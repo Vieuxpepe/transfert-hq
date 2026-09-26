@@ -1,0 +1,37 @@
+﻿# Secrets & local config
+bridge_config.json
+bridge_sessions.json
+*.pem
+id_rsa*
+id_ed25519*
+hq_ssh
+hq_ssh.ppk
+
+# Runtime / state
+bridge.pid
+bridge_stdout.log
+bridge_stderr.log
+bridge_activity.json
+bridge_transfers.json
+bridge_presence_history.json
+bridge_queue.json
+bridge_screenshot_ingest.json
+kanban.json
+scratchpad.txt
+.tmp/
+__pycache__/
+*.pyc
+
+# User content volumes
+Inbox/
+Uni/
+Print/
+assets/Inbox/
+assets/uploads/
+
+# Backups / editor junk
+*.bak
+*.bak-*
+iphone_bridge.py.bak*
+.DS_Store
+Thumbs.db
