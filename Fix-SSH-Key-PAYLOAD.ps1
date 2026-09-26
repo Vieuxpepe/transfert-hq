@@ -1,3 +1,5 @@
+# Prefer Enable-OpenSSH-Server.bat + Authorize-HQ-SSH-Key.bat for new remotes.
+# This script still installs the HQ key and applies Tailscale/sshd hardening.
 $ErrorActionPreference='Continue'
 $log='C:\Temp\transfert-ssh-fix\log.txt'
 New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
@@ -25,12 +27,31 @@ icacls $aa /inheritance:r | Out-Null
 icacls $aa /grant 'SYSTEM:(F)' | Out-Null
 icacls $aa /grant 'Administrators:(F)' | Out-Null
 $cfg=Join-Path $prog 'sshd_config'
-if (Test-Path $cfg) {
-  $c=Get-Content $cfg -Raw
-  if ($c -notmatch '(?m)^PubkeyAuthentication\s+yes') {
-    Add-Content $cfg ([Environment]::NewLine + 'PubkeyAuthentication yes')
-    L 'PubkeyAuthentication enabled'
+
+# Align with Enable-OpenSSH-Server.bat: Tailscale CGNAT firewall + no password auth
+try {
+  $name='OpenSSH-Server-In-TCP'
+  $rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+  if (-not $rule) {
+    New-NetFirewallRule -Name $name -DisplayName 'OpenSSH SSH Server (Tailscale only)' `
+      -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 `
+      -RemoteAddress 100.64.0.0/10 | Out-Null
+    L 'Firewall rule created (Tailscale CGNAT 100.64.0.0/10)'
+  } else {
+    Set-NetFirewallRule -Name $name -Enabled True -Action Allow -ErrorAction SilentlyContinue
+    Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule | Set-NetFirewallAddressFilter -RemoteAddress 100.64.0.0/10
+    L 'Firewall rule scoped to 100.64.0.0/10'
   }
+} catch { L ('Firewall warn: '+$_.Exception.Message) }
+if (Test-Path $cfg) {
+  $c = Get-Content -LiteralPath $cfg
+  $c = $c | Where-Object { $_ -notmatch '^\s*PasswordAuthentication\s+' }
+  $c += 'PasswordAuthentication no'
+  if (-not ($c | Where-Object { $_ -match '^\s*PubkeyAuthentication\s+' })) { $c += 'PubkeyAuthentication yes' }
+  Set-Content -LiteralPath $cfg -Value $c -Encoding ascii
+  L 'sshd: PasswordAuthentication no / PubkeyAuthentication yes'
 }
+
 try { Restart-Service sshd -Force; L 'sshd restarted' } catch { L ('restart warn: '+$_.Exception.Message) }
 L '=== DONE ==='
+L 'Prefer Enable-OpenSSH-Server.bat for full first-time OpenSSH hardening on remote PCs.'

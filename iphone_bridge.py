@@ -40,8 +40,10 @@ DEFAULT_MAX_UPLOAD_MB = 102400  # 100 Go
 SESSION_TTL_SEC = 60 * 60 * 24 * 7  # 7 days (was 30)
 LOGIN_BODY_MAX = 16 * 1024
 UPLOAD_TTL_SEC = 6 * 3600
-LOOPBACK_ONLY = False  # set True in main() when PIN is off
+LOOPBACK_ONLY = False  # legacy flag; PIN is mandatory at startup (fail closed)
 BIND_HOST = "0.0.0.0"
+REQ_TIMEOUT_SEC = 30
+REQ_SEM_MAX = 64
 
 # Active content must never execute on the HQ origin
 FORCE_ATTACHMENT_EXTS = {".html", ".htm", ".svg", ".xml", ".js", ".mjs", ".xhtml"}
@@ -51,13 +53,14 @@ UPLOAD_GET_EXACT = {
     "/", "/login", "/logout", "/manifest.webmanifest",
     "/icon-192.png", "/icon-512.png", "/wallboard",
     "/api/me",
+    "/api/upload/status",
 }
 UPLOAD_GET_PREFIX = ("/assets/",)
 UPLOAD_POST_EXACT = {
     "/login", "/logout",
     "/api/me", "/api/presence",
     "/api/upload",
-    "/api/upload/init", "/api/upload/chunk", "/api/upload/status", "/api/upload/complete",
+    "/api/upload/init", "/api/upload/chunk", "/api/upload/complete",
 }
 UPLOAD_POST_PREFIX = ()
 COOKIE_NAME = "transfert_session"
@@ -68,9 +71,14 @@ TEXT_EDIT_EXTS = {
 }
 CHUNK = 1024 * 1024
 PRESENCE_TTL_SEC = 90
+PRESENCE_ID_MAX = 128
+PRESENCE_MAX_ENTRIES = 64
 TRANSFER_HISTORY = 40
 LIST_LIMIT_DEFAULT = 50
 LIST_LIMIT_MAX = 100
+LIST_OFFSET_MAX = 1000
+UPLOAD_SESSIONS_MAX = 32
+UPLOAD_DISK_RESERVE_GB_DEFAULT = 2.0
 # CSRF / QR: optional public_base_urls in bridge_config.json (Serve HTTPS bases).
 # Never put PIN, session cookies, or tokens in QR payloads or public_base_urls.
 
@@ -78,6 +86,7 @@ SYSTEM_NAMES = {
     "iphone_bridge.py",
     "cc_ext.py",
     "readme.txt",
+    "third_party.txt",
     "start-iphone-upload.bat",
     "enable-openssh-server.bat",
     "authorize-hq-ssh-key.bat",
@@ -132,7 +141,7 @@ ADMIN_PREFIXES = (
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
 _LOGIN_FAILS_LOCK = threading.Lock()
-_REQ_SEM = threading.Semaphore(64)
+_REQ_SEM = threading.Semaphore(REQ_SEM_MAX)
 
 
 def default_auto_route() -> dict:
@@ -416,7 +425,7 @@ def extract_multipart_files(tmp: Path, content_type: str, default_folder: str, l
 
 def default_config() -> dict:
     return {
-        "pin": "",  # empty = loopback-only (no network admin). Set a PIN for Tailscale/LAN.
+        "pin": "",  # REQUIRED. Empty PIN refuses bridge startup (fail closed).
         "discord_webhook_url": "",
         "folders": list(DEFAULT_FOLDERS),
         "default_folder": "Inbox",
@@ -442,8 +451,10 @@ def default_config() -> dict:
         "screenshot_ingest_max_age_sec": 90,
         "autostart": True,
         "public_base_urls": [],  # optional https://… bases (Tailscale Serve) for CSRF allowlist + QR
+        "upload_sessions_max": UPLOAD_SESSIONS_MAX,
+        "upload_disk_reserve_gb": UPLOAD_DISK_RESERVE_GB_DEFAULT,
         "created": datetime.now().isoformat(timespec="seconds"),
-        "note": "Command Center HQ v6. Set pin in bridge_config.json. public_base_urls optional (Serve HTTPS). Never commit PIN. disk_probe_* = remote free space via Tailscale SSH.",
+        "note": "Command Center HQ v6. PIN required in bridge_config.json. public_base_urls optional (Serve HTTPS). Never commit PIN. disk_probe_* = remote free space via Tailscale SSH.",
     }
 
 
@@ -533,6 +544,16 @@ def load_config(*, write: bool = True) -> dict:
         base["screenshot_ingest_max_age_sec"] = max(30, min(600, int(base.get("screenshot_ingest_max_age_sec") or 90)))
     except (TypeError, ValueError):
         base["screenshot_ingest_max_age_sec"] = 90
+    try:
+        base["upload_sessions_max"] = max(1, min(256, int(base.get("upload_sessions_max") or UPLOAD_SESSIONS_MAX)))
+    except (TypeError, ValueError):
+        base["upload_sessions_max"] = UPLOAD_SESSIONS_MAX
+    try:
+        base["upload_disk_reserve_gb"] = max(0.0, min(100.0, float(
+            base.get("upload_disk_reserve_gb") if base.get("upload_disk_reserve_gb") is not None else UPLOAD_DISK_RESERVE_GB_DEFAULT
+        )))
+    except (TypeError, ValueError):
+        base["upload_disk_reserve_gb"] = UPLOAD_DISK_RESERVE_GB_DEFAULT
     try:
         base["notify_min_upload_mb"] = int(base.get("notify_min_upload_mb") or 50)
     except (TypeError, ValueError):
@@ -636,9 +657,7 @@ def authenticate_pin(pin: str) -> dict | None:
                 return {"user": str(u.get("name") or "user")[:40], "role": role}
         return None
     if not pin_enabled():
-        # Fail closed on the network: only loopback may run without a PIN.
-        if LOOPBACK_ONLY:
-            return {"user": "local", "role": "admin"}
+        # Fail closed: empty PIN never authenticates (startup should have refused).
         return None
     if hmac.compare_digest(pin_hash(pin), pin_hash(pin_value())):
         return {"user": "admin", "role": "admin"}
@@ -707,8 +726,7 @@ def issue_session(user: str = "admin", role: str = "admin") -> str:
 
 def session_info(token: str | None) -> dict | None:
     if not pin_enabled():
-        if LOOPBACK_ONLY:
-            return {"user": "local", "role": "admin", "exp": time.time() + 3600, "gen": auth_generation()}
+        # Fail closed: no PIN => no session, never implicit admin.
         return None
     if not token:
         return None
@@ -742,7 +760,10 @@ def session_valid(token: str | None) -> bool:
 
 def session_role(token: str | None) -> str:
     info = session_info(token)
-    return str((info or {}).get("role") or "admin")
+    if not info:
+        return ""
+    role = str(info.get("role") or "admin").lower()
+    return role if role in ("admin", "upload") else "admin"
 
 
 def revoke_session(token: str | None) -> None:
@@ -1138,8 +1159,8 @@ def parse_list_bounds(qs: dict, *, default: int = LIST_LIMIT_DEFAULT, max_limit:
             offset = int(raw_offset)
         except (TypeError, ValueError) as e:
             raise ValueError("offset invalide") from e
-        if offset < 0 or offset > 1_000_000:
-            raise ValueError("offset invalide")
+        if offset < 0 or offset > LIST_OFFSET_MAX:
+            raise ValueError(f"offset max {LIST_OFFSET_MAX}")
     return limit, offset
 
 
@@ -1202,6 +1223,9 @@ def _fmt_uptime(sec: float) -> str:
 
 
 def presence_upsert(client_id: str, payload: dict, ip: str) -> None:
+    client_id = str(client_id or "")[:PRESENCE_ID_MAX].strip()
+    if not client_id:
+        return
     now = time.time()
     free = payload.get("free")
     total = payload.get("total")
@@ -1243,6 +1267,9 @@ def presence_upsert(client_id: str, payload: dict, ip: str) -> None:
         dead = [k for k, v in _PRESENCE.items() if now - v.get("last_seen", 0) > PRESENCE_TTL_SEC]
         for k in dead:
             _PRESENCE.pop(k, None)
+        while len(_PRESENCE) > PRESENCE_MAX_ENTRIES:
+            oldest_k = min(_PRESENCE.items(), key=lambda kv: float(kv[1].get("last_seen") or 0))[0]
+            _PRESENCE.pop(oldest_k, None)
 
 
 def presence_list() -> list[dict]:
@@ -1623,6 +1650,47 @@ def chunk_upload_dir(upload_id: str, *, create: bool = True) -> Path:
     return d
 
 
+def upload_sessions_max() -> int:
+    try:
+        n = int(CONFIG.get("upload_sessions_max") or UPLOAD_SESSIONS_MAX)
+    except (TypeError, ValueError):
+        n = UPLOAD_SESSIONS_MAX
+    return max(1, min(256, n))
+
+
+def upload_disk_reserve_bytes() -> int:
+    try:
+        gb = float(CONFIG.get("upload_disk_reserve_gb") if CONFIG.get("upload_disk_reserve_gb") is not None else UPLOAD_DISK_RESERVE_GB_DEFAULT)
+    except (TypeError, ValueError):
+        gb = UPLOAD_DISK_RESERVE_GB_DEFAULT
+    gb = max(0.0, min(100.0, gb))
+    return int(gb * 1024 ** 3)
+
+
+def upload_active_count() -> int:
+    cleanup_stale_uploads()
+    root = TMP_DIR / "chunks"
+    n_disk = 0
+    if root.is_dir():
+        n_disk = sum(1 for d in root.iterdir() if d.is_dir())
+    with UPLOAD_SESSIONS_LOCK:
+        n_mem = len(UPLOAD_SESSIONS)
+    return max(n_disk, n_mem)
+
+
+def ensure_upload_capacity(size: int = 0) -> None:
+    """Refuse new chunk sessions when concurrent quota or free-disk reserve is exceeded."""
+    if upload_active_count() >= upload_sessions_max():
+        raise ValueError(f"Trop d'envois en cours (max {upload_sessions_max()})")
+    info = disk_free(ROOT)
+    free = int(info.get("free") or 0) if "error" not in info else 0
+    need = upload_disk_reserve_bytes() + max(0, int(size or 0))
+    if free and free < need:
+        raise ValueError(
+            f"Espace disque insuffisant (libre {human_size(free)}, reserve {human_size(upload_disk_reserve_bytes())})"
+        )
+
+
 def cleanup_stale_uploads(*, ttl: int = UPLOAD_TTL_SEC) -> int:
     root = TMP_DIR / "chunks"
     if not root.is_dir():
@@ -1660,6 +1728,7 @@ def upload_init(name: str, size: int, folder: str) -> dict:
         raise ValueError("Taille invalide")
     if size > max_upload_bytes():
         raise ValueError(f"Envoi trop gros (max {human_size(max_upload_bytes())})")
+    ensure_upload_capacity(size)
     upload_id = secrets.token_hex(12)
     chunk = CLIENT_CHUNK
     expected_parts = max(1, (size + chunk - 1) // chunk) if size else 1
@@ -2964,7 +3033,9 @@ function setupHQ() {
   });
   $('#btn-shot')?.addEventListener('click', async () => {
     try {
-      const data = await api('/api/pc/screenshot');
+      const data = await api('/api/pc/screenshot', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
+      });
       toast('Capture: ' + data.name);
       await refreshFiles();
       await refreshHQ();
@@ -3896,6 +3967,34 @@ def _login_fail(ip: str) -> None:
 class Handler(BaseHTTPRequestHandler):
     server_version = "TransfertBridge/6.0"
 
+    def setup(self) -> None:
+        super().setup()
+        try:
+            self.connection.settimeout(REQ_TIMEOUT_SEC)
+        except OSError:
+            pass
+
+    def handle(self) -> None:
+        """Bound concurrent handlers; refuse quickly with 503 when saturated."""
+        if not _REQ_SEM.acquire(blocking=False):
+            try:
+                self.close_connection = True
+                self.connection.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Type: text/plain; charset=utf-8\r\n"
+                    b"Content-Length: 11\r\n"
+                    b"Connection: close\r\n"
+                    b"\r\n"
+                    b"Server busy"
+                )
+            except OSError:
+                pass
+            return
+        try:
+            super().handle()
+        finally:
+            _REQ_SEM.release()
+
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
@@ -3911,13 +4010,14 @@ class Handler(BaseHTTPRequestHandler):
         return c[COOKIE_NAME].value if COOKIE_NAME in c else None
 
     def _auth(self) -> bool:
-        if not pin_enabled() and LOOPBACK_ONLY:
-            return True
+        # Never treat loopback / missing PIN as authenticated admin.
+        if not pin_enabled():
+            return False
         return session_valid(self._token())
 
     def _role(self) -> str:
-        if not pin_enabled() and LOOPBACK_ONLY:
-            return "admin"
+        if not pin_enabled():
+            return ""
         return session_role(self._token())
 
     def _require_admin(self) -> bool:
@@ -4192,7 +4292,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"missing")
             return
 
-        if (pin_enabled() or not LOOPBACK_ONLY) and not self._auth():
+        # Method guard before auth so clients see 405 (not 401) for wrong verb.
+        if raw == "/api/pc/screenshot":
+            self.send_response(405)
+            self.send_header("Allow", "POST")
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            body = b'{"error":"POST requis"}'
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if not self._auth():
             if raw.startswith("/api/") or raw.startswith("/files/") or raw.startswith("/download/"):
                 self._json(401, {"error": "PIN requis"})
                 return
@@ -4322,7 +4435,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/me":
-            info = session_info(self._token()) or {"user": "guest", "role": "admin"}
+            info = session_info(self._token()) or {"user": "?", "role": self._role() or "upload"}
             self._json(200, {"user": info.get("user"), "role": info.get("role")})
             return
 
@@ -4365,15 +4478,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
                 return
             self._json(200, {"ok": True, "text": text})
-            return
-
-        if raw == "/api/pc/screenshot":
-            try:
-                info = pc_screenshot()
-            except Exception as e:
-                self._json(500, {"error": str(e)})
-                return
-            self._json(200, {"ok": True, **info})
             return
 
         if raw == "/api/files":
@@ -4454,7 +4558,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        if (pin_enabled() or not LOOPBACK_ONLY) and not self._auth():
+        if not self._auth():
             self._json(401, {"error": "PIN requis"})
             return
 
@@ -4465,7 +4569,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if raw == "/api/presence":
             data = self._read_json()
-            cid = str(data.get("id") or secrets.token_hex(8))
+            cid = str(data.get("id") or secrets.token_hex(8))[:PRESENCE_ID_MAX].strip()
+            if not cid:
+                cid = secrets.token_hex(8)
             presence_upsert(cid, data, self.client_address[0])
             self._json(200, {"ok": True, "id": cid, "path": cc_ext.classify_ip(self.client_address[0])})
             return
@@ -4552,6 +4658,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
                 return
             self._json(200, {"ok": True})
+            return
+
+        if raw == "/api/pc/screenshot":
+            if not self._require_admin():
+                return
+            try:
+                info = pc_screenshot()
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+                return
+            self._json(200, {"ok": True, **info})
             return
 
         if raw == "/api/pc/lock":
@@ -5089,21 +5206,14 @@ def main() -> None:
         print(f"Transfert Bridge already running on port {PORT}")
         return
 
-    # Fail closed: no PIN => loopback only (never unauthenticated network admin/RCE).
-    insecure = bool(CONFIG.get("allow_insecure_no_pin"))
+    # Fail closed: PIN is mandatory. No-PIN + Tailscale Serve/Funnel must never yield unauthenticated admin.
     if not pin_enabled():
-        if insecure:
-            LOOPBACK_ONLY = True
-            BIND_HOST = "127.0.0.1"
-            print(" WARNING: PIN off + allow_insecure_no_pin — binding 127.0.0.1 only")
-        else:
-            LOOPBACK_ONLY = True
-            BIND_HOST = "127.0.0.1"
-            print(" WARNING: no PIN configured — binding 127.0.0.1 only.")
-            print("          Set pin (or users[].pin) in bridge_config.json for network access.")
-    else:
-        LOOPBACK_ONLY = False
-        BIND_HOST = str(CONFIG.get("bind_host") or "0.0.0.0").strip() or "0.0.0.0"
+        raise SystemExit(
+            "FATAL: PIN required. Set pin (or users[].pin) in bridge_config.json.\n"
+            "Refusing to start without authentication (Tailscale Serve/Funnel safety)."
+        )
+    LOOPBACK_ONLY = False
+    BIND_HOST = str(CONFIG.get("bind_host") or "0.0.0.0").strip() or "0.0.0.0"
 
     write_pid()
     lan = lan_ipv4()
@@ -5147,7 +5257,7 @@ def main() -> None:
         print(f" LAN    : http://{lan}:{PORT}/")
         print(f" Wallboard: http://{lan}:{PORT}/wallboard")
         print(f" Tailscale: http://{ts}:{PORT}/" if ts else " Tailscale: (not installed)")
-    print(f" PIN    : {'on' if pin_enabled() else 'off (loopback-only)'}")
+    print(f" PIN    : required (on)")
     print(f" Max up : {human_size(max_upload_bytes())}")
     print(f" Backup : every {CONFIG.get('backup_every_hours')}h -> {CONFIG.get('backup_dir')}")
     print(" Ctrl+C to stop")

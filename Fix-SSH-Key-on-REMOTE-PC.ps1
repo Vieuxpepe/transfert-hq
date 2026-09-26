@@ -1,3 +1,7 @@
+# Prefer Enable-OpenSSH-Server.bat + Authorize-HQ-SSH-Key.bat for new remotes.
+# This script installs the HQ pubkey and applies Tailscale CGNAT firewall +
+# PasswordAuthentication no (aligned with Enable-OpenSSH-Server.bat).
+
 # Transfert HQ - install HQ SSH pubkey on THIS PC (Administrator)
 # Writes log to Desktop\transfert-ssh-fix.log
 
@@ -104,14 +108,37 @@ if ($alines -notcontains $pub) {
 & icacls $adminAuth /grant "Administrators:(F)" | Out-Null
 Log "ACL fixed on administrators_authorized_keys" "Green"
 
+
+# Align with Enable-OpenSSH-Server.bat: Tailscale CGNAT firewall + no password auth
+try {
+  $fwName = "OpenSSH-Server-In-TCP"
+  $rule = Get-NetFirewallRule -Name $fwName -ErrorAction SilentlyContinue
+  if (-not $rule) {
+    New-NetFirewallRule -Name $fwName -DisplayName "OpenSSH SSH Server (Tailscale only)" `
+      -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 `
+      -RemoteAddress 100.64.0.0/10 | Out-Null
+    Log "Firewall rule created (Tailscale CGNAT 100.64.0.0/10)" "Green"
+  } else {
+    Set-NetFirewallRule -Name $fwName -Enabled True -Action Allow -ErrorAction SilentlyContinue
+    Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule | Set-NetFirewallAddressFilter -RemoteAddress 100.64.0.0/10
+    Log "Firewall rule scoped to 100.64.0.0/10" "Green"
+  }
+} catch {
+  Log ("Firewall warn: " + $_.Exception.Message) "Yellow"
+}
+
 $cfg = Join-Path $prog "sshd_config"
 if (Test-Path $cfg) {
-  $c = Get-Content $cfg -Raw
-  if ($c -notmatch "(?m)^PubkeyAuthentication\s+yes") {
-    Add-Content -Path $cfg -Value "`r`nPubkeyAuthentication yes`r`n"
-    Log "Enabled PubkeyAuthentication" "Green"
+  $lines = Get-Content -LiteralPath $cfg
+  $lines = $lines | Where-Object { $_ -notmatch "^\s*PasswordAuthentication\s+" }
+  $lines = @($lines) + @("PasswordAuthentication no")
+  if (-not ($lines | Where-Object { $_ -match "^\s*PubkeyAuthentication\s+" })) {
+    $lines = @($lines) + @("PubkeyAuthentication yes")
   }
+  Set-Content -LiteralPath $cfg -Value $lines -Encoding ascii
+  Log "sshd: PasswordAuthentication no / PubkeyAuthentication yes" "Green"
 }
+
 
 try {
   Restart-Service sshd -Force

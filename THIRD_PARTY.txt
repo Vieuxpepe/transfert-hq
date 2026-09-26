@@ -1,0 +1,17 @@
+Third-party assets — Transfert HQ
+=================================
+
+assets/qrcode.min.js
+--------------------
+Upstream project : QRCode.js (davidshimjs/qrcodejs)
+Common npm mirror: qrcodejs / qrcode-generator browser build
+Likely version   : 1.0.0-era minified build (version string not embedded in file)
+License          : MIT (QRCode.js)
+SHA-256          : C541EF06327885A8415BCA8DF6071E14189B4855336DEF4F36DB54BDE8484F36
+Local path       : assets/qrcode.min.js
+Notes            : Vendored minfile used for HQ / wallboard QR rendering.
+                   Do not commit secrets into QR payloads (URL-only).
+                   File intentionally unchanged unless a security fix is required.
+
+Upstream reference (historical):
+  https://github.com/davidshimjs/qrcodejs

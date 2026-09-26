@@ -58,8 +58,20 @@ ce fichier — il contient le PIN) :
 Ces URLs alimentent l'allowlist CSRF et les QR (URL uniquement, jamais de PIN).
 Derrière Serve, le cookie de session reçoit le flag Secure (via X-Forwarded-Proto).
 
+
+PIN (obligatoire)
+-----------------
+Le pont refuse de demarrer sans PIN (fail closed).
+Configure `pin` ou `users[].pin` dans bridge_config.json (ne jamais committer ce fichier).
+Sans PIN, Tailscale Serve/Funnel vers 127.0.0.1 ne doit jamais donner un admin non authentifie.
+Un PIN vide a l'execution nie toute auth (401), jamais de role admin implicite.
+
 Config utile (schéma, sans secrets)
 -----------------------------------
-  pin / users[]     — auth
+  pin / users[]     - auth OBLIGATOIRE (startup refuse sans PIN)
   public_base_urls  — bases HTTPS/LAN extras pour CSRF + QR
-  bind_host         — défaut 0.0.0.0 si PIN actif
+  bind_host         - defaut 0.0.0.0 (PIN requis)
+
+Third-party
+-----------
+See THIRD_PARTY.txt (qrcode.min.js provenance / license / SHA-256).
