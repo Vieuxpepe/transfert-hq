@@ -149,9 +149,14 @@ def load_activity() -> None:
         pass
 
 
-def activity_list() -> list[dict]:
+def activity_list(limit: int | None = None, offset: int = 0) -> list[dict]:
     with _lock:
-        return list(_activity)
+        items = list(_activity)
+    if offset:
+        items = items[offset:]
+    if limit is not None:
+        items = items[: max(0, int(limit))]
+    return items
 
 
 def push_alert(title: str, detail: str, *, discord: bool = True) -> None:
@@ -1085,15 +1090,20 @@ def record_presence_snapshot(devices: list[dict]) -> None:
         pass
 
 
-def presence_history() -> list[dict]:
+def presence_history(limit: int | None = None, offset: int = 0) -> list[dict]:
     path = presence_history_path()
     if not path.is_file():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        items = data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+    if offset:
+        items = items[offset:]
+    if limit is not None:
+        items = items[: max(0, int(limit))]
+    return items
 
 
 # ---- v6: backup ----
@@ -1304,8 +1314,14 @@ def inbox_zero(action: str) -> dict:
             target_rel = route.get(ext)
             if not target_rel:
                 continue
-            parts = str(target_rel).replace("\\", "/").strip("/").split("/")
-            dest_dir = _root().joinpath(*parts)
+            parts = [p for p in str(target_rel).replace("\\", "/").strip("/").split("/") if p and p not in (".", "..")]
+            if not parts:
+                continue
+            dest_dir = (_root().joinpath(*parts)).resolve()
+            try:
+                dest_dir.relative_to(_root().resolve())
+            except ValueError:
+                continue
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / p.name
             if dest.exists():
@@ -1622,9 +1638,10 @@ def run_shell(
     out = (r.stdout or "")[-12000:]
     err = (r.stderr or "")[-4000:]
     if not quiet:
-        log_activity("shell", f"{label} [{shell}]: {command[:80]}")
-        if notify_discord:
-            notify_discord("Terminal distant", f"**{label}** `{shell}`\n```{command[:500]}```")
+        # Never log/post raw command text (may contain secrets).
+        log_activity("shell", f"{label} [{shell}] exit={r.returncode}")
+        if notify_discord and _cfg().get("discord_log_shell"):
+            notify_discord("Terminal distant", f"**{label}** `{shell}` exit={r.returncode}")
 
     return {
         "ok": r.returncode == 0,

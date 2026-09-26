@@ -48,15 +48,29 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [3/4] Ensuring firewall rule for OpenSSH...
+echo [3/4] Firewall: OpenSSH only from Tailscale (100.64.0.0/10)...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "if (-not (Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue)) { " ^
-  "  New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH SSH Server (sshd)' " ^
-  "    -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null; " ^
-  "  Write-Host 'Firewall rule created.' -ForegroundColor Green " ^
+  "$name='OpenSSH-Server-In-TCP'; " ^
+  "$rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue; " ^
+  "if (-not $rule) { " ^
+  "  New-NetFirewallRule -Name $name -DisplayName 'OpenSSH SSH Server (Tailscale only)' " ^
+  "    -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 " ^
+  "    -RemoteAddress 100.64.0.0/10 | Out-Null; " ^
+  "  Write-Host 'Firewall rule created (Tailscale CGNAT only).' -ForegroundColor Green " ^
   "} else { " ^
-  "  Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue; " ^
-  "  Write-Host 'Firewall rule OK.' -ForegroundColor Green " ^
+  "  Set-NetFirewallRule -Name $name -Enabled True -Action Allow -ErrorAction SilentlyContinue; " ^
+  "  Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule | Set-NetFirewallAddressFilter -RemoteAddress 100.64.0.0/10; " ^
+  "  Write-Host 'Firewall rule scoped to 100.64.0.0/10.' -ForegroundColor Green " ^
+  "}; " ^
+  "$cfg = Join-Path $env:ProgramData 'ssh\\sshd_config'; " ^
+  "if (Test-Path $cfg) { " ^
+  "  $c = Get-Content -LiteralPath $cfg; " ^
+  "  $c = $c | Where-Object { $_ -notmatch '^\\s*PasswordAuthentication\\s+' }; " ^
+  "  $c += 'PasswordAuthentication no'; " ^
+  "  if (-not ($c | Where-Object { $_ -match '^\\s*PubkeyAuthentication\\s+' })) { $c += 'PubkeyAuthentication yes' }; " ^
+  "  Set-Content -LiteralPath $cfg -Value $c -Encoding ascii; " ^
+  "  Restart-Service sshd -ErrorAction SilentlyContinue; " ^
+  "  Write-Host 'sshd: PasswordAuthentication no' -ForegroundColor Green " ^
   "}"
 
 echo [4/4] Quick check...

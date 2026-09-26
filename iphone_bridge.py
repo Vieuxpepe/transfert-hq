@@ -37,7 +37,29 @@ CONFIG_PATH = ROOT / "bridge_config.json"
 PID_PATH = ROOT / "bridge.pid"
 TMP_DIR = ROOT / ".tmp"
 DEFAULT_MAX_UPLOAD_MB = 102400  # 100 Go
-SESSION_TTL_SEC = 60 * 60 * 24 * 30
+SESSION_TTL_SEC = 60 * 60 * 24 * 7  # 7 days (was 30)
+LOGIN_BODY_MAX = 16 * 1024
+UPLOAD_TTL_SEC = 6 * 3600
+LOOPBACK_ONLY = False  # set True in main() when PIN is off
+BIND_HOST = "0.0.0.0"
+
+# Active content must never execute on the HQ origin
+FORCE_ATTACHMENT_EXTS = {".html", ".htm", ".svg", ".xml", ".js", ".mjs", ".xhtml"}
+
+# upload role: explicit allowlist (everything else = 403)
+UPLOAD_GET_EXACT = {
+    "/", "/login", "/logout", "/manifest.webmanifest",
+    "/icon-192.png", "/icon-512.png", "/wallboard",
+    "/api/me",
+}
+UPLOAD_GET_PREFIX = ("/assets/",)
+UPLOAD_POST_EXACT = {
+    "/login", "/logout",
+    "/api/me", "/api/presence",
+    "/api/upload",
+    "/api/upload/init", "/api/upload/chunk", "/api/upload/status", "/api/upload/complete",
+}
+UPLOAD_POST_PREFIX = ()
 COOKIE_NAME = "transfert_session"
 DEFAULT_FOLDERS = ["Inbox", "Uni", "Print"]
 TEXT_EDIT_EXTS = {
@@ -47,6 +69,10 @@ TEXT_EDIT_EXTS = {
 CHUNK = 1024 * 1024
 PRESENCE_TTL_SEC = 90
 TRANSFER_HISTORY = 40
+LIST_LIMIT_DEFAULT = 50
+LIST_LIMIT_MAX = 100
+# CSRF / QR: optional public_base_urls in bridge_config.json (Serve HTTPS bases).
+# Never put PIN, session cookies, or tokens in QR payloads or public_base_urls.
 
 SYSTEM_NAMES = {
     "iphone_bridge.py",
@@ -90,6 +116,7 @@ UPLOAD_SESSIONS: dict[str, dict] = {}
 UPLOAD_SESSIONS_LOCK = threading.Lock()
 CLIENT_CHUNK = 2 * 1024 * 1024
 
+# Legacy denylist kept only as documentation; enforcement is UPLOAD_* allowlists.
 ADMIN_PREFIXES = (
     "/api/pc/",
     "/api/clipboard/pc",
@@ -102,6 +129,10 @@ ADMIN_PREFIXES = (
     "/api/captures",
     "/api/print",
 )
+
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_FAILS_LOCK = threading.Lock()
+_REQ_SEM = threading.Semaphore(64)
 
 
 def default_auto_route() -> dict:
@@ -215,6 +246,12 @@ def receive_body_to_temp(rfile, length: int, limit: int) -> Path:
                     break
                 out.write(chunk)
                 left -= len(chunk)
+        if left != 0:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise ValueError("Corps de requête tronqué")
         return path
     except Exception:
         try:
@@ -379,7 +416,7 @@ def extract_multipart_files(tmp: Path, content_type: str, default_folder: str, l
 
 def default_config() -> dict:
     return {
-        "pin": "",  # empty = auth off until set in bridge_config.json
+        "pin": "",  # empty = loopback-only (no network admin). Set a PIN for Tailscale/LAN.
         "discord_webhook_url": "",
         "folders": list(DEFAULT_FOLDERS),
         "default_folder": "Inbox",
@@ -404,25 +441,35 @@ def default_config() -> dict:
         "screenshot_ingest_every_sec": 5,
         "screenshot_ingest_max_age_sec": 90,
         "autostart": True,
+        "public_base_urls": [],  # optional https://… bases (Tailscale Serve) for CSRF allowlist + QR
         "created": datetime.now().isoformat(timespec="seconds"),
-        "note": "Command Center HQ v6. Set pin in bridge_config.json. discord_webhook_url optional. disk_probe_* = remote free space via Tailscale SSH.",
+        "note": "Command Center HQ v6. Set pin in bridge_config.json. public_base_urls optional (Serve HTTPS). Never commit PIN. disk_probe_* = remote free space via Tailscale SSH.",
     }
 
 
-def load_config() -> dict:
+def load_config(*, write: bool = True) -> dict:
+    """Load config. Malformed JSON aborts without overwriting the file."""
     base = default_config()
-    if CONFIG_PATH.is_file():
+    existed = CONFIG_PATH.is_file()
+    if existed:
         try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                base.update(data)
-        except (OSError, json.JSONDecodeError):
-            pass
+            raw_txt = CONFIG_PATH.read_text(encoding="utf-8")
+            data = json.loads(raw_txt)
+        except json.JSONDecodeError as e:
+            raise SystemExit(
+                f"FATAL: bridge_config.json is malformed and will NOT be overwritten.\n"
+                f"  Path: {CONFIG_PATH}\n  Error: {e}\n"
+                f"Fix the JSON or restore a backup, then restart."
+            ) from e
+        except OSError as e:
+            raise SystemExit(f"FATAL: cannot read bridge_config.json: {e}") from e
+        if not isinstance(data, dict):
+            raise SystemExit("FATAL: bridge_config.json must be a JSON object")
+        base.update(data)
     if not base.get("folders"):
         base["folders"] = list(DEFAULT_FOLDERS)
     if base.get("default_folder") not in base["folders"]:
         base["default_folder"] = base["folders"][0]
-    # merge missing auto_route / actions defaults
     ar = dict(default_auto_route())
     if isinstance(base.get("auto_route"), dict):
         ar.update({str(k).lower(): v for k, v in base["auto_route"].items()})
@@ -431,6 +478,15 @@ def load_config() -> dict:
         base["actions"] = default_actions()
     if not isinstance(base.get("favorites"), list):
         base["favorites"] = []
+    if not isinstance(base.get("public_base_urls"), list):
+        base["public_base_urls"] = []
+    else:
+        cleaned_urls = []
+        for u in base["public_base_urls"]:
+            s = str(u or "").strip()
+            if s:
+                cleaned_urls.append(s)
+        base["public_base_urls"] = cleaned_urls[:32]
     if not isinstance(base.get("scenes"), list) or not base["scenes"]:
         base["scenes"] = default_scenes() or cc_ext.default_scenes()
     try:
@@ -481,9 +537,27 @@ def load_config() -> dict:
         base["notify_min_upload_mb"] = int(base.get("notify_min_upload_mb") or 50)
     except (TypeError, ValueError):
         base["notify_min_upload_mb"] = 50
-    with _CONFIG_LOCK:
-        CONFIG_PATH.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
+    # Credential fingerprint → bump auth_generation when PIN/users change
+    users = [u for u in (base.get("users") or []) if isinstance(u, dict)]
+    cred = str(base.get("pin") or "") + "|" + "|".join(
+        f"{u.get('name')}:{u.get('pin')}:{u.get('role')}" for u in users
+    )
+    fp = hashlib.sha256(cred.encode("utf-8")).hexdigest()[:24]
+    try:
+        gen = int(base.get("auth_generation") or 0)
+    except (TypeError, ValueError):
+        gen = 0
+    if base.get("_auth_fp") != fp:
+        gen += 1
+        base["auth_generation"] = gen
+        base["_auth_fp"] = fp
+    else:
+        base["auth_generation"] = gen
+    if write:
+        with _CONFIG_LOCK:
+            CONFIG_PATH.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
     return base
+
 
 
 CONFIG = load_config()
@@ -562,7 +636,10 @@ def authenticate_pin(pin: str) -> dict | None:
                 return {"user": str(u.get("name") or "user")[:40], "role": role}
         return None
     if not pin_enabled():
-        return {"user": "guest", "role": "admin"}
+        # Fail closed on the network: only loopback may run without a PIN.
+        if LOOPBACK_ONLY:
+            return {"user": "local", "role": "admin"}
+        return None
     if hmac.compare_digest(pin_hash(pin), pin_hash(pin_value())):
         return {"user": "admin", "role": "admin"}
     return None
@@ -608,6 +685,13 @@ def load_sessions() -> None:
         pass
 
 
+def auth_generation() -> int:
+    try:
+        return int((CONFIG or {}).get("auth_generation") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def issue_session(user: str = "admin", role: str = "admin") -> str:
     token = secrets.token_urlsafe(24)
     with _SESSIONS_LOCK:
@@ -615,6 +699,7 @@ def issue_session(user: str = "admin", role: str = "admin") -> str:
             "exp": time.time() + SESSION_TTL_SEC,
             "user": user,
             "role": role,
+            "gen": auth_generation(),
         }
     _persist_sessions()
     return token
@@ -622,7 +707,9 @@ def issue_session(user: str = "admin", role: str = "admin") -> str:
 
 def session_info(token: str | None) -> dict | None:
     if not pin_enabled():
-        return {"user": "guest", "role": "admin", "exp": time.time() + 3600}
+        if LOOPBACK_ONLY:
+            return {"user": "local", "role": "admin", "exp": time.time() + 3600, "gen": auth_generation()}
+        return None
     if not token:
         return None
     with _SESSIONS_LOCK:
@@ -634,9 +721,12 @@ def session_info(token: str | None) -> dict | None:
                 _SESSIONS.pop(token, None)
                 info = None
             else:
-                info = {"user": "admin", "role": "admin", "exp": info}
+                info = {"user": "admin", "role": "admin", "exp": info, "gen": 0}
                 _SESSIONS[token] = info
         elif float(info.get("exp") or 0) < time.time():
+            _SESSIONS.pop(token, None)
+            info = None
+        elif int(info.get("gen") or 0) != auth_generation():
             _SESSIONS.pop(token, None)
             info = None
         else:
@@ -962,6 +1052,97 @@ def disk_free(path: Path) -> dict:
         return {"error": str(e)}
 
 
+
+def _normalize_public_base(url: str) -> str | None:
+    """Allow only http(s)://host[:port]/ — no path/query/fragment, never credentials."""
+    s = (url or "").strip()
+    if not s or any(c.isspace() for c in s):
+        return None
+    if "://" not in s:
+        s = "http://" + s
+    p = urlparse(s)
+    if p.scheme not in ("http", "https"):
+        return None
+    if not p.netloc or "@" in p.netloc:
+        return None
+    path = p.path or "/"
+    if path not in ("", "/"):
+        return None
+    if p.query or p.fragment or p.params:
+        return None
+    host = p.hostname
+    if not host:
+        return None
+    netloc = host
+    if p.port:
+        netloc = f"{host}:{p.port}"
+    return f"{p.scheme}://{netloc}/"
+
+
+def public_bridge_urls() -> list[dict]:
+    """Server-decided bridge base URLs for QR + CSRF. URL-only — never PIN/session/token."""
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    def add(label: str, url: str) -> None:
+        norm = _normalize_public_base(url)
+        if not norm or norm in seen:
+            return
+        seen.add(norm)
+        out.append({"label": label, "url": norm})
+
+    add("localhost", f"http://127.0.0.1:{PORT}/")
+    add("localhost", f"http://localhost:{PORT}/")
+    lan = lan_ipv4()
+    if lan:
+        add("LAN", f"http://{lan}:{PORT}/")
+    ts = tailscale_ipv4()
+    if ts:
+        add("Tailscale", f"http://{ts}:{PORT}/")
+    for u in (CONFIG.get("public_base_urls") or []):
+        add("Serve", str(u))
+    return out
+
+
+def csrf_allowed_origins(request_host: str | None = None) -> set[str]:
+    """Origins derived from request Host + LAN/Tailscale/localhost + public_base_urls."""
+    origins: set[str] = set()
+    host = (request_host or "").split(",")[0].strip()
+    if host and "/" not in host and " " not in host and "\\" not in host:
+        origins.add(f"http://{host}")
+        origins.add(f"https://{host}")
+    for entry in public_bridge_urls():
+        p = urlparse(entry["url"])
+        if p.scheme and p.netloc:
+            origins.add(f"{p.scheme}://{p.netloc}")
+    return origins
+
+
+def parse_list_bounds(qs: dict, *, default: int = LIST_LIMIT_DEFAULT, max_limit: int = LIST_LIMIT_MAX) -> tuple[int, int]:
+    """Parse limit/offset. Raises ValueError for absurd values (caller → 400)."""
+    raw_limit = (qs.get("limit") or [None])[0]
+    raw_offset = (qs.get("offset") or [None])[0]
+    if raw_limit is None or str(raw_limit).strip() == "":
+        limit = default
+    else:
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as e:
+            raise ValueError("limit invalide") from e
+        if limit < 0 or limit > max_limit:
+            raise ValueError(f"limit max {max_limit}")
+    if raw_offset is None or str(raw_offset).strip() == "":
+        offset = 0
+    else:
+        try:
+            offset = int(raw_offset)
+        except (TypeError, ValueError) as e:
+            raise ValueError("offset invalide") from e
+        if offset < 0 or offset > 1_000_000:
+            raise ValueError("offset invalide")
+    return limit, offset
+
+
 def bridge_status() -> dict:
     return {
         "hostname": socket.gethostname(),
@@ -999,8 +1180,11 @@ def bridge_status() -> dict:
         "notify_min_upload_mb": CONFIG.get("notify_min_upload_mb", 50),
         "alert_disk_min_gb": CONFIG.get("alert_disk_min_gb", 20),
         "urls": {
-            "lan": f"http://{lan_ipv4()}:{PORT}/",
-            "tailscale": (f"http://{tailscale_ipv4()}:{PORT}/" if tailscale_ipv4() else ""),
+            "lan": next((e["url"] for e in public_bridge_urls() if e["label"] == "LAN"), f"http://{lan_ipv4()}:{PORT}/"),
+            "tailscale": next((e["url"] for e in public_bridge_urls() if e["label"] == "Tailscale"), ""),
+            # QR payloads must use these server-built bases only (URL-only, jamais de PIN)
+            "qr": [{"label": e["label"], "url": e["url"]} for e in public_bridge_urls() if e["label"] in ("LAN", "Tailscale", "Serve")],
+            "public": [e["url"] for e in public_bridge_urls()],
         },
     }
 
@@ -1439,39 +1623,98 @@ def chunk_upload_dir(upload_id: str, *, create: bool = True) -> Path:
     return d
 
 
+def cleanup_stale_uploads(*, ttl: int = UPLOAD_TTL_SEC) -> int:
+    root = TMP_DIR / "chunks"
+    if not root.is_dir():
+        return 0
+    now = time.time()
+    n = 0
+    for d in list(root.iterdir()):
+        if not d.is_dir():
+            continue
+        meta_path = d / "meta.json"
+        created = 0.0
+        try:
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                created = float(meta.get("created") or 0)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            created = 0.0
+        if not created:
+            try:
+                created = d.stat().st_mtime
+            except OSError:
+                created = 0.0
+        if created and (now - created) > ttl:
+            shutil.rmtree(d, ignore_errors=True)
+            n += 1
+            with UPLOAD_SESSIONS_LOCK:
+                UPLOAD_SESSIONS.pop(d.name, None)
+    return n
+
+
 def upload_init(name: str, size: int, folder: str) -> dict:
+    cleanup_stale_uploads()
+    size = int(size)
+    if size < 0:
+        raise ValueError("Taille invalide")
+    if size > max_upload_bytes():
+        raise ValueError(f"Envoi trop gros (max {human_size(max_upload_bytes())})")
     upload_id = secrets.token_hex(12)
+    chunk = CLIENT_CHUNK
+    expected_parts = max(1, (size + chunk - 1) // chunk) if size else 1
     meta = {
         "id": upload_id,
         "name": Path(name).name,
-        "size": int(size),
+        "size": size,
         "folder": folder,
         "received": 0,
         "created": time.time(),
+        "chunk": chunk,
+        "expected_parts": expected_parts,
+        "indexes": [],
     }
     d = chunk_upload_dir(upload_id)
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     with UPLOAD_SESSIONS_LOCK:
         UPLOAD_SESSIONS[upload_id] = meta
-    return {"id": upload_id, "chunk": CLIENT_CHUNK}
+    return {"id": upload_id, "chunk": chunk}
 
 
 def upload_chunk(upload_id: str, index: int, data: bytes) -> dict:
     if not _valid_upload_id(upload_id):
         raise ValueError("Upload id invalide")
-    if index < 0 or index > 100000:
-        raise ValueError("Index chunk invalide")
     d = chunk_upload_dir(upload_id, create=False)
     meta_path = d / "meta.json"
     if not meta_path.is_file():
         raise ValueError("Upload inconnu / expiré")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     expected = int(meta.get("size") or 0)
+    chunk_sz = int(meta.get("chunk") or CLIENT_CHUNK)
+    max_index = int(meta.get("expected_parts") or max(1, (expected + chunk_sz - 1) // chunk_sz if expected else 1)) - 1
+    if index < 0 or index > max_index or index > 20000:
+        raise ValueError("Index chunk invalide")
+    # projected size BEFORE write
+    other = 0
+    for p in d.glob("part_*"):
+        try:
+            idx = int(p.name.split("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if idx == int(index):
+            continue
+        other += p.stat().st_size
+    projected = other + len(data)
+    if expected and projected > expected:
+        raise ValueError("Taille reçue incohérente")
     part = d / f"part_{int(index):06d}"
     part.write_bytes(data)
     received = sum(p.stat().st_size for p in d.glob("part_*"))
-    if expected and received > expected + CLIENT_CHUNK:
-        raise ValueError("Taille reçue incohérente")
+    idxs = sorted(meta.get("indexes") or [])
+    if int(index) not in idxs:
+        idxs.append(int(index))
+        idxs.sort()
+    meta["indexes"] = idxs
     meta["received"] = received
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
     with UPLOAD_SESSIONS_LOCK:
@@ -1506,6 +1749,15 @@ def upload_complete(upload_id: str) -> dict:
     received = sum(p.stat().st_size for p in parts)
     if expected and received != expected:
         raise ValueError(f"Incomplet: {received}/{expected} octets")
+    try:
+        indexes = sorted(int(p.name.split("_", 1)[1]) for p in parts)
+    except (IndexError, ValueError) as e:
+        raise ValueError("Chunks invalides") from e
+    if indexes != list(range(len(indexes))):
+        raise ValueError("Chunks manquants ou non contigus")
+    exp_parts = int(meta.get("expected_parts") or 0)
+    if exp_parts and len(indexes) != exp_parts:
+        raise ValueError(f"Nombre de chunks incorrect: {len(indexes)}/{exp_parts}")
     folder = str(meta.get("folder") or "Inbox")
     name = safe_leaf_name(str(meta.get("name") or "file.bin")) or "file.bin"
     target_rel = apply_auto_route(folder, name)
@@ -2143,11 +2395,13 @@ function setupDrop() {
 }
 
 function setupQR() {
+  /* QR = URL de base du pont uniquement (jamais PIN / cookie / token). Serveur décide. */
   if (typeof QRCode === 'undefined') return;
   const lan = $('#qr-lan');
   const ts = $('#qr-ts');
-  if (lan && lan.dataset.url) { lan.innerHTML = ''; new QRCode(lan, { text: lan.dataset.url, width: 112, height: 112 }); }
-  if (ts && ts.dataset.url) { ts.innerHTML = ''; new QRCode(ts, { text: ts.dataset.url, width: 112, height: 112 }); }
+  const ok = (u) => typeof u === 'string' && /^https?:\/\/[^\s?#]+\/$/i.test(u);
+  if (lan && ok(lan.dataset.url)) { lan.innerHTML = ''; new QRCode(lan, { text: lan.dataset.url, width: 112, height: 112 }); }
+  if (ts && ok(ts.dataset.url)) { ts.innerHTML = ''; new QRCode(ts, { text: ts.dataset.url, width: 112, height: 112 }); }
 }
 
 let presenceId = localStorage.getItem('transfert_presence_id') || '';
@@ -3183,6 +3437,7 @@ body.wall{{background:#070b10}}
   <section class="hq" style="margin-top:12px"><h2>Médias récents</h2><div class="media-strip" id="wb-media"></div></section>
   <section class="hq status" style="margin-top:12px">
     <h2>Accès QR</h2>
+    <p class="hint">QR = URL du pont seulement (pas de PIN ni de session).</p>
     <div class="qrs">
       <div class="qrbox"><div id="qr-lan" data-url=""></div><a id="qr-lan-link" href="#">LAN</a></div>
       <div class="qrbox"><div id="qr-ts" data-url=""></div><a id="qr-ts-link" href="#">Tailscale</a></div>
@@ -3207,21 +3462,25 @@ async function refreshWall() {{
     lel.innerHTML = (al.alerts||[]).slice(0,12).map(x => `<li><strong>${{escapeHtml(x.title||'')}}</strong><div class="meta">${{escapeHtml(x.detail||'')}}</div></li>`).join('') || '<li class="hint">Aucune</li>';
     const mel = $('#wb-media');
     mel.innerHTML = (med.items||[]).map(m => `<a href="/files/${{m.rel.split('/').map(encodeURIComponent).join('/')}}" target="_blank"><img src="/files/${{m.rel.split('/').map(encodeURIComponent).join('/')}}" alt=""/></a>`).join('') || '<span class="hint">Aucun média</span>';
-    const lan = st.urls?.lan || st.lan_url || '';
-    const tsu = st.urls?.tailscale || st.ts_url || '';
-    const setQr = (id, url) => {{
+    // Serveur décide des URLs QR (LAN / Tailscale / Serve) — jamais depuis le client
+    const qrList = Array.isArray(st.urls?.qr) ? st.urls.qr : [];
+    const lan = (qrList.find(x => x.label === 'LAN') || {{}}).url || st.urls?.lan || '';
+    const tsu = (qrList.find(x => x.label === 'Tailscale') || {{}}).url || st.urls?.tailscale || '';
+    const okUrl = (u) => typeof u === 'string' && /^https?:\/\/[^\s?#]+\/$/i.test(u);
+    const setQr = (id, url, label) => {{
       const box = document.getElementById(id);
       const link = document.getElementById(id + '-link');
       if (!box) return;
-      box.dataset.url = url || '';
+      const safe = okUrl(url) ? url : '';
+      box.dataset.url = safe;
       box.innerHTML = '';
-      if (url && window.QRCode) {{
-        try {{ new QRCode(box, {{ text: url, width: 120, height: 120 }}); }} catch (_) {{}}
+      if (safe && window.QRCode) {{
+        try {{ new QRCode(box, {{ text: safe, width: 120, height: 120 }}); }} catch (_) {{}}
       }}
-      if (link) {{ link.href = url || '#'; link.textContent = url || (id === 'qr-ts' ? 'Tailscale off' : 'LAN'); }}
+      if (link) {{ link.href = safe || '#'; link.textContent = safe ? (label + ' · ' + safe) : (id === 'qr-ts' ? 'Tailscale off' : 'LAN'); }}
     }};
-    setQr('qr-lan', lan);
-    setQr('qr-ts', tsu);
+    setQr('qr-lan', lan, 'LAN');
+    setQr('qr-ts', tsu, 'Tailscale');
     await refreshHQ();
     if (typeof renderHomeChart === 'function') await renderHomeChart();
   }} catch(e) {{ $('#wb-health').textContent = e.message; }}
@@ -3263,18 +3522,24 @@ def render_login(flash: str = "", error: bool = False) -> bytes:
 def render_app() -> bytes:
     folders = list(CONFIG.get("folders") or DEFAULT_FOLDERS)
     default_folder = valid_folder(CONFIG.get("default_folder"))
-    lan = lan_ipv4()
-    ts = tailscale_ipv4()
-    lan_url = f"http://{lan}:{PORT}/"
-    ts_url = f"http://{ts}:{PORT}/" if ts else ""
+    # QR payloads: server-built base URLs only (label LAN / Tailscale / Serve) — never PIN
+    _qr = {e["label"]: e["url"] for e in public_bridge_urls() if e["label"] in ("LAN", "Tailscale", "Serve")}
+    lan_url = _qr.get("LAN") or ""
+    ts_url = _qr.get("Tailscale") or ""
     chips = ""  # file manager breadcrumbs replace chips
     opts = "".join(
         f'<option value="{html.escape(f)}"{" selected" if f == default_folder else ""}>{html.escape(f)}</option>'
         for f in folders
     )
+    qr_lan = (
+        f'<div class="qrbox"><div id="qr-lan" data-url="{html.escape(lan_url)}"></div>'
+        f'<a href="{html.escape(lan_url)}">LAN · {html.escape(lan_url)}</a></div>'
+        if lan_url
+        else '<div class="qrbox"><em class="hint">LAN indisponible</em></div>'
+    )
     qr_ts = (
         f'<div class="qrbox"><div id="qr-ts" data-url="{html.escape(ts_url)}"></div>'
-        f'<a href="{html.escape(ts_url)}">{html.escape(ts_url)}</a></div>'
+        f'<a href="{html.escape(ts_url)}">Tailscale · {html.escape(ts_url)}</a></div>'
         if ts_url
         else '<div class="qrbox"><em class="hint">Installe Tailscale pour un QR distant</em></div>'
     )
@@ -3557,6 +3822,11 @@ def render_app() -> bytes:
       </dl>
       <p class="sec-hint">Écran TV / présence / QR → <a href="/wallboard?theme=oled&kiosk=1" style="color:var(--accent)">Wallboard</a>
         · <a href="/wallboard?theme=midnight" style="color:var(--accent)">midnight</a></p>
+      <div class="qrs" style="margin-top:10px" aria-label="QR d'accès">
+        {qr_lan}
+        {qr_ts}
+      </div>
+      <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
       <span id="hq-health" class="visually-hidden"></span>
     </section>
 
@@ -3608,6 +3878,21 @@ def render_app() -> bytes:
 
 
 
+
+def _login_rate_ok(ip: str) -> bool:
+    now = time.time()
+    with _LOGIN_FAILS_LOCK:
+        hits = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < 60]
+        _LOGIN_FAILS[ip] = hits
+        return len(hits) < 12
+
+
+def _login_fail(ip: str) -> None:
+    with _LOGIN_FAILS_LOCK:
+        hits = _LOGIN_FAILS.setdefault(ip, [])
+        hits.append(time.time())
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "TransfertBridge/6.0"
 
@@ -3626,9 +3911,13 @@ class Handler(BaseHTTPRequestHandler):
         return c[COOKIE_NAME].value if COOKIE_NAME in c else None
 
     def _auth(self) -> bool:
+        if not pin_enabled() and LOOPBACK_ONLY:
+            return True
         return session_valid(self._token())
 
     def _role(self) -> str:
+        if not pin_enabled() and LOOPBACK_ONLY:
+            return "admin"
         return session_role(self._token())
 
     def _require_admin(self) -> bool:
@@ -3636,6 +3925,104 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self._json(403, {"error": "Réservé admin"})
         return False
+
+    def _security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        # same-origin: keep Referer for CSRF on same-host GETs (logout); never leak off-origin
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+        )
+
+    def _request_is_https(self) -> bool:
+        xf = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+        return xf == "https"
+
+    def _session_cookie(self, token: str = "", *, clear: bool = False) -> str:
+        if clear:
+            parts = [f"{COOKIE_NAME}=", "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"]
+        else:
+            parts = [
+                f"{COOKIE_NAME}={token}",
+                "Path=/",
+                f"Max-Age={SESSION_TTL_SEC}",
+                "HttpOnly",
+                "SameSite=Lax",
+            ]
+        if self._request_is_https():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def _csrf_candidate(self, path: str) -> bool:
+        """True if this request is state-changing and needs Origin/Referer."""
+        method = (self.command or "GET").upper()
+        if method in ("POST", "PUT", "PATCH", "DELETE"):
+            return True
+        if method == "GET" and path == "/logout":
+            return True
+        if method == "GET" and path == "/api/inbox":
+            qs = parse_qs(urlparse(self.path).query)
+            if (qs.get("clear") or [""])[0] in ("1", "true", "yes"):
+                return True
+        return False
+
+    def _check_csrf(self) -> bool:
+        """Fail-closed CSRF for cookie sessions (and /login form POST).
+
+        Allowlist = request Host + LAN/Tailscale/localhost + config public_base_urls.
+        Intentional exception: none today — no Bearer auth bypass.
+        Same-origin HQ fetch/forms send Origin; login PIN form is same-origin.
+        """
+        path = urlparse(self.path).path
+        if not self._csrf_candidate(path):
+            return True
+        has_cookie = bool(self._token())
+        if not has_cookie and path != "/login":
+            return True
+
+        allowed = csrf_allowed_origins(self.headers.get("Host"))
+        origin = (self.headers.get("Origin") or "").strip()
+        referer = (self.headers.get("Referer") or "").strip()
+
+        def matches(raw: str) -> bool:
+            if not raw:
+                return False
+            try:
+                p = urlparse(raw)
+                if not p.scheme or not p.netloc:
+                    return False
+                return f"{p.scheme}://{p.netloc}" in allowed
+            except Exception:
+                return False
+
+        if origin:
+            if matches(origin):
+                return True
+            self._csrf_reject("Origin refusée")
+            return False
+        if referer:
+            if matches(referer):
+                return True
+            self._csrf_reject("Referer refusé")
+            return False
+        self._csrf_reject("Origin ou Referer requis")
+        return False
+
+    def _csrf_reject(self, detail: str) -> None:
+        path = urlparse(self.path).path
+        msg = f"CSRF: {detail}"
+        if path in ("/login", "/logout") and (self.command or "").upper() in ("GET", "POST"):
+            try:
+                body = render_login(msg, error=True) if pin_enabled() else msg.encode("utf-8")
+                self._send(403, body)
+            except Exception:
+                self._json(403, {"error": msg})
+        else:
+            self._json(403, {"error": msg})
+
 
     def _send(
         self,
@@ -3648,6 +4035,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._security_headers()
         if headers:
             for k, v in headers:
                 self.send_header(k, v)
@@ -3675,32 +4063,51 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("JSON invalide")
         return data
 
-    def _guard_admin_path(self, raw: str) -> bool:
-        """Return False if blocked (response already sent)."""
+    def _upload_allowed(self, method: str, raw: str) -> bool:
+        """Explicit allowlist for role=upload. Admin always True."""
         if self._role() == "admin":
             return True
-        admin_gets = (
-            "/api/pc/screenshot",
-            "/api/shell/targets",
-            "/api/terminal/commands",
-            "/api/printers",
-            "/api/clipboard/pc",
-            "/api/queue",
-        )
-        if raw in admin_gets or raw.startswith("/api/pc/") or raw.startswith("/api/clipboard/pc"):
+        if method == "GET":
+            if raw in UPLOAD_GET_EXACT:
+                return True
+            return any(raw.startswith(p) for p in UPLOAD_GET_PREFIX)
+        if method == "POST":
+            if raw in UPLOAD_POST_EXACT:
+                return True
+            return any(raw.startswith(p) for p in UPLOAD_POST_PREFIX)
+        return False
+
+    def _guard_admin_path(self, raw: str) -> bool:
+        """Return False if blocked (response already sent). Allowlist for upload role."""
+        if self._role() == "admin":
+            return True
+        # Static/login already handled; for authenticated GETs enforce allowlist.
+        method = "GET"
+        if not self._upload_allowed(method, raw):
             self._json(403, {"error": "Réservé admin"})
             return False
         return True
 
     def _send_file(self, path: Path, as_download: bool = False) -> None:
         size = path.stat().st_size
-        ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        ext = path.suffix.lower()
+        force_attach = as_download or ext in FORCE_ATTACHMENT_EXTS
+        if force_attach and ext in FORCE_ATTACHMENT_EXTS:
+            ctype = "application/octet-stream"
+        else:
+            ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-store")
-        disp = "attachment" if as_download else "inline"
+        self._security_headers()
+        if force_attach and ext in FORCE_ATTACHMENT_EXTS:
+            self.send_header(
+                "Content-Security-Policy",
+                "sandbox; default-src 'none'; base-uri 'none'",
+            )
+        disp = "attachment" if force_attach else "inline"
         self.send_header(
             "Content-Disposition",
             f"{disp}; filename=\"{path.name}\"; filename*=UTF-8''{quote(path.name)}",
@@ -3735,10 +4142,12 @@ class Handler(BaseHTTPRequestHandler):
         raw = parsed.path
 
         if raw == "/logout":
+            if not self._check_csrf():
+                return
             tok = self._token()
             revoke_session(tok)
             body = render_login("Déconnecté.") if pin_enabled() else render_app()
-            self._send(200, body, headers=[("Set-Cookie", f"{COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")])
+            self._send(200, body, headers=[("Set-Cookie", self._session_cookie(clear=True))])
             return
 
         if raw == "/login":
@@ -3783,7 +4192,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"missing")
             return
 
-        if pin_enabled() and not self._auth():
+        if (pin_enabled() or not LOOPBACK_ONLY) and not self._auth():
             if raw.startswith("/api/") or raw.startswith("/files/") or raw.startswith("/download/"):
                 self._json(401, {"error": "PIN requis"})
                 return
@@ -3801,7 +4210,18 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             path = (qs.get("path", [""])[0] or qs.get("rel", [""])[0] or "").strip()
             q = (qs.get("q", [""])[0] or "").strip()
-            self._json(200, list_dir(path, q))
+            try:
+                limit, offset = parse_list_bounds(qs, default=LIST_LIMIT_MAX, max_limit=LIST_LIMIT_MAX)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            data = list_dir(path, q)
+            items = list(data.get("items") or [])
+            data["total"] = len(items)
+            data["items"] = items[offset : offset + limit]
+            data["limit"] = limit
+            data["offset"] = offset
+            self._json(200, data)
             return
 
         if raw == "/api/status":
@@ -3820,7 +4240,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/activity":
-            self._json(200, {"activity": cc_ext.activity_list()})
+            qs = parse_qs(parsed.query)
+            try:
+                limit, offset = parse_list_bounds(qs)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            items = cc_ext.activity_list()
+            self._json(200, {"activity": items[offset : offset + limit], "total": len(items), "limit": limit, "offset": offset})
             return
 
         if raw == "/api/alerts":
@@ -3832,7 +4259,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/media/recent":
-            self._json(200, {"items": cc_ext.recent_media()})
+            qs = parse_qs(parsed.query)
+            try:
+                limit, offset = parse_list_bounds(qs, default=16, max_limit=LIST_LIMIT_MAX)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            items = cc_ext.recent_media(limit=limit + offset)
+            self._json(200, {"items": items[offset : offset + limit], "limit": limit, "offset": offset})
             return
 
         if raw == "/api/queue":
@@ -3840,6 +4274,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/inbox":
+            if not self._check_csrf():
+                return
             qs = parse_qs(parsed.query)
             did = (qs.get("id", [""])[0] or "").strip()
             clear = (qs.get("clear", [""])[0] or "") in ("1", "true", "yes")
@@ -3847,13 +4283,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/presence/history":
-            self._json(200, {"history": cc_ext.presence_history()})
+            qs = parse_qs(parsed.query)
+            try:
+                limit, offset = parse_list_bounds(qs)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            items = cc_ext.presence_history()
+            self._json(200, {"history": items[offset : offset + limit], "total": len(items), "limit": limit, "offset": offset})
             return
 
         if raw == "/api/search":
             qs = parse_qs(parsed.query)
             q = (qs.get("q", [""])[0] or "").strip()
-            self._json(200, {"q": q, "hits": cc_ext.search_files(q)})
+            try:
+                limit, offset = parse_list_bounds(qs, default=40, max_limit=LIST_LIMIT_MAX)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            hits = cc_ext.search_files(q, limit=limit + offset)
+            self._json(200, {"q": q, "hits": hits[offset : offset + limit], "limit": limit, "offset": offset})
             return
 
         if raw == "/api/kanban":
@@ -3895,7 +4344,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/transfers":
-            self._json(200, {"transfers": transfers_list()})
+            qs = parse_qs(parsed.query)
+            try:
+                limit, offset = parse_list_bounds(qs)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            items = transfers_list()
+            self._json(200, {"transfers": items[offset : offset + limit], "total": len(items), "limit": limit, "offset": offset})
             return
 
         if raw == "/api/favorites":
@@ -3962,37 +4418,48 @@ class Handler(BaseHTTPRequestHandler):
     def _do_POST(self) -> None:
         raw = urlparse(self.path).path
 
+        # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
+        if not self._check_csrf():
+            return
+
         if raw == "/login":
             length = int(self.headers.get("Content-Length", "0") or 0)
+            if length < 0 or length > LOGIN_BODY_MAX:
+                self._send(413, render_login("Requête trop grande.", error=True))
+                return
+            ip = self.client_address[0] if self.client_address else "?"
+            if not _login_rate_ok(ip):
+                self._send(429, render_login("Trop d'essais — réessaie dans une minute.", error=True))
+                return
             body = self.rfile.read(length).decode("utf-8", errors="replace")
             data = parse_qs(body, keep_blank_values=True)
             pin = (data.get("pin", [""])[0] or "").strip()
             auth = authenticate_pin(pin)
             if pin_enabled() and not auth:
+                _login_fail(ip)
                 self._send(401, render_login("PIN incorrect.", error=True))
                 return
-            auth = auth or {"user": "guest", "role": "admin"}
+            if not auth:
+                self._send(401, render_login("Authentification requise.", error=True))
+                return
             token = issue_session(auth["user"], auth["role"])
             # 303 so the browser stores the cookie, then loads / with it.
             # Returning the app HTML in the same Set-Cookie response races on Safari/iOS
             # (fetch runs before the cookie sticks → 401 → logout loop).
             self.send_response(303)
             self.send_header("Location", "/")
-            self.send_header(
-                "Set-Cookie",
-                f"{COOKIE_NAME}={token}; Path=/; Max-Age={SESSION_TTL_SEC}; HttpOnly; SameSite=Lax",
-            )
+            self.send_header("Set-Cookie", self._session_cookie(token))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
 
-        if pin_enabled() and not self._auth():
+        if (pin_enabled() or not LOOPBACK_ONLY) and not self._auth():
             self._json(401, {"error": "PIN requis"})
             return
 
-        # upload-only cannot hit admin routes
-        if self._role() != "admin" and any(raw.startswith(p) or raw == p.rstrip("/") for p in ADMIN_PREFIXES):
+        # upload role: explicit allowlist only
+        if self._role() != "admin" and not self._upload_allowed("POST", raw):
             self._json(403, {"error": "Réservé admin"})
             return
 
@@ -4612,14 +5079,32 @@ def already_running() -> bool:
 
 
 def main() -> None:
-    global CONFIG
+    global CONFIG, LOOPBACK_ONLY, BIND_HOST
     CONFIG = load_config()
     load_sessions()
     ensure_folders_and_migrate()
     bind_cc_ext()
+    cleanup_stale_uploads()
     if already_running():
         print(f"Transfert Bridge already running on port {PORT}")
         return
+
+    # Fail closed: no PIN => loopback only (never unauthenticated network admin/RCE).
+    insecure = bool(CONFIG.get("allow_insecure_no_pin"))
+    if not pin_enabled():
+        if insecure:
+            LOOPBACK_ONLY = True
+            BIND_HOST = "127.0.0.1"
+            print(" WARNING: PIN off + allow_insecure_no_pin — binding 127.0.0.1 only")
+        else:
+            LOOPBACK_ONLY = True
+            BIND_HOST = "127.0.0.1"
+            print(" WARNING: no PIN configured — binding 127.0.0.1 only.")
+            print("          Set pin (or users[].pin) in bridge_config.json for network access.")
+    else:
+        LOOPBACK_ONLY = False
+        BIND_HOST = str(CONFIG.get("bind_host") or "0.0.0.0").strip() or "0.0.0.0"
+
     write_pid()
     lan = lan_ipv4()
     ts = tailscale_ipv4()
@@ -4629,12 +5114,13 @@ def main() -> None:
         print(f" Sessions loaded: {len(_SESSIONS)}")
     except OSError:
         pass
-    notify_discord(
-        "Transfert HQ en ligne",
-        f"PC `{socket.gethostname()}`\nLAN: `http://{lan}:{PORT}/`"
-        + (f"\nTailscale: `http://{ts}:{PORT}/`" if ts else ""),
-    )
-    cc_ext.log_activity("boot", "Bridge démarré")
+    if pin_enabled():
+        notify_discord(
+            "Transfert HQ en ligne",
+            f"PC `{socket.gethostname()}`\nLAN: `http://{lan}:{PORT}/`"
+            + (f"\nTailscale: `http://{ts}:{PORT}/`" if ts else ""),
+        )
+    cc_ext.log_activity("boot", f"Bridge démarré (bind {BIND_HOST}, pin={'on' if pin_enabled() else 'off'})")
     cc_ext.start_monitor(
         get_devices=lambda: presence_list(),
         process_queue=cc_ext.queue_process,
@@ -4644,15 +5130,24 @@ def main() -> None:
     threading.Thread(target=probe_remote_disks_now, daemon=True).start()
     threading.Thread(target=harvest_screenshots_now, daemon=True).start()
     cc_ext.queue_process()
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    try:
+        server = ThreadingHTTPServer((BIND_HOST, PORT), Handler)
+    except OSError as e:
+        raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {e}") from e
+    # Mild DoS mitigation for stdlib server
+    server.timeout = 30
     print("=" * 56)
     print(" Transfert Bridge v6.0 — Command Center HQ")
     print("=" * 56)
     print(f" Folder : {ROOT}")
-    print(f" LAN    : http://{lan}:{PORT}/")
-    print(f" Wallboard: http://{lan}:{PORT}/wallboard")
-    print(f" Tailscale: http://{ts}:{PORT}/" if ts else " Tailscale: (not installed)")
-    print(f" PIN    : {'on' if pin_enabled() else 'off'}")
+    print(f" Bind   : {BIND_HOST}:{PORT}")
+    if BIND_HOST == "127.0.0.1":
+        print(f" Local  : http://127.0.0.1:{PORT}/")
+    else:
+        print(f" LAN    : http://{lan}:{PORT}/")
+        print(f" Wallboard: http://{lan}:{PORT}/wallboard")
+        print(f" Tailscale: http://{ts}:{PORT}/" if ts else " Tailscale: (not installed)")
+    print(f" PIN    : {'on' if pin_enabled() else 'off (loopback-only)'}")
     print(f" Max up : {human_size(max_upload_bytes())}")
     print(f" Backup : every {CONFIG.get('backup_every_hours')}h -> {CONFIG.get('backup_dir')}")
     print(" Ctrl+C to stop")
