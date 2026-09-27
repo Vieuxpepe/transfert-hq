@@ -70,6 +70,9 @@ class FeatureTests(unittest.TestCase):
             file_exists=lambda rel: (self.tmp / rel).is_file(),
             now=lambda: self.now,
             local_now=lambda: self.moment,
+            queue_load=None,
+            queue_save=None,
+            queue_lock=None,
         )
         self.calls = []
         self.devices = [{"id": "pc-host", "online": True, "source": "host"}]
@@ -560,6 +563,144 @@ class FeatureTests(unittest.TestCase):
             hq_automation.RESTORE_FILE_MAX = previous
         self.assertEqual((inbox / "note.txt").read_text(encoding="utf-8"), "ancien")
         self.assertFalse((inbox / "Cours" / "a.txt").exists())
+
+    def test_brief_meta_does_not_drop_concurrent_rule(self):
+        self.cfg["daily_brief_discord"] = True
+        self.cfg["discord_webhook_url"] = "https://example.invalid/hook"
+        started = threading.Event()
+        release = threading.Event()
+
+        def notify(_title, _body):
+            started.set()
+            self.assertTrue(release.wait(2))
+
+        hq_automation.bind(notify=notify, journal=lambda *a, **k: None)
+        outcome: dict = {}
+
+        def send() -> None:
+            try:
+                outcome["result"] = hq_automation.maybe_send_brief(
+                    {"title": "Brief", "lines": ["ligne"]},
+                    force=True,
+                )
+            except Exception as e:
+                outcome["error"] = e
+
+        worker = threading.Thread(target=send)
+        worker.start()
+        self.assertTrue(started.wait(2))
+        saved = threading.Event()
+
+        def do_save() -> None:
+            try:
+                outcome["rule"] = hq_automation.save_rule(
+                    {
+                        "id": "kept",
+                        "label": "Kept",
+                        "trigger": {"type": "manual"},
+                        "cooldown_sec": 30,
+                        "actions": [{"type": "journal", "message": "ok"}],
+                    }
+                )
+            except Exception as e:
+                outcome["save_error"] = e
+            finally:
+                saved.set()
+
+        saver = threading.Thread(target=do_save)
+        saver.start()
+        try:
+            self.assertTrue(saved.wait(1), "save_rule blocked behind the brief lock")
+        finally:
+            release.set()
+            worker.join(2)
+            saver.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(saver.is_alive())
+        self.assertNotIn("error", outcome)
+        self.assertNotIn("save_error", outcome)
+        self.assertTrue(outcome["result"]["sent"])
+        data = json.loads((self.tmp / "hq_automation.json").read_text(encoding="utf-8"))
+        ids = [rule.get("id") for rule in data.get("rules") or []]
+        self.assertIn("kept", ids)
+        self.assertEqual(data.get("meta", {}).get("last_brief_date"), "2026-09-28")
+
+    def test_queue_tick_does_not_drop_concurrent_add(self):
+        previous_root = cc_ext.ROOT
+        started = threading.Event()
+        release = threading.Event()
+
+        def backup():
+            started.set()
+            self.assertTrue(release.wait(2))
+            self.calls.append(("backup",))
+            return {"ok": True}
+
+        try:
+            cc_ext.bind(ROOT=self.tmp, get_config=lambda: self.cfg)
+            hq_automation.bind(
+                backup=backup,
+                queue_load=cc_ext.queue_load,
+                queue_save=cc_ext.queue_save,
+                queue_lock=cc_ext.queue_lock,
+                journal=lambda *a, **k: None,
+            )
+            due = hq_automation.normalize_schedule_job(
+                {"id": "due", "label": "Matin", "when": "daily", "type": "backup", "at": "08:00"}
+            )
+            cc_ext.queue_save([due])
+            errors: list[BaseException] = []
+
+            def run_tick() -> None:
+                try:
+                    hq_automation.tick()
+                except Exception as e:
+                    errors.append(e)
+
+            ticker = threading.Thread(target=run_tick)
+            ticker.start()
+            self.assertTrue(started.wait(2))
+            added_box: dict = {}
+
+            def do_add() -> None:
+                try:
+                    added_box["job"] = cc_ext.queue_add(
+                        {
+                            "id": "extra",
+                            "label": "Extra",
+                            "when": "once",
+                            "type": "notify",
+                            "once_at": self.now + 10_000,
+                            "title": "t",
+                            "body": "b",
+                        }
+                    )
+                except Exception as e:
+                    added_box["error"] = e
+
+            adder = threading.Thread(target=do_add)
+            adder.start()
+            adder.join(0.15)
+            release.set()
+            ticker.join(2)
+            adder.join(2)
+            self.assertFalse(ticker.is_alive())
+            self.assertFalse(adder.is_alive())
+            self.assertEqual(errors, [])
+            self.assertNotIn("error", added_box)
+            ids = {job.get("id") for job in cc_ext.queue_load()}
+            self.assertIn("due", ids)
+            self.assertIn("extra", ids)
+            self.assertIn(("backup",), self.calls)
+            path = self.tmp / "bridge_queue.json"
+            original = "{nope"
+            path.write_text(original, encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                cc_ext.queue_save([{"id": "nope"}])
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+        finally:
+            release.set()
+            cc_ext.bind(ROOT=previous_root)
 
 
 def _fmt_minutes(moment: datetime) -> str:

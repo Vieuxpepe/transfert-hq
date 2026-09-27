@@ -98,7 +98,13 @@ Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON c
   hq_vapid.json          clé privée Web Push — ne jamais committer
   bridge_config.json     PIN / webhook — ne jamais committer
   bridge_sessions.json
-  + les fichiers v6 déjà gitignorés (queue, activity, kanban, scratchpad, …)
+  bridge_queue.json      verrou RLock sur toute transaction load→save, écriture atomique.
+                         Un JSON illisible ou non-liste est conservé.
+  + les fichiers v6 déjà gitignorés (activity, kanban, scratchpad, …)
+
+Le brief Discord met à jour last_brief_date sous le verrou automation, après
+relecture. L'envoi Discord (thread) n'est pas fait sous ce verrou. disk_low
+reste un niveau : il peut repartir après le cooldown tant que le disque est bas.
 
 Clés de config nouvelles (dans bridge_config.json, pas de secret)
 ------------------------------------------------------------------

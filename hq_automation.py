@@ -17,6 +17,7 @@ import shutil
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1424,27 +1425,42 @@ def build_brief(*, state: str, attention: list[dict], events: list[dict], queue:
 
 
 def maybe_send_brief(brief: dict, *, force: bool = False) -> dict:
+    """Send the daily brief, then stamp ``last_brief_date`` on a fresh snapshot.
+
+    ``notify`` runs outside ``_automation_lock`` (Discord send is threaded and
+    returns immediately). The date is written on a reload so a rule save during
+    notify is not overwritten by the pre-notify snapshot.
+    """
     cfg = _cfg()
     webhook = str(cfg.get("discord_webhook_url") or "").strip()
     enabled = bool(cfg.get("daily_brief_discord"))
     if not enabled or not webhook:
         return {"ok": True, "sent": False, "reason": "Discord brief désactivé"}
-    data, bad = _load_automation()
-    if bad:
-        return {"ok": False, "sent": False, "reason": "état automation illisible"}
-    today = _local_now().strftime("%Y-%m-%d")
-    meta = data.setdefault("meta", {})
-    if not force and meta.get("last_brief_date") == today:
-        return {"ok": True, "sent": False, "reason": "déjà envoyé aujourd'hui"}
     fn = _cb.get("notify")
     if not callable(fn):
         return {"ok": False, "sent": False, "reason": "notify indisponible"}
+    today = _local_now().strftime("%Y-%m-%d")
+    with _automation_lock():
+        data, bad = _load_automation()
+        if bad:
+            return {"ok": False, "sent": False, "reason": "état automation illisible"}
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        if not force and meta.get("last_brief_date") == today:
+            return {"ok": True, "sent": False, "reason": "déjà envoyé aujourd'hui"}
     fn(str(brief.get("title") or "Brief"), "\n".join(brief.get("lines") or [])[:1800])
-    meta["last_brief_date"] = today
-    try:
-        _save_automation(data)
-    except (OSError, RuntimeError):
-        pass
+    with _automation_lock():
+        data, bad = _load_automation()
+        if bad:
+            return {"ok": False, "sent": True, "reason": "état automation illisible"}
+        meta = data.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            data["meta"] = meta
+        meta["last_brief_date"] = today
+        try:
+            _save_automation(data)
+        except (OSError, RuntimeError):
+            pass
     _journal("brief", "Brief envoyé sur Discord", level="info")
     return {"ok": True, "sent": True}
 
@@ -1752,12 +1768,15 @@ def tick() -> None:
     load = _cb.get("queue_load")
     save = _cb.get("queue_save")
     if callable(load) and callable(save):
+        lock_fn = _cb.get("queue_lock")
+        holder = lock_fn() if callable(lock_fn) else nullcontext()
         try:
-            items = load()
-            if isinstance(items, list):
-                result = process_schedules(items)
-                if result.get("changed"):
-                    save(items)
+            with holder:
+                items = load()
+                if isinstance(items, list):
+                    result = process_schedules(items)
+                    if result.get("changed"):
+                        save(items)
         except Exception as e:
             _journal("schedule", f"Tick file: {e}", level="warning")
     try:

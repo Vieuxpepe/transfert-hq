@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import hq_state
+
 ACTIVITY_MAX = 80
 ALERT_MAX = 40
 INBOX_MAX = 30
@@ -876,44 +878,71 @@ def queue_path() -> Path:
     return _root() / QUEUE_PATH_NAME
 
 
-def queue_load() -> list[dict]:
+def queue_lock() -> threading.RLock:
+    """RLock for a load→modify→save of bridge_queue.json. Reentrant with the atomic writer."""
+    return hq_state.path_lock(queue_path())
+
+
+def _queue_read() -> list[dict]:
     path = queue_path()
     if not path.is_file():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
     except (OSError, json.JSONDecodeError):
         return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _queue_write(items: list[dict]) -> None:
+    """Atomic replace. A missing file is created. Malformed bytes are kept."""
+    path = queue_path()
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuntimeError("bridge_queue.json illisible — fichier conservé") from e
+        if not isinstance(existing, list):
+            raise RuntimeError("bridge_queue.json illisible — fichier conservé")
+    hq_state.write_json_atomic(path, items)
+
+
+def queue_load() -> list[dict]:
+    with queue_lock():
+        return _queue_read()
 
 
 def queue_save(items: list[dict]) -> None:
-    queue_path().write_text(json.dumps(items, indent=2) + "\n", encoding="utf-8")
+    with queue_lock():
+        _queue_write(list(items))
 
 
 def queue_add(job: dict) -> dict:
-    items = queue_load()
-    try:
-        import hq_automation
+    with queue_lock():
+        items = _queue_read()
+        try:
+            import hq_automation
 
-        if hq_automation.ready():
-            job = hq_automation.normalize_schedule_job(job)
-        else:
-            raise RuntimeError("skip")
-    except RuntimeError:
-        job = {
-            "id": job.get("id") or f"q-{int(time.time()*1000)}",
-            "label": str(job.get("label") or "Tâche")[:80],
-            "when": str(job.get("when") or "online"),
-            "type": str(job.get("type") or "explore"),
-            "path": job.get("path"),
-            "action_id": job.get("action_id"),
-            "scene_id": job.get("scene_id"),
-            "created": time.time(),
-            "status": "pending",
-        }
-    items.insert(0, job)
-    queue_save(items[:50])
+            if hq_automation.ready():
+                job = hq_automation.normalize_schedule_job(job)
+            else:
+                raise RuntimeError("skip")
+        except RuntimeError:
+            job = {
+                "id": job.get("id") or f"q-{int(time.time()*1000)}",
+                "label": str(job.get("label") or "Tâche")[:80],
+                "when": str(job.get("when") or "online"),
+                "type": str(job.get("type") or "explore"),
+                "path": job.get("path"),
+                "action_id": job.get("action_id"),
+                "scene_id": job.get("scene_id"),
+                "created": time.time(),
+                "status": "pending",
+            }
+        items.insert(0, job)
+        _queue_write(items[:50])
     log_activity("queue", f"Planifié: {job['label']}")
     return job
 
@@ -924,29 +953,30 @@ def queue_list() -> list[dict]:
 
 def queue_process() -> list[dict]:
     """Run pending online jobs (bridge is up = PC awake enough)."""
-    items = queue_load()
-    changed = False
-    done = []
-    for job in items:
-        if job.get("status") != "pending":
-            continue
-        if job.get("when") not in ("online", "wake", "now"):
-            continue
-        try:
-            _run_job(job)
-            job["status"] = "done"
-            job["finished"] = time.time()
-            done.append(job)
-            log_activity("queue", f"Au réveil exécuté: {job.get('label')}")
-        except Exception as e:
-            job["status"] = "error"
-            job["error"] = str(e)[:200]
-            if notify_discord:
-                notify_discord("Au réveil — échec", f"{job.get('label')}: {e}")
-        changed = True
-    if changed:
-        queue_save(items)
-    return done
+    with queue_lock():
+        items = _queue_read()
+        changed = False
+        done = []
+        for job in items:
+            if job.get("status") != "pending":
+                continue
+            if job.get("when") not in ("online", "wake", "now"):
+                continue
+            try:
+                _run_job(job)
+                job["status"] = "done"
+                job["finished"] = time.time()
+                done.append(job)
+                log_activity("queue", f"Au réveil exécuté: {job.get('label')}")
+            except Exception as e:
+                job["status"] = "error"
+                job["error"] = str(e)[:200]
+                if notify_discord:
+                    notify_discord("Au réveil — échec", f"{job.get('label')}: {e}")
+            changed = True
+        if changed:
+            _queue_write(items)
+        return done
 
 
 def _run_job(job: dict) -> None:

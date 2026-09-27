@@ -1919,6 +1919,7 @@ def bind_hq() -> None:
         file_exists=_file_exists_rel,
         queue_load=cc_ext.queue_load,
         queue_save=cc_ext.queue_save,
+        queue_lock=cc_ext.queue_lock,
         events_since=lambda since: [
             ev
             for ev in (hq_events.list_events(limit=100).get("events") or [])
