@@ -25,6 +25,20 @@ class UxMarkupTests(unittest.TestCase):
         self.assertIn("--tap-min:44px", self.css)
         self.assertIn("--focus-ring:2px solid var(--accent)", self.css)
         self.assertIn("--accent:#08724f", self.css)
+        light = self.css.split("prefers-color-scheme: light", 1)[1].split("}", 1)[0]
+        root = self.css.split("@media (prefers-color-scheme: light)", 1)[0]
+        self.assertIn("--warn:#8b5e00", light)
+        self.assertNotIn("--warn:#b87a12", light)
+        self.assertIn("--warn:#e8a838", root)
+        relay = self.css.split(".path-badge.path-relay{", 1)[1].split("}", 1)[0]
+        self.assertIn("var(--warn)", relay)
+        self.assertNotIn("#e8a838", relay)
+        self.assertIn('item.level === "critical"', self.hq_js)
+        self.assertIn('critical + " critiques"', self.hq_js)
+        self.assertIn('"1 critique"', self.hq_js)
+        self.assertIn('others + " autres"', self.hq_js)
+        self.assertIn('"1 autre"', self.hq_js)
+        self.assertNotIn('n + " critiques"', self.hq_js)
         self.assertIn("(hover:hover) and (pointer:fine)", self.css)
         self.assertIn("prefers-reduced-motion:reduce", self.css)
         self.assertIn(":focus-visible", self.css)

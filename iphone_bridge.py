@@ -3640,7 +3640,8 @@ BASE_CSS = """
   :root {
     --bg:#f0f3f6; --panel:#ffffff; --panel-2:#e8eef4; --text:#121a22; --muted:#3d4d5c; --line:#c5d0dc;
     /* #08724f on #fff ≈ 5.95:1 (AA). Previous #0b8f62 was ≈ 4.10:1. */
-    --accent:#08724f; --accent2:#08724f; --ok:#08724f; --warn:#b87a12; --danger:#c62828;
+    /* #8b5e00 on #fff ≈ 5.68:1, on #e8eef4 ≈ 4.86:1 (AA). Previous #b87a12 was ≈ 3.60:1 / 3.08:1. */
+    --accent:#08724f; --accent2:#08724f; --ok:#08724f; --warn:#8b5e00; --danger:#c62828;
     --okbg:#1f8f4e18; --errbg:#ff3b3018; --accent-text:#fff;
   }
 }
@@ -3768,7 +3769,7 @@ li.file.is-dir .fname{color:var(--ok)}
 .path-badge{font-size:var(--text-xs);font-weight:800;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--text)}
 .path-badge.path-lan,.path-badge.path-direct,.path-badge.path-local{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}
 .path-badge.path-tailscale{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
-.path-badge.path-relay{color:#e8a838;border-color:#e8a83866}
+.path-badge.path-relay{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
 .path-badge.path-offline,.path-badge.path-unknown{opacity:.7}
 .media-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
 .media-strip a{flex:0 0 auto;width:88px;height:88px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:color-mix(in srgb,var(--bg) 50%,transparent)}

@@ -32,7 +32,9 @@ Accueil
   par défaut. Les événements ne sont pas supprimés.
   Les cartes HQ et Aujourd'hui sont repliées par défaut (localStorage
   hq_home_attention_open et hq_home_today_open). Un état critique ouvre
-  HQ, sans réécrire ce choix. Recherche reste visible à côté du résumé.
+  HQ, sans réécrire ce choix. Le compteur critique ne compte que les
+  éléments de niveau critique (les autres restent « autres »).
+  Recherche reste visible à côté du résumé.
   Le prochain événement reste dans l'en-tête d'Aujourd'hui : l'heure
   ou la date courte reste entière, le titre est la partie qui se coupe.
   Un rafraîchissement ne rouvre pas une carte refermée.

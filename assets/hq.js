@@ -107,6 +107,23 @@
     }
   }
 
+  function attentionMeta(state, items) {
+    const list = Array.isArray(items) ? items : [];
+    const n = list.length;
+    if (!n) {
+      if (state === "critical") return "Action requise";
+      if (state === "warning") return "À vérifier";
+      return "Tout est calme.";
+    }
+    if (state !== "critical") return n > 1 ? n + " à vérifier" : "1 à vérifier";
+    const critical = list.filter((item) => item && item.level === "critical").length;
+    const others = n - critical;
+    if (!critical) return others > 1 ? others + " à vérifier" : "1 à vérifier";
+    const head = critical > 1 ? critical + " critiques" : "1 critique";
+    if (!others) return head;
+    return head + " · " + (others > 1 ? others + " autres" : "1 autre");
+  }
+
   function noteHqState(state) {
     const enteringCritical = state === "critical" && hqStateSeen !== "critical";
     hqStateSeen = state;
@@ -124,12 +141,7 @@
       const label = $("#hq-state-label");
       if (label) label.textContent = "HQ · " + (STATE_LABEL[state] || state);
       const sub = $("#hq-state-sub");
-      if (sub) {
-        const n = (snap.attention || []).length;
-        if (!n) sub.textContent = state === "critical" ? "Action requise" : state === "warning" ? "À vérifier" : "Tout est calme.";
-        else if (state === "critical") sub.textContent = n > 1 ? n + " critiques" : "1 critique";
-        else sub.textContent = n > 1 ? n + " à vérifier" : "1 à vérifier";
-      }
+      if (sub) sub.textContent = attentionMeta(state, snap.attention);
       const attentionPanel = $("#hq-attention-panel");
       const described = document.querySelector("[aria-describedby~='hq-help-tooltip']");
       if (described && attentionPanel && attentionPanel.contains(described) && window.hqHideHelp) window.hqHideHelp();
