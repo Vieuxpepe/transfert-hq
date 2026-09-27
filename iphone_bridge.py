@@ -4090,25 +4090,34 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="accueil" class="accueil-grid">
-    <section id="hq-banner" class="hq hq-banner state-ok" aria-live="polite">
+    <section id="hq-banner" class="hq hq-banner state-ok">
       <div class="hq-banner-row">
-        <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
-        <div>
+        <button type="button" class="hq-disclosure" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
+          <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
           <strong id="hq-state-label">HQ</strong>
-          <p class="sec-hint" id="hq-state-sub">Lecture de l'état…</p>
-        </div>
+          <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
+          <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+        </button>
         <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action.">Recherche</button>
       </div>
-      <ul class="hq-list" id="hq-attention"></ul>
-      <div class="row hq-actions" id="hq-quick-scenes"></div>
+      <div id="hq-attention-panel" class="hq-disclosure-panel" hidden>
+        <ul class="hq-list" id="hq-attention"></ul>
+        <div class="row hq-actions" id="hq-quick-scenes"></div>
+      </div>
     </section>
     <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
-      <div class="sec-head">
-        <h2 id="cal-home-title">Aujourd'hui</h2>
+      <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="false" aria-controls="hq-today-panel" data-help="Affiche les événements et actions prévus aujourd'hui.">
+        <span class="hq-disclosure-copy">
+          <strong id="cal-home-title">Aujourd'hui</strong>
+          <span class="hq-disclosure-meta" id="hq-cal-next">Chargement…</span>
+        </span>
+        <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div id="hq-today-panel" class="hq-disclosure-panel" hidden>
         <p class="sec-hint">Ce qui se passe et ce qui vient</p>
+        <div id="hq-cal-today"></div>
+        <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
       </div>
-      <div id="hq-cal-today"><p class="hint">Chargement…</p></div>
-      <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
     </section>
     <div class="accueil-main">
       <section class="hq hq-primary" aria-labelledby="envoyer-title">

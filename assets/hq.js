@@ -54,6 +54,65 @@
     return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="1.6" points="${pts}"/></svg>`;
   }
 
+  const ATTENTION_KEY = "hq_home_attention_open";
+  const TODAY_KEY = "hq_home_today_open";
+  let hqStateSeen = null;
+
+  function readOpenPref(key) {
+    try {
+      const value = localStorage.getItem(key);
+      if (value === "1") return true;
+      if (value === "0") return false;
+    } catch (_) {}
+    return null;
+  }
+
+  function writeOpenPref(key, open) {
+    try {
+      localStorage.setItem(key, open ? "1" : "0");
+    } catch (_) {}
+  }
+
+  function setDisclosure(button, open) {
+    if (!button) return;
+    const panelId = button.getAttribute("aria-controls") || "";
+    const panel = panelId ? document.getElementById(panelId) : null;
+    const wasOpen = button.getAttribute("aria-expanded") === "true";
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.classList.toggle("is-open", !!open);
+    if (panel) panel.hidden = !open;
+    if (wasOpen && !open && window.hqHideHelp) window.hqHideHelp();
+  }
+
+  function setupHomeDisclosures() {
+    const attention = $("#hq-attention-toggle");
+    const today = $("#hq-today-toggle");
+    const attentionPref = readOpenPref(ATTENTION_KEY);
+    const todayPref = readOpenPref(TODAY_KEY);
+    setDisclosure(attention, attentionPref === null ? false : attentionPref);
+    setDisclosure(today, todayPref === null ? false : todayPref);
+    if (attention) {
+      attention.addEventListener("click", () => {
+        const open = attention.getAttribute("aria-expanded") !== "true";
+        setDisclosure(attention, open);
+        writeOpenPref(ATTENTION_KEY, open);
+      });
+    }
+    if (today) {
+      today.addEventListener("click", () => {
+        const open = today.getAttribute("aria-expanded") !== "true";
+        setDisclosure(today, open);
+        writeOpenPref(TODAY_KEY, open);
+      });
+    }
+  }
+
+  function noteHqState(state) {
+    const enteringCritical = state === "critical" && hqStateSeen !== "critical";
+    hqStateSeen = state;
+    if (enteringCritical) setDisclosure($("#hq-attention-toggle"), true);
+  }
+
   async function loadSnapshot() {
     const banner = $("#hq-banner");
     if (!banner || typeof api !== "function") return;
@@ -67,10 +126,13 @@
       const sub = $("#hq-state-sub");
       if (sub) {
         const n = (snap.attention || []).length;
-        if (!n) sub.textContent = state === "critical" ? "Une action est nécessaire." : state === "warning" ? "Quelque chose demande un coup d'œil." : "Tout est calme.";
-        else if (state === "critical") sub.textContent = n > 1 ? n + " points critiques." : "1 point critique.";
-        else sub.textContent = n > 1 ? n + " points à vérifier." : "1 point à vérifier.";
+        if (!n) sub.textContent = state === "critical" ? "Action requise" : state === "warning" ? "À vérifier" : "Tout est calme.";
+        else if (state === "critical") sub.textContent = n > 1 ? n + " critiques" : "1 critique";
+        else sub.textContent = n > 1 ? n + " à vérifier" : "1 à vérifier";
       }
+      const attentionPanel = $("#hq-attention-panel");
+      const described = document.querySelector("[aria-describedby~='hq-help-tooltip']");
+      if (described && attentionPanel && attentionPanel.contains(described) && window.hqHideHelp) window.hqHideHelp();
       const list = $("#hq-attention");
       if (list) {
         const items = snap.attention || [];
@@ -110,6 +172,7 @@
         });
       }
       if (window.hqPaintCalendarSummary) window.hqPaintCalendarSummary(snap.calendar || {});
+      noteHqState(state);
       if (document.body.classList.contains("wall")) drawFleet(snap);
     } catch (_) {}
   }
@@ -861,6 +924,8 @@
     setupScheduleForm();
     setupVoice();
     setupPush();
+    setupHomeDisclosures();
+    window.hqLoadSnapshot = loadSnapshot;
     loadSnapshot();
     loadEvents();
     loadBrief();

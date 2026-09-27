@@ -30,6 +30,11 @@ Accueil
   → activité récente (filtres Envois / Activité).
   Le journal technique reste disponible sous Plus / Système, fermé
   par défaut. Les événements ne sont pas supprimés.
+  Les cartes HQ et Aujourd'hui sont repliées par défaut (localStorage
+  hq_home_attention_open et hq_home_today_open). Un état critique ouvre
+  HQ, sans réécrire ce choix. Recherche reste visible à côté du résumé.
+  Le prochain événement reste dans l'en-tête d'Aujourd'hui. Un
+  rafraîchissement ne rouvre pas une carte refermée.
   Ctrl+K ou « / » (hors champ) ouvre la palette. Elle ne lance qu'une cible
   allowlist (dossier, favori, scène, action, commande par id, fiche appareil).
 

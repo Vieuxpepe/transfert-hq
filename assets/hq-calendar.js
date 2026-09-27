@@ -1172,12 +1172,20 @@
       });
       root.appendChild(list);
     }
-    if (cal && cal.next) {
-      const line = h("p", {});
-      line.appendChild(h("strong", { text: "Prochain" }));
-      line.appendChild(h("span", { text: " · " + (cal.next.title || "Sans titre") + " · " + homeWhen(cal.next) }));
-      root.appendChild(line);
-    }
+    const nextLine = document.getElementById("hq-cal-next");
+    if (nextLine) nextLine.textContent = nextSummary(cal);
+  }
+
+  function nextSummary(cal) {
+    const next = cal && cal.next;
+    if (!next) return "Rien à venir.";
+    const title = next.title || "Sans titre";
+    if (next.all_day) return "Prochain · " + title + " · Journée";
+    const start = parseLocalDateTime(next.start);
+    if (!start) return "Prochain · " + title;
+    const same = cal.server_date && dateKey(start) === cal.server_date;
+    const when = same ? fmtTime(start) : fmtDay(start) + " · " + fmtTime(start);
+    return "Prochain · " + title + " · " + when;
   }
 
   function paintWall(cal) {
