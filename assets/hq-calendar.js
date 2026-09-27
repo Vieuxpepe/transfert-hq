@@ -1172,20 +1172,41 @@
       });
       root.appendChild(list);
     }
-    const nextLine = document.getElementById("hq-cal-next");
-    if (nextLine) nextLine.textContent = nextSummary(cal);
+    paintNext(cal);
   }
 
-  function nextSummary(cal) {
+  function fmtNextDay(date) {
+    return new Intl.DateTimeFormat("fr-CA", { weekday: "short", day: "numeric", month: "short" }).format(date);
+  }
+
+  function nextParts(cal) {
     const next = cal && cal.next;
-    if (!next) return "Rien à venir.";
+    if (!next) return { when: "", title: "Rien à venir." };
     const title = next.title || "Sans titre";
-    if (next.all_day) return "Prochain · " + title + " · Journée";
+    if (next.all_day) {
+      const start = parseLocalDateKey(next.start);
+      const same = !!(start && cal.server_date && dateKey(start) === cal.server_date);
+      return { when: !start || same ? "Journée" : fmtNextDay(start) + " · Journée", title: title };
+    }
     const start = parseLocalDateTime(next.start);
-    if (!start) return "Prochain · " + title;
-    const same = cal.server_date && dateKey(start) === cal.server_date;
-    const when = same ? fmtTime(start) : fmtDay(start) + " · " + fmtTime(start);
-    return "Prochain · " + title + " · " + when;
+    if (!start) return { when: "", title: title };
+    const same = !!(cal.server_date && dateKey(start) === cal.server_date);
+    return { when: same ? fmtTime(start) : fmtNextDay(start) + " · " + fmtTime(start), title: title };
+  }
+
+  function paintNext(cal) {
+    const nextLine = document.getElementById("hq-cal-next");
+    if (!nextLine) return;
+    nextLine.textContent = "";
+    const parts = nextParts(cal);
+    const next = cal && cal.next;
+    if (next) nextLine.appendChild(h("span", { class: "hq-next-label", text: "Prochain" }));
+    if (parts.when) {
+      if (next) nextLine.appendChild(h("span", { class: "hq-next-sep", "aria-hidden": "true", text: "·" }));
+      nextLine.appendChild(h("span", { class: "hq-next-when", text: parts.when }));
+    }
+    if (next) nextLine.appendChild(h("span", { class: "hq-next-sep", "aria-hidden": "true", text: "·" }));
+    nextLine.appendChild(h("span", { class: "hq-next-title", text: parts.title }));
   }
 
   function paintWall(cal) {
