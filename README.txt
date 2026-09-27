@@ -179,11 +179,12 @@ Companions (contrôle des autres PC)
   Routes admin (cookie admin + CSRF, pas le rôle upload) : /api/agent
   Routes planificateur (127.0.0.1:8766, Bearer) : /local-agent/v1/devices|jobs
 
-  Installation Windows : install_companion.ps1 retire l'héritage ACL
-  (SYSTEM et Administrators en contrôle total, l'utilisateur installateur
-  en modification) et enregistre une tâche visible au logon. L'argument
-  est seulement --config. uninstall_companion.ps1 retire la tâche et
-  garde les secrets sauf -DeleteData. Protocole version 1.
+  Installation Windows : install_companion.ps1 retire l'héritage ACL.
+  Contrôle total pour les SID *S-1-5-18 et *S-1-5-32-544, modification
+  pour l'identité Windows courante. icacls non nul arrête l'installation
+  avant la tâche. La tâche visible au logon ne reçoit que --config.
+  uninstall_companion.ps1 retire la tâche et garde les secrets sauf
+  -DeleteData. Protocole version 1.
 
   SSH existant reste disponible et distinct (badge SSH). Agent HQ est
   un autre canal. Le shell interactif du pont n'est pas devenu un
