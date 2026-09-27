@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import cc_ext
 import hq_automation
 import hq_calendar
+import hq_companion
 import hq_devices
 import hq_events
 
@@ -1399,14 +1400,14 @@ def cached_roster_devices() -> list[dict]:
     with _ROSTER_CACHE_LOCK:
         cached = [dict(d) for d in (_ROSTER_CACHE.get("devices") or [])]
     peers = [d for d in cached if d.get("source") == "tailscale"]
-    return [host_device_entry(), *presence_list(), *peers]
+    return hq_companion.overlay_roster([host_device_entry(), *presence_list(), *peers])
 
 
 def devices_roster() -> dict:
     peers = tailscale_peers()
     devices = [host_device_entry()] + presence_list() + peers
     _store_roster_cache(devices)
-    return {"devices": devices}
+    return {"devices": [hq_devices.present(d) for d in hq_companion.overlay_roster(devices)]}
 
 
 def tailscale_peers() -> list[dict]:
@@ -1801,6 +1802,7 @@ def hq_snapshot() -> dict:
         "cached": True,
         "roster_age_sec": roster_cache_age(),
         "calendar": _calendar_summary(),
+        "agent": hq_companion.summary(),
     }
 
 
@@ -1953,6 +1955,17 @@ def bind_hq() -> None:
         actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
         devices=cached_roster_devices,
     )
+
+    def _agent_journal(kind, message, **extra):
+        hq_events.record(
+            kind,
+            message,
+            level=str(extra.get("level") or "info"),
+            source=str(extra.get("source") or "agent"),
+            meta=extra.get("meta") if isinstance(extra.get("meta"), dict) else None,
+        )
+
+    hq_companion.bind(ROOT, journal=_agent_journal)
     _HQ_BOUND = True
 
 
@@ -2948,11 +2961,14 @@ function renderDevices(devices) {
     }
     const pathLabel = ({lan:'LAN',tailscale:'Tailscale',direct:'Direct',relay:'Relay (lent)',local:'Local',wan:'WAN',offline:'Off',unknown:'?'})[d.path] || (d.path || '');
     const pathBadge = pathLabel ? `<span class="path-badge path-${escapeAttr(d.path || 'unknown')}">${escapeHtml(pathLabel)}</span>` : '';
+    const accessLabels = {agent:'Agent HQ', ssh:'SSH', browser:'Navigateur', local:'Cet ordinateur'};
+    const accessBadges = (Array.isArray(d.access) ? d.access : []).map(a => accessLabels[a]).filter(Boolean).map(label => `<span class="access-badge">${escapeHtml(label)}</span>`).join('');
     return `<li class="device-card" tabindex="0" role="button" aria-label="${escapeAttr((d.name || 'Appareil') + ' — ouvrir la fiche')}" data-device-id="${escapeAttr(d.id || '')}">
       <div class="device-head">
         <span class="dot ${on ? 'on' : 'off'}"></span>
         <strong>${escapeHtml(d.name || '?')}</strong>
         ${pathBadge}
+        ${accessBadges}
         <span class="device-kind">${escapeHtml(d.kind || '')}${ip}${bat}${ago}</span>
       </div>
       <div class="device-spaces">${bars}</div>
@@ -4186,6 +4202,7 @@ def render_app() -> bytes:
         <div class="sec-head">
           <h2 id="devices-title">Appareils <span class="badge" id="hq-dev-count">0</span></h2>
           <p class="sec-hint">En ligne et espace disque disponible</p>
+          <button type="button" class="secondary" id="btn-agent-center" data-help="Jetons d'enrôlement, approbations et historique des companions. Les iPhone restent des navigateurs.">Centre agents</button>
         </div>
         <ul class="hq-list" id="hq-devices"><li class="hint skeleton">Chargement…</li></ul>
       </section>
@@ -4575,11 +4592,19 @@ def render_app() -> bytes:
 <script>{APP_JS}</script>
 <script src="/assets/hq-features.js"></script>
 <script src="/assets/hq.js"></script>
+<script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
     <div id="hq-device-body"></div>
+    <div class="row"><button value="cancel" class="secondary">Fermer</button></div>
+  </form>
+</dialog>
+<dialog id="hq-agent-dialog" aria-labelledby="hq-agent-title">
+  <form method="dialog">
+    <header><strong id="hq-agent-title">Centre agents</strong></header>
+    <div id="hq-agent-body"><p class="hint">Chargement…</p></div>
     <div class="row"><button value="cancel" class="secondary">Fermer</button></div>
   </form>
 </dialog>
@@ -4797,6 +4822,29 @@ class Handler(BaseHTTPRequestHandler):
             code = 500
         self._send(code, body, "application/json; charset=utf-8", headers)
 
+    def _agent_v1(self) -> None:
+        """Signed companion routes. No cookie session, no public RPC."""
+        raw = urlparse(self.path).path
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "longueur invalide"})
+            return
+        cap = hq_companion.max_body_for(raw)
+        if length < 0 or length > cap:
+            self._json(413, {"error": "corps trop volumineux"})
+            return
+        body = self.rfile.read(length) if length else b""
+        ip = self.client_address[0] if self.client_address else ""
+        code, payload = hq_companion.handle_device(
+            method=self.command or "POST",
+            path=raw,
+            headers=self.headers,
+            body=body,
+            client_ip=ip,
+        )
+        self._json(code, payload)
+
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length < 0 or length > 8 * 1024 * 1024:
@@ -4910,6 +4958,10 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
             return True
+        if raw in ("/api/agent", "/api/agent/jobs"):
+            code, payload = hq_companion.admin_get(raw, parse_qs(parsed.query))
+            self._json(code, payload)
+            return True
         if raw == "/api/device":
             qs = parse_qs(parsed.query)
             ident = (qs.get("id", [""])[0] or "").strip()
@@ -4994,6 +5046,11 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _hq_post(self, raw: str) -> bool:
+        if raw == "/api/agent":
+            data = self._read_json()
+            code, payload = hq_companion.admin_post(data)
+            self._json(code, payload)
+            return True
         if raw == "/api/automation":
             data = self._read_json()
             action = str(data.get("action") or "")
@@ -5125,6 +5182,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         raw = parsed.path
         ensure_hq()
+
+        if raw.startswith("/agent/v1/"):
+            self._json(405, {"error": "POST requis"})
+            return
 
         if raw == "/logout":
             if not self._check_csrf():
@@ -5413,6 +5474,10 @@ class Handler(BaseHTTPRequestHandler):
 
         # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
         if not self._check_csrf():
+            return
+
+        if raw.startswith("/agent/v1/"):
+            self._agent_v1()
             return
 
         if raw == "/login":

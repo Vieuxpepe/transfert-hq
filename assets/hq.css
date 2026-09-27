@@ -104,6 +104,13 @@ dialog#hq-device-dialog::backdrop{background:rgba(0,0,0,.55)}
   .fm-filter{flex-direction:column;align-items:stretch}
   .fm-filter > input,.fm-sort,.fm-sort select{width:100%;flex:1 1 auto}
 }
+.access-badge{display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);font-size:var(--text-xs,.75rem);font-weight:700;vertical-align:middle}
+.agent-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.agent-tabs button{min-height:var(--tap-min,44px)}
+.job-row{padding:8px 0;border-top:1px solid var(--line)}
+.risk-destructive{color:var(--danger,#e85d4c);font-weight:700}
+.token-once{font-family:ui-monospace,monospace;word-break:break-all;font-size:var(--text-sm,.82rem)}
+#btn-agent-center{margin-top:8px}
 #btn-palette{white-space:nowrap}
 @media (max-width:700px){
   #btn-palette{padding:8px 10px}

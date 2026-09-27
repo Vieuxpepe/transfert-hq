@@ -14,6 +14,14 @@ Architecture
   hq_automation.py   scènes / runbooks, règles, planning, backups, télémétrie, brief, push
   hq_calendar.py     événements manuels, projection des horaires, rappels
   hq_devices.py      modèle d'appareils et capacités (dérivées, pas inventées)
+  hq_companion.py    registre companions, HMAC, politique (contrôleur)
+  hq_jobs.py         file de travaux bornée (hq_agent_jobs.json)
+  hq_agent_ops.py    catalogue d'opérations et risques
+  hq_agent_protocol.py  signature, version de protocole, délais de poll
+  companion_agent.py agent sortant sur un PC de confiance
+  companion_ops.py   opérations bornées exécutées sur ce PC
+  hqctl.py           CLI locale (humain ou planificateur)
+  assets/hq-agent.js centre agents (fiche Appareils)
   assets/hq.js       palette, bannière, aide contextuelle, journal, flotte, brief, voix, push
   assets/hq-calendar.js
   assets/hq-calendar.css
@@ -23,6 +31,45 @@ Architecture
 
 Les modules hq_* reçoivent des callbacks. Ils ne lancent pas de shell arbitraire
 et n'importent pas le serveur HTTP (pas de cycle).
+
+Companions (contrôle des autres PC)
+------------------------------------
+  Vieuxpeepee reste le contrôleur. Les PC de confiance lancent companion_agent.py.
+  Le companion ouvre une connexion HTTPS sortante vers Tailscale Serve
+  (poll 3 s quand un travail vient d'être traité, jusqu'à 15 s au repos,
+  backoff borné en cas d'erreur). Pas de port entrant sur le PC géré.
+  Pas de WebSocket. Pas de companion iOS : un iPhone reste un navigateur.
+
+  Enrôlement : jeton à usage unique (15 min) créé dans Centre agents,
+  échangé une fois contre un secret d'appareil. Le secret n'est plus
+  renvoyé. Stockage : hq_agents.json sur le pont, agent_config.json
+  sur le companion (ProgramData\TransfertHQ ou fichier local). Les deux
+  sont gitignorés.
+
+  Chaque requête signée porte X-HQ-Device, X-HQ-Time, X-HQ-Nonce,
+  X-HQ-Signature (HMAC-SHA256, décalage ±90 s, nonce anti-rejeu).
+  Les capacités effectives sont support ∩ plafond contrôleur ∩ politique
+  de l'appareil. Une revendication du client n'accorde rien.
+  Le terminal interactif n'est pas dans le plafond.
+
+  Risques : lecture (file directe), sûr / sensible (direct si l'origine
+  est un humain, sinon approbation), destructeur (toujours une approbation
+  séparée). confirm:true n'approuve pas. hqctl part en origine planner :
+  le planificateur ne peut pas s'approuver.
+
+  Les fichiers produits vont dans Inbox/AgentArtifacts/… Le JSON du
+  travail ne contient que le chemin, la taille et l'empreinte.
+  import vers Inbox, Uni ou Print se fait sur le pont.
+
+  Routes companion : POST /agent/v1/enroll|heartbeat|poll|result|artifact
+  Routes admin (cookie admin + CSRF, pas le rôle upload) : /api/agent
+
+  Installation Windows : install_companion.ps1 (copie locale, pas de
+  mise à jour automatique). Protocole version 1.
+
+  SSH existant reste disponible et distinct (badge SSH). Agent HQ est
+  un autre canal. Le shell interactif du pont n'est pas devenu un
+  shell permanent pour l'agent.
 
 Accueil
 -------
@@ -243,6 +290,9 @@ Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON c
   hq_backup_index.json
   hq_push_subscriptions.json
   hq_vapid.json          clé privée Web Push — ne jamais committer
+  hq_agents.json         secrets companions — ne jamais committer
+  hq_agent_jobs.json     file des travaux agents
+  agent_config.json      secret du companion, sur le PC distant
   bridge_config.json     PIN / webhook — ne jamais committer
   bridge_sessions.json
   bridge_queue.json      verrou RLock sur toute transaction load→save, écriture atomique.
@@ -306,7 +356,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py
 
 Contrôle manuel du calendrier
 -----------------------------
@@ -351,6 +401,12 @@ SECURITY INVARIANTS
 
   Exécution distante
     - Pas de surcharge d'hôte SSH (champ host refusé). Cibles = shell_targets / pairs connus.
+    - Companion : auth HMAC, capacités calculées côté pont, travaux explicites.
+      Pas d'écoute publique, pas de RPC anonyme, pas de shell permanent pour l'IA.
+      iOS refusé à l'enrôlement. Terminal interactif hors plafond.
+      Alimentation restart/shutdown : risque destructeur, TTL court, et le
+      companion Windows ne l'exécute que si destructive_power_enabled est vrai.
+      Presse-papiers désactivé tant que clipboard_enabled n'est pas vrai.
     - Automation, scènes, planning, palette : terminal par id allowlist uniquement.
     - Jamais de commande libre dans une règle, une scène, un job planifié
       ou un événement de calendrier.
