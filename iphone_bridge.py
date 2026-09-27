@@ -1800,7 +1800,18 @@ def hq_snapshot() -> dict:
         "generated_at": time.time(),
         "cached": True,
         "roster_age_sec": roster_cache_age(),
+        "calendar": _calendar_summary(),
     }
+
+
+def _calendar_summary() -> dict:
+    """Local calendar only. Must not probe Tailscale."""
+    try:
+        if hq_calendar.ready():
+            return hq_calendar.summary()
+    except Exception:
+        return {"today": [], "next": None, "malformed": True}
+    return {"today": [], "next": None}
 
 
 def palette_catalog() -> list[dict]:
@@ -3830,6 +3841,10 @@ body.wall{{background:#070b10}}
     <p class="sub" id="wb-health" aria-live="polite">Santé…</p>
     <p class="sub" id="fleet-state">Flotte…</p>
   </header>
+  <section class="hq" aria-labelledby="wb-next-title">
+    <h2 id="wb-next-title">Prochain</h2>
+    <div id="wb-next"><p class="hint">…</p></div>
+  </section>
   <section class="hq" aria-labelledby="fleet-title">
     <h2 id="fleet-title">Flotte</h2>
     <div id="fleet-map" class="fleet-map"></div>
@@ -3891,6 +3906,10 @@ async function refreshWall() {{
     }};
     setQr('qr-lan', lan, 'LAN');
     setQr('qr-ts', tsu, 'Tailscale');
+    try {{
+      const hq = await api('/api/hq');
+      if (window.hqPaintCalendarSummary) window.hqPaintCalendarSummary(hq.calendar || {{}});
+    }} catch (_) {{}}
     await refreshHQ();
     if (typeof renderHomeChart === 'function') await renderHomeChart();
   }} catch(e) {{ $('#wb-health').textContent = e.message; }}
@@ -3901,6 +3920,7 @@ document.addEventListener('DOMContentLoaded', () => {{
 }});
 </script>
 <script src="/assets/hq.js"></script>
+<script src="/assets/hq-calendar.js"></script>
 </body></html>"""
     return page.encode("utf-8")
 
@@ -4004,6 +4024,14 @@ def render_app() -> bytes:
       </div>
       <ul class="hq-list" id="hq-attention"></ul>
       <div class="row hq-actions" id="hq-quick-scenes"></div>
+    </section>
+    <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
+      <div class="sec-head">
+        <h2 id="cal-home-title">Aujourd'hui</h2>
+        <p class="sec-hint">Ce qui se passe et ce qui vient</p>
+      </div>
+      <div id="hq-cal-today"><p class="hint">Chargement…</p></div>
+      <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
     </section>
     <div class="accueil-main">
       <section class="hq hq-primary" aria-labelledby="envoyer-title">

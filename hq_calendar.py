@@ -679,7 +679,7 @@ def _journal_between(start: datetime, end: datetime) -> list[dict]:
     return found
 
 
-def query(start: datetime, end: datetime, *, include_activity: bool = False) -> dict:
+def query(start: datetime, end: datetime, *, include_activity: bool = False, with_catalog: bool = True) -> dict:
     assert_span(start, end)
     manual, bad = manual_between(start, end)
     scheduled, conditional = _project(start, end)
@@ -692,12 +692,73 @@ def query(start: datetime, end: datetime, *, include_activity: bool = False) -> 
         "to": _fmt_minute(end),
         "items": items,
         "conditional": conditional,
-        "catalog": _catalog(),
+        "catalog": _catalog() if with_catalog else {"scenes": [], "actions": [], "devices": []},
     }
     body.update(clock())
     if include_activity:
         body["activity"] = _activity(start, end)
     return body
+
+
+def _compact(item: dict) -> dict:
+    out: dict[str, Any] = {
+        "id": item.get("id"),
+        "title": str(item.get("title") or "")[:TITLE_MAX],
+        "start": item.get("start"),
+        "end": item.get("end"),
+        "all_day": bool(item.get("all_day")),
+        "source": item.get("source") or "manual",
+        "read_only": bool(item.get("read_only")),
+    }
+    if item.get("category"):
+        out["category"] = item.get("category")
+    if item.get("when"):
+        out["when"] = item.get("when")
+    return out
+
+
+def _item_start(item: dict) -> datetime | None:
+    if item.get("all_day"):
+        return parse_date(str(item.get("start") or ""))
+    return parse_minute(str(item.get("start") or ""))
+
+
+def summary() -> dict:
+    """Today and the next upcoming item. Reads local files only."""
+    wall = _local_now().replace(second=0, microsecond=0)
+    day_start = wall.replace(hour=0, minute=0, second=0, microsecond=0)
+    horizon = day_start + timedelta(days=15)
+    try:
+        body = query(day_start, horizon, include_activity=False, with_catalog=False)
+    except CalendarError:
+        body = {"items": [], "malformed": False}
+    day_end = day_start + timedelta(days=1)
+    today_rows = []
+    for item in body.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            if _overlaps(item, day_start, day_end):
+                today_rows.append(item)
+        except CalendarError:
+            continue
+    upcoming: list[tuple[datetime, dict]] = []
+    for item in body.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        start = _item_start(item)
+        if start is not None and start >= wall:
+            upcoming.append((start, item))
+    upcoming.sort(key=lambda pair: (pair[0], str(pair[1].get("id") or "")))
+    nxt = upcoming[0][1] if upcoming else None
+    info = clock()
+    return {
+        "today": [_compact(item) for item in today_rows[:5]],
+        "next": _compact(nxt) if nxt else None,
+        "server_now": info["server_now"],
+        "server_date": info["server_date"],
+        "malformed": bool(body.get("malformed")),
+    }
 
 
 def run_linked(event_id: str, target: str) -> dict:

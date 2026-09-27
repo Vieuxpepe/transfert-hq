@@ -350,6 +350,27 @@ class ProjectionTests(unittest.TestCase):
             hq_calendar.run_linked(saved["id"], "scene")
         self.assertEqual(self.calls, [])
 
+    def test_summary_today_and_next_without_notes(self):
+        self.jobs.append(
+            {"id": "day", "label": "Routine", "when": "daily", "type": "backup", "at": "11:00", "status": "pending"}
+        )
+        before = json.dumps(self.jobs, sort_keys=True)
+        hq_calendar.save_event(self._day(title="Matin", start="2026-09-28T09:00", end="2026-09-28T09:30", notes="SECRET_NOTE"))
+        hq_calendar.save_event(self._day(title="Apres-midi", start="2026-09-28T15:00", end="2026-09-28T16:00"))
+        hq_calendar.save_event(self._day(title="Journee", all_day=True, start="2026-09-28", end="2026-09-29", notes="SECRET_NOTE"))
+        info = hq_calendar.summary()
+        titles = [item["title"] for item in info["today"]]
+        self.assertIn("Journee", titles)
+        self.assertIn("Matin", titles)
+        self.assertIn("Routine", titles)
+        self.assertLessEqual(len(info["today"]), 5)
+        self.assertEqual(info["next"]["title"], "Routine")
+        self.assertEqual(info["next"]["start"], "2026-09-28T11:00")
+        self.assertTrue(info["next"]["read_only"])
+        self.assertNotIn("SECRET_NOTE", json.dumps(info))
+        self.assertNotIn("notes", info["today"][0])
+        self.assertEqual(json.dumps(self.jobs, sort_keys=True), before)
+
     def test_span_limits(self):
         start = datetime(2026, 1, 1)
         hq_calendar.query(start, start + timedelta(days=366))
@@ -544,6 +565,50 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(any(item.get("source") == "schedule" and item.get("when") == "daily" for item in payload["items"]))
         self.assertTrue(all(item.get("when") != "on-online" for item in payload["items"]))
         self.assertTrue(any(item.get("when") == "on-online" for item in payload["conditional"]))
+
+    def test_hq_summary_does_not_probe_or_leak_notes(self):
+        note = "NOTE_ABSENTE_DU_RESUME"
+        now = datetime.now().replace(second=0, microsecond=0)
+        start = now + timedelta(hours=2)
+        end = start + timedelta(hours=1)
+        status, _h, body = self._post(
+            "/api/calendar",
+            {
+                "action": "save",
+                "event": {
+                    "title": "Bientot HQ",
+                    "all_day": False,
+                    "start": start.strftime("%Y-%m-%dT%H:%M"),
+                    "end": end.strftime("%Y-%m-%dT%H:%M"),
+                    "category": "hq",
+                    "notes": note,
+                },
+            },
+        )
+        self.assertEqual(status, 200, body)
+        calls = []
+        original = iphone_bridge.tailscale_peers
+
+        def boom():
+            calls.append(1)
+            raise AssertionError("tailscale probe")
+
+        iphone_bridge.tailscale_peers = boom
+        try:
+            status, _h, body = self._get("/api/hq")
+            self.assertEqual(status, 200, body)
+            self.assertEqual(calls, [])
+            data = json.loads(body)
+            calendar = data["calendar"]
+            self.assertIsInstance(calendar["today"], list)
+            self.assertLessEqual(len(calendar["today"]), 5)
+            blob = json.dumps(calendar)
+            self.assertNotIn(note, blob)
+            titles = [item.get("title") for item in calendar["today"]]
+            next_title = (calendar.get("next") or {}).get("title")
+            self.assertTrue("Bientot HQ" in titles or next_title == "Bientot HQ")
+        finally:
+            iphone_bridge.tailscale_peers = original
 
 
 if __name__ == "__main__":

@@ -964,6 +964,57 @@
     closeSheets();
   }
 
+  function homeWhen(item) {
+    if (!item) return "";
+    if (item.all_day) return "Journée";
+    const start = parseLocalDateTime(item.start);
+    if (!start) return item.when ? (WHEN[item.when] || "") : "";
+    return fmtDay(start) + " · " + fmtTime(start);
+  }
+
+  function paintHome(cal) {
+    const root = document.getElementById("hq-cal-today");
+    if (!root) return;
+    root.textContent = "";
+    const today = (cal && cal.today) || [];
+    if (!today.length) {
+      root.appendChild(h("p", { class: "hint", text: "Rien de prévu aujourd'hui." }));
+    } else {
+      const list = h("ul", { class: "hq-list" });
+      today.slice(0, 5).forEach((item) => {
+        const li = h("li", {});
+        li.appendChild(h("strong", { text: item.title || "Sans titre" }));
+        li.appendChild(h("div", { class: "meta", text: homeWhen(item) }));
+        list.appendChild(li);
+      });
+      root.appendChild(list);
+    }
+    if (cal && cal.next) {
+      const line = h("p", {});
+      line.appendChild(h("strong", { text: "Prochain" }));
+      line.appendChild(h("span", { text: " · " + (cal.next.title || "Sans titre") + " · " + homeWhen(cal.next) }));
+      root.appendChild(line);
+    }
+  }
+
+  function paintWall(cal) {
+    const root = document.getElementById("wb-next");
+    if (!root) return;
+    root.textContent = "";
+    const next = cal && cal.next;
+    if (!next) {
+      root.appendChild(h("p", { class: "hint", text: "Rien à venir." }));
+      return;
+    }
+    root.appendChild(h("strong", { text: next.title || "Sans titre" }));
+    root.appendChild(h("div", { class: "hint", text: homeWhen(next) }));
+  }
+
+  window.hqPaintCalendarSummary = function (cal) {
+    paintHome(cal);
+    paintWall(cal);
+  };
+
   function boot() {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
@@ -978,6 +1029,12 @@
     state.anchor = todayLocal();
     root.addEventListener("click", onClick);
     document.addEventListener("keydown", onKey);
+    const openHome = document.getElementById("hq-cal-open");
+    if (openHome) {
+      openHome.addEventListener("click", () => {
+        if (typeof setView === "function") setView("calendrier");
+      });
+    }
     window.hqCalendarShow = function () {
       refresh();
     };

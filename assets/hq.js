@@ -80,6 +80,7 @@
           });
         });
       }
+      if (window.hqPaintCalendarSummary) window.hqPaintCalendarSummary(snap.calendar || {});
       if (document.body.classList.contains("wall")) drawFleet(snap);
     } catch (_) {}
   }
