@@ -139,10 +139,13 @@ class UxMarkupTests(unittest.TestCase):
         hq_css = (ROOT / "assets" / "hq.css").read_text(encoding="utf-8")
         self.assertIn("minmax(0,1fr) minmax(0,1fr)", hq_css)
         self.assertIn("align-items:start", hq_css)
-        self.assertIn("@media (min-width:1100px)", hq_css)
+        self.assertIn("@media (min-width:1160px)", hq_css)
+        self.assertNotIn("@media (min-width:1100px)", hq_css)
         self.assertIn(".accueil-summaries{grid-column:1/-1}", hq_css.replace(" ", ""))
-        before_pair = hq_css.split("@media (min-width:1100px)", 1)[0]
+        before_pair = hq_css.split("@media (min-width:1160px)", 1)[0]
         self.assertNotIn("minmax(0,1fr) minmax(0,1fr)", before_pair)
+        narrow = hq_css.split("@media (max-width:430px)", 1)[1].replace("\n", "")
+        self.assertIn("#hq-attention-toggle .hq-disclosure-meta{order:4;flex:1 0 100%;margin-left:20px}", narrow)
         self.assertIn(".hq-next-when{color:var(--text)}", hq_css.replace(" ", ""))
         self.assertIn(".hq-next-title{", hq_css.replace(" ", ""))
         self.assertIn("text-overflow:ellipsis", hq_css)

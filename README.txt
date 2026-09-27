@@ -38,8 +38,9 @@ Accueil
   Le prochain événement reste dans l'en-tête d'Aujourd'hui : l'heure
   ou la date courte reste entière, le titre est la partie qui se coupe.
   Un rafraîchissement ne rouvre pas une carte refermée.
-  À partir de 1100px, ces deux cartes sont côte à côte. En dessous,
-  elles restent l'une sous l'autre.
+  À partir de 1160px, ces deux cartes sont côte à côte. En dessous,
+  elles restent l'une sous l'autre. Jusqu'à 430px, le compteur
+  d'attention passe sous le titre pour que l'état reste lisible.
   Ctrl+K ou « / » (hors champ) ouvre la palette. Elle ne lance qu'une cible
   allowlist (dossier, favori, scène, action, commande par id, fiche appareil).
 
