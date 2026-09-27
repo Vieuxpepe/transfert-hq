@@ -926,6 +926,79 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn('AGENT_STATE_DIR = ".hq-agent-state"', state_src)
         self.assertIn("dest.parent", state_src)
         self.assertIn('.tmp"', state_src)
+        tree = (root / "install_hq_tree_acl.ps1").read_text(encoding="utf-8")
+        grants = [line for line in tree.splitlines() if "Add-AllowRule" in line]
+        self.assertTrue(grants)
+        self.assertFalse(any("Everyone" in line for line in grants))
+        self.assertFalse(any("Users" in line for line in grants))
+        self.assertNotIn("/deny", tree)
+        planner_grants = [line for line in grants if "PlannerIdentity" in line]
+        self.assertEqual(planner_grants, [line for line in planner_grants if "ReadAndExecute" in line and "$inheritChildren" in line])
+        self.assertEqual(len(planner_grants), 1)
+        for word in ("Modify", "FullControl", "Write"):
+            self.assertNotIn(word, planner_grants[0])
+        controller_grants = [line for line in grants if "ControllerIdentity" in line]
+        self.assertTrue(controller_grants)
+        self.assertTrue(all("Modify" in line for line in controller_grants))
+        self.assertTrue(any("$inheritChildren" in line for line in controller_grants))
+        sensitive = tree.split("sensitive files:", 1)[1].split("code integrity:", 1)[0]
+        self.assertIn("bridge_config.json", sensitive)
+        self.assertIn("bridge_sessions.json", sensitive)
+        self.assertNotIn("PlannerIdentity", sensitive)
+        self.assertNotIn("ReadAndExecute", sensitive)
+        for name in (
+            "iphone_bridge.py",
+            "cc_ext.py",
+            "hq_companion.py",
+            "hq_jobs.py",
+            "hq_planner.py",
+            "hq_state.py",
+            "hq_agent_protocol.py",
+            "hq_agent_ops.py",
+            "start_bridge_hidden.vbs",
+            "install_autostart.ps1",
+        ):
+            self.assertIn(name, tree)
+        self.assertIn(".hq-agent-state", tree)
+        self.assertIn("install_hq_state_acl.ps1", tree)
+        self.assertIn("hq_agents.json", tree)
+        self.assertIn("hq_planner.json", tree)
+        self.assertFalse(any("hq_agents.json" in line or "hq_agent_jobs.json" in line for line in grants))
+        for banned in ("Register-ScheduledTask", "Unregister-ScheduledTask", "Set-ScheduledTask", "schtasks", "Remove-Item", "Set-Content"):
+            self.assertNotIn(banned, tree)
+        self.assertIn("TransfertBridge", tree)
+        self.assertIn("ne la modifie pas", tree)
+        lowered = tree.lower()
+        self.assertNotIn("password", lowered)
+        self.assertNotIn("device_secret", lowered)
+        self.assertIn("SupportsShouldProcess", tree)
+        self.assertIn("élévation requise", tree)
+        self.assertNotIn("secret", lowered)
+        mask = tree.split("$writeBits = (", 1)[1].split(")", 1)[0]
+        mask_rights = []
+        for part in mask.split("FileSystemRights]::")[1:]:
+            mask_rights.append(part.split()[0].split("-bor")[0].strip())
+        for banned_right in ("Modify", "FullControl", "ReadAndExecute", "Write"):
+            self.assertNotIn(banned_right, mask_rights)
+        rights = {
+            "WriteData": 0x2,
+            "AppendData": 0x4,
+            "WriteExtendedAttributes": 0x10,
+            "WriteAttributes": 0x100,
+            "DeleteSubdirectoriesAndFiles": 0x40,
+            "Delete": 0x10000,
+            "ChangePermissions": 0x40000,
+            "TakeOwnership": 0x80000,
+            "ReadAndExecute": 0x200A9,
+            "Modify": 0x301BF,
+            "FullControl": 0x1F01FF,
+        }
+        write_mask = 0
+        for name in mask_rights:
+            write_mask |= rights[name]
+        self.assertEqual(rights["ReadAndExecute"] & write_mask, 0)
+        self.assertNotEqual(rights["Modify"] & write_mask, 0)
+        self.assertNotEqual(rights["FullControl"] & write_mask, 0)
         companion_src = (root / "hq_companion.py").read_text(encoding="utf-8")
         artifact_fn = companion_src.split("def _accept_artifact", 1)[1].split("\ndef ", 1)[0]
         self.assertIn("AgentArtifacts", artifact_fn)

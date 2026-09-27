@@ -73,12 +73,22 @@ Companions (contrôle des autres PC)
   L'écriture atomique crée <nom>.tmp dans ce répertoire : le fichier
   hérite de l'ACL du répertoire avant os.replace.
 
-  Séparation OS, pour deux comptes non administrateurs, après un premier
-  démarrage du pont (le répertoire et le jeton existent) :
+  Arbre du pont (code et données ordinaires), en élevé, avant l'état privé.
+  Le planificateur a ReadAndExecute héritable. Il n'a pas Modify.
+  bridge_config.json et bridge_sessions.json n'héritent pas : pas de
+  lecture planificateur. .hq-agent-state n'est pas touché ici.
+  La tâche TransfertBridge n'est pas réenregistrée ; son principal reste
+  le compte contrôleur.
+    powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 `
+      -StateDir D:\Transfert `
+      -ControllerIdentity "VIEUXPEEPEE\autm_" `
+      -PlannerIdentity "VIEUXPEEPEE\hq-planner"
+  Puis, après un premier démarrage (répertoire privé et jeton présents),
+  le même StateDir et les mêmes identités :
     powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 `
-      -StateDir C:\TransfertHQ `
-      -ControllerIdentity "TAILNET\hq-controller" `
-      -PlannerIdentity "TAILNET\hq-planner"
+      -StateDir D:\Transfert `
+      -ControllerIdentity "VIEUXPEEPEE\autm_" `
+      -PlannerIdentity "VIEUXPEEPEE\hq-planner"
   Le répertoire donne FullControl héritable à SYSTEM et Administrators,
   Modify héritable au contrôleur, et au planificateur seulement le droit
   de traverser (non héritable). hq_planner.json reçoit en plus Read
@@ -92,7 +102,11 @@ Companions (contrôle des autres PC)
 
   Vérification Windows des ACL (sur le pont, avant d'enrôler un second PC) :
   1. Démarrer HQ une fois pour créer .hq-agent-state et le jeton.
-  2. Lancer install_hq_state_acl.ps1 avec les deux identités réelles.
+  2. Lancer install_hq_tree_acl.ps1, puis install_hq_state_acl.ps1, avec les
+     deux identités réelles. Le second script seul durcit .hq-agent-state.
+     Get-Acl sur iphone_bridge.py : planificateur ReadAndExecute, pas Modify.
+     Get-Acl sur bridge_config.json et bridge_sessions.json : pas de lecture
+     planificateur. Get-ScheduledTask TransfertBridge : principal inchangé.
   3. Get-Acl sur le répertoire, hq_agents.json, hq_agent_jobs.json,
      hq_planner.json.
   4. Déclencher une écriture (créer puis ignorer un jeton d'enrôlement).
