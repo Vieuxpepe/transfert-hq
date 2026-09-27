@@ -14,7 +14,7 @@ Architecture
   hq_automation.py   scènes / runbooks, règles, planning, backups, télémétrie, brief, push
   hq_calendar.py     événements manuels, projection des horaires, rappels
   hq_devices.py      modèle d'appareils et capacités (dérivées, pas inventées)
-  assets/hq.js       palette, bannière HQ, journal, flotte, brief, voix, push
+  assets/hq.js       palette, bannière, aide contextuelle, journal, flotte, brief, voix, push
   assets/hq-calendar.js
   assets/hq-calendar.css
   assets/hq.css
@@ -26,8 +26,10 @@ et n'importent pas le serveur HTTP (pas de cycle).
 
 Accueil
 -------
-  État HQ (ok / attention / critique) → points d'attention → scènes rapides
-  → appareils → journal récent.
+  État HQ (ok / attention / critique) → aujourd'hui → envoyer → appareils
+  → activité récente (filtres Envois / Activité).
+  Le journal technique reste disponible sous Plus / Système, fermé
+  par défaut. Les événements ne sont pas supprimés.
   Ctrl+K ou « / » (hors champ) ouvre la palette. Elle ne lance qu'une cible
   allowlist (dossier, favori, scène, action, commande par id, fiche appareil).
 
@@ -81,8 +83,8 @@ Planning
 Calendrier
 ----------
   Onglet Calendrier : Jour, Semaine (lundi), Mois, Agenda.
-  Mois : une pastille tronquée sur téléphone, deux sur grand écran,
-  puis +N. Le titre ne déborde pas sur la case voisine.
+  Mois : une pastille tronquée sous 700px, deux au-dessus, puis +N.
+  Le titre ne déborde pas sur la case voisine.
   Téléphone : Jour par défaut. Grand écran : Semaine. Le dernier choix
   et le bouton Activité sont mémorisés dans le navigateur.
   Heure HQ locale, 24 h, français (fr-CA). Si le fuseau du navigateur
@@ -117,6 +119,87 @@ Calendrier
   Le wallboard n'affiche que la carte Prochain.
   Les routes calendrier sont admin. Elles ne sont pas sur l'allowlist
   du rôle upload. Les POST exigent le contrôle CSRF habituel.
+
+Interaction et accessibilité
+----------------------------
+  Tokens : --tap-min 44px, --text-xs 0.75rem, --text-sm 0.82rem,
+  --text-base 1rem, --focus-ring. Le texte interactif reste vers
+  0.80rem ou plus. Le thème clair utilise #08724f pour l'accent
+  (environ 5.95:1 sur blanc, texte blanc sur ce fond aussi).
+  Le thème sombre Mission Control ne change pas.
+  Une catégorie de calendrier se lit par une couleur ET une forme
+  (pastille, carré, losange, contour, capsule). Un horaire HQ est
+  en outre en bordure pointillée et porte « Lecture seule ».
+
+  Survol : uniquement @media (hover:hover) and (pointer:fine).
+  Bordure un peu plus claire, fond léger, parfois translateY(-1px).
+  Pas de survol sur un contrôle désactivé. Pas de rebond ni de halo.
+
+  Clavier : :focus-visible dessine outline 2px var(--accent),
+  offset 2px. Le focus n'est pas retiré sans remplacement.
+
+  Aide : un contrôleur dans assets/hq.js, un seul #hq-help-tooltip.
+  data-help="…" sur les contrôles où une phrase aide vraiment
+  (statut, mode, recherche, verrouiller, veille, capture, dossier,
+  captures, vues du calendrier, activité, nouvel événement, horaires
+  en lecture seule). Pointeur fin : pointerover en délégation
+  (relatedTarget ignore le déplacement dans le même contrôle, comme
+  pointerenter) démarre 2 s ; toujours sur la même cible → affichage ;
+  départ avant 2 s → annulation ; départ après affichage → masquage
+  immédiat. Aussi masqué au clic,
+  au défilement, à Échap, au changement de vue et à l'ouverture d'une
+  feuille. Clavier : environ 250 ms après le focus, sans les 2 s.
+  Tactile : pas de survol simulé, pas d'aide au premier tap, pas
+  d'appui long. L'essentiel est dans le libellé, aria-label ou la
+  feuille de détail.
+  role=tooltip, pointer-events:none, max-width 300px, texte en
+  textContent (jamais innerHTML). aria-describedby pointe vers
+  l'infobulle seulement pendant qu'elle est visible. Elle ne prend
+  pas le focus et n'est pas la seule source d'une information
+  essentielle. Pas de PIN, jeton, commande ni URL de webhook.
+  Le survol d'un événement (2 s, pointeur fin) résume le titre,
+  l'horaire, la catégorie ou « lecture seule », et « Lié » s'il
+  y a une scène ou une action. Les notes privées n'y sont pas.
+
+  Flèches du calendrier : aria-label « Jour/Semaine/Mois/Agenda
+  précédent/suivant ». Supprimer est un bouton danger (contour),
+  avec la même confirmation qu'avant.
+
+  Navigation : petites icônes SVG currentColor, avec le texte.
+  Téléphone : Plus. Bureau (≥900px) : Système. data-nav reste "plus".
+  Le titre du document suit la vue.
+
+  Opérations longues : withBusy / la ligne « … » déjà présente
+  (capture, sauvegarde, restauration, shell, envoi, impression,
+  archivage, tri, nettoyage, scène, enregistrement calendrier).
+  Pas de fausse barre de progression.
+
+  prefers-reduced-motion: reduce coupe le pulse et les transitions
+  non essentielles.
+
+  Fiche appareil (<dialog>), palette et feuilles calendrier :
+  focus à l'ouverture, Échap ferme, le focus revient à l'ouvreur,
+  role=dialog et aria-modal. Tabulation bouclée localement, sans
+  librairie.
+
+  Limites connues : les pastilles du mois et les événements très
+  courts restent plus bas que 44px pour ne pas recouvrir le voisin
+  ni casser le +N. Les marqueurs d'activité de la semaine font 24px
+  (ceux du jour occupent la gouttière, 44px).
+
+Contrôle sur un appareil réel
+-----------------------------
+  Non exécuté dans cet environnement sur iPhone, Safari iOS ou un
+  poste Windows. À faire sur le pont :
+  1. Largeurs ~390, ~430, 768, 1280 : pas de défilement horizontal
+     de la page. La semaine, elle, défile.
+  2. Mois, titre très long : une ligne coupée, puis +N. Téléphone :
+     une pastille. Bureau : deux.
+  3. Tap sur un contrôle : pas d'infobulle. Tab : infobulle rapide.
+     Bureau : infobulle après ~2 s, masquée par Échap, clic, scroll.
+  4. Thème clair et sombre. Supprimer reste rouge et confirme encore.
+  5. Plus (téléphone) / Système (bureau). Journal technique fermé.
+  6. Capture, sauvegarde, shell : la ligne d'attente s'affiche.
 
 Règles
 ------
