@@ -756,8 +756,25 @@
     };
   }
 
+  let sheetOpener = null;
+  let sheetRelease = null;
+
+  function rememberOpener() {
+    if (sheetOpener && document.contains(sheetOpener) && !(sheetOpener.closest && sheetOpener.closest(".hq-sheet"))) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) return;
+    if (active.closest && active.closest(".hq-sheet, dialog")) return;
+    sheetOpener = active;
+  }
+
+  function releaseSheet() {
+    if (sheetRelease) sheetRelease();
+    sheetRelease = null;
+  }
+
   function sheet(id) {
     if (window.hqHideHelp) window.hqHideHelp();
+    rememberOpener();
     let node = document.getElementById(id);
     if (!node) {
       node = h("div", { class: "hq-sheet", id: id, hidden: "hidden" });
@@ -779,12 +796,16 @@
         node.textContent = "";
       }
     });
+    releaseSheet();
+    const opener = sheetOpener;
+    sheetOpener = null;
+    if (opener && opener.focus && document.contains(opener)) opener.focus();
   }
 
   function openDetail(item) {
     const root = sheet("hq-cal-detail");
-    const card = h("div", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-label": "Détail" });
-    card.appendChild(h("h3", { text: item.title || "Sans titre" }));
+    const card = h("div", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-detail-title" });
+    card.appendChild(h("h3", { id: "hq-cal-detail-title", text: item.title || "Sans titre" }));
     card.appendChild(h("p", { class: "hint", text: whenText(item) }));
     if (item.location) card.appendChild(h("p", { text: item.location }));
     if (item.notes) card.appendChild(h("p", { class: "hq-cal-note", text: item.notes }));
@@ -802,7 +823,11 @@
     }
     card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
     card.addEventListener("click", (ev) => onSheetClick(ev, item));
+    card.tabIndex = -1;
     root.appendChild(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus();
   }
 
   function whenText(item) {
@@ -831,17 +856,22 @@
     return (found && found.label) || id;
   }
 
+  async function busy(label, fn) {
+    if (typeof withBusy === "function") return withBusy(label, fn);
+    return fn();
+  }
+
   async function runTarget(item, target) {
     const catalog = (state.data && state.data.catalog) || {};
     const label = target === "scene" ? labelFor(catalog.scenes, item.scene_id) : labelFor(catalog.actions, item.action_id);
     const noun = target === "scene" ? "la scène" : "l'action";
     if (!window.confirm("Lancer " + noun + " « " + label + " » ?")) return;
     try {
-      await api("/api/calendar/run", {
+      await busy("Lancement…", () => api("/api/calendar/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: item.id, target: target }),
-      });
+      }));
       if (typeof toast === "function") toast(target === "scene" ? "Scène lancée" : "Action lancée");
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Échec", "err");
@@ -870,11 +900,11 @@
   async function removeEvent(item) {
     if (!window.confirm("Supprimer « " + (item.title || "cet événement") + " » ?")) return;
     try {
-      await api("/api/calendar", {
+      await busy("Suppression…", () => api("/api/calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "delete", id: item.id, expected_rev: item.rev }),
-      });
+      }));
       closeSheets();
       if (typeof toast === "function") toast("Événement supprimé");
       refresh();
@@ -885,8 +915,8 @@
 
   function openEditor(item) {
     const root = sheet("hq-cal-editor");
-    const card = h("form", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-label": "Événement" });
-    card.appendChild(h("h3", { text: item.id ? "Modifier" : "Nouvel événement" }));
+    const card = h("form", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
+    card.appendChild(h("h3", { id: "hq-cal-editor-title", text: item.id ? "Modifier" : "Nouvel événement" }));
     card.appendChild(field("Titre", h("input", { id: "hq-cal-title", name: "title", maxlength: "120", required: "required", value: item.title || "" })));
     const allDay = h("input", { id: "cal-all-day", type: "checkbox" });
     allDay.checked = !!item.all_day;
@@ -945,6 +975,8 @@
       saveEditor(item, { allDay, start, end, category });
     });
     root.appendChild(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
     const title = card.querySelector("#hq-cal-title");
     if (title) title.focus();
   }
@@ -1026,11 +1058,11 @@
       return;
     }
     try {
-      await api("/api/calendar", {
+      await busy("Enregistrement…", () => api("/api/calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "save", expected_rev: item.id ? item.rev : 0, event: payload }),
-      });
+      }));
       closeSheets();
       if (typeof toast === "function") toast("Événement enregistré");
       refresh();

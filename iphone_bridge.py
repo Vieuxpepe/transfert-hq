@@ -2251,14 +2251,25 @@ function toast(msg, kind='ok', ms=3200) {
 }
 
 const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
+function viewTitle(view) {
+  if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
+  return VIEW_LABELS[view] || 'Accueil';
+}
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   document.body.dataset.view = view;
   if (window.hqHideHelp) window.hqHideHelp();
   const lab = $('#view-label');
-  if (lab) lab.textContent = VIEW_LABELS[view];
-  $$('.bottom-nav [data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === view));
+  const title = viewTitle(view);
+  if (lab) lab.textContent = title;
+  document.title = 'Transfert HQ · ' + title;
+  $$('.bottom-nav [data-nav]').forEach(b => {
+    const on = b.dataset.nav === view;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'calendrier' && window.hqCalendarShow) window.hqCalendarShow();
@@ -2291,6 +2302,10 @@ function setupNav() {
   let saved = 'accueil';
   try { saved = localStorage.getItem('tf_hq_view') || 'accueil'; } catch (_) {}
   setView(saved);
+  const wide = window.matchMedia('(min-width: 900px)');
+  if (wide.addEventListener) wide.addEventListener('change', () => {
+    if (document.body.dataset.view) setView(document.body.dataset.view);
+  });
 }
 
 function fmtRel(rel) {
@@ -2922,7 +2937,7 @@ function renderDevices(devices) {
     }
     const pathLabel = ({lan:'LAN',tailscale:'Tailscale',direct:'Direct',relay:'Relay (lent)',local:'Local',wan:'WAN',offline:'Off',unknown:'?'})[d.path] || (d.path || '');
     const pathBadge = pathLabel ? `<span class="path-badge path-${escapeAttr(d.path || 'unknown')}">${escapeHtml(pathLabel)}</span>` : '';
-    return `<li class="device-card" data-device-id="${escapeAttr(d.id || '')}">
+    return `<li class="device-card" tabindex="0" role="button" aria-label="${escapeAttr((d.name || 'Appareil') + ' — ouvrir la fiche')}" data-device-id="${escapeAttr(d.id || '')}">
       <div class="device-head">
         <span class="dot ${on ? 'on' : 'off'}"></span>
         <strong>${escapeHtml(d.name || '?')}</strong>
@@ -2994,7 +3009,7 @@ function renderRecents() {
   }
   if (filter === 'all') rows.sort((a, b) => (b.sort || 0) - (a.sort || 0));
   el.innerHTML = rows.slice(0, 16).map(r => r.html).join('')
-    || '<li class="empty-teach"><em>Rien de récent</em><p class="hint">Envoie un fichier depuis Accueil</p></li>';
+    || '<li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li>';
   $$('[data-open-rel]', el).forEach(b => b.addEventListener('click', () => navigate(b.dataset.openRel || '')));
 }
 
@@ -3094,8 +3109,8 @@ async function refreshHQ() {
     if ($('#hq-max')) $('#hq-max').textContent = st.max_upload_h || '—';
     const chip = $('#status-chip');
     if (chip) {
-      const free = disk.free_h || '?';
-      chip.textContent = '● ' + (st.hostname || 'PC') + ' · ' + free;
+      const free = disk.free_h || '';
+      chip.textContent = free ? ('● ' + free + ' libres') : '● État';
     }
     renderDevices(dev.devices || []);
     renderTransfers(tr.transfers || []);
@@ -3248,13 +3263,16 @@ async function runSearch() {
   const q = ($('#global-search')?.value || '').trim();
   const el = $('#search-hits');
   if (!el) return;
-  if (q.length < 2) { el.innerHTML = ''; return; }
+  if (q.length < 2) {
+    el.innerHTML = '<li class="hint">Saisis au moins deux lettres.</li>';
+    return;
+  }
   try {
     const data = await api('/api/search?q=' + encodeURIComponent(q));
     el.innerHTML = (data.hits||[]).map(h =>
       `<li><button type="button" class="fname" data-srel="${escapeAttr(h.rel)}" style="background:none;border:0;padding:0;color:var(--accent)">${escapeHtml(h.name)}</button>
       <div class="meta">${escapeHtml(h.rel)} · ${escapeHtml(h.match)}${h.snippet? ' — '+escapeHtml(h.snippet):''}</div></li>`
-    ).join('') || '<li class="hint">Aucun résultat</li>';
+    ).join('') || '<li class="hint">Aucun fichier ne correspond.</li>';
     $$('[data-srel]', el).forEach(b => b.addEventListener('click', () => {
       const parts = b.dataset.srel.split('/');
       parts.pop();
@@ -3271,7 +3289,7 @@ function renderAlerts(items) {
   if (!el) return;
   el.innerHTML = list.slice(0, 8).map(x =>
     `<li><strong>${escapeHtml(x.title || '')}</strong><div class="meta">${escapeHtml(x.detail || '')}</div></li>`
-  ).join('') || '<li class="hint">Aucune alerte</li>';
+  ).join('') || '<li class="hint">Aucune alerte pour le moment.</li>';
 }
 
 function renderMedia(items) {
@@ -3291,7 +3309,7 @@ function renderRecentsEmptyHint() {
   const el = $('#hq-recents');
   if (!el) return;
   if ((transfersCache.length + activityCache.length) === 0) {
-    el.innerHTML = '<li class="hint empty-teach"><em>Rien de récent</em><p class="hint">Envoie un fichier depuis Accueil</p></li>';
+    el.innerHTML = '<li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li>';
   }
 }
 
@@ -3304,7 +3322,7 @@ function renderScenes(scenes) {
   $$('[data-scene]', el).forEach(b => b.addEventListener('click', async () => {
     if (!confirm('Lancer la scène « ' + b.textContent + ' » ?')) return;
     try {
-      await api('/api/scene', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.scene }) });
+      await withBusy('Lancement…', () => api('/api/scene', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.scene }) }));
       toast('Scène lancée');
       await refreshHQ();
     } catch (e) { toast(e.message, 'err'); }
@@ -3371,19 +3389,23 @@ function setupHQ() {
   if (!$('#hq-devices') && !$('#btn-lock')) return;
   $('#btn-lock')?.addEventListener('click', async () => {
     if (!confirm('Verrouiller le PC ?')) return;
-    try { await api('/api/pc/lock', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); toast('PC verrouillé'); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      await withBusy('Verrouillage…', () => api('/api/pc/lock', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }));
+      toast('PC verrouillé');
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-sleep')?.addEventListener('click', async () => {
     if (!confirm('Mettre le PC en veille ?')) return;
-    try { await api('/api/pc/sleep', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); toast('Veille…'); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      await withBusy('Mise en veille…', () => api('/api/pc/sleep', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }));
+      toast('Veille demandée');
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-shot')?.addEventListener('click', async () => {
     try {
-      const data = await api('/api/pc/screenshot', {
+      const data = await withBusy('Capture…', () => api('/api/pc/screenshot', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
-      });
+      }));
       toast('Capture: ' + data.name);
       await refreshFiles();
       await refreshHQ();
@@ -3402,10 +3424,10 @@ function setupHQ() {
   });
   $('#btn-explore')?.addEventListener('click', async () => {
     try {
-      await api('/api/pc/explore', {
+      await withBusy('Ouverture du dossier…', () => api('/api/pc/explore', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ path: currentRel || 'Inbox' })
-      });
+      }));
       toast('Explorateur ouvert');
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -3418,10 +3440,10 @@ function setupHQ() {
     const rel = ($('#send-rel')?.value || '').trim();
     if (!to || !rel) { toast('Destinataire + fichier requis', 'err'); return; }
     try {
-      await api('/api/send', {
+      await withBusy('Envoi…', () => api('/api/send', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ to, rel, from: deviceName(), from_id: presenceId })
-      });
+      }));
       toast('Envoyé');
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -3440,23 +3462,31 @@ function setupHQ() {
   $('#btn-backup')?.addEventListener('click', async () => {
     if (!confirm('Lancer un backup maintenant ?')) return;
     try {
-      const d = await withBusy('Backup…', () => api('/api/backup', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }), 'backup-busy');
+      const d = await withBusy('Sauvegarde…', () => api('/api/backup', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }), 'backup-busy');
       toast(d.path || 'Backup OK');
     }
     catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-iz-archive')?.addEventListener('click', async () => {
     if (!confirm('Archiver les fichiers de Inbox ?')) return;
-    try { const d = await api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'archive' }) }); toast(d.moved + ' fichier(s) archivé(s)'); await refreshFiles(); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      const d = await withBusy('Archivage…', () => api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'archive' }) }));
+      toast(d.moved + ' fichier(s) archivé(s)');
+      await refreshFiles();
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-iz-sort')?.addEventListener('click', async () => {
-    try { const d = await api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'sort' }) }); toast(d.moved + ' fichier(s) trié(s)'); await refreshFiles(); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      const d = await withBusy('Tri…', () => api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'sort' }) }));
+      toast(d.moved + ' fichier(s) trié(s)');
+      await refreshFiles();
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-iz-tmp')?.addEventListener('click', async () => {
-    try { const d = await api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'empty-tmp' }) }); toast((d.removed||0) + ' fichier(s) tmp supprimé(s)'); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      const d = await withBusy('Nettoyage…', () => api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'empty-tmp' }) }));
+      toast((d.removed||0) + ' fichier(s) tmp supprimé(s)');
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#global-search')?.addEventListener('input', () => { clearTimeout(window._sq); window._sq = setTimeout(runSearch, 280); });
   $('#btn-print')?.addEventListener('click', async () => {
@@ -3464,10 +3494,10 @@ function setupHQ() {
     if (!rel) { toast('Indique Print/fichier…', 'err'); return; }
     if (!confirm('Imprimer ' + rel + ' ?')) return;
     try {
-      await api('/api/print', {
+      await withBusy('Impression…', () => api('/api/print', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ rel, printer: $('#print-printer')?.value || '' })
-      });
+      }));
       toast("Envoyé à l'imprimante");
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -3484,7 +3514,7 @@ function setupHQ() {
     if (!confirm('Exécuter sur ' + target + ' ?\n\n' + cmd)) return;
     $('#shell-out').textContent = '…';
     try {
-      const data = await withBusy('Shell…', () => api('/api/shell', {
+      const data = await withBusy('Exécution…', () => api('/api/shell', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ target, shell, cmd })
       }), 'shell-busy');
@@ -3767,6 +3797,7 @@ li.file.is-dir .fname{color:var(--ok)}
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 35%,transparent)}
 .bottom-nav .nav-ico{display:flex;align-items:center;justify-content:center;line-height:0}
 .nav-svg{display:block;width:20px;height:20px}
+.nav-label-desktop{display:none}
 body.theme-oled{--bg:#000;--panel:#0a0a0a;--panel-2:#111;--line:#222}
 body.theme-midnight{--bg:#0b1220;--panel:#121a2b;--accent:#7dd3fc;--accent2:#7dd3fc}
 body.kiosk .wrap{max-width:100%;padding:10px}
@@ -3777,13 +3808,15 @@ body.kiosk .bottom-nav{display:none}
 .dot.off{background:var(--danger)}
 @media (max-width:520px){
   .qrs{grid-template-columns:1fr}
-  .wrap{padding:12px 12px 20px}
+  .wrap{padding:12px max(12px, env(safe-area-inset-right)) 20px max(12px, env(safe-area-inset-left))}
   .icon-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
 }
 @media (min-width:900px){
-  body{padding-bottom:0;display:grid;grid-template-columns:148px 1fr;min-height:100vh}
-  .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:148px;grid-template-columns:1fr;
+  body{padding-bottom:0;display:grid;grid-template-columns:164px 1fr;min-height:100vh}
+  .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:164px;grid-template-columns:1fr;
     border-top:0;border-right:1px solid var(--line);padding:16px 10px;align-content:start;gap:6px;order:0}
+  .nav-label-mobile{display:none}
+  .nav-label-desktop{display:inline}
   .wrap{order:1;max-width:980px;padding:20px 24px 40px}
   #toasts{bottom:18px}
   .op-busy{bottom:72px}
@@ -4037,11 +4070,11 @@ def render_app() -> bytes:
 <body data-view="accueil">
 <a class="skip-link" href="#main">Aller au contenu</a>
 <nav class="bottom-nav" aria-label="Navigation HQ">
-  <button type="button" class="active" data-nav="accueil"><span class="nav-ico">⌂</span>Accueil</button>
-  <button type="button" data-nav="calendrier"><span class="nav-ico">▦</span>Calendrier</button>
-  <button type="button" data-nav="fichiers"><span class="nav-ico">📁</span>Fichiers</button>
-  <button type="button" data-nav="ops"><span class="nav-ico">⚡</span>Terminal</button>
-  <button type="button" data-nav="plus"><span class="nav-ico">⋯</span>Plus</button>
+  <button type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
+  <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
+  <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
+  <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
+  <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
 <main class="wrap" id="main">
   <header class="topbar" role="banner">
@@ -4144,34 +4177,17 @@ def render_app() -> bytes:
 
       <section class="hq" aria-labelledby="recents-title">
         <div class="sec-head">
-          <h2 id="recents-title">Récents</h2>
-          <p class="sec-hint">Derniers envois et activité</p>
+          <h2 id="recents-title">Activité récente</h2>
+          <p class="sec-hint">Derniers envois et actions, sans le journal technique</p>
         </div>
         <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
           <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
           <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
           <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Activité</button>
         </div>
-        <ul class="hq-list" id="hq-recents"><li class="hint">Rien pour l'instant — envoie un fichier ci-contre</li></ul>
+        <ul class="hq-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
         <ul class="hq-list" id="hq-transfers" hidden></ul>
         <ul class="hq-list" id="hq-activity" hidden></ul>
-      </section>
-
-      <section class="hq" aria-labelledby="events-title">
-        <div class="sec-head">
-          <h2 id="events-title">Journal</h2>
-          <p class="sec-hint">Événements récents du pont</p>
-        </div>
-        <div class="chips filter-chips" id="hq-event-filters" role="tablist" aria-label="Filtrer le journal">
-          <button type="button" class="chip active" data-event-kind="all">Tous</button>
-          <button type="button" class="chip" data-event-kind="alert">Alertes</button>
-          <button type="button" class="chip" data-event-kind="upload">Envois</button>
-          <button type="button" class="chip" data-event-kind="scene">Scènes</button>
-          <button type="button" class="chip" data-event-kind="backup">Backups</button>
-          <button type="button" class="chip" data-event-kind="automation">Auto</button>
-          <button type="button" class="chip" data-event-kind="schedule">Planning</button>
-        </div>
-        <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
       </section>
     </div>
   </div>
@@ -4182,7 +4198,7 @@ def render_app() -> bytes:
         <h2 id="cal-title">Calendrier</h2>
         <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
       </div>
-      <div id="hq-cal-app"></div>
+      <div id="hq-cal-app"><p class="hint">Chargement…</p></div>
     </section>
   </div>
 
@@ -4193,7 +4209,7 @@ def render_app() -> bytes:
         <p class="sec-hint">Trouver un fichier ou du texte dans .txt / .md</p>
       </div>
       <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale" data-help="Cherche un nom de fichier ou du texte dans les notes."/>
-      <ul class="hq-list" id="search-hits"></ul>
+      <ul class="hq-list" id="search-hits"><li class="hint">Saisis au moins deux lettres.</li></ul>
     </section>
 
     <section class="hq" aria-labelledby="fm-title">
@@ -4387,7 +4403,7 @@ def render_app() -> bytes:
         <h2 id="brief-title">Brief du jour</h2>
         <p class="sec-hint">Résumé déterministe, sans service externe</p>
       </div>
-      <div id="hq-brief" class="brief"></div>
+      <div id="hq-brief" class="brief"><p class="hint">Chargement…</p></div>
     </section>
 
     <section class="hq" aria-labelledby="backup-title">
@@ -4395,7 +4411,7 @@ def render_app() -> bytes:
         <h2 id="backup-title">Sauvegardes</h2>
         <p class="sec-hint">Catalogue local. La restauration écrase le dossier choisi.</p>
       </div>
-      <ul class="hq-list" id="hq-backups"><li class="hint">Aucune sauvegarde cataloguée</li></ul>
+      <ul class="hq-list" id="hq-backups"><li class="hint">Chargement…</li></ul>
     </section>
 
     <details class="hq mode-complet-only">
@@ -4449,6 +4465,25 @@ def render_app() -> bytes:
       <div class="kanban" id="kanban"></div>
     </details>
 
+    <details class="hq" id="hq-journal">
+      <summary>
+        <div class="sec-head">
+          <span class="summary-title" id="events-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Journal technique</span>
+          <p class="sec-hint">Historique détaillé du pont. Fermé tant que tu n'en as pas besoin.</p>
+        </div>
+      </summary>
+      <div class="chips filter-chips" id="hq-event-filters" role="tablist" aria-label="Filtrer le journal">
+        <button type="button" class="chip active" data-event-kind="all">Tous</button>
+        <button type="button" class="chip" data-event-kind="alert">Alertes</button>
+        <button type="button" class="chip" data-event-kind="upload">Envois</button>
+        <button type="button" class="chip" data-event-kind="scene">Scènes</button>
+        <button type="button" class="chip" data-event-kind="backup">Backups</button>
+        <button type="button" class="chip" data-event-kind="automation">Auto</button>
+        <button type="button" class="chip" data-event-kind="schedule">Planning</button>
+      </div>
+      <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
+    </details>
+
     <details class="hq">
       <summary>
         <div class="sec-head">
@@ -4456,7 +4491,7 @@ def render_app() -> bytes:
           <p class="sec-hint">Disque plein, erreurs, avertissements</p>
         </div>
       </summary>
-      <ul class="hq-list" id="hq-alerts"><li class="hint">Aucune alerte</li></ul>
+      <ul class="hq-list" id="hq-alerts"><li class="hint">Aucune alerte pour le moment.</li></ul>
     </details>
 
     <section class="hq">
@@ -4484,7 +4519,7 @@ def render_app() -> bytes:
 <script>{APP_JS}</script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-calendar.js"></script>
-<dialog id="hq-device-dialog">
+<dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
     <div id="hq-device-body"></div>
@@ -4492,8 +4527,8 @@ def render_app() -> bytes:
   </form>
 </dialog>
 <div id="hq-palette" class="palette" hidden>
-  <div class="palette-card" role="dialog" aria-label="Recherche HQ">
-    <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off"/>
+  <div class="palette-card" role="dialog" aria-modal="true" aria-label="Recherche HQ">
+    <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off" aria-autocomplete="list" aria-controls="hq-palette-list"/>
     <ul id="hq-palette-list"></ul>
   </div>
 </div>

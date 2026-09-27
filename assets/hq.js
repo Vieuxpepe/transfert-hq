@@ -3,6 +3,32 @@
   const $ = (s, el = document) => el.querySelector(s);
   const STATE_LABEL = { ok: "OK", warning: "Attention", critical: "Critique" };
 
+  function trapFocus(root) {
+    if (!root) return function () {};
+    function onKey(ev) {
+      if (ev.key !== "Tab") return;
+      const nodes = Array.prototype.filter.call(
+        root.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+        (el) => !el.disabled && el.getAttribute("aria-hidden") !== "true"
+      );
+      if (!nodes.length) return;
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      const onEdgeBack = document.activeElement === first || document.activeElement === root;
+      const onEdgeForward = document.activeElement === last || document.activeElement === root;
+      if (ev.shiftKey && onEdgeBack) {
+        ev.preventDefault();
+        last.focus();
+      } else if (!ev.shiftKey && onEdgeForward) {
+        ev.preventDefault();
+        first.focus();
+      }
+    }
+    root.addEventListener("keydown", onKey);
+    return function () { root.removeEventListener("keydown", onKey); };
+  }
+  window.hqTrapFocus = trapFocus;
+
   function esc(s) {
     if (typeof escapeHtml === "function") return escapeHtml(s);
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
@@ -41,7 +67,9 @@
       const sub = $("#hq-state-sub");
       if (sub) {
         const n = (snap.attention || []).length;
-        sub.textContent = n ? n + " point(s) demandent attention" : "Rien à signaler";
+        if (!n) sub.textContent = state === "critical" ? "Une action est nécessaire." : state === "warning" ? "Quelque chose demande un coup d'œil." : "Tout est calme.";
+        else if (state === "critical") sub.textContent = n > 1 ? n + " points critiques." : "1 point critique.";
+        else sub.textContent = n > 1 ? n + " points à vérifier." : "1 point à vérifier.";
       }
       const list = $("#hq-attention");
       if (list) {
@@ -68,11 +96,12 @@
           btn.addEventListener("click", async () => {
             if (!confirm("Lancer la scène « " + btn.textContent + " » ?")) return;
             try {
-              await api("/api/scene", {
+              const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+              await busy("Lancement…", () => api("/api/scene", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ id: btn.dataset.quickScene }),
-              });
+              }));
               if (typeof toast === "function") toast("Scène lancée");
             } catch (e) {
               if (typeof toast === "function") toast(e.message, "err");
@@ -101,7 +130,7 @@
                 `<li><strong>${esc(e.message || "")}</strong><div class="meta">${esc(e.at_h || "")} · ${esc(e.kind || "")} · ${esc(e.level || "")}</div></li>`
             )
             .join("")
-        : '<li class="hint">Journal vide</li>';
+        : '<li class="hint">Aucune entrée pour ce filtre.</li>';
     } catch (e) {
       el.innerHTML = `<li class="hint">${esc(e.message || "Journal indisponible")}</li>`;
     }
@@ -175,14 +204,15 @@
       btn.addEventListener("click", async () => {
         const act = btn.dataset.devAct;
         try {
+          const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
           if (act === "lock") {
             if (!confirm("Verrouiller le PC ?")) return;
-            await api("/api/pc/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            await busy("Verrouillage…", () => api("/api/pc/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
           } else if (act === "sleep") {
             if (!confirm("Mettre le PC en veille ?")) return;
-            await api("/api/pc/sleep", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            await busy("Mise en veille…", () => api("/api/pc/sleep", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
           } else if (act === "shot") {
-            await api("/api/pc/screenshot", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+            await busy("Capture…", () => api("/api/pc/screenshot", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
           }
           if (typeof toast === "function") toast("OK");
         } catch (e) {
@@ -191,23 +221,46 @@
       });
     });
     if (window.hqHideHelp) window.hqHideHelp();
-    if (typeof dlg.showModal === "function") dlg.showModal();
+    const opener = document.activeElement;
+    const wasOpen = !!dlg.open;
+    if (typeof dlg.showModal === "function" && !wasOpen) dlg.showModal();
+    if (dlg._hqRelease) dlg._hqRelease();
+    dlg._hqRelease = trapFocus(dlg);
+    const closeBtn = dlg.querySelector('button[value="cancel"]');
+    if (closeBtn) closeBtn.focus();
+    if (!wasOpen) {
+      dlg.addEventListener("close", () => {
+        if (dlg._hqRelease) dlg._hqRelease();
+        dlg._hqRelease = null;
+        if (opener && opener.focus && document.contains(opener)) opener.focus();
+      }, { once: true });
+    }
   }
 
   let paletteHits = [];
   let paletteIndex = 0;
+  let paletteOpener = null;
+  let paletteRelease = null;
 
   function renderPalette() {
     const list = $("#hq-palette-list");
     if (!list) return;
+    list.setAttribute("role", "listbox");
     list.innerHTML = paletteHits.length
       ? paletteHits
           .map(
             (hit, i) =>
-              `<li data-i="${i}" class="${i === paletteIndex ? "active" : ""}"><span>${esc(hit.label || hit.id)}</span><span class="palette-kind">${esc(hit.hint || hit.kind || "")}</span></li>`
+              `<li id="hq-palette-opt-${i}" role="option" data-i="${i}" aria-selected="${i === paletteIndex ? "true" : "false"}" class="${i === paletteIndex ? "active" : ""}"><span>${esc(hit.label || hit.id)}</span><span class="palette-kind">${esc(hit.hint || hit.kind || "")}</span></li>`
           )
           .join("")
-      : '<li class="hint">Aucun résultat</li>';
+      : '<li class="hint">Aucun résultat.</li>';
+    const input = $("#hq-palette-input");
+    const active = list.querySelector("li.active");
+    if (input) {
+      input.setAttribute("aria-controls", "hq-palette-list");
+      if (active) input.setAttribute("aria-activedescendant", active.id);
+      else input.removeAttribute("aria-activedescendant");
+    }
     list.querySelectorAll("li[data-i]").forEach((li) => {
       li.addEventListener("click", () => runPalette(paletteHits[Number(li.dataset.i)]));
     });
@@ -235,31 +288,34 @@
     }
     if (hit.kind === "scene") {
       if (!confirm("Lancer la scène « " + (hit.label || hit.id) + " » ?")) return;
-      await api("/api/scene", {
+      const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+      await busy("Lancement…", () => api("/api/scene", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: hit.id }),
-      });
+      }));
       if (typeof toast === "function") toast("Scène lancée");
       return;
     }
     if (hit.kind === "action") {
       if (!confirm("Lancer « " + (hit.label || hit.id) + " » sur le PC ?")) return;
-      await api("/api/pc/action", {
+      const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+      await busy("Action…", () => api("/api/pc/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: hit.id }),
-      });
+      }));
       if (typeof toast === "function") toast("Action lancée");
       return;
     }
     if (hit.kind === "terminal") {
       if (!confirm("Exécuter la commande allowlist « " + (hit.label || hit.id) + " » ?")) return;
-      const data = await api("/api/terminal", {
+      const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+      const data = await busy("Exécution…", () => api("/api/terminal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: hit.id }),
-      });
+      }));
       const out = $("#shell-out");
       if (out) out.textContent = (data.stdout || "") + (data.stderr || "");
       if (typeof setView === "function") setView("ops");
@@ -271,7 +327,11 @@
     const box = $("#hq-palette");
     if (!box) return;
     if (window.hqHideHelp) window.hqHideHelp();
+    if (box.hidden) paletteOpener = document.activeElement;
+    if (paletteRelease) paletteRelease();
     box.hidden = false;
+    const card = box.querySelector(".palette-card") || box;
+    paletteRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
     const input = $("#hq-palette-input");
     if (input) {
       input.value = "";
@@ -282,7 +342,12 @@
 
   function closePalette() {
     const box = $("#hq-palette");
+    if (paletteRelease) paletteRelease();
+    paletteRelease = null;
     if (box) box.hidden = true;
+    const opener = paletteOpener;
+    paletteOpener = null;
+    if (opener && opener.focus && document.contains(opener)) opener.focus();
   }
 
   function typingTarget(el) {
@@ -316,23 +381,24 @@
                 ["Inbox", "Uni", "Print"]
                   .map(
                     (folder) =>
-                      `<button type="button" class="secondary" data-restore="${esc(b.id)}" data-folder="${folder}">Restaurer ${folder}</button>`
+                      `<button type="button" class="danger" data-restore="${esc(b.id)}" data-folder="${folder}">Restaurer ${folder}</button>`
                   )
                   .join("") +
                 `</div></li>`
             )
             .join("")
-        : '<li class="hint">Aucune sauvegarde cataloguée</li>';
+        : '<li class="hint">Aucune sauvegarde pour l\'instant.</li>';
       el.querySelectorAll("[data-restore]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const folder = btn.dataset.folder;
           if (!confirm("Écraser " + folder + " avec le backup " + btn.dataset.restore + " ?")) return;
           try {
-            const res = await api("/api/backup/restore", {
+            const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+            const res = await busy("Restauration…", () => api("/api/backup/restore", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ id: btn.dataset.restore, folder, confirm: true }),
-            });
+            }));
             if (typeof toast === "function") toast((res.copied || 0) + " fichier(s) restauré(s)");
           } catch (e) {
             if (typeof toast === "function") toast(e.message, "err");
@@ -356,7 +422,7 @@
                 `<div class="row hq-actions"><button type="button" class="secondary" data-rule-run="${esc(r.id)}">Lancer</button></div></li>`
             )
             .join("")
-        : '<li class="hint">Aucune règle</li>';
+        : '<li class="hint">Aucune règle pour l\'instant.</li>';
       el.querySelectorAll("[data-rule-run]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           try {
@@ -476,7 +542,8 @@
         fd.append("folder", "Inbox/Voice");
         fd.append("files", blob, "voix-" + Date.now() + "." + ext);
         try {
-          await api("/api/upload", { method: "POST", body: fd, timeoutMs: 60000 });
+          const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
+          await busy("Envoi de la note…", () => api("/api/upload", { method: "POST", body: fd, timeoutMs: 60000 }));
           if (typeof toast === "function") toast("Note vocale dans Inbox/Voice");
         } catch (e) {
           if (typeof toast === "function") toast(e.message, "err");
@@ -541,6 +608,8 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ subscription: json }),
         });
+        btn.setAttribute("aria-pressed", "true");
+        btn.textContent = "Activées sur cet appareil";
         if (typeof toast === "function") toast("Notifications activées");
       } catch (e) {
         if (typeof toast === "function") toast(e.message || "Push refusé", "err");
@@ -777,10 +846,16 @@
     });
     const devices = $("#hq-devices");
     if (devices) {
-      devices.addEventListener("click", (ev) => {
+      const openCard = (ev) => {
         const card = ev.target && ev.target.closest ? ev.target.closest("[data-device-id]") : null;
-        if (card && card.dataset.deviceId) openDevice(card.dataset.deviceId);
-      });
+        if (!card || !card.dataset.deviceId) return;
+        if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
+        if (ev.type === "keydown" && ev.target !== card) return;
+        if (ev.type === "keydown") ev.preventDefault();
+        openDevice(card.dataset.deviceId);
+      };
+      devices.addEventListener("click", openCard);
+      devices.addEventListener("keydown", openCard);
     }
     setupRuleForm();
     setupScheduleForm();
