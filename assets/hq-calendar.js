@@ -1,10 +1,10 @@
 /* Transfert HQ calendar. Date-only math never uses new Date("YYYY-MM-DD"). */
 (function () {
   const VIEWS = [
-    ["day", "Jour"],
-    ["week", "Semaine"],
-    ["month", "Mois"],
-    ["agenda", "Agenda"],
+    ["day", "Jour", "Vue Jour : la journée, heure par heure."],
+    ["week", "Semaine", "Vue Semaine : sept jours. Sur téléphone, glisse horizontalement."],
+    ["month", "Mois", "Vue Mois : aperçu du mois. Les titres longs sont coupés."],
+    ["agenda", "Agenda", "Vue Agenda : la liste des trente prochains jours."],
   ];
   const CATS = [
     ["personal", "Personnel"],
@@ -243,9 +243,24 @@
     }
   }
 
+  function previewHelp(item) {
+    const parts = [item.title || "Sans titre"];
+    if (item.all_day) parts.push("Journée");
+    else if (item.start && String(item.start).indexOf("T") !== -1) parts.push(spanLabel(item));
+    else if (item.when) parts.push(WHEN[item.when] || "Conditionnel");
+    if (item.read_only) parts.push("Horaire HQ, lecture seule");
+    else {
+      const cat = CATS.find((row) => row[0] === (item.category || "other"));
+      if (cat) parts.push(cat[1]);
+    }
+    if (item.scene_id || item.action_id) parts.push("Lié");
+    return parts.join(" · ");
+  }
+
   function render() {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
+    if (window.hqHideHelp) window.hqHideHelp();
     root.textContent = "";
     paintTz();
     root.appendChild(toolbar());
@@ -273,13 +288,14 @@
   function toolbar() {
     const bar = h("div", { class: "hq-cal-bar" });
     const views = h("div", { class: "hq-cal-views", role: "tablist" });
-    VIEWS.forEach(([id, label]) => {
+    VIEWS.forEach(([id, label, help]) => {
       views.appendChild(
         h("button", {
           type: "button",
           class: "secondary",
           "data-cal": "view",
           "data-view": id,
+          "data-help": help,
           "aria-pressed": state.view === id ? "true" : "false",
           text: label,
         })
@@ -298,12 +314,18 @@
           type: "button",
           class: "secondary",
           "data-cal": "activity",
+          "data-help": "Affiche l'activité récente sur la grille. Lecture seule.",
           "aria-pressed": state.activity ? "true" : "false",
           text: state.activity ? "Activité affichée" : "Activité",
         })
       );
     }
-    bar.appendChild(h("button", { type: "button", "data-cal": "create", text: "Nouvel événement" }));
+    bar.appendChild(h("button", {
+      type: "button",
+      "data-cal": "create",
+      "data-help": "Crée un événement manuel dans le calendrier.",
+      text: "Nouvel événement",
+    }));
     return bar;
   }
 
@@ -360,7 +382,7 @@
       class: "hq-cal-chip " + catClass(item),
       "data-cal": "open",
       "data-id": item.id,
-      title: title,
+      "data-help": previewHelp(item),
       text: title,
     });
     return node;
@@ -424,6 +446,7 @@
         class: "hq-cal-event " + catClass(entry.item),
         "data-cal": "open",
         "data-id": entry.item.id,
+        "data-help": previewHelp(entry.item),
         style: "top:" + top + "%;height:" + height + "%;left:" + entry.col * width + "%;width:" + width + "%",
         text: entry.item.title || "Sans titre",
       });
@@ -482,9 +505,9 @@
         type: "button",
         class: "hq-cal-marker",
         style: "top:" + (mins / 1440) * 100 + "%",
-        "aria-label": marker.message || marker.kind || "Activité",
+        "aria-label": "Activité",
+        "data-help": marker.message || marker.kind || "Activité récente",
       });
-      button.title = marker.message || marker.kind || "";
       col.appendChild(button);
     });
   }
@@ -578,7 +601,6 @@
             class: "hq-cal-more",
             "data-cal": "pick-day",
             "data-day": dateKey(day),
-            title: label,
             "aria-label": label,
             text: "+" + extra,
           })
@@ -602,7 +624,13 @@
       const timed = rows.filter((item) => !item.all_day).sort((a, b) => String(a.start).localeCompare(String(b.start)));
       allDay.concat(timed).forEach((item) => {
         const when = item.all_day ? "Journée" : spanLabel(item);
-        const button = h("button", { type: "button", class: "hq-cal-row " + catClass(item), "data-cal": "open", "data-id": item.id });
+        const button = h("button", {
+          type: "button",
+          class: "hq-cal-row " + catClass(item),
+          "data-cal": "open",
+          "data-id": item.id,
+          "data-help": previewHelp(item),
+        });
         button.appendChild(h("time", { text: when }));
         const body = h("span", {});
         body.appendChild(h("strong", { text: item.title || "Sans titre" }));
@@ -629,7 +657,13 @@
     block.appendChild(h("h3", { text: "Conditionnel" }));
     block.appendChild(h("p", { class: "sec-hint", text: "Ces tâches ne sont pas sur la grille horaire." }));
     rows.forEach((item) => {
-      const button = h("button", { type: "button", class: "hq-cal-row is-schedule", "data-cal": "open", "data-id": item.id });
+      const button = h("button", {
+        type: "button",
+        class: "hq-cal-row is-schedule",
+        "data-cal": "open",
+        "data-id": item.id,
+        "data-help": previewHelp(item),
+      });
       button.appendChild(h("strong", { text: item.title || "Conditionnel" }));
       button.appendChild(h("span", { class: "hint", text: WHEN[item.when] || item.when || "" }));
       block.appendChild(button);
@@ -712,6 +746,7 @@
   }
 
   function sheet(id) {
+    if (window.hqHideHelp) window.hqHideHelp();
     let node = document.getElementById(id);
     if (!node) {
       node = h("div", { class: "hq-sheet", id: id, hidden: "hidden" });

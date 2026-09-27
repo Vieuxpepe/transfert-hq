@@ -190,6 +190,7 @@
         }
       });
     });
+    if (window.hqHideHelp) window.hqHideHelp();
     if (typeof dlg.showModal === "function") dlg.showModal();
   }
 
@@ -269,6 +270,7 @@
   function openPalette() {
     const box = $("#hq-palette");
     if (!box) return;
+    if (window.hqHideHelp) window.hqHideHelp();
     box.hidden = false;
     const input = $("#hq-palette-input");
     if (input) {
@@ -555,7 +557,168 @@
     } catch (_) {}
   }
 
+  let helpTicket = 0;
+  let helpTimer = 0;
+  let helpPending = null;
+  let helpCurrent = null;
+  let helpTip = null;
+  let helpFromKeyboard = false;
+  let helpPointerRecent = false;
+  let helpReady = false;
+
+  function finePointer() {
+    return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  }
+
+  function ensureTooltip() {
+    if (helpTip && helpTip.isConnected) return helpTip;
+    helpTip = document.getElementById("hq-help-tooltip");
+    if (!helpTip) {
+      helpTip = document.createElement("div");
+      helpTip.id = "hq-help-tooltip";
+      helpTip.setAttribute("role", "tooltip");
+      helpTip.hidden = true;
+      document.body.appendChild(helpTip);
+    }
+    return helpTip;
+  }
+
+  function cancelHelp() {
+    helpTicket += 1;
+    helpPending = null;
+    if (helpTimer) {
+      clearTimeout(helpTimer);
+      helpTimer = 0;
+    }
+  }
+
+  function restoreDescribed(target) {
+    if (!target || !target.isConnected) return;
+    const prev = target.getAttribute("data-help-prev");
+    if (prev) target.setAttribute("aria-describedby", prev);
+    else target.removeAttribute("aria-describedby");
+    target.removeAttribute("data-help-prev");
+  }
+
+  function hideHelp() {
+    cancelHelp();
+    if (helpCurrent) restoreDescribed(helpCurrent);
+    helpCurrent = null;
+    if (helpTip) {
+      helpTip.classList.remove("is-on");
+      helpTip.hidden = true;
+      helpTip.textContent = "";
+    }
+  }
+
+  function positionHelp(target) {
+    const node = ensureTooltip();
+    const margin = 8;
+    const rect = target.getBoundingClientRect();
+    const width = node.offsetWidth;
+    const height = node.offsetHeight;
+    let top = rect.top - height - margin;
+    if (top < margin) top = rect.bottom + margin;
+    if (top + height > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - height - margin);
+    let left = rect.left;
+    if (left + width > window.innerWidth - margin) left = window.innerWidth - width - margin;
+    if (left < margin) left = margin;
+    const covers = top < rect.bottom && top + height > rect.top && left < rect.right && left + width > rect.left;
+    if (covers) {
+      const below = rect.bottom + margin;
+      if (below + height <= window.innerHeight - margin) top = below;
+    }
+    node.style.left = Math.round(left) + "px";
+    node.style.top = Math.round(top) + "px";
+  }
+
+  function showHelp(target) {
+    const text = (target.getAttribute("data-help") || "").trim();
+    if (!text || !target.isConnected) return;
+    if (helpCurrent && helpCurrent !== target) restoreDescribed(helpCurrent);
+    const node = ensureTooltip();
+    node.textContent = text;
+    node.hidden = false;
+    const prev = (target.getAttribute("aria-describedby") || "")
+      .split(/\s+/)
+      .filter((id) => id && id !== "hq-help-tooltip")
+      .join(" ");
+    target.setAttribute("data-help-prev", prev);
+    target.setAttribute("aria-describedby", prev ? prev + " hq-help-tooltip" : "hq-help-tooltip");
+    helpCurrent = target;
+    helpPending = null;
+    positionHelp(target);
+    node.classList.add("is-on");
+  }
+
+  function scheduleHelp(target, delay) {
+    if (!target || !target.getAttribute("data-help")) return;
+    if (helpCurrent === target && helpTip && !helpTip.hidden) return;
+    cancelHelp();
+    helpPending = target;
+    const mine = helpTicket;
+    helpTimer = setTimeout(() => {
+      helpTimer = 0;
+      if (mine !== helpTicket) return;
+      if (!target.isConnected) {
+        hideHelp();
+        return;
+      }
+      if (delay >= 1000 && !finePointer()) return;
+      if (delay < 1000 && document.activeElement !== target) return;
+      showHelp(target);
+    }, delay);
+  }
+
+  function helpTargetFrom(node) {
+    return node && node.closest ? node.closest("[data-help]") : null;
+  }
+
+  function setupHelp() {
+    if (helpReady || !document.body) return;
+    helpReady = true;
+    window.hqHideHelp = hideHelp;
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Tab" || ev.key.indexOf("Arrow") === 0) helpFromKeyboard = true;
+      if (ev.key === "Escape") hideHelp();
+    }, true);
+    document.addEventListener("pointerdown", () => {
+      helpFromKeyboard = false;
+      helpPointerRecent = true;
+      hideHelp();
+      setTimeout(() => { helpPointerRecent = false; }, 500);
+    }, true);
+    document.addEventListener("pointerover", (ev) => {
+      if (!finePointer()) return;
+      const target = helpTargetFrom(ev.target);
+      if (!target) return;
+      if (helpTargetFrom(ev.relatedTarget) === target) return;
+      scheduleHelp(target, 2000);
+    }, true);
+    document.addEventListener("pointerout", (ev) => {
+      const target = helpTargetFrom(ev.target);
+      if (!target) return;
+      if (helpTargetFrom(ev.relatedTarget) === target) return;
+      if (helpCurrent === target || helpPending === target) hideHelp();
+    }, true);
+    document.addEventListener("focusin", (ev) => {
+      const target = helpTargetFrom(ev.target);
+      if (!target || helpPointerRecent) return;
+      const keyboard = helpFromKeyboard || (target.matches && target.matches(":focus-visible"));
+      if (!keyboard) return;
+      scheduleHelp(target, 250);
+    });
+    document.addEventListener("focusout", (ev) => {
+      const target = helpTargetFrom(ev.target);
+      if (!target) return;
+      if (helpCurrent === target || helpPending === target) hideHelp();
+    });
+    window.addEventListener("scroll", () => hideHelp(), true);
+    window.addEventListener("resize", () => hideHelp());
+  }
+
   function boot() {
+    setupHelp();
     $("#btn-palette")?.addEventListener("click", () => openPalette());
     $("#hq-palette")?.addEventListener("click", (ev) => {
       if (ev.target && ev.target.id === "hq-palette") closePalette();

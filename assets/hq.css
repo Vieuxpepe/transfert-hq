@@ -40,6 +40,12 @@ dialog#hq-device-dialog::backdrop{background:rgba(0,0,0,.55)}
 .fleet-map svg{width:100%;height:auto;max-height:320px}
 .fleet-node{cursor:default}
 
+#hq-help-tooltip{position:fixed;z-index:200;max-width:min(300px,calc(100vw - 16px));padding:8px 10px;border-radius:10px;
+  border:1px solid var(--line,#2a3544);background:var(--panel,#161d27);color:var(--text,#f3f6fa);
+  font:inherit;font-size:var(--text-sm,.82rem);line-height:1.4;box-shadow:0 8px 22px rgba(0,0,0,.28);
+  pointer-events:none;opacity:0}
+#hq-help-tooltip.is-on{opacity:1}
+@media (prefers-reduced-motion:no-preference){#hq-help-tooltip{transition:opacity .12s ease}}
 #btn-palette{white-space:nowrap}
 @media (max-width:700px){
   #btn-palette{padding:8px 10px}

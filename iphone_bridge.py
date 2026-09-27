@@ -2255,6 +2255,7 @@ function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   document.body.dataset.view = view;
+  if (window.hqHideHelp) window.hqHideHelp();
   const lab = $('#view-label');
   if (lab) lab.textContent = VIEW_LABELS[view];
   $$('.bottom-nav [data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === view));
@@ -2271,8 +2272,12 @@ function applyMode(simple) {
   if (btn) {
     btn.setAttribute('aria-pressed', simple ? 'true' : 'false');
     btn.textContent = simple ? 'Mode simple' : 'Mode complet';
-    btn.title = simple ? 'Afficher Terminal et outils avancés' : 'Masquer Terminal et outils avancés';
+    btn.removeAttribute('title');
+    btn.setAttribute('data-help', simple
+      ? 'Mode simple : le terminal et les outils avancés sont masqués.'
+      : 'Mode complet : terminal, planning et automatisations sont visibles.');
   }
+  if (window.hqHideHelp) window.hqHideHelp();
   try { localStorage.setItem('tf_hq_mode', simple ? 'simple' : 'complet'); } catch (_) {}
   if (simple && document.body.dataset.view === 'ops') setView('accueil');
 }
@@ -2879,7 +2884,7 @@ function spaceBar(label, free, total, freeH, totalH) {
     : `${escapeHtml(freeH || '?')} libre / ${escapeHtml(totalH || '?')} (${pctFree}%)`;
   return `<div class="space-row">
     <div class="space-top"><span>${escapeHtml(label)}</span><span>${caption}</span></div>
-    <div class="space-track" title="${pctFree == null ? 'n/d' : pctFree + '% libre'}">
+    <div class="space-track" aria-hidden="true">
       <div class="space-fill" style="width:${pctUsed}%;background:${color}"></div>
     </div>
   </div>`;
@@ -4044,11 +4049,11 @@ def render_app() -> bytes:
       <div class="brand">Transfert</div>
       <span class="hq-pill">HQ</span>
     </div>
-    <button type="button" class="status-chip" id="status-chip" title="Statut">● …</button>
+    <button type="button" class="status-chip" id="status-chip" data-help="État du pont. Ouvre Système pour l'espace, l'hôte et le rôle.">● …</button>
   </header>
   <div class="view-bar">
     <p class="view-label" id="view-label">Accueil</p>
-    <button type="button" class="mode-toggle" id="mode-toggle" aria-pressed="true" title="Masquer Ops avancé">Mode simple</button>
+    <button type="button" class="mode-toggle" id="mode-toggle" aria-pressed="true" data-help="Mode simple : le terminal et les outils avancés sont masqués.">Mode simple</button>
   </div>
 
   <div data-panel="accueil" class="accueil-grid">
@@ -4059,7 +4064,7 @@ def render_app() -> bytes:
           <strong id="hq-state-label">HQ</strong>
           <p class="sec-hint" id="hq-state-sub">Lecture de l'état…</p>
         </div>
-        <button type="button" class="secondary" id="btn-palette">Recherche</button>
+        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action.">Recherche</button>
       </div>
       <ul class="hq-list" id="hq-attention"></ul>
       <div class="row hq-actions" id="hq-quick-scenes"></div>
@@ -4124,13 +4129,13 @@ def render_app() -> bytes:
           <p class="sec-hint">Verrouiller, veille, capture d'écran, explorateur</p>
         </div>
         <div class="icon-actions" id="hq-actions">
-          <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC"><span class="ico" aria-hidden="true">🔒</span><span class="lbl">Verrouiller</span></button>
-          <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille"><span class="ico" aria-hidden="true">💤</span><span class="lbl">Veille</span></button>
-          <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture"><span class="ico" aria-hidden="true">📸</span><span class="lbl">Capture</span></button>
-          <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur"><span class="ico" aria-hidden="true">📁</span><span class="lbl">Dossier</span></button>
+          <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC" data-help="Verrouille la session Windows de ce PC."><span class="ico" aria-hidden="true">🔒</span><span class="lbl">Verrouiller</span></button>
+          <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille" data-help="Met ce PC en veille."><span class="ico" aria-hidden="true">💤</span><span class="lbl">Veille</span></button>
+          <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture" data-help="Enregistre une capture d'écran dans Captures."><span class="ico" aria-hidden="true">📸</span><span class="lbl">Capture</span></button>
+          <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true">📁</span><span class="lbl">Dossier</span></button>
         </div>
         <div class="row hq-actions" style="margin-top:10px">
-          <button type="button" id="btn-sync-captures">Récupérer les captures</button>
+          <button type="button" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
         </div>
         <div class="row hq-actions mode-complet-only" id="hq-custom-actions" style="margin-top:8px" aria-label="Actions personnalisées"></div>
         <div class="row hq-actions mode-complet-only" id="hq-scenes" style="margin-top:8px" aria-label="Scènes"></div>
@@ -4187,7 +4192,7 @@ def render_app() -> bytes:
         <h2 id="search-title">Recherche</h2>
         <p class="sec-hint">Trouver un fichier ou du texte dans .txt / .md</p>
       </div>
-      <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale"/>
+      <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale" data-help="Cherche un nom de fichier ou du texte dans les notes."/>
       <ul class="hq-list" id="search-hits"></ul>
     </section>
 
