@@ -25,6 +25,7 @@ import hq_devices
 import hq_events
 import hq_jobs
 import hq_planner
+import hq_state
 import iphone_bridge
 
 PIN = "424242"
@@ -241,7 +242,7 @@ class AgentCoreTests(unittest.TestCase):
         self.now += 31
         listed = hq_jobs.list_jobs(device_id=enrolled["device_id"])
         self.assertEqual(listed["jobs"][0]["state"], "expired")
-        path = self.tmp / "hq_agent_jobs.json"
+        path = hq_state.agent_state_dir(self.tmp) / "hq_agent_jobs.json"
         original = "{nope"
         path.write_text(original, encoding="utf-8")
         hq_jobs.bind(self.tmp, now=lambda: self.now)
@@ -249,7 +250,7 @@ class AgentCoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             hq_jobs.create_job(device_id=enrolled["device_id"], op="system.status", args={}, origin="human")
         self.assertEqual(path.read_text(encoding="utf-8"), original)
-        agents = self.tmp / "hq_agents.json"
+        agents = hq_state.agent_state_dir(self.tmp) / "hq_agents.json"
         agents.write_text("{", encoding="utf-8")
         hq_companion.bind(self.tmp, now=lambda: self.now)
         self.assertTrue(hq_companion.malformed())
@@ -506,7 +507,7 @@ class AgentHttpTests(unittest.TestCase):
             }
         )
         self.assertTrue(outcome["ok"], outcome)
-        stored = json.loads((self.tmp / "hq_agent_jobs.json").read_text(encoding="utf-8"))
+        stored = json.loads((hq_state.agent_state_dir(self.tmp) / "hq_agent_jobs.json").read_text(encoding="utf-8"))
         blob = json.dumps(stored)
         self.assertNotIn("hq-marker-unique", blob)
         self.assertNotIn("base64", blob)
@@ -644,13 +645,14 @@ class SecurityHardeningTests(unittest.TestCase):
         try:
             self.assertEqual(httpd.server_address[0], "127.0.0.1")
             port = httpd.server_address[1]
-            token = json.loads((self.tmp / "hq_planner.json").read_text(encoding="utf-8"))["token"]
-            mode = (self.tmp / "hq_planner.json").stat().st_mode & 0o777
+            token_path = hq_state.agent_state_dir(self.tmp) / "hq_planner.json"
+            token = json.loads(token_path.read_text(encoding="utf-8"))["token"]
+            mode = token_path.stat().st_mode & 0o777
             self.assertEqual(mode, 0o600)
             env = os.environ.copy()
             env.pop("HQ_PLANNER_TOKEN", None)
             cli = str(Path(__file__).resolve().parents[1] / "hqctl.py")
-            base = [sys.executable, cli, "--url", f"http://127.0.0.1:{port}", "--token-file", str(self.tmp / "hq_planner.json"), "--json"]
+            base = [sys.executable, cli, "--url", f"http://127.0.0.1:{port}", "--token-file", str(token_path), "--json"]
             proc = subprocess.run(base + ["run", "--device", enrolled["device_id"], "--op", "power.shutdown"], capture_output=True, text=True, check=False, env=env)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             payload = json.loads(proc.stdout)
@@ -729,11 +731,13 @@ class SecurityHardeningTests(unittest.TestCase):
             httpd.server_close()
 
     def test_corrupt_planner_token_is_kept(self):
-        path = self.tmp / "hq_planner.json"
-        path.write_text("{", encoding="utf-8")
+        legacy = self.tmp / "hq_planner.json"
+        legacy.write_text("{", encoding="utf-8")
         with self.assertRaises(RuntimeError):
             hq_planner.ensure_token(self.tmp)
-        self.assertEqual(path.read_text(encoding="utf-8"), "{")
+        private = hq_state.agent_state_dir(self.tmp) / "hq_planner.json"
+        self.assertEqual(private.read_text(encoding="utf-8"), "{")
+        self.assertFalse(legacy.exists())
 
     def test_artifact_is_authorized_before_any_write(self):
         enrolled = self._enroll()
@@ -790,7 +794,7 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertEqual(code, 200, payload)
         rel = payload["artifact"]["rel"]
         self.assertEqual((self.tmp / rel).read_bytes(), b"%PDF-1.4 x")
-        stored = json.loads((self.tmp / "hq_agent_jobs.json").read_text(encoding="utf-8"))
+        stored = json.loads((hq_state.agent_state_dir(self.tmp) / "hq_agent_jobs.json").read_text(encoding="utf-8"))
         self.assertNotIn("%PDF-1.4 x", json.dumps(stored))
         producers = sorted(name for name, spec in ops.OPS.items() if spec.produces_artifact)
         self.assertEqual(producers, ["fs.stage", "screenshot.capture"])
@@ -889,28 +893,44 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("if ($DeleteData)", uninstall)
         self.assertGreater(uninstall.index("Remove-Item"), uninstall.index("if ($DeleteData)"))
         acl = (root / "install_hq_state_acl.ps1").read_text(encoding="utf-8")
-        self.assertIn("ControllerIdentity", acl)
-        self.assertIn("PlannerIdentity", acl)
-        self.assertIn("hq_agents.json", acl)
-        self.assertIn("hq_agent_jobs.json", acl)
-        self.assertIn("hq_planner.json", acl)
+        self.assertIn(".hq-agent-state", acl)
+        self.assertIn("ContainerInherit", acl)
+        self.assertIn("ObjectInherit", acl)
+        self.assertIn("InheritanceFlags]::None", acl)
+        self.assertIn("$inheritChildren", acl)
+        self.assertIn("$noInherit", acl)
         self.assertNotIn("/deny", acl)
         self.assertIn("SetAccessRuleProtection", acl)
         self.assertIn("FullControl", acl)
         self.assertIn("Modify", acl)
-        self.assertIn("PlannerRead = $false", acl)
-        self.assertIn("PlannerRead = $true", acl)
-        self.assertLess(acl.index("PlannerRead = $false"), acl.index("PlannerRead = $true"))
-        planner_grant = acl.split("if ($file.PlannerRead)", 1)[1]
-        self.assertIn('"Read"', planner_grant)
-        self.assertNotIn("Modify", planner_grant.split("Set-Acl", 1)[0])
+        self.assertIn("must not inherit child-file read", acl)
+        self.assertIn(".json.tmp", acl)
+        controller_files = acl.split("controller files:", 1)[1].split("planner token:", 1)[0]
+        self.assertIn("hq_agents.json", controller_files)
+        self.assertIn("hq_agent_jobs.json", controller_files)
+        self.assertNotIn("PlannerIdentity", controller_files)
+        token_acl = acl.split("planner token:", 1)[1]
+        self.assertIn("hq_planner.json", token_acl)
+        self.assertIn('"Read"', token_acl)
+        self.assertNotIn("Modify", token_acl)
         self.assertIn("identiques", acl)
         self.assertIn("Administrateurs", acl)
         self.assertNotIn("device_secret", acl)
         self.assertNotIn("device_secret", task)
         ctl = (root / "hqctl.py").read_text(encoding="utf-8")
-        self.assertIn('Path(args.root) / "hq_planner.json"', ctl)
+        self.assertIn("agent_state_dir", ctl)
+        self.assertNotIn("import hq_companion", ctl)
+        self.assertNotIn("import hq_jobs", ctl)
         self.assertNotIn("device_secret", ctl)
+        state_src = (root / "hq_state.py").read_text(encoding="utf-8")
+        self.assertIn('AGENT_STATE_DIR = ".hq-agent-state"', state_src)
+        self.assertIn("dest.parent", state_src)
+        self.assertIn('.tmp"', state_src)
+        companion_src = (root / "hq_companion.py").read_text(encoding="utf-8")
+        artifact_fn = companion_src.split("def _accept_artifact", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("AgentArtifacts", artifact_fn)
+        self.assertNotIn("agent_state_dir", artifact_fn)
+        self.assertIn("agent_state_dir", companion_src)
         auth = (root / "hq_companion.py").read_text(encoding="utf-8")
         self.assertIn("process-local", auth)
         self.assertIn("90", auth)
@@ -993,7 +1013,7 @@ class SecurityHardeningTests(unittest.TestCase):
         )
         taken = hq_jobs.take_next(device_id)
         running = hq_jobs.acknowledge_start(device_id, fresh["id"], taken["dispatch_token"])
-        path = self.tmp / "hq_agent_jobs.json"
+        path = hq_state.agent_state_dir(self.tmp) / "hq_agent_jobs.json"
         stored = json.loads(path.read_text(encoding="utf-8"))
         for row in stored["jobs"]:
             if row["id"] == fresh["id"]:
@@ -1029,3 +1049,33 @@ class SecurityHardeningTests(unittest.TestCase):
             hq_jobs.acknowledge_start(device_id, fresh["id"], taken["dispatch_token"])
         with self.assertRaises(ops.AgentOpError):
             hq_jobs.authorize_artifact(device_id, fresh["id"], "keep.bin", 4, taken["dispatch_token"])
+
+    def test_legacy_agent_state_migrates_once_and_fails_closed(self):
+        legacy_jobs = self.tmp / "hq_agent_jobs.json"
+        legacy_jobs.write_text('{"version": 1, "jobs": []}', encoding="utf-8")
+        broken = self.tmp / "hq_agents.json"
+        broken.write_text("{", encoding="utf-8")
+        private = hq_state.prepare_agent_state(self.tmp)
+        self.assertEqual(private, self.tmp / ".hq-agent-state")
+        self.assertEqual((private / "hq_agent_jobs.json").read_text(encoding="utf-8"), '{"version": 1, "jobs": []}')
+        self.assertEqual((private / "hq_agents.json").read_text(encoding="utf-8"), "{")
+        self.assertFalse(legacy_jobs.exists())
+        self.assertFalse(broken.exists())
+        self.assertFalse((private / "hq_planner.json").exists())
+        again = hq_state.prepare_agent_state(self.tmp)
+        self.assertEqual((again / "hq_agents.json").read_text(encoding="utf-8"), "{")
+        (self.tmp / "hq_planner.json").write_text('{"version": 1, "token": "' + ("ab" * 32) + '"}', encoding="utf-8")
+        (private / "hq_planner.json").write_text('{"version": 1, "token": "' + ("cd" * 32) + '"}', encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            hq_state.prepare_agent_state(self.tmp)
+        self.assertTrue((self.tmp / "hq_planner.json").is_file())
+        self.assertIn("cd" * 32, (private / "hq_planner.json").read_text(encoding="utf-8"))
+        self.assertIn("ab" * 32, (self.tmp / "hq_planner.json").read_text(encoding="utf-8"))
+        kept = self.tmp / "only-new"
+        kept.mkdir()
+        newer = hq_state.agent_state_dir(kept)
+        newer.mkdir()
+        (newer / "hq_agents.json").write_text("{kept", encoding="utf-8")
+        hq_state.prepare_agent_state(kept)
+        self.assertEqual((newer / "hq_agents.json").read_text(encoding="utf-8"), "{kept")
+        self.assertFalse((kept / "hq_agents.json").exists())

@@ -43,7 +43,8 @@ _token = ""
 
 
 def token_path(root: Path | str) -> Path:
-    return Path(root) / TOKEN_NAME
+    hq_state.prepare_agent_state(root)
+    return hq_state.agent_state_dir(root) / TOKEN_NAME
 
 
 def ensure_token(root: Path | str) -> str:

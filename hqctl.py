@@ -6,7 +6,8 @@ cannot approve, reject, enroll, revoke, or change policy. Human approval
 stays in the browser admin session.
 
 Default URL: http://127.0.0.1:8766
-Token: --token, HQ_PLANNER_TOKEN, or --token-file (default {root}/hq_planner.json).
+Token: --token, HQ_PLANNER_TOKEN, or --token-file
+(default {root}/.hq-agent-state/hq_planner.json).
 
 ``--root`` only locates the token file. It does not open controller state.
 If this program runs as the same OS account as the controller, the account
@@ -26,6 +27,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import hq_state
+
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 STOP_STATES = frozenset({"succeeded", "failed", "cancelled", "expired", "rejected", "uncertain", "awaiting_approval"})
 
@@ -44,7 +47,7 @@ def _token(args: argparse.Namespace) -> str:
     env = os.environ.get("HQ_PLANNER_TOKEN", "").strip()
     if env:
         return env
-    path = Path(args.token_file) if args.token_file else Path(args.root) / "hq_planner.json"
+    path = Path(args.token_file) if args.token_file else hq_state.agent_state_dir(args.root) / "hq_planner.json"
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:

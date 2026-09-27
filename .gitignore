@@ -29,6 +29,7 @@ hq_vapid.json
 hq_agents.json
 hq_agent_jobs.json
 hq_planner.json
+.hq-agent-state/
 agent_config.json
 *.json.tmp
 .tmp/

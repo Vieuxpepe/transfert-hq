@@ -47,6 +47,7 @@ def bind(root: Path | str, *, journal: Callable[..., None] | None = None, now: C
     global _root, _journal, _now
     _root = Path(root)
     _root.mkdir(parents=True, exist_ok=True)
+    hq_state.prepare_agent_state(_root)
     _journal = journal
     _now = now or time.time
     _load()
@@ -63,7 +64,7 @@ def malformed() -> bool:
 def _path() -> Path:
     if _root is None:
         raise RuntimeError("hq_jobs non initialisé")
-    return _root / JOBS_NAME
+    return hq_state.agent_state_dir(_root) / JOBS_NAME
 
 
 def _clock() -> float:

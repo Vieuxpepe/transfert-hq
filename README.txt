@@ -65,21 +65,43 @@ Companions (contrôle des autres PC)
   L'approbation humaine reste le navigateur admin + CSRF.
 
   Cette frontière est logicielle tant que les deux processus partagent un
-  compte. La séparation OS, si on la veut, est une allowlist
-  (install_hq_state_acl.ps1) pour deux comptes non administrateurs :
+  compte. Les secrets du companion sont dans <pont>\.hq-agent-state\
+  (hq_agents.json, hq_agent_jobs.json, hq_planner.json). Les artifacts
+  restent dans Inbox\AgentArtifacts. Au premier démarrage, un fichier
+  encore à la racine est déplacé une fois si la destination est absente.
+  Si les deux copies existent, HQ s'arrête sans en choisir une.
+  L'écriture atomique crée <nom>.tmp dans ce répertoire : le fichier
+  hérite de l'ACL du répertoire avant os.replace.
+
+  Séparation OS, pour deux comptes non administrateurs, après un premier
+  démarrage du pont (le répertoire et le jeton existent) :
     powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 `
       -StateDir C:\TransfertHQ `
       -ControllerIdentity "TAILNET\hq-controller" `
       -PlannerIdentity "TAILNET\hq-planner"
-  Le contrôleur (iphone_bridge.py) a Modify sur hq_agents.json,
-  hq_agent_jobs.json et hq_planner.json. Le planificateur a Read seulement
-  sur hq_planner.json, et aucun droit sur les deux autres. SYSTEM et
-  Administrators gardent le contrôle total. hqctl, lancé sous le compte
-  planificateur, lit toujours hq_planner.json par défaut. Le script refuse
-  de s'appliquer si les deux identités sont identiques, ou si le
-  planificateur est Administrator / SYSTEM. Un planificateur membre du
-  groupe Administrateurs peut quand même lire l'état : ne pas appeler ça
-  une séparation.
+  Le répertoire donne FullControl héritable à SYSTEM et Administrators,
+  Modify héritable au contrôleur, et au planificateur seulement le droit
+  de traverser (non héritable). hq_planner.json reçoit en plus Read
+  explicite pour le planificateur, pas Modify. hq_agents.json,
+  hq_agent_jobs.json et les *.tmp n'ont pas de grant planificateur.
+  hqctl, sous le compte planificateur, lit
+  <pont>\.hq-agent-state\hq_planner.json par défaut. Le script refuse
+  deux identités identiques, ou un planificateur Administrator / SYSTEM.
+  Un planificateur membre du groupe Administrateurs peut quand même lire
+  l'état : ne pas appeler ça une séparation.
+
+  Vérification Windows des ACL (sur le pont, avant d'enrôler un second PC) :
+  1. Démarrer HQ une fois pour créer .hq-agent-state et le jeton.
+  2. Lancer install_hq_state_acl.ps1 avec les deux identités réelles.
+  3. Get-Acl sur le répertoire, hq_agents.json, hq_agent_jobs.json,
+     hq_planner.json.
+  4. Déclencher une écriture (créer puis ignorer un jeton d'enrôlement).
+  5. Get-Acl sur hq_agents.json : toujours contrôleur seulement, après
+     le remplacement atomique.
+  6. Créer un travail planificateur anodin pour réécrire hq_agent_jobs.json.
+     Get-Acl : le planificateur ne doit toujours pas pouvoir le lire.
+  7. Sous PlannerIdentity : hqctl devices --json fonctionne. La lecture
+     directe de hq_agents.json et hq_agent_jobs.json échoue.
 
   Bail : poll pose l'état leased, un dispatch_token et lease_until (30 s).
   expires_at est le délai d'attente avant le démarrage. Au POST
@@ -341,9 +363,13 @@ Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON c
   hq_backup_index.json
   hq_push_subscriptions.json
   hq_vapid.json          clé privée Web Push — ne jamais committer
-  hq_agents.json         secrets companions — ne jamais committer
-  hq_agent_jobs.json     file des travaux agents (contient le dispatch_token)
-  hq_planner.json        jeton du planificateur — ne jamais committer
+  .hq-agent-state/       secrets companions et jeton planificateur
+    hq_agents.json       secrets — ne jamais committer
+    hq_agent_jobs.json   file des travaux (contient le dispatch_token)
+    hq_planner.json      jeton du planificateur — ne jamais committer
+                         un fichier encore à la racine est migré une fois
+                         si la copie privée est absente ; les deux ensemble
+                         bloquent le démarrage
   agent_config.json      secret du companion, sur le PC distant
   bridge_config.json     PIN / webhook — ne jamais committer
   bridge_sessions.json
@@ -463,6 +489,8 @@ SECURITY INVARIANTS
       approuver. Deux comptes distincts et l'allowlist
       install_hq_state_acl.ps1 sont nécessaires pour une séparation OS.
       Un même compte, ou un planificateur administrateur, peut lire les secrets.
+      Les fichiers privés sont sous .hq-agent-state ; l'ACL durable est celle
+      du répertoire, héritée par les *.tmp avant os.replace.
       Artifact : autorisation avant écriture, réserve disque, pas d'orphelin.
       Bail avant start, puis run_deadline. Un résultat manquant après start
       n'est failed que pour une lecture. Le reste est uncertain, sans relance.

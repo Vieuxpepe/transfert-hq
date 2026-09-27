@@ -67,6 +67,7 @@ def bind(
     with _lock:
         _nonces.clear()
         _enroll_hits.clear()
+    hq_state.prepare_agent_state(_root)
     hq_jobs.bind(_root, journal=journal, now=_now)
     _load()
 
@@ -86,7 +87,7 @@ def _clock() -> float:
 def _path() -> Path:
     if _root is None:
         raise RuntimeError("hq_companion non initialisé")
-    return _root / AGENTS_NAME
+    return hq_state.agent_state_dir(_root) / AGENTS_NAME
 
 
 def _require_writable() -> None:
