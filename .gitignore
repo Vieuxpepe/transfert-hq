@@ -19,6 +19,7 @@ bridge_screenshot_ingest.json
 kanban.json
 scratchpad.txt
 hq_events.json
+hq_calendar.json
 hq_automation.json
 hq_runs.json
 hq_telemetry.json

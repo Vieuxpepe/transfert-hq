@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import cc_ext
 import hq_automation
+import hq_calendar
 import hq_devices
 import hq_events
 
@@ -163,6 +164,7 @@ ADMIN_PREFIXES = (
     "/api/brief",
     "/api/push",
     "/api/schedules",
+    "/api/calendar",
 )
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
@@ -1798,7 +1800,18 @@ def hq_snapshot() -> dict:
         "generated_at": time.time(),
         "cached": True,
         "roster_age_sec": roster_cache_age(),
+        "calendar": _calendar_summary(),
     }
+
+
+def _calendar_summary() -> dict:
+    """Local calendar only. Must not probe Tailscale."""
+    try:
+        if hq_calendar.ready():
+            return hq_calendar.summary()
+    except Exception:
+        return {"today": [], "next": None, "malformed": True}
+    return {"today": [], "next": None}
 
 
 def palette_catalog() -> list[dict]:
@@ -1928,6 +1941,17 @@ def bind_hq() -> None:
         events_recent=lambda limit=100: hq_events.list_events(limit=int(limit or 100)).get("events") or [],
         attention_items=lambda: hq_attention(cached_roster_devices()),
         build_brief=build_daily_brief,
+    )
+    hq_calendar.bind(
+        root=ROOT,
+        journal=lambda kind, message, **extra: cc_ext.log_activity(kind, message, **extra),
+        alert=cc_ext.push_alert,
+        queue_load=cc_ext.queue_load,
+        run_scene=cc_ext.run_scene,
+        run_action=pc_run_action,
+        scenes=lambda: [s for s in (CONFIG.get("scenes") or []) if isinstance(s, dict)],
+        actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
+        devices=cached_roster_devices,
     )
     _HQ_BOUND = True
 
@@ -2226,7 +2250,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
@@ -2236,6 +2260,7 @@ function setView(name) {
   $$('.bottom-nav [data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === view));
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (view === 'fichiers') refreshFiles().catch(() => {});
+  if (view === 'calendrier' && window.hqCalendarShow) window.hqCalendarShow();
 }
 function isSimpleMode() {
   try { return (localStorage.getItem('tf_hq_mode') || 'simple') === 'simple'; } catch (_) { return true; }
@@ -3594,6 +3619,7 @@ h1{font-size:1.7rem;margin:4px 0 6px;letter-spacing:-.02em}
 .sub{color:var(--muted);margin:0 0 14px}
 [data-panel]{display:none}
 body[data-view="accueil"] [data-panel="accueil"],
+body[data-view="calendrier"] [data-panel="calendrier"],
 body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
@@ -3720,11 +3746,11 @@ li.file.is-dir .fname{color:var(--ok)}
   border-radius:12px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-weight:700;cursor:pointer}
 .icon-btn .ico{font-size:1.25rem;line-height:1}
 .icon-btn .lbl{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:80;display:grid;grid-template-columns:repeat(4,1fr);gap:0;
+.bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:80;display:grid;grid-template-columns:repeat(5,1fr);gap:0;
   background:color-mix(in srgb,var(--panel) 92%,transparent);border-top:1px solid var(--line);
   padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));backdrop-filter:blur(10px)}
-.bottom-nav button{background:transparent;color:var(--muted);border:0;border-radius:10px;padding:8px 4px;font-size:.68rem;
-  font-weight:800;letter-spacing:.02em;text-transform:uppercase;min-height:52px;flex-direction:column;gap:2px}
+.bottom-nav button{background:transparent;color:var(--muted);border:0;border-radius:10px;padding:8px 2px;font-size:.6rem;
+  font-weight:800;letter-spacing:.01em;text-transform:uppercase;min-height:52px;flex-direction:column;gap:2px;line-height:1.15}
 .bottom-nav button.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .bottom-nav .nav-ico{font-size:1.1rem}
 body.theme-oled{--bg:#000;--panel:#0a0a0a;--panel-2:#111;--line:#222}
@@ -3815,6 +3841,10 @@ body.wall{{background:#070b10}}
     <p class="sub" id="wb-health" aria-live="polite">Santé…</p>
     <p class="sub" id="fleet-state">Flotte…</p>
   </header>
+  <section class="hq" aria-labelledby="wb-next-title">
+    <h2 id="wb-next-title">Prochain</h2>
+    <div id="wb-next"><p class="hint">…</p></div>
+  </section>
   <section class="hq" aria-labelledby="fleet-title">
     <h2 id="fleet-title">Flotte</h2>
     <div id="fleet-map" class="fleet-map"></div>
@@ -3876,6 +3906,10 @@ async function refreshWall() {{
     }};
     setQr('qr-lan', lan, 'LAN');
     setQr('qr-ts', tsu, 'Tailscale');
+    try {{
+      const hq = await api('/api/hq');
+      if (window.hqPaintCalendarSummary) window.hqPaintCalendarSummary(hq.calendar || {{}});
+    }} catch (_) {{}}
     await refreshHQ();
     if (typeof renderHomeChart === 'function') await renderHomeChart();
   }} catch(e) {{ $('#wb-health').textContent = e.message; }}
@@ -3886,6 +3920,7 @@ document.addEventListener('DOMContentLoaded', () => {{
 }});
 </script>
 <script src="/assets/hq.js"></script>
+<script src="/assets/hq-calendar.js"></script>
 </body></html>"""
     return page.encode("utf-8")
 
@@ -3952,12 +3987,14 @@ def render_app() -> bytes:
 <title>Transfert HQ</title>
 <style>{BASE_CSS}</style>
 <link rel="stylesheet" href="/assets/hq.css"/>
+<link rel="stylesheet" href="/assets/hq-calendar.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
 <a class="skip-link" href="#main">Aller au contenu</a>
 <nav class="bottom-nav" aria-label="Navigation HQ">
   <button type="button" class="active" data-nav="accueil"><span class="nav-ico">⌂</span>Accueil</button>
+  <button type="button" data-nav="calendrier"><span class="nav-ico">▦</span>Calendrier</button>
   <button type="button" data-nav="fichiers"><span class="nav-ico">📁</span>Fichiers</button>
   <button type="button" data-nav="ops"><span class="nav-ico">⚡</span>Terminal</button>
   <button type="button" data-nav="plus"><span class="nav-ico">⋯</span>Plus</button>
@@ -3987,6 +4024,14 @@ def render_app() -> bytes:
       </div>
       <ul class="hq-list" id="hq-attention"></ul>
       <div class="row hq-actions" id="hq-quick-scenes"></div>
+    </section>
+    <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
+      <div class="sec-head">
+        <h2 id="cal-home-title">Aujourd'hui</h2>
+        <p class="sec-hint">Ce qui se passe et ce qui vient</p>
+      </div>
+      <div id="hq-cal-today"><p class="hint">Chargement…</p></div>
+      <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
     </section>
     <div class="accueil-main">
       <section class="hq hq-primary" aria-labelledby="envoyer-title">
@@ -4085,6 +4130,16 @@ def render_app() -> bytes:
         <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
       </section>
     </div>
+  </div>
+
+  <div data-panel="calendrier">
+    <section class="hq hq-cal" aria-labelledby="cal-title">
+      <div class="sec-head">
+        <h2 id="cal-title">Calendrier</h2>
+        <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
+      </div>
+      <div id="hq-cal-app"></div>
+    </section>
   </div>
 
   <div data-panel="fichiers">
@@ -4384,6 +4439,7 @@ def render_app() -> bytes:
 <div id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <script>{APP_JS}</script>
 <script src="/assets/hq.js"></script>
+<script src="/assets/hq-calendar.js"></script>
 <dialog id="hq-device-dialog">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
@@ -4780,6 +4836,23 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._json(200, {"schedules": items})
             return True
+        if raw == "/api/calendar":
+            qs = parse_qs(parsed.query)
+            try:
+                start = hq_calendar.parse_bound((qs.get("from", [""])[0] or ""))
+                end = hq_calendar.parse_bound((qs.get("to", [""])[0] or ""))
+                flag = (qs.get("include_activity", ["0"])[0] or "0").strip()
+                if flag not in ("0", "1"):
+                    raise hq_calendar.CalendarError("include_activity invalide")
+                payload = hq_calendar.query(start, end, include_activity=(flag == "1"))
+            except hq_calendar.CalendarError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            except hq_calendar.CalendarConflict as e:
+                self._json(409, {"error": str(e)})
+                return True
+            self._json(200, payload)
+            return True
         return False
 
     def _hq_post(self, raw: str) -> bool:
@@ -4860,6 +4933,35 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json(400, {"error": str(e)})
             except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/calendar":
+            data = self._read_json()
+            action = str(data.get("action") or "")
+            try:
+                if action == "save":
+                    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+                    saved = hq_calendar.save_event(event, data.get("expected_rev"))
+                    self._json(200, {"ok": True, "event": saved})
+                elif action == "delete":
+                    self._json(200, hq_calendar.delete_event(str(data.get("id") or ""), data.get("expected_rev")))
+                else:
+                    self._json(400, {"error": "action invalide"})
+            except hq_calendar.CalendarError as e:
+                self._json(400, {"error": str(e)})
+            except hq_calendar.CalendarConflict as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/calendar/run":
+            data = self._read_json()
+            try:
+                self._json(
+                    200,
+                    hq_calendar.run_linked(str(data.get("id") or ""), str(data.get("target") or "")),
+                )
+            except hq_calendar.CalendarError as e:
+                self._json(400, {"error": str(e)})
+            except hq_calendar.CalendarConflict as e:
                 self._json(409, {"error": str(e)})
             return True
         return False
@@ -5893,6 +5995,10 @@ def main() -> None:
             hq_automation.tick()
         except Exception as e:
             sys.stderr.write(f"hq tick: {e}\n")
+        try:
+            hq_calendar.tick()
+        except Exception as e:
+            sys.stderr.write(f"calendar tick: {e}\n")
 
     cc_ext.start_monitor(
         get_devices=lambda: presence_list(),

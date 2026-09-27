@@ -80,6 +80,7 @@
           });
         });
       }
+      if (window.hqPaintCalendarSummary) window.hqPaintCalendarSummary(snap.calendar || {});
       if (document.body.classList.contains("wall")) drawFleet(snap);
     } catch (_) {}
   }
@@ -594,6 +595,7 @@
         return;
       }
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")) {
+        if (typingTarget(ev.target)) return;
         ev.preventDefault();
         openPalette();
         return;
@@ -627,6 +629,7 @@
     loadBackups();
     loadRules();
     loadHostSpark();
+    window.hqOpenDevice = openDevice;
     if (document.body.classList.contains("wall")) {
       setInterval(loadSnapshot, 15000);
     } else {
