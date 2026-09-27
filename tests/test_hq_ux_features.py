@@ -74,8 +74,12 @@ class UxFeatureTests(unittest.TestCase):
             self.assertIn(f'id="{target}"', plus)
             if target != "system-brief":
                 self.assertIn(f'data-jump="{target}"', nav)
-        self.assertIn("mode-complet-only", nav)
-        self.assertIn('data-jump="system-journal"', nav.split("mode-complet-only", 1)[1])
+        journal = nav.split('data-jump="system-journal"', 1)[0].rsplit("<button", 1)[1]
+        self.assertNotIn("mode-complet-only", journal)
+        self.assertIn('id="system-journal"', plus)
+        for advanced in ("system-automations", "system-tasks"):
+            button = nav.split(f'data-jump="{advanced}"', 1)[0].rsplit("<button", 1)[1]
+            self.assertIn("mode-complet-only", button)
         session, after = rest.split('id="system-brief"', 1)
         self.assertLess(session.index('id="hq-disk"'), session.index("<details"))
         self.assertIn("Partager l'accès", session)

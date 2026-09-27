@@ -4425,7 +4425,7 @@ def render_app() -> bytes:
       <button type="button" data-jump="system-notifications">Notifications</button>
       <button type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
       <button type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
-      <button type="button" class="mode-complet-only" data-jump="system-journal">Journal</button>
+      <button type="button" data-jump="system-journal">Journal</button>
       <button type="button" data-jump="system-alerts">Alertes</button>
       <button type="button" data-jump="system-info">Infos</button>
     </nav>
