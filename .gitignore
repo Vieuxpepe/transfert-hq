@@ -25,6 +25,7 @@ hq_telemetry.json
 hq_backup_index.json
 hq_push_subscriptions.json
 hq_vapid.json
+*.json.tmp
 .tmp/
 __pycache__/
 *.pyc

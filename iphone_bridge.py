@@ -115,6 +115,7 @@ SYSTEM_NAMES = {
     "hq_events.py",
     "hq_automation.py",
     "hq_devices.py",
+    "hq_state.py",
     "hq_events.json",
     "hq_automation.json",
     "hq_runs.json",
@@ -1923,6 +1924,8 @@ def bind_hq() -> None:
             for ev in (hq_events.list_events(limit=100).get("events") or [])
             if float(ev.get("ts") or 0) > float(since or 0)
         ],
+        events_recent=lambda limit=100: hq_events.list_events(limit=int(limit or 100)).get("events") or [],
+        attention_items=lambda: hq_attention(cached_roster_devices()),
         build_brief=build_daily_brief,
     )
     _HQ_BOUND = True
@@ -4330,7 +4333,7 @@ def render_app() -> bytes:
     <section class="hq" aria-labelledby="push-title">
       <div class="sec-head">
         <h2 id="push-title">Notifications</h2>
-        <p class="sec-hint">Web Push opt-in. Nécessite HTTPS (Tailscale Serve) et push_enabled.</p>
+        <p class="sec-hint">Web Push opt-in (HTTPS / Tailscale Serve, push_enabled) : alertes, attention critique, échec d'automatisation. Pas toutes les notifications HQ.</p>
       </div>
       <p id="hq-push-note" class="hint"></p>
       <button type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
@@ -4814,7 +4817,7 @@ class Handler(BaseHTTPRequestHandler):
                 info = hq_automation.restore_backup(
                     str(data.get("id") or ""),
                     str(data.get("folder") or ""),
-                    confirm=bool(data.get("confirm")),
+                    confirm=data.get("confirm"),
                 )
             except ValueError as e:
                 self._json(400, {"error": str(e)})

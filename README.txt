@@ -10,6 +10,7 @@ Architecture
   iphone_bridge.py   HTTP, auth, CSRF, fichiers, routing
   cc_ext.py          ops stables (file, activité, shell allowlist, backup disque)
   hq_events.py       journal unifié borné
+  hq_state.py        écriture JSON atomique (verrou, .tmp, fsync, os.replace)
   hq_automation.py   scènes / runbooks, règles, planning, backups, télémétrie, brief, push
   hq_devices.py      modèle d'appareils et capacités (dérivées, pas inventées)
   assets/hq.js       palette, bannière HQ, journal, flotte, brief, voix, push
@@ -64,12 +65,27 @@ Planning
   when : online | wake | now (existant) | daily | weekdays | weekly | once | on-online.
   Pas de cron libre. Garde une exécution par minute.
   terminal planifié : cmd_id allowlist. Champ command/cmd/shell/host refusé.
+  daily / weekdays / weekly mémorisent next_run (minute locale YYYY-MM-DDTHH:MM).
+  Si HQ était arrêté, un seul créneau en retard est rattrapé, dans une fenêtre
+  de 12 h (CATCHUP_WINDOW_SEC). Les périodes plus anciennes sont sautées :
+  pas de rejeu d'un backlog. Un job sans next_run ne rattrape pas un créneau
+  antérieur à sa création ; il part au prochain créneau, ou tout de suite si
+  la minute courante correspond.
 
 Règles
 ------
   Déclencheurs : manual, event (kind), device_online, disk_low.
   Actions : notify, scene, journal, backup, terminal (id), capture.
   cooldown_sec min 30. Master switch : automation_enabled.
+  device_online est un front offline → online, pas un niveau. Le premier
+  échantillon sert de référence (un redémarrage pendant que l'appareil est
+  déjà en ligne ne lance pas la règle). Rester en ligne ne relance pas après
+  le cooldown. Un front pendant le cooldown est mémorisé et part une fois
+  le cooldown écoulé, si l'appareil est encore en ligne.
+  Une règle event pose rule_id et run_id sur les événements qu'elle produit
+  (journal, scène). Ces descendants sont ignorés. Un curseur event_cursor_id
+  avance après le traitement : le cooldown seul ne suffit pas. disk_low reste
+  un niveau borné par le cooldown.
 
 Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON cassé)
 --------------------------------------------------------------------------------
@@ -102,8 +118,16 @@ Notes vocales
   Bouton « Note vocale » (MediaRecorder) → upload existant vers Inbox/Voice/.
   Mêmes quotas / dossiers / CSRF que les autres envois.
 
-Web Push (dernier, opt-in)
---------------------------
+Web Push (opt-in, périmètre limité)
+----------------------------------
+  Ce n'est pas un bus de toutes les notifications HQ.
+  Avec push_enabled et au moins un abonnement, send_push envoie seulement :
+    - alert            (journal d'activité kind=alert)
+    - attention        (points d'attention de niveau critique, une fois chacun)
+    - automation_failure (échec d'une action de règle)
+  POST /api/push/test réutilise ce même envoi (catégorie alert).
+  Un endpoint qui répond 404 ou 410 est retiré des abonnements.
+  La clé privée VAPID n'est ni renvoyée par l'API, ni écrite dans les logs.
   1. HTTPS obligatoire. Le HTTP :8765 nu ne suffit pas pour un iPhone.
      Préférer Tailscale Serve :
        tailscale serve --bg --https=443 http://127.0.0.1:8765
@@ -111,7 +135,7 @@ Web Push (dernier, opt-in)
   2. push_enabled: true
   3. pip install cryptography   (génération VAPID si hq_vapid.json absent)
      pip install pywebpush      (envoi ; sans ce paquet, l'abonnement se stocke
-                                 mais POST /api/push/test répond 409)
+                                 mais l'envoi répond que pywebpush manque)
   Aucun service cloud n'est contacté tant que tu n'abonnes pas un navigateur.
   L'envoi va uniquement vers l'endpoint push du navigateur (VAPID).
 
@@ -122,11 +146,14 @@ Migration depuis v6
   La file « au réveil » (when=online) est inchangée.
   Aucune migration de base : les JSON hq_* sont créés au premier usage.
   Un JSON hq_* illisible est laissé tel quel (les lectures renvoient malformed).
+  Écriture des sept fichiers v7 : verrou par chemin, sérialisation dans un
+  frère *.json.tmp, flush, fsync, os.replace. Un fichier cassé n'est pas
+  remplacé. Les *.json.tmp sont gitignorés.
 
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py
+  python -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_state.py
 
 
 SECURITY INVARIANTS
@@ -154,7 +181,9 @@ SECURITY INVARIANTS
     - Quotas d'upload : sessions simultanées, réserve disque, taille, chunks
       contigus, index borné, TTL.
     - Restauration : id YYYYMMDD_HHMMSS, dossier Inbox|Uni|Print, sous backup_dir,
-      écriture seulement sous la racine du pont, confirm=true obligatoire.
+      écriture seulement sous la racine du pont, confirm JSON true obligatoire
+      (un texte truthy ne suffit pas). Le nombre de fichiers est compté avant
+      toute copie ; au-dessus de 5000, rien n'est appliqué.
 
   Exécution distante
     - Pas de surcharge d'hôte SSH (champ host refusé). Cibles = shell_targets / pairs connus.

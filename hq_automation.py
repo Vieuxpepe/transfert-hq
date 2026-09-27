@@ -14,11 +14,14 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import hq_state
 
 AUTOMATION_NAME = "hq_automation.json"
 RUNS_NAME = "hq_runs.json"
@@ -61,8 +64,13 @@ TELEMETRY_MAX = 4000
 PUSH_MAX = 20
 BACKUP_INDEX_MAX = 60
 RESTORE_FILE_MAX = 5000
+# One overdue calendar run after restart. Older slots are skipped, not replayed.
+CATCHUP_WINDOW_SEC = 12 * 3600
+PUSH_CATEGORIES = ("alert", "attention", "automation_failure")
 
 _cb: dict[str, Any] = {}
+_cause_local = threading.local()
+_pushing = threading.local()
 _ready = False
 _last_local_sample = 0.0
 _last_remote_sample = 0.0
@@ -109,12 +117,35 @@ def _local_now() -> datetime:
     return datetime.now()
 
 
+def _cause_stack() -> list[dict]:
+    stack = getattr(_cause_local, "stack", None)
+    if stack is None:
+        stack = []
+        _cause_local.stack = stack
+    return stack
+
+
+def _current_cause() -> dict:
+    stack = getattr(_cause_local, "stack", None) or []
+    if not stack:
+        return {}
+    top = stack[-1]
+    out = {}
+    if top.get("rule_id"):
+        out["rule_id"] = str(top["rule_id"])[:40]
+    if top.get("run_id"):
+        out["run_id"] = str(top["run_id"])[:40]
+    return out
+
+
 def _journal(kind: str, message: str, *, level: str = "info", **meta: Any) -> None:
     fn = _cb.get("journal")
     if not callable(fn):
         return
+    merged = _current_cause()
+    merged.update(meta)
     try:
-        fn(kind, message, level=level, **meta)
+        fn(kind, message, level=level, **merged)
     except TypeError:
         try:
             fn(kind, message)
@@ -148,13 +179,13 @@ def _read_state(name: str, expect: str) -> tuple[Any, bool]:
 
 
 def _write_state(name: str, data: Any) -> None:
-    """Write only when the current file is missing or valid JSON of the same shape."""
+    """Atomic replace. A missing file is created. A malformed file is kept."""
     path = _root() / name
     if path.is_file():
         _existing, bad = _read_state(name, "dict" if isinstance(data, dict) else "list")
         if bad:
             raise RuntimeError(f"{name} illisible — fichier conservé")
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    hq_state.write_json_atomic(path, data)
 
 
 # ---- scenes / runbooks ----
@@ -520,7 +551,16 @@ def list_rules() -> dict:
     return {"ok": not bad, "malformed": bad, "rules": data.get("rules") or [], "meta": data.get("meta") or {}}
 
 
+def _automation_lock():
+    return hq_state.path_lock(_root() / AUTOMATION_NAME)
+
+
 def save_rule(rule: dict) -> dict:
+    with _automation_lock():
+        return _save_rule(rule)
+
+
+def _save_rule(rule: dict) -> dict:
     clean = validate_rule(rule)
     data, bad = _load_automation()
     if bad:
@@ -530,6 +570,12 @@ def save_rule(rule: dict) -> dict:
     for i, existing in enumerate(rules):
         if existing.get("id") == clean["id"]:
             clean["last_fired"] = float(existing.get("last_fired") or 0)
+            if "device_was_online" in existing:
+                clean["device_was_online"] = bool(existing.get("device_was_online"))
+            if "device_edge_pending" in existing:
+                clean["device_edge_pending"] = bool(existing.get("device_edge_pending"))
+            if existing.get("event_cursor_id"):
+                clean["event_cursor_id"] = str(existing.get("event_cursor_id"))[:80]
             rules[i] = clean
             replaced = True
             break
@@ -544,6 +590,11 @@ def save_rule(rule: dict) -> dict:
 
 
 def delete_rule(rule_id: str) -> dict:
+    with _automation_lock():
+        return _delete_rule(rule_id)
+
+
+def _delete_rule(rule_id: str) -> dict:
     data, bad = _load_automation()
     if bad:
         raise RuntimeError("hq_automation.json illisible — fichier conservé")
@@ -557,6 +608,11 @@ def delete_rule(rule_id: str) -> dict:
 
 
 def set_rule_enabled(rule_id: str, enabled: bool) -> dict:
+    with _automation_lock():
+        return _set_rule_enabled(rule_id, enabled)
+
+
+def _set_rule_enabled(rule_id: str, enabled: bool) -> dict:
     data, bad = _load_automation()
     if bad:
         raise RuntimeError("hq_automation.json illisible — fichier conservé")
@@ -568,11 +624,73 @@ def set_rule_enabled(rule_id: str, enabled: bool) -> dict:
     raise ValueError("Règle introuvable")
 
 
+def _recent_events(limit: int = 100) -> list[dict]:
+    fn = _cb.get("events_recent")
+    if callable(fn):
+        data = fn(limit)
+    else:
+        since_fn = _cb.get("events_since")
+        data = since_fn(0) if callable(since_fn) else []
+    if isinstance(data, dict):
+        data = data.get("events") or []
+    return [ev for ev in (data or []) if isinstance(ev, dict)][: max(1, int(limit or 100))]
+
+
+def _observe_device_edge(rule: dict) -> tuple[bool, bool]:
+    """Track offline→online. First sample only baselines. Returns (ready, dirty)."""
+    trigger = rule.get("trigger") or {}
+    online = _device_online(str(trigger.get("device_id") or ""))
+    if "device_was_online" not in rule:
+        rule["device_was_online"] = bool(online)
+        rule["device_edge_pending"] = False
+        return False, True
+    prev = bool(rule.get("device_was_online"))
+    dirty = False
+    if prev != bool(online):
+        rule["device_was_online"] = bool(online)
+        dirty = True
+    if (not prev) and online and not rule.get("device_edge_pending"):
+        rule["device_edge_pending"] = True
+        dirty = True
+    ready = bool(rule.get("device_edge_pending")) and bool(online)
+    return ready, dirty
+
+
+def _event_match(rule: dict) -> tuple[dict | None, str]:
+    """Newest-first journal. Skip this rule's own descendants. Do not move the cursor."""
+    events = _recent_events(100)
+    cursor = str(rule.get("event_cursor_id") or "")
+    fresh: list[dict] = []
+    for ev in events:
+        if cursor and str(ev.get("id") or "") == cursor:
+            break
+        fresh.append(ev)
+    kind = str((rule.get("trigger") or {}).get("kind") or "")
+    rid = str(rule.get("id") or "")
+    match = None
+    for ev in reversed(fresh):
+        meta = ev.get("meta") if isinstance(ev.get("meta"), dict) else {}
+        if str(meta.get("rule_id") or "") == rid and rid:
+            continue
+        if kind and str(ev.get("kind") or "") != kind:
+            continue
+        match = ev
+        break
+    newest = str(events[0].get("id") or "") if events else ""
+    return match, newest
+
+
+def _advance_event_cursor(rule: dict) -> None:
+    events = _recent_events(20)
+    if events and events[0].get("id"):
+        rule["event_cursor_id"] = str(events[0]["id"])[:80]
+
+
 def _rule_triggered(rule: dict, *, manual: bool = False) -> bool:
     trigger = rule.get("trigger") or {}
     ttype = trigger.get("type")
     if manual:
-        return ttype == "manual" or True
+        return True
     if ttype == "manual":
         return False
     if ttype == "disk_low":
@@ -584,25 +702,7 @@ def _rule_triggered(rule: dict, *, manual: bool = False) -> bool:
         except (TypeError, ValueError):
             min_gb = 20.0
         return bool(free) and free < min_gb * 1024**3
-    if ttype == "device_online":
-        want = str(trigger.get("device_id") or "")
-        devices = _cb.get("devices")
-        roster = devices() if callable(devices) else []
-        for d in roster or []:
-            if str(d.get("id") or "") == want and d.get("online"):
-                return True
-        return False
-    if ttype == "event":
-        kind = str(trigger.get("kind") or "")
-        since = float(rule.get("last_fired") or 0)
-        fn = _cb.get("events_since")
-        if not callable(fn):
-            return False
-        events = fn(since) or []
-        for ev in events:
-            if str(ev.get("kind") or "") == kind and float(ev.get("ts") or 0) > since:
-                return True
-        return False
+    # device_online and event are decided in run_rule (edge + cursor).
     return False
 
 
@@ -644,11 +744,21 @@ def _run_actions(actions: list[dict], *, origin: str) -> list[dict]:
         except Exception as e:
             log.append({"type": at, "ok": False, "error": str(e)[:200]})
             _journal("automation", f"{origin} échec {at}: {e}", level="warning")
+            send_push(
+                "Automatisation",
+                f"{origin}: {at} — {e}"[:180],
+                category="automation_failure",
+            )
             break
     return log
 
 
 def run_rule(rule_id: str, *, manual: bool = False, ignore_cooldown: bool = False) -> dict:
+    with _automation_lock():
+        return _run_rule(rule_id, manual=manual, ignore_cooldown=ignore_cooldown)
+
+
+def _run_rule(rule_id: str, *, manual: bool = False, ignore_cooldown: bool = False) -> dict:
     data, bad = _load_automation()
     if bad:
         raise RuntimeError("hq_automation.json illisible — fichier conservé")
@@ -662,12 +772,50 @@ def run_rule(rule_id: str, *, manual: bool = False, ignore_cooldown: bool = Fals
     now = _now()
     cool = int(rule.get("cooldown_sec") or 300)
     last = float(rule.get("last_fired") or 0)
-    if not ignore_cooldown and last and (now - last) < cool:
-        return {"ok": True, "skipped": True, "reason": "cooldown"}
-    if not manual and not _rule_triggered(rule, manual=False):
-        return {"ok": True, "skipped": True, "reason": "déclencheur inactif"}
-    log = _run_actions(rule.get("actions") or [], origin=str(rule.get("label") or rule_id))
+    cooling = (not ignore_cooldown) and bool(last) and (now - last) < cool
+    trigger = rule.get("trigger") or {}
+    ttype = trigger.get("type")
+
+    if manual:
+        if cooling:
+            return {"ok": True, "skipped": True, "reason": "cooldown"}
+    elif ttype == "device_online":
+        ready, dirty = _observe_device_edge(rule)
+        if cooling or not ready:
+            if dirty:
+                _save_automation(data)
+            if cooling:
+                return {"ok": True, "skipped": True, "reason": "cooldown"}
+            return {"ok": True, "skipped": True, "reason": "déclencheur inactif"}
+    elif ttype == "event":
+        match, newest = _event_match(rule)
+        if cooling or match is None:
+            dirty = False
+            if match is None and newest and rule.get("event_cursor_id") != newest:
+                rule["event_cursor_id"] = newest
+                dirty = True
+            if dirty:
+                _save_automation(data)
+            if cooling:
+                return {"ok": True, "skipped": True, "reason": "cooldown"}
+            return {"ok": True, "skipped": True, "reason": "déclencheur inactif"}
+    else:
+        if cooling:
+            return {"ok": True, "skipped": True, "reason": "cooldown"}
+        if not _rule_triggered(rule, manual=False):
+            return {"ok": True, "skipped": True, "reason": "déclencheur inactif"}
+
+    stack = _cause_stack()
+    stack.append({"rule_id": str(rule.get("id") or rule_id), "run_id": f"ar-{uuid.uuid4().hex[:12]}"})
+    try:
+        log = _run_actions(rule.get("actions") or [], origin=str(rule.get("label") or rule_id))
+    finally:
+        stack.pop()
     rule["last_fired"] = now
+    if ttype == "device_online":
+        rule["device_edge_pending"] = False
+    if ttype == "event":
+        _advance_event_cursor(rule)
     _save_automation(data)
     ok = all(item.get("ok") for item in log) if log else True
     return {"ok": ok, "id": rule_id, "actions": log}
@@ -840,8 +988,130 @@ def _run_scheduled_job(job: dict) -> None:
         raise ValueError("Job invalide")
 
 
+def _fmt_slot(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M")
+
+
+def _calendar_matches(job: dict, moment: datetime) -> bool:
+    when = job.get("when")
+    at = str(job.get("at") or "")
+    match = _AT_RE.match(at)
+    if not match:
+        return False
+    if moment.hour != int(match.group(1)) or moment.minute != int(match.group(2)):
+        return False
+    if when == "daily":
+        return True
+    if when == "weekdays":
+        return moment.weekday() < 5
+    if when == "weekly":
+        raw = job.get("weekday")
+        try:
+            weekday = int(raw)
+        except (TypeError, ValueError):
+            return False
+        return moment.weekday() == weekday
+    return False
+
+
+def _next_calendar_after(job: dict, after: datetime) -> datetime | None:
+    """First daily/weekdays/weekly slot strictly after ``after``."""
+    when = job.get("when")
+    at = str(job.get("at") or "")
+    match = _AT_RE.match(at)
+    if when not in ("daily", "weekdays", "weekly") or not match:
+        return None
+    hh, mm = int(match.group(1)), int(match.group(2))
+    cursor = after.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if cursor <= after:
+        cursor += timedelta(days=1)
+    weekday = None
+    if when == "weekly":
+        try:
+            weekday = int(job.get("weekday"))
+        except (TypeError, ValueError):
+            return None
+    for _ in range(14):
+        if when == "daily":
+            return cursor
+        if when == "weekdays" and cursor.weekday() < 5:
+            return cursor
+        if when == "weekly" and cursor.weekday() == weekday:
+            return cursor
+        cursor += timedelta(days=1)
+    return None
+
+
+def _calendar_plan(job: dict, moment: datetime) -> str:
+    """Return fire, reschedule, or same. Reschedule writes the next future slot only."""
+    if job.get("status") not in (None, "", "pending", "armed"):
+        return "same"
+    current = moment.replace(second=0, microsecond=0)
+    raw = job.get("next_run")
+    slot = None
+    if isinstance(raw, str) and raw:
+        try:
+            slot = datetime.strptime(raw, "%Y-%m-%dT%H:%M")
+        except ValueError:
+            slot = None
+    if slot is None:
+        if _calendar_matches(job, moment):
+            return "fire"
+        nxt = _next_calendar_after(job, current - timedelta(seconds=1))
+        formatted = _fmt_slot(nxt) if nxt else ""
+        if formatted and job.get("next_run") != formatted:
+            job["next_run"] = formatted
+            return "reschedule"
+        return "same"
+    if slot > current:
+        return "same"
+    window_start = current - timedelta(seconds=CATCHUP_WINDOW_SEC)
+    if slot < window_start:
+        nxt = _next_calendar_after(job, current)
+        formatted = _fmt_slot(nxt) if nxt else ""
+        if formatted and job.get("next_run") != formatted:
+            job["next_run"] = formatted
+            return "reschedule"
+        return "same"
+    return "fire"
+
+
+def _commit_schedule_fire(job: dict, *, minute: str, now: float) -> bool:
+    when = job.get("when")
+    job["last_minute"] = minute
+    try:
+        _run_scheduled_job(job)
+        job["last_fired"] = now
+        job["error"] = ""
+        if when == "once":
+            job["status"] = "done"
+        elif when == "on-online":
+            job["status"] = "armed"
+        else:
+            job["status"] = "pending"
+        _journal("schedule", f"Planifié: {job.get('label')}", level="info")
+        return True
+    except Exception as e:
+        job["error"] = str(e)[:200]
+        if when == "once":
+            job["status"] = "error"
+        _journal("schedule", f"Échec planifié {job.get('label')}: {e}", level="warning")
+        return False
+
+
+def _advance_calendar(job: dict, moment: datetime) -> None:
+    current = moment.replace(second=0, microsecond=0)
+    nxt = _next_calendar_after(job, current)
+    if nxt is not None:
+        job["next_run"] = _fmt_slot(nxt)
+
+
 def process_schedules(items: list[dict]) -> dict:
-    """Mutates queue items in place. Once-per-minute guard. Returns fired + changed."""
+    """Mutates queue items in place. Once-per-minute guard. Returns fired + changed.
+
+    Calendar jobs persist ``next_run``. If HQ was down, one overdue slot inside
+    CATCHUP_WINDOW_SEC (12 h) runs on the next tick. Older periods are skipped.
+    """
     if not isinstance(items, list):
         return {"fired": [], "changed": False}
     if not _cfg().get("schedules_enabled", True):
@@ -860,31 +1130,29 @@ def process_schedules(items: list[dict]) -> dict:
                 job["status"] = "pending"
                 changed = True
             continue
+        if when in ("daily", "weekdays", "weekly"):
+            plan = _calendar_plan(job, moment)
+            if plan == "same":
+                continue
+            if plan == "reschedule":
+                changed = True
+                continue
+            if job.get("last_minute") == minute:
+                continue
+            changed = True
+            if _commit_schedule_fire(job, minute=minute, now=now):
+                fired.append(job)
+            _advance_calendar(job, moment)
+            continue
         if when not in SCHEDULED_WHENS:
             continue
         if job.get("last_minute") == minute:
             continue
         if not _schedule_due(job, moment, now):
             continue
-        job["last_minute"] = minute
         changed = True
-        try:
-            _run_scheduled_job(job)
-            job["last_fired"] = now
-            job["error"] = ""
-            if when == "once":
-                job["status"] = "done"
-            elif when == "on-online":
-                job["status"] = "armed"
-            else:
-                job["status"] = "pending"
+        if _commit_schedule_fire(job, minute=minute, now=now):
             fired.append(job)
-            _journal("schedule", f"Planifié: {job.get('label')}", level="info")
-        except Exception as e:
-            job["error"] = str(e)[:200]
-            if when == "once":
-                job["status"] = "error"
-            _journal("schedule", f"Échec planifié {job.get('label')}: {e}", level="warning")
     return {"fired": fired, "changed": changed}
 
 
@@ -939,7 +1207,7 @@ def _backup_root() -> Path:
 
 
 def restore_backup(backup_id: str, folder: str, *, confirm: bool) -> dict:
-    if not confirm:
+    if confirm is not True:
         raise ValueError("Confirmation d'écrasement requise")
     folder = str(folder or "")
     if folder not in RESTORE_FOLDERS:
@@ -961,8 +1229,7 @@ def restore_backup(backup_id: str, folder: str, *, confirm: bool) -> dict:
     except ValueError as e:
         raise ValueError("Destination hors périmètre") from e
     dest.mkdir(parents=True, exist_ok=True)
-    copied = 0
-    overwritten = 0
+    planned: list[tuple[Path, Path]] = []
     for path in src.rglob("*"):
         if path.is_symlink() or not path.is_file():
             continue
@@ -978,13 +1245,17 @@ def restore_backup(backup_id: str, folder: str, *, confirm: bool) -> dict:
             target.relative_to(dest)
         except ValueError:
             continue
+        planned.append((path, target))
+        if len(planned) > RESTORE_FILE_MAX:
+            raise ValueError("Trop de fichiers à restaurer")
+    copied = 0
+    overwritten = 0
+    for path, target in planned:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             overwritten += 1
         shutil.copy2(path, target)
         copied += 1
-        if copied > RESTORE_FILE_MAX:
-            raise ValueError("Trop de fichiers à restaurer")
     _journal(
         "backup",
         f"Restauration {backup_id}/{folder} · {copied} fichier(s), {overwritten} écrasé(s)",
@@ -1202,7 +1473,11 @@ def push_status() -> dict:
         "subscriptions": count,
         "malformed": bad,
         "error": error,
-        "https_note": "Web Push exige HTTPS (Tailscale Serve). Le pont en HTTP clair ne peut pas abonner un iPhone.",
+        "categories": list(PUSH_CATEGORIES),
+        "https_note": (
+            "Web Push opt-in (HTTPS / Tailscale Serve) : alertes, attention critique "
+            "et échec d'automatisation. Pas toutes les notifications HQ."
+        ),
     }
 
 
@@ -1213,9 +1488,14 @@ def _vapid_path() -> Path:
 def vapid_public_key() -> str:
     """Return base64url uncompressed P-256 public key. Generates keys if missing.
 
-    Private key stays in hq_vapid.json. Never log it.
+    Private key stays in hq_vapid.json. Never log it or return it.
     """
     path = _vapid_path()
+    with hq_state.path_lock(path):
+        return _vapid_public_key_locked(path)
+
+
+def _vapid_public_key_locked(path: Path) -> str:
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -1242,7 +1522,7 @@ def vapid_public_key() -> str:
     ).decode("ascii")
     public = base64.urlsafe_b64encode(raw_pub).decode("ascii").rstrip("=")
     payload = {"public_key": public, "private_pem": priv_pem}
-    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    hq_state.write_json_atomic(path, payload)
     return public
 
 
@@ -1291,43 +1571,178 @@ def unsubscribe_push(endpoint: str) -> dict:
     return {"ok": True}
 
 
-def send_test_push() -> dict:
-    if not _cfg().get("push_enabled"):
-        raise ValueError("Web Push désactivé (push_enabled)")
+def push_enabled() -> bool:
+    return bool(_cfg().get("push_enabled"))
+
+
+def _deliver_push(sub: dict, payload: str) -> int:
+    """Return HTTP-like status. 404/410 means the subscription is gone. -1: no sender."""
+    transport = _cb.get("push_transport")
+    if callable(transport):
+        return int(transport(sub, payload) or 0)
     try:
         from pywebpush import webpush
-    except ImportError as e:
-        raise RuntimeError("pywebpush non installé — envoi impossible (opt-in)") from e
-    data, bad = _load_subs()
-    if bad:
-        raise RuntimeError("hq_push_subscriptions.json illisible — fichier conservé")
-    subs = data.get("subscriptions") or []
-    if not subs:
-        raise ValueError("Aucun abonnement")
+    except ImportError:
+        return -1
     path = _vapid_path()
     try:
         vapid = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError("Clé VAPID illisible") from e
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(vapid, dict):
+        return 0
     priv = str(vapid.get("private_pem") or "")
     if not priv:
-        raise RuntimeError("Clé VAPID absente")
-    payload = json.dumps({"title": "Transfert HQ", "body": "Notification de test"}, ensure_ascii=False)
-    sent = 0
-    errors = 0
-    for sub in subs:
+        return 0
+    try:
+        webpush(
+            subscription_info={"endpoint": sub.get("endpoint"), "keys": sub.get("keys")},
+            data=payload,
+            vapid_private_key=priv,
+            vapid_claims={"sub": "mailto:hq@transfert.local"},
+        )
+        return 201
+    except Exception as e:
+        response = getattr(e, "response", None)
+        status = getattr(response, "status_code", None) if response is not None else None
+        if status:
+            return int(status)
+        return 500
+
+
+def send_push(title: str, body: str, *, category: str = "alert", url: str = "/") -> dict:
+    """Send one opt-in notification. Never returns or logs VAPID private material.
+
+    Categories: alert, attention (critical), automation_failure.
+    404/410 subscriptions are pruned. No-op when push_enabled is false.
+    """
+    if category not in PUSH_CATEGORIES:
+        return {"ok": False, "sent": 0, "pruned": 0, "errors": 0, "error": "catégorie ignorée"}
+    if not push_enabled():
+        return {"ok": False, "sent": 0, "pruned": 0, "errors": 0, "error": "Web Push désactivé"}
+    if getattr(_pushing, "on", False):
+        return {"ok": False, "sent": 0, "pruned": 0, "errors": 0, "error": "reentrant"}
+    _pushing.on = True
+    try:
+        data, bad = _load_subs()
+        if bad:
+            return {"ok": False, "sent": 0, "pruned": 0, "errors": 0, "error": "abonnements illisibles"}
+        subs = list(data.get("subscriptions") or [])
+        if not subs:
+            return {"ok": False, "sent": 0, "pruned": 0, "errors": 0, "error": "aucun abonné"}
+        payload = json.dumps(
+            {
+                "title": str(title or "HQ")[:80],
+                "body": str(body or "")[:180],
+                "url": str(url or "/")[:200],
+                "category": category,
+            },
+            ensure_ascii=False,
+        )
+        sent = 0
+        pruned = 0
+        errors = 0
+        missing_lib = False
+        keep: list[dict] = []
+        for sub in subs:
+            status = _deliver_push(sub, payload)
+            if status == -1:
+                missing_lib = True
+                keep.append(sub)
+                errors += 1
+                continue
+            if status in (404, 410):
+                pruned += 1
+                continue
+            keep.append(sub)
+            if status in (200, 201, 202):
+                sent += 1
+            else:
+                errors += 1
+        if pruned:
+            data["subscriptions"] = keep
+            _write_state(PUSH_NAME, data)
+        result: dict[str, Any] = {
+            "ok": sent > 0 and errors == 0,
+            "sent": sent,
+            "pruned": pruned,
+            "errors": errors,
+        }
+        if missing_lib:
+            result["error"] = "pywebpush non installé"
+        elif not sent and not pruned and errors and not missing_lib:
+            result["error"] = "envoi incomplet"
+        return result
+    finally:
+        _pushing.on = False
+
+
+def send_test_push() -> dict:
+    if not push_enabled():
+        raise ValueError("Web Push désactivé (push_enabled)")
+    result = send_push("Transfert HQ", "Notification de test", category="alert")
+    if result.get("error") == "pywebpush non installé":
+        raise RuntimeError("pywebpush non installé — envoi impossible (opt-in)")
+    if result.get("error") == "aucun abonné":
+        raise ValueError("Aucun abonnement")
+    if result.get("error") == "abonnements illisibles":
+        raise RuntimeError("hq_push_subscriptions.json illisible — fichier conservé")
+    _journal("push", f"Test push envoyé ({result.get('sent')})", level="info")
+    return {
+        "ok": bool(result.get("ok")),
+        "sent": int(result.get("sent") or 0),
+        "errors": int(result.get("errors") or 0),
+        "pruned": int(result.get("pruned") or 0),
+    }
+
+
+def _push_critical_attention() -> None:
+    if not push_enabled():
+        return
+    fn = _cb.get("attention_items")
+    if not callable(fn):
+        return
+    try:
+        items = fn() or []
+    except Exception:
+        return
+    data, bad = _load_automation()
+    if bad:
+        return
+    meta = data.setdefault("meta", {})
+    seen = [str(x) for x in (meta.get("attention_pushed") or []) if x][-40:]
+    seen_set = set(seen)
+    fresh: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("level") != "critical":
+            continue
+        key = f"{item.get('title')}|{item.get('detail')}"[:160]
+        if not key.strip("|") or key in seen_set:
+            continue
+        send_push(
+            str(item.get("title") or "Attention")[:80],
+            str(item.get("detail") or "")[:180],
+            category="attention",
+            url="/#wallboard",
+        )
+        fresh.append(key)
+        seen_set.add(key)
+    if not fresh:
+        return
+    with _automation_lock():
+        data, bad = _load_automation()
+        if bad:
+            return
+        meta = data.setdefault("meta", {})
+        merged = [str(x) for x in (meta.get("attention_pushed") or []) if x]
+        for key in fresh:
+            if key not in merged:
+                merged.append(key)
+        meta["attention_pushed"] = merged[-40:]
         try:
-            webpush(
-                subscription_info={"endpoint": sub.get("endpoint"), "keys": sub.get("keys")},
-                data=payload,
-                vapid_private_key=priv,
-                vapid_claims={"sub": "mailto:hq@transfert.local"},
-            )
-            sent += 1
-        except Exception:
-            errors += 1
-    _journal("push", f"Test push envoyé ({sent})", level="info")
-    return {"ok": errors == 0, "sent": sent, "errors": errors}
+            _save_automation(data)
+        except (OSError, RuntimeError):
+            pass
 
 
 def tick() -> None:
@@ -1349,6 +1764,10 @@ def tick() -> None:
         evaluate_rules()
     except Exception as e:
         _journal("automation", f"Tick règles: {e}", level="warning")
+    try:
+        _push_critical_attention()
+    except Exception as e:
+        _journal("push", f"Attention: {e}", level="warning")
     devices_fn = _cb.get("devices")
     roster = devices_fn() if callable(devices_fn) else []
     try:

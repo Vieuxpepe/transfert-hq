@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import threading
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode
@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 import hq_automation
 import hq_devices
 import hq_events
+import hq_state
 import iphone_bridge
 import cc_ext
 
@@ -342,6 +343,227 @@ class FeatureTests(unittest.TestCase):
                 {"endpoint": "https://push.example/sub", "keys": {"p256dh": "abc", "auth": "def"}}
             )
         self.assertFalse((self.tmp / "hq_vapid.json").exists())
+
+    def test_device_online_is_edge_not_level(self):
+        hq_automation.save_rule(
+            {
+                "id": "sync",
+                "label": "Sync",
+                "trigger": {"type": "device_online", "device_id": "pc-host"},
+                "cooldown_sec": 30,
+                "actions": [{"type": "journal", "message": "online"}],
+            }
+        )
+        self.devices = [{"id": "pc-host", "online": True, "source": "host"}]
+        self.assertEqual(hq_automation.evaluate_rules(), [])
+        self.now += 120
+        self.assertEqual(hq_automation.evaluate_rules(), [])
+        self.devices = [{"id": "pc-host", "online": False, "source": "host"}]
+        self.assertEqual(hq_automation.evaluate_rules(), [])
+        self.devices = [{"id": "pc-host", "online": True, "source": "host"}]
+        fired = hq_automation.evaluate_rules()
+        self.assertEqual(len(fired), 1)
+        self.assertTrue(fired[0]["ok"])
+        self.now += 120
+        self.assertEqual(hq_automation.evaluate_rules(), [])
+
+    def test_event_rule_ignores_own_descendants(self):
+        def journal(kind, message, **extra):
+            self.events_seen.append((kind, message, extra))
+            meta = {k: v for k, v in extra.items() if k != "level"}
+            hq_events.record(kind, message, level=str(extra.get("level") or "info"), meta=meta)
+
+        hq_automation.bind(
+            journal=journal,
+            events_recent=lambda limit=100: hq_events.list_events(limit=int(limit or 100)).get("events") or [],
+        )
+        hq_automation.save_rule(
+            {
+                "id": "echo",
+                "label": "Echo",
+                "trigger": {"type": "event", "kind": "automation"},
+                "cooldown_sec": 30,
+                "actions": [{"type": "journal", "message": "echo"}],
+            }
+        )
+        first = hq_automation.evaluate_rules()
+        self.assertEqual(len(first), 1)
+        echoes = [ev for ev in hq_events.list_events(kind="automation")["events"] if ev.get("message") == "echo"]
+        self.assertTrue(echoes)
+        self.assertEqual(echoes[0]["meta"].get("rule_id"), "echo")
+        self.now += 120
+        self.assertEqual(hq_automation.evaluate_rules(), [])
+        hq_events.record("automation", "externe", level="info")
+        third = hq_automation.evaluate_rules()
+        self.assertEqual(len(third), 1)
+        self.assertTrue(third[0]["ok"])
+
+    def test_atomic_write_preserves_malformed_and_stays_json(self):
+        path = self.tmp / "hq_automation.json"
+        path.write_text("{bad", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            hq_state.write_json_atomic(path, {"version": 1})
+        self.assertEqual(path.read_text(encoding="utf-8"), "{bad")
+        path.write_text("123", encoding="utf-8")
+        with self.assertRaises(RuntimeError):
+            hq_state.write_json_atomic(path, {"version": 1})
+        self.assertEqual(path.read_text(encoding="utf-8"), "123")
+        path.write_text('{"version": 1}\n', encoding="utf-8")
+        hq_state.write_json_atomic(path, {"version": 2, "rules": []})
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], 2)
+        self.assertFalse((self.tmp / "hq_automation.json.tmp").exists())
+        errors: list[str] = []
+
+        def worker(i: int) -> None:
+            try:
+                for n in range(25):
+                    hq_state.write_json_atomic(path, {"version": 1, "i": i, "n": n})
+            except Exception as e:
+                errors.append(repr(e))
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        json.loads(path.read_text(encoding="utf-8"))
+
+    def test_schedule_catchup_runs_one_overdue_slot(self):
+        self.moment = datetime(2026, 9, 28, 10, 0, 5)
+        job = hq_automation.normalize_schedule_job(
+            {"label": "Matin", "when": "daily", "type": "backup", "at": "08:00"}
+        )
+        job["next_run"] = "2026-09-28T08:00"
+        items = [job]
+        first = hq_automation.process_schedules(items)
+        self.assertEqual(len(first["fired"]), 1)
+        self.assertEqual(job["next_run"], "2026-09-29T08:00")
+        self.calls.clear()
+        for _ in range(4):
+            again = hq_automation.process_schedules(items)
+            self.assertEqual(again["fired"], [])
+        self.assertEqual(self.calls, [])
+        stale = hq_automation.normalize_schedule_job(
+            {"label": "Vieux", "when": "daily", "type": "capture", "at": "08:00"}
+        )
+        stale["next_run"] = _fmt_minutes(self.moment - timedelta(hours=30))
+        self.calls.clear()
+        skipped = hq_automation.process_schedules([stale])
+        self.assertEqual(skipped["fired"], [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(stale["next_run"], "2026-09-29T08:00")
+        weekly = hq_automation.normalize_schedule_job(
+            {"label": "Hebdo", "when": "weekly", "weekday": 0, "type": "notify", "at": "08:00", "title": "t", "body": "b"}
+        )
+        weekly["next_run"] = "2026-08-03T08:00"
+        self.calls.clear()
+        missed = hq_automation.process_schedules([weekly])
+        self.assertEqual(missed["fired"], [])
+        self.assertNotIn(("notify", "t", "b"), self.calls)
+        self.assertEqual(weekly["next_run"], "2026-10-05T08:00")
+
+    def test_send_push_prunes_and_scopes_categories(self):
+        payloads: list[str] = []
+
+        def transport(sub, payload):
+            payloads.append(payload)
+            if str(sub.get("endpoint") or "").endswith("/gone"):
+                return 410
+            return 201
+
+        self.cfg["push_enabled"] = True
+        hq_automation.bind(push_transport=transport)
+        hq_automation.subscribe_push(
+            {"endpoint": "https://push.example/ok", "keys": {"p256dh": "abc", "auth": "def"}}
+        )
+        hq_automation.subscribe_push(
+            {"endpoint": "https://push.example/gone", "keys": {"p256dh": "abc", "auth": "def"}}
+        )
+        result = hq_automation.send_push("Alerte", "disque", category="alert")
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["pruned"], 1)
+        self.assertNotIn("private", json.dumps(result).lower())
+        self.assertEqual(hq_automation.push_status()["subscriptions"], 1)
+        self.assertTrue(payloads and all('"category": "alert"' in body for body in payloads))
+        self.cfg["push_enabled"] = False
+        payloads.clear()
+        quiet = hq_automation.send_push("Alerte", "x", category="alert")
+        self.assertEqual(quiet["sent"], 0)
+        self.assertEqual(payloads, [])
+        self.cfg["push_enabled"] = True
+        ignored = hq_automation.send_push("x", "y", category="scene")
+        self.assertEqual(ignored["sent"], 0)
+        self.assertEqual(payloads, [])
+
+        def boom():
+            raise RuntimeError("disk")
+
+        hq_automation.bind(backup=boom)
+        hq_automation.save_rule(
+            {
+                "id": "cap",
+                "trigger": {"type": "manual"},
+                "cooldown_sec": 30,
+                "actions": [{"type": "backup"}],
+            }
+        )
+        failed = hq_automation.run_rule("cap", manual=True)
+        self.assertFalse(failed["ok"])
+        self.assertTrue(any("automation_failure" in body for body in payloads))
+        before = len(payloads)
+        items = [{"level": "critical", "title": "Espace", "detail": "1 Go"}]
+        hq_automation.bind(
+            attention_items=lambda: items,
+            queue_load=lambda: [],
+            queue_save=lambda _items: None,
+        )
+        hq_automation.tick()
+        hq_automation.tick()
+        self.assertEqual(len(payloads), before + 1)
+        self.assertIn("attention", payloads[-1])
+        self.assertNotIn("private_pem", " ".join(payloads))
+        previous_root = cc_ext.ROOT
+        try:
+            cc_ext.bind(ROOT=self.tmp, get_config=lambda: self.cfg)
+            payloads.clear()
+            cc_ext.log_activity("alert", "seuil disque")
+            cc_ext.log_activity("upload", "fichier", level="info")
+            self.assertEqual(len(payloads), 1)
+            self.assertIn('"category": "alert"', payloads[0])
+        finally:
+            cc_ext.bind(ROOT=previous_root)
+
+    def test_restore_confirm_bool_and_preflight_limit(self):
+        backup_root = self.tmp / "backups" / "20260928_080000" / "Inbox"
+        backup_root.mkdir(parents=True)
+        (backup_root / "note.txt").write_text("salut", encoding="utf-8")
+        nested = backup_root / "Cours"
+        nested.mkdir()
+        (nested / "a.txt").write_text("a", encoding="utf-8")
+        inbox = self.tmp / "Inbox"
+        inbox.mkdir()
+        (inbox / "note.txt").write_text("ancien", encoding="utf-8")
+        hq_automation.note_backup(
+            {"id": "20260928_080000", "path": str(self.tmp / "backups" / "20260928_080000"), "folders": 1}
+        )
+        with self.assertRaises(ValueError):
+            hq_automation.restore_backup("20260928_080000", "Inbox", confirm="yes")
+        self.assertEqual((inbox / "note.txt").read_text(encoding="utf-8"), "ancien")
+        self.assertFalse((inbox / "Cours" / "a.txt").exists())
+        previous = hq_automation.RESTORE_FILE_MAX
+        hq_automation.RESTORE_FILE_MAX = 1
+        try:
+            with self.assertRaises(ValueError):
+                hq_automation.restore_backup("20260928_080000", "Inbox", confirm=True)
+        finally:
+            hq_automation.RESTORE_FILE_MAX = previous
+        self.assertEqual((inbox / "note.txt").read_text(encoding="utf-8"), "ancien")
+        self.assertFalse((inbox / "Cours" / "a.txt").exists())
+
+
+def _fmt_minutes(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M")
 
 
 class SecurityRegressionTests(unittest.TestCase):

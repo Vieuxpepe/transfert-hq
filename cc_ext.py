@@ -139,6 +139,14 @@ def log_activity(kind: str, message: str, **extra: Any) -> None:
             hq_events.record(kind, message, level=level, source="activity", meta=extra)
     except Exception:
         pass
+    if kind == "alert":
+        try:
+            import hq_automation
+
+            if hq_automation.ready() and hq_automation.push_enabled():
+                hq_automation.send_push(str(kind)[:40] or "Alerte", message[:180], category="alert")
+        except Exception:
+            pass
 
 
 def _persist_activity() -> None:

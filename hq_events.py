@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import hq_state
+
 EVENTS_NAME = "hq_events.json"
 MAX_EVENTS = 2000
 LEVELS = ("debug", "info", "warning", "critical")
@@ -33,6 +35,7 @@ _lock = threading.Lock()
 _root: Path | None = None
 _events: list[dict] = []
 _malformed = False
+_seq = 0
 
 
 def bind(root: Path | str) -> None:
@@ -102,12 +105,16 @@ def _load() -> None:
 
 
 def _persist() -> None:
-    """Rewrite only when the on-disk file is readable. Never clobber a bad file."""
+    """Atomic replace. A malformed on-disk file is left untouched."""
+    global _malformed
     if _malformed:
         return
     path = _path()
     payload = {"version": 1, "events": _events[:MAX_EVENTS]}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        hq_state.write_json_atomic(path, payload)
+    except RuntimeError:
+        _malformed = True
 
 
 def record(
@@ -124,7 +131,6 @@ def record(
     if lvl not in LEVELS:
         lvl = "info"
     entry = {
-        "id": f"e-{int(time.time() * 1000)}-{threading.get_ident() % 10000}",
         "ts": time.time(),
         "at_h": datetime.now().strftime("%H:%M:%S"),
         "kind": str(kind or "info")[:40],
@@ -134,14 +140,16 @@ def record(
         "meta": _sanitize_meta(meta),
     }
     with _lock:
+        global _seq
+        _seq += 1
+        entry["id"] = f"e-{int(entry['ts'] * 1000)}-{_seq}"
         _events.insert(0, entry)
         del _events[MAX_EVENTS:]
-        snapshot_ok = not _malformed
-    if snapshot_ok:
-        try:
-            _persist()
-        except OSError:
-            pass
+        if not _malformed:
+            try:
+                _persist()
+            except OSError:
+                pass
     return entry
 
 

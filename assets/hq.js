@@ -511,7 +511,7 @@
     if (note) {
       note.textContent = status.enabled
         ? status.https_note || ""
-        : "Désactivé. Mets push_enabled à true dans bridge_config.json, derrière Tailscale Serve (HTTPS).";
+        : "Désactivé. Mets push_enabled à true dans bridge_config.json, derrière Tailscale Serve (HTTPS). Périmètre : alertes, attention critique, échec d'automatisation.";
     }
     btn.addEventListener("click", async () => {
       if (!status.enabled) {
