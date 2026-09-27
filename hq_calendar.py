@@ -128,11 +128,17 @@ def _journal(kind: str, message: str, *, level: str = "info") -> None:
 
 
 def _alert(title: str, detail: str) -> None:
+    """HQ alert and journal/Web Push. Calendar reminders do not post to Discord."""
     fn = _cb.get("alert")
     if not callable(fn):
         return
     try:
-        fn(title[:120], detail[:400])
+        fn(title[:120], detail[:400], discord=False)
+    except TypeError:
+        try:
+            fn(title[:120], detail[:400])
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -325,6 +331,10 @@ def validate_event(payload: dict, *, existing: dict | None = None) -> dict:
     scene_id = _link(payload.get("scene_id"))
     action_id = _link(payload.get("action_id"))
     device_id = _link(payload.get("device_id"))
+    if scene_id and scene_id not in _catalog_ids("scenes"):
+        raise CalendarError("Scène inconnue")
+    if action_id and action_id not in _catalog_ids("actions"):
+        raise CalendarError("Action inconnue")
     if scene_id:
         stored["scene_id"] = scene_id
     if action_id:
@@ -600,6 +610,20 @@ def _project(start: datetime, end: datetime) -> tuple[list[dict], list[dict]]:
     return scheduled, conditional
 
 
+def _catalog_ids(key: str) -> set[str]:
+    """Live scene or action ids. Not capped: save must accept any real catalog id."""
+    fn = _cb.get(key)
+    raw = fn() if callable(fn) else []
+    found: set[str] = set()
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        ident = item.get("id")
+        if isinstance(ident, str) and _LINK_RE.match(ident):
+            found.add(ident)
+    return found
+
+
 def _catalog() -> dict[str, list[dict]]:
     def rows(key: str, label_key: str) -> list[dict]:
         fn = _cb.get(key)
@@ -624,6 +648,17 @@ def _catalog() -> dict[str, list[dict]]:
     }
 
 
+def _hq_local_minute(ts: Any) -> str | None:
+    """Unix ts as HQ wall-clock minute. The browser must not convert this itself."""
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+        return None
+    try:
+        moment = datetime.fromtimestamp(float(ts))
+    except (OSError, OverflowError, ValueError):
+        return None
+    return _fmt_minute(moment)
+
+
 def _activity(start: datetime, end: datetime) -> list[dict]:
     limit = 50
     fn = _cb.get("events_between")
@@ -646,9 +681,9 @@ def _activity(start: datetime, end: datetime) -> list[dict]:
         at = row.get("at") if isinstance(row.get("at"), str) else row.get("at_h")
         if isinstance(at, str) and at:
             marker["at"] = at[:8]
-        ts = row.get("ts")
-        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
-            marker["ts"] = float(ts)
+        local_at = _hq_local_minute(row.get("ts"))
+        if local_at:
+            marker["local_at"] = local_at
         markers.append(marker)
         if len(markers) >= limit:
             break
@@ -776,19 +811,19 @@ def run_linked(event_id: str, target: str) -> dict:
     title = str(event.get("title") or "")[:80]
     if target == "scene":
         ident = event.get("scene_id")
-        known = _catalog()["scenes"]
+        known = _catalog_ids("scenes")
         missing = "Aucune scène liée"
         unknown = "Scène inconnue"
         runner_key = "run_scene"
     else:
         ident = event.get("action_id")
-        known = _catalog()["actions"]
+        known = _catalog_ids("actions")
         missing = "Aucune action liée"
         unknown = "Action inconnue"
         runner_key = "run_action"
     if not isinstance(ident, str) or not ident:
         raise CalendarError(missing)
-    if not any(item.get("id") == ident for item in known):
+    if ident not in known:
         raise CalendarError(unknown)
     fn = _cb.get(runner_key)
     if not callable(fn):

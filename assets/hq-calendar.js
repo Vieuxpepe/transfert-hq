@@ -186,25 +186,58 @@
     return "Agenda · " + fmtDay(anchor);
   }
 
-  async function refresh() {
+  let refreshGen = 0;
+
+  function dayScroll() {
+    const node = document.querySelector("#hq-cal-app .hq-cal-scroll");
+    return node || null;
+  }
+
+  function scrollDayToNow() {
+    if (state.view !== "day" || !sameDay(state.anchor, serverToday())) return;
+    const nowLine = document.querySelector("#hq-cal-app .hq-cal-now");
+    const scroll = dayScroll();
+    const wall = serverNow();
+    if (scroll && wall && scroll.scrollHeight > scroll.clientHeight + 24) {
+      const slot = scroll.querySelector(".hq-cal-slot");
+      const hourPx = slot ? slot.getBoundingClientRect().height : 48;
+      if (hourPx) {
+        const y = ((wall.getHours() * 60 + wall.getMinutes()) / 60) * hourPx;
+        scroll.scrollTop = Math.max(0, y - scroll.clientHeight * 0.35);
+      }
+    }
+    if (nowLine) nowLine.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+
+  async function refresh(mode) {
     const root = document.getElementById("hq-cal-app");
     if (!root || typeof api !== "function") return;
+    const gen = ++refreshGen;
+    const previous = mode === "keep" ? dayScroll() : null;
+    const kept = previous ? previous.scrollTop : null;
     const range = rangeFor();
     const params = new URLSearchParams({ from: range.from, to: range.to });
     if (state.activity && state.view !== "month") params.set("include_activity", "1");
     try {
       const data = await api("/api/calendar?" + params.toString());
+      if (gen !== refreshGen) return;
       state.data = data;
       if (!state.synced && data.server_date && !state.userMoved) {
         state.synced = true;
         const serverDay = parseLocalDateKey(data.server_date);
         if (serverDay && !sameDay(serverDay, state.anchor)) {
           state.anchor = serverDay;
-          return refresh();
+          return refresh(mode);
         }
       }
       render();
+      if (mode === "snap") scrollDayToNow();
+      else if (kept != null) {
+        const next = dayScroll();
+        if (next) next.scrollTop = kept;
+      }
     } catch (err) {
+      if (gen !== refreshGen || state.data) return;
       root.textContent = "";
       root.appendChild(h("p", { class: "hint", text: (err && err.message) || "Calendrier indisponible" }));
     }
@@ -450,13 +483,8 @@
   }
 
   function markerTime(marker, day) {
-    if (typeof marker.ts === "number") {
-      const date = new Date(marker.ts * 1000);
-      if (date.getFullYear() !== day.getFullYear() || date.getMonth() !== day.getMonth() || date.getDate() !== day.getDate()) {
-        return null;
-      }
-      return makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), date.getHours(), date.getMinutes());
-    }
+    const local = parseLocalDateTime(marker.local_at);
+    if (local) return sameDay(local, day) ? local : null;
     const match = /^(\d{2}):(\d{2})/.exec(String(marker.at || ""));
     if (!match || state.view !== "day" || !sameDay(day, state.anchor)) return null;
     return makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), Number(match[1]), Number(match[2]));
@@ -605,7 +633,7 @@
     if (kind === "view") {
       state.view = button.dataset.view || "week";
       try { localStorage.setItem("hq_cal_view", state.view); } catch (_) {}
-      refresh();
+      refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
       return;
     }
     if (kind === "prev" || kind === "next") {
@@ -615,13 +643,13 @@
       else if (state.view === "week") state.anchor = addLocalDays(state.anchor, dir * 7);
       else if (state.view === "month") state.anchor = addMonths(state.anchor, dir);
       else state.anchor = addLocalDays(state.anchor, dir * 30);
-      refresh();
+      refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
       return;
     }
     if (kind === "today") {
       state.userMoved = true;
       state.anchor = serverToday();
-      refresh();
+      refresh("snap");
       return;
     }
     if (kind === "activity") {
@@ -641,7 +669,7 @@
       state.anchor = day;
       state.view = "day";
       try { localStorage.setItem("hq_cal_view", "day"); } catch (_) {}
-      refresh();
+      refresh(sameDay(day, serverToday()) ? "snap" : undefined);
       return;
     }
     if (kind === "slot") {
@@ -1037,9 +1065,19 @@
       });
     }
     window.hqCalendarShow = function () {
-      refresh();
+      refresh("snap");
     };
-    if (document.body && document.body.dataset.view === "calendrier") refresh();
+    if (document.body && document.body.dataset.view === "calendrier") refresh("snap");
+    setInterval(() => {
+      if (document.hidden) return;
+      if (!document.body || document.body.dataset.view !== "calendrier") return;
+      refresh("keep");
+    }, 45000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      if (!document.body || document.body.dataset.view !== "calendrier") return;
+      refresh("keep");
+    });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

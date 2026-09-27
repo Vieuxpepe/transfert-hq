@@ -344,11 +344,86 @@ class ProjectionTests(unittest.TestCase):
         with self.assertRaises(hq_calendar.CalendarError):
             hq_calendar.run_linked("sched-day-20260928T0900", "scene")
 
+    def test_unknown_scene_and_action_rejected_on_save(self):
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.save_event(self._day(scene_id="missing"))
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.save_event(self._day(action_id="nope"))
+        self.assertFalse((self.tmp / "hq_calendar.json").exists())
+        saved = hq_calendar.save_event(self._day(scene_id="ping", action_id="open-inbox"))
+        self.assertEqual(saved["scene_id"], "ping")
+        self.assertEqual(saved["action_id"], "open-inbox")
+        self.assertEqual(self.calls, [])
+
     def test_unknown_scene_rejected_without_runner(self):
-        saved = hq_calendar.save_event(self._day(scene_id="missing"))
+        saved = hq_calendar.save_event(self._day(scene_id="ping"))
+        _bind(
+            self.tmp,
+            queue_load=lambda: self.jobs,
+            run_scene=lambda sid: self.calls.append(("scene", sid)) or {"ok": True, "id": sid},
+            run_action=lambda aid: self.calls.append(("action", aid)) or {"ok": True, "id": aid},
+            scenes=lambda: [],
+            actions=lambda: [{"id": "open-inbox", "label": "Inbox"}],
+            events_between=self._events,
+        )
         with self.assertRaises(hq_calendar.CalendarError):
             hq_calendar.run_linked(saved["id"], "scene")
         self.assertEqual(self.calls, [])
+
+    def test_recurring_projection_not_before_created(self):
+        created = datetime(2026, 10, 6, 10, 0).timestamp()
+        self.jobs.append(
+            {
+                "id": "day",
+                "label": "Chaque jour",
+                "when": "daily",
+                "type": "backup",
+                "at": "08:00",
+                "status": "pending",
+                "created": created,
+            }
+        )
+        before = json.dumps(self.jobs, sort_keys=True)
+        body = hq_calendar.query(datetime(2026, 9, 1), datetime(2026, 10, 10))
+        starts = [item["start"] for item in body["items"] if item.get("schedule_id") == "day"]
+        self.assertEqual(starts, ["2026-10-07T08:00", "2026-10-08T08:00", "2026-10-09T08:00"])
+        self.assertNotIn("2026-10-06T08:00", starts)
+        self.assertTrue(all(not start.startswith("2026-09") for start in starts))
+        self.assertEqual(json.dumps(self.jobs, sort_keys=True), before)
+        weekly = {
+            "id": "wk",
+            "when": "weekly",
+            "at": "09:00",
+            "weekday": 0,
+            "created": created,
+            "label": "Lundi",
+        }
+        slots = hq_automation.project_schedule_slots(weekly, datetime(2026, 9, 1), datetime(2026, 10, 20))
+        self.assertEqual(
+            [slot.strftime("%Y-%m-%dT%H:%M") for slot in slots],
+            ["2026-10-12T09:00", "2026-10-19T09:00"],
+        )
+        weekdays = {
+            "id": "wd",
+            "when": "weekdays",
+            "at": "08:00",
+            "created": datetime(2026, 10, 2, 18, 0).timestamp(),
+            "label": "Ouvres",
+        }
+        slots = hq_automation.project_schedule_slots(weekdays, datetime(2026, 9, 1), datetime(2026, 10, 8))
+        self.assertEqual(
+            [slot.strftime("%Y-%m-%dT%H:%M") for slot in slots],
+            ["2026-10-05T08:00", "2026-10-06T08:00", "2026-10-07T08:00"],
+        )
+
+    def test_activity_local_at_is_hq_wall_time(self):
+        moment = datetime(2026, 9, 28, 15, 45, 30)
+        self._markers = [{"kind": "upload", "message": "fichier", "ts": moment.timestamp(), "notes": "secret-note"}]
+        body = hq_calendar.query(datetime(2026, 9, 28), datetime(2026, 9, 29), include_activity=True)
+        marker = body["activity"][0]
+        self.assertEqual(marker["local_at"], "2026-09-28T15:45")
+        self.assertNotIn("ts", marker)
+        self.assertNotIn("secret-note", json.dumps(marker))
 
     def test_summary_today_and_next_without_notes(self):
         self.jobs.append(
@@ -620,7 +695,7 @@ class ReminderTests(unittest.TestCase):
             self.tmp,
             local_now=lambda: self.moment,
             now=lambda: self.moment.timestamp(),
-            alert=lambda title, detail: self.alerts.append((title, detail)),
+            alert=lambda title, detail, **kwargs: self.alerts.append((title, detail, kwargs.get("discord", True))),
             journal=lambda kind, message, **_extra: self.notes.append((kind, message)),
             run_scene=lambda sid: self.runs.append(sid) or {"ok": True, "id": sid},
             scenes=lambda: [{"id": "ping", "label": "Ping"}],
@@ -650,6 +725,7 @@ class ReminderTests(unittest.TestCase):
         offsets = sorted(item["offset"] for item in fired)
         self.assertEqual(offsets, [5])
         self.assertEqual(len(self.alerts), 1)
+        self.assertEqual(self.alerts[0][2], False)
         self.assertTrue(any(kind == "calendar_reminder" for kind, _message in self.notes))
         self.assertNotIn("SECRET_NOTE", json.dumps(self.alerts))
         self.assertNotIn("SECRET_NOTE", json.dumps(self.notes))
@@ -660,6 +736,32 @@ class ReminderTests(unittest.TestCase):
         disk = json.loads((self.tmp / "hq_calendar.json").read_text(encoding="utf-8"))
         self.assertEqual(disk["reminder_fired"][f"{saved['id']}|2026-09-28T10:15|15"]["status"], "skipped")
         self.assertEqual(disk["reminder_fired"][f"{saved['id']}|2026-09-28T10:15|5"]["status"], "fired")
+
+    def test_reminder_does_not_call_discord(self):
+        discord = []
+
+        def alert(title, detail, discord_flag=True):
+            self.alerts.append((title, detail, discord_flag))
+            if discord_flag:
+                discord.append(title)
+
+        _bind(
+            self.tmp,
+            local_now=lambda: self.moment,
+            now=lambda: self.moment.timestamp(),
+            alert=lambda title, detail, discord=True: alert(title, detail, discord),
+            journal=lambda kind, message, **_extra: self.notes.append((kind, message)),
+            run_scene=lambda sid: self.runs.append(sid) or {"ok": True, "id": sid},
+            scenes=lambda: [{"id": "ping", "label": "Ping"}],
+        )
+        hq_calendar.save_event(self._event(reminders_min=[0], start="2026-09-28T10:00", end="2026-09-28T10:30"))
+        self.moment = datetime(2026, 9, 28, 10, 0, 0)
+        fired = hq_calendar.tick()
+        self.assertEqual(len(fired), 1)
+        self.assertEqual(discord, [])
+        self.assertEqual(self.alerts[-1][2], False)
+        self.assertTrue(any(kind == "calendar_reminder" for kind, _message in self.notes))
+        self.assertEqual(self.runs, [])
 
     def test_catchup_window_and_stale_skip(self):
         hq_calendar.save_event(self._event(start="2026-09-28T10:00", end="2026-09-28T10:30", reminders_min=[0], scene_id=None))

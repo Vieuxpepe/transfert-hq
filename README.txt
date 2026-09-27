@@ -90,8 +90,13 @@ Calendrier
   une action, ou un appareil (l'appareil ouvre seulement sa fiche).
   Les horaires daily / weekdays / weekly / once sont projetés depuis
   bridge_queue.json. Ils ne sont pas copiés dans hq_calendar.json.
-  online, wake et on-online restent dans la section Conditionnel,
-  hors de la grille. La projection ne modifie pas la file.
+  Un horaire récurrent ne commence pas avant sa création : un daily
+  08:00 créé à 10:00 apparaît le lendemain à 08:00, pas le matin même
+  ni les mois précédents. online, wake et on-online restent dans la
+  section Conditionnel, hors de la grille. La projection ne modifie
+  pas la file.
+  Une scène ou une action liée est refusée à l'enregistrement si elle
+  n'est pas dans le catalogue, puis revérifiée au lancement.
   Révision attendue (expected_rev) : un conflit répond 409.
   Plafond d'environ 2000 événements. Pas de récurrence manuelle.
   L'horloge ne lance jamais une scène ou une action liée. Seul
@@ -100,6 +105,11 @@ Calendrier
   du début invalide l'ancienne identité. Rattrapage de 5 minutes,
   au-delà le rappel est sauté. Journée entière : ancre à 08:00 HQ
   le jour de début (0 = 08:00 ce jour-là, 1440 = 08:00 la veille).
+  L'alerte reste dans HQ (journal et Web Push). Discord n'est pas appelé.
+  Les pastilles d'activité portent l'heure HQ (local_at), pas le fuseau
+  du navigateur. L'onglet ouvert se rafraîchit environ toutes les 45 s
+  tant qu'il est visible. La vue Jour d'aujourd'hui défile près de
+  l'heure courante.
   GET /api/hq ajoute calendar.today (5 éléments) et calendar.next
   sans sonder Tailscale. L'accueil affiche Aujourd'hui / Prochain.
   Le wallboard n'affiche que la carte Prochain.
