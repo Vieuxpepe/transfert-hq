@@ -14,21 +14,21 @@
 #hq-quick-scenes{margin-top:8px}
 
 .device-card[data-device-id]{cursor:pointer}
-.device-card[data-device-id]:hover{border-color:var(--accent)}
+.device-card[data-device-id]:focus-visible{outline:var(--focus-ring);outline-offset:2px}
 
 .palette{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:80;display:flex;align-items:flex-start;justify-content:center;padding:10vh 16px 16px}
 .palette[hidden]{display:none}
 .palette-card{width:min(560px,100%);background:var(--panel,#161d27);border:1px solid var(--line,#2a3544);border-radius:14px;padding:12px;box-shadow:0 18px 50px rgba(0,0,0,.35)}
 .palette-card input{width:100%;margin-bottom:8px}
 .palette-card ul{list-style:none;margin:0;padding:0;max-height:50vh;overflow:auto}
-.palette-card li{padding:8px 10px;border-radius:8px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
-.palette-card li.active,.palette-card li:hover{background:color-mix(in srgb,var(--accent) 16%,transparent)}
-.palette-kind{color:var(--muted);font-size:.78rem}
+.palette-card li{padding:10px 12px;border-radius:8px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;min-height:var(--tap-min,44px);align-items:center}
+.palette-card li.active{background:color-mix(in srgb,var(--accent) 18%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 40%,var(--line))}
+.palette-kind{color:var(--muted);font-size:var(--text-sm,.82rem)}
 
 dialog#hq-device-dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--text);max-width:520px;width:calc(100% - 24px);padding:14px}
 dialog#hq-device-dialog::backdrop{background:rgba(0,0,0,.55)}
 .cap-row{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
-.cap{font-size:.75rem;padding:3px 8px;border-radius:999px;background:var(--panel-2,#1c2530);border:1px solid var(--line)}
+.cap{font-size:var(--text-xs,.75rem);padding:4px 8px;border-radius:999px;background:var(--panel-2,#1c2530);border:1px solid var(--line);line-height:1.35}
 .cap.off{opacity:.35}
 
 .spark{display:block;color:var(--accent);margin-top:6px}
