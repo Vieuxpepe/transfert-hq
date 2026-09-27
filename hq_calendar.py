@@ -803,3 +803,78 @@ def run_linked(event_id: str, target: str) -> dict:
     _journal("calendar_run", f"Exécution {target}: {title}")
     return {"ok": ok, "id": event_id, "target": target}
 
+
+def _reminder_anchor(event: dict) -> datetime | None:
+    if event.get("all_day"):
+        day = parse_date(str(event.get("start") or ""))
+        if day is None:
+            return None
+        return day.replace(
+            hour=ALL_DAY_REMINDER_HOUR,
+            minute=ALL_DAY_REMINDER_MINUTE,
+            second=0,
+            microsecond=0,
+        )
+    return parse_minute(str(event.get("start") or ""))
+
+
+def tick() -> list[dict]:
+    """Fire due reminders once. Never starts a linked scene or action.
+
+    A reminder is due at the anchor minus its offset. Timed anchors are the
+    start minute. All-day anchors are 08:00 HQ local on the start date.
+    If the process wakes up more than 5 minutes late, the reminder is skipped.
+    """
+    if not ready():
+        return []
+    path = _path()
+    lock = hq_state.path_lock(path)
+    due: list[dict] = []
+    with lock:
+        state, bad = _read_state()
+        if bad or state is None:
+            return []
+        state = {
+            "version": VERSION,
+            "events": list(state.get("events") or []),
+            "reminder_fired": dict(state.get("reminder_fired") or {}),
+        }
+        now = _local_now().replace(microsecond=0)
+        changed = False
+        for event in state["events"]:
+            if not isinstance(event, dict):
+                continue
+            anchor = _reminder_anchor(event)
+            if anchor is None:
+                continue
+            start_key = str(event.get("start") or "")
+            event_id = str(event.get("id") or "")
+            for offset in event.get("reminders_min") or []:
+                if isinstance(offset, bool) or not isinstance(offset, int):
+                    continue
+                fire_at = anchor - timedelta(minutes=int(offset))
+                key = f"{event_id}|{start_key}|{offset}"
+                if key in state["reminder_fired"]:
+                    continue
+                delta = (now - fire_at).total_seconds()
+                if delta < 0:
+                    continue
+                status = "fired" if delta <= REMINDER_CATCHUP_SEC else "skipped"
+                state["reminder_fired"][key] = {"at": _now(), "status": status}
+                changed = True
+                if status == "fired":
+                    due.append(
+                        {
+                            "id": event_id,
+                            "title": str(event.get("title") or "Événement")[:TITLE_MAX],
+                            "start": start_key,
+                            "offset": int(offset),
+                        }
+                    )
+        if changed:
+            _write_state(state)
+    for item in due:
+        _alert("Rappel", f"{item['title']} · {item['start']}")
+        _journal("calendar_reminder", f"Rappel: {item['title']}")
+    return due
+

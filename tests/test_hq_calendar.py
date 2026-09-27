@@ -604,11 +604,111 @@ class ApiTests(unittest.TestCase):
             self.assertLessEqual(len(calendar["today"]), 5)
             blob = json.dumps(calendar)
             self.assertNotIn(note, blob)
-            titles = [item.get("title") for item in calendar["today"]]
-            next_title = (calendar.get("next") or {}).get("title")
-            self.assertTrue("Bientot HQ" in titles or next_title == "Bientot HQ")
+            self.assertIn("Bientot HQ", blob)
         finally:
             iphone_bridge.tailscale_peers = original
+
+
+class ReminderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hq-cal-rem-"))
+        self.moment = datetime(2026, 9, 28, 10, 0, 0)
+        self.alerts = []
+        self.notes = []
+        self.runs = []
+        _bind(
+            self.tmp,
+            local_now=lambda: self.moment,
+            now=lambda: self.moment.timestamp(),
+            alert=lambda title, detail: self.alerts.append((title, detail)),
+            journal=lambda kind, message, **_extra: self.notes.append((kind, message)),
+            run_scene=lambda sid: self.runs.append(sid) or {"ok": True, "id": sid},
+            scenes=lambda: [{"id": "ping", "label": "Ping"}],
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _event(self, **over):
+        base = {
+            "title": "Cours",
+            "all_day": False,
+            "start": "2026-09-28T10:15",
+            "end": "2026-09-28T11:00",
+            "category": "study",
+            "notes": "SECRET_NOTE",
+            "reminders_min": [15],
+            "scene_id": "ping",
+        }
+        base.update(over)
+        return base
+
+    def test_fires_once_and_does_not_run_scene(self):
+        saved = hq_calendar.save_event(self._event(reminders_min=[15, 5]))
+        self.moment = datetime(2026, 9, 28, 10, 15, 0)
+        fired = hq_calendar.tick()
+        offsets = sorted(item["offset"] for item in fired)
+        self.assertEqual(offsets, [5])
+        self.assertEqual(len(self.alerts), 1)
+        self.assertTrue(any(kind == "calendar_reminder" for kind, _message in self.notes))
+        self.assertNotIn("SECRET_NOTE", json.dumps(self.alerts))
+        self.assertNotIn("SECRET_NOTE", json.dumps(self.notes))
+        self.assertEqual(self.runs, [])
+        again = hq_calendar.tick()
+        self.assertEqual(again, [])
+        self.assertEqual(len(self.alerts), 1)
+        disk = json.loads((self.tmp / "hq_calendar.json").read_text(encoding="utf-8"))
+        self.assertEqual(disk["reminder_fired"][f"{saved['id']}|2026-09-28T10:15|15"]["status"], "skipped")
+        self.assertEqual(disk["reminder_fired"][f"{saved['id']}|2026-09-28T10:15|5"]["status"], "fired")
+
+    def test_catchup_window_and_stale_skip(self):
+        hq_calendar.save_event(self._event(start="2026-09-28T10:00", end="2026-09-28T10:30", reminders_min=[0], scene_id=None))
+        self.moment = datetime(2026, 9, 28, 10, 5, 0)
+        self.assertEqual(len(hq_calendar.tick()), 1)
+        hq_calendar.save_event(self._event(title="Tard", start="2026-09-28T12:00", end="2026-09-28T12:30", reminders_min=[0]))
+        self.moment = datetime(2026, 9, 28, 12, 6, 0)
+        self.assertEqual(hq_calendar.tick(), [])
+        self.assertEqual(len(self.alerts), 1)
+        self.assertEqual(self.runs, [])
+
+    def test_all_day_anchor_is_eight(self):
+        hq_calendar.save_event(
+            self._event(all_day=True, start="2026-09-28", end="2026-09-29", reminders_min=[0, 1440], title="Journee")
+        )
+        self.moment = datetime(2026, 9, 27, 8, 2, 0)
+        fired = hq_calendar.tick()
+        self.assertEqual([item["offset"] for item in fired], [1440])
+        self.moment = datetime(2026, 9, 28, 7, 50, 0)
+        self.assertEqual(hq_calendar.tick(), [])
+        self.moment = datetime(2026, 9, 28, 8, 1, 0)
+        fired = hq_calendar.tick()
+        self.assertEqual([item["offset"] for item in fired], [0])
+        self.assertEqual(self.runs, [])
+
+    def test_edit_allows_a_new_reminder_identity(self):
+        saved = hq_calendar.save_event(self._event())
+        self.moment = datetime(2026, 9, 28, 10, 0, 0)
+        self.assertEqual(len(hq_calendar.tick()), 1)
+        hq_calendar.save_event(
+            self._event(id=saved["id"], start="2026-09-28T12:15", end="2026-09-28T13:00"),
+            expected_rev=saved["rev"],
+        )
+        self.moment = datetime(2026, 9, 28, 12, 0, 0)
+        fired = hq_calendar.tick()
+        self.assertEqual(len(fired), 1)
+        self.assertEqual(fired[0]["start"], "2026-09-28T12:15")
+        self.assertEqual(self.runs, [])
+
+    def test_tick_leaves_missing_and_malformed_files(self):
+        path = self.tmp / "hq_calendar.json"
+        self.assertEqual(hq_calendar.tick(), [])
+        self.assertFalse(path.exists())
+        original = "{ not json"
+        path.write_text(original, encoding="utf-8")
+        self.assertEqual(hq_calendar.tick(), [])
+        self.assertEqual(path.read_text(encoding="utf-8"), original)
+        self.assertEqual(self.alerts, [])
+        self.assertEqual(self.runs, [])
 
 
 if __name__ == "__main__":

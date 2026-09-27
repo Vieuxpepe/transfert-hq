@@ -5995,6 +5995,10 @@ def main() -> None:
             hq_automation.tick()
         except Exception as e:
             sys.stderr.write(f"hq tick: {e}\n")
+        try:
+            hq_calendar.tick()
+        except Exception as e:
+            sys.stderr.write(f"calendar tick: {e}\n")
 
     cc_ext.start_monitor(
         get_devices=lambda: presence_list(),
