@@ -112,19 +112,32 @@ def default_scenes() -> list[dict]:
 
 
 def log_activity(kind: str, message: str, **extra: Any) -> None:
+    level = str(extra.pop("level", "") or "")
     entry = {
         "id": f"{int(time.time()*1000)}-{kind}",
         "kind": kind,
         "message": message[:240],
         "at": time.time(),
         "at_h": datetime.now().strftime("%H:%M:%S"),
-        **{k: v for k, v in extra.items() if v is not None},
+        **{k: v for k, v in extra.items() if v is not None and k not in ("pin", "token", "password", "cmd", "command")},
     }
     with _lock:
         _activity.insert(0, entry)
         del _activity[ACTIVITY_MAX:]
         _persist_activity()
-    if kind in ("upload", "lock", "screenshot", "print", "action", "scene", "send", "alert"):
+    try:
+        import hq_events
+
+        if hq_events.enabled():
+            if not level:
+                if kind in ("error", "backup_fail"):
+                    level = "critical"
+                elif kind == "alert":
+                    level = "warning"
+                else:
+                    level = "info"
+            hq_events.record(kind, message, level=level, source="activity", meta=extra)
+    except Exception:
         pass
 
 
@@ -801,7 +814,12 @@ def scratchpad_get() -> dict:
     return {"text": text, "mtime": mtime}
 
 
+SCRATCHPAD_MAX = 256 * 1024
+
+
 def scratchpad_set(text: str) -> dict:
+    if len(text.encode("utf-8")) > SCRATCHPAD_MAX:
+        raise ValueError("Bloc-notes trop long")
     path = scratchpad_path()
     path.write_text(text, encoding="utf-8")
     log_activity("scratchpad", "Bloc-notes partagé mis à jour")
@@ -867,20 +885,28 @@ def queue_save(items: list[dict]) -> None:
 
 def queue_add(job: dict) -> dict:
     items = queue_load()
-    job = {
-        "id": job.get("id") or f"q-{int(time.time()*1000)}",
-        "label": str(job.get("label") or "Tâche")[:80],
-        "when": str(job.get("when") or "online"),
-        "type": str(job.get("type") or "explore"),
-        "path": job.get("path"),
-        "action_id": job.get("action_id"),
-        "scene_id": job.get("scene_id"),
-        "created": time.time(),
-        "status": "pending",
-    }
+    try:
+        import hq_automation
+
+        if hq_automation.ready():
+            job = hq_automation.normalize_schedule_job(job)
+        else:
+            raise RuntimeError("skip")
+    except RuntimeError:
+        job = {
+            "id": job.get("id") or f"q-{int(time.time()*1000)}",
+            "label": str(job.get("label") or "Tâche")[:80],
+            "when": str(job.get("when") or "online"),
+            "type": str(job.get("type") or "explore"),
+            "path": job.get("path"),
+            "action_id": job.get("action_id"),
+            "scene_id": job.get("scene_id"),
+            "created": time.time(),
+            "status": "pending",
+        }
     items.insert(0, job)
     queue_save(items[:50])
-    log_activity("queue", f"Au réveil: {job['label']}")
+    log_activity("queue", f"Planifié: {job['label']}")
     return job
 
 
@@ -928,6 +954,22 @@ def _run_job(job: dict) -> None:
 
 
 def run_scene(scene_id: str) -> dict:
+    try:
+        import hq_automation
+
+        if hq_automation.ready():
+            result = hq_automation.run_scene(scene_id)
+            if not result.get("ok"):
+                raise ValueError(result.get("error") or "Scène en échec")
+            return result
+    except ValueError:
+        raise
+    except Exception:
+        # Fall through to the legacy runner only when v7 automation is not bound.
+        import hq_automation
+
+        if hq_automation.ready():
+            raise
     scenes = _cfg().get("scenes") or default_scenes()
     scene = next((s for s in scenes if isinstance(s, dict) and s.get("id") == scene_id), None)
     if not scene:
@@ -1140,7 +1182,17 @@ def run_backup(*, force: bool = False) -> dict:
     log_activity("backup", f"Backup → {dest}")
     if notify_discord:
         notify_discord("Backup Transfert", f"`{dest}` ({copied} dossiers)")
-    return {"ok": True, "path": str(dest), "folders": copied}
+    try:
+        import hq_automation
+
+        if hq_automation.ready():
+            hq_automation.note_backup({"id": stamp, "path": str(dest), "folders": copied, "at": now})
+    except Exception as e:
+        try:
+            __import__("sys").stderr.write(f"backup catalog: {e}\n")
+        except Exception:
+            pass
+    return {"ok": True, "id": stamp, "path": str(dest), "folders": copied}
 
 
 def maybe_backup() -> None:

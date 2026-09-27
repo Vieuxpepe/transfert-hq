@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transfert Bridge v6 — HQ (chunked upload, kanban, terminal, multi-user)."""
+"""Transfert HQ v7 — Mission Control (stdlib HTTP, local JSON state)."""
 
 from __future__ import annotations
 
@@ -30,6 +30,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import cc_ext
+import hq_automation
+import hq_devices
+import hq_events
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
@@ -109,6 +112,17 @@ SYSTEM_NAMES = {
     "bridge_presence_history.json",
     "bridge_sessions.json",
     "bridge_screenshot_ingest.json",
+    "hq_events.py",
+    "hq_automation.py",
+    "hq_devices.py",
+    "hq_events.json",
+    "hq_automation.json",
+    "hq_runs.json",
+    "hq_telemetry.json",
+    "hq_backup_index.json",
+    "hq_push_subscriptions.json",
+    "hq_vapid.json",
+    ".gitignore",
     ".tmp",
 }
 
@@ -137,6 +151,17 @@ ADMIN_PREFIXES = (
     "/api/inbox-zero",
     "/api/captures",
     "/api/print",
+    "/api/hq",
+    "/api/events",
+    "/api/device",
+    "/api/palette",
+    "/api/automation",
+    "/api/runs",
+    "/api/backups",
+    "/api/telemetry",
+    "/api/brief",
+    "/api/push",
+    "/api/schedules",
 )
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
@@ -453,8 +478,15 @@ def default_config() -> dict:
         "public_base_urls": [],  # optional https://… bases (Tailscale Serve) for CSRF allowlist + QR
         "upload_sessions_max": UPLOAD_SESSIONS_MAX,
         "upload_disk_reserve_gb": UPLOAD_DISK_RESERVE_GB_DEFAULT,
+        "automation_enabled": True,
+        "schedules_enabled": True,
+        "daily_brief_discord": False,  # brief Discord seulement si webhook ET ce flag
+        "push_enabled": False,  # Web Push opt-in (HTTPS / Tailscale Serve)
+        "telemetry_local_sec": 45,
+        "telemetry_remote_sec": 180,
+        "telemetry_retain_hours": 36,
         "created": datetime.now().isoformat(timespec="seconds"),
-        "note": "Command Center HQ v6. PIN required in bridge_config.json. public_base_urls optional (Serve HTTPS). Never commit PIN. disk_probe_* = remote free space via Tailscale SSH.",
+        "note": "Mission Control HQ v7. PIN required in bridge_config.json. public_base_urls optional (Serve HTTPS). Never commit PIN. push_enabled / daily_brief_discord restent off par défaut.",
     }
 
 
@@ -558,6 +590,22 @@ def load_config(*, write: bool = True) -> dict:
         base["notify_min_upload_mb"] = int(base.get("notify_min_upload_mb") or 50)
     except (TypeError, ValueError):
         base["notify_min_upload_mb"] = 50
+    base["automation_enabled"] = bool(base.get("automation_enabled", True))
+    base["schedules_enabled"] = bool(base.get("schedules_enabled", True))
+    base["daily_brief_discord"] = bool(base.get("daily_brief_discord"))
+    base["push_enabled"] = bool(base.get("push_enabled"))
+    try:
+        base["telemetry_local_sec"] = max(30, min(60, int(base.get("telemetry_local_sec") or 45)))
+    except (TypeError, ValueError):
+        base["telemetry_local_sec"] = 45
+    try:
+        base["telemetry_remote_sec"] = max(120, min(600, int(base.get("telemetry_remote_sec") or 180)))
+    except (TypeError, ValueError):
+        base["telemetry_remote_sec"] = 180
+    try:
+        base["telemetry_retain_hours"] = max(24, min(48, int(base.get("telemetry_retain_hours") or 36)))
+    except (TypeError, ValueError):
+        base["telemetry_retain_hours"] = 36
     # Credential fingerprint → bump auth_generation when PIN/users change
     users = [u for u in (base.get("users") or []) if isinstance(u, dict)]
     cred = str(base.get("pin") or "") + "|" + "|".join(
@@ -597,6 +645,7 @@ def ensure_folders_and_migrate() -> None:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Photos").mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Captures").mkdir(parents=True, exist_ok=True)
+    (ROOT / "Inbox" / "Voice").mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Screenshots").mkdir(parents=True, exist_ok=True)  # legacy alias folder
     # one-time: move legacy Screenshots files into Captures
     legacy = ROOT / "Inbox" / "Screenshots"
@@ -616,7 +665,7 @@ def ensure_folders_and_migrate() -> None:
     for p in ROOT.iterdir():
         if not p.is_file():
             continue
-        if p.name.lower() in SYSTEM_NAMES:
+        if p.name.startswith(".") or p.name.lower() in SYSTEM_NAMES:
             continue
         # never migrate bridge/code helpers
         if p.suffix.lower() in {".py", ".pyc", ".pyw", ".vbs", ".ps1", ".bat", ".cmd", ".json", ".log", ".pid"}:
@@ -1178,7 +1227,7 @@ def bridge_status() -> dict:
         "max_upload_h": human_size(max_upload_bytes()),
         "disk_d": disk_free(Path("D:/")),
         "disk_transfert": disk_free(ROOT),
-        "version": "6.0",
+        "version": "7.0",
         "terminal_commands": [
             {"id": c.get("id"), "label": c.get("label")}
             for c in (CONFIG.get("terminal_commands") or [])
@@ -1324,9 +1373,37 @@ def host_device_entry() -> dict:
     }
 
 
+_ROSTER_CACHE_LOCK = threading.Lock()
+_ROSTER_CACHE: dict = {"at": 0.0, "devices": []}
+_HQ_BOUND = False
+
+
+def _store_roster_cache(devices: list[dict]) -> None:
+    with _ROSTER_CACHE_LOCK:
+        _ROSTER_CACHE["at"] = time.time()
+        _ROSTER_CACHE["devices"] = [dict(d) for d in devices]
+
+
+def roster_cache_age() -> float | None:
+    with _ROSTER_CACHE_LOCK:
+        if not _ROSTER_CACHE.get("devices"):
+            return None
+        return max(0.0, time.time() - float(_ROSTER_CACHE.get("at") or 0))
+
+
+def cached_roster_devices() -> list[dict]:
+    """Local host + browsers, plus last cached Tailscale peers. Does not probe."""
+    with _ROSTER_CACHE_LOCK:
+        cached = [dict(d) for d in (_ROSTER_CACHE.get("devices") or [])]
+    peers = [d for d in cached if d.get("source") == "tailscale"]
+    return [host_device_entry(), *presence_list(), *peers]
+
+
 def devices_roster() -> dict:
     peers = tailscale_peers()
-    return {"devices": [host_device_entry()] + presence_list() + peers}
+    devices = [host_device_entry()] + presence_list() + peers
+    _store_roster_cache(devices)
+    return {"devices": devices}
 
 
 def tailscale_peers() -> list[dict]:
@@ -1384,8 +1461,12 @@ def tailscale_peers() -> list[dict]:
 
 
 def probe_remote_disks_now() -> None:
-    """Called from monitor — uses raw peer list (cache apply is fine)."""
-    cc_ext.refresh_remote_disks(tailscale_peers())
+    """Background disk probe. Refreshes the roster cache; HTTP /api/hq does not probe."""
+    peers = tailscale_peers()
+    cc_ext.refresh_remote_disks(peers)
+    for peer in peers:
+        cc_ext.apply_disk_cache(peer)
+    _store_roster_cache([host_device_entry(), *presence_list(), *peers])
 
 
 def harvest_screenshots_now(*, force: bool = False) -> dict:
@@ -1617,6 +1698,239 @@ def pc_print_file(rel: str) -> dict:
     notify_discord("Impression", f"`{rel}`")
     cc_ext.log_activity("print", f"Impression {rel}", rel=rel)
     return {"ok": True, "rel": rel}
+
+
+def hq_attention(devices: list[dict]) -> list[dict]:
+    items: list[dict] = []
+    disk = disk_free(ROOT)
+    try:
+        min_gb = float(CONFIG.get("alert_disk_min_gb") or 20)
+    except (TypeError, ValueError):
+        min_gb = 20.0
+    free = int(disk.get("free") or 0) if "error" not in disk else 0
+    if free and free < min_gb * 1024**3:
+        items.append(
+            {
+                "level": "critical",
+                "title": "Espace disque bas",
+                "detail": f"{disk.get('free_h') or '?'} libre (seuil {min_gb:g} Go)",
+            }
+        )
+    elif free and free < min_gb * 2 * 1024**3:
+        items.append(
+            {
+                "level": "warning",
+                "title": "Espace disque à surveiller",
+                "detail": f"{disk.get('free_h') or '?'} libre",
+            }
+        )
+    for device in devices:
+        if device.get("source") == "tailscale" and device.get("online") is False:
+            items.append(
+                {
+                    "level": "warning",
+                    "title": "Appareil hors ligne",
+                    "detail": str(device.get("name") or device.get("id") or "")[:80],
+                }
+            )
+            if sum(1 for it in items if it["title"] == "Appareil hors ligne") >= 5:
+                break
+    for alert in (cc_ext.alerts_list() or [])[:5]:
+        items.append(
+            {
+                "level": "warning",
+                "title": str(alert.get("title") or "Alerte")[:80],
+                "detail": str(alert.get("detail") or "")[:180],
+            }
+        )
+    for ev in hq_events.recent(30):
+        if ev.get("level") == "critical":
+            items.append(
+                {
+                    "level": "critical",
+                    "title": str(ev.get("kind") or "Critique"),
+                    "detail": str(ev.get("message") or "")[:180],
+                }
+            )
+            break
+    try:
+        for job in cc_ext.queue_list():
+            if isinstance(job, dict) and job.get("status") == "error":
+                items.append(
+                    {
+                        "level": "warning",
+                        "title": "Tâche en échec",
+                        "detail": str(job.get("label") or "")[:80],
+                    }
+                )
+                break
+    except Exception:
+        pass
+    return items[:12]
+
+
+def hq_overall_state(attention: list[dict]) -> str:
+    if any(item.get("level") == "critical" for item in attention):
+        return "critical"
+    if attention:
+        return "warning"
+    return "ok"
+
+
+def hq_snapshot() -> dict:
+    raw_devices = cached_roster_devices()
+    devices = hq_devices.normalize_all(raw_devices)
+    attention = hq_attention(raw_devices)
+    scenes = [
+        {"id": s.get("id"), "label": s.get("label")}
+        for s in (CONFIG.get("scenes") or [])
+        if isinstance(s, dict) and s.get("id")
+    ]
+    return {
+        "ok": True,
+        "version": "7.0",
+        "state": hq_overall_state(attention),
+        "attention": attention,
+        "devices": devices,
+        "events": hq_events.recent(12),
+        "scenes": scenes,
+        "generated_at": time.time(),
+        "cached": True,
+        "roster_age_sec": roster_cache_age(),
+    }
+
+
+def palette_catalog() -> list[dict]:
+    items: list[dict] = []
+    for folder in CONFIG.get("folders") or []:
+        items.append({"kind": "folder", "id": str(folder), "label": str(folder), "hint": "Dossier"})
+    for fav in CONFIG.get("favorites") or []:
+        items.append({"kind": "favorite", "id": str(fav), "label": str(fav), "hint": "Favori"})
+    for scene in CONFIG.get("scenes") or []:
+        if isinstance(scene, dict) and scene.get("id"):
+            items.append(
+                {
+                    "kind": "scene",
+                    "id": str(scene["id"]),
+                    "label": str(scene.get("label") or scene["id"]),
+                    "hint": "Scène",
+                }
+            )
+    for action in CONFIG.get("actions") or []:
+        if isinstance(action, dict) and action.get("id"):
+            items.append(
+                {
+                    "kind": "action",
+                    "id": str(action["id"]),
+                    "label": str(action.get("label") or action["id"]),
+                    "hint": "Action",
+                }
+            )
+    for cmd in CONFIG.get("terminal_commands") or []:
+        if isinstance(cmd, dict) and cmd.get("id"):
+            items.append(
+                {
+                    "kind": "terminal",
+                    "id": str(cmd["id"]),
+                    "label": str(cmd.get("label") or cmd["id"]),
+                    "hint": "Commande allowlist",
+                }
+            )
+    for device in hq_devices.normalize_all(cached_roster_devices()):
+        items.append(
+            {
+                "kind": "device",
+                "id": str(device.get("id") or ""),
+                "label": str(device.get("name") or device.get("id") or ""),
+                "hint": "Appareil",
+            }
+        )
+    return items
+
+
+def hq_safe_move(src: str, dest: str) -> dict:
+    path = resolve_rel(src, must_exist=True, allow_dir=True)
+    if not path:
+        raise ValueError("Source introuvable")
+    parts = parse_rel(src)
+    if parts is not None and len(parts) == 1 and path.is_dir():
+        raise ValueError("Impossible de déplacer une racine")
+    dest_dir = resolve_writable_dir(dest, create=True)
+    if not dest_dir:
+        raise ValueError("Destination invalide")
+    try:
+        dest_dir.resolve().relative_to(path.resolve())
+        if path.is_dir():
+            raise ValueError("Impossible de déplacer un dossier dans lui-même")
+    except ValueError as e:
+        if "lui-même" in str(e):
+            raise
+    target = dest_dir / path.name
+    if target.exists():
+        target = unique_in_dir(dest_dir, path.name)
+    shutil.move(str(path), str(target))
+    rel = "/".join(Path(target).resolve().relative_to(ROOT).parts)
+    return {"ok": True, "rel": rel}
+
+
+def _file_exists_rel(rel: str) -> bool:
+    return safe_rel_path(rel) is not None
+
+
+def build_daily_brief() -> dict:
+    snap = hq_snapshot()
+    events = (hq_events.list_events(limit=200).get("events") or [])
+    try:
+        queue = cc_ext.queue_list()
+    except Exception:
+        queue = []
+    backups: list[dict] = []
+    if hq_automation.ready():
+        backups = hq_automation.list_backups().get("backups") or []
+    return hq_automation.build_brief(
+        state=str(snap.get("state") or "ok"),
+        attention=list(snap.get("attention") or []),
+        events=events,
+        queue=queue,
+        backups=backups,
+        disk=disk_free(ROOT),
+    )
+
+
+def bind_hq() -> None:
+    global _HQ_BOUND
+    hq_events.bind(ROOT)
+    hq_automation.bind(
+        root=ROOT,
+        get_config=lambda: CONFIG,
+        journal=lambda kind, message, **extra: cc_ext.log_activity(kind, message, **extra),
+        explore=pc_explore,
+        action=pc_run_action,
+        terminal=lambda cmd_id: cc_ext.run_terminal(cmd_id=cmd_id),
+        backup=lambda: cc_ext.run_backup(force=True),
+        capture=pc_screenshot,
+        print_file=pc_print_file,
+        notify=notify_discord,
+        move=hq_safe_move,
+        sleep=time.sleep,
+        disk_free=disk_free,
+        devices=cached_roster_devices,
+        file_exists=_file_exists_rel,
+        queue_load=cc_ext.queue_load,
+        queue_save=cc_ext.queue_save,
+        events_since=lambda since: [
+            ev
+            for ev in (hq_events.list_events(limit=100).get("events") or [])
+            if float(ev.get("ts") or 0) > float(since or 0)
+        ],
+        build_brief=build_daily_brief,
+    )
+    _HQ_BOUND = True
+
+
+def ensure_hq() -> None:
+    if not _HQ_BOUND:
+        bind_hq()
 
 
 def bind_cc_ext() -> None:
@@ -2574,7 +2888,7 @@ function renderDevices(devices) {
     }
     const pathLabel = ({lan:'LAN',tailscale:'Tailscale',direct:'Direct',relay:'Relay (lent)',local:'Local',wan:'WAN',offline:'Off',unknown:'?'})[d.path] || (d.path || '');
     const pathBadge = pathLabel ? `<span class="path-badge path-${escapeAttr(d.path || 'unknown')}">${escapeHtml(pathLabel)}</span>` : '';
-    return `<li class="device-card">
+    return `<li class="device-card" data-device-id="${escapeAttr(d.id || '')}">
       <div class="device-head">
         <span class="dot ${on ? 'on' : 'off'}"></span>
         <strong>${escapeHtml(d.name || '?')}</strong>
@@ -3463,6 +3777,7 @@ def render_wallboard() -> bytes:
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#070b10"/>
 <title>Transfert HQ · Wallboard</title>
+<link rel="stylesheet" href="/assets/hq.css"/>
 <style>{BASE_CSS}
 body.wall{{background:#070b10}}
 .wall .wrap{{max-width:1100px;padding:16px}}
@@ -3494,7 +3809,12 @@ body.wall{{background:#070b10}}
     <div class="brand">Transfert HQ</div>
     <h1>Wallboard</h1>
     <p class="sub" id="wb-health" aria-live="polite">Santé…</p>
+    <p class="sub" id="fleet-state">Flotte…</p>
   </header>
+  <section class="hq" aria-labelledby="fleet-title">
+    <h2 id="fleet-title">Flotte</h2>
+    <div id="fleet-map" class="fleet-map"></div>
+  </section>
   <section class="hq" aria-labelledby="wb-presence-title">
     <h2 id="wb-presence-title">Qui est là ?</h2>
     <div id="home-chart" class="home-chart"></div>
@@ -3537,7 +3857,7 @@ async function refreshWall() {{
     const qrList = Array.isArray(st.urls?.qr) ? st.urls.qr : [];
     const lan = (qrList.find(x => x.label === 'LAN') || {{}}).url || st.urls?.lan || '';
     const tsu = (qrList.find(x => x.label === 'Tailscale') || {{}}).url || st.urls?.tailscale || '';
-    const okUrl = (u) => typeof u === 'string' && /^https?:\/\/[^\s?#]+\/$/i.test(u);
+    const okUrl = (u) => typeof u === 'string' && /^https?:\\/\\/[^\\s?#]+\\/$/i.test(u);
     const setQr = (id, url, label) => {{
       const box = document.getElementById(id);
       const link = document.getElementById(id + '-link');
@@ -3561,6 +3881,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   setInterval(refreshWall, 6000);
 }});
 </script>
+<script src="/assets/hq.js"></script>
 </body></html>"""
     return page.encode("utf-8")
 
@@ -3626,6 +3947,7 @@ def render_app() -> bytes:
 <link rel="apple-touch-icon" href="/icon-192.png"/>
 <title>Transfert HQ</title>
 <style>{BASE_CSS}</style>
+<link rel="stylesheet" href="/assets/hq.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
@@ -3650,6 +3972,18 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="accueil" class="accueil-grid">
+    <section id="hq-banner" class="hq hq-banner state-ok" aria-live="polite">
+      <div class="hq-banner-row">
+        <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
+        <div>
+          <strong id="hq-state-label">HQ</strong>
+          <p class="sec-hint" id="hq-state-sub">Lecture de l'état…</p>
+        </div>
+        <button type="button" class="secondary" id="btn-palette">Recherche</button>
+      </div>
+      <ul class="hq-list" id="hq-attention"></ul>
+      <div class="row hq-actions" id="hq-quick-scenes"></div>
+    </section>
     <div class="accueil-main">
       <section class="hq hq-primary" aria-labelledby="envoyer-title">
         <div class="sec-head">
@@ -3666,6 +4000,7 @@ def render_app() -> bytes:
           <div class="row" style="margin-top:12px">
             <button type="button" class="secondary" id="btn-camera">Caméra</button>
             <button type="button" class="secondary" id="btn-paste">Coller une image</button>
+            <button type="button" class="secondary" id="btn-voice">Note vocale</button>
           </div>
         </div>
         <input id="file-input" type="file" multiple hidden/>
@@ -3727,6 +4062,23 @@ def render_app() -> bytes:
         <ul class="hq-list" id="hq-recents"><li class="hint">Rien pour l'instant — envoie un fichier ci-contre</li></ul>
         <ul class="hq-list" id="hq-transfers" hidden></ul>
         <ul class="hq-list" id="hq-activity" hidden></ul>
+      </section>
+
+      <section class="hq" aria-labelledby="events-title">
+        <div class="sec-head">
+          <h2 id="events-title">Journal</h2>
+          <p class="sec-hint">Événements récents du pont</p>
+        </div>
+        <div class="chips filter-chips" id="hq-event-filters" role="tablist" aria-label="Filtrer le journal">
+          <button type="button" class="chip active" data-event-kind="all">Tous</button>
+          <button type="button" class="chip" data-event-kind="alert">Alertes</button>
+          <button type="button" class="chip" data-event-kind="upload">Envois</button>
+          <button type="button" class="chip" data-event-kind="scene">Scènes</button>
+          <button type="button" class="chip" data-event-kind="backup">Backups</button>
+          <button type="button" class="chip" data-event-kind="automation">Auto</button>
+          <button type="button" class="chip" data-event-kind="schedule">Planning</button>
+        </div>
+        <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
       </section>
     </div>
   </div>
@@ -3821,6 +4173,31 @@ def render_app() -> bytes:
       <div class="row hq-actions" style="margin-bottom:8px">
         <button type="button" class="secondary" id="btn-queue-add">+ Ouvrir Uni au réveil</button>
       </div>
+      <form id="hq-schedule-form" class="rule-form">
+        <div class="field"><label for="sched-label">Planifier</label><input id="sched-label" type="text" maxlength="80" placeholder="Backup du matin"/></div>
+        <div class="field"><label for="sched-when">Quand</label>
+          <select id="sched-when">
+            <option value="daily">Chaque jour</option>
+            <option value="weekdays">Jours ouvrés</option>
+            <option value="weekly">Chaque semaine</option>
+            <option value="once">Une fois</option>
+            <option value="on-online">Quand l'appareil revient</option>
+          </select>
+        </div>
+        <div class="field"><label for="sched-at">Heure (HH:MM)</label><input id="sched-at" type="text" value="08:00" maxlength="5"/></div>
+        <div class="field"><label for="sched-weekday">Jour (0=lundi, hebdo)</label><input id="sched-weekday" type="number" min="0" max="6" value="0"/></div>
+        <div class="field"><label for="sched-device">Appareil (au retour)</label><input id="sched-device" type="text" placeholder="pc-host"/></div>
+        <div class="field"><label for="sched-type">Action allowlist</label>
+          <select id="sched-type">
+            <option value="backup">Backup</option>
+            <option value="notify">Notification</option>
+            <option value="capture">Capture</option>
+            <option value="scene">Scène</option>
+          </select>
+        </div>
+        <div class="field"><label for="sched-target">Id de scène</label><input id="sched-target" type="text" maxlength="40"/></div>
+        <button type="submit" class="secondary">Ajouter au planning</button>
+      </form>
       <ul class="hq-list" id="hq-queue"><li class="hint">File vide — rien n'attend le réveil</li></ul>
     </details>
 
@@ -3899,6 +4276,64 @@ def render_app() -> bytes:
       </div>
       <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
       <span id="hq-health" class="visually-hidden"></span>
+      <div id="hq-spark-host" class="spark-host"></div>
+    </section>
+
+    <section class="hq" aria-labelledby="brief-title">
+      <div class="sec-head">
+        <h2 id="brief-title">Brief du jour</h2>
+        <p class="sec-hint">Résumé déterministe, sans service externe</p>
+      </div>
+      <div id="hq-brief" class="brief"></div>
+    </section>
+
+    <section class="hq" aria-labelledby="backup-title">
+      <div class="sec-head">
+        <h2 id="backup-title">Sauvegardes</h2>
+        <p class="sec-hint">Catalogue local. La restauration écrase le dossier choisi.</p>
+      </div>
+      <ul class="hq-list" id="hq-backups"><li class="hint">Aucune sauvegarde cataloguée</li></ul>
+    </section>
+
+    <details class="hq mode-complet-only">
+      <summary>
+        <div class="sec-head">
+          <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Automatisations</span>
+          <p class="sec-hint">Déclencheurs bornés — pas de shell arbitraire</p>
+        </div>
+      </summary>
+      <ul class="hq-list" id="hq-rules"><li class="hint">Aucune règle</li></ul>
+      <form id="hq-rule-form" class="rule-form">
+        <div class="field"><label for="rule-label">Libellé</label><input id="rule-label" type="text" maxlength="80" required/></div>
+        <div class="field"><label for="rule-trigger">Déclencheur</label>
+          <select id="rule-trigger">
+            <option value="manual">Manuel</option>
+            <option value="disk_low">Disque bas</option>
+            <option value="event">Événement</option>
+          </select>
+        </div>
+        <div class="field"><label for="rule-action">Action</label>
+          <select id="rule-action">
+            <option value="journal">Journal</option>
+            <option value="notify">Notification Discord</option>
+            <option value="backup">Backup</option>
+            <option value="capture">Capture</option>
+            <option value="scene">Scène</option>
+            <option value="terminal">Commande allowlist</option>
+          </select>
+        </div>
+        <div class="field"><label for="rule-target">Cible (id scène ou commande)</label><input id="rule-target" type="text" maxlength="40"/></div>
+        <button type="submit" class="secondary">Enregistrer la règle</button>
+      </form>
+    </details>
+
+    <section class="hq" aria-labelledby="push-title">
+      <div class="sec-head">
+        <h2 id="push-title">Notifications</h2>
+        <p class="sec-hint">Web Push opt-in. Nécessite HTTPS (Tailscale Serve) et push_enabled.</p>
+      </div>
+      <p id="hq-push-note" class="hint"></p>
+      <button type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
     </section>
 
     <details class="hq mode-complet-only">
@@ -3944,6 +4379,20 @@ def render_app() -> bytes:
 </div>
 <div id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <script>{APP_JS}</script>
+<script src="/assets/hq.js"></script>
+<dialog id="hq-device-dialog">
+  <form method="dialog">
+    <header><strong id="hq-device-title">Appareil</strong></header>
+    <div id="hq-device-body"></div>
+    <div class="row"><button value="cancel" class="secondary">Fermer</button></div>
+  </form>
+</dialog>
+<div id="hq-palette" class="palette" hidden>
+  <div class="palette-card" role="dialog" aria-label="Recherche HQ">
+    <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off"/>
+    <ul id="hq-palette-list"></ul>
+  </div>
+</div>
 </body></html>"""
     return page.encode("utf-8")
 
@@ -3965,7 +4414,7 @@ def _login_fail(ip: str) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "TransfertBridge/6.0"
+    server_version = "TransfertBridge/7.0"
 
     def setup(self) -> None:
         super().setup()
@@ -4220,6 +4669,197 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
+    def _hq_get(self, raw: str, parsed) -> bool:
+        if raw == "/hq-sw.js":
+            path = ROOT / "assets" / "hq-sw.js"
+            if not path.is_file():
+                self._send(404, b"missing", "text/plain; charset=utf-8")
+                return True
+            self._send(
+                200,
+                path.read_bytes(),
+                "application/javascript; charset=utf-8",
+                headers=[("Service-Worker-Allowed", "/")],
+            )
+            return True
+        if raw == "/api/hq":
+            self._json(200, hq_snapshot())
+            return True
+        if raw == "/api/events":
+            qs = parse_qs(parsed.query)
+            try:
+                limit, offset = parse_list_bounds(qs)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            since_raw = (qs.get("since", [""])[0] or "").strip()
+            since = None
+            if since_raw:
+                try:
+                    since = float(since_raw)
+                except ValueError:
+                    self._json(400, {"error": "since invalide"})
+                    return True
+            self._json(
+                200,
+                hq_events.list_events(
+                    kind=(qs.get("kind", [""])[0] or "").strip(),
+                    level=(qs.get("level", [""])[0] or "").strip(),
+                    q=(qs.get("q", [""])[0] or "").strip(),
+                    since=since,
+                    limit=limit,
+                    offset=offset,
+                ),
+            )
+            return True
+        if raw == "/api/device":
+            qs = parse_qs(parsed.query)
+            ident = (qs.get("id", [""])[0] or "").strip()
+            found = None
+            for device in cached_roster_devices():
+                if str(device.get("id") or "") == ident:
+                    found = device
+                    break
+            if not found:
+                self._json(404, {"error": "Appareil introuvable"})
+                return True
+            normalized = hq_devices.normalize(found)
+            self._json(200, {"ok": True, "device": normalized, "gates": hq_devices.gates_for(found)})
+            return True
+        if raw == "/api/palette":
+            qs = parse_qs(parsed.query)
+            q = (qs.get("q", [""])[0] or "").strip()
+            try:
+                limit, _offset = parse_list_bounds(qs, default=20, max_limit=LIST_LIMIT_MAX)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            hits = hq_devices.search_catalog(q, palette_catalog(), limit=limit)
+            self._json(200, {"q": q, "hits": hits})
+            return True
+        if raw == "/api/runs":
+            qs = parse_qs(parsed.query)
+            try:
+                limit, offset = parse_list_bounds(qs, default=20, max_limit=LIST_LIMIT_MAX)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            self._json(200, hq_automation.list_runs(limit=limit, offset=offset))
+            return True
+        if raw == "/api/automation":
+            self._json(200, hq_automation.list_rules())
+            return True
+        if raw == "/api/backups":
+            self._json(200, hq_automation.list_backups())
+            return True
+        if raw == "/api/telemetry":
+            qs = parse_qs(parsed.query)
+            device = (qs.get("device", [""])[0] or "").strip() or None
+            try:
+                limit, _offset = parse_list_bounds(qs, default=240, max_limit=1000)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            self._json(200, hq_automation.telemetry_series(device, limit=limit))
+            return True
+        if raw == "/api/brief":
+            self._json(200, build_daily_brief())
+            return True
+        if raw == "/api/push/status":
+            self._json(200, hq_automation.push_status())
+            return True
+        if raw == "/api/schedules":
+            items = [
+                job
+                for job in cc_ext.queue_list()
+                if isinstance(job, dict) and job.get("when") in ("daily", "weekdays", "weekly", "once", "on-online")
+            ]
+            self._json(200, {"schedules": items})
+            return True
+        return False
+
+    def _hq_post(self, raw: str) -> bool:
+        if raw == "/api/automation":
+            data = self._read_json()
+            action = str(data.get("action") or "")
+            try:
+                if action == "save":
+                    rule = hq_automation.save_rule(data.get("rule") if isinstance(data.get("rule"), dict) else {})
+                    self._json(200, {"ok": True, "rule": rule})
+                elif action == "delete":
+                    self._json(200, hq_automation.delete_rule(str(data.get("id") or "")))
+                elif action == "enable":
+                    self._json(
+                        200,
+                        {
+                            "ok": True,
+                            "rule": hq_automation.set_rule_enabled(
+                                str(data.get("id") or ""),
+                                bool(data.get("enabled", True)),
+                            ),
+                        },
+                    )
+                elif action == "run":
+                    self._json(200, hq_automation.run_rule(str(data.get("id") or ""), manual=True))
+                else:
+                    self._json(400, {"error": "action invalide"})
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/backup/restore":
+            data = self._read_json()
+            try:
+                info = hq_automation.restore_backup(
+                    str(data.get("id") or ""),
+                    str(data.get("folder") or ""),
+                    confirm=bool(data.get("confirm")),
+                )
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+                return True
+            self._json(200, info)
+            return True
+        if raw == "/api/brief":
+            data = self._read_json()
+            brief = build_daily_brief()
+            if str(data.get("action") or "") == "discord":
+                result = hq_automation.maybe_send_brief(brief, force=True)
+                self._json(200, {**brief, "discord": result})
+                return True
+            self._json(200, brief)
+            return True
+        if raw == "/api/push/subscribe":
+            data = self._read_json()
+            sub = data.get("subscription") if isinstance(data.get("subscription"), dict) else data
+            try:
+                self._json(200, hq_automation.subscribe_push(sub if isinstance(sub, dict) else {}))
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/push/unsubscribe":
+            data = self._read_json()
+            try:
+                self._json(200, hq_automation.unsubscribe_push(str(data.get("endpoint") or "")))
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/push/test":
+            try:
+                self._json(200, hq_automation.send_test_push())
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+            except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            return True
+        return False
+
     def do_GET(self) -> None:
         try:
             self._do_GET()
@@ -4240,6 +4880,7 @@ class Handler(BaseHTTPRequestHandler):
     def _do_GET(self) -> None:
         parsed = urlparse(self.path)
         raw = parsed.path
+        ensure_hq()
 
         if raw == "/logout":
             if not self._check_csrf():
@@ -4315,6 +4956,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard_admin_path(raw):
             return
 
+        if self._hq_get(raw, parsed):
+            return
+
         if raw in ("/", "/index.html"):
             self._send(200, render_app())
             return
@@ -4347,7 +4991,7 @@ class Handler(BaseHTTPRequestHandler):
                 cc_ext.health_report(
                     uptime_sec=time.time() - _STARTED_AT,
                     tailscale_ip=tailscale_ipv4(),
-                    version="6.0",
+                    version="7.0",
                 ),
             )
             return
@@ -4521,6 +5165,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _do_POST(self) -> None:
         raw = urlparse(self.path).path
+        ensure_hq()
 
         # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
         if not self._check_csrf():
@@ -4565,6 +5210,9 @@ class Handler(BaseHTTPRequestHandler):
         # upload role: explicit allowlist only
         if self._role() != "admin" and not self._upload_allowed("POST", raw):
             self._json(403, {"error": "Réservé admin"})
+            return
+
+        if self._hq_post(raw):
             return
 
         if raw == "/api/presence":
@@ -5201,6 +5849,7 @@ def main() -> None:
     load_sessions()
     ensure_folders_and_migrate()
     bind_cc_ext()
+    bind_hq()
     cleanup_stale_uploads()
     if already_running():
         print(f"Transfert Bridge already running on port {PORT}")
@@ -5231,9 +5880,19 @@ def main() -> None:
             + (f"\nTailscale: `http://{ts}:{PORT}/`" if ts else ""),
         )
     cc_ext.log_activity("boot", f"Bridge démarré (bind {BIND_HOST}, pin={'on' if pin_enabled() else 'off'})")
+    def _hq_background() -> None:
+        try:
+            cc_ext.queue_process()
+        except Exception as e:
+            sys.stderr.write(f"queue: {e}\n")
+        try:
+            hq_automation.tick()
+        except Exception as e:
+            sys.stderr.write(f"hq tick: {e}\n")
+
     cc_ext.start_monitor(
         get_devices=lambda: presence_list(),
-        process_queue=cc_ext.queue_process,
+        process_queue=_hq_background,
         probe_disks=probe_remote_disks_now,
         harvest_shots=harvest_screenshots_now,
     )
@@ -5247,7 +5906,7 @@ def main() -> None:
     # Mild DoS mitigation for stdlib server
     server.timeout = 30
     print("=" * 56)
-    print(" Transfert Bridge v6.0 — Command Center HQ")
+    print(" Transfert HQ v7.0 — Mission Control")
     print("=" * 56)
     print(f" Folder : {ROOT}")
     print(f" Bind   : {BIND_HOST}:{PORT}")

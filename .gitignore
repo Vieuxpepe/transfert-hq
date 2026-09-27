@@ -18,6 +18,13 @@ bridge_queue.json
 bridge_screenshot_ingest.json
 kanban.json
 scratchpad.txt
+hq_events.json
+hq_automation.json
+hq_runs.json
+hq_telemetry.json
+hq_backup_index.json
+hq_push_subscriptions.json
+hq_vapid.json
 .tmp/
 __pycache__/
 *.pyc
