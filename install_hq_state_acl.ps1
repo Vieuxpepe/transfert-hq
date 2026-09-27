@@ -78,28 +78,51 @@ $plannerAccount = ($PlannerIdentity.Trim() -split "\\")[-1].ToLowerInvariant()
 $blocked = @(
     "administrator",
     "administrators",
+    "administrateur",
+    "administrateurs",
     "builtin\administrators",
+    "builtin\administrateurs",
     "nt authority\system",
     "system",
-    "localhost\administrator"
+    "localhost\administrator",
+    "localhost\administrateur"
 )
 if ($blocked -contains $plannerKey -or $blocked -contains $plannerAccount) {
     throw "REFUS: PlannerIdentity est Administrator ou SYSTEM. La séparation OS ne tient pas. ACL non appliquée."
 }
 Write-Warning "SEPARATION OS NON GARANTIE si PlannerIdentity est membre du groupe Administrateurs, ou s'il peut lire l'état du contrôleur par un autre chemin. Ne pas prétendre à une séparation dans ce cas."
 
-$trustedOwner = New-Object System.Security.Principal.NTAccount("BUILTIN", "Administrators")
+# Well-known SIDs, translated on this machine. French Windows maps
+# S-1-5-32-544 to BUILTIN\Administrateurs, not the English display name.
 $administratorsSid = "S-1-5-32-544"
+$systemSid = "S-1-5-18"
 $everyoneSid = "S-1-1-0"
+function Resolve-SidAccount([string]$SidValue) {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($SidValue)
+    return $sid.Translate([System.Security.Principal.NTAccount])
+}
+$trustedOwner = Resolve-SidAccount $administratorsSid
+$systemAccount = Resolve-SidAccount $systemSid
 $inheritChildren = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
 $noInherit = [System.Security.AccessControl.InheritanceFlags]::None
 $propagate = [System.Security.AccessControl.PropagationFlags]::None
 $allow = [System.Security.AccessControl.AccessControlType]::Allow
+$plannerTraverse = (
+    [System.Security.AccessControl.FileSystemRights]::Traverse -bor
+    [System.Security.AccessControl.FileSystemRights]::ReadAttributes -bor
+    [System.Security.AccessControl.FileSystemRights]::ReadPermissions -bor
+    [System.Security.AccessControl.FileSystemRights]::Synchronize
+)
 
-function Add-AllowRule($Acl, [string]$Identity, $Rights, $Inheritance) {
+function Add-AllowRule($Acl, $Identity, $Rights, $Inheritance) {
+    if ($Identity -is [string]) {
+        $idRef = New-Object System.Security.Principal.NTAccount($Identity)
+    } else {
+        $idRef = $Identity
+    }
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        $Identity,
-        $Rights,
+        $idRef,
+        [System.Security.AccessControl.FileSystemRights]$Rights,
         $Inheritance,
         $propagate,
         $allow
@@ -107,15 +130,43 @@ function Add-AllowRule($Acl, [string]$Identity, $Rights, $Inheritance) {
     $Acl.AddAccessRule($rule)
 }
 
-function Save-SecurityDescriptor([string]$Path, $Acl, [string]$Reason) {
-    Write-Host "PRÉVU propriétaire=BUILTIN\Administrators $Reason :: $Path"
+function Save-SecurityDescriptor([string]$Path, [string]$Kind, [string]$Reason) {
+    Write-Host "PRÉVU propriétaire=$($trustedOwner.Value) ($administratorsSid) $Reason :: $Path"
     if ($WhatIfPreference) {
         return
     }
     if (-not $script:AclCmdlet.ShouldProcess($Path, $Reason)) {
         return
     }
-    Set-Acl -LiteralPath $Path -AclObject $Acl
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetOwner($trustedOwner)
+    switch ($Kind) {
+        "PrivateDirectory" {
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($existing in @($acl.Access)) {
+                [void]$acl.RemoveAccessRule($existing)
+            }
+            Add-AllowRule $acl $systemAccount "FullControl" $inheritChildren
+            Add-AllowRule $acl $trustedOwner "FullControl" $inheritChildren
+            Add-AllowRule $acl $ControllerIdentity.Trim() "Modify" $inheritChildren
+            # Traverse only. InheritanceFlags.None: PlannerIdentity must not inherit child-file read.
+            # *.tmp siblings created by write_json_atomic inherit the directory ACL above, not this ACE.
+            Add-AllowRule $acl $PlannerIdentity.Trim() $plannerTraverse $noInherit
+        }
+        "Inherit" {
+            $acl.SetAccessRuleProtection($false, $false)
+            Clear-ExplicitRules $acl
+        }
+        "TokenFile" {
+            $acl.SetAccessRuleProtection($false, $false)
+            Clear-ExplicitRules $acl
+            Add-AllowRule $acl $PlannerIdentity.Trim() "Read" $noInherit
+        }
+        default {
+            throw "REFUS: type d'ACL inconnu: $Kind"
+        }
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
 function Clear-ExplicitRules($Acl) {
@@ -169,6 +220,7 @@ if (Test-Path -LiteralPath $private) {
     }
 } else {
     Write-Host "PRÉVU créer répertoire: $private"
+    Write-Host "PRÉVU propriétaire=$($trustedOwner.Value) ($administratorsSid) DACL répertoire privé, traverse planificateur non héritable :: $private"
     if ($WhatIfPreference) {
         Write-Host "WhatIf: répertoire absent, propriétaire et ACL non écrits."
         return
@@ -179,26 +231,8 @@ if (Test-Path -LiteralPath $private) {
     New-Item -ItemType Directory -Path $private | Out-Null
 }
 
-$dirAcl = Get-Acl -LiteralPath $private
 # Drop HQ-root Users/Everyone inheritance. Do not copy those ACEs.
-$dirAcl.SetOwner($trustedOwner)
-$dirAcl.SetAccessRuleProtection($true, $false)
-foreach ($existing in @($dirAcl.Access)) {
-    [void]$dirAcl.RemoveAccessRule($existing)
-}
-Add-AllowRule $dirAcl "NT AUTHORITY\SYSTEM" "FullControl" $inheritChildren
-Add-AllowRule $dirAcl "BUILTIN\Administrators" "FullControl" $inheritChildren
-Add-AllowRule $dirAcl $ControllerIdentity.Trim() "Modify" $inheritChildren
-# Traverse only. InheritanceFlags.None: PlannerIdentity must not inherit child-file read.
-# *.tmp siblings created by write_json_atomic inherit the directory ACL above, not this ACE.
-$plannerTraverse = (
-    [System.Security.AccessControl.FileSystemRights]::Traverse -bor
-    [System.Security.AccessControl.FileSystemRights]::ReadAttributes -bor
-    [System.Security.AccessControl.FileSystemRights]::ReadPermissions -bor
-    [System.Security.AccessControl.FileSystemRights]::Synchronize
-)
-Add-AllowRule $dirAcl $PlannerIdentity.Trim() $plannerTraverse $noInherit
-Save-SecurityDescriptor $private $dirAcl "DACL répertoire privé, traverse planificateur non héritable"
+Save-SecurityDescriptor $private "PrivateDirectory" "DACL répertoire privé, traverse planificateur non héritable"
 Write-Host "Répertoire privé: $private"
 
 # controller files: inherit directory ACL, no planner grant
@@ -208,23 +242,15 @@ foreach ($name in @("hq_agents.json", "hq_agent_jobs.json")) {
         Write-Host "Pas encore créé (héritera du répertoire): $path"
         continue
     }
-    $acl = Get-Acl -LiteralPath $path
-    $acl.SetOwner($trustedOwner)
-    $acl.SetAccessRuleProtection($false, $false)
-    Clear-ExplicitRules $acl
-    Save-SecurityDescriptor $path $acl "héritage contrôleur seulement"
+    Save-SecurityDescriptor $path "Inherit" "héritage contrôleur seulement"
     Write-Host "Héritage contrôleur seulement: $path"
 }
 
 # planner token: explicit Read only
 $tokenPath = Join-Path $private "hq_planner.json"
 if (Test-Path -LiteralPath $tokenPath) {
-    $tokenAcl = Get-Acl -LiteralPath $tokenPath
-    $tokenAcl.SetOwner($trustedOwner)
-    $tokenAcl.SetAccessRuleProtection($false, $false)
-    Clear-ExplicitRules $tokenAcl
-    Add-AllowRule $tokenAcl $PlannerIdentity.Trim() "Read" $noInherit
-    Save-SecurityDescriptor $tokenPath $tokenAcl "lecture seule planificateur"
+    # explicit "Read" only
+    Save-SecurityDescriptor $tokenPath "TokenFile" "lecture seule planificateur"
     Write-Host "Lecture seule planificateur: $tokenPath"
 } else {
     Write-Warning "hq_planner.json absent. Relancer ce script après le premier démarrage du pont, sinon le planificateur n'a pas de lecture explicite."
@@ -237,11 +263,7 @@ foreach ($item in @(Get-ChildItem -LiteralPath $private -Force -ErrorAction Stop
     if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "REFUS: point de réparation. Etat privé non durci: $($item.FullName)"
     }
-    $extra = Get-Acl -LiteralPath $item.FullName
-    $extra.SetOwner($trustedOwner)
-    $extra.SetAccessRuleProtection($false, $false)
-    Clear-ExplicitRules $extra
-    Save-SecurityDescriptor $item.FullName $extra "héritage du répertoire privé"
+    Save-SecurityDescriptor $item.FullName "Inherit" "héritage du répertoire privé"
 }
 
 if ($WhatIfPreference) {

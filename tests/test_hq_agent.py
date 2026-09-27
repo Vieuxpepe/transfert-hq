@@ -956,10 +956,29 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertNotIn("/deny", state)
         self.assertIn("SetOwner", tree)
         self.assertIn("SetOwner", state)
-        self.assertIn('NTAccount("BUILTIN", "Administrators")', tree)
-        self.assertIn('NTAccount("BUILTIN", "Administrators")', state)
-        self.assertIn("S-1-5-32-544", tree)
-        self.assertIn("S-1-5-32-544", state)
+        for blob in (tree, state):
+            self.assertIn("S-1-5-32-544", blob)
+            self.assertIn("S-1-5-18", blob)
+            self.assertIn("SecurityIdentifier", blob)
+            self.assertIn(".Translate([System.Security.Principal.NTAccount])", blob)
+            self.assertNotIn('NTAccount("BUILTIN"', blob)
+            self.assertNotIn('"BUILTIN\\Administrators"', blob)
+            self.assertNotIn('"NT AUTHORITY\\SYSTEM"', blob)
+            lines = blob.splitlines()
+            save_start = next(i for i, line in enumerate(lines) if line.startswith("function Save-SecurityDescriptor"))
+            save_end = next(i for i, line in enumerate(lines) if i > save_start and line.startswith("function "))
+            for index, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("Add-AllowRule") or stripped.startswith("Set-Acl") or ".SetOwner(" in line:
+                    self.assertTrue(save_start < index < save_end, line)
+            save_body = "\n".join(lines[save_start:save_end])
+            self.assertLess(save_body.index("$WhatIfPreference"), save_body.index(".SetOwner("))
+            self.assertLess(save_body.index("$WhatIfPreference"), save_body.index("Add-AllowRule"))
+            self.assertLess(save_body.index("$WhatIfPreference"), save_body.index("Set-Acl"))
+            self.assertLess(save_body.index("$WhatIfPreference"), save_body.index("SetAccessRuleProtection"))
+            allow_body = blob.split("function Add-AllowRule", 1)[1].split("function ", 1)[0]
+            self.assertEqual(blob.count("AddAccessRule"), allow_body.count("AddAccessRule"))
+            self.assertEqual(blob.count("AddAccessRule"), 1)
         self.assertIn("S-1-1-0", tree)
         self.assertIn("S-1-1-0", state)
         self.assertNotIn("SetOwner($PlannerIdentity", tree.replace(" ", ""))
@@ -1071,7 +1090,7 @@ class SecurityHardeningTests(unittest.TestCase):
         state_save = state.split("function Save-SecurityDescriptor", 1)[1].split("function ", 1)[0]
         self.assertLess(state_save.index("WhatIfPreference"), state_save.index("Set-Acl"))
         self.assertEqual(state.count("Set-Acl"), 1)
-        created = state.split("PRÉVU créer répertoire:", 1)[1].split("Get-Acl", 1)[0]
+        created = state.split("PRÉVU créer répertoire:", 1)[1]
         self.assertLess(created.index("WhatIfPreference"), created.index("New-Item"))
         self.assertIn("ReparsePoint", state)
         self.assertIn("Etat privé non durci", state)

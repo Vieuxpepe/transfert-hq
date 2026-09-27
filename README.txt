@@ -73,8 +73,10 @@ Companions (contrôle des autres PC)
   L'écriture atomique crée <nom>.tmp dans ce répertoire : le fichier
   hérite de l'ACL du répertoire avant os.replace.
 
-  Arbre du pont, en élevé, avant l'état privé. Le propriétaire visé est
-  BUILTIN\Administrators : un objet laissé à Everyone peut réécrire sa DACL.
+  Arbre du pont, en élevé, avant l'état privé. Le propriétaire visé est le
+  SID S-1-5-32-544 (BUILTIN\Administrators, ou BUILTIN\Administrateurs sur
+  un Windows français). Le script traduit ce SID ; il n'écrit pas le nom
+  anglais en dur. Un objet laissé à Everyone peut réécrire sa DACL.
   Le planificateur n'est jamais propriétaire. Sur StateDir il a seulement
   le droit de traverser, non héritable. Les fichiers inconnus restent donc
   privés du contrôleur (Modify héritable). ReadAndExecute explicite, et
@@ -90,7 +92,8 @@ Companions (contrôle des autres PC)
   et le script s'arrête avant toute écriture, sans suivre la cible.
   La tâche TransfertBridge n'est pas réenregistrée ; son principal reste
   le compte contrôleur.
-  -WhatIf ne change ni le propriétaire, ni l'ACL, ni les octets :
+  -WhatIf affiche les lignes PRÉVU et n'appelle ni SetOwner, ni AddAccessRule,
+  ni Set-Acl. Propriétaire, ACL et octets restent inchangés :
     powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 -WhatIf `
       -StateDir D:\Transfert `
       -ControllerIdentity "VIEUXPEEPEE\autm_" `
@@ -126,7 +129,8 @@ Companions (contrôle des autres PC)
   1. Démarrer HQ une fois pour créer .hq-agent-state et le jeton.
   2. Lancer d'abord les deux scripts avec -WhatIf, puis sans -WhatIf.
      Le second script seul durcit .hq-agent-state.
-     Get-Acl : propriétaire BUILTIN\Administrators, plus Everyone.
+     Get-Acl : propriétaire S-1-5-32-544 (Administrateurs sur ce Windows),
+     plus Everyone.
      Get-Acl sur hqctl.py : planificateur ReadAndExecute.
      Get-Acl sur iphone_bridge.py et sur .git : pas de lecture planificateur.
      Get-Acl sur bridge_config.json et bridge_sessions.json : pas de lecture

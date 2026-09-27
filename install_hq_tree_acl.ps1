@@ -101,10 +101,14 @@ $plannerAccount = ($PlannerIdentity.Trim() -split "\\")[-1].ToLowerInvariant()
 $blocked = @(
     "administrator",
     "administrators",
+    "administrateur",
+    "administrateurs",
     "builtin\administrators",
+    "builtin\administrateurs",
     "nt authority\system",
     "system",
-    "localhost\administrator"
+    "localhost\administrator",
+    "localhost\administrateur"
 )
 if ($blocked -contains $plannerKey -or $blocked -contains $plannerAccount) {
     throw "REFUS: PlannerIdentity est Administrator ou SYSTEM. ACL non appliquée."
@@ -116,9 +120,17 @@ if (-not (Test-Path -LiteralPath $StateDir -PathType Container)) {
 }
 $StateDir = [System.IO.Path]::GetFullPath($StateDir)
 
-$trustedOwner = New-Object System.Security.Principal.NTAccount("BUILTIN", "Administrators")
+# Well-known SIDs, translated on this machine. French Windows maps
+# S-1-5-32-544 to BUILTIN\Administrateurs, not the English display name.
 $administratorsSid = "S-1-5-32-544"
+$systemSid = "S-1-5-18"
 $everyoneSid = "S-1-1-0"
+function Resolve-SidAccount([string]$SidValue) {
+    $sid = New-Object System.Security.Principal.SecurityIdentifier($SidValue)
+    return $sid.Translate([System.Security.Principal.NTAccount])
+}
+$trustedOwner = Resolve-SidAccount $administratorsSid
+$systemAccount = Resolve-SidAccount $systemSid
 $inheritChildren = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
 $noInherit = [System.Security.AccessControl.InheritanceFlags]::None
 $propagate = [System.Security.AccessControl.PropagationFlags]::None
@@ -158,10 +170,15 @@ $ControllerCode = @(
     "install_autostart.ps1"
 )
 
-function Add-AllowRule($Acl, [string]$Identity, $Rights, $Inheritance) {
+function Add-AllowRule($Acl, $Identity, $Rights, $Inheritance) {
+    if ($Identity -is [string]) {
+        $idRef = New-Object System.Security.Principal.NTAccount($Identity)
+    } else {
+        $idRef = $Identity
+    }
     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        $Identity,
-        $Rights,
+        $idRef,
+        [System.Security.AccessControl.FileSystemRights]$Rights,
         $Inheritance,
         $propagate,
         $allow
@@ -169,15 +186,66 @@ function Add-AllowRule($Acl, [string]$Identity, $Rights, $Inheritance) {
     $Acl.AddAccessRule($rule)
 }
 
-function Save-SecurityDescriptor([string]$Path, $Acl, [string]$Reason) {
-    Write-Host "PRÉVU propriétaire=BUILTIN\Administrators $Reason :: $Path"
+function Save-SecurityDescriptor([string]$Path, [string]$Kind, [string]$Reason) {
+    Write-Host "PRÉVU propriétaire=$($trustedOwner.Value) ($administratorsSid) $Reason :: $Path"
     if ($WhatIfPreference) {
         return
     }
     if (-not $script:AclCmdlet.ShouldProcess($Path, $Reason)) {
         return
     }
-    Set-Acl -LiteralPath $Path -AclObject $Acl
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetOwner($trustedOwner)
+    switch ($Kind) {
+        "DirectoryRoot" {
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($existing in @($acl.Access)) {
+                [void]$acl.RemoveAccessRule($existing)
+            }
+            Add-AllowRule $acl $systemAccount "FullControl" $inheritChildren
+            Add-AllowRule $acl $trustedOwner "FullControl" $inheritChildren
+            Add-AllowRule $acl $ControllerIdentity.Trim() "Modify" $inheritChildren
+            # planner traverse: StateDir only, not inherited by children
+            Add-AllowRule $acl $PlannerIdentity.Trim() $plannerTraverse $noInherit
+            if (Test-PlannerCanWrite $acl) {
+                throw "REFUS: l'allowlist de l'arbre donnerait une écriture au planificateur."
+            }
+            if (Test-PlannerHasReadExecute $acl) {
+                throw "REFUS: l'allowlist de l'arbre donnerait ReadAndExecute au planificateur."
+            }
+            $listBit = [System.Security.AccessControl.FileSystemRights]::ListDirectory
+            foreach ($rule in @($acl.Access)) {
+                if ((Test-IsPlanner $rule.IdentityReference.Value) -and (($rule.FileSystemRights -band $listBit) -ne 0)) {
+                    throw "REFUS: l'allowlist de l'arbre laisserait lister le répertoire."
+                }
+            }
+        }
+        "Inherit" {
+            $acl.SetAccessRuleProtection($false, $false)
+            Remove-ExplicitRules $acl
+        }
+        "PrivateFile" {
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($rule in @($acl.Access)) {
+                [void]$acl.RemoveAccessRule($rule)
+            }
+            Add-AllowRule $acl $systemAccount "FullControl" $noInherit
+            Add-AllowRule $acl $trustedOwner "FullControl" $noInherit
+            Add-AllowRule $acl $ControllerIdentity.Trim() "Modify" $noInherit
+            if (Test-PlannerHasAnyAllow $acl) {
+                throw "REFUS: $Path laisserait un accès au planificateur."
+            }
+        }
+        "ClientFile" {
+            $acl.SetAccessRuleProtection($false, $false)
+            Remove-ExplicitRules $acl
+            Add-AllowRule $acl $PlannerIdentity.Trim() "ReadAndExecute" $noInherit
+        }
+        default {
+            throw "REFUS: type d'ACL inconnu: $Kind"
+        }
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
 function Test-IsPlanner([string]$Identity) {
@@ -308,10 +376,13 @@ $privateState = Join-Path $StateDir ".hq-agent-state"
 Write-Host "Cible: $StateDir"
 Write-Host "Contrôleur: $ControllerIdentity"
 Write-Host "Planificateur: $PlannerIdentity"
-Write-Host "Propriétaire visé: BUILTIN\Administrators ($administratorsSid)"
+Write-Host "Propriétaire visé: $($trustedOwner.Value) ($administratorsSid)"
+Write-Host "PRÉVU DACL racine: SYSTEM FullControl héritable; Administrators FullControl héritable; $ControllerIdentity Modify héritable; $PlannerIdentity traverse non héritable"
+Write-Host "PRÉVU client planificateur: $($PlannerClientFiles -join ', ') ReadAndExecute non héritable"
+Write-Host "PRÉVU fichiers sensibles: bridge_config.json, bridge_sessions.json, sans accès planificateur"
+Write-Host "PRÉVU .git inclus (propriétaire et ACL). Octets, refs, config, hooks et index non modifiés."
 Write-Host "Etat privé délégué (non modifié ici): $privateState -> install_hq_state_acl.ps1"
 Write-Host "Tâche TransfertBridge: principal laissé à ControllerIdentity. Ce script ne la modifie pas."
-Write-Host "Clients planificateur (ReadAndExecute explicite): $($PlannerClientFiles -join ', ')"
 
 # apply: reparse points abort before any owner or ACL write
 $reparsePoints = @(Find-ReparsePoints $StateDir)
@@ -322,30 +393,7 @@ if ($reparsePoints.Count -gt 0) {
     throw "REFUS: point de réparation. Propriétaire et ACL non appliqués. Arbre non durci."
 }
 
-$dirAcl = Get-Acl -LiteralPath $StateDir
-$dirAcl.SetOwner($trustedOwner)
-$dirAcl.SetAccessRuleProtection($true, $false)
-foreach ($existing in @($dirAcl.Access)) {
-    [void]$dirAcl.RemoveAccessRule($existing)
-}
-Add-AllowRule $dirAcl "NT AUTHORITY\SYSTEM" "FullControl" $inheritChildren
-Add-AllowRule $dirAcl "BUILTIN\Administrators" "FullControl" $inheritChildren
-Add-AllowRule $dirAcl $ControllerIdentity.Trim() "Modify" $inheritChildren
-# planner traverse: StateDir only, not inherited by children
-Add-AllowRule $dirAcl $PlannerIdentity.Trim() $plannerTraverse $noInherit
-if (Test-PlannerCanWrite $dirAcl) {
-    throw "REFUS: l'allowlist de l'arbre donnerait une écriture au planificateur."
-}
-if (Test-PlannerHasReadExecute $dirAcl) {
-    throw "REFUS: l'allowlist de l'arbre donnerait ReadAndExecute au planificateur."
-}
-$listBit = [System.Security.AccessControl.FileSystemRights]::ListDirectory
-foreach ($rule in @($dirAcl.Access)) {
-    if ((Test-IsPlanner $rule.IdentityReference.Value) -and (($rule.FileSystemRights -band $listBit) -ne 0)) {
-        throw "REFUS: l'allowlist de l'arbre laisserait lister le répertoire."
-    }
-}
-Save-SecurityDescriptor $StateDir $dirAcl "DACL racine: traverse planificateur non héritable, contrôleur Modify héritable"
+Save-SecurityDescriptor $StateDir "DirectoryRoot" "DACL racine: traverse planificateur non héritable, contrôleur Modify héritable"
 
 $pending = New-Object System.Collections.Generic.Queue[string]
 $pending.Enqueue($StateDir)
@@ -366,11 +414,7 @@ while ($pending.Count -gt 0) {
         if ($atRoot -and ($PlannerClientFiles -contains $item.Name)) {
             continue
         }
-        $acl = Get-Acl -LiteralPath $item.FullName
-        $acl.SetOwner($trustedOwner)
-        $acl.SetAccessRuleProtection($false, $false)
-        Remove-ExplicitRules $acl
-        Save-SecurityDescriptor $item.FullName $acl "héritage de l'arbre, sans lecture planificateur"
+        Save-SecurityDescriptor $item.FullName "Inherit" "héritage de l'arbre, sans lecture planificateur"
         if ($item.PSIsContainer) {
             $pending.Enqueue($item.FullName)
         }
@@ -385,19 +429,7 @@ foreach ($name in $PrivateRootFiles) {
         Write-Warning "ABSENT, NON PROTÉGÉ: $path. Aucun contenu affiché. Relancer ce script quand le fichier existe."
         continue
     }
-    $acl = Get-Acl -LiteralPath $path
-    $acl.SetOwner($trustedOwner)
-    $acl.SetAccessRuleProtection($true, $false)
-    foreach ($rule in @($acl.Access)) {
-        [void]$acl.RemoveAccessRule($rule)
-    }
-    Add-AllowRule $acl "NT AUTHORITY\SYSTEM" "FullControl" $noInherit
-    Add-AllowRule $acl "BUILTIN\Administrators" "FullControl" $noInherit
-    Add-AllowRule $acl $ControllerIdentity.Trim() "Modify" $noInherit
-    if (Test-PlannerHasAnyAllow $acl) {
-        throw "REFUS: $name laisserait un accès au planificateur."
-    }
-    Save-SecurityDescriptor $path $acl "allowlist sans lecture planificateur"
+    Save-SecurityDescriptor $path "PrivateFile" "allowlist sans lecture planificateur"
 }
 
 # planner client files: explicit ReadAndExecute
@@ -408,12 +440,7 @@ foreach ($name in $PlannerClientFiles) {
         Write-Warning "ABSENT, client planificateur non accordé: $path"
         continue
     }
-    $fileAcl = Get-Acl -LiteralPath $path
-    $fileAcl.SetOwner($trustedOwner)
-    $fileAcl.SetAccessRuleProtection($false, $false)
-    Remove-ExplicitRules $fileAcl
-    Add-AllowRule $fileAcl $PlannerIdentity.Trim() "ReadAndExecute" $noInherit
-    Save-SecurityDescriptor $path $fileAcl "ReadAndExecute explicite planificateur, non héritable"
+    Save-SecurityDescriptor $path "ClientFile" "ReadAndExecute explicite planificateur, non héritable"
 }
 
 # code integrity: planner cannot read controller modules
