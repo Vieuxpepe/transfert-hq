@@ -93,6 +93,14 @@ dialog#hq-device-dialog::backdrop{background:rgba(0,0,0,.55)}
 .access-share{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
 .access-share > summary{cursor:pointer;list-style:none;font-weight:800;min-height:var(--tap-min,44px);display:flex;align-items:center}
 .access-share > summary::-webkit-details-marker{display:none}
+.fm-filter{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.fm-filter > input{flex:1 1 180px;min-width:0;width:auto}
+.fm-sort{display:flex;align-items:center;gap:8px;margin:0;font-weight:700;font-size:var(--text-sm,.82rem);flex:0 1 220px;min-width:0}
+.fm-sort select{width:auto;flex:1 1 auto;min-width:0;min-height:var(--tap-min,44px)}
+@media (max-width:430px){
+  .fm-filter{flex-direction:column;align-items:stretch}
+  .fm-filter > input,.fm-sort,.fm-sort select{width:100%;flex:1 1 auto}
+}
 #btn-palette{white-space:nowrap}
 @media (max-width:700px){
   #btn-palette{padding:8px 10px}

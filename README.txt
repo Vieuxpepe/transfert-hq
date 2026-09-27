@@ -43,6 +43,9 @@ Accueil
   d'attention passe sous le titre pour que l'état reste lisible.
   Ctrl+K ou « / » (hors champ) ouvre la palette. Elle ne lance qu'une cible
   allowlist (dossier, favori, scène, action, commande par id, fiche appareil).
+  Requête vide : récents locaux (hq_palette_recents : kind, id, label, hint)
+  et favoris déjà chargés. L'exécution repasse par les mêmes endpoints.
+  Le tri des fichiers (hq_files_sort) reste dans le navigateur.
 
 Routes ajoutées (admin ; le rôle upload reste sur son allowlist)
 ----------------------------------------------------------------

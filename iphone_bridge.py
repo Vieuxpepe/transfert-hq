@@ -2375,17 +2375,29 @@ function renderCrumbs(breadcrumb) {
   $$('.crumb[data-rel]', el).forEach(b => b.addEventListener('click', () => navigate(b.dataset.rel)));
 }
 
+function currentFilesSort() {
+  let value = 'name';
+  try { value = localStorage.getItem('hq_files_sort') || 'name'; } catch (_) {}
+  if (typeof hqFilesSortMode === 'function') return hqFilesSortMode(value);
+  return value === 'recent' || value === 'size' ? value : 'name';
+}
+
 function renderFiles() {
   const q = ($('#search')?.value || '').trim().toLowerCase();
   const list = $('#file-list');
-  const items = itemsCache.filter(f => !q || f.name.toLowerCase().includes(q));
+  const matched = itemsCache.filter(f => !q || f.name.toLowerCase().includes(q));
+  const items = typeof hqSortFolderItems === 'function' ? hqSortFolderItems(matched, currentFilesSort()) : matched;
   $('#file-count').textContent = String(items.length);
   if (!items.length) {
-    list.innerHTML = `<li class="file empty empty-teach">
-      <em>Aucun fichier ici</em>
-      <p class="hint"><button type="button" class="ghost" data-go-accueil>Envoie depuis Accueil</button></p>
-    </li>`;
-    $$('[data-go-accueil]', list).forEach(b => b.addEventListener('click', () => setView('accueil')));
+    if (q && itemsCache.length) {
+      list.innerHTML = '<li class="file empty empty-teach"><em>Aucun résultat dans ce dossier</em></li>';
+    } else {
+      list.innerHTML = `<li class="file empty empty-teach">
+        <em>Aucun fichier ici</em>
+        <p class="hint"><button type="button" class="ghost" data-go-accueil>Envoie depuis Accueil</button></p>
+      </li>`;
+      $$('[data-go-accueil]', list).forEach(b => b.addEventListener('click', () => setView('accueil')));
+    }
     return;
   }
   list.innerHTML = items.map(f => {
@@ -2456,10 +2468,8 @@ async function navigate(rel) {
 async function refreshFiles() {
   const list = $('#file-list');
   if (!list) return;
-  const q = ($('#search')?.value || '').trim();
   const qs = new URLSearchParams();
   if (currentRel) qs.set('path', currentRel);
-  if (q) qs.set('q', q);
   const data = await api('/api/list?' + qs.toString());
   if (data.error) throw new Error(data.error);
   itemsCache = data.items || [];
@@ -3600,6 +3610,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     navigate(parts.join('/'));
   });
   $('#search')?.addEventListener('input', () => renderFiles());
+  const sortSel = $('#file-sort');
+  if (sortSel) {
+    sortSel.value = currentFilesSort();
+    sortSel.addEventListener('change', () => {
+      const mode = typeof hqFilesSortMode === 'function' ? hqFilesSortMode(sortSel.value) : (sortSel.value === 'recent' || sortSel.value === 'size' ? sortSel.value : 'name');
+      sortSel.value = mode;
+      try { localStorage.setItem('hq_files_sort', mode); } catch (_) {}
+      renderFiles();
+    });
+  }
   setupDrop();
   setupQR();
   // Warm session, but NEVER leave the UI stuck on "Chargement…"
@@ -4219,8 +4239,8 @@ def render_app() -> bytes:
   <div data-panel="fichiers">
     <section class="hq" aria-labelledby="search-title">
       <div class="sec-head">
-        <h2 id="search-title">Recherche</h2>
-        <p class="sec-hint">Trouver un fichier ou du texte dans .txt / .md</p>
+        <h2 id="search-title">Recherche globale</h2>
+        <p class="sec-hint">Chercher un fichier ou du texte dans les notes</p>
       </div>
       <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale" data-help="Cherche un nom de fichier ou du texte dans les notes."/>
       <ul class="hq-list" id="search-hits"><li class="hint">Saisis au moins deux lettres.</li></ul>
@@ -4240,7 +4260,16 @@ def render_app() -> bytes:
         <button type="button" class="secondary" id="btn-up">↑ Remonter</button>
         <button type="button" class="secondary" id="btn-mkdir">+ Dossier</button>
         <button type="button" class="secondary" id="btn-newfile">+ Fichier</button>
-        <input id="search" type="search" placeholder="Filtrer…" aria-label="Filtrer la liste"/>
+      </div>
+      <div class="fm-filter">
+        <input id="search" type="search" placeholder="Filtrer ce dossier…" aria-label="Filtrer ce dossier"/>
+        <label class="fm-sort" for="file-sort">Trier
+          <select id="file-sort">
+            <option value="name">Nom</option>
+            <option value="recent">Récent</option>
+            <option value="size">Taille</option>
+          </select>
+        </label>
       </div>
       <ul class="files" id="file-list"></ul>
     </section>
