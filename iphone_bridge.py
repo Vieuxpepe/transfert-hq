@@ -33,6 +33,7 @@ import cc_ext
 import hq_automation
 import hq_calendar
 import hq_companion
+import hq_planner
 import hq_devices
 import hq_events
 
@@ -1965,7 +1966,7 @@ def bind_hq() -> None:
             meta=extra.get("meta") if isinstance(extra.get("meta"), dict) else None,
         )
 
-    hq_companion.bind(ROOT, journal=_agent_journal)
+    hq_companion.bind(ROOT, journal=_agent_journal, disk_free=disk_free, reserve_bytes=upload_disk_reserve_bytes)
     _HQ_BOUND = True
 
 
@@ -5183,6 +5184,10 @@ class Handler(BaseHTTPRequestHandler):
         raw = parsed.path
         ensure_hq()
 
+        if raw == "/local-agent" or raw.startswith("/local-agent/"):
+            self._json(404, {"error": "Inconnu"})
+            return
+
         if raw.startswith("/agent/v1/"):
             self._json(405, {"error": "POST requis"})
             return
@@ -5471,6 +5476,10 @@ class Handler(BaseHTTPRequestHandler):
     def _do_POST(self) -> None:
         raw = urlparse(self.path).path
         ensure_hq()
+
+        if raw == "/local-agent" or raw.startswith("/local-agent/"):
+            self._json(404, {"error": "Inconnu"})
+            return
 
         # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
         if not self._check_csrf():
@@ -6218,6 +6227,16 @@ def main() -> None:
         raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {e}") from e
     # Mild DoS mitigation for stdlib server
     server.timeout = 30
+    try:
+        planner_port = int(CONFIG.get("planner_port") or hq_planner.DEFAULT_PORT)
+    except (TypeError, ValueError):
+        planner_port = hq_planner.DEFAULT_PORT
+    planner_httpd = None
+    try:
+        planner_httpd = hq_planner.start(ROOT, port=planner_port)
+    except (RuntimeError, OSError) as exc:
+        server.server_close()
+        raise SystemExit(f"FATAL: planner loopback refused ({exc})") from exc
     print("=" * 56)
     print(" Transfert HQ v7.0 — Mission Control")
     print("=" * 56)
@@ -6230,6 +6249,7 @@ def main() -> None:
         print(f" Wallboard: http://{lan}:{PORT}/wallboard")
         print(f" Tailscale: http://{ts}:{PORT}/" if ts else " Tailscale: (not installed)")
     print(f" PIN    : required (on)")
+    print(f" Planner: http://127.0.0.1:{planner_httpd.server_address[1]}/ (loopback only, not Tailscale)")
     print(f" Max up : {human_size(max_upload_bytes())}")
     print(f" Backup : every {CONFIG.get('backup_every_hours')}h -> {CONFIG.get('backup_dir')}")
     print(" Ctrl+C to stop")
@@ -6239,6 +6259,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        if planner_httpd is not None:
+            planner_httpd.shutdown()
+            planner_httpd.server_close()
         try:
             PID_PATH.unlink(missing_ok=True)
         except OSError:

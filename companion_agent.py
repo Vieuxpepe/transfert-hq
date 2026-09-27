@@ -182,6 +182,14 @@ def _safe_artifact_name(name: str) -> str:
 
 
 def execute_job(config: dict, job: dict, host: companion_ops.RealHost, granted: list[str]) -> dict:
+    token = str(job.get("dispatch_token") or "")
+    status, started = _post_signed(
+        config,
+        "/agent/v1/start",
+        {"id": job.get("id"), "dispatch_token": token},
+    )
+    if status != 200:
+        return {"http": status, "result": started, "ok": False, "artifact": None, "error": str(started.get("error") or "démarrage refusé")}
     outcome = companion_ops.execute(job, host, granted=granted)
     artifact = None
     data = outcome.get("artifact_bytes")
@@ -191,7 +199,12 @@ def execute_job(config: dict, job: dict, host: companion_ops.RealHost, granted: 
             config,
             "/agent/v1/artifact",
             raw=bytes(data),
-            extra_headers={"X-HQ-Job": str(job.get("id") or ""), "X-HQ-Artifact-Name": name, "Content-Type": "application/octet-stream"},
+            extra_headers={
+                proto.HEADER_JOB: str(job.get("id") or ""),
+                proto.HEADER_ARTIFACT_NAME: name,
+                proto.HEADER_DISPATCH: token,
+                "Content-Type": "application/octet-stream",
+            },
         )
         if status != 200:
             outcome = {"ok": False, "summary": "", "output": "", "error": str(uploaded.get("error") or "artifact refusé")}
@@ -199,6 +212,7 @@ def execute_job(config: dict, job: dict, host: companion_ops.RealHost, granted: 
             artifact = uploaded.get("artifact")
     result_body = {
         "id": job.get("id"),
+        "dispatch_token": token,
         "ok": bool(outcome.get("ok")),
         "summary": str(outcome.get("summary") or "")[:240],
         "output": str(outcome.get("output") or "")[: proto.OUTPUT_MAX],

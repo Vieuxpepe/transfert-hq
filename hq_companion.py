@@ -38,17 +38,31 @@ _devices: list[dict] = []
 _malformed = False
 _now: Callable[[], float] = time.time
 _journal: Callable[..., None] | None = None
+_disk_free: Callable[[Path], dict] | None = None
+_reserve_bytes: Callable[[], int] | None = None
 _nonces: dict[str, dict[str, float]] = {}
 _enroll_hits: dict[str, list[float]] = {}
 _dummy_secret = secrets.token_hex(32)
+DISK_RESERVE_DEFAULT = 2 * 1024**3
+DEVICE_ARTIFACT_MAX_FILES = 32
+DEVICE_ARTIFACT_MAX_BYTES = 64 * 1024 * 1024
 
 
-def bind(root: Path | str, *, journal: Callable[..., None] | None = None, now: Callable[[], float] | None = None) -> None:
-    global _root, _journal, _now, _dummy_secret
+def bind(
+    root: Path | str,
+    *,
+    journal: Callable[..., None] | None = None,
+    now: Callable[[], float] | None = None,
+    disk_free: Callable[[Path], dict] | None = None,
+    reserve_bytes: Callable[[], int] | None = None,
+) -> None:
+    global _root, _journal, _now, _dummy_secret, _disk_free, _reserve_bytes
     _root = Path(root)
     _root.mkdir(parents=True, exist_ok=True)
     _journal = journal
     _now = now or time.time
+    _disk_free = disk_free
+    _reserve_bytes = reserve_bytes
     _dummy_secret = secrets.token_hex(32)
     with _lock:
         _nonces.clear()
@@ -191,7 +205,10 @@ def public_device(device: dict) -> dict:
         "support": list(device.get("support") or []),
         "policy": list(device.get("policy") or []),
         "granted": granted,
-        "tailscale_ips": list(device.get("tailscale_ips") or [])[:8],
+        "reported_hostname": device.get("reported_hostname") or "",
+        "reported_ips": list(device.get("reported_ips") or [])[:8],
+        "tailscale_ips": list(device.get("reported_ips") or device.get("tailscale_ips") or [])[:8],
+        "linked_peer_id": device.get("linked_peer_id") or "",
         "status": _bounded_status(device.get("status")),
     }
 
@@ -368,6 +385,9 @@ def enroll(*, token: str, body: dict, client_ip: str = "") -> dict:
             "support": support,
             "policy": policy,
             "tailscale_ips": ips,
+            "reported_ips": ips,
+            "reported_hostname": hostname,
+            "linked_peer_id": "",
             "status": {},
         }
         _devices.append(device)
@@ -461,7 +481,12 @@ def _remember_nonce(device_id: str, nonce: str, now: float) -> bool:
 
 
 def authenticate(method: str, path: str, headers: Any, body: bytes) -> dict | None:
-    """Return the device row when the HMAC headers are valid. Otherwise None."""
+    """Return the device row when the HMAC headers are valid. Otherwise None.
+
+    The nonce cache is process-local. After a controller restart, a captured
+    signed request can be replayed while its timestamp is still inside the
+    ±90s skew. TLS protects ordinary traffic. This is not a durable counter.
+    """
     device_id = _header(headers, proto.HEADER_DEVICE)
     stamp = proto.parse_timestamp(_header(headers, proto.HEADER_TIME))
     nonce = _header(headers, proto.HEADER_NONCE)
@@ -497,13 +522,13 @@ def _touch(device: dict, body: dict) -> dict:
     if version != proto.PROTOCOL_VERSION:
         raise ops.AgentOpError("protocole incompatible")
     if isinstance(body.get("hostname"), str):
-        device["hostname"] = body["hostname"][:80]
+        device["reported_hostname"] = body["hostname"][:80]
     if isinstance(os_name, str) and os_name.strip():
         device["os"] = os_name[:40]
     if "support" in body:
         device["support"] = _clean_support(body.get("support"))
     if "tailscale_ips" in body:
-        device["tailscale_ips"] = _clean_ips(body.get("tailscale_ips"))
+        device["reported_ips"] = _clean_ips(body.get("tailscale_ips"))
     if isinstance(body.get("status"), dict):
         device["status"] = _bounded_status(body.get("status"))
     device["last_seen"] = _clock()
@@ -558,7 +583,7 @@ def handle_device(*, method: str, path: str, headers: Any, body: bytes, client_i
                 "poll_sec": proto.POLL_SEC,
                 "idle_poll_sec": proto.IDLE_POLL_SEC,
             }
-        if path in ("/agent/v1/poll", "/agent/v1/result", "/agent/v1/artifact") and hq_jobs.malformed():
+        if path in ("/agent/v1/poll", "/agent/v1/start", "/agent/v1/result", "/agent/v1/artifact") and hq_jobs.malformed():
             return 409, {"error": "hq_agent_jobs.json illisible — fichier conservé"}
         if path == "/agent/v1/poll":
             granted = _granted(device)
@@ -573,6 +598,14 @@ def handle_device(*, method: str, path: str, headers: Any, body: bytes, client_i
                 "idle_poll_sec": proto.IDLE_POLL_SEC,
                 "job": job,
             }
+        if path == "/agent/v1/start":
+            data = _json_body(body or b"", proto.JSON_BODY_MAX)
+            snapshot = hq_jobs.acknowledge_start(
+                str(device.get("id")),
+                str(data.get("id") or ""),
+                str(data.get("dispatch_token") or ""),
+            )
+            return 200, {"ok": True, "job": snapshot}
         if path == "/agent/v1/result":
             data = _json_body(body or b"", proto.RESULT_MAX)
             snapshot = hq_jobs.complete(
@@ -582,6 +615,7 @@ def handle_device(*, method: str, path: str, headers: Any, body: bytes, client_i
                 summary=str(data.get("summary") or ""),
                 output=str(data.get("output") or ""),
                 error=str(data.get("error") or ""),
+                dispatch_token=str(data.get("dispatch_token") or ""),
             )
             return 200, {"ok": True, "job": snapshot}
         if path == "/agent/v1/artifact":
@@ -603,15 +637,67 @@ def max_body_for(path: str) -> int:
     return proto.JSON_BODY_MAX
 
 
+def _reserve_limit() -> int:
+    if _reserve_bytes is None:
+        return DISK_RESERVE_DEFAULT
+    try:
+        return max(0, int(_reserve_bytes()))
+    except (TypeError, ValueError):
+        return DISK_RESERVE_DEFAULT
+
+
+def _free_bytes() -> int | None:
+    if _root is None:
+        return None
+    if _disk_free is not None:
+        try:
+            info = _disk_free(_root)
+        except OSError:
+            return None
+        if not isinstance(info, dict) or info.get("error") or "free" not in info:
+            return None
+        try:
+            return int(info["free"])
+        except (TypeError, ValueError):
+            return None
+    try:
+        import shutil
+
+        return int(shutil.disk_usage(_root).free)
+    except OSError:
+        return None
+
+
+def _artifact_usage(device_id: str) -> tuple[int, int]:
+    if _root is None:
+        return 0, 0
+    root = _root / "Inbox" / "AgentArtifacts" / device_id
+    if not root.is_dir():
+        return 0, 0
+    files = 0
+    total = 0
+    for path in root.rglob("*"):
+        if not path.is_file() or path.name.endswith(".partial"):
+            continue
+        files += 1
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return files, total
+
+
 def _accept_artifact(device: dict, headers: Any, body: bytes) -> tuple[int, dict]:
+    """Authorize, then reserve disk, then write. A refusal creates no file."""
     if "artifacts" not in _granted(device):
         raise ops.AgentOpError("capacité refusée")
     if len(body) > proto.ARTIFACT_MAX:
         raise ops.AgentOpError("artifact trop volumineux")
     if not body:
         raise ops.AgentOpError("artifact vide")
-    job_id = _header(headers, "X-HQ-Job")
-    name = _header(headers, "X-HQ-Artifact-Name")
+    job_id = _header(headers, proto.HEADER_JOB)
+    name = _header(headers, proto.HEADER_ARTIFACT_NAME)
+    dispatch = _header(headers, proto.HEADER_DISPATCH)
     if not proto.JOB_ID_RE.fullmatch(job_id or ""):
         raise ops.AgentOpError("travail introuvable")
     if not SAFE_NAME_RE.fullmatch(name or ""):
@@ -619,23 +705,50 @@ def _accept_artifact(device: dict, headers: Any, body: bytes) -> tuple[int, dict
     if _root is None:
         raise RuntimeError("hq_companion non initialisé")
     device_id = str(device.get("id"))
-    rel_dir = Path("Inbox") / "AgentArtifacts" / device_id / job_id
-    dest_dir = _root / rel_dir
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / name
+    dest: Path | None = None
+    reserved = False
     try:
-        dest.resolve().relative_to((_root / "Inbox" / "AgentArtifacts").resolve())
-    except ValueError as exc:
-        raise ops.AgentOpError("nom d'artifact refusé") from exc
-    dest.write_bytes(body)
-    digest = hashlib.sha256(body).hexdigest()
-    rel = "/".join(dest.relative_to(_root).parts)
-    snapshot = hq_jobs.attach_artifact(
-        device_id,
-        job_id,
-        {"rel": rel, "name": name, "size": len(body), "sha256": digest},
-    )
-    return 200, {"ok": True, "artifact": snapshot.get("artifact"), "job": snapshot["id"]}
+        hq_jobs.authorize_artifact(device_id, job_id, name, len(body), dispatch)
+        reserved = True
+        free = _free_bytes()
+        if free is None or free < _reserve_limit() + len(body):
+            raise ops.AgentOpError("espace disque insuffisant")
+        used_files, used_bytes = _artifact_usage(device_id)
+        if used_files >= DEVICE_ARTIFACT_MAX_FILES or used_bytes + len(body) > DEVICE_ARTIFACT_MAX_BYTES:
+            raise ops.AgentOpError("quota d'artifacts atteint")
+        dest_dir = _root / "Inbox" / "AgentArtifacts" / device_id / job_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / name
+        try:
+            dest.resolve().relative_to((_root / "Inbox" / "AgentArtifacts").resolve())
+        except ValueError as exc:
+            raise ops.AgentOpError("nom d'artifact refusé") from exc
+        partial = dest.with_name(dest.name + ".partial")
+        with partial.open("wb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(partial, dest)
+        digest = hashlib.sha256(body).hexdigest()
+        rel = "/".join(dest.relative_to(_root).parts)
+        snapshot = hq_jobs.attach_artifact(
+            device_id,
+            job_id,
+            {"rel": rel, "name": name, "size": len(body), "sha256": digest},
+            dispatch_token=dispatch,
+        )
+        reserved = False
+        return 200, {"ok": True, "artifact": snapshot.get("artifact"), "job": snapshot["id"]}
+    except Exception:
+        if dest is not None:
+            for path in (dest, dest.with_name(dest.name + ".partial")):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        if reserved:
+            hq_jobs.release_artifact_reservation(device_id, job_id)
+        raise
 
 
 def overlay_roster(devices: list[dict] | None) -> list[dict]:
@@ -671,7 +784,7 @@ def overlay_roster(devices: list[dict] | None) -> list[dict]:
                 "source": "agent",
                 "os": agent.get("os") or "",
                 "online": bool(agent.get("online")),
-                "ip": (agent.get("tailscale_ips") or [""])[0],
+                "ip": (agent.get("reported_ips") or agent.get("tailscale_ips") or [""])[0],
                 "path": "tailscale",
                 "last_seen": agent.get("last_seen") or 0,
                 "_agent_id": agent.get("id"),
@@ -688,18 +801,31 @@ def _matchable(device: dict) -> bool:
 
 
 def _match_agent(device: dict, agents: list[dict]) -> dict | None:
-    ip = str(device.get("ip") or "")
-    source = str(device.get("source") or "")
-    name = str(device.get("name") or "").split(".")[0].lower()
+    """Link only when a human stored linked_peer_id. Reports are not identity."""
+    peer_id = str(device.get("id") or "")
+    if not peer_id:
+        return None
     for agent in agents:
-        ips = {str(item) for item in (agent.get("tailscale_ips") or []) if item}
-        if ip and ip in ips:
+        if str(agent.get("linked_peer_id") or "") == peer_id:
             return agent
-        if source == "tailscale":
-            host = str(agent.get("hostname") or agent.get("name") or "").split(".")[0].lower()
-            if name and host and name == host:
-                return agent
     return None
+
+
+def link_agent(device_id: str, peer_id: str) -> dict:
+    """Record an explicit controller-side link. Heartbeat data cannot do this."""
+    _require_writable()
+    peer = str(peer_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", peer):
+        raise ops.AgentOpError("pair invalide")
+    with _lock:
+        device = _find_device(str(device_id or ""))
+        if device is None or device.get("revoked"):
+            raise ops.AgentOpError("appareil introuvable")
+        device["linked_peer_id"] = peer
+        _persist()
+        snapshot = public_device(device)
+    _audit("agent_link", f"Lien companion · {peer}", {"device": device_id, "peer": peer})
+    return {"ok": True, "device": snapshot}
 
 
 def create_job_for_admin(data: dict) -> dict:
@@ -800,6 +926,8 @@ def admin_post(data: dict) -> tuple[int, dict]:
             return 200, {"ok": True, "job": hq_jobs.reject(str(data.get("id") or ""), actor="human")}
         if action == "cancel":
             return 200, {"ok": True, "job": hq_jobs.cancel(str(data.get("id") or ""), actor="human")}
+        if action == "link":
+            return 200, link_agent(str(data.get("device_id") or ""), str(data.get("peer_id") or ""))
         if action == "import":
             return 200, import_artifact(rel=str(data.get("rel") or ""), dest=str(data.get("dest") or ""))
         raise ops.AgentOpError("action invalide")

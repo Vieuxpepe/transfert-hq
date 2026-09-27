@@ -2,10 +2,18 @@
 
 State file: hq_agent_jobs.json (gitignored).
 A malformed file is kept and never overwritten. ``confirm`` does not approve.
+
+A poll leases a job. The companion must acknowledge start before a result
+or an artifact is accepted. Read jobs may be requeued a bounded number of
+times when the lease expires. Safe, sensitive, and destructive jobs become
+``uncertain`` instead of running again.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import re
 import secrets
 import threading
 import time
@@ -18,7 +26,11 @@ import hq_state
 
 JOBS_NAME = "hq_agent_jobs.json"
 MAX_JOBS = 400
-TERMINAL = frozenset({"succeeded", "failed", "cancelled", "expired", "rejected"})
+LEASE_SEC = 30
+READ_ATTEMPTS_MAX = 3
+TERMINAL = frozenset({"succeeded", "failed", "cancelled", "expired", "rejected", "uncertain"})
+DISPATCH_RE = re.compile(r"^[0-9a-f]{32}$")
+ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 _lock = threading.RLock()
 _root: Path | None = None
@@ -26,6 +38,8 @@ _jobs: list[dict] = []
 _malformed = False
 _now: Callable[[], float] = time.time
 _journal: Callable[..., None] | None = None
+
+
 def bind(root: Path | str, *, journal: Callable[..., None] | None = None, now: Callable[[], float] | None = None) -> None:
     global _root, _journal, _now
     _root = Path(root)
@@ -118,6 +132,7 @@ def _public(job: dict, *, full: bool = True) -> dict:
         "origin": job.get("origin"),
         "state": job.get("state"),
         "approved": bool(job.get("approved")),
+        "attempts": int(job.get("attempts") or 0),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "expires_at": job.get("expires_at"),
@@ -142,14 +157,19 @@ def _public(job: dict, *, full: bool = True) -> dict:
 
 
 def _dispatch_view(job: dict) -> dict:
+    """Companion poll payload. The dispatch token never appears in _public."""
     return {
         "id": job["id"],
         "op": job["op"],
         "args": job.get("args") or {},
         "risk": job["risk"],
+        "state": job.get("state"),
         "timeout_sec": job.get("timeout_sec") or 20,
         "expires_at": job.get("expires_at"),
+        "lease_until": job.get("lease_until") or 0,
+        "attempts": int(job.get("attempts") or 0),
         "approved": job.get("approved") is True,
+        "dispatch_token": job.get("dispatch_token") or "",
     }
 
 
@@ -160,8 +180,17 @@ def _find(job_id: str) -> dict | None:
     return None
 
 
+def _token_eq(stored: Any, presented: Any) -> bool:
+    left = str(stored or "")
+    right = str(presented or "")
+    same = hmac.compare_digest(hashlib.sha256(left.encode("utf-8")).digest(), hashlib.sha256(right.encode("utf-8")).digest())
+    if not DISPATCH_RE.fullmatch(left) or not DISPATCH_RE.fullmatch(right):
+        return False
+    return bool(same)
+
+
 def sweep() -> int:
-    """Expire queued and abandoned work. Returns how many rows changed."""
+    """Expire queued work and settle abandoned leases. Returns how many rows changed."""
     if _malformed or _root is None:
         return 0
     now = _clock()
@@ -175,15 +204,55 @@ def sweep() -> int:
                 expires = float(job.get("expires_at") or 0)
             except (TypeError, ValueError):
                 expires = 0
-            if expires and now > expires and state in ("queued", "awaiting_approval", "dispatched"):
-                job["state"] = "expired" if state != "dispatched" else "failed"
-                if state == "dispatched":
-                    job["error"] = "délai dépassé"
+            if state == "leased":
+                try:
+                    lease_until = float(job.get("lease_until") or 0)
+                except (TypeError, ValueError):
+                    lease_until = 0
+                if lease_until and now > lease_until:
+                    _settle_lease(job, now, expires)
+                    changed += 1
+                continue
+            if state == "running" and expires and now > expires:
+                job["state"] = "failed"
+                job["error"] = "délai dépassé"
+                job["updated_at"] = now
+                changed += 1
+                continue
+            if state == "dispatched" and expires and now > expires:
+                job["state"] = "failed"
+                job["error"] = "délai dépassé"
+                job["updated_at"] = now
+                changed += 1
+                continue
+            if expires and now > expires and state in ("queued", "awaiting_approval"):
+                job["state"] = "expired"
                 job["updated_at"] = now
                 changed += 1
         if changed:
             _persist()
     return changed
+
+
+def _settle_lease(job: dict, now: float, expires: float) -> None:
+    """Lease expired before start. Reads may retry. Nothing else runs twice."""
+    risk = str(job.get("risk") or "")
+    attempts = int(job.get("attempts") or 0)
+    job["dispatch_token"] = ""
+    job["lease_until"] = 0
+    job["artifact_reserved"] = False
+    job["updated_at"] = now
+    if expires and now > expires:
+        job["state"] = "expired" if risk == "read" else "uncertain"
+        if job["state"] == "uncertain":
+            job["error"] = "bail non confirmé"
+        return
+    if risk == "read" and attempts < READ_ATTEMPTS_MAX:
+        job["state"] = "queued"
+        job["error"] = ""
+        return
+    job["state"] = "uncertain"
+    job["error"] = "bail non confirmé"
 
 
 def create_job(
@@ -227,6 +296,10 @@ def create_job(
             "origin": origin,
             "state": state,
             "approved": approved,
+            "attempts": 0,
+            "dispatch_token": "",
+            "lease_until": 0,
+            "artifact_reserved": False,
             "created_at": now,
             "updated_at": now,
             "expires_at": now + ttl,
@@ -296,10 +369,12 @@ def reject(job_id: str, *, actor: str) -> dict:
 def cancel(job_id: str, *, actor: str) -> dict:
     if actor not in ops.ORIGINS:
         raise PermissionError("origine invalide")
+    if actor == "planner":
+        return _close(job_id, state="cancelled", actor=actor, planner_scope=True)
     return _close(job_id, state="cancelled", actor=actor)
 
 
-def _close(job_id: str, *, state: str, actor: str) -> dict:
+def _close(job_id: str, *, state: str, actor: str, planner_scope: bool = False) -> dict:
     _require_writable()
     now = _clock()
     with _lock:
@@ -310,6 +385,11 @@ def _close(job_id: str, *, state: str, actor: str) -> dict:
             raise ops.AgentOpError("travail déjà terminé")
         if state == "rejected" and job.get("state") != "awaiting_approval":
             raise ops.AgentOpError("travail non refusable")
+        if planner_scope:
+            if job.get("origin") != "planner":
+                raise PermissionError("annulation refusée")
+            if job.get("state") not in ("queued", "awaiting_approval"):
+                raise PermissionError("annulation refusée")
         job["state"] = state
         job["updated_at"] = now
         job["closed_by"] = actor
@@ -320,7 +400,7 @@ def _close(job_id: str, *, state: str, actor: str) -> dict:
 
 
 def take_next(device_id: str) -> dict | None:
-    """Mark the oldest queued job for this device as dispatched."""
+    """Lease the oldest queued job. The companion must ack before it runs."""
     _require_writable()
     sweep()
     now = _clock()
@@ -339,11 +419,45 @@ def take_next(device_id: str) -> dict | None:
             break
         if chosen is None:
             return None
-        chosen["state"] = "dispatched"
-        chosen["dispatched_at"] = now
+        chosen["state"] = "leased"
+        chosen["dispatch_token"] = secrets.token_hex(16)
+        chosen["lease_until"] = now + LEASE_SEC
+        chosen["attempts"] = int(chosen.get("attempts") or 0) + 1
+        chosen["leased_at"] = now
         chosen["updated_at"] = now
         _persist()
         return _dispatch_view(chosen)
+
+
+def acknowledge_start(device_id: str, job_id: str, dispatch_token: str) -> dict:
+    """Move leased → running when the dispatch token and the lease are still valid."""
+    _require_writable()
+    if not proto.JOB_ID_RE.fullmatch(str(job_id or "")):
+        raise ops.AgentOpError("travail introuvable")
+    now = _clock()
+    with _lock:
+        job = _find(job_id)
+        if job is None or job.get("device_id") != device_id:
+            raise ops.AgentOpError("travail introuvable")
+        if not _token_eq(job.get("dispatch_token"), dispatch_token):
+            raise ops.AgentOpError("jeton de bail refusé")
+        state = job.get("state")
+        if state == "running":
+            if float(job.get("expires_at") or 0) < now:
+                raise ops.AgentOpError("travail expiré")
+            return _public(job)
+        if state != "leased":
+            raise ops.AgentOpError("travail non actif")
+        if float(job.get("lease_until") or 0) < now:
+            raise ops.AgentOpError("bail expiré")
+        if float(job.get("expires_at") or 0) < now:
+            raise ops.AgentOpError("travail expiré")
+        job["state"] = "running"
+        job["started_at"] = now
+        job["updated_at"] = now
+        _persist()
+        snapshot = _public(job)
+    return snapshot
 
 
 def complete(
@@ -354,6 +468,7 @@ def complete(
     summary: str = "",
     output: str = "",
     error: str = "",
+    dispatch_token: str = "",
 ) -> dict:
     _require_writable()
     if not proto.JOB_ID_RE.fullmatch(str(job_id or "")):
@@ -367,7 +482,7 @@ def complete(
         job = _find(job_id)
         if job is None or job.get("device_id") != device_id:
             raise ops.AgentOpError("travail introuvable")
-        if job.get("state") != "dispatched":
+        if job.get("state") != "running" or not _token_eq(job.get("dispatch_token"), dispatch_token):
             raise ops.AgentOpError("travail non actif")
         job["state"] = "succeeded" if ok else "failed"
         job["summary"] = str(summary or "")[:240]
@@ -385,30 +500,82 @@ def complete(
     return snapshot
 
 
-def attach_artifact(device_id: str, job_id: str, meta: dict) -> dict:
+def authorize_artifact(device_id: str, job_id: str, name: str, size: int, dispatch_token: str) -> dict:
+    """Admit an artifact. This function does not create or write any file."""
+    _require_writable()
+    if not proto.JOB_ID_RE.fullmatch(str(job_id or "")):
+        raise ops.AgentOpError("travail introuvable")
+    if not ARTIFACT_NAME_RE.fullmatch(str(name or "")):
+        raise ops.AgentOpError("nom d'artifact refusé")
+    if isinstance(size, bool) or not isinstance(size, int) or size <= 0 or size > proto.ARTIFACT_MAX:
+        raise ops.AgentOpError("taille refusée")
+    with _lock:
+        job = _find(job_id)
+        if job is None or job.get("device_id") != device_id:
+            raise ops.AgentOpError("travail introuvable")
+        if job.get("state") != "running" or not _token_eq(job.get("dispatch_token"), dispatch_token):
+            raise ops.AgentOpError("travail non actif")
+        spec = ops.get_op(str(job.get("op") or ""))
+        if not spec.produces_artifact:
+            raise ops.AgentOpError("opération sans artifact")
+        if job.get("artifact") or job.get("artifact_reserved"):
+            raise ops.AgentOpError("artifact déjà reçu")
+        job["artifact_reserved"] = True
+        job["updated_at"] = _clock()
+        _persist()
+        return {"device_id": device_id, "job_id": job_id, "name": name, "size": size, "op": spec.name}
+
+
+def release_artifact_reservation(device_id: str, job_id: str) -> None:
+    """Drop a reservation when the bytes were not kept. No-op once metadata exists."""
+    if _malformed or _root is None:
+        return
+    with _lock:
+        job = _find(job_id)
+        if job is None or job.get("device_id") != device_id:
+            return
+        if job.get("artifact") or not job.get("artifact_reserved"):
+            return
+        job["artifact_reserved"] = False
+        job["updated_at"] = _clock()
+        _persist()
+
+
+def attach_artifact(device_id: str, job_id: str, meta: dict, *, dispatch_token: str = "") -> dict:
     """Record artifact metadata only. Bytes never enter the job JSON."""
     _require_writable()
     with _lock:
         job = _find(job_id)
         if job is None or job.get("device_id") != device_id:
             raise ops.AgentOpError("travail introuvable")
-        if job.get("state") != "dispatched":
+        if job.get("state") != "running" or not _token_eq(job.get("dispatch_token"), dispatch_token):
             raise ops.AgentOpError("travail non actif")
+        if job.get("artifact"):
+            raise ops.AgentOpError("artifact déjà reçu")
         job["artifact"] = {
             "rel": str(meta.get("rel") or "")[:240],
             "name": str(meta.get("name") or "")[:80],
             "size": int(meta.get("size") or 0),
             "sha256": str(meta.get("sha256") or "")[:64],
         }
+        job["artifact_reserved"] = False
         job["updated_at"] = _clock()
         _persist()
         return _public(job)
 
 
-def list_jobs(*, device_id: str | None = None, state: str | None = None, limit: int = 50, offset: int = 0) -> dict:
+def list_jobs(
+    *,
+    device_id: str | None = None,
+    state: str | None = None,
+    origin: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
     sweep()
     device_f = (device_id or "").strip()
     state_f = (state or "").strip()
+    origin_f = (origin or "").strip()
     with _lock:
         rows = list(_jobs)
         bad = _malformed
@@ -417,6 +584,8 @@ def list_jobs(*, device_id: str | None = None, state: str | None = None, limit: 
         if device_f and job.get("device_id") != device_f:
             continue
         if state_f and job.get("state") != state_f:
+            continue
+        if origin_f and job.get("origin") != origin_f:
             continue
         out.append(_public(job))
     offset = max(0, int(offset or 0))

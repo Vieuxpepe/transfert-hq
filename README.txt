@@ -20,7 +20,8 @@ Architecture
   hq_agent_protocol.py  signature, version de protocole, délais de poll
   companion_agent.py agent sortant sur un PC de confiance
   companion_ops.py   opérations bornées exécutées sur ce PC
-  hqctl.py           CLI locale (humain ou planificateur)
+  hqctl.py           client HTTP du planificateur (loopback seulement)
+  hq_planner.py      API planificateur sur 127.0.0.1:8766
   assets/hq-agent.js centre agents (fiche Appareils)
   assets/hq.js       palette, bannière, aide contextuelle, journal, flotte, brief, voix, push
   assets/hq-calendar.js
@@ -54,18 +55,52 @@ Companions (contrôle des autres PC)
 
   Risques : lecture (file directe), sûr / sensible (direct si l'origine
   est un humain, sinon approbation), destructeur (toujours une approbation
-  séparée). confirm:true n'approuve pas. hqctl part en origine planner :
-  le planificateur ne peut pas s'approuver.
+  séparée). confirm:true n'approuve pas.
 
-  Les fichiers produits vont dans Inbox/AgentArtifacts/… Le JSON du
-  travail ne contient que le chemin, la taille et l'empreinte.
-  import vers Inbox, Uni ou Print se fait sur le pont.
+  hqctl est un client HTTP de 127.0.0.1:8766 (hq_planner.py). Il n'importe
+  pas le registre ni la file. L'origine est forcée à planner ; un champ
+  origin fourni est refusé. Le jeton planificateur (hq_planner.json) n'est
+  ni le PIN, ni la session admin, ni un secret d'appareil. Le port public
+  (8765, y compris derrière Tailscale Serve) répond 404 sur /local-agent.
+  L'approbation humaine reste le navigateur admin + CSRF.
 
-  Routes companion : POST /agent/v1/enroll|heartbeat|poll|result|artifact
+  Cette frontière est logicielle. Si le planificateur tourne sous le même
+  compte que le pont, il peut lire hq_agents.json. « Le planificateur ne
+  peut pas s'approuver » n'est alors pas une garantie : il faut un compte
+  distinct et install_hq_state_acl.ps1 -PlannerIdentity. Un administrateur
+  du même poste peut reprendre la propriété des fichiers.
+
+  Bail : poll pose l'état leased, un dispatch_token et lease_until (30 s).
+  Le companion envoie POST /agent/v1/start. Résultat et artifact ne sont
+  acceptés qu'en état running avec le même jeton. Bail expiré : une lecture
+  peut revenir en file (3 essais au plus). Sûr, sensible et destructeur
+  passent à uncertain et ne sont pas relancés. attempts est conservé.
+
+  Identité : l'IP ou le hostname déclarés sont des diagnostics
+  (reported_ips, reported_hostname). Ils ne lient pas un companion à un
+  pair Tailscale. Lien explicite : POST /api/agent action=link (admin).
+  Tant qu'il n'y a pas de linked_peer_id, le companion est sa propre ligne.
+  Un téléphone ne devient jamais un companion, même si l'id lié correspond.
+
+  Artifacts : authorize_artifact ne crée aucun fichier. Ensuite réserve
+  disque (upload_disk_reserve_gb, défaut 2 Go) et quota par appareil.
+  Écriture *.partial, fsync, os.replace. Si le rattachement échoue, le
+  fichier est supprimé. Seuls fs.stage et screenshot.capture produisent
+  un artifact.
+
+  Nonce : le cache anti-rejeu est en mémoire. Après un redémarrage du
+  pont, une requête signée capturée peut être rejouée tant que son
+  horodatage reste dans ±90 s. TLS protège le trafic habituel.
+
+  Routes companion : POST /agent/v1/enroll|heartbeat|poll|start|result|artifact
   Routes admin (cookie admin + CSRF, pas le rôle upload) : /api/agent
+  Routes planificateur (127.0.0.1:8766, Bearer) : /local-agent/v1/devices|jobs
 
-  Installation Windows : install_companion.ps1 (copie locale, pas de
-  mise à jour automatique). Protocole version 1.
+  Installation Windows : install_companion.ps1 retire l'héritage ACL
+  (SYSTEM et Administrators en contrôle total, l'utilisateur installateur
+  en modification) et enregistre une tâche visible au logon. L'argument
+  est seulement --config. uninstall_companion.ps1 retire la tâche et
+  garde les secrets sauf -DeleteData. Protocole version 1.
 
   SSH existant reste disponible et distinct (badge SSH). Agent HQ est
   un autre canal. Le shell interactif du pont n'est pas devenu un
@@ -291,7 +326,8 @@ Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON c
   hq_push_subscriptions.json
   hq_vapid.json          clé privée Web Push — ne jamais committer
   hq_agents.json         secrets companions — ne jamais committer
-  hq_agent_jobs.json     file des travaux agents
+  hq_agent_jobs.json     file des travaux agents (contient le dispatch_token)
+  hq_planner.json        jeton du planificateur — ne jamais committer
   agent_config.json      secret du companion, sur le PC distant
   bridge_config.json     PIN / webhook — ne jamais committer
   bridge_sessions.json
@@ -356,7 +392,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py
 
 Contrôle manuel du calendrier
 -----------------------------
@@ -407,6 +443,11 @@ SECURITY INVARIANTS
       Alimentation restart/shutdown : risque destructeur, TTL court, et le
       companion Windows ne l'exécute que si destructive_power_enabled est vrai.
       Presse-papiers désactivé tant que clipboard_enabled n'est pas vrai.
+      Le planificateur n'est pas sur le port public. hqctl ne peut pas
+      approuver. Un même compte OS peut quand même lire les secrets.
+      Artifact : autorisation avant écriture, réserve disque, pas d'orphelin.
+      Bail + accusé de démarrage. Pas de lien automatique pair/companion.
+      Cache de nonces perdu au redémarrage (fenêtre ±90 s).
     - Automation, scènes, planning, palette : terminal par id allowlist uniquement.
     - Jamais de commande libre dans une règle, une scène, un job planifié
       ou un événement de calendrier.

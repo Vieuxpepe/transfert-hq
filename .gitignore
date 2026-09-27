@@ -28,6 +28,7 @@ hq_push_subscriptions.json
 hq_vapid.json
 hq_agents.json
 hq_agent_jobs.json
+hq_planner.json
 agent_config.json
 *.json.tmp
 .tmp/

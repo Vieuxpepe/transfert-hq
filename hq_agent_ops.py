@@ -24,7 +24,14 @@ class AgentOpError(ValueError):
 
 
 class OpSpec:
-    def __init__(self, name: str, capability: str, risk: str, allowed: tuple[str, ...] = ()):
+    def __init__(
+        self,
+        name: str,
+        capability: str,
+        risk: str,
+        allowed: tuple[str, ...] = (),
+        produces_artifact: bool = False,
+    ):
         if risk not in RISKS:
             raise ValueError(risk)
         if capability not in hq_devices.AGENT_CAPS:
@@ -33,6 +40,7 @@ class OpSpec:
         self.capability = capability
         self.risk = risk
         self.allowed = frozenset(allowed)
+        self.produces_artifact = bool(produces_artifact)
 
 
 OPS: dict[str, OpSpec] = {
@@ -44,8 +52,8 @@ OPS: dict[str, OpSpec] = {
         OpSpec("fs.read", "files_read", "read", ("workspace", "path")),
         OpSpec("fs.write", "files_write", "sensitive", ("workspace", "path", "text")),
         OpSpec("fs.copy", "files_copy", "safe", ("workspace", "src", "dest")),
-        OpSpec("fs.stage", "files_read", "read", ("workspace", "path")),
-        OpSpec("screenshot.capture", "screenshot", "read"),
+        OpSpec("fs.stage", "files_read", "read", ("workspace", "path"), produces_artifact=True),
+        OpSpec("screenshot.capture", "screenshot", "read", produces_artifact=True),
         OpSpec("apps.list", "apps_list", "read"),
         OpSpec("apps.launch", "apps_launch", "safe", ("id",)),
         OpSpec("process.list", "process_list", "read"),

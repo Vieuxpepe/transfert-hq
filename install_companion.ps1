@@ -1,5 +1,20 @@
 # Install the Transfert HQ Companion on a trusted Windows PC.
 # Outbound only: no firewall port, no inbound listener, no self-update.
+#
+# ACL after copy (inheritance removed):
+#   NT AUTHORITY\SYSTEM:(OI)(CI)(F)
+#   BUILTIN\Administrators:(OI)(CI)(F)
+#   <installing user>:(OI)(CI)(M)
+# The companion identity keeps Modify so it can read agent_config.json.
+# Broad inherited Everyone / Users access is dropped.
+#
+# Scheduled task "TransfertHQ Companion":
+#   Trigger: at logon of the installing user (not before that user signs in).
+#   Hidden: false (visible in Task Scheduler).
+#   Action: py -3 <companion_agent.py> --config <agent_config.json>
+#   WorkingDirectory: %ProgramData%\TransfertHQ
+#   The device secret is only in the config file, never on the command line.
+#
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File .\install_companion.ps1 -Controller https://VIEUXPEEPEE.TAILNET.ts.net
 param(
@@ -43,8 +58,22 @@ if (-not (Test-Path $ConfigPath)) {
     } | ConvertTo-Json -Depth 4
     Set-Content -Path $ConfigPath -Value $template -Encoding UTF8
 }
+
+$aclUser = "$env:USERDOMAIN\$env:USERNAME"
+icacls $Dest /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "${aclUser}:(OI)(CI)M" | Out-Null
+icacls $ConfigPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" "${aclUser}:M" | Out-Null
+
+$ScriptPath = Join-Path $Dest "companion_agent.py"
+$TaskArg = "-3 `"$ScriptPath`" --config `"$ConfigPath`""
+$Action = New-ScheduledTaskAction -Execute "py.exe" -Argument $TaskArg -WorkingDirectory $Dest
+$Trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden:$false
+Register-ScheduledTask -TaskName "TransfertHQ Companion" -Action $Action -Trigger $Trigger -Settings $Settings -Force -Description "Transfert HQ companion. Config path only; secret stays in agent_config.json. Runs at logon of the installing user." | Out-Null
+
 Write-Host "Companion copié dans $Dest"
+Write-Host "ACL: SYSTEM et Administrators en contrôle total, $aclUser en modification, héritage retiré."
+Write-Host "Tâche: TransfertHQ Companion, visible, au logon de $env:USERNAME, dossier $Dest."
 Write-Host "1. Sur Vieuxpeepee : Centre agents → Créer un jeton"
-Write-Host "2. py -3 `"$Dest\companion_agent.py`" --config `"$ConfigPath`" --controller $Controller --name `"$Name`" --workspace `"$Work`" --enroll JETON"
-Write-Host "3. Ensuite, sans --enroll, le même script interroge le pont (pas de port entrant)."
+Write-Host "2. py -3 `"$ScriptPath`" --config `"$ConfigPath`" --controller $Controller --name `"$Name`" --workspace `"$Work`" --enroll JETON"
+Write-Host "3. Ensuite la tâche planifiée interroge le pont (pas de port entrant)."
 Write-Host "Le terminal interactif et l'auto-mise à jour ne sont pas installés."
