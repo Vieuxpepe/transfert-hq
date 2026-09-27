@@ -4180,7 +4180,7 @@ def render_app() -> bytes:
           <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true">📁</span><span class="lbl">Dossier</span></button>
         </div>
         <div class="row hq-actions" style="margin-top:10px">
-          <button type="button" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
+          <button type="button" class="secondary" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
         </div>
         <div class="row hq-actions mode-complet-only" id="hq-custom-actions" style="margin-top:8px" aria-label="Actions personnalisées"></div>
         <div class="row hq-actions mode-complet-only" id="hq-scenes" style="margin-top:8px" aria-label="Scènes"></div>

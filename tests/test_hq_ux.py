@@ -110,6 +110,7 @@ class UxMarkupTests(unittest.TestCase):
         self.assertIn('aria-controls="hq-attention-panel"', attention_head)
         self.assertIn('id="btn-palette"', attention_head)
         self.assertNotIn('id="btn-palette"', attention_panel)
+        self.assertIn('class="secondary" id="btn-sync-captures"', accueil)
         self.assertNotIn("<button", attention_head.split("<button", 1)[1].split("</button>", 1)[0])
         self.assertIn('id="hq-today-toggle"', today_head)
         self.assertIn('aria-controls="hq-today-panel"', today_head)
