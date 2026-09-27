@@ -302,10 +302,16 @@
       );
     });
     bar.appendChild(views);
+    const navCopy = {
+      day: ["Jour précédent", "Jour suivant", "Recule d'un jour.", "Avance d'un jour."],
+      week: ["Semaine précédente", "Semaine suivante", "Recule d'une semaine.", "Avance d'une semaine."],
+      month: ["Mois précédent", "Mois suivant", "Recule d'un mois.", "Avance d'un mois."],
+      agenda: ["Agenda précédent", "Agenda suivant", "Recule de trente jours.", "Avance de trente jours."],
+    }[state.view] || ["Période précédente", "Période suivante", "Recule.", "Avance."];
     const nav = h("div", { class: "hq-cal-nav hq-cal-views" });
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "prev", text: "‹" }));
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "today", text: "Aujourd'hui" }));
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "next", text: "›" }));
+    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "prev", "aria-label": navCopy[0], "data-help": navCopy[2], text: "‹" }));
+    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "today", "data-help": "Revient à la journée du pont.", text: "Aujourd'hui" }));
+    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "next", "aria-label": navCopy[1], "data-help": navCopy[3], text: "›" }));
     bar.appendChild(nav);
     bar.appendChild(h("h3", { class: "hq-cal-title", text: titleText() }));
     if (state.view !== "month") {
@@ -368,7 +374,7 @@
     const lane = h("div", { class: "hq-cal-allday" });
     const rows = items().filter((item) => item.all_day && overlapsDay(item, day));
     if (!rows.length) {
-      lane.appendChild(h("span", { class: "hint", text: "Toute la journée" }));
+      lane.appendChild(h("span", { class: "hint", text: "Rien sur toute la journée." }));
       return lane;
     }
     rows.forEach((item) => lane.appendChild(chip(item)));
@@ -389,7 +395,7 @@
   }
 
   function monthChipLimit() {
-    return window.matchMedia("(max-width: 800px)").matches ? 1 : 2;
+    return window.matchMedia("(max-width: 700px)").matches ? 1 : 2;
   }
 
   function dayTimeline(day) {
@@ -635,11 +641,16 @@
         const body = h("span", {});
         body.appendChild(h("strong", { text: item.title || "Sans titre" }));
         if (item.location) body.appendChild(h("div", { class: "hint", text: item.location }));
+        if (item.read_only) body.appendChild(h("div", { class: "hint", text: "Lecture seule" }));
+        else {
+          const cat = CATS.find((row) => row[0] === (item.category || "other"));
+          if (cat) body.appendChild(h("div", { class: "hint", text: cat[1] }));
+        }
         button.appendChild(body);
         wrap.appendChild(button);
       });
     }
-    if (!any) wrap.appendChild(h("p", { class: "hint", text: "Rien sur les 30 prochains jours." }));
+    if (!any) wrap.appendChild(h("p", { class: "hint", text: "Rien de prévu sur les 30 prochains jours." }));
     return wrap;
   }
 
@@ -787,7 +798,7 @@
       if (item.scene_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "scene", text: "Lancer la scène" }));
       if (item.action_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "action", text: "Lancer l'action" }));
       if (item.device_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "device", "data-id": item.id, text: "Voir l'appareil" }));
-      card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "delete", "data-id": item.id, text: "Supprimer" }));
+      card.appendChild(h("button", { type: "button", class: "danger", "data-sheet": "delete", "data-id": item.id, text: "Supprimer" }));
     }
     card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
     card.addEventListener("click", (ev) => onSheetClick(ev, item));
