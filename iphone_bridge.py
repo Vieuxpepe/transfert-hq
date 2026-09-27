@@ -4390,7 +4390,17 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="plus">
-    <section class="hq" aria-labelledby="plus-status-title">
+    <nav class="sys-jump" aria-label="Sections Système">
+      <button type="button" data-jump="system-session">Session</button>
+      <button type="button" data-jump="system-backups">Sauvegardes</button>
+      <button type="button" data-jump="system-notifications">Notifications</button>
+      <button type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
+      <button type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
+      <button type="button" class="mode-complet-only" data-jump="system-journal">Journal</button>
+      <button type="button" data-jump="system-alerts">Alertes</button>
+      <button type="button" data-jump="system-info">Infos</button>
+    </nav>
+    <section class="hq" id="system-session" aria-labelledby="plus-status-title">
       <div class="sec-head">
         <h2 id="plus-status-title">Session <span class="badge" id="hq-uptime">—</span></h2>
         <p class="sec-hint">Espace disque, hôte, et rôle de connexion</p>
@@ -4401,18 +4411,21 @@ def render_app() -> bytes:
         <dt>Max upload</dt><dd id="hq-max">…</dd>
         <dt>Session</dt><dd id="hq-role">…</dd>
       </dl>
-      <p class="sec-hint">Écran TV / présence / QR → <a href="/wallboard?theme=oled&kiosk=1" style="color:var(--accent)">Wallboard</a>
-        · <a href="/wallboard?theme=midnight" style="color:var(--accent)">midnight</a></p>
-      <div class="qrs" style="margin-top:10px" aria-label="QR d'accès">
-        {qr_lan}
-        {qr_ts}
-      </div>
-      <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
+      <details class="access-share">
+        <summary>Partager l'accès</summary>
+        <p class="sec-hint">Écran TV / présence / QR → <a href="/wallboard?theme=oled&kiosk=1" style="color:var(--accent)">Wallboard</a>
+          · <a href="/wallboard?theme=midnight" style="color:var(--accent)">midnight</a></p>
+        <div class="qrs" style="margin-top:10px" aria-label="QR d'accès">
+          {qr_lan}
+          {qr_ts}
+        </div>
+        <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
+      </details>
       <span id="hq-health" class="visually-hidden"></span>
       <div id="hq-spark-host" class="spark-host"></div>
     </section>
 
-    <section class="hq" aria-labelledby="brief-title">
+    <section class="hq" id="system-brief" aria-labelledby="brief-title">
       <div class="sec-head">
         <h2 id="brief-title">Brief du jour</h2>
         <p class="sec-hint">Résumé déterministe, sans service externe</p>
@@ -4420,7 +4433,7 @@ def render_app() -> bytes:
       <div id="hq-brief" class="brief"><p class="hint">Chargement…</p></div>
     </section>
 
-    <section class="hq" aria-labelledby="backup-title">
+    <section class="hq" id="system-backups" aria-labelledby="backup-title">
       <div class="sec-head">
         <h2 id="backup-title">Sauvegardes</h2>
         <p class="sec-hint">Catalogue local. La restauration écrase le dossier choisi.</p>
@@ -4428,7 +4441,7 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-backups"><li class="hint">Chargement…</li></ul>
     </section>
 
-    <details class="hq mode-complet-only">
+    <details class="hq mode-complet-only" id="system-automations">
       <summary>
         <div class="sec-head">
           <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Automatisations</span>
@@ -4460,7 +4473,7 @@ def render_app() -> bytes:
       </form>
     </details>
 
-    <section class="hq" aria-labelledby="push-title">
+    <section class="hq" id="system-notifications" aria-labelledby="push-title">
       <div class="sec-head">
         <h2 id="push-title">Notifications</h2>
         <p class="sec-hint">Web Push opt-in (HTTPS / Tailscale Serve, push_enabled) : alertes, attention critique, échec d'automatisation. Pas toutes les notifications HQ.</p>
@@ -4469,7 +4482,7 @@ def render_app() -> bytes:
       <button type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
     </section>
 
-    <details class="hq mode-complet-only">
+    <details class="hq mode-complet-only" id="system-tasks">
       <summary>
         <div class="sec-head">
           <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Tâches</span>
@@ -4479,7 +4492,7 @@ def render_app() -> bytes:
       <div class="kanban" id="kanban"></div>
     </details>
 
-    <details class="hq" id="hq-journal">
+    <details class="hq" id="system-journal">
       <summary>
         <div class="sec-head">
           <span class="summary-title" id="events-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Journal technique</span>
@@ -4498,7 +4511,7 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
     </details>
 
-    <details class="hq">
+    <details class="hq" id="system-alerts">
       <summary>
         <div class="sec-head">
           <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Alertes <span class="badge" id="hq-alert-count">0</span></span>
@@ -4508,7 +4521,7 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-alerts"><li class="hint">Aucune alerte pour le moment.</li></ul>
     </details>
 
-    <section class="hq">
+    <section class="hq" id="system-info">
       <div class="sec-head">
         <h2>Infos</h2>
         <p class="sec-hint">Réglages de base du pont</p>

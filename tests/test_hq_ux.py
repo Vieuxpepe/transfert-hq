@@ -49,7 +49,7 @@ class UxMarkupTests(unittest.TestCase):
         plus = html.split('<div data-panel="plus"', 1)[1].split("</main>", 1)[0]
         self.assertIn("Activité récente", accueil)
         self.assertNotIn('id="hq-events"', accueil)
-        self.assertIn('id="hq-journal"', plus)
+        self.assertIn('id="system-journal"', plus)
         self.assertIn("Journal technique", plus)
         self.assertIn('data-nav="plus"', html)
         self.assertIn("Système", html)

@@ -987,8 +987,31 @@
     window.addEventListener("resize", () => hideHelp());
   }
 
+  function setupSystemNav() {
+    const nav = document.querySelector('nav[aria-label="Sections Système"]');
+    if (!nav || nav.dataset.ready) return;
+    nav.dataset.ready = "1";
+    nav.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest ? ev.target.closest("[data-jump]") : null;
+      if (!btn || !nav.contains(btn)) return;
+      const target = document.getElementById(btn.dataset.jump || "");
+      if (!target) return;
+      const details = target.tagName === "DETAILS" ? target : target.querySelector("details");
+      if (details) details.open = true;
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+      nav.querySelectorAll("[data-jump]").forEach((node) => {
+        const on = node === btn;
+        node.classList.toggle("is-current", on);
+        if (on) node.setAttribute("aria-current", "true");
+        else node.removeAttribute("aria-current");
+      });
+    });
+  }
+
   function boot() {
     setupHelp();
+    setupSystemNav();
     $("#btn-palette")?.addEventListener("click", () => openPalette());
     $("#hq-palette")?.addEventListener("click", (ev) => {
       if (ev.target && ev.target.id === "hq-palette") closePalette();

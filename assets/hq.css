@@ -85,6 +85,14 @@ dialog#hq-device-dialog::backdrop{background:rgba(0,0,0,.55)}
 #hq-help-tooltip.is-on{opacity:1}
 @media (prefers-reduced-motion:no-preference){#hq-help-tooltip{transition:opacity .12s ease}}
 #btn-push[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--panel))}
+.sys-jump{display:flex;gap:6px;overflow-x:auto;flex-wrap:nowrap;margin:0 0 12px;padding-bottom:2px;-webkit-overflow-scrolling:touch}
+.sys-jump button{flex:0 0 auto;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:8px 12px;font:inherit;font-weight:700;font-size:var(--text-sm,.82rem);min-height:var(--tap-min,44px);cursor:pointer}
+.sys-jump button.is-current{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--panel))}
+@media (min-width:900px){.sys-jump{flex-wrap:wrap;overflow:visible}}
+[id^="system-"]{scroll-margin-top:12px}
+.access-share{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
+.access-share > summary{cursor:pointer;list-style:none;font-weight:800;min-height:var(--tap-min,44px);display:flex;align-items:center}
+.access-share > summary::-webkit-details-marker{display:none}
 #btn-palette{white-space:nowrap}
 @media (max-width:700px){
   #btn-palette{padding:8px 10px}
