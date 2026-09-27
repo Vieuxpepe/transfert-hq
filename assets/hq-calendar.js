@@ -1,10 +1,10 @@
 /* Transfert HQ calendar. Date-only math never uses new Date("YYYY-MM-DD"). */
 (function () {
   const VIEWS = [
-    ["day", "Jour"],
-    ["week", "Semaine"],
-    ["month", "Mois"],
-    ["agenda", "Agenda"],
+    ["day", "Jour", "Vue Jour : la journée, heure par heure."],
+    ["week", "Semaine", "Vue Semaine : sept jours. Sur téléphone, glisse horizontalement."],
+    ["month", "Mois", "Vue Mois : aperçu du mois. Les titres longs sont coupés."],
+    ["agenda", "Agenda", "Vue Agenda : la liste des trente prochains jours."],
   ];
   const CATS = [
     ["personal", "Personnel"],
@@ -243,9 +243,24 @@
     }
   }
 
+  function previewHelp(item) {
+    const parts = [item.title || "Sans titre"];
+    if (item.all_day) parts.push("Journée");
+    else if (item.start && String(item.start).indexOf("T") !== -1) parts.push(spanLabel(item));
+    else if (item.when) parts.push(WHEN[item.when] || "Conditionnel");
+    if (item.read_only) parts.push("Horaire HQ, lecture seule");
+    else {
+      const cat = CATS.find((row) => row[0] === (item.category || "other"));
+      if (cat) parts.push(cat[1]);
+    }
+    if (item.scene_id || item.action_id) parts.push("Lié");
+    return parts.join(" · ");
+  }
+
   function render() {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
+    if (window.hqHideHelp) window.hqHideHelp();
     root.textContent = "";
     paintTz();
     root.appendChild(toolbar());
@@ -273,23 +288,30 @@
   function toolbar() {
     const bar = h("div", { class: "hq-cal-bar" });
     const views = h("div", { class: "hq-cal-views", role: "tablist" });
-    VIEWS.forEach(([id, label]) => {
+    VIEWS.forEach(([id, label, help]) => {
       views.appendChild(
         h("button", {
           type: "button",
           class: "secondary",
           "data-cal": "view",
           "data-view": id,
+          "data-help": help,
           "aria-pressed": state.view === id ? "true" : "false",
           text: label,
         })
       );
     });
     bar.appendChild(views);
+    const navCopy = {
+      day: ["Jour précédent", "Jour suivant", "Recule d'un jour.", "Avance d'un jour."],
+      week: ["Semaine précédente", "Semaine suivante", "Recule d'une semaine.", "Avance d'une semaine."],
+      month: ["Mois précédent", "Mois suivant", "Recule d'un mois.", "Avance d'un mois."],
+      agenda: ["Agenda précédent", "Agenda suivant", "Recule de trente jours.", "Avance de trente jours."],
+    }[state.view] || ["Période précédente", "Période suivante", "Recule.", "Avance."];
     const nav = h("div", { class: "hq-cal-nav hq-cal-views" });
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "prev", text: "‹" }));
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "today", text: "Aujourd'hui" }));
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "next", text: "›" }));
+    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "prev", "aria-label": navCopy[0], "data-help": navCopy[2], text: "‹" }));
+    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "today", "data-help": "Revient à la journée du pont.", text: "Aujourd'hui" }));
+    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "next", "aria-label": navCopy[1], "data-help": navCopy[3], text: "›" }));
     bar.appendChild(nav);
     bar.appendChild(h("h3", { class: "hq-cal-title", text: titleText() }));
     if (state.view !== "month") {
@@ -298,12 +320,18 @@
           type: "button",
           class: "secondary",
           "data-cal": "activity",
+          "data-help": "Affiche l'activité récente sur la grille. Lecture seule.",
           "aria-pressed": state.activity ? "true" : "false",
           text: state.activity ? "Activité affichée" : "Activité",
         })
       );
     }
-    bar.appendChild(h("button", { type: "button", "data-cal": "create", text: "Nouvel événement" }));
+    bar.appendChild(h("button", {
+      type: "button",
+      "data-cal": "create",
+      "data-help": "Crée un événement manuel dans le calendrier.",
+      text: "Nouvel événement",
+    }));
     return bar;
   }
 
@@ -346,7 +374,7 @@
     const lane = h("div", { class: "hq-cal-allday" });
     const rows = items().filter((item) => item.all_day && overlapsDay(item, day));
     if (!rows.length) {
-      lane.appendChild(h("span", { class: "hint", text: "Toute la journée" }));
+      lane.appendChild(h("span", { class: "hint", text: "Rien sur toute la journée." }));
       return lane;
     }
     rows.forEach((item) => lane.appendChild(chip(item)));
@@ -360,14 +388,14 @@
       class: "hq-cal-chip " + catClass(item),
       "data-cal": "open",
       "data-id": item.id,
-      title: title,
+      "data-help": previewHelp(item),
       text: title,
     });
     return node;
   }
 
   function monthChipLimit() {
-    return window.matchMedia("(max-width: 800px)").matches ? 1 : 2;
+    return window.matchMedia("(max-width: 700px)").matches ? 1 : 2;
   }
 
   function dayTimeline(day) {
@@ -401,6 +429,48 @@
     return items().filter((item) => !item.all_day && overlapsDay(item, day));
   }
 
+  function coarsePointer() {
+    return window.matchMedia("(pointer: coarse)").matches;
+  }
+
+  function columnPx() {
+    return (state.view === "week" ? 44 : 48) * 24;
+  }
+
+  function assignHitSlop(placed) {
+    const pxPerMin = columnPx() / 1440;
+    const targetPx = 44;
+    const gapPx = 2;
+    const groups = new Map();
+    placed.forEach((entry) => {
+      const list = groups.get(entry.col) || [];
+      list.push(entry);
+      groups.set(entry.col, list);
+    });
+    groups.forEach((rows) => {
+      rows.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+      rows.forEach((entry, index) => {
+        const prevEnd = index > 0 ? rows[index - 1].endMin : 0;
+        const nextStart = index + 1 < rows.length ? rows[index + 1].startMin : 1440;
+        const aboveRoom = Math.max(0, ((entry.startMin - prevEnd) * pxPerMin) / 2 - (index > 0 ? gapPx / 2 : 0));
+        const belowRoom = Math.max(0, ((nextStart - entry.endMin) * pxPerMin) / 2 - (index + 1 < rows.length ? gapPx / 2 : 0));
+        const visualPx = Math.max(1, (entry.endMin - entry.startMin) * pxPerMin);
+        const need = Math.max(0, targetPx - visualPx);
+        let above = Math.min(aboveRoom, need / 2);
+        let below = Math.min(belowRoom, need - above);
+        const leftover = need - above - below;
+        if (leftover > 0) {
+          const addAbove = Math.min(Math.max(0, aboveRoom - above), leftover);
+          above += addAbove;
+          below += Math.min(Math.max(0, belowRoom - below), leftover - addAbove);
+        }
+        entry.hitAbovePx = above;
+        entry.hitBelowPx = below;
+        entry.visualPx = visualPx;
+      });
+    });
+  }
+
   function placeTimed(col, day, columns) {
     const dayStart = makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate());
     const dayEnd = addLocalDays(dayStart, 1);
@@ -415,18 +485,42 @@
         return { item, startMin, endMin };
       })
     );
+    const coarse = coarsePointer();
+    if (coarse) assignHitSlop(placed);
+    const colPx = columnPx();
     placed.forEach((entry) => {
-      const top = (entry.startMin / 1440) * 100;
-      const height = Math.max(((entry.endMin - entry.startMin) / 1440) * 100, 1.6);
       const width = 100 / entry.cols;
+      const spanMin = Math.max(1, entry.endMin - entry.startMin);
+      const top = (entry.startMin / 1440) * 100;
+      const height = (spanMin / 1440) * 100;
+      let hitTop = top;
+      let hitHeight = coarse ? height : Math.max(height, 1.6);
       const button = h("button", {
         type: "button",
-        class: "hq-cal-event " + catClass(entry.item),
+        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)),
         "data-cal": "open",
         "data-id": entry.item.id,
-        style: "top:" + top + "%;height:" + height + "%;left:" + entry.col * width + "%;width:" + width + "%",
-        text: entry.item.title || "Sans titre",
+        "data-help": previewHelp(entry.item),
       });
+      if (coarse) {
+        const abovePct = ((entry.hitAbovePx || 0) / colPx) * 100;
+        const belowPct = ((entry.hitBelowPx || 0) / colPx) * 100;
+        hitTop = top - abovePct;
+        hitHeight = height + abovePct + belowPct;
+        const face = h("span", {
+          class: "hq-cal-face " + catClass(entry.item),
+          text: entry.item.title || "Sans titre",
+        });
+        face.style.top = (abovePct / hitHeight) * 100 + "%";
+        face.style.height = (height / hitHeight) * 100 + "%";
+        button.appendChild(face);
+      } else {
+        button.textContent = entry.item.title || "Sans titre";
+      }
+      button.style.top = hitTop + "%";
+      button.style.height = hitHeight + "%";
+      button.style.left = entry.col * width + "%";
+      button.style.width = width + "%";
       col.appendChild(button);
     });
     return columns;
@@ -482,9 +576,9 @@
         type: "button",
         class: "hq-cal-marker",
         style: "top:" + (mins / 1440) * 100 + "%",
-        "aria-label": marker.message || marker.kind || "Activité",
+        "aria-label": "Activité",
+        "data-help": marker.message || marker.kind || "Activité récente",
       });
-      button.title = marker.message || marker.kind || "";
       col.appendChild(button);
     });
   }
@@ -578,7 +672,6 @@
             class: "hq-cal-more",
             "data-cal": "pick-day",
             "data-day": dateKey(day),
-            title: label,
             "aria-label": label,
             text: "+" + extra,
           })
@@ -602,16 +695,27 @@
       const timed = rows.filter((item) => !item.all_day).sort((a, b) => String(a.start).localeCompare(String(b.start)));
       allDay.concat(timed).forEach((item) => {
         const when = item.all_day ? "Journée" : spanLabel(item);
-        const button = h("button", { type: "button", class: "hq-cal-row " + catClass(item), "data-cal": "open", "data-id": item.id });
+        const button = h("button", {
+          type: "button",
+          class: "hq-cal-row " + catClass(item),
+          "data-cal": "open",
+          "data-id": item.id,
+          "data-help": previewHelp(item),
+        });
         button.appendChild(h("time", { text: when }));
         const body = h("span", {});
         body.appendChild(h("strong", { text: item.title || "Sans titre" }));
         if (item.location) body.appendChild(h("div", { class: "hint", text: item.location }));
+        if (item.read_only) body.appendChild(h("div", { class: "hint", text: "Lecture seule" }));
+        else {
+          const cat = CATS.find((row) => row[0] === (item.category || "other"));
+          if (cat) body.appendChild(h("div", { class: "hint", text: cat[1] }));
+        }
         button.appendChild(body);
         wrap.appendChild(button);
       });
     }
-    if (!any) wrap.appendChild(h("p", { class: "hint", text: "Rien sur les 30 prochains jours." }));
+    if (!any) wrap.appendChild(h("p", { class: "hint", text: "Rien de prévu sur les 30 prochains jours." }));
     return wrap;
   }
 
@@ -629,7 +733,13 @@
     block.appendChild(h("h3", { text: "Conditionnel" }));
     block.appendChild(h("p", { class: "sec-hint", text: "Ces tâches ne sont pas sur la grille horaire." }));
     rows.forEach((item) => {
-      const button = h("button", { type: "button", class: "hq-cal-row is-schedule", "data-cal": "open", "data-id": item.id });
+      const button = h("button", {
+        type: "button",
+        class: "hq-cal-row is-schedule",
+        "data-cal": "open",
+        "data-id": item.id,
+        "data-help": previewHelp(item),
+      });
       button.appendChild(h("strong", { text: item.title || "Conditionnel" }));
       button.appendChild(h("span", { class: "hint", text: WHEN[item.when] || item.when || "" }));
       block.appendChild(button);
@@ -711,7 +821,25 @@
     };
   }
 
+  let sheetOpener = null;
+  let sheetRelease = null;
+
+  function rememberOpener() {
+    if (sheetOpener && document.contains(sheetOpener) && !(sheetOpener.closest && sheetOpener.closest(".hq-sheet"))) return;
+    const active = document.activeElement;
+    if (!active || active === document.body) return;
+    if (active.closest && active.closest(".hq-sheet, dialog")) return;
+    sheetOpener = active;
+  }
+
+  function releaseSheet() {
+    if (sheetRelease) sheetRelease();
+    sheetRelease = null;
+  }
+
   function sheet(id) {
+    if (window.hqHideHelp) window.hqHideHelp();
+    rememberOpener();
     let node = document.getElementById(id);
     if (!node) {
       node = h("div", { class: "hq-sheet", id: id, hidden: "hidden" });
@@ -733,12 +861,16 @@
         node.textContent = "";
       }
     });
+    releaseSheet();
+    const opener = sheetOpener;
+    sheetOpener = null;
+    if (opener && opener.focus && document.contains(opener)) opener.focus();
   }
 
   function openDetail(item) {
     const root = sheet("hq-cal-detail");
-    const card = h("div", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-label": "Détail" });
-    card.appendChild(h("h3", { text: item.title || "Sans titre" }));
+    const card = h("div", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-detail-title" });
+    card.appendChild(h("h3", { id: "hq-cal-detail-title", text: item.title || "Sans titre" }));
     card.appendChild(h("p", { class: "hint", text: whenText(item) }));
     if (item.location) card.appendChild(h("p", { text: item.location }));
     if (item.notes) card.appendChild(h("p", { class: "hq-cal-note", text: item.notes }));
@@ -752,11 +884,15 @@
       if (item.scene_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "scene", text: "Lancer la scène" }));
       if (item.action_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "action", text: "Lancer l'action" }));
       if (item.device_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "device", "data-id": item.id, text: "Voir l'appareil" }));
-      card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "delete", "data-id": item.id, text: "Supprimer" }));
+      card.appendChild(h("button", { type: "button", class: "danger", "data-sheet": "delete", "data-id": item.id, text: "Supprimer" }));
     }
     card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
     card.addEventListener("click", (ev) => onSheetClick(ev, item));
+    card.tabIndex = -1;
     root.appendChild(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus();
   }
 
   function whenText(item) {
@@ -785,17 +921,22 @@
     return (found && found.label) || id;
   }
 
+  async function busy(label, fn) {
+    if (typeof withBusy === "function") return withBusy(label, fn);
+    return fn();
+  }
+
   async function runTarget(item, target) {
     const catalog = (state.data && state.data.catalog) || {};
     const label = target === "scene" ? labelFor(catalog.scenes, item.scene_id) : labelFor(catalog.actions, item.action_id);
     const noun = target === "scene" ? "la scène" : "l'action";
     if (!window.confirm("Lancer " + noun + " « " + label + " » ?")) return;
     try {
-      await api("/api/calendar/run", {
+      await busy("Lancement…", () => api("/api/calendar/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: item.id, target: target }),
-      });
+      }));
       if (typeof toast === "function") toast(target === "scene" ? "Scène lancée" : "Action lancée");
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Échec", "err");
@@ -824,11 +965,11 @@
   async function removeEvent(item) {
     if (!window.confirm("Supprimer « " + (item.title || "cet événement") + " » ?")) return;
     try {
-      await api("/api/calendar", {
+      await busy("Suppression…", () => api("/api/calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "delete", id: item.id, expected_rev: item.rev }),
-      });
+      }));
       closeSheets();
       if (typeof toast === "function") toast("Événement supprimé");
       refresh();
@@ -839,8 +980,8 @@
 
   function openEditor(item) {
     const root = sheet("hq-cal-editor");
-    const card = h("form", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-label": "Événement" });
-    card.appendChild(h("h3", { text: item.id ? "Modifier" : "Nouvel événement" }));
+    const card = h("form", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
+    card.appendChild(h("h3", { id: "hq-cal-editor-title", text: item.id ? "Modifier" : "Nouvel événement" }));
     card.appendChild(field("Titre", h("input", { id: "hq-cal-title", name: "title", maxlength: "120", required: "required", value: item.title || "" })));
     const allDay = h("input", { id: "cal-all-day", type: "checkbox" });
     allDay.checked = !!item.all_day;
@@ -899,6 +1040,8 @@
       saveEditor(item, { allDay, start, end, category });
     });
     root.appendChild(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
     const title = card.querySelector("#hq-cal-title");
     if (title) title.focus();
   }
@@ -980,11 +1123,11 @@
       return;
     }
     try {
-      await api("/api/calendar", {
+      await busy("Enregistrement…", () => api("/api/calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "save", expected_rev: item.id ? item.rev : 0, event: payload }),
-      });
+      }));
       closeSheets();
       if (typeof toast === "function") toast("Événement enregistré");
       refresh();
@@ -1029,12 +1172,41 @@
       });
       root.appendChild(list);
     }
-    if (cal && cal.next) {
-      const line = h("p", {});
-      line.appendChild(h("strong", { text: "Prochain" }));
-      line.appendChild(h("span", { text: " · " + (cal.next.title || "Sans titre") + " · " + homeWhen(cal.next) }));
-      root.appendChild(line);
+    paintNext(cal);
+  }
+
+  function fmtNextDay(date) {
+    return new Intl.DateTimeFormat("fr-CA", { weekday: "short", day: "numeric", month: "short" }).format(date);
+  }
+
+  function nextParts(cal) {
+    const next = cal && cal.next;
+    if (!next) return { when: "", title: "Rien à venir." };
+    const title = next.title || "Sans titre";
+    if (next.all_day) {
+      const start = parseLocalDateKey(next.start);
+      const same = !!(start && cal.server_date && dateKey(start) === cal.server_date);
+      return { when: !start || same ? "Journée" : fmtNextDay(start) + " · Journée", title: title };
     }
+    const start = parseLocalDateTime(next.start);
+    if (!start) return { when: "", title: title };
+    const same = !!(cal.server_date && dateKey(start) === cal.server_date);
+    return { when: same ? fmtTime(start) : fmtNextDay(start) + " · " + fmtTime(start), title: title };
+  }
+
+  function paintNext(cal) {
+    const nextLine = document.getElementById("hq-cal-next");
+    if (!nextLine) return;
+    nextLine.textContent = "";
+    const parts = nextParts(cal);
+    const next = cal && cal.next;
+    if (next) nextLine.appendChild(h("span", { class: "hq-next-label", text: "Prochain" }));
+    if (parts.when) {
+      if (next) nextLine.appendChild(h("span", { class: "hq-next-sep", "aria-hidden": "true", text: "·" }));
+      nextLine.appendChild(h("span", { class: "hq-next-when", text: parts.when }));
+    }
+    if (next) nextLine.appendChild(h("span", { class: "hq-next-sep", "aria-hidden": "true", text: "·" }));
+    nextLine.appendChild(h("span", { class: "hq-next-title", text: parts.title }));
   }
 
   function paintWall(cal) {

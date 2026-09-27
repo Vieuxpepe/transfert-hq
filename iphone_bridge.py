@@ -2251,13 +2251,25 @@ function toast(msg, kind='ok', ms=3200) {
 }
 
 const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
+function viewTitle(view) {
+  if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
+  return VIEW_LABELS[view] || 'Accueil';
+}
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   document.body.dataset.view = view;
+  if (window.hqHideHelp) window.hqHideHelp();
   const lab = $('#view-label');
-  if (lab) lab.textContent = VIEW_LABELS[view];
-  $$('.bottom-nav [data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === view));
+  const title = viewTitle(view);
+  if (lab) lab.textContent = title;
+  document.title = 'Transfert HQ · ' + title;
+  $$('.bottom-nav [data-nav]').forEach(b => {
+    const on = b.dataset.nav === view;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'calendrier' && window.hqCalendarShow) window.hqCalendarShow();
@@ -2271,8 +2283,12 @@ function applyMode(simple) {
   if (btn) {
     btn.setAttribute('aria-pressed', simple ? 'true' : 'false');
     btn.textContent = simple ? 'Mode simple' : 'Mode complet';
-    btn.title = simple ? 'Afficher Terminal et outils avancés' : 'Masquer Terminal et outils avancés';
+    btn.removeAttribute('title');
+    btn.setAttribute('data-help', simple
+      ? 'Mode simple : le terminal et les outils avancés sont masqués.'
+      : 'Mode complet : terminal, planning et automatisations sont visibles.');
   }
+  if (window.hqHideHelp) window.hqHideHelp();
   try { localStorage.setItem('tf_hq_mode', simple ? 'simple' : 'complet'); } catch (_) {}
   if (simple && document.body.dataset.view === 'ops') setView('accueil');
 }
@@ -2286,6 +2302,10 @@ function setupNav() {
   let saved = 'accueil';
   try { saved = localStorage.getItem('tf_hq_view') || 'accueil'; } catch (_) {}
   setView(saved);
+  const wide = window.matchMedia('(min-width: 900px)');
+  if (wide.addEventListener) wide.addEventListener('change', () => {
+    if (document.body.dataset.view) setView(document.body.dataset.view);
+  });
 }
 
 function fmtRel(rel) {
@@ -2879,7 +2899,7 @@ function spaceBar(label, free, total, freeH, totalH) {
     : `${escapeHtml(freeH || '?')} libre / ${escapeHtml(totalH || '?')} (${pctFree}%)`;
   return `<div class="space-row">
     <div class="space-top"><span>${escapeHtml(label)}</span><span>${caption}</span></div>
-    <div class="space-track" title="${pctFree == null ? 'n/d' : pctFree + '% libre'}">
+    <div class="space-track" aria-hidden="true">
       <div class="space-fill" style="width:${pctUsed}%;background:${color}"></div>
     </div>
   </div>`;
@@ -2917,7 +2937,7 @@ function renderDevices(devices) {
     }
     const pathLabel = ({lan:'LAN',tailscale:'Tailscale',direct:'Direct',relay:'Relay (lent)',local:'Local',wan:'WAN',offline:'Off',unknown:'?'})[d.path] || (d.path || '');
     const pathBadge = pathLabel ? `<span class="path-badge path-${escapeAttr(d.path || 'unknown')}">${escapeHtml(pathLabel)}</span>` : '';
-    return `<li class="device-card" data-device-id="${escapeAttr(d.id || '')}">
+    return `<li class="device-card" tabindex="0" role="button" aria-label="${escapeAttr((d.name || 'Appareil') + ' — ouvrir la fiche')}" data-device-id="${escapeAttr(d.id || '')}">
       <div class="device-head">
         <span class="dot ${on ? 'on' : 'off'}"></span>
         <strong>${escapeHtml(d.name || '?')}</strong>
@@ -2989,7 +3009,7 @@ function renderRecents() {
   }
   if (filter === 'all') rows.sort((a, b) => (b.sort || 0) - (a.sort || 0));
   el.innerHTML = rows.slice(0, 16).map(r => r.html).join('')
-    || '<li class="empty-teach"><em>Rien de récent</em><p class="hint">Envoie un fichier depuis Accueil</p></li>';
+    || '<li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li>';
   $$('[data-open-rel]', el).forEach(b => b.addEventListener('click', () => navigate(b.dataset.openRel || '')));
 }
 
@@ -3089,8 +3109,8 @@ async function refreshHQ() {
     if ($('#hq-max')) $('#hq-max').textContent = st.max_upload_h || '—';
     const chip = $('#status-chip');
     if (chip) {
-      const free = disk.free_h || '?';
-      chip.textContent = '● ' + (st.hostname || 'PC') + ' · ' + free;
+      const free = disk.free_h || '';
+      chip.textContent = free ? ('● ' + free + ' libres') : '● État';
     }
     renderDevices(dev.devices || []);
     renderTransfers(tr.transfers || []);
@@ -3243,13 +3263,16 @@ async function runSearch() {
   const q = ($('#global-search')?.value || '').trim();
   const el = $('#search-hits');
   if (!el) return;
-  if (q.length < 2) { el.innerHTML = ''; return; }
+  if (q.length < 2) {
+    el.innerHTML = '<li class="hint">Saisis au moins deux lettres.</li>';
+    return;
+  }
   try {
     const data = await api('/api/search?q=' + encodeURIComponent(q));
     el.innerHTML = (data.hits||[]).map(h =>
       `<li><button type="button" class="fname" data-srel="${escapeAttr(h.rel)}" style="background:none;border:0;padding:0;color:var(--accent)">${escapeHtml(h.name)}</button>
       <div class="meta">${escapeHtml(h.rel)} · ${escapeHtml(h.match)}${h.snippet? ' — '+escapeHtml(h.snippet):''}</div></li>`
-    ).join('') || '<li class="hint">Aucun résultat</li>';
+    ).join('') || '<li class="hint">Aucun fichier ne correspond.</li>';
     $$('[data-srel]', el).forEach(b => b.addEventListener('click', () => {
       const parts = b.dataset.srel.split('/');
       parts.pop();
@@ -3266,7 +3289,7 @@ function renderAlerts(items) {
   if (!el) return;
   el.innerHTML = list.slice(0, 8).map(x =>
     `<li><strong>${escapeHtml(x.title || '')}</strong><div class="meta">${escapeHtml(x.detail || '')}</div></li>`
-  ).join('') || '<li class="hint">Aucune alerte</li>';
+  ).join('') || '<li class="hint">Aucune alerte pour le moment.</li>';
 }
 
 function renderMedia(items) {
@@ -3286,7 +3309,7 @@ function renderRecentsEmptyHint() {
   const el = $('#hq-recents');
   if (!el) return;
   if ((transfersCache.length + activityCache.length) === 0) {
-    el.innerHTML = '<li class="hint empty-teach"><em>Rien de récent</em><p class="hint">Envoie un fichier depuis Accueil</p></li>';
+    el.innerHTML = '<li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li>';
   }
 }
 
@@ -3299,7 +3322,7 @@ function renderScenes(scenes) {
   $$('[data-scene]', el).forEach(b => b.addEventListener('click', async () => {
     if (!confirm('Lancer la scène « ' + b.textContent + ' » ?')) return;
     try {
-      await api('/api/scene', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.scene }) });
+      await withBusy('Lancement…', () => api('/api/scene', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.scene }) }));
       toast('Scène lancée');
       await refreshHQ();
     } catch (e) { toast(e.message, 'err'); }
@@ -3366,19 +3389,23 @@ function setupHQ() {
   if (!$('#hq-devices') && !$('#btn-lock')) return;
   $('#btn-lock')?.addEventListener('click', async () => {
     if (!confirm('Verrouiller le PC ?')) return;
-    try { await api('/api/pc/lock', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); toast('PC verrouillé'); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      await withBusy('Verrouillage…', () => api('/api/pc/lock', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }));
+      toast('PC verrouillé');
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-sleep')?.addEventListener('click', async () => {
     if (!confirm('Mettre le PC en veille ?')) return;
-    try { await api('/api/pc/sleep', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); toast('Veille…'); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      await withBusy('Mise en veille…', () => api('/api/pc/sleep', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }));
+      toast('Veille demandée');
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-shot')?.addEventListener('click', async () => {
     try {
-      const data = await api('/api/pc/screenshot', {
+      const data = await withBusy('Capture…', () => api('/api/pc/screenshot', {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
-      });
+      }));
       toast('Capture: ' + data.name);
       await refreshFiles();
       await refreshHQ();
@@ -3397,10 +3424,10 @@ function setupHQ() {
   });
   $('#btn-explore')?.addEventListener('click', async () => {
     try {
-      await api('/api/pc/explore', {
+      await withBusy('Ouverture du dossier…', () => api('/api/pc/explore', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ path: currentRel || 'Inbox' })
-      });
+      }));
       toast('Explorateur ouvert');
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -3413,10 +3440,10 @@ function setupHQ() {
     const rel = ($('#send-rel')?.value || '').trim();
     if (!to || !rel) { toast('Destinataire + fichier requis', 'err'); return; }
     try {
-      await api('/api/send', {
+      await withBusy('Envoi…', () => api('/api/send', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ to, rel, from: deviceName(), from_id: presenceId })
-      });
+      }));
       toast('Envoyé');
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -3435,23 +3462,31 @@ function setupHQ() {
   $('#btn-backup')?.addEventListener('click', async () => {
     if (!confirm('Lancer un backup maintenant ?')) return;
     try {
-      const d = await withBusy('Backup…', () => api('/api/backup', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }), 'backup-busy');
+      const d = await withBusy('Sauvegarde…', () => api('/api/backup', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }), 'backup-busy');
       toast(d.path || 'Backup OK');
     }
     catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-iz-archive')?.addEventListener('click', async () => {
     if (!confirm('Archiver les fichiers de Inbox ?')) return;
-    try { const d = await api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'archive' }) }); toast(d.moved + ' fichier(s) archivé(s)'); await refreshFiles(); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      const d = await withBusy('Archivage…', () => api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'archive' }) }));
+      toast(d.moved + ' fichier(s) archivé(s)');
+      await refreshFiles();
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-iz-sort')?.addEventListener('click', async () => {
-    try { const d = await api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'sort' }) }); toast(d.moved + ' fichier(s) trié(s)'); await refreshFiles(); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      const d = await withBusy('Tri…', () => api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'sort' }) }));
+      toast(d.moved + ' fichier(s) trié(s)');
+      await refreshFiles();
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#btn-iz-tmp')?.addEventListener('click', async () => {
-    try { const d = await api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'empty-tmp' }) }); toast((d.removed||0) + ' fichier(s) tmp supprimé(s)'); }
-    catch (e) { toast(e.message, 'err'); }
+    try {
+      const d = await withBusy('Nettoyage…', () => api('/api/inbox-zero', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'empty-tmp' }) }));
+      toast((d.removed||0) + ' fichier(s) tmp supprimé(s)');
+    } catch (e) { toast(e.message, 'err'); }
   });
   $('#global-search')?.addEventListener('input', () => { clearTimeout(window._sq); window._sq = setTimeout(runSearch, 280); });
   $('#btn-print')?.addEventListener('click', async () => {
@@ -3459,10 +3494,10 @@ function setupHQ() {
     if (!rel) { toast('Indique Print/fichier…', 'err'); return; }
     if (!confirm('Imprimer ' + rel + ' ?')) return;
     try {
-      await api('/api/print', {
+      await withBusy('Impression…', () => api('/api/print', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ rel, printer: $('#print-printer')?.value || '' })
-      });
+      }));
       toast("Envoyé à l'imprimante");
     } catch (e) { toast(e.message, 'err'); }
   });
@@ -3479,7 +3514,7 @@ function setupHQ() {
     if (!confirm('Exécuter sur ' + target + ' ?\n\n' + cmd)) return;
     $('#shell-out').textContent = '…';
     try {
-      const data = await withBusy('Shell…', () => api('/api/shell', {
+      const data = await withBusy('Exécution…', () => api('/api/shell', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ target, shell, cmd })
       }), 'shell-busy');
@@ -3595,26 +3630,33 @@ BASE_CSS = """
   --font:system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:ui-monospace,Consolas,monospace;
   --nav-h:64px;
+  --tap-min:44px;
+  --text-xs:.75rem;
+  --text-sm:.82rem;
+  --text-base:1rem;
+  --focus-ring:2px solid var(--accent);
 }
 @media (prefers-color-scheme: light) {
   :root {
     --bg:#f0f3f6; --panel:#ffffff; --panel-2:#e8eef4; --text:#121a22; --muted:#3d4d5c; --line:#c5d0dc;
-    --accent:#0b8f62; --accent2:#0b8f62; --ok:#0b8f62; --warn:#b87a12; --danger:#c62828;
+    /* #08724f on #fff ≈ 5.95:1 (AA). Previous #0b8f62 was ≈ 4.10:1. */
+    /* #8b5e00 on #fff ≈ 5.68:1, on #e8eef4 ≈ 4.86:1 (AA). Previous #b87a12 was ≈ 3.60:1 / 3.08:1. */
+    --accent:#08724f; --accent2:#08724f; --ok:#08724f; --warn:#8b5e00; --danger:#c62828;
     --okbg:#1f8f4e18; --errbg:#ff3b3018; --accent-text:#fff;
   }
 }
 *{box-sizing:border-box}
 body{margin:0;font-family:var(--font);color:var(--text);min-height:100vh;background:var(--bg);line-height:1.45;
   padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px))}
-.wrap{max-width:720px;margin:0 auto;padding:14px 14px 24px}
+.wrap{max-width:720px;margin:0 auto;padding:14px max(14px, env(safe-area-inset-right)) 24px max(14px, env(safe-area-inset-left));min-width:0}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
 .brand-lockup{display:flex;align-items:baseline;gap:8px}
 .brand{font-size:1.25rem;letter-spacing:-.02em;text-transform:none;color:var(--text);font-weight:800}
-.hq-pill{font-size:.65rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:3px 7px;border-radius:999px;
+.hq-pill{font-size:var(--text-xs);font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:3px 7px;border-radius:999px;
   background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line))}
-.status-chip{border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font:inherit;font-size:.72rem;font-family:var(--font-mono);
-  padding:8px 10px;border-radius:999px;cursor:pointer;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.view-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}.view-label{margin:0;font-size:.72rem;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.status-chip{border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-size:var(--text-sm);font-family:var(--font-mono);
+  padding:8px 12px;border-radius:999px;cursor:pointer;max-width:62%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:var(--tap-min)}
+.view-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}.view-label{margin:0;font-size:var(--text-sm);font-weight:800;letter-spacing:.04em;text-transform:none;color:var(--muted)}
 h1{font-size:1.7rem;margin:4px 0 6px;letter-spacing:-.02em}
 .sub{color:var(--muted);margin:0 0 14px}
 [data-panel]{display:none}
@@ -3635,17 +3677,18 @@ details.hq > summary{cursor:pointer;list-style:none}
 details.hq > summary::-webkit-details-marker{display:none}
 details.hq > summary .sec-head{margin:0}
 details.hq[open] > summary .sec-head{margin-bottom:12px}
-.mode-toggle{border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-size:.72rem;font-weight:800;
-  padding:8px 10px;border-radius:999px;cursor:pointer;min-height:36px;letter-spacing:.02em}
-.mode-toggle[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));color:var(--accent)}
+.mode-toggle{border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:800;
+  padding:8px 12px;border-radius:999px;cursor:pointer;min-height:var(--tap-min);letter-spacing:.01em}
+.mode-toggle[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 16%,var(--panel));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 40%,var(--line))}
 body.mode-simple .mode-complet-only{display:none!important}
 body.mode-simple .bottom-nav [data-nav="ops"]{display:none}
 body.mode-simple[data-view="ops"] [data-panel="ops"]{display:none}
 .empty-teach{padding:16px 4px;text-align:center}
 .empty-teach em{display:block;font-style:normal;font-weight:700;margin-bottom:6px}
 .empty-teach .hint{margin:0}
-button.danger-outline,.btn.danger-outline{background:transparent;border:1.5px solid var(--danger);color:var(--danger);padding:7px 10px;font-size:.8rem}
-.badge{font-size:.72rem;font-weight:800;padding:3px 8px;border-radius:999px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+button.danger-outline,.btn.danger-outline{background:transparent;border:1.5px solid var(--danger);color:var(--danger);padding:8px 12px;font-size:var(--text-sm)}
+.badge{font-size:var(--text-xs);font-weight:800;padding:3px 8px;border-radius:999px;background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
 label{display:block;font-weight:700;margin:0 0 6px;font-size:.92rem}
 .field{margin-bottom:10px}
 input[type=text],input[type=password],input[type=search],select,textarea{
@@ -3657,8 +3700,8 @@ button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6p
   width:auto;max-width:100%;flex:0 0 auto;min-height:44px;-webkit-appearance:none}
 button.block,.btn.block,#note-form button[type=submit]{width:100%}
 button.secondary,.btn.secondary{background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--text)}
-button.danger,.btn.danger{background:transparent;border:1.5px solid var(--danger);color:var(--danger);padding:7px 10px;font-size:.8rem}
-button.ghost,.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text);padding:7px 10px;font-size:.8rem;min-height:36px}
+button.danger,.btn.danger{background:transparent;border:1.5px solid var(--danger);color:var(--danger);padding:8px 12px;font-size:var(--text-sm)}
+button.ghost,.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text);padding:8px 12px;font-size:var(--text-sm);min-height:var(--tap-min)}
 .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
 .row.stretch > *{flex:1 1 0}
 .row:not(.stretch) > *{flex:0 0 auto}
@@ -3671,7 +3714,7 @@ button.ghost,.btn.ghost{background:transparent;border:1px solid var(--line);colo
 .progress{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:10px}
 .progress > div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .15s}
 .crumbs{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:10px;font-size:.85rem;font-family:var(--font-mono)}
-.crumb{border:0;background:transparent;color:var(--accent);font:inherit;font-weight:700;padding:4px 6px;cursor:pointer;min-height:36px}
+.crumb{border:0;background:transparent;color:var(--accent);font:inherit;font-weight:700;padding:8px 8px;cursor:pointer;min-height:var(--tap-min)}
 .crumb:last-child{color:var(--text);cursor:default}
 .crumb-sep{color:var(--muted)}
 .fm-tools{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
@@ -3682,9 +3725,9 @@ li.file{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-bottom:
 li.file:last-child{border-bottom:0}
 li.file.is-dir .fname{color:var(--ok)}
 .fname{font-weight:750;color:var(--text);text-decoration:none;word-break:break-word;font-size:.95rem}
-.meta{font-size:.78rem;color:var(--muted);font-family:var(--font-mono)}
+.meta{font-size:var(--text-sm);color:var(--muted);font-family:var(--font-mono);line-height:1.4}
 .row-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.row-actions .btn, .row-actions button{flex:0 0 auto;width:auto;padding:7px 10px;font-size:.78rem;line-height:1.2}
+.row-actions .btn, .row-actions button{flex:0 0 auto;width:auto;padding:8px 12px;font-size:var(--text-sm);line-height:1.3;min-height:var(--tap-min)}
 .file-more{position:relative}
 .file-more-menu{display:none;position:absolute;right:0;top:calc(100% + 4px);z-index:20;min-width:160px;padding:6px;
   background:var(--panel-2);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 28px #0008}
@@ -3694,9 +3737,9 @@ li.file.is-dir .fname{color:var(--ok)}
 .qrbox{text-align:center}
 .qrbox div{display:inline-block;padding:8px;background:#fff;border-radius:12px;max-width:100%}
 .qrbox canvas,.qrbox img{max-width:120px!important;height:auto!important}
-.qrbox a{display:block;font-size:.72rem;color:var(--muted);margin-top:6px;word-break:break-all;font-family:var(--font-mono)}
+.qrbox a{display:block;font-size:var(--text-xs);color:var(--muted);margin-top:6px;word-break:break-all;font-family:var(--font-mono);line-height:1.4}
 .status dd{margin:2px 0 8px;font-weight:700;word-break:break-all;font-family:var(--font-mono)}
-.status dt{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.status dt{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
 #toasts{position:fixed;left:50%;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:99;width:min(92vw,420px);display:grid;gap:8px}
 .toast{opacity:0;transform:translateY(8px);transition:.25s;background:var(--panel);border:1px solid var(--line);
   padding:12px 14px;border-radius:12px;box-shadow:0 10px 30px #0004;font-weight:700}
@@ -3705,28 +3748,28 @@ li.file.is-dir .fname{color:var(--ok)}
 .pin-card{text-align:center;padding:28px 16px}
 .pin-card input{text-align:center;letter-spacing:.28em;font-size:1.2rem}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
-.chip{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:7px 12px;font-weight:700;cursor:pointer;font-size:.85rem;width:auto;flex:0 0 auto;min-height:36px}
-.chip.active{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
-.hq-status{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0}
-.hq-status dt{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);align-self:center}
+.chip{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:999px;padding:8px 12px;font-weight:700;cursor:pointer;font-size:var(--text-sm);width:auto;flex:0 0 auto;min-height:var(--tap-min)}
+.chip.active{background:var(--accent);border-color:var(--accent);color:var(--accent-text);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent-text) 30%,transparent)}
+.hq-status{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;margin:0}
+.hq-status dt{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);align-self:center}
 .hq-status dd{margin:0;font-weight:700;word-break:break-all;font-family:var(--font-mono)}
 .hq-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:12px}
-.hq-list li{border-bottom:0;font-size:.9rem}.hq-list li:not(.device-card){padding:0}
-.hq-list .meta{font-size:.75rem;color:var(--muted)}
+.hq-list li{border-bottom:0;font-size:.95rem;line-height:1.4}.hq-list li:not(.device-card){padding:0}
+.hq-list .meta{font-size:var(--text-sm);color:var(--muted);line-height:1.4}
 .hq-list li.device-card,.device-card{border:1px solid var(--line);border-radius:14px;padding:18px 20px 16px;background:color-mix(in srgb,var(--bg) 40%,var(--panel));box-sizing:border-box}
 .device-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:10px}
 .device-head strong{font-size:.98rem}
-.device-kind{font-size:.72rem;color:var(--muted);flex:1 1 auto}
+.device-kind{font-size:var(--text-xs);color:var(--muted);flex:1 1 auto;line-height:1.35}
 .device-spaces{display:flex;flex-direction:column;gap:8px}
 .space-row{display:flex;flex-direction:column;gap:4px}
-.space-top{display:flex;justify-content:space-between;gap:8px;font-size:.72rem;color:var(--muted)}
+.space-top{display:flex;justify-content:space-between;gap:8px;font-size:var(--text-xs);color:var(--muted);line-height:1.35}
 .space-top span:first-child{font-weight:800;color:var(--text)}
 .space-track{height:10px;border-radius:99px;background:color-mix(in srgb,var(--line) 80%,transparent);overflow:hidden}
 .space-fill{height:100%;width:0;border-radius:99px;transition:width .35s ease,background .35s ease}
-.path-badge{font-size:.65rem;font-weight:800;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.path-badge{font-size:var(--text-xs);font-weight:800;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--text)}
 .path-badge.path-lan,.path-badge.path-direct,.path-badge.path-local{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,var(--line))}
 .path-badge.path-tailscale{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
-.path-badge.path-relay{color:#e8a838;border-color:#e8a83866}
+.path-badge.path-relay{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
 .path-badge.path-offline,.path-badge.path-unknown{opacity:.7}
 .media-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
 .media-strip a{flex:0 0 auto;width:88px;height:88px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:color-mix(in srgb,var(--bg) 50%,transparent)}
@@ -3739,20 +3782,23 @@ li.file.is-dir .fname{color:var(--ok)}
 .kcol{border:1px solid var(--line);border-radius:12px;padding:8px;background:color-mix(in srgb,var(--bg) 35%,var(--panel));min-height:120px}
 .kcol h3{margin:0 0 8px;font-size:.85rem}
 .kcard{border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:6px;background:var(--panel);font-size:.85rem}
-.term-out{background:#0a0e14;color:#c6f6d5;border-radius:10px;padding:10px;min-height:80px;max-height:220px;overflow:auto;font-size:.75rem;white-space:pre-wrap;font-family:var(--font-mono)}
+.term-out{background:#0a0e14;color:#c6f6d5;border-radius:10px;padding:10px;min-height:80px;max-height:220px;overflow:auto;font-size:var(--text-sm);line-height:1.45;white-space:pre-wrap;font-family:var(--font-mono)}
 .home-chart{min-height:72px}
 .icon-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .icon-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:56px;padding:10px 6px;
   border-radius:12px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-weight:700;cursor:pointer}
 .icon-btn .ico{font-size:1.25rem;line-height:1}
-.icon-btn .lbl{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:80;display:grid;grid-template-columns:repeat(5,1fr);gap:0;
-  background:color-mix(in srgb,var(--panel) 92%,transparent);border-top:1px solid var(--line);
-  padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));backdrop-filter:blur(10px)}
-.bottom-nav button{background:transparent;color:var(--muted);border:0;border-radius:10px;padding:8px 2px;font-size:.6rem;
-  font-weight:800;letter-spacing:.01em;text-transform:uppercase;min-height:52px;flex-direction:column;gap:2px;line-height:1.15}
-.bottom-nav button.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
-.bottom-nav .nav-ico{font-size:1.1rem}
+.icon-btn .lbl{font-size:var(--text-sm);color:var(--text);text-transform:none;letter-spacing:0;font-weight:700;line-height:1.2}
+.bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:80;display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:0;
+  background:color-mix(in srgb,var(--panel) 94%,transparent);border-top:1px solid var(--line);
+  padding:6px max(8px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom,0px)) max(8px, env(safe-area-inset-left));backdrop-filter:blur(10px)}
+.bottom-nav button{background:transparent;color:var(--muted);border:0;border-radius:10px;padding:6px 2px;font-size:var(--text-xs);
+  font-weight:700;letter-spacing:0;text-transform:none;min-height:52px;flex-direction:column;gap:3px;line-height:1.2}
+.bottom-nav button.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 35%,transparent)}
+.bottom-nav .nav-ico{display:flex;align-items:center;justify-content:center;line-height:0}
+.nav-svg{display:block;width:20px;height:20px}
+.nav-label-desktop{display:none}
 body.theme-oled{--bg:#000;--panel:#0a0a0a;--panel-2:#111;--line:#222}
 body.theme-midnight{--bg:#0b1220;--panel:#121a2b;--accent:#7dd3fc;--accent2:#7dd3fc}
 body.kiosk .wrap{max-width:100%;padding:10px}
@@ -3763,13 +3809,15 @@ body.kiosk .bottom-nav{display:none}
 .dot.off{background:var(--danger)}
 @media (max-width:520px){
   .qrs{grid-template-columns:1fr}
-  .wrap{padding:12px 12px 20px}
+  .wrap{padding:12px max(12px, env(safe-area-inset-right)) 20px max(12px, env(safe-area-inset-left))}
   .icon-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
 }
 @media (min-width:900px){
-  body{padding-bottom:0;display:grid;grid-template-columns:148px 1fr;min-height:100vh}
-  .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:148px;grid-template-columns:1fr;
+  body{padding-bottom:0;display:grid;grid-template-columns:164px 1fr;min-height:100vh}
+  .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:164px;grid-template-columns:1fr;
     border-top:0;border-right:1px solid var(--line);padding:16px 10px;align-content:start;gap:6px;order:0}
+  .nav-label-mobile{display:none}
+  .nav-label-desktop{display:inline}
   .wrap{order:1;max-width:980px;padding:20px 24px 40px}
   #toasts{bottom:18px}
   .op-busy{bottom:72px}
@@ -3782,13 +3830,13 @@ body.kiosk .bottom-nav{display:none}
 .fav-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
 .fav-bar .chips{margin:0;flex:1 1 auto}
 .note-acc{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
-.note-acc > summary{cursor:pointer;font-size:.75rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.note-acc > summary{cursor:pointer;font-size:var(--text-sm);font-weight:800;letter-spacing:0;text-transform:none;color:var(--text);min-height:var(--tap-min);display:flex;align-items:center}
 .note-acc[open] > summary{margin-bottom:10px;color:var(--text)}
 .filter-chips{margin-bottom:10px}
 [hidden]{display:none!important}
 .busy-line,.op-busy{display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 10px;border-radius:10px;
   background:color-mix(in srgb,var(--accent) 12%,var(--panel-2));border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));
-  font-size:.8rem;font-family:var(--font-mono);color:var(--text)}
+  font-size:var(--text-sm);font-family:var(--font);color:var(--text)}
 .op-busy{position:fixed;left:50%;bottom:calc(var(--nav-h) + 56px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);
   z-index:90;width:min(92vw,420px);margin:0}
 .busy-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1s infinite}
@@ -3796,6 +3844,36 @@ body.kiosk .bottom-nav{display:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .skeleton{opacity:.7}
 li.hint.skeleton::after{content:'';display:inline-block;width:4ch;animation:pulse 1.2s infinite}
+button:disabled,.btn:disabled{opacity:.72;cursor:not-allowed}
+:where(button,a,input,select,textarea,summary,[role="button"],.palette-card li):focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.accueil-main,.accueil-side,.accueil-grid,section{min-width:0}
+@media (hover:hover) and (pointer:fine){
+  button.secondary:not(:disabled):hover,
+  button.ghost:not(:disabled):hover,
+  button.danger:not(:disabled):hover,
+  button.danger-outline:not(:disabled):hover,
+  .icon-btn:not(:disabled):hover,
+  .chip:not(.active):hover,
+  .status-chip:hover,
+  .mode-toggle:hover,
+  .launch:hover,
+  .palette-card li:hover,
+  .device-card[data-device-id]:hover,
+  .drop:hover,
+  .bottom-nav button:hover,
+  .crumb:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line));background:color-mix(in srgb,var(--text) 6%,var(--panel))}
+  button:not(.secondary):not(.ghost):not(.danger):not(.danger-outline):not(.icon-btn):not(.status-chip):not(.mode-toggle):not(.chip):not(:disabled):hover{filter:brightness(1.06)}
+  .bottom-nav button:hover,.crumb:hover{filter:none}
+}
+@media (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+  .icon-btn:not(:disabled):hover,
+  .launch:hover,
+  .device-card[data-device-id]:hover{transform:translateY(-1px)}
+}
+@media (prefers-reduced-motion:reduce){
+  .busy-dot,.skeleton,li.hint.skeleton::after{animation:none}
+  .toast,.space-fill,.progress>div,.drop,.hq-cal-chip,.hq-cal-event{transition:none}
+}
 """
 
 
@@ -3993,11 +4071,11 @@ def render_app() -> bytes:
 <body data-view="accueil">
 <a class="skip-link" href="#main">Aller au contenu</a>
 <nav class="bottom-nav" aria-label="Navigation HQ">
-  <button type="button" class="active" data-nav="accueil"><span class="nav-ico">⌂</span>Accueil</button>
-  <button type="button" data-nav="calendrier"><span class="nav-ico">▦</span>Calendrier</button>
-  <button type="button" data-nav="fichiers"><span class="nav-ico">📁</span>Fichiers</button>
-  <button type="button" data-nav="ops"><span class="nav-ico">⚡</span>Terminal</button>
-  <button type="button" data-nav="plus"><span class="nav-ico">⋯</span>Plus</button>
+  <button type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
+  <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
+  <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
+  <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
+  <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
 <main class="wrap" id="main">
   <header class="topbar" role="banner">
@@ -4005,34 +4083,45 @@ def render_app() -> bytes:
       <div class="brand">Transfert</div>
       <span class="hq-pill">HQ</span>
     </div>
-    <button type="button" class="status-chip" id="status-chip" title="Statut">● …</button>
+    <button type="button" class="status-chip" id="status-chip" data-help="État du pont. Ouvre Système pour l'espace, l'hôte et le rôle.">● …</button>
   </header>
   <div class="view-bar">
     <p class="view-label" id="view-label">Accueil</p>
-    <button type="button" class="mode-toggle" id="mode-toggle" aria-pressed="true" title="Masquer Ops avancé">Mode simple</button>
+    <button type="button" class="mode-toggle" id="mode-toggle" aria-pressed="true" data-help="Mode simple : le terminal et les outils avancés sont masqués.">Mode simple</button>
   </div>
 
   <div data-panel="accueil" class="accueil-grid">
-    <section id="hq-banner" class="hq hq-banner state-ok" aria-live="polite">
+    <div class="accueil-summaries">
+    <section id="hq-banner" class="hq hq-banner state-ok">
       <div class="hq-banner-row">
-        <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
-        <div>
+        <button type="button" class="hq-disclosure" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
+          <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
           <strong id="hq-state-label">HQ</strong>
-          <p class="sec-hint" id="hq-state-sub">Lecture de l'état…</p>
-        </div>
-        <button type="button" class="secondary" id="btn-palette">Recherche</button>
+          <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
+          <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action.">Recherche</button>
       </div>
-      <ul class="hq-list" id="hq-attention"></ul>
-      <div class="row hq-actions" id="hq-quick-scenes"></div>
+      <div id="hq-attention-panel" class="hq-disclosure-panel" hidden>
+        <ul class="hq-list" id="hq-attention"></ul>
+        <div class="row hq-actions" id="hq-quick-scenes"></div>
+      </div>
     </section>
     <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
-      <div class="sec-head">
-        <h2 id="cal-home-title">Aujourd'hui</h2>
+      <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="false" aria-controls="hq-today-panel" data-help="Affiche les événements et actions prévus aujourd'hui.">
+        <span class="hq-disclosure-copy">
+          <strong id="cal-home-title">Aujourd'hui</strong>
+          <span class="hq-disclosure-meta" id="hq-cal-next">Chargement…</span>
+        </span>
+        <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div id="hq-today-panel" class="hq-disclosure-panel" hidden>
         <p class="sec-hint">Ce qui se passe et ce qui vient</p>
+        <div id="hq-cal-today"></div>
+        <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
       </div>
-      <div id="hq-cal-today"><p class="hint">Chargement…</p></div>
-      <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
     </section>
+    </div>
     <div class="accueil-main">
       <section class="hq hq-primary" aria-labelledby="envoyer-title">
         <div class="sec-head">
@@ -4085,13 +4174,13 @@ def render_app() -> bytes:
           <p class="sec-hint">Verrouiller, veille, capture d'écran, explorateur</p>
         </div>
         <div class="icon-actions" id="hq-actions">
-          <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC"><span class="ico" aria-hidden="true">🔒</span><span class="lbl">Verrouiller</span></button>
-          <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille"><span class="ico" aria-hidden="true">💤</span><span class="lbl">Veille</span></button>
-          <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture"><span class="ico" aria-hidden="true">📸</span><span class="lbl">Capture</span></button>
-          <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur"><span class="ico" aria-hidden="true">📁</span><span class="lbl">Dossier</span></button>
+          <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC" data-help="Verrouille la session Windows de ce PC."><span class="ico" aria-hidden="true">🔒</span><span class="lbl">Verrouiller</span></button>
+          <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille" data-help="Met ce PC en veille."><span class="ico" aria-hidden="true">💤</span><span class="lbl">Veille</span></button>
+          <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture" data-help="Enregistre une capture d'écran dans Captures."><span class="ico" aria-hidden="true">📸</span><span class="lbl">Capture</span></button>
+          <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true">📁</span><span class="lbl">Dossier</span></button>
         </div>
         <div class="row hq-actions" style="margin-top:10px">
-          <button type="button" id="btn-sync-captures">Récupérer les captures</button>
+          <button type="button" class="secondary" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
         </div>
         <div class="row hq-actions mode-complet-only" id="hq-custom-actions" style="margin-top:8px" aria-label="Actions personnalisées"></div>
         <div class="row hq-actions mode-complet-only" id="hq-scenes" style="margin-top:8px" aria-label="Scènes"></div>
@@ -4100,34 +4189,17 @@ def render_app() -> bytes:
 
       <section class="hq" aria-labelledby="recents-title">
         <div class="sec-head">
-          <h2 id="recents-title">Récents</h2>
-          <p class="sec-hint">Derniers envois et activité</p>
+          <h2 id="recents-title">Activité récente</h2>
+          <p class="sec-hint">Derniers envois et actions, sans le journal technique</p>
         </div>
         <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
           <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
           <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
           <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Activité</button>
         </div>
-        <ul class="hq-list" id="hq-recents"><li class="hint">Rien pour l'instant — envoie un fichier ci-contre</li></ul>
+        <ul class="hq-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
         <ul class="hq-list" id="hq-transfers" hidden></ul>
         <ul class="hq-list" id="hq-activity" hidden></ul>
-      </section>
-
-      <section class="hq" aria-labelledby="events-title">
-        <div class="sec-head">
-          <h2 id="events-title">Journal</h2>
-          <p class="sec-hint">Événements récents du pont</p>
-        </div>
-        <div class="chips filter-chips" id="hq-event-filters" role="tablist" aria-label="Filtrer le journal">
-          <button type="button" class="chip active" data-event-kind="all">Tous</button>
-          <button type="button" class="chip" data-event-kind="alert">Alertes</button>
-          <button type="button" class="chip" data-event-kind="upload">Envois</button>
-          <button type="button" class="chip" data-event-kind="scene">Scènes</button>
-          <button type="button" class="chip" data-event-kind="backup">Backups</button>
-          <button type="button" class="chip" data-event-kind="automation">Auto</button>
-          <button type="button" class="chip" data-event-kind="schedule">Planning</button>
-        </div>
-        <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
       </section>
     </div>
   </div>
@@ -4138,7 +4210,7 @@ def render_app() -> bytes:
         <h2 id="cal-title">Calendrier</h2>
         <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
       </div>
-      <div id="hq-cal-app"></div>
+      <div id="hq-cal-app"><p class="hint">Chargement…</p></div>
     </section>
   </div>
 
@@ -4148,8 +4220,8 @@ def render_app() -> bytes:
         <h2 id="search-title">Recherche</h2>
         <p class="sec-hint">Trouver un fichier ou du texte dans .txt / .md</p>
       </div>
-      <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale"/>
-      <ul class="hq-list" id="search-hits"></ul>
+      <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale" data-help="Cherche un nom de fichier ou du texte dans les notes."/>
+      <ul class="hq-list" id="search-hits"><li class="hint">Saisis au moins deux lettres.</li></ul>
     </section>
 
     <section class="hq" aria-labelledby="fm-title">
@@ -4343,7 +4415,7 @@ def render_app() -> bytes:
         <h2 id="brief-title">Brief du jour</h2>
         <p class="sec-hint">Résumé déterministe, sans service externe</p>
       </div>
-      <div id="hq-brief" class="brief"></div>
+      <div id="hq-brief" class="brief"><p class="hint">Chargement…</p></div>
     </section>
 
     <section class="hq" aria-labelledby="backup-title">
@@ -4351,7 +4423,7 @@ def render_app() -> bytes:
         <h2 id="backup-title">Sauvegardes</h2>
         <p class="sec-hint">Catalogue local. La restauration écrase le dossier choisi.</p>
       </div>
-      <ul class="hq-list" id="hq-backups"><li class="hint">Aucune sauvegarde cataloguée</li></ul>
+      <ul class="hq-list" id="hq-backups"><li class="hint">Chargement…</li></ul>
     </section>
 
     <details class="hq mode-complet-only">
@@ -4405,6 +4477,25 @@ def render_app() -> bytes:
       <div class="kanban" id="kanban"></div>
     </details>
 
+    <details class="hq" id="hq-journal">
+      <summary>
+        <div class="sec-head">
+          <span class="summary-title" id="events-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Journal technique</span>
+          <p class="sec-hint">Historique détaillé du pont. Fermé tant que tu n'en as pas besoin.</p>
+        </div>
+      </summary>
+      <div class="chips filter-chips" id="hq-event-filters" role="tablist" aria-label="Filtrer le journal">
+        <button type="button" class="chip active" data-event-kind="all">Tous</button>
+        <button type="button" class="chip" data-event-kind="alert">Alertes</button>
+        <button type="button" class="chip" data-event-kind="upload">Envois</button>
+        <button type="button" class="chip" data-event-kind="scene">Scènes</button>
+        <button type="button" class="chip" data-event-kind="backup">Backups</button>
+        <button type="button" class="chip" data-event-kind="automation">Auto</button>
+        <button type="button" class="chip" data-event-kind="schedule">Planning</button>
+      </div>
+      <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
+    </details>
+
     <details class="hq">
       <summary>
         <div class="sec-head">
@@ -4412,7 +4503,7 @@ def render_app() -> bytes:
           <p class="sec-hint">Disque plein, erreurs, avertissements</p>
         </div>
       </summary>
-      <ul class="hq-list" id="hq-alerts"><li class="hint">Aucune alerte</li></ul>
+      <ul class="hq-list" id="hq-alerts"><li class="hint">Aucune alerte pour le moment.</li></ul>
     </details>
 
     <section class="hq">
@@ -4440,7 +4531,7 @@ def render_app() -> bytes:
 <script>{APP_JS}</script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-calendar.js"></script>
-<dialog id="hq-device-dialog">
+<dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
     <div id="hq-device-body"></div>
@@ -4448,8 +4539,8 @@ def render_app() -> bytes:
   </form>
 </dialog>
 <div id="hq-palette" class="palette" hidden>
-  <div class="palette-card" role="dialog" aria-label="Recherche HQ">
-    <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off"/>
+  <div class="palette-card" role="dialog" aria-modal="true" aria-label="Recherche HQ">
+    <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off" aria-autocomplete="list" aria-controls="hq-palette-list"/>
     <ul id="hq-palette-list"></ul>
   </div>
 </div>
