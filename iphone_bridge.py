@@ -2239,7 +2239,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
@@ -2249,6 +2249,7 @@ function setView(name) {
   $$('.bottom-nav [data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === view));
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (view === 'fichiers') refreshFiles().catch(() => {});
+  if (view === 'calendrier' && window.hqCalendarShow) window.hqCalendarShow();
 }
 function isSimpleMode() {
   try { return (localStorage.getItem('tf_hq_mode') || 'simple') === 'simple'; } catch (_) { return true; }
@@ -3607,6 +3608,7 @@ h1{font-size:1.7rem;margin:4px 0 6px;letter-spacing:-.02em}
 .sub{color:var(--muted);margin:0 0 14px}
 [data-panel]{display:none}
 body[data-view="accueil"] [data-panel="accueil"],
+body[data-view="calendrier"] [data-panel="calendrier"],
 body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
@@ -3733,11 +3735,11 @@ li.file.is-dir .fname{color:var(--ok)}
   border-radius:12px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-weight:700;cursor:pointer}
 .icon-btn .ico{font-size:1.25rem;line-height:1}
 .icon-btn .lbl{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:80;display:grid;grid-template-columns:repeat(4,1fr);gap:0;
+.bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:80;display:grid;grid-template-columns:repeat(5,1fr);gap:0;
   background:color-mix(in srgb,var(--panel) 92%,transparent);border-top:1px solid var(--line);
   padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px));backdrop-filter:blur(10px)}
-.bottom-nav button{background:transparent;color:var(--muted);border:0;border-radius:10px;padding:8px 4px;font-size:.68rem;
-  font-weight:800;letter-spacing:.02em;text-transform:uppercase;min-height:52px;flex-direction:column;gap:2px}
+.bottom-nav button{background:transparent;color:var(--muted);border:0;border-radius:10px;padding:8px 2px;font-size:.6rem;
+  font-weight:800;letter-spacing:.01em;text-transform:uppercase;min-height:52px;flex-direction:column;gap:2px;line-height:1.15}
 .bottom-nav button.active{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .bottom-nav .nav-ico{font-size:1.1rem}
 body.theme-oled{--bg:#000;--panel:#0a0a0a;--panel-2:#111;--line:#222}
@@ -3965,12 +3967,14 @@ def render_app() -> bytes:
 <title>Transfert HQ</title>
 <style>{BASE_CSS}</style>
 <link rel="stylesheet" href="/assets/hq.css"/>
+<link rel="stylesheet" href="/assets/hq-calendar.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
 <a class="skip-link" href="#main">Aller au contenu</a>
 <nav class="bottom-nav" aria-label="Navigation HQ">
   <button type="button" class="active" data-nav="accueil"><span class="nav-ico">⌂</span>Accueil</button>
+  <button type="button" data-nav="calendrier"><span class="nav-ico">▦</span>Calendrier</button>
   <button type="button" data-nav="fichiers"><span class="nav-ico">📁</span>Fichiers</button>
   <button type="button" data-nav="ops"><span class="nav-ico">⚡</span>Terminal</button>
   <button type="button" data-nav="plus"><span class="nav-ico">⋯</span>Plus</button>
@@ -4098,6 +4102,16 @@ def render_app() -> bytes:
         <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
       </section>
     </div>
+  </div>
+
+  <div data-panel="calendrier">
+    <section class="hq hq-cal" aria-labelledby="cal-title">
+      <div class="sec-head">
+        <h2 id="cal-title">Calendrier</h2>
+        <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
+      </div>
+      <div id="hq-cal-app"></div>
+    </section>
   </div>
 
   <div data-panel="fichiers">
@@ -4397,6 +4411,7 @@ def render_app() -> bytes:
 <div id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <script>{APP_JS}</script>
 <script src="/assets/hq.js"></script>
+<script src="/assets/hq-calendar.js"></script>
 <dialog id="hq-device-dialog">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
