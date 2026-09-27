@@ -10,11 +10,16 @@ import shutil
 import tempfile
 import threading
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlencode
 
+import hq_automation
 import hq_calendar
+import hq_events
 import hq_state
+import iphone_bridge
 
 
 def _bind(root: Path, **extra):
@@ -228,6 +233,317 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(info["server_now"], "2026-09-28T10:00")
         self.assertEqual(info["server_date"], "2026-09-28")
         self.assertIsInstance(info["server_utc_offset_min"], int)
+
+
+class ProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hq-cal-proj-"))
+        self.calls = []
+        self.jobs = []
+        _bind(
+            self.tmp,
+            queue_load=lambda: self.jobs,
+            run_scene=lambda sid: self.calls.append(("scene", sid)) or {"ok": True, "id": sid},
+            run_action=lambda aid: self.calls.append(("action", aid)) or {"ok": True, "id": aid},
+            scenes=lambda: [{"id": "ping", "label": "Ping"}],
+            actions=lambda: [{"id": "open-inbox", "label": "Inbox"}],
+            events_between=self._events,
+        )
+        self._markers = []
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _events(self, _start, _end, limit):
+        return list(self._markers)[:limit]
+
+    def _day(self, **over):
+        base = {
+            "title": "Cours",
+            "all_day": False,
+            "start": "2026-09-28T14:00",
+            "end": "2026-09-28T15:00",
+            "category": "study",
+        }
+        base.update(over)
+        return base
+
+    def test_projects_grid_whens_and_leaves_queue_untouched(self):
+        secret = "RAW_QUEUE_FIELD_SHOULD_NOT_APPEAR"
+        once_at = datetime(2026, 9, 30, 15, 30).timestamp()
+        self.jobs.extend(
+            [
+                {"id": "day", "label": "Chaque jour", "when": "daily", "type": "backup", "at": "08:00", "status": "pending", "cmd": secret},
+                {"id": "wd", "label": "Semaine", "when": "weekdays", "type": "notify", "at": "08:00", "status": "pending"},
+                {"id": "wk", "label": "Lundi", "when": "weekly", "type": "scene", "at": "09:00", "weekday": 0, "status": "pending", "scene_id": "ping"},
+                {"id": "one", "label": "Une fois", "when": "once", "type": "notify", "once_at": once_at, "status": "pending"},
+                {"id": "edge", "label": "Au retour", "when": "on-online", "type": "scene", "device_id": "pc-host", "status": "pending", "scene_id": "ping"},
+                {"id": "wake", "label": "Réveil", "when": "wake", "type": "backup", "status": "pending"},
+                {"id": "online", "label": "En ligne", "when": "online", "type": "explore", "status": "pending"},
+                {"id": "soon", "label": "Maintenant", "when": "now", "type": "notify", "status": "pending"},
+            ]
+        )
+        before = json.dumps(self.jobs, sort_keys=True)
+        path = self.tmp / "bridge_queue.json"
+        path.write_text(before, encoding="utf-8")
+        raw = path.read_bytes()
+        start = datetime(2026, 9, 28)
+        end = datetime(2026, 10, 5)
+        body = hq_calendar.query(start, end)
+        self.assertEqual(json.dumps(self.jobs, sort_keys=True), before)
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertNotIn(secret, json.dumps(body))
+        self.assertNotIn("next_run", json.dumps(self.jobs))
+        grid = [item for item in body["items"] if item["source"] == "schedule"]
+        whens = {item["when"] for item in grid}
+        self.assertEqual(whens, {"daily", "weekdays", "weekly", "once"})
+        self.assertTrue(all(item["read_only"] for item in grid))
+        daily = [item for item in grid if item["schedule_id"] == "day"]
+        self.assertEqual(len(daily), 7)
+        weekdays = [item for item in grid if item["schedule_id"] == "wd"]
+        self.assertEqual(len(weekdays), 5)
+        weekly = [item for item in grid if item["schedule_id"] == "wk"]
+        self.assertEqual([item["start"] for item in weekly], ["2026-09-28T09:00"])
+        once = [item for item in grid if item["schedule_id"] == "one"]
+        self.assertEqual([item["start"] for item in once], ["2026-09-30T15:30"])
+        cond_whens = sorted(item["when"] for item in body["conditional"])
+        self.assertEqual(cond_whens, ["on-online", "online", "wake"])
+        self.assertTrue(all(item["when"] != "on-online" for item in grid))
+        self.assertEqual(self.calls, [])
+
+    def test_slot_helper_does_not_mutate_and_skips_conditional(self):
+        job = {"id": "day", "when": "daily", "at": "08:00", "label": "Jour"}
+        snapshot = json.dumps(job, sort_keys=True)
+        slots = hq_automation.project_schedule_slots(job, datetime(2026, 9, 28), datetime(2026, 9, 30))
+        self.assertEqual([slot.strftime("%Y-%m-%dT%H:%M") for slot in slots], ["2026-09-28T08:00", "2026-09-29T08:00"])
+        self.assertEqual(json.dumps(job, sort_keys=True), snapshot)
+        online = {"id": "edge", "when": "on-online", "device_id": "pc-host", "at": "08:00"}
+        self.assertEqual(hq_automation.project_schedule_slots(online, datetime(2026, 9, 28), datetime(2026, 10, 5)), [])
+
+    def test_activity_is_bounded_and_omits_extra_fields(self):
+        self._markers = [
+            {"kind": "upload", "message": "m" * 200, "at": "10:00:00", "ts": i, "notes": "secret-note"}
+            for i in range(80)
+        ]
+        body = hq_calendar.query(datetime(2026, 9, 28), datetime(2026, 9, 29), include_activity=True)
+        self.assertEqual(len(body["activity"]), 50)
+        self.assertTrue(all(len(item["message"]) <= 80 for item in body["activity"]))
+        self.assertNotIn("secret-note", json.dumps(body["activity"]))
+        self.assertNotIn("activity", hq_calendar.query(datetime(2026, 9, 28), datetime(2026, 9, 29)))
+
+    def test_run_scene_and_action_are_explicit(self):
+        saved = hq_calendar.save_event(self._day(scene_id="ping", action_id="open-inbox"))
+        self.assertEqual(self.calls, [])
+        ran = hq_calendar.run_linked(saved["id"], "scene")
+        self.assertEqual(ran["target"], "scene")
+        self.assertEqual(self.calls, [("scene", "ping")])
+        hq_calendar.run_linked(saved["id"], "action")
+        self.assertEqual(self.calls[-1], ("action", "open-inbox"))
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.run_linked(saved["id"], "device")
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.run_linked("sched-day-20260928T0900", "scene")
+
+    def test_unknown_scene_rejected_without_runner(self):
+        saved = hq_calendar.save_event(self._day(scene_id="missing"))
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.run_linked(saved["id"], "scene")
+        self.assertEqual(self.calls, [])
+
+    def test_span_limits(self):
+        start = datetime(2026, 1, 1)
+        hq_calendar.query(start, start + timedelta(days=366))
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.query(start, start + timedelta(days=367))
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.query(start, start)
+
+
+def _http(port, method, path, *, body=None, headers=None, cookie=None):
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=8)
+    hdrs = {"Host": f"127.0.0.1:{port}"}
+    if headers:
+        hdrs.update(headers)
+    if cookie:
+        hdrs["Cookie"] = cookie
+    if body is not None and "Content-Length" not in hdrs:
+        hdrs["Content-Length"] = str(len(body))
+    conn.request(method, path, body=body, headers=hdrs)
+    resp = conn.getresponse()
+    payload = resp.read()
+    conn.close()
+    return resp.status, dict(resp.getheaders()), payload
+
+
+class ApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="hq-cal-api-"))
+        cls._root = iphone_bridge.ROOT
+        cls._config = json.loads(json.dumps(iphone_bridge.CONFIG))
+        iphone_bridge.ROOT = cls.tmp
+        for name in ("Inbox", "Uni", "Print"):
+            (cls.tmp / name).mkdir()
+        iphone_bridge.CONFIG["pin"] = "424242"
+        iphone_bridge.CONFIG["users"] = []
+        iphone_bridge.CONFIG["discord_webhook_url"] = ""
+        iphone_bridge.CONFIG["scenes"] = [
+            {"id": "ping", "label": "Ping", "steps": [{"type": "notify", "title": "ping", "body": "ok"}]}
+        ]
+        iphone_bridge.CONFIG["actions"] = [
+            {"id": "open-inbox", "label": "Inbox", "type": "explore", "path": str(cls.tmp / "missing-action-path")}
+        ]
+        iphone_bridge.bind_cc_ext()
+        iphone_bridge.bind_hq()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), iphone_bridge.Handler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.admin = cls._login("424242")
+
+    @classmethod
+    def _login(cls, pin: str) -> str:
+        status, headers, _body = _http(
+            cls.port,
+            "POST",
+            "/login",
+            body=urlencode({"pin": pin}).encode(),
+            headers={
+                "Origin": f"http://127.0.0.1:{cls.port}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        if status != 303:
+            raise AssertionError(status)
+        raw = headers.get("Set-Cookie") or headers.get("set-cookie") or ""
+        return raw.split(";", 1)[0]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        iphone_bridge.ROOT = cls._root
+        iphone_bridge.CONFIG.clear()
+        iphone_bridge.CONFIG.update(cls._config)
+        iphone_bridge.bind_cc_ext()
+        iphone_bridge.bind_hq()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _get(self, path, cookie=None):
+        return _http(self.port, "GET", path, cookie=self.admin if cookie is None else cookie)
+
+    def _post(self, path, payload, *, cookie=None, origin=True):
+        headers = {"Content-Type": "application/json"}
+        if origin:
+            headers["Origin"] = f"http://127.0.0.1:{self.port}"
+        return _http(
+            self.port,
+            "POST",
+            path,
+            body=json.dumps(payload).encode(),
+            headers=headers,
+            cookie=self.admin if cookie is None else cookie,
+        )
+
+    def test_auth_csrf_and_allowlist(self):
+        self.assertNotIn("/api/calendar", iphone_bridge.UPLOAD_GET_EXACT)
+        self.assertNotIn("/api/calendar", iphone_bridge.UPLOAD_POST_EXACT)
+        self.assertNotIn("/api/calendar/run", iphone_bridge.UPLOAD_POST_EXACT)
+        status, _h, _b = _http(self.port, "GET", "/api/calendar?from=2026-09-28&to=2026-09-29")
+        self.assertEqual(status, 401)
+        iphone_bridge.CONFIG["users"] = [
+            {"name": "admin", "pin": "424242", "role": "admin"},
+            {"name": "phone", "pin": "111111", "role": "upload"},
+        ]
+        try:
+            phone = type(self)._login("111111")
+            status, _h, _b = self._get("/api/calendar?from=2026-09-28&to=2026-09-29", cookie=phone)
+            self.assertEqual(status, 403)
+            status, _h, _b = self._post(
+                "/api/calendar",
+                {"action": "save", "event": {"title": "x", "all_day": True, "start": "2026-09-28", "end": "2026-09-29"}},
+                cookie=phone,
+            )
+            self.assertEqual(status, 403)
+            status, _h, _b = self._post("/api/calendar/run", {"id": "cal-" + "ab" * 8, "target": "scene"}, cookie=phone)
+            self.assertEqual(status, 403)
+        finally:
+            iphone_bridge.CONFIG["users"] = []
+        status, _h, body = self._post(
+            "/api/calendar",
+            {"action": "save", "event": {"title": "x", "all_day": True, "start": "2026-09-28", "end": "2026-09-29"}},
+            origin=False,
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("CSRF", body.decode())
+
+    def test_save_rev_conflict_and_range(self):
+        status, _h, body = self._post(
+            "/api/calendar",
+            {
+                "action": "save",
+                "event": {
+                    "title": "Visite",
+                    "all_day": False,
+                    "start": "2026-09-28T11:00",
+                    "end": "2026-09-28T12:00",
+                    "category": "appointment",
+                    "scene_id": "ping",
+                },
+            },
+        )
+        self.assertEqual(status, 200, body)
+        event = json.loads(body)["event"]
+        status, _h, body = self._post(
+            "/api/calendar",
+            {"action": "save", "expected_rev": 1, "event": {**event, "title": "Visite 2"}},
+        )
+        self.assertEqual(status, 200, body)
+        status, _h, body = self._post(
+            "/api/calendar",
+            {"action": "save", "expected_rev": 1, "event": {**event, "title": "Visite 3"}},
+        )
+        self.assertEqual(status, 409, body)
+        status, _h, body = self._get("/api/calendar?from=2026-09-28&to=2026-09-29")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertIn("server_now", payload)
+        self.assertIn("server_date", payload)
+        self.assertIn("server_utc_offset_min", payload)
+        self.assertTrue(any(item["id"] == event["id"] for item in payload["items"]))
+        status, _h, _b = self._get("/api/calendar?from=2026-01-01&to=2027-01-03")
+        self.assertEqual(status, 400)
+        status, _h, _b = self._get("/api/calendar?from=2026-09-29&to=2026-09-28")
+        self.assertEqual(status, 400)
+        status, _h, _b = self._get("/api/calendar")
+        self.assertEqual(status, 400)
+        status, _h, _b = self._get("/api/calendar?from=2026-09-28&to=2026-09-29&include_activity=2")
+        self.assertEqual(status, 400)
+        status, _h, body = self._post("/api/calendar/run", {"id": event["id"], "target": "scene"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["target"], "scene")
+        status, _h, body = self._post("/api/calendar/run", {"id": event["id"], "target": "action"})
+        self.assertEqual(status, 400)
+
+    def test_projection_endpoint_does_not_write_queue(self):
+        secret = "QUEUE_SECRET_NOT_FOR_CALENDAR"
+        queue = [
+            {"id": "day", "label": "Chaque jour", "when": "daily", "type": "backup", "at": "07:30", "status": "pending", "cmd": secret},
+            {"id": "edge", "label": "Au retour", "when": "on-online", "type": "scene", "device_id": "pc-host", "status": "armed", "scene_id": "ping"},
+        ]
+        path = self.tmp / "bridge_queue.json"
+        path.write_text(json.dumps(queue), encoding="utf-8")
+        before = path.read_bytes()
+        status, _h, body = self._get("/api/calendar?from=2026-09-28&to=2026-09-29")
+        self.assertEqual(status, 200)
+        self.assertEqual(path.read_bytes(), before)
+        text = body.decode()
+        self.assertNotIn(secret, text)
+        payload = json.loads(body)
+        self.assertTrue(any(item.get("source") == "schedule" and item.get("when") == "daily" for item in payload["items"]))
+        self.assertTrue(all(item.get("when") != "on-online" for item in payload["items"]))
+        self.assertTrue(any(item.get("when") == "on-online" for item in payload["conditional"]))
 
 
 if __name__ == "__main__":

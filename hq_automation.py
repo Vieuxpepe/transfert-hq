@@ -1043,6 +1043,43 @@ def _next_calendar_after(job: dict, after: datetime) -> datetime | None:
     return None
 
 
+def project_schedule_slots(job: dict, start: datetime, end: datetime) -> list[datetime]:
+    """Read-only occurrences in ``[start, end)``.
+
+    Uses the same daily / weekdays / weekly / once rules as the scheduler.
+    Does not write ``next_run`` or any other field on ``job``.
+    ``online``, ``wake``, and ``on-online`` are not grid times and yield nothing.
+    """
+    if not isinstance(job, dict) or not isinstance(start, datetime) or not isinstance(end, datetime):
+        return []
+    if end <= start:
+        return []
+    when = str(job.get("when") or "")
+    if when == "once":
+        try:
+            stamp = float(job.get("once_at") or 0)
+        except (TypeError, ValueError):
+            return []
+        if stamp <= 0:
+            return []
+        moment = datetime.fromtimestamp(stamp).replace(second=0, microsecond=0)
+        if start <= moment < end:
+            return [moment]
+        return []
+    if when not in ("daily", "weekdays", "weekly"):
+        return []
+    cursor = start - timedelta(minutes=1)
+    found: list[datetime] = []
+    for _ in range(400):
+        nxt = _next_calendar_after(job, cursor)
+        if nxt is None or nxt >= end:
+            break
+        if nxt >= start:
+            found.append(nxt)
+        cursor = nxt
+    return found
+
+
 def _calendar_plan(job: dict, moment: datetime) -> str:
     """Return fire, reschedule, or same. Reschedule writes the next future slot only."""
     if job.get("status") not in (None, "", "pending", "armed"):

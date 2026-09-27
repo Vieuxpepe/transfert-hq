@@ -510,6 +510,235 @@ def manual_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
             item["source"] = "manual"
             item["read_only"] = False
             found.append(item)
-    found.sort(key=lambda item: (0 if item.get("all_day") else 1, str(item.get("start") or ""), str(item.get("id") or "")))
+    found.sort(key=_item_sort)
     return found, False
+
+
+def _item_sort(item: dict) -> tuple:
+    return (0 if item.get("all_day") else 1, str(item.get("start") or ""), str(item.get("title") or ""), str(item.get("id") or ""))
+
+
+def _queue_items() -> list:
+    fn = _cb.get("queue_load")
+    if not callable(fn):
+        return []
+    try:
+        data = fn()
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return data
+
+
+def _safe_piece(value: Any) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", str(value or ""))[:40]
+    return cleaned or "job"
+
+
+def _schedule_item(job: dict, slot: datetime) -> dict:
+    end = slot + timedelta(minutes=SCHEDULE_BLOCK_MIN)
+    item: dict[str, Any] = {
+        "source": "schedule",
+        "read_only": True,
+        "id": f"sched-{_safe_piece(job.get('id'))}-{slot.strftime('%Y%m%dT%H%M')}",
+        "schedule_id": str(job.get("id") or "")[:48],
+        "title": str(job.get("label") or "Planifié")[:TITLE_MAX],
+        "all_day": False,
+        "start": _fmt_minute(slot),
+        "end": _fmt_minute(end),
+        "when": str(job.get("when") or ""),
+        "job_type": str(job.get("type") or "")[:40],
+        "status": str(job.get("status") or "pending")[:20],
+    }
+    scene_id = job.get("scene_id")
+    action_id = job.get("action_id")
+    if isinstance(scene_id, str) and _LINK_RE.match(scene_id):
+        item["scene_id"] = scene_id
+    if isinstance(action_id, str) and _LINK_RE.match(action_id):
+        item["action_id"] = action_id
+    return item
+
+
+def _conditional_item(job: dict) -> dict:
+    item: dict[str, Any] = {
+        "source": "schedule",
+        "read_only": True,
+        "id": f"cond-{_safe_piece(job.get('id'))}",
+        "schedule_id": str(job.get("id") or "")[:48],
+        "title": str(job.get("label") or "Conditionnel")[:TITLE_MAX],
+        "when": str(job.get("when") or ""),
+        "job_type": str(job.get("type") or "")[:40],
+        "status": str(job.get("status") or "pending")[:20],
+    }
+    device_id = job.get("device_id")
+    if isinstance(device_id, str) and _LINK_RE.match(device_id):
+        item["device_id"] = device_id
+    return item
+
+
+def _project(start: datetime, end: datetime) -> tuple[list[dict], list[dict]]:
+    """Project queue jobs. The queue list and its dicts are not modified."""
+    import hq_automation
+
+    scheduled: list[dict] = []
+    conditional: list[dict] = []
+    for job in _queue_items():
+        if not isinstance(job, dict):
+            continue
+        when = str(job.get("when") or "")
+        if when in CONDITIONAL_WHENS:
+            if str(job.get("status") or "pending") in ("pending", "armed", "error"):
+                conditional.append(_conditional_item(job))
+            continue
+        if when not in GRID_WHENS:
+            continue
+        snapshot = dict(job)
+        for slot in hq_automation.project_schedule_slots(snapshot, start, end):
+            scheduled.append(_schedule_item(job, slot))
+    conditional = conditional[:40]
+    return scheduled, conditional
+
+
+def _catalog() -> dict[str, list[dict]]:
+    def rows(key: str, label_key: str) -> list[dict]:
+        fn = _cb.get(key)
+        raw = fn() if callable(fn) else []
+        out = []
+        for item in raw or []:
+            if not isinstance(item, dict):
+                continue
+            ident = item.get("id")
+            if not isinstance(ident, str) or not _LINK_RE.match(ident):
+                continue
+            label = item.get(label_key) or item.get("label") or ident
+            out.append({"id": ident, "label": str(label)[:80]})
+            if len(out) >= 40:
+                break
+        return out
+
+    return {
+        "scenes": rows("scenes", "label"),
+        "actions": rows("actions", "label"),
+        "devices": rows("devices", "name"),
+    }
+
+
+def _activity(start: datetime, end: datetime) -> list[dict]:
+    limit = 50
+    fn = _cb.get("events_between")
+    rows: list = []
+    if callable(fn):
+        try:
+            rows = list(fn(start, end, limit) or [])
+        except Exception:
+            rows = []
+    else:
+        rows = _journal_between(start, end)
+    markers = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        marker: dict[str, Any] = {
+            "kind": str(row.get("kind") or "")[:40],
+            "message": str(row.get("message") or "")[:80],
+        }
+        at = row.get("at") if isinstance(row.get("at"), str) else row.get("at_h")
+        if isinstance(at, str) and at:
+            marker["at"] = at[:8]
+        ts = row.get("ts")
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+            marker["ts"] = float(ts)
+        markers.append(marker)
+        if len(markers) >= limit:
+            break
+    return markers
+
+
+def _journal_between(start: datetime, end: datetime) -> list[dict]:
+    try:
+        import hq_events
+    except Exception:
+        return []
+    if not hq_events.enabled():
+        return []
+    listed = hq_events.list_events(limit=200, offset=0)
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    found = []
+    for event in listed.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        try:
+            ts = float(event.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if start_ts <= ts < end_ts:
+            found.append(event)
+    found.sort(key=lambda event: float(event.get("ts") or 0))
+    return found
+
+
+def query(start: datetime, end: datetime, *, include_activity: bool = False) -> dict:
+    assert_span(start, end)
+    manual, bad = manual_between(start, end)
+    scheduled, conditional = _project(start, end)
+    items = list(manual) + scheduled
+    items.sort(key=_item_sort)
+    body: dict[str, Any] = {
+        "ok": not bad,
+        "malformed": bad,
+        "from": _fmt_minute(start),
+        "to": _fmt_minute(end),
+        "items": items,
+        "conditional": conditional,
+        "catalog": _catalog(),
+    }
+    body.update(clock())
+    if include_activity:
+        body["activity"] = _activity(start, end)
+    return body
+
+
+def run_linked(event_id: str, target: str) -> dict:
+    """Run a linked scene or action. Explicit call only — never from the clock."""
+    if target not in ("scene", "action"):
+        raise CalendarError("Cible invalide")
+    if not isinstance(event_id, str) or not _CAL_ID_RE.match(event_id):
+        raise CalendarError("Identifiant invalide")
+    state, bad = _read_state()
+    if bad:
+        raise CalendarConflict("hq_calendar.json illisible — fichier conservé")
+    event = _find(list((state or {}).get("events") or []), event_id)
+    if event is None:
+        raise CalendarError("Événement introuvable")
+    title = str(event.get("title") or "")[:80]
+    if target == "scene":
+        ident = event.get("scene_id")
+        known = _catalog()["scenes"]
+        missing = "Aucune scène liée"
+        unknown = "Scène inconnue"
+        runner_key = "run_scene"
+    else:
+        ident = event.get("action_id")
+        known = _catalog()["actions"]
+        missing = "Aucune action liée"
+        unknown = "Action inconnue"
+        runner_key = "run_action"
+    if not isinstance(ident, str) or not ident:
+        raise CalendarError(missing)
+    if not any(item.get("id") == ident for item in known):
+        raise CalendarError(unknown)
+    fn = _cb.get(runner_key)
+    if not callable(fn):
+        raise CalendarError("Exécution indisponible")
+    try:
+        result = fn(ident)
+    except CalendarError:
+        raise
+    except Exception as exc:
+        raise CalendarError(str(exc)[:200]) from exc
+    ok = True if not isinstance(result, dict) else bool(result.get("ok", True))
+    _journal("calendar_run", f"Exécution {target}: {title}")
+    return {"ok": ok, "id": event_id, "target": target}
 

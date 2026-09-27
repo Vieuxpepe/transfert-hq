@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import cc_ext
 import hq_automation
+import hq_calendar
 import hq_devices
 import hq_events
 
@@ -163,6 +164,7 @@ ADMIN_PREFIXES = (
     "/api/brief",
     "/api/push",
     "/api/schedules",
+    "/api/calendar",
 )
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
@@ -1928,6 +1930,17 @@ def bind_hq() -> None:
         events_recent=lambda limit=100: hq_events.list_events(limit=int(limit or 100)).get("events") or [],
         attention_items=lambda: hq_attention(cached_roster_devices()),
         build_brief=build_daily_brief,
+    )
+    hq_calendar.bind(
+        root=ROOT,
+        journal=lambda kind, message, **extra: cc_ext.log_activity(kind, message, **extra),
+        alert=cc_ext.push_alert,
+        queue_load=cc_ext.queue_load,
+        run_scene=cc_ext.run_scene,
+        run_action=pc_run_action,
+        scenes=lambda: [s for s in (CONFIG.get("scenes") or []) if isinstance(s, dict)],
+        actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
+        devices=cached_roster_devices,
     )
     _HQ_BOUND = True
 
@@ -4780,6 +4793,23 @@ class Handler(BaseHTTPRequestHandler):
             ]
             self._json(200, {"schedules": items})
             return True
+        if raw == "/api/calendar":
+            qs = parse_qs(parsed.query)
+            try:
+                start = hq_calendar.parse_bound((qs.get("from", [""])[0] or ""))
+                end = hq_calendar.parse_bound((qs.get("to", [""])[0] or ""))
+                flag = (qs.get("include_activity", ["0"])[0] or "0").strip()
+                if flag not in ("0", "1"):
+                    raise hq_calendar.CalendarError("include_activity invalide")
+                payload = hq_calendar.query(start, end, include_activity=(flag == "1"))
+            except hq_calendar.CalendarError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            except hq_calendar.CalendarConflict as e:
+                self._json(409, {"error": str(e)})
+                return True
+            self._json(200, payload)
+            return True
         return False
 
     def _hq_post(self, raw: str) -> bool:
@@ -4860,6 +4890,35 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json(400, {"error": str(e)})
             except RuntimeError as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/calendar":
+            data = self._read_json()
+            action = str(data.get("action") or "")
+            try:
+                if action == "save":
+                    event = data.get("event") if isinstance(data.get("event"), dict) else {}
+                    saved = hq_calendar.save_event(event, data.get("expected_rev"))
+                    self._json(200, {"ok": True, "event": saved})
+                elif action == "delete":
+                    self._json(200, hq_calendar.delete_event(str(data.get("id") or ""), data.get("expected_rev")))
+                else:
+                    self._json(400, {"error": "action invalide"})
+            except hq_calendar.CalendarError as e:
+                self._json(400, {"error": str(e)})
+            except hq_calendar.CalendarConflict as e:
+                self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/calendar/run":
+            data = self._read_json()
+            try:
+                self._json(
+                    200,
+                    hq_calendar.run_linked(str(data.get("id") or ""), str(data.get("target") or "")),
+                )
+            except hq_calendar.CalendarError as e:
+                self._json(400, {"error": str(e)})
+            except hq_calendar.CalendarConflict as e:
                 self._json(409, {"error": str(e)})
             return True
         return False
