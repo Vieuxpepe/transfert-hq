@@ -429,6 +429,48 @@
     return items().filter((item) => !item.all_day && overlapsDay(item, day));
   }
 
+  function coarsePointer() {
+    return window.matchMedia("(pointer: coarse)").matches;
+  }
+
+  function columnPx() {
+    return (state.view === "week" ? 44 : 48) * 24;
+  }
+
+  function assignHitSlop(placed) {
+    const pxPerMin = columnPx() / 1440;
+    const targetPx = 44;
+    const gapPx = 2;
+    const groups = new Map();
+    placed.forEach((entry) => {
+      const list = groups.get(entry.col) || [];
+      list.push(entry);
+      groups.set(entry.col, list);
+    });
+    groups.forEach((rows) => {
+      rows.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+      rows.forEach((entry, index) => {
+        const prevEnd = index > 0 ? rows[index - 1].endMin : 0;
+        const nextStart = index + 1 < rows.length ? rows[index + 1].startMin : 1440;
+        const aboveRoom = Math.max(0, ((entry.startMin - prevEnd) * pxPerMin) / 2 - (index > 0 ? gapPx / 2 : 0));
+        const belowRoom = Math.max(0, ((nextStart - entry.endMin) * pxPerMin) / 2 - (index + 1 < rows.length ? gapPx / 2 : 0));
+        const visualPx = Math.max(1, (entry.endMin - entry.startMin) * pxPerMin);
+        const need = Math.max(0, targetPx - visualPx);
+        let above = Math.min(aboveRoom, need / 2);
+        let below = Math.min(belowRoom, need - above);
+        const leftover = need - above - below;
+        if (leftover > 0) {
+          const addAbove = Math.min(Math.max(0, aboveRoom - above), leftover);
+          above += addAbove;
+          below += Math.min(Math.max(0, belowRoom - below), leftover - addAbove);
+        }
+        entry.hitAbovePx = above;
+        entry.hitBelowPx = below;
+        entry.visualPx = visualPx;
+      });
+    });
+  }
+
   function placeTimed(col, day, columns) {
     const dayStart = makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate());
     const dayEnd = addLocalDays(dayStart, 1);
@@ -443,19 +485,42 @@
         return { item, startMin, endMin };
       })
     );
+    const coarse = coarsePointer();
+    if (coarse) assignHitSlop(placed);
+    const colPx = columnPx();
     placed.forEach((entry) => {
-      const top = (entry.startMin / 1440) * 100;
-      const height = Math.max(((entry.endMin - entry.startMin) / 1440) * 100, 1.6);
       const width = 100 / entry.cols;
+      const spanMin = Math.max(1, entry.endMin - entry.startMin);
+      const top = (entry.startMin / 1440) * 100;
+      const height = (spanMin / 1440) * 100;
+      let hitTop = top;
+      let hitHeight = coarse ? height : Math.max(height, 1.6);
       const button = h("button", {
         type: "button",
-        class: "hq-cal-event " + catClass(entry.item),
+        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)),
         "data-cal": "open",
         "data-id": entry.item.id,
         "data-help": previewHelp(entry.item),
-        style: "top:" + top + "%;height:" + height + "%;left:" + entry.col * width + "%;width:" + width + "%",
-        text: entry.item.title || "Sans titre",
       });
+      if (coarse) {
+        const abovePct = ((entry.hitAbovePx || 0) / colPx) * 100;
+        const belowPct = ((entry.hitBelowPx || 0) / colPx) * 100;
+        hitTop = top - abovePct;
+        hitHeight = height + abovePct + belowPct;
+        const face = h("span", {
+          class: "hq-cal-face " + catClass(entry.item),
+          text: entry.item.title || "Sans titre",
+        });
+        face.style.top = (abovePct / hitHeight) * 100 + "%";
+        face.style.height = (height / hitHeight) * 100 + "%";
+        button.appendChild(face);
+      } else {
+        button.textContent = entry.item.title || "Sans titre";
+      }
+      button.style.top = hitTop + "%";
+      button.style.height = hitHeight + "%";
+      button.style.left = entry.col * width + "%";
+      button.style.width = width + "%";
       col.appendChild(button);
     });
     return columns;

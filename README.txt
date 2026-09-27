@@ -182,10 +182,13 @@ Interaction et accessibilité
   role=dialog et aria-modal. Tabulation bouclée localement, sans
   librairie.
 
-  Limites connues : les pastilles du mois et les événements très
-  courts restent plus bas que 44px pour ne pas recouvrir le voisin
-  ni casser le +N. Les marqueurs d'activité de la semaine font 24px
-  (ceux du jour occupent la gouttière, 44px).
+  Limites connues : sur un pointeur grossier, un événement court
+  de Jour ou Semaine élargit sa zone de tap dans le temps libre,
+  jusqu'à 44px, en s'arrêtant à mi-chemin du voisin. La barre colorée
+  reste sur la durée réelle. Deux événements collés ne s'élargissent
+  pas et peuvent rester sous 32px. Les pastilles du mois et « +N »
+  font 32px pour garder la grille. Les marqueurs d'activité de la
+  semaine font 24px (ceux du jour occupent la gouttière, 44px).
 
 Contrôle sur un appareil réel
 -----------------------------
