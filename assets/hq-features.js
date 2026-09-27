@@ -62,14 +62,16 @@
     PALETTE_GROUPS.forEach(function (row) {
       buckets.set(row[0], { kind: row[0], label: row[1], items: [] });
     });
-    const order = [];
     (hits || []).forEach(function (hit, index) {
       const bucket = buckets.get(hit && hit.kind);
       if (!bucket) return;
-      if (!bucket.items.length) order.push(bucket);
       bucket.items.push({ hit: hit, index: index });
     });
-    return order;
+    return PALETTE_GROUPS.map(function (row) {
+      return buckets.get(row[0]);
+    }).filter(function (bucket) {
+      return bucket.items.length;
+    });
   }
 
   function filesSortMode(value) {
