@@ -81,6 +81,8 @@ Planning
 Calendrier
 ----------
   Onglet Calendrier : Jour, Semaine (lundi), Mois, Agenda.
+  Mois : une pastille tronquée sur téléphone, deux sur grand écran,
+  puis +N. Le titre ne déborde pas sur la case voisine.
   Téléphone : Jour par défaut. Grand écran : Semaine. Le dernier choix
   et le bouton Activité sont mémorisés dans le navigateur.
   Heure HQ locale, 24 h, français (fr-CA). Si le fuseau du navigateur

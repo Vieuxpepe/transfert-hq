@@ -42,13 +42,15 @@
 .hq-cal-weekcol{position:relative;border-left:1px solid var(--line);min-height:calc(24 * 36px)}
 .hq-cal-week .hq-cal-slot{height:36px}
 .hq-cal-week .hq-cal-hourlabel{height:36px}
-.hq-cal-month{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
-.hq-cal-dow{font-size:.68rem;font-weight:800;color:var(--muted);text-align:center;padding:4px 0}
-.hq-cal-mcell{min-height:88px;border:1px solid var(--line);border-radius:10px;padding:4px;background:var(--panel-2);display:flex;flex-direction:column;gap:3px}
+.hq-cal-month{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;width:100%;min-width:0}
+.hq-cal-dow{font-size:.68rem;font-weight:800;color:var(--muted);text-align:center;padding:4px 0;min-width:0;overflow:hidden}
+.hq-cal-mcell{min-width:0;min-height:72px;overflow:hidden;border:1px solid var(--line);border-radius:10px;padding:4px;background:var(--panel-2);display:flex;flex-direction:column;gap:2px}
 .hq-cal-mcell.is-out{opacity:.55}
 .hq-cal-mcell.is-today{border-color:var(--accent)}
-.hq-cal-mday{border:0;background:transparent;color:var(--text);font:inherit;font-weight:800;text-align:left;padding:0 2px;min-height:28px}
-.hq-cal-more{border:0;background:transparent;color:var(--muted);font:inherit;font-size:.68rem;font-weight:700;text-align:left;padding:0 2px}
+.hq-cal-mday{border:0;background:transparent;color:var(--text);font:inherit;font-weight:800;text-align:left;padding:0 2px;min-height:22px;width:auto;max-width:100%}
+.hq-cal-mcell .hq-cal-chip,.hq-cal-mcell .hq-cal-more{display:block;width:100%;max-width:100%;min-width:0;min-height:0;flex:0 1 auto;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
+.hq-cal-mcell .hq-cal-chip{padding:1px 4px;font-size:.62rem;line-height:1.3;border-radius:4px}
+.hq-cal-more{border:0;background:transparent;color:var(--muted);font:inherit;font-size:.68rem;font-weight:700;text-align:left;padding:0 2px;line-height:1.2}
 .hq-cal-agenda h3{margin:12px 0 6px;font-size:.95rem}
 .hq-cal-row{display:flex;gap:8px;align-items:flex-start;width:100%;margin:0 0 6px;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;text-align:left}
 .hq-cal-row time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:.78rem;min-width:7.5rem}

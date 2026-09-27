@@ -354,13 +354,20 @@
   }
 
   function chip(item) {
-    return h("button", {
+    const title = item.title || "Sans titre";
+    const node = h("button", {
       type: "button",
       class: "hq-cal-chip " + catClass(item),
       "data-cal": "open",
       "data-id": item.id,
-      text: item.title || "Sans titre",
+      title: title,
+      text: title,
     });
+    return node;
+  }
+
+  function monthChipLimit() {
+    return window.matchMedia("(max-width: 800px)").matches ? 1 : 2;
   }
 
   function dayTimeline(day) {
@@ -560,16 +567,20 @@
         h("button", { type: "button", class: "hq-cal-mday", "data-cal": "pick-day", "data-day": dateKey(day), text: String(day.getDate()) })
       );
       const rows = items().filter((item) => overlapsDay(item, day));
-      rows.slice(0, 3).forEach((item) => cell.appendChild(chip(item)));
-      if (rows.length > 3) {
-        const extra = rows.length - 3;
+      const limit = monthChipLimit();
+      rows.slice(0, limit).forEach((item) => cell.appendChild(chip(item)));
+      if (rows.length > limit) {
+        const extra = rows.length - limit;
+        const label = extra === 1 ? "1 autre" : extra + " autres";
         cell.appendChild(
           h("button", {
             type: "button",
             class: "hq-cal-more",
             "data-cal": "pick-day",
             "data-day": dateKey(day),
-            text: extra === 1 ? "1 autre" : extra + " autres",
+            title: label,
+            "aria-label": label,
+            text: "+" + extra,
           })
         );
       }
