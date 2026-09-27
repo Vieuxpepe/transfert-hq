@@ -22,15 +22,14 @@
 # Unknown files stay controller-private. No ACE for Everyone or Users.
 # No deny ACE. PlannerIdentity never receives Modify, Write, or FullControl.
 #
-# Explicit planner ReadAndExecute, not inherited, only on the hqctl client:
-#   hqctl.py, hq_state.py
-# Audited imports of hqctl.py are the standard library plus hq_state.
-# Invocation: py -3 -B D:\Transfert\hqctl.py
+# Explicit planner ReadAndExecute, not inherited, only on:
+#   hqctl.py
+# hqctl.py imports only the standard library. It locates the token file
+# itself. Invocation: py -3 -B D:\Transfert\hqctl.py
 # Controller modules stay unreadable by the planner, including
 #   iphone_bridge.py, cc_ext.py, hq_companion.py, hq_jobs.py, hq_planner.py,
-#   hq_agent_protocol.py, hq_agent_ops.py, start_bridge_hidden.vbs,
-#   install_autostart.ps1
-# hq_state.py is readable and not writable.
+#   hq_state.py, hq_agent_protocol.py, hq_agent_ops.py,
+#   start_bridge_hidden.vbs, install_autostart.ps1
 #
 # bridge_config.json and bridge_sessions.json break inheritance and keep
 # SYSTEM, Administrators, and ControllerIdentity only. A missing file is a
@@ -52,11 +51,12 @@
 # re-register that task. hq-planner cannot change it without elevation.
 #
 # Post-apply contract for PlannerIdentity:
-#   may traverse StateDir, read/execute hqctl.py and hq_state.py,
+#   may traverse StateDir, read/execute hqctl.py,
 #   read .hq-agent-state\hq_planner.json, connect to 127.0.0.1:8766
-#   may not list or read the rest of the tree, read bridge config or sessions,
-#   read agents/jobs/vapid/keys, modify controller code or .git, change a DACL
-#   by owning it, alter TransfertBridge, or approve jobs
+#   may not list the tree, read any other repository Python file,
+#   read bridge config or sessions, read agents/jobs/vapid/keys,
+#   modify controller code or .git, change a DACL by owning it,
+#   alter TransfertBridge, or approve jobs
 #
 # Example (elevated), before any companion enrollment. -WhatIf writes nothing:
 #   powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 -WhatIf `
@@ -142,8 +142,8 @@ $plannerTraverse = (
     [System.Security.AccessControl.FileSystemRights]::ReadPermissions -bor
     [System.Security.AccessControl.FileSystemRights]::Synchronize
 )
-# Audited hqctl imports: standard library plus hq_state.py only.
-$PlannerClientFiles = @("hqctl.py", "hq_state.py")
+# hqctl.py is stdlib-only. No other repository Python file is a planner client.
+$PlannerClientFiles = @("hqctl.py")
 $PrivateRootFiles = @("bridge_config.json", "bridge_sessions.json")
 $ControllerCode = @(
     "iphone_bridge.py",
@@ -151,6 +151,7 @@ $ControllerCode = @(
     "hq_companion.py",
     "hq_jobs.py",
     "hq_planner.py",
+    "hq_state.py",
     "hq_agent_protocol.py",
     "hq_agent_ops.py",
     "start_bridge_hidden.vbs",
@@ -400,7 +401,7 @@ foreach ($name in $PrivateRootFiles) {
 }
 
 # planner client files: explicit ReadAndExecute
-# hqctl.py, hq_state.py only
+# hqctl.py only
 foreach ($name in $PlannerClientFiles) {
     $path = Join-Path $StateDir $name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {

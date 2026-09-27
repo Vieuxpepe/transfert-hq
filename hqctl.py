@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Planner-only HTTP client for the loopback HQ planner API.
 
-This process does not import the companion registry or the job store and
+This process imports only the standard library. It does not import the
+companion registry, the job store, or any other repository module, and it
 cannot approve, reject, enroll, revoke, or change policy. Human approval
 stays in the browser admin session.
 
@@ -27,9 +28,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-import hq_state
-
+AGENT_STATE_DIR = ".hq-agent-state"
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _planner_token_path(root: Path | str) -> Path:
+    return Path(root) / AGENT_STATE_DIR / "hq_planner.json"
 STOP_STATES = frozenset({"succeeded", "failed", "cancelled", "expired", "rejected", "uncertain", "awaiting_approval"})
 
 
@@ -47,7 +51,7 @@ def _token(args: argparse.Namespace) -> str:
     env = os.environ.get("HQ_PLANNER_TOKEN", "").strip()
     if env:
         return env
-    path = Path(args.token_file) if args.token_file else hq_state.agent_state_dir(args.root) / "hq_planner.json"
+    path = Path(args.token_file) if args.token_file else _planner_token_path(args.root)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:

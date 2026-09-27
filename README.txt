@@ -78,8 +78,9 @@ Companions (contrôle des autres PC)
   Le planificateur n'est jamais propriétaire. Sur StateDir il a seulement
   le droit de traverser, non héritable. Les fichiers inconnus restent donc
   privés du contrôleur (Modify héritable). ReadAndExecute explicite, et
-  seulement ça, pour hqctl.py et hq_state.py (imports audités : bibliothèque
-  standard + hq_state). Invocation : py -3 -B D:\Transfert\hqctl.py
+  seulement ça, pour hqctl.py. hqctl n'importe aucun module du dépôt :
+  il calcule lui-même le chemin du jeton. hq_state.py reste privé du
+  contrôleur. Invocation : py -3 -B D:\Transfert\hqctl.py
   bridge_config.json et bridge_sessions.json n'héritent pas : pas de
   lecture planificateur. Les autres fichiers d'identifiants (hq_vapid.json,
   clés, agent_config.json) restent privés parce que l'accès planificateur
@@ -114,8 +115,9 @@ Companions (contrôle des autres PC)
   l'état : ne pas appeler ça une séparation.
 
   Contrat après application, pour le planificateur : traverser D:\Transfert,
-  lire/exécuter hqctl.py et hq_state.py, lire hq_planner.json, joindre
-  127.0.0.1:8766. Pas lister ni lire le reste de l'arbre, pas lire la config,
+  lire/exécuter hqctl.py, lire hq_planner.json, joindre 127.0.0.1:8766.
+  Aucun autre fichier Python du dépôt n'est lisible, y compris hq_state.py.
+  Pas lister ni lire le reste de l'arbre, pas lire la config,
   les sessions, les agents, les travaux, vapid ou les clés, pas modifier le
   code, .git, une DACL via un propriétaire Everyone, ni TransfertBridge,
   pas approuver un travail.
@@ -136,8 +138,11 @@ Companions (contrôle des autres PC)
      le remplacement atomique.
   6. Créer un travail planificateur anodin pour réécrire hq_agent_jobs.json.
      Get-Acl : le planificateur ne doit toujours pas pouvoir le lire.
-  7. Sous PlannerIdentity : hqctl devices --json fonctionne. La lecture
-     directe de hq_agents.json et hq_agent_jobs.json échoue.
+  7. Sous PlannerIdentity : py -3 -B D:\Transfert\hqctl.py devices --json
+     fonctionne. Échoue : Get-ChildItem D:\Transfert ; Get-Content de
+     iphone_bridge.py, hq_state.py, bridge_config.json, bridge_sessions.json,
+     .hq-agent-state\hq_agents.json et .hq-agent-state\hq_agent_jobs.json.
+     Modifier hqctl.py échoue.
 
   Bail : poll pose l'état leased, un dispatch_token et lease_until (30 s).
   expires_at est le délai d'attente avant le démarrage. Au POST
@@ -524,7 +529,7 @@ SECURITY INVARIANTS
       Le planificateur n'est pas sur le port public. hqctl ne peut pas
       approuver. Deux comptes distincts, install_hq_tree_acl.ps1 (propriétaire
       BUILTIN\Administrators, traverse non héritable, ReadAndExecute seulement
-      sur hqctl.py et hq_state.py) puis install_hq_state_acl.ps1 sont
+      sur hqctl.py) puis install_hq_state_acl.ps1 sont
       nécessaires pour une séparation OS.
       Un même compte, ou un planificateur administrateur, peut lire les secrets.
       Les fichiers privés sont sous .hq-agent-state ; l'ACL durable est celle

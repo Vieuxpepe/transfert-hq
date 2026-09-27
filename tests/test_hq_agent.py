@@ -637,6 +637,13 @@ class SecurityHardeningTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "hqctl.py").read_text(encoding="utf-8")
         self.assertNotIn("import hq_companion", source)
         self.assertNotIn("import hq_jobs", source)
+        self.assertNotIn("import hq_state", source)
+        self.assertIn("def _planner_token_path", source)
+        import hqctl
+        self.assertEqual(
+            hqctl._planner_token_path(self.tmp),
+            hq_state.agent_state_dir(self.tmp) / "hq_planner.json",
+        )
         self.assertNotIn("enroll-token", source)
         self.assertNotIn("--origin", source)
         support = list(hq_devices.DEFAULT_AGENT_POLICY) + ["power_shutdown", "clipboard_read"]
@@ -919,7 +926,9 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertNotIn("device_secret", acl)
         self.assertNotIn("device_secret", task)
         ctl = (root / "hqctl.py").read_text(encoding="utf-8")
-        self.assertIn("agent_state_dir", ctl)
+        self.assertIn('AGENT_STATE_DIR = ".hq-agent-state"', ctl)
+        self.assertIn("def _planner_token_path", ctl)
+        self.assertNotIn("import hq_state", ctl)
         self.assertNotIn("import hq_companion", ctl)
         self.assertNotIn("import hq_jobs", ctl)
         self.assertNotIn("device_secret", ctl)
@@ -971,15 +980,21 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertTrue(any("$inheritChildren" in line for line in controller_grants))
         client_names = tree.split("$PlannerClientFiles = @(", 1)[1].split(")", 1)[0]
         names = [part.strip().strip('"') for part in client_names.split(",") if part.strip()]
-        self.assertEqual(names, ["hqctl.py", "hq_state.py"])
+        self.assertEqual(names, ["hqctl.py"])
+        controller_names = tree.split("$ControllerCode = @(", 1)[1].split(")", 1)[0]
+        controller_files = [part.strip().strip('"') for part in controller_names.split(",") if part.strip()]
+        self.assertIn("hq_state.py", controller_files)
+        self.assertNotIn("hq_state.py", names)
+        self.assertFalse(any("hq_state.py" in line for line in grants))
         imported = set()
         for node in ast.walk(ast.parse((root / "hqctl.py").read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
-        stdlib = {"__future__", "argparse", "json", "os", "re", "sys", "time", "urllib", "pathlib"}
-        self.assertEqual(imported - stdlib, {"hq_state"})
+        non_stdlib = {name for name in imported if name not in sys.stdlib_module_names}
+        self.assertEqual(non_stdlib, set())
+        self.assertNotIn("hq_state", imported)
         sensitive = tree.split("sensitive files:", 1)[1].split("planner client files:", 1)[0]
         self.assertIn("bridge_config.json", sensitive)
         self.assertIn("bridge_sessions.json", sensitive)
@@ -987,7 +1002,7 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertNotIn("ReadAndExecute", sensitive)
         client = tree.split("planner client files:", 1)[1].split("code integrity:", 1)[0]
         self.assertIn("hqctl.py", client)
-        self.assertIn("hq_state.py", client)
+        self.assertNotIn("hq_state.py", client)
         self.assertNotIn("iphone_bridge.py", client)
         self.assertNotIn("$inheritChildren", client)
         code = tree.split("code integrity:", 1)[1]
@@ -998,6 +1013,7 @@ class SecurityHardeningTests(unittest.TestCase):
             "hq_companion.py",
             "hq_jobs.py",
             "hq_planner.py",
+            "hq_state.py",
             "hq_agent_protocol.py",
             "hq_agent_ops.py",
             "start_bridge_hidden.vbs",
@@ -1099,6 +1115,10 @@ class SecurityHardeningTests(unittest.TestCase):
             traverse_rights,
             ["Traverse", "ReadAttributes", "ReadPermissions", "Synchronize"],
         )
+        self.assertNotIn("ListDirectory", traverse_rights)
+        self.assertNotIn("ReadAndExecute", traverse_rights)
+        self.assertFalse(any("ListDirectory" in line for line in grants))
+        self.assertIn("ListDirectory", tree)
 
     def test_running_result_loss_does_not_claim_failure(self):
         support = list(hq_devices.DEFAULT_AGENT_POLICY) + ["files_write", "power_shutdown"]
