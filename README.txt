@@ -12,8 +12,11 @@ Architecture
   hq_events.py       journal unifié borné
   hq_state.py        écriture JSON atomique (verrou, .tmp, fsync, os.replace)
   hq_automation.py   scènes / runbooks, règles, planning, backups, télémétrie, brief, push
+  hq_calendar.py     événements manuels, projection des horaires, rappels
   hq_devices.py      modèle d'appareils et capacités (dérivées, pas inventées)
   assets/hq.js       palette, bannière HQ, journal, flotte, brief, voix, push
+  assets/hq-calendar.js
+  assets/hq-calendar.css
   assets/hq.css
   assets/hq-sw.js    service worker Web Push (opt-in)
   assets/qrcode.min.js
@@ -38,6 +41,9 @@ Routes ajoutées (admin ; le rôle upload reste sur son allowlist)
   GET  /api/automation          règles
   POST /api/automation          {action: save|delete|enable|run, ...}
   GET  /api/schedules           jobs daily|weekdays|weekly|once|on-online
+  GET  /api/calendar            ?from=&to= (fin exclue, max 366 jours) &include_activity=0|1
+  POST /api/calendar            {action: save|delete, expected_rev, event|id}
+  POST /api/calendar/run        {id, target: scene|action} — jamais appelé par l'horloge
   POST /api/queue               étendu : ces when + at HH:MM, weekday 0=lundi, once_at, device_id
   GET  /api/backups             catalogue
   POST /api/backup/restore      {id, folder: Inbox|Uni|Print, confirm: true}
@@ -72,6 +78,34 @@ Planning
   antérieur à sa création ; il part au prochain créneau, ou tout de suite si
   la minute courante correspond.
 
+Calendrier
+----------
+  Onglet Calendrier : Jour, Semaine (lundi), Mois, Agenda.
+  Téléphone : Jour par défaut. Grand écran : Semaine. Le dernier choix
+  et le bouton Activité sont mémorisés dans le navigateur.
+  Heure HQ locale, 24 h, français (fr-CA). Si le fuseau du navigateur
+  diffère, la barre indique « Heure HQ ».
+  Événement manuel : titre, journée entière (fin exclue), catégorie,
+  lieu, notes, rappels (au plus 3). Liens optionnels vers une scène,
+  une action, ou un appareil (l'appareil ouvre seulement sa fiche).
+  Les horaires daily / weekdays / weekly / once sont projetés depuis
+  bridge_queue.json. Ils ne sont pas copiés dans hq_calendar.json.
+  online, wake et on-online restent dans la section Conditionnel,
+  hors de la grille. La projection ne modifie pas la file.
+  Révision attendue (expected_rev) : un conflit répond 409.
+  Plafond d'environ 2000 événements. Pas de récurrence manuelle.
+  L'horloge ne lance jamais une scène ou une action liée. Seul
+  POST /api/calendar/run le fait, après confirmation dans l'interface.
+  Rappels : une fois, identité événement|début|délai. Une modification
+  du début invalide l'ancienne identité. Rattrapage de 5 minutes,
+  au-delà le rappel est sauté. Journée entière : ancre à 08:00 HQ
+  le jour de début (0 = 08:00 ce jour-là, 1440 = 08:00 la veille).
+  GET /api/hq ajoute calendar.today (5 éléments) et calendar.next
+  sans sonder Tailscale. L'accueil affiche Aujourd'hui / Prochain.
+  Le wallboard n'affiche que la carte Prochain.
+  Les routes calendrier sont admin. Elles ne sont pas sur l'allowlist
+  du rôle upload. Les POST exigent le contrôle CSRF habituel.
+
 Règles
 ------
   Déclencheurs : manual, event (kind), device_online, disk_low.
@@ -90,6 +124,7 @@ Règles
 Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON cassé)
 --------------------------------------------------------------------------------
   hq_events.json
+  hq_calendar.json
   hq_automation.json
   hq_runs.json
   hq_telemetry.json
@@ -159,7 +194,18 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_state.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py
+
+Contrôle manuel du calendrier
+-----------------------------
+  Non exécuté ici sur Windows, iPhone ou Tailscale.
+  À faire sur le pont réel :
+  1. Ouvrir Calendrier. Téléphone : Jour. Bureau : Semaine.
+  2. Créer un horaire et une journée entière. Les revoir en Mois et Agenda.
+  3. Ajouter un job daily. Il s'affiche en lecture seule. bridge_queue.json
+     ne gagne pas de copie dans hq_calendar.json.
+  4. Confirmer « Lancer la scène ». Un rappel ne doit pas la lancer seul.
+  5. Compte upload : /api/calendar répond 403.
 
 
 SECURITY INVARIANTS
@@ -194,7 +240,10 @@ SECURITY INVARIANTS
   Exécution distante
     - Pas de surcharge d'hôte SSH (champ host refusé). Cibles = shell_targets / pairs connus.
     - Automation, scènes, planning, palette : terminal par id allowlist uniquement.
-    - Jamais de commande libre dans une règle, une scène ou un job planifié.
+    - Jamais de commande libre dans une règle, une scène, un job planifié
+      ou un événement de calendrier.
+    - Le calendrier n'a pas de terminal_id. L'heure d'un événement ne lance
+      ni scène ni action.
     - Le shell interactif admin existant reste explicite (POST /api/shell sur une cible connue).
     - Les logs ne contiennent pas la commande brute.
 
