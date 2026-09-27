@@ -2375,17 +2375,29 @@ function renderCrumbs(breadcrumb) {
   $$('.crumb[data-rel]', el).forEach(b => b.addEventListener('click', () => navigate(b.dataset.rel)));
 }
 
+function currentFilesSort() {
+  let value = 'name';
+  try { value = localStorage.getItem('hq_files_sort') || 'name'; } catch (_) {}
+  if (typeof hqFilesSortMode === 'function') return hqFilesSortMode(value);
+  return value === 'recent' || value === 'size' ? value : 'name';
+}
+
 function renderFiles() {
   const q = ($('#search')?.value || '').trim().toLowerCase();
   const list = $('#file-list');
-  const items = itemsCache.filter(f => !q || f.name.toLowerCase().includes(q));
+  const matched = itemsCache.filter(f => !q || f.name.toLowerCase().includes(q));
+  const items = typeof hqSortFolderItems === 'function' ? hqSortFolderItems(matched, currentFilesSort()) : matched;
   $('#file-count').textContent = String(items.length);
   if (!items.length) {
-    list.innerHTML = `<li class="file empty empty-teach">
-      <em>Aucun fichier ici</em>
-      <p class="hint"><button type="button" class="ghost" data-go-accueil>Envoie depuis Accueil</button></p>
-    </li>`;
-    $$('[data-go-accueil]', list).forEach(b => b.addEventListener('click', () => setView('accueil')));
+    if (q && itemsCache.length) {
+      list.innerHTML = '<li class="file empty empty-teach"><em>Aucun résultat dans ce dossier</em></li>';
+    } else {
+      list.innerHTML = `<li class="file empty empty-teach">
+        <em>Aucun fichier ici</em>
+        <p class="hint"><button type="button" class="ghost" data-go-accueil>Envoie depuis Accueil</button></p>
+      </li>`;
+      $$('[data-go-accueil]', list).forEach(b => b.addEventListener('click', () => setView('accueil')));
+    }
     return;
   }
   list.innerHTML = items.map(f => {
@@ -2456,10 +2468,8 @@ async function navigate(rel) {
 async function refreshFiles() {
   const list = $('#file-list');
   if (!list) return;
-  const q = ($('#search')?.value || '').trim();
   const qs = new URLSearchParams();
   if (currentRel) qs.set('path', currentRel);
-  if (q) qs.set('q', q);
   const data = await api('/api/list?' + qs.toString());
   if (data.error) throw new Error(data.error);
   itemsCache = data.items || [];
@@ -2838,6 +2848,7 @@ function setupQR() {
 
 let presenceId = localStorage.getItem('transfert_presence_id') || '';
 let favoritesCache = [];
+window.hqFavoriteFolders = () => favoritesCache.slice();
 let hqTimer = null;
 
 function deviceName() {
@@ -3003,7 +3014,7 @@ function renderRecents() {
       rows.push({
         sort: x.at || 0,
         html: `<li data-kind="activity"><strong>${escapeHtml(x.message || '')}</strong>
-          <div class="meta">activité · ${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
+          <div class="meta">opération · ${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
       });
     }
   }
@@ -3599,6 +3610,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     navigate(parts.join('/'));
   });
   $('#search')?.addEventListener('input', () => renderFiles());
+  const sortSel = $('#file-sort');
+  if (sortSel) {
+    sortSel.value = currentFilesSort();
+    sortSel.addEventListener('change', () => {
+      const mode = typeof hqFilesSortMode === 'function' ? hqFilesSortMode(sortSel.value) : (sortSel.value === 'recent' || sortSel.value === 'size' ? sortSel.value : 'name');
+      sortSel.value = mode;
+      try { localStorage.setItem('hq_files_sort', mode); } catch (_) {}
+      renderFiles();
+    });
+  }
   setupDrop();
   setupQR();
   // Warm session, but NEVER leave the UI stuck on "Chargement…"
@@ -3997,6 +4018,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   setInterval(refreshWall, 6000);
 }});
 </script>
+<script src="/assets/hq-features.js"></script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 </body></html>"""
@@ -4100,7 +4122,7 @@ def render_app() -> bytes:
           <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
           <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
         </button>
-        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action.">Recherche</button>
+        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action. Ctrl+K ou Cmd+K."><span>Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
       </div>
       <div id="hq-attention-panel" class="hq-disclosure-panel" hidden>
         <ul class="hq-list" id="hq-attention"></ul>
@@ -4195,7 +4217,7 @@ def render_app() -> bytes:
         <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
           <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
           <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
-          <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Activité</button>
+          <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Opérations</button>
         </div>
         <ul class="hq-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
         <ul class="hq-list" id="hq-transfers" hidden></ul>
@@ -4217,8 +4239,8 @@ def render_app() -> bytes:
   <div data-panel="fichiers">
     <section class="hq" aria-labelledby="search-title">
       <div class="sec-head">
-        <h2 id="search-title">Recherche</h2>
-        <p class="sec-hint">Trouver un fichier ou du texte dans .txt / .md</p>
+        <h2 id="search-title">Recherche globale</h2>
+        <p class="sec-hint">Chercher un fichier ou du texte dans les notes</p>
       </div>
       <input id="global-search" type="search" placeholder="Ex. facture, capture, notes…" aria-label="Recherche globale" data-help="Cherche un nom de fichier ou du texte dans les notes."/>
       <ul class="hq-list" id="search-hits"><li class="hint">Saisis au moins deux lettres.</li></ul>
@@ -4238,7 +4260,16 @@ def render_app() -> bytes:
         <button type="button" class="secondary" id="btn-up">↑ Remonter</button>
         <button type="button" class="secondary" id="btn-mkdir">+ Dossier</button>
         <button type="button" class="secondary" id="btn-newfile">+ Fichier</button>
-        <input id="search" type="search" placeholder="Filtrer…" aria-label="Filtrer la liste"/>
+      </div>
+      <div class="fm-filter">
+        <input id="search" type="search" placeholder="Filtrer ce dossier…" aria-label="Filtrer ce dossier"/>
+        <label class="fm-sort" for="file-sort">Trier
+          <select id="file-sort">
+            <option value="name">Nom</option>
+            <option value="recent">Récent</option>
+            <option value="size">Taille</option>
+          </select>
+        </label>
       </div>
       <ul class="files" id="file-list"></ul>
     </section>
@@ -4388,7 +4419,17 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="plus">
-    <section class="hq" aria-labelledby="plus-status-title">
+    <nav class="sys-jump" aria-label="Sections Système">
+      <button type="button" data-jump="system-session">Session</button>
+      <button type="button" data-jump="system-backups">Sauvegardes</button>
+      <button type="button" data-jump="system-notifications">Notifications</button>
+      <button type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
+      <button type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
+      <button type="button" data-jump="system-journal">Journal</button>
+      <button type="button" data-jump="system-alerts">Alertes</button>
+      <button type="button" data-jump="system-info">Infos</button>
+    </nav>
+    <section class="hq" id="system-session" aria-labelledby="plus-status-title">
       <div class="sec-head">
         <h2 id="plus-status-title">Session <span class="badge" id="hq-uptime">—</span></h2>
         <p class="sec-hint">Espace disque, hôte, et rôle de connexion</p>
@@ -4399,18 +4440,21 @@ def render_app() -> bytes:
         <dt>Max upload</dt><dd id="hq-max">…</dd>
         <dt>Session</dt><dd id="hq-role">…</dd>
       </dl>
-      <p class="sec-hint">Écran TV / présence / QR → <a href="/wallboard?theme=oled&kiosk=1" style="color:var(--accent)">Wallboard</a>
-        · <a href="/wallboard?theme=midnight" style="color:var(--accent)">midnight</a></p>
-      <div class="qrs" style="margin-top:10px" aria-label="QR d'accès">
-        {qr_lan}
-        {qr_ts}
-      </div>
-      <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
+      <details class="access-share">
+        <summary>Partager l'accès</summary>
+        <p class="sec-hint">Écran TV / présence / QR → <a href="/wallboard?theme=oled&kiosk=1" style="color:var(--accent)">Wallboard</a>
+          · <a href="/wallboard?theme=midnight" style="color:var(--accent)">midnight</a></p>
+        <div class="qrs" style="margin-top:10px" aria-label="QR d'accès">
+          {qr_lan}
+          {qr_ts}
+        </div>
+        <p class="hint">QR = adresse du pont seulement (pas de PIN ni de session).</p>
+      </details>
       <span id="hq-health" class="visually-hidden"></span>
       <div id="hq-spark-host" class="spark-host"></div>
     </section>
 
-    <section class="hq" aria-labelledby="brief-title">
+    <section class="hq" id="system-brief" aria-labelledby="brief-title">
       <div class="sec-head">
         <h2 id="brief-title">Brief du jour</h2>
         <p class="sec-hint">Résumé déterministe, sans service externe</p>
@@ -4418,7 +4462,7 @@ def render_app() -> bytes:
       <div id="hq-brief" class="brief"><p class="hint">Chargement…</p></div>
     </section>
 
-    <section class="hq" aria-labelledby="backup-title">
+    <section class="hq" id="system-backups" aria-labelledby="backup-title">
       <div class="sec-head">
         <h2 id="backup-title">Sauvegardes</h2>
         <p class="sec-hint">Catalogue local. La restauration écrase le dossier choisi.</p>
@@ -4426,7 +4470,7 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-backups"><li class="hint">Chargement…</li></ul>
     </section>
 
-    <details class="hq mode-complet-only">
+    <details class="hq mode-complet-only" id="system-automations">
       <summary>
         <div class="sec-head">
           <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Automatisations</span>
@@ -4458,7 +4502,7 @@ def render_app() -> bytes:
       </form>
     </details>
 
-    <section class="hq" aria-labelledby="push-title">
+    <section class="hq" id="system-notifications" aria-labelledby="push-title">
       <div class="sec-head">
         <h2 id="push-title">Notifications</h2>
         <p class="sec-hint">Web Push opt-in (HTTPS / Tailscale Serve, push_enabled) : alertes, attention critique, échec d'automatisation. Pas toutes les notifications HQ.</p>
@@ -4467,7 +4511,7 @@ def render_app() -> bytes:
       <button type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
     </section>
 
-    <details class="hq mode-complet-only">
+    <details class="hq mode-complet-only" id="system-tasks">
       <summary>
         <div class="sec-head">
           <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Tâches</span>
@@ -4477,7 +4521,7 @@ def render_app() -> bytes:
       <div class="kanban" id="kanban"></div>
     </details>
 
-    <details class="hq" id="hq-journal">
+    <details class="hq" id="system-journal">
       <summary>
         <div class="sec-head">
           <span class="summary-title" id="events-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Journal technique</span>
@@ -4496,7 +4540,7 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
     </details>
 
-    <details class="hq">
+    <details class="hq" id="system-alerts">
       <summary>
         <div class="sec-head">
           <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Alertes <span class="badge" id="hq-alert-count">0</span></span>
@@ -4506,7 +4550,7 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-alerts"><li class="hint">Aucune alerte pour le moment.</li></ul>
     </details>
 
-    <section class="hq">
+    <section class="hq" id="system-info">
       <div class="sec-head">
         <h2>Infos</h2>
         <p class="sec-hint">Réglages de base du pont</p>
@@ -4529,6 +4573,7 @@ def render_app() -> bytes:
 </div>
 <div id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <script>{APP_JS}</script>
+<script src="/assets/hq-features.js"></script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
@@ -4539,9 +4584,11 @@ def render_app() -> bytes:
   </form>
 </dialog>
 <div id="hq-palette" class="palette" hidden>
-  <div class="palette-card" role="dialog" aria-modal="true" aria-label="Recherche HQ">
+  <div class="palette-card" role="dialog" aria-modal="true" aria-labelledby="hq-palette-title">
+    <p id="hq-palette-title" class="palette-title">Recherche HQ</p>
     <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off" aria-autocomplete="list" aria-controls="hq-palette-list"/>
-    <ul id="hq-palette-list"></ul>
+    <div id="hq-palette-list"></div>
+    <p class="palette-foot">↑ ↓ naviguer · Entrée ouvrir · Échap fermer</p>
   </div>
 </div>
 </body></html>"""

@@ -38,6 +38,7 @@
     view: "week",
     anchor: null,
     activity: false,
+    legend: false,
     userMoved: false,
     synced: false,
     data: null,
@@ -264,6 +265,9 @@
     root.textContent = "";
     paintTz();
     root.appendChild(toolbar());
+    const legend = legendPanel();
+    legend.hidden = !state.legend;
+    root.appendChild(legend);
     if (state.data && state.data.malformed) {
       root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
     }
@@ -328,11 +332,48 @@
     }
     bar.appendChild(h("button", {
       type: "button",
+      class: "secondary",
+      "data-cal": "legend",
+      "aria-expanded": state.legend ? "true" : "false",
+      "aria-controls": "hq-cal-legend",
+      "data-help": "Formes et couleurs des catégories, du planning et de l'activité.",
+      text: "Légende",
+    }));
+    bar.appendChild(h("button", {
+      type: "button",
       "data-cal": "create",
       "data-help": "Crée un événement manuel dans le calendrier.",
       text: "Nouvel événement",
     }));
     return bar;
+  }
+
+  function legendPanel() {
+    const panel = h("div", {
+      id: "hq-cal-legend",
+      class: "hq-cal-legend",
+      role: "region",
+      "aria-label": "Légende du calendrier",
+    });
+    const cats = h("ul", { class: "hq-cal-legend-cats" });
+    CATS.forEach(([id, label]) => {
+      const item = h("li", { class: "hq-cal-legend-item" });
+      item.appendChild(h("span", { class: "hq-cal-legend-mark cat-" + id, "aria-hidden": "true" }));
+      item.appendChild(h("span", { text: label }));
+      cats.appendChild(item);
+    });
+    panel.appendChild(cats);
+    const notes = h("ul", { class: "hq-cal-legend-notes" });
+    const schedule = h("li", { class: "hq-cal-legend-note" });
+    schedule.appendChild(h("span", { class: "hq-cal-legend-mark is-schedule", "aria-hidden": "true" }));
+    schedule.appendChild(h("span", { text: "Planning HQ · lecture seule" }));
+    const activity = h("li", { class: "hq-cal-legend-note" });
+    activity.appendChild(h("span", { class: "hq-cal-legend-activity", "aria-hidden": "true" }));
+    activity.appendChild(h("span", { text: "Activité observée" }));
+    notes.appendChild(schedule);
+    notes.appendChild(activity);
+    panel.appendChild(notes);
+    return panel;
   }
 
   function dayView() {
@@ -777,6 +818,13 @@
       state.activity = !state.activity;
       try { localStorage.setItem("hq_cal_activity", state.activity ? "1" : "0"); } catch (_) {}
       refresh();
+      return;
+    }
+    if (kind === "legend") {
+      state.legend = !state.legend;
+      render();
+      const again = document.querySelector('#hq-cal-app [data-cal="legend"]');
+      if (again) again.focus();
       return;
     }
     if (kind === "create") {
