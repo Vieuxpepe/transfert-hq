@@ -64,17 +64,33 @@ Companions (contrôle des autres PC)
   (8765, y compris derrière Tailscale Serve) répond 404 sur /local-agent.
   L'approbation humaine reste le navigateur admin + CSRF.
 
-  Cette frontière est logicielle. Si le planificateur tourne sous le même
-  compte que le pont, il peut lire hq_agents.json. « Le planificateur ne
-  peut pas s'approuver » n'est alors pas une garantie : il faut un compte
-  distinct et install_hq_state_acl.ps1 -PlannerIdentity. Un administrateur
-  du même poste peut reprendre la propriété des fichiers.
+  Cette frontière est logicielle tant que les deux processus partagent un
+  compte. La séparation OS, si on la veut, est une allowlist
+  (install_hq_state_acl.ps1) pour deux comptes non administrateurs :
+    powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 `
+      -StateDir C:\TransfertHQ `
+      -ControllerIdentity "TAILNET\hq-controller" `
+      -PlannerIdentity "TAILNET\hq-planner"
+  Le contrôleur (iphone_bridge.py) a Modify sur hq_agents.json,
+  hq_agent_jobs.json et hq_planner.json. Le planificateur a Read seulement
+  sur hq_planner.json, et aucun droit sur les deux autres. SYSTEM et
+  Administrators gardent le contrôle total. hqctl, lancé sous le compte
+  planificateur, lit toujours hq_planner.json par défaut. Le script refuse
+  de s'appliquer si les deux identités sont identiques, ou si le
+  planificateur est Administrator / SYSTEM. Un planificateur membre du
+  groupe Administrateurs peut quand même lire l'état : ne pas appeler ça
+  une séparation.
 
   Bail : poll pose l'état leased, un dispatch_token et lease_until (30 s).
-  Le companion envoie POST /agent/v1/start. Résultat et artifact ne sont
-  acceptés qu'en état running avec le même jeton. Bail expiré : une lecture
-  peut revenir en file (3 essais au plus). Sûr, sensible et destructeur
-  passent à uncertain et ne sont pas relancés. attempts est conservé.
+  expires_at est le délai d'attente avant le démarrage. Au POST
+  /agent/v1/start, HQ pose started_at et
+  run_deadline = started_at + timeout_sec + 15 s. Résultat et artifact ne
+  sont acceptés qu'en état running avec le même jeton. Bail expiré avant
+  start : une lecture peut revenir en file (3 essais au plus). Après start,
+  plus aucune relance. Si le résultat manque : une lecture devient failed
+  (« résultat non reçu ») ; sûr, sensible et destructeur deviennent
+  uncertain (« résultat non reçu après démarrage »). Le jeton est effacé.
+  Un artifact déjà enregistré est conservé. attempts et started_at restent.
 
   Identité : l'IP ou le hostname déclarés sont des diagnostics
   (reported_ips, reported_hostname). Ils ne lient pas un companion à un
@@ -444,9 +460,13 @@ SECURITY INVARIANTS
       companion Windows ne l'exécute que si destructive_power_enabled est vrai.
       Presse-papiers désactivé tant que clipboard_enabled n'est pas vrai.
       Le planificateur n'est pas sur le port public. hqctl ne peut pas
-      approuver. Un même compte OS peut quand même lire les secrets.
+      approuver. Deux comptes distincts et l'allowlist
+      install_hq_state_acl.ps1 sont nécessaires pour une séparation OS.
+      Un même compte, ou un planificateur administrateur, peut lire les secrets.
       Artifact : autorisation avant écriture, réserve disque, pas d'orphelin.
-      Bail + accusé de démarrage. Pas de lien automatique pair/companion.
+      Bail avant start, puis run_deadline. Un résultat manquant après start
+      n'est failed que pour une lecture. Le reste est uncertain, sans relance.
+      Pas de lien automatique pair/companion.
       Cache de nonces perdu au redémarrage (fenêtre ±90 s).
     - Automation, scènes, planning, palette : terminal par id allowlist uniquement.
     - Jamais de commande libre dans une règle, une scène, un job planifié

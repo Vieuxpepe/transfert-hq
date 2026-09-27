@@ -889,10 +889,143 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("if ($DeleteData)", uninstall)
         self.assertGreater(uninstall.index("Remove-Item"), uninstall.index("if ($DeleteData)"))
         acl = (root / "install_hq_state_acl.ps1").read_text(encoding="utf-8")
-        self.assertIn("hq_agents.json", acl)
-        self.assertIn("hq_planner.json", acl)
-        self.assertIn("/deny", acl)
+        self.assertIn("ControllerIdentity", acl)
         self.assertIn("PlannerIdentity", acl)
+        self.assertIn("hq_agents.json", acl)
+        self.assertIn("hq_agent_jobs.json", acl)
+        self.assertIn("hq_planner.json", acl)
+        self.assertNotIn("/deny", acl)
+        self.assertIn("SetAccessRuleProtection", acl)
+        self.assertIn("FullControl", acl)
+        self.assertIn("Modify", acl)
+        self.assertIn("PlannerRead = $false", acl)
+        self.assertIn("PlannerRead = $true", acl)
+        self.assertLess(acl.index("PlannerRead = $false"), acl.index("PlannerRead = $true"))
+        planner_grant = acl.split("if ($file.PlannerRead)", 1)[1]
+        self.assertIn('"Read"', planner_grant)
+        self.assertNotIn("Modify", planner_grant.split("Set-Acl", 1)[0])
+        self.assertIn("identiques", acl)
+        self.assertIn("Administrateurs", acl)
+        self.assertNotIn("device_secret", acl)
+        self.assertNotIn("device_secret", task)
+        ctl = (root / "hqctl.py").read_text(encoding="utf-8")
+        self.assertIn('Path(args.root) / "hq_planner.json"', ctl)
+        self.assertNotIn("device_secret", ctl)
         auth = (root / "hq_companion.py").read_text(encoding="utf-8")
         self.assertIn("process-local", auth)
         self.assertIn("90", auth)
+
+    def test_running_result_loss_does_not_claim_failure(self):
+        support = list(hq_devices.DEFAULT_AGENT_POLICY) + ["files_write", "power_shutdown"]
+        enrolled = self._enroll(support=support)
+        device_id = enrolled["device_id"]
+        hq_companion.set_policy(device_id, support)
+        granted = hq_companion.granted_for(device_id)
+        queued = hq_jobs.create_job(
+            device_id=device_id,
+            op="system.status",
+            args={},
+            origin="human",
+            granted=granted,
+            ttl_sec=30,
+            timeout_sec=20,
+        )
+        self.assertEqual(queued["expires_at"] - queued["created_at"], 30)
+        self.now += 29
+        leased = hq_jobs.take_next(device_id)
+        self.assertEqual(leased["id"], queued["id"])
+        started = hq_jobs.acknowledge_start(device_id, leased["id"], leased["dispatch_token"])
+        self.assertEqual(started["state"], "running")
+        self.assertGreater(started["run_deadline"], started["expires_at"])
+        self.assertEqual(started["run_deadline"], started["started_at"] + 20 + hq_jobs.RUN_GRACE_SEC)
+        read_token = leased["dispatch_token"]
+        self.now = started["expires_at"] + 1
+        self.assertLess(self.now, started["run_deadline"])
+        hq_jobs.sweep()
+        self.assertEqual(hq_jobs.get_job(queued["id"])["state"], "running")
+        with self.assertRaises(ops.AgentOpError):
+            hq_jobs.complete(device_id, queued["id"], ok=True, dispatch_token="ab" * 16)
+        self.assertEqual(hq_jobs.get_job(queued["id"])["state"], "running")
+        self.now = started["run_deadline"] + 1
+        hq_jobs.sweep()
+        lost = hq_jobs.get_job(queued["id"])
+        self.assertEqual(lost["state"], "failed")
+        self.assertEqual(lost["error"], "résultat non reçu")
+        self.assertEqual(lost["attempts"], started["attempts"])
+        self.assertEqual(lost["started_at"], started["started_at"])
+        self.assertIsNone(hq_jobs.take_next(device_id))
+        with self.assertRaises(ops.AgentOpError):
+            hq_jobs.complete(device_id, queued["id"], ok=True, dispatch_token=read_token)
+
+        def lose(op, args, *, approve=False):
+            job = hq_jobs.create_job(
+                device_id=device_id,
+                op=op,
+                args=args,
+                origin="human",
+                granted=granted,
+                timeout_sec=20,
+            )
+            if approve:
+                hq_jobs.approve(job["id"], actor="human")
+            taken = hq_jobs.take_next(device_id)
+            self.assertEqual(taken["id"], job["id"])
+            running = hq_jobs.acknowledge_start(device_id, job["id"], taken["dispatch_token"])
+            self.now = running["run_deadline"] + 1
+            hq_jobs.sweep()
+            return hq_jobs.get_job(job["id"])
+
+        safe = lose("power.lock", {})
+        self.assertEqual(safe["state"], "uncertain")
+        self.assertEqual(safe["error"], "résultat non reçu après démarrage")
+        sensitive = lose("fs.write", {"path": "note.txt", "text": "x"})
+        self.assertEqual(sensitive["state"], "uncertain")
+        destructive = lose("power.shutdown", {}, approve=True)
+        self.assertEqual(destructive["state"], "uncertain")
+
+        fresh = hq_jobs.create_job(
+            device_id=device_id,
+            op="power.lock",
+            args={},
+            origin="human",
+            granted=granted,
+            timeout_sec=20,
+        )
+        taken = hq_jobs.take_next(device_id)
+        running = hq_jobs.acknowledge_start(device_id, fresh["id"], taken["dispatch_token"])
+        path = self.tmp / "hq_agent_jobs.json"
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        for row in stored["jobs"]:
+            if row["id"] == fresh["id"]:
+                row["artifact_reserved"] = True
+                row["artifact"] = {
+                    "rel": "Inbox/AgentArtifacts/keep.bin",
+                    "name": "keep.bin",
+                    "size": 4,
+                    "sha256": "ab" * 32,
+                }
+        path.write_text(json.dumps(stored), encoding="utf-8")
+        hq_companion.bind(
+            self.tmp,
+            now=lambda: self.now,
+            reserve_bytes=lambda: 0,
+            disk_free=lambda _path: {"free": 10**15},
+        )
+        self.now = running["run_deadline"] + 1
+        hq_jobs.sweep()
+        settled = json.loads(path.read_text(encoding="utf-8"))
+        row = next(item for item in settled["jobs"] if item["id"] == fresh["id"])
+        self.assertEqual(row["state"], "uncertain")
+        self.assertEqual(row["error"], "résultat non reçu après démarrage")
+        self.assertFalse(row["artifact_reserved"])
+        self.assertEqual(row["artifact"]["name"], "keep.bin")
+        self.assertEqual(row["dispatch_token"], "")
+        self.assertEqual(row["lease_until"], 0)
+        self.assertEqual(row["attempts"], running["attempts"])
+        self.assertEqual(row["started_at"], running["started_at"])
+        with self.assertRaises(ops.AgentOpError):
+            hq_jobs.complete(device_id, fresh["id"], ok=True, dispatch_token=taken["dispatch_token"])
+        with self.assertRaises(ops.AgentOpError):
+            hq_jobs.acknowledge_start(device_id, fresh["id"], taken["dispatch_token"])
+        with self.assertRaises(ops.AgentOpError):
+            hq_jobs.authorize_artifact(device_id, fresh["id"], "keep.bin", 4, taken["dispatch_token"])

@@ -28,6 +28,9 @@ JOBS_NAME = "hq_agent_jobs.json"
 MAX_JOBS = 400
 LEASE_SEC = 30
 READ_ATTEMPTS_MAX = 3
+# Extra seconds after timeout_sec for the companion to report a result.
+# The queue TTL is not this timer.
+RUN_GRACE_SEC = 15
 TERMINAL = frozenset({"succeeded", "failed", "cancelled", "expired", "rejected", "uncertain"})
 DISPATCH_RE = re.compile(r"^[0-9a-f]{32}$")
 ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -136,6 +139,8 @@ def _public(job: dict, *, full: bool = True) -> dict:
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "expires_at": job.get("expires_at"),
+        "started_at": job.get("started_at") or 0,
+        "run_deadline": job.get("run_deadline") or 0,
         "timeout_sec": job.get("timeout_sec"),
         "error": job.get("error") or "",
         "summary": (job.get("summary") or "")[:240],
@@ -213,11 +218,10 @@ def sweep() -> int:
                     _settle_lease(job, now, expires)
                     changed += 1
                 continue
-            if state == "running" and expires and now > expires:
-                job["state"] = "failed"
-                job["error"] = "délai dépassé"
-                job["updated_at"] = now
-                changed += 1
+            if state == "running":
+                if _running_deadline_passed(job, now):
+                    _settle_running(job, now)
+                    changed += 1
                 continue
             if state == "dispatched" and expires and now > expires:
                 job["state"] = "failed"
@@ -232,6 +236,53 @@ def sweep() -> int:
         if changed:
             _persist()
     return changed
+
+
+def run_deadline_at(started_at: float, timeout_sec: int) -> float:
+    """Execution window starts at confirmed start, not at queue time."""
+    try:
+        timeout = int(timeout_sec)
+    except (TypeError, ValueError):
+        timeout = 20
+    if isinstance(timeout_sec, bool) or timeout < 1:
+        timeout = 20
+    return float(started_at) + timeout + RUN_GRACE_SEC
+
+
+def _running_deadline_passed(job: dict, now: float) -> bool:
+    try:
+        deadline = float(job.get("run_deadline") or 0)
+    except (TypeError, ValueError):
+        deadline = 0
+    if not deadline:
+        try:
+            started = float(job.get("started_at") or 0)
+        except (TypeError, ValueError):
+            started = 0
+        if not started:
+            return False
+        deadline = run_deadline_at(started, int(job.get("timeout_sec") or 20))
+    return now > deadline
+
+
+def _settle_running(job: dict, now: float) -> None:
+    """The companion already started. A missing result is not proof of failure.
+
+    Read work can be reported as failed because nothing was supposed to change.
+    Any other risk becomes ``uncertain``. The job is not queued again.
+    An artifact already stored on the job is left in place.
+    """
+    risk = str(job.get("risk") or "")
+    job["dispatch_token"] = ""
+    job["lease_until"] = 0
+    job["artifact_reserved"] = False
+    job["updated_at"] = now
+    if risk == "read":
+        job["state"] = "failed"
+        job["error"] = "résultat non reçu"
+        return
+    job["state"] = "uncertain"
+    job["error"] = "résultat non reçu après démarrage"
 
 
 def _settle_lease(job: dict, now: float, expires: float) -> None:
@@ -443,8 +494,8 @@ def acknowledge_start(device_id: str, job_id: str, dispatch_token: str) -> dict:
             raise ops.AgentOpError("jeton de bail refusé")
         state = job.get("state")
         if state == "running":
-            if float(job.get("expires_at") or 0) < now:
-                raise ops.AgentOpError("travail expiré")
+            if _running_deadline_passed(job, now):
+                raise ops.AgentOpError("délai d'exécution dépassé")
             return _public(job)
         if state != "leased":
             raise ops.AgentOpError("travail non actif")
@@ -452,8 +503,10 @@ def acknowledge_start(device_id: str, job_id: str, dispatch_token: str) -> dict:
             raise ops.AgentOpError("bail expiré")
         if float(job.get("expires_at") or 0) < now:
             raise ops.AgentOpError("travail expiré")
+        timeout = int(job.get("timeout_sec") or 20)
         job["state"] = "running"
         job["started_at"] = now
+        job["run_deadline"] = run_deadline_at(now, timeout)
         job["updated_at"] = now
         _persist()
         snapshot = _public(job)
