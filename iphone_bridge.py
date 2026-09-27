@@ -4090,6 +4090,7 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="accueil" class="accueil-grid">
+    <div class="accueil-summaries">
     <section id="hq-banner" class="hq hq-banner state-ok">
       <div class="hq-banner-row">
         <button type="button" class="hq-disclosure" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
@@ -4119,6 +4120,7 @@ def render_app() -> bytes:
         <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
       </div>
     </section>
+    </div>
     <div class="accueil-main">
       <section class="hq hq-primary" aria-labelledby="envoyer-title">
         <div class="sec-head">

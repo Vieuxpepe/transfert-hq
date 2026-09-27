@@ -1,6 +1,5 @@
 /* Transfert HQ calendar. Mobile-first day, desktop-first week. */
 
-#hq-cal-home{grid-column:1 / -1}
 #wb-next strong{display:block;font-size:1.15rem}
 
 .hq-cal-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}

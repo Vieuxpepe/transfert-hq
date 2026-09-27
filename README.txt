@@ -35,6 +35,8 @@ Accueil
   HQ, sans réécrire ce choix. Recherche reste visible à côté du résumé.
   Le prochain événement reste dans l'en-tête d'Aujourd'hui. Un
   rafraîchissement ne rouvre pas une carte refermée.
+  À partir de 900px, ces deux cartes sont côte à côte. En dessous,
+  elles restent l'une sous l'autre.
   Ctrl+K ou « / » (hors champ) ouvre la palette. Elle ne lance qu'une cible
   allowlist (dossier, favori, scène, action, commande par id, fiche appareil).
 

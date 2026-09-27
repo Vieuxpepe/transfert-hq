@@ -1,6 +1,9 @@
 /* Transfert HQ v7 — Mission Control layer. Calm, dense, French UI. */
 
-#hq-banner{grid-column:1 / -1}
+.accueil-summaries{min-width:0}
+@media (min-width:900px){
+  body[data-view="accueil"] .accueil-summaries{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;grid-column:1 / -1;align-items:start}
+}
 .hq-banner{border-left:3px solid var(--ok,#3dbe7a)}
 .hq-banner.state-ok{border-left-color:var(--ok,#3dbe7a)}
 .hq-banner.state-warning{border-left-color:var(--warn,#e6b450)}
