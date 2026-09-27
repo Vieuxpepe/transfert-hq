@@ -5,6 +5,7 @@ No Windows desktop, no live Tailscale, no public listener.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -926,54 +927,145 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn('AGENT_STATE_DIR = ".hq-agent-state"', state_src)
         self.assertIn("dest.parent", state_src)
         self.assertIn('.tmp"', state_src)
+        companion_src = (root / "hq_companion.py").read_text(encoding="utf-8")
+        artifact_fn = companion_src.split("def _accept_artifact", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("AgentArtifacts", artifact_fn)
+        self.assertNotIn("agent_state_dir", artifact_fn)
+        self.assertIn("agent_state_dir", companion_src)
+        auth = (root / "hq_companion.py").read_text(encoding="utf-8")
+        self.assertIn("process-local", auth)
+        self.assertIn("90", auth)
+
+    def test_tree_and_state_acl_owner_and_least_privilege(self):
+        root = Path(__file__).resolve().parents[1]
         tree = (root / "install_hq_tree_acl.ps1").read_text(encoding="utf-8")
+        state = (root / "install_hq_state_acl.ps1").read_text(encoding="utf-8")
         grants = [line for line in tree.splitlines() if "Add-AllowRule" in line]
         self.assertTrue(grants)
-        self.assertFalse(any("Everyone" in line for line in grants))
-        self.assertFalse(any("Users" in line for line in grants))
+        self.assertFalse(any("Everyone" in line or "Users" in line for line in grants))
         self.assertNotIn("/deny", tree)
+        self.assertNotIn("/deny", state)
+        self.assertIn("SetOwner", tree)
+        self.assertIn("SetOwner", state)
+        self.assertIn('NTAccount("BUILTIN", "Administrators")', tree)
+        self.assertIn('NTAccount("BUILTIN", "Administrators")', state)
+        self.assertIn("S-1-5-32-544", tree)
+        self.assertIn("S-1-5-32-544", state)
+        self.assertIn("S-1-1-0", tree)
+        self.assertIn("S-1-1-0", state)
+        self.assertNotIn("SetOwner($PlannerIdentity", tree.replace(" ", ""))
+        self.assertNotIn("SetOwner($PlannerIdentity", state.replace(" ", ""))
         planner_grants = [line for line in grants if "PlannerIdentity" in line]
-        self.assertEqual(planner_grants, [line for line in planner_grants if "ReadAndExecute" in line and "$inheritChildren" in line])
-        self.assertEqual(len(planner_grants), 1)
-        for word in ("Modify", "FullControl", "Write"):
-            self.assertNotIn(word, planner_grants[0])
+        self.assertEqual(len(planner_grants), 2)
+        traverse = [line for line in planner_grants if "$plannerTraverse" in line and "$noInherit" in line]
+        explicit = [line for line in planner_grants if '"ReadAndExecute"' in line and "$noInherit" in line]
+        self.assertEqual(len(traverse), 1)
+        self.assertEqual(len(explicit), 1)
+        for line in planner_grants:
+            self.assertNotIn("$inheritChildren", line)
+            for word in ("Modify", "FullControl", "Write"):
+                self.assertNotIn(word, line)
         controller_grants = [line for line in grants if "ControllerIdentity" in line]
         self.assertTrue(controller_grants)
         self.assertTrue(all("Modify" in line for line in controller_grants))
         self.assertTrue(any("$inheritChildren" in line for line in controller_grants))
-        sensitive = tree.split("sensitive files:", 1)[1].split("code integrity:", 1)[0]
+        client_names = tree.split("$PlannerClientFiles = @(", 1)[1].split(")", 1)[0]
+        names = [part.strip().strip('"') for part in client_names.split(",") if part.strip()]
+        self.assertEqual(names, ["hqctl.py", "hq_state.py"])
+        imported = set()
+        for node in ast.walk(ast.parse((root / "hqctl.py").read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        stdlib = {"__future__", "argparse", "json", "os", "re", "sys", "time", "urllib", "pathlib"}
+        self.assertEqual(imported - stdlib, {"hq_state"})
+        sensitive = tree.split("sensitive files:", 1)[1].split("planner client files:", 1)[0]
         self.assertIn("bridge_config.json", sensitive)
         self.assertIn("bridge_sessions.json", sensitive)
         self.assertNotIn("PlannerIdentity", sensitive)
         self.assertNotIn("ReadAndExecute", sensitive)
+        client = tree.split("planner client files:", 1)[1].split("code integrity:", 1)[0]
+        self.assertIn("hqctl.py", client)
+        self.assertIn("hq_state.py", client)
+        self.assertNotIn("iphone_bridge.py", client)
+        self.assertNotIn("$inheritChildren", client)
+        code = tree.split("code integrity:", 1)[1]
+        self.assertNotIn("Add-AllowRule", code)
         for name in (
             "iphone_bridge.py",
             "cc_ext.py",
             "hq_companion.py",
             "hq_jobs.py",
             "hq_planner.py",
-            "hq_state.py",
             "hq_agent_protocol.py",
             "hq_agent_ops.py",
             "start_bridge_hidden.vbs",
             "install_autostart.ps1",
         ):
             self.assertIn(name, tree)
+            self.assertNotIn(name, client)
+        for name in (
+            "hq_vapid.json",
+            "hq_push_subscriptions.json",
+            "hq_ssh",
+            "hq_ssh.ppk",
+            "agent_config.json",
+            "id_rsa",
+            "id_ed25519",
+            ".pem",
+        ):
+            self.assertIn(name, tree)
+            self.assertFalse(any(name in line for line in grants))
+        self.assertIn(".git", tree)
+        self.assertNotIn('.Name -eq ".git"', tree)
+        self.assertNotIn("-eq '.git'", tree)
+        for banned in (
+            "Set-Content",
+            "Add-Content",
+            "Out-File",
+            "Remove-Item",
+            "Clear-Content",
+            "git add",
+            "git commit",
+            "git config",
+            "Register-ScheduledTask",
+            "Unregister-ScheduledTask",
+            "Set-ScheduledTask",
+            "schtasks",
+        ):
+            self.assertNotIn(banned, tree)
+            self.assertNotIn(banned, state)
+        self.assertIn("TransfertBridge", tree)
+        self.assertIn("ne la modifie pas", tree)
         self.assertIn(".hq-agent-state", tree)
         self.assertIn("install_hq_state_acl.ps1", tree)
         self.assertIn("hq_agents.json", tree)
         self.assertIn("hq_planner.json", tree)
         self.assertFalse(any("hq_agents.json" in line or "hq_agent_jobs.json" in line for line in grants))
-        for banned in ("Register-ScheduledTask", "Unregister-ScheduledTask", "Set-ScheduledTask", "schtasks", "Remove-Item", "Set-Content"):
-            self.assertNotIn(banned, tree)
-        self.assertIn("TransfertBridge", tree)
-        self.assertIn("ne la modifie pas", tree)
-        lowered = tree.lower()
-        self.assertNotIn("password", lowered)
-        self.assertNotIn("device_secret", lowered)
+        apply = tree.split("# apply:", 1)[1]
+        self.assertLess(apply.index("Arbre non durci"), apply.index("Save-SecurityDescriptor"))
+        finder = tree.split("function Find-ReparsePoints", 1)[1].split("function ", 1)[0]
+        self.assertIn("ReparsePoint", finder)
+        self.assertNotIn("-Recurse", finder)
+        self.assertIn("continue", finder)
+        save = tree.split("function Save-SecurityDescriptor", 1)[1].split("function ", 1)[0]
+        self.assertLess(save.index("WhatIfPreference"), save.index("Set-Acl"))
+        self.assertEqual(tree.count("Set-Acl"), 1)
+        state_save = state.split("function Save-SecurityDescriptor", 1)[1].split("function ", 1)[0]
+        self.assertLess(state_save.index("WhatIfPreference"), state_save.index("Set-Acl"))
+        self.assertEqual(state.count("Set-Acl"), 1)
+        created = state.split("PRÉVU créer répertoire:", 1)[1].split("Get-Acl", 1)[0]
+        self.assertLess(created.index("WhatIfPreference"), created.index("New-Item"))
+        self.assertIn("ReparsePoint", state)
+        self.assertIn("Etat privé non durci", state)
         self.assertIn("SupportsShouldProcess", tree)
         self.assertIn("élévation requise", tree)
-        self.assertNotIn("secret", lowered)
+        for blob in (tree, state):
+            lowered = blob.lower()
+            self.assertNotIn("password", lowered)
+            self.assertNotIn("device_secret", lowered)
+            self.assertNotIn("secret", lowered)
         mask = tree.split("$writeBits = (", 1)[1].split(")", 1)[0]
         mask_rights = []
         for part in mask.split("FileSystemRights]::")[1:]:
@@ -999,14 +1091,14 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertEqual(rights["ReadAndExecute"] & write_mask, 0)
         self.assertNotEqual(rights["Modify"] & write_mask, 0)
         self.assertNotEqual(rights["FullControl"] & write_mask, 0)
-        companion_src = (root / "hq_companion.py").read_text(encoding="utf-8")
-        artifact_fn = companion_src.split("def _accept_artifact", 1)[1].split("\ndef ", 1)[0]
-        self.assertIn("AgentArtifacts", artifact_fn)
-        self.assertNotIn("agent_state_dir", artifact_fn)
-        self.assertIn("agent_state_dir", companion_src)
-        auth = (root / "hq_companion.py").read_text(encoding="utf-8")
-        self.assertIn("process-local", auth)
-        self.assertIn("90", auth)
+        traverse_block = tree.split("$plannerTraverse = (", 1)[1].split(")", 1)[0]
+        traverse_rights = []
+        for part in traverse_block.split("FileSystemRights]::")[1:]:
+            traverse_rights.append(part.split()[0].split("-bor")[0].strip())
+        self.assertEqual(
+            traverse_rights,
+            ["Traverse", "ReadAttributes", "ReadPermissions", "Synchronize"],
+        )
 
     def test_running_result_loss_does_not_claim_failure(self):
         support = list(hq_devices.DEFAULT_AGENT_POLICY) + ["files_write", "power_shutdown"]

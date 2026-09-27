@@ -73,42 +73,64 @@ Companions (contrôle des autres PC)
   L'écriture atomique crée <nom>.tmp dans ce répertoire : le fichier
   hérite de l'ACL du répertoire avant os.replace.
 
-  Arbre du pont (code et données ordinaires), en élevé, avant l'état privé.
-  Le planificateur a ReadAndExecute héritable. Il n'a pas Modify.
+  Arbre du pont, en élevé, avant l'état privé. Le propriétaire visé est
+  BUILTIN\Administrators : un objet laissé à Everyone peut réécrire sa DACL.
+  Le planificateur n'est jamais propriétaire. Sur StateDir il a seulement
+  le droit de traverser, non héritable. Les fichiers inconnus restent donc
+  privés du contrôleur (Modify héritable). ReadAndExecute explicite, et
+  seulement ça, pour hqctl.py et hq_state.py (imports audités : bibliothèque
+  standard + hq_state). Invocation : py -3 -B D:\Transfert\hqctl.py
   bridge_config.json et bridge_sessions.json n'héritent pas : pas de
-  lecture planificateur. .hq-agent-state n'est pas touché ici.
+  lecture planificateur. Les autres fichiers d'identifiants (hq_vapid.json,
+  clés, agent_config.json) restent privés parce que l'accès planificateur
+  n'est pas hérité. .hq-agent-state n'est pas touché ici.
+  .git est inclus : propriétaire et ACL seulement, octets / refs / config /
+  hooks / index inchangés. Un point de réparation est signalé par son chemin
+  et le script s'arrête avant toute écriture, sans suivre la cible.
   La tâche TransfertBridge n'est pas réenregistrée ; son principal reste
   le compte contrôleur.
-    powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 `
+  -WhatIf ne change ni le propriétaire, ni l'ACL, ni les octets :
+    powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 -WhatIf `
       -StateDir D:\Transfert `
       -ControllerIdentity "VIEUXPEEPEE\autm_" `
       -PlannerIdentity "VIEUXPEEPEE\hq-planner"
-  Puis, après un premier démarrage (répertoire privé et jeton présents),
-  le même StateDir et les mêmes identités :
-    powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 `
+    powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 -WhatIf `
       -StateDir D:\Transfert `
       -ControllerIdentity "VIEUXPEEPEE\autm_" `
       -PlannerIdentity "VIEUXPEEPEE\hq-planner"
-  Le répertoire donne FullControl héritable à SYSTEM et Administrators,
+  Puis, sans -WhatIf, le même StateDir et les mêmes identités. L'état privé
+  après un premier démarrage (répertoire et jeton présents).
+  Le répertoire privé donne FullControl héritable à SYSTEM et Administrators,
   Modify héritable au contrôleur, et au planificateur seulement le droit
-  de traverser (non héritable). hq_planner.json reçoit en plus Read
-  explicite pour le planificateur, pas Modify. hq_agents.json,
-  hq_agent_jobs.json et les *.tmp n'ont pas de grant planificateur.
+  de traverser (non héritable). Propriétaire : BUILTIN\Administrators.
+  hq_planner.json reçoit en plus Read explicite pour le planificateur.
+  hq_agents.json, hq_agent_jobs.json et les *.tmp n'ont pas de grant
+  planificateur. Un *.tmp créé ensuite peut appartenir au contrôleur :
+  le planificateur n'en est pas propriétaire.
   hqctl, sous le compte planificateur, lit
   <pont>\.hq-agent-state\hq_planner.json par défaut. Le script refuse
   deux identités identiques, ou un planificateur Administrator / SYSTEM.
   Un planificateur membre du groupe Administrateurs peut quand même lire
   l'état : ne pas appeler ça une séparation.
 
+  Contrat après application, pour le planificateur : traverser D:\Transfert,
+  lire/exécuter hqctl.py et hq_state.py, lire hq_planner.json, joindre
+  127.0.0.1:8766. Pas lister ni lire le reste de l'arbre, pas lire la config,
+  les sessions, les agents, les travaux, vapid ou les clés, pas modifier le
+  code, .git, une DACL via un propriétaire Everyone, ni TransfertBridge,
+  pas approuver un travail.
+
   Vérification Windows des ACL (sur le pont, avant d'enrôler un second PC) :
   1. Démarrer HQ une fois pour créer .hq-agent-state et le jeton.
-  2. Lancer install_hq_tree_acl.ps1, puis install_hq_state_acl.ps1, avec les
-     deux identités réelles. Le second script seul durcit .hq-agent-state.
-     Get-Acl sur iphone_bridge.py : planificateur ReadAndExecute, pas Modify.
+  2. Lancer d'abord les deux scripts avec -WhatIf, puis sans -WhatIf.
+     Le second script seul durcit .hq-agent-state.
+     Get-Acl : propriétaire BUILTIN\Administrators, plus Everyone.
+     Get-Acl sur hqctl.py : planificateur ReadAndExecute.
+     Get-Acl sur iphone_bridge.py et sur .git : pas de lecture planificateur.
      Get-Acl sur bridge_config.json et bridge_sessions.json : pas de lecture
      planificateur. Get-ScheduledTask TransfertBridge : principal inchangé.
-  3. Get-Acl sur le répertoire, hq_agents.json, hq_agent_jobs.json,
-     hq_planner.json.
+  3. Get-Acl sur le répertoire privé, hq_agents.json, hq_agent_jobs.json,
+     hq_planner.json. Propriétaire BUILTIN\Administrators.
   4. Déclencher une écriture (créer puis ignorer un jeton d'enrôlement).
   5. Get-Acl sur hq_agents.json : toujours contrôleur seulement, après
      le remplacement atomique.
@@ -500,11 +522,14 @@ SECURITY INVARIANTS
       companion Windows ne l'exécute que si destructive_power_enabled est vrai.
       Presse-papiers désactivé tant que clipboard_enabled n'est pas vrai.
       Le planificateur n'est pas sur le port public. hqctl ne peut pas
-      approuver. Deux comptes distincts et l'allowlist
-      install_hq_state_acl.ps1 sont nécessaires pour une séparation OS.
+      approuver. Deux comptes distincts, install_hq_tree_acl.ps1 (propriétaire
+      BUILTIN\Administrators, traverse non héritable, ReadAndExecute seulement
+      sur hqctl.py et hq_state.py) puis install_hq_state_acl.ps1 sont
+      nécessaires pour une séparation OS.
       Un même compte, ou un planificateur administrateur, peut lire les secrets.
       Les fichiers privés sont sous .hq-agent-state ; l'ACL durable est celle
-      du répertoire, héritée par les *.tmp avant os.replace.
+      du répertoire, héritée par les *.tmp avant os.replace. Le propriétaire
+      de ce répertoire est BUILTIN\Administrators, pas Everyone.
       Artifact : autorisation avant écriture, réserve disque, pas d'orphelin.
       Bail avant start, puis run_deadline. Un résultat manquant après start
       n'est failed que pour une lecture. Le reste est uncertain, sans relance.
