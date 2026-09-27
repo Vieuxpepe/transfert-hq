@@ -802,7 +802,7 @@
     const root = sheet("hq-cal-editor");
     const card = h("form", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-label": "Événement" });
     card.appendChild(h("h3", { text: item.id ? "Modifier" : "Nouvel événement" }));
-    card.appendChild(field("Titre", h("input", { id: "cal-title", name: "title", maxlength: "120", required: "required", value: item.title || "" })));
+    card.appendChild(field("Titre", h("input", { id: "hq-cal-title", name: "title", maxlength: "120", required: "required", value: item.title || "" })));
     const allDay = h("input", { id: "cal-all-day", type: "checkbox" });
     allDay.checked = !!item.all_day;
     const allWrap = h("label", { text: "" });
@@ -834,6 +834,7 @@
     syncTypes();
     card.appendChild(field("Début", start));
     card.appendChild(field("Fin", end));
+    card.appendChild(h("p", { class: "hint", text: "Journée entière : la date de fin est exclue (le lendemain pour un seul jour)." }));
     const category = h("select", { id: "cal-category" });
     CATS.forEach(([id, label]) => {
       const option = h("option", { value: id, text: label });
@@ -859,7 +860,7 @@
       saveEditor(item, { allDay, start, end, category });
     });
     root.appendChild(card);
-    const title = card.querySelector("#cal-title");
+    const title = card.querySelector("#hq-cal-title");
     if (title) title.focus();
   }
 
@@ -912,7 +913,7 @@
   }
 
   async function saveEditor(item, refs) {
-    const title = document.getElementById("cal-title");
+    const title = document.getElementById("hq-cal-title");
     const notes = document.getElementById("cal-notes");
     const location = document.getElementById("cal-location");
     const scene = document.getElementById("cal-scene");
