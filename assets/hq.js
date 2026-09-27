@@ -5,11 +5,17 @@
 
   function trapFocus(root) {
     if (!root) return function () {};
+    function visible(el) {
+      if (!el || el.disabled || el.getAttribute("aria-hidden") === "true") return false;
+      if (el.closest("[hidden]")) return false;
+      const style = window.getComputedStyle(el);
+      return style.display !== "none" && style.visibility !== "hidden";
+    }
     function onKey(ev) {
       if (ev.key !== "Tab") return;
       const nodes = Array.prototype.filter.call(
         root.querySelectorAll("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
-        (el) => !el.disabled && el.getAttribute("aria-hidden") !== "true"
+        visible
       );
       if (!nodes.length) return;
       const first = nodes[0];
@@ -242,17 +248,17 @@
   }
 
   async function openDevice(id) {
-    if (!id || typeof api !== "function") return;
+    if (!id || typeof api !== "function") return false;
     const dlg = $("#hq-device-dialog");
     const body = $("#hq-device-body");
     const title = $("#hq-device-title");
-    if (!dlg || !body) return;
+    if (!dlg || !body) return false;
     let data;
     try {
       data = await api("/api/device?id=" + encodeURIComponent(id));
     } catch (e) {
       if (typeof toast === "function") toast(e.message, "err");
-      return;
+      return false;
     }
     const device = data.device || {};
     const gates = data.gates || {};
@@ -310,59 +316,163 @@
         if (opener && opener.focus && document.contains(opener)) opener.focus();
       }, { once: true });
     }
+    return true;
   }
 
+  const PALETTE_RECENTS_KEY = "hq_palette_recents";
   let paletteHits = [];
+  let paletteGroups = [];
+  let paletteQuery = "";
   let paletteIndex = 0;
   let paletteOpener = null;
   let paletteRelease = null;
 
+  function readRecents() {
+    let raw = [];
+    try {
+      raw = JSON.parse(localStorage.getItem(PALETTE_RECENTS_KEY) || "[]");
+    } catch (_) {
+      raw = [];
+    }
+    return typeof hqSanitizeRecents === "function" ? hqSanitizeRecents(raw, 6) : [];
+  }
+
+  function writeRecents(items) {
+    const clean = typeof hqSanitizeRecents === "function" ? hqSanitizeRecents(items, 6) : [];
+    try {
+      localStorage.setItem(PALETTE_RECENTS_KEY, JSON.stringify(clean));
+    } catch (_) {}
+  }
+
+  function rememberRecent(hit) {
+    const entry = typeof hqPaletteRecentEntry === "function" ? hqPaletteRecentEntry(hit) : null;
+    if (!entry) return;
+    const rest = readRecents().filter((item) => !(item.kind === entry.kind && item.id === entry.id));
+    writeRecents([entry].concat(rest));
+  }
+
+  function forgetRecent(hit) {
+    if (!hit) return;
+    writeRecents(readRecents().filter((item) => !(item.kind === hit.kind && item.id === hit.id)));
+  }
+
+  function favoritePaletteHits() {
+    let names = [];
+    if (typeof window.hqFavoriteFolders === "function") names = window.hqFavoriteFolders() || [];
+    const seen = new Set();
+    const hits = [];
+    names.forEach((name) => {
+      const id = String(name || "");
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      hits.push({ kind: "favorite", id: id, label: id, hint: "Favori" });
+    });
+    return hits.slice(0, 6);
+  }
+
+  function paletteMark(kind) {
+    const paths = {
+      folder: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
+      favorite: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="m12 4.2 1.7 3.5 3.9.6-2.8 2.7.7 3.8L12 13.1 8.5 15l.7-3.8-2.8-2.7 3.9-.6z"/>',
+      device: '<rect x="8" y="3" width="8" height="18" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M11 18.5h2"/>',
+      scene: '<path fill="currentColor" d="M8 6.2v11.6L17.2 12z"/>',
+      action: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M13 3.5 6.2 13H11l-.8 7.5L17.8 11H13z"/>',
+      terminal: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/>',
+    };
+    return `<svg class="palette-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[kind] || paths.folder}</svg>`;
+  }
+
+  function paletteOption(hit, index) {
+    const on = index === paletteIndex;
+    return `<li id="hq-palette-opt-${index}" role="option" data-i="${index}" aria-selected="${on ? "true" : "false"}" class="${on ? "active" : ""}">${paletteMark(hit.kind)}<span class="palette-copy"><span class="palette-label">${esc(hit.label || hit.id)}</span><span class="palette-kind">${esc(hit.hint || hit.kind || "")}</span></span></li>`;
+  }
+
   function renderPalette() {
     const list = $("#hq-palette-list");
     if (!list) return;
-    list.setAttribute("role", "listbox");
-    list.innerHTML = paletteHits.length
-      ? paletteHits
-          .map(
-            (hit, i) =>
-              `<li id="hq-palette-opt-${i}" role="option" data-i="${i}" aria-selected="${i === paletteIndex ? "true" : "false"}" class="${i === paletteIndex ? "active" : ""}"><span>${esc(hit.label || hit.id)}</span><span class="palette-kind">${esc(hit.hint || hit.kind || "")}</span></li>`
-          )
-          .join("")
-      : '<li class="hint">Aucun résultat.</li>';
     const input = $("#hq-palette-input");
+    if (!paletteHits.length) {
+      list.removeAttribute("role");
+      list.innerHTML = paletteQuery
+        ? `<p class="palette-empty">Aucun résultat pour « ${esc(paletteQuery)} »</p>`
+        : `<p class="palette-empty">Tape un dossier, une scène ou une action.</p>`;
+      if (input) input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    list.setAttribute("role", "listbox");
+    const many = paletteGroups.length > 1;
+    list.innerHTML = paletteGroups
+      .map((group) => {
+        const items = group.items.map((row) => paletteOption(row.hit, row.index)).join("");
+        return `<div class="palette-group${many ? "" : " is-solo"}" role="group" aria-label="${esc(group.label)}"><p class="palette-group-label">${esc(group.label)}</p><ul>${items}</ul></div>`;
+      })
+      .join("");
     const active = list.querySelector("li.active");
     if (input) {
       input.setAttribute("aria-controls", "hq-palette-list");
       if (active) input.setAttribute("aria-activedescendant", active.id);
       else input.removeAttribute("aria-activedescendant");
     }
+    if (active && active.scrollIntoView) {
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      active.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+    }
     list.querySelectorAll("li[data-i]").forEach((li) => {
-      li.addEventListener("click", () => runPalette(paletteHits[Number(li.dataset.i)]));
+      li.addEventListener("click", () => {
+        runPalette(paletteHits[Number(li.dataset.i)]).catch((err) => {
+          if (typeof toast === "function") toast(err.message, "err");
+        });
+      });
     });
   }
 
-  async function queryPalette(q) {
-    if (typeof api !== "function") return;
-    const data = await api("/api/palette?q=" + encodeURIComponent(q || "") + "&limit=20");
-    paletteHits = data.hits || [];
+  function showPaletteHome() {
+    const recents = readRecents();
+    const taken = new Set(recents.map((item) => item.kind + "\0" + item.id));
+    const favorites = favoritePaletteHits().filter((item) => !taken.has("favorite\0" + item.id) && !taken.has("folder\0" + item.id));
+    const hits = recents.concat(favorites);
+    const groups = [];
+    if (recents.length) groups.push({ label: "Récents", items: recents.map((hit, index) => ({ hit: hit, index: index })) });
+    if (favorites.length) {
+      groups.push({
+        label: "Favoris",
+        items: favorites.map((hit, index) => ({ hit: hit, index: recents.length + index })),
+      });
+    }
+    paletteHits = hits;
+    paletteGroups = groups;
+    paletteQuery = "";
     paletteIndex = 0;
     renderPalette();
   }
 
-  async function runPalette(hit) {
-    if (!hit) return;
-    closePalette();
+  async function queryPalette(q) {
+    const query = String(q || "").trim();
+    if (!query) {
+      showPaletteHome();
+      return;
+    }
+    if (typeof api !== "function") return;
+    const data = await api("/api/palette?q=" + encodeURIComponent(query) + "&limit=20");
+    const hits = data.hits || [];
+    paletteHits = hits;
+    paletteGroups = typeof hqGroupPaletteHits === "function"
+      ? hqGroupPaletteHits(hits)
+      : [{ label: "Résultats", items: hits.map((hit, index) => ({ hit: hit, index: index })) }];
+    paletteQuery = query;
+    paletteIndex = 0;
+    renderPalette();
+  }
+
+  async function dispatchPalette(hit) {
     if (hit.kind === "folder" || hit.kind === "favorite") {
-      if (typeof navigate === "function") navigate(hit.id);
+      if (typeof navigate === "function") await navigate(hit.id);
       else if (typeof setView === "function") setView("fichiers");
-      return;
+      return "ok";
     }
-    if (hit.kind === "device") {
-      openDevice(hit.id);
-      return;
-    }
+    if (hit.kind === "device") return (await openDevice(hit.id)) ? "ok" : "fail";
     if (hit.kind === "scene") {
-      if (!confirm("Lancer la scène « " + (hit.label || hit.id) + " » ?")) return;
+      if (!confirm("Lancer la scène « " + (hit.label || hit.id) + " » ?")) return "skip";
       const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
       await busy("Lancement…", () => api("/api/scene", {
         method: "POST",
@@ -370,10 +480,10 @@
         body: JSON.stringify({ id: hit.id }),
       }));
       if (typeof toast === "function") toast("Scène lancée");
-      return;
+      return "ok";
     }
     if (hit.kind === "action") {
-      if (!confirm("Lancer « " + (hit.label || hit.id) + " » sur le PC ?")) return;
+      if (!confirm("Lancer « " + (hit.label || hit.id) + " » sur le PC ?")) return "skip";
       const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
       await busy("Action…", () => api("/api/pc/action", {
         method: "POST",
@@ -381,10 +491,10 @@
         body: JSON.stringify({ id: hit.id }),
       }));
       if (typeof toast === "function") toast("Action lancée");
-      return;
+      return "ok";
     }
     if (hit.kind === "terminal") {
-      if (!confirm("Exécuter la commande allowlist « " + (hit.label || hit.id) + " » ?")) return;
+      if (!confirm("Exécuter la commande allowlist « " + (hit.label || hit.id) + " » ?")) return "skip";
       const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
       const data = await busy("Exécution…", () => api("/api/terminal", {
         method: "POST",
@@ -395,7 +505,23 @@
       if (out) out.textContent = (data.stdout || "") + (data.stderr || "");
       if (typeof setView === "function") setView("ops");
       if (typeof toast === "function") toast(data.ok ? "Commande terminée" : "Commande en erreur");
+      return "ok";
     }
+    return "fail";
+  }
+
+  async function runPalette(hit) {
+    if (!hit) return;
+    closePalette();
+    let outcome = "skip";
+    try {
+      outcome = await dispatchPalette(hit);
+    } catch (err) {
+      forgetRecent(hit);
+      throw err;
+    }
+    if (outcome === "ok") rememberRecent(hit);
+    else if (outcome === "fail") forgetRecent(hit);
   }
 
   function openPalette() {
@@ -879,6 +1005,7 @@
           closePalette();
           return;
         }
+        if (!paletteHits.length) return;
         if (ev.key === "ArrowDown") {
           paletteIndex = Math.min(paletteHits.length - 1, paletteIndex + 1);
           renderPalette();
@@ -902,8 +1029,15 @@
         return;
       }
       if ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")) {
-        if (typingTarget(ev.target)) return;
+        const box = $("#hq-palette");
+        const inPalette = !!(ev.target && ev.target.id === "hq-palette-input");
+        if (typingTarget(ev.target) && !inPalette) return;
+        if (document.querySelector("dialog[open]")) return;
         ev.preventDefault();
+        if (box && !box.hidden) {
+          $("#hq-palette-input")?.focus();
+          return;
+        }
         openPalette();
         return;
       }

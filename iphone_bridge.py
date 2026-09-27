@@ -2838,6 +2838,7 @@ function setupQR() {
 
 let presenceId = localStorage.getItem('transfert_presence_id') || '';
 let favoritesCache = [];
+window.hqFavoriteFolders = () => favoritesCache.slice();
 let hqTimer = null;
 
 function deviceName() {
@@ -3003,7 +3004,7 @@ function renderRecents() {
       rows.push({
         sort: x.at || 0,
         html: `<li data-kind="activity"><strong>${escapeHtml(x.message || '')}</strong>
-          <div class="meta">activité · ${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
+          <div class="meta">opération · ${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
       });
     }
   }
@@ -3997,6 +3998,7 @@ document.addEventListener('DOMContentLoaded', () => {{
   setInterval(refreshWall, 6000);
 }});
 </script>
+<script src="/assets/hq-features.js"></script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 </body></html>"""
@@ -4100,7 +4102,7 @@ def render_app() -> bytes:
           <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
           <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
         </button>
-        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action.">Recherche</button>
+        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action. Ctrl+K ou Cmd+K."><span>Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
       </div>
       <div id="hq-attention-panel" class="hq-disclosure-panel" hidden>
         <ul class="hq-list" id="hq-attention"></ul>
@@ -4195,7 +4197,7 @@ def render_app() -> bytes:
         <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
           <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
           <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
-          <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Activité</button>
+          <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Opérations</button>
         </div>
         <ul class="hq-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
         <ul class="hq-list" id="hq-transfers" hidden></ul>
@@ -4529,6 +4531,7 @@ def render_app() -> bytes:
 </div>
 <div id="toasts" aria-live="polite" aria-relevant="additions"></div>
 <script>{APP_JS}</script>
+<script src="/assets/hq-features.js"></script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
@@ -4539,9 +4542,11 @@ def render_app() -> bytes:
   </form>
 </dialog>
 <div id="hq-palette" class="palette" hidden>
-  <div class="palette-card" role="dialog" aria-modal="true" aria-label="Recherche HQ">
+  <div class="palette-card" role="dialog" aria-modal="true" aria-labelledby="hq-palette-title">
+    <p id="hq-palette-title" class="palette-title">Recherche HQ</p>
     <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off" aria-autocomplete="list" aria-controls="hq-palette-list"/>
-    <ul id="hq-palette-list"></ul>
+    <div id="hq-palette-list"></div>
+    <p class="palette-foot">↑ ↓ naviguer · Entrée ouvrir · Échap fermer</p>
   </div>
 </div>
 </body></html>"""

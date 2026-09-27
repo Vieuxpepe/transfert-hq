@@ -27,7 +27,7 @@ et n'importent pas le serveur HTTP (pas de cycle).
 Accueil
 -------
   État HQ (ok / attention / critique) → aujourd'hui → envoyer → appareils
-  → activité récente (filtres Envois / Activité).
+  → activité récente (filtres Envois / Opérations).
   Le journal technique reste disponible sous Plus / Système, fermé
   par défaut. Les événements ne sont pas supprimés.
   Les cartes HQ et Aujourd'hui sont repliées par défaut (localStorage
