@@ -1259,11 +1259,31 @@ def _volume_present(path: Path) -> bool:
         return False
 
 
+def config_flag(value: Any) -> bool:
+    """Strict boolean for hand-edited JSON: true/1/"true"/"oui"… only ("false" stays False)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "oui", "on")
+    return False
+
+
+def backup_auto_paused() -> bool:
+    """bridge_config.json "backup_auto_paused": true suspends every automatic backup
+    (monitor schedule, automation schedules/rules/scenes). Manual POST /api/backup still runs."""
+    return config_flag(_cfg().get("backup_auto_paused", False))
+
+
 def backup_target_status() -> dict:
     """Is the configured backup destination usable? Never falls back to another drive."""
     raw = str(_cfg().get("backup_dir") or DEFAULT_BACKUP_DIR)
     dest = Path(raw)
     status = {"dir": raw, "volume": volume_label(dest), "default": raw == DEFAULT_BACKUP_DIR}
+    status["auto_paused"] = backup_auto_paused()
+    if status["auto_paused"]:
+        status["note"] = "Backups automatiques en pause (backup_auto_paused) — backup manuel seulement"
     if not dest.is_absolute():
         status.update(ok=False, error=f"backup_dir doit être un chemin absolu ({raw})")
     elif not _volume_present(dest):
@@ -1277,8 +1297,11 @@ def backup_target_status() -> dict:
     return status
 
 
-def run_backup(*, force: bool = False) -> dict:
+def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
+    """automatic=True for every unattended trigger; skipped (no target access) while paused."""
     global _last_backup, _backup_alerted
+    if automatic and backup_auto_paused():
+        return {"ok": True, "skipped": True, "paused": True, "reason": "Backups automatiques en pause (backup_auto_paused)"}
     cfg = _cfg()
     every_h = float(cfg.get("backup_every_hours") or 24)
     now = time.time()
@@ -1325,10 +1348,13 @@ def run_backup(*, force: bool = False) -> dict:
 
 def maybe_backup() -> None:
     """Scheduled backup. A failure raises one visible alert (not one per monitor tick);
-    it re-arms after the next successful backup."""
+    it re-arms after the next successful backup. Paused (backup_auto_paused): nothing at all
+    is attempted, no target is touched and no alert is raised; health reports the pause."""
     global _backup_alerted
+    if backup_auto_paused():
+        return
     try:
-        run_backup(force=False)
+        run_backup(force=False, automatic=True)
     except Exception as e:
         first = not _backup_alerted
         _backup_alerted = True

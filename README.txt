@@ -457,6 +457,41 @@ Disque surveillé et backups
   backup planifié (réarmée après un backup réussi), avertissement au démarrage,
   et /api/health → backup.ok=false. Choisir un autre disque : régler backup_dir.
 
+  Pause des backups automatiques : "backup_auto_paused": true
+    Suspend TOUS les backups automatiques (planning backup_every_hours du pont,
+    et les étapes/actions « backup » des planifications, règles et scènes
+    d'automatisation) : aucune écriture, aucun accès à backup_dir, aucune
+    alerte répétée. Le bouton « Faire une sauvegarde » (POST /api/backup) reste
+    disponible et échoue toujours clairement si la cible est inutilisable.
+    Visible : /api/health → backup.auto_paused=true (+ note), /api/status →
+    backup_auto_paused=true, ligne santé « Backup auto en pause », et au
+    démarrage « Backup : PAUSE (backup_auto_paused) ». Défaut : false.
+    Les backups déjà présents sur D: ne sont ni déplacés ni supprimés.
+
+    Sur le contrôleur (à faire soi-même) :
+      1. Arrêter le pont (une sauvegarde de config par le pont en marche
+         écraserait une modification faite à la main pendant qu'il tourne).
+      2. Dans C:\Transfert\bridge_config.json, ajouter au niveau racine :
+           "backup_auto_paused": true,
+      3. Redémarrer le pont, puis vérifier /api/health → backup.auto_paused.
+    Pour reprendre : remettre false (ou retirer la clé) et redémarrer.
+
+  Avant de s'appuyer sur une nouvelle cible (disque externe NTFS, NAS) :
+    - Vérifier le système de fichiers (PowerShell : Get-Volume -DriveLetter E →
+      FileSystem NTFS ; FAT32 refuse les fichiers > 4 Go).
+    - Régler backup_dir, redémarrer, lancer « Faire une sauvegarde » : la
+      réponse indique le dossier <backup_dir>\<AAAAMMJJ_HHMMSS>.
+    - Relire le backup SANS restaurer sur la racine (la restauration HQ écrase
+      Inbox|Uni|Print) : comparer les empreintes, par ex.
+        $src = "C:\Transfert\Inbox"; $dst = "E:\Backups\Transfert\<id>\Inbox"
+        $h = { param($r) Get-ChildItem $r -Recurse -File | ForEach-Object {
+               "{0}|{1}" -f $_.FullName.Substring($r.Length), (Get-FileHash $_.FullName).Hash } }
+        Compare-Object (& $h $src) (& $h $dst)    # aucune sortie = identique
+      (les fichiers .tmp / *.pid sont exclus du backup ; un fichier modifié
+      depuis le backup apparaîtra aussi) et ouvrir quelques fichiers copiés
+      vers un dossier temporaire. La liste des backups catalogués est dans
+      GET /api/backups (Système → Sauvegardes).
+
 Notes vocales
 -------------
   Bouton « Note vocale » (MediaRecorder) → upload existant vers Inbox/Voice/.

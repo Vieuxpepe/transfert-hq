@@ -19,6 +19,7 @@ from unittest import mock
 
 import cc_ext
 import hq_automation
+import hq_calendar
 import hq_events
 import iphone_bridge
 
@@ -27,6 +28,7 @@ STATE = (
     "_lock", "_activity", "_alerts", "ROOT", "human_size", "notify_discord", "disk_free", "get_config",
     "_disk_alerted", "_disk_missing_alerted", "_backup_alerted", "_last_backup",
 )
+REAL_MKDIR = Path.mkdir
 
 
 def disk(free_gb: float, total_gb: float = 500.0) -> dict:
@@ -249,6 +251,126 @@ class BackupTargetTests(DiskTestBase):
         with mock.patch.object(cc_ext, "_volume_present", return_value=False, create=True):
             cc_ext.maybe_backup()
         self.assertEqual(len(self.alerts("Backup impossible")), 2)
+
+
+class BackupPauseTests(DiskTestBase):
+    """backup_auto_paused: no automatic backup touches any target; manual backup still works."""
+
+    def setUp(self):
+        super().setUp()
+        cc_ext.ROOT = self.tmp / "Transfert"
+        (cc_ext.ROOT / "Inbox").mkdir(parents=True)
+        (cc_ext.ROOT / "Inbox" / "a.txt").write_text("x", encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        self.bk = self.tmp / "bk"
+        self.cfg["backup_dir"] = str(self.bk)
+        self.cfg["backup_auto_paused"] = True
+
+    def spies(self, volume_present: bool = True):
+        """Spy every way run_backup reaches a backup target (probe, mkdir, copytree)."""
+        mkdirs: list[str] = []
+
+        def spy_mkdir(path, *args, **kwargs):
+            mkdirs.append(str(path))
+            return REAL_MKDIR(path, *args, **kwargs)
+
+        present = mock.Mock(return_value=volume_present)
+        copytree = mock.Mock(side_effect=shutil.copytree)
+        stack = [
+            mock.patch.object(cc_ext, "_volume_present", present, create=True),
+            mock.patch.object(Path, "mkdir", spy_mkdir),
+            mock.patch("shutil.copytree", copytree),
+        ]
+        for patcher in stack:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return present, copytree, mkdirs
+
+    def test_paused_scheduler_makes_no_backup_writes_and_no_target_calls(self):
+        present, copytree, mkdirs = self.spies()
+        for _ in range(5):
+            cc_ext.maybe_backup()
+        present.assert_not_called()
+        copytree.assert_not_called()
+        self.assertEqual(mkdirs, [])
+        self.assertFalse(self.bk.exists())
+        self.assertEqual(self.alerts("Backup impossible"), [])
+        self.assertEqual(cc_ext._last_backup, 0.0)
+
+    def test_paused_with_unusable_default_target_touches_nothing_and_stays_quiet(self):
+        del self.cfg["backup_dir"]  # default D:/Backups/Transfert (the failing FAT32 USB volume)
+        present, copytree, mkdirs = self.spies(volume_present=False)
+        for _ in range(5):
+            cc_ext.maybe_backup()
+        present.assert_not_called()
+        copytree.assert_not_called()
+        self.assertEqual(mkdirs, [])
+        self.assertEqual(cc_ext.alerts_list(), [], "no repeated (or any) alert for the paused state")
+        self.assertFalse((self.tmp / "D:").exists())
+
+    def test_automation_backup_callback_is_skipped_while_paused(self):
+        captured = {}
+        with mock.patch.object(hq_automation, "bind", lambda **kw: captured.update(kw)), \
+                mock.patch.object(hq_events, "bind", lambda *a, **k: None), \
+                mock.patch.object(hq_calendar, "bind", lambda *a, **k: None), \
+                mock.patch.object(iphone_bridge.hq_companion, "bind", lambda *a, **k: None), \
+                mock.patch.object(iphone_bridge, "_HQ_BOUND", iphone_bridge._HQ_BOUND):
+            iphone_bridge.bind_hq()
+        present, copytree, mkdirs = self.spies()
+        result = captured["backup"]()  # what schedules / rules / scenes call
+        self.assertTrue(result.get("paused") and result.get("skipped"), result)
+        present.assert_not_called()
+        copytree.assert_not_called()
+        self.assertEqual(mkdirs, [])
+        self.assertFalse(self.bk.exists())
+        self.assertEqual(self.alerts("Backup impossible"), [])
+
+    def test_manual_backup_still_works_while_paused(self):
+        info = cc_ext.run_backup(force=True)  # POST /api/backup
+        self.assertTrue(info["ok"])
+        self.assertNotIn("paused", info)
+        self.assertEqual((Path(info["path"]) / "Inbox" / "a.txt").read_text(encoding="utf-8"), "x")
+
+    def test_manual_backup_while_paused_still_fails_clearly_on_unusable_target(self):
+        with mock.patch.object(cc_ext, "_volume_present", return_value=False, create=True):
+            with self.assertRaises(RuntimeError) as cm:
+                cc_ext.run_backup(force=True)
+        self.assertIn("introuvable", str(cm.exception))
+
+    def test_unpaused_behavior_unchanged(self):
+        for off in (False, "false", 0, None):
+            self.cfg["backup_auto_paused"] = off
+            self.assertFalse(cc_ext.backup_auto_paused(), repr(off))
+        self.cfg["backup_auto_paused"] = False
+        cc_ext.maybe_backup()
+        self.assertTrue(any(self.bk.iterdir()), "scheduled backup runs when not paused")
+        cc_ext._last_backup = 0.0
+        info = cc_ext.run_backup(force=True, automatic=True)
+        self.assertTrue(info["ok"])
+        self.assertNotIn("paused", info)
+
+    def test_config_flag_is_strict(self):
+        for on in (True, 1, "true", "TRUE", " oui ", "yes", "1", "on"):
+            self.assertTrue(cc_ext.config_flag(on), repr(on))
+        for off in (False, 0, 2, "false", "non", "", None, [], {}):
+            self.assertFalse(cc_ext.config_flag(off), repr(off))
+        self.assertIs(iphone_bridge.default_config()["backup_auto_paused"], False)
+
+    def test_health_and_status_report_pause(self):
+        with mock.patch.object(cc_ext, "smb_share_ok", return_value=False):
+            rep = cc_ext.health_report(uptime_sec=1, tailscale_ip=None, version="7.0")
+        self.assertTrue(rep["backup"]["auto_paused"])
+        self.assertIn("pause", rep["backup"]["note"])
+        with mock.patch.object(iphone_bridge, "disk_free", FakeDisks(ROOT=disk(100))), \
+                mock.patch.object(iphone_bridge, "lan_ipv4", return_value="192.168.1.10"), \
+                mock.patch.object(iphone_bridge, "tailscale_ipv4", return_value=None):
+            st = iphone_bridge.bridge_status()
+        self.assertIs(st["backup_auto_paused"], True)
+        self.cfg["backup_auto_paused"] = False
+        self.assertFalse(cc_ext.backup_target_status()["auto_paused"])
+        self.assertNotIn("note", cc_ext.backup_target_status())
 
 
 if __name__ == "__main__":

@@ -468,6 +468,7 @@ def default_config() -> dict:
         "alert_disk_min_gb": 20,
         "backup_every_hours": 24,
         "backup_dir": "D:/Backups/Transfert",
+        "backup_auto_paused": False,  # true = no automatic backups (manual POST /api/backup still works)
         "users": [],  # optional: [{"name":"admin","pin":"...","role":"admin"},{"name":"phone","pin":"...","role":"upload"}]
         "terminal_commands": [],
         "shell_targets": [],
@@ -557,6 +558,7 @@ def load_config(*, write: bool = True) -> dict:
         base["shell_timeout_sec"] = int(base.get("shell_timeout_sec") or 45)
     except (TypeError, ValueError):
         base["shell_timeout_sec"] = 45
+    base["backup_auto_paused"] = cc_ext.config_flag(base.get("backup_auto_paused", False))
     if "disk_probe_enabled" not in base:
         base["disk_probe_enabled"] = True
     else:
@@ -1234,6 +1236,7 @@ def bridge_status() -> dict:
         # flagged missing:true when there is no D: drive.
         "disk_d": cc_ext.volume_info(Path("D:/"), disk_free(Path("D:/"))),
         "disk_transfert": cc_ext.volume_info(ROOT, disk_free(ROOT)),
+        "backup_auto_paused": cc_ext.backup_auto_paused(),
         "version": "7.0",
         "terminal_commands": [
             {"id": c.get("id"), "label": c.get("label")}
@@ -1936,7 +1939,7 @@ def bind_hq() -> None:
         explore=pc_explore,
         action=pc_run_action,
         terminal=lambda cmd_id: cc_ext.run_terminal(cmd_id=cmd_id),
-        backup=lambda: cc_ext.run_backup(force=True),
+        backup=lambda: cc_ext.run_backup(force=True, automatic=True),  # schedules/rules/scenes
         capture=pc_screenshot,
         print_file=pc_print_file,
         notify=notify_discord,
@@ -3183,7 +3186,7 @@ async function refreshHQ() {
     if ($('#hq-health') && health && health.hostname) {
       const smb = health.smb_transfert?.ok ? 'SMB OK' : 'SMB off';
       const ts = health.tailscale?.ok ? 'Tailscale OK' : 'Tailscale off';
-      $('#hq-health').textContent = ts + ' · ' + smb;
+      $('#hq-health').textContent = ts + ' · ' + smb + (health.backup && health.backup.auto_paused ? ' · Backup auto en pause' : '');
     }
     renderActivity(act.activity || []);
     renderAlerts(al.alerts || []);
@@ -6265,6 +6268,8 @@ def main() -> None:
     print(f" Max up : {human_size(max_upload_bytes())}")
     print(f" Backup : every {CONFIG.get('backup_every_hours')}h -> {CONFIG.get('backup_dir')}")
     _bk = cc_ext.backup_target_status()
+    if _bk.get("auto_paused"):
+        print(" Backup : PAUSE (backup_auto_paused) — aucun backup automatique ; manuel via POST /api/backup")
     if not _bk.get("ok"):
         print(f" Backup : ATTENTION {_bk.get('error')}")
     print(" Ctrl+C to stop")
