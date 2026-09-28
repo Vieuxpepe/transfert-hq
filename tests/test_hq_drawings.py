@@ -95,6 +95,10 @@ def dxf_entities(text: str) -> list[dict]:
 
 
 class NamingTests(unittest.TestCase):
+    def test_earcut_license_is_kept_at_repo_root(self):
+        self.assertIn("earcut-license.txt", iphone_bridge.SYSTEM_NAMES)
+        self.assertTrue((Path(iphone_bridge.__file__).parent / "EARCUT-LICENSE.txt").is_file())
+
     def test_sanitize_base_name(self):
         cases = {
             "../../etc/passwd": "passwd",

@@ -122,6 +122,7 @@ SYSTEM_NAMES = {
     "hq_drawings.py",
     "hq_solid.py",
     "hq_earcut.py",
+    "earcut-license.txt",
     "hq_state.py",
     "hq_events.json",
     "hq_automation.json",
