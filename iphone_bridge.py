@@ -119,6 +119,9 @@ SYSTEM_NAMES = {
     "hq_events.py",
     "hq_automation.py",
     "hq_devices.py",
+    "hq_drawings.py",
+    "hq_solid.py",
+    "hq_earcut.py",
     "hq_state.py",
     "hq_events.json",
     "hq_automation.json",
@@ -3783,7 +3786,7 @@ li.file.is-dir .fname{color:var(--ok)}
 .qrbox a{display:block;font-size:var(--text-xs);color:var(--muted);margin-top:6px;word-break:break-all;font-family:var(--font-mono);line-height:1.4}
 .status dd{margin:2px 0 8px;font-weight:700;word-break:break-all;font-family:var(--font-mono)}
 .status dt{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
-#toasts{position:fixed;left:50%;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:99;width:min(92vw,420px);display:grid;gap:8px}
+#toasts{position:fixed;left:50%;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:99;width:min(92vw,420px);display:grid;gap:8px;pointer-events:none}
 .toast{opacity:0;transform:translateY(8px);transition:.25s;background:var(--panel);border:1px solid var(--line);
   padding:12px 14px;border-radius:12px;box-shadow:0 10px 30px #0004;font-weight:700}
 .toast.show{opacity:1;transform:none}
@@ -4613,6 +4616,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-sketch-core.js"></script>
+<script src="/assets/hq-solid-view.js"></script>
 <script src="/assets/hq-dessiner.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -4955,7 +4959,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _drawings_post(self, raw: str) -> bool:
-        if raw != "/api/drawings":
+        if raw not in ("/api/drawings", "/api/drawings/mesh"):
             return False
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -4973,7 +4977,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "JSON invalide"})
             return True
         try:
-            result = hq_drawings.save_drawing(ROOT, data)
+            result = hq_drawings.preview_mesh(data) if raw == "/api/drawings/mesh" else hq_drawings.save_drawing(ROOT, data)
         except hq_drawings.DrawingError as e:
             self._json(e.status, {"error": str(e)})
             return True

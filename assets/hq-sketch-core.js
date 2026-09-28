@@ -10,7 +10,7 @@
 })(typeof window !== "undefined" ? window : null, function () {
   "use strict";
   const FORMAT = "transfert-hq-sketch";
-  const VERSION = 1;
+  const VERSION = 2;
   const DRAFT_KEY = "tf_hq_sketch_draft_v1";
   const UNIT_MM = { mm: 1, cm: 10, m: 1000, in: 25.4 };
   const LINE_TYPES = { line: 1, centerline: 1 };
@@ -27,7 +27,7 @@
       format: FORMAT, version: VERSION, units: units, mode: o.mode === "construction" ? "construction" : "quick",
       grid: { spacing: Number(o.spacing) > 0 ? Number(o.spacing) : (units === "mm" ? 10 : units === "cm" ? 1 : units === "m" ? 0.01 : 0.5), visible: true, snap: true },
       snap: { angle: true, angleStep: 15 },
-      nextId: 1, points: [], objects: [], constraints: [],
+      nextId: 1, points: [], objects: [], constraints: [], features: [],
     };
   }
 
@@ -36,6 +36,7 @@
     doc.points.forEach(p => used.add(p.id));
     doc.objects.forEach(p => used.add(p.id));
     doc.constraints.forEach(p => used.add(p.id));
+    (doc.features || []).forEach(p => used.add(p.id));
     let n = Math.max(1, Number(doc.nextId) || 1);
     while (used.has(prefix + n)) n++;
     doc.nextId = n + 1;
@@ -330,7 +331,31 @@
     const used = new Set();
     d.objects.forEach(o => { if (isLine(o)) { used.add(o.p1); used.add(o.p2); } else if (o.type === "circle") used.add(o.center); });
     d.points = d.points.filter(p => used.has(p.id));
+    d.features = (d.features || []).filter(f => !f.profile.some(id => set.has(id)));
+    if (!d.features.length || d.features[0].type !== "extrude") d.features = [];
     return d;
+  }
+
+  function addFeature(doc, type, profile, depth, extent) {
+    const d = clone(doc), features = d.features || [];
+    if (type !== "extrude" && type !== "cut") return { ok: false, error: "Fonction 3D inconnue" };
+    if ((type === "extrude") !== (features.length === 0)) return { ok: false, error: "Crée d'abord une extrusion de base" };
+    if (!Array.isArray(profile) || !profile.length || profile.length > 500 || new Set(profile).size !== profile.length) return { ok: false, error: "Sélectionne un contour fermé" };
+    const known = new Map(d.objects.map(o => [o.id, o.type]));
+    if (profile.some(id => !["line", "circle"].includes(known.get(id)))) return { ok: false, error: "Seules les lignes et les cercles forment un solide" };
+    const dep = Number(depth), ext = type === "cut" && extent === "throughAll" ? "throughAll" : "blind";
+    if (!isFinite(dep) || dep < 0 || (ext === "blind" && dep <= 0) || dep > LIMITS.coord) return { ok: false, error: "Profondeur invalide" };
+    d.version = VERSION;
+    d.features = features;
+    d.features.push({ id: newId(d, "f"), type, profile: profile.slice(), depth: round6(dep), extent: ext });
+    return { ok: true, doc: d };
+  }
+
+  function removeFeature(doc, id) {
+    const d = clone(doc), at = (d.features || []).findIndex(f => f.id === id);
+    if (at < 0) return { ok: false, error: "Fonction introuvable" };
+    d.features = at === 0 ? [] : d.features.filter(f => f.id !== id);
+    return { ok: true, doc: d };
   }
 
   function updateObject(doc, id, patch) {
@@ -471,6 +496,7 @@
       else if (o.type === "dim_angle") { o.c = sp(o.c); o.a = sp(o.a); o.b = sp(o.b); o.r = s(o.r); }
     });
     d.constraints.forEach(k => { if (k.type === "length") k.value = s(k.value); });
+    (d.features || []).forEach(f => { f.depth = s(f.depth); });
     if (d.view) { d.view.x0 = s(d.view.x0); d.view.y0 = s(d.view.y0); d.view.ppu = d.view.ppu / f; }
     return { ok: true, doc: d };
   }
@@ -522,7 +548,7 @@
   function validateDoc(doc) {
     try {
       if (!doc || typeof doc !== "object") throw new Error("Document invalide");
-      if (doc.format !== FORMAT || doc.version !== VERSION) throw new Error("Format/version inconnus");
+      if (doc.format !== FORMAT || ![1, VERSION].includes(doc.version)) throw new Error("Format/version inconnus");
       if (!UNIT_MM[doc.units]) throw new Error("Unités invalides");
       if (!doc.grid || !(doc.grid.spacing > 0)) throw new Error("Grille invalide");
       for (const k of ["points", "objects", "constraints"]) if (!Array.isArray(doc[k])) throw new Error(k + " invalides");
@@ -545,6 +571,13 @@
         if (k.type === "length") { if (!lines.has(k.line) || !lines.get(k.line).includes(k.fixed)) throw new Error("Contrainte invalide"); }
         else if (k.type === "angle") { if (!Array.isArray(k.lines) || k.lines.length !== 2 || !k.lines.every(l => lines.has(l) && lines.get(l).includes(k.vertex))) throw new Error("Contrainte invalide"); }
         else throw new Error("Contrainte inconnue");
+      }
+      const features = doc.features || [];
+      if (!Array.isArray(features) || features.length > 50 || (doc.version === 1 && features.length)) throw new Error("Fonctions 3D invalides");
+      for (let i = 0; i < features.length; i++) {
+        const f = features[i]; claim(f.id);
+        if (f.type !== (i === 0 ? "extrude" : "cut") || !Array.isArray(f.profile) || !f.profile.length || f.profile.length > 500 || new Set(f.profile).size !== f.profile.length || f.profile.some(id => !["line", "circle"].includes(doc.objects.find(o => o.id === id)?.type))) throw new Error("Profil 3D invalide");
+        if (!num(f.depth) || f.depth < 0 || (f.extent !== "throughAll" && f.depth <= 0) || !["blind", "throughAll"].includes(f.extent) || (f.type === "extrude" && f.extent !== "blind")) throw new Error("Profondeur 3D invalide");
       }
       return { ok: true };
     } catch (e) { return { ok: false, error: e.message }; }
@@ -585,7 +618,7 @@
     FORMAT, VERSION, DRAFT_KEY, UNIT_MM, LIMITS,
     clone, createDoc, newId, pointMap, getObj, isLine, addPoint, findPointNear, addLine, addRect, addCircle, addStroke,
     addText, addDimLinear, addDimAngle, measureLinear, measureAngle, linesAtPoint, otherEnd, sharedVertex, lineLength,
-    angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, moveObjects, movePoint, deleteObjects,
+    angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, addFeature, removeFeature, moveObjects, movePoint, deleteObjects,
     updateObject, hitTest, hitAll, objectDistance, dimLinearGeom, textBox, snapGrid, snapAngle, snapSegmentEnd, simplify,
     convertUnits, fmt, extents, toScreen, toModel, zoomAt, fitView, sourceHint, validateDoc, createHistory,
     saveDraft, loadDraft, clearDraft,

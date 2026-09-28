@@ -33,13 +33,15 @@
     doc: null, name: "", stem: "", dirty: false, tool: "select", sel: [], multi: false,
     hist: S.createHistory(100), view: null, W: 0, H: 0, dpr: 1, ptrs: new Map(), gesture: null, action: null,
     penSeen: false, fixedEnd: "p1", swapAngle: false, angleTaps: [], built: false, draftTimer: 0, hudMsg: "",
+    tab3d: false, solidDepth: 20, cutDepth: 5, cutThrough: false, solidBusy: false, mesh: [], meshVersion: 0, meshLoadedVersion: -1, meshTimer: 0,
   };
-  let root, canvas, ctx, hud, props, textIn;
+  let root, canvas, ctx, hud, props, textIn, solidView;
 
   // ------------------------------------------------------------ doc helpers
   function commit(next, opts) {
     if (!(opts && opts.noHistory)) st.hist.push(st.doc);
     st.doc = next;
+    st.meshVersion++;
     st.doc.view = st.view;
     st.dirty = true;
     const alive = new Set(st.doc.objects.map(o => o.id));
@@ -92,6 +94,10 @@
     </div>
   </div>
   <div class="sk-tools" role="toolbar" aria-label="Outils"></div>
+  <div class="sk-view-tabs" role="tablist" aria-label="Vue du dessin">
+    <button type="button" data-act="view2d" role="tab" aria-selected="true">Dessin 2D</button>
+    <button type="button" data-act="view3d" role="tab" aria-selected="false">Aperçu 3D</button>
+  </div>
   <div class="sk-settings" hidden>
     <label>Unités <select data-set="units"><option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option><option value="in">po (in)</option></select></label>
     <label>Grille <input data-set="spacing" type="number" inputmode="decimal" min="0.001" step="any"/></label>
@@ -106,6 +112,11 @@
     <div class="sk-hud" aria-live="polite"></div>
     <div class="sk-float"><button type="button" class="sk-btn" data-act="undo" aria-label="Annuler">↶</button><button type="button" class="sk-btn" data-act="redo" aria-label="Rétablir">↷</button></div>
   </div>
+  <div class="sk-3d-stage" hidden>
+    <canvas class="sk-3d-canvas" aria-label="Aperçu 3D interactif" role="img"></canvas>
+    <div class="sk-3d-overlay"><span class="sk-3d-status" aria-live="polite"></span><button type="button" data-act="reset3d">Recentrer</button></div>
+  </div>
+  <div class="sk-solid"></div>
   <div class="sk-props"></div>
   <dialog class="sk-dlg" id="sk-save-dlg" aria-labelledby="sk-save-title">
     <form method="dialog">
@@ -129,6 +140,7 @@
     hud = $(".sk-hud", root);
     props = $(".sk-props", root);
     textIn = $(".sk-textin", root);
+    if (window.HQSolidView) solidView = window.HQSolidView($(".sk-3d-canvas", root));
     wire();
     return true;
   }
@@ -164,6 +176,15 @@
     props.addEventListener("click", onPropsClick);
     props.addEventListener("change", onPropsChange);
     props.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("input[data-apply]")) { e.preventDefault(); applyProp(e.target.dataset.apply); } });
+    $(".sk-solid", root).addEventListener("input", e => {
+      if (e.target.dataset.solid === "base-depth") st.solidDepth = e.target.value;
+      if (e.target.dataset.solid === "cut-depth") st.cutDepth = e.target.value;
+      if (e.target.dataset.solid === "through") {
+        st.cutThrough = e.target.checked;
+        const depthInput = $('[data-solid="cut-depth"]', root);
+        if (depthInput) depthInput.disabled = st.cutThrough;
+      }
+    });
 
     canvas.addEventListener("pointerdown", onDown);
     canvas.addEventListener("pointermove", onMove);
@@ -191,7 +212,7 @@
     dlg.addEventListener("close", () => { if (dlg.returnValue === "ok") doSave(nameIn.value); });
   }
 
-  function refreshAll() { renderToolbar(); renderProps(); syncSettings(); draw(); updateButtons(); }
+  function refreshAll() { renderToolbar(); renderProps(); syncSettings(); draw(); updateButtons(); if (st.tab3d) scheduleMesh(); }
 
   function setMode(mode) {
     if (!TOOLS[mode] || !st.doc) return;
@@ -231,10 +252,90 @@
     set("delete", !st.sel.length);
   }
 
+  function selectedProfile() {
+    if (!st.sel.length) return [];
+    const chosen = st.sel.map(id => S.getObj(st.doc, id)).filter(Boolean);
+    if (chosen.length !== 1 || chosen[0].type !== "line") return chosen.map(o => o.id);
+    const first = chosen[0];
+    if (first.group) return st.doc.objects.filter(o => o.type === "line" && o.group === first.group).map(o => o.id);
+    const seen = new Set(), queue = [first];
+    while (queue.length) {
+      const line = queue.pop(); if (seen.has(line.id)) continue; seen.add(line.id);
+      for (const o of st.doc.objects) if (o.type === "line" && !seen.has(o.id) && [o.p1, o.p2].some(p => p === line.p1 || p === line.p2)) queue.push(o);
+    }
+    return [...seen];
+  }
+
+  function renderSolid() {
+    const box = $(".sk-solid", root);
+    const features = st.doc.features || [], selected = selectedProfile();
+    const parts = features.map((f, i) => `<div class="sk-solid-feature"><span>${i + 1}. ${f.type === "extrude" ? "Extrusion" : "Enlèvement"} · ${f.extent === "throughAll" ? "traversant" : S.fmt(f.depth) + " " + esc(st.doc.units)} · ${f.profile.length} objet(s)</span><button type="button" data-act="remove3d" data-feature="${esc(f.id)}" aria-label="Retirer la fonction ${i + 1}">Retirer</button></div>`).join("");
+    box.innerHTML = `<div class="sk-solid-head"><strong>Pièce 3D</strong><span>${features.length ? features.length + " fonction(s)" : "Sélectionne un contour fermé en Construction"}</span></div>
+      <div class="sk-solid-features">${parts}</div>
+      <div class="sk-solid-controls"><span class="hint">Profil : ${selected.length ? selected.length + " objet(s) sélectionné(s)" : "touche un rectangle, un cercle ou plusieurs lignes fermées"}</span>
+      ${!features.length ? `<label>Profondeur (${esc(st.doc.units)}) <input data-solid="base-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.solidDepth)}"/></label><button type="button" data-act="solid-extrude" ${selected.length && !st.solidBusy ? "" : "disabled"}>Extruder</button>`
+      : `<label>Profondeur de coupe (${esc(st.doc.units)}) <input data-solid="cut-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.cutDepth)}" ${st.cutThrough ? "disabled" : ""}/></label><label class="sk-chk"><input data-solid="through" type="checkbox" ${st.cutThrough ? "checked" : ""}/> Traversant</label><button type="button" data-act="solid-cut" ${selected.length && !st.solidBusy ? "" : "disabled"}>Enlever matière</button>`}</div>
+      <p class="hint">La pièce part du plan Z=0. Les coupes doivent rester à l'intérieur sans toucher un autre contour. STL exporté en millimètres.</p>`;
+  }
+
+  function setView3d(on) {
+    st.tab3d = on;
+    $(".sk-stage", root).hidden = on; $(".sk-3d-stage", root).hidden = !on;
+    root.querySelector('[data-act="view2d"]').setAttribute("aria-selected", on ? "false" : "true");
+    root.querySelector('[data-act="view3d"]').setAttribute("aria-selected", on ? "true" : "false");
+    if (on) scheduleMesh(); else resize();
+  }
+
+  function scheduleMesh() {
+    clearTimeout(st.meshTimer);
+    if (!st.tab3d || !st.doc) return;
+    if (st.meshLoadedVersion === st.meshVersion) {
+      if (solidView) solidView.draw();
+      $(".sk-3d-status", root).textContent = st.mesh.length ? `${st.mesh.length} triangles · glisse pour tourner · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
+      return;
+    }
+    st.meshTimer = setTimeout(loadMesh, 180);
+  }
+
+  async function loadMesh() {
+    const version = st.meshVersion, status = $(".sk-3d-status", root);
+    if (!(st.doc.features || []).length) { st.mesh = []; st.meshLoadedVersion = version; if (solidView) solidView.setTriangles([]); status.textContent = "Crée une extrusion pour voir la pièce."; return; }
+    status.textContent = "Calcul du modèle…";
+    try {
+      const res = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: st.doc }), timeoutMs: 45000 });
+      if (version !== st.meshVersion) return;
+      st.mesh = res.triangles; st.meshLoadedVersion = version;
+      if (solidView) solidView.setTriangles(st.mesh);
+      status.textContent = `${res.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
+    } catch (e) { if (version === st.meshVersion) { st.meshLoadedVersion = -1; status.textContent = e.message; } }
+  }
+
+  async function createSolid(kind) {
+    if (st.solidBusy) return;
+    const profile = selectedProfile();
+    const depth = Number(String(kind === "extrude" ? st.solidDepth : st.cutDepth).replace(",", "."));
+    const result = S.addFeature(st.doc, kind, profile, kind === "cut" && st.cutThrough ? 0 : depth, kind === "cut" && st.cutThrough ? "throughAll" : "blind");
+    if (!result.ok) { say(result.error, "err"); return; }
+    const version = st.meshVersion;
+    st.solidBusy = true; renderSolid();
+    try {
+      const check = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: result.doc }), timeoutMs: 45000 });
+      if (version !== st.meshVersion) throw new Error("Le dessin a changé pendant le calcul : réessaie");
+      commit(result.doc); st.mesh = check.triangles; st.meshLoadedVersion = st.meshVersion;
+      if (solidView) solidView.setTriangles(st.mesh);
+      setView3d(true); say(kind === "extrude" ? "Pièce extrudée" : "Matière enlevée");
+    } catch (e) { say("Profil 3D refusé : " + e.message, "err"); flashHud(e.message); }
+    finally { st.solidBusy = false; renderSolid(); }
+  }
+
   // ------------------------------------------------------------ actions
   function act(name, el) {
-    if (name === "undo") { const p = st.hist.undo(st.doc); if (p) { st.doc = p; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
-    if (name === "redo") { const p = st.hist.redo(st.doc); if (p) { st.doc = p; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
+    if (name === "view2d" || name === "view3d") { setView3d(name === "view3d"); return; }
+    if (name === "reset3d") { if (solidView) solidView.reset(); return; }
+    if (name === "solid-extrude" || name === "solid-cut") { createSolid(name === "solid-extrude" ? "extrude" : "cut"); return; }
+    if (name === "remove3d") { tryCommit(S.removeFeature(st.doc, el.dataset.feature)); return; }
+    if (name === "undo") { const p = st.hist.undo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
+    if (name === "redo") { const p = st.hist.redo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
     if (name === "delete") { deleteSel(); return; }
     if (name === "fit") { st.view = S.fitView(st.doc, st.W, st.H, 40); scheduleDraft(); draw(); return; }
     if (name === "multi") { st.multi = !st.multi; renderToolbar(); return; }
@@ -593,6 +694,7 @@
       h = `<div class="sk-prop-head"><strong>${sel.length} objet(s)</strong></div><p class="sk-hint">Glisse pour déplacer, 🗑 pour supprimer. Sélectionne deux lignes reliées pour coter leur angle.</p>`;
     }
     props.innerHTML = h;
+    renderSolid();
   }
   function onPropsClick(e) {
     const f = e.target.closest("[data-fixed]");
@@ -928,7 +1030,7 @@
   }
   function updateSavePreview() {
     const stem = previewStem($("#sk-save-name", root).value);
-    $("#sk-save-preview", root).textContent = "→ Inbox/Drawings/" + stem + " (.hqdraw.json, .png, .dxf). Un suffixe -2, -3… est ajouté si le nom existe déjà. Source estimée d'après le type de pointeur et la taille d'écran.";
+    $("#sk-save-preview", root).textContent = "→ Inbox/Drawings/" + stem + " (.hqdraw.json, .png, .dxf" + ((st.doc.features || []).length ? ", .stl" : "") + "). Un suffixe -2, -3… est ajouté si le nom existe déjà. Source estimée d'après le type de pointeur et la taille d'écran.";
   }
   async function doSave(name) {
     if (name == null) return;
@@ -948,7 +1050,7 @@
   function fileUrl(stem, kind) { return "/api/drawings/file?stem=" + encodeURIComponent(stem) + "&kind=" + kind; }
   function showSaved(res) {
     props.innerHTML = `<div class="sk-prop-head"><strong>Enregistré</strong> · Inbox/Drawings/${esc(res.stem)}</div>
-      <div class="sk-row"><a class="sk-link" href="${fileUrl(res.stem, "dxf")}" download>DXF (SolidWorks)</a><a class="sk-link" href="${fileUrl(res.stem, "png")}" target="_blank" rel="noopener">PNG</a><a class="sk-link" href="${fileUrl(res.stem, "json")}" download>Document</a></div>`;
+      <div class="sk-row"><a class="sk-link" href="${fileUrl(res.stem, "dxf")}" download>DXF (SolidWorks)</a>${res.files.stl ? `<a class="sk-link" href="${fileUrl(res.stem, "stl")}" download>STL 3D (mm)</a>` : ""}<a class="sk-link" href="${fileUrl(res.stem, "png")}" target="_blank" rel="noopener">PNG</a><a class="sk-link" href="${fileUrl(res.stem, "json")}" download>Document</a></div>`;
   }
   async function openList() {
     const dlg = $("#sk-open-dlg", root), list = $(".sk-list", dlg);
@@ -960,7 +1062,7 @@
       list.innerHTML = res.items.map(it => `<div class="sk-item">
         ${it.png ? `<img alt="" loading="lazy" src="${fileUrl(it.stem, "png")}"/>` : '<div class="sk-noimg"></div>'}
         <div class="sk-item-body"><strong>${esc(it.stem)}</strong><span class="hint">${esc(new Date(it.mtime * 1000).toLocaleString("fr-CA"))}</span>
-        <div class="sk-row"><button type="button" data-open="${esc(it.stem)}">Ouvrir</button>${it.dxf ? `<a class="sk-link" href="${fileUrl(it.stem, "dxf")}" download>DXF</a>` : ""}</div></div></div>`).join("");
+        <div class="sk-row"><button type="button" data-open="${esc(it.stem)}">Ouvrir</button>${it.dxf ? `<a class="sk-link" href="${fileUrl(it.stem, "dxf")}" download>DXF</a>` : ""}${it.stl ? `<a class="sk-link" href="${fileUrl(it.stem, "stl")}" download>STL</a>` : ""}</div></div></div>`).join("");
       list.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => { dlg.close(); reopen(b.dataset.open); }));
     } catch (e) { list.innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
   }
@@ -971,6 +1073,7 @@
       const doc = res.doc; const meta = doc.meta || {}; delete doc.meta;
       const ok = S.validateDoc(doc); if (!ok.ok) throw new Error(ok.error);
       st.doc = doc; st.hist.clear(); st.sel = []; st.stem = stem; st.name = meta.name || stem; st.dirty = false;
+      st.meshVersion++;
       st.view = doc.view && doc.view.ppu > 0 ? Object.assign({}, doc.view) : S.fitView(doc, st.W, st.H);
       flushDraft(); refreshAll();
       say("Ouvert : " + stem);

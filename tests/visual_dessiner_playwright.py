@@ -69,6 +69,7 @@ def mouse_drag(page, a, b, steps=12):
 
 def click_obj(page, oid, multi=False):
     """Click an object's midpoint on the canvas through the real UI."""
+    page.locator(".sk-canvas").scroll_into_view_if_needed()
     pos = page.evaluate("""(id) => { const s = window.hqSketchState(), d = s.doc, o = HQSketch.getObj(d, id), pm = HQSketch.pointMap(d);
       let x, y; if (HQSketch.isLine(o)) { const a = pm.get(o.p1), b = pm.get(o.p2); x = (a.x + b.x) / 2; y = (a.y + b.y) / 2; }
       else if (o.type === 'dim_linear') { const g = HQSketch.dimLinearGeom(o); x = g.mid[0]; y = g.mid[1]; }
@@ -84,7 +85,7 @@ def click_obj(page, oid, multi=False):
 
 
 def desktop(pw, errors):
-    browser = pw.chromium.launch()
+    browser = pw.chromium.launch(channel=os.environ.get("HQ_BROWSER_CHANNEL") or None)
     ctx = browser.new_context(viewport={"width": 1440, "height": 900}, device_scale_factor=1)
     page = ctx.new_page()
     page.on("pageerror", lambda e: errors.append("desktop pageerror: " + str(e) + " @ " + (getattr(e, "stack", "") or "")[:600]))
@@ -248,7 +249,7 @@ def desktop(pw, errors):
 
 
 def iphone(pw, errors):
-    browser = pw.chromium.launch()
+    browser = pw.chromium.launch(channel=os.environ.get("HQ_BROWSER_CHANNEL") or None)
     dev = dict(pw.devices["iPhone 13"])
     ctx = browser.new_context(**dev)
     page = ctx.new_page()
@@ -273,9 +274,8 @@ def iphone(pw, errors):
     open_tab(page)
     check(page.evaluate("matchMedia('(pointer: coarse)').matches"), "iphone: coarse pointer emulated")
     page.locator(".sk-stage").scroll_into_view_if_needed()
-    b = page.locator(".sk-canvas").bounding_box()
-    X = lambda fx: b["x"] + b["width"] * fx
-    Y = lambda fy: b["y"] + b["height"] * fy
+    X = lambda fx: page.locator(".sk-canvas").bounding_box()["x"] + page.locator(".sk-canvas").bounding_box()["width"] * fx
+    Y = lambda fy: page.locator(".sk-canvas").bounding_box()["y"] + page.locator(".sk-canvas").bounding_box()["height"] * fy
 
     page.tap('[data-tool="pen"]')
     touch_drag((X(0.15), Y(0.3)), (X(0.8), Y(0.45)))
@@ -300,6 +300,11 @@ def iphone(pw, errors):
     check(st(page)["n"] == 1, "iphone: lifting one pinch finger then moving the other draws nothing")
 
     page.tap('[data-tool="text"]')
+    # Windows Chrome can consume the first synthetic tap after a CDP pinch.
+    if page.evaluate("window.hqSketchState().tool") != "text":
+        page.tap('[data-tool="text"]')
+    check(page.evaluate("window.hqSketchState().tool") == "text", "iphone: text tool selected after pinch")
+    page.locator(".sk-canvas").scroll_into_view_if_needed()
     touch("touchStart", [(X(0.2), Y(0.15))]); touch("touchEnd", [])
     page.wait_for_selector(".sk-textin:not([hidden])")
     page.keyboard.type("Note iPhone : chanfrein 1x45")
@@ -337,8 +342,10 @@ def iphone(pw, errors):
 def main():
     errors: list[str] = []
     with sync_playwright() as pw:
-        desktop(pw, errors)
-        iphone(pw, errors)
+        if os.environ.get("HQ_VISUAL_MOBILE_ONLY") != "1":
+            desktop(pw, errors)
+        if os.environ.get("HQ_VISUAL_DESKTOP_ONLY") != "1":
+            iphone(pw, errors)
     real = [e for e in errors if "favicon" not in e]
     check(not real, "no page errors / console errors" + ("" if not real else ": " + "; ".join(real[:5])))
     print("\n".join(results))

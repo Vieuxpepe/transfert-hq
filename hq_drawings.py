@@ -3,8 +3,9 @@
 Saved drawings live in ROOT/Inbox/Drawings (same resolution as Inbox/Voice,
 Inbox/Photos, …). The client never supplies a filesystem path: it sends a base
 name, a coarse source hint, the vector document and a PNG preview. The server
-sanitizes the name, validates and normalizes the document, renders the DXF
-itself, and publishes <stem>.hqdraw.json / <stem>.png / <stem>.dxf without ever
+sanitizes the name, validates and normalizes the document, renders the DXF and
+optional 3D STL itself, and publishes <stem>.hqdraw.json / <stem>.png / <stem>.dxf
+(and .stl for a solid) without ever
 overwriting an existing file (unique stem on collision).
 
 Filesystem rules:
@@ -15,9 +16,9 @@ Filesystem rules:
     are published with os.link (fails if the target exists) — atomic and
     never clobbering.
 
-Document format (version 1) — kept ready for a future 3D step:
+Document format (version 2; version 1 remains readable):
   stable object ids, explicit point table (lines/circles reference point ids,
-  so connectivity is explicit), units, grid, driving constraints.
+  so connectivity is explicit), units, grid, driving constraints, 3D features.
 """
 
 from __future__ import annotations
@@ -35,12 +36,15 @@ import time
 import unicodedata
 from pathlib import Path
 
+import hq_solid
+
 FORMAT = "transfert-hq-sketch"
-VERSION = 1
+VERSION = 2
 SUBDIR = ("Inbox", "Drawings")
 DOC_SUFFIX = ".hqdraw.json"
 PNG_SUFFIX = ".png"
 DXF_SUFFIX = ".dxf"
+STL_SUFFIX = ".stl"
 
 MAX_BODY = 6 * 1024 * 1024          # whole POST body
 MAX_DOC_BYTES = 2 * 1024 * 1024     # normalized JSON document
@@ -200,7 +204,7 @@ def validate_document(doc) -> dict:
         raise DrawingError("Document invalide")
     if doc.get("format") != FORMAT:
         raise DrawingError("Format de dessin inconnu")
-    if doc.get("version") != VERSION:
+    if doc.get("version") not in (1, VERSION):
         raise DrawingError("Version de dessin non prise en charge")
     units = doc.get("units")
     if units not in UNITS:
@@ -211,7 +215,7 @@ def validate_document(doc) -> dict:
         raise DrawingError("Grille invalide")
     out: dict = {
         "format": FORMAT,
-        "version": VERSION,
+        "version": doc["version"],
         "units": units,
         "mode": doc.get("mode") if doc.get("mode") in MODES else "quick",
         "grid": {
@@ -355,6 +359,39 @@ def validate_document(doc) -> dict:
         else:
             raise DrawingError(f"{kid} : type de contrainte inconnu")
     out["constraints"] = cons
+    raw_features = doc.get("features", [])
+    if not isinstance(raw_features, list) or len(raw_features) > hq_solid.MAX_FEATURES:
+        raise DrawingError("Fonctions 3D invalides ou trop nombreuses")
+    if doc["version"] == 1 and raw_features:
+        raise DrawingError("Les fonctions 3D exigent la version 2")
+    features = []
+    object_types = {o["id"]: o["type"] for o in objects}
+    for i, f in enumerate(raw_features):
+        if not isinstance(f, dict):
+            raise DrawingError(f"Fonction 3D {i} invalide")
+        fid = claim(_id(f.get("id"), f"fonction 3D {i}"))
+        kind = f.get("type")
+        if kind not in ("extrude", "cut") or (i == 0) != (kind == "extrude"):
+            raise DrawingError("Une extrusion de base, puis des coupes, sont requises")
+        profile = f.get("profile")
+        if not isinstance(profile, list) or not 1 <= len(profile) <= 500:
+            raise DrawingError(f"{fid} : profil invalide")
+        profile = [_id(v, f"{fid} profil") for v in profile]
+        if len(set(profile)) != len(profile) or any(object_types.get(v) not in ("line", "circle") for v in profile):
+            raise DrawingError(f"{fid} : profil invalide")
+        extent = f.get("extent", "blind")
+        if extent not in ("blind", "throughAll") or (kind == "extrude" and extent != "blind"):
+            raise DrawingError(f"{fid} : étendue invalide")
+        depth = _num(f.get("depth", 0), f"{fid} profondeur", lo=0, hi=MAX_COORD)
+        if (kind == "extrude" or extent == "blind") and depth <= 0:
+            raise DrawingError(f"{fid} : profondeur positive requise")
+        features.append({"id": fid, "type": kind, "profile": profile, "depth": depth, "extent": extent})
+    out["features"] = features if doc["version"] == 2 else []
+    if features:
+        try:
+            hq_solid.build_mesh(out)
+        except hq_solid.SolidError as e:
+            raise DrawingError(str(e), 422) from e
     return out
 
 
@@ -639,6 +676,8 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
     saved_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now()))
     directory = drawings_dir(root, create=True)
     dxf_bytes = build_dxf(doc).encode("cp1252", errors="replace")
+    mesh = hq_solid.build_mesh(doc) if doc["features"] else []
+    stl_bytes = hq_solid.binary_stl(mesh, doc["units"]) if mesh else None
 
     with _SAVE_LOCK:
         temps: list[Path] = []
@@ -647,9 +686,14 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
             temps.append(png_tmp)
             dxf_tmp = _write_temp(directory, dxf_bytes)
             temps.append(dxf_tmp)
+            stl_tmp = _write_temp(directory, stl_bytes) if stl_bytes is not None else None
+            if stl_tmp is not None:
+                temps.append(stl_tmp)
             for n in range(0, 1000):
                 stem = f"{base}{'' if n == 0 else '-' + str(n + 1)}{suffix}"
                 names = [stem + DOC_SUFFIX, stem + PNG_SUFFIX, stem + DXF_SUFFIX]
+                if stl_tmp is not None:
+                    names.append(stem + STL_SUFFIX)
                 if any(os.path.lexists(directory / nm) for nm in names):
                     continue
                 doc_out = dict(doc)
@@ -658,7 +702,7 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
                     "name": base,
                     "source": suffix.lstrip("_"),
                     "saved_at": saved_at,
-                    "files": {"png": names[1], "dxf": names[2]},
+                    "files": {"png": names[1], "dxf": names[2], **({"stl": names[3]} if stl_tmp is not None else {})},
                 }
                 body = json.dumps(doc_out, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
                 if len(body) > MAX_DOC_BYTES:
@@ -667,7 +711,11 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
                 temps.append(doc_tmp)
                 published: list[Path] = []
                 try:
-                    for tmp, nm in ((png_tmp, names[1]), (dxf_tmp, names[2]), (doc_tmp, names[0])):
+                    publications = [(png_tmp, names[1]), (dxf_tmp, names[2])]
+                    if stl_tmp is not None:
+                        publications.append((stl_tmp, names[3]))
+                    publications.append((doc_tmp, names[0]))
+                    for tmp, nm in publications:
                         _publish_noclobber(tmp, directory / nm)
                         published.append(directory / nm)
                 except FileExistsError:
@@ -684,12 +732,21 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
                     "ok": True,
                     "stem": stem,
                     "saved_at": saved_at,
-                    "files": {k: rel_for(nm) for k, nm in zip(("json", "png", "dxf"), names)},
+                    "files": {k: rel_for(nm) for k, nm in zip(("json", "png", "dxf", "stl"), names)},
                 }
             raise DrawingError("Trop de dessins portant ce nom", 409)
         finally:
             for t in temps:
                 _unlink_quiet(t)
+
+
+def preview_mesh(payload: dict) -> dict:
+    """Compute an unsaved 3D preview from the same validated mesh as STL."""
+    if not isinstance(payload, dict):
+        raise DrawingError("Requête invalide")
+    doc = validate_document(payload.get("doc"))
+    mesh = hq_solid.build_mesh(doc)
+    return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh)}
 
 
 def _read_regular(directory: Path, name: str, cap: int) -> bytes:
@@ -755,6 +812,7 @@ def read_file(root: Path, stem, kind: str) -> tuple[bytes, str, str]:
         "png": (PNG_SUFFIX, "image/png", MAX_PNG_BYTES),
         "dxf": (DXF_SUFFIX, "application/dxf", 16 * 1024 * 1024),
         "json": (DOC_SUFFIX, "application/json; charset=utf-8", MAX_DOC_BYTES),
+        "stl": (STL_SUFFIX, "model/stl", 12 * 1024 * 1024),
     }.get(kind, (None, None, 0))
     if not suffix:
         raise DrawingError("Type de fichier invalide", 400)
@@ -794,6 +852,7 @@ def list_drawings(root: Path) -> dict:
                 "size": int(st.st_size),
                 "png": (stem + PNG_SUFFIX) in names,
                 "dxf": (stem + DXF_SUFFIX) in names,
+                "stl": (stem + STL_SUFFIX) in names,
                 "source": "Mobile" if stem.endswith("_HQWeb-Mobile") else ("Desktop" if stem.endswith("_HQWeb-Desktop") else ""),
             })
     items.sort(key=lambda x: (-x["mtime"], x["stem"]))

@@ -328,7 +328,7 @@ class ValidationTests(unittest.TestCase):
         bads = [
             None, [], "x",
             mut(lambda d: d.update(format="other")),
-            mut(lambda d: d.update(version=2)),
+            mut(lambda d: d.update(version=3)),
             mut(lambda d: d.update(units="furlong")),
             mut(lambda d: d["objects"].append({"id": "z", "type": "script"})),
             mut(lambda d: d["objects"][0].update(p2="missing")),
@@ -506,7 +506,7 @@ class HttpTests(unittest.TestCase):
         iphone_bridge.CONFIG.update(cls._config)
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def _post(self, payload, *, cookie="admin", origin="self", raw=None, headers=None):
+    def _post(self, payload, *, cookie="admin", origin="self", raw=None, headers=None, path="/api/drawings"):
         hdrs = {"Content-Type": "application/json"}
         if origin == "self":
             hdrs["Origin"] = self.origin
@@ -516,7 +516,19 @@ class HttpTests(unittest.TestCase):
             hdrs.update(headers)
         body = raw if raw is not None else json.dumps(payload).encode()
         ck = {"admin": self.admin, "phone": self.phone, None: None}[cookie]
-        return _http(self.port, "POST", "/api/drawings", body=body, headers=hdrs, cookie=ck)
+        return _http(self.port, "POST", path, body=body, headers=hdrs, cookie=ck)
+
+    def test_mesh_preview_auth_and_no_files(self):
+        from tests.test_hq_solid import sample
+        body = {"doc": sample()}
+        path = "/api/drawings/mesh"
+        for cookie, origin, expected in ((None, "self", 401), ("phone", "self", 403), ("admin", None, 403), ("admin", "http://evil.example", 403)):
+            status, _h, _b = self._post(body, cookie=cookie, origin=origin, path=path)
+            self.assertEqual(status, expected)
+        status, _h, raw = self._post(body, path=path)
+        self.assertEqual(status, 200, raw)
+        self.assertTrue(json.loads(raw)["count"] > 0)
+        self.assertFalse((self.tmp / "Inbox" / "Drawings").exists(), "preview must not persist")
 
     def _get(self, path, cookie="admin"):
         ck = {"admin": self.admin, "phone": self.phone, None: None}[cookie]
