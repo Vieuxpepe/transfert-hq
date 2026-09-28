@@ -1,0 +1,255 @@
+"""Disk alert, disk health and backup-target tests for the HQ-root volume.
+
+The live HQ root is C:\\Transfert. The monitor alert used to watch a hard-coded D:,
+so a missing D: silently disabled it and a full C: never alerted.
+
+Offline only: fake disk_free keyed by drive, isolated cc_ext module state, no
+Discord, no live bridge, no real backups outside a temp dir.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import tempfile
+import threading
+import unittest
+from pathlib import Path, PureWindowsPath
+from unittest import mock
+
+import cc_ext
+import hq_automation
+import hq_events
+import iphone_bridge
+
+GB = 1024**3
+STATE = (
+    "_lock", "_activity", "_alerts", "ROOT", "human_size", "notify_discord", "disk_free", "get_config",
+    "_disk_alerted", "_disk_missing_alerted", "_backup_alerted", "_last_backup",
+)
+
+
+def disk(free_gb: float, total_gb: float = 500.0) -> dict:
+    return {"free": int(free_gb * GB), "total": int(total_gb * GB), "free_h": f"{free_gb:g} Go", "total_h": f"{total_gb:g} Go"}
+
+
+MISSING = {"error": "[WinError 3] Le chemin d'accès spécifié est introuvable"}
+
+
+class FakeDisks:
+    """disk_free() stand-in: answers by drive letter of the queried path."""
+
+    def __init__(self, **drives: dict):
+        self.drives = drives
+        self.calls: list[str] = []
+
+    def __call__(self, path) -> dict:
+        text = str(path)
+        self.calls.append(text)
+        letter = text[:1].upper() if text[1:2] == ":" else "ROOT"
+        return dict(self.drives.get(letter, MISSING))
+
+
+class DiskTestBase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="hq-disk-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        saved = {name: getattr(cc_ext, name, None) for name in STATE}
+
+        def restore():
+            for name, value in saved.items():
+                setattr(cc_ext, name, value)
+
+        self.addCleanup(restore)
+        self.cfg: dict = {"alert_disk_min_gb": 20}
+        self.discord: list[tuple[str, str]] = []
+        cc_ext._lock = threading.Lock()
+        cc_ext._activity = []
+        cc_ext._alerts = []
+        cc_ext._disk_alerted = False
+        cc_ext._disk_missing_alerted = False
+        cc_ext._backup_alerted = False
+        cc_ext._last_backup = 0.0
+        cc_ext.ROOT = PureWindowsPath(r"C:\Transfert")  # the live layout
+        cc_ext.human_size = lambda n: f"{n / GB:.1f} Go"
+        cc_ext.notify_discord = lambda title, detail: self.discord.append((title, detail))
+        cc_ext.get_config = lambda: self.cfg
+        cc_ext.disk_free = FakeDisks(C=disk(200), D=disk(900))
+        for patcher in (
+            mock.patch.object(hq_events, "enabled", return_value=False),
+            mock.patch.object(hq_automation, "ready", return_value=False),
+            mock.patch.object(cc_ext, "_persist_activity", lambda: None),  # ROOT is a PureWindowsPath
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def alerts(self, title: str) -> list[dict]:
+        return [a for a in cc_ext.alerts_list() if a["title"] == title]
+
+
+class DiskAlertTests(DiskTestBase):
+    def test_low_space_on_root_volume_alerts_once_and_names_drive(self):
+        cc_ext.disk_free = FakeDisks(C=disk(5), D=disk(900))
+        cc_ext.check_disk_alert()
+        cc_ext.check_disk_alert()
+        low = self.alerts("Espace disque bas")
+        self.assertEqual(len(low), 1, "alert once, no duplicate on repeat")
+        self.assertEqual(low[0]["detail"], "C: libre: **5.0 Go** (seuil 20.0 Go)")
+        self.assertEqual(self.discord, [("Espace disque bas", "C: libre: **5.0 Go** (seuil 20.0 Go)")])
+        self.assertTrue(any(c.startswith("C:") for c in cc_ext.disk_free.calls))
+
+    def test_d_drive_no_longer_drives_the_alert(self):
+        cc_ext.disk_free = FakeDisks(C=disk(200), D=disk(1))
+        cc_ext.check_disk_alert()
+        self.assertEqual(self.alerts("Espace disque bas"), [])
+        self.assertFalse(any(c.startswith("D:") for c in cc_ext.disk_free.calls), cc_ext.disk_free.calls)
+
+    def test_recovery_rearms_like_main(self):
+        cc_ext.disk_free = FakeDisks(C=disk(5))
+        cc_ext.check_disk_alert()
+        cc_ext.disk_free.drives["C"] = disk(50)  # back above the threshold -> re-armed
+        cc_ext.check_disk_alert()
+        self.assertFalse(cc_ext._disk_alerted)
+        cc_ext.disk_free.drives["C"] = disk(5)
+        cc_ext.check_disk_alert()
+        self.assertEqual(len(self.alerts("Espace disque bas")), 2)
+
+    def test_full_disk_with_zero_free_bytes_alerts(self):
+        cc_ext.disk_free = FakeDisks(C=disk(0))
+        cc_ext.check_disk_alert()
+        self.assertEqual(len(self.alerts("Espace disque bas")), 1)
+
+    def test_missing_root_volume_warns_once_and_is_not_treated_as_fine(self):
+        cc_ext.disk_free = FakeDisks(C=disk(5))
+        cc_ext.check_disk_alert()  # low -> alerted
+        cc_ext.disk_free.drives.pop("C")  # volume becomes unreadable
+        for _ in range(3):
+            cc_ext.check_disk_alert()
+        missing = self.alerts("Disque introuvable")
+        self.assertEqual(len(missing), 1, "one warning, no spam")
+        self.assertIn("C: illisible", missing[0]["detail"])
+        self.assertIn("introuvable", missing[0]["detail"])
+        self.assertTrue(cc_ext._disk_alerted, "unknown state must not re-arm/clear the low-space alert")
+        cc_ext.disk_free.drives["C"] = disk(5)  # readable again, still low: no duplicate low alert
+        cc_ext.check_disk_alert()
+        self.assertEqual(len(self.alerts("Espace disque bas")), 1)
+        cc_ext.disk_free.drives.pop("C")  # missing again after recovery -> warns again
+        cc_ext.check_disk_alert()
+        self.assertEqual(len(self.alerts("Disque introuvable")), 2)
+
+    def test_volume_label(self):
+        self.assertEqual(cc_ext.volume_label(PureWindowsPath(r"C:\Transfert")), "C:")
+        self.assertEqual(cc_ext.volume_label(PureWindowsPath(r"E:\HQ\Transfert")), "E:")
+        self.assertEqual(cc_ext.volume_label(PureWindowsPath(r"\\nas\share\Transfert")), "\\\\nas\\share")
+        self.assertEqual(cc_ext.volume_label(Path("/srv/transfert")), "/")
+
+
+class HealthTests(DiskTestBase):
+    def test_health_report_has_root_volume_and_flags_missing_d(self):
+        cc_ext.disk_free = FakeDisks(C=disk(120))  # no D: drive
+        with mock.patch.object(cc_ext, "smb_share_ok", return_value=False):
+            rep = cc_ext.health_report(uptime_sec=5, tailscale_ip=None, version="7.0")
+        self.assertEqual(rep["disk_root"]["volume"], "C:")
+        self.assertEqual(rep["disk_root"]["free"], 120 * GB)
+        self.assertNotIn("missing", rep["disk_root"])
+        self.assertIn("disk_d", rep, "kept for older clients")
+        self.assertTrue(rep["disk_d"]["missing"])
+        self.assertEqual(rep["disk_d"]["volume"], "D:")
+        self.assertTrue(rep["disk_d"]["error"])
+        self.assertIn("backup", rep)
+
+    def test_health_report_keeps_d_values_when_present(self):
+        cc_ext.disk_free = FakeDisks(C=disk(120), D=disk(900))
+        with mock.patch.object(cc_ext, "smb_share_ok", return_value=False):
+            rep = cc_ext.health_report(uptime_sec=5, tailscale_ip=None, version="7.0")
+        self.assertEqual(rep["disk_d"]["free"], 900 * GB)
+        self.assertEqual(rep["disk_d"]["free_h"], "900 Go")
+        self.assertNotIn("missing", rep["disk_d"])
+
+    def _host_entry(self, root, fake):
+        with mock.patch.object(iphone_bridge, "ROOT", root), mock.patch.object(iphone_bridge, "disk_free", fake), \
+                mock.patch.object(iphone_bridge, "lan_ipv4", return_value="192.168.1.10"):
+            return iphone_bridge.host_device_entry()
+
+    def test_host_entry_primary_is_root_volume(self):
+        entry = self._host_entry(PureWindowsPath(r"C:\Transfert"), FakeDisks(C=disk(120), D=disk(900)))
+        self.assertEqual(entry["free"], 120 * GB, "primary = HQ-root volume, not D:")
+        self.assertEqual([d["name"] for d in entry["disks"]], ["C:", "D:"])
+
+    def test_host_entry_without_d_and_on_other_root_drive(self):
+        entry = self._host_entry(PureWindowsPath(r"C:\Transfert"), FakeDisks(C=disk(120)))
+        self.assertEqual([d["name"] for d in entry["disks"]], ["C:"])
+        self.assertEqual(entry["free"], 120 * GB)
+        entry = self._host_entry(PureWindowsPath(r"E:\Transfert"), FakeDisks(C=disk(120), E=disk(40)))
+        self.assertEqual([d["name"] for d in entry["disks"]], ["E:", "C:"])
+        self.assertEqual(entry["free"], 40 * GB)
+
+    def test_bridge_status_marks_volumes(self):
+        with mock.patch.object(iphone_bridge, "ROOT", PureWindowsPath(r"C:\Transfert")), \
+                mock.patch.object(iphone_bridge, "disk_free", FakeDisks(C=disk(120))), \
+                mock.patch.object(iphone_bridge, "lan_ipv4", return_value="192.168.1.10"), \
+                mock.patch.object(iphone_bridge, "tailscale_ipv4", return_value=None):
+            st = iphone_bridge.bridge_status()
+        self.assertEqual(st["disk_transfert"]["volume"], "C:")
+        self.assertEqual(st["disk_transfert"]["free_h"], "120 Go")
+        self.assertTrue(st["disk_d"]["missing"])
+
+    def test_wallboard_health_line_uses_root_volume(self):
+        html = iphone_bridge.render_wallboard().decode("utf-8")
+        self.assertIn("h.disk_root", html)
+        self.assertNotIn("' · D: ' + (h.disk_d?.free_h", html)
+
+
+class BackupTargetTests(DiskTestBase):
+    def setUp(self):
+        super().setUp()
+        cc_ext.ROOT = self.tmp / "Transfert"
+        (cc_ext.ROOT / "Inbox").mkdir(parents=True)
+        (cc_ext.ROOT / "Inbox" / "a.txt").write_text("x", encoding="utf-8")
+        cwd = os.getcwd()
+        os.chdir(self.tmp)  # a relative default must never land in the repo
+        self.addCleanup(os.chdir, cwd)
+
+    def test_default_backup_dir_is_not_moved_to_root_volume(self):
+        self.assertEqual(cc_ext.DEFAULT_BACKUP_DIR, "D:/Backups/Transfert")
+        self.assertEqual(iphone_bridge.default_config()["backup_dir"], "D:/Backups/Transfert")
+        self.assertEqual(cc_ext.backup_target_status()["dir"], "D:/Backups/Transfert")
+
+    def test_missing_backup_drive_fails_explicitly(self):
+        self.cfg["backup_dir"] = str(self.tmp / "nodrive" / "Backups")
+        with mock.patch.object(cc_ext, "_volume_present", return_value=False, create=True):
+            status = cc_ext.backup_target_status()
+            with self.assertRaises(RuntimeError) as cm:
+                cc_ext.run_backup(force=True)
+        self.assertFalse(status["ok"])
+        self.assertIn("introuvable", str(cm.exception))
+        self.assertFalse((self.tmp / "nodrive").exists(), "nothing written elsewhere")
+        self.assertEqual(sorted(p.name for p in cc_ext.ROOT.iterdir()), ["Inbox"], "never falls back to ROOT")
+
+    def test_unusable_default_never_writes_relative_or_to_root(self):
+        # On this POSIX box "D:/Backups/Transfert" is not absolute (as a missing D: on Windows,
+        # it is unusable): the backup must fail loudly instead of writing somewhere else.
+        with self.assertRaises(RuntimeError):
+            cc_ext.run_backup(force=True)
+        self.assertFalse((self.tmp / "D:").exists())
+        self.assertEqual(sorted(p.name for p in cc_ext.ROOT.iterdir()), ["Inbox"])
+
+    def test_scheduled_backup_failure_alerts_once_and_rearms(self):
+        self.cfg["backup_dir"] = str(self.tmp / "bk")
+        with mock.patch.object(cc_ext, "_volume_present", return_value=False, create=True):
+            for _ in range(3):
+                cc_ext.maybe_backup()
+        failed = self.alerts("Backup impossible")
+        self.assertEqual(len(failed), 1, "one visible alert, not one per monitor tick")
+        self.assertIn("introuvable", failed[0]["detail"])
+        cc_ext.maybe_backup()  # drive back: backup succeeds and re-arms
+        self.assertTrue(any((self.tmp / "bk").iterdir()))
+        self.assertFalse(cc_ext._backup_alerted)
+        cc_ext._last_backup = 0.0
+        with mock.patch.object(cc_ext, "_volume_present", return_value=False, create=True):
+            cc_ext.maybe_backup()
+        self.assertEqual(len(self.alerts("Backup impossible")), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

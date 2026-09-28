@@ -440,6 +440,23 @@ Clés de config nouvelles (dans bridge_config.json, pas de secret)
 Télémétrie : l'échantillon local vient du cache disque déjà connu.
 Les pairs Tailscale ne sont pas re-sondés à chaque GET /api/hq.
 
+Disque surveillé et backups
+---------------------------
+  Alerte « Espace disque bas » : volume de la racine HQ (ROOT, ex. C: pour
+  C:\Transfert), seuil alert_disk_min_gb. Une alerte par passage sous le seuil,
+  réarmée quand l'espace repasse au-dessus. Un volume illisible donne une seule
+  alerte « Disque introuvable » (jamais traité comme « OK »).
+  Santé : /api/health → disk_root (volume principal, avec "volume"), disk_d
+  conservé pour compatibilité (missing:true si D: absent) ; /api/status →
+  disk_transfert (volume racine, principal) et disk_d ; l'appareil pc-host
+  affiche d'abord le volume racine.
+  backup_dir : défaut D:/Backups/Transfert, volontairement PAS le volume de la
+  racine (un backup sur le même disque ne protège pas d'une panne). Si le
+  lecteur est absent ou le chemin non absolu, le backup échoue explicitement :
+  erreur 500 sur POST /api/backup, une alerte « Backup impossible » pour le
+  backup planifié (réarmée après un backup réussi), avertissement au démarrage,
+  et /api/health → backup.ok=false. Choisir un autre disque : régler backup_dir.
+
 Notes vocales
 -------------
   Bouton « Note vocale » (MediaRecorder) → upload existant vers Inbox/Voice/.
