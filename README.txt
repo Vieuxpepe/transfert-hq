@@ -456,6 +456,12 @@ Disque surveillé et backups
   erreur 500 sur POST /api/backup, une alerte « Backup impossible » pour le
   backup planifié (réarmée après un backup réussi), avertissement au démarrage,
   et /api/health → backup.ok=false. Choisir un autre disque : régler backup_dir.
+  Limite : seule la PRÉSENCE du lecteur (et un chemin absolu) est vérifiée.
+  Un volume présent mais en mauvais état ou inadapté n'est PAS détecté — par
+  ex. le D: du contrôleur (clé USB FAT32 « Full Repair Needed », FAT32 refuse
+  les fichiers > 4 Go) : un pont non mis en pause y écrirait quand même. Une
+  cible présente mais défaillante doit être mise en pause explicitement
+  (backup_auto_paused, ci-dessous) ou remplacée via backup_dir.
 
   Pause des backups automatiques : "backup_auto_paused": true
     Suspend TOUS les backups automatiques (planning backup_every_hours du pont,
@@ -465,16 +471,28 @@ Disque surveillé et backups
     disponible et échoue toujours clairement si la cible est inutilisable.
     Visible : /api/health → backup.auto_paused=true (+ note), /api/status →
     backup_auto_paused=true, ligne santé « Backup auto en pause », et au
-    démarrage « Backup : PAUSE (backup_auto_paused) ». Défaut : false.
+    démarrage « Backup : PAUSE (backup_auto_paused) ».
+    Défaut : false (une nouvelle installation garde ses backups planifiés).
+    Ce défaut ne protège PAS contre une cible présente mais défaillante : sur
+    une telle machine, la pause doit être mise explicitement.
     Les backups déjà présents sur D: ne sont ni déplacés ni supprimés.
+    Pas de contournement par un grand backup_every_hours : _last_backup vaut 0
+    au démarrage et l'intervalle ne s'applique qu'après un backup réussi, donc
+    le premier backup planifié part quand même au démarrage du pont.
 
-    Sur le contrôleur (à faire soi-même) :
-      1. Arrêter le pont (une sauvegarde de config par le pont en marche
-         écraserait une modification faite à la main pendant qu'il tourne).
-      2. Dans C:\Transfert\bridge_config.json, ajouter au niveau racine :
+    Déploiement sur le contrôleur (à faire soi-même, dans cet ordre) :
+      1. Arrêter le pont.
+      2. Pont arrêté : installer le code relu (cette version) ET, dans
+         C:\Transfert\bridge_config.json, ajouter au niveau racine :
            "backup_auto_paused": true,
-      3. Redémarrer le pont, puis vérifier /api/health → backup.auto_paused.
-    Pour reprendre : remettre false (ou retirer la clé) et redémarrer.
+         (pont arrêté : une sauvegarde de config par le pont en marche
+         écraserait la modification ; une ancienne version du code ignore
+         cette clé et lancerait le premier backup planifié au démarrage.)
+      3. Redémarrer le pont.
+      4. Vérifier /api/health → backup.auto_paused: true (ou la ligne de
+         démarrage « Backup : PAUSE (backup_auto_paused) »).
+    Pour reprendre (après avoir validé une nouvelle cible, voir ci-dessous) :
+    remettre false (ou retirer la clé) pont arrêté, puis redémarrer.
 
   Avant de s'appuyer sur une nouvelle cible (disque externe NTFS, NAS) :
     - Vérifier le système de fichiers (PowerShell : Get-Volume -DriveLetter E →
