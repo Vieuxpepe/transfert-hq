@@ -440,6 +440,76 @@ Clés de config nouvelles (dans bridge_config.json, pas de secret)
 Télémétrie : l'échantillon local vient du cache disque déjà connu.
 Les pairs Tailscale ne sont pas re-sondés à chaque GET /api/hq.
 
+Disque surveillé et backups
+---------------------------
+  Alerte « Espace disque bas » : volume de la racine HQ (ROOT, ex. C: pour
+  C:\Transfert), seuil alert_disk_min_gb. Une alerte par passage sous le seuil,
+  réarmée quand l'espace repasse au-dessus. Un volume illisible donne une seule
+  alerte « Disque introuvable » (jamais traité comme « OK »).
+  Santé : /api/health → disk_root (volume principal, avec "volume"), disk_d
+  conservé pour compatibilité (missing:true si D: absent) ; /api/status →
+  disk_transfert (volume racine, principal) et disk_d ; l'appareil pc-host
+  affiche d'abord le volume racine.
+  backup_dir : défaut D:/Backups/Transfert, volontairement PAS le volume de la
+  racine (un backup sur le même disque ne protège pas d'une panne). Si le
+  lecteur est absent ou le chemin non absolu, le backup échoue explicitement :
+  erreur 500 sur POST /api/backup, une alerte « Backup impossible » pour le
+  backup planifié (réarmée après un backup réussi), avertissement au démarrage,
+  et /api/health → backup.ok=false. Choisir un autre disque : régler backup_dir.
+  Limite : seule la PRÉSENCE du lecteur (et un chemin absolu) est vérifiée.
+  Un volume présent mais en mauvais état ou inadapté n'est PAS détecté — par
+  ex. le D: du contrôleur (clé USB FAT32 « Full Repair Needed », FAT32 refuse
+  les fichiers > 4 Go) : un pont non mis en pause y écrirait quand même. Une
+  cible présente mais défaillante doit être mise en pause explicitement
+  (backup_auto_paused, ci-dessous) ou remplacée via backup_dir.
+
+  Pause des backups automatiques : "backup_auto_paused": true
+    Suspend TOUS les backups automatiques (planning backup_every_hours du pont,
+    et les étapes/actions « backup » des planifications, règles et scènes
+    d'automatisation) : aucune écriture, aucun accès à backup_dir, aucune
+    alerte répétée. Le bouton « Faire une sauvegarde » (POST /api/backup) reste
+    disponible et échoue toujours clairement si la cible est inutilisable.
+    Visible : /api/health → backup.auto_paused=true (+ note), /api/status →
+    backup_auto_paused=true, ligne santé « Backup auto en pause », et au
+    démarrage « Backup : PAUSE (backup_auto_paused) ».
+    Défaut : false (une nouvelle installation garde ses backups planifiés).
+    Ce défaut ne protège PAS contre une cible présente mais défaillante : sur
+    une telle machine, la pause doit être mise explicitement.
+    Les backups déjà présents sur D: ne sont ni déplacés ni supprimés.
+    Pas de contournement par un grand backup_every_hours : _last_backup vaut 0
+    au démarrage et l'intervalle ne s'applique qu'après un backup réussi, donc
+    le premier backup planifié part quand même au démarrage du pont.
+
+    Déploiement sur le contrôleur (à faire soi-même, dans cet ordre) :
+      1. Arrêter le pont.
+      2. Pont arrêté : installer le code relu (cette version) ET, dans
+         C:\Transfert\bridge_config.json, ajouter au niveau racine :
+           "backup_auto_paused": true,
+         (pont arrêté : une sauvegarde de config par le pont en marche
+         écraserait la modification ; une ancienne version du code ignore
+         cette clé et lancerait le premier backup planifié au démarrage.)
+      3. Redémarrer le pont.
+      4. Vérifier /api/health → backup.auto_paused: true (ou la ligne de
+         démarrage « Backup : PAUSE (backup_auto_paused) »).
+    Pour reprendre (après avoir validé une nouvelle cible, voir ci-dessous) :
+    remettre false (ou retirer la clé) pont arrêté, puis redémarrer.
+
+  Avant de s'appuyer sur une nouvelle cible (disque externe NTFS, NAS) :
+    - Vérifier le système de fichiers (PowerShell : Get-Volume -DriveLetter E →
+      FileSystem NTFS ; FAT32 refuse les fichiers > 4 Go).
+    - Régler backup_dir, redémarrer, lancer « Faire une sauvegarde » : la
+      réponse indique le dossier <backup_dir>\<AAAAMMJJ_HHMMSS>.
+    - Relire le backup SANS restaurer sur la racine (la restauration HQ écrase
+      Inbox|Uni|Print) : comparer les empreintes, par ex.
+        $src = "C:\Transfert\Inbox"; $dst = "E:\Backups\Transfert\<id>\Inbox"
+        $h = { param($r) Get-ChildItem $r -Recurse -File | ForEach-Object {
+               "{0}|{1}" -f $_.FullName.Substring($r.Length), (Get-FileHash $_.FullName).Hash } }
+        Compare-Object (& $h $src) (& $h $dst)    # aucune sortie = identique
+      (les fichiers .tmp / *.pid sont exclus du backup ; un fichier modifié
+      depuis le backup apparaîtra aussi) et ouvrir quelques fichiers copiés
+      vers un dossier temporaire. La liste des backups catalogués est dans
+      GET /api/backups (Système → Sauvegardes).
+
 Notes vocales
 -------------
   Bouton « Note vocale » (MediaRecorder) → upload existant vers Inbox/Voice/.
