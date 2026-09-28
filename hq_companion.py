@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import threading
 import time
 from pathlib import Path
@@ -669,16 +670,73 @@ def _free_bytes() -> int | None:
         return None
 
 
+_REPARSE_ATTR = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_link_or_reparse(st: os.stat_result) -> bool:
+    """True for a POSIX symlink or any Windows reparse point (junction included)."""
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0) or 0
+    return bool(attrs & _REPARSE_ATTR)
+
+
+def _artifact_dir(device_id: str, job_id: str, *, create: bool) -> Path | None:
+    """Walk Inbox/AgentArtifacts/<device>/<job> without following any link.
+
+    Every component is checked with lstat. A symlink, a junction or any other
+    reparse point, or a non-directory, refuses the artifact. A missing
+    component is created one level at a time (never parents=True) and checked
+    again. Returns None when ``create`` is false and a component is missing.
+    """
+    if _root is None:
+        raise RuntimeError("hq_companion non initialisé")
+    current = _root
+    for part in ("Inbox", "AgentArtifacts", device_id, job_id):
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except FileNotFoundError:
+            if not create:
+                return None
+            try:
+                os.mkdir(current)
+            except FileExistsError:
+                pass
+            st = os.lstat(current)
+        if _is_link_or_reparse(st) or not stat.S_ISDIR(st.st_mode):
+            raise ops.AgentOpError("chemin d'artifact refusé")
+    return current
+
+
+def _open_exclusive(path: Path) -> int:
+    """Create a new file; never open an existing name or follow a link."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags, 0o666)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or _is_link_or_reparse(os.lstat(path)):
+            raise ops.AgentOpError("chemin d'artifact refusé")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _artifact_usage(device_id: str) -> tuple[int, int]:
     if _root is None:
         return 0, 0
     root = _root / "Inbox" / "AgentArtifacts" / device_id
-    if not root.is_dir():
+    try:
+        if _is_link_or_reparse(os.lstat(root)) or not root.is_dir():
+            return 0, 0
+    except OSError:
         return 0, 0
     files = 0
     total = 0
     for path in root.rglob("*"):
-        if not path.is_file() or path.name.endswith(".partial"):
+        if path.is_symlink() or not path.is_file() or path.name.endswith(".partial"):
             continue
         files += 1
         try:
@@ -689,7 +747,14 @@ def _artifact_usage(device_id: str) -> tuple[int, int]:
 
 
 def _accept_artifact(device: dict, headers: Any, body: bytes) -> tuple[int, dict]:
-    """Authorize, then reserve disk, then write. A refusal creates no file."""
+    """Authorize, then reserve disk, then write. A refusal creates no file.
+
+    The path is walked without following links (no symlink, junction or other
+    reparse point in Inbox/AgentArtifacts/<device>/<job>). The temporary file
+    is created exclusively (O_CREAT|O_EXCL, O_NOFOLLOW where available): a
+    pre-existing or planted .partial refuses the upload and is never opened.
+    Cleanup removes only the names this request created.
+    """
     if "artifacts" not in _granted(device):
         raise ops.AgentOpError("capacité refusée")
     if len(body) > proto.ARTIFACT_MAX:
@@ -706,7 +771,7 @@ def _accept_artifact(device: dict, headers: Any, body: bytes) -> tuple[int, dict
     if _root is None:
         raise RuntimeError("hq_companion non initialisé")
     device_id = str(device.get("id"))
-    dest: Path | None = None
+    created: list[Path] = []
     reserved = False
     try:
         hq_jobs.authorize_artifact(device_id, job_id, name, len(body), dispatch)
@@ -714,22 +779,35 @@ def _accept_artifact(device: dict, headers: Any, body: bytes) -> tuple[int, dict
         free = _free_bytes()
         if free is None or free < _reserve_limit() + len(body):
             raise ops.AgentOpError("espace disque insuffisant")
+        # Refuse a link in an existing component before counting the quota.
+        _artifact_dir(device_id, job_id, create=False)
         used_files, used_bytes = _artifact_usage(device_id)
         if used_files >= DEVICE_ARTIFACT_MAX_FILES or used_bytes + len(body) > DEVICE_ARTIFACT_MAX_BYTES:
             raise ops.AgentOpError("quota d'artifacts atteint")
-        dest_dir = _root / "Inbox" / "AgentArtifacts" / device_id / job_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir = _artifact_dir(device_id, job_id, create=True)
+        if dest_dir is None:
+            raise ops.AgentOpError("chemin d'artifact refusé")
         dest = dest_dir / name
         try:
             dest.resolve().relative_to((_root / "Inbox" / "AgentArtifacts").resolve())
         except ValueError as exc:
             raise ops.AgentOpError("nom d'artifact refusé") from exc
         partial = dest.with_name(dest.name + ".partial")
-        with partial.open("wb") as handle:
+        for existing in (dest, partial):
+            if os.path.lexists(existing):
+                raise ops.AgentOpError("chemin d'artifact refusé")
+        fd = _open_exclusive(partial)
+        created.append(partial)
+        with os.fdopen(fd, "wb") as handle:
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
+        # The directory chain is checked again right before the rename.
+        if _artifact_dir(device_id, job_id, create=False) != dest_dir or os.path.lexists(dest):
+            raise ops.AgentOpError("chemin d'artifact refusé")
         os.replace(partial, dest)
+        created.remove(partial)
+        created.append(dest)
         digest = hashlib.sha256(body).hexdigest()
         rel = "/".join(dest.relative_to(_root).parts)
         snapshot = hq_jobs.attach_artifact(
@@ -741,12 +819,12 @@ def _accept_artifact(device: dict, headers: Any, body: bytes) -> tuple[int, dict
         reserved = False
         return 200, {"ok": True, "artifact": snapshot.get("artifact"), "job": snapshot["id"]}
     except Exception:
-        if dest is not None:
-            for path in (dest, dest.with_name(dest.name + ".partial")):
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        for path in created:
+            try:
+                # unlink removes a name, never the target of a link.
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         if reserved:
             hq_jobs.release_artifact_reservation(device_id, job_id)
         raise
