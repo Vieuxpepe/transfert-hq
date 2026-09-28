@@ -1,8 +1,8 @@
 # Install / refresh Transfert Bridge logon autostart
 $ErrorActionPreference = 'Stop'
 $taskName = 'TransfertBridge'
-$bridge = 'D:\Transfert\iphone_bridge.py'
-$vbs = 'D:\Transfert\start_bridge_hidden.vbs'
+$bridge = 'C:\Transfert\iphone_bridge.py'
+$vbs = 'C:\Transfert\start_bridge_hidden.vbs'
 $py = (Get-Command py -ErrorAction Stop).Source
 
 $vbsContent = @"

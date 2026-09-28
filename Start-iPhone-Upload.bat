@@ -1,5 +1,5 @@
 @echo off
-cd /d D:\Transfert
+cd /d C:\Transfert
 echo.
 echo ========================================
 echo  Transfert Bridge v3
@@ -18,6 +18,6 @@ echo.
 echo  If already running, this window will exit quickly.
 echo ========================================
 echo.
-py -3 D:\Transfert\iphone_bridge.py
+py -3 C:\Transfert\iphone_bridge.py
 if errorlevel 1 pause
 pause

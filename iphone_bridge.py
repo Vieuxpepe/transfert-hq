@@ -3481,7 +3481,7 @@ function setupHQ() {
     try {
       await api('/api/queue', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ label, when: 'online', type: 'explore', path: 'D:/Transfert/Uni' })
+        body: JSON.stringify({ label, when: 'online', type: 'explore', path: 'C:/Transfert/Uni' })
       });
       toast('Ajouté à la file');
       await refreshHQ();
@@ -4574,7 +4574,7 @@ def render_app() -> bytes:
         <p class="sec-hint">Réglages de base du pont</p>
       </div>
       <dl class="hq-status">
-        <dt>Dossier PC</dt><dd>D:\\Transfert\\{{Inbox,Uni,Print}}</dd>
+        <dt>Dossier PC</dt><dd>C:\\Transfert\\{{Inbox,Uni,Print}}</dd>
         <dt>PIN</dt><dd>{"activé" if pin_enabled() else "désactivé"}</dd>
         <dt>Gros fichiers</dt><dd>jusqu'à {html.escape(human_size(max_upload_bytes()))} (stream)</dd>
         <dt>Discord</dt><dd>{"activé" if str(CONFIG.get("discord_webhook_url") or "").strip() else "off"}</dd>

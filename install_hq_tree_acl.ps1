@@ -25,7 +25,7 @@
 # Explicit planner ReadAndExecute, not inherited, only on:
 #   hqctl.py
 # hqctl.py imports only the standard library. It locates the token file
-# itself. Invocation: py -3 -B D:\Transfert\hqctl.py
+# itself. Invocation: py -3 -B C:\Transfert\hqctl.py
 # Controller modules stay unreadable by the planner, including
 #   iphone_bridge.py, cc_ext.py, hq_companion.py, hq_jobs.py, hq_planner.py,
 #   hq_state.py, hq_agent_protocol.py, hq_agent_ops.py,
@@ -60,11 +60,11 @@
 #
 # Example (elevated), before any companion enrollment. -WhatIf writes nothing:
 #   powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 -WhatIf `
-#     -StateDir D:\Transfert `
+#     -StateDir C:\Transfert `
 #     -ControllerIdentity "VIEUXPEEPEE\autm_" `
 #     -PlannerIdentity "VIEUXPEEPEE\hq-planner"
 #   powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 -WhatIf `
-#     -StateDir D:\Transfert `
+#     -StateDir C:\Transfert `
 #     -ControllerIdentity "VIEUXPEEPEE\autm_" `
 #     -PlannerIdentity "VIEUXPEEPEE\hq-planner"
 [CmdletBinding(SupportsShouldProcess = $true)]
