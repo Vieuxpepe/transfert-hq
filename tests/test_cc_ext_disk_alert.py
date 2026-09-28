@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import threading
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest import mock
 
 import cc_ext
@@ -29,6 +29,27 @@ STATE = (
     "_disk_alerted", "_disk_missing_alerted", "_backup_alerted", "_last_backup",
 )
 REAL_MKDIR = Path.mkdir
+
+
+def guarded_mkdir(test_root: Path):
+    """Path.mkdir that refuses anything outside the test's temp dir.
+
+    run_backup() creates its destination with Path.mkdir before copying anything, so
+    this stops a test from ever writing a real backup (e.g. to D: on a Windows PC
+    where D:/Backups/Transfert is an absolute, existing path)."""
+    root = os.path.abspath(str(test_root))
+
+    def mkdir(path, *args, **kwargs):
+        target = os.path.abspath(str(path))
+        try:
+            inside = os.path.commonpath([root, target]) == root
+        except ValueError:  # different drives on Windows
+            inside = False
+        if not inside:
+            raise AssertionError(f"test tried to create a directory outside its temp dir: {path}")
+        return REAL_MKDIR(path, *args, **kwargs)
+
+    return mkdir
 
 
 def disk(free_gb: float, total_gb: float = 500.0) -> dict:
@@ -81,6 +102,7 @@ class DiskTestBase(unittest.TestCase):
             mock.patch.object(hq_events, "enabled", return_value=False),
             mock.patch.object(hq_automation, "ready", return_value=False),
             mock.patch.object(cc_ext, "_persist_activity", lambda: None),  # ROOT is a PureWindowsPath
+            mock.patch.object(Path, "mkdir", guarded_mkdir(self.tmp)),  # never write outside tmp (e.g. D:)
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -143,7 +165,7 @@ class DiskAlertTests(DiskTestBase):
         self.assertEqual(cc_ext.volume_label(PureWindowsPath(r"C:\Transfert")), "C:")
         self.assertEqual(cc_ext.volume_label(PureWindowsPath(r"E:\HQ\Transfert")), "E:")
         self.assertEqual(cc_ext.volume_label(PureWindowsPath(r"\\nas\share\Transfert")), "\\\\nas\\share")
-        self.assertEqual(cc_ext.volume_label(Path("/srv/transfert")), "/")
+        self.assertEqual(cc_ext.volume_label(PurePosixPath("/srv/transfert")), "/")
 
 
 class HealthTests(DiskTestBase):
@@ -229,11 +251,15 @@ class BackupTargetTests(DiskTestBase):
         self.assertEqual(sorted(p.name for p in cc_ext.ROOT.iterdir()), ["Inbox"], "never falls back to ROOT")
 
     def test_unusable_default_never_writes_relative_or_to_root(self):
-        # On this POSIX box "D:/Backups/Transfert" is not absolute (as a missing D: on Windows,
-        # it is unusable): the backup must fail loudly instead of writing somewhere else.
-        with self.assertRaises(RuntimeError):
-            cc_ext.run_backup(force=True)
-        self.assertFalse((self.tmp / "D:").exists())
+        # Default target D:/Backups/Transfert made unusable: on POSIX it is not absolute; on
+        # Windows the missing-volume check is mocked (the PC running the suite may really have
+        # a D: drive). Either way the backup must fail instead of writing somewhere else.
+        with mock.patch.object(cc_ext, "_volume_present", return_value=False, create=True):
+            with self.assertRaises(RuntimeError):
+                cc_ext.run_backup(force=True)
+        # Nothing new next to ROOT (a relative "D:" folder on POSIX, or anything else);
+        # listing the temp dir avoids Path("D:") meaning "current dir of drive D:" on Windows.
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["Transfert"])
         self.assertEqual(sorted(p.name for p in cc_ext.ROOT.iterdir()), ["Inbox"])
 
     def test_scheduled_backup_failure_alerts_once_and_rearms(self):
@@ -272,9 +298,11 @@ class BackupPauseTests(DiskTestBase):
         """Spy every way run_backup reaches a backup target (probe, mkdir, copytree)."""
         mkdirs: list[str] = []
 
+        guarded = guarded_mkdir(self.tmp)
+
         def spy_mkdir(path, *args, **kwargs):
             mkdirs.append(str(path))
-            return REAL_MKDIR(path, *args, **kwargs)
+            return guarded(path, *args, **kwargs)
 
         present = mock.Mock(return_value=volume_present)
         copytree = mock.Mock(side_effect=shutil.copytree)
@@ -308,7 +336,7 @@ class BackupPauseTests(DiskTestBase):
         copytree.assert_not_called()
         self.assertEqual(mkdirs, [])
         self.assertEqual(cc_ext.alerts_list(), [], "no repeated (or any) alert for the paused state")
-        self.assertFalse((self.tmp / "D:").exists())
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["Transfert"])
 
     def test_automation_backup_callback_is_skipped_while_paused(self):
         captured = {}
