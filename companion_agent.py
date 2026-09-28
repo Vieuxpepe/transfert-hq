@@ -8,9 +8,11 @@ No inbound port. No iOS. HTTPS to the controller (Tailscale Serve) unless
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import platform
+import re
 import secrets
 import sys
 import time
@@ -279,11 +281,61 @@ def serve(config: dict, *, once: bool = False, sleep: Callable[[float], None] | 
         sleeper(delay)
 
 
+# Enrollment token input (F3). The one-time token never travels in argv: it
+# would land in shell history, the process list and audit logs. ``--enroll``
+# takes no value. The token is read with a masked prompt when stdin is a
+# console, or as one line from stdin otherwise (for example piped from a file
+# readable only by the installer account). The scheduled task never enrolls:
+# its action stays the script plus --config.
+_ENROLL_FROM_INPUT = object()
+_ENROLL_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,256}")
+ENROLL_PROMPT = "Jeton d'enrôlement (saisie masquée) : "
+ENROLL_ARGV_REFUSED = (
+    "REFUS : le jeton ne se passe pas en argument (historique, liste des processus). "
+    "Relancer avec --enroll seul, puis coller le jeton (saisie masquée) ou le fournir "
+    "sur l'entrée standard. Ce jeton a pu être exposé : en créer un nouveau dans Centre agents."
+)
+
+
+class _QuietParser(argparse.ArgumentParser):
+    """argparse echoes offending values; an argument may be a token, so do not."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.exit(2, f"{self.prog}: arguments invalides (valeurs non affichées). Voir --help.\n")
+
+
+def read_enroll_token(stdin=None, prompt: Callable[[str], str] | None = None) -> str:
+    """Read the one-time token without echo and without argv. Never logged."""
+    stream = stdin if stdin is not None else sys.stdin
+    if stream is None:
+        raise ops.AgentOpError("jeton d'enrôlement absent")
+    try:
+        interactive = bool(stream.isatty())
+    except (AttributeError, ValueError):
+        interactive = False
+    if interactive:
+        raw = (prompt or getpass.getpass)(ENROLL_PROMPT)
+    else:
+        raw = stream.readline(1024)
+    token = str(raw or "").lstrip("\ufeff").strip()
+    if not token:
+        raise ops.AgentOpError("jeton d'enrôlement absent")
+    if not _ENROLL_TOKEN_RE.fullmatch(token):
+        raise ops.AgentOpError("jeton d'enrôlement illisible")
+    return token
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Transfert HQ Companion")
+    parser = _QuietParser(description="Transfert HQ Companion")
     parser.add_argument("--config", default="")
     parser.add_argument("--controller", default="")
-    parser.add_argument("--enroll", default="", help="jeton à usage unique")
+    parser.add_argument(
+        "--enroll",
+        nargs="?",
+        const=_ENROLL_FROM_INPUT,
+        default=None,
+        help="enrôler : le jeton est demandé (saisie masquée) ou lu sur l'entrée standard, jamais en argument",
+    )
     parser.add_argument("--name", default="")
     parser.add_argument("--workspace", action="append", default=[])
     parser.add_argument("--dev", action="store_true", help="HTTP loopback seulement")
@@ -291,14 +343,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     path = Path(args.config) if args.config else default_config_path()
+    if args.enroll is not None and args.enroll is not _ENROLL_FROM_INPUT:
+        # The value is not echoed and is not sent to the controller.
+        sys.stderr.write(ENROLL_ARGV_REFUSED + "\n")
+        return 2
     try:
-        if args.enroll:
+        if args.enroll is _ENROLL_FROM_INPUT:
             if not args.controller:
                 raise ops.AgentOpError("contrôleur requis")
+            token = read_enroll_token()
             result = enroll_with_controller(
                 path,
                 controller=args.controller,
-                token=args.enroll,
+                token=token,
                 name=args.name,
                 workspaces=list(args.workspace or []),
                 dev=bool(args.dev),
