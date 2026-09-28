@@ -581,12 +581,13 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_earcut.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_earcut.py
   node tests/check_hq_features.mjs
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
+  (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
 
 Dessiner (croquis mécanique)
 ----------------------------
@@ -619,6 +620,18 @@ Dessiner (croquis mécanique)
   il ne sauvegarde rien lors d'un simple aperçu. Les fonctions 3D sont annulables
   et éditables par retrait puis recréation. Le DXF demeure une esquisse 2D ; le
   STL est un maillage, non un historique de fonctions SolidWorks.
+  Croquis sur face : dans l'aperçu 3D, toucher une face plane, puis « Dessiner sur
+  cette face ». Rectangle, cercle et contour fermé sont disponibles au doigt,
+  stylet ou souris ; saisir la profondeur puis ajouter ou enlever la matière.
+  Fonctionne sur les faces supérieures, inférieures et latérales planes, y compris
+  celles créées par une extrusion précédente. Le profil doit rester sur la face ;
+  les opérations qui créent une pièce vide, séparée ou non fermée sont refusées.
+  Les croquis de face sont stockés dans le JSON v3 et peuvent être retirés puis
+  recréés ; les outils de cotes pilotantes du croquis 2D ne s'y appliquent pas.
+  Pour ces fonctions, installer avant le démarrage du bridge, avec son Python :
+    python -m pip install -r requirements-face3d.txt
+  Paquets épinglés : manifold3d 3.5.4 et numpy 2.5.3. Sans eux, les dessins v1/v2
+  continuent de fonctionner et les fonctions sur face renvoient une erreur claire.
 
   Enregistrement dans ROOT/Inbox/Drawings (même résolution qu'Inbox/Voice) :
     <nom>_HQWeb-Mobile|_HQWeb-Desktop[.hqdraw.json|.png|.dxf|.stl], même radical.
@@ -636,10 +649,12 @@ Dessiner (croquis mécanique)
     COTATIONS (LINE/ARC/TEXT). Aucune entité DIMENSION : les cotes manuelles
     ne deviennent jamais des contraintes CAO. Les cotes pilotantes restent dans
     le .hqdraw.json ; le DXF porte la géométrie résultante.
-  Format .hqdraw.json v2 : format, version, units, grid, snap, points[{id,x,y}],
+  Format .hqdraw.json v2/v3 : format, version, units, grid, snap, points[{id,x,y}],
   objects[{id,type,...}] (les lignes référencent des id de points : connectivité
   explicite), constraints[{id,type:length|angle,...}],
   features[{id,type:extrude|cut,profile:[object-id,...],depth,extent}], meta.
+  V3 ajoute faceFeatures[{id,type,plane:{origin,u,v,normal},profile:[[u,v],...],
+  depth,extent}] ; les fichiers v1/v2 restent lisibles.
   Les anciens fichiers v1 restent lisibles et passent en v2 à la première
   fonction 3D. Triangulation embarquée sous licence ISC (EARCUT-LICENSE.txt).
   Contrôle manuel : non fait sur un vrai iPhone Safari, ni import SolidWorks, ni

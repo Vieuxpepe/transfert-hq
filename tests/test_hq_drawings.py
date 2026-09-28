@@ -332,7 +332,7 @@ class ValidationTests(unittest.TestCase):
         bads = [
             None, [], "x",
             mut(lambda d: d.update(format="other")),
-            mut(lambda d: d.update(version=3)),
+            mut(lambda d: d.update(version=4)),
             mut(lambda d: d.update(units="furlong")),
             mut(lambda d: d["objects"].append({"id": "z", "type": "script"})),
             mut(lambda d: d["objects"][0].update(p2="missing")),

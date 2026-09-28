@@ -1,8 +1,9 @@
-"""Bounded 2.5D solid builder for Dessiner (no runtime dependencies).
+"""Bounded legacy 2.5D builder for Dessiner (stdlib path).
 
 One closed outer sketch profile is extruded from Z=0.  Further closed,
 non-touching profiles can remove material from its top, blind or through all.
 All geometry here is in document units; STL conversion to mm is separate.
+Optional planar-face features use hq_face_solid and a pinned Boolean kernel.
 """
 
 from __future__ import annotations
@@ -171,7 +172,7 @@ def _walls(mesh, ring, lo, hi):
         mesh.append((a0, b1, a1))
 
 
-def build_mesh(doc):
+def _build_legacy_mesh(doc):
     """Return a triangle soup in document units; reject invalid/non-manifold plans."""
     features = doc.get("features") or []
     if not features:
@@ -209,6 +210,16 @@ def build_mesh(doc):
             _cap(mesh, _normal_ring(c["ring"], True), [], c["floor"], True)
     if len(mesh) > MAX_TRIANGLES:
         raise SolidError("Modèle trop complexe pour STL")
+    return mesh
+
+
+def build_mesh(doc):
+    """Build legacy profiles, then apply optional planar-face features."""
+    mesh = _build_legacy_mesh(doc)
+    face_features = doc.get("faceFeatures") or []
+    if face_features:
+        from hq_face_solid import apply_face_features
+        mesh = apply_face_features(mesh, face_features)
     return mesh
 
 

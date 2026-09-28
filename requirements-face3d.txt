@@ -1,0 +1,4 @@
+# Optional only for sketches extruded or cut from a planar model face.
+# Install with the same Python interpreter that runs iphone_bridge.py.
+manifold3d==3.5.4
+numpy==2.5.3

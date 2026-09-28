@@ -121,7 +121,9 @@ SYSTEM_NAMES = {
     "hq_devices.py",
     "hq_drawings.py",
     "hq_solid.py",
+    "hq_face_solid.py",
     "hq_earcut.py",
+    "requirements-face3d.txt",
     "earcut-license.txt",
     "hq_state.py",
     "hq_events.json",
@@ -4633,6 +4635,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js"></script>
+<script src="/assets/hq-face-sketch.js"></script>
 <script src="/assets/hq-dessiner.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">

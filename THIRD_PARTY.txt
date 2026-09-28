@@ -15,3 +15,9 @@ Notes            : Vendored minfile used for HQ / wallboard QR rendering.
 
 Upstream reference (historical):
   https://github.com/davidshimjs/qrcodejs
+
+Optional face-solid runtime packages
+------------------------------------
+manifold3d 3.5.4 (Apache-2.0) and NumPy 2.5.3 (BSD-3-Clause and bundled
+notices) are installed separately from PyPI when planar-face features are
+needed. No wheel is vendored in this repository. See requirements-face3d.txt.
