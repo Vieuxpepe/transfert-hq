@@ -14,6 +14,8 @@ from hq_earcut import earcut
 
 MAX_FEATURES = 50
 MAX_TRIANGLES = 200_000
+MAX_PROFILE_EDGES = 500
+MAX_TOTAL_EDGES = 2048
 CIRCLE_STEPS = 96
 EPS = 1e-8
 UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
@@ -74,7 +76,7 @@ def _check_ring(ring):
 
 
 def _profile(doc, ids):
-    if not isinstance(ids, list) or not ids or len(ids) > 500:
+    if not isinstance(ids, list) or not ids or len(ids) > MAX_PROFILE_EDGES:
         raise SolidError("Sélectionne un contour fermé (lignes ou cercle)")
     if len(set(ids)) != len(ids):
         raise SolidError("Profil avec objets en double")
@@ -176,6 +178,10 @@ def build_mesh(doc):
         return []
     if len(features) > MAX_FEATURES or features[0].get("type") != "extrude" or any(f.get("type") != "cut" for f in features[1:]):
         raise SolidError("Une extrusion de base suivie de coupes est requise")
+    types = {o["id"]: o["type"] for o in doc["objects"]}
+    complexity = sum(CIRCLE_STEPS if types.get(oid) == "circle" else 1 for f in features for oid in f["profile"])
+    if complexity > MAX_TOTAL_EDGES:
+        raise SolidError("Trop de segments pour le calcul 3D")
     base = features[0]
     height = base["depth"]
     if not (height > 0):

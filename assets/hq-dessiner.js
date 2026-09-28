@@ -307,7 +307,7 @@
       st.mesh = res.triangles; st.meshLoadedVersion = version;
       if (solidView) solidView.setTriangles(st.mesh);
       status.textContent = `${res.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
-    } catch (e) { if (version === st.meshVersion) { st.meshLoadedVersion = -1; status.textContent = e.message; } }
+    } catch (e) { if (version === st.meshVersion) { st.mesh = []; st.meshLoadedVersion = -1; if (solidView) solidView.setTriangles([]); status.textContent = e.message; } }
   }
 
   async function createSolid(kind) {
