@@ -5,7 +5,12 @@
 # (S-1-5-32-544). PlannerIdentity is never an owner. Controller access is the
 # explicit Modify ACE, not ownership.
 #
-# This script does not touch <StateDir>\.hq-agent-state.
+# This script does not touch <StateDir>\.hq-agent-state, and only that path
+# (compared as a full path). A directory named .hq-agent-state anywhere else
+# is ordinary tree content: it takes the tree policy (explicit ACEs removed,
+# inheritance restored) and is verified like any other object. The verify
+# pass fails closed if any such object keeps an explicit ACE or a protected
+# DACL.
 # After it, run install_hq_state_acl.ps1 with the same identities.
 # That second script remains the only policy for:
 #   hq_agents.json       planner: no access
@@ -316,6 +321,16 @@ function Test-CredentialFileName([string]$Name) {
     return $false
 }
 
+function Test-DelegatedStateDir($Item) {
+    # True only for <StateDir>\.hq-agent-state itself, never for a nested
+    # directory that happens to carry the same name.
+    if (-not $Item.PSIsContainer) {
+        return $false
+    }
+    $full = [System.IO.Path]::GetFullPath([string]$Item.FullName).TrimEnd([char[]]@('\', '/'))
+    return [string]::Equals($full, $script:PrivateStateFull, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Find-ReparsePoints([string]$Root) {
     $found = New-Object System.Collections.Generic.List[string]
     $rootItem = Get-Item -LiteralPath $Root -Force
@@ -332,7 +347,7 @@ function Find-ReparsePoints([string]$Root) {
                 $found.Add($item.FullName)
                 continue
             }
-            if ($item.Name -eq ".hq-agent-state") {
+            if (Test-DelegatedStateDir $item) {
                 continue
             }
             if ($item.PSIsContainer) {
@@ -373,6 +388,7 @@ function Assert-AdministratorsOwner([string]$Path) {
 }
 
 $privateState = Join-Path $StateDir ".hq-agent-state"
+$script:PrivateStateFull = [System.IO.Path]::GetFullPath($privateState).TrimEnd([char[]]@('\', '/'))
 Write-Host "Cible: $StateDir"
 Write-Host "Contrôleur: $ControllerIdentity"
 Write-Host "Planificateur: $PlannerIdentity"
@@ -403,7 +419,7 @@ while ($pending.Count -gt 0) {
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "REFUS: point de réparation apparu pendant le parcours. Arbre non durci: $($item.FullName)"
         }
-        if ($item.Name -eq ".hq-agent-state") {
+        if (Test-DelegatedStateDir $item) {
             Write-Host "Ignoré, délégué à install_hq_state_acl.ps1: $($item.FullName)"
             continue
         }
@@ -482,7 +498,7 @@ if (-not $WhatIfPreference) {
             if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw "REFUS: point de réparation après écriture. Arbre non durci: $($item.FullName)"
             }
-            if ($item.Name -eq ".hq-agent-state") {
+            if (Test-DelegatedStateDir $item) {
                 continue
             }
             $atRoot = ($dir -eq $StateDir)
@@ -491,6 +507,18 @@ if (-not $WhatIfPreference) {
                 continue
             }
             $acl = Assert-AdministratorsOwner $item.FullName
+            $treePolicy = -not ($atRoot -and ($PrivateRootFiles -contains $item.Name))
+            if ($treePolicy) {
+                # Tree policy means inherited ACEs only (nested .hq-agent-state included).
+                if ($acl.AreAccessRulesProtected) {
+                    throw "REFUS: héritage coupé hors liste. Arbre non durci: $($item.FullName)"
+                }
+                foreach ($rule in @($acl.Access)) {
+                    if (-not $rule.IsInherited) {
+                        throw "REFUS: ACE explicite conservée. Arbre non durci: $($item.FullName)"
+                    }
+                }
+            }
             if (Test-PlannerHasAnyAllow $acl) {
                 if (Test-CredentialFileName $item.Name) {
                     throw "REFUS: fichier d'identifiants lisible par le planificateur: $($item.FullName)"
