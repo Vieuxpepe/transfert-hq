@@ -885,19 +885,21 @@ class SecurityHardeningTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         install = (root / "install_companion.ps1").read_text(encoding="utf-8")
         task = install.split("New-ScheduledTaskAction", 1)[1]
-        self.assertIn("icacls", install)
-        self.assertIn("/inheritance:r", install)
-        self.assertIn("*S-1-5-18:(OI)(CI)F", install)
-        self.assertIn("*S-1-5-18:F", install)
-        self.assertIn("*S-1-5-32-544:(OI)(CI)F", install)
-        self.assertIn("*S-1-5-32-544:F", install)
-        self.assertNotIn("Administrators:(OI)(CI)F", install)
-        self.assertNotIn("Administrators:F", install)
+        # Allowlist DACL by SID (protected, whole DACL replaced), verified
+        # by SID before the task. See tests/test_security_audit.py for F2.
+        self.assertIn('$script:SidLocalSystem = "S-1-5-18"', install)
+        self.assertIn('$script:SidBuiltinAdmins = "S-1-5-32-544"', install)
+        self.assertIn("D:P(A;$flags;0x1f01ff;;;$($script:SidLocalSystem))", install)
+        self.assertIn("(A;$flags;0x1f01ff;;;$($script:SidBuiltinAdmins))", install)
+        self.assertIn("(A;$flags;0x1301bf;;;$UserSid)", install)
+        self.assertIn('$flags = "OICI"', install)
+        self.assertNotIn("Administrators:", install)
         self.assertIn("WindowsIdentity", install)
-        self.assertIn("(OI)(CI)M", install)
-        self.assertIn("if ($LASTEXITCODE -ne 0)", install)
-        self.assertLess(install.rindex("Invoke-CompanionIcacls"), install.index("Register-ScheduledTask"))
-        self.assertLess(install.index("if ($LASTEXITCODE -ne 0)"), install.index("Register-ScheduledTask"))
+        self.assertNotIn("icacls", install)
+        body = install.split("function Invoke-CompanionInstall", 1)[1]
+        self.assertLess(body.rindex("Set-CompanionAllowlistAcl"), body.index("Register-CompanionTask"))
+        self.assertLess(body.index("Get-CompanionAclProblems"), body.index("Register-CompanionTask"))
+        self.assertLess(body.index("if ($problems.Count -gt 0)"), body.index("Register-CompanionTask"))
         self.assertIn("Register-ScheduledTask", install)
         self.assertIn("-AtLogon", install)
         self.assertIn("-WorkingDirectory $Dest", task)

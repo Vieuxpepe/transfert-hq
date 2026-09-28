@@ -4,9 +4,10 @@ State file: hq_agent_jobs.json (gitignored).
 A malformed file is kept and never overwritten. ``confirm`` does not approve.
 
 A poll leases a job. The companion must acknowledge start before a result
-or an artifact is accepted. Read jobs may be requeued a bounded number of
-times when the lease expires. Safe, sensitive, and destructive jobs become
-``uncertain`` instead of running again.
+or an artifact is accepted. A running job past run_deadline is settled under
+the lock by any result, artifact, or start request, not only by sweep. Read
+jobs may be requeued a bounded number of times when the lease expires. Safe,
+sensitive, and destructive jobs become ``uncertain`` instead of running again.
 """
 
 from __future__ import annotations
@@ -286,6 +287,20 @@ def _settle_running(job: dict, now: float) -> None:
     job["error"] = "résultat non reçu après démarrage"
 
 
+def _settle_overdue_locked(job: dict, now: float) -> bool:
+    """Settle a running job whose run_deadline passed, even if no sweep ran.
+
+    Caller holds ``_lock``. Returns True when the job was settled and saved.
+    Same policy as ``sweep``: read work fails, anything else is uncertain,
+    nothing is queued again, an attached artifact stays on the job.
+    """
+    if job.get("state") != "running" or not _running_deadline_passed(job, now):
+        return False
+    _settle_running(job, now)
+    _persist()
+    return True
+
+
 def _settle_lease(job: dict, now: float, expires: float) -> None:
     """Lease expired before start. Reads may retry. Nothing else runs twice."""
     risk = str(job.get("risk") or "")
@@ -495,7 +510,7 @@ def acknowledge_start(device_id: str, job_id: str, dispatch_token: str) -> dict:
             raise ops.AgentOpError("jeton de bail refusé")
         state = job.get("state")
         if state == "running":
-            if _running_deadline_passed(job, now):
+            if _settle_overdue_locked(job, now):
                 raise ops.AgentOpError("délai d'exécution dépassé")
             return _public(job)
         if state != "leased":
@@ -536,6 +551,9 @@ def complete(
         job = _find(job_id)
         if job is None or job.get("device_id") != device_id:
             raise ops.AgentOpError("travail introuvable")
+        # A late result must not overwrite the settled state (F7).
+        if _settle_overdue_locked(job, now):
+            raise ops.AgentOpError("délai d'exécution dépassé")
         if job.get("state") != "running" or not _token_eq(job.get("dispatch_token"), dispatch_token):
             raise ops.AgentOpError("travail non actif")
         job["state"] = "succeeded" if ok else "failed"
@@ -567,6 +585,8 @@ def authorize_artifact(device_id: str, job_id: str, name: str, size: int, dispat
         job = _find(job_id)
         if job is None or job.get("device_id") != device_id:
             raise ops.AgentOpError("travail introuvable")
+        if _settle_overdue_locked(job, _clock()):
+            raise ops.AgentOpError("délai d'exécution dépassé")
         if job.get("state") != "running" or not _token_eq(job.get("dispatch_token"), dispatch_token):
             raise ops.AgentOpError("travail non actif")
         spec = ops.get_op(str(job.get("op") or ""))
@@ -602,6 +622,9 @@ def attach_artifact(device_id: str, job_id: str, meta: dict, *, dispatch_token: 
         job = _find(job_id)
         if job is None or job.get("device_id") != device_id:
             raise ops.AgentOpError("travail introuvable")
+        # Bytes written after run_deadline are refused; the caller deletes them.
+        if _settle_overdue_locked(job, _clock()):
+            raise ops.AgentOpError("délai d'exécution dépassé")
         if job.get("state") != "running" or not _token_eq(job.get("dispatch_token"), dispatch_token):
             raise ops.AgentOpError("travail non actif")
         if job.get("artifact"):

@@ -43,7 +43,15 @@ Companions (contrôle des autres PC)
 
   Enrôlement : jeton à usage unique (15 min) créé dans Centre agents,
   échangé une fois contre un secret d'appareil. Le secret n'est plus
-  renvoyé. Stockage : hq_agents.json sur le pont, agent_config.json
+  renvoyé. Le jeton ne passe jamais en argument (historique, liste des
+  processus) : sur le PC, lancer companion_agent.py avec --enroll seul,
+  puis coller le jeton à l'invite (saisie masquée). Sans console, le
+  fournir sur l'entrée standard depuis un fichier lisible par ce compte
+  seulement, puis supprimer le fichier :
+    Get-Content -Raw <fichier> | py -3 companion_agent.py --config ... --controller ... --enroll
+  --enroll JETON (ou --enroll=JETON) est refusé sans afficher la valeur
+  et sans contacter le pont : créer alors un nouveau jeton. La tâche
+  planifiée n'enrôle jamais et ne reçoit que --config. Stockage : hq_agents.json sur le pont, agent_config.json
   sur le companion (ProgramData\TransfertHQ ou fichier local). Les deux
   sont gitignorés.
 
@@ -86,7 +94,11 @@ Companions (contrôle des autres PC)
   bridge_config.json et bridge_sessions.json n'héritent pas : pas de
   lecture planificateur. Les autres fichiers d'identifiants (hq_vapid.json,
   clés, agent_config.json) restent privés parce que l'accès planificateur
-  n'est pas hérité. .hq-agent-state n'est pas touché ici.
+  n'est pas hérité. Seul <StateDir>\.hq-agent-state (chemin complet) est
+  laissé à install_hq_state_acl.ps1. Un autre dossier nommé .hq-agent-state
+  ailleurs dans l'arbre reçoit la politique de l'arbre (ACE explicites
+  retirées, héritage rétabli) ; s'il garde une ACE explicite ou un héritage
+  coupé, le script s'arrête sans déclarer l'arbre durci.
   .git est inclus : propriétaire et ACL seulement, octets / refs / config /
   hooks / index inchangés. Un point de réparation est signalé par son chemin
   et le script s'arrête avant toute écriture, sans suivre la cible.
@@ -152,7 +164,10 @@ Companions (contrôle des autres PC)
   expires_at est le délai d'attente avant le démarrage. Au POST
   /agent/v1/start, HQ pose started_at et
   run_deadline = started_at + timeout_sec + 15 s. Résultat et artifact ne
-  sont acceptés qu'en état running avec le même jeton. Bail expiré avant
+  sont acceptés qu'en état running avec le même jeton, et avant
+  run_deadline. Une requête start, result ou artifact arrivée après
+  run_deadline règle d'abord le travail sous le verrou (même règle que le
+  balayage, même sans balayage), puis est refusée. Bail expiré avant
   start : une lecture peut revenir en file (3 essais au plus). Après start,
   plus aucune relance. Si le résultat manque : une lecture devient failed
   (« résultat non reçu ») ; sûr, sensible et destructeur deviennent
@@ -168,7 +183,12 @@ Companions (contrôle des autres PC)
   Artifacts : authorize_artifact ne crée aucun fichier. Ensuite réserve
   disque (upload_disk_reserve_gb, défaut 2 Go) et quota par appareil.
   Écriture *.partial, fsync, os.replace. Si le rattachement échoue, le
-  fichier est supprimé. Seuls fs.stage et screenshot.capture produisent
+  fichier est supprimé. Aucun lien n'est suivi : un lien symbolique, une
+  jonction ou un autre point de réparation dans
+  Inbox\AgentArtifacts\<appareil>\<travail> refuse l'artifact. Le *.partial
+  est créé en exclusif (O_CREAT|O_EXCL, O_NOFOLLOW si disponible) ; un
+  *.partial ou un nom final déjà présent refuse l'envoi. Seuls les fichiers
+  créés par la requête sont supprimés. Seuls fs.stage et screenshot.capture produisent
   un artifact.
 
   Nonce : le cache anti-rejeu est en mémoire. Après un redémarrage du
@@ -179,10 +199,17 @@ Companions (contrôle des autres PC)
   Routes admin (cookie admin + CSRF, pas le rôle upload) : /api/agent
   Routes planificateur (127.0.0.1:8766, Bearer) : /local-agent/v1/devices|jobs
 
-  Installation Windows : install_companion.ps1 retire l'héritage ACL.
-  Contrôle total pour les SID *S-1-5-18 et *S-1-5-32-544, modification
-  pour l'identité Windows courante. icacls non nul arrête l'installation
-  avant la tâche. La tâche visible au logon ne reçoit que --config.
+  Installation Windows : install_companion.ps1 pose une DACL protégée
+  (héritage retiré, DACL remplacée en entier) par SID seulement :
+  S-1-5-18 et S-1-5-32-544 en contrôle total, SID de l'identité Windows
+  courante en modification. Elle couvre le dossier, work, agent_config.json,
+  le code copié et tout objet déjà présent ; une ancienne ACE Users,
+  Everyone ou autre disparaît. Un point de réparation dans l'arbre arrête
+  l'installation avant toute écriture. Chaque objet est relu et vérifié
+  par SID (protégé, propriétaire, SID autorisés, droits, présence). Un
+  échec d'écriture ACL ou de vérification arrête l'installation avant la
+  tâche. La tâche visible au logon ne reçoit que --config. Le script
+  affiche l'étape d'enrôlement avec --enroll seul (saisie masquée).
   uninstall_companion.ps1 retire la tâche et garde les secrets sauf
   -DeleteData. Protocole version 1.
 
@@ -443,6 +470,76 @@ Clés de config nouvelles (dans bridge_config.json, pas de secret)
 
 Télémétrie : l'échantillon local vient du cache disque déjà connu.
 Les pairs Tailscale ne sont pas re-sondés à chaque GET /api/hq.
+
+Disque surveillé et backups
+---------------------------
+  Alerte « Espace disque bas » : volume de la racine HQ (ROOT, ex. C: pour
+  C:\Transfert), seuil alert_disk_min_gb. Une alerte par passage sous le seuil,
+  réarmée quand l'espace repasse au-dessus. Un volume illisible donne une seule
+  alerte « Disque introuvable » (jamais traité comme « OK »).
+  Santé : /api/health → disk_root (volume principal, avec "volume"), disk_d
+  conservé pour compatibilité (missing:true si D: absent) ; /api/status →
+  disk_transfert (volume racine, principal) et disk_d ; l'appareil pc-host
+  affiche d'abord le volume racine.
+  backup_dir : défaut D:/Backups/Transfert, volontairement PAS le volume de la
+  racine (un backup sur le même disque ne protège pas d'une panne). Si le
+  lecteur est absent ou le chemin non absolu, le backup échoue explicitement :
+  erreur 500 sur POST /api/backup, une alerte « Backup impossible » pour le
+  backup planifié (réarmée après un backup réussi), avertissement au démarrage,
+  et /api/health → backup.ok=false. Choisir un autre disque : régler backup_dir.
+  Limite : seule la PRÉSENCE du lecteur (et un chemin absolu) est vérifiée.
+  Un volume présent mais en mauvais état ou inadapté n'est PAS détecté — par
+  ex. le D: du contrôleur (clé USB FAT32 « Full Repair Needed », FAT32 refuse
+  les fichiers > 4 Go) : un pont non mis en pause y écrirait quand même. Une
+  cible présente mais défaillante doit être mise en pause explicitement
+  (backup_auto_paused, ci-dessous) ou remplacée via backup_dir.
+
+  Pause des backups automatiques : "backup_auto_paused": true
+    Suspend TOUS les backups automatiques (planning backup_every_hours du pont,
+    et les étapes/actions « backup » des planifications, règles et scènes
+    d'automatisation) : aucune écriture, aucun accès à backup_dir, aucune
+    alerte répétée. Le bouton « Faire une sauvegarde » (POST /api/backup) reste
+    disponible et échoue toujours clairement si la cible est inutilisable.
+    Visible : /api/health → backup.auto_paused=true (+ note), /api/status →
+    backup_auto_paused=true, ligne santé « Backup auto en pause », et au
+    démarrage « Backup : PAUSE (backup_auto_paused) ».
+    Défaut : false (une nouvelle installation garde ses backups planifiés).
+    Ce défaut ne protège PAS contre une cible présente mais défaillante : sur
+    une telle machine, la pause doit être mise explicitement.
+    Les backups déjà présents sur D: ne sont ni déplacés ni supprimés.
+    Pas de contournement par un grand backup_every_hours : _last_backup vaut 0
+    au démarrage et l'intervalle ne s'applique qu'après un backup réussi, donc
+    le premier backup planifié part quand même au démarrage du pont.
+
+    Déploiement sur le contrôleur (à faire soi-même, dans cet ordre) :
+      1. Arrêter le pont.
+      2. Pont arrêté : installer le code relu (cette version) ET, dans
+         C:\Transfert\bridge_config.json, ajouter au niveau racine :
+           "backup_auto_paused": true,
+         (pont arrêté : une sauvegarde de config par le pont en marche
+         écraserait la modification ; une ancienne version du code ignore
+         cette clé et lancerait le premier backup planifié au démarrage.)
+      3. Redémarrer le pont.
+      4. Vérifier /api/health → backup.auto_paused: true (ou la ligne de
+         démarrage « Backup : PAUSE (backup_auto_paused) »).
+    Pour reprendre (après avoir validé une nouvelle cible, voir ci-dessous) :
+    remettre false (ou retirer la clé) pont arrêté, puis redémarrer.
+
+  Avant de s'appuyer sur une nouvelle cible (disque externe NTFS, NAS) :
+    - Vérifier le système de fichiers (PowerShell : Get-Volume -DriveLetter E →
+      FileSystem NTFS ; FAT32 refuse les fichiers > 4 Go).
+    - Régler backup_dir, redémarrer, lancer « Faire une sauvegarde » : la
+      réponse indique le dossier <backup_dir>\<AAAAMMJJ_HHMMSS>.
+    - Relire le backup SANS restaurer sur la racine (la restauration HQ écrase
+      Inbox|Uni|Print) : comparer les empreintes, par ex.
+        $src = "C:\Transfert\Inbox"; $dst = "E:\Backups\Transfert\<id>\Inbox"
+        $h = { param($r) Get-ChildItem $r -Recurse -File | ForEach-Object {
+               "{0}|{1}" -f $_.FullName.Substring($r.Length), (Get-FileHash $_.FullName).Hash } }
+        Compare-Object (& $h $src) (& $h $dst)    # aucune sortie = identique
+      (les fichiers .tmp / *.pid sont exclus du backup ; un fichier modifié
+      depuis le backup apparaîtra aussi) et ouvrir quelques fichiers copiés
+      vers un dossier temporaire. La liste des backups catalogués est dans
+      GET /api/backups (Système → Sauvegardes).
 
 Notes vocales
 -------------

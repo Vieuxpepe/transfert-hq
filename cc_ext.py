@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable
 
 import hq_state
@@ -30,6 +30,8 @@ _alerts: list[dict] = []
 _inbox: dict[str, list[dict]] = {}
 _seen_presence: dict[str, dict] = {}
 _disk_alerted = False
+_disk_missing_alerted = False
+_backup_alerted = False
 _monitor_started = False
 _disk_cache: dict[str, dict] = {}  # peer id -> {disks, error, at, os}
 _disk_cache_lock = threading.Lock()
@@ -208,36 +210,89 @@ def note_presence_snapshot(devices: list[dict]) -> None:
     global _seen_presence
     now = time.time()
     browser = {d["id"]: d for d in devices if d.get("source") == "browser" and d.get("id")}
+    offline_names: list[str] = []
     with _lock:
-        # offline?
+        # offline? Collect names only: push_alert() takes _lock itself (non-reentrant),
+        # so the alerts are emitted after the lock is released.
         for pid, prev in list(_seen_presence.items()):
             if pid not in browser and now - prev.get("last_seen", 0) < 600:
-                name = prev.get("name") or pid
-                push_alert("Appareil hors ligne", f"**{name}** ne répond plus")
+                offline_names.append(prev.get("name") or pid)
                 _seen_presence.pop(pid, None)
         for pid, d in browser.items():
             _seen_presence[pid] = {
                 "name": d.get("name"),
                 "last_seen": d.get("last_seen") or now,
             }
+    for name in offline_names:
+        push_alert("Appareil hors ligne", f"**{name}** ne répond plus")
 
 
 def check_disk_alert() -> None:
-    global _disk_alerted
+    """Low-space alert for the HQ-root volume (the drive that holds ROOT, e.g. C: for C:\\Transfert).
+
+    Low space alerts once and re-arms when free space is back at/above the threshold
+    (same edge semantics as before). A volume that cannot be read raises one
+    "Disque introuvable" alert instead of being treated as fine; it re-arms once the
+    volume is readable again. An unreadable volume leaves the low-space state untouched.
+    """
+    global _disk_alerted, _disk_missing_alerted
     if not disk_free or not human_size:
         return
     try:
         min_gb = float((_cfg() or {}).get("alert_disk_min_gb") or 20)
     except (TypeError, ValueError):
         min_gb = 20
-    info = disk_free(Path("D:/"))
-    free = info.get("free") or 0
-    if free and free < min_gb * 1024**3:
+    target = disk_alert_target()
+    label = volume_label(target)
+    info = disk_free(target) or {}
+    free = _disk_free_bytes(info)
+    if free is None:
+        if not _disk_missing_alerted:
+            _disk_missing_alerted = True
+            reason = str(info.get("error") or "espace libre inconnu")[:160]
+            push_alert(
+                "Disque introuvable",
+                f"{label} illisible : **{reason}** — surveillance de l'espace impossible",
+            )
+        return
+    _disk_missing_alerted = False
+    if free < min_gb * 1024**3:
         if not _disk_alerted:
             _disk_alerted = True
-            push_alert("Espace disque bas", f"D: libre: **{human_size(int(free))}** (seuil {min_gb} Go)")
+            push_alert("Espace disque bas", f"{label} libre: **{human_size(int(free))}** (seuil {min_gb} Go)")
     else:
         _disk_alerted = False
+
+
+def disk_alert_target() -> Path:
+    """The volume watched by the disk alert and shown as primary health: the HQ root."""
+    return _root()
+
+
+def volume_label(path: Path | PurePath | str) -> str:
+    """Human drive name for a path: "C:" for C:\\Transfert, the UNC share, or "/" on POSIX."""
+    p = path if isinstance(path, PurePath) else Path(str(path))
+    return p.drive or p.anchor or str(p)
+
+
+def _disk_free_bytes(info: dict | None) -> int | None:
+    """Free bytes from a disk_free() result, or None when the volume is missing/unreadable."""
+    if not isinstance(info, dict) or info.get("error"):
+        return None
+    free = info.get("free")
+    if isinstance(free, bool) or not isinstance(free, (int, float)) or free < 0:
+        return None
+    return int(free)
+
+
+def volume_info(path: Path | PurePath | str, info: dict | None) -> dict:
+    """disk_free() result annotated with its volume name; missing volumes say so explicitly."""
+    out = dict(info or {})
+    out["volume"] = volume_label(path)
+    if _disk_free_bytes(out) is None:
+        out["missing"] = True
+        out.setdefault("error", "volume introuvable")
+    return out
 
 
 def start_monitor(
@@ -1085,7 +1140,11 @@ def smb_share_ok() -> bool:
 
 
 def health_report(*, uptime_sec: float, tailscale_ip: str | None, version: str) -> dict:
-    d = disk_free(Path("D:/")) if disk_free else {}
+    # Primary disk = the HQ-root volume. disk_d stays for older UIs/scripts as a
+    # secondary entry and says explicitly when D: is absent.
+    target = disk_alert_target()
+    root_disk = volume_info(target, disk_free(target)) if disk_free else {}
+    d = volume_info(Path("D:/"), disk_free(Path("D:/"))) if disk_free else {}
     ts_ok = bool(tailscale_ip)
     return {
         "ok": True,
@@ -1093,7 +1152,9 @@ def health_report(*, uptime_sec: float, tailscale_ip: str | None, version: str) 
         "hostname": socket.gethostname(),
         "uptime_sec": int(uptime_sec),
         "tailscale": {"ok": ts_ok, "ip": tailscale_ip},
+        "disk_root": root_disk,
         "disk_d": d,
+        "backup": backup_target_status(),
         "smb_transfert": {"ok": smb_share_ok()},
         "bridge": {"ok": True, "port": 8765},
         "checked_at": time.time(),
@@ -1189,16 +1250,70 @@ def presence_history(limit: int | None = None, offset: int = 0) -> list[dict]:
 # ---- v6: backup ----
 
 _last_backup = 0.0
+# Deliberately NOT the HQ-root volume: a backup on the same drive as C:\Transfert
+# does not survive a disk failure. Moving it is an explicit user decision (backup_dir).
+DEFAULT_BACKUP_DIR = "D:/Backups/Transfert"
 
 
-def run_backup(*, force: bool = False) -> dict:
-    global _last_backup
+def _volume_present(path: Path) -> bool:
+    try:
+        return Path(path.anchor).exists()
+    except OSError:
+        return False
+
+
+def config_flag(value: Any) -> bool:
+    """Strict boolean for hand-edited JSON: true/1/"true"/"oui"… only ("false" stays False)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "oui", "on")
+    return False
+
+
+def backup_auto_paused() -> bool:
+    """bridge_config.json "backup_auto_paused": true suspends every automatic backup
+    (monitor schedule, automation schedules/rules/scenes). Manual POST /api/backup still runs."""
+    return config_flag(_cfg().get("backup_auto_paused", False))
+
+
+def backup_target_status() -> dict:
+    """Is the configured backup destination usable? Never falls back to another drive."""
+    raw = str(_cfg().get("backup_dir") or DEFAULT_BACKUP_DIR)
+    dest = Path(raw)
+    status = {"dir": raw, "volume": volume_label(dest), "default": raw == DEFAULT_BACKUP_DIR}
+    status["auto_paused"] = backup_auto_paused()
+    if status["auto_paused"]:
+        status["note"] = "Backups automatiques en pause (backup_auto_paused) — backup manuel seulement"
+    if not dest.is_absolute():
+        status.update(ok=False, error=f"backup_dir doit être un chemin absolu ({raw})")
+    elif not _volume_present(dest):
+        status.update(
+            ok=False,
+            error=f"Lecteur {volume_label(dest)} introuvable pour backup_dir ({raw}) — backup impossible, "
+            "configurez backup_dir",
+        )
+    else:
+        status["ok"] = True
+    return status
+
+
+def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
+    """automatic=True for every unattended trigger; skipped (no target access) while paused."""
+    global _last_backup, _backup_alerted
+    if automatic and backup_auto_paused():
+        return {"ok": True, "skipped": True, "paused": True, "reason": "Backups automatiques en pause (backup_auto_paused)"}
     cfg = _cfg()
     every_h = float(cfg.get("backup_every_hours") or 24)
-    dest_root = Path(str(cfg.get("backup_dir") or (Path("D:/Backups/Transfert"))))
     now = time.time()
     if not force and _last_backup and (now - _last_backup) < every_h * 3600:
         return {"ok": True, "skipped": True, "next_h": every_h}
+    target = backup_target_status()
+    if not target["ok"]:
+        raise RuntimeError(target["error"])
+    dest_root = Path(target["dir"])
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = dest_root / stamp
     dest.mkdir(parents=True, exist_ok=True)
@@ -1215,6 +1330,7 @@ def run_backup(*, force: bool = False) -> dict:
         except OSError as e:
             raise RuntimeError(f"Backup {name}: {e}") from e
     _last_backup = now
+    _backup_alerted = False
     # marker
     (dest / "README.txt").write_text(f"Transfert backup {stamp}\n", encoding="utf-8")
     log_activity("backup", f"Backup → {dest}")
@@ -1234,13 +1350,26 @@ def run_backup(*, force: bool = False) -> dict:
 
 
 def maybe_backup() -> None:
+    """Scheduled backup. A failure raises one visible alert (not one per monitor tick);
+    it re-arms after the next successful backup. Paused (backup_auto_paused): nothing at all
+    is attempted, no target is touched and no alert is raised; health reports the pause."""
+    global _backup_alerted
+    if backup_auto_paused():
+        return
     try:
-        run_backup(force=False)
+        run_backup(force=False, automatic=True)
     except Exception as e:
-        try:
-            __import__("sys").stderr.write(f"backup: {e}\n")
-        except Exception:
-            pass
+        first = not _backup_alerted
+        _backup_alerted = True
+        if first:
+            try:
+                push_alert("Backup impossible", str(e)[:300])
+            except Exception:
+                pass
+            try:
+                __import__("sys").stderr.write(f"backup: {e}\n")
+            except Exception:
+                pass
 
 
 # ---- v6: kanban ----

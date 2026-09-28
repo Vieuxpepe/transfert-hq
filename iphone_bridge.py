@@ -473,6 +473,7 @@ def default_config() -> dict:
         "alert_disk_min_gb": 20,
         "backup_every_hours": 24,
         "backup_dir": "D:/Backups/Transfert",
+        "backup_auto_paused": False,  # true = no automatic backups (manual POST /api/backup still works)
         "users": [],  # optional: [{"name":"admin","pin":"...","role":"admin"},{"name":"phone","pin":"...","role":"upload"}]
         "terminal_commands": [],
         "shell_targets": [],
@@ -562,6 +563,7 @@ def load_config(*, write: bool = True) -> dict:
         base["shell_timeout_sec"] = int(base.get("shell_timeout_sec") or 45)
     except (TypeError, ValueError):
         base["shell_timeout_sec"] = 45
+    base["backup_auto_paused"] = cc_ext.config_flag(base.get("backup_auto_paused", False))
     if "disk_probe_enabled" not in base:
         base["disk_probe_enabled"] = True
     else:
@@ -1236,8 +1238,11 @@ def bridge_status() -> dict:
         "discord": bool(str(CONFIG.get("discord_webhook_url") or "").strip()),
         "max_upload": max_upload_bytes(),
         "max_upload_h": human_size(max_upload_bytes()),
-        "disk_d": disk_free(Path("D:/")),
-        "disk_transfert": disk_free(ROOT),
+        # disk_transfert = HQ-root volume (primary); disk_d kept for older clients,
+        # flagged missing:true when there is no D: drive.
+        "disk_d": cc_ext.volume_info(Path("D:/"), disk_free(Path("D:/"))),
+        "disk_transfert": cc_ext.volume_info(ROOT, disk_free(ROOT)),
+        "backup_auto_paused": cc_ext.backup_auto_paused(),
         "version": "7.0",
         "terminal_commands": [
             {"id": c.get("id"), "label": c.get("label")}
@@ -1348,13 +1353,23 @@ def presence_list() -> list[dict]:
 
 
 def host_device_entry() -> dict:
-    """This PC as a roster entry with real volume free space."""
-    disk_d = disk_free(Path("D:/"))
-    disk_c = disk_free(Path("C:/"))
+    """This PC as a roster entry with real volume free space.
+
+    Primary free space = the HQ-root volume (the drive holding ROOT); C:/D: follow
+    when present. Missing drives are skipped, never reported as free space.
+    """
+    root_label = cc_ext.volume_label(ROOT)
+    root_disk = disk_free(ROOT)
+    candidates = [(root_label, root_disk)]
+    for label, probe in (("C:", Path("C:/")), ("D:", Path("D:/"))):
+        if label.upper() != root_label.upper():
+            candidates.append((label, disk_free(probe)))
     disks = []
-    for label, info in (("C:", disk_c), ("D:", disk_d)):
+    readable = []
+    for label, info in candidates:
         if info.get("error"):
             continue
+        readable.append(info)
         disks.append(
             {
                 "name": label,
@@ -1365,7 +1380,7 @@ def host_device_entry() -> dict:
                 "pct_used": info.get("pct_used"),
             }
         )
-    primary = disk_d if not disk_d.get("error") else disk_c
+    primary = readable[0] if readable else {}
     return {
         "id": "pc-host",
         "name": socket.gethostname(),
@@ -1930,7 +1945,7 @@ def bind_hq() -> None:
         explore=pc_explore,
         action=pc_run_action,
         terminal=lambda cmd_id: cc_ext.run_terminal(cmd_id=cmd_id),
-        backup=lambda: cc_ext.run_backup(force=True),
+        backup=lambda: cc_ext.run_backup(force=True, automatic=True),  # schedules/rules/scenes
         capture=pc_screenshot,
         print_file=pc_print_file,
         notify=notify_discord,
@@ -3178,7 +3193,7 @@ async function refreshHQ() {
     if ($('#hq-health') && health && health.hostname) {
       const smb = health.smb_transfert?.ok ? 'SMB OK' : 'SMB off';
       const ts = health.tailscale?.ok ? 'Tailscale OK' : 'Tailscale off';
-      $('#hq-health').textContent = ts + ' · ' + smb;
+      $('#hq-health').textContent = ts + ' · ' + smb + (health.backup && health.backup.auto_paused ? ' · Backup auto en pause' : '');
     }
     renderActivity(act.activity || []);
     renderAlerts(al.alerts || []);
@@ -4004,7 +4019,7 @@ async function refreshWall() {{
     ]);
     const smb = h.smb_transfert?.ok ? 'SMB OK' : 'SMB ?';
     const ts = h.tailscale?.ok ? ('TS ' + (h.tailscale.ip||'')) : 'TS off';
-    $('#wb-health').textContent = (h.hostname||'') + ' · up ' + Math.round((h.uptime_sec||0)/60) + 'm · ' + ts + ' · ' + smb + ' · D: ' + (h.disk_d?.free_h||'?');
+    $('#wb-health').textContent = (h.hostname||'') + ' · up ' + Math.round((h.uptime_sec||0)/60) + 'm · ' + ts + ' · ' + smb + ' · ' + ((h.disk_root && h.disk_root.volume) || 'D:') + ' ' + ((h.disk_root || h.disk_d || {{}}).free_h || '?');
     const ael = $('#wb-activity');
     ael.innerHTML = (act.activity||[]).slice(0,20).map(x => `<li><strong>${{escapeHtml(x.message||'')}}</strong><div class="meta">${{escapeHtml(x.at_h||'')}} · ${{escapeHtml(x.kind||'')}}</div></li>`).join('') || '<li class="hint">—</li>';
     const lel = $('#wb-alerts');
@@ -6325,6 +6340,11 @@ def main() -> None:
     print(f" Planner: http://127.0.0.1:{planner_httpd.server_address[1]}/ (loopback only, not Tailscale)")
     print(f" Max up : {human_size(max_upload_bytes())}")
     print(f" Backup : every {CONFIG.get('backup_every_hours')}h -> {CONFIG.get('backup_dir')}")
+    _bk = cc_ext.backup_target_status()
+    if _bk.get("auto_paused"):
+        print(" Backup : PAUSE (backup_auto_paused) — aucun backup automatique ; manuel via POST /api/backup")
+    if not _bk.get("ok"):
+        print(f" Backup : ATTENTION {_bk.get('error')}")
     print(" Ctrl+C to stop")
     print("=" * 56)
     try:
