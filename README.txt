@@ -226,6 +226,10 @@ Routes ajoutées (admin ; le rôle upload reste sur son allowlist)
   GET  /api/calendar            ?from=&to= (fin exclue, max 366 jours) &include_activity=0|1
   POST /api/calendar            {action: save|delete, expected_rev, event|id}
   POST /api/calendar/run        {id, target: scene|action} — jamais appelé par l'horloge
+  GET  /api/drawings            dessins de Inbox/Drawings (liste, 200 max)
+  GET  /api/drawings/open?stem= document vectoriel validé (réouverture)
+  GET  /api/drawings/file?stem=&kind=png|dxf|json
+  POST /api/drawings            {name, source: mobile|desktop, doc, png} — corps ≤ 6 Mio
   POST /api/queue               étendu : ces when + at HH:MM, weekday 0=lundi, once_at, device_id
   GET  /api/backups             catalogue
   POST /api/backup/restore      {id, folder: Inbox|Uni|Print, confirm: true}
@@ -480,7 +484,49 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py
+  node tests/check_hq_features.mjs
+  node tests/check_hq_sketch.mjs
+  (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
+
+Dessiner (croquis mécanique)
+----------------------------
+  Onglet Dessiner : tactile, stylet, souris. Deux modes sur le MÊME dessin :
+    Croquis rapide : stylo main levée, gomme (objet), notes texte déplaçables,
+                     cotes manuelles linéaires / angulaires (annotations seulement).
+    Construction   : lignes, rectangles, cercles, axes ; accroche grille et angle
+                     (pas réglable) ; longueur pilotante (une extrémité fixe, l'autre
+                     glisse) ; angle pilotant entre deux lignes reliées (la ligne
+                     choisie pivote autour du sommet commun, longueur conservée).
+  Une modification qui déformerait de la géométrie reliée que le solveur ne sait pas
+  résoudre (ex. pivoter un côté d'un contour fermé) est refusée avec un message ;
+  le dessin n'est pas modifié. Les contraintes pilotantes déjà posées sont vérifiées
+  après chaque édition (déplacement, poignée, cote).
+  Repère Y vers le haut (flèches X/Y en bas à gauche), unités explicites (mm, cm, m,
+  po), pas de grille en unités réelles. Annuler/Rétablir, sélection (Maj ou « Multi »),
+  déplacement, suppression, pincer pour zoomer, deux doigts / Main pour se déplacer.
+  Dès qu'un stylet est vu, un doigt seul déplace la vue (rejet de paume).
+  Brouillon local (localStorage) sauvegardé en continu et au changement d'appli.
+
+  Enregistrement dans ROOT/Inbox/Drawings (même résolution qu'Inbox/Voice) :
+    <nom>_HQWeb-Mobile|_HQWeb-Desktop[.hqdraw.json|.png|.dxf], même radical.
+    Le suffixe est une estimation (pointeur grossier / écran tactile / taille de
+    fenêtre), jamais le nom exact de l'appareil. Le nom est nettoyé côté serveur ;
+    aucun chemin client n'est accepté. Collision : -2, -3… (jamais d'écrasement).
+    Écriture : fichier temporaire caché (O_EXCL, fsync) puis os.link sans écrasement.
+    Inbox/Drawings lien symbolique / jonction / point d'analyse : refusé.
+    Fichiers liés (symlink, reparse) : ignorés à la liste, refusés à l'ouverture.
+  DXF ASCII (AC1009 + $INSUNITS), coordonnées réelles 1:1, Y vers le haut :
+    GEOMETRIE (LINE, CIRCLE), AXES (LINE, type CENTER),
+    REFERENCE_MAIN_LEVEE (POLYLINE simplifiée), NOTES (TEXT),
+    COTATIONS (LINE/ARC/TEXT). Aucune entité DIMENSION : les cotes manuelles
+    ne deviennent jamais des contraintes CAO. Les cotes pilotantes restent dans
+    le .hqdraw.json ; le DXF porte la géométrie résultante.
+  Format .hqdraw.json v1 : format, version, units, grid, snap, points[{id,x,y}],
+  objects[{id,type,...}] (les lignes référencent des id de points : connectivité
+  explicite), constraints[{id,type:length|angle,...}], meta (serveur).
+  Contrôle manuel : non fait sur un vrai iPhone Safari, ni import SolidWorks, ni
+  jonction Windows réelle (test unitaire Windows seulement, ignoré ailleurs).
 
 Contrôle manuel du calendrier
 -----------------------------
