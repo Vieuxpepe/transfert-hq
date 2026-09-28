@@ -39,6 +39,71 @@ FORBIDDEN_CAPS = frozenset(
     }
 )
 
+# Companion capabilities. Granted only by intersection, never by a client claim.
+AGENT_CAPS = (
+    "status",
+    "telemetry",
+    "files_list",
+    "files_read",
+    "files_write",
+    "files_copy",
+    "screenshot",
+    "clipboard_read",
+    "clipboard_write",
+    "apps_list",
+    "apps_launch",
+    "process_list",
+    "process_kill",
+    "power_lock",
+    "power_sleep",
+    "power_restart",
+    "power_shutdown",
+    "terminal_allowlisted",
+    "terminal_interactive",
+    "jobs",
+    "artifacts",
+)
+# Interactive terminal stays out of the controller ceiling (off unless a future
+# explicit build enables it — v1 never does).
+CONTROLLER_ALLOWED = frozenset(c for c in AGENT_CAPS if c != "terminal_interactive")
+DEFAULT_AGENT_POLICY = (
+    "status",
+    "telemetry",
+    "files_list",
+    "files_read",
+    "files_copy",
+    "screenshot",
+    "apps_list",
+    "process_list",
+    "power_lock",
+    "power_sleep",
+    "jobs",
+    "artifacts",
+)
+CAP_RISK = {
+    "status": "read",
+    "telemetry": "read",
+    "files_list": "read",
+    "files_read": "read",
+    "files_write": "sensitive",
+    "files_copy": "safe",
+    "screenshot": "read",
+    "clipboard_read": "sensitive",
+    "clipboard_write": "sensitive",
+    "apps_list": "read",
+    "apps_launch": "safe",
+    "process_list": "read",
+    "process_kill": "sensitive",
+    "power_lock": "safe",
+    "power_sleep": "safe",
+    "power_restart": "destructive",
+    "power_shutdown": "destructive",
+    "terminal_allowlisted": "sensitive",
+    "terminal_interactive": "destructive",
+    "jobs": "read",
+    "artifacts": "read",
+}
+
 _KEEP = (
     "id",
     "name",
@@ -67,7 +132,61 @@ def _os_name(device: dict) -> str:
 def _is_phone(device: dict) -> bool:
     os_name = _os_name(device)
     kind = str(device.get("kind") or "").lower()
-    return any(p in os_name for p in PHONE_OS) or kind in ("phone", "ios", "ipad")
+    return is_phone_os(os_name) or kind in ("phone", "ios", "ipad")
+
+
+def is_phone_os(name: str) -> bool:
+    text = (name or "").lower()
+    if any(p in text for p in PHONE_OS):
+        return True
+    return any(token in text for token in ("iphone", "ipad"))
+
+
+def is_phone_device(device: dict) -> bool:
+    return isinstance(device, dict) and _is_phone(device)
+
+
+def intersect_capabilities(support, policy, controller_allowed=None) -> list[str]:
+    """support ∩ policy ∩ controller ceiling. Unknown and forbidden names drop out."""
+    ceiling = CONTROLLER_ALLOWED if controller_allowed is None else frozenset(controller_allowed)
+    support_set = {str(x) for x in support} if isinstance(support, (list, tuple, set)) else set()
+    policy_set = {str(x) for x in policy} if isinstance(policy, (list, tuple, set)) else set()
+    return [
+        cap
+        for cap in AGENT_CAPS
+        if cap in support_set and cap in policy_set and cap in ceiling and cap not in FORBIDDEN_CAPS
+    ]
+
+
+def agent_capabilities_for(device: dict) -> list[str]:
+    """Only a controller-attached ``_granted`` list counts. Client claims do not."""
+    if not isinstance(device, dict) or _is_phone(device):
+        return []
+    granted = device.get("_granted")
+    if not isinstance(granted, list):
+        return []
+    allowed = [cap for cap in AGENT_CAPS if cap in granted and cap in CONTROLLER_ALLOWED and cap not in FORBIDDEN_CAPS]
+    return allowed
+
+
+def access_for(device: dict) -> list[str]:
+    """Channel class: local / ssh / browser / agent. Phones are always browser."""
+    if not isinstance(device, dict) or _is_phone(device):
+        return ["browser"]
+    source = str(device.get("source") or "")
+    ident = str(device.get("id") or "")
+    if source == "browser":
+        return ["browser"]
+    modes: list[str] = []
+    if source == "host" or ident == "pc-host":
+        modes.append("local")
+    elif source == "tailscale":
+        modes.append("ssh")
+    elif source == "agent":
+        modes.append("agent")
+    if device.get("_agent_id") and "agent" not in modes:
+        modes.append("agent")
+    return modes or ["browser"]
 
 
 def capabilities_for(device: dict) -> list[str]:
@@ -101,12 +220,36 @@ def normalize(device: dict) -> dict:
     out["name"] = str(out.get("name") or out["id"] or "Appareil")[:80]
     caps = [c for c in capabilities_for(src) if c not in FORBIDDEN_CAPS]
     out["capabilities"] = caps
+    out["access"] = access_for(src)
+    out["agent_capabilities"] = agent_capabilities_for(src)
+    agent_id = str(src.get("_agent_id") or "")
+    if str(src.get("source") or "") == "agent" and not agent_id:
+        agent_id = str(src.get("id") or "")
+    if agent_id and not _is_phone(src):
+        out["agent_id"] = agent_id[:80]
     out["online"] = bool(src.get("online", True)) if src.get("online") is not False else False
     return out
 
 
 def normalize_all(devices: list[dict] | None) -> list[dict]:
     return [normalize(d) for d in (devices or []) if isinstance(d, dict)]
+
+
+def present(device: dict) -> dict:
+    """Roster row plus derived access. Drops controller-only ``_granted``."""
+    src = device if isinstance(device, dict) else {}
+    out = dict(src)
+    out["access"] = access_for(src)
+    out["agent_capabilities"] = agent_capabilities_for(src)
+    agent_id = str(src.get("_agent_id") or "")
+    if str(src.get("source") or "") == "agent" and not agent_id:
+        agent_id = str(src.get("id") or "")
+    if agent_id and not _is_phone(src):
+        out["agent_id"] = agent_id[:80]
+    out.pop("_granted", None)
+    out.pop("_agent_id", None)
+    out.pop("secret", None)
+    return out
 
 
 def gates_for(device: dict) -> dict[str, bool]:

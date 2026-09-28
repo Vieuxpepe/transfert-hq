@@ -26,6 +26,11 @@ hq_telemetry.json
 hq_backup_index.json
 hq_push_subscriptions.json
 hq_vapid.json
+hq_agents.json
+hq_agent_jobs.json
+hq_planner.json
+.hq-agent-state/
+agent_config.json
 *.json.tmp
 .tmp/
 __pycache__/

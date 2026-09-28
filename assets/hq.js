@@ -190,6 +190,7 @@
         });
       }
       if (window.hqPaintCalendarSummary) window.hqPaintCalendarSummary(snap.calendar || {});
+      if (window.hqPaintAgentBadge) window.hqPaintAgentBadge(snap.agent || {});
       noteHqState(state);
       if (document.body.classList.contains("wall")) drawFleet(snap);
     } catch (_) {}
@@ -281,6 +282,10 @@
       `<div class="cap-row">${capHtml}</div>` +
       series +
       `<div class="row hq-actions" style="margin-top:8px">${actions}</div>`;
+    const agentHost = document.createElement("div");
+    agentHost.id = "hq-device-agent";
+    body.appendChild(agentHost);
+    if (typeof window.hqPaintDeviceAgent === "function") window.hqPaintDeviceAgent(agentHost, device);
     body.querySelectorAll("[data-dev-act]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const act = btn.dataset.devAct;

@@ -14,6 +14,15 @@ Architecture
   hq_automation.py   scènes / runbooks, règles, planning, backups, télémétrie, brief, push
   hq_calendar.py     événements manuels, projection des horaires, rappels
   hq_devices.py      modèle d'appareils et capacités (dérivées, pas inventées)
+  hq_companion.py    registre companions, HMAC, politique (contrôleur)
+  hq_jobs.py         file de travaux bornée (hq_agent_jobs.json)
+  hq_agent_ops.py    catalogue d'opérations et risques
+  hq_agent_protocol.py  signature, version de protocole, délais de poll
+  companion_agent.py agent sortant sur un PC de confiance
+  companion_ops.py   opérations bornées exécutées sur ce PC
+  hqctl.py           client HTTP du planificateur (loopback seulement)
+  hq_planner.py      API planificateur sur 127.0.0.1:8766
+  assets/hq-agent.js centre agents (fiche Appareils)
   assets/hq.js       palette, bannière, aide contextuelle, journal, flotte, brief, voix, push
   assets/hq-calendar.js
   assets/hq-calendar.css
@@ -23,6 +32,163 @@ Architecture
 
 Les modules hq_* reçoivent des callbacks. Ils ne lancent pas de shell arbitraire
 et n'importent pas le serveur HTTP (pas de cycle).
+
+Companions (contrôle des autres PC)
+------------------------------------
+  Vieuxpeepee reste le contrôleur. Les PC de confiance lancent companion_agent.py.
+  Le companion ouvre une connexion HTTPS sortante vers Tailscale Serve
+  (poll 3 s quand un travail vient d'être traité, jusqu'à 15 s au repos,
+  backoff borné en cas d'erreur). Pas de port entrant sur le PC géré.
+  Pas de WebSocket. Pas de companion iOS : un iPhone reste un navigateur.
+
+  Enrôlement : jeton à usage unique (15 min) créé dans Centre agents,
+  échangé une fois contre un secret d'appareil. Le secret n'est plus
+  renvoyé. Stockage : hq_agents.json sur le pont, agent_config.json
+  sur le companion (ProgramData\TransfertHQ ou fichier local). Les deux
+  sont gitignorés.
+
+  Chaque requête signée porte X-HQ-Device, X-HQ-Time, X-HQ-Nonce,
+  X-HQ-Signature (HMAC-SHA256, décalage ±90 s, nonce anti-rejeu).
+  Les capacités effectives sont support ∩ plafond contrôleur ∩ politique
+  de l'appareil. Une revendication du client n'accorde rien.
+  Le terminal interactif n'est pas dans le plafond.
+
+  Risques : lecture (file directe), sûr / sensible (direct si l'origine
+  est un humain, sinon approbation), destructeur (toujours une approbation
+  séparée). confirm:true n'approuve pas.
+
+  hqctl est un client HTTP de 127.0.0.1:8766 (hq_planner.py). Il n'importe
+  pas le registre ni la file. L'origine est forcée à planner ; un champ
+  origin fourni est refusé. Le jeton planificateur (hq_planner.json) n'est
+  ni le PIN, ni la session admin, ni un secret d'appareil. Le port public
+  (8765, y compris derrière Tailscale Serve) répond 404 sur /local-agent.
+  L'approbation humaine reste le navigateur admin + CSRF.
+
+  Cette frontière est logicielle tant que les deux processus partagent un
+  compte. Les secrets du companion sont dans <pont>\.hq-agent-state\
+  (hq_agents.json, hq_agent_jobs.json, hq_planner.json). Les artifacts
+  restent dans Inbox\AgentArtifacts. Au premier démarrage, un fichier
+  encore à la racine est déplacé une fois si la destination est absente.
+  Si les deux copies existent, HQ s'arrête sans en choisir une.
+  L'écriture atomique crée <nom>.tmp dans ce répertoire : le fichier
+  hérite de l'ACL du répertoire avant os.replace.
+
+  Arbre du pont, en élevé, avant l'état privé. Le propriétaire visé est le
+  SID S-1-5-32-544 (BUILTIN\Administrators, ou BUILTIN\Administrateurs sur
+  un Windows français). Le script traduit ce SID ; il n'écrit pas le nom
+  anglais en dur. Un objet laissé à Everyone peut réécrire sa DACL.
+  Le planificateur n'est jamais propriétaire. Sur StateDir il a seulement
+  le droit de traverser, non héritable. Les fichiers inconnus restent donc
+  privés du contrôleur (Modify héritable). ReadAndExecute explicite, et
+  seulement ça, pour hqctl.py. hqctl n'importe aucun module du dépôt :
+  il calcule lui-même le chemin du jeton. hq_state.py reste privé du
+  contrôleur. Invocation : py -3 -B D:\Transfert\hqctl.py
+  bridge_config.json et bridge_sessions.json n'héritent pas : pas de
+  lecture planificateur. Les autres fichiers d'identifiants (hq_vapid.json,
+  clés, agent_config.json) restent privés parce que l'accès planificateur
+  n'est pas hérité. .hq-agent-state n'est pas touché ici.
+  .git est inclus : propriétaire et ACL seulement, octets / refs / config /
+  hooks / index inchangés. Un point de réparation est signalé par son chemin
+  et le script s'arrête avant toute écriture, sans suivre la cible.
+  La tâche TransfertBridge n'est pas réenregistrée ; son principal reste
+  le compte contrôleur.
+  -WhatIf affiche les lignes PRÉVU et n'appelle ni SetOwner, ni AddAccessRule,
+  ni Set-Acl. Propriétaire, ACL et octets restent inchangés :
+    powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 -WhatIf `
+      -StateDir D:\Transfert `
+      -ControllerIdentity "VIEUXPEEPEE\autm_" `
+      -PlannerIdentity "VIEUXPEEPEE\hq-planner"
+    powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 -WhatIf `
+      -StateDir D:\Transfert `
+      -ControllerIdentity "VIEUXPEEPEE\autm_" `
+      -PlannerIdentity "VIEUXPEEPEE\hq-planner"
+  Puis, sans -WhatIf, le même StateDir et les mêmes identités. L'état privé
+  après un premier démarrage (répertoire et jeton présents).
+  Le répertoire privé donne FullControl héritable à SYSTEM et Administrators,
+  Modify héritable au contrôleur, et au planificateur seulement le droit
+  de traverser (non héritable). Propriétaire : BUILTIN\Administrators.
+  hq_planner.json reçoit en plus Read explicite pour le planificateur.
+  hq_agents.json, hq_agent_jobs.json et les *.tmp n'ont pas de grant
+  planificateur. Un *.tmp créé ensuite peut appartenir au contrôleur :
+  le planificateur n'en est pas propriétaire.
+  hqctl, sous le compte planificateur, lit
+  <pont>\.hq-agent-state\hq_planner.json par défaut. Le script refuse
+  deux identités identiques, ou un planificateur Administrator / SYSTEM.
+  Un planificateur membre du groupe Administrateurs peut quand même lire
+  l'état : ne pas appeler ça une séparation.
+
+  Contrat après application, pour le planificateur : traverser D:\Transfert,
+  lire/exécuter hqctl.py, lire hq_planner.json, joindre 127.0.0.1:8766.
+  Aucun autre fichier Python du dépôt n'est lisible, y compris hq_state.py.
+  Pas lister ni lire le reste de l'arbre, pas lire la config,
+  les sessions, les agents, les travaux, vapid ou les clés, pas modifier le
+  code, .git, une DACL via un propriétaire Everyone, ni TransfertBridge,
+  pas approuver un travail.
+
+  Vérification Windows des ACL (sur le pont, avant d'enrôler un second PC) :
+  1. Démarrer HQ une fois pour créer .hq-agent-state et le jeton.
+  2. Lancer d'abord les deux scripts avec -WhatIf, puis sans -WhatIf.
+     Le second script seul durcit .hq-agent-state.
+     Get-Acl : propriétaire S-1-5-32-544 (Administrateurs sur ce Windows),
+     plus Everyone.
+     Get-Acl sur hqctl.py : planificateur ReadAndExecute.
+     Get-Acl sur iphone_bridge.py et sur .git : pas de lecture planificateur.
+     Get-Acl sur bridge_config.json et bridge_sessions.json : pas de lecture
+     planificateur. Get-ScheduledTask TransfertBridge : principal inchangé.
+  3. Get-Acl sur le répertoire privé, hq_agents.json, hq_agent_jobs.json,
+     hq_planner.json. Propriétaire BUILTIN\Administrators.
+  4. Déclencher une écriture (créer puis ignorer un jeton d'enrôlement).
+  5. Get-Acl sur hq_agents.json : toujours contrôleur seulement, après
+     le remplacement atomique.
+  6. Créer un travail planificateur anodin pour réécrire hq_agent_jobs.json.
+     Get-Acl : le planificateur ne doit toujours pas pouvoir le lire.
+  7. Sous PlannerIdentity : py -3 -B D:\Transfert\hqctl.py devices --json
+     fonctionne. Échoue : Get-ChildItem D:\Transfert ; Get-Content de
+     iphone_bridge.py, hq_state.py, bridge_config.json, bridge_sessions.json,
+     .hq-agent-state\hq_agents.json et .hq-agent-state\hq_agent_jobs.json.
+     Modifier hqctl.py échoue.
+
+  Bail : poll pose l'état leased, un dispatch_token et lease_until (30 s).
+  expires_at est le délai d'attente avant le démarrage. Au POST
+  /agent/v1/start, HQ pose started_at et
+  run_deadline = started_at + timeout_sec + 15 s. Résultat et artifact ne
+  sont acceptés qu'en état running avec le même jeton. Bail expiré avant
+  start : une lecture peut revenir en file (3 essais au plus). Après start,
+  plus aucune relance. Si le résultat manque : une lecture devient failed
+  (« résultat non reçu ») ; sûr, sensible et destructeur deviennent
+  uncertain (« résultat non reçu après démarrage »). Le jeton est effacé.
+  Un artifact déjà enregistré est conservé. attempts et started_at restent.
+
+  Identité : l'IP ou le hostname déclarés sont des diagnostics
+  (reported_ips, reported_hostname). Ils ne lient pas un companion à un
+  pair Tailscale. Lien explicite : POST /api/agent action=link (admin).
+  Tant qu'il n'y a pas de linked_peer_id, le companion est sa propre ligne.
+  Un téléphone ne devient jamais un companion, même si l'id lié correspond.
+
+  Artifacts : authorize_artifact ne crée aucun fichier. Ensuite réserve
+  disque (upload_disk_reserve_gb, défaut 2 Go) et quota par appareil.
+  Écriture *.partial, fsync, os.replace. Si le rattachement échoue, le
+  fichier est supprimé. Seuls fs.stage et screenshot.capture produisent
+  un artifact.
+
+  Nonce : le cache anti-rejeu est en mémoire. Après un redémarrage du
+  pont, une requête signée capturée peut être rejouée tant que son
+  horodatage reste dans ±90 s. TLS protège le trafic habituel.
+
+  Routes companion : POST /agent/v1/enroll|heartbeat|poll|start|result|artifact
+  Routes admin (cookie admin + CSRF, pas le rôle upload) : /api/agent
+  Routes planificateur (127.0.0.1:8766, Bearer) : /local-agent/v1/devices|jobs
+
+  Installation Windows : install_companion.ps1 retire l'héritage ACL.
+  Contrôle total pour les SID *S-1-5-18 et *S-1-5-32-544, modification
+  pour l'identité Windows courante. icacls non nul arrête l'installation
+  avant la tâche. La tâche visible au logon ne reçoit que --config.
+  uninstall_companion.ps1 retire la tâche et garde les secrets sauf
+  -DeleteData. Protocole version 1.
+
+  SSH existant reste disponible et distinct (badge SSH). Agent HQ est
+  un autre canal. Le shell interactif du pont n'est pas devenu un
+  shell permanent pour l'agent.
 
 Accueil
 -------
@@ -243,6 +409,14 @@ Fichiers d'état (gitignorés — tolérer l'absence ; ne pas écraser un JSON c
   hq_backup_index.json
   hq_push_subscriptions.json
   hq_vapid.json          clé privée Web Push — ne jamais committer
+  .hq-agent-state/       secrets companions et jeton planificateur
+    hq_agents.json       secrets — ne jamais committer
+    hq_agent_jobs.json   file des travaux (contient le dispatch_token)
+    hq_planner.json      jeton du planificateur — ne jamais committer
+                         un fichier encore à la racine est migré une fois
+                         si la copie privée est absente ; les deux ensemble
+                         bloquent le démarrage
+  agent_config.json      secret du companion, sur le PC distant
   bridge_config.json     PIN / webhook — ne jamais committer
   bridge_sessions.json
   bridge_queue.json      verrou RLock sur toute transaction load→save, écriture atomique.
@@ -306,7 +480,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py
 
 Contrôle manuel du calendrier
 -----------------------------
@@ -351,6 +525,26 @@ SECURITY INVARIANTS
 
   Exécution distante
     - Pas de surcharge d'hôte SSH (champ host refusé). Cibles = shell_targets / pairs connus.
+    - Companion : auth HMAC, capacités calculées côté pont, travaux explicites.
+      Pas d'écoute publique, pas de RPC anonyme, pas de shell permanent pour l'IA.
+      iOS refusé à l'enrôlement. Terminal interactif hors plafond.
+      Alimentation restart/shutdown : risque destructeur, TTL court, et le
+      companion Windows ne l'exécute que si destructive_power_enabled est vrai.
+      Presse-papiers désactivé tant que clipboard_enabled n'est pas vrai.
+      Le planificateur n'est pas sur le port public. hqctl ne peut pas
+      approuver. Deux comptes distincts, install_hq_tree_acl.ps1 (propriétaire
+      BUILTIN\Administrators, traverse non héritable, ReadAndExecute seulement
+      sur hqctl.py) puis install_hq_state_acl.ps1 sont
+      nécessaires pour une séparation OS.
+      Un même compte, ou un planificateur administrateur, peut lire les secrets.
+      Les fichiers privés sont sous .hq-agent-state ; l'ACL durable est celle
+      du répertoire, héritée par les *.tmp avant os.replace. Le propriétaire
+      de ce répertoire est BUILTIN\Administrators, pas Everyone.
+      Artifact : autorisation avant écriture, réserve disque, pas d'orphelin.
+      Bail avant start, puis run_deadline. Un résultat manquant après start
+      n'est failed que pour une lecture. Le reste est uncertain, sans relance.
+      Pas de lien automatique pair/companion.
+      Cache de nonces perdu au redémarrage (fenêtre ±90 s).
     - Automation, scènes, planning, palette : terminal par id allowlist uniquement.
     - Jamais de commande libre dans une règle, une scène, un job planifié
       ou un événement de calendrier.
