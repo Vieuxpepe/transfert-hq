@@ -208,18 +208,21 @@ def note_presence_snapshot(devices: list[dict]) -> None:
     global _seen_presence
     now = time.time()
     browser = {d["id"]: d for d in devices if d.get("source") == "browser" and d.get("id")}
+    offline_names: list[str] = []
     with _lock:
-        # offline?
+        # offline? Collect names only: push_alert() takes _lock itself (non-reentrant),
+        # so the alerts are emitted after the lock is released.
         for pid, prev in list(_seen_presence.items()):
             if pid not in browser and now - prev.get("last_seen", 0) < 600:
-                name = prev.get("name") or pid
-                push_alert("Appareil hors ligne", f"**{name}** ne répond plus")
+                offline_names.append(prev.get("name") or pid)
                 _seen_presence.pop(pid, None)
         for pid, d in browser.items():
             _seen_presence[pid] = {
                 "name": d.get("name"),
                 "last_seen": d.get("last_seen") or now,
             }
+    for name in offline_names:
+        push_alert("Appareil hors ligne", f"**{name}** ne répond plus")
 
 
 def check_disk_alert() -> None:
