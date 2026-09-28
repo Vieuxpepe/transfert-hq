@@ -1,6 +1,6 @@
 # F2 acceptance test on real NTFS (Windows only, any locale; SIDs only).
 # Isolated: a temp tree under %TEMP%, never %ProgramData%\TransfertHQ.
-# Register-ScheduledTask is shadowed by a function, so no task is created;
+# Register-CompanionTask is shadowed at the installer's own seam, so no task is created;
 # the task name used is unique and is checked to be absent afterwards.
 # No elevation needed (the test owns its temp tree).
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\powershell\Test-InstallCompanionAcl.ps1
@@ -27,6 +27,13 @@ function Register-ScheduledTask {
     # Shadow: capture only. The real cmdlet is never reached from this test.
     param($TaskName, $Action, $Trigger, $Settings, [switch]$Force, $Description)
     $script:Registered.Add([pscustomobject]@{ TaskName = $TaskName; Execute = [string]$Action.Execute; Arguments = [string]$Action.Arguments; WorkingDirectory = [string]$Action.WorkingDirectory })
+}
+
+function Register-CompanionTask {
+    # Intercept before ScheduledTasks cmdlets are invoked: module autoload can
+    # replace a Register-ScheduledTask function mock on Windows PowerShell.
+    param([string]$Dest, [string]$ScriptPath, [string]$ConfigPath, [string]$TaskName)
+    $script:Registered.Add([pscustomobject]@{ TaskName = $TaskName; Execute = "py.exe"; Arguments = (Get-CompanionTaskArgument -ScriptPath $ScriptPath -ConfigPath $ConfigPath); WorkingDirectory = $Dest })
 }
 
 function Get-TestAcl([string]$Path) {

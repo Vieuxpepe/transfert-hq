@@ -68,6 +68,12 @@ try {
     $rootPrivate = Join-Path $state ".hq-agent-state"
     New-Item -ItemType Directory -Path $rootPrivate | Out-Null
     Set-Content -LiteralPath (Join-Path $rootPrivate "hq_agents.json") -Value "{}"
+    # The delegated state directory is protected by install_hq_state_acl.ps1
+    # in production. Without a protected DACL, changing the parent's inheritable
+    # ACEs changes this directory's effective SDDL even when it is skipped.
+    $privateAcl = Get-Acl -LiteralPath $rootPrivate
+    $privateAcl.SetAccessRuleProtection($true, $true)
+    Set-Acl -LiteralPath $rootPrivate -AclObject $privateAcl
     $nestedA = Join-Path $state "Inbox\.hq-agent-state"
     $nestedB = Join-Path $state "deep\x\.HQ-AGENT-STATE"
     New-Item -ItemType Directory -Path $nestedA, $nestedB -Force | Out-Null
@@ -106,7 +112,18 @@ try {
     Write-Output "FAIL exception: $($_.Exception.Message)"
     $script:Failures++
 } finally {
-    if (Test-Path -LiteralPath $base) { Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $base) {
+        $resolvedBase = [IO.Path]::GetFullPath($base)
+        $resolvedTemp = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\')
+        if (-not $resolvedBase.StartsWith(($resolvedTemp + '\hq-f5-'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "REFUS: dossier de test hors TEMP"
+        }
+        $baseItem = Get-Item -LiteralPath $resolvedBase -Force
+        if ($baseItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "REFUS: dossier de test est un point de réparation"
+        }
+        Remove-Item -LiteralPath $resolvedBase -Recurse -Force -ErrorAction Stop
+    }
 }
 if ($script:Failures -gt 0) { Write-Output "RESULT: FAIL ($($script:Failures))"; exit 1 }
 Write-Output "RESULT: PASS"

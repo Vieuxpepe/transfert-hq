@@ -14,6 +14,7 @@ $script:Events = New-Object System.Collections.Generic.List[string]
 $script:Registered = New-Object System.Collections.Generic.List[object]
 $script:FailAclOn = ""
 $script:ProblemOn = ""
+$script:TaskName = "TransfertHQ Companion TEST " + [guid]::NewGuid().ToString("N")
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if ($Condition) { Write-Output "PASS $Message" } else { Write-Output "FAIL $Message"; $script:Failures++ }
@@ -40,13 +41,12 @@ function Register-ScheduledTask {
     $script:Events.Add("register")
     $script:Registered.Add([pscustomobject]@{ TaskName = $TaskName; Arguments = [string]$Action.Arguments; Execute = [string]$Action.Execute; WorkingDirectory = [string]$Action.WorkingDirectory })
 }
-$haveTaskCmdlets = [bool](Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue)
-if (-not $haveTaskCmdlets) {
-    function Register-CompanionTask {
-        param([string]$Dest, [string]$ScriptPath, [string]$ConfigPath, [string]$TaskName)
-        $script:Events.Add("register")
-        $script:Registered.Add([pscustomobject]@{ TaskName = $TaskName; Arguments = (Get-CompanionTaskArgument -ScriptPath $ScriptPath -ConfigPath $ConfigPath); Execute = "py.exe"; WorkingDirectory = $Dest })
-    }
+function Register-CompanionTask {
+    # Shadow the installer's own registration seam on every platform. Importing
+    # ScheduledTasks can replace a Register-ScheduledTask function mock.
+    param([string]$Dest, [string]$ScriptPath, [string]$ConfigPath, [string]$TaskName)
+    $script:Events.Add("register")
+    $script:Registered.Add([pscustomobject]@{ TaskName = $TaskName; Arguments = (Get-CompanionTaskArgument -ScriptPath $ScriptPath -ConfigPath $ConfigPath); Execute = "py.exe"; WorkingDirectory = $Dest })
 }
 
 function New-Scenario {
@@ -65,7 +65,7 @@ function New-Scenario {
 
 function Invoke-Scenario([string]$Dest) {
     try {
-        Invoke-CompanionInstall -Controller "https://example.invalid" -Name "TEST" -InstallRoot $Dest -SourceDir $repo -TaskName "TransfertHQ Companion TEST" 6>$null
+        Invoke-CompanionInstall -Controller "https://example.invalid" -Name "TEST" -InstallRoot $Dest -SourceDir $repo -TaskName $script:TaskName 6>$null
         return $null
     } catch {
         return $_.Exception.Message
@@ -153,6 +153,9 @@ try {
         $err = $null
     } catch { $err = $_.Exception.Message }
     Assert-True ($err -match "HTTPS" -and $script:Events.Count -eq 0) "contrôleur HTTP refusé sans écriture"
+    if ($env:OS -eq "Windows_NT") {
+        Assert-True ($null -eq (Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue)) "aucune tâche réelle enregistrée"
+    }
 } finally {
     foreach ($dir in $cleanup) {
         if ($dir -and (Test-Path -LiteralPath $dir)) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
