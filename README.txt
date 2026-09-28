@@ -1,4 +1,4 @@
-﻿Transfert HQ v7 — Mission Control
+Transfert HQ v7 — Mission Control
 =================================
 
 Pont personnel (un opérateur) entre PCs Windows et iPhone, via LAN + Tailscale.
@@ -82,7 +82,7 @@ Companions (contrôle des autres PC)
   privés du contrôleur (Modify héritable). ReadAndExecute explicite, et
   seulement ça, pour hqctl.py. hqctl n'importe aucun module du dépôt :
   il calcule lui-même le chemin du jeton. hq_state.py reste privé du
-  contrôleur. Invocation : py -3 -B D:\Transfert\hqctl.py
+  contrôleur. Invocation : py -3 -B C:\Transfert\hqctl.py
   bridge_config.json et bridge_sessions.json n'héritent pas : pas de
   lecture planificateur. Les autres fichiers d'identifiants (hq_vapid.json,
   clés, agent_config.json) restent privés parce que l'accès planificateur
@@ -95,11 +95,11 @@ Companions (contrôle des autres PC)
   -WhatIf affiche les lignes PRÉVU et n'appelle ni SetOwner, ni AddAccessRule,
   ni Set-Acl. Propriétaire, ACL et octets restent inchangés :
     powershell -ExecutionPolicy Bypass -File .\install_hq_tree_acl.ps1 -WhatIf `
-      -StateDir D:\Transfert `
+      -StateDir C:\Transfert `
       -ControllerIdentity "VIEUXPEEPEE\autm_" `
       -PlannerIdentity "VIEUXPEEPEE\hq-planner"
     powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 -WhatIf `
-      -StateDir D:\Transfert `
+      -StateDir C:\Transfert `
       -ControllerIdentity "VIEUXPEEPEE\autm_" `
       -PlannerIdentity "VIEUXPEEPEE\hq-planner"
   Puis, sans -WhatIf, le même StateDir et les mêmes identités. L'état privé
@@ -117,7 +117,7 @@ Companions (contrôle des autres PC)
   Un planificateur membre du groupe Administrateurs peut quand même lire
   l'état : ne pas appeler ça une séparation.
 
-  Contrat après application, pour le planificateur : traverser D:\Transfert,
+  Contrat après application, pour le planificateur : traverser C:\Transfert,
   lire/exécuter hqctl.py, lire hq_planner.json, joindre 127.0.0.1:8766.
   Aucun autre fichier Python du dépôt n'est lisible, y compris hq_state.py.
   Pas lister ni lire le reste de l'arbre, pas lire la config,
@@ -142,8 +142,8 @@ Companions (contrôle des autres PC)
      le remplacement atomique.
   6. Créer un travail planificateur anodin pour réécrire hq_agent_jobs.json.
      Get-Acl : le planificateur ne doit toujours pas pouvoir le lire.
-  7. Sous PlannerIdentity : py -3 -B D:\Transfert\hqctl.py devices --json
-     fonctionne. Échoue : Get-ChildItem D:\Transfert ; Get-Content de
+  7. Sous PlannerIdentity : py -3 -B C:\Transfert\hqctl.py devices --json
+     fonctionne. Échoue : Get-ChildItem C:\Transfert ; Get-Content de
      iphone_bridge.py, hq_state.py, bridge_config.json, bridge_sessions.json,
      .hq-agent-state\hq_agents.json et .hq-agent-state\hq_agent_jobs.json.
      Modifier hqctl.py échoue.

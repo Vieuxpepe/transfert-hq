@@ -93,7 +93,7 @@ def classify_ip(ip: str) -> str:
 
 
 def default_scenes() -> list[dict]:
-    r = str(_root()) if ROOT else "D:\\Transfert"
+    r = str(_root()) if ROOT else "C:\\Transfert"
     return [
         {
             "id": "study",
@@ -1556,7 +1556,7 @@ def default_terminal_commands() -> list[dict]:
     return [
         {"id": "ipconfig", "label": "ipconfig", "cmd": "ipconfig"},
         {"id": "tailscale-status", "label": "Tailscale status", "cmd": "tailscale status"},
-        {"id": "dir-transfert", "label": "Dir Transfert", "cmd": "dir D:\\Transfert"},
+        {"id": "dir-transfert", "label": "Dir Transfert", "cmd": "dir C:\\Transfert"},
         {"id": "freespace", "label": "Espace disque", "cmd": "powershell -NoProfile -Command \"Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free\""},
     ]
 

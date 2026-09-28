@@ -39,7 +39,7 @@
 #
 # Example (elevated), after HQ has created the directory once:
 #   powershell -ExecutionPolicy Bypass -File .\install_hq_state_acl.ps1 -WhatIf `
-#     -StateDir D:\Transfert `
+#     -StateDir C:\Transfert `
 #     -ControllerIdentity "VIEUXPEEPEE\autm_" `
 #     -PlannerIdentity "VIEUXPEEPEE\hq-planner"
 #
