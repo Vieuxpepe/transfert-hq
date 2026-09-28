@@ -43,7 +43,15 @@ Companions (contrôle des autres PC)
 
   Enrôlement : jeton à usage unique (15 min) créé dans Centre agents,
   échangé une fois contre un secret d'appareil. Le secret n'est plus
-  renvoyé. Stockage : hq_agents.json sur le pont, agent_config.json
+  renvoyé. Le jeton ne passe jamais en argument (historique, liste des
+  processus) : sur le PC, lancer companion_agent.py avec --enroll seul,
+  puis coller le jeton à l'invite (saisie masquée). Sans console, le
+  fournir sur l'entrée standard depuis un fichier lisible par ce compte
+  seulement, puis supprimer le fichier :
+    Get-Content -Raw <fichier> | py -3 companion_agent.py --config ... --controller ... --enroll
+  --enroll JETON (ou --enroll=JETON) est refusé sans afficher la valeur
+  et sans contacter le pont : créer alors un nouveau jeton. La tâche
+  planifiée n'enrôle jamais et ne reçoit que --config. Stockage : hq_agents.json sur le pont, agent_config.json
   sur le companion (ProgramData\TransfertHQ ou fichier local). Les deux
   sont gitignorés.
 
@@ -86,7 +94,11 @@ Companions (contrôle des autres PC)
   bridge_config.json et bridge_sessions.json n'héritent pas : pas de
   lecture planificateur. Les autres fichiers d'identifiants (hq_vapid.json,
   clés, agent_config.json) restent privés parce que l'accès planificateur
-  n'est pas hérité. .hq-agent-state n'est pas touché ici.
+  n'est pas hérité. Seul <StateDir>\.hq-agent-state (chemin complet) est
+  laissé à install_hq_state_acl.ps1. Un autre dossier nommé .hq-agent-state
+  ailleurs dans l'arbre reçoit la politique de l'arbre (ACE explicites
+  retirées, héritage rétabli) ; s'il garde une ACE explicite ou un héritage
+  coupé, le script s'arrête sans déclarer l'arbre durci.
   .git est inclus : propriétaire et ACL seulement, octets / refs / config /
   hooks / index inchangés. Un point de réparation est signalé par son chemin
   et le script s'arrête avant toute écriture, sans suivre la cible.
@@ -152,7 +164,10 @@ Companions (contrôle des autres PC)
   expires_at est le délai d'attente avant le démarrage. Au POST
   /agent/v1/start, HQ pose started_at et
   run_deadline = started_at + timeout_sec + 15 s. Résultat et artifact ne
-  sont acceptés qu'en état running avec le même jeton. Bail expiré avant
+  sont acceptés qu'en état running avec le même jeton, et avant
+  run_deadline. Une requête start, result ou artifact arrivée après
+  run_deadline règle d'abord le travail sous le verrou (même règle que le
+  balayage, même sans balayage), puis est refusée. Bail expiré avant
   start : une lecture peut revenir en file (3 essais au plus). Après start,
   plus aucune relance. Si le résultat manque : une lecture devient failed
   (« résultat non reçu ») ; sûr, sensible et destructeur deviennent
@@ -168,7 +183,12 @@ Companions (contrôle des autres PC)
   Artifacts : authorize_artifact ne crée aucun fichier. Ensuite réserve
   disque (upload_disk_reserve_gb, défaut 2 Go) et quota par appareil.
   Écriture *.partial, fsync, os.replace. Si le rattachement échoue, le
-  fichier est supprimé. Seuls fs.stage et screenshot.capture produisent
+  fichier est supprimé. Aucun lien n'est suivi : un lien symbolique, une
+  jonction ou un autre point de réparation dans
+  Inbox\AgentArtifacts\<appareil>\<travail> refuse l'artifact. Le *.partial
+  est créé en exclusif (O_CREAT|O_EXCL, O_NOFOLLOW si disponible) ; un
+  *.partial ou un nom final déjà présent refuse l'envoi. Seuls les fichiers
+  créés par la requête sont supprimés. Seuls fs.stage et screenshot.capture produisent
   un artifact.
 
   Nonce : le cache anti-rejeu est en mémoire. Après un redémarrage du
@@ -179,10 +199,17 @@ Companions (contrôle des autres PC)
   Routes admin (cookie admin + CSRF, pas le rôle upload) : /api/agent
   Routes planificateur (127.0.0.1:8766, Bearer) : /local-agent/v1/devices|jobs
 
-  Installation Windows : install_companion.ps1 retire l'héritage ACL.
-  Contrôle total pour les SID *S-1-5-18 et *S-1-5-32-544, modification
-  pour l'identité Windows courante. icacls non nul arrête l'installation
-  avant la tâche. La tâche visible au logon ne reçoit que --config.
+  Installation Windows : install_companion.ps1 pose une DACL protégée
+  (héritage retiré, DACL remplacée en entier) par SID seulement :
+  S-1-5-18 et S-1-5-32-544 en contrôle total, SID de l'identité Windows
+  courante en modification. Elle couvre le dossier, work, agent_config.json,
+  le code copié et tout objet déjà présent ; une ancienne ACE Users,
+  Everyone ou autre disparaît. Un point de réparation dans l'arbre arrête
+  l'installation avant toute écriture. Chaque objet est relu et vérifié
+  par SID (protégé, propriétaire, SID autorisés, droits, présence). Un
+  échec d'écriture ACL ou de vérification arrête l'installation avant la
+  tâche. La tâche visible au logon ne reçoit que --config. Le script
+  affiche l'étape d'enrôlement avec --enroll seul (saisie masquée).
   uninstall_companion.ps1 retire la tâche et garde les secrets sauf
   -DeleteData. Protocole version 1.
 
