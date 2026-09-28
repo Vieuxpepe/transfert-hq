@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import cc_ext
 import hq_automation
 import hq_calendar
+import hq_drawings
 import hq_companion
 import hq_planner
 import hq_devices
@@ -118,6 +119,9 @@ SYSTEM_NAMES = {
     "hq_events.py",
     "hq_automation.py",
     "hq_devices.py",
+    "hq_drawings.py",
+    "hq_solid.py",
+    "hq_earcut.py",
     "hq_state.py",
     "hq_events.json",
     "hq_automation.json",
@@ -167,6 +171,7 @@ ADMIN_PREFIXES = (
     "/api/push",
     "/api/schedules",
     "/api/calendar",
+    "/api/drawings",
 )
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
@@ -653,6 +658,7 @@ def ensure_folders_and_migrate() -> None:
     (ROOT / "Inbox" / "Photos").mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Captures").mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Voice").mkdir(parents=True, exist_ok=True)
+    (ROOT / "Inbox" / "Drawings").mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Screenshots").mkdir(parents=True, exist_ok=True)  # legacy alias folder
     # one-time: move legacy Screenshots files into Captures
     legacy = ROOT / "Inbox" / "Screenshots"
@@ -2279,7 +2285,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', dessiner: 'Dessiner', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -2302,6 +2308,7 @@ function setView(name) {
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'calendrier' && window.hqCalendarShow) window.hqCalendarShow();
+  if (view === 'dessiner' && window.hqSketchShow) window.hqSketchShow();
 }
 function isSimpleMode() {
   try { return (localStorage.getItem('tf_hq_mode') || 'simple') === 'simple'; } catch (_) { return true; }
@@ -3715,6 +3722,7 @@ h1{font-size:1.7rem;margin:4px 0 6px;letter-spacing:-.02em}
 [data-panel]{display:none}
 body[data-view="accueil"] [data-panel="accueil"],
 body[data-view="calendrier"] [data-panel="calendrier"],
+body[data-view="dessiner"] [data-panel="dessiner"],
 body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
@@ -3793,7 +3801,7 @@ li.file.is-dir .fname{color:var(--ok)}
 .qrbox a{display:block;font-size:var(--text-xs);color:var(--muted);margin-top:6px;word-break:break-all;font-family:var(--font-mono);line-height:1.4}
 .status dd{margin:2px 0 8px;font-weight:700;word-break:break-all;font-family:var(--font-mono)}
 .status dt{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
-#toasts{position:fixed;left:50%;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:99;width:min(92vw,420px);display:grid;gap:8px}
+#toasts{position:fixed;left:50%;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:99;width:min(92vw,420px);display:grid;gap:8px;pointer-events:none}
 .toast{opacity:0;transform:translateY(8px);transition:.25s;background:var(--panel);border:1px solid var(--line);
   padding:12px 14px;border-radius:12px;box-shadow:0 10px 30px #0004;font-weight:700}
 .toast.show{opacity:1;transform:none}
@@ -4120,6 +4128,7 @@ def render_app() -> bytes:
 <style>{BASE_CSS}</style>
 <link rel="stylesheet" href="/assets/hq.css"/>
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
+<link rel="stylesheet" href="/assets/hq-dessiner.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
@@ -4127,6 +4136,7 @@ def render_app() -> bytes:
 <nav class="bottom-nav" aria-label="Navigation HQ">
   <button type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
   <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
+  <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
   <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
@@ -4266,6 +4276,16 @@ def render_app() -> bytes:
         <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
       </div>
       <div id="hq-cal-app"><p class="hint">Chargement…</p></div>
+    </section>
+  </div>
+
+  <div data-panel="dessiner">
+    <section class="hq hq-sk" aria-labelledby="sk-title">
+      <div class="sec-head">
+        <h2 id="sk-title">Dessiner</h2>
+        <p class="sec-hint">Croquis rapide ou construction cotée · tactile, stylet, souris · enregistré dans Inbox/Drawings (JSON + PNG + DXF)</p>
+      </div>
+      <div id="hq-sk-app"><p class="hint">Chargement…</p></div>
     </section>
   </div>
 
@@ -4610,6 +4630,9 @@ def render_app() -> bytes:
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-sketch-core.js"></script>
+<script src="/assets/hq-solid-view.js"></script>
+<script src="/assets/hq-dessiner.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
@@ -4931,7 +4954,55 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
+    def _drawings_get(self, raw: str, parsed) -> bool:
+        """Dessiner: list / reopen / fetch saved files. Admin-only (not in UPLOAD_* allowlists)."""
+        if raw not in ("/api/drawings", "/api/drawings/open", "/api/drawings/file"):
+            return False
+        qs = parse_qs(parsed.query)
+        try:
+            if raw == "/api/drawings":
+                self._json(200, hq_drawings.list_drawings(ROOT))
+            elif raw == "/api/drawings/open":
+                self._json(200, hq_drawings.open_drawing(ROOT, (qs.get("stem") or [""])[0]))
+            else:
+                kind = (qs.get("kind") or [""])[0]
+                body, ctype, name = hq_drawings.read_file(ROOT, (qs.get("stem") or [""])[0], kind)
+                disp = "inline" if kind == "png" else "attachment"
+                self._send(200, body, ctype, [("Content-Disposition", f'{disp}; filename="{name}"')])
+        except hq_drawings.DrawingError as e:
+            self._json(e.status, {"error": str(e)})
+        return True
+
+    def _drawings_post(self, raw: str) -> bool:
+        if raw not in ("/api/drawings", "/api/drawings/mesh"):
+            return False
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "longueur invalide"})
+            return True
+        if length <= 0 or length > hq_drawings.MAX_BODY:
+            self.close_connection = True
+            self._json(413 if length > 0 else 400, {"error": "Dessin trop volumineux" if length > 0 else "Corps vide"})
+            return True
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json(400, {"error": "JSON invalide"})
+            return True
+        try:
+            result = hq_drawings.preview_mesh(data) if raw == "/api/drawings/mesh" else hq_drawings.save_drawing(ROOT, data)
+        except hq_drawings.DrawingError as e:
+            self._json(e.status, {"error": str(e)})
+            return True
+        # No cc_ext.log_activity here: the save must never wait on the shared activity lock.
+        self._json(200, result)
+        return True
+
     def _hq_get(self, raw: str, parsed) -> bool:
+        if self._drawings_get(raw, parsed):
+            return True
         if raw == "/hq-sw.js":
             path = ROOT / "assets" / "hq-sw.js"
             if not path.is_file():
@@ -5062,6 +5133,8 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _hq_post(self, raw: str) -> bool:
+        if self._drawings_post(raw):
+            return True
         if raw == "/api/agent":
             data = self._read_json()
             code, payload = hq_companion.admin_post(data)

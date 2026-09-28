@@ -253,6 +253,10 @@ Routes ajoutées (admin ; le rôle upload reste sur son allowlist)
   GET  /api/calendar            ?from=&to= (fin exclue, max 366 jours) &include_activity=0|1
   POST /api/calendar            {action: save|delete, expected_rev, event|id}
   POST /api/calendar/run        {id, target: scene|action} — jamais appelé par l'horloge
+  GET  /api/drawings            dessins de Inbox/Drawings (liste, 200 max)
+  GET  /api/drawings/open?stem= document vectoriel validé (réouverture)
+  GET  /api/drawings/file?stem=&kind=png|dxf|json
+  POST /api/drawings            {name, source: mobile|desktop, doc, png} — corps ≤ 6 Mio
   POST /api/queue               étendu : ces when + at HH:MM, weekday 0=lundi, once_at, device_id
   GET  /api/backups             catalogue
   POST /api/backup/restore      {id, folder: Inbox|Uni|Print, confirm: true}
@@ -577,7 +581,69 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_earcut.py
+  node tests/check_hq_features.mjs
+  node tests/check_hq_sketch.mjs
+  node tests/check_hq_solid.mjs
+  (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
+  (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
+
+Dessiner (croquis mécanique)
+----------------------------
+  Onglet Dessiner : tactile, stylet, souris. Deux modes sur le MÊME dessin :
+    Croquis rapide : stylo main levée, gomme (objet), notes texte déplaçables,
+                     cotes manuelles linéaires / angulaires (annotations seulement).
+    Construction   : lignes, rectangles, cercles, axes ; accroche grille et angle
+                     (pas réglable) ; longueur pilotante (une extrémité fixe, l'autre
+                     glisse) ; angle pilotant entre deux lignes reliées (la ligne
+                     choisie pivote autour du sommet commun, longueur conservée).
+  Une modification qui déformerait de la géométrie reliée que le solveur ne sait pas
+  résoudre (ex. pivoter un côté d'un contour fermé) est refusée avec un message ;
+  le dessin n'est pas modifié. Les contraintes pilotantes déjà posées sont vérifiées
+  après chaque édition (déplacement, poignée, cote).
+  Repère Y vers le haut (flèches X/Y en bas à gauche), unités explicites (mm, cm, m,
+  po), pas de grille en unités réelles. Annuler/Rétablir, sélection (Maj ou « Multi »),
+  déplacement, suppression, pincer pour zoomer, deux doigts / Main pour se déplacer.
+  Dès qu'un stylet est vu, un doigt seul déplace la vue (rejet de paume).
+  Brouillon local (localStorage) sauvegardé en continu et au changement d'appli.
+
+  Pièce 3D : en Construction, sélectionner un rectangle, un cercle ou des lignes
+  formant un seul contour fermé ; saisir une profondeur positive et Extruder.
+  Sélectionner ensuite un autre contour strictement intérieur pour Enlever matière,
+  en coupe borgne (profondeur depuis la face supérieure) ou traversante. Les
+  contours ouverts, croisés, ramifiés, qui se touchent ou se chevauchent sont
+  refusés sans changer la pièce. Une seule extrusion de base ; les coupes ne se
+  recouvrent pas. Les traits libres, axes, textes et cotes sont exclus des solides.
+  Aperçu 3D : tourner au doigt/souris, pincer ou utiliser la molette pour zoomer,
+  recentrer. Le serveur recalcule le même maillage pour l'aperçu et le STL ;
+  il ne sauvegarde rien lors d'un simple aperçu. Les fonctions 3D sont annulables
+  et éditables par retrait puis recréation. Le DXF demeure une esquisse 2D ; le
+  STL est un maillage, non un historique de fonctions SolidWorks.
+
+  Enregistrement dans ROOT/Inbox/Drawings (même résolution qu'Inbox/Voice) :
+    <nom>_HQWeb-Mobile|_HQWeb-Desktop[.hqdraw.json|.png|.dxf|.stl], même radical.
+    Le .stl n'est créé que si le dessin contient une pièce 3D valide. Le STL
+    binaire n'a pas de champ d'unités : ses coordonnées sont toujours en mm.
+    Le suffixe est une estimation (pointeur grossier / écran tactile / taille de
+    fenêtre), jamais le nom exact de l'appareil. Le nom est nettoyé côté serveur ;
+    aucun chemin client n'est accepté. Collision : -2, -3… (jamais d'écrasement).
+    Écriture : fichier temporaire caché (O_EXCL, fsync) puis os.link sans écrasement.
+    Inbox/Drawings lien symbolique / jonction / point d'analyse : refusé.
+    Fichiers liés (symlink, reparse) : ignorés à la liste, refusés à l'ouverture.
+  DXF ASCII (AC1009 + $INSUNITS), coordonnées réelles 1:1, Y vers le haut :
+    GEOMETRIE (LINE, CIRCLE), AXES (LINE, type CENTER),
+    REFERENCE_MAIN_LEVEE (POLYLINE simplifiée), NOTES (TEXT),
+    COTATIONS (LINE/ARC/TEXT). Aucune entité DIMENSION : les cotes manuelles
+    ne deviennent jamais des contraintes CAO. Les cotes pilotantes restent dans
+    le .hqdraw.json ; le DXF porte la géométrie résultante.
+  Format .hqdraw.json v2 : format, version, units, grid, snap, points[{id,x,y}],
+  objects[{id,type,...}] (les lignes référencent des id de points : connectivité
+  explicite), constraints[{id,type:length|angle,...}],
+  features[{id,type:extrude|cut,profile:[object-id,...],depth,extent}], meta.
+  Les anciens fichiers v1 restent lisibles et passent en v2 à la première
+  fonction 3D. Triangulation embarquée sous licence ISC (EARCUT-LICENSE.txt).
+  Contrôle manuel : non fait sur un vrai iPhone Safari, ni import SolidWorks, ni
+  jonction Windows réelle (test unitaire Windows seulement, ignoré ailleurs).
 
 Contrôle manuel du calendrier
 -----------------------------
