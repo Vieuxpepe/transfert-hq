@@ -38,6 +38,7 @@
     doc.constraints.forEach(p => used.add(p.id));
     (doc.features || []).forEach(p => used.add(p.id));
     (doc.faceFeatures || []).forEach(p => used.add(p.id));
+    (doc.roundFeatures || []).forEach(p => used.add(p.id));
     let n = Math.max(1, Number(doc.nextId) || 1);
     while (used.has(prefix + n)) n++;
     doc.nextId = n + 1;
@@ -333,7 +334,7 @@
     d.objects.forEach(o => { if (isLine(o)) { used.add(o.p1); used.add(o.p2); } else if (o.type === "circle") used.add(o.center); });
     d.points = d.points.filter(p => used.has(p.id));
     d.features = (d.features || []).filter(f => !f.profile.some(id => set.has(id)));
-    if (!d.features.length || d.features[0].type !== "extrude") { d.features = []; d.faceFeatures = []; }
+    if (!d.features.length || d.features[0].type !== "extrude") { d.features = []; d.faceFeatures = []; d.roundFeatures = []; }
     return d;
   }
 
@@ -356,7 +357,7 @@
     const d = clone(doc), at = (d.features || []).findIndex(f => f.id === id);
     if (at < 0) return { ok: false, error: "Fonction introuvable" };
     d.features = at === 0 ? [] : d.features.filter(f => f.id !== id);
-    if (at === 0) d.faceFeatures = [];
+    if (at === 0) { d.faceFeatures = []; d.roundFeatures = []; }
     return { ok: true, doc: d };
   }
 
@@ -382,6 +383,24 @@
     const d = clone(doc), count = (d.faceFeatures || []).length;
     d.faceFeatures = (d.faceFeatures || []).filter(f => f.id !== id);
     return count === d.faceFeatures.length ? { ok: false, error: "Fonction introuvable" } : { ok: true, doc: d };
+  }
+
+  function addRoundFeature(doc, a, b, radius) {
+    const d = clone(doc), r = Number(radius);
+    if (!(d.features || []).length) return { ok: false, error: "Crée d'abord une pièce 3D" };
+    if (![a, b].every(p => Array.isArray(p) && p.length === 3 && p.every(v => Number.isFinite(v) && Math.abs(v) <= LIMITS.coord)) ||
+        !(r > 1e-6 && r <= LIMITS.coord)) return { ok: false, error: "Arête ou rayon invalide" };
+    d.version = 3;
+    d.roundFeatures = d.roundFeatures || [];
+    if (d.roundFeatures.length >= 50) return { ok: false, error: "Trop d'arrondis" };
+    d.roundFeatures.push({ id: newId(d, "rf"), a: a.map(round6), b: b.map(round6), radius: round6(r) });
+    return { ok: true, doc: d };
+  }
+
+  function removeRoundFeature(doc, id) {
+    const d = clone(doc), count = (d.roundFeatures || []).length;
+    d.roundFeatures = (d.roundFeatures || []).filter(f => f.id !== id);
+    return count === d.roundFeatures.length ? { ok: false, error: "Arrondi introuvable" } : { ok: true, doc: d };
   }
 
   function updateObject(doc, id, patch) {
@@ -524,6 +543,7 @@
     d.constraints.forEach(k => { if (k.type === "length") k.value = s(k.value); });
     (d.features || []).forEach(f => { f.depth = s(f.depth); });
     (d.faceFeatures || []).forEach(f => { f.depth = s(f.depth); f.profile = f.profile.map(sp); f.plane.origin = f.plane.origin.map(s); });
+    (d.roundFeatures || []).forEach(f => { f.a = f.a.map(s); f.b = f.b.map(s); f.radius = s(f.radius); });
     if (d.view) { d.view.x0 = s(d.view.x0); d.view.y0 = s(d.view.y0); d.view.ppu = d.view.ppu / f; }
     return { ok: true, doc: d };
   }
@@ -616,6 +636,13 @@
             !f.plane || ["origin", "u", "v", "normal"].some(k => !Array.isArray(f.plane[k]) || f.plane[k].length !== 3 || !f.plane[k].every(num)))
           throw new Error("Fonction sur face invalide");
       }
+      const rounds = doc.roundFeatures || [];
+      if (!Array.isArray(rounds) || rounds.length > 50 || (doc.version < 3 && rounds.length)) throw new Error("Arrondis invalides");
+      for (const f of rounds) {
+        claim(f.id);
+        if (![f.a, f.b].every(p => Array.isArray(p) && p.length === 3 && p.every(num)) || !num(f.radius) || f.radius <= 1e-6)
+          throw new Error("Arrondi invalide");
+      }
       return { ok: true };
     } catch (e) { return { ok: false, error: e.message }; }
   }
@@ -655,7 +682,7 @@
     FORMAT, VERSION, DRAFT_KEY, UNIT_MM, LIMITS,
     clone, createDoc, newId, pointMap, getObj, isLine, addPoint, findPointNear, addLine, addRect, addCircle, addStroke,
     addText, addDimLinear, addDimAngle, measureLinear, measureAngle, linesAtPoint, otherEnd, sharedVertex, lineLength,
-    angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, addFeature, removeFeature, addFaceFeature, removeFaceFeature, moveObjects, movePoint, deleteObjects,
+    angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, addFeature, removeFeature, addFaceFeature, removeFaceFeature, addRoundFeature, removeRoundFeature, moveObjects, movePoint, deleteObjects,
     updateObject, hitTest, hitAll, objectDistance, dimLinearGeom, textBox, snapGrid, snapAngle, snapSegmentEnd, simplify,
     convertUnits, fmt, extents, toScreen, toModel, zoomAt, fitView, sourceHint, validateDoc, createHistory,
     saveDraft, loadDraft, clearDraft,

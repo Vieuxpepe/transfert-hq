@@ -428,7 +428,26 @@ def validate_document(doc) -> dict:
             raise DrawingError(f"{fid} : axes du plan invalides")
         face_features.append({"id": fid, "type": kind, "extent": extent, "depth": depth, "plane": vectors, "profile": ring})
     out["faceFeatures"] = face_features if doc["version"] >= 3 else []
-    if features or face_features:
+    raw_rounds = doc.get("roundFeatures", [])
+    if not isinstance(raw_rounds, list) or len(raw_rounds) > 50 or (doc["version"] < 3 and raw_rounds):
+        raise DrawingError("Arrondis invalides")
+    round_features = []
+    for i, item in enumerate(raw_rounds):
+        if not isinstance(item, dict):
+            raise DrawingError(f"Arrondi {i} invalide")
+        rid = _id(item.get("id"), f"arrondi {i}")
+        if rid in face_ids:
+            raise DrawingError("Identifiant d'arrondi en double")
+        face_ids.add(rid)
+        a, b = item.get("a"), item.get("b")
+        if not all(isinstance(p, (list, tuple)) and len(p) == 3 for p in (a, b)):
+            raise DrawingError(f"{rid} : arête invalide")
+        start = [_num(v, f"{rid} arête") for v in a]
+        end = [_num(v, f"{rid} arête") for v in b]
+        radius = _num(item.get("radius"), f"{rid} rayon", lo=1e-6, hi=MAX_COORD)
+        round_features.append({"id": rid, "a": start, "b": end, "radius": radius})
+    out["roundFeatures"] = round_features if doc["version"] >= 3 else []
+    if features or face_features or round_features:
         try:
             hq_solid.build_mesh(out)
         except hq_solid.SolidError as e:
@@ -717,7 +736,7 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
     saved_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now()))
     directory = drawings_dir(root, create=True)
     dxf_bytes = build_dxf(doc).encode("cp1252", errors="replace")
-    mesh = hq_solid.build_mesh(doc) if doc["features"] or doc["faceFeatures"] else []
+    mesh = hq_solid.build_mesh(doc) if doc["features"] or doc["faceFeatures"] or doc["roundFeatures"] else []
     stl_bytes = hq_solid.binary_stl(mesh, doc["units"]) if mesh else None
 
     with _SAVE_LOCK:
@@ -787,7 +806,11 @@ def preview_mesh(payload: dict) -> dict:
         raise DrawingError("Requête invalide")
     doc = validate_document(payload.get("doc"))
     mesh = hq_solid.build_mesh(doc)
-    return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh)}
+    from hq_round_solid import eligible_edges
+    edges = eligible_edges(mesh)
+    return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh),
+            "edges": [{"a": e["a"], "b": e["b"], "length": e["length"]} for e in edges[:5000]],
+            "edgesTruncated": len(edges) > 5000}
 
 
 def _read_regular(directory: Path, name: str, cap: int) -> bytes:

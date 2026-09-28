@@ -29,7 +29,8 @@
 .sk-3d-stage{position:relative;height:clamp(360px,calc(100vh - 330px),860px);border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#edf4f8}
 .sk-3d-canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
 .sk-3d-canvas:active{cursor:grabbing}
-.sk-3d-overlay{position:absolute;left:8px;right:8px;bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;pointer-events:none}
+.sk-3d-overlay{position:absolute;z-index:2;left:8px;right:8px;bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;pointer-events:none}
+.sk-3d-edge-overlay{position:absolute;z-index:1;inset:0;width:100%;height:100%;pointer-events:none}
 .sk-3d-overlay>*{pointer-events:auto;background:color-mix(in srgb,var(--panel) 88%,transparent);border-radius:8px;padding:6px 9px}
 .sk-3d-overlay button{min-height:38px;border:1px solid var(--line);color:var(--text)}
 .sk-face-editor[hidden]{display:none}

@@ -33,7 +33,7 @@
     doc: null, name: "", stem: "", dirty: false, tool: "select", sel: [], multi: false,
     hist: S.createHistory(100), view: null, W: 0, H: 0, dpr: 1, ptrs: new Map(), gesture: null, action: null,
     penSeen: false, fixedEnd: "p1", swapAngle: false, angleTaps: [], built: false, draftTimer: 0, hudMsg: "",
-    tab3d: false, solidDepth: 20, cutDepth: 5, cutThrough: false, solidBusy: false, mesh: [], meshVersion: 0, meshLoadedVersion: -1, meshTimer: 0, faceSelection: null,
+    tab3d: false, solidDepth: 20, cutDepth: 5, cutThrough: false, solidBusy: false, mesh: [], edges: [], meshVersion: 0, meshLoadedVersion: -1, meshTimer: 0, faceSelection: null, edgeSelection: null, edgeMode: false, roundRadius: 2,
   };
   let root, canvas, ctx, hud, props, textIn, solidView, faceSketch;
 
@@ -114,7 +114,7 @@
   </div>
   <div class="sk-3d-stage" hidden>
     <canvas class="sk-3d-canvas" aria-label="Aperçu 3D interactif" role="img"></canvas>
-    <div class="sk-3d-overlay"><span class="sk-3d-status" aria-live="polite"></span><button type="button" data-act="faceSketch" class="sk-face-start" hidden>Dessiner sur cette face</button><button type="button" data-act="reset3d">Recentrer</button></div>
+    <div class="sk-3d-overlay"><span class="sk-3d-status" aria-live="polite"></span><button type="button" data-act="faceSketch" class="sk-face-start" hidden>Dessiner sur cette face</button><button type="button" data-act="roundMode" class="sk-round-mode" aria-pressed="false">Arrondir une arête</button><button type="button" data-act="reset3d">Recentrer</button></div>
     <div class="sk-face-editor" hidden></div>
   </div>
   <div class="sk-solid"></div>
@@ -147,6 +147,11 @@
         st.faceSelection = face;
         $(".sk-face-start", root).hidden = !face;
         if (face) $(".sk-3d-status", root).textContent = "Face sélectionnée";
+      });
+      solidView.onEdgeSelect(edge => {
+        st.edgeSelection = edge;
+        $(".sk-3d-status", root).textContent = edge ? "Arête sélectionnée · choisis un rayon" : "Touche une arête droite convexe de la pièce";
+        renderSolid();
       });
     }
     if (window.HQFaceSketch) faceSketch = window.HQFaceSketch($(".sk-face-editor", root), createFaceSolid);
@@ -188,6 +193,7 @@
     $(".sk-solid", root).addEventListener("input", e => {
       if (e.target.dataset.solid === "base-depth") st.solidDepth = e.target.value;
       if (e.target.dataset.solid === "cut-depth") st.cutDepth = e.target.value;
+      if (e.target.dataset.solid === "round-radius") st.roundRadius = e.target.value;
       if (e.target.dataset.solid === "through") {
         st.cutThrough = e.target.checked;
         const depthInput = $('[data-solid="cut-depth"]', root);
@@ -280,11 +286,13 @@
     const features = st.doc.features || [], selected = selectedProfile();
     const parts = features.map((f, i) => `<div class="sk-solid-feature"><span>${i + 1}. ${f.type === "extrude" ? "Extrusion" : "Enlèvement"} · ${f.extent === "throughAll" ? "traversant" : S.fmt(f.depth) + " " + esc(st.doc.units)} · ${f.profile.length} objet(s)</span><button type="button" data-act="remove3d" data-feature="${esc(f.id)}" aria-label="Retirer la fonction ${i + 1}">Retirer</button></div>`).join("");
     const faceParts = (st.doc.faceFeatures || []).map((f, i) => `<div class="sk-solid-feature"><span>Face ${i + 1}. ${f.type === "extrude" ? "Ajout" : "Enlèvement"} · ${f.extent === "throughAll" ? "traversant" : S.fmt(f.depth) + " " + esc(st.doc.units)}</span><button type="button" data-act="removeFace3d" data-feature="${esc(f.id)}" aria-label="Retirer la fonction sur face ${i + 1}">Retirer</button></div>`).join("");
-    box.innerHTML = `<div class="sk-solid-head"><strong>Pièce 3D</strong><span>${features.length ? features.length + (st.doc.faceFeatures || []).length + " fonction(s)" : "Sélectionne un contour fermé en Construction"}</span></div>
-      <div class="sk-solid-features">${parts}${faceParts}</div>
+    const roundParts = (st.doc.roundFeatures || []).map((f, i) => `<div class="sk-solid-feature"><span>Arrondi ${i + 1} · R ${S.fmt(f.radius)} ${esc(st.doc.units)}</span><button type="button" data-act="removeRound3d" data-feature="${esc(f.id)}" aria-label="Retirer l'arrondi ${i + 1}">Retirer</button></div>`).join("");
+    box.innerHTML = `<div class="sk-solid-head"><strong>Pièce 3D</strong><span>${features.length ? features.length + (st.doc.faceFeatures || []).length + (st.doc.roundFeatures || []).length + " fonction(s)" : "Sélectionne un contour fermé en Construction"}</span></div>
+      <div class="sk-solid-features">${parts}${faceParts}${roundParts}</div>
       <div class="sk-solid-controls"><span class="hint">Profil : ${selected.length ? selected.length + " objet(s) sélectionné(s)" : "touche un rectangle, un cercle ou plusieurs lignes fermées"}</span>
       ${!features.length ? `<label>Profondeur (${esc(st.doc.units)}) <input data-solid="base-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.solidDepth)}"/></label><button type="button" data-act="solid-extrude" ${selected.length && !st.solidBusy ? "" : "disabled"}>Extruder</button>`
       : `<label>Profondeur de coupe (${esc(st.doc.units)}) <input data-solid="cut-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.cutDepth)}" ${st.cutThrough ? "disabled" : ""}/></label><label class="sk-chk"><input data-solid="through" type="checkbox" ${st.cutThrough ? "checked" : ""}/> Traversant</label><button type="button" data-act="solid-cut" ${selected.length && !st.solidBusy ? "" : "disabled"}>Enlever matière</button>`}</div>
+      ${features.length && st.edgeMode ? `<div class="sk-solid-controls"><label>Rayon (${esc(st.doc.units)}) <input data-solid="round-radius" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.roundRadius)}"/></label><button type="button" data-act="roundApply" ${st.edgeSelection && !st.solidBusy ? "" : "disabled"}>Appliquer l'arrondi</button><span class="hint">Sélectionne une arête droite convexe. Le rayon est refusé s'il traverse la pièce ou une autre fonction.</span></div>` : ""}
       <p class="hint">La pièce part du plan Z=0. Pour ajouter ou enlever de la matière sur une face plane, touche la face dans l'aperçu 3D. STL exporté en millimètres.</p>`;
   }
 
@@ -310,16 +318,17 @@
 
   async function loadMesh() {
     const version = st.meshVersion, status = $(".sk-3d-status", root);
-    if (!(st.doc.features || []).length) { st.mesh = []; st.meshLoadedVersion = version; if (solidView) solidView.setTriangles([]); status.textContent = "Crée une extrusion pour voir la pièce."; return; }
+    if (!(st.doc.features || []).length) { st.mesh = []; st.edges = []; st.meshLoadedVersion = version; if (solidView) { solidView.setTriangles([]); solidView.setEdges([]); } status.textContent = "Crée une extrusion pour voir la pièce."; return; }
     status.textContent = "Calcul du modèle…";
     try {
       const res = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: st.doc }), timeoutMs: 45000 });
       if (version !== st.meshVersion) return;
-      st.mesh = res.triangles; st.meshLoadedVersion = version;
-      st.faceSelection = null; $(".sk-face-start", root).hidden = true;
-      if (solidView) solidView.setTriangles(st.mesh);
+      st.mesh = res.triangles; st.edges = res.edges || []; st.meshLoadedVersion = version;
+      st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
+      if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
+      renderSolid();
       status.textContent = `${res.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
-    } catch (e) { if (version === st.meshVersion) { st.mesh = []; st.meshLoadedVersion = -1; if (solidView) solidView.setTriangles([]); status.textContent = e.message; } }
+    } catch (e) { if (version === st.meshVersion) { st.mesh = []; st.edges = []; st.meshLoadedVersion = -1; if (solidView) { solidView.setTriangles([]); solidView.setEdges([]); } status.textContent = e.message; } }
   }
 
   async function createSolid(kind) {
@@ -333,8 +342,10 @@
     try {
       const check = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: result.doc }), timeoutMs: 45000 });
       if (version !== st.meshVersion) throw new Error("Le dessin a changé pendant le calcul : réessaie");
-      commit(result.doc); st.mesh = check.triangles; st.meshLoadedVersion = st.meshVersion;
-      if (solidView) solidView.setTriangles(st.mesh);
+      commit(result.doc); st.mesh = check.triangles; st.edges = check.edges || []; st.meshLoadedVersion = st.meshVersion;
+      clearTimeout(st.meshTimer);
+      if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
+      $(".sk-3d-status", root).textContent = `${check.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
       setView3d(true); say(kind === "extrude" ? "Pièce extrudée" : "Matière enlevée");
     } catch (e) { say("Profil 3D refusé : " + e.message, "err"); flashHud(e.message); }
     finally { st.solidBusy = false; renderSolid(); }
@@ -349,29 +360,54 @@
     try {
       const check = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: result.doc }), timeoutMs: 45000 });
       if (version !== st.meshVersion) throw new Error("Le dessin a changé pendant le calcul : réessaie");
-      commit(result.doc); st.mesh = check.triangles; st.meshLoadedVersion = st.meshVersion;
-      st.faceSelection = null; $(".sk-face-start", root).hidden = true;
-      if (solidView) solidView.setTriangles(st.mesh);
+      commit(result.doc); st.mesh = check.triangles; st.edges = check.edges || []; st.meshLoadedVersion = st.meshVersion;
+      clearTimeout(st.meshTimer);
+      st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
+      if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
+      $(".sk-3d-status", root).textContent = `${check.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
       setView3d(true); say(kind === "extrude" ? "Matière ajoutée sur la face" : "Matière enlevée sur la face");
     } finally { st.solidBusy = false; renderSolid(); }
   }
 
-  async function removeSolidFeature(id, onFace) {
+  async function createRound() {
+    if (st.solidBusy || !st.edgeSelection) return;
+    const edge = st.edgeSelection;
+    const radius = Number(String(st.roundRadius).replace(",", "."));
+    const result = S.addRoundFeature(st.doc, edge.a, edge.b, radius);
+    if (!result.ok) { say(result.error, "err"); return; }
+    const version = st.meshVersion;
+    st.solidBusy = true; renderSolid();
+    try {
+      const check = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: result.doc }), timeoutMs: 45000 });
+      if (version !== st.meshVersion) throw new Error("Le dessin a changé pendant le calcul : réessaie");
+      commit(result.doc); st.mesh = check.triangles; st.edges = check.edges || []; st.meshLoadedVersion = st.meshVersion;
+      clearTimeout(st.meshTimer);
+      st.edgeSelection = null;
+      if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
+      $(".sk-3d-status", root).textContent = `${check.count} triangles · touche une autre arête ou termine l'arrondi`;
+      say("Arête arrondie");
+    } catch (e) { say("Arrondi refusé : " + e.message, "err"); flashHud(e.message); }
+    finally { st.solidBusy = false; renderSolid(); }
+  }
+
+  async function removeSolidFeature(id, type) {
     if (st.solidBusy) return;
-    const result = onFace ? S.removeFaceFeature(st.doc, id) : S.removeFeature(st.doc, id);
+    const result = type === "face" ? S.removeFaceFeature(st.doc, id) : type === "round" ? S.removeRoundFeature(st.doc, id) : S.removeFeature(st.doc, id);
     if (!result.ok) { say(result.error, "err"); return; }
     const version = st.meshVersion;
     st.solidBusy = true;
     try {
-      let triangles = [];
+      let triangles = [], edges = [];
       if ((result.doc.features || []).length) {
         const check = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: result.doc }), timeoutMs: 45000 });
-        triangles = check.triangles;
+        triangles = check.triangles; edges = check.edges || [];
       }
       if (version !== st.meshVersion) throw new Error("Le dessin a changé pendant le calcul : réessaie");
-      commit(result.doc); st.mesh = triangles; st.meshLoadedVersion = st.meshVersion;
-      st.faceSelection = null; $(".sk-face-start", root).hidden = true;
-      if (solidView) solidView.setTriangles(triangles);
+      commit(result.doc); st.mesh = triangles; st.edges = edges; st.meshLoadedVersion = st.meshVersion;
+      clearTimeout(st.meshTimer);
+      st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
+      if (solidView) { solidView.setTriangles(triangles); solidView.setEdges(edges); }
+      $(".sk-3d-status", root).textContent = triangles.length ? `${triangles.length} triangles · glisse pour tourner · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
       say("Fonction retirée");
     } catch (e) { say("Retrait refusé : " + e.message, "err"); }
     finally { st.solidBusy = false; renderSolid(); }
@@ -381,10 +417,21 @@
   function act(name, el) {
     if (name === "view2d" || name === "view3d") { setView3d(name === "view3d"); return; }
     if (name === "reset3d") { if (solidView) solidView.reset(); return; }
+    if (name === "roundMode") {
+      st.edgeMode = !st.edgeMode; st.edgeSelection = null; st.faceSelection = null;
+      $(".sk-face-start", root).hidden = true;
+      $(".sk-round-mode", root).setAttribute("aria-pressed", String(st.edgeMode));
+      $(".sk-round-mode", root).textContent = st.edgeMode ? "Finir l'arrondi" : "Arrondir une arête";
+      if (solidView) solidView.setEdgeMode(st.edgeMode);
+      $(".sk-3d-status", root).textContent = st.edgeMode ? "Touche une arête droite convexe de la pièce" : "Touche une face pour y dessiner";
+      renderSolid(); return;
+    }
+    if (name === "roundApply") { createRound(); return; }
     if (name === "faceSketch") { if (faceSketch && st.faceSelection) faceSketch.open(st.faceSelection); return; }
     if (name === "solid-extrude" || name === "solid-cut") { createSolid(name === "solid-extrude" ? "extrude" : "cut"); return; }
-    if (name === "remove3d") { removeSolidFeature(el.dataset.feature, false); return; }
-    if (name === "removeFace3d") { removeSolidFeature(el.dataset.feature, true); return; }
+    if (name === "remove3d") { removeSolidFeature(el.dataset.feature, "legacy"); return; }
+    if (name === "removeFace3d") { removeSolidFeature(el.dataset.feature, "face"); return; }
+    if (name === "removeRound3d") { removeSolidFeature(el.dataset.feature, "round"); return; }
     if (name === "undo") { const p = st.hist.undo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
     if (name === "redo") { const p = st.hist.redo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
     if (name === "delete") { deleteSel(); return; }

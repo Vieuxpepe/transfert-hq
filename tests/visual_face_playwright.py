@@ -82,6 +82,32 @@ def run():
                     page.wait_for_function('() => window.hqSketchState().doc.faceFeatures?.length === 1', timeout=5000)
                 except Exception:
                     raise AssertionError('Face sketch failed: ' + page.locator('.sk-face-message').inner_text())
+                page.click('[data-act="roundMode"]')
+                edge_points = page.evaluate('''() => {
+                  const s=window.hqSketchState(), c=document.querySelector('.sk-3d-canvas'), r=c.getBoundingClientRect();
+                  const all=s.mesh.flat(), lo=[0,1,2].map(i=>Math.min(...all.map(p=>p[i])));
+                  const hi=[0,1,2].map(i=>Math.max(...all.map(p=>p[i])));
+                  const center=lo.map((v,i)=>(v+hi[i])/2), span=Math.max(...lo.map((v,i)=>hi[i]-v),1e-6);
+                  const cy=Math.cos(-.72), sy=Math.sin(-.72), cp=Math.cos(.62), sp=Math.sin(.62);
+                  const scale=1.42/span, aspect=c.width/c.height;
+                  function xy(p) {let x=p[0]-center[0],y=p[1]-center[1],z=p[2]-center[2];
+                    let rx=cy*x-sy*y,ry=sy*x+cy*y;
+                    return [r.left+(rx*scale/Math.max(1,aspect)+1)*r.width/2,
+                            r.top+(1-(cp*z-sp*ry)*scale)*r.height/2];}
+                  return s.edges.map(e=>xy(e.a.map((v,i)=>(v+e.b[i])/2)));
+                }''')
+                found = False
+                for x, y in edge_points:
+                    if not (stage['x'] < x < stage['x'] + stage['width'] and stage['y'] < y < stage['y'] + stage['height']):
+                        continue
+                    page.mouse.click(x, y)
+                    if page.evaluate('!!window.hqSketchState().edgeSelection'):
+                        found = True; break
+                assert found, 'No visible convex edge could be selected'
+                page.fill('[data-solid="round-radius"]', '1')
+                page.click('[data-act="roundApply"]')
+                page.wait_for_function('() => window.hqSketchState().doc.roundFeatures?.length === 1')
+                page.click('[data-act="roundMode"]')
                 assert not errors, errors
                 if os.environ.get('HQ_FACE_SCREENSHOTS'):
                     page.screenshot(path=os.environ['HQ_FACE_SCREENSHOTS'] + '-desktop.png', full_page=True)
@@ -94,6 +120,9 @@ def run():
                 page.click('[data-act="open"]')
                 page.click(f'[data-open="{stem}"]')
                 page.wait_for_function('() => window.hqSketchState().doc.faceFeatures?.length === 1')
+                assert page.evaluate('window.hqSketchState().doc.roundFeatures?.length') == 1
+                page.click('[data-act="removeRound3d"]')
+                page.wait_for_function('() => window.hqSketchState().doc.roundFeatures?.length === 0')
                 page.click('[data-act="removeFace3d"]')
                 page.wait_for_function('() => window.hqSketchState().doc.faceFeatures?.length === 0')
                 page.click('[data-act="undo"]')
@@ -151,7 +180,7 @@ def run():
             server.shutdown(); server.server_close()
             iphone_bridge.ROOT = old_root
             iphone_bridge.CONFIG.clear(); iphone_bridge.CONFIG.update(old_config)
-    print('Face sketch browser flow passed: side selection, extrusion, STL save, reopen')
+    print('Face sketch and edge round browser flow passed: side selection, extrusion, fillet, STL save, reopen')
 
 
 if __name__ == '__main__':

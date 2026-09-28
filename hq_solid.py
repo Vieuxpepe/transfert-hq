@@ -220,6 +220,10 @@ def build_mesh(doc):
     if face_features:
         from hq_face_solid import apply_face_features
         mesh = apply_face_features(mesh, face_features)
+    round_features = doc.get("roundFeatures") or []
+    if round_features:
+        from hq_round_solid import apply_round_features
+        mesh = apply_round_features(mesh, round_features)
     return mesh
 
 

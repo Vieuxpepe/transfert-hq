@@ -122,6 +122,7 @@ SYSTEM_NAMES = {
     "hq_drawings.py",
     "hq_solid.py",
     "hq_face_solid.py",
+    "hq_round_solid.py",
     "hq_earcut.py",
     "requirements-face3d.txt",
     "earcut-license.txt",
