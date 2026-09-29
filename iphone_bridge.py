@@ -63,6 +63,20 @@ UPLOAD_GET_EXACT = {
     "/api/upload/status",
 }
 UPLOAD_GET_PREFIX = ("/assets/",)
+# /assets/* types are fixed here, never read from mimetypes: on Windows it merges
+# HKCR "Content Type" values, and a text/plain .js there plus nosniff makes every
+# browser refuse the scripts (Dessiner then stayed on « Chargement… »).
+ASSET_CONTENT_TYPES = {
+    ".js": "application/javascript; charset=utf-8",
+    ".mjs": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+}
 UPLOAD_POST_EXACT = {
     "/login", "/logout",
     "/api/me", "/api/presence",
@@ -2298,6 +2312,94 @@ function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
 }
+// Dessiner bootstrap watchdog: the tab must never stay on « Chargement… ».
+// Event-driven only (script error events, setView, one check at window load).
+const SK_SCRIPTS = [
+  ['hq-sketch-core.js', 'HQSketch', true],
+  ['hq-solid-view.js', 'HQSolidView', false],
+  ['hq-face-sketch.js', 'HQFaceSketch', false],
+  ['hq-dessiner.js', 'hqSketchShow', true],
+];
+const SK_INIT_ERROR = "erreur d'initialisation";
+const skFailedScripts = new Set();
+window.addEventListener('error', (e) => {
+  const t = e.target;
+  if (t && t.tagName === 'SCRIPT' && t.dataset && t.dataset.sk) skFailedScripts.add(t.dataset.sk);
+}, true);
+function skMissingReason() {
+  const failed = SK_SCRIPTS.find(([name, glob, required]) => required && !window[glob] && skFailedScripts.has(name));
+  if (failed) return 'module de dessin non chargé (' + failed[0] + ')';
+  if (!window.HQSketch) return 'module de dessin non chargé (hq-sketch-core.js)';
+  if (!window.hqSketchShow) return 'module de dessin non chargé (hq-dessiner.js)';
+  return SK_INIT_ERROR;
+}
+window.hqSketchFail = function (reason, kind) {
+  const app = document.getElementById('hq-sk-app');
+  if (!app) return;
+  const box = document.createElement('div');
+  box.className = 'sk-fail';
+  box.setAttribute('role', 'alert');
+  const title = document.createElement('p');
+  title.className = 'sk-fail-title';
+  title.textContent = "Dessiner n'a pas pu démarrer.";
+  const why = document.createElement('p');
+  why.className = 'hint sk-fail-reason';
+  why.textContent = String(reason || SK_INIT_ERROR).slice(0, 120);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'secondary sk-retry';
+  btn.textContent = 'Réessayer';
+  btn.addEventListener('click', () => hqSketchRetry(kind === 'init' ? 'init' : 'load', btn));
+  box.append(title, why, btn);
+  app.textContent = '';
+  app.appendChild(box);
+};
+function hqSketchStart() {
+  if (!window.hqSketchShow) {
+    // Classic scripts at the end of <body> all run before DOMContentLoaded, so a
+    // missing module after that point is a load failure, not a race.
+    if (document.readyState !== 'loading') window.hqSketchFail(skMissingReason(), 'load');
+    return;
+  }
+  try { window.hqSketchShow(); } catch (e) { console.error(e); window.hqSketchFail(SK_INIT_ERROR, 'init'); }
+}
+let skRetrying = false;
+function hqSketchRetry(kind, btn) {
+  // Scripts present but init threw: state may be half-built, reload is the safe retry.
+  if (kind === 'init' && window.hqSketchShow) { location.reload(); return; }
+  if (skRetrying) return;
+  skRetrying = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Nouvel essai…'; }
+  // Re-inject only what never ran, in page order; never re-run hq-dessiner.js once it has.
+  const todo = SK_SCRIPTS.filter(([, glob]) => !window[glob]);
+  const next = () => {
+    const item = todo.shift();
+    if (!item) {
+      skRetrying = false;
+      skFailedScripts.clear();
+      hqSketchStart();
+      return;
+    }
+    const [name, , required] = item;
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.dataset.sk = name;
+    el.onload = next;
+    el.onerror = () => {
+      el.remove();
+      if (!required) { next(); return; }  // 3D helpers are optional, as on first load
+      skRetrying = false;
+      window.hqSketchFail('module de dessin non chargé (' + name + ')', 'load');
+    };
+    document.body.appendChild(el);
+  };
+  next();
+}
+window.addEventListener('load', () => {
+  const app = document.getElementById('hq-sk-app');
+  if (document.body.dataset.view === 'dessiner' && app && !app.querySelector('.sk, .sk-fail')) hqSketchStart();
+}, { once: true });
+
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
@@ -2315,8 +2417,10 @@ function setView(name) {
   });
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (view === 'fichiers') refreshFiles().catch(() => {});
-  if (view === 'calendrier' && window.hqCalendarShow) window.hqCalendarShow();
-  if (view === 'dessiner' && window.hqSketchShow) window.hqSketchShow();
+  if (view === 'calendrier' && window.hqCalendarShow) {
+    try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
+  }
+  if (view === 'dessiner') hqSketchStart();
 }
 function isSimpleMode() {
   try { return (localStorage.getItem('tf_hq_mode') || 'simple') === 'simple'; } catch (_) { return true; }
@@ -4638,10 +4742,10 @@ def render_app() -> bytes:
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
-<script src="/assets/hq-sketch-core.js"></script>
-<script src="/assets/hq-solid-view.js"></script>
-<script src="/assets/hq-face-sketch.js"></script>
-<script src="/assets/hq-dessiner.js"></script>
+<script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
+<script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
+<script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
+<script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
@@ -5334,7 +5438,7 @@ class Handler(BaseHTTPRequestHandler):
             name = Path(raw[len("/assets/") :]).name
             path = ROOT / "assets" / name
             if path.is_file():
-                ctype = mimetypes.guess_type(name)[0] or "application/javascript"
+                ctype = ASSET_CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
                 self._send(200, path.read_bytes(), ctype)
                 return
             self._send(404, b"missing")
