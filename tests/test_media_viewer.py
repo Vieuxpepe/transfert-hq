@@ -39,6 +39,23 @@ def _http(port, path, *, method="GET", body=None, headers=None, cookie=None):
         conn.close()
 
 
+def _http_all_headers(port, path, *, headers=None, cookie=None):
+    """Like _http but keeps repeated headers (two Content-Security-Policy lines)."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    hdrs = {"Host": f"127.0.0.1:{port}"}
+    hdrs.update(headers or {})
+    if cookie:
+        hdrs["Cookie"] = cookie
+    try:
+        conn.request("GET", path, headers=hdrs)
+        resp = conn.getresponse()
+        return resp.status, [(k.lower(), v) for k, v in resp.getheaders()], resp.read()
+    finally:
+        conn.close()
+
+
 class ParseByteRangeTests(unittest.TestCase):
     def test_table(self):
         cases = {
@@ -78,6 +95,12 @@ class MediaRouteTests(unittest.TestCase):
         (inbox / "vide.mp3").write_bytes(b"")
         (inbox / ".cache.mp3").write_bytes(b"hidden")
         (cls.tmp / "Uni" / "cours.mp4").write_bytes(b"\x00" * 64)
+        # 3D models: bytes are opaque to the server (parsing is client-side); a GLB header + filler.
+        cls.glb = b"glTF" + (2).to_bytes(4, "little") + bytes((i * 13) % 256 for i in range(200_000))
+        (cls.tmp / "Uni" / "3D").mkdir()
+        (cls.tmp / "Uni" / "3D" / "pièce.glb").write_bytes(cls.glb)
+        (cls.tmp / "Uni" / "3D" / "support.STL").write_bytes(b"solid x\nendsolid x\n")
+        (inbox / "scene.gltf").write_text("{}", encoding="utf-8")  # JSON glTF (external buffers): not listed
         cls.types = dict(B.MEDIA_CONTENT_TYPES)
         for ext in cls.types:
             (cls.tmp / "Print" / f"t{ext}").write_bytes(b"x" * 10)
@@ -234,12 +257,63 @@ class MediaRouteTests(unittest.TestCase):
     def test_deterministic_types(self):
         expected = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav", ".flac": "audio/flac",
                     ".ogg": "audio/ogg", ".opus": "audio/ogg", ".mp4": "video/mp4", ".m4v": "video/mp4",
-                    ".mov": "video/quicktime", ".webm": "video/webm"}
+                    ".mov": "video/quicktime", ".webm": "video/webm",
+                    ".glb": "model/gltf-binary", ".stl": "model/stl"}
         self.assertEqual(self.types, expected)
+        self.assertEqual(B.MEDIA_ATTACHMENT_EXTS, {".glb", ".stl"})
         for ext, ctype in expected.items():
             status, headers, body = self.get(f"/media/Print/t{ext}")
             self.assertEqual((status, headers["content-type"], body), (200, ctype, b"x" * 10), ext)
-            self.assertTrue(headers["content-disposition"].startswith("inline;"))
+            disposition = "attachment;" if ext in (".glb", ".stl") else "inline;"
+            self.assertTrue(headers["content-disposition"].startswith(disposition), ext)
+
+    MODEL = "/media/Uni/3D/pi%C3%A8ce.glb"
+
+    def test_models_attachment_sandboxed(self):
+        for path, ctype, data in ((self.MODEL, "model/gltf-binary", self.glb),
+                                  ("/media/Uni/3D/support.STL", "model/stl", b"solid x\nendsolid x\n")):
+            status, hdrs, body = _http_all_headers(self.port, path, cookie=self.admin)
+            self.assertEqual((status, body), (200, data), path)
+            h = dict(hdrs)
+            self.assertEqual(h["content-type"], ctype)
+            self.assertEqual(h["x-content-type-options"], "nosniff")
+            self.assertEqual(h["cache-control"], "no-store")
+            self.assertTrue(h["content-disposition"].startswith("attachment;"), h["content-disposition"])
+            csps = [v for k, v in hdrs if k == "content-security-policy"]
+            # The normal page policy is kept, plus a sandbox policy; both apply (the stricter wins).
+            self.assertIn("sandbox; default-src 'none'", csps)
+            self.assertTrue(any("default-src 'self'" in c and "frame-ancestors 'none'" in c for c in csps), csps)
+            self.assertNotIn("text/html", ctype)
+        _s, _h, _b = _http_all_headers(self.port, self.MODEL, cookie=self.admin)
+        self.assertIn("filename*=UTF-8''pi%C3%A8ce.glb", dict(_h)["content-disposition"])
+
+    def test_models_ranges(self):
+        n = len(self.glb)
+        for header, (a, b) in {"bytes=0-11": (0, 11), "bytes=150000-": (150000, n - 1),
+                               "bytes=-20": (n - 20, n - 1), "bytes=100-199": (100, 199)}.items():
+            status, headers, body = self.get(self.MODEL, {"Range": header})
+            self.assertEqual(status, 206, header)
+            self.assertEqual(headers["content-range"], f"bytes {a}-{b}/{n}", header)
+            self.assertEqual(body, self.glb[a:b + 1], header)
+            self.assertTrue(headers["content-disposition"].startswith("attachment;"))
+            self.assertEqual(headers["x-content-type-options"], "nosniff")
+        status, headers, body = self.get(self.MODEL, {"Range": f"bytes={n}-"})
+        self.assertEqual((status, headers["content-range"], body), (416, f"bytes */{n}", b""))
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+
+    def test_models_auth_and_confinement(self):
+        for cookie, expected in (("", 401), ("transfert_session=forged", 401), ("phone", 403)):
+            status, headers, body = self.get(self.MODEL, cookie=cookie)
+            self.assertEqual(status, expected, cookie)
+            self.assertNotIn(b"glTF", body)
+            self.assertIn("application/json", headers["content-type"])
+        # A model outside Inbox/Uni/Print must never be reachable (dot segments are dropped, not followed).
+        (self.tmp / "hors.stl").write_bytes(b"solid outside the served folders")
+        for path in ("/media/Uni/3D/../../hors.stl", "/media/Uni/%2e%2e/hors.stl", "/media/Uni/..%2F..%2Fhors.stl",
+                     "/media/hors.stl", "/media/Inbox/scene.gltf", "/media/Uni/3D/absent.stl", "/media/Uni/3D/"):
+            status, _h, body = self.get(path)
+            self.assertIn(status, (404, 415), path)
+            self.assertNotIn(b"outside", body, path)
 
     def test_library(self):
         status, headers, body = self.get("/api/media/library")
@@ -250,10 +324,14 @@ class MediaRouteTests(unittest.TestCase):
         self.assertIn("Inbox/Musique/chanson été.wav", rels)
         self.assertEqual(rels["Inbox/Musique/chanson été.wav"]["kind"], "audio")
         self.assertEqual(rels["Uni/cours.mp4"]["kind"], "video")
+        self.assertEqual(rels["Uni/3D/pièce.glb"]["kind"], "model")
+        self.assertEqual(rels["Uni/3D/support.STL"]["kind"], "model")
+        self.assertEqual(rels["Print/t.stl"]["kind"], "model")
+        self.assertNotIn("Inbox/scene.gltf", rels)
         for rel in ("Inbox/notes.txt", "Inbox/film.mkv", "Inbox/.cache.mp3", "Inbox/lien.mp3", "Inbox/boucle/secret.mp3", "secret.mp3"):
             self.assertNotIn(rel, rels)
         self.assertFalse(any("boucle" in r for r in rels))
-        self.assertEqual(len(rels), len(self.types) + 3)  # Print/t.*, the wav, the mp4, the empty mp3
+        self.assertEqual(len(rels), len(self.types) + 5)  # Print/t.*, the wav, the mp4, the empty mp3, 2 models
         mtimes = [i["mtime"] for i in data["items"]]
         self.assertEqual(mtimes, sorted(mtimes, reverse=True))
         self.assertFalse(data["truncated"])
@@ -302,6 +380,9 @@ class LecteurTabStaticTests(unittest.TestCase):
         # Links and buttons in a row keep their single-click behavior.
         self.assertIn("target.closest('a, button, input, select, textarea, label, .file-more-menu')", self.js)
         self.assertIn("li.file[data-media]{touch-action:manipulation}", B.BASE_CSS)
+        # The second tap's compatibility click is swallowed once (it would hit the Lecteur list).
+        self.assertIn("hqGhostClick = { until: now + 600, x: e.clientX, y: e.clientY };", self.js)
+        self.assertIn("if (Date.now() < g.until && Math.hypot(e.clientX - g.x, e.clientY - g.y) < 30) { e.preventDefault(); e.stopPropagation(); }\n}, true);", self.js)
 
     def test_media_name_double_click(self):
         # Only media names are delayed; the selector is scoped to rows marked data-media.
@@ -318,6 +399,25 @@ class LecteurTabStaticTests(unittest.TestCase):
         self.assertEqual({"." + k: v for k, v in js_types.items()}, B.MEDIA_CONTENT_TYPES)
         self.assertIn("'mkv', 'avi'", self.js)
         self.assertIn("ne se lit pas dans un navigateur", self.js)
+
+    def test_model_viewer_wiring(self):
+        self.assertIn('<script src="/assets/hq-model-view.js"></script>', self.html)
+        self.assertIn('<canvas id="player-model-canvas"', self.html)
+        self.assertIn('id="btn-player-fit">Recadrer</button>', self.html)
+        self.assertIn(".player-model canvas{display:block;width:100%;height:min(62vh,520px);background:#edf5fa;border-radius:12px;touch-action:none", B.BASE_CSS)
+        self.assertIn("kind === 'model' ? '🧊'", self.js)
+        # Fetched with the session cookie through the confined /media/ route; no token in the URL, a timeout, stale-load guard.
+        self.assertIn("fetch(mediaRel(rel), { credentials: 'same-origin', cache: 'no-store'", self.js)
+        self.assertIn("setTimeout(() => { timedOut = true; if (ctl) ctl.abort(); }, 120000)", self.js)
+        self.assertIn("if (token !== hqModel.token) return;", self.js)
+        for text in ("Session expirée : reconnecte-toi puis réessaie.", "Modèle trop volumineux pour le lecteur 3D",
+                     "Chargement trop long (plus de 2 minutes)", "Module 3D non chargé (hq-model-view.js)"):
+            self.assertIn(text, self.js)
+        asset = (Path(B.__file__).resolve().parent / "assets" / "hq-model-view.js").read_text(encoding="utf-8")
+        # Vendored and offline: no network access besides what the page hands it, no eval.
+        for banned in ("fetch(", "XMLHttpRequest", "import(", "eval(", "new Function", "http://", "https://", "WebSocket"):
+            self.assertNotIn(banned, asset, banned)
+        self.assertEqual(B.ASSET_CONTENT_TYPES[".js"], "application/javascript; charset=utf-8")
 
     def test_no_secrets_in_media_urls(self):
         self.assertIn("return '/media/' + rel.split('/').map(encodeURIComponent).join('/');", self.js)
