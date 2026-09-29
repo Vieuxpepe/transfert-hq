@@ -29,7 +29,7 @@ No merge/deploy. Finish in compact HANDOFF format.
 ```text
 Run docs/carnet-agents/DELIVERY.md for the current reviewed stage.
 Read only the current stage's START-HERE matrix files. Do not redesign anything.
-If any required check is red, stop. Commit/push/open one Draft PR only if explicitly authorized. Never merge/deploy.
+If any required check is red, stop. Do not create/switch branches. Commit/push only if explicitly authorized; otherwise leave reviewed changes in the current working tree. Never merge/deploy.
 ```
 
 ## Preflight
