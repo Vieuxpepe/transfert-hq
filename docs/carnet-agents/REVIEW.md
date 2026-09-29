@@ -27,6 +27,7 @@ Always attack:
 - WebKit/iPhone/reduced-motion when relevant
 - backup coherence
 - throwaway-test-root guarantee
+- test process/source isolation: no Python suite importing `iphone_bridge` may run from live `C:\\Transfert`
 - scope creep / weakened existing tests / generated artifacts
 
 Reproduce high-value issues with a test when practical.
