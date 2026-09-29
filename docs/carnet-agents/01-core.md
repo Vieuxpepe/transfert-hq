@@ -1,5 +1,7 @@
 # 01 — Carnet core: storage/domain/API
 
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
 Branch: \`feat/carnet-core\` from current accepted main.
 
 Read only:
