@@ -1,12 +1,15 @@
 # Stage 02 accepted handoff
 
-Base checkpoint:
+Stage-01 base checkpoint:
 `5ce460ec023219433f2343e509a6dd6679a6dfc4`
+
+Stage-02 checkpoint commit on local `main`:
+`33127c370e5eaa43f1ee4b17bc44602bea4dac58`
 
 Working mode:
 - local `C:\Transfert`
 - branch `main`
-- Stage 02 accepted and currently uncommitted unless the user has subsequently authorized a checkpoint commit
+- Stage 02 is checkpointed locally on `main` at `33127c370e5eaa43f1ee4b17bc44602bea4dac58`; it is not pushed unless the user later authorizes push
 
 Accepted substantive Stage-02 files:
 - `iphone_bridge.py`
