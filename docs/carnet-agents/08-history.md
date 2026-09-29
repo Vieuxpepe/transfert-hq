@@ -1,6 +1,6 @@
 # 08 — History / bulk ops / reports / backlinks / final hardening
 
-Base accepted Stage 07. Branch \`feat/carnet-history-reports\`.
+Base: accepted Stage 07 state already present in the same current `main` working tree. Stay on `main`.
 
 Read CONTEXT, TESTS, HANDOFF.
 
