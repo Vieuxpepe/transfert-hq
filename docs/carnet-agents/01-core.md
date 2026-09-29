@@ -105,6 +105,8 @@ legacy folders unchanged; coherent Carnet; missing safe; no temp; legacy count u
 
 Run TESTS.md matrix appropriate to server changes.
 
+**Test-location rule:** do not run any Python test importing `iphone_bridge` from live `C:\\Transfert`. Use the disposable isolated source-copy procedure from TESTS.md. In-place execution is allowed only for tests proven not to touch/import runtime-bound code.
+
 STOP before UI/editor work.
 
 Output compact HANDOFF-format report. No merge/deploy.
