@@ -1253,6 +1253,16 @@ def _note_backup_locked(bid: str, info: dict) -> dict:
         "at": float(info.get("at") or _now()),
         "folders": int(info.get("folders") or 0),
     }
+    carnet = info.get("carnet")
+    if isinstance(carnet, dict):
+        # Separate Carnet status; never folded into the legacy `folders` count.
+        entry["carnet"] = {
+            "status": str(carnet.get("status") or "")[:20],
+            "ok": carnet.get("ok") is True,
+            "included": carnet.get("included") is True,
+        }
+        if "valid" in carnet:
+            entry["carnet"]["valid"] = carnet.get("valid") is True
     items = [b for b in (data.get("backups") or []) if isinstance(b, dict) and b.get("id") != bid]
     items.insert(0, entry)
     data["version"] = 1

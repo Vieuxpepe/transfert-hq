@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 import cc_ext
 import hq_automation
 import hq_calendar
+import hq_carnet
 import hq_drawings
 import hq_companion
 import hq_planner
@@ -217,6 +218,7 @@ ADMIN_PREFIXES = (
     "/api/push",
     "/api/schedules",
     "/api/calendar",
+    "/api/carnet",
     "/api/drawings",
 )
 
@@ -2112,6 +2114,7 @@ def bind_hq() -> None:
         actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
         devices=cached_roster_devices,
     )
+    hq_carnet.bind(root=ROOT)
 
     def _agent_journal(kind, message, **extra):
         hq_events.record(
@@ -5768,6 +5771,10 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             self._json(200, payload)
             return True
+        if raw == "/api/carnet":
+            code, payload = hq_carnet.http_get(parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         return False
 
     def _hq_post(self, raw: str) -> bool:
@@ -5885,6 +5892,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)})
             except hq_calendar.CalendarConflict as e:
                 self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/carnet":
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_carnet.http_post(data)
+            self._json(code, payload)
             return True
         return False
 

@@ -1626,6 +1626,37 @@ def seed_last_backup_from_index(*, now: float | None = None) -> dict:
     return done()
 
 
+def _backup_carnet(dest: Path) -> dict:
+    """Copy committed Carnet bytes to ``<dest>/Carnet/notebook.json`` under its path lock.
+
+    Never fails the legacy backup; the outcome is reported separately.
+    """
+    try:
+        import hq_carnet
+
+        return hq_carnet.snapshot_to(_root(), dest / "Carnet")
+    except Exception as e:
+        try:
+            log_activity("backup", f"Carnet non sauvegardé : {type(e).__name__}", level="warning")
+        except Exception:
+            pass
+        return {"ok": False, "included": False, "status": "failed", "error": "Carnet non sauvegardé"}
+
+
+def _carnet_purge_block(carnet: dict) -> str | None:
+    """Reason to skip retention for this run, or None when purging is safe.
+
+    Older backups may hold the only valid Carnet recovery point: never purge
+    after a failed snapshot or after copying an unusable (malformed) notebook.
+    An absent notebook is normal and does not block purging.
+    """
+    if not isinstance(carnet, dict) or carnet.get("ok") is not True:
+        return "carnet_snapshot_failed"
+    if carnet.get("included") and carnet.get("valid") is not True:
+        return "carnet_invalid"
+    return None
+
+
 def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
     """automatic=True for every unattended trigger; skipped (no target access) while paused."""
     global _last_backup, _backup_alerted
@@ -1655,6 +1686,8 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
             copied += 1
         except OSError as e:
             raise RuntimeError(f"Backup {name}: {e}") from e
+    # Carnet: separate status; never counted in legacy `folders`.
+    carnet = _backup_carnet(dest)
     _last_backup = now
     _backup_alerted = False
     # marker
@@ -1666,14 +1699,22 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
         import hq_automation
 
         if hq_automation.ready():
-            hq_automation.note_backup({"id": stamp, "path": str(dest), "folders": copied, "at": now})
+            hq_automation.note_backup({"id": stamp, "path": str(dest), "folders": copied, "at": now, "carnet": carnet})
     except Exception as e:
         try:
             __import__("sys").stderr.write(f"backup catalog: {e}\n")
         except Exception:
             pass
-    info = {"ok": True, "id": stamp, "path": str(dest), "folders": copied}
+    info = {"ok": True, "id": stamp, "path": str(dest), "folders": copied, "carnet": carnet}
     # Retention: only here, after a successful new backup (never on a failed/skipped one).
+    blocked = _carnet_purge_block(carnet)
+    if blocked:
+        info["purge"] = {"ok": True, "purge_skipped": True, "reason": blocked, "deleted": []}
+        try:
+            log_activity("backup", "Purge des anciens backups suspendue : Carnet non sauvegardé", level="warning")
+        except Exception:
+            pass
+        return info
     try:
         info["purge"] = purge_old_backups(keep_id=stamp)
     except Exception as e:
