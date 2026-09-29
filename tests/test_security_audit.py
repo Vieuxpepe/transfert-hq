@@ -494,15 +494,38 @@ class EnrollmentInputTests(unittest.TestCase):
         self.assertNotEqual(again.returncode, 0)
         self.assertNotIn(token, again.stdout.decode("utf-8", "replace") + again.stderr.decode("utf-8", "replace"))
 
+    def _dashless_enroll_token(self) -> str:
+        """A real enrollment token that argparse cannot mistake for an option.
+
+        secrets.token_urlsafe() starts with "-" about once in 64 draws; argparse then
+        rejects "--enroll -xxxx" with its generic error instead of the specific refusal,
+        which made this test flaky. Such tokens are still refused (covered below)."""
+        for _ in range(hq_companion.MAX_TOKENS):
+            token = hq_companion.create_enroll_token(label="audit")["token"]
+            if not token.startswith("-"):
+                return token
+        self.fail("no dash-free enrollment token drawn")
+
     def test_token_as_argument_is_refused_without_echo_or_use(self):
-        token = hq_companion.create_enroll_token(label="audit")["token"]
+        token = self._dashless_enroll_token()
         for argv in (self._argv("--enroll", token), self._argv(f"--enroll={token}")):
-            with self.subTest(form=argv[-1][:9]):
+            with self.subTest(form="separate" if argv[-1] == token else "equals"):
                 proc = subprocess.run(argv, capture_output=True, env=self._env(), cwd=str(self.tmp), timeout=30, input=b"")
                 self.assertEqual(proc.returncode, 2)
                 both = proc.stdout.decode("utf-8", "replace") + proc.stderr.decode("utf-8", "replace")
                 self.assertNotIn(token, both)
                 self.assertIn("--enroll seul", both)
+        # A token that happens to start with "-" is refused too (argparse's generic
+        # error), still without echoing it and without contacting the controller.
+        # Fixed "-Z" prefix: a random second character could be "h" and hit -h/--help.
+        dash = "-Z" + token[2:]
+        for argv in (self._argv("--enroll", dash), self._argv(f"--enroll={dash}")):
+            with self.subTest(form="dash-" + ("separate" if argv[-1] == dash else "equals")):
+                proc = subprocess.run(argv, capture_output=True, env=self._env(), cwd=str(self.tmp), timeout=30, input=b"")
+                self.assertEqual(proc.returncode, 2)
+                both = proc.stdout.decode("utf-8", "replace") + proc.stderr.decode("utf-8", "replace")
+                self.assertNotIn(dash, both)
+                self.assertNotIn(dash[1:], both)
         self.assertEqual(_MockControllerHandler.log_lines, [])
         self.assertFalse(self.config.exists())
         # The refused token was never sent, so it still works through stdin.

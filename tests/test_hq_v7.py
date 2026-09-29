@@ -6,9 +6,11 @@ Offline only: no Windows desktop, no live :8765, no Tailscale.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
@@ -37,10 +39,27 @@ def _http(port: int, method: str, path: str, *, body: bytes | None = None, heade
         hdrs["Cookie"] = cookie
     if body is not None and "Content-Length" not in hdrs:
         hdrs["Content-Length"] = str(len(body))
-    conn.request(method, path, body=body, headers=hdrs)
-    resp = conn.getresponse()
-    payload = resp.read()
-    return resp.status, dict(resp.getheaders()), payload
+    try:
+        conn.request(method, path, body=body, headers=hdrs)
+        resp = conn.getresponse()
+        payload = resp.read()
+        return resp.status, dict(resp.getheaders()), payload
+    finally:
+        conn.close()
+
+
+def _unlink_with_retry(path: Path, *, timeout: float = 10.0) -> None:
+    """Windows: the server thread (or an antivirus scan of a fresh .html) may still hold
+    the file for a moment after the response was read (WinError 32). Retry, then fail."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if os.name != "nt" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
 
 
 class FeatureTests(unittest.TestCase):
@@ -882,7 +901,8 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertNotIn(b"text/html", headers.get("Content-Type", "").encode())
             self.assertIn(b"alert(1)", body)
         finally:
-            html_path.unlink(missing_ok=True)
+            _unlink_with_retry(html_path)
+        self.assertFalse(html_path.exists())
 
     def test_chunk_and_quota_guards(self):
         iphone_bridge.CONFIG["upload_sessions_max"] = 1
