@@ -21,7 +21,7 @@ UI: camera/photos/files. Default inline image between blocks. Resize roughly 30â
 
 Free-position is OPTIONAL and only ships if robust on phone/iPad/desktop/export; use relative coordinates and page bounds. Never default.
 
-Backup/export includes referenced committed assets coherently and excludes temp/partial files. Markdown uses relative asset packaging; print/PDF preserves layout.
+Backup/export includes referenced persisted assets coherently and excludes temp/partial files. Markdown uses relative asset packaging; print/PDF preserves layout.
 
 Tests: valid types, spoofed MIME/signature, oversize/quota, traversal, interrupted upload, binary absent from JSON, insert/resize/caption/reload/conflict, backup/export, WebKit layout, large-image memory behavior.
 
