@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import shutil
+import stat as statmod
+import sys
 import socket
 import subprocess
 import threading
@@ -1250,6 +1253,21 @@ def presence_history(limit: int | None = None, offset: int = 0) -> list[dict]:
 # ---- v6: backup ----
 
 _last_backup = 0.0
+# Retention (bridge_config.json "backup_keep_days" / "backup_keep_min"). The purge only
+# runs right after a successful new backup; see purge_old_backups() for the safety rules.
+BACKUP_KEEP_DAYS_DEFAULT = 14
+BACKUP_KEEP_DAYS_MAX = 36500
+BACKUP_KEEP_MIN_DEFAULT = 3
+BACKUP_KEEP_MIN_MAX = 1000
+# The index "at" and the folder-name stamp are taken a few ms apart; more than this
+# means the folder is not what the catalog says it is, so it is never purged.
+BACKUP_AT_TOLERANCE_SEC = 24 * 3600
+BACKUP_MARKER_NAME = "README.txt"
+BACKUP_MARKER_MAX = 4096
+_BACKUP_NAME = re.compile(r"^\d{8}_\d{6}$")
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_last_purge: dict = {}
+_backup_seed: dict = {}
 # Deliberately NOT the HQ-root volume: a backup on the same drive as C:\Transfert
 # does not survive a disk failure. Moving it is an explicit user decision (backup_dir).
 DEFAULT_BACKUP_DIR = "D:/Backups/Transfert"
@@ -1297,7 +1315,315 @@ def backup_target_status() -> dict:
         )
     else:
         status["ok"] = True
+    status["retention"] = backup_retention_status()
+    status["last_backup_at"] = _last_backup or None
+    if _backup_seed:
+        status["startup_seed"] = dict(_backup_seed)
     return status
+
+
+# ---- backup retention (purge) + startup seed ----
+
+def _strict_int(value: Any, default: int) -> int:
+    """Whole number from hand-edited JSON (7, 7.0, "7"); anything else -> default."""
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")) or not value.is_integer():
+            return default
+        return int(value)
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d{1,12}", value.strip()):
+        return int(value.strip())
+    return default
+
+
+def parse_backup_keep_days(value: Any) -> int:
+    """backup_keep_days: default 14; 0 or less disables the purge (normalized to 0)."""
+    return max(0, min(_strict_int(value, BACKUP_KEEP_DAYS_DEFAULT), BACKUP_KEEP_DAYS_MAX))
+
+
+def parse_backup_keep_min(value: Any) -> int:
+    """backup_keep_min: newest backups always kept, whatever their age. Default 3, minimum 1."""
+    return max(1, min(_strict_int(value, BACKUP_KEEP_MIN_DEFAULT), BACKUP_KEEP_MIN_MAX))
+
+
+def backup_retention() -> dict:
+    cfg = _cfg()
+    days = parse_backup_keep_days(cfg.get("backup_keep_days", BACKUP_KEEP_DAYS_DEFAULT))
+    return {"keep_days": days, "keep_min": parse_backup_keep_min(cfg.get("backup_keep_min", BACKUP_KEEP_MIN_DEFAULT)), "enabled": days > 0}
+
+
+def backup_retention_status() -> dict:
+    out = backup_retention()
+    last = dict(_last_purge)
+    out["last_purge_count"] = last.get("count")
+    out["last_purge_at"] = last.get("at")
+    out["last_purge_errors"] = last.get("errors")
+    if last.get("reason"):
+        out["last_purge_reason"] = last.get("reason")
+    return out
+
+
+def _norm_path(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path)) if path else ""
+
+
+def _is_link_stat(st: os.stat_result) -> bool:
+    """Symlink, junction or any other reparse point (never followed, never recursed into)."""
+    if statmod.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _stamp_time(name: str) -> float | None:
+    if not _BACKUP_NAME.match(name):
+        return None
+    try:
+        return datetime.strptime(name, "%Y%m%d_%H%M%S").timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _has_backup_marker(folder: str, name: str) -> bool:
+    """The README.txt run_backup() writes: exactly "Transfert backup <id>"."""
+    marker = os.path.join(folder, BACKUP_MARKER_NAME)
+    try:
+        st = os.lstat(marker)
+        if _is_link_stat(st) or not statmod.S_ISREG(st.st_mode) or st.st_size > BACKUP_MARKER_MAX:
+            return False
+        with open(marker, "rb") as fh:
+            text = fh.read(BACKUP_MARKER_MAX + 1).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return text.strip() == f"Transfert backup {name}"
+
+
+def _backup_index_entries() -> tuple[list[dict] | None, bool]:
+    """(entries, malformed) from hq_backup_index.json; (None, False) when the catalog is not bound."""
+    try:
+        import hq_automation
+
+        if not hq_automation.ready():
+            return None, False
+        data = hq_automation.list_backups()
+    except Exception:
+        return None, True
+    items = [b for b in (data.get("backups") or []) if isinstance(b, dict)]
+    return items, bool(data.get("malformed"))
+
+
+def _index_times_for(dir_norms: set[str], entries: list[dict] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for b in entries or []:
+        path = str(b.get("path") or "")
+        name = os.path.basename(os.path.normpath(path)) if path else ""
+        at = b.get("at")
+        if not _BACKUP_NAME.match(name) or _norm_path(os.path.dirname(os.path.normpath(path))) not in dir_norms:
+            continue
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or at in (float("inf"), float("-inf")):
+            continue
+        out[name] = float(at)
+    return out
+
+
+def _scan_for_links(folder: str) -> str | None:
+    """First link/reparse point found under folder (relative), without following any."""
+    stack = [folder]
+    while stack:
+        current = stack.pop()
+        with os.scandir(current) as it:
+            for entry in it:
+                st = entry.stat(follow_symlinks=False)
+                if _is_link_stat(st):
+                    return os.path.relpath(entry.path, folder)
+                if statmod.S_ISDIR(st.st_mode):
+                    stack.append(entry.path)
+    return None
+
+
+def _remove_backup_folder(folder: str) -> str | None:
+    """Delete one verified backup folder. Returns None on success, else the reason.
+
+    Refuses folders that contain any link/junction/reparse point, so rmtree can never
+    reach outside the folder. Read-only files (copied by copy2) are made writable and
+    retried once, only when they are real files inside the folder."""
+    try:
+        inner = _scan_for_links(folder)
+    except OSError as e:
+        return f"analyse impossible : {e}"
+    if inner:
+        return f"lien ou point d'analyse à l'intérieur ({inner}) — non supprimé"
+    try:
+        if _is_link_stat(os.lstat(folder)):
+            return "devenu un lien — non supprimé"
+    except OSError as e:
+        return str(e)
+    root = _norm_path(folder)
+    errors: list[str] = []
+
+    def handle(func, path, exc) -> None:
+        norm = _norm_path(path)
+        if isinstance(exc, PermissionError) and (norm == root or norm.startswith(root + os.sep)):
+            try:
+                st = os.lstat(path)
+                if not _is_link_stat(st):
+                    os.chmod(path, statmod.S_IREAD | statmod.S_IWRITE | (statmod.S_IEXEC if statmod.S_ISDIR(st.st_mode) else 0))
+                    func(path)
+                    return
+            except OSError as e2:
+                exc = e2
+        errors.append(f"{os.path.relpath(path, folder) if path else folder}: {exc}")
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(folder, onexc=handle)
+    else:  # pragma: no cover - older Pythons
+        shutil.rmtree(folder, onerror=lambda func, path, info: handle(func, path, info[1]))
+    if errors:
+        return "; ".join(errors)[:300]
+    if os.path.lexists(folder):
+        return "toujours présent après suppression"
+    return None
+
+
+def purge_old_backups(*, keep_id: str | None = None, now: float | None = None) -> dict:
+    """Retention purge. Called ONLY by run_backup() right after a successful new backup.
+
+    Deletes a folder only if ALL hold: it sits DIRECTLY in the configured backup_dir;
+    its name is AAAAMMJJ_HHMMSS; it is older than backup_keep_days by its name stamp
+    (and by the index "at" when the catalog has one, which must agree within a day);
+    it holds the "Transfert backup <id>" marker; it is not a symlink/junction/reparse
+    point and contains none; its resolved parent is the resolved backup_dir, on the
+    configured drive. The newest backup_keep_min valid backups are always kept.
+    """
+    now = time.time() if now is None else float(now)
+    ret = backup_retention()
+    result: dict = {"ok": True, "deleted": [], "errors": [], "skipped": [], "keep_days": ret["keep_days"], "keep_min": ret["keep_min"]}
+
+    def finish(reason: str | None = None) -> dict:
+        global _last_purge
+        if reason:
+            result["reason"] = reason
+        _last_purge = {"count": len(result["deleted"]), "at": now, "errors": len(result["errors"]), "reason": reason}
+        return result
+
+    if not ret["enabled"]:
+        result["disabled"] = True
+        return finish("rétention désactivée (backup_keep_days <= 0)")
+    raw = str(_cfg().get("backup_dir") or DEFAULT_BACKUP_DIR)
+    if not os.path.isabs(raw):
+        return finish("backup_dir non absolu")
+    base_abs = os.path.abspath(raw)
+    try:
+        base_st = os.lstat(base_abs)
+    except OSError:
+        return finish("backup_dir introuvable")
+    if _is_link_stat(base_st) or not statmod.S_ISDIR(base_st.st_mode):
+        return finish("backup_dir est un lien ou n'est pas un dossier — purge refusée")
+    base_real = os.path.realpath(base_abs)
+    if os.path.normcase(os.path.splitdrive(base_real)[0]) != os.path.normcase(os.path.splitdrive(base_abs)[0]):
+        return finish("backup_dir résolu sur un autre lecteur — purge refusée")
+    entries, malformed = _backup_index_entries()
+    if malformed:
+        return finish("hq_backup_index.json illisible — purge refusée")
+    index_at = _index_times_for({_norm_path(base_abs), _norm_path(base_real)}, entries)
+    valid: list[tuple[float, str, str, float, bool]] = []
+    try:
+        with os.scandir(base_abs) as it:
+            listing = list(it)
+    except OSError as e:
+        return finish(f"lecture de backup_dir impossible : {e}")
+    for entry in listing:
+        name = entry.name
+        ts = _stamp_time(name)
+        if ts is None:
+            continue  # not a backup folder name: never ours to touch
+        path = os.path.join(base_abs, name)
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if _is_link_stat(st):
+            result["skipped"].append({"id": name, "reason": "lien/jonction"})
+            continue
+        if not statmod.S_ISDIR(st.st_mode):
+            continue
+        if _norm_path(os.path.dirname(os.path.realpath(path))) != _norm_path(base_real):
+            result["skipped"].append({"id": name, "reason": "hors de backup_dir une fois résolu"})
+            continue
+        if not _has_backup_marker(path, name):
+            result["skipped"].append({"id": name, "reason": "sans marqueur de backup"})
+            continue
+        at = index_at.get(name)
+        consistent = at is None or abs(at - ts) <= BACKUP_AT_TOLERANCE_SEC
+        if not consistent:
+            result["skipped"].append({"id": name, "reason": "horodatage incohérent avec l'index"})
+        age_ts = max(ts, at) if at is not None else ts
+        valid.append((ts, name, path, age_ts, consistent))
+    valid.sort(key=lambda item: item[0], reverse=True)
+    result["kept"] = min(len(valid), ret["keep_min"])
+    cutoff = now - ret["keep_days"] * 86400
+    for ts, name, path, age_ts, consistent in valid[ret["keep_min"]:]:
+        if name == keep_id or not consistent or age_ts >= cutoff:
+            continue
+        err = _remove_backup_folder(path)
+        if err:
+            result["errors"].append({"id": name, "error": err})
+            log_activity("backup", f"Purge impossible pour {path} : {err}", level="warning", purge=True, backup_id=name)
+        else:
+            result["deleted"].append({"id": name, "path": path})
+            log_activity("backup", f"Backup purgé (plus de {ret['keep_days']} j) → {path}", purge=True, backup_id=name)
+    result["skipped"] = result["skipped"][:20]
+    if result["deleted"]:
+        try:
+            import hq_automation
+
+            if hq_automation.ready():
+                result["index_removed"] = hq_automation.forget_backups([d["path"] for d in result["deleted"]])
+        except Exception as e:
+            result["index_error"] = str(e)[:200]
+            log_activity("backup", f"Catalogue des backups non mis à jour : {e}", level="warning")
+    result["ok"] = not result["errors"]
+    return finish()
+
+
+def seed_last_backup_from_index(*, now: float | None = None) -> dict:
+    """Startup: resume the automatic schedule from the newest cataloged backup of the
+    CURRENT backup_dir, so a restart within backup_every_hours makes no new backup.
+
+    Reads only hq_backup_index.json (never backup_dir). No seed (backup on start, as
+    before) when the index is missing/corrupt, has no entry for this dir, or its newest
+    entry is in the future."""
+    global _last_backup
+    now = time.time() if now is None else float(now)
+    info: dict = {"seeded": False, "checked_at": now}
+
+    def done(reason: str | None = None) -> dict:
+        global _backup_seed
+        if reason:
+            info["reason"] = reason
+        _backup_seed = dict(info)
+        return info
+
+    raw = str(_cfg().get("backup_dir") or DEFAULT_BACKUP_DIR)
+    if not os.path.isabs(raw):
+        return done("backup_dir non absolu")
+    entries, malformed = _backup_index_entries()
+    if malformed:
+        return done("index illisible")
+    if entries is None:
+        return done("index indisponible")
+    times = _index_times_for({_norm_path(os.path.abspath(raw))}, entries)
+    if not times:
+        return done("aucun backup indexé pour ce backup_dir")
+    newest_id, newest = max(times.items(), key=lambda kv: kv[1])
+    if newest > now:
+        return done("dernier backup indexé dans le futur")
+    if newest > _last_backup:
+        _last_backup = newest
+    info.update(seeded=True, id=newest_id, at=newest)
+    return done()
 
 
 def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
@@ -1346,7 +1672,17 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
             __import__("sys").stderr.write(f"backup catalog: {e}\n")
         except Exception:
             pass
-    return {"ok": True, "id": stamp, "path": str(dest), "folders": copied}
+    info = {"ok": True, "id": stamp, "path": str(dest), "folders": copied}
+    # Retention: only here, after a successful new backup (never on a failed/skipped one).
+    try:
+        info["purge"] = purge_old_backups(keep_id=stamp)
+    except Exception as e:
+        info["purge"] = {"ok": False, "error": str(e)[:200]}
+        try:
+            log_activity("backup", f"Purge des anciens backups impossible : {e}", level="warning")
+        except Exception:
+            pass
+    return info
 
 
 def maybe_backup() -> None:
