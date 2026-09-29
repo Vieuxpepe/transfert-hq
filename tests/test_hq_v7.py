@@ -807,6 +807,26 @@ class SecurityRegressionTests(unittest.TestCase):
             iphone_bridge.ROOT = old
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_repo_docs_stay_at_root(self):
+        # ensure_folders_and_migrate() moves stray root files into Inbox at every start:
+        # shipped docs must be system names or the live git tree turns dirty.
+        tmp = Path(tempfile.mkdtemp(prefix="hq-docs-"))
+        repo = Path(__file__).resolve().parents[1]
+        docs = [p.name for p in repo.iterdir() if p.is_file() and p.suffix.lower() in {".md", ".txt"}]
+        self.assertIn("design.md", docs)
+        for name in docs:
+            (tmp / name).write_text("doc\n", encoding="utf-8")
+        old = iphone_bridge.ROOT
+        try:
+            iphone_bridge.ROOT = tmp
+            iphone_bridge.ensure_folders_and_migrate()
+            for name in docs:
+                self.assertTrue((tmp / name).is_file(), name)
+                self.assertFalse((tmp / "Inbox" / name).exists(), name)
+        finally:
+            iphone_bridge.ROOT = old
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_loopback_is_not_admin(self):
         status, _headers, body = _http(self.port, "GET", "/api/me")
         self.assertEqual(status, 401)

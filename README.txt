@@ -635,9 +635,11 @@ Commandes
   node tests/check_hq_features.mjs
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
+  node tests/check_hq_3d_nav.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
+  (optionnel, Playwright + WebKit, profil iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_dessiner_webkit.py [--repeat 3]
 
 Dessiner (croquis mécanique)
 ----------------------------
