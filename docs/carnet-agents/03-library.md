@@ -1,6 +1,8 @@
 # 03 — Library / organization / retrieval
 
-Base: accepted Stage 02. Branch: `feat/carnet-library`.
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
+Base: accepted Stage 02 state in the current working tree.
 
 Read CONTEXT, TESTS, HANDOFF. Do not read full design unless current schema differs.
 
@@ -57,4 +59,4 @@ Search case/accent/rank/safety; context CRUD/inheritance; pin; recents; trash/un
 
 STOP before rich formatting/links/images/sources.
 
-Compact HANDOFF.
+Compact HANDOFF; include current HEAD SHA and working-tree diff status.
