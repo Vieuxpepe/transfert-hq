@@ -107,6 +107,7 @@ SYSTEM_NAMES = {
     "iphone_bridge.py",
     "cc_ext.py",
     "readme.txt",
+    "design.md",
     "third_party.txt",
     "start-iphone-upload.bat",
     "enable-openssh-server.bat",

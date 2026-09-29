@@ -23,6 +23,33 @@ def drag(page, a, b):
     page.mouse.move(*a); page.mouse.down(); page.mouse.move(*b, steps=12); page.mouse.up()
 
 
+FRONT = """() => {const c=document.querySelector('.sk-3d-canvas'),pr=c.hqSolidProject;let best=null,bd=Infinity;
+  for (const p of window.hqSketchState().mesh.flat()) {const q=pr(p); if (q[2]<bd) {bd=q[2]; best=p;}} return best;}"""
+CLIENT = """(p) => {const c=document.querySelector('.sk-3d-canvas'),r=c.getBoundingClientRect(),q=c.hqSolidProject(p);
+  return [r.left+(q[0]+1)*r.width/2, r.top+(1-q[1])*r.height/2];}"""
+
+
+def check_orbit_follows(page, touch_cdp=None):
+    """A drag must move the front of the model with the pointer (mouse drag, or one finger via CDP touch)."""
+    page.locator(".sk-3d-canvas").scroll_into_view_if_needed()
+    box = page.locator(".sk-3d-canvas").bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    for dx, dy in ((60, 0), (-60, 0), (0, 40), (0, -40)):
+        front = page.evaluate(FRONT); before = page.evaluate(CLIENT, front)
+        if touch_cdp is None:
+            page.mouse.move(cx, cy); page.mouse.down(); page.mouse.move(cx + dx, cy + dy, steps=6); page.mouse.up()
+        else:
+            send = lambda kind, pts: touch_cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": pts})
+            send("touchStart", [{"x": cx, "y": cy, "id": 1}])
+            for i in range(1, 7):
+                send("touchMove", [{"x": cx + dx * i / 6, "y": cy + dy * i / 6, "id": 1}])
+            send("touchEnd", [])
+        after = page.evaluate(CLIENT, front)
+        moved = (after[0] - before[0], after[1] - before[1])
+        axis = 0 if dx else 1
+        assert moved[axis] * (dx or dy) > 0, f"3D orbit must follow the drag {(dx, dy)}; front point moved {moved}"
+
+
 def run():
     errors = []
     with sync_playwright() as p:
@@ -52,6 +79,7 @@ def run():
         page.click('[data-act="solid-extrude"]')
         page.wait_for_function("() => window.hqSketchState().doc.features.length === 1 && window.hqSketchState().mesh.length > 0")
         assert page.locator('.sk-3d-canvas').is_visible()
+        check_orbit_follows(page)
         page.screenshot(path=str(OUT / "3d-base-desktop.png"))
         page.click('[data-act="view2d"]')
         doc = page.evaluate("window.hqSketchState().doc")
@@ -104,9 +132,10 @@ def run():
         assert touch.locator('.sk-3d-canvas').is_visible()
         assert touch.locator('.sk-3d-stage').bounding_box()['height'] >= 380
         touch.screenshot(path=str(OUT / "3d-iphone-emulation.png"), full_page=True)
+        check_orbit_follows(touch, phone.new_cdp_session(touch))
         assert not errors, errors
         phone.close()
-        print("Dessiner 3D visual flow passed: extrusion, through and blind cuts, preview, STL save, reopen")
+        print("Dessiner 3D visual flow passed: extrusion, through and blind cuts, preview, orbit follows mouse and touch drags, STL save, reopen")
         browser.close()
 
 
