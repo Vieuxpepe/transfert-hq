@@ -2,6 +2,14 @@
 
 Purpose: minimize local-agent quota while preserving the full Carnet design.
 
+## Working-tree mode
+
+Work directly in the checked-out project folder `C:\\Transfert`.
+Do not create, switch, or use feature branches/worktrees for Carnet stages.
+Do not commit, push, merge, reset, clean, checkout files, or alter unrelated working-tree changes unless the user explicitly asks.
+All stages build incrementally in the same local working tree after the previous stage is accepted.
+
+
 ## Stage read matrix
 
 Read ONLY the files for the current stage.
