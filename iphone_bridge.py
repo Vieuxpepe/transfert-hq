@@ -70,7 +70,14 @@ MEDIA_CONTENT_TYPES = {
     ".m4v": "video/mp4",
     ".mov": "video/quicktime",
     ".webm": "video/webm",
+    # 3D models for the Lecteur viewer (parsed in JS, never rendered by the browser itself).
+    # IANA-registered types; browsers have no inline handler for them. /media/ still sends them
+    # as attachment + CSP sandbox so a direct navigation downloads instead of rendering.
+    ".glb": "model/gltf-binary",
+    ".stl": "model/stl",
 }
+# Types /media/ must never serve inline (fetched by the Lecteur's parser, not a media element).
+MEDIA_ATTACHMENT_EXTS = {".glb", ".stl"}
 MEDIA_LIBRARY_MAX = 500      # files returned by /api/media/library
 MEDIA_SCAN_MAX = 20000       # directory entries visited per library request
 MEDIA_SCAN_DEPTH = 12
@@ -2671,7 +2678,7 @@ function renderFiles() {
       ? `<button type="button" class="ghost" data-print="${escapeAttr(f.rel)}">Imprimer</button>` : '';
     const nameEl = isDir
       ? `<button type="button" class="fname" data-open="${escapeAttr(f.rel)}" style="background:none;border:0;padding:0;text-align:left">📁 ${escapeHtml(f.name)}</button>`
-      : `<a class="fname" href="${fmtRel(f.rel)}" target="_blank" rel="noopener">${mkind === 'video' ? '🎬' : mkind === 'audio' ? '🎵' : '📄'} ${escapeHtml(f.name)}</a>`;
+      : `<a class="fname" href="${fmtRel(f.rel)}" target="_blank" rel="noopener">${hqMediaIcon(mkind)} ${escapeHtml(f.name)}</a>`;
     return `<li class="file ${isDir ? 'is-dir' : ''}"${mediaAttr}>
       ${nameEl}
       <div class="row-actions">
@@ -3858,7 +3865,9 @@ async function clipFromPc() {
 // ---- Lecteur (audio / vidéo) --------------------------------------------------
 // Types streamed by /media/ (keep in sync with MEDIA_CONTENT_TYPES in iphone_bridge.py).
 const HQ_MEDIA_TYPES = { mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac',
-  ogg: 'audio/ogg', opus: 'audio/ogg', mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' };
+  ogg: 'audio/ogg', opus: 'audio/ogg', mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
+  glb: 'model/gltf-binary', stl: 'model/stl' };
+function hqMediaIcon(kind) { return kind === 'video' ? '🎬' : kind === 'audio' ? '🎵' : kind === 'model' ? '🧊' : '📄'; }
 // Containers no browser plays: the Lecteur explains instead of showing a broken player.
 const HQ_MEDIA_UNSUPPORTED = ['mkv', 'avi', 'wmv', 'flv', 'wma', 'mpg', 'mpeg', 'vob'];
 function hqMediaExt(name) { const m = /\.([a-z0-9]+)$/i.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
@@ -3869,6 +3878,81 @@ function hqMediaKind(name) {
 }
 function mediaRel(rel) { return '/media/' + rel.split('/').map(encodeURIComponent).join('/'); }
 const hqPlayer = { rel: '', openedAt: 0, restored: false, ready: false, lib: [], libAt: 0, libError: '', libTruncated: false };
+// Lecteur 3D (.glb / .stl): parsed and drawn by assets/hq-model-view.js (no network beyond /media/).
+const hqModel = { viewer: null, token: 0, abort: null };
+function hqModelInfo(text) { const el = $('#player-model-info'); if (el) el.textContent = text || ''; }
+function hqModelStop() {
+  hqModel.token++;
+  if (hqModel.abort) { try { hqModel.abort.abort(); } catch (_) {} hqModel.abort = null; }
+  const box = $('#player-model'); if (box) box.hidden = true;
+  if (hqModel.viewer) hqModel.viewer.setModel(null);
+  hqModelInfo('');
+}
+function hqModelFail(token, text) {
+  if (token !== hqModel.token) return;
+  hqModel.abort = null;
+  if (hqPlayer.restored) { hqPlayerClear(); return; }  // last file from a previous visit is gone: start empty
+  hqModelStop();
+  hqPlayerMessage(text);
+}
+function hqModelWaitLib() {
+  // The page loads hq-model-view.js after this script; wait for it instead of failing on first paint.
+  if (window.HQModel) return Promise.resolve(window.HQModel);
+  if (document.readyState === 'complete') return Promise.resolve(null);
+  return new Promise(res => window.addEventListener('load', () => res(window.HQModel || null), { once: true }));
+}
+async function hqModelLoad(rel) {
+  const token = ++hqModel.token;
+  if (hqModel.abort) { try { hqModel.abort.abort(); } catch (_) {} }
+  const box = $('#player-model'), canvas = $('#player-model-canvas');
+  box.hidden = false;
+  hqModelInfo('Chargement du modèle…');
+  const M = await hqModelWaitLib();
+  if (token !== hqModel.token) return;
+  if (!M) { hqModelFail(token, 'Module 3D non chargé (hq-model-view.js). Recharge la page.'); return; }
+  const entry = hqPlayer.lib.find(f => f.rel === rel);
+  if (entry && entry.size > M.LIMITS.maxBytes) {
+    hqModelFail(token, 'Modèle trop volumineux pour le lecteur 3D (' + entry.size_h + ', maximum ' + Math.round(M.LIMITS.maxBytes / 1048576) + ' Mo). « Sauver » reste possible.');
+    return;
+  }
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  hqModel.abort = ctl;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; if (ctl) ctl.abort(); }, 120000);
+  let buf;
+  try {
+    const r = await fetch(mediaRel(rel), { credentials: 'same-origin', cache: 'no-store', signal: ctl ? ctl.signal : undefined });
+    if (token !== hqModel.token) return;
+    if (r.status === 401) { hqModelFail(token, 'Session expirée : reconnecte-toi puis réessaie.'); return; }
+    if (r.status === 404) { hqModelFail(token, 'Fichier introuvable (déplacé ou supprimé ?).'); return; }
+    if (!r.ok) { hqModelFail(token, 'Chargement impossible (erreur ' + r.status + ').'); return; }
+    const len = Number(r.headers.get('Content-Length') || 0);
+    if (len > M.LIMITS.maxBytes) { hqModelFail(token, 'Modèle trop volumineux pour le lecteur 3D (maximum ' + Math.round(M.LIMITS.maxBytes / 1048576) + ' Mo). « Sauver » reste possible.'); return; }
+    hqModelInfo('Chargement du modèle…' + (len ? ' (' + (len / 1048576).toFixed(1) + ' Mo)' : ''));
+    buf = await r.arrayBuffer();
+  } catch (e) {
+    if (token !== hqModel.token) return;
+    hqModelFail(token, timedOut ? 'Chargement trop long (plus de 2 minutes). Réessaie sur un meilleur réseau.' : 'Chargement interrompu (réseau ou session expirée). Réessaie.');
+    return;
+  } finally { clearTimeout(timer); }
+  if (token !== hqModel.token) return;
+  hqModel.abort = null;
+  hqModelInfo('Analyse du modèle…');
+  await new Promise(res => setTimeout(res, 0));  // let the message paint before a long parse
+  if (token !== hqModel.token) return;
+  try {
+    const model = M.parse(rel.split('/').pop() || rel, buf);
+    if (!hqModel.viewer) hqModel.viewer = M.viewer(canvas);
+    hqModel.viewer.setModel(model);
+    hqPlayer.restored = false;
+    const info = model.format + ' · ' + model.triangles.toLocaleString('fr-CA') + ' triangles' + (hqModel.viewer.webgl ? '' : ' · affichage simplifié (sans WebGL)');
+    hqModelInfo(info);
+    if (model.notices.length) hqPlayerMessage(model.notices.join(' '));
+  } catch (e) {
+    const text = e && e.name === 'ModelError' ? e.message : 'Modèle illisible : ' + ((e && e.message) || 'erreur inconnue') + '.';
+    hqModelFail(token, text);
+  }
+}
 function hqIsIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
 function hqPlayerMessage(text) { const m = $('#player-msg'); if (!m) return; m.textContent = text || ''; m.hidden = !text; }
 function hqPlayerStop(el) {
@@ -3880,9 +3964,9 @@ function hqPlayerStop(el) {
 function hqPlayerClear() {
   hqPlayer.rel = ''; hqPlayer.restored = false;
   try { localStorage.removeItem('tf_hq_player_rel'); } catch (_) {}
-  hqPlayerStop($('#player-video')); hqPlayerStop($('#player-audio'));
+  hqPlayerStop($('#player-video')); hqPlayerStop($('#player-audio')); hqModelStop();
   $('#player-name').textContent = 'Aucun fichier sélectionné';
-  $('#player-where').textContent = 'Double-clique une musique ou une vidéo dans Fichiers, ou choisis-la ci-dessous.';
+  $('#player-where').textContent = 'Double-clique une musique, une vidéo ou un modèle 3D dans Fichiers, ou choisis-le ci-dessous.';
   $('#player-dl').hidden = true;
   hqPlayerMessage('');
   hqPlayerRenderList();
@@ -3897,13 +3981,20 @@ function hqPlayerLoad(rel, autoplay) {
   $('#player-where').textContent = rel.split('/').slice(0, -1).join(' / ');
   const dl = $('#player-dl'); dl.href = dlRel(rel); dl.hidden = false;
   hqPlayerMessage('');
+  if (kind === 'model') {
+    hqPlayerStop(video); hqPlayerStop(audio);
+    hqPlayerRenderList();
+    hqModelLoad(rel);
+    return;
+  }
+  hqModelStop();
   const use = kind === 'video' ? video : audio;
   hqPlayerStop(kind === 'video' ? audio : video);
   if (kind !== 'audio' && kind !== 'video') {
     hqPlayerStop(use);
     hqPlayerMessage(kind === 'unsupported'
       ? 'Le format .' + ext + ' ne se lit pas dans un navigateur (MKV, AVI, WMV… : ni Safari ni Chrome). Utilise « Sauver » puis ouvre-le avec VLC.'
-      : "Ce fichier n'est pas une musique ni une vidéo.");
+      : "Ce fichier n'est ni une musique, ni une vidéo, ni un modèle 3D.");
     hqPlayerRenderList();
     return;
   }
@@ -3942,6 +4033,7 @@ function hqPlayerInit() {
   $('#btn-player-back').addEventListener('click', () => navigate(hqPlayer.rel ? hqPlayer.rel.split('/').slice(0, -1).join('/') : currentRel));
   $('#player-filter').addEventListener('input', hqPlayerRenderList);
   $('#player-list').addEventListener('click', (e) => { const b = e.target.closest('[data-play]'); if (b) hqPlayerOpen(b.dataset.play, true); });
+  $('#btn-player-fit').addEventListener('click', () => { if (hqModel.viewer) hqModel.viewer.fit(); });
 }
 function hqPlayerOpen(rel, autoplay) {
   if (!rel) return;
@@ -3953,6 +4045,9 @@ function hqPlayerOpen(rel, autoplay) {
   if (document.body.dataset.view !== 'lecteur') setView('lecteur');
   hqPlayerInit();
   hqPlayerLoad(rel, autoplay);
+  // Opened from far down Fichiers or the Lecteur list: bring the player (and any message) on screen.
+  const top = $('#player-title');
+  if (top && top.scrollIntoView) { try { top.scrollIntoView({ block: 'start' }); } catch (_) { top.scrollIntoView(); } }
 }
 window.hqPlayerOpen = hqPlayerOpen;
 window.hqPlayerView = function (view) {
@@ -3987,14 +4082,14 @@ function hqPlayerRenderList() {
   const items = hqPlayer.lib.filter(f => !q || f.rel.toLowerCase().includes(q));
   $('#player-count').textContent = String(hqPlayer.lib.length);
   if (!items.length) {
-    const empty = hqPlayer.libError || (q ? 'Aucun résultat' : "Aucune musique ni vidéo dans Transfert pour l'instant.");
+    const empty = hqPlayer.libError || (q ? 'Aucun résultat' : "Aucune musique, vidéo ni modèle 3D dans Transfert pour l'instant.");
     list.innerHTML = `<li class="hint">${escapeHtml(empty)}</li>`;
     return;
   }
   list.innerHTML = items.map(f => {
     const cur = f.rel === hqPlayer.rel;
     return `<li class="player-item${cur ? ' is-current' : ''}"><button type="button" class="player-pick" data-play="${escapeAttr(f.rel)}"${cur ? ' aria-current="true"' : ''}>
-      <span class="player-ico" aria-hidden="true">${f.kind === 'video' ? '🎬' : '🎵'}</span>
+      <span class="player-ico" aria-hidden="true">${hqMediaIcon(f.kind)}</span>
       <span class="player-item-body"><span class="fname">${escapeHtml(f.name)}</span>
       <span class="meta">${escapeHtml(f.rel.split('/').slice(0, -1).join(' / '))} · ${escapeHtml(f.size_h)} · ${escapeHtml(f.mtime_h)}</span></span></button></li>`;
   }).join('') + (hqPlayer.libTruncated ? '<li class="hint">Liste limitée aux 500 fichiers les plus récents.</li>' : '');
@@ -4035,6 +4130,16 @@ document.addEventListener('click', (e) => {
   hqNameClick = { rel, timer: setTimeout(() => { hqNameClick = null; window.open(href, '_blank', 'noopener'); }, 300) };
 });
 let hqLastTap = null;
+// After a double tap opens the Lecteur, the browser still sends the second tap's compatibility
+// click to whatever is now under the finger (e.g. another file in the Lecteur list): swallow it.
+// Only a click at the tap's own spot within 600 ms counts; any other click passes (some browsers send none).
+let hqGhostClick = null;
+document.addEventListener('click', (e) => {
+  const g = hqGhostClick;
+  if (!g) return;
+  hqGhostClick = null;
+  if (Date.now() < g.until && Math.hypot(e.clientX - g.x, e.clientY - g.y) < 30) { e.preventDefault(); e.stopPropagation(); }
+}, true);
 document.addEventListener('pointerup', (e) => {
   if (e.pointerType === 'mouse') return;
   const row = hqMediaRow(e.target);
@@ -4043,6 +4148,7 @@ document.addEventListener('pointerup', (e) => {
   if (hqLastTap && hqLastTap.rel === rel && now - hqLastTap.t <= 300 && Math.hypot(e.clientX - hqLastTap.x, e.clientY - hqLastTap.y) < 40) {
     hqLastTap = null;
     e.preventDefault();
+    hqGhostClick = { until: now + 600, x: e.clientX, y: e.clientY };
     hqPlayerOpen(rel, true);
     return;
   }
@@ -4148,6 +4254,10 @@ body[data-view="plus"] [data-panel="plus"]{display:block}
 .player-where{margin:2px 0 12px}
 .player-stage video{display:block;width:100%;max-height:62vh;background:#000;border-radius:12px}
 .player-stage audio{display:block;width:100%}
+.player-model canvas{display:block;width:100%;height:min(62vh,520px);background:#edf5fa;border-radius:12px;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.player-model-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px}
+.player-model-bar button{width:auto;padding:8px 14px;min-height:var(--tap-min)}
+.player-model-help{margin:6px 0 0;font-size:.85rem}
 .player-stage [hidden],.player-actions [hidden]{display:none}
 .player-msg{margin:12px 0 0;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--text)}
 .player-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
@@ -4773,13 +4883,21 @@ def render_app() -> bytes:
     <section class="hq hq-primary" aria-labelledby="player-title">
       <div class="sec-head">
         <h2 id="player-title">Lecteur</h2>
-        <p class="sec-hint">Musique et vidéos déjà dans Transfert</p>
+        <p class="sec-hint">Musique, vidéos et modèles 3D déjà dans Transfert</p>
       </div>
       <p class="player-name" id="player-name">Aucun fichier sélectionné</p>
-      <p class="hint player-where" id="player-where">Double-clique une musique ou une vidéo dans Fichiers, ou choisis-la ci-dessous.</p>
+      <p class="hint player-where" id="player-where">Double-clique une musique, une vidéo ou un modèle 3D dans Fichiers, ou choisis-le ci-dessous.</p>
       <div class="player-stage">
         <video id="player-video" controls playsinline preload="metadata" hidden></video>
         <audio id="player-audio" controls preload="metadata" hidden></audio>
+        <div id="player-model" class="player-model" hidden>
+          <canvas id="player-model-canvas" aria-label="Aperçu 3D du modèle"></canvas>
+          <div class="player-model-bar">
+            <button type="button" class="secondary" id="btn-player-fit">Recadrer</button>
+            <span class="hint" id="player-model-info" role="status"></span>
+          </div>
+          <p class="hint player-model-help">Un doigt : tourner · deux doigts : déplacer et zoomer · souris : glisser pour tourner, clic droit ou Maj pour déplacer, molette pour zoomer.</p>
+        </div>
       </div>
       <p class="player-msg" id="player-msg" role="status" hidden></p>
       <div class="player-actions">
@@ -4789,10 +4907,10 @@ def render_app() -> bytes:
     </section>
     <section class="hq" aria-labelledby="player-lib-title">
       <div class="sec-head">
-        <h2 id="player-lib-title">Musique et vidéos <span class="badge" id="player-count">0</span></h2>
+        <h2 id="player-lib-title">Musique, vidéos et 3D <span class="badge" id="player-count">0</span></h2>
         <p class="sec-hint">Dans Inbox, Uni et Print, les plus récents d'abord</p>
       </div>
-      <input id="player-filter" type="search" placeholder="Filtrer…" aria-label="Filtrer la musique et les vidéos"/>
+      <input id="player-filter" type="search" placeholder="Filtrer…" aria-label="Filtrer la musique, les vidéos et les modèles 3D"/>
       <ul class="hq-list player-list" id="player-list"><li class="hint">Chargement…</li></ul>
     </section>
   </div>
@@ -5095,6 +5213,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
 <script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
+<script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
@@ -5417,8 +5536,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _send_media(self, path: Path) -> None:
-        """Lecteur stream: allow-listed type, inline, one byte range (206/416), chunked."""
+        """Lecteur stream: allow-listed type, inline, one byte range (206/416), chunked.
+        3D models go out as attachment with an extra sandbox CSP: the Lecteur reads them
+        with fetch(); a direct navigation must download, never render."""
         ctype = MEDIA_CONTENT_TYPES[path.suffix.lower()]
+        attachment = path.suffix.lower() in MEDIA_ATTACHMENT_EXTS
         with path.open("rb") as f:
             st = os.fstat(f.fileno())
             size = st.st_size
@@ -5449,7 +5571,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Last-Modified", last_modified)
             self.send_header("Cache-Control", "no-store")
             self._security_headers()
-            self.send_header("Content-Disposition", f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(path.name)}")
+            if attachment:
+                self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+            disposition = "attachment" if attachment else "inline"
+            self.send_header("Content-Disposition", f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(path.name)}")
             self.end_headers()
             f.seek(start)
             remaining = length

@@ -636,10 +636,26 @@ Commandes
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
   node tests/check_hq_3d_nav.mjs
+  node tests/check_hq_model.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
   (optionnel, Playwright + WebKit, profil iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_dessiner_webkit.py [--repeat 3]
+  (optionnel, Playwright ; serveur loopback jetable inclus) python tests/visual_media_playwright.py
+  (optionnel, Playwright Chromium + WebKit, profil iPhone ; serveur loopback jetable inclus) python tests/visual_model_playwright.py
+
+Lecteur 3D (.stl, .glb)
+-----------------------
+  Les fichiers .stl (binaire ou ASCII) et .glb d'Inbox, Uni et Print apparaissent dans
+  le Lecteur ; double-clic / double-tap dans Fichiers les ouvre. Un doigt tourne, deux
+  doigts déplacent et zooment (souris : clic droit ou Maj pour déplacer, molette pour
+  zoomer) ; « Recadrer » remet la pièce au centre. Tout est lu dans le navigateur
+  (assets/hq-model-view.js, sans réseau externe) ; /media/ envoie ces fichiers en pièce
+  jointe avec une CSP sandbox, jamais affichés tels quels.
+  GLB : maillages, indices, transformations des nœuds, couleur de base des matériaux.
+  Non pris en charge : textures, Draco / meshopt (message clair si requis), animations,
+  squelettes, .gltf à fichiers séparés. Limites : 64 Mo, 300 000 triangles
+  (30 000 sans WebGL).
 
 Dessiner (croquis mécanique)
 ----------------------------
