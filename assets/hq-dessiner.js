@@ -4,8 +4,15 @@
  */
 (function () {
   "use strict";
+  // Injected again by the page's « Réessayer »: never register handlers twice.
+  if (window.hqSketchShow) return;
+  const fail = (reason, kind) => {
+    if (typeof window.hqSketchFail === "function") { window.hqSketchFail(reason, kind); return; }
+    const app = document.getElementById("hq-sk-app");
+    if (app) app.textContent = "Dessiner n'a pas pu démarrer. " + reason;
+  };
   const S = window.HQSketch;
-  if (!S) return;
+  if (!S) { fail("module de dessin non chargé (hq-sketch-core.js)", "load"); return; }
   const $ = (sel, el) => (el || document).querySelector(sel);
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const say = (msg, kind) => { if (typeof window.toast === "function") window.toast(msg, kind || "ok"); };
@@ -1214,8 +1221,17 @@
   }
 
   let scrolledOnce = false;
+  let initFailed = false;
   window.hqSketchShow = function () {
-    if (!init()) return;
+    if (initFailed) return;
+    try {
+      if (!init()) return;
+    } catch (err) {
+      initFailed = true;  // half-built: keep the error state, « Réessayer » reloads
+      console.error(err);
+      fail("erreur d'initialisation", "init");
+      return;
+    }
     requestAnimationFrame(resize);
     if (!scrolledOnce && window.innerWidth < 900) {
       scrolledOnce = true;
@@ -1223,5 +1239,6 @@
     }
   };
   window.hqSketchState = () => st; // test/debug hook (read-only use)
+  // Late load (retry injection or slow script): initialize if Dessiner is already the view.
   if (document.body && document.body.dataset.view === "dessiner") window.hqSketchShow();
 })();
