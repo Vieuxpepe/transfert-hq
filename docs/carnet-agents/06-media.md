@@ -1,5 +1,7 @@
 # 06 — Note images/media
 
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
 Base accepted Stage 05. Branch \`feat/carnet-media\`.
 
 Read CONTEXT, TESTS, HANDOFF.
@@ -25,4 +27,4 @@ Tests: valid types, spoofed MIME/signature, oversize/quota, traversal, interrupt
 
 STOP before engineering tools/annotation.
 
-Compact HANDOFF.
+Compact HANDOFF; include current HEAD SHA and working-tree diff status.
