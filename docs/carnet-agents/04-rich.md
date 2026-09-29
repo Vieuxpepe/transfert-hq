@@ -1,5 +1,7 @@
 # 04 — Rich text / links / replace / export
 
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
 Base accepted Stage 03. Branch \`feat/carnet-rich\`.
 
 Read CONTEXT, TESTS, HANDOFF. Inspect current persisted content schema before editing.
@@ -51,4 +53,4 @@ migration; formatting persistence; selection + iOS; safe/unsafe URL; internal re
 
 STOP before Sources.
 
-Compact HANDOFF.
+Compact HANDOFF; include current HEAD SHA and working-tree diff status.
