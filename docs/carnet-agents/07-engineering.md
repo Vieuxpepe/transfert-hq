@@ -1,5 +1,7 @@
 # 07 — Engineering tools / HQ deep links
 
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
 Base accepted Stage 06. Branch \`feat/carnet-engineering\`.
 
 Read CONTEXT, TESTS, HANDOFF. Tools stay collapsed/contextual; default paper stays quiet.
@@ -40,4 +42,4 @@ Tests: parser attack cases, conversion constants/affine temp/precision, toleranc
 
 STOP before history/report extras.
 
-Compact HANDOFF.
+Compact HANDOFF; include current HEAD SHA and working-tree diff status.
