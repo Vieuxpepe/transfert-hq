@@ -1,5 +1,7 @@
 # Carnet — Local Agent Implementation Playbook
 
+> Canonical working mode: edit the existing `C:\\Transfert` working tree directly on `main`. Do not create/switch feature branches, worktrees, or clones. Leave changes uncommitted/unpushed unless the user explicitly authorizes delivery.
+
 Status: implementation prompts prepared from the Carnet design specification.
 
 Design source: \`design.md\` on branch \`docs/carnet-design\`.
@@ -193,8 +195,7 @@ You are implementing Stage 1 of Carnet for Transfert HQ.
 
 Read design.md and the Stage 0 report first.
 
-Create a local branch from current accepted main:
-feat/carnet-core
+Stay on the existing `main` branch. Do not create or switch branches.
 
 Scope is STRICTLY:
 - Carnet persistent domain model
@@ -529,7 +530,7 @@ Do not implement Stage 2.
 Do not merge/deploy.
 Report:
 - base SHA
-- branch
+- working branch (`main`)
 - files
 - schema
 - API contract
@@ -549,7 +550,7 @@ Suggested branch:
 \`feat/carnet-editor\`
 
 Base:
-accepted Stage 1 commit/branch.
+accepted Stage 1 state in the same working tree.
 
 \`\`\`text
 You are implementing Stage 2 of Carnet.
@@ -2110,7 +2111,7 @@ Final report should explicitly separate:
 
 # REUSABLE ADVERSARIAL REVIEW GATE — run after every stage
 
-Use this after the implementation agent finishes a stage and before accepting the branch.
+Use this after the implementation agent finishes a stage and before accepting the stage.
 
 \`\`\`text
 You are the adversarial reviewer for the current Carnet stage.
@@ -2201,7 +2202,7 @@ You are the release gate for the current accepted Carnet stage.
 Do not redesign the feature.
 
 1. Fetch current remote refs.
-2. Verify branch is based on intended accepted predecessor.
+2. Verify current branch is still `main` and the working tree contains the intended accepted predecessor.
 3. git status --short
 4. git diff --check
 5. review complete diff
@@ -2229,9 +2230,9 @@ Data-integrity gate as relevant:
 - migrations
 
 If green and explicitly authorized:
-- create one focused commit
-- push only this stage branch
-- open one Draft PR against intended base
+- create one focused commit on current `main`
+- push `main` only if push is also explicitly authorized
+- do not create a PR/feature branch in this workflow
 - do not merge
 - do not deploy
 
@@ -2249,12 +2250,11 @@ Return:
 - base/head SHA
 - commit SHA
 - branch
-- PR number/URL
 - diff stat
 - exact tests
 - GitHub checks if visible
 - final git status
-- confirmation Draft/unmerged/not deployed
+- confirmation no branch/worktree/clone/merge/deploy
 \`\`\`
 
 ---
@@ -2270,31 +2270,29 @@ To minimize agent token/quota consumption:
 5. Tell the implementation agent not to explain every trivial edit; require concise checkpoints only.
 6. Keep one stage per fresh context if the coding environment benefits from context isolation.
 7. Run the adversarial reviewer in a separate context so it does not inherit implementation assumptions.
-8. Feed the reviewer the branch/diff, not the builder's narrative.
+8. Feed the reviewer the working-tree diff, not the builder's narrative.
 9. Do not ask agents to "improve anything else they notice."
 10. Freeze out-of-scope future stages explicitly.
 11. If a stage encounters an architectural mismatch, require a short report before expanding scope.
 12. Prefer tests that encode invariants so later agents can rely on executable behavior rather than rereading prose.
 
-# Branch lineage recommendation
+# Working-tree progression
 
-A safe local sequence:
+All accepted stages accumulate in the same local `C:\Transfert` working tree on `main`:
 
-\`\`\`text
-main
- └─ feat/carnet-core
-     └─ feat/carnet-editor
-         └─ feat/carnet-library
-             └─ feat/carnet-rich
-                 └─ feat/carnet-sources
-                     └─ feat/carnet-media
-                         └─ feat/carnet-engineering
-                             └─ feat/carnet-history-reports
-\`\`\`
+```text
+main working tree
+  Stage 01 core
+  + Stage 02 editor
+  + Stage 03 library
+  + Stage 04 rich
+  + Stage 05 sources
+  + Stage 06 media
+  + Stage 07 engineering
+  + Stage 08 history/reports
+```
 
-If each stage is merged into main before the next starts, branch each new stage from refreshed main instead.
-
-Do not stack branches against stale bases if earlier stages have been modified during review.
+Do not create/switch feature branches, worktrees, or clones. Review after each stage. Commit/push only when explicitly authorized.
 
 # Product invariant to repeat to every agent
 
