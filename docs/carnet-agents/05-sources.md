@@ -1,5 +1,7 @@
 # 05 — Engineering Sources / citations / exact PDF location
 
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
 Base accepted Stage 04. Branch \`feat/carnet-sources\`.
 
 Read CONTEXT, TESTS, HANDOFF. This stage optimizes provenance and fast verification.
@@ -82,4 +84,4 @@ source CRUD/families/editions/archive; citation snapshots; all locator kinds; pi
 
 STOP before note media attachments.
 
-Compact HANDOFF.
+Compact HANDOFF; include current HEAD SHA and working-tree diff status.
