@@ -1,6 +1,8 @@
 # 02 — Core editor/autosave/conflicts
 
-Base: accepted Stage 01 SHA. Branch: `feat/carnet-editor`.
+**Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
+Base: accepted Stage 01 state in the current working tree.
 
 Read: CONTEXT.md, TESTS.md, prior HANDOFF.
 
@@ -127,4 +129,4 @@ Run desktop Chromium + WebKit iPad + WebKit iPhone where installed. Run existing
 
 STOP before library/search/category-management UI.
 
-Compact HANDOFF report only.
+Compact HANDOFF report only; include current HEAD SHA and working-tree diff status.
