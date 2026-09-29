@@ -6,7 +6,7 @@ Do not edit code.
 
 Run/inspect:
 \`\`\`bash
-git fetch --all --prune
+git fetch --all --prune   # attempt once; if credentials are unavailable, report it and continue read-only with existing refs
 git status --short
 git branch --show-current
 git rev-parse HEAD
@@ -34,4 +34,4 @@ Output ONLY:
 4. exact focused Stage-01 test commands
 5. blockers/risks
 
-No implementation plan essay. No edits/commit/push.
+No implementation plan essay. No edits. Do not create/switch branches. Do not commit/push.
