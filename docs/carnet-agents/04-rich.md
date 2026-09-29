@@ -2,7 +2,7 @@
 
 **Working mode:** edit the existing `C:\Transfert` working tree directly. Do not create/switch branches or worktrees. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
 
-Base accepted Stage 03. Branch \`feat/carnet-rich\`.
+Base: accepted Stage 03 state already present in the same current `main` working tree. Stay on `main`.
 
 Read CONTEXT, TESTS, HANDOFF. Inspect current persisted content schema before editing.
 
