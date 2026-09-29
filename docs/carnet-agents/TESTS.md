@@ -1,5 +1,20 @@
 # Carnet compact test matrix
 
+## CRITICAL: test execution isolation
+
+Implementation edits happen directly in `C:\Transfert`, but Python test execution that imports `iphone_bridge` or other runtime-bound modules must **not** run from that live checkout.
+
+Before any such Python suite:
+1. create a temporary plain source copy outside `C:\Transfert` (for example under `$env:TEMP\transfert-hq-test-<id>`);
+2. copy source/tests/assets needed for the suite, excluding `.git`, Inbox, Uni, Print, `.hq-carnet`, bridge/runtime JSON, PID/log/temp files and other live user data;
+3. run the Python suite from the temporary copy;
+4. delete the temporary copy afterward;
+5. verify selected live runtime files in `C:\Transfert` were unchanged.
+
+Do not use a Git clone/worktree for this test sandbox; it is only a disposable filesystem copy.
+
+If isolation cannot be established, SKIP the unsafe suite and report it. Never trade live data safety for test coverage.
+
 Always inspect current README because commands can change. Baseline at design time:
 
 \`\`\`bash
