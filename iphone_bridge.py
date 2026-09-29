@@ -2423,7 +2423,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', dessiner: 'Dessiner', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -2511,11 +2511,59 @@ function hqSketchRetry(kind, btn) {
   };
   next();
 }
+// Carnet bootstrap fallback: if hq-carnet.js never ran, show a durable error with retry
+// instead of « Chargement… ». A Carnet failure never aborts HQ startup/navigation.
+let carnetRetrying = false;
+function hqCarnetMissing() {
+  const app = document.getElementById('hq-carnet-app');
+  if (!app || app.querySelector('.carnet, .carnet-fail')) return;
+  const box = document.createElement('div');
+  box.className = 'carnet-fail';
+  box.setAttribute('role', 'alert');
+  const title = document.createElement('p');
+  title.className = 'carnet-fail-title';
+  title.textContent = "Le carnet n'a pas pu s'ouvrir.";
+  const why = document.createElement('p');
+  why.className = 'hint carnet-fail-reason';
+  why.textContent = 'module carnet non chargé (hq-carnet.js)';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'secondary carnet-retry';
+  btn.textContent = 'Réessayer';
+  btn.addEventListener('click', () => {
+    if (window.hqCarnetShow) { app.textContent = ''; setView('carnet'); return; }
+    if (carnetRetrying) return;
+    carnetRetrying = true;
+    btn.disabled = true;
+    const el = document.createElement('script');
+    el.src = '/assets/hq-carnet.js';
+    el.onload = () => {
+      carnetRetrying = false;
+      app.textContent = '';
+      if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
+        try { window.hqCarnetShow(); } catch (e) { console.error(e); }
+      }
+    };
+    el.onerror = () => { el.remove(); carnetRetrying = false; btn.disabled = false; };
+    document.body.appendChild(el);
+  });
+  box.append(title, why, btn);
+  app.textContent = '';
+  app.appendChild(box);
+}
 window.addEventListener('load', () => {
   const app = document.getElementById('hq-sk-app');
   if (document.body.dataset.view === 'dessiner' && app && !app.querySelector('.sk, .sk-fail')) hqSketchStart();
 }, { once: true });
 
+// Narrow phones may scroll the bottom nav sideways: keep the active target in view.
+function hqNavReveal(b) {
+  const nav = b.parentElement;
+  if (!nav || nav.scrollWidth <= nav.clientWidth + 1) return;
+  const l = b.offsetLeft, r = l + b.offsetWidth;
+  if (l < nav.scrollLeft) nav.scrollLeft = l;
+  else if (r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = r - nav.clientWidth;
+}
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
@@ -2530,12 +2578,18 @@ function setView(name) {
     b.classList.toggle('active', on);
     if (on) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
+    if (on) hqNavReveal(b);
   });
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (window.hqPlayerView) {
     try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
   }
   if (view === 'fichiers') refreshFiles().catch(() => {});
+  if (view === 'carnet' && window.hqCarnetShow) {
+    try { window.hqCarnetShow(); } catch (e) { console.error(e); }  // a Carnet failure never aborts HQ
+  } else if (view === 'carnet' && document.readyState !== 'loading') {
+    hqCarnetMissing();
+  }
   if (view === 'calendrier' && window.hqCalendarShow) {
     try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
   }
@@ -2603,6 +2657,8 @@ async function api(url, opts={}) {
   } finally {
     clearTimeout(timer);
   }
+  // Non-2xx errors carry err.status (+ err.data for JSON bodies); messages unchanged.
+  const fail = (msg, data) => { const err = new Error(msg); err.status = res.status; if (data !== undefined) err.data = data; return err; };
   if (res.status === 401) {
     const now = Date.now();
     const last = Number(sessionStorage.getItem('tf_auth_at') || 0);
@@ -2611,21 +2667,21 @@ async function api(url, opts={}) {
       sessionStorage.setItem('tf_auth_at', String(now));
       location.replace('/logout');
     }
-    throw new Error('PIN requis');
+    throw fail('PIN requis');
   }
   if (res.status === 403) {
     let msg = 'Réservé admin';
     try { const j = await res.clone().json(); if (j.error) msg = j.error; } catch (_) {}
-    throw new Error(msg);
+    throw fail(msg);
   }
   sessionStorage.removeItem('tf_auth_redirect');
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('application/json')) {
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || ('Erreur ' + res.status));
+    if (!res.ok) throw fail((data && data.error) || ('Erreur ' + res.status), data);
     return data;
   }
-  if (!res.ok) throw new Error('Erreur ' + res.status);
+  if (!res.ok) throw fail('Erreur ' + res.status);
   return res;
 }
 
@@ -4247,6 +4303,7 @@ h1{font-size:1.7rem;margin:4px 0 6px;letter-spacing:-.02em}
 .sub{color:var(--muted);margin:0 0 14px}
 [data-panel]{display:none}
 body[data-view="accueil"] [data-panel="accueil"],
+body[data-view="carnet"] [data-panel="carnet"],
 body[data-view="calendrier"] [data-panel="calendrier"],
 body[data-view="dessiner"] [data-panel="dessiner"],
 body[data-view="fichiers"] [data-panel="fichiers"],
@@ -4404,6 +4461,7 @@ li.file.is-dir .fname{color:var(--ok)}
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 35%,transparent)}
 .bottom-nav .nav-ico{display:flex;align-items:center;justify-content:center;line-height:0}
 .nav-svg{display:block;width:20px;height:20px}
+.bottom-nav .nav-label{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nav-label-desktop{display:none}
 body.theme-oled{--bg:#000;--panel:#0a0a0a;--panel-2:#111;--line:#222}
 body.theme-midnight{--bg:#0b1220;--panel:#121a2b;--accent:#7dd3fc;--accent2:#7dd3fc}
@@ -4413,6 +4471,20 @@ body.kiosk .bottom-nav{display:none}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:2px;background:var(--muted);flex:0 0 auto}
 .dot.on{background:var(--ok)}
 .dot.off{background:var(--danger)}
+@media (max-width:430px){
+  /* Narrow phones: every nav target stays >= 44x44. If they cannot all fit (full mode
+     below 360px), the nav scrolls sideways instead of shrinking the buttons. */
+  .bottom-nav{padding-left:max(4px, env(safe-area-inset-left));padding-right:max(4px, env(safe-area-inset-right));
+    grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(44px,1fr);
+    overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .bottom-nav::-webkit-scrollbar{display:none}
+  .bottom-nav button{padding:6px 0;font-size:.66rem;min-width:44px}
+}
+@media (max-width:359px){
+  /* 6.5 buttons visible: the half-cut next button shows the nav scrolls. */
+  body:not(.mode-simple) .bottom-nav{grid-auto-columns:max(44px, calc((100vw - 8px) / 6.5));scroll-snap-type:x proximity}
+  body:not(.mode-simple) .bottom-nav button{scroll-snap-align:start}
+}
 @media (max-width:520px){
   .qrs{grid-template-columns:1fr}
   .wrap{padding:12px max(12px, env(safe-area-inset-right)) 20px max(12px, env(safe-area-inset-left))}
@@ -4674,12 +4746,14 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq.css"/>
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
+<link rel="stylesheet" href="/assets/hq-carnet.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
 <a class="skip-link" href="#main">Aller au contenu</a>
 <nav class="bottom-nav" aria-label="Navigation HQ">
   <button type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
+  <button type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
   <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
   <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
   <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
@@ -4813,6 +4887,15 @@ def render_app() -> bytes:
         <ul class="hq-list" id="hq-activity" hidden></ul>
       </section>
     </div>
+  </div>
+
+  <div data-panel="carnet">
+    <section class="hq hq-carnet" aria-labelledby="carnet-title">
+      <h2 id="carnet-title" class="visually-hidden">Carnet</h2>
+      <div id="hq-carnet-app">
+        <p class="hint">Chargement…</p>
+      </div>
+    </section>
   </div>
 
   <div data-panel="calendrier">
@@ -5212,6 +5295,7 @@ def render_app() -> bytes:
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-carnet.js"></script>
 <script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>

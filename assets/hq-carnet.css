@@ -1,0 +1,131 @@
+/* Transfert HQ — Carnet (Stage 02). Paper first; system fonts; CSS-only paper. */
+.hq-carnet{
+  --carnet-paper:#1d2127;
+  --carnet-ink:#eef1f4;
+  --carnet-rule:color-mix(in srgb,#8fb4d9 16%,transparent);
+  --carnet-margin:color-mix(in srgb,#ff7a7a 34%,transparent);
+  --carnet-grain:color-mix(in srgb,#fff 2.5%,transparent);
+  --carnet-lh:28px;
+  --carnet-fs:17px;
+  --carnet-pad-x:22px;
+  --carnet-margin-x:34px;
+  --carnet-tap:44px;
+  padding:10px;
+}
+@media (prefers-color-scheme: light){
+  .hq-carnet{
+    --carnet-paper:#fbf8f0;
+    --carnet-ink:#1d232b;
+    --carnet-rule:color-mix(in srgb,#5b8fc9 24%,transparent);
+    --carnet-margin:color-mix(in srgb,#e0574f 42%,transparent);
+    --carnet-grain:color-mix(in srgb,#8a6d3b 4%,transparent);
+  }
+}
+.carnet{display:flex;flex-direction:column;gap:8px;min-width:0;width:100%;box-sizing:border-box}
+
+/* ---- bars */
+.carnet-bar{display:flex;align-items:center;gap:6px;min-width:0}
+.carnet-bar-top{justify-content:space-between}
+.carnet-bar-bottom{justify-content:space-between;position:sticky;z-index:3;bottom:calc(var(--nav-h, 64px) + env(safe-area-inset-bottom, 0px));
+  padding:6px 0;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px)}
+.carnet-actions,.carnet-nav{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.carnet-status-wrap{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:flex-end;gap:8px;overflow:hidden}
+.carnet-status{margin:0;font-size:var(--text-sm);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.carnet-status[data-kind="warn"]{color:var(--warn);font-weight:700;white-space:normal}
+.carnet-status[data-kind="err"]{color:var(--danger);font-weight:700;white-space:normal}
+.carnet-flash{font-size:var(--text-sm);color:var(--accent);font-weight:700;white-space:nowrap}
+.carnet-flash:empty{display:none}
+.carnet-attention{flex:0 0 auto;min-height:var(--carnet-tap);padding:0 12px;border-radius:999px;background:transparent;cursor:pointer;
+  border:1px solid color-mix(in srgb,var(--warn) 55%,var(--line));color:var(--warn);font:inherit;font-size:var(--text-sm);font-weight:700;white-space:nowrap}
+.carnet-attention[hidden]{display:none}
+.carnet-btn{min-width:var(--carnet-tap);min-height:var(--carnet-tap);padding:0 10px;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;
+  background:var(--panel-2);color:var(--text);border:1px solid var(--line);cursor:pointer;touch-action:manipulation}
+.carnet-btn:disabled{opacity:.4}
+.carnet-btn[aria-pressed="true"],.carnet-btn[aria-expanded="true"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.carnet-ico{width:20px;height:20px;display:block}
+.carnet-pill{display:inline-block;text-align:left;line-height:var(--carnet-tap);min-height:var(--carnet-tap);max-width:48%;padding:0 14px;border-radius:999px;background:transparent;border:1px solid var(--line);color:var(--muted);
+  font:inherit;font-size:var(--text-sm);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;flex:0 1 auto}
+.carnet-indicator{min-width:4.5em;text-align:center;font-size:var(--text-sm);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ---- quick tools */
+.carnet-tools{display:flex;flex-wrap:wrap;gap:6px}
+.carnet-sym{min-width:var(--carnet-tap);min-height:var(--carnet-tap);padding:0 10px;border-radius:10px;background:var(--panel-2);color:var(--text);
+  border:1px solid var(--line);font:inherit;font-size:1.05rem;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;touch-action:manipulation}
+.carnet-time span{font-size:var(--text-sm);font-weight:700}
+
+/* ---- conflict */
+.carnet-conflict{border:1px solid color-mix(in srgb,var(--warn) 55%,var(--line));background:color-mix(in srgb,var(--warn) 12%,var(--panel));
+  border-radius:12px;padding:10px 12px}
+.carnet-conflict-msg{margin:0 0 8px;font-weight:700}
+.carnet-conflict-actions{display:flex;flex-wrap:wrap;gap:8px}
+.carnet-conflict-actions button{min-height:var(--carnet-tap)}
+
+/* ---- paper */
+.carnet-stage{perspective:1600px;touch-action:pan-y pinch-zoom}
+.carnet-paper{position:relative;border-radius:6px;background-color:var(--carnet-paper);
+  box-shadow:0 1px 0 color-mix(in srgb,#000 12%,transparent),0 10px 30px color-mix(in srgb,#000 18%,transparent);
+  background-image:radial-gradient(circle at 20% 30%,var(--carnet-grain) 0 1px,transparent 1.5px),
+    radial-gradient(circle at 70% 80%,var(--carnet-grain) 0 1px,transparent 1.5px);
+  background-size:7px 7px,11px 11px;overflow:hidden}
+.carnet-editor{display:block;width:100%;box-sizing:border-box;margin:0;border:0;border-radius:6px;resize:none;outline:none;
+  min-height:calc(100vh - 260px);min-height:calc(100dvh - 260px);
+  padding:var(--carnet-lh) var(--carnet-pad-x) var(--carnet-lh) calc(var(--carnet-margin-x) + 14px);
+  font-family:var(--font);font-size:var(--carnet-fs);line-height:var(--carnet-lh);color:var(--carnet-ink);caret-color:var(--accent);
+  background-color:transparent;
+  background-image:linear-gradient(to right,transparent calc(var(--carnet-margin-x) - 1px),var(--carnet-margin) calc(var(--carnet-margin-x) - 1px),var(--carnet-margin) var(--carnet-margin-x),transparent var(--carnet-margin-x)),
+    linear-gradient(to bottom,transparent calc(var(--carnet-lh) - 1px),var(--carnet-rule) calc(var(--carnet-lh) - 1px));
+  background-size:100% 100%,100% var(--carnet-lh);background-attachment:local;background-position:0 0,0 0;
+  white-space:pre-wrap;overflow-wrap:break-word;-webkit-text-size-adjust:100%}
+.carnet-editor::placeholder{color:color-mix(in srgb,var(--carnet-ink) 38%,transparent)}
+.carnet-editor:focus-visible{outline:none;box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 40%,transparent)}
+.carnet-editor[readonly]{opacity:.75}
+
+/* ---- page flip: temporary aria-hidden ghost, CSS transform only */
+.carnet-page-ghost{position:absolute;inset:0;z-index:2;pointer-events:none;box-sizing:border-box;background:var(--carnet-paper);
+  padding:var(--carnet-lh) var(--carnet-pad-x) var(--carnet-lh) calc(var(--carnet-margin-x) + 14px);
+  font-family:var(--font);font-size:var(--carnet-fs);line-height:var(--carnet-lh);color:var(--carnet-ink);
+  white-space:pre-wrap;overflow:hidden;backface-visibility:hidden;will-change:transform;
+  transform-origin:left center;animation:carnet-flip-next .22s ease-in forwards}
+.carnet-page-ghost.is-prev{transform-origin:right center;animation-name:carnet-flip-prev}
+@keyframes carnet-flip-next{from{transform:rotateY(0);opacity:1}to{transform:rotateY(-78deg);opacity:0}}
+@keyframes carnet-flip-prev{from{transform:rotateY(0);opacity:1}to{transform:rotateY(78deg);opacity:0}}
+@media (prefers-reduced-motion:reduce){
+  .carnet-page-ghost{display:none;animation:none}
+}
+
+/* ---- failure */
+.carnet-fail{border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line));border-radius:12px;padding:14px;background:var(--panel)}
+.carnet-fail-title{margin:0 0 4px;font-weight:800}
+.carnet-retry{min-height:var(--carnet-tap)}
+.carnet-copy-buffer{position:fixed;left:-9999px;top:0;opacity:0;width:1px;height:1px}
+
+/* ---- phone: paper dominates */
+@media (max-width:599px){
+  .hq-carnet{padding:4px 0;border:0;background:transparent;box-shadow:none}
+  .hq-carnet{--carnet-pad-x:14px;--carnet-margin-x:22px}
+  .carnet{gap:6px}
+  .carnet-editor{min-height:calc(100vh - 250px);min-height:calc(100dvh - 250px)}
+  .carnet-bar-top{flex-wrap:wrap}
+  .carnet-status-wrap{order:3;flex:1 1 100%;justify-content:flex-start}
+  .carnet-pill{max-width:calc(100% - 3 * var(--carnet-tap) - 30px)}
+}
+/* ---- iPad / tablet: roomy paper */
+@media (min-width:600px) and (max-width:899px){
+  .hq-carnet{--carnet-fs:18px;--carnet-lh:30px;--carnet-pad-x:32px;--carnet-margin-x:44px}
+  .carnet-paper{max-width:760px;margin:0 auto;width:100%}
+  .carnet-bar{max-width:760px;margin:0 auto;width:100%}
+}
+/* ---- desktop: centered/wide paper, keyboard + mouse */
+@media (min-width:900px){
+  body[data-view="carnet"] .wrap{max-width:1180px;width:100%;box-sizing:border-box}
+  .hq-carnet{--carnet-fs:18px;--carnet-lh:30px;--carnet-pad-x:44px;--carnet-margin-x:56px}
+  .carnet{max-width:880px;margin:0 auto}
+  .carnet-bar-bottom{bottom:0}
+  .carnet-editor{min-height:calc(100vh - 230px)}
+}
+@media (pointer:coarse){
+  .hq-carnet{--carnet-tap:44px}
+}
+@media (hover:hover) and (pointer:fine){
+  .carnet-btn:not(:disabled):hover,.carnet-sym:hover,.carnet-pill:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+}
