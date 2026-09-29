@@ -37,6 +37,8 @@
     doc.objects.forEach(p => used.add(p.id));
     doc.constraints.forEach(p => used.add(p.id));
     (doc.features || []).forEach(p => used.add(p.id));
+    (doc.faceFeatures || []).forEach(p => used.add(p.id));
+    (doc.roundFeatures || []).forEach(p => used.add(p.id));
     let n = Math.max(1, Number(doc.nextId) || 1);
     while (used.has(prefix + n)) n++;
     doc.nextId = n + 1;
@@ -332,7 +334,7 @@
     d.objects.forEach(o => { if (isLine(o)) { used.add(o.p1); used.add(o.p2); } else if (o.type === "circle") used.add(o.center); });
     d.points = d.points.filter(p => used.has(p.id));
     d.features = (d.features || []).filter(f => !f.profile.some(id => set.has(id)));
-    if (!d.features.length || d.features[0].type !== "extrude") d.features = [];
+    if (!d.features.length || d.features[0].type !== "extrude") { d.features = []; d.faceFeatures = []; d.roundFeatures = []; }
     return d;
   }
 
@@ -345,7 +347,7 @@
     if (profile.some(id => !["line", "circle"].includes(known.get(id)))) return { ok: false, error: "Seules les lignes et les cercles forment un solide" };
     const dep = Number(depth), ext = type === "cut" && extent === "throughAll" ? "throughAll" : "blind";
     if (!isFinite(dep) || dep < 0 || (ext === "blind" && dep <= 0) || dep > LIMITS.coord) return { ok: false, error: "Profondeur invalide" };
-    d.version = VERSION;
+    d.version = Math.max(d.version, VERSION);
     d.features = features;
     d.features.push({ id: newId(d, "f"), type, profile: profile.slice(), depth: round6(dep), extent: ext });
     return { ok: true, doc: d };
@@ -355,7 +357,50 @@
     const d = clone(doc), at = (d.features || []).findIndex(f => f.id === id);
     if (at < 0) return { ok: false, error: "Fonction introuvable" };
     d.features = at === 0 ? [] : d.features.filter(f => f.id !== id);
+    if (at === 0) { d.faceFeatures = []; d.roundFeatures = []; }
     return { ok: true, doc: d };
+  }
+
+  function addFaceFeature(doc, type, plane, profile, depth, extent) {
+    const d = clone(doc);
+    if (!(d.features || []).length) return { ok: false, error: "Crée d'abord une extrusion de base" };
+    if (!["extrude", "cut"].includes(type) || !Array.isArray(profile) || profile.length < 3 || profile.length > 500 ||
+        profile.some(p => !Array.isArray(p) || p.length !== 2 || p.some(v => !Number.isFinite(v) || Math.abs(v) > LIMITS.coord)))
+      return { ok: false, error: "Contour de face invalide" };
+    if (!plane || ["origin", "u", "v", "normal"].some(k => !Array.isArray(plane[k]) || plane[k].length !== 3 || plane[k].some(v => !Number.isFinite(v))))
+      return { ok: false, error: "Plan de face invalide" };
+    const dep = Number(depth), ext = type === "cut" && extent === "throughAll" ? "throughAll" : "blind";
+    if (!(dep > 0 && dep <= LIMITS.coord)) return { ok: false, error: "Profondeur invalide" };
+    d.version = 3;
+    d.faceFeatures = d.faceFeatures || [];
+    if (d.faceFeatures.length >= 50) return { ok: false, error: "Trop de fonctions sur face" };
+    d.faceFeatures.push({ id: newId(d, "ff"), type, extent: ext, depth: round6(dep),
+      plane: clone(plane), profile: profile.map(p => p.map(round6)) });
+    return { ok: true, doc: d };
+  }
+
+  function removeFaceFeature(doc, id) {
+    const d = clone(doc), count = (d.faceFeatures || []).length;
+    d.faceFeatures = (d.faceFeatures || []).filter(f => f.id !== id);
+    return count === d.faceFeatures.length ? { ok: false, error: "Fonction introuvable" } : { ok: true, doc: d };
+  }
+
+  function addRoundFeature(doc, a, b, radius) {
+    const d = clone(doc), r = Number(radius);
+    if (!(d.features || []).length) return { ok: false, error: "Crée d'abord une pièce 3D" };
+    if (![a, b].every(p => Array.isArray(p) && p.length === 3 && p.every(v => Number.isFinite(v) && Math.abs(v) <= LIMITS.coord)) ||
+        !(r > 1e-6 && r <= LIMITS.coord)) return { ok: false, error: "Arête ou rayon invalide" };
+    d.version = 3;
+    d.roundFeatures = d.roundFeatures || [];
+    if (d.roundFeatures.length >= 50) return { ok: false, error: "Trop d'arrondis" };
+    d.roundFeatures.push({ id: newId(d, "rf"), a: a.map(round6), b: b.map(round6), radius: round6(r) });
+    return { ok: true, doc: d };
+  }
+
+  function removeRoundFeature(doc, id) {
+    const d = clone(doc), count = (d.roundFeatures || []).length;
+    d.roundFeatures = (d.roundFeatures || []).filter(f => f.id !== id);
+    return count === d.roundFeatures.length ? { ok: false, error: "Arrondi introuvable" } : { ok: true, doc: d };
   }
 
   function updateObject(doc, id, patch) {
@@ -497,6 +542,8 @@
     });
     d.constraints.forEach(k => { if (k.type === "length") k.value = s(k.value); });
     (d.features || []).forEach(f => { f.depth = s(f.depth); });
+    (d.faceFeatures || []).forEach(f => { f.depth = s(f.depth); f.profile = f.profile.map(sp); f.plane.origin = f.plane.origin.map(s); });
+    (d.roundFeatures || []).forEach(f => { f.a = f.a.map(s); f.b = f.b.map(s); f.radius = s(f.radius); });
     if (d.view) { d.view.x0 = s(d.view.x0); d.view.y0 = s(d.view.y0); d.view.ppu = d.view.ppu / f; }
     return { ok: true, doc: d };
   }
@@ -548,7 +595,7 @@
   function validateDoc(doc) {
     try {
       if (!doc || typeof doc !== "object") throw new Error("Document invalide");
-      if (doc.format !== FORMAT || ![1, VERSION].includes(doc.version)) throw new Error("Format/version inconnus");
+      if (doc.format !== FORMAT || ![1, 2, 3].includes(doc.version)) throw new Error("Format/version inconnus");
       if (!UNIT_MM[doc.units]) throw new Error("Unités invalides");
       if (!doc.grid || !(doc.grid.spacing > 0)) throw new Error("Grille invalide");
       for (const k of ["points", "objects", "constraints"]) if (!Array.isArray(doc[k])) throw new Error(k + " invalides");
@@ -578,6 +625,23 @@
         const f = features[i]; claim(f.id);
         if (f.type !== (i === 0 ? "extrude" : "cut") || !Array.isArray(f.profile) || !f.profile.length || f.profile.length > 500 || new Set(f.profile).size !== f.profile.length || f.profile.some(id => !["line", "circle"].includes(doc.objects.find(o => o.id === id)?.type))) throw new Error("Profil 3D invalide");
         if (!num(f.depth) || f.depth < 0 || (f.extent !== "throughAll" && f.depth <= 0) || !["blind", "throughAll"].includes(f.extent) || (f.type === "extrude" && f.extent !== "blind")) throw new Error("Profondeur 3D invalide");
+      }
+      const faceFeatures = doc.faceFeatures || [];
+      if (!Array.isArray(faceFeatures) || faceFeatures.length > 50 || (doc.version < 3 && faceFeatures.length)) throw new Error("Fonctions sur face invalides");
+      for (const f of faceFeatures) {
+        claim(f.id);
+        if (!["extrude", "cut"].includes(f.type) || !["blind", "throughAll"].includes(f.extent) || (f.type === "extrude" && f.extent !== "blind") ||
+            !num(f.depth) || f.depth <= 0 || !Array.isArray(f.profile) || f.profile.length < 3 || f.profile.length > 500 ||
+            f.profile.some(p => !Array.isArray(p) || p.length !== 2 || !p.every(num)) ||
+            !f.plane || ["origin", "u", "v", "normal"].some(k => !Array.isArray(f.plane[k]) || f.plane[k].length !== 3 || !f.plane[k].every(num)))
+          throw new Error("Fonction sur face invalide");
+      }
+      const rounds = doc.roundFeatures || [];
+      if (!Array.isArray(rounds) || rounds.length > 50 || (doc.version < 3 && rounds.length)) throw new Error("Arrondis invalides");
+      for (const f of rounds) {
+        claim(f.id);
+        if (![f.a, f.b].every(p => Array.isArray(p) && p.length === 3 && p.every(num)) || !num(f.radius) || f.radius <= 1e-6)
+          throw new Error("Arrondi invalide");
       }
       return { ok: true };
     } catch (e) { return { ok: false, error: e.message }; }
@@ -618,7 +682,7 @@
     FORMAT, VERSION, DRAFT_KEY, UNIT_MM, LIMITS,
     clone, createDoc, newId, pointMap, getObj, isLine, addPoint, findPointNear, addLine, addRect, addCircle, addStroke,
     addText, addDimLinear, addDimAngle, measureLinear, measureAngle, linesAtPoint, otherEnd, sharedVertex, lineLength,
-    angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, addFeature, removeFeature, moveObjects, movePoint, deleteObjects,
+    angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, addFeature, removeFeature, addFaceFeature, removeFaceFeature, addRoundFeature, removeRoundFeature, moveObjects, movePoint, deleteObjects,
     updateObject, hitTest, hitAll, objectDistance, dimLinearGeom, textBox, snapGrid, snapAngle, snapSegmentEnd, simplify,
     convertUnits, fmt, extents, toScreen, toModel, zoomAt, fitView, sourceHint, validateDoc, createHistory,
     saveDraft, loadDraft, clearDraft,

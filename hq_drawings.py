@@ -16,7 +16,7 @@ Filesystem rules:
     are published with os.link (fails if the target exists) — atomic and
     never clobbering.
 
-Document format (version 2; version 1 remains readable):
+Document format (version 3; versions 1 and 2 remain readable):
   stable object ids, explicit point table (lines/circles reference point ids,
   so connectivity is explicit), units, grid, driving constraints, 3D features.
 """
@@ -39,7 +39,7 @@ from pathlib import Path
 import hq_solid
 
 FORMAT = "transfert-hq-sketch"
-VERSION = 2
+VERSION = 3
 SUBDIR = ("Inbox", "Drawings")
 DOC_SUFFIX = ".hqdraw.json"
 PNG_SUFFIX = ".png"
@@ -204,7 +204,7 @@ def validate_document(doc) -> dict:
         raise DrawingError("Document invalide")
     if doc.get("format") != FORMAT:
         raise DrawingError("Format de dessin inconnu")
-    if doc.get("version") not in (1, VERSION):
+    if doc.get("version") not in (1, 2, VERSION):
         raise DrawingError("Version de dessin non prise en charge")
     units = doc.get("units")
     if units not in UNITS:
@@ -386,8 +386,68 @@ def validate_document(doc) -> dict:
         if (kind == "extrude" or extent == "blind") and depth <= 0:
             raise DrawingError(f"{fid} : profondeur positive requise")
         features.append({"id": fid, "type": kind, "profile": profile, "depth": depth, "extent": extent})
-    out["features"] = features if doc["version"] == 2 else []
-    if features:
+    out["features"] = features if doc["version"] >= 2 else []
+    raw_faces = doc.get("faceFeatures", [])
+    if not isinstance(raw_faces, list) or len(raw_faces) > 50 or (doc["version"] < 3 and raw_faces):
+        raise DrawingError("Fonctions sur face invalides")
+    face_features = []
+    face_ids = set(ids)
+    total_vertices = 0
+    for i, face in enumerate(raw_faces):
+        if not isinstance(face, dict):
+            raise DrawingError(f"Fonction sur face {i} invalide")
+        fid = _id(face.get("id"), f"fonction sur face {i}")
+        if fid in face_ids:
+            raise DrawingError("Identifiant de fonction sur face en double")
+        face_ids.add(fid)
+        kind = face.get("type")
+        extent = face.get("extent", "blind")
+        if kind not in ("extrude", "cut") or extent not in ("blind", "throughAll") or (kind == "extrude" and extent != "blind"):
+            raise DrawingError(f"{fid} : type ou étendue invalide")
+        depth = _num(face.get("depth"), f"{fid} profondeur", lo=1e-9, hi=MAX_COORD)
+        profile = face.get("profile")
+        if not isinstance(profile, list) or not 3 <= len(profile) <= 500:
+            raise DrawingError(f"{fid} : contour invalide")
+        total_vertices += len(profile)
+        if total_vertices > 2048:
+            raise DrawingError("Trop de sommets sur les faces", 413)
+        ring = [_xy(point, f"{fid} contour") for point in profile]
+        plane = face.get("plane")
+        if not isinstance(plane, dict):
+            raise DrawingError(f"{fid} : plan invalide")
+        vectors = {}
+        for key in ("origin", "u", "v", "normal"):
+            value = plane.get(key)
+            if not isinstance(value, (list, tuple)) or len(value) != 3:
+                raise DrawingError(f"{fid} : {key} invalide")
+            vectors[key] = [_num(n, f"{fid} {key}") for n in value]
+        u, v, n = (vectors[k] for k in ("u", "v", "normal"))
+        dot = lambda a, b: sum(x * y for x, y in zip(a, b))
+        cross = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+        if any(abs(dot(a, a) - 1) > 1e-4 for a in (u, v, n)) or any(abs(dot(a, b)) > 1e-4 for a, b in ((u, v), (u, n), (v, n))) or any(abs(a - b) > 1e-4 for a, b in zip(cross, n)):
+            raise DrawingError(f"{fid} : axes du plan invalides")
+        face_features.append({"id": fid, "type": kind, "extent": extent, "depth": depth, "plane": vectors, "profile": ring})
+    out["faceFeatures"] = face_features if doc["version"] >= 3 else []
+    raw_rounds = doc.get("roundFeatures", [])
+    if not isinstance(raw_rounds, list) or len(raw_rounds) > 50 or (doc["version"] < 3 and raw_rounds):
+        raise DrawingError("Arrondis invalides")
+    round_features = []
+    for i, item in enumerate(raw_rounds):
+        if not isinstance(item, dict):
+            raise DrawingError(f"Arrondi {i} invalide")
+        rid = _id(item.get("id"), f"arrondi {i}")
+        if rid in face_ids:
+            raise DrawingError("Identifiant d'arrondi en double")
+        face_ids.add(rid)
+        a, b = item.get("a"), item.get("b")
+        if not all(isinstance(p, (list, tuple)) and len(p) == 3 for p in (a, b)):
+            raise DrawingError(f"{rid} : arête invalide")
+        start = [_num(v, f"{rid} arête") for v in a]
+        end = [_num(v, f"{rid} arête") for v in b]
+        radius = _num(item.get("radius"), f"{rid} rayon", lo=1e-6, hi=MAX_COORD)
+        round_features.append({"id": rid, "a": start, "b": end, "radius": radius})
+    out["roundFeatures"] = round_features if doc["version"] >= 3 else []
+    if features or face_features or round_features:
         try:
             hq_solid.build_mesh(out)
         except hq_solid.SolidError as e:
@@ -676,7 +736,7 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
     saved_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now()))
     directory = drawings_dir(root, create=True)
     dxf_bytes = build_dxf(doc).encode("cp1252", errors="replace")
-    mesh = hq_solid.build_mesh(doc) if doc["features"] else []
+    mesh = hq_solid.build_mesh(doc) if doc["features"] or doc["faceFeatures"] or doc["roundFeatures"] else []
     stl_bytes = hq_solid.binary_stl(mesh, doc["units"]) if mesh else None
 
     with _SAVE_LOCK:
@@ -746,7 +806,11 @@ def preview_mesh(payload: dict) -> dict:
         raise DrawingError("Requête invalide")
     doc = validate_document(payload.get("doc"))
     mesh = hq_solid.build_mesh(doc)
-    return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh)}
+    from hq_round_solid import eligible_edges
+    edges = eligible_edges(mesh)
+    return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh),
+            "edges": [{"a": e["a"], "b": e["b"], "length": e["length"]} for e in edges[:5000]],
+            "edgesTruncated": len(edges) > 5000}
 
 
 def _read_regular(directory: Path, name: str, cap: int) -> bytes:
