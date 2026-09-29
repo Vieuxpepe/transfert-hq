@@ -1,5 +1,7 @@
 # 08 — History / bulk ops / reports / backlinks / final hardening
 
+**Working mode:** edit the existing `C:\Transfert` working tree directly on `main`. Do not create/switch branches, worktrees, or clones. Do not commit/push unless separately authorized. Never run feature tests against live runtime state; use throwaway roots.
+
 Base: accepted Stage 07 state already present in the same current `main` working tree. Stay on `main`.
 
 Read CONTEXT, TESTS, HANDOFF.
