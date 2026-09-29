@@ -12,6 +12,7 @@ State files (gitignored, never wiped when malformed):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -1234,6 +1235,13 @@ def note_backup(info: dict) -> dict:
         bid = Path(path).name
     if not _BACKUP_ID.match(bid):
         raise ValueError("Identifiant de backup invalide")
+    with hq_state.path_lock(_root() / BACKUP_INDEX_NAME):
+        entry = _note_backup_locked(bid, info)
+    _journal("backup", f"Catalogue backup {bid}", level="info")
+    return entry
+
+
+def _note_backup_locked(bid: str, info: dict) -> dict:
     data, bad = _read_state(BACKUP_INDEX_NAME, "dict")
     if bad:
         raise RuntimeError("hq_backup_index.json illisible — fichier conservé")
@@ -1250,8 +1258,36 @@ def note_backup(info: dict) -> dict:
     data["version"] = 1
     data["backups"] = items[:BACKUP_INDEX_MAX]
     _write_state(BACKUP_INDEX_NAME, data)
-    _journal("backup", f"Catalogue backup {bid}", level="info")
     return entry
+
+
+def _index_path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path)) if path else ""
+
+
+def forget_backups(paths: list[str]) -> int:
+    """Drop the catalog entries of purged backup folders (matched by full path).
+
+    Entries of other folders, or of the same id under another backup_dir, are kept.
+    A malformed index is never rewritten (RuntimeError)."""
+    targets = {_index_path_key(str(p)) for p in paths if p}
+    if not targets:
+        return 0
+    with hq_state.path_lock(_root() / BACKUP_INDEX_NAME):
+        data, bad = _read_state(BACKUP_INDEX_NAME, "dict")
+        if bad:
+            raise RuntimeError("hq_backup_index.json illisible — fichier conservé")
+        if not isinstance(data, dict):
+            return 0
+        items = list(data.get("backups") or [])
+        keep = [b for b in items if not (isinstance(b, dict) and _index_path_key(str(b.get("path") or "")) in targets)]
+        removed = len(items) - len(keep)
+        if removed:
+            data["backups"] = keep
+            _write_state(BACKUP_INDEX_NAME, data)
+    if removed:
+        _journal("backup", f"Catalogue : {removed} backup(s) purgé(s) retiré(s)", level="info")
+    return removed
 
 
 def list_backups() -> dict:

@@ -506,10 +506,13 @@ Disque surveillé et backups
     Défaut : false (une nouvelle installation garde ses backups planifiés).
     Ce défaut ne protège PAS contre une cible présente mais défaillante : sur
     une telle machine, la pause doit être mise explicitement.
-    Les backups déjà présents sur D: ne sont ni déplacés ni supprimés.
-    Pas de contournement par un grand backup_every_hours : _last_backup vaut 0
-    au démarrage et l'intervalle ne s'applique qu'après un backup réussi, donc
-    le premier backup planifié part quand même au démarrage du pont.
+    La pause ne déplace ni ne supprime aucun backup existant (la rétention,
+    plus bas, ne tourne qu'après un NOUVEAU backup réussi, donc jamais pendant
+    une pause des backups automatiques, sauf après un backup manuel).
+    Pas de contournement par un grand backup_every_hours : au démarrage, le
+    planning ne reprend depuis le catalogue que s'il contient un backup de ce
+    backup_dir (voir « Backup au démarrage ») ; sinon le premier backup
+    planifié part au démarrage du pont.
 
     Déploiement sur le contrôleur (à faire soi-même, dans cet ordre) :
       1. Arrêter le pont.
@@ -540,6 +543,53 @@ Disque surveillé et backups
       depuis le backup apparaîtra aussi) et ouvrir quelques fichiers copiés
       vers un dossier temporaire. La liste des backups catalogués est dans
       GET /api/backups (Système → Sauvegardes).
+
+  Rétention : "backup_keep_days" (défaut 14) et "backup_keep_min" (défaut 3)
+    Après chaque NOUVEAU backup réussi (planifié, automatisation ou manuel),
+    les backups de plus de backup_keep_days jours sont supprimés, en gardant
+    TOUJOURS les backup_keep_min plus récents quel que soit leur âge (minimum
+    1). Jamais de purge après un backup échoué ou sauté (intervalle, pause).
+    backup_keep_days <= 0 désactive la purge. Valeurs invalides (texte, 7.5,
+    true…) → défauts 14 / 3 ; normalisées au chargement de la config.
+    La purge s'applique au backup_dir configuré, QUEL QU'IL SOIT — aujourd'hui
+    C:\Backups\Transfert sur le contrôleur. Rappel : un backup sur le même
+    disque que C:\Transfert ne protège PAS contre la perte de ce disque ; la
+    rétention ne fait que limiter la place prise.
+    Un dossier n'est supprimé que si TOUT est vrai :
+      - il est DIRECTEMENT dans backup_dir (parent résolu = backup_dir résolu,
+        même lecteur que celui configuré) ;
+      - son nom est AAAAMMJJ_HHMMSS (^\d{8}_\d{6}$) ;
+      - son âge vient de l'horodatage du nom, recoupé avec "at" de
+        hq_backup_index.json quand l'entrée existe (écart > 1 jour : jamais
+        supprimé) ; la date de modification n'est pas utilisée ;
+      - il contient le marqueur README.txt « Transfert backup <id> » écrit par
+        le pont (fichier normal, contenu exact) ;
+      - ce n'est ni un lien symbolique, ni une jonction, ni un point d'analyse
+        (os.lstat / FILE_ATTRIBUTE_REPARSE_POINT), et il n'en contient aucun :
+        un dossier contenant un lien est laissé tel quel et signalé.
+    backup_dir lui-même lien/jonction, résolu sur un autre lecteur, ou index
+    illisible → aucune purge. La suppression ne suit jamais de lien ; un
+    fichier en lecture seule dans le backup est rendu modifiable puis
+    supprimé. Un échec sur un dossier est journalisé (« Purge impossible »)
+    sans faire échouer le backup. Chaque suppression apparaît dans le journal
+    d'activité et les événements (« Backup purgé … »), et son entrée est
+    retirée de hq_backup_index.json. Rien d'autre (fichiers, dossiers au nom
+    différent, autres lecteurs, D:) n'est touché.
+    Santé : /api/health → backup.retention (keep_days, keep_min, enabled,
+    last_purge_count, last_purge_at, last_purge_errors) ; la réponse de
+    POST /api/backup contient le détail "purge".
+
+  Backup au démarrage
+    Au démarrage, le pont reprend le planning depuis le backup le plus récent
+    de hq_backup_index.json dont le chemin est dans le backup_dir ACTUEL :
+    un redémarrage moins de backup_every_hours après ce backup ne crée pas de
+    nouveau backup ; le suivant part à l'échéance. Seul l'index est lu (pas
+    backup_dir). Backup au démarrage comme avant si l'index est absent ou
+    illisible, s'il n'a aucune entrée pour ce backup_dir (ex. après un
+    changement de cible) ou si l'entrée est dans le futur. POST /api/backup
+    reste forcé ; backup_auto_paused garde la priorité. Ligne de démarrage :
+    « Backup : dernier backup … » ou « Backup : backup automatique au
+    démarrage (<raison>) » ; /api/health → backup.startup_seed.
 
 Notes vocales
 -------------

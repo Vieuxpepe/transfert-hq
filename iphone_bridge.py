@@ -478,6 +478,8 @@ def default_config() -> dict:
         "backup_every_hours": 24,
         "backup_dir": "D:/Backups/Transfert",
         "backup_auto_paused": False,  # true = no automatic backups (manual POST /api/backup still works)
+        "backup_keep_days": 14,  # retention: purge backups older than N days after a new backup; <= 0 = never purge
+        "backup_keep_min": 3,  # the newest N backups are always kept, whatever their age (minimum 1)
         "users": [],  # optional: [{"name":"admin","pin":"...","role":"admin"},{"name":"phone","pin":"...","role":"upload"}]
         "terminal_commands": [],
         "shell_targets": [],
@@ -568,6 +570,8 @@ def load_config(*, write: bool = True) -> dict:
     except (TypeError, ValueError):
         base["shell_timeout_sec"] = 45
     base["backup_auto_paused"] = cc_ext.config_flag(base.get("backup_auto_paused", False))
+    base["backup_keep_days"] = cc_ext.parse_backup_keep_days(base.get("backup_keep_days", cc_ext.BACKUP_KEEP_DAYS_DEFAULT))
+    base["backup_keep_min"] = cc_ext.parse_backup_keep_min(base.get("backup_keep_min", cc_ext.BACKUP_KEEP_MIN_DEFAULT))
     if "disk_probe_enabled" not in base:
         base["disk_probe_enabled"] = True
     else:
@@ -6261,6 +6265,9 @@ def main() -> None:
     ensure_folders_and_migrate()
     bind_cc_ext()
     bind_hq()
+    # Resume the backup schedule from the catalog: a restart within backup_every_hours
+    # of the last backup (same backup_dir) makes no new backup. Reads the index only.
+    _seed = cc_ext.seed_last_backup_from_index()
     cleanup_stale_uploads()
     if already_running():
         print(f"Transfert Bridge already running on port {PORT}")
@@ -6350,6 +6357,15 @@ def main() -> None:
         print(" Backup : PAUSE (backup_auto_paused) — aucun backup automatique ; manuel via POST /api/backup")
     if not _bk.get("ok"):
         print(f" Backup : ATTENTION {_bk.get('error')}")
+    _ret = _bk.get("retention") or {}
+    if _ret.get("enabled"):
+        print(f" Backup : rétention {_ret.get('keep_days')} j, {_ret.get('keep_min')} plus récents toujours gardés (purge après chaque backup réussi)")
+    else:
+        print(" Backup : rétention désactivée (backup_keep_days <= 0) — aucune purge")
+    if _seed.get("seeded"):
+        print(f" Backup : dernier backup {datetime.fromtimestamp(_seed['at']).strftime('%Y-%m-%d %H:%M')} — pas de backup au démarrage avant {CONFIG.get('backup_every_hours')}h")
+    else:
+        print(f" Backup : backup automatique au démarrage ({_seed.get('reason')})")
     print(" Ctrl+C to stop")
     print("=" * 56)
     try:
