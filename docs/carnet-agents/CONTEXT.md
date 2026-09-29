@@ -32,6 +32,9 @@ Working mode:
 - do not create/switch branches, worktrees, or extra clones;
 - leave changes uncommitted/unpushed unless the user explicitly authorizes delivery;
 - tests must use throwaway ROOTs and must not mutate live runtime data under `C:\\Transfert`.
+- **Never run Python tests that import `iphone_bridge` from the live `C:\\Transfert` checkout.** Import side effects and older tests can rewrite runtime files before fixtures redirect ROOT.
+- Full/relevant Python suites must run from an isolated temporary source copy outside `C:\\Transfert` (plain file copy is fine; no Git clone/worktree required). Exclude runtime folders/files and `.git`.
+- Focused tests may run in-place only if proven not to import/touch live-runtime modules; when uncertain, use the isolated copy.
 
 Design was prepared when main was `d7e7eb3f2a293303ab258c69fda7f104c245022d`; always inspect current refs first.
 
