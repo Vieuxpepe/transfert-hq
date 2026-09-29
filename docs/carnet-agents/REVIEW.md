@@ -1,6 +1,6 @@
 # Carnet adversarial review packet
 
-Use in a fresh context after each stage.
+Use in a fresh context after each stage. Review the current `main` working-tree diff; do not create/switch branches or commit.
 
 Read ONLY:
 - CONTEXT.md
@@ -38,4 +38,4 @@ Re-run focused tests + current relevant matrix + \`git diff --check\`.
 Final response in HANDOFF-style:
 findings, fixes, exact tests, residual risks, head SHA, diff stat, git status.
 
-No merge/deploy.
+Leave fixes uncommitted in the same `main` working tree. No push/merge/deploy.
