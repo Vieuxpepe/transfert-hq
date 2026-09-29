@@ -25,6 +25,14 @@ Cross-device editing between PC ↔ iPad ↔ iPhone is a core acceptance case.
 
 Repo: `Vieuxpepe/transfert-hq`.
 
+Working mode:
+- project folder is `C:\\Transfert`;
+- stay on the existing `main` branch;
+- edit source files directly in that working tree;
+- do not create/switch branches, worktrees, or extra clones;
+- leave changes uncommitted/unpushed unless the user explicitly authorizes delivery;
+- tests must use throwaway ROOTs and must not mutate live runtime data under `C:\\Transfert`.
+
 Design was prepared when main was `d7e7eb3f2a293303ab258c69fda7f104c245022d`; always inspect current refs first.
 
 Hard constraints:
@@ -154,7 +162,7 @@ Trash:
 - permanent delete is deep/explicit
 
 Backup:
-- include committed Carnet data coherently
+- include persisted Carnet data coherently
 - do not alter legacy meaning of backup `folders` count
 - expose separate Carnet status
 - no live restore UI in foundation
