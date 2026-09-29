@@ -1,12 +1,15 @@
 # Stage 01 accepted handoff
 
-Accepted against base:
+Accepted against original base:
 `d7e7eb3f2a293303ab258c69fda7f104c245022d`
+
+Checkpoint commit on local `main`:
+`5ce460ec023219433f2343e509a6dd6679a6dfc4`
 
 Working mode:
 - local `C:\Transfert`
 - branch `main`
-- Stage 01 remains uncommitted unless the user has subsequently authorized a checkpoint commit
+- Stage 01 is checkpointed locally on `main` at `5ce460ec023219433f2343e509a6dd6679a6dfc4`; it is not pushed unless the user later authorizes push
 
 Accepted substantive files:
 - `.gitignore`
