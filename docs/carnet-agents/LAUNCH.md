@@ -9,7 +9,7 @@ Work in the current Transfert HQ repo.
 Read docs/carnet-agents/START-HERE.md, then ONLY the files listed there for <STAGE_FILE>.
 Execute that stage exactly. Use INTEGRATION-MAP rg anchors before opening large files; use frozen CONTRACTS/DOM/FIXTURES instead of inventing alternatives.
 Do not read the verbose playbook/design unless the stage explicitly says a decision is ambiguous.
-Do not expand scope, merge, deploy, or touch live C:\Transfert.
+Edit source files directly in C:\Transfert on the existing main branch. Do not create/switch branches, worktrees, or clones. Do not touch live runtime data (Inbox/Uni/Print/state files) except through throwaway test roots.
 Keep commentary minimal: start state, material blocker/finding only, then compact HANDOFF-format completion.
 ```
 
@@ -29,7 +29,7 @@ No merge/deploy. Finish in compact HANDOFF format.
 ```text
 Run docs/carnet-agents/DELIVERY.md for the current reviewed stage.
 Read only the current stage's START-HERE matrix files. Do not redesign anything.
-If any required check is red, stop. Do not create/switch branches. Commit/push only if explicitly authorized; otherwise leave reviewed changes in the current working tree. Never merge/deploy.
+If any required check is red, stop. Stay on main. Commit and/or push main only if explicitly authorized; otherwise leave reviewed changes uncommitted in the current working tree. Never merge/deploy.
 ```
 
 ## Preflight
