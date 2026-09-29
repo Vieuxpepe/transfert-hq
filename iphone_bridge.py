@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 import zlib
 from datetime import datetime
+from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,6 +55,25 @@ REQ_SEM_MAX = 64
 
 # Active content must never execute on the HQ origin
 FORCE_ATTACHMENT_EXTS = {".html", ".htm", ".svg", ".xml", ".js", ".mjs", ".xhtml"}
+
+# Lecteur: the only types /media/ streams (inline). Fixed here, never taken from
+# mimetypes (on Windows it merges registry values that vary per machine).
+MEDIA_CONTENT_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+}
+MEDIA_LIBRARY_MAX = 500      # files returned by /api/media/library
+MEDIA_SCAN_MAX = 20000       # directory entries visited per library request
+MEDIA_SCAN_DEPTH = 12
 
 # upload role: explicit allowlist (everything else = 403)
 UPLOAD_GET_EXACT = {
@@ -289,6 +309,91 @@ def human_size(n: int) -> str:
     if n < 1024**3:
         return f"{n / 1024**2:.1f} Mo"
     return f"{n / 1024**3:.2f} Go"
+
+
+def parse_byte_range(header: str | None, size: int) -> tuple[int, int] | str | None:
+    """One RFC 9110 byte range for a file of `size` bytes.
+
+    Returns (start, end) inclusive for a satisfiable range, "unsatisfiable" for a
+    416, or None to ignore the header and send the whole file (missing, not
+    bytes, malformed, or several ranges: a single range is all the Lecteur needs).
+    """
+    if not header:
+        return None
+    unit, sep, spec = header.strip().partition("=")
+    if not sep or unit.strip().lower() != "bytes" or "," in spec:
+        return None
+    m = re.fullmatch(r"\s*(\d{0,19})-(\d{0,19})\s*", spec)
+    if not m or (not m.group(1) and not m.group(2)):
+        return None
+    first, last = m.group(1), m.group(2)
+    if not first:  # suffix: the last N bytes
+        n = int(last)
+        if n == 0 or size == 0:
+            return "unsatisfiable"
+        return max(0, size - n), size - 1
+    start = int(first)
+    if last and int(last) < start:
+        return None  # invalid range-spec: ignore
+    if start >= size:
+        return "unsatisfiable"
+    end = min(int(last), size - 1) if last else size - 1
+    return start, end
+
+
+def media_library(limit: int = MEDIA_LIBRARY_MAX) -> dict:
+    """Playable files under ROOT/{Inbox|Uni|Print}, newest first. Bounded walk:
+    no dotfiles, system names, symlinks or junctions; depth and entry caps."""
+    items: list[dict] = []
+    scanned = 0
+    truncated = False
+    for folder in list(CONFIG.get("folders") or DEFAULT_FOLDERS):
+        base = ROOT / folder
+        if not base.is_dir():
+            continue
+        stack: list[tuple[str, list[str]]] = [(str(base), [folder])]
+        while stack and not truncated:
+            directory, parts = stack.pop()
+            try:
+                with os.scandir(directory) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            for entry in entries:
+                scanned += 1
+                if scanned > MEDIA_SCAN_MAX:
+                    truncated = True
+                    break
+                name = entry.name
+                if name.startswith(".") or name.lower() in SYSTEM_NAMES:
+                    continue
+                try:
+                    if entry.is_symlink() or (hasattr(entry, "is_junction") and entry.is_junction()):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if len(parts) < MEDIA_SCAN_DEPTH:
+                            stack.append((entry.path, parts + [name]))
+                        continue
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext not in MEDIA_CONTENT_TYPES or not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                items.append(
+                    {
+                        "name": name,
+                        "rel": "/".join(parts + [name]),
+                        "kind": MEDIA_CONTENT_TYPES[ext].split("/", 1)[0],
+                        "size": st.st_size,
+                        "size_h": human_size(st.st_size),
+                        "mtime": int(st.st_mtime),
+                        "mtime_h": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    }
+                )
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    total = len(items)
+    return {"items": items[:limit], "total": total, "truncated": truncated or total > limit}
 
 
 def receive_body_to_temp(rfile, length: int, limit: int) -> Path:
@@ -2308,7 +2413,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', dessiner: 'Dessiner', fichiers: 'Fichiers', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', calendrier: 'Calendrier', dessiner: 'Dessiner', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -2417,6 +2522,9 @@ function setView(name) {
     else b.removeAttribute('aria-current');
   });
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
+  if (window.hqPlayerView) {
+    try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
+  }
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'calendrier' && window.hqCalendarShow) {
     try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
@@ -2551,6 +2659,8 @@ function renderFiles() {
   }
   list.innerHTML = items.map(f => {
     const isDir = f.type === 'dir';
+    const mkind = isDir ? '' : hqMediaKind(f.name);
+    const mediaAttr = mkind ? ` data-media="${mkind}" data-rel="${escapeAttr(f.rel)}" title="Double-clic : ouvrir dans le Lecteur"` : '';
     const editable = !isDir && /\.(txt|md|csv|json|log|py|css|js|html?|xml|ya?ml|ini|cfg|srt)$/i.test(f.name);
     const openBtn = isDir
       ? `<button type="button" class="btn" data-open="${escapeAttr(f.rel)}">Ouvrir</button>`
@@ -2561,8 +2671,8 @@ function renderFiles() {
       ? `<button type="button" class="ghost" data-print="${escapeAttr(f.rel)}">Imprimer</button>` : '';
     const nameEl = isDir
       ? `<button type="button" class="fname" data-open="${escapeAttr(f.rel)}" style="background:none;border:0;padding:0;text-align:left">📁 ${escapeHtml(f.name)}</button>`
-      : `<a class="fname" href="${fmtRel(f.rel)}" target="_blank" rel="noopener">📄 ${escapeHtml(f.name)}</a>`;
-    return `<li class="file ${isDir ? 'is-dir' : ''}">
+      : `<a class="fname" href="${fmtRel(f.rel)}" target="_blank" rel="noopener">${mkind === 'video' ? '🎬' : mkind === 'audio' ? '🎵' : '📄'} ${escapeHtml(f.name)}</a>`;
+    return `<li class="file ${isDir ? 'is-dir' : ''}"${mediaAttr}>
       ${nameEl}
       <div class="row-actions">
         ${openBtn}${saveBtn}
@@ -3745,6 +3855,200 @@ async function clipFromPc() {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+// ---- Lecteur (audio / vidéo) --------------------------------------------------
+// Types streamed by /media/ (keep in sync with MEDIA_CONTENT_TYPES in iphone_bridge.py).
+const HQ_MEDIA_TYPES = { mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac',
+  ogg: 'audio/ogg', opus: 'audio/ogg', mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' };
+// Containers no browser plays: the Lecteur explains instead of showing a broken player.
+const HQ_MEDIA_UNSUPPORTED = ['mkv', 'avi', 'wmv', 'flv', 'wma', 'mpg', 'mpeg', 'vob'];
+function hqMediaExt(name) { const m = /\.([a-z0-9]+)$/i.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+function hqMediaKind(name) {
+  const ext = hqMediaExt(name), type = HQ_MEDIA_TYPES[ext];
+  if (type) return type.split('/')[0];
+  return HQ_MEDIA_UNSUPPORTED.includes(ext) ? 'unsupported' : '';
+}
+function mediaRel(rel) { return '/media/' + rel.split('/').map(encodeURIComponent).join('/'); }
+const hqPlayer = { rel: '', openedAt: 0, restored: false, ready: false, lib: [], libAt: 0, libError: '', libTruncated: false };
+function hqIsIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function hqPlayerMessage(text) { const m = $('#player-msg'); if (!m) return; m.textContent = text || ''; m.hidden = !text; }
+function hqPlayerStop(el) {
+  if (!el) return;
+  try { el.pause(); } catch (_) {}
+  if (el.getAttribute('src')) { el.removeAttribute('src'); try { el.load(); } catch (_) {} }
+  el.hidden = true;
+}
+function hqPlayerClear() {
+  hqPlayer.rel = ''; hqPlayer.restored = false;
+  try { localStorage.removeItem('tf_hq_player_rel'); } catch (_) {}
+  hqPlayerStop($('#player-video')); hqPlayerStop($('#player-audio'));
+  $('#player-name').textContent = 'Aucun fichier sélectionné';
+  $('#player-where').textContent = 'Double-clique une musique ou une vidéo dans Fichiers, ou choisis-la ci-dessous.';
+  $('#player-dl').hidden = true;
+  hqPlayerMessage('');
+  hqPlayerRenderList();
+}
+function hqPlayerLoad(rel, autoplay) {
+  const video = $('#player-video'), audio = $('#player-audio');
+  if (!video || !audio) return;
+  const name = rel.split('/').pop() || rel, kind = hqMediaKind(name), ext = hqMediaExt(name);
+  hqPlayer.rel = rel;
+  try { localStorage.setItem('tf_hq_player_rel', rel); } catch (_) {}
+  $('#player-name').textContent = name;
+  $('#player-where').textContent = rel.split('/').slice(0, -1).join(' / ');
+  const dl = $('#player-dl'); dl.href = dlRel(rel); dl.hidden = false;
+  hqPlayerMessage('');
+  const use = kind === 'video' ? video : audio;
+  hqPlayerStop(kind === 'video' ? audio : video);
+  if (kind !== 'audio' && kind !== 'video') {
+    hqPlayerStop(use);
+    hqPlayerMessage(kind === 'unsupported'
+      ? 'Le format .' + ext + ' ne se lit pas dans un navigateur (MKV, AVI, WMV… : ni Safari ni Chrome). Utilise « Sauver » puis ouvre-le avec VLC.'
+      : "Ce fichier n'est pas une musique ni une vidéo.");
+    hqPlayerRenderList();
+    return;
+  }
+  use.hidden = false;
+  use.src = mediaRel(rel);
+  hqPlayerRenderList();
+  if (autoplay) {
+    // Called from the double-click / double-tap handler, so iOS counts it as a user gesture.
+    const started = use.play();
+    if (started && started.catch) started.catch(e => { if (e && e.name === 'NotAllowedError') hqPlayerMessage('Appuie sur lecture pour démarrer.'); });
+  }
+}
+function hqPlayerError(e) {
+  const el = e.target;
+  if (el.hidden || !el.getAttribute('src')) return;
+  if (hqPlayer.restored) { hqPlayerClear(); return; }  // last file from a previous visit is gone: start empty
+  const ext = hqMediaExt(hqPlayer.rel), code = el.error && el.error.code;
+  let text;
+  if (code === 2) text = 'Lecture interrompue (réseau ou session expirée). Réessaie.';
+  else {
+    text = 'Impossible de lire ce fichier ici : format ou codec non pris en charge par ce navigateur.';
+    if (hqIsIOS() && (ext === 'ogg' || ext === 'opus')) text += ' Sur iPhone, OGG/Opus demande iOS 18.4 ou plus récent.';
+    else if (hqIsIOS() && ext === 'webm') text += ' Sur iPhone, WebM demande iOS 17.4 ou plus récent.';
+    text += ' « Sauver » reste possible.';
+  }
+  hqPlayerStop(el);
+  hqPlayerMessage(text);
+}
+function hqPlayerInit() {
+  if (hqPlayer.ready || !$('#player-video')) return;
+  hqPlayer.ready = true;
+  $('#player-video').addEventListener('error', hqPlayerError);
+  $('#player-audio').addEventListener('error', hqPlayerError);
+  $('#player-video').addEventListener('loadedmetadata', () => { hqPlayer.restored = false; });
+  $('#player-audio').addEventListener('loadedmetadata', () => { hqPlayer.restored = false; });
+  $('#btn-player-back').addEventListener('click', () => navigate(hqPlayer.rel ? hqPlayer.rel.split('/').slice(0, -1).join('/') : currentRel));
+  $('#player-filter').addEventListener('input', hqPlayerRenderList);
+  $('#player-list').addEventListener('click', (e) => { const b = e.target.closest('[data-play]'); if (b) hqPlayerOpen(b.dataset.play, true); });
+}
+function hqPlayerOpen(rel, autoplay) {
+  if (!rel) return;
+  const now = Date.now();
+  // One gesture can arrive twice (a touch double-tap that the browser also reports as dblclick).
+  if (rel === hqPlayer.rel && now - hqPlayer.openedAt < 700 && document.body.dataset.view === 'lecteur') return;
+  hqPlayer.openedAt = now;
+  hqPlayer.rel = rel; hqPlayer.restored = false;
+  if (document.body.dataset.view !== 'lecteur') setView('lecteur');
+  hqPlayerInit();
+  hqPlayerLoad(rel, autoplay);
+}
+window.hqPlayerOpen = hqPlayerOpen;
+window.hqPlayerView = function (view) {
+  if (view !== 'lecteur') {
+    const video = $('#player-video');
+    if (video && !video.paused) video.pause();  // music keeps playing while browsing; a hidden video does not
+    return;
+  }
+  hqPlayerInit();
+  if (!hqPlayer.rel) {
+    let saved = '';
+    try { saved = localStorage.getItem('tf_hq_player_rel') || ''; } catch (_) {}
+    if (saved) { hqPlayer.restored = true; hqPlayerLoad(saved, false); }
+  }
+  hqPlayerLibrary(false);
+};
+async function hqPlayerLibrary(force) {
+  if (!force && hqPlayer.libAt && Date.now() - hqPlayer.libAt < 30000) { hqPlayerRenderList(); return; }
+  hqPlayer.libAt = Date.now();
+  try {
+    const d = await api('/api/media/library');
+    hqPlayer.lib = d.items || []; hqPlayer.libTruncated = !!d.truncated; hqPlayer.libError = '';
+  } catch (e) {
+    hqPlayer.lib = []; hqPlayer.libError = e.message || 'Liste indisponible'; hqPlayer.libAt = 0;
+  }
+  hqPlayerRenderList();
+}
+function hqPlayerRenderList() {
+  const list = $('#player-list');
+  if (!list) return;
+  const q = ($('#player-filter')?.value || '').trim().toLowerCase();
+  const items = hqPlayer.lib.filter(f => !q || f.rel.toLowerCase().includes(q));
+  $('#player-count').textContent = String(hqPlayer.lib.length);
+  if (!items.length) {
+    const empty = hqPlayer.libError || (q ? 'Aucun résultat' : "Aucune musique ni vidéo dans Transfert pour l'instant.");
+    list.innerHTML = `<li class="hint">${escapeHtml(empty)}</li>`;
+    return;
+  }
+  list.innerHTML = items.map(f => {
+    const cur = f.rel === hqPlayer.rel;
+    return `<li class="player-item${cur ? ' is-current' : ''}"><button type="button" class="player-pick" data-play="${escapeAttr(f.rel)}"${cur ? ' aria-current="true"' : ''}>
+      <span class="player-ico" aria-hidden="true">${f.kind === 'video' ? '🎬' : '🎵'}</span>
+      <span class="player-item-body"><span class="fname">${escapeHtml(f.name)}</span>
+      <span class="meta">${escapeHtml(f.rel.split('/').slice(0, -1).join(' / '))} · ${escapeHtml(f.size_h)} · ${escapeHtml(f.mtime_h)}</span></span></button></li>`;
+  }).join('') + (hqPlayer.libTruncated ? '<li class="hint">Liste limitée aux 500 fichiers les plus récents.</li>' : '');
+}
+// File manager: double-click (mouse) or double-tap (touch, handled here because iOS Safari
+// doesn't reliably fire dblclick) on a media row opens it in the Lecteur. Links and buttons
+// in the row keep their single-click behavior.
+function hqMediaRow(target) {
+  if (!target || !target.closest) return null;
+  const row = target.closest('#file-list li.file[data-media]');
+  if (!row || target.closest('a, button, input, select, textarea, label, .file-more-menu')) return null;
+  return row;
+}
+document.addEventListener('dblclick', (e) => {
+  const row = hqMediaRow(e.target);
+  if (!row) return;
+  e.preventDefault();
+  try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+  hqPlayerOpen(row.dataset.rel, true);
+});
+// Media names: a single click waits ~300 ms for a second one, then opens the file as before
+// (new tab); a double click / double tap opens the Lecteur. Other names stay immediate.
+// window.open runs inside the click's transient user activation (Chrome ~5 s, WebKit ~1 s).
+let hqNameClick = null;
+document.addEventListener('click', (e) => {
+  const link = e.target && e.target.closest ? e.target.closest('#file-list li.file[data-media] a.fname') : null;
+  if (!link || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  const rel = link.closest('li.file').dataset.rel;
+  if (hqNameClick && hqNameClick.rel === rel) {
+    clearTimeout(hqNameClick.timer);
+    hqNameClick = null;
+    hqPlayerOpen(rel, true);
+    return;
+  }
+  if (hqNameClick) clearTimeout(hqNameClick.timer);
+  const href = link.href;
+  hqNameClick = { rel, timer: setTimeout(() => { hqNameClick = null; window.open(href, '_blank', 'noopener'); }, 300) };
+});
+let hqLastTap = null;
+document.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse') return;
+  const row = hqMediaRow(e.target);
+  if (!row) { hqLastTap = null; return; }
+  const now = Date.now(), rel = row.dataset.rel;
+  if (hqLastTap && hqLastTap.rel === rel && now - hqLastTap.t <= 300 && Math.hypot(e.clientX - hqLastTap.x, e.clientY - hqLastTap.y) < 40) {
+    hqLastTap = null;
+    e.preventDefault();
+    hqPlayerOpen(rel, true);
+    return;
+  }
+  hqLastTap = { rel, t: now, x: e.clientX, y: e.clientY };
+});
+
 document.addEventListener('DOMContentLoaded', async () => {
   setupModeToggle();
   setupNav();
@@ -3838,7 +4142,22 @@ body[data-view="calendrier"] [data-panel="calendrier"],
 body[data-view="dessiner"] [data-panel="dessiner"],
 body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="ops"] [data-panel="ops"],
+body[data-view="lecteur"] [data-panel="lecteur"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
+.player-name{margin:0;font-weight:800;font-size:1.05rem;word-break:break-word}
+.player-where{margin:2px 0 12px}
+.player-stage video{display:block;width:100%;max-height:62vh;background:#000;border-radius:12px}
+.player-stage audio{display:block;width:100%}
+.player-stage [hidden],.player-actions [hidden]{display:none}
+.player-msg{margin:12px 0 0;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--text)}
+.player-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.player-actions .btn,.player-actions button{width:auto;padding:8px 14px;min-height:var(--tap-min)}
+#player-filter{margin-bottom:12px}
+.player-list .player-pick{display:flex;gap:10px;align-items:flex-start;justify-content:flex-start;width:100%;text-align:left;background:none;border:0;padding:8px;border-radius:10px;color:var(--text);min-height:var(--tap-min)}
+.player-list .is-current .player-pick{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+.player-item-body{display:flex;flex-direction:column;gap:2px;min-width:0}
+li.file[data-media]{touch-action:manipulation}
+body[data-view="lecteur"] .wrap{width:100%}
 section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:12px}
 section.hq-primary{border-color:color-mix(in srgb,var(--accent) 40%,var(--line));border-left:3px solid var(--accent)}
 .sec-head{margin:0 0 14px}
@@ -4251,6 +4570,7 @@ def render_app() -> bytes:
   <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
   <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
   <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
+  <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
@@ -4446,6 +4766,34 @@ def render_app() -> bytes:
         <p class="sec-hint">Aperçu des images récentes</p>
       </div>
       <div class="media-strip" id="hq-media"></div>
+    </section>
+  </div>
+
+  <div data-panel="lecteur">
+    <section class="hq hq-primary" aria-labelledby="player-title">
+      <div class="sec-head">
+        <h2 id="player-title">Lecteur</h2>
+        <p class="sec-hint">Musique et vidéos déjà dans Transfert</p>
+      </div>
+      <p class="player-name" id="player-name">Aucun fichier sélectionné</p>
+      <p class="hint player-where" id="player-where">Double-clique une musique ou une vidéo dans Fichiers, ou choisis-la ci-dessous.</p>
+      <div class="player-stage">
+        <video id="player-video" controls playsinline preload="metadata" hidden></video>
+        <audio id="player-audio" controls preload="metadata" hidden></audio>
+      </div>
+      <p class="player-msg" id="player-msg" role="status" hidden></p>
+      <div class="player-actions">
+        <button type="button" class="secondary" id="btn-player-back">← Retour aux fichiers</button>
+        <a class="btn secondary" id="player-dl" href="#" download hidden>Sauver</a>
+      </div>
+    </section>
+    <section class="hq" aria-labelledby="player-lib-title">
+      <div class="sec-head">
+        <h2 id="player-lib-title">Musique et vidéos <span class="badge" id="player-count">0</span></h2>
+        <p class="sec-hint">Dans Inbox, Uni et Print, les plus récents d'abord</p>
+      </div>
+      <input id="player-filter" type="search" placeholder="Filtrer…" aria-label="Filtrer la musique et les vidéos"/>
+      <ul class="hq-list player-list" id="player-list"><li class="hint">Chargement…</li></ul>
     </section>
   </div>
 
@@ -5068,6 +5416,57 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
 
+    def _send_media(self, path: Path) -> None:
+        """Lecteur stream: allow-listed type, inline, one byte range (206/416), chunked."""
+        ctype = MEDIA_CONTENT_TYPES[path.suffix.lower()]
+        with path.open("rb") as f:
+            st = os.fstat(f.fileno())
+            size = st.st_size
+            etag = f'"{size:x}-{st.st_mtime_ns:x}"'
+            last_modified = formatdate(st.st_mtime, usegmt=True)
+            rng = parse_byte_range(self.headers.get("Range"), size)
+            if_range = (self.headers.get("If-Range") or "").strip()
+            if rng is not None and if_range and if_range not in (etag, last_modified):
+                rng = None  # file changed since the client's first response: send it whole
+            if rng == "unsatisfiable":
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self._security_headers()
+                self.end_headers()
+                return
+            start, end = rng if isinstance(rng, tuple) else (0, size - 1)
+            length = max(0, end - start + 1)
+            ascii_name = re.sub(r"[^A-Za-z0-9._ -]", "_", path.name) or "media"
+            self.send_response(206 if isinstance(rng, tuple) else 200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(length))
+            if isinstance(rng, tuple):
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("ETag", etag)
+            self.send_header("Last-Modified", last_modified)
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            self.send_header("Content-Disposition", f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(path.name)}")
+            self.end_headers()
+            f.seek(start)
+            remaining = length
+            try:
+                while remaining > 0:
+                    chunk = f.read(min(CHUNK, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            except (ConnectionError, TimeoutError):
+                # Players abort and re-request ranges when seeking or pausing: normal, not an error.
+                self.close_connection = True
+                return
+            if remaining:
+                self.close_connection = True  # file shrank mid-stream; Content-Length can't be honoured
+
     def _drawings_get(self, raw: str, parsed) -> bool:
         """Dessiner: list / reopen / fetch saved files. Admin-only (not in UPLOAD_* allowlists)."""
         if raw not in ("/api/drawings", "/api/drawings/open", "/api/drawings/file"):
@@ -5459,7 +5858,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not self._auth():
-            if raw.startswith("/api/") or raw.startswith("/files/") or raw.startswith("/download/"):
+            if raw.startswith(("/api/", "/files/", "/download/", "/media/")):
                 self._json(401, {"error": "PIN requis"})
                 return
             self._send(200, render_login())
@@ -5643,6 +6042,22 @@ class Handler(BaseHTTPRequestHandler):
             if folder == "all":
                 folder = None
             self._json(200, {"files": list_files(folder, q)})
+            return
+
+        if raw == "/api/media/library":
+            self._json(200, media_library())
+            return
+
+        if raw.startswith("/media/"):
+            # Same confinement as /files/ (resolve_rel under ROOT/{Inbox|Uni|Print}); cookie session only.
+            path = safe_rel_path(raw[len("/media/") :])
+            if not path:
+                self._json(404, {"error": "Fichier introuvable"})
+                return
+            if path.suffix.lower() not in MEDIA_CONTENT_TYPES:
+                self._json(415, {"error": "Format non lisible dans le lecteur"})
+                return
+            self._send_media(path)
             return
 
         if raw.startswith("/files/") or raw.startswith("/download/"):
