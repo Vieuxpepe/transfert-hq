@@ -655,8 +655,11 @@ class SecurityHardeningTests(unittest.TestCase):
             port = httpd.server_address[1]
             token_path = hq_state.agent_state_dir(self.tmp) / "hq_planner.json"
             token = json.loads(token_path.read_text(encoding="utf-8"))["token"]
-            mode = token_path.stat().st_mode & 0o777
-            self.assertEqual(mode, 0o600)
+            if os.name != "nt":
+                # POSIX only: on Windows chmod just toggles read-only (st_mode reads 0o666);
+                # the planner token there is protected by the HQ tree ACL instead.
+                mode = token_path.stat().st_mode & 0o777
+                self.assertEqual(mode, 0o600)
             env = os.environ.copy()
             env.pop("HQ_PLANNER_TOKEN", None)
             cli = str(Path(__file__).resolve().parents[1] / "hqctl.py")
