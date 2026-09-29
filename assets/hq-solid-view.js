@@ -156,7 +156,7 @@
     canvas.addEventListener("pointermove", e => {
       if (!pointers.has(e.pointerId)) return;
       const old = pointers.get(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, old[2], old[3]]);
-      if (pointers.size === 1) { state.yaw += (e.clientX - old[0]) * 0.012; state.pitch = Math.max(-1.48, Math.min(1.48, state.pitch + (e.clientY - old[1]) * 0.012)); draw(); }
+      if (pointers.size === 1) { state.yaw -= (e.clientX - old[0]) * 0.012; state.pitch = Math.max(-1.48, Math.min(1.48, state.pitch + (e.clientY - old[1]) * 0.012)); draw(); }
       else if (pointers.size === 2) {
         const p = [...pointers.values()], distance = Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]);
         if (lastDistance) state.zoom = Math.max(0.15, Math.min(10, state.zoom * distance / lastDistance));
@@ -180,6 +180,7 @@
     });
     canvas.addEventListener("wheel", e => { e.preventDefault(); state.zoom = Math.max(0.15, Math.min(10, state.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); draw(); }, { passive: false });
     if (root.ResizeObserver) new ResizeObserver(draw).observe(canvas);
+    canvas.hqSolidProject = p => projectPoint(p); // read-only test hook: [x, y, depth] in clip space, smaller depth is nearer
     return { setTriangles, setEdges, setEdgeMode, reset, draw, state, faceAt, edgeAt,
       onFaceSelect(callback) { onFace = callback; }, onEdgeSelect(callback) { onEdge = callback; } };
   }
