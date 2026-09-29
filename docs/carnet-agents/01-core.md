@@ -15,6 +15,7 @@ rg -n "def path_lock|def write_json_atomic" hq_state.py
 rg -n "expected_rev|Conflict|path_lock|write_json_atomic|def bind" hq_calendar.py
 rg -n "UPLOAD_GET_EXACT|UPLOAD_POST_EXACT|_guard_admin_path|_check_csrf|def _hq_get|def _hq_post|def ensure_hq|def bind_hq" iphone_bridge.py
 rg -n "def run_backup|folders" cc_ext.py
+rg -n "note_backup|_note_backup_locked|folders" hq_automation.py
 \`\`\`
 Read only surrounding ranges required to implement.
 
