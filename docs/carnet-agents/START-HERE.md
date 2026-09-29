@@ -4,8 +4,9 @@ Purpose: minimize local-agent quota while preserving the full Carnet design.
 
 ## Working-tree mode
 
-Work directly in the checked-out project folder `C:\\Transfert`.
-Do not create, switch, or use feature branches/worktrees for Carnet stages.
+Work directly in the checked-out project folder `C:\\Transfert` on the existing `main` branch.
+Source files in `C:\\Transfert` are the intended edit target; live runtime data under that same root is not.
+Do not create, switch, or use feature branches, worktrees, or extra clones for Carnet stages.
 Do not commit, push, merge, reset, clean, checkout files, or alter unrelated working-tree changes unless the user explicitly asks.
 All stages build incrementally in the same local working tree after the previous stage is accepted.
 
@@ -36,7 +37,7 @@ Do not read files from future stages.
 
 00 preflight → 01 core → 02 editor → 03 library → 04 rich → 05 sources → 06 media → 07 engineering → 08 history/reports.
 
-After every implementation stage, use `REVIEW.md`. Use `DELIVERY.md` only when explicitly authorized to commit/push/open a Draft PR.
+After every implementation stage, use `REVIEW.md`. Use `DELIVERY.md` only when explicitly authorized to commit and/or push `main`.
 
 ## Context discipline
 
