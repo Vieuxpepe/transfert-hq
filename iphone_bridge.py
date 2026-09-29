@@ -2522,7 +2522,9 @@ function setView(name) {
     else b.removeAttribute('aria-current');
   });
   try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
-  if (window.hqPlayerView) window.hqPlayerView(view);
+  if (window.hqPlayerView) {
+    try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
+  }
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'calendrier' && window.hqCalendarShow) {
     try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup

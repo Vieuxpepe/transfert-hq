@@ -287,7 +287,12 @@ class LecteurTabStaticTests(unittest.TestCase):
         self.assertIn("Retour aux fichiers", self.html)
         self.assertIn("lecteur: 'Lecteur'", self.js)
         self.assertIn('body[data-view="lecteur"] [data-panel="lecteur"]', B.BASE_CSS)
-        self.assertIn("if (window.hqPlayerView) window.hqPlayerView(view);", self.js)
+        self.assertIn("try { window.hqPlayerView(view); } catch (e) { console.error(e); }", self.js)
+        # Combined with PR #15: the Dessiner watchdog and the guarded Calendrier hook are still in setView.
+        set_view = re.search(r"function setView\(name\) \{(.*?)\n\}", self.js, re.S).group(1)
+        self.assertIn("if (view === 'dessiner') hqSketchStart();", set_view)
+        self.assertIn("try { window.hqCalendarShow(); } catch (e) { console.error(e); }", set_view)
+        self.assertIn("window.hqPlayerView(view)", set_view)
 
     def test_gestures(self):
         self.assertIn("document.addEventListener('dblclick'", self.js)
