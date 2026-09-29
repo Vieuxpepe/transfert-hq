@@ -185,9 +185,6 @@ Expected outcome:
 
 # STAGE 1 — Persistence, domain model and HTTP API
 
-Suggested branch:
-\`feat/carnet-core\`
-
 This stage deliberately has NO rich UI. Build the reliable server/domain foundation first.
 
 \`\`\`text
@@ -545,9 +542,6 @@ Acceptance gate for Stage 1:
 ---
 
 # STAGE 2 — Core editor, paper UI, local drafts, autosave and conflicts
-
-Suggested branch:
-\`feat/carnet-editor\`
 
 Base:
 accepted Stage 1 state in the same working tree.
@@ -946,9 +940,6 @@ Acceptance gate:
 
 # STAGE 3 — Library, projects, categories, search, recents, trash and Home integration
 
-Suggested branch:
-\`feat/carnet-library\`
-
 Base:
 accepted Stage 2.
 
@@ -1161,9 +1152,6 @@ Acceptance gate:
 ---
 
 # STAGE 4 — Rich text, hyperlinks, find/replace, export and publish-to-Transfert
-
-Suggested branch:
-\`feat/carnet-rich\`
 
 Base:
 accepted Stage 3.
@@ -1388,9 +1376,6 @@ Acceptance gate:
 ---
 
 # STAGE 5 — Sources, citations, edition lineage and exact PDF-page navigation
-
-Suggested branch:
-\`feat/carnet-sources\`
 
 Base:
 accepted Stage 4.
@@ -1639,9 +1624,6 @@ Acceptance gate:
 
 # STAGE 6 — Images and media attachments
 
-Suggested branch:
-\`feat/carnet-media\`
-
 Base:
 accepted Stage 5.
 
@@ -1789,9 +1771,6 @@ Acceptance gate:
 ---
 
 # STAGE 7 — Engineering tools and deep HQ integration
-
-Suggested branch:
-\`feat/carnet-engineering\`
 
 Base:
 accepted Stage 6.
@@ -1962,9 +1941,6 @@ Acceptance gate:
 ---
 
 # STAGE 8 — History, bulk operations, reports, backlinks/QR and final product hardening
-
-Suggested branch:
-\`feat/carnet-history-reports\`
 
 Base:
 accepted Stage 7.
