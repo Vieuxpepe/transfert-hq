@@ -6,7 +6,7 @@ Keep this short. Later agents should read this instead of the previous agent's f
 STAGE:
 BASE_SHA:
 HEAD_SHA:
-BRANCH:
+WORKING_BRANCH: main (must remain unchanged)
 STATUS: accepted | needs-fix | draft
 
 FILES_CHANGED:
@@ -28,7 +28,7 @@ REAL_DEVICE:
 - not tested | details
 
 NEXT_STAGE_BASE:
-- exact SHA
+- current HEAD SHA; accepted stage changes may still be uncommitted in the same working tree
 
 GIT_STATUS:
 - ...
