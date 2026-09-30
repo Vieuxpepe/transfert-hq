@@ -1,0 +1,179 @@
+{
+ "_doc": "Stage 05 shared vectors. The Shigley case: the SAME content sits at printed p.394 / PDF 416 in the 11th edition and at printed p.417 / PDF 439 in the 12th. A migration must NEVER infer 417/439 from 394/416.",
+ "sources": {
+  "version": 1,
+  "sources_rev": 7,
+  "limits": {},
+  "families": [
+   {
+    "id": "srcf-shigley",
+    "name": "Shigley's Mechanical Engineering Design",
+    "rev": 1,
+    "archived": false
+   },
+   {
+    "id": "srcf-mach",
+    "name": "Machinery's Handbook",
+    "rev": 1,
+    "archived": false
+   },
+   {
+    "id": "srcf-old",
+    "name": "Ancien manuel",
+    "rev": 2,
+    "archived": true
+   }
+  ],
+  "editions": [
+   {
+    "id": "srce-shigley11",
+    "family_id": "srcf-shigley",
+    "rev": 2,
+    "type": "book",
+    "title": "Shigley's Mechanical Engineering Design",
+    "author": "Budynas, Nisbett",
+    "edition": "11e",
+    "year": 2020,
+    "publisher": "McGraw-Hill",
+    "identifier": "ISBN 978-1260",
+    "url": "https://example.com/shigley11",
+    "file_ref": "Uni/Shigley/11e.pdf",
+    "file_state": "ok",
+    "notes": "",
+    "archived": false,
+    "superseded_by": "srce-shigley12",
+    "project_ids": [
+     "proj-shaft"
+    ],
+    "calibration": {
+     "printed": 1,
+     "pdf": 23
+    }
+   },
+   {
+    "id": "srce-shigley12",
+    "family_id": "srcf-shigley",
+    "rev": 1,
+    "type": "book",
+    "title": "Shigley's Mechanical Engineering Design",
+    "author": "Budynas, Nisbett",
+    "edition": "12e",
+    "year": 2026,
+    "publisher": "McGraw-Hill",
+    "identifier": "",
+    "url": "",
+    "file_ref": "Uni/Shigley/12e.pdf",
+    "file_state": "ok",
+    "notes": "",
+    "archived": false,
+    "superseded_by": null,
+    "project_ids": [],
+    "calibration": null
+   },
+   {
+    "id": "srce-mach31",
+    "family_id": "srcf-mach",
+    "rev": 1,
+    "type": "book",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "31e",
+    "year": 2020,
+    "publisher": "Industrial Press",
+    "identifier": "",
+    "url": "",
+    "file_ref": "",
+    "file_state": null,
+    "notes": "",
+    "archived": false,
+    "superseded_by": null,
+    "project_ids": [],
+    "calibration": null
+   },
+   {
+    "id": "srce-iso286",
+    "family_id": "srcf-mach",
+    "rev": 1,
+    "type": "standard",
+    "title": "ISO 286-1 Tolérances — Élément d'ajustement",
+    "author": "",
+    "edition": "2010",
+    "year": 2010,
+    "publisher": "ISO",
+    "identifier": "ISO 286-1",
+    "url": "",
+    "file_ref": "",
+    "file_state": null,
+    "notes": "",
+    "archived": false,
+    "superseded_by": null,
+    "project_ids": [
+     "proj-shaft"
+    ],
+    "calibration": null
+   },
+   {
+    "id": "srce-old1",
+    "family_id": "srcf-old",
+    "rev": 3,
+    "type": "book",
+    "title": "Ancien manuel",
+    "author": "",
+    "edition": "1e",
+    "year": 1990,
+    "publisher": "",
+    "identifier": "",
+    "url": "",
+    "file_ref": "",
+    "file_state": null,
+    "notes": "",
+    "archived": true,
+    "superseded_by": null,
+    "project_ids": [],
+    "calibration": null
+   }
+  ]
+ },
+ "old_citation": {
+  "src": "srce-shigley11",
+  "loc": {
+   "kind": "page",
+   "text": "394"
+  },
+  "pdf": 416,
+  "ok": true,
+  "snap": {
+   "title": "Shigley's Mechanical Engineering Design",
+   "author": "Budynas, Nisbett",
+   "edition": "11e",
+   "year": 2020,
+   "ident": "ISBN 978-1260"
+  },
+  "from": null
+ },
+ "unsafe_file_refs": [
+  "../x.pdf",
+  "/etc/x.pdf",
+  "C:/x.pdf",
+  "C:\\x.pdf",
+  "\\\\srv\\share\\x.pdf",
+  "Uni\\x.pdf",
+  "Uni/../x.pdf",
+  "Uni/x.txt",
+  "Elsewhere/x.pdf",
+  "Uni/.h/x.pdf",
+  "Uni/x.pdf/",
+  "",
+  null,
+  5
+ ],
+ "tampered_fmt": [
+  "[[\"p\",0,[[\"citation\",0,3,\"c\",[\"bad\",\"page\",\"1\",null,0,[\"T\",null,null,null,null],null]]]]]",
+  "[[\"p\",0,[[\"citation\",0,3,\"c\",[\"srce-a\",\"nope\",\"1\",null,0,[\"T\",null,null,null,null],null]]]]]",
+  "[[\"p\",0,[[\"citation\",0,3,\"x\",[\"srce-a\",\"page\",\"1\",null,0,[\"T\",null,null,null,null],null]]]]]",
+  "[[\"p\",0,[[\"citation\",0,3,\"c\",[\"srce-a\",\"page\",\"1\",null,2,[\"T\",null,null,null,null],null]]]]]",
+  "[[\"p\",0,[[\"citation\",0,3,\"c\"]]]]",
+  "[[\"p\",0,[[\"citation\",0,9,\"c\",[\"srce-a\",\"page\",\"1\",null,0,[\"T\",null,null,null,null],null]]]]]"
+ ],
+ "valid_fmt": "[[\"p\",0,[[\"citation\",0,3,\"c\",[\"srce-a\",\"page\",\"1\",null,0,[\"T\",null,null,null,null],null]]]]]"
+}

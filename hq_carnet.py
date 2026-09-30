@@ -4,6 +4,12 @@ Runtime state lives at ``<ROOT>/.hq-carnet/notebook.json`` (fixed server path).
 Writes go through ``hq_state.write_json_atomic`` under ``hq_state.path_lock``.
 A malformed or unsupported file is never rewritten: its bytes stay untouched.
 
+Content (Stage 04): pages hold structured content V2 (``hq_carnet_rich``: one-line blocks with
+inline marks, never HTML) or legacy V1 (one text block). Migration is lazy and per page: reads and
+unrelated writes never convert a V1 page; writing a page stores V2 when it fits the line limits, and
+a plain page that does not fit stays a compact V1 block (no text lost, no amplification).
+``page_export`` writes a confined, no-clobber TXT/Markdown snapshot into Inbox/Uni/Print.
+
 Revisions:
 - every page has its own ``rev`` (``page_save`` checks ``expected_rev``);
 - structural actions check ``expected_notebook_rev``;
@@ -23,12 +29,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+import hq_carnet_rich as rich
+import hq_carnet_sources as sources
 import hq_state
 
 DIR_NAME = ".hq-carnet"
 FILE_NAME = "notebook.json"
 VERSION = 1
-CONTENT_VERSION = 1
+CONTENT_VERSION = rich.CONTENT_VERSION  # stored page content (V1 is read + migrated, never written)
 
 PAGES_ACTIVE_MAX = 128
 # Trash is bounded too: trashing is refused once it holds this many pages.
@@ -44,6 +52,11 @@ CATEGORY_COLORS = ("blue", "green", "amber", "coral", "violet", "pink", "teal", 
 TITLE_MAX = 120
 PREVIEW_MAX = 160
 UNTITLED = "Page sans titre"
+
+EXPORT_ACTION = "page_export"  # read-only snapshot into Inbox/Uni/Print; never mutates the notebook
+EXPORT_FORMATS = ("txt", "md")
+EXPORT_DEPTH_MAX = 6
+EXPORT_PART_MAX = 80
 
 ACTIONS = (
     "page_create",
@@ -66,7 +79,6 @@ _ID_RE = {
     "proj": re.compile(r"^proj-[A-Za-z0-9_-]{1,64}\Z"),
 }
 _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
-_TEXT_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _cb: dict[str, Any] = {}
 _ready = False
@@ -114,6 +126,7 @@ def bind(**kwargs: Any) -> None:
     global _ready
     with _guard:
         _cb.update(kwargs)
+        sources.bind(**kwargs)  # Stage 05: sources share the root / confinement callbacks
         _ready = _cb.get("root") is not None
 
 
@@ -188,7 +201,27 @@ def limits() -> dict:
         "category_name_chars": CATEGORY_NAME_MAX,
         "project_name_chars": PROJECT_NAME_MAX,
         "category_colors": list(CATEGORY_COLORS),
+        "page_blocks": rich.BLOCKS_MAX,
+        "notebook_blocks": rich.NOTEBOOK_BLOCKS_MAX,
+        "marks_per_block": rich.MARKS_PER_BLOCK_MAX,
     }
+
+
+def _folders() -> tuple[str, ...]:
+    fn = _cb.get("folders")
+    try:
+        got = tuple(str(x) for x in fn()) if callable(fn) else ()
+    except Exception:
+        got = ()
+    return got or ("Inbox", "Uni", "Print")
+
+
+def _system_names() -> frozenset[str]:
+    names = _cb.get("system_names")
+    try:
+        return frozenset(str(x).lower() for x in (names or ()))
+    except TypeError:
+        return frozenset()
 
 
 def _new_id(prefix: str) -> str:
@@ -211,23 +244,7 @@ def _opt_id(value: Any, kind: str) -> bool:
 
 
 def _valid_content(content: Any) -> bool:
-    if not isinstance(content, dict) or set(content) != {"version", "blocks"}:
-        return False
-    if content.get("version") != CONTENT_VERSION:
-        return False
-    blocks = content.get("blocks")
-    if not isinstance(blocks, list) or len(blocks) != 1:
-        return False
-    block = blocks[0]
-    if not isinstance(block, dict) or set(block) != {"id", "type", "text", "marks"}:
-        return False
-    return (
-        isinstance(block.get("id"), str)
-        and bool(_ID_RE["block"].match(block["id"]))
-        and block.get("type") == "text"
-        and isinstance(block.get("text"), str)
-        and block.get("marks") == []
-    )
+    return rich.valid_v1(content) or rich.valid_v2(content)
 
 
 _PAGE_KEYS = {"id", "rev", "project_id", "category_id", "pinned", "deleted_at", "created_at", "updated_at", "content"}
@@ -330,7 +347,7 @@ def _blank_page(now: float) -> dict:
         "updated_at": now,
         "content": {
             "version": CONTENT_VERSION,
-            "blocks": [{"id": _new_id("block"), "type": "text", "text": "", "marks": []}],
+            "blocks": [{"id": _new_id("block"), "type": "paragraph", "text": "", "marks": []}],
         },
     }
 
@@ -367,7 +384,7 @@ def _load_locked(*, create: bool) -> dict:
 
 
 def _text(page: dict) -> str:
-    return page["content"]["blocks"][0]["text"]
+    return rich.flat_text(page["content"])
 
 
 def _bytes(text: str) -> int:
@@ -480,26 +497,30 @@ def _name(value: Any, limit: int, label: str) -> str:
     return name
 
 
-def _check_text(text: Any) -> str:
-    if not isinstance(text, str):
-        raise CarnetError("Texte invalide")
-    if _TEXT_CTRL_RE.search(text):
-        raise CarnetError("Texte invalide")
-    try:
-        size = _bytes(text)
-    except UnicodeEncodeError as e:
-        raise CarnetError("Texte invalide") from e
-    if size > PAGE_TEXT_BYTES:
-        raise CarnetError(f"Page trop longue (max {PAGE_TEXT_BYTES} octets)")
-    return text
-
-
 def _active(state: dict) -> list[dict]:
     return [page for page in state["pages"] if page["deleted_at"] is None]
 
 
 def _active_text_bytes(state: dict, *, skip: str | None = None) -> int:
     return sum(_bytes(_text(page)) for page in _active(state) if page["id"] != skip)
+
+
+def _total_blocks(state: dict) -> int:
+    return sum(len(page["content"]["blocks"]) for page in state["pages"])
+
+
+def _block_budget_ok(state: dict, delta: int) -> bool:
+    """One invariant for every operation that adds stored blocks (save, create, replacement page).
+
+    Shrinking or keeping the count is always allowed, so a notebook that is over the budget can
+    only recover, never grow.
+    """
+    return delta <= 0 or _total_blocks(state) + delta <= rich.NOTEBOOK_BLOCKS_MAX
+
+
+def _need_block_budget(state: dict, delta: int) -> None:
+    if not _block_budget_ok(state, delta):
+        raise CarnetError(f"Carnet trop volumineux (max {rich.NOTEBOOK_BLOCKS_MAX} lignes)")
 
 
 def _find(items: list[dict], item_id: str, label: str) -> dict:
@@ -563,6 +584,7 @@ def _page_create(state: dict, data: dict, now: float) -> dict:
     category_id = _category_ref(state, category_id)
     if len(_active(state)) >= PAGES_ACTIVE_MAX:
         raise CarnetError(f"Carnet plein (max {PAGES_ACTIVE_MAX} pages)")
+    _need_block_budget(state, 1)
     index = len(state["pages"])
     if after_id is not None:
         after = _find(state["pages"], after_id, "Page")
@@ -603,36 +625,31 @@ def _page_save(state: dict, data: dict, now: float) -> dict:
         changed = changed or pinned != page["pinned"]
     else:
         pinned = page["pinned"]
-    block = page["content"]["blocks"][0]
-    text = block["text"]
+    new_content = None
     if "content" in data:
-        content = data["content"]
-        if not isinstance(content, dict) or set(content) != {"version", "blocks"}:
-            raise CarnetError("Contenu invalide")
-        if content.get("version") != CONTENT_VERSION:
-            raise CarnetError("Version de contenu non prise en charge")
-        blocks = content.get("blocks")
-        if not isinstance(blocks, list) or len(blocks) != 1 or not isinstance(blocks[0], dict):
-            raise CarnetError("Une page contient exactement un bloc texte")
-        incoming = blocks[0]
-        if not set(incoming) <= {"id", "type", "text", "marks"} or not {"type", "text"} <= set(incoming):
-            raise CarnetError("Bloc invalide")
-        if incoming.get("type") != "text":
-            raise CarnetError("Bloc invalide")
-        if "id" in incoming and incoming["id"] != block["id"]:
-            raise CarnetError("Bloc étranger à cette page")
-        if incoming.get("marks", []) != []:
-            raise CarnetError("Mise en forme non prise en charge")
-        text = _check_text(incoming.get("text"))
-        changed = changed or text != block["text"]
+        try:
+            parsed = rich.parse_content(
+                data["content"],
+                existing=page["content"],
+                folders=_folders(),
+                system_names=_system_names(),
+                text_limit=PAGE_TEXT_BYTES,
+            )
+            if not rich.same_as_stored(parsed, page["content"]):
+                new_content = rich.store_content(parsed, page["content"], budget_ok=lambda delta: _block_budget_ok(state, delta))
+        except rich.ContentError as e:
+            raise CarnetError(str(e)) from e
+        changed = changed or new_content is not None
     if not changed:
         return {"page": page}
-    if _active_text_bytes(state, skip=page_id) + _bytes(text) > NOTEBOOK_TEXT_BYTES:
+    new_bytes = _bytes(rich.flat_text(new_content)) if new_content is not None else _bytes(_text(page))
+    if _active_text_bytes(state, skip=page_id) + new_bytes > NOTEBOOK_TEXT_BYTES:
         raise CarnetError(f"Carnet trop volumineux (max {NOTEBOOK_TEXT_BYTES} octets)")
     page["project_id"] = project_id
     page["category_id"] = category_id
     page["pinned"] = pinned
-    block["text"] = text
+    if new_content is not None:
+        page["content"] = new_content
     page["rev"] += 1
     page["updated_at"] = now
     return {"page": page, "_write": True}
@@ -656,6 +673,8 @@ def _page_trash(state: dict, data: dict, now: float) -> dict:
     trashed = len(state["pages"]) - len(_active(state))
     if trashed >= PAGES_TRASH_MAX:
         raise CarnetError(f"Corbeille pleine (max {PAGES_TRASH_MAX}) — supprime définitivement des pages")
+    if len(_active(state)) == 1:
+        _need_block_budget(state, 1)  # trashing the last active page creates the blank replacement
     page["deleted_at"] = now
     page["rev"] += 1
     page["updated_at"] = now
@@ -829,15 +848,145 @@ def mutate(data: Any) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- export (snapshot copy into Transfert)
+
+_EXPORT_PART_BAD = re.compile(r'[<>"|?*\x00-\x1f\x7f]')
+
+
+def _export_parts(value: Any) -> list[str]:
+    """Validate a relative destination like ``Inbox/Notes``. Never resolves or touches the disk."""
+    if not isinstance(value, str) or not value or len(value) > 400:
+        raise CarnetError("Dossier invalide")
+    if "\\" in value or value.startswith("/") or ":" in value:
+        raise CarnetError("Dossier invalide")
+    parts = value[:-1].split("/") if value.endswith("/") else value.split("/")
+    if not parts or len(parts) > EXPORT_DEPTH_MAX:
+        raise CarnetError("Dossier invalide")
+    folders, system = _folders(), _system_names()
+    if parts[0] not in folders:
+        raise CarnetError("Dossier invalide (Inbox, Uni ou Print)")
+    for part in parts:
+        if (
+            not part
+            or part in (".", "..")
+            or part.startswith(".")
+            or part != part.strip()
+            or part.endswith(".")
+            or len(part) > EXPORT_PART_MAX
+            or _EXPORT_PART_BAD.search(part)
+            or part.lower() in system
+            or part.split(".")[0].lower() in rich._RESERVED
+        ):
+            raise CarnetError("Dossier invalide")
+    return parts
+
+
+def _export_dir(root: Path | str, parts: list[str]) -> Path:
+    """Walk ``parts`` below the real ROOT: no link, no escape, roots must already exist.
+
+    Only missing sub-folders (never the Inbox/Uni/Print roots) are created, one level at a
+    time, each verified after creation.
+    """
+    cur = Path(os.path.abspath(os.fspath(root)))
+    real_cur = os.path.realpath(cur)
+    for index, part in enumerate(parts):
+        nxt = cur / part
+        try:
+            if os.path.lexists(nxt):
+                if _is_link(nxt) or not nxt.is_dir():
+                    raise CarnetError("Dossier invalide")
+            elif index == 0:
+                raise CarnetError("Dossier racine introuvable")
+            else:
+                nxt.mkdir()
+            real_nxt = os.path.realpath(nxt)
+        except OSError as e:
+            raise CarnetStorageError("Dossier inaccessible", 503) from e
+        if not _same(real_nxt, os.path.join(real_cur, part)) or _is_link(nxt):
+            raise CarnetError("Dossier invalide")
+        cur, real_cur = nxt, real_nxt
+    return cur
+
+
+def render_export(content: dict, fmt: str) -> str:
+    return rich.render_markdown(content) if fmt == "md" else rich.render_txt(content)
+
+
+def export_copy(data: dict) -> dict:
+    """Write a TXT/Markdown snapshot of the persisted page revision into Inbox/Uni/Print.
+
+    The note text is read server-side (nothing but ids/paths travel in the request), the
+    target is confined, the name sanitised, and an existing file is NEVER overwritten
+    (409 ``export_exists``). Carnet stays the source of truth; the file is a snapshot.
+    """
+    _only_keys(data, {"action", "id", "expected_rev", "format", "dir", "filename"})
+    page_id = _req_id(data, "id", "page")
+    expected = _req_int(data, "expected_rev")
+    fmt = data.get("format")
+    if fmt not in EXPORT_FORMATS:
+        raise CarnetError("Format invalide")
+    filename = data.get("filename")
+    if filename is not None and (not isinstance(filename, str) or len(filename) > 200):
+        raise CarnetError("Nom de fichier invalide")
+    parts = _export_parts(data.get("dir"))
+    nb_path = _path()
+    with hq_state.path_lock(nb_path):
+        state = _load_locked(create=False)
+        page = _find(state["pages"], page_id, "Page")
+        _check_page_rev(state, page, expected)
+        if page["deleted_at"] is not None:
+            raise CarnetError("Page dans la corbeille — restaure-la d'abord")
+        content = _copy(page["content"])
+        rev = page["rev"]
+    name = rich.export_filename(filename, derive_title(rich.flat_text(content)), fmt)
+    leaf_ok = _cb.get("safe_leaf_name")
+    if callable(leaf_ok) and leaf_ok(name) is None:
+        raise CarnetError("Nom de fichier invalide")
+    payload = render_export(content, fmt).encode("utf-8")
+    directory = _export_dir(_cb["root"], parts)
+    target = directory / name
+    if os.path.lexists(target):
+        raise CarnetConflict({"error": "Un fichier du même nom existe déjà — choisis un autre nom", "code": "export_exists"})
+    created = False
+    try:
+        with open(target, "xb") as handle:
+            created = True
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as e:
+        raise CarnetConflict({"error": "Un fichier du même nom existe déjà — choisis un autre nom", "code": "export_exists"}) from e
+    except OSError as e:
+        if created:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        raise CarnetStorageError("Écriture de la copie impossible", 503) from e
+    return {
+        "ok": True,
+        "path": "/".join(parts + [name]),
+        "name": name,
+        "bytes": len(payload),
+        "rev": rev,
+        "format": fmt,
+        "exported_at": _now(),
+    }
+
+
 # ---------------------------------------------------------------- HTTP helpers
 
 
 def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
-    """``query`` is ``parse_qs`` output. Only ``meta=1`` is accepted."""
+    """``query`` is ``parse_qs`` output. Only ``meta=1`` (page metadata) or ``sources=1`` (Stage 05) is accepted."""
     try:
-        extra = set(query) - {"meta"}
+        extra = set(query) - {"meta", "sources"}
         if extra:
             raise CarnetError("Paramètre inconnu")
+        if "sources" in query:
+            if query["sources"] != ["1"] or "meta" in query:
+                raise CarnetError("sources invalide")
+            return 200, sources.get_sources()
         values = query.get("meta")
         meta = False
         if values is not None:
@@ -849,6 +998,8 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetStorageError as e:
         return e.status, {"error": str(e), "code": e.code}
+    except (sources.SourceError, sources.SourceStorageError) as e:
+        return e.status, {"error": str(e), "code": e.code}
     except OSError:
         # Never echo OS error text: it can contain absolute paths.
         return 503, {"error": "Carnet inaccessible", "code": "storage_error"}
@@ -856,9 +1007,15 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
 
 def http_post(data: Any) -> tuple[int, dict]:
     try:
+        if isinstance(data, dict) and data.get("action") == EXPORT_ACTION:
+            return 200, export_copy(data)
+        if isinstance(data, dict) and isinstance(data.get("action"), str) and data["action"].startswith("source_"):
+            return 200, sources.mutate(data)
         return 200, mutate(data)
-    except CarnetConflict as e:
+    except (CarnetConflict, sources.SourceConflict) as e:
         return e.status, e.payload
+    except (sources.SourceError, sources.SourceStorageError) as e:
+        return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetStorageError as e:
@@ -871,30 +1028,7 @@ def http_post(data: Any) -> tuple[int, dict]:
 # ---------------------------------------------------------------- backup
 
 
-def snapshot_to(root: Path | str, dest_dir: Path) -> dict:
-    """Copy committed notebook bytes into ``dest_dir/notebook.json``.
-
-    Taken under the notebook path lock (coherent with writers). Only the
-    committed file is copied, never ``*.tmp``. Missing notebook is not an error
-    (``status: "absent"``). Malformed bytes are copied as-is and reported
-    ``valid: False``. A redirected (symlink/junction) path is refused
-    (CarnetStorageError) and never followed.
-    """
-    src = notebook_path(root)
-    with hq_state.path_lock(src):
-        confined_path(root)
-        if not os.path.lexists(src):
-            return {"ok": True, "included": False, "status": "absent"}
-        if not src.is_file():
-            raise CarnetStorageError("notebook.json n'est pas un fichier — conservé")
-        payload = src.read_bytes()
-    try:
-        parsed = json.loads(payload.decode("utf-8"))
-        valid = isinstance(parsed, dict) and parsed.get("version") == VERSION and _usable(parsed)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        valid = False
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    out = dest_dir / FILE_NAME
+def _write_exclusive(out: Path, payload: bytes) -> None:
     created = False
     try:
         with open(out, "xb") as handle:
@@ -911,4 +1045,45 @@ def snapshot_to(root: Path | str, dest_dir: Path) -> dict:
             except OSError:
                 pass
         raise
-    return {"ok": True, "included": True, "status": "included", "bytes": len(payload), "valid": valid}
+
+
+def snapshot_to(root: Path | str, dest_dir: Path) -> dict:
+    """Copy committed Carnet bytes into ``dest_dir``: ``notebook.json`` and (Stage 05) ``sources.json``.
+
+    Each file is taken under its own path lock (coherent with writers); citations only carry edition
+    ids + a snapshot, so the two files are independently consistent. Only committed files are copied,
+    never ``*.tmp``. Missing notebook AND sources is not an error (``status: "absent"``). Malformed
+    bytes are copied as-is and reported ``valid: False``. A redirected (symlink/junction) path is
+    refused (CarnetStorageError) and never followed. Linked PDFs live under Inbox/Uni/Print and are
+    covered by the legacy folder backup: only the metadata is copied here.
+    """
+    src = notebook_path(root)
+    payload: bytes | None = None
+    valid = True
+    with hq_state.path_lock(src):
+        confined_path(root)
+        if os.path.lexists(src):
+            if not src.is_file():
+                raise CarnetStorageError("notebook.json n'est pas un fichier — conservé")
+            payload = src.read_bytes()
+    if payload is not None:
+        try:
+            parsed = json.loads(payload.decode("utf-8"))
+            valid = isinstance(parsed, dict) and parsed.get("version") == VERSION and _usable(parsed)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            valid = False
+    try:
+        src_payload, src_valid = sources.snapshot_bytes(root)
+    except sources.SourceStorageError as e:
+        raise CarnetStorageError(str(e)) from e
+    if payload is None and src_payload is None:
+        return {"ok": True, "included": False, "status": "absent"}
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if payload is not None:
+        _write_exclusive(dest_dir / FILE_NAME, payload)
+    if src_payload is not None:
+        _write_exclusive(dest_dir / sources.FILE_NAME, src_payload)
+    out: dict = {"ok": True, "included": True, "status": "included", "bytes": len(payload or b""), "valid": bool(valid and src_valid)}
+    if src_payload is not None:  # the accepted Stage-01 status shape is unchanged when there are no sources
+        out["sources"] = {"bytes": len(src_payload), "valid": bool(src_valid)}
+    return out

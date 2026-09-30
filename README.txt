@@ -631,7 +631,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py
   node tests/check_hq_features.mjs
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
@@ -639,6 +639,8 @@ Commandes
   node tests/check_hq_model.mjs
   node tests/check_hq_carnet.mjs
   node tests/check_hq_carnet_library.mjs
+  node tests/check_hq_carnet_rich.mjs
+  node tests/check_hq_carnet_sources.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
@@ -646,6 +648,7 @@ Commandes
   (optionnel, Playwright ; serveur loopback jetable inclus) python tests/visual_media_playwright.py
   (optionnel, Playwright Chromium + WebKit, profil iPhone ; serveur loopback jetable inclus) python tests/visual_model_playwright.py
   (optionnel, Playwright Chromium bureau + WebKit iPad/iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_carnet_playwright.py [--part stage02|stage03]
+  (optionnel, Playwright Node + Chromium ; serveur loopback jetable via tests/carnet_test_server.py, à lancer depuis une copie jetable) node tests/visual_carnet_rich_playwright.mjs
 
 Lecteur 3D (.stl, .glb)
 -----------------------

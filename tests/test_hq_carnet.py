@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 
 import cc_ext
 import hq_carnet
+import hq_carnet_rich
 import hq_state
 import iphone_bridge
 
@@ -250,7 +251,7 @@ class PageTests(CarnetBase):
         self.assertEqual(payload["error"], "Page modifiée ailleurs")
         self.assertEqual(payload["page"]["id"], "page-shaft")
         self.assertEqual(payload["page"]["rev"], 4)
-        self.assertEqual(payload["page"]["content"]["blocks"][0]["text"], "Shaft inspection\nclient B")
+        self.assertEqual(hq_carnet_rich.flat_text(payload["page"]["content"]), "Shaft inspection\nclient B")
         self.assertEqual(payload["notebook_rev"], 4)
         self.assertEqual(self.path.read_bytes(), before)
 
@@ -776,7 +777,7 @@ class ApiTests(unittest.TestCase):
         data = json.loads(body)
         self.assertTrue(data["ok"])
         self.assertEqual((data["version"], data["notebook_rev"]), (1, 4))
-        self.assertEqual(data["pages"], FIXTURE["pages"])
+        self.assertEqual(data["pages"], FIXTURE["pages"], "Stage 04: untouched V1 pages are served as-is (lazy migration)")
         self.assertEqual(data["limits"]["page_text_bytes"], 49152)
         self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff")
         self.assertIn("default-src 'self'", headers.get("Content-Security-Policy", ""))

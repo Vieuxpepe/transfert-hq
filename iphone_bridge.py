@@ -2114,7 +2114,12 @@ def bind_hq() -> None:
         actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
         devices=cached_roster_devices,
     )
-    hq_carnet.bind(root=ROOT)
+    hq_carnet.bind(
+        root=ROOT,
+        folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
+        system_names=SYSTEM_NAMES,
+        safe_leaf_name=safe_leaf_name,
+    )
 
     def _agent_journal(kind, message, **extra):
         hq_events.record(
@@ -2535,17 +2540,21 @@ function hqCarnetMissing() {
     if (carnetRetrying) return;
     carnetRetrying = true;
     btn.disabled = true;
-    const el = document.createElement('script');
-    el.src = '/assets/hq-carnet.js';
-    el.onload = () => {
+    const load = (src, done) => {
+      const el = document.createElement('script');
+      el.src = src;
+      el.onload = done;
+      el.onerror = () => { el.remove(); carnetRetrying = false; btn.disabled = false; };
+      document.body.appendChild(el);
+    };
+    // Stage 04/05: the structured-content and sources modules must load before the editor.
+    load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    };
-    el.onerror = () => { el.remove(); carnetRetrying = false; btn.disabled = false; };
-    document.body.appendChild(el);
+    })));
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5299,6 +5308,8 @@ def render_app() -> bytes:
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-carnet-rich.js"></script>
+<script src="/assets/hq-carnet-sources.js"></script>
 <script src="/assets/hq-carnet.js"></script>
 <script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
@@ -5409,15 +5420,19 @@ class Handler(BaseHTTPRequestHandler):
         self._json(403, {"error": "Réservé admin"})
         return False
 
-    def _security_headers(self) -> None:
+    def _security_headers(self, *, frame_self: bool = False) -> None:
+        """``frame_self`` (Stage 05, inline PDFs served by /files/ only): the Carnet source viewer embeds
+        the confined local PDF in a same-origin frame. Every other response keeps ``frame-ancestors 'none'``."""
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Frame-Options", "SAMEORIGIN" if frame_self else "DENY")
         # same-origin: keep Referer for CSRF on same-host GETs (logout); never leak off-origin
         self.send_header("Referrer-Policy", "same-origin")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+            "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
+            + ("frame-ancestors 'self'" if frame_self else "frame-ancestors 'none'")
+            + "; base-uri 'self'",
         )
 
     def _request_is_https(self) -> bool:
@@ -5607,7 +5622,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-store")
-        self._security_headers()
+        self._security_headers(frame_self=(ext == ".pdf" and not as_download))
         if force_attach and ext in FORCE_ATTACHMENT_EXTS:
             self.send_header(
                 "Content-Security-Policy",

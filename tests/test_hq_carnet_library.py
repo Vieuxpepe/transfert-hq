@@ -103,7 +103,9 @@ class LibraryStaticTests(unittest.TestCase):
         self.assertIn('ui.role !== "admin"', render)
 
     def test_one_editor_one_state_machine(self):
-        self.assertEqual(self.js.count('"textarea"'), 2)  # the editor + the legacy copy buffer
+        # Stage 04: the editor is one contenteditable surface; the only textarea left is the legacy copy buffer.
+        self.assertEqual(self.js.count('"textarea"'), 1)
+        self.assertEqual(self.js.count('el("div", {\n      id: "hq-carnet-editor"'), 1)
         self.assertEqual(self.js.count("createCore({"), 1)
         self.assertEqual(self.js.count('id: "hq-carnet-editor"'), 1)
 

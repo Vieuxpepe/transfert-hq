@@ -93,7 +93,8 @@ class Server:
         return json.loads(self.nb_path.read_text(encoding="utf-8"))
 
     def text(self, pid):
-        return next(p for p in self.nb()["pages"] if p["id"] == pid)["content"]["blocks"][0]["text"]
+        # Stage 04: persisted content is one block per line; the page text is the lines joined by "\n".
+        return "\n".join(b["text"] for b in next(p for p in self.nb()["pages"] if p["id"] == pid)["content"]["blocks"])
 
     def rev(self, pid):
         return next(p for p in self.nb()["pages"] if p["id"] == pid)["rev"]

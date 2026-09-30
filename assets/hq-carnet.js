@@ -27,6 +27,13 @@
 (function (global) {
   "use strict";
 
+  // Stage 04: structured content model (pure) lives in hq-carnet-rich.js, loaded first.
+  const Rich = (function () {
+    if (global && global.HqCarnetRich) return global.HqCarnetRich;
+    if (typeof require === "function") return require("./hq-carnet-rich.js");
+    throw new Error("hq-carnet-rich.js manquant");
+  })();
+
   const DRAFT_PREFIX = "hq_carnet_drafts_v1:";
   const DEBOUNCE_MS = 450;
   const POLL_MS = 5000;
@@ -69,7 +76,31 @@
     trashedDraft: "Brouillon local conservé — page dans la corbeille",
     noPages: "Aucune page",
     noResults: "Aucun résultat",
+    linkBad: "Lien non autorisé — adresses http ou https uniquement.",
+    linkNeedSel: "Sélectionne d'abord le texte à lier.",
+    linkMissing: "Note introuvable.",
+    findNone: "Aucun résultat",
+    exportStale: "Modifié depuis l'export",
+    exportDirty: "Enregistrement en cours — réessaie dans un instant.",
+    exportSaved: "Copie enregistrée",
+    exportExists: "Un fichier du même nom existe déjà — choisis un autre nom.",
+    exportFail: "Copie impossible",
+    tooManyLines: "Trop de lignes pour la mise en forme (max 8192) — réduis la page.",
   };
+  const FORMATS = [
+    ["bold", "G", "Gras (Ctrl+B)"],
+    ["italic", "I", "Italique (Ctrl+I)"],
+    ["underline", "S", "Souligné (Ctrl+U)"],
+    ["highlight", "Ab", "Surligné"],
+    ["code", "</>", "Monospace"],
+    ["heading", "T", "Titre"],
+    ["bullet", "•", "Liste à puces"],
+    ["number", "1.", "Liste numérotée"],
+    ["check", "☐", "Liste de cases à cocher (Ctrl+Entrée coche)"],
+    ["link", "🔗", "Lien (Ctrl+K)"],
+  ];
+  const EXPORT_ROOTS = ["Inbox", "Uni", "Print"];
+  const EXPORT_PREFIX = "hq_carnet_exports_v1:";
   const SYMBOLS = ["Ø", "±", "°", "µ", "Δ", "×", "→", "≤", "≥", "²", "³"];
   const ORG = ["project_id", "category_id"];
   const FILTERS = [
@@ -86,6 +117,7 @@
   ];
   const PREVIEW_MAX = 160;
   const PAGE_TEXT_BYTES = 48 * 1024; // server contract (hq_carnet.PAGE_TEXT_BYTES)
+  const PAGE_FMT_CHARS = 1024 * 1024; // hard bound on a persisted structure string (marks are also count-limited)
 
   // ------------------------------------------------------------------ pure helpers
 
@@ -264,12 +296,59 @@
     return v === null || typeof v === "string" ? v : null;
   }
 
+  /** Lines of a server page (content V1 legacy or V2), or null when unusable. Never throws. */
+  function pageLines(page) {
+    try {
+      return Rich.linesFromContent(page.content);
+    } catch (_) {
+      return null;
+    }
+  }
+
   function pageText(page) {
     try {
-      const t = page.content.blocks[0].text;
-      return typeof t === "string" ? t : "";
+      const c = page.content;
+      if (c && c.version === 1 && Array.isArray(c.blocks) && c.blocks.length === 1 && typeof c.blocks[0].text === "string") return c.blocks[0].text; // cheap for huge legacy pages
+    } catch (_) {}
+    const l = pageLines(page);
+    return l ? Rich.flat(l) : "";
+  }
+
+  /** Canonical structure string of a page (see hq-carnet-rich.js fmtOf); "" = plain paragraphs. */
+  function pageFmt(page) {
+    try {
+      const c = page.content;
+      if (c && c.version === 1 && Array.isArray(c.blocks) && c.blocks.length === 1) return ""; // a V1 page is plain by definition
+    } catch (_) {}
+    const l = pageLines(page);
+    return l ? Rich.fmtOf(l) : "";
+  }
+
+  /**
+   * The ordered vector of real block ids of a page (V1: its single legacy id). Cheap: never builds
+   * lines. Two pages have the same block identity only if these vectors are EXACTLY equal.
+   */
+  function pageIdVector(page) {
+    try {
+      const c = page.content;
+      if (c && Array.isArray(c.blocks)) return c.blocks.map((b) => (b && Rich.isRealId(b.id) ? b.id : null)).filter((x) => x !== null);
+    } catch (_) {}
+    return [];
+  }
+
+  /** Real server block ids of a page (a Set) — the only ids a save may claim. */
+  function pageBlockIds(page) {
+    const l = pageLines(page);
+    return new Set(l ? Rich.idsOf(l).filter((id) => Rich.isRealId(id)) : []);
+  }
+
+  /** {text, fmt} of a persisted local draft, or null when its content is unusable. */
+  function draftEditable(d) {
+    try {
+      const l = Rich.linesFromContent(d.content);
+      return l ? { text: Rich.flat(l), fmt: Rich.fmtOf(l), ids: Rich.idsOf(l) } : null;
     } catch (_) {
-      return "";
+      return null;
     }
   }
 
@@ -283,14 +362,12 @@
   }
 
   function validPage(p) {
-    return isObj(p) && typeof p.id === "string" && Number.isInteger(p.rev) && isObj(p.content) &&
-      Array.isArray(p.content.blocks) && p.content.blocks.length === 1 && typeof pageText(p) === "string";
+    return isObj(p) && typeof p.id === "string" && Number.isInteger(p.rev) && isObj(p.content) && pageLines(p) !== null;
   }
 
   function validDraft(d) {
     return isObj(d) && Number.isInteger(d.server_rev) && Number.isInteger(d.generation) &&
-      Number.isInteger(d.saved_generation) && isObj(d.content) && Array.isArray(d.content.blocks) &&
-      d.content.blocks.length === 1 && isObj(d.content.blocks[0]) && typeof d.content.blocks[0].text === "string";
+      Number.isInteger(d.saved_generation) && isObj(d.content) && draftEditable(d) !== null;
   }
 
   // ------------------------------------------------------------------ local drafts
@@ -309,7 +386,9 @@
     const memoryOnly = new Set();
 
     function sameContent(cur, sent) {
-      return validDraft(cur) && cur.content.blocks[0].text === sent.text && !!cur.pinned === !!sent.pinned;
+      if (!validDraft(cur)) return false;
+      const c = draftEditable(cur);
+      return c.text === sent.text && c.fmt === sent.fmt && !!cur.pinned === !!sent.pinned;
     }
 
     function readAll() {
@@ -414,8 +493,11 @@
     };
 
     function editableFromPage(p) {
+      const lines = pageLines(p) || Rich.plainLines("");
       return {
-        text: pageText(p),
+        text: Rich.flat(lines),
+        fmt: Rich.fmtOf(lines),
+        ids: Rich.idsOf(lines), // block identity (never part of equality)
         pinned: !!p.pinned,
         project_id: optId(p.project_id),
         category_id: optId(p.category_id),
@@ -423,7 +505,7 @@
     }
 
     function sameEditable(a, b) {
-      return a.text === b.text && a.pinned === b.pinned && a.project_id === b.project_id && a.category_id === b.category_id;
+      return a.text === b.text && a.fmt === b.fmt && a.pinned === b.pinned && a.project_id === b.project_id && a.category_id === b.category_id;
     }
 
     function newEntry(page) {
@@ -445,6 +527,7 @@
         retries: 0,
         error: "",
         orphan: false,
+        alias: {}, // obsolete block id / temporary key -> server-adopted id (keeps a stale DOM from re-sending it)
         draftBase: null, // recovered draft: EXACT {text, pinned} its base rev held (null = unknown)
       };
     }
@@ -537,6 +620,16 @@
       return out;
     }
 
+    /**
+     * Local draft content. Same strategy as the wire: a plain page longer than the structured block
+     * limit is persisted as ONE compact legacy text block (never one object per newline: that could
+     * exhaust the browser draft quota); everything else is V2. Real server ids only, never temporary keys.
+     */
+    function draftContent(local) {
+      const lines = Rich.linesFromTextFmt(local.text, local.fmt, local.ids) || Rich.plainLines(local.text);
+      return Rich.wireContent(lines, null, Rich.isRealId(lines[0].id) ? lines[0].id : null);
+    }
+
     function draftRecord(e) {
       const rec = {
         server_rev: e.serverRev,
@@ -544,12 +637,19 @@
         saved_generation: e.savedGeneration,
         updated_local_at: e.updatedLocalAt || now(),
         pinned: e.local.pinned,
-        content: { version: 1, blocks: [{ id: e.blockId, type: "text", text: e.local.text, marks: [] }] },
+        content: draftContent(e.local),
       };
       // Exact content of the save base (not a hash): lets a restore rebase only on proven
-      // equality. It changes only when the base does (never per keystroke).
+      // equality. It changes only when the base does (never per keystroke). Stage 04: the
+      // base carries the canonical structure string too (version 2).
       const base = baseContent(e);
-      if (base) rec.base = { version: 1, text: base.text, pinned: base.pinned };
+      // A plain base keeps the accepted version-1 shape (text + pin) so older readers still
+      // understand it; only a structured base needs the version-2 shape.
+      if (base) {
+        if (base.legacy && base.fmt === "") rec.base = { version: 1, text: base.text, pinned: base.pinned }; // legacy single-block page: accepted shape
+        else if (Array.isArray(base.ids)) rec.base = { version: 3, text: base.text, fmt: base.fmt, pinned: base.pinned, ids: base.ids.slice() };
+        else rec.base = { version: 2, text: base.text, fmt: base.fmt, pinned: base.pinned }; // no vector known (recovered pre-id base)
+      }
       // Never a snapshot of project/category: only explicit, reconcilable choices.
       const org = {};
       for (const f of ORG) if (e.intent[f]) org[f] = { value: e.intent[f].value, base: e.intent[f].base };
@@ -590,9 +690,12 @@
       return !!e && serverOf(e).deleted_at != null;
     }
 
-    /** Exact content (text + pin) of the save base, or null when it is not known exactly. */
+    /** Exact content (text + structure + pin) of the save base, or null when it is not known exactly. */
     function baseContent(e) {
-      if (e.server && e.server.rev === e.serverRev) return { text: pageText(e.server), pinned: !!e.server.pinned };
+      if (e.server && e.server.rev === e.serverRev) {
+        // ids: the exact authoritative block-id vector of the base (the proof of identity for a fast rebase)
+        return { text: pageText(e.server), fmt: pageFmt(e.server), pinned: !!e.server.pinned, ids: pageIdVector(e.server), legacy: !!(e.server.content && e.server.content.version === 1) };
+      }
       return e.draftBase || null;
     }
 
@@ -600,14 +703,32 @@
     function readDraftBase(b) {
       if (!isObj(b)) return null;
       const keys = Object.keys(b).sort().join(",");
-      if (keys !== "pinned,text,version" || b.version !== 1) return null;
+      let fmt = "";
+      let ids = null; // the base's authoritative block-id vector, when it was persisted (version 3)
+      let legacy = false;
+      if (keys === "pinned,text,version" && b.version === 1) {
+        fmt = ""; // Stage 02/03 base: text + pin only, so it can equal only a plain (unstructured) page
+        legacy = true; // no id vector: identity is only provable against a single-block legacy page
+      } else if (keys === "fmt,pinned,text,version" && b.version === 2 && typeof b.fmt === "string") {
+        fmt = b.fmt;
+        legacy = true; // Stage 04 pre-id base: no id vector
+      } else if (keys === "fmt,ids,pinned,text,version" && b.version === 3 && typeof b.fmt === "string" && Array.isArray(b.ids)) {
+        fmt = b.fmt;
+        ids = b.ids;
+      } else return null;
       if (typeof b.text !== "string" || typeof b.pinned !== "boolean") return null;
       try {
-        if (utf8Bytes(b.text) > PAGE_TEXT_BYTES) return null;
+        if (utf8Bytes(b.text) > PAGE_TEXT_BYTES || fmt.length > PAGE_FMT_CHARS) return null;
       } catch (_) {
         return null;
       }
-      return { text: b.text, pinned: b.pinned };
+      const lines = Rich.linesFromTextFmt(b.text, fmt);
+      if (lines === null) return null; // structure must fit the text exactly
+      if (ids !== null) {
+        // strict: one real, unique id per line, bounded by the structured block limit
+        if (ids.length !== lines.length || ids.length > Rich.BLOCKS_MAX || ids.some((x) => !Rich.isRealId(x)) || new Set(ids).size !== ids.length) return null;
+      }
+      return { text: b.text, fmt, pinned: b.pinned, ids, legacy };
     }
 
     /**
@@ -618,7 +739,19 @@
     function rebaseIfContentUnchanged(e, page) {
       if (!validPage(page) || page.rev <= e.serverRev || e.inflight || e.conflict) return false;
       const base = baseContent(e);
-      if (!base || base.text !== pageText(page) || base.pinned !== (page.pinned === true)) return false;
+      if (!base || base.text !== pageText(page) || base.fmt !== pageFmt(page) || base.pinned !== (page.pinned === true)) return false;
+      // Block identity must be provable too: text + structure + pin can be restored while the blocks
+      // were re-created or re-associated. A fast rebase is only for a newer revision that changed
+      // lifecycle/organization, so the block-id vector must be EXACTLY the OLD AUTHORITATIVE BASE's
+      // (same ids, same order). Never inferred from the dirty local ids (local insertions/deletions).
+      // - in memory the old authoritative page is known; a recovered v3 base carries its vector;
+      // - a legacy base without a vector (Stage 02/03 shape) is provable only against a single-block
+      //   legacy page (one block: nothing to re-associate); anything else fails CLOSED: no rebase, the
+      //   save meets the ordinary revision conflict, remote ids/content and the local draft stay untouched.
+      const newIds = pageIdVector(page);
+      if (Array.isArray(base.ids)) {
+        if (base.ids.length !== newIds.length || base.ids.some((id, i) => id !== newIds[i])) return false;
+      } else if (!(page.content && page.content.version === 1 && newIds.length === 1)) return false;
       e.server = page;
       e.serverRev = page.rev;
       e.draftBase = null;
@@ -660,7 +793,21 @@
       if (!e || isTrashed(e)) return false; // trashed pages are read-only until restored
       const next = Object.assign({}, e.local);
       if (typeof patch.text === "string") next.text = patch.text;
+      if (typeof patch.fmt === "string") next.fmt = patch.fmt;
       if (typeof patch.pinned === "boolean") next.pinned = patch.pinned;
+      // text and structure must always describe the same lines; never store a mismatched pair
+      if (typeof patch.text === "string" || typeof patch.fmt === "string") {
+        const lines = Rich.linesFromTextFmt(next.text, next.fmt);
+        if (lines === null) return false;
+        const n = lines.length;
+        // block ids: the caller's (the editor tracks them through every edit), else the previous ones
+        // when the line count is unchanged, else all-new blocks
+        if (Array.isArray(patch.ids) && patch.ids.length === n) next.ids = patch.ids.map((x) => (Rich.isRealId(x) || Rich.isTmpId(x) ? x : null));
+        else if (Array.isArray(e.local.ids) && e.local.ids.length === n) next.ids = e.local.ids;
+        else next.ids = new Array(n).fill(null);
+        // a caller holding a stale id (e.g. a live DOM that has not seen the adoption yet) never re-sends it
+        next.ids = next.ids.map((x) => (x && e.alias[x]) || x);
+      }
       e.local = next;
       e.generation += 1; // 1. generation++
       e.updatedLocalAt = now();
@@ -687,14 +834,19 @@
         e.retryTimer = null;
       }
       if (validateIntents(e)) syncOrg(e);
-      const sent = Object.assign({}, e.local);
+      const sent = Object.assign({}, e.local, { ids: (e.local.ids || []).slice() });
       const generation = e.generation;
       const expected = e.serverRev;
+      // A save may only claim block ids that exist in the page revision it is based on; anything
+      // else (a block deleted elsewhere, a temporary key) is sent as a NEW block.
+      const allowed = pageBlockIds(e.server);
+      const baseLines = pageLines(e.server);
+      const firstBaseId = baseLines && baseLines[0] ? baseLines[0].id : null;
       const payload = {
         action: "page_save",
         id: e.id,
         expected_rev: expected,
-        content: { version: 1, blocks: [{ id: e.blockId, type: "text", text: sent.text, marks: [] }] },
+        content: Rich.wireContent(Rich.linesFromTextFmt(sent.text, sent.fmt, sent.ids) || Rich.plainLines(sent.text), allowed, firstBaseId),
       };
       // Pin is sent only when it differs from the server. project/category are sent ONLY as
       // surviving explicit intents (never a draft snapshot): a stale client must not
@@ -715,7 +867,7 @@
           keepalive = false;
         }
       }
-      const inflight = { generation, sent, expected, org, promise: null };
+      const inflight = { generation, sent, expected, org, allowed, promise: null };
       e.inflight = inflight;
       inflight.promise = Promise.resolve()
         .then(() => request(payload, { keepalive }))
@@ -741,18 +893,33 @@
         if (e.latest !== page) reconcileOrg(e, e.latest, null);
         syncOrg(e);
       }
+      // Adopt the server-generated block ids (positional: the server stores exactly the lines it was
+      // sent). This is not a user edit: no generation bump, equality ignores ids.
+      let adopted = null;
+      const saved = validPage(page) && page.id === e.id ? pageLines(page) : null;
+      if (saved && saved.length === inflight.sent.ids.length) {
+        const pids = Rich.idsOf(saved);
+        adopted = {};
+        inflight.sent.ids.forEach((sid, i) => {
+          if (sid && !inflight.allowed.has(sid) && Rich.isRealId(pids[i])) adopted[sid] = pids[i];
+        });
+        Object.assign(e.alias, adopted);
+        const exact = e.generation === inflight.generation && sameEditable(e.local, inflight.sent);
+        if (exact) e.local = Object.assign({}, e.local, { ids: pids });
+        else if (Array.isArray(e.local.ids)) e.local = Object.assign({}, e.local, { ids: e.local.ids.map((x) => (x && adopted[x]) || x) });
+      }
       if (e.generation === inflight.generation && sameEditable(e.local, inflight.sent)) {
         e.savedGeneration = inflight.generation;
         drafts.drop(e.id, inflight.generation, inflight.sent);
         e.error = "";
         st.savedOnce = true;
-        onChange({ type: "saved", id: e.id });
+        onChange({ type: "saved", id: e.id, adopted });
         return;
       }
       // Late success: newer typing exists. Keep dirty + draft, record the new base rev,
       // and send the newest state immediately against it.
       persist(e);
-      onChange({ type: "saved-stale", id: e.id });
+      onChange({ type: "saved-stale", id: e.id, adopted });
       if (!e.conflict) return flush(e.id);
     }
 
@@ -763,7 +930,7 @@
       if (status === 409 && data && data.code === "revision_conflict" && validPage(data.page)) {
         const remote = editableFromPage(data.page);
         const orgSame = ORG.every((f) => !has(inflight.org, f) || remote[f] === inflight.org[f]);
-        if (remote.text === inflight.sent.text && remote.pinned === inflight.sent.pinned && orgSame) {
+        if (remote.text === inflight.sent.text && remote.fmt === inflight.sent.fmt && remote.pinned === inflight.sent.pinned && orgSame) {
           // The server already holds exactly what we sent (e.g. a keepalive flush from a
           // closed tab landed after reload): not a conflict — adopt it like a success.
           return onSaved(e, inflight, { page: data.page, notebook_rev: data.notebook_rev });
@@ -849,6 +1016,7 @@
       e.serverRev = page.rev;
       noteLatest(e, page);
       e.intent = {}; // explicit choice: the remote version wins entirely
+      e.alias = {};
       e.blockId = pageBlockId(page) || e.blockId;
       e.local = editableFromPage(page);
       syncOrg(e);
@@ -972,10 +1140,11 @@
         const d = map[id];
         if (d.generation <= d.saved_generation) continue;
         let e = st.entries.get(id);
-        const block = d.content.blocks[0];
-        // The draft owns text + pin only. Legacy project_id/category_id snapshots are ignored;
+        const content = draftEditable(d);
+        const block0 = isObj(d.content.blocks[0]) ? d.content.blocks[0] : {};
+        // The draft owns text + structure + pin only. Legacy project_id/category_id snapshots are ignored;
         // explicit organization intents are re-validated against the fresh server page.
-        const draftLocal = { text: block.text, pinned: !!d.pinned };
+        const draftLocal = { text: content.text, fmt: content.fmt, ids: content.ids, pinned: !!d.pinned };
         if (!e) {
           const page = {
             id,
@@ -984,7 +1153,7 @@
             category_id: null,
             pinned: draftLocal.pinned,
             deleted_at: null,
-            content: { version: 1, blocks: [{ id: typeof block.id === "string" ? block.id : null, type: "text", text: "", marks: [] }] },
+            content: { version: 1, blocks: [{ id: typeof block0.id === "string" ? block0.id : null, type: "text", text: "", marks: [] }] },
           };
           e = newEntry(page);
           e.orphan = true;
@@ -996,7 +1165,7 @@
           reconcileOrg(e, serverOf(e), null);
           const server = editableFromPage(e.server);
           // Our own save already landed (tab closed before the draft was cleared).
-          if (server.text === draftLocal.text && server.pinned === draftLocal.pinned && !Object.keys(e.intent).length) {
+          if (server.text === draftLocal.text && server.fmt === draftLocal.fmt && server.pinned === draftLocal.pinned && !Object.keys(e.intent).length) {
             drafts.drop(id, d.generation, draftLocal);
             continue;
           }
@@ -1552,6 +1721,10 @@
     pageNavDelta,
     createDraftStore,
     createCore,
+    Rich,
+    pageFmt,
+    pageLines,
+    EXPORT_PREFIX,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (!global || typeof global.document === "undefined") return;
@@ -1587,6 +1760,16 @@
     pending: null, // Home launcher request processed once the editor is ready
     home: { busy: false, timer: null },
     mqBound: false,
+    fmtOpen: false,
+    selCache: null, // last editor selection {start, end} (flat offsets): toolbar taps may blur the editor
+    pendingMarks: null, // {pos, types:Set}: inline styles armed at a collapsed caret
+    linkOpen: false,
+    linkRange: null,
+    linkMark: null,
+    user: "", // confirmed /api/me username (namespaces local exports memory like drafts)
+    find: { open: false, q: "", r: "", caseSensitive: false, wholeWord: false, index: -1, matches: [], undo: null },
+    exportOpen: false,
+    printNode: null,
   };
 
   function el(tag, attrs, children) {
@@ -1733,6 +1916,7 @@
     const status = el("p", { id: "hq-carnet-status", class: "carnet-status", role: "status", "aria-live": "polite" });
     const flash = el("span", { class: "carnet-flash", role: "status", "aria-live": "polite" });
     const attention = el("button", { type: "button", id: "btn-carnet-attention", class: "carnet-attention", hidden: true });
+    const exportFlag = el("span", { id: "carnet-export-flag", class: "carnet-export-flag", hidden: true, text: MSG.exportStale });
     const context = el("button", {
       type: "button", id: "btn-carnet-context", class: "carnet-pill", title: "Projet et catégorie",
       "aria-haspopup": "dialog", "aria-expanded": "false", "aria-controls": "hq-carnet-context",
@@ -1743,7 +1927,7 @@
     const more = iconButton("btn-carnet-more", "Symboles et outils", ICON.more, { "aria-expanded": "false", "aria-controls": "carnet-quick-tools" });
     const top = el("div", { class: "carnet-bar carnet-bar-top" }, [
       context,
-      el("div", { class: "carnet-status-wrap" }, [status, attention, flash]),
+      el("div", { class: "carnet-status-wrap" }, [status, attention, exportFlag, flash]),
       el("div", { class: "carnet-actions" }, [pin, library, focusBtn, more]),
     ]);
 
@@ -1758,6 +1942,16 @@
     time.appendChild(el("span", { text: "Heure" }));
     keepFocus(time);
     tools.appendChild(time);
+    const toolBtn = (id, label, text) => {
+      const b = el("button", { type: "button", id, class: "carnet-sym carnet-tool", "data-carnet-tool": "", "aria-label": label, "aria-expanded": "false" });
+      b.appendChild(el("span", { text }));
+      keepFocus(b);
+      return b;
+    };
+    tools.appendChild(toolBtn("btn-carnet-format", "Mise en forme", "Aa"));
+    tools.appendChild(toolBtn("btn-carnet-find", "Rechercher et remplacer dans la page", "Rechercher"));
+    tools.appendChild(toolBtn("btn-carnet-cite", "Insérer une référence (source, page)", "Référence"));
+    tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
@@ -1806,15 +2000,26 @@
     const ctxPanel = el("div", { id: "hq-carnet-context", class: "carnet-context", role: "dialog", "aria-label": "Classement de la page", hidden: true });
     const ctxBackdrop = el("div", { class: "carnet-ctx-backdrop", "aria-hidden": "true", hidden: true });
 
-    const editor = el("textarea", {
+    // Stage 04: one contenteditable surface (structured lines/marks) instead of a textarea. It
+    // keeps native typing, IME and iOS selection; its content is only ever read back through the
+    // strict parser in hq-carnet-rich.js and written with createElement/textContent.
+    const editor = el("div", {
       id: "hq-carnet-editor",
       class: "carnet-editor",
+      role: "textbox",
+      "aria-multiline": "true",
       "aria-label": "Page du carnet",
+      contenteditable: "true",
       spellcheck: "true",
       autocapitalize: "sentences",
-      autocomplete: "off",
-      placeholder: "Écris…",
+      autocorrect: "on",
+      "data-placeholder": "Écris…",
     });
+    installEditorShim(editor);
+    const formatBar = buildFormatBar();
+    const linkPanel = buildLinkPanel();
+    const findPanel = buildFindPanel();
+    const exportPanel = buildExportPanel();
     const paper = el("div", { class: "carnet-paper" }, [editor]);
     const stage = el("div", { class: "carnet-stage" }, [paper]);
 
@@ -1830,7 +2035,7 @@
     ]);
     const focusExit = iconButton("btn-carnet-focus-exit", "Quitter le mode concentration (Échap)", ICON.unfocus, { class: "carnet-btn carnet-focus-exit" });
 
-    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, stage, bottom, focusExit]);
+    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, formatBar, linkPanel, findPanel, exportPanel, stage, bottom, focusExit]);
     const lib = buildLibrary();
     const libBackdrop = el("div", { class: "carnet-lib-backdrop", "aria-hidden": "true", hidden: true });
     root.append(lib, libBackdrop, main);
@@ -1849,14 +2054,7 @@
     ui.lib.sig = "";
     ui.lib.scopeSig = "";
 
-    editor.addEventListener("input", () => {
-      const c = ui.core;
-      if (!c || !c.st.currentId) return;
-      c.edit(c.st.currentId, { text: editor.value });
-    });
-    editor.addEventListener("blur", () => {
-      if (ui.core && ui.core.st.currentId) ui.core.flush(ui.core.st.currentId);
-    });
+    bindEditor(editor);
     prev.addEventListener("click", () => navigate(-1));
     next.addEventListener("click", () => navigate(1));
     add.addEventListener("click", () => newPage(null)); // global New: always "À classer"
@@ -1890,6 +2088,10 @@
       if (b.id === "btn-carnet-time") insertText(timeMarker(new Date()));
       else if (b.dataset.carnetSymbol) insertText(b.dataset.carnetSymbol);
       else if (b.hasAttribute("data-carnet-trash")) trashCurrent();
+      else if (b.id === "btn-carnet-format") toggleFormatBar();
+      else if (b.id === "btn-carnet-find") toggleFind();
+      else if (b.id === "btn-carnet-cite") openCitePicker();
+      else if (b.id === "btn-carnet-export") toggleExport();
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -2664,6 +2866,19 @@
       closeContext(true);
       return true;
     }
+    if (ui.linkOpen) {
+      closeLink(true);
+      return true;
+    }
+    if (ui.find.open) {
+      toggleFind(false);
+      focusEditor(false);
+      return true;
+    }
+    if (ui.exportOpen) {
+      toggleExport(false);
+      return true;
+    }
     const s = doc.getElementById("hq-carnet-search");
     if (s && doc.activeElement === s && s.value) {
       s.value = "";
@@ -2768,27 +2983,48 @@
     note.textContent = showNote ? ui.deleteNotice.text : "";
     doc.getElementById("btn-carnet-focus").setAttribute("aria-pressed", ui.focus ? "true" : "false");
     if (ui.ctxOpen) renderContext();
+    renderExportState();
+    refreshFormatState();
+    if (ui.find.open) findUpdateUi();
   }
 
-  function setEditorText(text, keepCaret) {
+  /** Lines of a core entry's editable state (never null: falls back to plain text). */
+  function localLines(local) {
+    return Rich.linesFromTextFmt(local.text, local.fmt, local.ids) || Rich.plainLines(local.text);
+  }
+
+  /** Show `local` in the editor unless it already matches; keep the caret when asked and focused. */
+  function setEditorContent(local, keepCaret) {
     const ed = ui.editor;
-    if (ed.value === text) return;
-    const s = ed.selectionStart;
-    const t = ed.selectionEnd;
-    ed.value = text;
-    if (keepCaret && doc.activeElement === ed) {
-      try {
-        ed.setSelectionRange(Math.min(s, text.length), Math.min(t, text.length));
-      } catch (_) {}
-    }
+    const cur = Rich.parseEditor(ed);
+    if (Rich.flat(cur) === local.text && Rich.fmtOf(cur) === local.fmt) return;
+    const sel = keepCaret && doc.activeElement === ed ? readSel() : null;
+    renderEditor(localLines(local));
+    if (sel) setSel(Math.min(sel.start, local.text.length), Math.min(sel.end, local.text.length));
   }
 
   function showCurrent() {
     const e = ui.core && ui.core.current();
-    setEditorText(e ? e.local.text : "", false);
+    renderEditor(e ? localLines(e.local) : Rich.plainLines(""));
     try {
       ui.editor.scrollTop = 0;
     } catch (_) {}
+    ui.pendingMarks = null;
+    findRefresh();
+    closeLink();
+  }
+
+  /**
+   * The live DOM's block identities follow the authoritative local ids whenever the DOM shows exactly
+   * the same lines (a poll/rebase/restore can change ids without changing text). Not a user edit.
+   */
+  function syncDomIds() {
+    const c = ui.core;
+    const e = c && c.current();
+    if (!e || !ui.editor || !Array.isArray(e.local.ids)) return;
+    const lines = Rich.parseEditor(ui.editor);
+    if (Rich.flat(lines) !== e.local.text || Rich.fmtOf(lines) !== e.local.fmt) return;
+    Rich.syncIds(ui.editor, lines, e.local.ids);
   }
 
   function onCoreChange(evt) {
@@ -2797,15 +3033,18 @@
     if (evt && evt.type === "select") {
       showCurrent();
     } else if (evt && evt.type === "remote" && evt.id === c.st.currentId) {
-      setEditorText(c.current().local.text, true);
+      setEditorContent(c.current().local, true);
     } else if (evt && (evt.type === "poll" || evt.type === "loaded")) {
       const e = c.current();
       if (e && !ui.editor.dataset.pageId) showCurrent();
       else if (e && ui.editor.dataset.pageId !== e.id) showCurrent();
-      else if (e && evt.adopted && evt.adopted.includes(e.id) && !c.isDirty(e)) setEditorText(e.local.text, true);
+      else if (e && evt.adopted && evt.adopted.includes(e.id) && !c.isDirty(e)) setEditorContent(e.local, true);
     }
     if (evt && evt.type === "edit") c.st.notice = "";
+    if (evt && evt.adopted && evt.id === c.st.currentId) Rich.adoptIds(ui.editor, evt.adopted); // server ids replace obsolete ids / temporary keys
+    if (evt && evt.type !== "edit" && evt.type !== "saving") syncDomIds();
     render();
+    if (evt && evt.type === "edit") findEdited();
     const t = evt && evt.type;
     if (t === "edit") scheduleLibrary(300);
     else if (t !== "saving") scheduleLibrary(40);
@@ -2865,18 +3104,22 @@
     const ed = ui.editor;
     const e = ui.core && ui.core.current();
     if (!ed || !e || ed.readOnly) return;
-    if (doc.activeElement !== ed) ed.focus({ preventScroll: true });
+    if (doc.activeElement !== ed) {
+      const cached = ui.selCache;
+      ed.focus({ preventScroll: true });
+      if (cached) setSel(cached.start, cached.end);
+    }
     let ok = false;
+    const before = ed.value;
     try {
       ok = doc.execCommand && doc.execCommand("insertText", false, text); // keeps native undo
     } catch (_) {
       ok = false;
     }
-    if (!ok || ed.value !== ui.core.current().local.text) {
-      if (!ok) {
-        ed.setRangeText(text, ed.selectionStart, ed.selectionEnd, "end");
-      }
-      ed.dispatchEvent(new Event("input", { bubbles: true }));
+    if (!ok || ed.value === before) {
+      const sel = readSel() || { start: before.length, end: before.length };
+      const res = Rich.replaceRange(Rich.parseEditor(ed), sel.start, sel.end, text);
+      commitLines(res.lines, { start: res.caret, end: res.caret });
     }
   }
 
@@ -2922,6 +3165,1036 @@
     flashMsg(ok ? MSG.copied : MSG.copyFail);
   }
 
+  // ---------------------------------------------------------------- Stage 04: editor surface
+
+  /**
+   * The editor is a contenteditable div, but callers (and the accepted browser tests) keep using
+   * the textarea vocabulary: value, selectionStart/End, setSelectionRange, readOnly. Selection
+   * offsets are flat text offsets (lines joined by "\\n"), exactly like a textarea's.
+   */
+  function installEditorShim(ed) {
+    const define = (name, desc) => Object.defineProperty(ed, name, Object.assign({ configurable: true }, desc));
+    define("value", {
+      get() {
+        return Rich.flat(Rich.parseEditor(ed));
+      },
+      set(v) {
+        Rich.renderInto(ed, Rich.plainLines(String(v)));
+        markEmpty(ed);
+      },
+    });
+    define("selectionStart", { get: () => (readSel() || { start: 0 }).start });
+    define("selectionEnd", { get: () => (readSel() || { end: 0 }).end });
+    define("readOnly", {
+      get() {
+        return ed.getAttribute("contenteditable") !== "true";
+      },
+      set(v) {
+        const want = v ? "false" : "true";
+        if (ed.getAttribute("contenteditable") !== want) ed.setAttribute("contenteditable", want);
+        if (v) ed.setAttribute("aria-readonly", "true");
+        else ed.removeAttribute("aria-readonly");
+      },
+    });
+    ed.setSelectionRange = (a, b) => setSel(a, b);
+  }
+
+  function markEmpty(ed) {
+    const e = ed || ui.editor;
+    if (!e) return;
+    const first = e.children.length === 1 && e.firstChild && e.firstChild.getAttribute("data-line-type") === "paragraph" && !e.firstChild.textContent;
+    if (first) e.setAttribute("data-empty", "true");
+    else e.removeAttribute("data-empty");
+  }
+
+  function renderEditor(lines) {
+    Rich.renderInto(ui.editor, lines);
+    markEmpty();
+  }
+
+  /** {start, end, lines} for the selection inside the editor, or null when it lies elsewhere. */
+  function readSel() {
+    const ed = ui.editor;
+    const sel = global.getSelection ? global.getSelection() : null;
+    if (!ed || !sel || !sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    if (!ed.contains(r.startContainer) || !ed.contains(r.endContainer)) return null;
+    const map = new Map();
+    const lines = Rich.parseEditor(ed, map);
+    const a = Rich.pointToOffset(ed, r.startContainer, r.startOffset, lines, map);
+    const b = Rich.pointToOffset(ed, r.endContainer, r.endOffset, lines, map);
+    return { start: Math.min(a, b), end: Math.max(a, b), lines };
+  }
+
+  function setSel(start, end) {
+    const ed = ui.editor;
+    const sel = global.getSelection ? global.getSelection() : null;
+    if (!ed || !sel) return;
+    const map = new Map();
+    const lines = Rich.parseEditor(ed, map);
+    const total = Rich.flat(lines).length;
+    const a = Math.max(0, Math.min(start, total));
+    const b = Math.max(0, Math.min(end, total));
+    const p = Rich.offsetToPoint(ed, lines, a, map);
+    const q = b === a ? p : Rich.offsetToPoint(ed, lines, b, map);
+    const range = doc.createRange();
+    try {
+      range.setStart(p.node, p.off);
+      range.setEnd(q.node, q.off);
+    } catch (_) {
+      return;
+    }
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  /** The selection to act on: the live one, else the last cached one, else the end of the page. */
+  function currentSel() {
+    const live = readSel();
+    if (live) return live;
+    const lines = Rich.parseEditor(ui.editor);
+    const total = Rich.flat(lines).length;
+    const c = ui.selCache;
+    if (c) return { start: Math.min(c.start, total), end: Math.min(c.end, total), lines };
+    return { start: total, end: total, lines };
+  }
+
+  /**
+   * One structural edit: state machine first (draft + generation, same path as typing), then the
+   * DOM is rebuilt from the same lines and the selection restored.
+   */
+  function commitLines(lines, sel) {
+    const c = ui.core;
+    const e = c && c.current();
+    if (!e || isReadOnly(e)) return false;
+    if (lines.length > Rich.BLOCKS_MAX && !Rich.isPlain(lines)) {
+      flashMsg(MSG.tooManyLines); // visible, and nothing changes: never truncate or flatten the page
+      return false;
+    }
+    Rich.ensureKeys(lines);
+    if (!c.edit(e.id, { text: Rich.flat(lines), fmt: Rich.fmtOf(lines), ids: Rich.idsOf(lines) })) {
+      flashMsg("Modification refusée");
+      return false;
+    }
+    renderEditor(lines);
+    if (sel) setSel(sel.start, sel.end);
+    ui.pendingMarks = null;
+    refreshFormatState();
+    return true;
+  }
+
+  function curEntry() {
+    const c = ui.core;
+    const e = c && c.current();
+    return e && !isReadOnly(e) ? e : null;
+  }
+
+  function onEditorInput() {
+    const c = ui.core;
+    if (!c || !c.st.currentId) return;
+    const lines = Rich.parseEditor(ui.editor);
+    Rich.renumber(ui.editor);
+    markEmpty();
+    ui.pendingMarks = null;
+    if (!c.edit(c.st.currentId, { text: Rich.flat(lines), fmt: Rich.fmtOf(lines), ids: Rich.idsOf(lines) })) {
+      const e = c.current();
+      if (e && !isReadOnly(e)) {
+        flashMsg(lines.length > Rich.BLOCKS_MAX ? MSG.tooManyLines : "Modification refusée");
+        showCurrent();
+      }
+    }
+  }
+
+  function typeWithPending(data) {
+    const sel = readSel();
+    const pend = ui.pendingMarks;
+    if (!sel || !pend) return false;
+    const res = Rich.replaceRange(sel.lines, sel.start, sel.end, data);
+    let lines = res.lines;
+    const from = res.caret - data.length;
+    // A pending style flips what native typing would have produced here (the mark covering the
+    // character before the caret continues by default).
+    for (const t of pend.types) {
+      const native = sel.start === sel.end && Rich.hasMark(sel.lines, Math.max(0, sel.start - 1), sel.start, t);
+      lines = Rich.setMark(lines, from, res.caret, t, !native);
+    }
+    return commitLines(lines, { start: res.caret, end: res.caret });
+  }
+
+  function onBeforeInput(ev) {
+    const e = curEntry();
+    if (!e || ev.isComposing) return;
+    const t = ev.inputType || "";
+    if (t === "insertParagraph" || t === "insertLineBreak") {
+      ev.preventDefault();
+      doEnter();
+    } else if (t === "formatBold" || t === "formatItalic" || t === "formatUnderline") {
+      ev.preventDefault();
+      applyFormat(t === "formatBold" ? "bold" : t === "formatItalic" ? "italic" : "underline");
+    } else if (t.indexOf("format") === 0 || t === "insertFromDrop" || t === "insertFromPaste" || t === "insertFromPasteAsQuotation") {
+      ev.preventDefault(); // never let the browser create its own formatting/HTML
+    } else if (t === "deleteContentBackward") {
+      const sel = readSel();
+      if (sel && sel.start === sel.end) {
+        const at = Rich.locate(sel.lines, sel.start);
+        if (at.off === 0 && sel.lines[at.line].type !== "paragraph") {
+          ev.preventDefault();
+          commitLines(Rich.setBlockType(sel.lines, sel.start, sel.start, sel.lines[at.line].type), sel);
+        }
+      }
+    } else if (t === "insertText" && ev.data && ui.pendingMarks && ev.data.indexOf("\n") < 0) {
+      const sel = readSel();
+      if (sel && ui.pendingMarks.pos === sel.start) {
+        ev.preventDefault();
+        typeWithPending(ev.data);
+      }
+    }
+  }
+
+  function doEnter() {
+    const sel = readSel();
+    if (!sel) return;
+    const res = Rich.splitAt(sel.lines, sel.start, sel.end);
+    commitLines(res.lines, { start: res.caret, end: res.caret });
+  }
+
+  function cleanPasted(text) {
+    return String(text).replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  }
+
+  function onPaste(ev) {
+    ev.preventDefault(); // plain text only: no clipboard HTML ever reaches the note
+    const e = curEntry();
+    if (!e) return;
+    const data = ev.clipboardData && ev.clipboardData.getData ? ev.clipboardData.getData("text/plain") : "";
+    const text = cleanPasted(data);
+    const sel = readSel();
+    if (!text || !sel) return;
+    const res = Rich.replaceRange(sel.lines, sel.start, sel.end, text);
+    commitLines(res.lines, { start: res.caret, end: res.caret });
+  }
+
+  function onEditorKey(ev) {
+    if ((ev.key === "Enter" || ev.key === " ") && ev.target && ev.target.closest && ev.target.closest("[data-carnet-citation]") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      const w = ev.target.closest("[data-carnet-citation]");
+      if (w && ui.editor.contains(w)) {
+        ev.preventDefault();
+        openCitationElement(w);
+        return;
+      }
+    }
+    const mod = ev.ctrlKey || ev.metaKey;
+    if (!mod || ev.altKey) return;
+    const k = String(ev.key || "").toLowerCase();
+    if (!curEntry()) return;
+    if (!ev.shiftKey && (k === "b" || k === "i" || k === "u")) {
+      ev.preventDefault();
+      applyFormat(k === "b" ? "bold" : k === "i" ? "italic" : "underline");
+    } else if (!ev.shiftKey && k === "k") {
+      ev.preventDefault();
+      openLinkPanel();
+    } else if (k === "enter" && !ev.shiftKey) {
+      const sel = readSel();
+      if (sel) {
+        const at = Rich.locate(sel.lines, sel.start);
+        if (sel.lines[at.line].type === "check") {
+          ev.preventDefault();
+          commitLines(Rich.toggleChecked(sel.lines, at.line), sel);
+        }
+      }
+    }
+  }
+
+  function onEditorClick(ev) {
+    const t = ev.target && ev.target.closest ? ev.target : null;
+    if (!t) return;
+    const box = t.closest("[data-carnet-check]");
+    if (box && ui.editor.contains(box)) {
+      ev.preventDefault();
+      const e = curEntry();
+      const line = box.closest("[data-carnet-line]");
+      if (!e || !line) return;
+      const idx = Array.prototype.indexOf.call(ui.editor.children, line);
+      const lines = Rich.parseEditor(ui.editor);
+      const sel = readSel();
+      commitLines(Rich.toggleChecked(lines, idx), sel && { start: sel.start, end: sel.end });
+      return;
+    }
+    const cw = t.closest("[data-carnet-citation]");
+    if (cw && ui.editor.contains(cw)) {
+      ev.preventDefault();
+      openCitationElement(cw);
+      return;
+    }
+    const a = t.closest("a[data-carnet-link]");
+    if (a && ui.editor.contains(a)) {
+      ev.preventDefault(); // caret placement wins over navigation; Ctrl/Cmd+click or read-only opens
+      if (ev.ctrlKey || ev.metaKey || !curEntry()) openLinkElement(a);
+    }
+  }
+
+  function bindEditor(ed) {
+    ed.addEventListener("input", onEditorInput);
+    ed.addEventListener("beforeinput", onBeforeInput);
+    ed.addEventListener("paste", onPaste);
+    ed.addEventListener("drop", (ev) => ev.preventDefault());
+    ed.addEventListener("keydown", onEditorKey);
+    ed.addEventListener("click", onEditorClick);
+    ed.addEventListener("mousedown", (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest("[data-carnet-check]")) ev.preventDefault();
+    });
+    ed.addEventListener("blur", () => {
+      const sel = readSel();
+      if (sel) ui.selCache = { start: sel.start, end: sel.end };
+      if (ui.core && ui.core.st.currentId) ui.core.flush(ui.core.st.currentId);
+    });
+  }
+
+  function onSelectionChange() {
+    if (ui.phase !== "ready" || !ui.editor) return;
+    const sel = global.getSelection ? global.getSelection() : null;
+    if (!sel || !sel.rangeCount || !ui.editor.contains(sel.getRangeAt(0).startContainer)) return;
+    if (!(ui.fmtOpen || ui.find.open || ui.linkOpen || ui.pendingMarks || ui.exportOpen)) return;
+    const cur = readSel();
+    if (!cur) return;
+    ui.selCache = { start: cur.start, end: cur.end };
+    if (ui.pendingMarks && (cur.start !== cur.end || ui.pendingMarks.pos !== cur.start)) ui.pendingMarks = null;
+    refreshFormatState();
+  }
+
+  // ---------------------------------------------------------------- formatting controls
+
+  function buildFormatBar() {
+    const bar = el("div", { id: "carnet-format-bar", class: "carnet-format", role: "toolbar", "aria-label": "Mise en forme", hidden: true });
+    for (const [kind, glyph, title] of FORMATS) {
+      const b = el("button", { type: "button", class: "carnet-fmt", "data-carnet-format": kind, "aria-label": title, title, "aria-pressed": "false" });
+      b.appendChild(el("span", { class: "carnet-fmt-glyph", "data-glyph": kind, text: glyph }));
+      keepFocus(b);
+      bar.appendChild(b);
+    }
+    bar.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-format]") : null;
+      if (b && !b.disabled) applyFormat(b.getAttribute("data-carnet-format"));
+    });
+    return bar;
+  }
+
+  function toggleFormatBar(force) {
+    ui.fmtOpen = typeof force === "boolean" ? force : !ui.fmtOpen;
+    const bar = doc.getElementById("carnet-format-bar");
+    if (bar) bar.hidden = !ui.fmtOpen;
+    const btn = doc.getElementById("btn-carnet-format");
+    if (btn) btn.setAttribute("aria-expanded", ui.fmtOpen ? "true" : "false");
+    refreshFormatState();
+  }
+
+  function armMark(kind, sel) {
+    const pend = ui.pendingMarks && ui.pendingMarks.pos === sel.start ? ui.pendingMarks : { pos: sel.start, types: new Set() };
+    if (pend.types.has(kind)) pend.types.delete(kind);
+    else pend.types.add(kind);
+    ui.pendingMarks = pend.types.size ? pend : null;
+  }
+
+  function applyFormat(kind) {
+    const e = curEntry();
+    if (!e) return;
+    if (kind === "link") {
+      openLinkPanel();
+      return;
+    }
+    const sel = currentSel();
+    if (Rich.INLINE.indexOf(kind) >= 0) {
+      if (sel.start === sel.end) {
+        armMark(kind, sel);
+        refreshFormatState();
+        return;
+      }
+      commitLines(Rich.toggleMark(sel.lines, sel.start, sel.end, kind), sel);
+    } else if (Rich.BLOCK_TYPES.indexOf(kind) >= 0) {
+      commitLines(Rich.setBlockType(sel.lines, sel.start, sel.end, kind), sel);
+    }
+    if (doc.activeElement !== ui.editor && finePointer()) focusEditor(false);
+  }
+
+  function refreshFormatState() {
+    const bar = doc.getElementById("carnet-format-bar");
+    if (!bar || !ui.core) return;
+    const e = ui.core.current();
+    const ro = !e || isReadOnly(e);
+    const sel = ui.fmtOpen ? currentSel() : null;
+    for (const b of bar.querySelectorAll("[data-carnet-format]")) {
+      b.disabled = ro;
+      if (!sel) continue;
+      const kind = b.getAttribute("data-carnet-format");
+      let on = false;
+      if (Rich.INLINE.indexOf(kind) >= 0) {
+        if (sel.start !== sel.end) on = Rich.hasMark(sel.lines, sel.start, sel.end, kind);
+        else {
+          on = Rich.hasMark(sel.lines, Math.max(0, sel.start - 1), sel.start, kind);
+          if (ui.pendingMarks && ui.pendingMarks.pos === sel.start && ui.pendingMarks.types.has(kind)) on = !on;
+        }
+      } else if (kind === "link") on = !!Rich.linkAt(sel.lines, sel.start);
+      else on = sel.lines[Rich.locate(sel.lines, sel.start).line].type === kind;
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+
+  // ---------------------------------------------------------------- links
+
+  function buildLinkPanel() {
+    const url = el("input", {
+      type: "text", id: "hq-carnet-link-url", class: "carnet-input", inputmode: "url", autocomplete: "off", autocapitalize: "off",
+      spellcheck: "false", placeholder: "Adresse du lien", "aria-label": "Adresse du lien (http ou https)",
+    });
+    const note = el("select", { id: "hq-carnet-link-note", class: "carnet-input", "aria-label": "Lier une note du carnet" });
+    const msg = el("p", { id: "carnet-link-msg", class: "carnet-msg", role: "alert" });
+    const panel = el("div", { id: "hq-carnet-link", class: "carnet-panel", role: "group", "aria-label": "Lien", hidden: true }, [
+      url,
+      note,
+      el("div", { class: "carnet-panel-row" }, [
+        el("button", { type: "button", id: "btn-carnet-link-apply", class: "carnet-small", text: "Lier" }),
+        el("button", { type: "button", id: "btn-carnet-link-open", class: "carnet-small", text: "Ouvrir" }),
+        el("button", { type: "button", id: "btn-carnet-link-remove", class: "carnet-small", text: "Retirer" }),
+        el("button", { type: "button", id: "btn-carnet-link-close", class: "carnet-small", text: "Fermer" }),
+      ]),
+      msg,
+    ]);
+    panel.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b) return;
+      if (b.id === "btn-carnet-link-apply") applyLink(false);
+      else if (b.id === "btn-carnet-link-remove") applyLink(true);
+      else if (b.id === "btn-carnet-link-open") openLinkFromPanel();
+      else if (b.id === "btn-carnet-link-close") closeLink(true);
+    });
+    url.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        applyLink(false);
+      }
+    });
+    return panel;
+  }
+
+  function fillNoteChoices(selected) {
+    const sel = doc.getElementById("hq-carnet-link-note");
+    if (!sel) return;
+    sel.textContent = "";
+    sel.appendChild(el("option", { value: "", text: "— Lier une note —" }));
+    const cur = ui.core && ui.core.st.currentId;
+    for (const it of ui.core ? ui.core.libraryItems() : []) {
+      if (it.deleted || it.id === cur) continue;
+      const opt = el("option", { value: it.id });
+      opt.textContent = it.title; // note text only via textContent
+      sel.appendChild(opt);
+    }
+    sel.value = selected || "";
+  }
+
+  function openLinkPanel() {
+    const e = curEntry();
+    if (!e) return;
+    const sel = currentSel();
+    let range = { start: sel.start, end: sel.end };
+    let mark = null;
+    if (sel.start === sel.end) {
+      const hit = Rich.linkAt(sel.lines, sel.start);
+      if (hit) {
+        const base = Rich.lineStarts(sel.lines)[hit.line];
+        range = { start: base + hit.mark.start, end: base + hit.mark.end };
+        mark = hit.mark;
+      }
+    } else {
+      const hit = Rich.linkAt(sel.lines, sel.start);
+      if (hit) mark = hit.mark;
+    }
+    const panel = doc.getElementById("hq-carnet-link");
+    const msg = doc.getElementById("carnet-link-msg");
+    if (range.start === range.end) {
+      msg.textContent = MSG.linkNeedSel;
+      panel.hidden = false;
+      ui.linkOpen = true;
+      ui.linkRange = null;
+      return;
+    }
+    ui.linkRange = range;
+    ui.linkOpen = true;
+    panel.hidden = false;
+    msg.textContent = "";
+    fillNoteChoices(mark && mark.ref && mark.ref.kind === "note" ? mark.ref.id : "");
+    const input = doc.getElementById("hq-carnet-link-url");
+    input.value = mark && mark.href ? mark.href : "";
+    doc.getElementById("btn-carnet-link-remove").disabled = !mark;
+    doc.getElementById("btn-carnet-link-open").disabled = !mark;
+    ui.linkMark = mark;
+    input.focus({ preventScroll: true });
+  }
+
+  function closeLink(refocus) {
+    const panel = doc.getElementById("hq-carnet-link");
+    if (panel) panel.hidden = true;
+    ui.linkOpen = false;
+    ui.linkRange = null;
+    ui.linkMark = null;
+    if (refocus) focusEditor(false);
+  }
+
+  function applyLink(remove) {
+    const e = curEntry();
+    const msg = doc.getElementById("carnet-link-msg");
+    const range = ui.linkRange;
+    if (!e || !range) return;
+    const lines = Rich.parseEditor(ui.editor);
+    if (range.end > Rich.flat(lines).length) {
+      msg.textContent = MSG.linkNeedSel;
+      return;
+    }
+    let target = null;
+    if (!remove) {
+      const noteId = doc.getElementById("hq-carnet-link-note").value;
+      const raw = doc.getElementById("hq-carnet-link-url").value.trim();
+      if (raw) {
+        const href = Rich.safeHref(raw);
+        if (!href) {
+          msg.textContent = MSG.linkBad;
+          return;
+        }
+        target = { href };
+      } else if (noteId) target = { ref: { kind: "note", id: noteId } };
+      else {
+        msg.textContent = MSG.linkBad;
+        return;
+      }
+    }
+    const next = Rich.setLink(lines, range.start, range.end, target);
+    if (!next) {
+      msg.textContent = MSG.linkBad;
+      return;
+    }
+    msg.textContent = "";
+    commitLines(next, { start: range.start, end: range.end });
+    closeLink(true);
+  }
+
+  function openLinkTarget(kind, value) {
+    if (kind === "external") {
+      const href = Rich.safeHref(value);
+      if (href) global.open(href, "_blank", "noopener,noreferrer");
+    } else if (kind === "note") {
+      if (ui.core && ui.core.entry(value) && !ui.core.isTrashed(ui.core.entry(value))) openPage(value);
+      else flashMsg(MSG.linkMissing);
+    } else if (kind === "file" || kind === "media" || kind === "model") {
+      const ref = Rich.checkRef({ kind, id: value });
+      if (ref) global.open("/files/" + ref.id.split("/").map(encodeURIComponent).join("/"), "_blank", "noopener,noreferrer");
+    } else if (kind === "drawing") {
+      if (typeof global.setView === "function") global.setView("dessiner");
+    }
+  }
+
+  function openLinkElement(a) {
+    const kind = a.getAttribute("data-carnet-link");
+    if (kind === "external") openLinkTarget("external", a.getAttribute("data-href"));
+    else openLinkTarget(a.getAttribute("data-ref-kind"), a.getAttribute("data-ref-id"));
+  }
+
+  function openLinkFromPanel() {
+    const m = ui.linkMark;
+    if (!m) return;
+    if (m.href) openLinkTarget("external", m.href);
+    else openLinkTarget(m.ref.kind, m.ref.id);
+  }
+
+  // ---------------------------------------------------------------- sources / citations (Stage 05)
+
+  /** Lazily mounts the sources UI (hq-carnet-sources.js). The editor state machine stays the single writer. */
+  function sourcesUi() {
+    if (ui.sources) return ui.sources;
+    const S = global.HqCarnetSources;
+    if (!S || typeof S.mount !== "function") {
+      flashMsg("Module sources non chargé");
+      return null;
+    }
+    ui.sources = S.mount({
+      doc,
+      root: (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      user: () => ui.user,
+      storage: safeStorage,
+      api: { get: (url) => apiCall(url, { timeoutMs: 12000 }), post: (payload) => request(payload) },
+      flash: flashMsg,
+      editor: {
+        entry: curEntry,
+        current: () => (ui.core ? ui.core.current() : null),
+        sel: currentSel,
+        commit: commitLines,
+        projectId: () => {
+          const e = ui.core && ui.core.current();
+          return e && e.local && e.local.project_id ? e.local.project_id : null;
+        },
+      },
+      onClose: (refocus) => {
+        if (refocus && finePointer()) focusEditor(false);
+      },
+    });
+    return ui.sources;
+  }
+
+  function openCitePicker() {
+    const s = sourcesUi();
+    if (!s) return;
+    const sel = currentSel(); // the caret/selection BEFORE the picker takes focus
+    ui.selCache = { start: sel.start, end: sel.end };
+    s.openPicker(null);
+  }
+
+  /** Citation under a rendered wrapper: {cite, start, end, readonly} from the parsed model (never from the DOM payload). */
+  function openCitationElement(node) {
+    const s = sourcesUi();
+    if (!s) return;
+    const map = new Map();
+    const lines = Rich.parseEditor(ui.editor, map);
+    const first = doc.createTreeWalker(node, 4).nextNode();
+    if (!first || !map.has(first)) return;
+    const p = map.get(first);
+    const hit = Rich.citationAt(lines, Rich.lineStarts(lines)[p.line] + p.off);
+    if (!hit) return;
+    ui.selCache = { start: hit.end, end: hit.end }; // a new citation made from the viewer goes AFTER this one, never over it
+    if (curEntry()) setSel(hit.end, hit.end);
+    s.openCitation({ cite: hit.mark.cite, start: hit.start, end: hit.end, readonly: !curEntry() });
+  }
+
+  // ---------------------------------------------------------------- find / replace (current note only)
+
+  function buildFindPanel() {
+    const q = el("input", {
+      type: "search", id: "hq-carnet-find-input", class: "carnet-input", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+      "aria-label": "Rechercher dans la page", placeholder: "Rechercher", enterkeyhint: "search",
+    });
+    const r = el("input", {
+      type: "text", id: "hq-carnet-replace-input", class: "carnet-input", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+      "aria-label": "Remplacer par (vide = supprimer)", placeholder: "Remplacer par (vide = supprimer)", enterkeyhint: "done",
+    });
+    const count = el("span", { id: "carnet-find-count", class: "carnet-find-count", role: "status", "aria-live": "polite" });
+    const btn = (id, text, label) => el("button", { type: "button", id, class: "carnet-small", "aria-label": label || text, text });
+    const caseBtn = el("button", { type: "button", id: "btn-carnet-find-case", class: "carnet-small", "aria-pressed": "false", "aria-label": "Respecter la casse", title: "Respecter la casse", text: "Aa" });
+    const wordBtn = el("button", { type: "button", id: "btn-carnet-find-word", class: "carnet-small", "aria-pressed": "false", "aria-label": "Mot entier", title: "Mot entier", text: "Mot" });
+    const undo = el("button", { type: "button", id: "btn-carnet-replace-undo", class: "carnet-small", hidden: true, text: "Annuler" });
+    const panel = el("div", { id: "hq-carnet-find", class: "carnet-panel", role: "search", "aria-label": "Rechercher et remplacer", hidden: true }, [
+      el("div", { class: "carnet-panel-row" }, [q, caseBtn, wordBtn]),
+      el("div", { class: "carnet-panel-row" }, [
+        btn("btn-carnet-find-prev", "‹", "Résultat précédent"),
+        btn("btn-carnet-find-next", "›", "Résultat suivant"),
+        count,
+      ]),
+      el("div", { class: "carnet-panel-row" }, [r]),
+      el("div", { class: "carnet-panel-row" }, [
+        btn("btn-carnet-replace-one", "Remplacer"),
+        btn("btn-carnet-replace-all", "Tout remplacer"),
+        undo,
+        btn("btn-carnet-find-close", "Fermer"),
+      ]),
+    ]);
+    q.addEventListener("input", () => {
+      ui.find.q = q.value;
+      ui.find.index = -1;
+      findRefresh();
+      findStep(1, true);
+    });
+    r.addEventListener("input", () => {
+      ui.find.r = r.value;
+    });
+    q.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        findStep(ev.shiftKey ? -1 : 1);
+      }
+    });
+    panel.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b) return;
+      const id = b.id;
+      if (id === "btn-carnet-find-next") findStep(1);
+      else if (id === "btn-carnet-find-prev") findStep(-1);
+      else if (id === "btn-carnet-find-case") {
+        ui.find.caseSensitive = !ui.find.caseSensitive;
+        b.setAttribute("aria-pressed", ui.find.caseSensitive ? "true" : "false");
+        ui.find.index = -1;
+        findRefresh();
+      } else if (id === "btn-carnet-find-word") {
+        ui.find.wholeWord = !ui.find.wholeWord;
+        b.setAttribute("aria-pressed", ui.find.wholeWord ? "true" : "false");
+        ui.find.index = -1;
+        findRefresh();
+      } else if (id === "btn-carnet-replace-one") replaceOne();
+      else if (id === "btn-carnet-replace-all") replaceAll();
+      else if (id === "btn-carnet-replace-undo") undoReplaceAll();
+      else if (id === "btn-carnet-find-close") toggleFind(false);
+    });
+    return panel;
+  }
+
+  function toggleFind(force) {
+    const f = ui.find;
+    f.open = typeof force === "boolean" ? force : !f.open;
+    const panel = doc.getElementById("hq-carnet-find");
+    if (panel) panel.hidden = !f.open;
+    const btn = doc.getElementById("btn-carnet-find");
+    if (btn) btn.setAttribute("aria-expanded", f.open ? "true" : "false");
+    if (f.open) {
+      const sel = readSel();
+      const input = doc.getElementById("hq-carnet-find-input");
+      if (sel && sel.start !== sel.end && sel.lines && Rich.flat(sel.lines).slice(sel.start, sel.end).indexOf("\n") < 0 && sel.end - sel.start <= 100) {
+        f.q = Rich.flat(sel.lines).slice(sel.start, sel.end);
+        input.value = f.q;
+      }
+      findRefresh();
+      input.focus({ preventScroll: true });
+    } else {
+      findPaint([]);
+    }
+  }
+
+  function findLines() {
+    const e = ui.core && ui.core.current();
+    return e ? localLines(e.local) : Rich.plainLines("");
+  }
+
+  /** Recompute matches against the current editable state (never against stale DOM). */
+  function findRefresh() {
+    const f = ui.find;
+    if (!f.open && !f.q) return;
+    const lines = findLines();
+    f.matches = f.open && f.q ? Rich.findAll(lines, f.q, { caseSensitive: f.caseSensitive, wholeWord: f.wholeWord }) : [];
+    if (f.index >= f.matches.length) f.index = f.matches.length - 1;
+    findUpdateUi();
+    findPaint(f.matches);
+  }
+
+  function findUpdateUi() {
+    const f = ui.find;
+    const n = f.matches.length;
+    const count = doc.getElementById("carnet-find-count");
+    if (!count) return;
+    if (!f.q) count.textContent = "";
+    else if (!n) count.textContent = MSG.findNone;
+    else count.textContent = (f.index >= 0 ? f.index + 1 + " / " : "") + n + (n > 1 ? " occurrences" : " occurrence");
+    const all = doc.getElementById("btn-carnet-replace-all");
+    const one = doc.getElementById("btn-carnet-replace-one");
+    const e = ui.core && ui.core.current();
+    const ro = !e || isReadOnly(e);
+    if (all) {
+      all.textContent = n > 1 ? "Tout remplacer (" + n + ")" : "Tout remplacer";
+      all.disabled = ro || !n;
+    }
+    if (one) one.disabled = ro || !n;
+    const u = f.undo;
+    const undo = doc.getElementById("btn-carnet-replace-undo");
+    if (undo) undo.hidden = !u;
+  }
+
+  function findPaint(matches) {
+    // CSS Custom Highlight API where available (no DOM change); the current match also becomes the selection.
+    try {
+      if (!global.CSS || !global.CSS.highlights || typeof global.Highlight !== "function") return;
+      global.CSS.highlights.delete("carnet-find");
+      global.CSS.highlights.delete("carnet-find-current");
+      if (!matches.length || !ui.editor) return;
+      const map = new Map();
+      const lines = Rich.parseEditor(ui.editor, map);
+      const all = [];
+      let cur = null;
+      matches.forEach((m, i) => {
+        const a = Rich.offsetToPoint(ui.editor, lines, m.start, map);
+        const b = Rich.offsetToPoint(ui.editor, lines, m.end, map);
+        const r = doc.createRange();
+        r.setStart(a.node, a.off);
+        r.setEnd(b.node, b.off);
+        if (i === ui.find.index) cur = r;
+        else all.push(r);
+      });
+      if (all.length) global.CSS.highlights.set("carnet-find", new global.Highlight(...all));
+      if (cur) global.CSS.highlights.set("carnet-find-current", new global.Highlight(cur));
+    } catch (_) {}
+  }
+
+  function findStep(dir, quiet) {
+    const f = ui.find;
+    findRefresh();
+    const n = f.matches.length;
+    if (!n) return;
+    f.index = f.index < 0 ? (dir > 0 ? 0 : n - 1) : (f.index + dir + n) % n;
+    findUpdateUi();
+    findPaint(f.matches);
+    const m = f.matches[f.index];
+    if (!quiet || finePointer()) {
+      // Bring the match into view and select it. The caret is only moved when the editor already owns focus.
+      const focused = doc.activeElement === ui.editor;
+      if (focused || !global.CSS || !global.CSS.highlights) setSel(m.start, m.end);
+      try {
+        const map = new Map();
+        const lines = Rich.parseEditor(ui.editor, map);
+        const p = Rich.offsetToPoint(ui.editor, lines, m.start, map);
+        const node = p.node.nodeType === 3 ? p.node.parentElement : p.node;
+        if (node && node.scrollIntoView) node.scrollIntoView({ block: "center" });
+      } catch (_) {}
+    }
+  }
+
+  function replaceOne() {
+    const f = ui.find;
+    const e = curEntry();
+    if (!e) return;
+    findRefresh();
+    if (!f.matches.length) return;
+    const at = f.index >= 0 ? f.index : 0;
+    const m = f.matches[at];
+    const next = Rich.replaceMatches(findLines(), [m], f.r);
+    f.undo = null;
+    if (commitLines(next, null)) {
+      f.index = at - 1; // the next occurrence becomes current
+      findRefresh();
+      findStep(1);
+    }
+  }
+
+  function replaceAll() {
+    const f = ui.find;
+    const e = curEntry();
+    if (!e) return;
+    findRefresh();
+    const n = f.matches.length;
+    if (!n) return;
+    const lines = findLines();
+    const before = { text: Rich.flat(lines), fmt: Rich.fmtOf(lines) };
+    const next = Rich.replaceMatches(lines, f.matches, f.r);
+    if (!commitLines(next, null)) return;
+    f.undo = { id: e.id, before, after: { text: Rich.flat(next), fmt: Rich.fmtOf(next) }, count: n };
+    f.index = -1;
+    findRefresh();
+    const count = doc.getElementById("carnet-find-count");
+    if (count) count.textContent = n + (n > 1 ? " occurrences " : " occurrence ") + (f.r ? "remplacées" : "supprimées");
+    const undo = doc.getElementById("btn-carnet-replace-undo");
+    if (undo) undo.hidden = false;
+  }
+
+  function undoReplaceAll() {
+    const f = ui.find;
+    const u = f.undo;
+    const c = ui.core;
+    const e = c && c.current();
+    f.undo = null;
+    if (!u || !e || e.id !== u.id || isReadOnly(e) || e.local.text !== u.after.text || e.local.fmt !== u.after.fmt) {
+      findUpdateUi();
+      return;
+    }
+    if (c.edit(e.id, { text: u.before.text, fmt: u.before.fmt })) renderEditor(localLines(e.local));
+    f.index = -1;
+    findRefresh();
+    flashMsg("Remplacement annulé");
+  }
+
+  /** Any edit that is not the replace-all itself invalidates its Undo (never overwrite newer work). */
+  function findEdited() {
+    const f = ui.find;
+    const e = ui.core && ui.core.current();
+    if (f.undo && (!e || e.id !== f.undo.id || e.local.text !== f.undo.after.text || e.local.fmt !== f.undo.after.fmt)) f.undo = null;
+    findRefresh();
+  }
+
+  // ---------------------------------------------------------------- export
+
+  function exportUser() {
+    return ui.user || "";
+  }
+
+  function readExports() {
+    try {
+      const raw = safeStorage().getItem(EXPORT_PREFIX + encodeURIComponent(exportUser()));
+      const v = raw ? JSON.parse(raw) : null;
+      return v && typeof v === "object" && v.version === 1 && v.pages && typeof v.pages === "object" ? v.pages : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function rememberExport(id, rec) {
+    try {
+      const pages = readExports();
+      pages[id] = rec;
+      safeStorage().setItem(EXPORT_PREFIX + encodeURIComponent(exportUser()), JSON.stringify({ version: 1, pages }));
+    } catch (_) {} // remembering is a convenience only
+  }
+
+  /** "Modifié depuis l'export": the page moved past the exported revision, or has unsaved edits. */
+  function exportIsStale(e) {
+    if (!e) return false;
+    const rec = readExports()[e.id];
+    if (!rec || !Number.isInteger(rec.rev)) return false;
+    const srv = e.latest || e.server || {};
+    return srv.rev !== rec.rev || ui.core.isDirty(e);
+  }
+
+  function buildExportPanel() {
+    const msg = el("p", { id: "carnet-export-msg", class: "carnet-msg", role: "status", "aria-live": "polite" });
+    const stale = el("p", { id: "carnet-export-stale", class: "carnet-msg carnet-export-stale", hidden: true, text: MSG.exportStale });
+    const root = el("select", { id: "hq-carnet-export-root", class: "carnet-input", "aria-label": "Dossier Transfert" });
+    for (const r of EXPORT_ROOTS) root.appendChild(el("option", { value: r, text: r }));
+    const sub = el("input", {
+      type: "text", id: "hq-carnet-export-sub", class: "carnet-input", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+      placeholder: "Sous-dossier (facultatif)", "aria-label": "Sous-dossier facultatif",
+    });
+    const name = el("input", {
+      type: "text", id: "hq-carnet-export-name", class: "carnet-input", autocomplete: "off", autocapitalize: "off", spellcheck: "false",
+      "aria-label": "Nom du fichier",
+    });
+    const fmt = el("select", { id: "hq-carnet-export-format", class: "carnet-input", "aria-label": "Format" }, [
+      el("option", { value: "md", text: "Markdown (.md)" }),
+      el("option", { value: "txt", text: "Texte (.txt)" }),
+    ]);
+    const form = el("div", { id: "hq-carnet-export-form", class: "carnet-export-form", hidden: true }, [
+      el("div", { class: "carnet-panel-row" }, [root, sub]),
+      el("div", { class: "carnet-panel-row" }, [name, fmt]),
+      el("div", { class: "carnet-panel-row" }, [
+        el("button", { type: "button", id: "btn-carnet-export-save", class: "carnet-small", text: "Enregistrer la copie" }),
+      ]),
+    ]);
+    const copy = el("button", { type: "button", id: "btn-carnet-export-copy", class: "carnet-small", "aria-expanded": "false", text: "Enregistrer une copie dans Transfert…" });
+    const panel = el("div", { id: "hq-carnet-export", class: "carnet-panel", role: "group", "aria-label": "Exporter", hidden: true }, [
+      el("div", { class: "carnet-panel-row" }, [
+        el("button", { type: "button", id: "btn-carnet-export-txt", class: "carnet-small", "data-carnet-export": "txt", text: "Télécharger .txt" }),
+        el("button", { type: "button", id: "btn-carnet-export-md", class: "carnet-small", "data-carnet-export": "md", text: "Télécharger .md" }),
+        el("button", { type: "button", id: "btn-carnet-export-print", class: "carnet-small", "data-carnet-export": "print", text: "Imprimer / PDF" }),
+      ]),
+      el("div", { class: "carnet-panel-row" }, [copy]),
+      form,
+      stale,
+      msg,
+      el("div", { class: "carnet-panel-row" }, [el("button", { type: "button", id: "btn-carnet-export-close", class: "carnet-small", text: "Fermer" })]),
+    ]);
+    let nameTouched = false;
+    name.addEventListener("input", () => {
+      nameTouched = true;
+    });
+    fmt.addEventListener("change", () => {
+      if (!nameTouched) name.value = exportName("");
+    });
+    panel.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b) return;
+      const kind = b.getAttribute("data-carnet-export");
+      if (kind === "txt" || kind === "md") downloadExport(kind);
+      else if (kind === "print") printPage();
+      else if (b.id === "btn-carnet-export-copy") {
+        form.hidden = !form.hidden;
+        b.setAttribute("aria-expanded", form.hidden ? "false" : "true");
+        if (!form.hidden && !nameTouched) name.value = exportName("");
+      } else if (b.id === "btn-carnet-export-save") exportCopy();
+      else if (b.id === "btn-carnet-export-close") toggleExport(false);
+    });
+    return panel;
+  }
+
+  function exportTitle() {
+    const e = ui.core && ui.core.current();
+    return e ? deriveTitle(e.local.text) : UNTITLED;
+  }
+
+  function exportName(typed) {
+    const fmtSel = doc.getElementById("hq-carnet-export-format");
+    return Rich.exportFilename(typed, exportTitle(), fmtSel ? fmtSel.value : "md");
+  }
+
+  function toggleExport(force) {
+    ui.exportOpen = typeof force === "boolean" ? force : !ui.exportOpen;
+    const panel = doc.getElementById("hq-carnet-export");
+    if (panel) panel.hidden = !ui.exportOpen;
+    const btn = doc.getElementById("btn-carnet-export");
+    if (btn) btn.setAttribute("aria-expanded", ui.exportOpen ? "true" : "false");
+    renderExportState();
+  }
+
+  function renderExportState() {
+    const e = ui.core && ui.core.current();
+    const stale = !!e && exportIsStale(e);
+    const s = doc.getElementById("carnet-export-stale");
+    if (s) s.hidden = !(stale && ui.exportOpen);
+    const flag = doc.getElementById("carnet-export-flag");
+    if (flag) flag.hidden = !stale;
+  }
+
+  function downloadExport(fmt) {
+    const e = ui.core && ui.core.current();
+    if (!e) return;
+    const lines = localLines(e.local);
+    const text = fmt === "md" ? Rich.renderMarkdown(lines) : Rich.renderTxt(lines);
+    const name = Rich.exportFilename("", deriveTitle(e.local.text), fmt);
+    const blob = new global.Blob([text], { type: (fmt === "md" ? "text/markdown" : "text/plain") + ";charset=utf-8" });
+    const url = global.URL.createObjectURL(blob);
+    const a = el("a", { href: url, download: name, class: "carnet-copy-buffer", "aria-hidden": "true", tabindex: "-1" });
+    doc.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => global.URL.revokeObjectURL(url), 4000);
+  }
+
+  function clearPrint() {
+    if (ui.printNode) ui.printNode.remove();
+    ui.printNode = null;
+    if (doc.body) doc.body.classList.remove("carnet-printing");
+  }
+
+  /** Print/PDF through the browser: a read-only structured snapshot in a print-only container. */
+  function printPage() {
+    const e = ui.core && ui.core.current();
+    if (!e) return;
+    clearPrint();
+    const host = el("div", { id: "hq-carnet-print", "aria-hidden": "true" });
+    Rich.renderInto(host, localLines(e.local));
+    host.removeAttribute("contenteditable");
+    doc.body.appendChild(host);
+    doc.body.classList.add("carnet-printing");
+    ui.printNode = host;
+    global.addEventListener("afterprint", clearPrint, { once: true });
+    try {
+      global.print();
+    } finally {
+      setTimeout(clearPrint, 1500);
+    }
+  }
+
+  async function exportCopy() {
+    const c = ui.core;
+    const e = c && c.current();
+    const msg = doc.getElementById("carnet-export-msg");
+    if (!e || isReadOnly(e)) return;
+    msg.textContent = "";
+    if (e.conflict || e.orphan) {
+      msg.textContent = MSG.trashConflict;
+      return;
+    }
+    await c.flush(e.id);
+    if (c.isDirty(e) || e.inflight || e.conflict || e.error) {
+      msg.textContent = MSG.exportDirty;
+      return;
+    }
+    const root = doc.getElementById("hq-carnet-export-root").value;
+    const sub = doc.getElementById("hq-carnet-export-sub").value.trim().replace(/^\/+|\/+$/g, "");
+    const fmt = doc.getElementById("hq-carnet-export-format").value;
+    const filename = doc.getElementById("hq-carnet-export-name").value.trim();
+    const payload = { action: "page_export", id: e.id, expected_rev: e.serverRev, format: fmt, dir: sub ? root + "/" + sub : root };
+    if (filename) payload.filename = filename;
+    try {
+      const res = await request(payload);
+      rememberExport(e.id, { path: String(res.path || ""), rev: Number(res.rev) || e.serverRev, at: Number(res.exported_at) || Date.now() / 1000, format: fmt });
+      msg.textContent = MSG.exportSaved + " : " + String(res.path || "");
+      doc.getElementById("hq-carnet-export-name").value = String(res.name || filename);
+    } catch (err) {
+      const data = err && err.data && typeof err.data === "object" ? err.data : {};
+      if (err && err.status === 409 && data.code === "export_exists") msg.textContent = MSG.exportExists;
+      else msg.textContent = String(data.error || (err && err.message) || MSG.exportFail).slice(0, 160);
+    }
+    renderExportState();
+  }
+
   // ---------------------------------------------------------------- polling / lifecycle
 
   function startPoll() {
@@ -2963,6 +4236,11 @@
 
   function onKey(e) {
     if (ui.phase !== "ready" || !doc.body || doc.body.dataset.view !== "carnet") return;
+    if (ui.sources && ui.sources.isOpen()) {
+      // The sources overlay is modal too: page navigation never runs behind it (its actions are bound to the page it was opened on).
+      if (pageNavDelta(e)) e.preventDefault();
+      if (e.key !== "Escape") return;
+    }
     if (libModal()) {
       // Modal overlay: only the dialog's own keys act. Tab is trapped, Escape closes, and
       // editor/page shortcuts (Alt+Left/Right) never operate on the page behind it.
@@ -2992,6 +4270,7 @@
     if (ui.listeners) return;
     ui.listeners = true;
     doc.addEventListener("keydown", onKey);
+    doc.addEventListener("selectionchange", onSelectionChange);
     doc.addEventListener("visibilitychange", () => {
       if (ui.phase !== "ready") return;
       if (doc.visibilityState === "hidden") {
@@ -3031,6 +4310,7 @@
     try {
       const me = await apiCall("/api/me", { timeoutMs: 8000 });
       ui.role = me && typeof me.role === "string" ? me.role : null;
+      ui.user = me && typeof me.user === "string" ? me.user : "";
       if (!me || me.role !== "admin") {
         ui.phase = "denied";
         clearHome();

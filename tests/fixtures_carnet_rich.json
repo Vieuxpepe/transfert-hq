@@ -1,0 +1,426 @@
+{
+ "canonical": [
+  {
+   "name": "touching merge",
+   "in": [
+    {
+     "type": "bold",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "type": "bold",
+     "start": 2,
+     "end": 4
+    }
+   ],
+   "out": [
+    {
+     "type": "bold",
+     "start": 0,
+     "end": 4
+    }
+   ]
+  },
+  {
+   "name": "overlap merge + sort",
+   "in": [
+    {
+     "type": "italic",
+     "start": 3,
+     "end": 5
+    },
+    {
+     "type": "bold",
+     "start": 0,
+     "end": 3
+    },
+    {
+     "type": "bold",
+     "start": 2,
+     "end": 4
+    }
+   ],
+   "out": [
+    {
+     "type": "bold",
+     "start": 0,
+     "end": 4
+    },
+    {
+     "type": "italic",
+     "start": 3,
+     "end": 5
+    }
+   ]
+  },
+  {
+   "name": "different types stay",
+   "in": [
+    {
+     "type": "code",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "type": "bold",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "type": "underline",
+     "start": 0,
+     "end": 2
+    }
+   ],
+   "out": [
+    {
+     "type": "bold",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "type": "underline",
+     "start": 0,
+     "end": 2
+    },
+    {
+     "type": "code",
+     "start": 0,
+     "end": 2
+    }
+   ]
+  },
+  {
+   "name": "empty dropped",
+   "in": [
+    {
+     "type": "bold",
+     "start": 1,
+     "end": 1
+    },
+    {
+     "type": "bold",
+     "start": 1,
+     "end": 2
+    }
+   ],
+   "out": [
+    {
+     "type": "bold",
+     "start": 1,
+     "end": 2
+    }
+   ]
+  },
+  {
+   "name": "link same target merges",
+   "in": [
+    {
+     "type": "link",
+     "start": 0,
+     "end": 2,
+     "href": "https://a.b"
+    },
+    {
+     "type": "link",
+     "start": 2,
+     "end": 3,
+     "href": "https://a.b"
+    },
+    {
+     "type": "link",
+     "start": 4,
+     "end": 6,
+     "ref": {
+      "kind": "note",
+      "id": "page-x"
+     }
+    }
+   ],
+   "out": [
+    {
+     "type": "link",
+     "start": 0,
+     "end": 3,
+     "href": "https://a.b"
+    },
+    {
+     "type": "link",
+     "start": 4,
+     "end": 6,
+     "ref": {
+      "kind": "note",
+      "id": "page-x"
+     }
+    }
+   ]
+  },
+  {
+   "name": "nested same type",
+   "in": [
+    {
+     "type": "highlight",
+     "start": 0,
+     "end": 10
+    },
+    {
+     "type": "highlight",
+     "start": 2,
+     "end": 3
+    }
+   ],
+   "out": [
+    {
+     "type": "highlight",
+     "start": 0,
+     "end": 10
+    }
+   ]
+  }
+ ],
+ "render": [
+  {
+   "name": "mixed",
+   "blocks": [
+    {
+     "type": "heading",
+     "text": "Shaft *notes*",
+     "marks": []
+    },
+    {
+     "type": "check",
+     "text": "measure Ø12",
+     "marks": [
+      {
+       "type": "bold",
+       "start": 0,
+       "end": 7
+      }
+     ],
+     "checked": true
+    },
+    {
+     "type": "check",
+     "text": "todo",
+     "marks": [],
+     "checked": false
+    },
+    {
+     "type": "number",
+     "text": "first",
+     "marks": []
+    },
+    {
+     "type": "number",
+     "text": "second",
+     "marks": [
+      {
+       "type": "link",
+       "start": 0,
+       "end": 6,
+       "href": "https://example.com/a(b)"
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "",
+     "marks": []
+    },
+    {
+     "type": "number",
+     "text": "restart",
+     "marks": []
+    },
+    {
+     "type": "bullet",
+     "text": "under_score `x`",
+     "marks": [
+      {
+       "type": "italic",
+       "start": 0,
+       "end": 5
+      },
+      {
+       "type": "code",
+       "start": 6,
+       "end": 9
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "text": "# not a heading",
+     "marks": []
+    },
+    {
+     "type": "paragraph",
+     "text": "  spaced bold  ",
+     "marks": [
+      {
+       "type": "bold",
+       "start": 0,
+       "end": 15
+      },
+      {
+       "type": "underline",
+       "start": 2,
+       "end": 8
+      },
+      {
+       "type": "highlight",
+       "start": 7,
+       "end": 13
+      }
+     ]
+    }
+   ],
+   "txt": "Shaft *notes*\n[x] measure Ø12\n[ ] todo\n1. first\n2. second (https://example.com/a(b))\n\n1. restart\n- under_score `x`\n# not a heading\n  spaced bold  \n",
+   "md": "## Shaft \\*notes\\*\n\n- [x] **measure** Ø12\n- [ ] todo\n\n1. first\n2. [second](https://example.com/a%28b%29)\n\n1. restart\n\n- *under*\\_`sco`re \\`x\\`\n\n\\# not a heading\n\n  <u>**space**</u><mark><u>**d**</u></mark> <mark>**bold**</mark>  \n"
+  },
+  {
+   "name": "emoji+overlap",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "a😀b cd",
+     "marks": [
+      {
+       "type": "bold",
+       "start": 1,
+       "end": 4
+      },
+      {
+       "type": "italic",
+       "start": 3,
+       "end": 7
+      }
+     ]
+    }
+   ],
+   "txt": "a😀b cd\n",
+   "md": "a**😀*****b*** *cd*\n"
+  },
+  {
+   "name": "plain",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "one",
+     "marks": []
+    },
+    {
+     "type": "paragraph",
+     "text": "",
+     "marks": []
+    },
+    {
+     "type": "paragraph",
+     "text": "three",
+     "marks": []
+    }
+   ],
+   "txt": "one\n\nthree\n",
+   "md": "one\n\nthree\n"
+  },
+  {
+   "name": "empty page",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "",
+     "marks": []
+    }
+   ],
+   "txt": "\n",
+   "md": "\n"
+  }
+ ],
+ "filename": [
+  {
+   "name": "plain",
+   "given": "",
+   "title": "Shaft inspection",
+   "fmt": "md",
+   "out": "Shaft inspection.md"
+  },
+  {
+   "name": "edit",
+   "given": "My Note.txt",
+   "title": "x",
+   "fmt": "md",
+   "out": "My Note.md"
+  },
+  {
+   "name": "trav",
+   "given": "../../evil",
+   "title": "x",
+   "fmt": "txt",
+   "out": "evil.txt"
+  },
+  {
+   "name": "con",
+   "given": "CON",
+   "title": "x",
+   "fmt": "txt",
+   "out": "_CON.txt"
+  },
+  {
+   "name": "long",
+   "given": "",
+   "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "fmt": "md",
+   "out": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md"
+  },
+  {
+   "name": "bad",
+   "given": "a:b*c?",
+   "title": "t",
+   "fmt": "txt",
+   "out": "a-b-c.txt"
+  },
+  {
+   "name": "hidden",
+   "given": ".hidden",
+   "title": "t",
+   "fmt": "md",
+   "out": "hidden.md"
+  },
+  {
+   "name": "dots",
+   "given": "name.",
+   "title": "t",
+   "fmt": "txt",
+   "out": "name.txt"
+  },
+  {
+   "name": "empty",
+   "given": "   ",
+   "title": "  ",
+   "fmt": "md",
+   "out": "note.md"
+  },
+  {
+   "name": "both ext",
+   "given": "x.md.txt",
+   "title": "t",
+   "fmt": "md",
+   "out": "x.md.md"
+  },
+  {
+   "name": "unicode",
+   "given": "é ü",
+   "title": "t",
+   "fmt": "txt",
+   "out": "é ü.txt"
+  },
+  {
+   "name": "case ext",
+   "given": "NOTE.MD",
+   "title": "t",
+   "fmt": "md",
+   "out": "NOTE.md"
+  }
+ ]
+}
