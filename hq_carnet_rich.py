@@ -40,6 +40,18 @@ A ``citation`` mark (Stage 05) is an ATOM over the visible label text::
 Citations are never merged (two identical adjacent citations stay two), never overlap each other or a
 link, and take part in canonical equality like every other mark.
 
+An ``image`` block (Stage 06, additive: pages without images are byte-identical to Stage 05) carries
+only bounded metadata, never bytes or a path::
+
+    {"id": "block-…", "type": "image", "text": "", "marks": [],
+     "asset": {"id": "asset-<24 hex>", "mime": "image/jpeg|png|webp", "w": 1600, "h": 1200,
+               "width": 30..100,            # percent of the content width
+               "layout": "inline",          # the only layout (free position is not implemented)
+               "caption": "one line"}}
+
+``text`` is always empty (an image line occupies no text offset: marks, find/replace and titles never touch
+it) and ``marks`` is always empty. The caption lives in ``asset.caption``.
+
 Canonical form: marks sorted, non-empty, same-type/same-target marks merged when they
 overlap or touch. The browser (``hq-carnet-rich.js``) implements the same rules; the
 shared vectors in the tests keep both in step. Page text never appears in errors.
@@ -57,7 +69,15 @@ from urllib.parse import urlsplit
 CONTENT_VERSION = 2
 LEGACY_CONTENT_VERSION = 1
 
-BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check")
+BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image")
+IMAGE_TYPE = "image"  # Stage 06 (additive to V2): metadata only, see ``check_asset``
+ASSET_ID_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")
+ASSET_MIMES = ("image/jpeg", "image/png", "image/webp")
+ASSET_LONG_SIDE_MAX = 2560
+ASSET_WIDTH_MIN, ASSET_WIDTH_MAX = 30, 100
+ASSET_CAPTION_MAX = 300
+IMAGES_PER_PAGE_MAX = 32
+ASSET_KEYS = {"id", "mime", "w", "h", "width", "layout", "caption"}
 INLINE_MARKS = ("bold", "italic", "underline", "highlight", "code")
 MARK_ORDER = INLINE_MARKS + ("link", "citation")
 REF_KINDS = ("note", "file", "drawing", "model", "media")
@@ -369,6 +389,51 @@ def _check_marks(text: str, raw: Any, folders: tuple[str, ...] | None, system_na
 # ---------------------------------------------------------------- content validation
 
 
+_CAPTION_CTRL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")  # C0 (tab, CR, LF), DEL, C1 (NEL), U+2028/U+2029 line/paragraph separators: one line
+
+
+def check_caption(caption: Any) -> str:
+    """Image caption rule, identical in the browser (hq-carnet-rich.js ``captionOk``): a string stored as-is, no C0/DEL/C1
+    control and no U+2028/U+2029 (so no tab/CR/LF/NEL or Unicode line break), no unpaired surrogate, at most ``ASSET_CAPTION_MAX`` UTF-16 code units."""
+    if not isinstance(caption, str) or _CAPTION_CTRL_RE.search(caption) or u16_len(caption) > ASSET_CAPTION_MAX:
+        raise ContentError("Légende invalide")
+    try:
+        caption.encode("utf-8")  # an unpaired surrogate cannot be encoded
+    except UnicodeEncodeError as e:
+        raise ContentError("Légende invalide") from e
+    return caption
+
+
+def check_asset(asset: Any) -> dict:
+    """Validate the bounded metadata of an image block. Returns a clean copy. Never carries client text."""
+    if not isinstance(asset, dict) or set(asset) != ASSET_KEYS:
+        raise ContentError("Image invalide")
+    ident = asset["id"]
+    if not isinstance(ident, str) or not ASSET_ID_RE.match(ident):
+        raise ContentError("Image invalide")
+    if asset["mime"] not in ASSET_MIMES:
+        raise ContentError("Image invalide")
+    for key in ("w", "h"):
+        if not _is_int(asset[key]) or not 1 <= asset[key] <= ASSET_LONG_SIDE_MAX:
+            raise ContentError("Image invalide")
+    width = asset["width"]
+    if not _is_int(width) or not ASSET_WIDTH_MIN <= width <= ASSET_WIDTH_MAX:
+        raise ContentError("Largeur d'image invalide")
+    if asset["layout"] != "inline":
+        raise ContentError("Disposition d'image non prise en charge")
+    caption = check_caption(asset["caption"])
+    return {"id": ident, "mime": asset["mime"], "w": asset["w"], "h": asset["h"], "width": width, "layout": "inline", "caption": caption}
+
+
+def asset_key(asset: dict) -> tuple:
+    """Identity of the stored file an image block points at (what the server must verify on the real file)."""
+    return (asset["id"], asset["mime"], asset["w"], asset["h"])
+
+
+def assets_of(content: dict) -> list[dict]:
+    return [b["asset"] for b in content["blocks"] if b.get("type") == IMAGE_TYPE]
+
+
 def _check_line(text: Any) -> str:
     if not isinstance(text, str) or "\n" in text or _TEXT_CTRL_RE.search(text):
         raise ContentError("Texte invalide")
@@ -442,13 +507,24 @@ def parse_content(
     out = []
     total_marks = 0
     plain = True
+    images = 0
     for incoming in blocks:
         if not isinstance(incoming, dict):
             raise ContentError("Bloc invalide")
-        if not set(incoming) <= {"id", "type", "text", "marks", "checked"} or not {"type", "text"} <= set(incoming):
+        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset"} or not {"type", "text"} <= set(incoming):
             raise ContentError("Bloc invalide")
         kind = incoming["type"]
         if kind not in BLOCK_TYPES:
+            raise ContentError("Bloc invalide")
+        asset = None
+        if kind == IMAGE_TYPE:
+            if "asset" not in incoming or "checked" in incoming or incoming["text"] != "" or incoming.get("marks", []) != []:
+                raise ContentError("Bloc image invalide")
+            asset = check_asset(incoming["asset"])
+            images += 1
+            if images > IMAGES_PER_PAGE_MAX:
+                raise ContentError(f"Trop d'images sur la page (max {IMAGES_PER_PAGE_MAX})")
+        elif "asset" in incoming:
             raise ContentError("Bloc invalide")
         checked = False
         if kind == "check":
@@ -467,6 +543,8 @@ def parse_content(
             block["id"] = incoming["id"]
         if kind == "check":
             block["checked"] = checked
+        if asset is not None:
+            block["asset"] = asset
         if kind != "paragraph" or marks:
             plain = False
         out.append(block)
@@ -517,6 +595,8 @@ def store_content(parsed: dict, existing: dict, *, blocks_limit: int | None = No
             item: dict[str, Any] = {"id": ident, "type": block["type"], "text": block["text"], "marks": block["marks"]}
             if block["type"] == "check":
                 item["checked"] = block["checked"]
+            if block["type"] == IMAGE_TYPE:
+                item["asset"] = dict(block["asset"])
             out.append(item)
         return {"version": CONTENT_VERSION, "blocks": out}
     if legacy and parsed["plain"]:
@@ -534,7 +614,10 @@ def store_content(parsed: dict, existing: dict, *, blocks_limit: int | None = No
 def strip_ids(content: dict) -> list:
     out = []
     for block in content["blocks"]:
-        out.append((block["type"], bool(block.get("checked", False)), block["text"], [_mark_key(m) for m in block["marks"]]))
+        row = (block["type"], bool(block.get("checked", False)), block["text"], [_mark_key(m) for m in block["marks"]])
+        if block["type"] == IMAGE_TYPE:
+            row += (tuple(sorted(block["asset"].items())),)
+        out.append(row)
     return out
 
 
@@ -577,8 +660,13 @@ def valid_v2(content: Any) -> bool:
             if not isinstance(block, dict):
                 return False
             keys = {"id", "type", "text", "marks"} | ({"checked"} if block.get("type") == "check" else set())
+            if block.get("type") == IMAGE_TYPE:
+                keys = {"id", "type", "text", "marks", "asset"}
             if set(block) != keys or block["type"] not in BLOCK_TYPES:
                 return False
+            if block["type"] == IMAGE_TYPE:
+                if block["text"] != "" or block["marks"] != [] or check_asset(block["asset"]) != block["asset"]:
+                    return False
             ident = block["id"]
             if not isinstance(ident, str) or not _BLOCK_ID_RE.match(ident) or ident in seen:
                 return False
@@ -643,8 +731,12 @@ def render_txt(content: dict) -> str:
     labels = _number_labels(content["blocks"])
     lines = []
     for block, label in zip(content["blocks"], labels):
-        text = _txt_inline(block)
         kind = block["type"]
+        if kind == IMAGE_TYPE:
+            caption = block["asset"]["caption"]
+            lines.append(f"[Image : {caption}]" if caption else "[Image]")
+            continue
+        text = _txt_inline(block)
         if kind == "bullet":
             text = "- " + text
         elif kind == "number":
@@ -724,13 +816,43 @@ def _md_inline(block: dict) -> str:
     return "".join(_md_wrap(chunk, active) for chunk, active in _segments(block["text"], block["marks"]))
 
 
-def render_markdown(content: dict) -> str:
-    """Deterministic Markdown for the supported structure (a snapshot)."""
+_MD_PATH_SAFE = re.compile(r"[^A-Za-z0-9._~/-]")
+
+
+def _md_path(rel: str) -> str:
+    """Percent-encode a package-relative path for a Markdown link: only [A-Za-z0-9._~/-] stay literal (so ``#``,
+    ``?``, ``%``, spaces, parentheses and non-ASCII can never break or redirect the link). Mirrors the JS renderer."""
+    return _MD_PATH_SAFE.sub(lambda m: "".join("%%%02X" % b for b in m.group(0).encode("utf-8")), rel)
+
+
+def _md_alt(text: str) -> str:
+    return re.sub(r"([\\\[\]])", r"\\\1", text)
+
+
+def render_markdown(content: dict, asset_paths: dict[str, str] | None = None) -> str:
+    """Deterministic Markdown for the supported structure (a snapshot).
+
+    ``asset_paths`` maps an asset id to its path RELATIVE to the export package (never absolute); an image
+    without an entry is rendered as a text placeholder (no dangling link, no binary).
+    """
     labels = _number_labels(content["blocks"])
     parts: list[tuple[str, str, bool]] = []  # (kind, rendered, after a blank separator)
     gap = False
     for block, label in zip(content["blocks"], labels):
         kind = block["type"]
+        if kind == IMAGE_TYPE:
+            asset = block["asset"]
+            caption = asset["caption"]
+            rel = (asset_paths or {}).get(asset["id"])
+            if rel:
+                text = f"![{_md_alt(caption)}]({_md_path(rel)})"
+                if caption:
+                    text += f"\n\n*{_md_escape(caption)}*"
+            else:
+                text = f"*\\[Image : {_md_escape(caption)}\\]*" if caption else "*\\[Image\\]*"
+            parts.append(("img", text, gap))
+            gap = False
+            continue
         if kind in ("paragraph", "heading") and not block["text"].strip():
             gap = True  # a blank line ends any list: numbering restarts, like the TXT export
             continue

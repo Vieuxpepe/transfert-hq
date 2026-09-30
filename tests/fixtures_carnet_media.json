@@ -1,0 +1,421 @@
+{
+ "assets": {
+  "a1": {
+   "id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+   "mime": "image/png",
+   "w": 640,
+   "h": 480,
+   "width": 60,
+   "layout": "inline",
+   "caption": "Vue [A] *1* (x)"
+  },
+  "a2": {
+   "id": "asset-bbbbbbbbbbbbbbbbbbbbbbbb",
+   "mime": "image/jpeg",
+   "w": 640,
+   "h": 480,
+   "width": 60,
+   "layout": "inline",
+   "caption": ""
+  },
+  "a3": {
+   "id": "asset-cccccccccccccccccccccccc",
+   "mime": "image/png",
+   "w": 640,
+   "h": 480,
+   "width": 60,
+   "layout": "inline",
+   "caption": "l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00"
+  }
+ },
+ "render": [
+  {
+   "name": "one image no caption no package",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "intro",
+     "marks": []
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-bbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime": "image/jpeg",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": ""
+     }
+    },
+    {
+     "type": "paragraph",
+     "text": "fin",
+     "marks": []
+    }
+   ],
+   "paths": {},
+   "txt": "intro\n[Image]\nfin\n",
+   "md": "intro\n\n*\\[Image\\]*\n\nfin\n"
+  },
+  {
+   "name": "packaged with caption",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "intro",
+     "marks": []
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "image/png",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": "Vue [A] *1* (x)"
+     }
+    },
+    {
+     "type": "paragraph",
+     "text": "fin",
+     "marks": []
+    }
+   ],
+   "paths": {
+    "asset-aaaaaaaaaaaaaaaaaaaaaaaa": "note.assets/figure-01.png"
+   },
+   "txt": "intro\n[Image : Vue [A] *1* (x)]\nfin\n",
+   "md": "intro\n\n![Vue \\[A\\] *1* (x)](note.assets/figure-01.png)\n\n*Vue \\[A\\] \\*1\\* (x)*\n\nfin\n"
+  },
+  {
+   "name": "packaged path needing escapes",
+   "blocks": [
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-bbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime": "image/jpeg",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": ""
+     }
+    }
+   ],
+   "paths": {
+    "asset-bbbbbbbbbbbbbbbbbbbbbbbb": "my note (1).assets/figure-01.jpg"
+   },
+   "txt": "[Image]\n",
+   "md": "![](my%20note%20%281%29.assets/figure-01.jpg)\n"
+  },
+  {
+   "name": "unpackaged caption placeholder",
+   "blocks": [
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "image/png",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": "Vue [A] *1* (x)"
+     }
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-cccccccccccccccccccccccc",
+      "mime": "image/png",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": "l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00"
+     }
+    }
+   ],
+   "paths": {},
+   "txt": "[Image : Vue [A] *1* (x)]\n[Image : l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00]\n",
+   "md": "*\\[Image : Vue \\[A\\] \\*1\\* (x)\\]*\n\n*\\[Image : l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00\\]*\n"
+  },
+  {
+   "name": "image between list items resets numbering",
+   "blocks": [
+    {
+     "type": "number",
+     "text": "one",
+     "marks": []
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-bbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime": "image/jpeg",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": ""
+     }
+    },
+    {
+     "type": "number",
+     "text": "two",
+     "marks": []
+    }
+   ],
+   "paths": {},
+   "txt": "1. one\n[Image]\n1. two\n",
+   "md": "1. one\n\n*\\[Image\\]*\n\n1. two\n"
+  },
+  {
+   "name": "consecutive images and blank lines",
+   "blocks": [
+    {
+     "type": "paragraph",
+     "text": "",
+     "marks": []
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-bbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime": "image/jpeg",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": ""
+     }
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-cccccccccccccccccccccccc",
+      "mime": "image/png",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": "l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00"
+     }
+    },
+    {
+     "type": "paragraph",
+     "text": "",
+     "marks": []
+    },
+    {
+     "type": "paragraph",
+     "text": "end",
+     "marks": []
+    }
+   ],
+   "paths": {
+    "asset-bbbbbbbbbbbbbbbbbbbbbbbb": "n.assets/figure-01.jpg",
+    "asset-cccccccccccccccccccccccc": "n.assets/figure-02.png"
+   },
+   "txt": "\n[Image]\n[Image : l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00]\n\nend\n",
+   "md": "![](n.assets/figure-01.jpg)\n\n![l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00](n.assets/figure-02.png)\n\n*l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00*\n\nend\n"
+  },
+  {
+   "name": "package path with #, ?, %, space and non-ASCII",
+   "blocks": [
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-bbbbbbbbbbbbbbbbbbbbbbbb",
+      "mime": "image/jpeg",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": ""
+     }
+    },
+    {
+     "type": "image",
+     "text": "",
+     "marks": [],
+     "asset": {
+      "id": "asset-cccccccccccccccccccccccc",
+      "mime": "image/png",
+      "w": 640,
+      "h": 480,
+      "width": 60,
+      "layout": "inline",
+      "caption": "l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00"
+     }
+    }
+   ],
+   "paths": {
+    "asset-bbbbbbbbbbbbbbbbbbbbbbbb": "Rapport #1 \u00e9?%.assets/figure-01.jpg",
+    "asset-cccccccccccccccccccccccc": "Rapport #1 \u00e9?%.assets/figure-02.png"
+   },
+   "txt": "[Image]\n[Image : l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00]\n",
+   "md": "![](Rapport%20%231%20%C3%A9%3F%25.assets/figure-01.jpg)\n\n![l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00](Rapport%20%231%20%C3%A9%3F%25.assets/figure-02.png)\n\n*l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00*\n"
+  }
+ ],
+ "captions": [
+  {
+   "name": "empty",
+   "caption": "",
+   "ok": true
+  },
+  {
+   "name": "ascii 300",
+   "caption": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "ok": true
+  },
+  {
+   "name": "ascii 301",
+   "caption": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "ok": false
+  },
+  {
+   "name": "astral 150 (300 units)",
+   "caption": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+   "ok": true
+  },
+  {
+   "name": "astral 151 (302 units)",
+   "caption": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+   "ok": false
+  },
+  {
+   "name": "astral 200 (400 units)",
+   "caption": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+   "ok": false
+  },
+  {
+   "name": "astral 149 + 2 ascii (300 units)",
+   "caption": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00ab",
+   "ok": true
+  },
+  {
+   "name": "tab",
+   "caption": "a\tb",
+   "ok": false
+  },
+  {
+   "name": "LF",
+   "caption": "a\nb",
+   "ok": false
+  },
+  {
+   "name": "CR",
+   "caption": "a\rb",
+   "ok": false
+  },
+  {
+   "name": "NUL",
+   "caption": "a\u0000b",
+   "ok": false
+  },
+  {
+   "name": "ESC",
+   "caption": "a\u001bb",
+   "ok": false
+  },
+  {
+   "name": "DEL",
+   "caption": "a\u007fb",
+   "ok": false
+  },
+  {
+   "name": "C1 0x80",
+   "caption": "a\u0080b",
+   "ok": false
+  },
+  {
+   "name": "C1 0x85 NEL",
+   "caption": "a\u0085b",
+   "ok": false
+  },
+  {
+   "name": "C1 0x9f",
+   "caption": "a\u009fb",
+   "ok": false
+  },
+  {
+   "name": "NBSP 0xa0 allowed",
+   "caption": "a\u00a0b",
+   "ok": true
+  },
+  {
+   "name": "lone high surrogate",
+   "caption": "a\ud83db",
+   "ok": false
+  },
+  {
+   "name": "lone low surrogate",
+   "caption": "a\ude00b",
+   "ok": false
+  },
+  {
+   "name": "reversed pair",
+   "caption": "\ude00\ud83d",
+   "ok": false
+  },
+  {
+   "name": "valid pair",
+   "caption": "a\ud83d\ude00b",
+   "ok": true
+  },
+  {
+   "name": "accents and CJK",
+   "caption": "Coupe \u00e9 \u65e5\u672c\u8a9e",
+   "ok": true
+  },
+  {
+   "name": "leading/trailing spaces kept as-is",
+   "caption": "  a  ",
+   "ok": true
+  },
+  {
+   "name": "non-string",
+   "caption": 5,
+   "ok": false
+  },
+  {
+   "name": "U+2028 line separator",
+   "caption": "a\u2028b",
+   "ok": false
+  },
+  {
+   "name": "U+2029 paragraph separator",
+   "caption": "a\u2029b",
+   "ok": false
+  },
+  {
+   "name": "U+2027 and U+202A neighbours allowed",
+   "caption": "a\u2027\u202ab",
+   "ok": true
+  }
+ ]
+}

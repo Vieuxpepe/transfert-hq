@@ -310,6 +310,25 @@ body.carnet-focus .topbar,body.carnet-focus .view-bar,body.carnet-focus .bottom-
 .carnet-tool span{font-size:var(--text-sm);font-weight:700}
 .carnet.is-focus .carnet-format,.carnet.is-focus .carnet-panel,.carnet.is-focus [data-carnet-tool],.carnet.is-focus .carnet-export-flag{display:none!important}
 
+/* ---- Stage 06: note images (inline figure atoms; the bytes come from /api/carnet/asset/<id>). */
+.carnet-image-line{display:block;margin:.6em 0;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.carnet-figure{margin:0 auto;display:block;position:relative;max-width:100%;box-sizing:border-box;border-radius:8px;outline:3px solid transparent;outline-offset:3px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.carnet-figure:focus-visible{outline-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+.carnet-image-line[data-selected="true"] .carnet-figure{outline-color:var(--accent)}
+.carnet-img{display:block;width:100%;height:auto;border-radius:6px;background:var(--panel-2);-webkit-user-drag:none}
+.carnet-caption{margin-top:.35em;font-size:.88em;line-height:1.35;text-align:center;color:var(--muted);overflow-wrap:anywhere;white-space:pre-wrap}
+.carnet-figure[data-broken="true"]{min-height:var(--carnet-tap);border:1px dashed var(--line);padding:10px;color:var(--muted);text-align:center;font-size:var(--text-sm)}
+.carnet-figure[data-broken="true"]::before{content:"Image indisponible";display:block}
+.carnet-figure[data-broken="true"] .carnet-img{display:none}
+.carnet-file-input{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none}
+.carnet-image-hint,.carnet-export-images{margin:0;font-size:var(--text-sm)}
+.carnet-image-width-row{flex-wrap:nowrap}
+.carnet-image-width-row input[type="range"]{flex:1 1 120px;min-width:0;min-height:var(--carnet-tap);accent-color:var(--accent)}
+.carnet-image-width-label{font-size:var(--text-sm);color:var(--muted)}
+.carnet-image-width-out{min-width:3.4em;text-align:right;font-variant-numeric:tabular-nums;font-size:var(--text-sm)}
+.carnet-image-tools[hidden],.carnet-image-hint[hidden],.carnet-export-images[hidden]{display:none}
+.carnet-msg[data-kind="info"]{color:var(--muted)}
+
 /* ---- Print / PDF (browser print path): only the structured snapshot is printed. */
 #hq-carnet-print{display:none}
 @media print{
@@ -357,3 +376,9 @@ body.carnet-focus .topbar,body.carnet-focus .view-bar,body.carnet-focus .bottom-
 .carnet-src-msg:empty{display:none}
 a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 @media print{.carnet-src-layer{display:none!important}}
+@media print{
+  body.carnet-printing #hq-carnet-print .carnet-image-line{display:block;margin:.6em 0;break-inside:avoid;page-break-inside:avoid}
+  body.carnet-printing #hq-carnet-print .carnet-figure{margin:0 auto;max-width:100%;outline:none;break-inside:avoid;page-break-inside:avoid}
+  body.carnet-printing #hq-carnet-print .carnet-img{display:block;width:100%;height:auto;max-height:23cm;object-fit:contain;background:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body.carnet-printing #hq-carnet-print .carnet-caption{color:#000;font-size:.85em;text-align:center;break-before:avoid;page-break-before:avoid}
+}

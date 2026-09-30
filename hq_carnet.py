@@ -10,6 +10,12 @@ unrelated writes never convert a V1 page; writing a page stores V2 when it fits 
 a plain page that does not fit stays a compact V1 block (no text lost, no amplification).
 ``page_export`` writes a confined, no-clobber TXT/Markdown snapshot into Inbox/Uni/Print.
 
+Images (Stage 06, ``hq_carnet_media``): an ``image`` block carries only bounded metadata (asset id, MIME,
+dimensions, width %, caption). The bytes live in ``<ROOT>/.hq-carnet/assets/`` (generated names, write-once,
+never deleted by Carnet in Stage 06: orphans count against the quota). ``page_save`` verifies every NEWLY
+referenced asset against the real file; backup copies exactly the referenced assets; a Markdown export with
+images is a package (``<name>.md`` + ``<name>.assets/``).
+
 Revisions:
 - every page has its own ``rev`` (``page_save`` checks ``expected_rev``);
 - structural actions check ``expected_notebook_rev``;
@@ -29,6 +35,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import hq_carnet_media as media
 import hq_carnet_rich as rich
 import hq_carnet_sources as sources
 import hq_state
@@ -127,6 +134,7 @@ def bind(**kwargs: Any) -> None:
     with _guard:
         _cb.update(kwargs)
         sources.bind(**kwargs)  # Stage 05: sources share the root / confinement callbacks
+        media.bind(**kwargs)  # Stage 06: image storage shares the root
         _ready = _cb.get("root") is not None
 
 
@@ -204,6 +212,7 @@ def limits() -> dict:
         "page_blocks": rich.BLOCKS_MAX,
         "notebook_blocks": rich.NOTEBOOK_BLOCKS_MAX,
         "marks_per_block": rich.MARKS_PER_BLOCK_MAX,
+        **media.limits(),
     }
 
 
@@ -637,6 +646,7 @@ def _page_save(state: dict, data: dict, now: float) -> dict:
             )
             if not rich.same_as_stored(parsed, page["content"]):
                 new_content = rich.store_content(parsed, page["content"], budget_ok=lambda delta: _block_budget_ok(state, delta))
+                _verify_media(page["content"], new_content)
         except rich.ContentError as e:
             raise CarnetError(str(e)) from e
         changed = changed or new_content is not None
@@ -653,6 +663,38 @@ def _page_save(state: dict, data: dict, now: float) -> dict:
     page["rev"] += 1
     page["updated_at"] = now
     return {"page": page, "_write": True}
+
+
+def _verify_media(old: dict, new: dict) -> None:
+    """Every image file a save newly points at must exist and match the real file (mime/size bounds/dimensions).
+
+    References already stored on the page are not re-verified (a missing file there is preserved state, never a
+    reason to block unrelated edits). Assets are write-once, so no assets lock is needed here (lock order:
+    the assets lock is always OUTER; ``page_save`` holds only the notebook lock).
+    """
+    known = {rich.asset_key(a) for a in rich.assets_of(old)} if old["version"] == rich.CONTENT_VERSION else set()
+    checked: set[tuple] = set()
+    for asset in rich.assets_of(new):
+        key = rich.asset_key(asset)
+        if key in known or key in checked:
+            continue
+        checked.add(key)
+        try:
+            media.verify_asset(asset)
+        except media.MediaError as e:
+            if e.status >= 500:
+                raise CarnetStorageError(str(e), 503) from e
+            raise CarnetError(str(e)) from e
+
+
+def referenced_assets(state: dict) -> set[str]:
+    """Asset ids referenced by any page (trash included). Derived, never a stored counter."""
+    out: set[str] = set()
+    for page in state["pages"]:
+        content = page["content"]
+        if content.get("version") == rich.CONTENT_VERSION:
+            out.update(a["id"] for a in rich.assets_of(content))
+    return out
 
 
 def _structural_page(state: dict, data: dict) -> dict:
@@ -908,8 +950,8 @@ def _export_dir(root: Path | str, parts: list[str]) -> Path:
     return cur
 
 
-def render_export(content: dict, fmt: str) -> str:
-    return rich.render_markdown(content) if fmt == "md" else rich.render_txt(content)
+def render_export(content: dict, fmt: str, asset_paths: dict[str, str] | None = None) -> str:
+    return rich.render_markdown(content, asset_paths) if fmt == "md" else rich.render_txt(content)
 
 
 def export_copy(data: dict) -> dict:
@@ -942,26 +984,69 @@ def export_copy(data: dict) -> dict:
     leaf_ok = _cb.get("safe_leaf_name")
     if callable(leaf_ok) and leaf_ok(name) is None:
         raise CarnetError("Nom de fichier invalide")
-    payload = render_export(content, fmt).encode("utf-8")
     directory = _export_dir(_cb["root"], parts)
     target = directory / name
+    images = rich.assets_of(content) if fmt == "md" else []
+    package: Path | None = None
+    asset_paths: dict[str, str] = {}
+    exists = CarnetConflict({"error": "Un fichier du même nom existe déjà — choisis un autre nom", "code": "export_exists"})
     if os.path.lexists(target):
-        raise CarnetConflict({"error": "Un fichier du même nom existe déjà — choisis un autre nom", "code": "export_exists"})
-    created = False
+        raise exists
+    if images:
+        # Markdown with images is a package: ``<stem>.md`` + ``<stem>.assets/figure-NN.<ext>`` (relative links).
+        package_name = name[: -len(".md")] + ".assets"
+        if callable(leaf_ok) and leaf_ok(package_name) is None:
+            raise CarnetError("Nom de fichier invalide")
+        package = directory / package_name
+        if os.path.lexists(package):
+            raise exists
+        for asset in images:
+            if asset["id"] not in asset_paths:
+                asset_paths[asset["id"]] = f"{package_name}/figure-{len(asset_paths) + 1:02d}{media.MIME_EXT[asset['mime']]}"
+    payload = render_export(content, fmt, asset_paths or None).encode("utf-8")
+    created: list[Path] = []
+    made_package = False
+
+    def _undo() -> None:
+        for item in reversed(created):
+            try:
+                item.unlink()
+            except OSError:
+                pass
+        if made_package and package is not None:
+            try:
+                package.rmdir()
+            except OSError:
+                pass
+
     try:
+        if package is not None:
+            try:
+                package.mkdir()
+            except FileExistsError as e:
+                raise exists from e
+            made_package = True
+            for asset_id, rel in asset_paths.items():
+                dest = package / rel.rsplit("/", 1)[1]
+                created.append(dest)
+                try:
+                    media.copy_asset(asset_id, dest)
+                except media.MediaError as e:
+                    raise CarnetError("Image manquante — export refusé") from e
+        created.append(target)
         with open(target, "xb") as handle:
-            created = True
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
     except FileExistsError as e:
-        raise CarnetConflict({"error": "Un fichier du même nom existe déjà — choisis un autre nom", "code": "export_exists"}) from e
+        created = [item for item in created if item != target]  # never delete a file that is not ours
+        _undo()
+        raise exists from e
+    except (CarnetError, CarnetConflict):
+        _undo()
+        raise
     except OSError as e:
-        if created:
-            try:
-                target.unlink()
-            except OSError:
-                pass
+        _undo()
         raise CarnetStorageError("Écriture de la copie impossible", 503) from e
     return {
         "ok": True,
@@ -971,6 +1056,7 @@ def export_copy(data: dict) -> dict:
         "rev": rev,
         "format": fmt,
         "exported_at": _now(),
+        **({"assets_dir": "/".join(parts + [package.name]), "assets": len(asset_paths)} if package is not None else {}),
     }
 
 
@@ -1025,6 +1111,28 @@ def http_post(data: Any) -> tuple[int, dict]:
         return 503, {"error": "Carnet inaccessible", "code": "storage_error"}
 
 
+# ---------------------------------------------------------------- media (Stage 06)
+
+
+def http_asset_upload(read, length: Any, declared_mime: str | None) -> tuple[int, dict]:
+    """``POST /api/carnet/asset``: ``read(n)`` streams the raw body. Every refusal is path-free."""
+    try:
+        return 200, media.store_upload(read, length, declared_mime)
+    except media.MediaError as e:
+        return e.status, {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, {"error": "Enregistrement de l'image impossible", "code": "storage_error"}
+
+
+def http_asset_usage() -> tuple[int, dict]:
+    try:
+        return 200, media.usage()
+    except media.MediaError as e:
+        return e.status, {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, {"error": "Images inaccessibles", "code": "storage_error"}
+
+
 # ---------------------------------------------------------------- backup
 
 
@@ -1048,7 +1156,8 @@ def _write_exclusive(out: Path, payload: bytes) -> None:
 
 
 def snapshot_to(root: Path | str, dest_dir: Path) -> dict:
-    """Copy committed Carnet bytes into ``dest_dir``: ``notebook.json`` and (Stage 05) ``sources.json``.
+    """Copy committed Carnet bytes into ``dest_dir``: ``notebook.json``, (Stage 05) ``sources.json`` and
+    (Stage 06) the image assets the snapshotted notebook references, under ``assets/``.
 
     Each file is taken under its own path lock (coherent with writers); citations only carry edition
     ids + a snapshot, so the two files are independently consistent. Only committed files are copied,
@@ -1056,34 +1165,63 @@ def snapshot_to(root: Path | str, dest_dir: Path) -> dict:
     bytes are copied as-is and reported ``valid: False``. A redirected (symlink/junction) path is
     refused (CarnetStorageError) and never followed. Linked PDFs live under Inbox/Uni/Print and are
     covered by the legacy folder backup: only the metadata is copied here.
+
+    Assets: the referenced set is derived from the SAME notebook bytes that are copied (snapshot
+    consistency). Assets are write-once and never deleted in Stage 06, so a file added after the notebook
+    read is simply not part of this snapshot and nothing referenced can disappear mid-copy. Only
+    referenced assets are copied (no temp files, no unrelated files, no symlinks). A referenced asset that
+    is missing/unreadable, or an asset reference that does not validate, makes the snapshot ``valid: False``
+    (which blocks backup retention) without failing the legacy backup. Lock order: assets lock (outer),
+    then the notebook lock briefly.
     """
+    with media.assets_lock(root):
+        return _snapshot_locked(root, dest_dir)
+
+
+def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
     src = notebook_path(root)
     payload: bytes | None = None
     valid = True
+    parsed: Any = None
     with hq_state.path_lock(src):
         confined_path(root)
         if os.path.lexists(src):
             if not src.is_file():
                 raise CarnetStorageError("notebook.json n'est pas un fichier — conservé")
             payload = src.read_bytes()
+    refs: set[str] = set()
     if payload is not None:
         try:
             parsed = json.loads(payload.decode("utf-8"))
             valid = isinstance(parsed, dict) and parsed.get("version") == VERSION and _usable(parsed)
         except (UnicodeDecodeError, json.JSONDecodeError):
             valid = False
+        if valid:
+            refs = referenced_assets(parsed)
     try:
         src_payload, src_valid = sources.snapshot_bytes(root)
     except sources.SourceStorageError as e:
         raise CarnetStorageError(str(e)) from e
     if payload is None and src_payload is None:
         return {"ok": True, "included": False, "status": "absent"}
+    if refs:
+        try:
+            media.confined_assets_dir(root)  # a redirected assets directory is refused before anything is written
+        except media.MediaError as e:
+            raise CarnetStorageError(str(e), e.status if e.status >= 500 else 409) from e
     dest_dir.mkdir(parents=True, exist_ok=True)
     if payload is not None:
         _write_exclusive(dest_dir / FILE_NAME, payload)
     if src_payload is not None:
         _write_exclusive(dest_dir / sources.FILE_NAME, src_payload)
+    assets_report: dict | None = None
+    if refs:
+        assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
+        if assets_report["missing"]:
+            valid = False
     out: dict = {"ok": True, "included": True, "status": "included", "bytes": len(payload or b""), "valid": bool(valid and src_valid)}
     if src_payload is not None:  # the accepted Stage-01 status shape is unchanged when there are no sources
         out["sources"] = {"bytes": len(src_payload), "valid": bool(src_valid)}
+    if assets_report is not None:  # ... and when there are no images
+        out["assets"] = assets_report
     return out

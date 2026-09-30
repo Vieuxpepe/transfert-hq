@@ -2540,21 +2540,22 @@ function hqCarnetMissing() {
     if (carnetRetrying) return;
     carnetRetrying = true;
     btn.disabled = true;
-    const load = (src, done) => {
+    const load = (src, done, optional) => {
       const el = document.createElement('script');
       el.src = src;
       el.onload = done;
-      el.onerror = () => { el.remove(); carnetRetrying = false; btn.disabled = false; };
+      el.onerror = () => { el.remove(); if (optional) { done(); return; } carnetRetrying = false; btn.disabled = false; };
       document.body.appendChild(el);
     };
     // Stage 04/05: the structured-content and sources modules must load before the editor.
-    load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet.js', () => {
+    // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
+    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    })));
+    }))), true);
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5308,6 +5309,7 @@ def render_app() -> bytes:
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-rich.js"></script>
 <script src="/assets/hq-carnet-sources.js"></script>
 <script src="/assets/hq-carnet.js"></script>
@@ -5878,7 +5880,73 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_carnet.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw == "/api/carnet/asset":
+            code, payload = hq_carnet.http_asset_usage()
+            self._json(code, payload)
+            return True
+        if raw.startswith("/api/carnet/asset/"):
+            self._carnet_asset_get(raw[len("/api/carnet/asset/"):])
+            return True
         return False
+
+    def _carnet_asset_get(self, asset_id: str) -> None:
+        """Stage 06: serve one confined Carnet image. Admin-only (the caller already enforced the role).
+        Fixed Content-Type from the stored extension, nosniff, a locked-down CSP, never framed; private/no-cache + ETag."""
+        media = hq_carnet.media
+        try:
+            handle, mime, size = media.open_asset(asset_id)
+        except media.MediaError as e:
+            self._json(e.status, {"error": str(e), "code": e.code})
+            return
+        except OSError:
+            self._json(503, {"error": "Images inaccessibles", "code": "storage_error"})
+            return
+        etag = f'"{asset_id}"'  # assets are write-once: the id IS the version
+        with handle:
+            if (self.headers.get("If-None-Match") or "").strip() == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, no-cache")
+                self.send_header("Content-Length", "0")
+                self._security_headers()
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(size))
+            self.send_header("ETag", etag)
+            # private + no-cache: the browser may keep the bytes but MUST revalidate (auth is checked on every
+            # request; an unchanged image costs a 304). Keeps the editor from re-downloading on every re-render.
+            self.send_header("Cache-Control", "private, no-cache")
+            self.send_header("Content-Disposition", "inline")
+            self._security_headers()
+            self.send_header("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox; frame-ancestors 'none'")
+            self.end_headers()
+            sent = 0
+            while sent < size:
+                chunk = handle.read(min(CHUNK, size - sent))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                sent += len(chunk)
+
+    def _carnet_asset_post(self) -> None:
+        """Stage 06: raw-body image upload (no JSON/base64, no client file name or path). Bounded by
+        Content-Length BEFORE any read; the body is streamed to a generated temp file by hq_carnet_media."""
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            self._json(411, {"error": "Content-Length requis", "code": "bad_length"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        declared = (self.headers.get("X-Carnet-Mime") or "").strip().lower() or None
+        # A stalled client is bounded by the handler's existing per-connection timeout (REQ_TIMEOUT_SEC, see setup()).
+        code, payload = hq_carnet.http_asset_upload(self.rfile.read, length, declared)
+        if code != 200:
+            self.close_connection = True  # the unread body must never be parsed as the next request
+        self._json(code, payload)
 
     def _hq_post(self, raw: str) -> bool:
         if self._drawings_post(raw):
@@ -5995,6 +6063,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)})
             except hq_calendar.CalendarConflict as e:
                 self._json(409, {"error": str(e)})
+            return True
+        if raw == "/api/carnet/asset":
+            self._carnet_asset_post()
             return True
         if raw == "/api/carnet":
             try:

@@ -631,7 +631,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py hq_carnet_media.py
   node tests/check_hq_features.mjs
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
@@ -641,6 +641,7 @@ Commandes
   node tests/check_hq_carnet_library.mjs
   node tests/check_hq_carnet_rich.mjs
   node tests/check_hq_carnet_sources.mjs
+  node tests/check_hq_carnet_media.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
@@ -649,6 +650,29 @@ Commandes
   (optionnel, Playwright Chromium + WebKit, profil iPhone ; serveur loopback jetable inclus) python tests/visual_model_playwright.py
   (optionnel, Playwright Chromium bureau + WebKit iPad/iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_carnet_playwright.py [--part stage02|stage03]
   (optionnel, Playwright Node + Chromium ; serveur loopback jetable via tests/carnet_test_server.py, à lancer depuis une copie jetable) node tests/visual_carnet_rich_playwright.mjs
+  (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_media_playwright.mjs
+
+Carnet — images (étape 06)
+--------------------------
+  Stockage   <ROOT>/.hq-carnet/assets/asset-<24 hex>.<jpg|png|webp> (noms générés, jamais de chemin client).
+             Les pages ne contiennent que des métadonnées bornées (id, type MIME, dimensions, largeur 30-100 %,
+             légende) : jamais d'octets, jamais de chemin. Pas de HEIC, pas d'image à position libre.
+  Limites    12 Mo par fichier stocké (source choisie <= 16 Mo, <= 50 Mpx), grand côté <= 2560 px, 250 Mo au total,
+             512 fichiers, 32 images par page, légende <= 300 caractères. Appliquées côté serveur.
+  Traitement Le NAVIGATEUR redimensionne (<= 2560 px), applique l'orientation EXIF aux pixels et réencode
+             (ce qui retire EXIF/GPS) AVANT l'envoi. Le SERVEUR (stdlib, aucun décodeur) ne transforme jamais les
+             pixels : il valide la structure (signature, segments/chunks, CRC PNG, taille RIFF, EOI JPEG), lit les
+             dimensions réelles, refuse EXIF orientation != 1, animés, tronqués, hors limites. Il ne détecte pas un
+             flux de pixels corrompu dans un conteneur bien formé.
+  API        POST /api/carnet/asset (corps brut, admin + CSRF, Content-Length obligatoire, en-tête facultatif
+             X-Carnet-Mime comparé au contenu réel) ; GET /api/carnet/asset/<id> ; GET /api/carnet/asset (usage).
+  Cycle      Un envoi est durable dès qu'il est finalisé. Retirer/remplacer une image ne supprime RIEN : les orphelins
+             comptent dans le quota (message explicite quand il est atteint). Aucun nettoyage automatique ni manuel
+             à l'étape 06 (un brouillon hors ligne peut encore référencer un fichier que le serveur ne voit pas) :
+             reporté à une étape avec sémantique d'atteignabilité brouillons/historique.
+  Sauvegarde Les images RÉFÉRENCÉES par le carnet copié sont ajoutées sous Carnet/assets/ ; un fichier manquant ou
+             des métadonnées invalides rendent la copie « valid: false » (la purge des anciens backups est alors
+             suspendue). Export Markdown avec images : <nom>.md + <nom>.assets/ (liens relatifs).
 
 Lecteur 3D (.stl, .glb)
 -----------------------

@@ -87,6 +87,22 @@
     exportFail: "Copie impossible",
     tooManyLines: "Trop de lignes pour la mise en forme (max 8192) — réduis la page.",
   };
+  const IMG_MSG = {
+    prep: "Préparation de l'image…",
+    up: "Téléversement…",
+    stalePage: "La page a changé pendant l'envoi — image non insérée (elle reste stockée dans le carnet).",
+    staleAnchor: "L'emplacement a changé pendant l'envoi — image non insérée (elle reste stockée dans le carnet).",
+    staleTool: "Cette image a changé ailleurs — vérifie-la puis recommence.",
+    busy: "Une image est déjà en cours d'envoi.",
+    tooMany: "Trop d'images sur cette page (max 32).",
+    unavailable: "Images indisponibles (module non chargé).",
+    readonly: "Page en lecture seule.",
+    removed: "Image retirée de la page (le fichier reste stocké dans le carnet).",
+    inserted: "Image insérée",
+    replaced: "Image remplacée",
+    confirmRemove: "Confirmer le retrait",
+    remove: "Retirer",
+  };
   const FORMATS = [
     ["bold", "G", "Gras (Ctrl+B)"],
     ["italic", "I", "Italique (Ctrl+I)"],
@@ -1770,6 +1786,8 @@
     find: { open: false, q: "", r: "", caseSensitive: false, wholeWord: false, index: -1, matches: [], undo: null },
     exportOpen: false,
     printNode: null,
+    // Stage 06: {panelOpen, busy, origin: {pageId, mode, anchorId, replace}, sel: {pageId, blockId, assetId, rev, sig}, confirm, timer}
+    image: { panelOpen: false, busy: false, origin: null, sel: null, confirm: false, timer: null, inputs: null },
   };
 
   function el(tag, attrs, children) {
@@ -1951,6 +1969,7 @@
     tools.appendChild(toolBtn("btn-carnet-format", "Mise en forme", "Aa"));
     tools.appendChild(toolBtn("btn-carnet-find", "Rechercher et remplacer dans la page", "Rechercher"));
     tools.appendChild(toolBtn("btn-carnet-cite", "Insérer une référence (source, page)", "Référence"));
+    tools.appendChild(toolBtn("btn-carnet-image", "Insérer une image (appareil photo, photos, fichiers)", "Image"));
     tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
@@ -2020,6 +2039,8 @@
     const linkPanel = buildLinkPanel();
     const findPanel = buildFindPanel();
     const exportPanel = buildExportPanel();
+    const imagePanel = buildImagePanel();
+    const imageTools = buildImageTools();
     const paper = el("div", { class: "carnet-paper" }, [editor]);
     const stage = el("div", { class: "carnet-stage" }, [paper]);
 
@@ -2035,7 +2056,7 @@
     ]);
     const focusExit = iconButton("btn-carnet-focus-exit", "Quitter le mode concentration (Échap)", ICON.unfocus, { class: "carnet-btn carnet-focus-exit" });
 
-    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, formatBar, linkPanel, findPanel, exportPanel, stage, bottom, focusExit]);
+    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, formatBar, linkPanel, findPanel, exportPanel, imagePanel, imageTools, stage, bottom, focusExit]);
     const lib = buildLibrary();
     const libBackdrop = el("div", { class: "carnet-lib-backdrop", "aria-hidden": "true", hidden: true });
     root.append(lib, libBackdrop, main);
@@ -2092,6 +2113,7 @@
       else if (b.id === "btn-carnet-find") toggleFind();
       else if (b.id === "btn-carnet-cite") openCitePicker();
       else if (b.id === "btn-carnet-export") toggleExport();
+      else if (b.id === "btn-carnet-image") toggleImagePanel();
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -2985,6 +3007,7 @@
     if (ui.ctxOpen) renderContext();
     renderExportState();
     refreshFormatState();
+    refreshImageUi();
     if (ui.find.open) findUpdateUi();
   }
 
@@ -3012,6 +3035,7 @@
     ui.pendingMarks = null;
     findRefresh();
     closeLink();
+    closeImageTools();
   }
 
   /**
@@ -3333,6 +3357,8 @@
       applyFormat(t === "formatBold" ? "bold" : t === "formatItalic" ? "italic" : "underline");
     } else if (t.indexOf("format") === 0 || t === "insertFromDrop" || t === "insertFromPaste" || t === "insertFromPasteAsQuotation") {
       ev.preventDefault(); // never let the browser create its own formatting/HTML
+    } else if ((t === "deleteContentBackward" || t === "deleteContentForward") && imgKeyAdjacent(ev)) {
+      return; // next to an image: Backspace/Delete selected it instead of deleting it
     } else if (t === "deleteContentBackward") {
       const sel = readSel();
       if (sel && sel.start === sel.end) {
@@ -3375,6 +3401,7 @@
   }
 
   function onEditorKey(ev) {
+    if (onImageKey(ev)) return;
     if ((ev.key === "Enter" || ev.key === " ") && ev.target && ev.target.closest && ev.target.closest("[data-carnet-citation]") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       const w = ev.target.closest("[data-carnet-citation]");
       if (w && ui.editor.contains(w)) {
@@ -3408,6 +3435,13 @@
   function onEditorClick(ev) {
     const t = ev.target && ev.target.closest ? ev.target : null;
     if (!t) return;
+    const fig = t.closest("[data-carnet-image]");
+    if (fig && ui.editor.contains(fig)) {
+      ev.preventDefault();
+      selectImageLine(fig.closest("[data-carnet-line]"));
+      return;
+    }
+    if (ui.image.sel) closeImageTools(""); // a click in the text leaves the image
     const box = t.closest("[data-carnet-check]");
     if (box && ui.editor.contains(box)) {
       ev.preventDefault();
@@ -3440,6 +3474,7 @@
     ed.addEventListener("drop", (ev) => ev.preventDefault());
     ed.addEventListener("keydown", onEditorKey);
     ed.addEventListener("click", onEditorClick);
+    ed.addEventListener("error", onImageError, true); // <img> errors do not bubble: capture
     ed.addEventListener("mousedown", (ev) => {
       if (ev.target && ev.target.closest && ev.target.closest("[data-carnet-check]")) ev.preventDefault();
     });
@@ -4067,6 +4102,7 @@
       el("div", { class: "carnet-panel-row" }, [copy]),
       form,
       stale,
+      el("p", { id: "carnet-export-images", class: "hint carnet-export-images", hidden: true, text: "Cette page contient des images : « Enregistrer une copie dans Transfert » (Markdown) les joint dans un dossier .assets ; le .md téléchargé les remplace par un libellé, le .txt aussi." }),
       msg,
       el("div", { class: "carnet-panel-row" }, [el("button", { type: "button", id: "btn-carnet-export-close", class: "carnet-small", text: "Fermer" })]),
     ]);
@@ -4119,6 +4155,504 @@
     if (s) s.hidden = !(stale && ui.exportOpen);
     const flag = doc.getElementById("carnet-export-flag");
     if (flag) flag.hidden = !stale;
+    const hint = doc.getElementById("carnet-export-images");
+    if (hint) hint.hidden = !(ui.exportOpen && e && Rich.assetsOf(localLines(e.local)).length > 0);
+  }
+
+  // ---------------------------------------------------------------- Stage 06: note images
+  //
+  // Every image mutation goes through the SAME path as typing: lines -> c.edit() (draft + generation +
+  // autosave + revision/conflict handling). The tools are bound to {page, block, asset}; each mutation
+  // re-reads the CURRENT state and refuses when that exact object is gone or was changed elsewhere.
+  // The browser resizes/re-encodes (hq-carnet-media.js); the server only validates and bounds.
+
+  const Media = global.HqCarnetMedia || null;
+
+  function imgSig(a) {
+    return a.id + "|" + a.width + "|" + a.caption;
+  }
+
+  function imgFind(lines, blockId, e) {
+    const alias = (e && e.alias) || {};
+    const want = [blockId, alias[blockId]].filter(Boolean);
+    return lines.findIndex((l) => l.id && want.indexOf(l.id) >= 0);
+  }
+
+  function imgNote(text, isError) {
+    const n = doc.getElementById("carnet-image-msg");
+    if (n) {
+      n.textContent = text || "";
+      n.setAttribute("data-kind", isError ? "error" : "info");
+    }
+    if (text && !(ui.image.panelOpen && n)) flashMsg(text);
+  }
+
+  function buildImagePanel() {
+    const I = ui.image;
+    const msg = el("p", { id: "carnet-image-msg", class: "carnet-msg", role: "status", "aria-live": "polite" });
+    const mkInput = (kind, accept, capture) => {
+      const attrs = { type: "file", class: "carnet-file-input", accept, tabindex: "-1", "aria-hidden": "true", "data-carnet-image-input": kind };
+      if (capture) attrs.capture = capture; // standards-based: a hint that mobile browsers may honour (desktop: plain file dialog)
+      const input = el("input", attrs);
+      input.addEventListener("change", onImageInput);
+      return input;
+    };
+    const Mm = Media || { ACCEPT: "image/jpeg,image/png,image/webp", ACCEPT_FILES: ".jpg,.jpeg,.png,.webp" };
+    I.inputs = {
+      camera: mkInput("camera", Mm.ACCEPT, "environment"),
+      photos: mkInput("photos", Mm.ACCEPT),
+      files: mkInput("files", Mm.ACCEPT_FILES),
+    };
+    const src = (id, kind, label) => {
+      const b = el("button", { type: "button", id, class: "carnet-small", "data-carnet-image-source": kind, text: label });
+      keepFocus(b);
+      return b;
+    };
+    const panel = el("div", { id: "hq-carnet-image-panel", class: "carnet-panel", role: "group", "aria-label": "Insérer une image", hidden: true }, [
+      el("div", { class: "carnet-panel-row" }, [
+        src("btn-carnet-image-camera", "camera", "Appareil photo"),
+        src("btn-carnet-image-photos", "photos", "Photos"),
+        src("btn-carnet-image-files", "files", "Fichiers"),
+      ]),
+      el("p", { class: "hint carnet-image-hint", text: "JPEG, PNG ou WebP · réduite à 2560 px · 12 Mo max après réduction." }),
+      msg,
+      el("div", { class: "carnet-panel-row" }, [el("button", { type: "button", id: "btn-carnet-image-close", class: "carnet-small", text: "Fermer" })]),
+      I.inputs.camera, I.inputs.photos, I.inputs.files,
+    ]);
+    panel.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b) return;
+      if (b.id === "btn-carnet-image-close") toggleImagePanel(false);
+      else if (b.hasAttribute("data-carnet-image-source")) pickImage(b.getAttribute("data-carnet-image-source"), null);
+    });
+    return panel;
+  }
+
+  function buildImageTools() {
+    const range = el("input", {
+      type: "range", id: "carnet-image-width", min: String(Rich.ASSET_WIDTH_MIN), max: String(Rich.ASSET_WIDTH_MAX), step: "5", value: "100", "aria-label": "Largeur de l'image",
+    });
+    const out = el("output", { id: "carnet-image-width-out", class: "carnet-image-width-out", text: "100 %" });
+    const caption = el("input", {
+      type: "text", id: "carnet-image-caption", class: "carnet-input", maxlength: String(Rich.ASSET_CAPTION_MAX), autocomplete: "off", spellcheck: "true",
+      placeholder: "Légende", "aria-label": "Légende de l'image",
+    });
+    const btn = (id, text, extra) => el("button", Object.assign({ type: "button", id, class: "carnet-small", text }, extra || {}));
+    const tools = el("div", { id: "hq-carnet-image-tools", class: "carnet-panel carnet-image-tools", role: "group", "aria-label": "Outils de l'image", "data-carnet-image-tools": "", hidden: true }, [
+      el("div", { class: "carnet-panel-row carnet-image-width-row" }, [
+        el("label", { class: "carnet-image-width-label", for: "carnet-image-width", text: "Largeur" }), range, out,
+      ]),
+      el("div", { class: "carnet-panel-row" }, [caption]),
+      el("div", { class: "carnet-panel-row" }, [
+        btn("btn-carnet-image-replace", "Remplacer…"),
+        btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),
+        btn("btn-carnet-image-done", "Terminé"),
+      ]),
+      el("p", { id: "carnet-image-tools-msg", class: "carnet-msg", role: "status", "aria-live": "polite" }),
+    ]);
+    range.addEventListener("input", () => imgMutate((a) => Object.assign({}, a, { width: clampWidth(range.value) })));
+    caption.addEventListener("input", () => imgMutate((a) => Object.assign({}, a, { caption: cleanCaption(caption.value) })));
+    caption.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        closeImageTools("", true);
+      }
+    });
+    tools.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeImageTools("", true);
+      }
+    });
+    tools.addEventListener("click", (ev) => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b) return;
+      if (b.id === "btn-carnet-image-done") closeImageTools("", true);
+      else if (b.id === "btn-carnet-image-replace") replaceSelectedImage();
+      else if (b.id === "btn-carnet-image-remove") removeSelectedImage();
+    });
+    return tools;
+  }
+
+  function clampWidth(v) {
+    const n = Math.round(Number(v));
+    if (!isFinite(n)) return Rich.ASSET_WIDTH_MAX;
+    return Math.max(Rich.ASSET_WIDTH_MIN, Math.min(Rich.ASSET_WIDTH_MAX, n));
+  }
+
+  function cleanCaption(v) {
+    return Rich.cleanCaptionText(v);
+  }
+
+  function toggleImagePanel(force) {
+    const I = ui.image;
+    I.panelOpen = typeof force === "boolean" ? force : !I.panelOpen;
+    const panel = doc.getElementById("hq-carnet-image-panel");
+    if (panel) panel.hidden = !I.panelOpen;
+    const btn = doc.getElementById("btn-carnet-image");
+    if (btn) btn.setAttribute("aria-expanded", I.panelOpen ? "true" : "false");
+    if (!I.panelOpen) I.origin = null;
+    const msg = doc.getElementById("carnet-image-msg");
+    if (msg && !I.busy) msg.textContent = "";
+    refreshImageUi();
+  }
+
+  /** Where a new image goes, decided NOW (before any native picker/upload delay) and re-checked when it lands. */
+  function imgCaptureTarget(e) {
+    const lines = Rich.parseEditor(ui.editor);
+    const total = Rich.flat(lines).length;
+    const live = readSel();
+    const c = ui.selCache;
+    const pos = live ? live.end : c ? Math.min(c.end, total) : total;
+    const at = Rich.locate(lines, pos);
+    const line = lines[at.line];
+    let mode = "after";
+    if (line.type === "paragraph" && line.text === "") mode = "before"; // the blank line stays BELOW the image: keep typing there
+    else if (line.type !== "image" && at.off === 0 && line.text !== "") mode = "before";
+    return { pageId: e.id, mode, anchorId: line.id, replace: null };
+  }
+
+  function pickImage(kind, replace) {
+    const I = ui.image;
+    if (!Media) return imgNote(IMG_MSG.unavailable, true);
+    const e = curEntry();
+    if (!e) return imgNote(IMG_MSG.readonly, true);
+    if (I.busy) return imgNote(IMG_MSG.busy, true);
+    const origin = imgCaptureTarget(e);
+    if (replace) {
+      origin.replace = replace;
+      origin.pageId = replace.pageId;
+    } else if (Rich.assetsOf(localLines(e.local)).length >= Rich.IMAGES_PER_PAGE_MAX) {
+      return imgNote(IMG_MSG.tooMany, true);
+    }
+    I.origin = origin;
+    const input = I.inputs && I.inputs[kind];
+    if (input) input.click();
+  }
+
+  function onImageInput(ev) {
+    const input = ev.target;
+    const file = input && input.files && input.files[0];
+    if (input) input.value = ""; // the same file can be chosen again; the File object stays valid
+    const origin = ui.image.origin;
+    ui.image.origin = null;
+    if (!file) return;
+    imageFromFile(file, origin);
+  }
+
+  async function imageFromFile(file, origin) {
+    const I = ui.image;
+    if (!Media) return imgNote(IMG_MSG.unavailable, true);
+    if (I.busy) return imgNote(IMG_MSG.busy, true);
+    const e0 = curEntry();
+    if (!origin || !e0 || e0.id !== origin.pageId) return imgNote(IMG_MSG.stalePage, true);
+    I.busy = true;
+    refreshImageUi();
+    let asset;
+    try {
+      imgNote(IMG_MSG.prep);
+      const prepared = await Media.prepare(file);
+      imgNote(IMG_MSG.up);
+      asset = await Media.upload(prepared.blob, apiCall);
+    } catch (err) {
+      I.busy = false;
+      imgNote(Media.describeError(err), true);
+      refreshImageUi();
+      return;
+    }
+    I.busy = false;
+    // Everything below re-reads the CURRENT state: nothing from before the await is trusted.
+    const e = curEntry();
+    if (!e || e.id !== origin.pageId) {
+      imgNote(IMG_MSG.stalePage, true);
+      refreshImageUi();
+      return;
+    }
+    const lines = localLines(e.local);
+    if (origin.replace) {
+      const idx = imgFind(lines, origin.replace.blockId, e);
+      if (idx < 0 || !lines[idx].asset || lines[idx].asset.id !== origin.replace.assetId) {
+        imgNote(IMG_MSG.staleTool, true);
+        refreshImageUi();
+        return;
+      }
+      lines[idx].asset = Object.assign({}, lines[idx].asset, { id: asset.id, mime: asset.mime, w: asset.w, h: asset.h });
+      const bound = ui.image.sel;
+      const before = bound ? { sig: bound.sig, assetId: bound.assetId } : null;
+      if (bound) {
+        bound.assetId = asset.id;
+        bound.sig = imgSig(lines[idx].asset);
+      }
+      if (imgCommit(lines, idx)) imgNote(IMG_MSG.replaced);
+      else if (bound && before) Object.assign(bound, before);
+      refreshImageUi();
+      return;
+    }
+    const idx = imgFind(lines, origin.anchorId, e);
+    if (idx < 0) {
+      imgNote(IMG_MSG.staleAnchor, true);
+      refreshImageUi();
+      return;
+    }
+    if (Rich.assetsOf(lines).length >= Rich.IMAGES_PER_PAGE_MAX) {
+      imgNote(IMG_MSG.tooMany, true);
+      refreshImageUi();
+      return;
+    }
+    const line = Rich.imageLine({ id: asset.id, mime: asset.mime, w: asset.w, h: asset.h, width: 100, layout: "inline", caption: "" });
+    if (!line) {
+      imgNote("Réponse du serveur invalide", true);
+      refreshImageUi();
+      return;
+    }
+    const at = origin.mode === "before" ? idx : idx + 1;
+    lines.splice(at, 0, line);
+    const after = lines[at + 1];
+    if (!after || after.type === "image") lines.splice(at + 1, 0, Rich.newLine("", "paragraph")); // always a place to keep typing
+    if (imgCommit(lines, null, true)) {
+      imgNote(IMG_MSG.inserted);
+      const dom = ui.editor.children[at];
+      if (dom) selectImageLine(dom);
+    }
+    refreshImageUi();
+  }
+
+  /** One image edit = one state-machine edit. `index` set -> patch that image in place (no <img> churn). */
+  function imgCommit(lines, index, forceRender) {
+    const c = ui.core;
+    const e = c && c.current();
+    if (!e || isReadOnly(e)) return false;
+    Rich.ensureKeys(lines);
+    if (lines.length > Rich.BLOCKS_MAX && !Rich.isPlain(lines)) {
+      flashMsg(MSG.tooManyLines);
+      return false;
+    }
+    if (!c.edit(e.id, { text: Rich.flat(lines), fmt: Rich.fmtOf(lines), ids: Rich.idsOf(lines) })) {
+      flashMsg("Modification refusée");
+      return false;
+    }
+    let patched = false;
+    if (!forceRender && index != null && ui.editor.children.length === lines.length) {
+      patched = Rich.patchImage(ui.editor, index, lines[index].asset);
+      if (patched && Rich.fmtOf(Rich.parseEditor(ui.editor)) !== Rich.fmtOf(lines)) patched = false;
+    }
+    if (!patched) renderEditor(lines);
+    ui.pendingMarks = null;
+    return true;
+  }
+
+  /** Validate the bound {page, block, asset} against the CURRENT entry. Returns {e, lines, idx} or null (tools are then closed). */
+  function imgBound(notify) {
+    const I = ui.image;
+    const sel = I.sel;
+    if (!sel) return null;
+    const e = curEntry();
+    if (!e || e.id !== sel.pageId) {
+      closeImageTools("");
+      return null;
+    }
+    const lines = localLines(e.local);
+    const idx = imgFind(lines, sel.blockId, e);
+    if (idx < 0 || !lines[idx].asset || lines[idx].asset.id !== sel.assetId) {
+      closeImageTools(notify === false ? "" : IMG_MSG.staleTool);
+      return null;
+    }
+    sel.blockId = lines[idx].id || sel.blockId;
+    return { e, lines, idx };
+  }
+
+  function imgMutate(change) {
+    const I = ui.image;
+    const b = imgBound();
+    if (!b) return false;
+    const current = b.lines[b.idx].asset;
+    if (imgSig(current) !== I.sel.sig) {
+      // changed elsewhere since the tools last showed it: show the truth, apply nothing
+      imgTools(b, true);
+      imgToolsNote(IMG_MSG.staleTool);
+      return false;
+    }
+    const next = Rich.checkAsset(change(Object.assign({}, current)));
+    if (!next || next.id !== current.id) return false;
+    b.lines[b.idx].asset = next;
+    I.sel.sig = imgSig(next);
+    I.sel.rev = b.e.serverRev;
+    const ok = imgCommit(b.lines, b.idx);
+    if (!ok) I.sel.sig = imgSig(current);
+    return ok;
+  }
+
+  function imgToolsNote(text) {
+    const n = doc.getElementById("carnet-image-tools-msg");
+    if (n) n.textContent = text || "";
+  }
+
+  /** Fill the tools from the CURRENT asset (the source of truth is the entry, never the last thing the inputs showed). */
+  function imgTools(b, force) {
+    const I = ui.image;
+    const a = b.lines[b.idx].asset;
+    const range = doc.getElementById("carnet-image-width");
+    const cap = doc.getElementById("carnet-image-caption");
+    const out = doc.getElementById("carnet-image-width-out");
+    if (force || doc.activeElement !== range) range.value = String(a.width);
+    if (force || doc.activeElement !== cap) cap.value = a.caption;
+    out.textContent = a.width + " %";
+    I.sel.sig = imgSig(a);
+  }
+
+  function selectImageLine(lineEl) {
+    const e = curEntry();
+    if (!e || !lineEl || !ui.editor.contains(lineEl)) return;
+    const idx = Array.prototype.indexOf.call(ui.editor.children, lineEl);
+    const lines = localLines(e.local);
+    const l = lines[idx];
+    if (!l || l.type !== "image") return;
+    const I = ui.image;
+    I.sel = { pageId: e.id, blockId: l.id, assetId: l.asset.id, rev: e.serverRev, sig: imgSig(l.asset) };
+    I.confirm = false;
+    imgToolsNote("");
+    const b = { e, lines, idx };
+    imgTools(b, true);
+    refreshImageUi();
+  }
+
+  function closeImageTools(note, refocus) {
+    const I = ui.image;
+    if (!I) return;
+    const had = !!I.sel;
+    I.sel = null;
+    I.confirm = false;
+    if (I.timer) clearTimeout(I.timer);
+    I.timer = null;
+    const tools = doc.getElementById("hq-carnet-image-tools");
+    if (tools) tools.hidden = true;
+    if (ui.editor) for (const n of ui.editor.querySelectorAll("[data-selected]")) n.removeAttribute("data-selected");
+    const rm = doc.getElementById("btn-carnet-image-remove");
+    if (rm) rm.textContent = IMG_MSG.remove;
+    if (had && note) flashMsg(note);
+    if (had && refocus && ui.editor) {
+      try {
+        ui.editor.focus({ preventScroll: true });
+      } catch (_) {}
+    }
+  }
+
+  function refreshImageUi() {
+    const I = ui.image;
+    if (!I || !ui.editor) return;
+    const e = ui.core && ui.core.current();
+    if (I.panelOpen && I.origin && (!e || e.id !== I.origin.pageId)) I.origin = null; // a picker opened against another page is dead
+    const can = !!curEntry();
+    const panel = doc.getElementById("hq-carnet-image-panel");
+    if (panel) {
+      for (const b of panel.querySelectorAll("[data-carnet-image-source]")) b.disabled = I.busy || !can;
+      panel.setAttribute("aria-busy", I.busy ? "true" : "false");
+    }
+    const btn = doc.getElementById("btn-carnet-image");
+    if (btn) btn.disabled = !can;
+    if (!I.sel) return;
+    const b = imgBound();
+    const tools = doc.getElementById("hq-carnet-image-tools");
+    if (!b) return;
+    if (tools) tools.hidden = false;
+    const a = b.lines[b.idx].asset;
+    if (imgSig(a) !== I.sel.sig) {
+      imgTools(b, true); // another client / a rebase changed this image: show the current values
+      imgToolsNote(IMG_MSG.staleTool);
+    }
+    for (let i = 0; i < ui.editor.children.length; i += 1) {
+      const n = ui.editor.children[i];
+      if (i === b.idx) n.setAttribute("data-selected", "true");
+      else if (n.hasAttribute("data-selected")) n.removeAttribute("data-selected");
+    }
+    const replace = doc.getElementById("btn-carnet-image-replace");
+    if (replace) replace.disabled = I.busy;
+  }
+
+  function replaceSelectedImage() {
+    const b = imgBound();
+    if (!b) return;
+    pickImage("files", { pageId: b.e.id, blockId: ui.image.sel.blockId, assetId: ui.image.sel.assetId });
+  }
+
+  function removeSelectedImage() {
+    const I = ui.image;
+    const btn = doc.getElementById("btn-carnet-image-remove");
+    if (!I.confirm) {
+      const b0 = imgBound();
+      if (!b0) return;
+      I.confirm = true;
+      if (btn) btn.textContent = IMG_MSG.confirmRemove;
+      if (I.timer) clearTimeout(I.timer);
+      I.timer = setTimeout(() => {
+        I.confirm = false;
+        I.timer = null;
+        const r = doc.getElementById("btn-carnet-image-remove");
+        if (r) r.textContent = IMG_MSG.remove;
+      }, 5000);
+      return;
+    }
+    const b = imgBound();
+    if (!b) return;
+    if (imgSig(b.lines[b.idx].asset) !== I.sel.sig) {
+      imgTools(b, true);
+      imgToolsNote(IMG_MSG.staleTool);
+      I.confirm = false;
+      if (btn) btn.textContent = IMG_MSG.remove;
+      return;
+    }
+    b.lines.splice(b.idx, 1);
+    if (!b.lines.length) b.lines.push(Rich.newLine("", "paragraph"));
+    const ok = imgCommit(b.lines, null, true);
+    closeImageTools("");
+    if (ok) flashMsg(IMG_MSG.removed);
+  }
+
+  /** Backspace/Delete next to an image SELECTS it first (a second deliberate action removes it): no accidental loss. */
+  function imgKeyAdjacent(ev) {
+    const sel = readSel();
+    if (!sel || sel.start !== sel.end) return false;
+    const at = Rich.locate(sel.lines, sel.start);
+    const back = ev.inputType === "deleteContentBackward";
+    const fwd = ev.inputType === "deleteContentForward";
+    let target = -1;
+    if (back && at.off === 0 && at.line > 0 && sel.lines[at.line - 1].type === "image") target = at.line - 1;
+    else if (fwd && at.off === sel.lines[at.line].text.length && at.line + 1 < sel.lines.length && sel.lines[at.line + 1].type === "image") target = at.line + 1;
+    if (target < 0) return false;
+    ev.preventDefault();
+    selectImageLine(ui.editor.children[target]);
+    return true;
+  }
+
+  function onImageKey(ev) {
+    const fig = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-image]") : null;
+    if (!fig || !ui.editor.contains(fig)) return false;
+    const line = fig.closest("[data-carnet-line]");
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      selectImageLine(line);
+      return true;
+    }
+    if (ev.key === "Delete" || ev.key === "Backspace") {
+      ev.preventDefault();
+      selectImageLine(line);
+      removeSelectedImage();
+      return true;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeImageTools("", true);
+      return true;
+    }
+    return false;
+  }
+
+  function onImageError(ev) {
+    const t = ev.target;
+    if (t && t.tagName === "IMG" && ui.editor && ui.editor.contains(t)) {
+      const fig = t.closest("figure");
+      if (fig) fig.setAttribute("data-broken", "true"); // missing/unreadable file: a visible placeholder, never a silent blank
+    }
   }
 
   function downloadExport(fmt) {
@@ -4154,11 +4688,21 @@
     doc.body.classList.add("carnet-printing");
     ui.printNode = host;
     global.addEventListener("afterprint", clearPrint, { once: true });
-    try {
-      global.print();
-    } finally {
-      setTimeout(clearPrint, 1500);
-    }
+    const go = () => {
+      if (ui.printNode !== host) return; // cancelled / replaced while images were loading
+      try {
+        global.print();
+      } finally {
+        setTimeout(clearPrint, 1500);
+      }
+    };
+    // Stage 06: print only once the pictures are decoded (bounded wait), so the layout is the final one.
+    const pending = Array.prototype.slice.call(host.querySelectorAll("img")).filter((i) => !i.complete).map((i) => new Promise((resolve) => {
+      i.addEventListener("load", resolve, { once: true });
+      i.addEventListener("error", resolve, { once: true });
+    }));
+    if (!pending.length) go();
+    else Promise.race([Promise.all(pending), new Promise((resolve) => setTimeout(resolve, 6000))]).then(go, go);
   }
 
   async function exportCopy() {

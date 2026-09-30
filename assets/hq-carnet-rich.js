@@ -1,7 +1,7 @@
 /* Transfert HQ — Carnet Stage 04: structured content model (pure) + editor DOM bridge.
  *
  * A page is a list of one-line blocks ("lines"): {type, checked, text, marks}.
- *   type  : paragraph | heading | bullet | number | check
+ *   type  : paragraph | heading | bullet | number | check | image (Stage 06)
  *   marks : [{type: bold|italic|underline|highlight|code|link, start, end, href?|ref?}]
  *           offsets are UTF-16 code units inside the line (same unit as the server).
  *   link  : href is http(s) only; ref = {kind: note|file|drawing|model|media, id}.
@@ -9,6 +9,10 @@
  *           snap:{title,author?,edition?,year?,ident?}, from}. Never merged, never overlapping another
  *           citation or a link; part of canonical equality (fmt) so two citations with the same label but
  *           another edition / locator / PDF page / verified flag / provenance are different content.
+ *   image (Stage 06): an ATOM line with `asset` = {id: asset-<24 hex>, mime, w, h, width: 30..100 (%), layout:
+ *           "inline", caption}. Its `text` is always "" and it never has marks: it occupies no text offset,
+ *           so marks, find/replace, offsets and titles never touch it. The bytes live on the server
+ *           (/api/carnet/asset/<id>); a page only ever carries this bounded metadata.
  * Flat page text = lines.map(l => l.text).join("\n").
  * Every line may carry an `id`: a server block id (block-…, authoritative, kept through typing,
  * Enter/split, insertion, deletion and formatting) or a client-only temporary key (tmp-N) for a
@@ -34,9 +38,17 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (global) {
   "use strict";
 
-  const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check"];
-  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c" };
-  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check" };
+  const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"];
+  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i" };
+  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image" };
+  const ASSET_ID = /^asset-[0-9a-f]{24}$/;
+  const ASSET_MIMES = ["image/jpeg", "image/png", "image/webp"];
+  const ASSET_LONG_SIDE_MAX = 2560; // server: hq_carnet_media.MAX_LONG_SIDE
+  const ASSET_WIDTH_MIN = 30;
+  const ASSET_WIDTH_MAX = 100;
+  const ASSET_CAPTION_MAX = 300;
+  const IMAGES_PER_PAGE_MAX = 32;
+  const ASSET_URL = "/api/carnet/asset/";
   const INLINE = ["bold", "italic", "underline", "highlight", "code"];
   const MARK_ORDER = INLINE.concat(["link", "citation"]);
   const LOCATOR_KINDS = ["page", "section", "clause", "chapter", "figure", "table", "custom"];
@@ -298,12 +310,54 @@
     return isRealId(id) || isTmpId(id) ? id : null;
   }
 
-  function newLine(text, type, checked, marks, id) {
-    return { type: type || "paragraph", checked: type === "check" ? !!checked : false, text: text || "", marks: marks || [], id: cleanId(id) };
+  const CAPTION_CTRL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/; // C0 (tab, CR, LF), DEL, C1 (NEL), U+2028/U+2029: one line
+  const CAPTION_LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+  /** Caption rule, identical to hq_carnet_rich.check_caption: string, no control, no unpaired surrogate, <= 300 UTF-16 units. */
+  function captionOk(c) {
+    return typeof c === "string" && c.length <= ASSET_CAPTION_MAX && !CAPTION_CTRL.test(c) && !CAPTION_LONE_SURROGATE.test(c);
+  }
+
+  /** Make arbitrary input satisfy captionOk (controls -> space, unpaired surrogates dropped, cut at 300 units on a pair boundary). */
+  function cleanCaptionText(v) {
+    let t = String(v == null ? "" : v).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, "");
+    if (t.length > ASSET_CAPTION_MAX) {
+      t = t.slice(0, ASSET_CAPTION_MAX);
+      if (/[\ud800-\udbff]$/.test(t)) t = t.slice(0, -1);
+    }
+    return t;
+  }
+
+  /** Strict image metadata check (mirrors hq_carnet_rich.check_asset). Returns a clean copy or null. */
+  function checkAsset(a) {
+    if (!isObj(a) || Object.keys(a).sort().join(",") !== "caption,h,id,layout,mime,w,width") return null;
+    if (typeof a.id !== "string" || !ASSET_ID.test(a.id) || ASSET_MIMES.indexOf(a.mime) < 0) return null;
+    if (!isInt(a.w) || !isInt(a.h) || a.w < 1 || a.h < 1 || a.w > ASSET_LONG_SIDE_MAX || a.h > ASSET_LONG_SIDE_MAX) return null;
+    if (!isInt(a.width) || a.width < ASSET_WIDTH_MIN || a.width > ASSET_WIDTH_MAX || a.layout !== "inline") return null;
+    if (!captionOk(a.caption)) return null;
+    return { id: a.id, mime: a.mime, w: a.w, h: a.h, width: a.width, layout: "inline", caption: a.caption };
+  }
+
+  function newLine(text, type, checked, marks, id, asset) {
+    const image = type === "image";
+    return {
+      type: type || "paragraph", checked: type === "check" ? !!checked : false, text: image ? "" : text || "", marks: image ? [] : marks || [],
+      id: cleanId(id), asset: image && asset ? Object.assign({}, asset) : null,
+    };
   }
 
   function cloneLine(l) {
-    return { type: l.type, checked: l.checked, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)), id: l.id || null };
+    return { type: l.type, checked: l.checked, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)), id: l.id || null, asset: l.asset ? Object.assign({}, l.asset) : null };
+  }
+
+  /** A new image line (no id yet: the editor gives it a temporary key, the server the real id). */
+  function imageLine(asset) {
+    const clean = checkAsset(asset);
+    return clean ? newLine("", "image", false, [], null, clean) : null;
+  }
+
+  function assetsOf(lines) {
+    return lines.filter((l) => l.type === "image" && l.asset).map((l) => l.asset);
   }
 
   /** Give every line without an id a temporary key; a repeated id keeps its first line only. Mutates. */
@@ -341,22 +395,33 @@
   }
 
   function normalizeLine(l) {
-    const type = BLOCK_TYPES.indexOf(l.type) >= 0 ? l.type : "paragraph";
+    let type = BLOCK_TYPES.indexOf(l.type) >= 0 ? l.type : "paragraph";
+    if (type === "image") {
+      const asset = checkAsset(l.asset);
+      if (asset) return { type, checked: false, text: "", marks: [], id: cleanId(l.id), asset };
+      type = "paragraph"; // an image without valid metadata is not an image
+    }
     const marks = canonicalMarks(l.marks || []);
-    return { type, checked: type === "check" ? !!l.checked : false, text: l.text, marks: marks || [], id: cleanId(l.id) };
+    return { type, checked: type === "check" ? !!l.checked : false, text: l.text, marks: marks || [], id: cleanId(l.id), asset: null };
   }
 
   function fmtOf(lines) {
     if (isPlain(lines)) return "";
-    return JSON.stringify(lines.map((l) => [
-      TYPE_CODE[l.type],
-      l.checked ? 1 : 0,
-      l.marks.map((m) => {
-        if (m.type === "citation") return [m.type, m.start, m.end, "c", JSON.parse(citeKey(m.cite))];
-        if (m.type !== "link") return [m.type, m.start, m.end];
-        return m.href != null ? [m.type, m.start, m.end, "h", m.href] : [m.type, m.start, m.end, "r", m.ref.kind, m.ref.id];
-      }),
-    ]));
+    return JSON.stringify(lines.map((l) => {
+      const row = [
+        TYPE_CODE[l.type],
+        l.checked ? 1 : 0,
+        l.marks.map((m) => {
+          if (m.type === "citation") return [m.type, m.start, m.end, "c", JSON.parse(citeKey(m.cite))];
+          if (m.type !== "link") return [m.type, m.start, m.end];
+          return m.href != null ? [m.type, m.start, m.end, "h", m.href] : [m.type, m.start, m.end, "r", m.ref.kind, m.ref.id];
+        }),
+      ];
+      // Only image rows carry a 4th element (fixed order, never object keys): every other row is
+      // byte-identical to the pre-Stage-06 encoding, so existing drafts/bases stay comparable.
+      if (l.type === "image") row.push([l.asset.id, l.asset.mime, l.asset.w, l.asset.h, l.asset.width, l.asset.caption]);
+      return row;
+    }));
   }
 
   /** Rebuild lines from (text, fmt). Returns null when fmt is malformed or does not fit the text. */
@@ -373,12 +438,24 @@
     if (!Array.isArray(arr) || arr.length !== base.length || arr.length > BLOCKS_MAX) return null;
     const out = [];
     let total = 0;
+    let images = 0;
     for (let i = 0; i < arr.length; i += 1) {
       const row = arr[i];
-      if (!Array.isArray(row) || row.length !== 3) return null;
+      if (!Array.isArray(row) || (row.length !== 3 && row.length !== 4)) return null;
       const type = CODE_TYPE[row[0]];
       if (!type || (row[1] !== 0 && row[1] !== 1) || (row[1] === 1 && type !== "check") || !Array.isArray(row[2])) return null;
       if (row[2].length > MARKS_PER_BLOCK_MAX) return null;
+      if ((row.length === 4) !== (type === "image")) return null;
+      if (type === "image") {
+        const a = row[3];
+        if (base[i] !== "" || row[2].length || !Array.isArray(a) || a.length !== 6) return null;
+        const asset = checkAsset({ id: a[0], mime: a[1], w: a[2], h: a[3], width: a[4], layout: "inline", caption: a[5] });
+        if (!asset) return null;
+        images += 1;
+        if (images > IMAGES_PER_PAGE_MAX) return null;
+        out.push(newLine("", "image", false, [], idAt(i), asset));
+        continue;
+      }
       const marks = [];
       for (const r of row[2]) {
         if (!Array.isArray(r) || r.length < 3 || MARK_ORDER.indexOf(r[0]) < 0 || !isInt(r[1]) || !isInt(r[2])) return null;
@@ -423,6 +500,13 @@
     const out = [];
     for (const b of content.blocks) {
       if (!isObj(b) || typeof b.text !== "string" || b.text.indexOf("\n") >= 0 || BLOCK_TYPES.indexOf(b.type) < 0) return null;
+      if (b.type === "image") {
+        const asset = checkAsset(b.asset);
+        if (!asset || b.text !== "" || (Array.isArray(b.marks) && b.marks.length) || b.checked !== undefined) return null;
+        out.push(newLine("", "image", false, [], isRealId(b.id) ? b.id : null, asset));
+        continue;
+      }
+      if (b.asset !== undefined) return null;
       const marks = [];
       for (const m of Array.isArray(b.marks) ? b.marks : []) {
         if (!isObj(m) || MARK_ORDER.indexOf(m.type) < 0 || !isInt(m.start) || !isInt(m.end)) return null;
@@ -471,6 +555,7 @@
       blocks: lines.map((l) => {
         const b = { type: l.type, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)) };
         if (l.type === "check") b.checked = !!l.checked;
+        if (l.type === "image") b.asset = Object.assign({}, l.asset);
         if (isRealId(l.id) && (!allowed || allowed.has(l.id)) && !used.has(l.id)) {
           used.add(l.id);
           b.id = l.id;
@@ -542,6 +627,44 @@
    * Never produces empty, negative or out-of-bounds ranges.
    */
   function replaceRange(lines, s, e, rep) {
+    if (!lines.some((l) => l.type === "image")) return replaceRangeText(lines, s, e, rep);
+    return replaceRangeAround(lines, s, e, rep);
+  }
+
+  /**
+   * replaceRange on a page that holds image atoms. An image has no text and never merges with a text line:
+   * - an insertion AT an image goes into a new paragraph ABOVE it (the image keeps its identity);
+   * - a range ending exactly at an image's start leaves that image untouched;
+   * - an image fully inside the range (or starting it) is removed with the range, like any selected atom.
+   */
+  function replaceRangeAround(lines, s, e, rep) {
+    const lo = Math.min(s, e);
+    const hi = Math.max(s, e);
+    const a = locate(lines, lo);
+    if (lo === hi) {
+      if (lines[a.line].type !== "image") return replaceRangeText(lines, lo, hi, rep);
+      const work = lines.slice(0, a.line).map(cloneLine).concat([newLine("", "paragraph")], lines.slice(a.line).map(cloneLine));
+      const at = lineStarts(work)[a.line];
+      return replaceRangeText(work, at, at, rep);
+    }
+    const b = locate(lines, hi);
+    const endRetained = b.line > a.line && lines[b.line].type === "image"; // the range stops right before this image
+    const last = endRetained ? b.line - 1 : b.line;
+    const mid = [];
+    for (let i = a.line; i <= last; i += 1) {
+      const l = lines[i];
+      if (l.type !== "image") mid.push(cloneLine(l));
+      else if (i === a.line || i === last) mid.push(newLine("", "paragraph")); // an endpoint needs a line to sit in
+    }
+    const work = lines.slice(0, a.line).map(cloneLine).concat(mid, lines.slice(last + 1).map(cloneLine));
+    const starts = lineStarts(work);
+    const startOff = lines[a.line].type === "image" ? 0 : a.off;
+    const endLine = a.line + mid.length - 1;
+    const endOff = endRetained ? (lines[last].type === "image" ? 0 : lines[last].text.length) : b.off;
+    return replaceRangeText(work, starts[a.line] + startOff, starts[endLine] + endOff, rep);
+  }
+
+  function replaceRangeText(lines, s, e, rep) {
     const lo = Math.min(s, e);
     const hi = Math.max(s, e);
     const a = locate(lines, lo);
@@ -769,14 +892,21 @@
 
   /** Set block type of every line touched by [s, e]; same type on all lines toggles back to paragraph. */
   function setBlockType(lines, s, e, type) {
-    if (BLOCK_TYPES.indexOf(type) < 0) return lines;
+    if (BLOCK_TYPES.indexOf(type) < 0 || type === "image") return lines;
     const a = locate(lines, Math.min(s, e)).line;
     const b = locate(lines, Math.max(s, e)).line;
     let all = true;
-    for (let i = a; i <= b; i += 1) if (lines[i].type !== type) all = false;
+    let any = false;
+    for (let i = a; i <= b; i += 1) {
+      if (lines[i].type === "image") continue; // an image is never re-typed
+      any = true;
+      if (lines[i].type !== type) all = false;
+    }
+    if (!any) return lines;
     const target = all ? "paragraph" : type;
     const out = cloneLines(lines);
     for (let i = a; i <= b; i += 1) {
+      if (out[i].type === "image") continue;
       out[i].type = target;
       if (target !== "check") out[i].checked = false;
     }
@@ -795,6 +925,12 @@
     const at = locate(lines, Math.min(s, e));
     const cur = lines[at.line];
     const collapsed = s === e;
+    if (collapsed && cur.type === "image") {
+      // Enter on an image atom opens ONE empty paragraph above it; the image keeps its place and identity
+      const out = cloneLines(lines);
+      out.splice(at.line, 0, newLine("", "paragraph"));
+      return { lines: out, caret: lineStarts(out)[at.line], idToLast: false };
+    }
     if (collapsed && cur.text === "" && (cur.type === "bullet" || cur.type === "number" || cur.type === "check")) {
       const out = cloneLines(lines);
       out[at.line].type = "paragraph";
@@ -904,6 +1040,7 @@
   function renderTxt(lines) {
     const labels = numberLabels(lines);
     const out = lines.map((l, i) => {
+      if (l.type === "image") return l.asset.caption ? "[Image : " + l.asset.caption + "]" : "[Image]";
       let text = l.text;
       const links = l.marks.filter((m) => m.type === "link" && m.href != null).sort((x, y) => x.start - y.start);
       if (links.length) {
@@ -970,11 +1107,36 @@
     return out;
   }
 
-  function renderMarkdown(lines) {
+  /** Percent-encode a package-relative path (mirrors hq_carnet_rich._md_path): only [A-Za-z0-9._~/-] stay literal. */
+  function mdPath(rel) {
+    return rel.replace(/[^A-Za-z0-9._~/-]/gu, (ch) => encodeURIComponent(ch).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()));
+  }
+
+  function mdAlt(t) {
+    return t.replace(/([\\\[\]])/g, "\\$1");
+  }
+
+  /**
+   * `assetPaths` (optional {assetId: path relative to the export package}) turns an image into a relative
+   * Markdown image; without an entry the image is a text placeholder (no dangling link, no binary).
+   */
+  function renderMarkdown(lines, assetPaths) {
     const labels = numberLabels(lines);
     const parts = [];
     let gap = false;
     lines.forEach((l, i) => {
+      if (l.type === "image") {
+        const cap = l.asset.caption;
+        const relPath = assetPaths && assetPaths[l.asset.id];
+        let text;
+        if (relPath) {
+          text = "![" + mdAlt(cap) + "](" + mdPath(relPath) + ")";
+          if (cap) text += "\n\n*" + mdEscape(cap) + "*";
+        } else text = cap ? "*\\[Image : " + mdEscape(cap) + "\\]*" : "*\\[Image\\]*";
+        parts.push(["img", text, gap]);
+        gap = false;
+        return;
+      }
       if ((l.type === "paragraph" || l.type === "heading") && !l.text.trim()) {
         gap = true; // a blank line ends any list: numbering restarts, like the TXT export
         return;
@@ -1033,6 +1195,8 @@
 
   const CITE_KEY_ATTR = "data-cite-key";
   const REGISTRIES = new WeakMap(); // editor root -> Map(cite key -> payload). No user text goes into attributes.
+  const ASSET_KEY_ATTR = "data-asset-key";
+  const ASSET_REGS = new WeakMap(); // editor root -> Map(asset key -> image metadata). Attributes only carry the opaque asset id.
 
   function segNodes(doc, l, from, to) {
     const out = [];
@@ -1075,7 +1239,33 @@
     return out;
   }
 
+  /** An image atom: <div.carnet-line contenteditable=false><figure><img><figcaption></figure></div>. Safe DOM only. */
+  function renderImage(doc, l, idx, reg) {
+    const a = l.asset;
+    const div = el(doc, "div", { class: "carnet-line carnet-image-line", "data-carnet-line": String(idx), "data-line-type": "image", "data-carnet-asset": a.id, contenteditable: "false" });
+    if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
+    else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
+    if (reg) {
+      reg.an += 1;
+      const key = "a" + reg.an;
+      reg.assets.set(key, Object.assign({}, a));
+      div.setAttribute(ASSET_KEY_ATTR, key);
+    }
+    const fig = el(doc, "figure", { class: "carnet-figure", tabindex: "0", "data-carnet-image": "", "aria-label": "Image" + (a.caption ? " : " + a.caption : "") });
+    fig.style.width = a.width + "%";
+    const img = el(doc, "img", { class: "carnet-img", src: ASSET_URL + a.id, alt: a.caption || "", width: String(a.w), height: String(a.h), draggable: "false", decoding: "async" });
+    fig.appendChild(img);
+    if (a.caption) {
+      const cap = el(doc, "figcaption", { class: "carnet-caption" });
+      cap.appendChild(doc.createTextNode(a.caption));
+      fig.appendChild(cap);
+    }
+    div.appendChild(fig);
+    return div;
+  }
+
   function renderLine(doc, l, idx, num, reg) {
+    if (l.type === "image") return renderImage(doc, l, idx, reg);
     const div = el(doc, "div", { class: "carnet-line", "data-carnet-line": String(idx), "data-line-type": l.type });
     if (l.type === "number") div.setAttribute("data-num", String(num));
     if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
@@ -1129,9 +1319,46 @@
     while (rootEl.firstChild) rootEl.removeChild(rootEl.firstChild);
     const labels = numberLabels(lines);
     ensureKeys(lines);
-    const reg = { map: new Map(), n: 0 };
+    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0 };
     REGISTRIES.set(rootEl, reg.map);
+    ASSET_REGS.set(rootEl, reg.assets);
     lines.forEach((l, i) => rootEl.appendChild(renderLine(doc, l, i, labels[i], reg)));
+  }
+
+  /**
+   * In-place update of ONE image atom (width, caption, alt, even the asset): the <img> element is reused so a
+   * caption keystroke never re-requests the picture. The registry entry is replaced; returns false when that
+   * DOM line is not an image (or the metadata is invalid): the caller then falls back to a full render.
+   */
+  function patchImage(rootEl, index, asset) {
+    const lineEl = rootEl.children[index];
+    const clean = checkAsset(asset);
+    const areg = ASSET_REGS.get(rootEl);
+    if (!lineEl || !clean || !areg || lineEl.getAttribute("data-line-type") !== "image") return false;
+    const key = lineEl.getAttribute(ASSET_KEY_ATTR);
+    const fig = lineEl.querySelector("figure");
+    const img = fig ? fig.querySelector("img") : null;
+    if (!areg.has(key) || !fig || !img) return false;
+    areg.set(key, Object.assign({}, clean));
+    lineEl.setAttribute("data-carnet-asset", clean.id);
+    fig.style.width = clean.width + "%";
+    fig.setAttribute("aria-label", "Image" + (clean.caption ? " : " + clean.caption : ""));
+    if (img.getAttribute("src") !== ASSET_URL + clean.id) {
+      img.setAttribute("src", ASSET_URL + clean.id);
+      img.setAttribute("width", String(clean.w));
+      img.setAttribute("height", String(clean.h));
+    }
+    img.setAttribute("alt", clean.caption || "");
+    let cap = fig.querySelector("figcaption");
+    if (clean.caption) {
+      if (!cap) {
+        cap = lineEl.ownerDocument.createElement("figcaption");
+        cap.setAttribute("class", "carnet-caption");
+        fig.appendChild(cap);
+      }
+      cap.textContent = clean.caption;
+    } else if (cap) cap.remove();
+    return true;
   }
 
   /**
@@ -1204,12 +1431,13 @@
    */
   function parseEditor(rootEl, map) {
     const reg = REGISTRIES.get(rootEl) || null;
+    const areg = ASSET_REGS.get(rootEl) || null;
     const lines = [];
     let cur = null;
     const open = (type, checked, el) => {
       const real = el ? el.getAttribute("data-carnet-block-id") : null;
       const tmp = el ? el.getAttribute("data-carnet-tmp") : null;
-      cur = { type: BLOCK_TYPES.indexOf(type) >= 0 ? type : "paragraph", checked: type === "check" && checked, text: "", marks: [], id: isRealId(real) ? real : isTmpId(tmp) ? tmp : null, el };
+      cur = { type: BLOCK_TYPES.indexOf(type) >= 0 ? type : "paragraph", checked: type === "check" && checked, text: "", marks: [], id: isRealId(real) ? real : isTmpId(tmp) ? tmp : null, el, asset: null };
       lines.push(cur);
     };
     const close = () => {
@@ -1239,6 +1467,18 @@
             const at = cur.text.length;
             walk(child, active, false); // the label text (and its inner formatting) is ordinary content
             if (payload && cur.text.length > at) cur.marks.push({ type: "citation", start: at, end: cur.text.length, cite: payload });
+            continue;
+          }
+          if (child.parentNode === rootEl && child.getAttribute("data-line-type") === "image" && BLOCK_TAGS[child.nodeName]) {
+            // image atom: metadata comes from the registry built by renderInto, never from attributes/text;
+            // a line whose metadata is unknown (foreign/duplicated markup) is not an image and is dropped
+            close();
+            const meta = areg ? areg.get(child.getAttribute(ASSET_KEY_ATTR)) : null;
+            if (meta) {
+              open("image", false, child);
+              cur.asset = Object.assign({}, meta);
+              close();
+            }
             continue;
           }
           if (child.hasAttribute(NS_SKIP) || child.getAttribute("contenteditable") === "false") continue;
@@ -1319,6 +1559,7 @@
     const at = locate(lines, pos);
     const lineEl = rootEl.children[at.line];
     if (!lineEl) return { node: rootEl, off: rootEl.childNodes.length };
+    if (lines[at.line] && lines[at.line].type === "image") return { node: rootEl, off: at.line }; // never a caret INSIDE an atom
     let best = null;
     for (const [t, p] of map || []) {
       if (p.line !== at.line || !lineEl.contains(t)) continue;
@@ -1349,6 +1590,7 @@
     checkCite, citeKey, citationLabel, locatorLabel, citationAt, citationsOf, insertCitation, setCitationPayload,
     safeHref, checkRef, canonicalMarks, newLine, cloneLines, ensureKeys, idsOf, isRealId, isTmpId, wireContent, adoptIds, syncIds, flat, plainLines, isPlain, fmtOf,
     linesFromTextFmt, linesFromContent, contentFromLines, contentFromTextFmt, lineStarts, locate,
+    checkAsset, captionOk, cleanCaptionText, imageLine, assetsOf, patchImage, ASSET_URL, ASSET_LONG_SIDE_MAX, ASSET_WIDTH_MIN, ASSET_WIDTH_MAX, ASSET_CAPTION_MAX, IMAGES_PER_PAGE_MAX, ASSET_MIMES,
     replaceRange, toggleMark, setMark, hasMark, setLink, linkAt, setBlockType, toggleChecked, splitAt, findAll, replaceMatches,
     renderTxt, renderMarkdown, exportFilename, renderInto, renumber, parseEditor, pointToOffset, offsetToPoint,
   };
