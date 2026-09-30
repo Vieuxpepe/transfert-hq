@@ -878,6 +878,57 @@ ok("exact base: malformed records fail closed");
   assert.equal(ctx.srv.pg("page-idea").content.blocks[0].text, "my local draft", "explicit choice still works");
   ok("exact base: legacy base_sig ignored");
 }
+// G. remote trash + remote restore happen BEFORE this browser reloads (audit MEDIUM)
+async function restoredBeforeReload({ remoteText = null, remotePin = null } = {}) {
+  const srv = fakeServer();
+  srv.pg("page-idea").content.blocks[0].text = "A";
+  const st = memStorage();
+  const A = make(srv, st);
+  await A.core.load();
+  srv.offline = true;
+  A.core.edit("page-idea", { text: "my local draft" }); // dirty draft based on rev 1, text "A"
+  A.timers.runAll();
+  await settle();
+  srv.offline = false;
+  let rev = 1;
+  if (remoteText !== null || remotePin !== null) {
+    const p = { action: "page_save", id: "page-idea", expected_rev: rev, content: SAVE(remoteText !== null ? remoteText : "A") };
+    if (remotePin !== null) p.pinned = remotePin;
+    srv.remote(p);
+    rev += 1;
+  }
+  srv.remote({ action: "page_trash", id: "page-idea", expected_rev: rev });
+  srv.remote({ action: "page_restore", id: "page-idea", expected_rev: rev + 1 });
+  const before = srv.saves().length;
+  const B = make(srv, st); // only now does this browser reload
+  await B.core.load();
+  await settle();
+  return { srv, st, B, e: B.core.entry("page-idea"), newSaves: srv.saves().slice(before) };
+}
+{
+  const ctx = await restoredBeforeReload();
+  assert.equal(ctx.srv.pg("page-idea").rev, 4, "server: trash rev 2, restore rev 3, our save rev 4");
+  assert.equal(ctx.e.conflict, null, "identical base -> no needless conflict");
+  assert.equal(ctx.newSaves.length, 1, "exactly one automatic save after reload");
+  assert.equal(ctx.newSaves[0].payload.expected_rev, 3, "save uses the restored rev");
+  assert.equal(ctx.srv.pg("page-idea").content.blocks[0].text, "my local draft");
+  assert.equal(ctx.B.core.isDirty(ctx.e), false);
+  assert.deepEqual(draftsOf(ctx.st), {});
+  ok("exact base: remote restore before reload rebases");
+}
+for (const [label, opts] of [["text differs", { remoteText: "B" }], ["pin differs", { remotePin: true }]]) {
+  const ctx = await restoredBeforeReload(opts);
+  assert.ok(ctx.e.conflict, `${label}: normal conflict after reload`);
+  assert.equal(ctx.newSaves.length, 1, `${label}: one save attempt, refused by 409`);
+  assert.equal(ctx.newSaves[0].payload.expected_rev, 1, `${label}: base not advanced`);
+  const pg = ctx.srv.pg("page-idea");
+  assert.equal(pg.content.blocks[0].text, opts.remoteText || "A", `${label}: remote text untouched`);
+  assert.equal(pg.pinned, !!opts.remotePin, `${label}: remote pin untouched`);
+  assert.equal(ctx.e.local.text, "my local draft", `${label}: local draft protected`);
+  assert.ok(draftsOf(ctx.st)["page-idea"], `${label}: draft kept`);
+}
+ok("exact base: remote restore before reload with changed content conflicts");
+
 // F. exact base survives reload(s) and keeps the restore behaviour
 {
   const ctx = await recoveredTrashed({ baseText: "VfFlTvt5Gv" });

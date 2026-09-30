@@ -1009,6 +1009,10 @@
         e.generation = d.generation;
         e.savedGeneration = d.saved_generation;
         e.updatedLocalAt = Number(d.updated_local_at) || now();
+        // The server may have moved on while this browser was closed (e.g. trashed then
+        // restored elsewhere) without changing the content the draft descends from: rebase on
+        // the already-known authoritative copy before the first save, on EXACT equality only.
+        if (!e.orphan && !isTrashed(e) && rebaseIfContentUnchanged(e, serverOf(e))) persist(e);
       }
     }
 
