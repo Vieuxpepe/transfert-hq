@@ -638,13 +638,14 @@ Commandes
   node tests/check_hq_3d_nav.mjs
   node tests/check_hq_model.mjs
   node tests/check_hq_carnet.mjs
+  node tests/check_hq_carnet_library.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
   (optionnel, Playwright + WebKit, profil iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_dessiner_webkit.py [--repeat 3]
   (optionnel, Playwright ; serveur loopback jetable inclus) python tests/visual_media_playwright.py
   (optionnel, Playwright Chromium + WebKit, profil iPhone ; serveur loopback jetable inclus) python tests/visual_model_playwright.py
-  (optionnel, Playwright Chromium bureau + WebKit iPad/iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_carnet_playwright.py
+  (optionnel, Playwright Chromium bureau + WebKit iPad/iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_carnet_playwright.py [--part stage02|stage03]
 
 Lecteur 3D (.stl, .glb)
 -----------------------

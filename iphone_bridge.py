@@ -2590,6 +2590,9 @@ function setView(name) {
   } else if (view === 'carnet' && document.readyState !== 'loading') {
     hqCarnetMissing();
   }
+  if (view === 'accueil' && window.hqCarnetHome) {
+    try { window.hqCarnetHome(); } catch (e) { console.error(e); }  // admin-only summary; never aborts HQ
+  }
   if (view === 'calendrier' && window.hqCalendarShow) {
     try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
   }
@@ -4791,6 +4794,7 @@ def render_app() -> bytes:
         <div class="row hq-actions" id="hq-quick-scenes"></div>
       </div>
     </section>
+    <section class="hq carnet-home" id="hq-carnet-home" aria-label="Carnet" hidden></section>
     <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
       <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="false" aria-controls="hq-today-panel" data-help="Affiche les événements et actions prévus aujourd'hui.">
         <span class="hq-disclosure-copy">

@@ -15,6 +15,7 @@ mouse buttons, clipboard native/fallback, symbols/time, new page, reduced motion
 responsive layout, init asset/API failure, no pageerror/console/external request.
 """
 import json
+import os
 import re
 import shutil
 import sys
@@ -78,12 +79,15 @@ class Server:
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self.nb_path = self.root / ".hq-carnet" / "notebook.json"
 
-    def seed(self):
+    def seed(self, data=None):
         import hq_carnet
         import hq_state
         self.nb_path.parent.mkdir(parents=True, exist_ok=True)
         with hq_state.path_lock(hq_carnet.notebook_path(self.root)):
-            self.nb_path.write_text(json.dumps(fixture(), ensure_ascii=False), encoding="utf-8")
+            self.nb_path.write_text(json.dumps(data or fixture(), ensure_ascii=False), encoding="utf-8")
+
+    def page(self, pid):
+        return next((p for p in self.nb()["pages"] if p["id"] == pid), None)
 
     def nb(self):
         return json.loads(self.nb_path.read_text(encoding="utf-8"))
@@ -189,6 +193,8 @@ class Harness:
         def on_console(m):
             if m.type != "error":
                 return
+            if m.text.startswith("Button failed to load, iconName = "):
+                return  # Linux WebKit/Adwaita theme artefact for native control glyphs (e.g. search field), not page code
             if self.expected_failures and ("Failed to load resource" in m.text or "Could not connect" in m.text
                                            or "Load cannot follow" in m.text or "network" in m.text.lower()):
                 return
@@ -292,8 +298,9 @@ def t_load_layout(h, profile):
         check(nav_w <= 200, "desktop keeps the HQ sidebar")
         check(640 <= paper[1] <= 900, f"desktop paper comfortable width ({paper[1]:.0f}px)")
         center = paper[0] + paper[1] / 2
-        main = page.eval_on_selector(".wrap", "e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2; }")
-        check(abs(center - main) < 30, "desktop paper centered")
+        # Stage 03: the docked library takes the left column; the paper is centered in the main column.
+        main = page.eval_on_selector(".carnet-main", "e => { const r = e.getBoundingClientRect(); return r.left + r.width / 2; }")
+        check(abs(center - main) < 30, "desktop paper centered in the main column")
     if profile != "desktop":
         small = page.eval_on_selector_all(".carnet button:not([hidden])",
                                           "els => els.filter(b => b.offsetParent).map(b => b.getBoundingClientRect()).filter(r => r.width < 44 || r.height < 44).length")
@@ -784,6 +791,768 @@ def t_attention(h, profile):
     ctx.close()
 
 
+# ============================================================ Stage 03 — library / organization / retrieval
+
+XSS = '<img src=x onerror="window.__xss=1">'
+
+
+def library_fixture():
+    """Basic fixture + search pages (FIXTURES.md) + an HTML-looking title, with recent timestamps."""
+    nb = fixture()
+    now = time.time()
+
+    def page(pid, text, updated, **extra):
+        p = {"id": pid, "rev": 1, "project_id": None, "category_id": None, "pinned": False, "deleted_at": None,
+             "created_at": updated, "updated_at": updated,
+             "content": {"version": 1, "blocks": [{"id": "block-" + pid[5:], "type": "text", "text": text, "marks": []}]}}
+        p.update(extra)
+        return p
+    nb["pages"][0]["updated_at"] = now - 120
+    nb["pages"][1]["updated_at"] = now - 60
+    nb["pages"].append(page("page-ebauche", "Ébauche moteur\ndiamètre arbre", now - 30,
+                            project_id="proj-fixture", category_id="cat-measures"))
+    nb["pages"].append(page("page-html", XSS + "\n<b>not bold</b>", now - 400 * 86400))
+    return nb
+
+
+def open_library(page):
+    if not page.is_visible("#hq-carnet-library"):
+        page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-library"), "library visible")
+
+
+def card_ids(page):
+    return page.eval_on_selector_all("#carnet-library-list [data-carnet-page-id]", "els => els.map(e => e.dataset.carnetPageId)")
+
+
+def settle_anim(page):
+    page.wait_for_function("() => document.getElementById('hq-carnet-library').getAnimations().every(a => a.playState === 'finished')")
+    page.wait_for_timeout(50)
+
+
+def no_overflow(page):
+    return page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth + 1")
+
+
+def small_targets(page, scope):
+    return page.eval_on_selector_all(scope + " button, " + scope + " input, " + scope + " select, " + scope + " summary",
+                                     "els => els.filter(b => b.offsetParent && getComputedStyle(b).visibility !== 'hidden')"
+                                     ".map(b => b.getBoundingClientRect()).filter(r => r.width > 0 && (r.width < 44 || r.height < 44)).length")
+
+
+def t_library_desktop(h):
+    print("-- library: desktop sidebar / search / filters / keyboard [desktop]")
+    h.srv.seed(library_fixture())
+    ctx = h.context("desktop")
+    page = h.page(ctx)
+    check(page.is_visible("#hq-carnet-library"), "desktop: library docked by default (no sheet)")
+    lib = page.eval_on_selector("#hq-carnet-library", "e => { const r = e.getBoundingClientRect(); return [r.width, r.height, getComputedStyle(e).position]; }")
+    check(260 <= lib[0] <= 300 and lib[2] != "fixed", f"desktop sidebar 260–300px, in flow ({lib[0]:.0f}px, {lib[2]})")
+    paper = page.eval_on_selector(".carnet-paper", "e => e.getBoundingClientRect().width")
+    check(paper >= 2 * lib[0], f"paper dominant ({paper:.0f}px vs {lib[0]:.0f}px)")
+    check(no_overflow(page), "no horizontal overflow with sidebar")
+    # collapse / expand
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: not page.is_visible("#hq-carnet-library"), "sidebar collapses")
+    wider = page.eval_on_selector(".carnet-paper", "e => e.getBoundingClientRect().width")
+    check(wider >= paper - 1, "paper keeps room when collapsed")
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-library"), "sidebar re-opens")
+    # safe rendering of HTML-looking note text
+    titles = page.eval_on_selector_all("#carnet-library-list .carnet-card-title", "els => els.map(e => e.textContent)")
+    check(XSS in titles, "HTML-looking title rendered as literal text")
+    check(page.evaluate("() => !document.querySelector('#carnet-library-list img, #carnet-library-list b') && !window.__xss"), "no element injected from note text")
+    # cards
+    check(card_ids(page)[0] == "page-shaft", "Toutes: pinned first")
+    meta = page.inner_text('#carnet-library-list [data-carnet-page-id="page-shaft"]')
+    check("Shaft inspection" in meta and "Ø12.034 mm Check bearing preload" in meta and "Fixture redesign · Mesures" in meta, "card: title, preview, context")
+    check("Page sans titre" not in meta, "derived title")
+    # search: accent/case folding, ranking, keyboard
+    page.locator("#hq-carnet-search").click()
+    polls = []
+    page.on("request", lambda r: polls.append(r.url) if "/api/carnet" in r.url else None)
+    page.keyboard.type("EBAUCHE")
+    wait_until(lambda: card_ids(page) == ["page-ebauche"], "'EBAUCHE' finds 'Ébauche moteur'")
+    check(len(polls) <= 1, f"no request per keystroke ({len(polls)})")
+    page.fill("#hq-carnet-search", "mesures")
+    wait_until(lambda: card_ids(page) == ["page-shaft", "page-ebauche"], "category search, pinned tie-break")
+    page.fill("#hq-carnet-search", "fixture redesign")
+    wait_until(lambda: card_ids(page) == ["page-shaft", "page-ebauche"], "project search")
+    page.fill("#hq-carnet-search", "diametre")
+    wait_until(lambda: card_ids(page) == ["page-ebauche"], "body search with accent folding")
+    page.focus("#hq-carnet-search")
+    page.keyboard.press("Enter")
+    wait_until(lambda: page_id(page) == "page-ebauche", "Enter opens the first result in the same editor")
+    check(editor_value(page).startswith("Ébauche moteur"), "editor shows the opened page")
+    page.focus("#hq-carnet-search")
+    page.keyboard.press("Escape")
+    wait_until(lambda: page.input_value("#hq-carnet-search") == "", "Escape clears the search")
+    # filters
+    page.locator('[data-carnet-filter="pinned"]').click()
+    wait_until(lambda: card_ids(page) == ["page-shaft"], "Épinglées")
+    page.locator('[data-carnet-filter="unfiled"]').click()
+    wait_until(lambda: sorted(card_ids(page)) == ["page-html", "page-idea"], "À classer")
+    page.locator('[data-carnet-filter="recent"]').click()
+    wait_until(lambda: page.eval_on_selector_all("#carnet-library-list .carnet-lib-group", "els => els.map(e => e.textContent)")[:1] == ["Aujourd'hui"],
+               "Récentes grouped (Aujourd'hui first)")
+    groups = page.eval_on_selector_all("#carnet-library-list .carnet-lib-group", "els => els.map(e => e.textContent)")
+    check(groups[-1] == "Plus ancien" and len(groups) == len(set(groups)), f"older bucket last, no duplicate bucket {groups}")
+    check(card_ids(page)[-1] == "page-html", "old page in the older bucket")
+    page.locator('#hq-carnet-library [data-carnet-category="cat-measures"]').click()
+    wait_until(lambda: sorted(card_ids(page)) == ["page-ebauche", "page-shaft"], "category scope")
+    page.locator('#hq-carnet-library [data-carnet-project="proj-fixture"]').click()
+    wait_until(lambda: sorted(card_ids(page)) == ["page-ebauche", "page-shaft"], "project scope")
+    # mouse click on a card opens it; the sidebar stays (desktop)
+    page.locator('#carnet-library-list [data-carnet-page-id="page-shaft"]').click()
+    wait_until(lambda: page_id(page) == "page-shaft", "click opens page")
+    check(page.is_visible("#hq-carnet-library"), "desktop sidebar stays open after opening a page")
+    check(page.eval_on_selector_all("#hq-carnet-editor", "els => els.length") == 1, "exactly one editor")
+    ctx.close()
+
+
+def t_library_phone(h):
+    print("-- library: phone bottom sheet [iphone]")
+    h.srv.seed(library_fixture())
+    ctx = h.context("iphone")
+    page = h.page(ctx)
+    check(not page.is_visible("#hq-carnet-library"), "sheet closed by default (paper first)")
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-library"), "sheet opens")
+    settle_anim(page)  # let the short entrance animation finish before measuring
+    vh = page.evaluate("() => window.innerHeight")
+    r = page.eval_on_selector("#hq-carnet-library", "e => { const r = e.getBoundingClientRect(); return [r.top, r.bottom, r.height, r.width]; }")
+    check(0.84 * vh <= r[2] <= 0.91 * vh and abs(r[1] - vh) < 2, f"bottom sheet ~85–90% height ({r[2] / vh:.2f}, bottom {r[1]:.0f}/{vh})")
+    check(small_targets(page, "#hq-carnet-library") == 0, "sheet controls >= 44px")
+    check(no_overflow(page), "no horizontal overflow with the sheet open")
+    for sel in ('[data-carnet-filter="all"]', '[data-carnet-filter="pinned"]', '[data-carnet-filter="recent"]', '[data-carnet-filter="unfiled"]', "#hq-carnet-search"):
+        check(page.is_visible(sel), f"sheet shows {sel}")
+    page.locator('#carnet-library-list [data-carnet-page-id="page-ebauche"]').click()
+    wait_until(lambda: not page.is_visible("#hq-carnet-library"), "tap result closes the sheet")
+    check(page_id(page) == "page-ebauche" and editor_value(page).startswith("Ébauche"), "tap opens that page in the same editor")
+    check(page.eval_on_selector_all("#hq-carnet-editor", "els => els.length") == 1, "one editor on phone")
+    # backdrop closes
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.is_visible(".carnet-lib-backdrop"), "backdrop shown")
+    page.mouse.click(10, 30)
+    wait_until(lambda: not page.is_visible("#hq-carnet-library"), "backdrop tap closes")
+    # context popover on phone: 2 taps
+    page.locator("#btn-carnet-context").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-context"), "context popover")
+    check(small_targets(page, "#hq-carnet-context") == 0, "context options >= 44px")
+    page.locator('#hq-carnet-context [data-carnet-category=""]').click()
+    wait_until(lambda: h.srv.page("page-ebauche")["category_id"] is None, "clear category in 2 taps")
+    check(no_overflow(page), "no overflow with context popover")
+    ctx.close()
+
+
+def t_library_ipad(h):
+    print("-- library: iPad portrait drawer / landscape sidebar [ipad]")
+    h.srv.seed(library_fixture())
+    ctx = h.context("ipad")
+    page = h.page(ctx)
+    vw = page.viewport_size["width"]
+    check(not page.is_visible("#hq-carnet-library"), "portrait: library closed by default")
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-library"), "portrait drawer opens")
+    settle_anim(page)
+    w = page.eval_on_selector("#hq-carnet-library", "e => e.getBoundingClientRect().width")
+    check(w <= 0.5 * vw, f"drawer leaves the paper visible ({w:.0f}/{vw})")
+    check(small_targets(page, "#hq-carnet-library") == 0, "drawer controls >= 44px")
+    page.keyboard.press("Escape")
+    wait_until(lambda: not page.is_visible("#hq-carnet-library"), "hardware keyboard Escape closes the drawer")
+    page.set_viewport_size({"width": 1194, "height": 834})
+    wait_until(lambda: page.is_visible("#hq-carnet-library"), "landscape: docked sidebar")
+    paper = page.eval_on_selector(".carnet-paper", "e => e.getBoundingClientRect().width")
+    lw = page.eval_on_selector("#hq-carnet-library", "e => e.getBoundingClientRect().width")
+    check(paper >= 600 and paper > 2 * lw, f"landscape paper not covered ({paper:.0f}px, library {lw:.0f}px)")
+    check(page.evaluate("() => !document.querySelector('.carnet-lib-backdrop:not([hidden])')"), "no backdrop over the paper in landscape")
+    check(no_overflow(page), "no overflow in landscape")
+    ctx.close()
+
+
+def t_context_inherit(h, profile):
+    print(f"-- context assignment / create-in-context / global New [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    page.locator("#btn-carnet-next").click()
+    wait_until(lambda: page_id(page) == "page-idea", "on page-idea")
+    check(page.inner_text("#btn-carnet-context").strip() == "À classer", "unassigned page shows À classer")
+    page.locator("#btn-carnet-context").click()
+    page.locator('#hq-carnet-context [data-carnet-category="cat-measures"]').click()
+    wait_until(lambda: h.srv.page("page-idea")["category_id"] == "cat-measures", "category assigned in 2 clicks")
+    page.locator('#hq-carnet-context [data-carnet-project="proj-fixture"]').click()
+    wait_until(lambda: h.srv.page("page-idea")["project_id"] == "proj-fixture", "project assigned (independent dimension)")
+    check(page.inner_text("#btn-carnet-context").strip() == "Fixture redesign · Mesures", "pill reflects assignment")
+    page.locator('#hq-carnet-context [data-carnet-project=""]').click()
+    wait_until(lambda: h.srv.page("page-idea")["project_id"] is None and h.srv.page("page-idea")["category_id"] == "cat-measures", "clear project only")
+    if profile == "desktop":
+        page.keyboard.press("Escape")
+    else:
+        page.locator("#btn-carnet-context-close").click()
+    wait_until(lambda: not page.is_visible("#hq-carnet-context"), "popover closes")
+    # create while filtered inherits context
+    open_library(page)
+    page.locator('#hq-carnet-library [data-carnet-category="cat-measures"]').click()
+    wait_until(lambda: page.inner_text("#btn-carnet-lib-new").strip() == "+ Nouvelle page ici", "scoped New label")
+    before = {p["id"] for p in h.srv.nb()["pages"]}
+    page.locator("#btn-carnet-lib-new").click()
+    wait_until(lambda: len(h.srv.nb()["pages"]) == len(before) + 1, "page created from the library")
+    new_id = next(p["id"] for p in h.srv.nb()["pages"] if p["id"] not in before)
+    check(h.srv.page(new_id)["category_id"] == "cat-measures" and h.srv.page(new_id)["project_id"] is None, "create in category inherits it")
+    wait_until(lambda: page_id(page) == new_id, "new page opened in the editor")
+    open_library(page)
+    page.locator('#hq-carnet-library [data-carnet-project="proj-fixture"]').click()
+    before = {p["id"] for p in h.srv.nb()["pages"]}
+    page.locator("#btn-carnet-lib-new").click()
+    wait_until(lambda: len(h.srv.nb()["pages"]) == len(before) + 1, "page created in project scope")
+    pid = next(p["id"] for p in h.srv.nb()["pages"] if p["id"] not in before)
+    check(h.srv.page(pid)["project_id"] == "proj-fixture", "create in project inherits it")
+    before = {p["id"] for p in h.srv.nb()["pages"]}
+    page.locator("#btn-carnet-new").click()
+    wait_until(lambda: len(h.srv.nb()["pages"]) == len(before) + 1, "global New")
+    gid = next(p["id"] for p in h.srv.nb()["pages"] if p["id"] not in before)
+    check(h.srv.page(gid)["project_id"] is None and h.srv.page(gid)["category_id"] is None, "global New stays À classer")
+    ctx.close()
+
+
+def t_manage(h):
+    print("-- project/category management [desktop]")
+    h.srv.seed()
+    ctx = h.context("desktop")
+    page = h.page(ctx)
+    page.locator('#hq-carnet-library [data-carnet-act="manage"]').click()
+    page.locator('.carnet-create[data-row-kind="project"] input').fill("Banc d'essai")
+    page.locator('.carnet-create[data-row-kind="project"] [data-carnet-act="project-create"]').click()
+    wait_until(lambda: any(p["name"] == "Banc d'essai" for p in h.srv.nb()["projects"]), "project created")
+    pid = next(p["id"] for p in h.srv.nb()["projects"] if p["name"] == "Banc d'essai")
+    row = f'.carnet-manage-row[data-row-id="{pid}"]'
+    page.locator(row + " input").fill("Banc")
+    page.locator(row + ' [data-carnet-act="project-rename"]').click()
+    wait_until(lambda: any(p["name"] == "Banc" for p in h.srv.nb()["projects"]), "project renamed")
+    page.locator(row + ' [data-carnet-act="project-archive"]').click()
+    wait_until(lambda: next(p for p in h.srv.nb()["projects"] if p["id"] == pid)["archived"] is True, "project archived")
+    page.locator("#btn-carnet-context").click()
+    check(page.query_selector(f'#hq-carnet-context [data-carnet-project="{pid}"]') is None, "archived project not offered for assignment")
+    page.keyboard.press("Escape")
+    page.locator('.carnet-create[data-row-kind="category"] input').fill("Idées")
+    page.locator('.carnet-create[data-row-kind="category"] select').select_option("violet")
+    page.locator('.carnet-create[data-row-kind="category"] [data-carnet-act="category-create"]').click()
+    wait_until(lambda: any(c["name"] == "Idées" and c["color"] == "violet" for c in h.srv.nb()["categories"]), "category created")
+    cid = next(c["id"] for c in h.srv.nb()["categories"] if c["name"] == "Idées")
+    crow = f'.carnet-manage-row[data-row-id="{cid}"]'
+    page.locator(crow + " input").fill("Idées folles")
+    page.locator(crow + ' [data-carnet-act="category-save"]').click()
+    wait_until(lambda: any(c["name"] == "Idées folles" for c in h.srv.nb()["categories"]), "category updated")
+    # delete Mesures: pages lose it, client adopts null; needs two explicit clicks
+    mrow = '.carnet-manage-row[data-row-id="cat-measures"]'
+    page.locator(mrow + ' [data-carnet-act="category-delete"]').click()
+    page.wait_for_timeout(200)
+    check(any(c["id"] == "cat-measures" for c in h.srv.nb()["categories"]), "first click only arms category delete")
+    page.locator(mrow + ' [data-carnet-act="category-delete"]').click()
+    wait_until(lambda: not any(c["id"] == "cat-measures" for c in h.srv.nb()["categories"]), "category deleted")
+    wait_until(lambda: page.inner_text("#btn-carnet-context").strip() == "Fixture redesign", "current page adopts the unassigned category")
+    set_editor(page, "after category delete")
+    wait_until(lambda: h.srv.text("page-shaft") == "after category delete", "saves normally")
+    check(h.srv.page("page-shaft")["category_id"] is None, "deleted category never resurrected")
+    ctx.close()
+
+
+def t_stale_org(h, profile):
+    print(f"-- stale draft org metadata never resurrects [{profile}]")
+    nb = fixture()
+    nb["categories"] = []
+    nb["pages"][0].update({"category_id": None, "rev": 4})
+    nb["notebook_rev"] = 5
+    h.srv.seed(nb)
+    legacy = {"version": 1, "pages": {"page-shaft": {"server_rev": 4, "generation": 2, "saved_generation": 1, "updated_local_at": 1,
+              "project_id": "proj-fixture", "category_id": "cat-measures", "pinned": True,
+              "content": {"version": 1, "blocks": [{"id": "block-shaft", "type": "text", "text": "stale draft text", "marks": []}]}}}}
+    init = f"try {{ if (!sessionStorage.getItem('seeded')) {{ sessionStorage.setItem('seeded','1'); localStorage.setItem({json.dumps(DRAFT_KEY)}, {json.dumps(json.dumps(legacy))}); }} }} catch (_) {{}}"
+    ctx = h.context(profile, init=init)
+    posts = []
+    ctx.on("request", lambda r: posts.append(json.loads(r.post_data)) if r.method == "POST" and r.url.endswith("/api/carnet") else None)
+    page = h.page(ctx)
+    check(editor_value(page) == "stale draft text", "draft text recovered")
+    check(page.inner_text("#btn-carnet-context").strip() == "Fixture redesign", "authoritative (null) category shown, not the draft's")
+    wait_until(lambda: h.srv.text("page-shaft") == "stale draft text", "draft saved")
+    check(h.srv.page("page-shaft")["category_id"] is None, "deleted category not resurrected")
+    check(all("category_id" not in p and "project_id" not in p for p in posts if p.get("action") == "page_save"), "no org field sent from a draft")
+    page.reload()
+    h.open_carnet(page)
+    check(page.inner_text("#btn-carnet-context").strip() == "Fixture redesign", "reload keeps authoritative metadata")
+    ctx.close()
+
+
+def t_pin_queue(h, profile):
+    print(f"-- pin through the save queue [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    page.locator("#btn-carnet-next").click()
+    wait_until(lambda: page_id(page) == "page-idea", "on page-idea")
+    held, posts = [], []
+
+    def route(r):
+        if r.request.method == "POST":
+            posts.append(json.loads(r.request.post_data))
+            if len(posts) == 1:
+                held.append(r)
+                return
+        r.continue_()
+    page.route("**/api/carnet", route)
+    page.locator("#btn-carnet-pin").click()
+    check(read_draft(page)["pages"]["page-idea"]["pinned"] is True, "pin draft written synchronously")
+    wait_until(lambda: len(posts) == 1, "pin save in flight")
+    page.locator("#btn-carnet-pin").click()  # unpin while in flight
+    page.wait_for_timeout(700)
+    check(len(posts) == 1, "one in-flight save per page")
+    held.pop().continue_()
+    wait_until(lambda: len(posts) == 2 and posts[1]["pinned"] is False and posts[1]["expected_rev"] == 2, "late success -> newest pin sent on new rev")
+    wait_until(lambda: h.srv.page("page-idea")["pinned"] is False and h.srv.rev("page-idea") == 3, "server holds newest pin")
+    page.unroute("**/api/carnet")
+    page.locator("#btn-carnet-pin").click()
+    wait_until(lambda: h.srv.page("page-idea")["pinned"] is True, "pin saved")
+    page.reload()
+    h.open_carnet(page)
+    page.locator("#btn-carnet-next").click()
+    wait_until(lambda: page.get_attribute("#btn-carnet-pin", "aria-pressed") == "true", "pin persists across reload")
+    ctx.close()
+
+
+def t_trash(h, profile):
+    print(f"-- trash / undo / read-only / restore / permanent delete [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile)
+    page = h.page(ctx)
+
+    def trash_current():
+        if not page.is_visible("#carnet-quick-tools"):
+            page.locator("#btn-carnet-more").click()
+        page.locator("[data-carnet-trash]").click()
+
+    trash_current()
+    wait_until(lambda: h.srv.page("page-shaft")["deleted_at"] is not None, "delete = soft delete")
+    wait_until(lambda: page.is_visible("#btn-carnet-undo"), "Undo exposed immediately")
+    check(page_id(page) == "page-idea", "editor moves to a neighbour page")
+    page.locator("#btn-carnet-undo").click()
+    wait_until(lambda: h.srv.page("page-shaft")["deleted_at"] is None, "Undo restores")
+    wait_until(lambda: page_id(page) == "page-shaft", "Undo reopens the page")
+    trash_current()
+    wait_until(lambda: h.srv.page("page-shaft")["deleted_at"] is not None, "trashed again")
+    open_library(page)
+    page.locator('[data-carnet-filter="trash"]').click()
+    wait_until(lambda: card_ids(page) == ["page-shaft"], "Corbeille is a separate state")
+    page.locator('#carnet-library-list [data-carnet-page-id="page-shaft"]').click()
+    wait_until(lambda: page_id(page) == "page-shaft", "trashed note viewable")
+    check(page.eval_on_selector("#hq-carnet-editor", "e => e.readOnly") is True, "read-only while trashed")
+    check(page.is_visible("#hq-carnet-trashed"), "trash banner")
+    check(page.inner_text("#carnet-page-indicator").strip() == "Corbeille", "indicator says Corbeille")
+    posts = []
+    page.on("request", lambda r: posts.append(json.loads(r.post_data)) if r.method == "POST" and r.url.endswith("/api/carnet") else None)
+    page.focus("#hq-carnet-editor")
+    page.keyboard.type("nope")
+    page.eval_on_selector("#hq-carnet-editor", "e => { e.value = e.value + 'forced'; e.dispatchEvent(new Event('input', {bubbles:true})); }")
+    page.wait_for_timeout(800)
+    check(not [p for p in posts if p.get("action") == "page_save"], "no autosave while trashed")
+    check(h.srv.text("page-shaft") == SHAFT, "server text untouched")
+    check(page.is_disabled("#btn-carnet-pin"), "pin disabled while trashed")
+    page.locator("#hq-carnet-trashed [data-carnet-restore]").click()
+    wait_until(lambda: h.srv.page("page-shaft")["deleted_at"] is None, "restore from banner")
+    wait_until(lambda: page.eval_on_selector("#hq-carnet-editor", "e => e.readOnly") is False, "editable after restore")
+    set_editor(page, SHAFT + " restored")
+    wait_until(lambda: h.srv.text("page-shaft") == SHAFT + " restored", "autosave works again")
+    # permanent delete requires trash + typed confirmation
+    trash_current()
+    wait_until(lambda: h.srv.page("page-shaft")["deleted_at"] is not None, "trashed for permanent delete")
+    open_library(page)
+    page.locator('[data-carnet-filter="trash"]').click()
+    page.locator('#carnet-library-list [data-carnet-delete-permanent="page-shaft"]').click()
+    wait_until(lambda: page.is_visible("#hq-carnet-delete-confirm"), "deep confirmation shown")
+    check(page.is_disabled("#btn-carnet-delete-confirm"), "confirm disabled until typed")
+    page.fill("#hq-carnet-delete-word", "supp")
+    check(page.is_disabled("#btn-carnet-delete-confirm"), "partial word keeps it disabled")
+    page.keyboard.press("Escape")
+    wait_until(lambda: not page.is_visible("#hq-carnet-delete-confirm"), "Escape cancels")
+    check(h.srv.page("page-shaft") is not None, "nothing deleted on cancel")
+    page.locator("#hq-carnet-trashed [data-carnet-delete-permanent]").click()
+    page.fill("#hq-carnet-delete-word", "supprimer")
+    page.locator("#btn-carnet-delete-confirm").click()
+    wait_until(lambda: h.srv.page("page-shaft") is None, "permanent delete after explicit confirmation")
+    wait_until(lambda: page_id(page) == "page-idea", "editor returns to an active page")
+    # final active page invariant
+    trash_current()
+    wait_until(lambda: h.srv.page("page-idea")["deleted_at"] is not None, "last active page trashed")
+    active = [p for p in h.srv.nb()["pages"] if p["deleted_at"] is None]
+    check(len(active) == 1 and active[0]["content"]["blocks"][0]["text"] == "", "server kept a blank active page")
+    wait_until(lambda: page_id(page) == active[0]["id"] and editor_value(page) == "", "replacement page opened")
+    ctx.close()
+
+
+def remote(action, **kw):
+    """Another device acting on the throwaway server."""
+    import hq_carnet
+    nb_rev = hq_carnet.get_notebook(meta=True)["notebook_rev"]
+    payload = {"action": action}
+    payload.update(kw)
+    if action != "page_save":
+        payload.setdefault("expected_notebook_rev", nb_rev)
+    return hq_carnet.mutate(payload)
+
+
+def t_delete_stale(h, profile):
+    print(f"-- permanent delete never crosses a revision conflict [{profile}]")
+    h.srv.seed()
+    h.expected_failures = True  # the expected 409 is logged by the browser
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    page.locator("#btn-carnet-more").click()
+    page.locator("[data-carnet-trash]").click()
+    wait_until(lambda: h.srv.page("page-shaft")["deleted_at"] is not None, "trashed (rev 4)")
+    open_library(page)
+    page.locator('[data-carnet-filter="trash"]').click()
+    page.locator('#carnet-library-list [data-carnet-delete-permanent="page-shaft"]').click()
+    wait_until(lambda: page.is_visible("#hq-carnet-delete-confirm"), "confirmation open for rev 4")
+    page.fill("#hq-carnet-delete-word", "SUPPRIMER")
+    # meanwhile another device restores, edits and re-trashes the note (rev 7)
+    remote("page_restore", id="page-shaft", expected_rev=4)
+    remote("page_save", id="page-shaft", expected_rev=5,
+           content={"version": 1, "blocks": [{"id": "block-shaft", "type": "text", "text": "Newer remote shaft notes", "marks": []}]})
+    remote("page_trash", id="page-shaft", expected_rev=6)
+    deletes = []
+    page.on("request", lambda r: deletes.append(json.loads(r.post_data)) if r.method == "POST" and r.url.endswith("/api/carnet")
+            and '"page_delete_permanent"' in (r.post_data or "") else None)
+    page.locator("#btn-carnet-delete-confirm").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-trashed-note"), "user told the note changed")
+    page.wait_for_timeout(800)
+    check(len(deletes) == 1 and deletes[0]["expected_rev"] == 4, f"exactly one delete request (confirmed rev), no automatic retry ({deletes})")
+    check(h.srv.page("page-shaft") is not None and h.srv.rev("page-shaft") == 7, "page still exists")
+    wait_until(lambda: editor_value(page) == "Newer remote shaft notes", "refreshed current state shown")
+    check(not page.is_visible("#hq-carnet-delete-confirm"), "old confirmation closed")
+    check("confirme à nouveau" in page.inner_text("#hq-carnet-trashed-note"), "reconfirmation requested")
+    # a NEW explicit confirmation is required for the current revision
+    page.locator("#hq-carnet-trashed [data-carnet-delete-permanent]").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-delete-confirm"), "new confirmation")
+    check(page.input_value("#hq-carnet-delete-word") == "" and page.is_disabled("#btn-carnet-delete-confirm"), "new confirmation starts empty/disabled")
+    check("Newer remote shaft notes" in page.inner_text("#hq-carnet-delete-confirm"), "new confirmation names the current title")
+    page.fill("#hq-carnet-delete-word", "supprimer")
+    page.locator("#btn-carnet-delete-confirm").click()
+    wait_until(lambda: h.srv.page("page-shaft") is None, "rev 7 deleted only after the second human confirmation")
+    check(len(deletes) == 2 and deletes[1]["expected_rev"] == 7, "second request carries the reconfirmed rev")
+    h.expected_failures = False
+    ctx.close()
+
+
+def t_remote_lifecycle(h, profile):
+    print(f"-- remote trash/restore of a dirty page [{profile}]")
+    h.srv.seed()
+    h.expected_failures = True
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    ctx.route("**/api/carnet", lambda r: r.abort() if r.request.method == "POST" else r.continue_())
+    set_editor(page, "dirty local shaft")
+    wait_until(lambda: status(page) == OFFLINE_MSG, "dirty and unsaved")
+    remote("page_trash", id="page-shaft", expected_rev=3)
+    wait_until(lambda: page.eval_on_selector("#hq-carnet-editor", "e => e.readOnly") is True, "remote trash -> read-only", timeout=12)
+    check(editor_value(page) == "dirty local shaft", "local text preserved")
+    check(read_draft(page)["pages"]["page-shaft"]["content"]["blocks"][0]["text"] == "dirty local shaft", "draft preserved")
+    check(page.is_visible("#hq-carnet-trashed") and page.inner_text("#carnet-page-indicator").strip() == "Corbeille", "trash banner shown")
+    check(status(page) == "Brouillon local conservé — page dans la corbeille", "truthful status (no endless Enregistrement…)")
+    open_library(page)
+    page.locator('[data-carnet-filter="trash"]').click()
+    wait_until(lambda: card_ids(page) == ["page-shaft"], "dirty trashed page listed in Corbeille")
+    page.locator('[data-carnet-filter="all"]').click()
+    wait_until(lambda: "page-shaft" not in card_ids(page), "not among active pages")
+    if profile != "desktop":
+        page.locator("#btn-carnet-lib-close").click()
+    ctx.unroute("**/api/carnet")
+    page.evaluate("() => window.dispatchEvent(new Event('online'))")
+    page.wait_for_timeout(900)
+    check(h.srv.text("page-shaft") == SHAFT and h.srv.page("page-shaft")["deleted_at"] is not None, "no autosave into the trashed page")
+    # restored elsewhere: active again, stale Restore gone, the protected draft resumes safely
+    remote("page_restore", id="page-shaft", expected_rev=4)
+    wait_until(lambda: page.eval_on_selector("#hq-carnet-editor", "e => e.readOnly") is False, "remote restore -> editable", timeout=12)
+    check(not page.is_visible("#hq-carnet-trashed"), "stale Restore action gone")
+    wait_until(lambda: h.srv.text("page-shaft") == "dirty local shaft", "draft resumed by itself (remote content was unchanged)", timeout=10)
+    wait_until(lambda: read_draft(page) is None, "draft cleared once saved")
+    h.expected_failures = False
+    ctx.close()
+
+
+def t_library_modal(h, profile):
+    print(f"-- library overlay is a modal dialog; docked sidebar is not [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    if profile == "desktop":
+        check(page.get_attribute("#hq-carnet-library", "role") is None and page.get_attribute("#hq-carnet-library", "aria-modal") is None,
+              "docked sidebar is not modal")
+        check(page.evaluate("() => !document.querySelector('.carnet-main').inert"), "paper stays interactive next to the sidebar")
+        ctx.close()
+        return
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.is_visible("#hq-carnet-library"), "overlay open")
+    check(page.get_attribute("#hq-carnet-library", "role") == "dialog" and page.get_attribute("#hq-carnet-library", "aria-modal") == "true",
+          "overlay has dialog semantics")
+    check(page.evaluate("() => document.querySelector('.carnet-main').inert === true"), "paper behind the overlay is inert")
+    page.focus("#hq-carnet-search")
+    inside = True
+    for _ in range(30):
+        page.keyboard.press("Tab")
+        if not page.evaluate("() => document.getElementById('hq-carnet-library').contains(document.activeElement)"):
+            inside = False
+            break
+    check(inside, "Tab stays inside the overlay")
+    page.keyboard.press("Shift+Tab")
+    check(page.evaluate("() => document.getElementById('hq-carnet-library').contains(document.activeElement)"), "Shift+Tab stays inside")
+    page.keyboard.press("Escape")
+    wait_until(lambda: not page.is_visible("#hq-carnet-library"), "Escape closes the overlay")
+    check(page.evaluate("() => document.activeElement && document.activeElement.id") == "btn-carnet-library", "focus returns to the opener")
+    check(page.evaluate("() => !document.querySelector('.carnet-main').inert"), "paper interactive again")
+    ctx.close()
+
+
+def t_modal_shortcuts(h, profile):
+    print(f"-- modal library blocks background page shortcuts [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    check(page_id(page) == "page-shaft", "starts on page 1")
+    page.locator("#btn-carnet-library").click()
+    wait_until(lambda: page.get_attribute("#hq-carnet-library", "aria-modal") == "true", "modal overlay open")
+    page.focus("#hq-carnet-search")
+    for key in ("Alt+ArrowRight", "Alt+ArrowLeft", "Alt+ArrowRight"):
+        page.keyboard.press(key)
+    page.wait_for_timeout(200)
+    check(page_id(page) == "page-shaft", "Alt+Left/Right do not change the page behind the modal")
+    page.keyboard.type("shaft")
+    wait_until(lambda: page.input_value("#hq-carnet-search") == "shaft", "typing in the modal search still works")
+    wait_until(lambda: card_ids(page) == ["page-shaft"], "search inside the modal works")
+    page.keyboard.press("Escape")  # clears the search first
+    page.keyboard.press("Escape")  # then closes the modal
+    wait_until(lambda: not page.is_visible("#hq-carnet-library"), "Escape closes the modal")
+    page.focus("#hq-carnet-editor")
+    page.keyboard.press("Alt+ArrowRight")
+    wait_until(lambda: page_id(page) == "page-idea", "Alt+Right works again once the modal is closed")
+    page.keyboard.press("Alt+ArrowLeft")
+    wait_until(lambda: page_id(page) == "page-shaft", "Alt+Left works again")
+    ctx.close()
+
+
+def _mode_ctx(h, engine, **opts):
+    ctx = h.browser(engine).new_context(**opts)
+    ctx.add_init_script(INSTRUMENT)
+    r = ctx.request.post(h.srv.base + "/login", form={"pin": ADMIN_PIN}, headers={"Origin": h.srv.base}, max_redirects=0)
+    assert r.status == 303, r.status
+    page = ctx.new_page()
+    page.on("pageerror", lambda e: h.errors.append(f"[{engine}] pageerror {e}"))
+    page.goto(h.srv.base + "/")
+    h.open_carnet(page)
+    return ctx, page
+
+
+def _mode_state(page):
+    return page.evaluate("""() => {
+      const lib = document.getElementById('hq-carnet-library');
+      const main = document.querySelector('.carnet-main');
+      const r = lib.getBoundingClientRect();
+      return { mode: window.hqCarnetDebug().library.mode, visible: !lib.hidden, role: lib.getAttribute('role'),
+               modal: lib.getAttribute('aria-modal'), inert: !!main.inert, width: r.width, pos: getComputedStyle(lib).position,
+               editors: document.querySelectorAll('#hq-carnet-editor').length,
+               paper: document.querySelector('.carnet-paper').getBoundingClientRect().width,
+               overflow: document.documentElement.scrollWidth > window.innerWidth + 1 };
+    }""")
+
+
+def t_responsive_modes(h, engines):
+    print("-- responsive library modes (capability-aware)")
+    h.srv.seed()
+    cases = []
+    if "chromium" in engines:
+        cases.append(("chromium desktop 1024x768", "chromium", {"viewport": {"width": 1024, "height": 768}}, "dock", (258, 262)))
+        cases.append(("chromium desktop 1366x900", "chromium", {"viewport": {"width": 1366, "height": 900}}, "dock", (278, 282)))
+    if "webkit" in engines:
+        ipad = dict(h.pw.devices["iPad Pro 11"])
+        ipad.pop("default_browser_type", None)
+        portrait = dict(ipad, viewport={"width": 1024, "height": 1366})
+        landscape = dict(ipad, viewport={"width": 1194, "height": 834})
+        phone = dict(h.pw.devices["iPhone 13"])
+        phone.pop("default_browser_type", None)
+        cases.append(("webkit iPad portrait 1024 (touch)", "webkit", portrait, "drawer", None))
+        cases.append(("webkit iPad landscape 1194", "webkit", landscape, "dock", (278, 282)))
+        cases.append(("webkit iPhone", "webkit", phone, "sheet", None))
+    for label, engine, opts, want, width in cases:
+        ctx, page = _mode_ctx(h, engine, **opts)
+        m = _mode_state(page)
+        check(m["mode"] == want, f"{label}: mode {m['mode']} == {want}")
+        check(m["editors"] == 1 and not m["overflow"], f"{label}: one editor, no horizontal overflow")
+        if want == "dock":
+            check(m["visible"] and m["pos"] != "fixed", f"{label}: docked sidebar visible, in flow")
+            check(m["role"] is None and m["modal"] is None and not m["inert"], f"{label}: not role=dialog / aria-modal, paper not inert")
+            check(width[0] <= m["width"] <= width[1], f"{label}: sidebar {m['width']:.0f}px")
+            check(m["paper"] > m["width"] * 1.7, f"{label}: paper dominant ({m['paper']:.0f}px)")
+            page.locator("#btn-carnet-library").click()
+            wait_until(lambda: page.is_hidden("#hq-carnet-library"), f"{label}: sidebar collapses")
+            page.locator("#btn-carnet-library").click()
+            wait_until(lambda: page.is_visible("#hq-carnet-library"), f"{label}: sidebar re-opens")
+            page.focus("#hq-carnet-editor")
+            page.keyboard.press("Alt+ArrowRight")
+            wait_until(lambda: page_id(page) == "page-idea", f"{label}: keyboard page navigation with the sidebar open")
+        else:
+            check(not m["visible"], f"{label}: overlay closed by default")
+            page.locator("#btn-carnet-library").click()
+            wait_until(lambda: page.is_visible("#hq-carnet-library"), f"{label}: overlay opens")
+            m = _mode_state(page)
+            check(m["role"] == "dialog" and m["modal"] == "true" and m["inert"], f"{label}: modal semantics, paper inert")
+            page.keyboard.press("Escape")
+            wait_until(lambda: page.is_hidden("#hq-carnet-library"), f"{label}: Escape closes")
+            check(not _mode_state(page)["inert"], f"{label}: paper interactive again")
+        ctx.close()
+
+
+def t_focus(h, profile):
+    print(f"-- Focus mode [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile)
+    page = h.page(ctx)
+    before_text = editor_value(page)
+    for i in range(3):
+        page.locator("#btn-carnet-focus").click()
+        wait_until(lambda: page.evaluate("() => document.querySelector('.carnet').classList.contains('is-focus')"), f"enter focus #{i + 1}")
+        hidden = ["#hq-carnet-library", ".bottom-nav", ".topbar", "#btn-carnet-context", "#btn-carnet-pin", "#btn-carnet-library",
+                  "#btn-carnet-focus", "#btn-carnet-new", "#btn-carnet-copy"]
+        check(all(not page.is_visible(sel) for sel in hidden), "focus hides HQ chrome, library, context/pin and New/Copy")
+        check(page.is_visible("#hq-carnet-editor") and page.is_visible("#btn-carnet-focus-exit"), "paper + explicit exit visible")
+        check(all(page.is_visible(sel) for sel in ("#btn-carnet-prev", "#btn-carnet-next", "#carnet-page-indicator", "#btn-carnet-more")),
+              "focus keeps minimal page navigation, indicator and quick tools toggle")
+        check(page.eval_on_selector("#hq-carnet-status", "e => getComputedStyle(e).display !== 'none' && getComputedStyle(e.parentElement).display !== 'none'"),
+              "save status stays available in focus")
+        check(editor_value(page) == before_text and page_id(page) == "page-shaft", "editor state unchanged")
+        if i == 0:
+            small = page.eval_on_selector_all("#btn-carnet-prev, #btn-carnet-next, #btn-carnet-more, #btn-carnet-focus-exit",
+                                              "els => els.map(b => b.getBoundingClientRect()).filter(r => r.width < 44 || r.height < 44).length")
+            check(small == 0, "focus controls >= 44px")
+            page.locator("#btn-carnet-next").click()
+            wait_until(lambda: page_id(page) == "page-idea", "focus: next page button works")
+            page.locator("#btn-carnet-prev").click()
+            wait_until(lambda: page_id(page) == "page-shaft", "focus: previous page button works")
+            if profile != "iphone":
+                page.focus("#hq-carnet-editor")
+                page.keyboard.press("Alt+ArrowRight")
+                wait_until(lambda: page_id(page) == "page-idea", "focus: Alt+Right keyboard navigation")
+                page.keyboard.press("Alt+ArrowLeft")
+                wait_until(lambda: page_id(page) == "page-shaft", "focus: Alt+Left keyboard navigation")
+            page.locator("#btn-carnet-more").click()
+            wait_until(lambda: page.is_visible("#carnet-quick-tools"), "focus: quick tools open")
+            check(not page.is_visible(".carnet-trash-btn"), "focus: destructive trash action hidden")
+            page.eval_on_selector("#hq-carnet-editor", "e => { e.focus(); e.setSelectionRange(0, 0); }")
+            page.locator('[data-carnet-symbol="±"]').click()
+            wait_until(lambda: editor_value(page).startswith("±"), "focus: symbol inserted")
+            page.locator("#btn-carnet-time").click()
+            wait_until(lambda: re.match(r"^±\d\d:\d\d — ", editor_value(page)) is not None, "focus: time inserted")
+            wait_until(lambda: h.srv.text("page-shaft") == editor_value(page), "focus: tool edits autosaved")
+            page.locator("#btn-carnet-more").click()
+            before_text = editor_value(page)
+        if profile == "iphone":
+            page.locator("#btn-carnet-focus-exit").click()
+        else:
+            page.keyboard.press("Escape")
+        wait_until(lambda: not page.evaluate("() => document.querySelector('.carnet').classList.contains('is-focus')"), "exit focus")
+        check(page.is_visible(".bottom-nav"), "chrome restored")
+    bb = page.eval_on_selector("#btn-carnet-focus", "e => { const r = e.getBoundingClientRect(); return [r.width, r.height]; }")
+    check(bb[0] >= 44 and bb[1] >= 44, "focus button >= 44px")
+    page.locator("#btn-carnet-focus").click()
+    set_editor(page, "typed in focus")
+    wait_until(lambda: h.srv.text("page-shaft") == "typed in focus", "autosave in focus mode")
+    page.locator("#btn-carnet-focus-exit").click()
+    counts = page.evaluate("() => ({ i: window.__carnetCounts.intervals.size, l: window.__carnetCounts.listeners })")
+    check(counts["i"] == 1, f"one poll interval after focus toggles ({counts['i']})")
+    check(all(v == 1 for v in counts["l"].values()), f"no duplicated listeners {counts['l']}")
+    # leaving Carnet exits focus
+    page.locator("#btn-carnet-focus").click()
+    page.evaluate("() => setView('accueil')")
+    wait_until(lambda: not page.evaluate("() => document.body.classList.contains('carnet-focus')"), "leaving Carnet exits focus")
+    ctx.close()
+
+
+def t_home(h, profile):
+    print(f"-- Home summary / launcher [{profile}]")
+    nb = fixture()
+    nb["pages"][1]["content"]["blocks"][0]["text"] = XSS
+    h.srv.seed(nb)
+    ctx = h.context(profile)
+    page = h.page(ctx, open_carnet=False)
+    page.locator('.bottom-nav [data-nav="accueil"]').click()
+    wait_until(lambda: page.is_visible("#hq-carnet-home"), "admin Home summary visible")
+    txt = page.inner_text("#hq-carnet-home")
+    check("2 pages · 1 épinglée" in txt, f"counts ({txt!r})")
+    titles = page.eval_on_selector_all("#hq-carnet-home [data-carnet-page-id]", "els => els.map(e => e.dataset.carnetPageId)")
+    check(titles[:2] == ["page-shaft", "page-idea"] and len(titles) <= 3, "pinned first, at most 3")
+    check(XSS in txt and page.evaluate("() => !document.querySelector('#hq-carnet-home img') && !window.__xss"), "safe titles")
+    top = page.evaluate("""() => { const h = document.getElementById('hq-carnet-home').getBoundingClientRect().top;
+        const c = document.getElementById('hq-cal-home').getBoundingClientRect().top; return h < c; }""")
+    check(top, "summary near the top of Home")
+    page.locator('#hq-carnet-home [data-carnet-page-id="page-idea"]').click()
+    wait_until(lambda: page.get_attribute("body", "data-view") == "carnet", "launcher routes to Carnet")
+    wait_until(lambda: page_id(page) == "page-idea", "launcher opens that page in the Carnet editor")
+    check(page.eval_on_selector_all("#hq-carnet-editor", "els => els.length") == 1, "no second editor")
+    page.locator('.bottom-nav [data-nav="accueil"]').click()
+    wait_until(lambda: page.is_visible("#btn-home-carnet-new"), "Home again")
+    before = {p["id"] for p in h.srv.nb()["pages"]}
+    page.locator("#btn-home-carnet-new").click()
+    wait_until(lambda: len(h.srv.nb()["pages"]) == len(before) + 1, "Home New creates a page")
+    nid = next(p["id"] for p in h.srv.nb()["pages"] if p["id"] not in before)
+    wait_until(lambda: page_id(page) == nid, "new page opened in the same editor")
+    check(h.srv.page(nid)["project_id"] is None and h.srv.page(nid)["category_id"] is None, "Home New is À classer")
+    set_editor(page, "from home")
+    wait_until(lambda: h.srv.text(nid) == "from home", "typing saves")
+    page.locator('.bottom-nav [data-nav="accueil"]').click()
+    wait_until(lambda: "3 pages" in page.inner_text("#hq-carnet-home"), "summary refreshed")
+    page.locator("#btn-home-carnet-open").click()
+    wait_until(lambda: page.get_attribute("body", "data-view") == "carnet", "Ouvrir routes to Carnet")
+    check(page_id(page) == nid, "Ouvrir keeps the current page")
+    ctx.close()
+
+
+def t_home_upload(h, profile):
+    print(f"-- Home privacy for upload role [{profile}]")
+    h.srv.seed()
+    ctx = h.context(profile, pin=UPLOAD_PIN)
+    h.expected_failures = True
+    calls = []
+    ctx.on("request", lambda r: calls.append(r.url) if "/api/carnet" in r.url else None)
+    page = h.page(ctx, open_carnet=False)
+    page.locator('.bottom-nav [data-nav="accueil"]').click()
+    page.wait_for_timeout(1500)
+    check(not page.is_visible("#hq-carnet-home"), "upload role: no Carnet summary")
+    check(page.inner_text("#hq-carnet-home") == "" if page.query_selector("#hq-carnet-home") else True, "summary host empty")
+    body = page.content()
+    check("Shaft inspection" not in body and "épinglée" not in body, "no private titles/counts in the DOM")
+    check(not calls, "no /api/carnet request for upload role")
+    h.expected_failures = False
+    ctx.close()
+
+
+def t_same_note_resize(h):
+    print("-- same note across desktop/iPad/phone layouts (one editor) [chromium resize]")
+    h.srv.seed()
+    ctx = h.context("desktop")
+    page = h.page(ctx)
+    page.evaluate("() => { window.__ed = document.querySelector('#hq-carnet-editor'); }")
+    for i, (w, hgt) in enumerate(((1366, 900), (834, 1112), (390, 844), (1194, 834))):
+        page.set_viewport_size({"width": w, "height": hgt})
+        page.wait_for_timeout(150)
+        check(page.evaluate("() => window.__ed === document.querySelector('#hq-carnet-editor') && document.querySelectorAll('#hq-carnet-editor').length === 1"),
+              f"{w}px: same single editor element")
+        check(page_id(page) == "page-shaft", f"{w}px: same page")
+        set_editor(page, f"edit at {w}")
+        wait_until(lambda: h.srv.text("page-shaft") == f"edit at {w}", f"{w}px: edit saved")
+        check(no_overflow(page), f"{w}px: no horizontal overflow")
+        lib_hidden = not page.is_visible("#hq-carnet-library")
+        check(lib_hidden if w < 1100 else True, f"{w}px: overlay library never opens by itself")
+    ctx.close()
+
+
 def main():
     try:
         from playwright.sync_api import sync_playwright
@@ -806,6 +1575,55 @@ def main():
             pc = "desktop" if "chromium" in engines else None
             mob = ["ipad", "iphone"] if "webkit" in engines else []
             profiles = ([pc] if pc else []) + mob
+            part = "all"
+            if "--part" in sys.argv:
+                part = sys.argv[sys.argv.index("--part") + 1]
+            if part in ("all", "stage02"):
+                stage02(h, pc, mob, profiles, engines)
+            if part in ("all", "stage03"):
+                stage03(h, pc, mob, profiles)
+            check(not h.errors, "no pageerror / unexpected console error: " + "; ".join(h.errors[:5]))
+            check(not h.external, "no external requests: " + ", ".join(h.external[:5]))
+            h.close()
+    finally:
+        srv.close()
+    print(f"carnet playwright: {RESULTS['ok']} checks passed")
+    return 0
+
+
+def _run(fn, h, *a):
+    only = os.environ.get("CARNET_ONLY")
+    if not only or any(x in fn.__name__ for x in only.split(",")):
+        fn(h, *a)
+
+
+def stage03(h, pc, mob, profiles):
+    if pc:
+        _run(t_library_desktop, h)
+        _run(t_manage, h)
+        _run(t_same_note_resize, h)
+    if mob:
+        _run(t_library_phone, h)
+        _run(t_library_ipad, h)
+    _run(t_responsive_modes, h, [e for e, ok in (("chromium", pc), ("webkit", mob)) if ok])
+    for prof in [p for p in profiles if p != "desktop"]:
+        _run(t_modal_shortcuts, h, prof)
+    for prof in profiles:
+        _run(t_library_modal, h, prof)
+        _run(t_remote_lifecycle, h, prof)
+        _run(t_delete_stale, h, prof)
+        _run(t_context_inherit, h, prof)
+        _run(t_trash, h, prof)
+        _run(t_focus, h, prof)
+    for prof in ([pc] if pc else []) + (["iphone"] if mob else []):
+        _run(t_stale_org, h, prof)
+        _run(t_pin_queue, h, prof)
+        _run(t_home, h, prof)
+        _run(t_home_upload, h, prof)
+
+
+def stage02(h, pc, mob, profiles, engines):
+    if True:
             for prof in profiles:
                 t_load_layout(h, prof)
                 t_autosave_draft(h, prof)
@@ -838,13 +1656,6 @@ def main():
                 t_attention(h, prof)
             for engine in engines:
                 t_nav_targets(h, engine)
-            check(not h.errors, "no pageerror / unexpected console error: " + "; ".join(h.errors[:5]))
-            check(not h.external, "no external requests: " + ", ".join(h.external[:5]))
-            h.close()
-    finally:
-        srv.close()
-    print(f"carnet playwright: {RESULTS['ok']} checks passed")
-    return 0
 
 
 if __name__ == "__main__":
