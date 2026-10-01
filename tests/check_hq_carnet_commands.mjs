@@ -8,9 +8,70 @@ const Rich = require("../assets/hq-carnet-rich.js");
 // registry shape
 const ids = C.COMMANDS.map((c) => c.id);
 assert.equal(new Set(ids).size, ids.length, "unique ids");
-for (const want of ["paragraph", "heading", "bullet", "number", "check", "image", "camera", "file", "drawing", "measure", "calc", "decision", "cite", "time"]) assert.ok(ids.includes(want), want);
-assert.deepEqual(C.insertItems().map((c) => c.id), ["image", "camera", "file", "drawing", "measure", "calc", "decision"]);
+for (const want of ["paragraph", "heading", "bullet", "number", "check", "image", "camera", "file", "drawing", "measure", "calc", "decision", "task", "cite", "time"]) assert.ok(ids.includes(want), want);
 for (const c of C.COMMANDS) assert.ok(c.label && c.hint && Array.isArray(c.keys) && ["block", "tool", "format"].includes(c.kind), c.id);
+
+// ---- product phase 1: categories, icons, concise hints, honest shortcuts
+assert.deepEqual(C.CATEGORIES.map((c) => c.label), ["Écrire", "Ajouter", "Ingénierie", "Projet"]);
+const byCat = (cat) => C.COMMANDS.filter((c) => c.cat === cat).map((c) => c.label);
+assert.deepEqual(byCat("write"), ["Texte", "Titre", "Liste", "Liste numérotée", "Checklist"]);
+assert.deepEqual(byCat("add"), ["Image", "Photo", "Fichier", "Dessin"]);
+assert.deepEqual(byCat("eng"), ["Mesure", "Calcul", "Décision"]);
+assert.deepEqual(byCat("project"), ["Tâche", "Référence", "Heure"]);
+for (const c of C.COMMANDS) {
+  assert.ok(C.category(c.cat), "known category " + c.id);
+  assert.match(c.icon, /^[MmLlHhVvZzAaCcQq0-9 .,\-]+$/, "icon is a plain stroke path " + c.id);
+  assert.ok(c.hint.length <= 32, "concise description " + c.id + ": " + c.hint);
+  assert.ok(c.shortcut === undefined, "no invented shortcut on " + c.id);
+}
+assert.equal(new Set(C.COMMANDS.map((c) => c.icon)).size, C.COMMANDS.length, "every command has its own icon");
+
+// ---- catalog: grouped when the query is empty (with Récents first when there are some), flat results otherwise
+let g = C.catalog({});
+assert.deepEqual(g.map((x) => x.label), ["Écrire", "Ajouter", "Ingénierie", "Projet"]);
+assert.equal(C.flatten(g).length, C.COMMANDS.length);
+g = C.catalog({ recents: ["calc", "image", "calc", "nope", "heading", "time"] });
+assert.equal(g[0].id, "recent");
+assert.deepEqual(g[0].items.map((c) => c.id), ["calc", "image", "heading"], "unknown ids dropped, duplicates collapsed, shown capped at 3");
+assert.equal(g.length, 5);
+g = C.catalog({ query: "mes" });
+assert.deepEqual(g.map((x) => x.id), ["results"]);
+assert.equal(g[0].items[0].id, "measure");
+assert.deepEqual(C.catalog({ query: "zzzzzz" }), []);
+assert.deepEqual(C.catalog({ exclude: ["calc"] }).find((x) => x.id === "eng").items.map((c) => c.id), ["measure", "decision"]);
+
+// ---- fuzzy ranking: accepted ranks 0..3 unchanged, in-order letters (rank 4) as the extension
+assert.equal(C.filter("chk")[0].id, "check", "chk -> Checklist");
+assert.equal(C.filter("mesr")[0].id, "measure", "mesr -> Mesure");
+assert.equal(C.filter("clcl")[0].id, "calc", "clcl -> Calcul");
+assert.equal(C.filter("dsn")[0].id, "drawing", "dsn -> Dessin (tight match beats looser ones)");
+assert.equal(C.filter("ingenierie").length, 3, "a category name finds its commands");
+assert.deepEqual(C.filter("ingenierie").map((c) => c.id), ["measure", "calc", "decision"]);
+assert.equal(C.filter("tableau")[0].id, "task");
+assert.equal(C.filter("tache")[0].id, "task");
+assert.equal(C.filter("TÂCHE")[0].id, "task");
+assert.ok(C.filter("m").length >= 1 && C.filter("m")[0].label.toLowerCase().startsWith("m"), "single letter: prefix only, no fuzzy noise");
+assert.ok(C.filter("m").every((c) => /m/i.test(c.label + c.keys.join(" ") + c.hint + C.category(c.cat).label)), "single letter never fuzzy-matches unrelated commands");
+assert.ok(C.score("deci", C.byId("decision")).rank === 0 && C.score("chk", C.byId("check")).rank === 4);
+assert.equal(C.score("xyz", C.byId("check")), null);
+// determinism: same query, same order
+assert.deepEqual(C.filter("li").map((c) => c.id), C.filter("li").map((c) => c.id));
+assert.deepEqual(C.filter("").map((c) => c.id), C.COMMANDS.map((c) => c.id), "empty query keeps registry order");
+
+// ---- recents: pure, bounded, sanitized
+assert.deepEqual(C.pushRecent([], "calc"), ["calc"]);
+assert.deepEqual(C.pushRecent(["calc", "image"], "image"), ["image", "calc"], "a repeat moves to the front");
+let recent = [];
+for (const id of ["paragraph", "heading", "bullet", "number", "check", "image"]) recent = C.pushRecent(recent, id);
+assert.equal(recent.length, C.RECENTS_MAX);
+assert.deepEqual(recent, ["image", "check", "number", "bullet"]);
+assert.deepEqual(C.pushRecent(["calc"], "not-a-command"), ["calc"], "an unknown id is ignored");
+assert.deepEqual(C.sanitizeRecents("calc"), []);
+assert.deepEqual(C.sanitizeRecents(["calc", 3, null, {}, "calc", "time"]), ["calc", "time"]);
+assert.deepEqual(C.sanitizeRecents(null), []);
+const before = ["calc"];
+C.pushRecent(before, "time");
+assert.deepEqual(before, ["calc"], "input never mutated");
 
 // filter / rank (accent- and case-insensitive; label prefix beats keyword)
 assert.equal(C.filter("").length, C.COMMANDS.length);

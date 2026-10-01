@@ -300,7 +300,7 @@ scenario("slash menu: '/' opens it (keystroke cancelled), keyboard nav + Enter i
   check((await p.getAttribute("#carnet-cmd-input", "aria-expanded")) === "true", "aria-expanded=true on the search input");
   check((await p.evaluate(() => document.activeElement.id)) === "carnet-cmd-input", "focus is in the menu's own search input");
   let o = await cmdOpts(p);
-  check(o.length === 14 && o[0][0] === "paragraph" && o[0][1] === "true", "all 14 commands, first selected: " + o.length);
+  check(o.length === 15 && o[0][0] === "paragraph" && o[0][1] === "true", "all 15 commands, first selected: " + o.length);
   check(!(await dirty(p)), "opening the menu is not an edit (nothing dirty)");
   await p.keyboard.press("ArrowDown");
   await p.keyboard.press("ArrowDown");
@@ -358,7 +358,7 @@ scenario("slash menu: only after whitespace / at line start; never mid-word; ato
 
 scenario("slash menu: block commands convert; tool commands reuse the SAME runInsert path (decision / measure)", async () => {
   const { srv, p } = await openEditor();
-  for (const [q, want] of [["liste à", "bullet"], ["numér", "number"], ["cases", "check"], ["texte", "paragraph"]]) {
+  for (const [q, want] of [["liste", "bullet"], ["numér", "number"], ["cases", "check"], ["texte", "paragraph"]]) {
     await caretEnd(p);
     await p.keyboard.type("/");
     await until(() => menuVisible(p), "menu for " + q);
@@ -864,7 +864,7 @@ scenario("between-block '+': appears near a seam on hover, opens the shared comm
   check(!(await p.evaluate(() => document.querySelector("#hq-carnet-editor").contains(document.querySelector("#carnet-gap-plus")))), "outside the editor DOM");
   await p.click("#carnet-gap-plus");
   await until(() => menuVisible(p), "same command menu opens");
-  check((await cmdOpts(p)).length === 14, "the full shared registry");
+  check((await cmdOpts(p)).length === 15, "the full shared registry");
   await p.keyboard.type("titr");
   await p.keyboard.press("Enter");
   await saved(p);

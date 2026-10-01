@@ -1298,17 +1298,23 @@
         }
         for (let attempt = 0; attempt < 2; attempt += 1) {
           try {
-            const res = await request(Object.assign({
+            const body = Object.assign({
               action: "page_create",
               expected_notebook_rev: st.notebookRev,
               after_id: afterId,
-            }, ctx), {});
+            }, ctx);
+            // Templates: the page is created WITH its content in this one request (server-validated, atomic): a refusal leaves no page.
+            if (opts && opts.content) body.content = opts.content;
+            if (opts && typeof opts.requestId === "string") body.request_id = opts.requestId;
+            const res = await request(body, {});
             if (!validPage(res && res.page)) throw new Error("Réponse carnet invalide");
             if (Number.isInteger(res.notebook_rev)) st.notebookRev = res.notebook_rev;
-            const e = newEntry(res.page);
-            st.entries.set(e.id, e);
-            const at = afterId ? st.order.indexOf(afterId) + 1 : st.order.length;
-            st.order.splice(at > 0 ? at : st.order.length, 0, e.id);
+            const e = st.entries.get(res.page.id) || newEntry(res.page);
+            if (!st.entries.has(e.id)) {
+              st.entries.set(e.id, e);
+              const at = afterId ? st.order.indexOf(afterId) + 1 : st.order.length;
+              st.order.splice(at > 0 ? at : st.order.length, 0, e.id);
+            }
             st.offline = false;
             const prev = st.currentId;
             st.currentId = e.id;
@@ -1321,6 +1327,7 @@
               continue;
             }
             const status = err && Number.isInteger(err.status) ? err.status : 0;
+            st.lastCode = data && typeof data.code === "string" ? data.code : "";
             if (!status || status >= 500) st.offline = true;
             st.notice = !status || status >= 500 ? MSG.offlineClean + " — nouvelle page impossible" :
               String((data && data.error) || (err && err.message) || "Erreur").slice(0, 160);
@@ -1792,6 +1799,8 @@
     printNode: null,
     // Stage 06: {panelOpen, busy, origin: {pageId, mode, anchorId, replace}, sel: {pageId, blockId, assetId, rev, sig}, confirm, timer}
     image: { panelOpen: false, busy: false, origin: null, sel: null, confirm: false, timer: null, inputs: null },
+    tpl: null, // template picker {box, back, list, open, ctx, from}
+    recents: null, // recent command ids (validated; see recentsList)
   };
 
   function el(tag, attrs, children) {
@@ -1975,6 +1984,7 @@
     tools.appendChild(toolBtn("btn-carnet-cite", "Insérer une référence (source, page)", "Référence"));
     tools.appendChild(toolBtn("btn-carnet-image", "Insérer une image (appareil photo, photos, fichiers)", "Image"));
     tools.appendChild(toolBtn("btn-carnet-eng", "Outils d'ingénierie (calcul, mesure, décision, conversion, tâche, lien)", "Ingénierie"));
+    tools.appendChild(toolBtn("btn-carnet-templates", "Nouvelle page depuis un modèle", "Modèles"));
     tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
     tools.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
@@ -2122,6 +2132,7 @@
       else if (b.id === "btn-carnet-find") toggleFind();
       else if (b.id === "btn-carnet-cite") openCitePicker();
       else if (b.id === "btn-carnet-export") toggleExport();
+      else if (b.id === "btn-carnet-templates") openTemplates({}, b);
       else if (b.id === "btn-carnet-image") toggleImagePanel();
       else if (b.id === "btn-carnet-eng") openEngMenu();
       else if (b.id === "btn-carnet-history") openHistory("history", b);
@@ -2185,20 +2196,56 @@
 
   // ---- visible "+ Insérer" (UX pass): the primary way to add content; advanced tools stay behind "Plus" (…)
 
-  const INSERT_FALLBACK = [
-    ["image", "Image", "Photos et fichiers de cet appareil"],
-    ["camera", "Appareil photo", "Prendre une photo"],
-    ["file", "Fichier", "Lien vers un fichier du carnet (sélectionner du texte)"],
-    ["drawing", "Dessin", "Lien vers un dessin (sélectionner du texte)"],
-    ["measure", "Mesure", "Valeur mesurée et tolérance"],
-    ["calc", "Calcul", "Expression avec résultat"],
-    ["decision", "Décision", "Marquer la ligne comme décision"],
-  ];
-  /** ONE registry (hq-carnet-commands.js) feeds "+ Insérer", the "/" menu, the between-block "+" and the block menu. */
-  function insertItems() {
+  // Recent commands: ids only, validated, at most RECENTS_MAX, kept in a tiny preference key (never note data, never the drafts store).
+  // Written ONLY when a command is run; falls back to memory when the browser store is unavailable.
+  const RECENTS_KEY = "hq_carnet_recent_cmds_v1";
+
+  function recentsList() {
     const R = global.HqCarnetCommands;
-    return R ? R.insertItems().map((c) => [c.id, c.label, c.hint]) : INSERT_FALLBACK;
+    if (!R) return [];
+    if (!ui.recents) {
+      let raw = null;
+      try {
+        raw = JSON.parse(safeStorage().getItem(RECENTS_KEY) || "null");
+      } catch (_) {
+        raw = null;
+      }
+      ui.recents = R.sanitizeRecents(raw);
+    }
+    return ui.recents.slice();
   }
+
+  function recentsNote(id) {
+    const R = global.HqCarnetCommands;
+    if (!R || !R.byId(id)) return;
+    ui.recents = R.pushRecent(recentsList(), id);
+    try {
+      safeStorage().setItem(RECENTS_KEY, JSON.stringify(ui.recents));
+    } catch (_) {
+      // memory only: the menu still shows them for this page load
+    }
+  }
+
+  /** ONE registry (hq-carnet-commands.js) feeds "+ Insérer", the "/" menu, the between-block "+" and the block menu. */
+  function fillInsertMenu(menu) {
+    const R = global.HqCarnetCommands;
+    const M = global.HqCarnetEditorUi;
+    menu.textContent = "";
+    if (!R || !M) return;
+    for (const g of R.catalog({ recents: recentsList() })) {
+      const gid = "carnet-insert-g-" + g.id;
+      const box = el("div", { class: "carnet-insert-group", role: "group", "aria-labelledby": gid }, [el("div", { id: gid, class: "carnet-cmd-group-label", text: g.label })]);
+      for (const c of g.items) {
+        const it = el("button", { type: "button", role: "menuitem", class: "carnet-insert-item", [g.id === "recent" ? "data-carnet-insert-recent" : "data-carnet-insert"]: c.id, tabindex: "-1" });
+        it.appendChild(M.commandRow(doc, c, null));
+        keepFocus(it);
+        box.appendChild(it);
+      }
+      menu.appendChild(box);
+    }
+  }
+
+  const INSERT_SEL = "[data-carnet-insert],[data-carnet-insert-recent]";
 
   function buildInsertRow() {
     const btn = el("button", {
@@ -2209,16 +2256,9 @@
     btn.appendChild(el("span", { text: "Insérer" }));
     keepFocus(btn);
     const menu = el("div", { id: "hq-carnet-insert-menu", class: "carnet-insert-menu", role: "menu", "aria-label": "Insérer", hidden: true });
-    for (const [key, label, hint] of insertItems()) {
-      const it = el("button", { type: "button", role: "menuitem", class: "carnet-insert-item", "data-carnet-insert": key, tabindex: "-1" }, [
-        el("span", { class: "carnet-insert-label", text: label }),
-        el("span", { class: "carnet-insert-hint", text: hint }),
-      ]);
-      keepFocus(it);
-      menu.appendChild(it);
-    }
+    fillInsertMenu(menu);
     const row = el("div", { class: "carnet-insert-row" }, [btn, menu]);
-    const items = () => Array.prototype.slice.call(menu.querySelectorAll("[data-carnet-insert]"));
+    const items = () => Array.prototype.slice.call(menu.querySelectorAll(INSERT_SEL));
     const close = (refocus) => {
       menu.hidden = true;
       btn.setAttribute("aria-expanded", "false");
@@ -2231,6 +2271,7 @@
       }
       const sel = currentSel(); // the caret BEFORE the menu takes focus: new content goes there
       ui.selCache = { start: sel.start, end: sel.end };
+      fillInsertMenu(menu); // recents may have changed since the last time
       menu.hidden = false;
       btn.setAttribute("aria-expanded", "true");
       const first = items()[0];
@@ -2259,9 +2300,9 @@
       } else if (e.key === "Tab") close(false);
     });
     menu.addEventListener("click", (e) => {
-      const b = e.target && e.target.closest ? e.target.closest("[data-carnet-insert]") : null;
+      const b = e.target && e.target.closest ? e.target.closest(INSERT_SEL) : null;
       if (!b) return;
-      const key = b.getAttribute("data-carnet-insert");
+      const key = b.getAttribute("data-carnet-insert") || b.getAttribute("data-carnet-insert-recent");
       close(false);
       runInsert(key);
     });
@@ -2277,6 +2318,7 @@
     if (!curEntry()) return flashMsg(IMG_MSG.readonly);
     const R = global.HqCarnetCommands;
     const cmd = R ? R.byId(key) : null;
+    if (cmd) recentsNote(key); // every menu ends here: the recents list is fed from the single path
     if (cmd && cmd.kind === "block") return runBlockCommand(cmd);
     if (key === "cite") return openCitePicker();
     if (key === "time") return insertText(timeMarker(new Date()));
@@ -2285,7 +2327,7 @@
     const eu = engUi();
     if (!eu) return;
     if (key === "file" || key === "drawing") return eu.openTool("link", key);
-    eu.openTool(key);
+    eu.openTool(key); // measure / calc / decision / task
   }
 
   /** Re-type the caret's text block to the command's type (never an atom; never toggles back to a paragraph). */
@@ -2323,6 +2365,8 @@
       format: (kind) => applyFormat(kind),
       cite: () => openCitePicker(),
       command: (id) => runInsert(id),
+      recents: recentsList,
+      noteRecent: recentsNote,
       isOn: (kind, sel) => {
         if (Rich.INLINE.indexOf(kind) >= 0) return Rich.hasMark(sel.lines, sel.start, sel.end, kind);
         return false;
@@ -2354,6 +2398,7 @@
       iconButton("btn-carnet-lib-close", "Fermer la bibliothèque", ICON.close, { class: "carnet-btn carnet-lib-close" }),
       el("div", { class: "carnet-lib-actions" }, [
         el("button", { type: "button", id: "btn-carnet-lib-new", class: "carnet-small carnet-primary", text: "+ Nouvelle page" }),
+        el("button", { type: "button", id: "btn-carnet-lib-templates", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", text: "Modèles" }),
         el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small carnet-quiet", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
       ]),
     ]);
@@ -2551,6 +2596,8 @@
     const inherit = scopeCreateContext();
     newBtn.textContent = inherit ? "+ Nouvelle page ici" : "+ Nouvelle page";
     newBtn.hidden = sel.filter === "trash";
+    const tplBtn = doc.getElementById("btn-carnet-lib-templates");
+    if (tplBtn) tplBtn.hidden = sel.filter === "trash";
     const items = c.libraryItems();
     renderFilterCounts(items);
     renderScopes(items);
@@ -2810,6 +2857,7 @@
     if (!c || !b || !ui.libEl.contains(b)) return;
     if (b.id === "btn-carnet-lib-close") return closeLibrary(true);
     if (b.id === "btn-carnet-lib-new") return newPage(scopeCreateContext() || {});
+    if (b.id === "btn-carnet-lib-templates") return openTemplates(scopeCreateContext() || {}, b);
     if (b.id === "btn-carnet-lib-bulk") return openHistory("bulk", b);
     if (b.dataset.carnetFold) {
       const k = b.dataset.carnetFold;
@@ -2900,6 +2948,123 @@
       focusEditor(true);
     }
     return id;
+  }
+
+  // ---------------------------------------------------------------- templates (product phase 1)
+
+  const TPL_MSG = {
+    unavailable: "Modèles indisponibles",
+    invalid: "Modèle invalide : aucune page créée",
+    stale: "Le carnet a changé : modèle non appliqué, rien n'a été créé",
+  };
+
+  /**
+   * A template page: ordinary lines built by the pure template module, sent in ONE page_create (born with its content, server-validated).
+   * Any failure (invalid template, limits, offline, stale notebook) creates nothing and leaves the page list untouched.
+   */
+  async function newPageFromTemplate(id, ctx) {
+    const c = ui.core;
+    const T = global.HqCarnetTemplates;
+    if (!c || !T) return flashMsg(TPL_MSG.unavailable, true), null;
+    const built = T.build(Rich, id, new Date());
+    if (built.error) return flashMsg(TPL_MSG.invalid, true), null;
+    const content = Rich.wireContent(built.lines, null, null);
+    c.st.notice = "";
+    // One request_id per (template, scope, content): pressing the same template again after an uncertain failure re-sends it, and the
+    // server answers with the page it already created instead of making a second one.
+    const key = JSON.stringify([id, ctx || {}, content]);
+    if (!ui.tplAttempt || ui.tplAttempt.key !== key) ui.tplAttempt = { key, requestId: "tpl-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12) };
+    const pageId = await c.createPage(Object.assign({}, ctx || {}, { content, requestId: ui.tplAttempt.requestId }));
+    if (!pageId) {
+      if (c.st.lastCode === "request_result_gone") ui.tplAttempt = null; // created then deleted elsewhere: the next click is a new, explicit attempt
+      flashMsg(c.st.notice || TPL_MSG.stale, true);
+      return null;
+    }
+    ui.tplAttempt = null;
+    if (libMode() !== "dock" && libVisible()) closeLibrary(false);
+    openPage(pageId);
+    // the caret goes to the first fill-in line (the first empty one after the title), ready to type
+    const lines = Rich.parseEditor(ui.editor);
+    const at = lines.findIndex((l, i) => i > 0 && !l.text);
+    const starts = Rich.lineStarts(lines);
+    focusEditor(false);
+    const pos = at >= 0 ? starts[at] : starts[starts.length - 1] + lines[lines.length - 1].text.length;
+    setSel(pos, pos);
+    return pageId;
+  }
+
+  function closeTemplates(refocus) {
+    const T = ui.tpl;
+    if (!T || !T.open) return;
+    T.open = false;
+    T.box.hidden = true;
+    T.back.hidden = true;
+    const from = T.from;
+    T.from = null;
+    if (refocus && from && from.isConnected) from.focus({ preventScroll: true });
+  }
+
+  function openTemplates(ctx, from) {
+    const c = ui.core;
+    const Tm = global.HqCarnetTemplates;
+    if (!c || !Tm || !ui.root) return flashMsg(TPL_MSG.unavailable, true);
+    if (!ui.tpl) {
+      const back = el("div", { class: "carnet-tpl-backdrop", "aria-hidden": "true", hidden: true });
+      const list = el("div", { class: "carnet-tpl-list", role: "group", "aria-label": "Modèles" });
+      const box = el("div", { id: "hq-carnet-templates", class: "carnet-tpl", role: "dialog", "aria-modal": "true", "aria-labelledby": "carnet-tpl-title", hidden: true }, [
+        el("div", { class: "carnet-tpl-head" }, [
+          el("h3", { id: "carnet-tpl-title", class: "carnet-tpl-title", text: "Nouvelle page depuis un modèle" }),
+          iconButton("btn-carnet-tpl-close", "Fermer", ICON.close, { class: "carnet-btn" }),
+        ]),
+        list,
+        el("p", { class: "hint carnet-tpl-note", text: "Une page ordinaire : tu écris par-dessus, rien n'est rempli à ta place." }),
+      ]);
+      ui.root.append(back, box);
+      ui.tpl = { box, back, list, open: false, ctx: {}, from: null };
+      back.addEventListener("click", () => closeTemplates(true));
+      box.querySelector("#btn-carnet-tpl-close").addEventListener("click", () => closeTemplates(true));
+      box.addEventListener("keydown", (e) => {
+        const items = Array.prototype.slice.call(box.querySelectorAll("button"));
+        const at = items.indexOf(doc.activeElement);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          closeTemplates(true);
+        } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          items[(at + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus({ preventScroll: true });
+        } else if (e.key === "Tab") {
+          // the dialog is modal: Tab cycles inside it
+          e.preventDefault();
+          items[(at + (e.shiftKey ? -1 : 1) + items.length) % items.length].focus({ preventScroll: true });
+        }
+      });
+      list.addEventListener("click", (e) => {
+        const b = e.target && e.target.closest ? e.target.closest("[data-carnet-template]") : null;
+        if (!b || b.disabled) return;
+        const T = ui.tpl;
+        for (const x of list.querySelectorAll("button")) x.disabled = true; // one choice, one request
+        newPageFromTemplate(b.getAttribute("data-carnet-template"), T.ctx).then((id) => {
+          for (const x of list.querySelectorAll("button")) x.disabled = false;
+          if (id) closeTemplates(false);
+        });
+      });
+    }
+    const T = ui.tpl;
+    T.ctx = ctx || {};
+    T.from = from || null;
+    while (T.list.firstChild) T.list.removeChild(T.list.firstChild);
+    for (const t of Tm.list()) {
+      const b = el("button", { type: "button", class: "carnet-tpl-item", "data-carnet-template": t.id });
+      b.appendChild(svgIcon(t.icon));
+      b.appendChild(el("span", { class: "carnet-tpl-text" }, [el("span", { class: "carnet-tpl-label", text: t.label }), el("span", { class: "carnet-tpl-hint", text: t.hint })]));
+      T.list.appendChild(b);
+    }
+    T.open = true;
+    T.back.hidden = false;
+    T.box.hidden = false;
+    const first = T.list.querySelector("button");
+    if (first) first.focus({ preventScroll: true });
   }
 
   // ---------------------------------------------------------------- context popover
@@ -5825,6 +5990,23 @@
     } catch (e) {
       console.error(e);
     }
+  };
+
+  /** Quick Capture hooks (hq-carnet-capture.js): adopt a page created elsewhere, and open it in the Carnet view. No state of its own. */
+  global.hqCarnetRefresh = function () {
+    try {
+      return ui.phase === "ready" && ui.core ? ui.core.poll() : Promise.resolve([]);
+    } catch (_) {
+      return Promise.resolve([]);
+    }
+  };
+  global.hqCarnetOpen = async function (id) {
+    if (typeof id !== "string" || !id) return;
+    try {
+      if (ui.phase === "ready" && ui.core) await ui.core.poll(); // the page was created by another request: make it known first
+    } catch (_) {}
+    ui.pending = { id };
+    goCarnet();
   };
 
   global.hqCarnetShow = function () {

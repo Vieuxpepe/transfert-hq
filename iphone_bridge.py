@@ -2551,13 +2551,13 @@ function hqCarnetMissing() {
     };
     // Stage 04/05: the structured-content and sources modules must load before the editor.
     // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
+    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    }))))))))), true);
+    })))))))))), true);
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5319,8 +5319,10 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-history-ui.js"></script>
 <script src="/assets/hq-carnet-image-ui.js"></script>
 <script src="/assets/hq-carnet-commands.js"></script>
+<script src="/assets/hq-carnet-templates.js"></script>
 <script src="/assets/hq-carnet-editor-ui.js"></script>
 <script src="/assets/hq-carnet.js"></script>
+<script src="/assets/hq-carnet-capture.js"></script>
 <script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>

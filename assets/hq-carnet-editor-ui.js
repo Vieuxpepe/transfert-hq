@@ -31,6 +31,8 @@
     ["clear", "Effacer", "Effacer la mise en forme"],
   ];
 
+  const CMD_SEL = "[data-carnet-cmd],[data-carnet-cmd-recent]";
+
   const MSG = {
     stale: "Le contexte a changé : action annulée, rien n'a été modifié",
     readonly: "Cette page est en lecture seule",
@@ -52,6 +54,54 @@
     let left = anchor.left + (anchor.right - anchor.left) / 2 - size.w / 2;
     left = Math.max(margin, Math.min(left, Math.max(margin, view.w - size.w - margin)));
     return { top: Math.round(top), left: Math.round(left) };
+  }
+
+  /**
+   * One command row, shared by the "/" menu, the between-block "+" and the "+ Insérer" popover: icon, label, concise description, and
+   * (only when a REAL shortcut exists for that exact command) a key hint. Pure DOM construction, no HTML strings.
+   */
+  function commandRow(doc, c, opts) {
+    const o = opts || {};
+    const frag = doc.createDocumentFragment();
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = doc.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "carnet-cmd-icon");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const path = doc.createElementNS(ns, "path");
+    path.setAttribute("d", c.icon || "M5 12h14");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+    frag.appendChild(svg);
+    const text = doc.createElement("span");
+    text.className = "carnet-cmd-text";
+    const label = doc.createElement("span");
+    label.className = "carnet-cmd-label";
+    label.textContent = c.label;
+    const hint = doc.createElement("span");
+    hint.className = "carnet-cmd-hint";
+    hint.textContent = c.hint;
+    text.appendChild(label);
+    text.appendChild(hint);
+    frag.appendChild(text);
+    if (o.category) {
+      const tag = doc.createElement("span");
+      tag.className = "carnet-cmd-cat";
+      tag.textContent = o.category;
+      frag.appendChild(tag);
+    }
+    if (c.shortcut) {
+      const k = doc.createElement("kbd");
+      k.className = "carnet-cmd-kbd";
+      k.textContent = c.shortcut;
+      frag.appendChild(k);
+    }
+    return frag;
   }
 
   function mount(host) {
@@ -224,7 +274,9 @@
       });
       const list = el("div", { id: "carnet-cmd-list", class: "carnet-cmd-list", role: "listbox", "aria-label": "Commandes" });
       const live = el("div", { class: "carnet-sr", role: "status", "aria-live": "polite" });
-      const box = el("div", { id: "carnet-cmd-menu", class: "carnet-cmd-menu", hidden: true }, [input, list, live]);
+      // the footer lists only keys the menu really handles (↑↓ Enter Escape); hidden on touch devices
+      const foot = el("div", { class: "carnet-cmd-footer", "aria-hidden": "true" }, [el("span", { text: "↑↓ naviguer" }), el("span", { text: "⏎ choisir" }), el("span", { text: "Échap fermer" })]);
+      const box = el("div", { id: "carnet-cmd-menu", class: "carnet-cmd-menu", hidden: true }, [input, list, live, foot]);
       host.root.appendChild(box);
       const M = { box, input, list, live, open: false, items: [], active: 0, ctx: null, origin: "", closing: false };
       input.addEventListener("input", () => renderMenu(M));
@@ -233,6 +285,23 @@
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
           e.preventDefault();
           if (M.items.length) moveActive(M, (M.active + (e.key === "ArrowDown" ? 1 : -1) + M.items.length) % M.items.length);
+        } else if (e.key === "PageDown" || e.key === "PageUp") {
+          // jump to the first command of the next group (PageDown) / the start of this group, then the previous one (PageUp)
+          e.preventDefault();
+          const opts = Array.prototype.slice.call(M.list.querySelectorAll(CMD_SEL));
+          if (opts.length) {
+            const groupOf = (i) => opts[i].getAttribute("data-carnet-group");
+            const start = (i) => opts.findIndex((o) => o.getAttribute("data-carnet-group") === groupOf(i));
+            let to;
+            if (e.key === "PageDown") {
+              to = opts.findIndex((o, i) => i > M.active && groupOf(i) !== groupOf(M.active));
+              if (to < 0) to = opts.length - 1;
+            } else {
+              const s0 = start(M.active);
+              to = s0 < M.active ? s0 : s0 > 0 ? start(s0 - 1) : 0;
+            }
+            moveActive(M, to);
+          }
         } else if (e.key === "Enter") {
           e.preventDefault();
           const c = M.items[M.active];
@@ -248,9 +317,9 @@
       });
       list.addEventListener("mousedown", (e) => e.preventDefault());
       list.addEventListener("click", (e) => {
-        const opt = e.target && e.target.closest ? e.target.closest("[data-carnet-cmd]") : null;
+        const opt = e.target && e.target.closest ? e.target.closest(CMD_SEL) : null;
         if (!opt) return;
-        const c = C.byId(opt.getAttribute("data-carnet-cmd"));
+        const c = C.byId(opt.getAttribute("data-carnet-cmd") || opt.getAttribute("data-carnet-cmd-recent"));
         if (c) choose(M, c);
       });
       box.addEventListener("focusout", (e) => {
@@ -266,25 +335,35 @@
     }
 
     function renderMenu(M) {
-      const items = C.filter(M.input.value);
+      const query = M.input.value;
+      const groups = C.catalog({ query, recents: host.recents ? host.recents() : [] });
+      const items = C.flatten(groups); // the keyboard order (a command may appear in Récents AND in its category)
       M.items = items;
       M.active = Math.min(M.active, Math.max(0, items.length - 1));
       while (M.list.firstChild) M.list.removeChild(M.list.firstChild);
-      items.forEach((c, i) => {
-        const opt = el("div", { id: "carnet-cmd-" + c.id, class: "carnet-cmd-item", role: "option", "data-carnet-cmd": c.id, "aria-selected": i === M.active ? "true" : "false" }, [
-          el("span", { class: "carnet-cmd-label", text: c.label }),
-          el("span", { class: "carnet-cmd-hint", text: c.hint }),
+      let n = 0;
+      for (const g of groups) {
+        const gid = "carnet-cmd-g-" + g.id;
+        const box = el("div", { class: "carnet-cmd-group", role: "group", "aria-labelledby": gid, "data-carnet-group": g.id }, [
+          el("div", { id: gid, class: "carnet-cmd-group-label", text: g.label }),
         ]);
-        M.list.appendChild(opt);
-      });
+        for (const c of g.items) {
+          // a command repeated under "Récents" carries data-carnet-cmd-recent so [data-carnet-cmd="id"] stays unique (the category row)
+          const opt = el("div", { id: "carnet-cmd-" + n, class: "carnet-cmd-item", role: "option", [g.id === "recent" ? "data-carnet-cmd-recent" : "data-carnet-cmd"]: c.id, "data-carnet-group": g.id, "aria-selected": n === M.active ? "true" : "false" });
+          opt.appendChild(commandRow(doc, c, { category: g.id === "results" ? (C.category(c.cat) || {}).label : "" }));
+          box.appendChild(opt);
+          n += 1;
+        }
+        M.list.appendChild(box);
+      }
       if (!items.length) M.list.appendChild(el("div", { class: "carnet-cmd-empty", text: "Aucune commande" }));
-      M.input.setAttribute("aria-activedescendant", items.length ? "carnet-cmd-" + items[M.active].id : "");
+      M.input.setAttribute("aria-activedescendant", items.length ? "carnet-cmd-" + M.active : "");
       M.live.textContent = items.length ? items.length + (items.length > 1 ? " commandes" : " commande") : "Aucune commande";
     }
 
     function moveActive(M, i) {
       M.active = i;
-      const opts = M.list.querySelectorAll("[data-carnet-cmd]");
+      const opts = M.list.querySelectorAll(CMD_SEL);
       opts.forEach((o, k) => o.setAttribute("aria-selected", k === i ? "true" : "false"));
       const cur = opts[i];
       if (cur) {
@@ -387,6 +466,7 @@
         }
         ok = insertBlock(ctx, ctx.where || "below", true);
         if (ok && cmd.id !== "paragraph") host.command(cmd.id);
+        else if (ok && host.noteRecent) host.noteRecent(cmd.id);
       }
       M.closing = false;
       return ok;
@@ -898,5 +978,5 @@
     };
   }
 
-  return { mount, place, SEL_ACTIONS, MSG };
+  return { mount, place, commandRow, SEL_ACTIONS, MSG };
 });

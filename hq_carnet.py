@@ -36,6 +36,7 @@ Note contents never go to logs, URLs or error messages.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -114,6 +115,9 @@ _ready = False
 _guard = threading.Lock()
 _task_lock = threading.Lock()
 _task_seen: "OrderedDict[str, dict]" = OrderedDict()
+# page_create idempotency (Quick Capture / templates): request_id -> (fingerprint, page_id). Bounded, per process, like _task_seen.
+_create_seen: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
+CREATE_SEEN_MAX = 256
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
 
 
@@ -619,11 +623,29 @@ def _dup_name(items: list[dict], name: str, skip: str | None = None) -> bool:
 
 
 def _page_create(state: dict, data: dict, now: float) -> dict:
-    _only_keys(data, {"action", "expected_notebook_rev", "after_id", "project_id", "category_id"})
+    _only_keys(data, {"action", "expected_notebook_rev", "after_id", "project_id", "category_id", "content", "request_id"})
     expected = _req_int(data, "expected_notebook_rev")
     after_id = _opt_ref(data, "after_id", "page")
     project_id = _opt_ref(data, "project_id", "proj")
     category_id = _opt_ref(data, "category_id", "cat")
+    request_id = data.get("request_id")
+    fingerprint = None
+    if request_id is not None:
+        if not isinstance(request_id, str) or not _REQUEST_ID_RE.match(request_id):
+            raise CarnetError("request_id invalide")
+        # Idempotent retry: the SAME request (same content / classification) returns the page already created for this id —
+        # no second page, no revision bump. Checked before the revision guard (a retry carries a stale notebook_rev by design).
+        fingerprint = hashlib.sha256(json.dumps([data.get("content"), project_id, category_id, after_id], sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
+        known = _create_seen.get(request_id)
+        if known is not None:
+            if known[0] != fingerprint:
+                raise CarnetError("request_id déjà utilisé pour une autre requête")
+            existing = next((p for p in state["pages"] if p["id"] == known[1]), None)
+            if existing is not None:  # still there (active or in the trash): answer with THAT page
+                return {"page": existing, "duplicate": True}
+            # A COMMITTED request id never creates a second page, even after its page was permanently deleted: a stale retry
+            # must not resurrect what the user deleted on purpose. The client is told so and starts a new attempt only on an explicit Save.
+            raise CarnetConflict({"error": "Cette capture avait déjà été créée, puis supprimée : rien n'a été recréé", "code": "request_result_gone", "notebook_rev": state["notebook_rev"]})
     _check_notebook_rev(state, expected)
     project_id = _project_ref(state, project_id)
     category_id = _category_ref(state, category_id)
@@ -639,9 +661,52 @@ def _page_create(state: dict, data: dict, now: float) -> dict:
     page = _blank_page(now)
     page["project_id"] = project_id
     page["category_id"] = category_id
+    if "content" in data:
+        # Templates / Quick Capture: the page is born WITH its content in this single atomic action. The content goes through
+        # exactly the validation, id assignment, budgets and media checks of page_save; any failure raises before the page
+        # is inserted, so a refused creation leaves no page (and no notebook revision bump) behind.
+        blank = page["content"]
+        new_content = _parse_store_content(state, blank, data["content"], blocks_already_counted=len(blank["blocks"]))
+        if new_content is not None:
+            if _active_text_bytes(state) + _bytes(rich.flat_text(new_content)) > NOTEBOOK_TEXT_BYTES:
+                raise CarnetError(f"Carnet trop volumineux (max {NOTEBOOK_TEXT_BYTES} octets)")
+            page["content"] = new_content
     state["pages"].insert(index, page)
     state["notebook_rev"] += 1
-    return {"page": page}
+    out: dict = {"page": page}
+    if request_id is not None:
+        # Remembered as COMMITTED only after mutate() has persisted the notebook (a failed write releases the id: the retry may create).
+        page_id = page["id"]
+
+        def commit() -> None:
+            _create_seen[request_id] = (fingerprint, page_id)
+            while len(_create_seen) > CREATE_SEEN_MAX:
+                _create_seen.popitem(last=False)
+
+        out["_after_write"] = commit
+    return out
+
+
+def _parse_store_content(state: dict, existing: dict, raw: Any, *, blocks_already_counted: int | None = None) -> dict | None:
+    """Validate ``raw`` against ``existing`` exactly like ``page_save`` and return the NEW stored content (``None`` when it is
+    identical to ``existing``). Raises ``CarnetError``. ``blocks_already_counted``: when ``existing`` is a page that is NOT yet
+    part of ``state`` (a page being created) its blocks are not in the notebook total yet, so the budget delta is the full count."""
+    try:
+        parsed = rich.parse_content(
+            raw,
+            existing=existing,
+            folders=_folders(),
+            system_names=_system_names(),
+            text_limit=PAGE_TEXT_BYTES,
+        )
+        if rich.same_as_stored(parsed, existing) and blocks_already_counted is None:
+            return None
+        extra = blocks_already_counted or 0
+        new_content = rich.store_content(parsed, existing, budget_ok=lambda delta: _block_budget_ok(state, delta + extra))
+        _verify_media(existing, new_content)
+        return new_content
+    except rich.ContentError as e:
+        raise CarnetError(str(e)) from e
 
 
 def _page_save(state: dict, data: dict, now: float) -> dict:
@@ -672,19 +737,7 @@ def _page_save(state: dict, data: dict, now: float) -> dict:
         pinned = page["pinned"]
     new_content = None
     if "content" in data:
-        try:
-            parsed = rich.parse_content(
-                data["content"],
-                existing=page["content"],
-                folders=_folders(),
-                system_names=_system_names(),
-                text_limit=PAGE_TEXT_BYTES,
-            )
-            if not rich.same_as_stored(parsed, page["content"]):
-                new_content = rich.store_content(parsed, page["content"], budget_ok=lambda delta: _block_budget_ok(state, delta))
-                _verify_media(page["content"], new_content)
-        except rich.ContentError as e:
-            raise CarnetError(str(e)) from e
+        new_content = _parse_store_content(state, page["content"], data["content"])
         changed = changed or new_content is not None
     if not changed:
         return {"page": page}
@@ -919,8 +972,11 @@ def mutate(data: Any) -> dict:
         before = state["notebook_rev"]
         result = handler(state, data, now)
         write = result.pop("_write", False) or state["notebook_rev"] != before
+        after_write = result.pop("_after_write", None)
         if write:
             _write(state)
+            if callable(after_write):
+                after_write()
         out = {"ok": True, "notebook_rev": state["notebook_rev"]}
         out.update(_copy(result))
         if write and action in _LIFECYCLE:
