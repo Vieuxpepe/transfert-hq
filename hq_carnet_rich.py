@@ -62,6 +62,20 @@ declarative payload under a key named like the block type (see ``hq_carnet_eng``
 ``calc`` and ``measure`` are atoms (no text, no marks); a ``decision`` is an ordinary text line. Nothing executable is ever
 stored and a stored result is never recomputed silently.
 
+Structured blocks (Product Phase 2, additive: pages without them are byte-identical to Phase 1) are ATOMS too (``text`` is
+always ``""`` and ``marks`` always ``[]``, so offsets, marks, find/replace, titles and previews never touch them). Each carries
+one bounded payload under its own key; every string is one line (no C0/DEL/C1 control, no U+2028/9, no unpaired surrogate)
+except the explicit multi-line ``body`` fields::
+
+    {"type": "table",      "table":   {"header": bool, "rows": [[cell, ...], ...]}}         # 1-20 rows x 1-10 cols, rectangular
+    {"type": "callout",    "callout": {"kind": "note|info|warning", "title": "", "body": "lines\nof text"}}
+    {"type": "toggle",     "toggle":  {"summary": "one line", "body": "lines\nof plain text"}}  # nesting depth 0: never child blocks
+    {"type": "imagegroup", "group":   {"layout": "two|three|compare", "items": [{id, mime, w, h, caption}, ...]}}
+
+Collapsed/expanded state of a toggle is UI state and never stored. ``structured_bytes`` (the UTF-8 size of the visible
+structured strings, NOT of the JSON) is bounded per page. Image-group children are Stage-06 assets: ``assets_of`` yields them,
+so backup closure, history, export and the media checks see them like any other image.
+
 Canonical form: marks sorted, non-empty, same-type/same-target marks merged when they
 overlap or touch. The browser (``hq-carnet-rich.js``) implements the same rules; the
 shared vectors in the tests keep both in step. Page text never appears in errors.
@@ -82,7 +96,22 @@ import hq_carnet_eng as eng
 CONTENT_VERSION = 2
 LEGACY_CONTENT_VERSION = 1
 
-BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image") + eng.ENG_TYPES
+TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE = "table", "callout", "toggle", "imagegroup"
+STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE)
+STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group"}  # block type -> payload key
+BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image") + eng.ENG_TYPES + STRUCT_TYPES
+TABLE_ROWS_MAX, TABLE_COLS_MAX = 20, 10
+CELL_U16_MAX, CELL_BYTES_MAX = 200, 800
+TABLE_BYTES_MAX = 16 * 1024  # UTF-8 bytes of all cells of one table
+TABLES_PER_PAGE_MAX = 20
+CALLOUT_KINDS = ("note", "info", "warning")
+CALLOUT_TITLE_MAX, CALLOUT_BODY_MAX, CALLOUT_BODY_LINES_MAX = 120, 2000, 20
+TOGGLE_SUMMARY_MAX, TOGGLE_BODY_MAX, TOGGLE_BODY_LINES_MAX = 160, 4000, 50
+NOTES_PER_PAGE_MAX = 100  # callouts + toggles
+GROUP_LAYOUTS = {"two": 2, "three": 3, "compare": 2}  # layout -> exact number of children
+GROUP_ITEM_KEYS = {"id", "mime", "w", "h", "caption"}
+GROUPS_PER_PAGE_MAX = 16
+STRUCT_BYTES_MAX = 96 * 1024  # visible structured text per page (UTF-8 bytes of the strings, never the JSON overhead)
 IMAGE_TYPE = "image"  # Stage 06 (additive to V2): metadata only, see ``check_asset``
 ASSET_ID_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")
 ASSET_MIMES = ("image/jpeg", "image/png", "image/webp")
@@ -451,8 +480,154 @@ def asset_key(asset: dict) -> tuple:
     return (asset["id"], asset["mime"], asset["w"], asset["h"])
 
 
+def block_assets(block: dict) -> list[dict]:
+    """Every stored image asset a block points at: the image itself, or the children of an image group (Phase 2)."""
+    if not isinstance(block, dict):
+        return []
+    kind = block.get("type")
+    if kind == IMAGE_TYPE and isinstance(block.get("asset"), dict):
+        return [block["asset"]]
+    if kind == GROUP_TYPE and isinstance(block.get("group"), dict) and isinstance(block["group"].get("items"), list):
+        return [a for a in block["group"]["items"] if isinstance(a, dict)]
+    return []
+
+
 def assets_of(content: dict) -> list[dict]:
-    return [b["asset"] for b in content["blocks"] if b.get("type") == IMAGE_TYPE]
+    """All image assets of a page in document order (single images AND image-group children): the ONE scanner that backup
+    closure, media verification, export packaging and the report use."""
+    return [a for b in content["blocks"] for a in block_assets(b)]
+
+
+# ---------------------------------------------------------------- structured blocks (Phase 2)
+
+
+def _struct_line(value: Any, limit: int, label: str, *, allow_empty: bool = True) -> str:
+    """One line of visible structured text: same rule as an image caption (no control, no line separator, no unpaired surrogate)."""
+    if not isinstance(value, str) or _CAPTION_CTRL_RE.search(value) or u16_len(value) > limit or (not allow_empty and not value):
+        raise ContentError(f"{label} invalide")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as e:
+        raise ContentError(f"{label} invalide") from e
+    return value
+
+
+def _struct_body(value: Any, limit: int, max_lines: int, label: str) -> str:
+    """Several lines separated by ``\n`` only; every line follows the one-line rule (no CR, tab or other control)."""
+    if not isinstance(value, str) or u16_len(value) > limit:
+        raise ContentError(f"{label} invalide")
+    lines = value.split("\n")
+    if len(lines) > max_lines:
+        raise ContentError(f"{label} invalide")
+    for line in lines:
+        _struct_line(line, limit, label)
+    return value
+
+
+def check_table(table: Any) -> dict:
+    if not isinstance(table, dict) or set(table) != {"header", "rows"} or not isinstance(table["header"], bool):
+        raise ContentError("Tableau invalide")
+    rows = table["rows"]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= TABLE_ROWS_MAX:
+        raise ContentError("Tableau invalide")
+    width = None
+    total = 0
+    out = []
+    for row in rows:
+        if not isinstance(row, list) or not 1 <= len(row) <= TABLE_COLS_MAX or (width is not None and len(row) != width):
+            raise ContentError("Tableau invalide")
+        width = len(row)
+        clean = []
+        for cell in row:
+            text = _struct_line(cell, CELL_U16_MAX, "Cellule")
+            size = len(text.encode("utf-8"))
+            if size > CELL_BYTES_MAX:
+                raise ContentError("Cellule invalide")
+            total += size
+            clean.append(text)
+        out.append(clean)
+    if total > TABLE_BYTES_MAX:
+        raise ContentError("Tableau trop volumineux")
+    return {"header": table["header"], "rows": out}
+
+
+def check_callout(callout: Any) -> dict:
+    if not isinstance(callout, dict) or set(callout) != {"kind", "title", "body"} or callout["kind"] not in CALLOUT_KINDS:
+        raise ContentError("Encadré invalide")
+    return {
+        "kind": callout["kind"],
+        "title": _struct_line(callout["title"], CALLOUT_TITLE_MAX, "Titre d'encadré"),
+        "body": _struct_body(callout["body"], CALLOUT_BODY_MAX, CALLOUT_BODY_LINES_MAX, "Texte d'encadré"),
+    }
+
+
+def check_toggle(toggle: Any) -> dict:
+    if not isinstance(toggle, dict) or set(toggle) != {"summary", "body"}:
+        raise ContentError("Section repliable invalide")
+    return {
+        "summary": _struct_line(toggle["summary"], TOGGLE_SUMMARY_MAX, "Résumé", allow_empty=False),
+        "body": _struct_body(toggle["body"], TOGGLE_BODY_MAX, TOGGLE_BODY_LINES_MAX, "Texte de section"),
+    }
+
+
+def check_group(group: Any) -> dict:
+    """Image group: 2 or 3 distinct Stage-06 assets. Each child is validated with the SAME checks as a single image (id shape,
+    mime, bounded dimensions, caption); the server additionally verifies the real files (see hq_carnet ``_verify_media``)."""
+    if not isinstance(group, dict) or set(group) != {"layout", "items"} or group["layout"] not in GROUP_LAYOUTS:
+        raise ContentError("Groupe d'images invalide")
+    items = group["items"]
+    if not isinstance(items, list) or len(items) != GROUP_LAYOUTS[group["layout"]]:
+        raise ContentError("Groupe d'images invalide")
+    out = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or set(item) != GROUP_ITEM_KEYS:
+            raise ContentError("Groupe d'images invalide")
+        full = check_asset({**item, "width": ASSET_WIDTH_MAX, "layout": "inline"})
+        if full["id"] in seen:
+            raise ContentError("Image en double dans le groupe")
+        seen.add(full["id"])
+        out.append({k: full[k] for k in ("id", "mime", "w", "h", "caption")})
+    return {"layout": group["layout"], "items": out}
+
+
+_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group}
+
+
+def check_struct(kind: str, payload: Any) -> dict:
+    return _STRUCT_CHECK[kind](payload)
+
+
+def structured_strings(block: dict) -> list[str]:
+    """The visible user text of a structured block, in reading order (cells, titles, bodies, captions)."""
+    kind = block.get("type")
+    if kind == TABLE_TYPE:
+        return [cell for row in block["table"]["rows"] for cell in row]
+    if kind == CALLOUT_TYPE:
+        return [x for x in (block["callout"]["title"], block["callout"]["body"]) if x]
+    if kind == TOGGLE_TYPE:
+        return [x for x in (block["toggle"]["summary"], block["toggle"]["body"]) if x]
+    if kind == GROUP_TYPE:
+        return [a["caption"] for a in block["group"]["items"] if a["caption"]]
+    return []
+
+
+def structured_bytes(content: dict) -> int:
+    """UTF-8 size of the visible structured strings of a page (not the JSON size)."""
+    if content.get("version") != CONTENT_VERSION:
+        return 0
+    return sum(len(x.encode("utf-8")) for b in content["blocks"] for x in structured_strings(b))
+
+
+def text_bytes(content: dict) -> int:
+    """Notebook budget size of a page: its flat text plus its visible structured text."""
+    return len(flat_text(content).encode("utf-8")) + structured_bytes(content)
+
+
+def search_text(content: dict) -> str:
+    """Visible text for library search: the flat text followed by the structured strings (never any key, kind or id)."""
+    extra = [x for b in content["blocks"] if b.get("type") in STRUCT_TYPES for x in structured_strings(b)] if content.get("version") == CONTENT_VERSION else []
+    return "\n".join([flat_text(content)] + extra) if extra else flat_text(content)
 
 
 def check_eng(kind: str, payload: Any, folders: tuple[str, ...] | None = _DEFAULT_FOLDERS, system_names: frozenset[str] = frozenset()) -> dict:
@@ -553,10 +728,12 @@ def parse_content(
     images = 0
     atoms = 0
     decisions = 0
+    tables = notes = groups = 0
+    struct_bytes = 0
     for incoming in blocks:
         if not isinstance(incoming, dict):
             raise ContentError("Bloc invalide")
-        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset", *eng.ENG_TYPES} or not {"type", "text"} <= set(incoming):
+        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset", *eng.ENG_TYPES, *STRUCT_KEY.values()} or not {"type", "text"} <= set(incoming):
             raise ContentError("Bloc invalide")
         kind = incoming["type"]
         if kind not in BLOCK_TYPES:
@@ -589,6 +766,34 @@ def parse_content(
             payload = check_eng(kind, incoming[kind], folders, system_names)
         elif carried:
             raise ContentError("Bloc invalide")
+        sdata = None
+        if kind in STRUCT_TYPES:
+            key = STRUCT_KEY[kind]
+            if set(incoming) & (set(STRUCT_KEY.values()) - {key}) or key not in incoming or "checked" in incoming or "asset" in incoming or carried:
+                raise ContentError("Bloc invalide")
+            if incoming["text"] != "" or incoming.get("marks", []) != []:
+                raise ContentError("Bloc invalide")
+            sdata = check_struct(kind, incoming[key])
+            if kind == TABLE_TYPE:
+                tables += 1
+                if tables > TABLES_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de tableaux sur la page (max {TABLES_PER_PAGE_MAX})")
+            elif kind == GROUP_TYPE:
+                groups += 1
+                images += len(sdata["items"])
+                if groups > GROUPS_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de groupes d'images sur la page (max {GROUPS_PER_PAGE_MAX})")
+                if images > IMAGES_PER_PAGE_MAX:
+                    raise ContentError(f"Trop d'images sur la page (max {IMAGES_PER_PAGE_MAX})")
+            else:
+                notes += 1
+                if notes > NOTES_PER_PAGE_MAX:
+                    raise ContentError(f"Trop d'encadrés/sections sur la page (max {NOTES_PER_PAGE_MAX})")
+            struct_bytes += sum(len(x.encode("utf-8")) for x in structured_strings({"type": kind, STRUCT_KEY[kind]: sdata}))
+            if struct_bytes > STRUCT_BYTES_MAX:
+                raise ContentError("Trop de texte structuré sur la page")
+        elif set(incoming) & set(STRUCT_KEY.values()):
+            raise ContentError("Bloc invalide")
         checked = False
         if kind == "check":
             checked = incoming.get("checked", False)
@@ -610,6 +815,8 @@ def parse_content(
             block["asset"] = asset
         if payload is not None:
             block[kind] = payload
+        if sdata is not None:
+            block[STRUCT_KEY[kind]] = sdata
         if kind != "paragraph" or marks:
             plain = False
         out.append(block)
@@ -664,6 +871,8 @@ def store_content(parsed: dict, existing: dict, *, blocks_limit: int | None = No
                 item["asset"] = dict(block["asset"])
             if block["type"] in eng.ENG_TYPES:
                 item[block["type"]] = copy.deepcopy(block[block["type"]])
+            if block["type"] in STRUCT_TYPES:
+                item[STRUCT_KEY[block["type"]]] = copy.deepcopy(block[STRUCT_KEY[block["type"]]])
             out.append(item)
         return {"version": CONTENT_VERSION, "blocks": out}
     if legacy and parsed["plain"]:
@@ -686,6 +895,8 @@ def strip_ids(content: dict) -> list:
             row += (tuple(sorted(block["asset"].items())),)
         if block["type"] in eng.ENG_TYPES:
             row += (json.dumps(block[block["type"]], sort_keys=True, ensure_ascii=True),)
+        if block["type"] in STRUCT_TYPES:
+            row += (json.dumps(block[STRUCT_KEY[block["type"]]], sort_keys=True, ensure_ascii=True),)
         out.append(row)
     return out
 
@@ -733,8 +944,13 @@ def valid_v2(content: Any) -> bool:
                 keys = {"id", "type", "text", "marks", "asset"}
             if block.get("type") in eng.ENG_TYPES:
                 keys = {"id", "type", "text", "marks", block["type"]}
+            if block.get("type") in STRUCT_TYPES:
+                keys = {"id", "type", "text", "marks", STRUCT_KEY[block["type"]]}
             if set(block) != keys or block["type"] not in BLOCK_TYPES:
                 return False
+            if block["type"] in STRUCT_TYPES:
+                if block["text"] != "" or block["marks"] != [] or check_struct(block["type"], block[STRUCT_KEY[block["type"]]]) != block[STRUCT_KEY[block["type"]]]:
+                    return False
             if block["type"] in eng.ENG_TYPES:
                 if block["type"] in eng.ATOM_TYPES and (block["text"] != "" or block["marks"] != []):
                     return False
@@ -802,6 +1018,78 @@ def _link_of(active: list[dict]) -> dict | None:
     return None
 
 
+CALLOUT_LABEL = {"note": "Note", "info": "Info", "warning": "Attention"}  # words, never colour alone; same in the browser
+GROUP_ITEM_LABEL = {"compare": ("Avant", "Après")}
+
+
+def _txt_struct(block: dict) -> list[str]:
+    kind = block["type"]
+    if kind == TABLE_TYPE:
+        return ["[Tableau]"] + [" | ".join(row) for row in block["table"]["rows"]]
+    if kind == CALLOUT_TYPE:
+        c = block["callout"]
+        head = f"[{CALLOUT_LABEL[c['kind']]}]" + (f" {c['title']}" if c["title"] else "")
+        return [head] + (c["body"].split("\n") if c["body"] else [])
+    if kind == TOGGLE_TYPE:
+        t = block["toggle"]
+        return ["[Section] " + t["summary"]] + (t["body"].split("\n") if t["body"] else [])
+    g = block["group"]  # image group: one line per child, labelled for a before/after pair
+    labels = GROUP_ITEM_LABEL.get(g["layout"])
+    out = []
+    for n, a in enumerate(g["items"]):
+        label = labels[n] if labels else "Image"
+        out.append(f"[{label} : {a['caption']}]" if a["caption"] else f"[{label}]")
+    return out
+
+
+def _md_cell(text: str) -> str:
+    return _md_escape(text)
+
+
+def _md_struct(block: dict, asset_paths: dict[str, str] | None) -> str:
+    kind = block["type"]
+    if kind == TABLE_TYPE:
+        rows = block["table"]["rows"]
+        width = len(rows[0])
+        if block["table"]["header"]:
+            head, body = rows[0], rows[1:]
+        else:
+            head, body = [""] * width, rows  # a synthetic EMPTY header: row 0 stays data, it is never promoted to a header
+        lines = ["| " + " | ".join(_md_cell(c) for c in head) + " |", "|" + "|".join(["---"] * width) + "|"]
+        lines += ["| " + " | ".join(_md_cell(c) for c in row) + " |" for row in body]
+        return "\n".join(lines)
+    if kind == CALLOUT_TYPE:
+        c = block["callout"]
+        head = "> **" + CALLOUT_LABEL[c["kind"]] + "**" + (" \u2014 " + _md_escape(c["title"]) if c["title"] else "")
+        lines = [head]
+        for line in c["body"].split("\n") if c["body"] else []:
+            if line.strip():
+                lines += [">", "> " + _md_line_start_escape(_md_escape(line))]
+        return "\n".join(lines)
+    if kind == TOGGLE_TYPE:
+        t = block["toggle"]
+        parts = ["**" + _md_escape(t["summary"]) + "**"]
+        parts += [_md_line_start_escape(_md_escape(line)) for line in t["body"].split("\n") if line.strip()]
+        return "\n\n".join(parts)
+    g = block["group"]
+    labels = GROUP_ITEM_LABEL.get(g["layout"])
+    parts = []
+    for n, a in enumerate(g["items"]):
+        rel = (asset_paths or {}).get(a["id"])
+        label = labels[n] if labels else "Image"
+        piece = []
+        if labels:
+            piece.append("**" + label + "**")
+        if rel:
+            piece.append(f"![{_md_alt(a['caption'])}]({_md_path(rel)})")
+            if a["caption"]:
+                piece.append(f"*{_md_escape(a['caption'])}*")
+        else:
+            piece.append(f"*\\[{label} : {_md_escape(a['caption'])}\\]*" if a["caption"] else f"*\\[{label}\\]*")
+        parts.append("\n\n".join(piece))
+    return "\n\n".join(parts)
+
+
 def render_txt(content: dict) -> str:
     """Deterministic plain text (a snapshot, not a source of truth)."""
     labels = _number_labels(content["blocks"])
@@ -811,6 +1099,9 @@ def render_txt(content: dict) -> str:
         if kind == IMAGE_TYPE:
             caption = block["asset"]["caption"]
             lines.append(f"[Image : {caption}]" if caption else "[Image]")
+            continue
+        if kind in STRUCT_TYPES:
+            lines.extend(_txt_struct(block))
             continue
         if kind == "calc":
             lines.append("[" + eng.describe_calc(block["calc"]) + "]")
@@ -937,6 +1228,10 @@ def render_markdown(content: dict, asset_paths: dict[str, str] | None = None) ->
             else:
                 text = f"*\\[Image : {_md_escape(caption)}\\]*" if caption else "*\\[Image\\]*"
             parts.append(("img", text, gap))
+            gap = False
+            continue
+        if kind in STRUCT_TYPES:
+            parts.append(("struct", _md_struct(block, asset_paths), gap))
             gap = False
             continue
         if kind in ("calc", "measure"):

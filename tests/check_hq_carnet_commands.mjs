@@ -15,7 +15,7 @@ for (const c of C.COMMANDS) assert.ok(c.label && c.hint && Array.isArray(c.keys)
 assert.deepEqual(C.CATEGORIES.map((c) => c.label), ["Écrire", "Ajouter", "Ingénierie", "Projet"]);
 const byCat = (cat) => C.COMMANDS.filter((c) => c.cat === cat).map((c) => c.label);
 assert.deepEqual(byCat("write"), ["Texte", "Titre", "Liste", "Liste numérotée", "Checklist"]);
-assert.deepEqual(byCat("add"), ["Image", "Photo", "Fichier", "Dessin"]);
+assert.deepEqual(byCat("add"), ["Image", "Photo", "Tableau", "Encadré", "Section repliable", "Groupe d'images", "Fichier", "Dessin"]);
 assert.deepEqual(byCat("eng"), ["Mesure", "Calcul", "Décision"]);
 assert.deepEqual(byCat("project"), ["Tâche", "Référence", "Heure"]);
 for (const c of C.COMMANDS) {
@@ -47,7 +47,8 @@ assert.equal(C.filter("clcl")[0].id, "calc", "clcl -> Calcul");
 assert.equal(C.filter("dsn")[0].id, "drawing", "dsn -> Dessin (tight match beats looser ones)");
 assert.equal(C.filter("ingenierie").length, 3, "a category name finds its commands");
 assert.deepEqual(C.filter("ingenierie").map((c) => c.id), ["measure", "calc", "decision"]);
-assert.equal(C.filter("tableau")[0].id, "task");
+assert.equal(C.filter("tableau")[0].id, "table", "Phase 2: Tableau is now a real table block (it used to resolve to Tâche)");
+assert.ok(C.filter("tableau").some((c) => c.id === "task"), "Tâche is still reachable through the same word");
 assert.equal(C.filter("tache")[0].id, "task");
 assert.equal(C.filter("TÂCHE")[0].id, "task");
 assert.ok(C.filter("m").length >= 1 && C.filter("m")[0].label.toLowerCase().startsWith("m"), "single letter: prefix only, no fuzzy noise");

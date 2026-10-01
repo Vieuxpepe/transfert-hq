@@ -910,7 +910,7 @@
       const back = ev.inputType === "deleteContentBackward";
       const fwd = ev.inputType === "deleteContentForward";
       let target = -1;
-      const isEngAtom = (l) => !!l && Rich.isAtom(l) && l.type !== "image";
+      const isEngAtom = (l) => !!l && Rich.isEngAtom(l);
       if (back && at.off === 0 && at.line > 0 && isEngAtom(lines[at.line - 1])) target = at.line - 1;
       else if (fwd && at.off === lines[at.line].text.length && at.line + 1 < lines.length && isEngAtom(lines[at.line + 1])) target = at.line + 1;
       if (target < 0) return false;

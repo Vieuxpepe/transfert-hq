@@ -148,7 +148,8 @@ def build(data: Any) -> dict:
                 ]
             else:
                 found = next((b for b in content["blocks"] if b["id"] == item["block_id"]), None) if content["version"] == rich.CONTENT_VERSION else None
-                if found is None or found["type"] != BLOCK_KIND[item["kind"]]:
+                want = (BLOCK_KIND[item["kind"]], rich.GROUP_TYPE) if item["kind"] == "photo" else (BLOCK_KIND[item["kind"]],)  # a photo item may be an image group
+                if found is None or found["type"] not in want:
                     raise hc.CarnetNotFound("Bloc introuvable")
                 blocks = [copy.deepcopy(found)]
             sections.append({"kind": item["kind"], "page_id": page["id"], "page_title": ptitle, "blocks": blocks})
@@ -173,7 +174,7 @@ def build(data: Any) -> dict:
     images: list[dict] = []
     for sec in sections:
         if sec["kind"] in ("note", "photo"):
-            images.extend(b["asset"] for b in sec["blocks"] if b["type"] == rich.IMAGE_TYPE)
+            images.extend(a for b in sec["blocks"] for a in rich.block_assets(b))
     package_images = [a for n, a in enumerate(images) if a["id"] not in {x["id"] for x in images[:n]}]
 
     def render(asset_paths: dict[str, str] | None) -> str:

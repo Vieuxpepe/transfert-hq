@@ -551,7 +551,7 @@ def _active(state: dict) -> list[dict]:
 
 
 def _active_text_bytes(state: dict, *, skip: str | None = None) -> int:
-    return sum(_bytes(_text(page)) for page in _active(state) if page["id"] != skip)
+    return sum(rich.text_bytes(page["content"]) for page in _active(state) if page["id"] != skip)
 
 
 def _total_blocks(state: dict) -> int:
@@ -668,7 +668,7 @@ def _page_create(state: dict, data: dict, now: float) -> dict:
         blank = page["content"]
         new_content = _parse_store_content(state, blank, data["content"], blocks_already_counted=len(blank["blocks"]))
         if new_content is not None:
-            if _active_text_bytes(state) + _bytes(rich.flat_text(new_content)) > NOTEBOOK_TEXT_BYTES:
+            if _active_text_bytes(state) + rich.text_bytes(new_content) > NOTEBOOK_TEXT_BYTES:
                 raise CarnetError(f"Carnet trop volumineux (max {NOTEBOOK_TEXT_BYTES} octets)")
             page["content"] = new_content
     state["pages"].insert(index, page)
@@ -741,7 +741,7 @@ def _page_save(state: dict, data: dict, now: float) -> dict:
         changed = changed or new_content is not None
     if not changed:
         return {"page": page}
-    new_bytes = _bytes(rich.flat_text(new_content)) if new_content is not None else _bytes(_text(page))
+    new_bytes = rich.text_bytes(new_content) if new_content is not None else rich.text_bytes(page["content"])
     if _active_text_bytes(state, skip=page_id) + new_bytes > NOTEBOOK_TEXT_BYTES:
         raise CarnetError(f"Carnet trop volumineux (max {NOTEBOOK_TEXT_BYTES} octets)")
     page["project_id"] = project_id
@@ -825,7 +825,7 @@ def _page_restore(state: dict, data: dict, now: float) -> dict:
         raise CarnetError("Page non supprimée")
     if len(_active(state)) >= PAGES_ACTIVE_MAX:
         raise CarnetError(f"Carnet plein (max {PAGES_ACTIVE_MAX} pages)")
-    if _active_text_bytes(state) + _bytes(_text(page)) > NOTEBOOK_TEXT_BYTES:
+    if _active_text_bytes(state) + rich.text_bytes(page["content"]) > NOTEBOOK_TEXT_BYTES:
         raise CarnetError(f"Carnet trop volumineux (max {NOTEBOOK_TEXT_BYTES} octets)")
     page["deleted_at"] = None
     page["rev"] += 1

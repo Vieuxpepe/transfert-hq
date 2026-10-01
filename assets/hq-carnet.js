@@ -1597,6 +1597,11 @@
 
     // ---------------------------------------------------------------- library view model
 
+    /** Visible text of tables / callouts / toggles / image captions: searchable (never replaceable), never title or preview. */
+    function structExtra(fmt) {
+      return Rich.structSearchText(fmt);
+    }
+
     function libraryItems() {
       const projects = new Map();
       for (const p of st.projects) if (isObj(p)) projects.set(p.id, p);
@@ -1616,7 +1621,7 @@
           id: e.id,
           title: deriveTitle(text),
           preview: derivePreview(text),
-          body: bodyText(text),
+          body: bodyText(text) + (structExtra(e.local.fmt) ? "\n" + structExtra(e.local.fmt) : ""),
           pinned: !!e.local.pinned,
           project_id: e.local.project_id,
           category_id: e.local.category_id,
@@ -2093,6 +2098,7 @@
     ui.lib.sig = "";
     ui.lib.scopeSig = "";
 
+    structUi(); // before the first render: the editor draws structured blocks through it
     bindEditor(editor);
     ui.eui = mountEditorUi();
     prev.addEventListener("click", () => navigate(-1));
@@ -2324,6 +2330,7 @@
     if (key === "time") return insertText(timeMarker(new Date()));
     if (key === "image") return pickImage("photos", null);
     if (key === "camera") return pickImage("camera", null);
+    if (key === "table" || key === "callout" || key === "toggle" || key === "imagegroup") return structInsert(key);
     const eu = engUi();
     if (!eu) return;
     if (key === "file" || key === "drawing") return eu.openTool("link", key);
@@ -3458,6 +3465,7 @@
     const c = ui.core;
     if (evt && evt.type === "select") {
       showCurrent();
+      structRevealForQuery();
     } else if (evt && evt.type === "remote" && evt.id === c.st.currentId) {
       setEditorContent(c.current().local, true);
     } else if (evt && (evt.type === "poll" || evt.type === "loaded")) {
@@ -3929,6 +3937,12 @@
   function onEditorKey(ev) {
     if (ui.eui && ui.eui.onKeydown(ev)) return;
     if (onImageKey(ev)) return;
+    const attEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-attach-open]") : null;
+    if (attEl && ui.editor.contains(attEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      openAttachment(attEl.getAttribute("data-carnet-attach-open"));
+      return;
+    }
     const atomEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-eng]") : null;
     if (atomEl && ui.editor.contains(atomEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       ev.preventDefault();
@@ -3975,6 +3989,12 @@
     if (fig && ui.editor.contains(fig)) {
       ev.preventDefault();
       selectImageLine(fig.closest("[data-carnet-line]"));
+      return;
+    }
+    const att = t.closest("[data-carnet-attach-open]");
+    if (att && ui.editor.contains(att)) {
+      ev.preventDefault();
+      openAttachment(att.getAttribute("data-carnet-attach-open"));
       return;
     }
     const atom = t.closest("[data-carnet-eng]");
@@ -4381,7 +4401,7 @@
       const prev = back && at.off === 0 && at.line > 0 ? sel.lines[at.line - 1] : null;
       const next = !back && at.off === sel.lines[at.line].text.length ? sel.lines[at.line + 1] : null;
       const a = prev || next;
-      if (!a || !Rich.isAtom(a) || a.type === "image") return false;
+      if (!a || !Rich.isEngAtom(a)) return false;
     }
     const eu = engUi();
     return !!eu && eu.keyAdjacent(ev);
@@ -4441,6 +4461,7 @@
             if (b.type === "measure" && isObj(b.measure)) out.push({ id: b.id, type: "measure", label: String(b.measure.label || "mesure").slice(0, 60) });
             else if (b.type === "decision") out.push({ id: b.id, type: "decision", label: String(b.text || "décision").slice(0, 60) });
             else if (b.type === "image" && isObj(b.asset)) out.push({ id: b.id, type: "photo", label: String(b.asset.caption || "image").slice(0, 60) });
+            else if (b.type === "imagegroup" && isObj(b.group) && Array.isArray(b.group.items)) out.push({ id: b.id, type: "photo", label: ("groupe de " + b.group.items.length + " images").slice(0, 60) });
           }
         }
         return out.slice(0, 100);
@@ -4983,6 +5004,7 @@
       el("div", { class: "carnet-panel-row" }, [
         ctl("btn-carnet-image-caption-focus", "Légende", "Modifier la légende de l'image"),
         btn("btn-carnet-image-replace", "Remplacer…", { "aria-label": "Remplacer l'image" }),
+        btn("btn-carnet-image-group", "Grouper…", { "aria-label": "Grouper avec une ou deux autres images" }),
         btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),
         btn("btn-carnet-image-done", "Terminé"),
       ]),
@@ -5007,6 +5029,7 @@
       if (!b) return;
       if (b.id === "btn-carnet-image-done") closeImageTools("", true);
       else if (b.id === "btn-carnet-image-replace") replaceSelectedImage();
+      else if (b.id === "btn-carnet-image-group") structGroupSelected();
       else if (b.id === "btn-carnet-image-remove") removeSelectedImage();
       else if (b.id === "btn-carnet-image-caption-focus") {
         caption.focus();
@@ -5339,6 +5362,273 @@
     return ui.imageUi;
   }
 
+
+  // ---------------------------------------------------------------- Product Phase 2: structured blocks (table / callout / toggle / image group)
+
+  const STRUCT_LIMIT_MSG = {
+    tables: "Trop de tableaux sur la page (20 au maximum)",
+    notes: "Trop d'encadrés et de sections sur la page (100 au maximum)",
+    groups: "Trop de groupes d'images sur la page (16 au maximum)",
+    images: "Trop d'images sur la page (32 au maximum)",
+    bytes: "Trop de texte structuré sur la page",
+  };
+
+  function structUi() {
+    if (ui.structUi) return ui.structUi;
+    const M = global.HqCarnetStructuredUi;
+    if (!M || typeof M.mount !== "function" || !Rich.Struct) return null;
+    ui.structUi = M.mount({
+      doc,
+      rich: Rich,
+      editor: () => ui.editor,
+      readOnly: () => !curEntry(),
+      flash: flashMsg,
+      timeout: (fn, ms) => setTimeout(fn, ms),
+      clear: (h) => clearTimeout(h),
+      pageKey: () => {
+        const e = ui.core && ui.core.current();
+        return e ? e.id : "";
+      },
+      changed: (wrapper, opts) => structChanged(wrapper, opts || {}),
+      remove: (wrapper) => structRemove(wrapper),
+      ungroup: (wrapper, payload) => structUngroup(wrapper, payload),
+      pickImages: (req) => structPick(req || {}),
+    });
+    Rich.setStructRenderer((d, w, type, payload, idx) => ui.structUi.render(d, w, type, payload, idx));
+    return ui.structUi;
+  }
+
+  /** One logical edit from a structured block: typing = draft only (no re-render); a structural change = one re-render. */
+  function structChanged(wrapper, opts) {
+    const c = ui.core;
+    const e = curEntry();
+    if (!c || !e || !ui.editor.contains(wrapper)) return false;
+    const lines = Rich.parseEditor(ui.editor);
+    const lim = Rich.structLimits(lines);
+    if (lim) {
+      flashMsg(STRUCT_LIMIT_MSG[lim]);
+      showCurrent(); // the refused edit never reaches the draft: the block returns to its saved state
+      return false;
+    }
+    if (opts.rerender) return commitLines(lines, null);
+    Rich.ensureKeys(lines);
+    ui.pendingMarks = null;
+    if (!c.edit(e.id, { text: Rich.flat(lines), fmt: Rich.fmtOf(lines), ids: Rich.idsOf(lines) })) {
+      flashMsg("Modification refusée");
+      showCurrent();
+      return false;
+    }
+    return true;
+  }
+
+  function structIndex(wrapper) {
+    return Array.prototype.indexOf.call(ui.editor.children, wrapper);
+  }
+
+  function structRemove(wrapper) {
+    if (!curEntry() || !ui.editor.contains(wrapper)) return;
+    const lines = Rich.parseEditor(ui.editor);
+    const idx = structIndex(wrapper);
+    if (idx < 0 || !lines[idx] || !Rich.isStructType(lines[idx].type)) return;
+    lines.splice(idx, 1);
+    if (!lines.length || lines[lines.length - 1].type !== "paragraph") lines.push(Rich.newLine("", "paragraph"));
+    if (commitLines(lines, null)) focusEditor(false);
+  }
+
+  /** Ungroup: the children become independent images (width 100 %, inline); the first keeps the block id. Asset identity is untouched. */
+  function structUngroup(wrapper, payload) {
+    if (!curEntry() || !ui.editor.contains(wrapper)) return;
+    const lines = Rich.parseEditor(ui.editor);
+    const idx = structIndex(wrapper);
+    if (idx < 0 || !lines[idx] || lines[idx].type !== "imagegroup") return;
+    const imgs = payload.items.map((a, n) => {
+      const l = Rich.imageLine({ id: a.id, mime: a.mime, w: a.w, h: a.h, width: 100, layout: "inline", caption: a.caption });
+      if (l && n === 0) l.id = lines[idx].id;
+      return l;
+    });
+    if (imgs.some((l) => !l)) return flashMsg("Modification refusée");
+    lines.splice(idx, 1, ...imgs);
+    if (lines[lines.length - 1].type !== "paragraph") lines.push(Rich.newLine("", "paragraph"));
+    commitLines(lines, null);
+  }
+
+  /**
+   * Choose image file(s) and upload them through the ONE Stage-06 pipeline. Resolves with [{id,mime,w,h}] or null (cancelled, failed,
+   * too many). Nothing in the page is touched here: the caller re-validates the CURRENT state and then makes ONE edit.
+   * req: {multiple, min, max, grow} — grow = the images ADD to the page (the 32-image cap is checked first).
+   */
+  function structPick(req) {
+    const I = ui.image;
+    if (!Media) {
+      flashMsg(IMG_MSG.unavailable);
+      return Promise.resolve(null);
+    }
+    const e = curEntry();
+    if (!e) {
+      flashMsg(IMG_MSG.readonly);
+      return Promise.resolve(null);
+    }
+    if (I.busy) {
+      flashMsg(IMG_MSG.busy);
+      return Promise.resolve(null);
+    }
+    const have = Rich.assetsOf(localLines(e.local)).length;
+    const need = req.min || 1;
+    if (req.grow && have + need > Rich.IMAGES_PER_PAGE_MAX) {
+      flashMsg(IMG_MSG.tooMany);
+      return Promise.resolve(null);
+    }
+    const S = ui.structPick || (ui.structPick = { input: null, resolve: null });
+    if (S.resolve) S.resolve(null);
+    if (!S.input) {
+      S.input = el("input", { type: "file", class: "carnet-file-input", accept: Media.ACCEPT, tabindex: "-1", "aria-hidden": "true", "data-carnet-struct-input": "" });
+      (ui.root || doc.body).appendChild(S.input);
+    }
+    const input = S.input;
+    if (req.multiple) input.setAttribute("multiple", "");
+    else input.removeAttribute("multiple");
+    return new Promise((resolve) => {
+      S.resolve = resolve;
+      const done = (v) => {
+        if (S.resolve === resolve) S.resolve = null;
+        input.onchange = null;
+        input.oncancel = null;
+        resolve(v);
+      };
+      input.oncancel = () => done(null);
+      input.onchange = async () => {
+        const files = Array.prototype.slice.call(input.files || []);
+        input.value = "";
+        if (!files.length) return done(null);
+        const max = req.max || 1;
+        if (files.length < need || files.length > max) {
+          flashMsg(need === max ? "Choisissez " + need + (need > 1 ? " images" : " image") : "Choisissez entre " + need + " et " + max + " images");
+          return done(null);
+        }
+        if (req.grow && have + files.length > Rich.IMAGES_PER_PAGE_MAX) {
+          flashMsg(IMG_MSG.tooMany);
+          return done(null);
+        }
+        I.busy = true;
+        refreshImageUi();
+        const out = [];
+        try {
+          for (const f of files) {
+            flashMsg(IMG_MSG.prep);
+            const prepared = await Media.prepare(f);
+            flashMsg(IMG_MSG.up);
+            const a = await Media.upload(prepared.blob, apiCall);
+            out.push({ id: a.id, mime: a.mime, w: a.w, h: a.h, caption: "" });
+          }
+        } catch (err) {
+          I.busy = false;
+          refreshImageUi();
+          flashMsg(Media.describeError(err));
+          return done(null);
+        }
+        I.busy = false;
+        refreshImageUi();
+        done(out);
+      };
+      input.click();
+    });
+  }
+
+  /** Opening a page from a library search whose words are only found inside a structured block: scroll to, open and highlight that block. */
+  function structRevealForQuery() {
+    const U = ui.structUi;
+    if (!U || !ui.lib || !ui.lib.query) return;
+    const toks = queryTokens(ui.lib.query);
+    if (!toks.length) return;
+    const lines = Rich.parseEditor(ui.editor);
+    const flatFold = fold(Rich.flat(lines));
+    if (toks.some((t) => flatFold.indexOf(t) >= 0)) return; // the ordinary text matches: normal behaviour
+    for (let i = 0; i < lines.length; i += 1) {
+      const l = lines[i];
+      if (!Rich.isStructType(l.type) || !l.struct) continue;
+      const hay = fold(Rich.Struct.strings(l.type, l.struct).join("\n"));
+      if (toks.some((t) => hay.indexOf(t) >= 0)) {
+        U.reveal(i);
+        return;
+      }
+    }
+  }
+
+  function structFirstFocus(idx) {
+    const w = ui.editor.children[idx];
+    const f = w && w.querySelector("input:not([type=checkbox]),textarea,select,button");
+    if (f) f.focus();
+  }
+
+  /** Insert a new structured block at the caret (an empty paragraph is replaced; a place to keep typing always follows). */
+  function structInsertBlock(type, payload) {
+    const e = curEntry();
+    if (!e) return flashMsg(IMG_MSG.readonly);
+    const sel = currentSel();
+    const lines = sel.lines;
+    const at = Rich.locate(lines, sel.start);
+    const line = Rich.structLine(type, payload);
+    if (!line) return flashMsg("Modification refusée");
+    const cur = lines[at.line];
+    let idx = at.line + 1;
+    if (cur && cur.type === "paragraph" && cur.text === "") {
+      lines.splice(at.line, 1, line);
+      idx = at.line;
+    } else lines.splice(idx, 0, line);
+    const after = lines[idx + 1];
+    if (!after || Rich.isAtom(after)) lines.splice(idx + 1, 0, Rich.newLine("", "paragraph"));
+    const lim = Rich.structLimits(lines);
+    if (lim) return flashMsg(STRUCT_LIMIT_MSG[lim]);
+    if (commitLines(lines, null)) structFirstFocus(idx);
+  }
+
+  async function structInsert(key) {
+    const U = global.HqCarnetStructuredUi;
+    if (!structUi() || !curEntry()) return curEntry() ? flashMsg("Blocs structurés indisponibles") : flashMsg(IMG_MSG.readonly);
+    if (key !== "imagegroup") return structInsertBlock(key, U.blank(key));
+    const sel = currentSel();
+    const lines = sel.lines;
+    const e = curEntry();
+    const pageId = e.id;
+    const got = await structPick({ multiple: true, min: 2, max: 3, grow: true });
+    if (!got) return;
+    const e2 = curEntry();
+    if (!e2 || e2.id !== pageId) return flashMsg(IMG_MSG.stalePage);
+    const group = Rich.Struct.groupFrom(got, null);
+    if (!group) return flashMsg("Choisissez des images différentes");
+    void lines;
+    structInsertBlock("imagegroup", group);
+  }
+
+  /** Selected single image + 1-2 more images -> ONE atomic edit turning that block into a group (never a 1-image group). */
+  async function structGroupSelected() {
+    const b = imgBound();
+    if (!b) return;
+    const first = b.lines[b.idx].asset;
+    const blockId = b.lines[b.idx].id;
+    const pageId = b.e.id;
+    if (!structUi()) return;
+    const got = await structPick({ multiple: true, min: 1, max: 2, grow: true });
+    if (!got) return; // cancelled or failed: the original image is unchanged
+    const b2 = imgBound();
+    if (!b2 || b2.e.id !== pageId || b2.lines[b2.idx].id !== blockId || b2.lines[b2.idx].asset.id !== first.id) return flashMsg(IMG_MSG.staleTool);
+    const group = Rich.Struct.groupFrom([first].concat(got), null);
+    if (!group) return flashMsg("Image déjà présente dans le groupe");
+    const line = Rich.structLine("imagegroup", group);
+    if (!line) return flashMsg("Modification refusée");
+    line.id = blockId; // same block identity; width / alignment of the single image are not carried (the group owns the layout)
+    b2.lines.splice(b2.idx, 1, line);
+    const lim = Rich.structLimits(b2.lines);
+    if (lim) return flashMsg(STRUCT_LIMIT_MSG[lim]);
+    closeImageTools("");
+    commitLines(b2.lines, null);
+  }
+
+  function openAttachment(refId) {
+    const ref = Rich.checkRef({ kind: "file", id: String(refId) });
+    if (ref) global.open("/files/" + ref.id.split("/").map(encodeURIComponent).join("/"), "_blank", "noopener,noreferrer");
+  }
+
   function imgToolsNote(text) {
     const n = doc.getElementById("carnet-image-tools-msg");
     if (n) n.textContent = text || "";
@@ -5548,7 +5838,16 @@
     let target = -1;
     if (back && at.off === 0 && at.line > 0 && sel.lines[at.line - 1].type === "image") target = at.line - 1;
     else if (fwd && at.off === sel.lines[at.line].text.length && at.line + 1 < sel.lines.length && sel.lines[at.line + 1].type === "image") target = at.line + 1;
-    if (target < 0) return false;
+    if (target < 0) {
+      // Phase 2: Backspace/Delete next to a table / callout / toggle / group focuses it instead of deleting it (it has its own named delete)
+      let st = -1;
+      if (back && at.off === 0 && at.line > 0 && Rich.isStructType(sel.lines[at.line - 1].type)) st = at.line - 1;
+      else if (fwd && at.off === sel.lines[at.line].text.length && at.line + 1 < sel.lines.length && Rich.isStructType(sel.lines[at.line + 1].type)) st = at.line + 1;
+      if (st < 0) return false;
+      ev.preventDefault();
+      structFirstFocus(st);
+      return true;
+    }
     ev.preventDefault();
     selectImageLine(ui.editor.children[target]);
     return true;
@@ -5612,7 +5911,7 @@
     if (!e) return;
     clearPrint();
     const host = el("div", { id: "hq-carnet-print", "aria-hidden": "true" });
-    Rich.renderInto(host, localLines(e.local));
+    Rich.renderInto(host, localLines(e.local), { print: true }); // static structured blocks: a toggle is always expanded, no inputs
     host.removeAttribute("contenteditable");
     doc.body.appendChild(host);
     doc.body.classList.add("carnet-printing");

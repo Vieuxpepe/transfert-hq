@@ -39,6 +39,7 @@
     edge: "Déjà au bout de la page",
     limitBlocks: "Limite de blocs atteinte",
     limitImages: "Limite d'images atteinte pour cette page",
+    limitStruct: "Limite de blocs structur\u00e9s atteinte pour cette page",
     limitDecisions: "Limite de décisions atteinte pour cette page",
     refused: "Modification refusée",
   };
@@ -505,7 +506,7 @@
 
     function commitBlocks(res, opts) {
       if (res.error) {
-        say(res.error === "limit-blocks" ? MSG.limitBlocks : res.error === "limit-images" ? MSG.limitImages : res.error === "limit-decisions" ? MSG.limitDecisions : res.error === "edge" ? MSG.edge : MSG.stale, true);
+        say(res.error === "limit-blocks" ? MSG.limitBlocks : res.error === "limit-images" ? MSG.limitImages : res.error === "limit-struct" ? MSG.limitStruct : res.error === "limit-decisions" ? MSG.limitDecisions : res.error === "edge" ? MSG.edge : MSG.stale, true);
         return false;
       }
       const starts = Rich.lineStarts(res.lines);

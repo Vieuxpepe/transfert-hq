@@ -555,10 +555,10 @@ def referenced_assets(data: Any) -> set[str]:
         if not isinstance(content, dict) or content.get("version") != rich.CONTENT_VERSION or not isinstance(content.get("blocks"), list):
             continue
         for block in content["blocks"]:
-            asset = block.get("asset") if isinstance(block, dict) and block.get("type") == rich.IMAGE_TYPE else None
-            ident = asset.get("id") if isinstance(asset, dict) else None
-            if isinstance(ident, str) and rich.ASSET_ID_RE.match(ident):
-                out.add(ident)
+            for asset in rich.block_assets(block):  # single images AND image-group children (Phase 2)
+                ident = asset.get("id")
+                if isinstance(ident, str) and rich.ASSET_ID_RE.match(ident):
+                    out.add(ident)
     return out
 
 

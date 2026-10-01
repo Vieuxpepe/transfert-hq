@@ -44,10 +44,13 @@
   // Stage 07 engineering core (pure). In a browser it is loaded before this file; without it the three engineering
   // block types are simply unknown (their pages fail closed instead of being rewritten).
   const Eng = typeof module === "object" && module && module.exports ? require("./hq-carnet-eng.js") : global.HqCarnetEng || null;
+  // Product Phase 2 structured blocks (pure core). Without it the four types are unknown and their pages fail closed.
+  const Struct = typeof module === "object" && module && module.exports ? require("./hq-carnet-struct.js") : global.HqCarnetStruct || null;
+  const STRUCT_TYPES = Struct ? Struct.TYPES.slice() : [];
   const ENG_TYPES = Eng ? Eng.ENG_TYPES.slice() : [];
-  const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"].concat(ENG_TYPES);
-  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d" };
-  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision" };
+  const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"].concat(ENG_TYPES, STRUCT_TYPES);
+  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j" };
+  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup" };
   const ASSET_ID = /^asset-[0-9a-f]{24}$/;
   const ASSET_MIMES = ["image/jpeg", "image/png", "image/webp"];
   const ASSET_LONG_SIDE_MAX = 2560; // server: hq_carnet_media.MAX_LONG_SIDE
@@ -354,7 +357,21 @@
 
   /** An atom line has no text, no marks and no caret inside: an image, a calculation or a measurement. */
   function isAtomType(type) {
-    return type === "image" || (!!Eng && Eng.ATOM_TYPES.indexOf(type) >= 0);
+    return type === "image" || (!!Eng && Eng.ATOM_TYPES.indexOf(type) >= 0) || isStructType(type);
+  }
+
+  /** Phase 2: a table / callout / toggle / image group (an atom carrying `struct`). */
+  function isStructType(type) {
+    return STRUCT_TYPES.indexOf(type) >= 0;
+  }
+
+  /** Stage 07 calculation / measurement atom (an atom with an `eng` payload). */
+  function isEngAtom(l) {
+    return !!l && !!Eng && Eng.ATOM_TYPES.indexOf(l.type) >= 0;
+  }
+
+  function structPayload(type, p) {
+    return Struct && isStructType(type) ? Struct.checkPayload(type, p, checkAsset) : null;
   }
 
   function isAtom(l) {
@@ -377,19 +394,20 @@
     return Eng && isEngType(type) ? Eng.checkPayload(type, p, measureLink) : null;
   }
 
-  function newLine(text, type, checked, marks, id, asset, eng) {
+  function newLine(text, type, checked, marks, id, asset, eng, struct) {
     const image = type === "image";
     const atom = isAtomType(type);
     return {
       type: type || "paragraph", checked: type === "check" ? !!checked : false, text: atom ? "" : text || "", marks: atom ? [] : marks || [],
       id: cleanId(id), asset: image && asset ? Object.assign({}, asset) : null, eng: isEngType(type) && eng ? cloneEng(eng) : null,
+      struct: isStructType(type) && struct ? cloneEng(struct) : null,
     };
   }
 
   function cloneLine(l) {
     return {
       type: l.type, checked: l.checked, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)), id: l.id || null,
-      asset: l.asset ? Object.assign({}, l.asset) : null, eng: l.eng ? cloneEng(l.eng) : null,
+      asset: l.asset ? Object.assign({}, l.asset) : null, eng: l.eng ? cloneEng(l.eng) : null, struct: l.struct ? cloneEng(l.struct) : null,
     };
   }
 
@@ -425,8 +443,75 @@
     return clean ? newLine("", "image", false, [], null, clean) : null;
   }
 
+  /** Every image asset of the page: single images AND image-group children (the one client-side scanner). */
   function assetsOf(lines) {
-    return lines.filter((l) => l.type === "image" && l.asset).map((l) => l.asset);
+    const out = [];
+    for (const l of lines) {
+      if (l.type === "image" && l.asset) out.push(l.asset);
+      else if (l.type === "imagegroup" && l.struct) for (const a of l.struct.items) out.push(a);
+    }
+    return out;
+  }
+
+  const STRUCT_TEXT_CACHE = new Map(); // fmt string -> visible structured text (bounded; library search over many pages)
+
+  /**
+   * Visible user text of the structured blocks of a draft (`fmt`), newline-joined, for library search. Strictly decoded: a row that
+   * does not decode contributes nothing. "" when the page has none (the common case costs one regexp test).
+   */
+  function structSearchText(fmt) {
+    if (!Struct || typeof fmt !== "string" || !/\["[togj]",0,/.test(fmt)) return "";
+    if (STRUCT_TEXT_CACHE.has(fmt)) return STRUCT_TEXT_CACHE.get(fmt);
+    let out = [];
+    try {
+      const arr = JSON.parse(fmt);
+      if (Array.isArray(arr)) {
+        for (const row of arr) {
+          const type = Array.isArray(row) ? CODE_TYPE[row[0]] : null;
+          if (!type || !isStructType(type) || row.length !== 4) continue;
+          const p = Struct.decode(type, row[3], checkAsset);
+          if (p) out = out.concat(Struct.strings(type, p));
+        }
+      }
+    } catch (_) {
+      out = [];
+    }
+    const text = out.join("\n");
+    if (STRUCT_TEXT_CACHE.size >= 256) STRUCT_TEXT_CACHE.clear();
+    STRUCT_TEXT_CACHE.set(fmt, text);
+    return text;
+  }
+
+  /** A new structured atom (no id yet). null when the payload is not valid. */
+  function structLine(type, payload) {
+    const clean = structPayload(type, payload);
+    return clean ? newLine("", type, false, [], null, null, null, clean) : null;
+  }
+
+  /** Page-level limits of structured blocks (mirror hq_carnet_rich.parse_content). null = fine, else a short reason code. */
+  function structLimits(lines) {
+    if (!Struct) return null;
+    let tables = 0;
+    let notes = 0;
+    let groups = 0;
+    let images = 0;
+    let bytes = 0;
+    for (const l of lines) {
+      if (l.type === "image") images += 1;
+      if (!isStructType(l.type) || !l.struct) continue;
+      if (l.type === "table") tables += 1;
+      else if (l.type === "imagegroup") {
+        groups += 1;
+        images += l.struct.items.length;
+      } else notes += 1;
+      bytes += Struct.bytesOf(l.type, l.struct);
+    }
+    if (tables > Struct.TABLES_PER_PAGE_MAX) return "tables";
+    if (notes > Struct.NOTES_PER_PAGE_MAX) return "notes";
+    if (groups > Struct.GROUPS_PER_PAGE_MAX) return "groups";
+    if (images > IMAGES_PER_PAGE_MAX) return "images";
+    if (bytes > Struct.STRUCT_BYTES_MAX) return "bytes";
+    return null;
   }
 
   /** Give every line without an id a temporary key; a repeated id keeps its first line only. Mutates. */
@@ -470,6 +555,11 @@
       if (asset) return { type, checked: false, text: "", marks: [], id: cleanId(l.id), asset };
       type = "paragraph"; // an image without valid metadata is not an image
     }
+    if (isStructType(type)) {
+      const struct = structPayload(type, l.struct);
+      if (struct) return { type, checked: false, text: "", marks: [], id: cleanId(l.id), asset: null, eng: null, struct };
+      type = "paragraph"; // a structured block without a valid payload is not one
+    }
     let eng = null;
     if (isEngType(type)) {
       eng = engPayload(type, l.eng);
@@ -500,6 +590,7 @@
         if (l.asset.layout !== "inline") ar.push(l.asset.layout);
         row.push(ar);
       }
+      else if (isStructType(l.type)) row.push(Struct.encode(l.type, l.struct)); // Phase 2: same rule, fixed-order arrays
       else if (isEngType(l.type)) row.push(Eng.encode(l.type, l.eng)); // Stage 07: same 4th-element rule, fixed-order arrays
       return row;
     }));
@@ -528,8 +619,14 @@
       const type = CODE_TYPE[row[0]];
       if (!type || (row[1] !== 0 && row[1] !== 1) || (row[1] === 1 && type !== "check") || !Array.isArray(row[2])) return null;
       if (row[2].length > MARKS_PER_BLOCK_MAX) return null;
-      if ((row.length === 4) !== (type === "image" || isEngType(type))) return null;
+      if ((row.length === 4) !== (type === "image" || isEngType(type) || isStructType(type))) return null;
       let payload = null;
+      if (isStructType(type)) {
+        const sp = Struct.decode(type, row[3], checkAsset);
+        if (!sp || base[i] !== "" || row[2].length) return null;
+        out.push(newLine("", type, false, [], idAt(i), null, null, sp));
+        continue;
+      }
       if (isEngType(type)) {
         payload = Eng.decode(type, row[3], measureLink);
         if (!payload) return null;
@@ -581,7 +678,7 @@
       if (!canon) return null;
       out.push(newLine(base[i], type, row[1] === 1, canon, idAt(i), null, payload));
     }
-    return out;
+    return structLimits(out) ? null : out;
   }
 
   /** Server/draft content (V1 legacy or V2) -> lines. null when unusable. */
@@ -605,6 +702,15 @@
         continue;
       }
       if (b.asset !== undefined) return null;
+      if (isStructType(b.type)) {
+        const key = Struct.KEY[b.type];
+        for (const t of STRUCT_TYPES) if (b[Struct.KEY[t]] !== undefined && t !== b.type) return null; // a payload only under its own type
+        const sp = structPayload(b.type, b[key]);
+        if (!sp || b.text !== "" || (Array.isArray(b.marks) && b.marks.length) || b.checked !== undefined) return null;
+        out.push(newLine("", b.type, false, [], isRealId(b.id) ? b.id : null, null, null, sp));
+        continue;
+      }
+      if (STRUCT_TYPES.some((t) => b[Struct.KEY[t]] !== undefined)) return null;
       let payload = null;
       if (Eng) for (const k of ENG_TYPES) if (b[k] !== undefined && k !== b.type) return null; // a payload only under its own type
       if (isEngType(b.type)) {
@@ -666,6 +772,7 @@
         if (l.type === "check") b.checked = !!l.checked;
         if (l.type === "image") b.asset = Object.assign({}, l.asset);
         if (isEngType(l.type)) b[l.type] = cloneEng(l.eng);
+        if (isStructType(l.type)) b[Struct.KEY[l.type]] = cloneEng(l.struct);
         if (isRealId(l.id) && (!allowed || allowed.has(l.id)) && !used.has(l.id)) {
           used.add(l.id);
           b.id = l.id;
@@ -1151,6 +1258,7 @@
   function renderTxt(lines) {
     const labels = numberLabels(lines);
     const out = lines.map((l, i) => {
+      if (isStructType(l.type)) return Struct.txtLines(l.type, l.struct).join("\n");
       if (l.type === "image") return l.asset.caption ? "[Image : " + l.asset.caption + "]" : "[Image]";
       if (l.type === "calc") return "[" + Eng.describeCalc(l.eng) + "]";
       if (l.type === "measure") return "[" + Eng.describeMeasure(l.eng) + "]";
@@ -1239,6 +1347,11 @@
     const parts = [];
     let gap = false;
     lines.forEach((l, i) => {
+      if (isStructType(l.type)) {
+        parts.push(["struct", Struct.mdBlock(l.type, l.struct, assetPaths, { esc: mdEscape, lineStart: mdLineStart, alt: mdAlt, path: mdPath }), gap]);
+        gap = false;
+        return;
+      }
       if (l.type === "image") {
         const cap = l.asset.caption;
         const relPath = assetPaths && assetPaths[l.asset.id];
@@ -1325,6 +1438,104 @@
   const ASSET_REGS = new WeakMap(); // editor root -> Map(asset key -> image metadata). Attributes only carry the opaque asset id.
   const ENG_KEY_ATTR = "data-eng-key";
   const ENG_REGS = new WeakMap(); // editor root -> Map(eng key -> {type, payload}). Payloads never travel in attributes or text.
+  const STRUCT_KEY_ATTR = "data-struct-key";
+  const STRUCT_REGS = new WeakMap(); // editor root -> Map(struct key -> {type, payload}). Phase 2: payloads never travel in attributes or text.
+  let structRenderer = null; // (doc, wrapper, type, payload, idx) -> fills the wrapper; installed by hq-carnet-structured-ui.js
+
+  /** Install the interactive renderer of structured blocks (the editor UI module). Without one a readable static fallback is drawn. */
+  function setStructRenderer(fn) {
+    structRenderer = typeof fn === "function" ? fn : null;
+  }
+
+  /** The current payload of the structured block whose wrapper element is `wrapper` (clean copy) or null. */
+  function getStructPayload(rootEl, wrapper) {
+    const reg = STRUCT_REGS.get(rootEl);
+    const meta = reg && wrapper ? reg.get(wrapper.getAttribute(STRUCT_KEY_ATTR)) : null;
+    return meta ? cloneEng(meta.payload) : null;
+  }
+
+  /** Replace the payload of a rendered structured block (validated; false = unchanged). The UI calls this before the host commits. */
+  function setStructPayload(rootEl, wrapper, payload) {
+    const reg = STRUCT_REGS.get(rootEl);
+    const key = wrapper ? wrapper.getAttribute(STRUCT_KEY_ATTR) : null;
+    const meta = reg && key ? reg.get(key) : null;
+    const clean = meta ? structPayload(meta.type, payload) : null;
+    if (!clean) return false;
+    reg.set(key, { type: meta.type, payload: clean });
+    return true;
+  }
+
+  const CALLOUT_GLYPH = { note: "\u270e", info: "\u2139", warning: "\u26a0" };
+
+  /**
+   * Read-only rendering of a structured block (print / PDF and the no-UI fallback): real table semantics, labelled callout,
+   * a toggle ALWAYS expanded (print shows the full content), image groups as figures. Text nodes only: no inputs, no buttons.
+   */
+  function structStatic(doc, type, p) {
+    const box = el(doc, "div", { class: "carnet-struct carnet-struct-static", "data-struct": type });
+    if (type === "table") {
+      const scroll = el(doc, "div", { class: "carnet-table-scroll" });
+      const table = el(doc, "table", { class: "carnet-table" });
+      p.rows.forEach((row, r) => {
+        const tr = el(doc, "tr");
+        row.forEach((val) => {
+          const head = p.header && r === 0;
+          tr.appendChild(textEl(doc, head ? "th" : "td", head ? "carnet-cell-head" : "carnet-cell-text", val));
+        });
+        table.appendChild(tr);
+      });
+      scroll.appendChild(table);
+      box.appendChild(scroll);
+    } else if (type === "callout") {
+      const card = el(doc, "div", { class: "carnet-callout", "data-kind": p.kind, role: "note" });
+      const head = el(doc, "div", { class: "carnet-callout-head" });
+      head.appendChild(textEl(doc, "span", "carnet-callout-glyph", CALLOUT_GLYPH[p.kind]));
+      head.appendChild(textEl(doc, "span", "carnet-callout-kind", Struct.CALLOUT_LABEL[p.kind]));
+      if (p.title) head.appendChild(textEl(doc, "strong", "carnet-callout-title-text", p.title));
+      card.appendChild(head);
+      if (p.body) card.appendChild(textEl(doc, "div", "carnet-callout-body-text", p.body));
+      box.appendChild(card);
+    } else if (type === "toggle") {
+      const card = el(doc, "div", { class: "carnet-toggle", "data-open": "true" });
+      card.appendChild(textEl(doc, "strong", "carnet-toggle-summary-text", p.summary));
+      if (p.body) card.appendChild(textEl(doc, "div", "carnet-toggle-body-text", p.body));
+      box.appendChild(card);
+    } else {
+      const card = el(doc, "div", { class: "carnet-group", "data-layout": p.layout, role: "group" });
+      const grid = el(doc, "div", { class: "carnet-group-grid" });
+      const labels = Struct.GROUP_ITEM_LABEL[p.layout];
+      p.items.forEach((a, i) => {
+        const fig = el(doc, "figure", { class: "carnet-group-item" });
+        if (labels) fig.appendChild(textEl(doc, "span", "carnet-group-label", labels[i]));
+        fig.appendChild(el(doc, "img", { class: "carnet-img", src: ASSET_URL + a.id, alt: a.caption || "", width: String(a.w), height: String(a.h), draggable: "false", decoding: "async" }));
+        if (a.caption) fig.appendChild(textEl(doc, "figcaption", "carnet-caption", a.caption));
+        grid.appendChild(fig);
+      });
+      card.appendChild(grid);
+      box.appendChild(card);
+    }
+    return box;
+  }
+
+  /** A table / callout / toggle / image-group atom: <div.carnet-line contenteditable=false>. Safe DOM only. */
+  function renderStruct(doc, l, idx, reg, print) {
+    const label = { table: "Tableau", callout: "Encadr\u00e9", toggle: "Section repliable", imagegroup: "Groupe d'images" }[l.type];
+    const div = el(doc, "div", {
+      class: "carnet-line carnet-struct-line", "data-carnet-line": String(idx), "data-line-type": l.type, "data-carnet-struct": l.type, contenteditable: "false",
+      role: "group", "aria-label": label,
+    });
+    if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
+    else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
+    if (reg && reg.structs) {
+      reg.sn += 1;
+      const key = "s" + reg.sn;
+      reg.structs.set(key, { type: l.type, payload: cloneEng(l.struct) });
+      div.setAttribute(STRUCT_KEY_ATTR, key);
+    }
+    if (structRenderer && !print) structRenderer(doc, div, l.type, cloneEng(l.struct), idx);
+    else div.appendChild(structStatic(doc, l.type, l.struct));
+    return div;
+  }
 
   function segNodes(doc, l, from, to) {
     const out = [];
@@ -1448,8 +1659,38 @@
     return div;
   }
 
-  function renderLine(doc, l, idx, num, reg) {
+  /**
+   * Phase 2 attachment card: a RENDERING treatment over an existing safe file reference (no schema, no second file system).
+   * A paragraph is a card only when its whole visible text (no surrounding whitespace) is covered by exactly one link mark
+   * with ref.kind === "file" and it carries no other mark; anything else stays ordinary rich text. Returns the ref or null.
+   */
+  function attachmentOf(l) {
+    if (!l || l.type !== "paragraph" || !l.text || l.marks.length !== 1) return null;
+    const m = l.marks[0];
+    if (m.type !== "link" || !m.ref || m.ref.kind !== "file" || m.start !== 0 || m.end !== l.text.length || l.text !== l.text.trim()) return null;
+    return checkRef(m.ref);
+  }
+
+  const ATTACH_CHIP = { pdf: "PDF", doc: "DOC", docx: "DOC", xls: "XLS", xlsx: "XLS", csv: "CSV", txt: "TXT", md: "MD", zip: "ZIP", step: "CAO", stp: "CAO", stl: "STL", dxf: "DXF", dwg: "DWG", png: "IMG", jpg: "IMG", jpeg: "IMG", webp: "IMG", gif: "IMG", mp4: "VID", mov: "VID", mp3: "AUDIO" };
+
+  /** Non-editable badge of an attachment card: type chip, root-relative folder (never an absolute path), a named open action. */
+  function attachmentBadge(doc, ref) {
+    const parts = ref.id.split("/");
+    const name = parts[parts.length - 1];
+    const dot = name.lastIndexOf(".");
+    const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+    const badge = el(doc, "span", { class: "carnet-attach-badge", contenteditable: "false", [NS_SKIP]: "" });
+    badge.appendChild(textEl(doc, "span", "carnet-attach-chip", ATTACH_CHIP[ext] || (ext ? ext.slice(0, 4).toUpperCase() : "FICHIER")));
+    badge.appendChild(textEl(doc, "span", "carnet-attach-dir", parts.slice(0, -1).join("/")));
+    const open = el(doc, "span", { class: "carnet-attach-open", role: "button", tabindex: "0", "data-carnet-attach-open": ref.id, "aria-label": "Ouvrir le fichier " + name });
+    open.appendChild(doc.createTextNode("Ouvrir"));
+    badge.appendChild(open);
+    return badge;
+  }
+
+  function renderLine(doc, l, idx, num, reg, print) {
     if (l.type === "image") return renderImage(doc, l, idx, reg);
+    if (isStructType(l.type)) return renderStruct(doc, l, idx, reg, print);
     if (isAtomType(l.type)) return renderEngAtom(doc, l, idx, reg);
     const div = el(doc, "div", { class: "carnet-line", "data-carnet-line": String(idx), "data-line-type": l.type });
     if (l.type === "decision") {
@@ -1457,6 +1698,12 @@
       div.appendChild(el(doc, "span", { class: "carnet-decision-label", contenteditable: "false", [NS_SKIP]: "" })).appendChild(doc.createTextNode("D\u00c9CISION \u00b7 " + localTimeLabel(l.eng.at)));
     }
     if (l.type === "number") div.setAttribute("data-num", String(num));
+    const attach = attachmentOf(l);
+    if (attach) {
+      div.setAttribute("data-carnet-attachment", "file");
+      div.setAttribute("class", "carnet-line carnet-attachment");
+      div.appendChild(attachmentBadge(doc, attach));
+    }
     if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
     else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
     if (l.type === "check") {
@@ -1503,16 +1750,18 @@
   }
 
   /** Replace the editor content with `lines` (safe DOM only). */
-  function renderInto(rootEl, lines) {
+  function renderInto(rootEl, lines, opts) {
     const doc = rootEl.ownerDocument;
     while (rootEl.firstChild) rootEl.removeChild(rootEl.firstChild);
     const labels = numberLabels(lines);
     ensureKeys(lines);
-    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0, engs: new Map(), en: 0 };
+    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0, engs: new Map(), en: 0, structs: new Map(), sn: 0 };
+    STRUCT_REGS.set(rootEl, reg.structs);
     REGISTRIES.set(rootEl, reg.map);
     ASSET_REGS.set(rootEl, reg.assets);
     ENG_REGS.set(rootEl, reg.engs);
-    lines.forEach((l, i) => rootEl.appendChild(renderLine(doc, l, i, labels[i], reg)));
+    const print = !!(opts && opts.print);
+    lines.forEach((l, i) => rootEl.appendChild(renderLine(doc, l, i, labels[i], reg, print)));
   }
 
   /**
@@ -1624,13 +1873,15 @@
     const reg = REGISTRIES.get(rootEl) || null;
     const areg = ASSET_REGS.get(rootEl) || null;
     const ereg = ENG_REGS.get(rootEl) || null;
+    const sreg = STRUCT_REGS.get(rootEl) || null;
+    const structUsed = new Set();
     const engUsed = new Set(); // a payload key is honoured once: a line the browser cloned natively never duplicates a payload
     const lines = [];
     let cur = null;
     const open = (type, checked, el) => {
       const real = el ? el.getAttribute("data-carnet-block-id") : null;
       const tmp = el ? el.getAttribute("data-carnet-tmp") : null;
-      cur = { type: BLOCK_TYPES.indexOf(type) >= 0 ? type : "paragraph", checked: type === "check" && checked, text: "", marks: [], id: isRealId(real) ? real : isTmpId(tmp) ? tmp : null, el, asset: null, eng: null };
+      cur = { type: BLOCK_TYPES.indexOf(type) >= 0 ? type : "paragraph", checked: type === "check" && checked, text: "", marks: [], id: isRealId(real) ? real : isTmpId(tmp) ? tmp : null, el, asset: null, eng: null, struct: null };
       lines.push(cur);
     };
     const close = () => {
@@ -1674,6 +1925,19 @@
             }
             continue;
           }
+          if (child.parentNode === rootEl && child.hasAttribute("data-carnet-struct") && BLOCK_TAGS[child.nodeName]) {
+            // table / callout / toggle / image group: the payload comes from the registry, never from attributes/text/inputs
+            close();
+            const key = child.getAttribute(STRUCT_KEY_ATTR);
+            const meta = sreg && !structUsed.has(key) ? sreg.get(key) : null;
+            if (meta && isStructType(meta.type)) {
+              structUsed.add(key);
+              open(meta.type, false, child);
+              cur.struct = cloneEng(meta.payload);
+              close();
+            }
+            continue;
+          }
           if (child.parentNode === rootEl && child.hasAttribute("data-carnet-eng") && BLOCK_TAGS[child.nodeName]) {
             // calculation / measurement atom: the payload comes from the registry built by renderInto, never from attributes/text
             close();
@@ -1711,7 +1975,7 @@
       }
     }
     walk(rootEl, [], true);
-    if (!lines.length) lines.push({ type: "paragraph", checked: false, text: "", marks: [], id: null, el: null, eng: null });
+    if (!lines.length) lines.push({ type: "paragraph", checked: false, text: "", marks: [], id: null, el: null, eng: null, struct: null });
     // Identity of DOM lines: keep server ids / temporary keys; a line the browser created natively
     // (or a duplicated id) gets a fresh temporary key, written back so it stays stable.
     const seen = new Set();
@@ -1804,6 +2068,7 @@
     checkCite, citeKey, citationLabel, locatorLabel, citationAt, citationsOf, insertCitation, setCitationPayload,
     safeHref, checkRef, canonicalMarks, newLine, cloneLines, ensureKeys, idsOf, isRealId, isTmpId, wireContent, adoptIds, syncIds, flat, plainLines, isPlain, fmtOf,
     linesFromTextFmt, linesFromContent, contentFromLines, contentFromTextFmt, lineStarts, locate,
+    attachmentOf, Struct, STRUCT_TYPES, isStructType, isEngAtom, structPayload, structLine, structLimits, structSearchText, setStructRenderer, getStructPayload, setStructPayload,
     Eng, ENG_TYPES, isAtom, isEngType, engPayload, engLine, decisionLine, engOf, localTimeLabel, measureLink,
     checkAsset, captionOk, cleanCaptionText, imageLine, assetsOf, patchImage, ASSET_URL, ASSET_LONG_SIDE_MAX, ASSET_WIDTH_MIN, ASSET_WIDTH_MAX, ASSET_CAPTION_MAX, IMAGES_PER_PAGE_MAX, ASSET_MIMES,
     replaceRange, toggleMark, setMark, hasMark, setLink, linkAt, setBlockType, toggleChecked, splitAt, findAll, replaceMatches,

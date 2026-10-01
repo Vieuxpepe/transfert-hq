@@ -39,6 +39,10 @@
     { id: "check", cat: "write", kind: "block", type: "check", label: "Checklist", hint: "Cases à cocher", icon: "M4 7l2 2 3.5-3.5M12 7h8M4 16l2 2 3.5-3.5M12 16h8", keys: ["checklist", "cases", "cocher", "todo", "check", "liste de controle"] },
     { id: "image", cat: "add", kind: "tool", label: "Image", hint: "Depuis cet appareil", icon: "M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9.5h.01", keys: ["image", "picture", "img", "galerie"] },
     { id: "camera", cat: "add", kind: "tool", label: "Photo", hint: "Prendre une photo", icon: "M4 8h3l1.5-2h7L17 8h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z", keys: ["photo", "camera", "caméra", "appareil", "capture"] },
+    { id: "table", cat: "add", kind: "tool", label: "Tableau", hint: "Lignes et colonnes de texte", icon: "M4 5h16v14H4zM4 10h16M4 15h16M10 5v14", keys: ["tableau", "table", "grille", "colonnes", "lignes"] },
+    { id: "callout", cat: "add", kind: "tool", label: "Encadré", hint: "Note, info ou attention", icon: "M5 4h14v12H9l-4 4zM9 8h6M9 12h4", keys: ["encadre", "encadré", "note", "callout", "attention", "avertissement", "info"] },
+    { id: "toggle", cat: "add", kind: "tool", label: "Section repliable", hint: "Contenu masquable", icon: "M8 6l8 6-8 6zM4 4v16", keys: ["section", "repliable", "toggle", "details", "détails", "masquer", "accordeon"] },
+    { id: "imagegroup", cat: "add", kind: "tool", label: "Groupe d'images", hint: "2 ou 3 images, avant / après", icon: "M3 5h8v14H3zM13 5h8v14h-8zM3 15l3-3 3 3M13 15l3-3 3 3", keys: ["groupe", "images", "avant", "apres", "après", "comparer", "galerie", "cote a cote"] },
     { id: "file", cat: "add", kind: "tool", label: "Fichier", hint: "Lier un fichier", icon: "M7 3h7l5 5v13H7zM14 3v5h5", keys: ["fichier", "file", "lien", "piece"] },
     { id: "drawing", cat: "add", kind: "tool", label: "Dessin", hint: "Lier un dessin", icon: "M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM4 20h7", keys: ["dessin", "drawing", "croquis", "plan"] },
     { id: "measure", cat: "eng", kind: "tool", label: "Mesure", hint: "Valeur et tolérance", icon: "M3 15L15 3l6 6L9 21zM7 11l2 2M10 8l2 2M13 5l2 2", keys: ["mesure", "measure", "cote", "tolerance", "tolérance", "releve"] },
@@ -201,6 +205,7 @@
     let decisions = 0;
     for (const l of lines) {
       if (l.type === "image") images += 1;
+      else if (l.type === "imagegroup" && l.struct) images += l.struct.items.length; // group children are images too
       else if (l.type === "decision") decisions += 1;
     }
     return { images, decisions };
@@ -251,11 +256,13 @@
     const imax = Rich.IMAGES_PER_PAGE_MAX || IMAGES_MAX;
     const dmax = (Rich.Eng && Rich.Eng.DECISIONS_PER_PAGE_MAX) || DECISIONS_MAX;
     if (src.type === "image" && c.images >= imax) return { error: "limit-images" };
+    if (src.type === "imagegroup" && src.struct && c.images + src.struct.items.length > imax) return { error: "limit-images" };
     if (src.type === "decision" && c.decisions >= dmax) return { error: "limit-decisions" };
     const out = Rich.cloneLines(lines);
     const copy = Rich.cloneLines([src])[0];
     copy.id = null;
     out.splice(index + 1, 0, copy);
+    if (Rich.structLimits && Rich.structLimits(out)) return { error: "limit-struct" }; // tables / notes / groups / structured text caps
     return { lines: out, index: index + 1 };
   }
 

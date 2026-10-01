@@ -890,7 +890,7 @@
         hostEl.appendChild(el(doc, "h2", { text: sec.label + " — " + sec.page_title }));
         const part = el(doc, "div");
         try {
-          Rich.renderInto(part, Rich.linesFromContent({ version: 2, blocks: sec.blocks }));
+          Rich.renderInto(part, Rich.linesFromContent({ version: 2, blocks: sec.blocks }), { print: true });
           part.removeAttribute("contenteditable");
         } catch (_) {
           part.appendChild(el(doc, "p", { text: "(contenu non affichable)" }));

@@ -330,7 +330,7 @@ for (const [label, width, height] of VIEWPORTS) {
     const items = await p.locator("#hq-carnet-insert-menu [data-carnet-insert]").allTextContents();
     const groups = await p.locator("#hq-carnet-insert-menu .carnet-cmd-group-label").allTextContents();
     check(JSON.stringify(groups) === JSON.stringify(["Écrire", "Ajouter", "Ingénierie", "Projet"]), "menu is grouped by category: " + groups);
-    check(items.length === 15 && /Texte/.test(items[0]) && items.some((t) => /^Image/.test(t)) && items.some((t) => /Mesure/.test(t)) && items.some((t) => /Calcul/.test(t)) && items.some((t) => /Décision/.test(t)) && items.some((t) => /Dessin/.test(t)) && items.some((t) => /Fichier/.test(t)) && items.some((t) => /Photo/.test(t)) && items.some((t) => /Tâche/.test(t)), "menu lists every command once: " + items.map((t) => t.slice(0, 12)));
+    check(items.length === 19 && /Texte/.test(items[0]) && items.some((t) => /^Image/.test(t)) && items.some((t) => /Mesure/.test(t)) && items.some((t) => /Calcul/.test(t)) && items.some((t) => /Décision/.test(t)) && items.some((t) => /Dessin/.test(t)) && items.some((t) => /Fichier/.test(t)) && items.some((t) => /Photo/.test(t)) && items.some((t) => /Tâche/.test(t)) && items.some((t) => /^Tableau/.test(t)) && items.some((t) => /^Encadré/.test(t)) && items.some((t) => /^Section repliable/.test(t)) && items.some((t) => /^Groupe d.images/.test(t)), "menu lists every command once (19: Phase 1 + four structured blocks): " + items.map((t) => t.slice(0, 12)));
     const mr = await rect(p, "#hq-carnet-insert-menu");
     check(mr.l >= -0.5 && mr.r <= width + 0.5, "the menu stays inside the viewport");
     await p.keyboard.press("Escape");

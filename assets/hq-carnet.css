@@ -683,3 +683,82 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .hq-capture-toast-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
 .hq-capture-toast-open{flex:0 0 auto;min-height:44px;padding:0 16px;border:0;border-radius:10px;background:var(--accent);color:var(--cap-on-accent);font:inherit;font-weight:800;cursor:pointer}
 @media (prefers-reduced-motion:reduce){.hq-capture-fab,.hq-capture,.hq-capture-toast{transition:none!important;animation:none!important}}
+
+/* ---- Product Phase 2: structured blocks (table, callout, toggle, image group) and attachment cards */
+.carnet-struct-line{display:block;margin:10px 0;min-width:0;max-width:100%;box-sizing:border-box;-webkit-user-select:text;user-select:text}
+.carnet-struct{min-width:0;max-width:100%;box-sizing:border-box;border:1px solid var(--line,#3a4350);border-radius:10px;padding:8px;background:color-mix(in srgb,var(--panel,#222831) 70%,transparent);font-size:.94em;line-height:1.35}
+.carnet-struct-line[data-struct-hit="true"] .carnet-struct{outline:3px solid var(--accent,#4fd1a5);outline-offset:2px}
+.carnet-struct input[type=text],.carnet-struct textarea,.carnet-struct select{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:6px;padding:4px 6px;min-width:0;box-sizing:border-box;line-height:1.3}
+.carnet-struct input[type=text]:focus-visible,.carnet-struct textarea:focus-visible,.carnet-struct select:focus-visible,.carnet-struct button:focus-visible,.carnet-table-scroll:focus-visible,.carnet-toggle-btn:focus-visible{outline:2px solid var(--accent,#4fd1a5);outline-offset:1px;border-color:var(--accent,#4fd1a5)}
+.carnet-struct-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.carnet-struct-btn,.carnet-struct-check{min-height:var(--carnet-tap,44px);display:inline-flex;align-items:center;gap:4px;box-sizing:border-box}
+.carnet-struct-btn{padding:0 12px}
+.carnet-struct-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;min-height:20px}
+.carnet-struct-msg{font-size:.85em;opacity:.85}
+.carnet-struct-del{margin-left:auto}
+/* table: only the scroller scrolls horizontally, cells keep a readable width */
+.carnet-table-scroll{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;border-radius:6px}
+.carnet-table{border-collapse:collapse;width:max-content;min-width:100%}
+.carnet-table th,.carnet-table td{border:1px solid var(--line,#3a4350);padding:0;min-width:7.5em;vertical-align:top}
+.carnet-table th{background:color-mix(in srgb,var(--accent,#4fd1a5) 14%,transparent);font-weight:700}
+.carnet-table th input{font-weight:700}
+.carnet-cell{display:block;width:100%;min-height:var(--carnet-tap,44px)}
+.carnet-cell-head,.carnet-cell-text{padding:6px 8px;text-align:left}
+.carnet-cell-head{background:color-mix(in srgb,var(--accent,#4fd1a5) 14%,transparent);font-weight:700}
+/* callout: the type is a WORD plus a glyph, colour is only reinforcement */
+.carnet-callout{border-left:5px solid var(--cl,var(--accent,#4fd1a5));border-radius:8px;padding:6px 10px;background:color-mix(in srgb,var(--cl,var(--accent,#4fd1a5)) 12%,transparent)}
+.carnet-callout[data-kind="note"]{--cl:#8fa3b8}
+.carnet-callout[data-kind="info"]{--cl:#5b8fc9}
+.carnet-callout[data-kind="warning"]{--cl:#d9a441}
+.carnet-callout-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.carnet-callout-kind{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:.8em}
+.carnet-callout-select{margin-left:auto;min-height:var(--carnet-tap,44px);border:1px solid var(--line,#3a4350)!important}
+.carnet-callout-title,.carnet-callout-body{display:block;width:100%;font-weight:inherit}
+.carnet-callout-title{font-weight:700}
+.carnet-callout-body{resize:vertical;min-height:4.5em}
+.carnet-callout-body-text,.carnet-toggle-body-text{white-space:pre-wrap;overflow-wrap:anywhere}
+/* toggle */
+.carnet-toggle-head{display:flex;align-items:center;gap:6px}
+.carnet-toggle-btn{min-width:var(--carnet-tap,44px);min-height:var(--carnet-tap,44px)}
+.carnet-toggle-summary{flex:1 1 auto;font-weight:700;min-height:var(--carnet-tap,44px)}
+.carnet-toggle-body{display:block;width:100%;resize:vertical}
+.carnet-toggle-body[hidden]{display:none}
+/* image group: deterministic stack on narrow screens, columns from 640 px */
+.carnet-group-grid{display:grid;grid-template-columns:1fr;gap:10px}
+@media (min-width:640px){
+  .carnet-group[data-layout="two"] .carnet-group-grid,.carnet-group[data-layout="compare"] .carnet-group-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .carnet-group[data-layout="three"] .carnet-group-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+.carnet-group-item{margin:0;min-width:0;display:flex;flex-direction:column;gap:6px}
+.carnet-group-item .carnet-img{display:block;width:100%;height:auto;max-width:100%;border-radius:8px;object-fit:contain}
+.carnet-group-label{font-weight:700;font-size:.8em;text-transform:uppercase;letter-spacing:.05em}
+.carnet-group-caption{width:100%}
+.carnet-group-item-bar{display:flex;flex-wrap:wrap;gap:6px}
+.carnet-group-item figure[data-broken="true"] img,.carnet-group-item[data-broken="true"] img{outline:2px dashed #d9a441}
+/* attachment card: a rendering treatment over an existing file link (the line stays ordinary editable text) */
+.carnet-attachment{display:flex;flex-wrap:wrap;align-items:center;gap:8px;border:1px solid var(--line,#3a4350);border-radius:10px;padding:4px 10px;background:color-mix(in srgb,var(--panel,#222831) 70%,transparent);max-width:100%;box-sizing:border-box}
+.carnet-attach-badge{display:inline-flex;align-items:center;gap:8px;max-width:100%}
+.carnet-attach-chip{font-size:.72em;font-weight:700;letter-spacing:.05em;padding:2px 6px;border-radius:6px;background:var(--accent,#4fd1a5);color:var(--carnet-on-accent,#04110c)}
+.carnet-attach-dir{font-size:.8em;opacity:.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:14em}
+.carnet-attach-open{display:inline-flex;align-items:center;min-height:var(--carnet-tap,44px);padding:0 10px;border:1px solid var(--line,#3a4350);border-radius:8px;cursor:pointer;font-size:.85em}
+.carnet-attach-open:focus-visible{outline:2px solid var(--accent,#4fd1a5);outline-offset:1px}
+@media (prefers-reduced-motion:reduce){.carnet-struct *,.carnet-attachment *{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+@media print{
+  body.carnet-printing #hq-carnet-print .carnet-struct{border:1px solid #000;background:none;color:#000;padding:4px;break-inside:avoid;font-size:.95em;white-space:normal}
+  body.carnet-printing #hq-carnet-print .carnet-table-scroll{overflow:visible}
+  body.carnet-printing #hq-carnet-print .carnet-table{width:100%;border-collapse:collapse}
+  body.carnet-printing #hq-carnet-print .carnet-table th,body.carnet-printing #hq-carnet-print .carnet-table td{border:1px solid #000;padding:3px 6px;min-width:0;color:#000;text-align:left}
+  body.carnet-printing #hq-carnet-print .carnet-table th{background:#e6e6e6;font-weight:700}
+  body.carnet-printing #hq-carnet-print .carnet-table thead,body.carnet-printing #hq-carnet-print .carnet-table tr{break-inside:avoid}
+  body.carnet-printing #hq-carnet-print .carnet-callout{border:1px solid #000;border-left:6px solid #000;background:none;color:#000}
+  body.carnet-printing #hq-carnet-print .carnet-callout-body-text,body.carnet-printing #hq-carnet-print .carnet-toggle-body-text{white-space:pre-wrap}
+  body.carnet-printing #hq-carnet-print .carnet-group-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  body.carnet-printing #hq-carnet-print .carnet-group[data-layout="three"] .carnet-group-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  body.carnet-printing #hq-carnet-print .carnet-group-item{break-inside:avoid}
+  body.carnet-printing #hq-carnet-print .carnet-group-item .carnet-img{max-width:100%;height:auto}
+  body.carnet-printing #hq-carnet-print .carnet-attachment{border:1px solid #000;background:none}
+  body.carnet-printing #hq-carnet-print .carnet-attach-open{display:none}
+  body.carnet-printing #hq-carnet-print .carnet-attach-chip{background:none;color:#000;border:1px solid #000}
+}
+.carnet-struct-btn{font-size:.82rem;padding:0 10px}
+.carnet-struct-bar{gap:4px}
