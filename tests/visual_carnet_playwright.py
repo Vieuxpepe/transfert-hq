@@ -882,9 +882,17 @@ def t_library_desktop(h):
     page.fill("#hq-carnet-search", "diametre")
     wait_until(lambda: card_ids(page) == ["page-ebauche"], "body search with accent folding")
     page.focus("#hq-carnet-search")
+    ebauche_text, ebauche_rev = h.srv.text("page-ebauche"), h.srv.rev("page-ebauche")
+    ebauche_blocks = [dict(b) for b in next(p for p in h.srv.nb()["pages"] if p["id"] == "page-ebauche")["content"]["blocks"]]
     page.keyboard.press("Enter")
     wait_until(lambda: page_id(page) == "page-ebauche", "Enter opens the first result in the same editor")
-    check(editor_value(page).startswith("Ébauche moteur"), "editor shows the opened page")
+    # Regression (final audit): the Enter that opens a result must not also reach the newly focused editor.
+    check(editor_value(page) == "Ébauche moteur\ndiamètre arbre", f"Enter-open leaves the editor exactly unchanged {editor_value(page)!r}")
+    page.wait_for_timeout(1500)  # > DEBOUNCE_MS (450): an unintended edit would have been autosaved by now
+    persisted = next(p for p in h.srv.nb()["pages"] if p["id"] == "page-ebauche")["content"]["blocks"]
+    check(persisted == ebauche_blocks and h.srv.text("page-ebauche") == ebauche_text, "Enter-open: persisted content unchanged (blocks identical)")
+    check(h.srv.rev("page-ebauche") == ebauche_rev, f"Enter-open: page rev unchanged ({ebauche_rev})")
+    check(editor_value(page) == "Ébauche moteur\ndiamètre arbre", "Enter-open: editor still unchanged after the autosave interval")
     page.focus("#hq-carnet-search")
     page.keyboard.press("Escape")
     wait_until(lambda: page.input_value("#hq-carnet-search") == "", "Escape clears the search")
@@ -908,6 +916,12 @@ def t_library_desktop(h):
     wait_until(lambda: page_id(page) == "page-shaft", "click opens page")
     check(page.is_visible("#hq-carnet-library"), "desktop sidebar stays open after opening a page")
     check(page.eval_on_selector_all("#hq-carnet-editor", "els => els.length") == 1, "exactly one editor")
+    # mouse opening of the Enter-tested note stays exact and edit-free (regression companion of the Enter-open checks)
+    page.locator('#carnet-library-list [data-carnet-page-id="page-ebauche"]').click()
+    wait_until(lambda: page_id(page) == "page-ebauche", "click opens the same note")
+    check(editor_value(page) == "Ébauche moteur\ndiamètre arbre", "click-open: editor exactly unchanged")
+    page.wait_for_timeout(1000)
+    check(h.srv.rev("page-ebauche") == ebauche_rev and h.srv.text("page-ebauche") == ebauche_text, "click-open: no save, rev unchanged")
     ctx.close()
 
 
@@ -929,7 +943,8 @@ def t_library_phone(h):
         check(page.is_visible(sel), f"sheet shows {sel}")
     page.locator('#carnet-library-list [data-carnet-page-id="page-ebauche"]').click()
     wait_until(lambda: not page.is_visible("#hq-carnet-library"), "tap result closes the sheet")
-    check(page_id(page) == "page-ebauche" and editor_value(page).startswith("Ébauche"), "tap opens that page in the same editor")
+    check(page_id(page) == "page-ebauche" and editor_value(page) == "Ébauche moteur\ndiamètre arbre", "tap opens that page in the same editor (exact content)")
+    check(h.srv.rev("page-ebauche") == 1, "click-open does not bump the page rev")
     check(page.eval_on_selector_all("#hq-carnet-editor", "els => els.length") == 1, "one editor on phone")
     # backdrop closes
     page.locator("#btn-carnet-library").click()

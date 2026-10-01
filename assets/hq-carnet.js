@@ -2207,6 +2207,9 @@
     });
     search.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
+        // The click below moves focus to the editor during this keydown; without this the same Enter would then be
+        // delivered to the editor and insert a newline (an autosaved, unintended edit of the opened note).
+        e.preventDefault();
         const first = list.querySelector("[data-carnet-page-id]");
         if (first) first.click();
       }
