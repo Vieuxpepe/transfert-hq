@@ -106,3 +106,9 @@
 .sk-fail{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px;border:1px solid var(--danger);border-radius:12px;background:var(--panel-2)}
 .sk-fail-title{margin:0;font-weight:600}
 .sk-fail-reason{margin:0}
+
+/* Phase 3: link back to the caller (Carnet). Always visible when present, 44 px target, never hover-only. */
+.sk-return{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 10px;margin-bottom:6px;border:1px solid var(--line,#2a3a4a);border-radius:10px;background:var(--panel-2,rgba(120,160,200,.10))}
+.sk-return[hidden]{display:none}
+.sk-return-msg{font-size:var(--text-sm,13px);font-weight:600}
+.sk-return-btn{min-height:44px;padding:6px 14px;font-weight:800}

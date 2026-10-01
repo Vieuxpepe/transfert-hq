@@ -49,8 +49,8 @@
   const STRUCT_TYPES = Struct ? Struct.TYPES.slice() : [];
   const ENG_TYPES = Eng ? Eng.ENG_TYPES.slice() : [];
   const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"].concat(ENG_TYPES, STRUCT_TYPES);
-  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j" };
-  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup" };
+  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j", drawing: "w" };
+  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup", w: "drawing" };
   const ASSET_ID = /^asset-[0-9a-f]{24}$/;
   const ASSET_MIMES = ["image/jpeg", "image/png", "image/webp"];
   const ASSET_LONG_SIDE_MAX = 2560; // server: hq_carnet_media.MAX_LONG_SIDE
@@ -494,6 +494,7 @@
     let tables = 0;
     let notes = 0;
     let groups = 0;
+    let drawings = 0;
     let images = 0;
     let bytes = 0;
     for (const l of lines) {
@@ -503,12 +504,14 @@
       else if (l.type === "imagegroup") {
         groups += 1;
         images += l.struct.items.length;
-      } else notes += 1;
+      } else if (l.type === "drawing") drawings += 1;
+      else notes += 1;
       bytes += Struct.bytesOf(l.type, l.struct);
     }
     if (tables > Struct.TABLES_PER_PAGE_MAX) return "tables";
     if (notes > Struct.NOTES_PER_PAGE_MAX) return "notes";
     if (groups > Struct.GROUPS_PER_PAGE_MAX) return "groups";
+    if (drawings > Struct.DRAWINGS_PER_PAGE_MAX) return "drawings";
     if (images > IMAGES_PER_PAGE_MAX) return "images";
     if (bytes > Struct.STRUCT_BYTES_MAX) return "bytes";
     return null;
@@ -1465,6 +1468,7 @@
     return true;
   }
 
+  const DRAWING_FILE_URL = "/api/drawings/file?stem="; // the existing Dessiner preview route (admin session, immutable per stem)
   const CALLOUT_GLYPH = { note: "\u270e", info: "\u2139", warning: "\u26a0" };
 
   /**
@@ -1500,6 +1504,19 @@
       card.appendChild(textEl(doc, "strong", "carnet-toggle-summary-text", p.summary));
       if (p.body) card.appendChild(textEl(doc, "div", "carnet-toggle-body-text", p.body));
       box.appendChild(card);
+    } else if (type === "drawing") {
+      // Read-only (print / PDF / fallback): the Dessiner preview when it resolves, else a compact placeholder. Nothing else is shown.
+      const name = Struct.drawingLabel(p.id);
+      const fig = el(doc, "figure", { class: "carnet-drawing carnet-drawing-static", "data-state": "loading" });
+      const img = el(doc, "img", { class: "carnet-drawing-img", src: DRAWING_FILE_URL + encodeURIComponent(p.id) + "&kind=png", alt: "Croquis : " + name, draggable: "false", decoding: "async" });
+      const gone = textEl(doc, "div", "carnet-drawing-missing", "Croquis indisponible");
+      gone.hidden = true;
+      img.addEventListener("load", () => fig.setAttribute("data-state", "ok"));
+      img.addEventListener("error", () => { fig.setAttribute("data-state", "missing"); img.hidden = true; gone.hidden = false; });
+      fig.appendChild(img);
+      fig.appendChild(gone);
+      fig.appendChild(textEl(doc, "figcaption", "carnet-caption", "Croquis : " + name));
+      box.appendChild(fig);
     } else {
       const card = el(doc, "div", { class: "carnet-group", "data-layout": p.layout, role: "group" });
       const grid = el(doc, "div", { class: "carnet-group-grid" });
@@ -1519,7 +1536,7 @@
 
   /** A table / callout / toggle / image-group atom: <div.carnet-line contenteditable=false>. Safe DOM only. */
   function renderStruct(doc, l, idx, reg, print) {
-    const label = { table: "Tableau", callout: "Encadr\u00e9", toggle: "Section repliable", imagegroup: "Groupe d'images" }[l.type];
+    const label = { table: "Tableau", callout: "Encadr\u00e9", toggle: "Section repliable", imagegroup: "Groupe d'images", drawing: "Croquis" }[l.type];
     const div = el(doc, "div", {
       class: "carnet-line carnet-struct-line", "data-carnet-line": String(idx), "data-line-type": l.type, "data-carnet-struct": l.type, contenteditable: "false",
       role: "group", "aria-label": label,

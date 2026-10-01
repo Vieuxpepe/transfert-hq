@@ -224,4 +224,41 @@ group("the editor model is untouched for old pages (no struct key appears, no ro
   assert.equal(Rich.linesFromContent(c).length, 3);
 });
 
+const Core = require("../assets/hq-sketch-core.js");
+
+group("Phase 3: drawing payload / underlay contract parity with Python (shared vectors)", () => {
+  assert.ok(V.underlay.length >= 60 && V.underlay_check.length >= 8);
+  const same = (a, b, name) => {
+    if (b === null) return assert.equal(a, null, name);
+    for (const k of ["x0", "y0", "x1", "y1"]) assert.ok(Math.abs(a[k] - b[k]) <= 1e-9, name + " " + k + ": " + a[k] + " vs " + b[k]);
+  };
+  for (const c of V.underlay) same(Core.underlayRect(c.units, c.w, c.h), c.rect, "rect " + JSON.stringify([c.units, c.w, c.h]));
+  for (const c of V.underlay_check) assert.deepEqual(Core.checkUnderlay(c.value, c.version), c.out, "underlay " + c.name);
+  // the contract itself: a 4:3 image in mm fits a 1000 mm square, uniform, centred on the origin
+  const r = Core.underlayRect("mm", 4, 3);
+  assert.deepEqual([r.x0, r.x1, r.y0, r.y1], [-500, 500, -375, 375]);
+  const inch = Core.underlayRect("in", 100, 100);
+  assert.ok(Math.abs(inch.x1 - 1000 / 25.4 / 2) < 1e-9);
+});
+
+group("Phase 3: drawing block is an atom, label / search / title never leak a name, path or preview", () => {
+  const b = blk("drawing", { id: "Plan-A_HQWeb-Mobile" });
+  const lines = Rich.linesFromContent({ version: 2, blocks: [b] });
+  assert.ok(lines && lines[0].type === "drawing" && Rich.isAtom(lines[0]) && lines[0].text === "");
+  assert.equal(S.drawingLabel("Plan-A_HQWeb-Mobile"), "Plan-A");
+  assert.equal(S.drawingLabel("Plan-A_HQWeb-Desktop"), "Plan-A");
+  assert.equal(S.drawingLabel("Plan-A_HQWeb"), "Plan-A");
+  assert.equal(Rich.renderTxt(lines).trim(), "[Croquis : Plan-A]");
+  assert.ok(!/png|\/api\/|data:/.test(Rich.renderMarkdown(lines, { x: "y" })));
+  assert.equal(Rich.structSearchText(Rich.fmtOf(lines)), "");
+  assert.equal(S.DRAWINGS_PER_PAGE_MAX, 32);
+  const many = { version: 2, blocks: Array.from({ length: 33 }, (_, i) => blk("drawing", { id: "d" + i }, "block-" + i)) };
+  const ml = Rich.linesFromContent(many);
+  assert.ok(ml === null || Rich.structLimits(ml) === "drawings", "33 drawings refused");
+  // a drawing block never carries a second payload / text / marks
+  assert.equal(Rich.linesFromContent({ version: 2, blocks: [{ ...b, text: "x" }] }), null);
+  assert.equal(Rich.linesFromContent({ version: 2, blocks: [{ ...b, asset: {} }] }), null);
+  assert.equal(Rich.linesFromContent({ version: 2, blocks: [{ ...b, drawing: { id: "a", svg: "<svg/>" } }] }), null);
+});
+
 console.log("hq carnet structured checks ok (" + groups + " groups)");

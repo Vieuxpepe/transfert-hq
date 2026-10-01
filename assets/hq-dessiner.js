@@ -44,6 +44,45 @@
   };
   let root, canvas, ctx, hud, props, textIn, solidView, faceSketch;
 
+  // ------------------------------------------------------------ Phase 3: underlay image + link back to the caller (Carnet)
+  // The underlay is ONE Carnet Stage-06 asset shown beneath the strokes (fixed "contain" placement, see hq-sketch-core.js). It is
+  // loaded from the confined same-origin asset route; the document stores only the asset id.
+  const UL = { id: "", img: null, ok: false, failed: false, fitOnLoad: false };
+  function syncUnderlay() {
+    const u = st.doc && st.doc.underlay;
+    if (!u) { UL.id = ""; UL.img = null; UL.ok = false; UL.failed = false; UL.fitOnLoad = false; return; }
+    if (UL.id === u.asset_id) return;
+    UL.id = u.asset_id; UL.ok = false; UL.failed = false;
+    const img = new Image();
+    UL.img = img;
+    img.decoding = "async";
+    img.onload = () => {
+      if (UL.img !== img) return;
+      UL.ok = true;
+      if (UL.fitOnLoad) { UL.fitOnLoad = false; if (st.W) st.view = S.fitView(st.doc, st.W, st.H, 40, underlayRect()); }
+      draw();
+    };
+    img.onerror = () => { if (UL.img === img) { UL.failed = true; say("Image du fond introuvable", "err"); } };
+    img.src = "/api/carnet/asset/" + encodeURIComponent(u.asset_id);
+  }
+  function underlayRect() {
+    return UL.ok && st.doc && st.doc.underlay ? S.underlayRect(st.doc.units, UL.img.naturalWidth, UL.img.naturalHeight) : null;
+  }
+  function drawUnderlay(c, view, H) {
+    const r = underlayRect();
+    if (!r) return;
+    const a = S.toScreen(view, H, r.x0, r.y1), b = S.toScreen(view, H, r.x1, r.y0);
+    c.drawImage(UL.img, a.x, a.y, b.x - a.x, b.y - a.y);
+  }
+  // The caller (Carnet) may link the editor: a « Retour au carnet » bar and a saved callback. Dessiner knows nothing else about it.
+  function setLink(opts) {
+    st.link = opts && typeof opts.ret === "function" ? { ret: opts.ret, onSaved: typeof opts.onSaved === "function" ? opts.onSaved : null, label: String(opts.label || "Croquis lié au carnet").slice(0, 80) } : null;
+    const bar = $(".sk-return", root);
+    if (!bar) return;
+    bar.hidden = !st.link;
+    $(".sk-return-msg", root).textContent = st.link ? st.link.label : "";
+  }
+
   // ------------------------------------------------------------ doc helpers
   function commit(next, opts) {
     if (!(opts && opts.noHistory)) st.hist.push(st.doc);
@@ -84,6 +123,7 @@
     if (!root) return false;
     root.innerHTML = `
 <div class="sk" data-mode="quick">
+  <div class="sk-return" role="region" aria-label="Retour au carnet" hidden><span class="sk-return-msg"></span><button type="button" class="sk-btn sk-return-btn" data-act="return">← Retour au carnet</button></div>
   <div class="sk-bar">
     <div class="sk-seg" role="tablist" aria-label="Mode de dessin">
       <button type="button" role="tab" data-mode="quick">Croquis rapide</button>
@@ -234,7 +274,7 @@
     dlg.addEventListener("close", () => { if (dlg.returnValue === "ok") doSave(nameIn.value); });
   }
 
-  function refreshAll() { renderToolbar(); renderProps(); syncSettings(); draw(); updateButtons(); if (st.tab3d) scheduleMesh(); }
+  function refreshAll() { syncUnderlay(); renderToolbar(); renderProps(); syncSettings(); draw(); updateButtons(); if (st.tab3d) scheduleMesh(); }
 
   function setMode(mode) {
     if (!TOOLS[mode] || !st.doc) return;
@@ -422,6 +462,7 @@
 
   // ------------------------------------------------------------ actions
   function act(name, el) {
+    if (name === "return") { if (st.link) st.link.ret(); return; }
     if (name === "view2d" || name === "view3d") { setView3d(name === "view3d"); return; }
     if (name === "reset3d") { if (solidView) solidView.reset(); return; }
     if (name === "roundMode") {
@@ -442,7 +483,7 @@
     if (name === "undo") { const p = st.hist.undo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
     if (name === "redo") { const p = st.hist.redo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
     if (name === "delete") { deleteSel(); return; }
-    if (name === "fit") { st.view = S.fitView(st.doc, st.W, st.H, 40); scheduleDraft(); draw(); return; }
+    if (name === "fit") { st.view = S.fitView(st.doc, st.W, st.H, 40, underlayRect()); scheduleDraft(); draw(); return; }
     if (name === "multi") { st.multi = !st.multi; renderToolbar(); return; }
     if (name === "settings") {
       const s = $(".sk-settings", root); s.hidden = !s.hidden; el.setAttribute("aria-expanded", s.hidden ? "false" : "true"); syncSettings(); return;
@@ -891,6 +932,7 @@
     FK = o.k || 1;
     const ts = (x, y) => S.toScreen(view, H, x, y);
     c.fillStyle = T.bg; c.fillRect(0, 0, W, H);
+    if (doc.underlay && !o.noUnderlay) drawUnderlay(c, view, H);
     // grid (real-world spacing; adaptive density so it never turns into noise)
     if (doc.grid.visible) {
       let step = doc.grid.spacing, k = 0;
@@ -1093,7 +1135,7 @@
 
   // ------------------------------------------------------------ export PNG
   function renderPng(title) {
-    const e = S.extents(st.doc);
+    const e = S.extentsWith(st.doc, underlayRect());
     const maxSide = 1800, margin = 60, footer = 72;
     let W = 1200, H = 800, view;
     if (e) {
@@ -1143,12 +1185,23 @@
     btn.disabled = true; btn.textContent = "Envoi…";
     try {
       st.doc.view = st.view;
-      const body = JSON.stringify({ name: String(name).slice(0, 120), source: sourceHint(), doc: st.doc, png: renderPng(String(name).trim().slice(0, 60)) });
-      if (body.length > 6 * 1024 * 1024) throw new Error("Dessin trop volumineux pour l'envoi");
-      const res = await window.api("/api/drawings", { method: "POST", headers: { "Content-Type": "application/json" }, body: body, timeoutMs: 45000 });
+      const png = renderPng(String(name).trim().slice(0, 60));
+      const send = base => {
+        const body = JSON.stringify(Object.assign({ name: String(name).slice(0, 120), source: sourceHint(), doc: st.doc, png: png }, base ? { base: base } : {}));
+        if (body.length > 6 * 1024 * 1024) throw new Error("Dessin trop volumineux pour l'envoi");
+        return window.api("/api/drawings", { method: "POST", headers: { "Content-Type": "application/json" }, body: body, timeoutMs: 45000 });
+      };
+      // Phase 3: a save is ALWAYS a new immutable stem; the stem we started from is recorded as its parent (lineage only, never overwritten).
+      let res;
+      try { res = await send(st.stem); }
+      catch (e) {
+        if (st.stem && /Version précédente/.test(String(e && e.message))) res = await send(""); // the parent was removed meanwhile: save without lineage
+        else throw e;
+      }
       st.stem = res.stem; st.name = String(name).trim() || "croquis"; st.dirty = false; flushDraft();
       say("Enregistré : " + res.stem);
       showSaved(res);
+      if (st.link && st.link.onSaved) { try { st.link.onSaved({ stem: res.stem, parent: res.parent || "" }); } catch (_) {} }
     } catch (e) { say("Échec de l'enregistrement : " + e.message, "err"); }
     finally { btn.disabled = false; btn.textContent = "Enregistrer"; }
   }
@@ -1172,7 +1225,7 @@
     } catch (e) { list.innerHTML = `<p class="hint">${esc(e.message)}</p>`; }
   }
   async function reopen(stem) {
-    if (st.dirty && st.doc.objects.length && !window.confirm("Remplacer le dessin en cours (non enregistré) ? Le brouillon actuel sera perdu.")) return;
+    if (st.dirty && st.doc.objects.length && !window.confirm("Remplacer le dessin en cours (non enregistré) ? Le brouillon actuel sera perdu.")) return false;
     try {
       const res = await window.api("/api/drawings/open?stem=" + encodeURIComponent(stem));
       const doc = res.doc; const meta = doc.meta || {}; delete doc.meta;
@@ -1180,10 +1233,39 @@
       st.doc = doc; st.hist.clear(); st.sel = []; st.stem = stem; st.name = meta.name || stem; st.dirty = false;
       st.meshVersion++;
       st.view = doc.view && doc.view.ppu > 0 ? Object.assign({}, doc.view) : S.fitView(doc, st.W, st.H);
+      UL.fitOnLoad = !!doc.underlay && !(doc.view && doc.view.ppu > 0);
       flushDraft(); refreshAll();
       say("Ouvert : " + stem);
-    } catch (e) { say("Ouverture impossible : " + e.message, "err"); }
+      return true;
+    } catch (e) { say("Ouverture impossible : " + e.message, "err"); return false; }
   }
+
+  // ------------------------------------------------------------ Phase 3: exact entry points for the caller (Carnet)
+  // Identity is the stem, nothing else: no name guessing, no « latest drawing ». Each returns {ok, error?}. A link (return bar + saved
+  // callback) is installed only after the drawing is actually in the editor.
+  async function openExact(stem, opts) {
+    if (!init()) return { ok: false, error: "Dessiner indisponible" };
+    if (typeof stem !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(stem)) return { ok: false, error: "Dessin invalide" };
+    const ok = await reopen(stem);
+    if (!ok) return { ok: false, error: "Dessin introuvable ou ouverture annulée" };
+    setLink(opts);
+    return { ok: true, stem: stem };
+  }
+  function startFresh(opts, underlay) {
+    if (!init()) return { ok: false, error: "Dessiner indisponible" };
+    if (st.dirty && st.doc.objects.length && !window.confirm("Commencer un nouveau dessin ? Le dessin actuel non enregistré sera remplacé.")) return { ok: false, error: "Annulé" };
+    const fresh = S.createDoc({ units: "mm", spacing: 10, mode: "quick" });
+    if (underlay) { fresh.version = 3; fresh.underlay = { asset_id: underlay, fit: "contain" }; } // the underlay key only exists from document version 3
+    st.hist.clear(); st.name = ""; st.stem = ""; st.sel = []; st.doc = fresh; st.meshVersion++;
+    st.view = S.fitView(fresh, st.W || 800, st.H || 600);
+    UL.fitOnLoad = !!underlay; st.dirty = false;
+    flushDraft(); refreshAll(); setLink(opts);
+    return { ok: true };
+  }
+  window.hqSketchOpenExact = (stem, opts) => openExact(stem, opts);
+  window.hqSketchStartBlank = opts => startFresh(opts, "");
+  window.hqSketchStartUnderlay = (assetId, opts) => /^asset-[0-9a-f]{24}$/.test(String(assetId)) ? startFresh(opts, String(assetId)) : { ok: false, error: "Image invalide" };
+  window.hqSketchClearLink = () => setLink(null);
 
   // ------------------------------------------------------------ keyboard
   function onKey(e) {

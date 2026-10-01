@@ -786,6 +786,16 @@ def referenced_assets(state: dict) -> set[str]:
     return out
 
 
+def referenced_drawings(state: dict) -> set[str]:
+    """Drawing stems referenced by any page (trash included): blocks and inline links. Derived, never stored."""
+    out: set[str] = set()
+    for page in state["pages"]:
+        content = page["content"]
+        if content.get("version") == rich.CONTENT_VERSION:
+            out.update(rich.drawings_of(content))
+    return out
+
+
 def _structural_page(state: dict, data: dict) -> dict:
     _only_keys(data, {"action", "id", "expected_rev", "expected_notebook_rev"})
     page_id = _req_id(data, "id", "page")
@@ -1480,6 +1490,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
                 raise CarnetStorageError("notebook.json n'est pas un fichier — conservé")
             payload = src.read_bytes()
     refs: set[str] = set()
+    stems: set[str] = set()  # Phase 3: drawing stems the notebook / history reference (one-hop underlay closure)
     if payload is not None:
         try:
             parsed = json.loads(payload.decode("utf-8"))
@@ -1488,6 +1499,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             valid = False
         if valid:
             refs = referenced_assets(parsed)
+            stems = referenced_drawings(parsed)
     try:
         src_payload, src_valid = sources.snapshot_bytes(root)
     except sources.SourceStorageError as e:
@@ -1498,9 +1510,26 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         raise CarnetStorageError(str(e)) from e
     if hist_payload is not None and hist_valid:  # Stage 08: the media closure of every retained restore point travels with it
         try:
-            refs = refs | history.referenced_assets(json.loads(hist_payload.decode("utf-8")))
+            hist_data = json.loads(hist_payload.decode("utf-8"))
+            refs = refs | history.referenced_assets(hist_data)
+            stems = stems | history.referenced_drawings(hist_data)
         except (UnicodeDecodeError, ValueError):
             hist_valid = False
+    drawings_report: dict | None = None
+    if stems:
+        # Dessiner owns the drawings (the legacy Inbox/ backup copies them). Carnet only follows ONE hop: the Stage-06 underlay
+        # asset an annotation drawing needs. A missing drawing is a broken reference (counted, never fatal); a malformed one
+        # makes the snapshot invalid (blocks retention) and contributes nothing.
+        import hq_drawings
+
+        try:
+            found = hq_drawings.underlay_assets(Path(root), stems)
+        except (OSError, hq_drawings.DrawingError):
+            found = {"ids": set(), "missing": 0, "invalid": len(stems)}
+        refs = refs | found["ids"]
+        drawings_report = {"referenced": len(stems), "missing": found["missing"], "invalid": found["invalid"], "underlays": len(found["ids"])}
+        if found["invalid"]:
+            valid = False
     if payload is None and src_payload is None and hist_payload is None:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
@@ -1527,4 +1556,6 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["history"] = {"bytes": len(hist_payload), "valid": bool(hist_valid)}
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
+    if drawings_report is not None:  # ... and when there are no drawing references
+        out["drawings"] = drawings_report
     return out

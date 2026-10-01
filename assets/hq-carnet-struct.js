@@ -6,6 +6,7 @@
  *   callout    {kind: note|info|warning, title, body}                       icon derived in the UI, never stored
  *   toggle     {summary, body}                                              plain text body, nesting depth 0, open/closed is UI state
  *   imagegroup {layout: two|three|compare, items: [{id,mime,w,h,caption}]}  2-3 DISTINCT Stage-06 assets
+ *   drawing    {id}                                                         (Phase 3) ONE immutable Dessiner stem; Dessiner owns the drawing
  * Every string is one line (no C0/DEL/C1 control, no U+2028/9, no unpaired surrogate) except the multi-line `body`
  * fields ("\n" only). Offsets, marks, find/replace, titles and previews never touch these blocks. No HTML anywhere.
  *
@@ -22,8 +23,11 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const TYPES = ["table", "callout", "toggle", "imagegroup"];
-  const KEY = { table: "table", callout: "callout", toggle: "toggle", imagegroup: "group" };
+  const TYPES = ["table", "callout", "toggle", "imagegroup", "drawing"];
+  const KEY = { table: "table", callout: "callout", toggle: "toggle", imagegroup: "group", drawing: "drawing" };
+  const DRAWINGS_PER_PAGE_MAX = 32;
+  const STEM_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
+  const DRAWING_SUFFIX_RE = /_HQWeb(?:-Mobile|-Desktop)?$/;
   const TABLE_ROWS_MAX = 20;
   const TABLE_COLS_MAX = 10;
   const CELL_U16_MAX = 200;
@@ -135,12 +139,24 @@
     return { layout: g.layout, items };
   }
 
+  /** Drawing reference: EXACTLY {id: <canonical Dessiner stem>}. Nothing else is ever stored (no name, path, URL, preview). */
+  function checkDrawing(d) {
+    if (!isObj(d) || Object.keys(d).join(",") !== "id" || typeof d.id !== "string" || !STEM_RE.test(d.id)) return null;
+    return { id: d.id };
+  }
+
+  /** Readable name derived from the stem itself (never stored). */
+  function drawingLabel(stem) {
+    return stem.replace(DRAWING_SUFFIX_RE, "") || stem;
+  }
+
   /** Strict payload check of one structured block. Clean copy or null. */
   function checkPayload(type, p, checkAsset) {
     if (type === "table") return checkTable(p);
     if (type === "callout") return checkCallout(p);
     if (type === "toggle") return checkToggle(p);
     if (type === "imagegroup") return checkGroup(p, checkAsset);
+    if (type === "drawing") return checkDrawing(p);
     return null;
   }
 
@@ -154,7 +170,7 @@
     if (type === "callout") return [p.title, p.body].filter(Boolean);
     if (type === "toggle") return [p.summary, p.body].filter(Boolean);
     if (type === "imagegroup") return p.items.map((a) => a.caption).filter(Boolean);
-    return [];
+    return []; // a drawing contributes no text of its own
   }
 
   function bytesOf(type, p) {
@@ -167,6 +183,7 @@
     if (type === "table") return [p.header ? 1 : 0, p.rows];
     if (type === "callout") return [CALLOUT_KINDS.indexOf(p.kind), p.title, p.body];
     if (type === "toggle") return [p.summary, p.body];
+    if (type === "drawing") return [p.id];
     return [GROUP_LAYOUT_ORDER.indexOf(p.layout), p.items.map((a) => [a.id, a.mime, a.w, a.h, a.caption])];
   }
 
@@ -175,6 +192,7 @@
     if (type === "table") return a.length === 2 && (a[0] === 0 || a[0] === 1) ? checkTable({ header: a[0] === 1, rows: a[1] }) : null;
     if (type === "callout") return a.length === 3 && CALLOUT_KINDS[a[0]] ? checkCallout({ kind: CALLOUT_KINDS[a[0]], title: a[1], body: a[2] }) : null;
     if (type === "toggle") return a.length === 2 ? checkToggle({ summary: a[0], body: a[1] }) : null;
+    if (type === "drawing") return a.length === 1 ? checkDrawing({ id: a[0] }) : null;
     if (type === "imagegroup") {
       if (a.length !== 2 || !GROUP_LAYOUT_ORDER[a[0]] || !Array.isArray(a[1])) return null;
       const items = [];
@@ -354,6 +372,7 @@
     if (type === "table") return ["[Tableau]"].concat(p.rows.map((r) => r.join(" | ")));
     if (type === "callout") return ["[" + CALLOUT_LABEL[p.kind] + "]" + (p.title ? " " + p.title : "")].concat(p.body ? p.body.split("\n") : []);
     if (type === "toggle") return ["[Section] " + p.summary].concat(p.body ? p.body.split("\n") : []);
+    if (type === "drawing") return ["[Croquis : " + drawingLabel(p.id) + "]"];
     const labels = GROUP_ITEM_LABEL[p.layout];
     return p.items.map((a, n) => {
       const label = labels ? labels[n] : "Image";
@@ -380,6 +399,7 @@
       for (const l of p.body.split("\n")) if (l.trim()) parts.push(h.lineStart(h.esc(l)));
       return parts.join("\n\n");
     }
+    if (type === "drawing") return "*\\[Croquis : " + h.esc(drawingLabel(p.id)) + "\\]*"; // a text label only: no path, URL or preview asset
     const labels = GROUP_ITEM_LABEL[p.layout];
     return p.items.map((a, n) => {
       const rel = assetPaths && assetPaths[a.id];
@@ -397,8 +417,8 @@
   return {
     TYPES, KEY, TABLE_ROWS_MAX, TABLE_COLS_MAX, CELL_U16_MAX, CELL_BYTES_MAX, TABLE_BYTES_MAX, TABLES_PER_PAGE_MAX, CALLOUT_KINDS, CALLOUT_TITLE_MAX,
     CALLOUT_BODY_MAX, CALLOUT_BODY_LINES_MAX, TOGGLE_SUMMARY_MAX, TOGGLE_BODY_MAX, TOGGLE_BODY_LINES_MAX, NOTES_PER_PAGE_MAX, GROUP_LAYOUTS,
-    GROUP_LAYOUT_ORDER, GROUPS_PER_PAGE_MAX, STRUCT_BYTES_MAX, CALLOUT_LABEL, GROUP_ITEM_LABEL,
-    checkPayload, checkTable, checkCallout, checkToggle, checkGroup, clone, strings, bytesOf, utf8Len, encode, decode,
+    GROUP_LAYOUT_ORDER, GROUPS_PER_PAGE_MAX, DRAWINGS_PER_PAGE_MAX, STEM_RE, STRUCT_BYTES_MAX, CALLOUT_LABEL, GROUP_ITEM_LABEL,
+    checkPayload, checkTable, checkCallout, checkToggle, checkGroup, checkDrawing, drawingLabel, clone, strings, bytesOf, utf8Len, encode, decode,
     addRow, removeRow, addCol, removeCol, cleanCell, groupFrom, groupAdd, groupRemove, groupMove, groupReplace, groupSetLayout, layoutFor, formatTsv, parseTsv, pasteGrid, txtLines, mdBlock,
   };
 });

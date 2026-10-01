@@ -772,7 +772,7 @@
 
     function itemLabel(it) {
       if (it.kind === "source") return "Source — " + (it.label || it.edition_id);
-      const k = { note: "Note", measure: "Mesure", decision: "Décision", photo: "Photo" }[it.kind];
+      const k = { note: "Note", measure: "Mesure", decision: "Décision", photo: "Photo", drawing: "Croquis" }[it.kind];
       return k + " — " + (it.label || it.page_id);
     }
 
@@ -795,7 +795,7 @@
       const pick = el(doc, "select", { id: "hq-carnet-hx-radd", class: "carnet-input", "aria-label": "Ajouter au rapport" }, [el(doc, "option", { value: "", text: "— ajouter —" })]);
       const sc = host.scope();
       for (const i of (sc && sc.items) || []) if (!i.deleted) pick.appendChild(el(doc, "option", { value: "note:" + i.id, text: "Note — " + i.title }));
-      for (const b of host.blocks() || []) pick.appendChild(el(doc, "option", { value: b.type + ":" + b.id, text: ({ measure: "Mesure", decision: "Décision", photo: "Photo" }[b.type] || b.type) + " (page ouverte) — " + b.label }));
+      for (const b of host.blocks() || []) pick.appendChild(el(doc, "option", { value: b.type + ":" + b.id, text: ({ measure: "Mesure", decision: "Décision", photo: "Photo", drawing: "Croquis" }[b.type] || b.type) + " (page ouverte) — " + b.label }));
       for (const e of state.editions || []) pick.appendChild(el(doc, "option", { value: "source:" + e.id, text: "Source — " + e.title + (e.edition ? " " + e.edition : "") }));
       out.push(el(doc, "div", { class: "carnet-panel-row" }, [pick, btn("Ajouter", { "data-hx": "radd", id: "btn-carnet-hx-radd" })]));
       if (!state.editions) loadEditions();

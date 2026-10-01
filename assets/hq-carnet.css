@@ -762,3 +762,21 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 }
 .carnet-struct-btn{font-size:.82rem;padding:0 10px}
 .carnet-struct-bar{gap:4px}
+
+/* ---- Product Phase 3: native Dessiner drawing block (the notebook stores only the stem; the preview is Dessiner's PNG) */
+.carnet-drawing{margin:0;min-width:0;max-width:100%;box-sizing:border-box}
+.carnet-drawing-img{display:block;max-width:100%;height:auto;max-height:min(70vh,520px);margin:0 auto;object-fit:contain;border-radius:6px;background:#fff;border:1px solid var(--line,#3a4350)}
+.carnet-drawing[data-state="missing"] .carnet-drawing-img,.carnet-drawing[data-state="loading"][data-pending="true"] .carnet-drawing-img{display:none}
+.carnet-drawing-missing{min-height:var(--carnet-tap,44px);box-sizing:border-box;border:1px dashed var(--line,#3a4350);border-radius:6px;padding:10px;text-align:center;color:var(--muted,#9aa5b1);overflow-wrap:anywhere}
+.carnet-drawing-missing[hidden],.carnet-drawing-open[hidden],.carnet-drawing-retry[hidden],.carnet-drawing-offer[hidden],.carnet-drawing-picker[hidden]{display:none}
+.carnet-drawing-offer{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;padding:6px 8px;border-radius:8px;border:1px solid var(--accent,#4fd1a5);background:color-mix(in srgb,var(--accent,#4fd1a5) 14%,transparent)}
+.carnet-drawing-offer-name{overflow-wrap:anywhere}
+.carnet-drawing-bar button,.carnet-drawing-use,.carnet-drawing-retry,.carnet-drawing-open{min-height:var(--carnet-tap,44px);box-sizing:border-box}
+.carnet-drawing-picker{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.carnet-drawing-select{min-height:var(--carnet-tap,44px);max-width:100%;min-width:0;flex:1 1 200px;box-sizing:border-box;border:1px solid var(--line,#3a4350)!important}
+.carnet-drawing-static .carnet-drawing-img{margin:.4em auto}
+@media print{
+  body.carnet-printing #hq-carnet-print .carnet-drawing{break-inside:avoid;page-break-inside:avoid}
+  body.carnet-printing #hq-carnet-print .carnet-drawing-img{border:1px solid #000;max-height:none}
+  body.carnet-printing #hq-carnet-print .carnet-drawing-offer,body.carnet-printing #hq-carnet-print .carnet-drawing-bar{display:none}
+}

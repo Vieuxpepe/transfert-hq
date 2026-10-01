@@ -1245,10 +1245,12 @@
         if (needsFull(meta)) adopted = applyNotebook(await fetchNotebook(false));
         else if (Number.isInteger(meta.notebook_rev)) st.notebookRev = meta.notebook_rev;
         st.offline = false;
+        st.pollOk = true;
         onChange({ type: "poll", adopted });
         if (wasOffline) retryAll();
         return adopted;
       } catch (err) {
+        st.pollOk = false;
         const status = err && Number.isInteger(err.status) ? err.status : 0;
         if (!status || status >= 500) {
           st.offline = true;
@@ -2331,6 +2333,7 @@
     if (key === "image") return pickImage("photos", null);
     if (key === "camera") return pickImage("camera", null);
     if (key === "table" || key === "callout" || key === "toggle" || key === "imagegroup") return structInsert(key);
+    if (key === "sketch") return dessinerNew();
     const eu = engUi();
     if (!eu) return;
     if (key === "file" || key === "drawing") return eu.openTool("link", key);
@@ -3485,14 +3488,14 @@
     if (t && t !== "edit" && t !== "saving") scheduleHome();
   }
 
-  function flashMsg(text) {
+  function flashMsg(text, ms) {
     if (!ui.flashEl) return;
     ui.flashEl.textContent = text;
     if (ui.flashTimer) clearTimeout(ui.flashTimer);
     ui.flashTimer = setTimeout(() => {
       ui.flashTimer = null;
       if (ui.flashEl) ui.flashEl.textContent = "";
-    }, 1800);
+    }, typeof ms === "number" && ms > 0 ? ms : 1800);
   }
 
   // ---------------------------------------------------------------- actions
@@ -4365,6 +4368,18 @@
         openLibrary();
         renderLibrary();
       },
+      openDrawing: async (stem) => {
+        // An inline drawing link has no block to come back to: Dessiner opens the exact stem with a plain "back to Carnet" bar.
+        if (typeof global.hqSketchOpenExact !== "function" || !Rich.Struct.STEM_RE.test(String(stem))) return false;
+        if (typeof global.setView === "function") global.setView("dessiner");
+        const res = await global.hqSketchOpenExact(stem, { label: "Croquis ouvert depuis le carnet", ret: () => goCarnet() });
+        if (!res || !res.ok) {
+          goCarnet();
+          flashMsg((res && res.error) || "Dessiner indisponible", DESSINER_FLASH_MS);
+          return false;
+        }
+        return true;
+      },
       openFile: (rel) => {
         const ref = Rich.checkRef({ kind: "file", id: rel });
         if (ref) global.open("/files/" + ref.id.split("/").map(encodeURIComponent).join("/"), "_blank", "noopener,noreferrer");
@@ -4461,6 +4476,7 @@
             if (b.type === "measure" && isObj(b.measure)) out.push({ id: b.id, type: "measure", label: String(b.measure.label || "mesure").slice(0, 60) });
             else if (b.type === "decision") out.push({ id: b.id, type: "decision", label: String(b.text || "décision").slice(0, 60) });
             else if (b.type === "image" && isObj(b.asset)) out.push({ id: b.id, type: "photo", label: String(b.asset.caption || "image").slice(0, 60) });
+            else if (b.type === "drawing" && isObj(b.drawing) && typeof b.drawing.id === "string") out.push({ id: b.id, type: "drawing", label: Rich.Struct.drawingLabel(b.drawing.id).slice(0, 60) });
             else if (b.type === "imagegroup" && isObj(b.group) && Array.isArray(b.group.items)) out.push({ id: b.id, type: "photo", label: ("groupe de " + b.group.items.length + " images").slice(0, 60) });
           }
         }
@@ -5005,6 +5021,7 @@
         ctl("btn-carnet-image-caption-focus", "Légende", "Modifier la légende de l'image"),
         btn("btn-carnet-image-replace", "Remplacer…", { "aria-label": "Remplacer l'image" }),
         btn("btn-carnet-image-group", "Grouper…", { "aria-label": "Grouper avec une ou deux autres images" }),
+        ctl("btn-carnet-image-annotate", "Annoter…", "Annoter l'image dans Dessiner (l'image d'origine reste inchangée)"),
         btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),
         btn("btn-carnet-image-done", "Terminé"),
       ]),
@@ -5030,6 +5047,7 @@
       if (b.id === "btn-carnet-image-done") closeImageTools("", true);
       else if (b.id === "btn-carnet-image-replace") replaceSelectedImage();
       else if (b.id === "btn-carnet-image-group") structGroupSelected();
+      else if (b.id === "btn-carnet-image-annotate") dessinerAnnotateSelected();
       else if (b.id === "btn-carnet-image-remove") removeSelectedImage();
       else if (b.id === "btn-carnet-image-caption-focus") {
         caption.focus();
@@ -5371,6 +5389,7 @@
     groups: "Trop de groupes d'images sur la page (16 au maximum)",
     images: "Trop d'images sur la page (32 au maximum)",
     bytes: "Trop de texte structuré sur la page",
+    drawings: "Trop de croquis sur la page (32 au maximum)",
   };
 
   function structUi() {
@@ -5393,6 +5412,11 @@
       remove: (wrapper) => structRemove(wrapper),
       ungroup: (wrapper, payload) => structUngroup(wrapper, payload),
       pickImages: (req) => structPick(req || {}),
+      openDrawing: (wrapper, stem) => dessinerOpen(wrapper, stem),
+      listDrawings: async () => {
+        const d = await apiCall("/api/drawings", { timeoutMs: 12000 });
+        return ((d && d.items) || []).map((it) => it && it.stem).filter((x) => typeof x === "string" && Rich.Struct.STEM_RE.test(x));
+      },
     });
     Rich.setStructRenderer((d, w, type, payload, idx) => ui.structUi.render(d, w, type, payload, idx));
     return ui.structUi;
@@ -5622,6 +5646,162 @@
     if (lim) return flashMsg(STRUCT_LIMIT_MSG[lim]);
     closeImageTools("");
     commitLines(b2.lines, null);
+  }
+
+  // ---------------------------------------------------------------- Product Phase 3: Dessiner (orchestration; Dessiner owns the drawing)
+
+  const DESSINER_FLASH_MS = 6000;
+
+  function dessinerUi() {
+    if (ui.dessinerUi) return ui.dessinerUi;
+    const M = global.HqCarnetDessiner;
+    if (!M || typeof M.mount !== "function") return null;
+    const flash = (text) => flashMsg(text, DESSINER_FLASH_MS);
+    ui.dessinerUi = M.mount({
+      storage: () => global.sessionStorage,
+      now: () => Date.now(),
+      flash,
+      sketch: () => (typeof global.hqSketchOpenExact === "function" && typeof global.hqSketchStartBlank === "function" && typeof global.hqSketchStartUnderlay === "function"
+        ? { openExact: global.hqSketchOpenExact, startBlank: global.hqSketchStartBlank, startUnderlay: global.hqSketchStartUnderlay } : null),
+      clearSketchLink: () => {
+        if (typeof global.hqSketchClearLink === "function") global.hqSketchClearLink();
+      },
+      setView: (name) => {
+        if (name === "carnet") return goCarnet();
+        if (typeof global.setView === "function") global.setView(name);
+      },
+      current: () => {
+        const e = ui.core && ui.core.current();
+        if (!e) return null;
+        return { pageId: e.id, rev: e.serverRev, dirty: !!(ui.core.isDirty(e) || e.inflight), conflict: !!e.conflict, readOnly: isReadOnly(e) };
+      },
+      flushCurrent: async () => {
+        const c = ui.core;
+        const e = c && c.current();
+        if (!e) return false;
+        for (let i = 0; i < 4 && !e.conflict && !e.orphan && (c.isDirty(e) || e.inflight); i += 1) {
+          if (e.inflight) await e.inflight.promise;
+          else await c.flush(e.id);
+        }
+        return !c.isDirty(e) && !e.inflight && !e.conflict && !e.orphan;
+      },
+      blockAt: (i) => {
+        const e = ui.core && ui.core.current();
+        const l = e && Number.isInteger(i) && i >= 0 ? localLines(e.local)[i] : null;
+        if (!l) return null;
+        return { id: l.id && Rich.isRealId(l.id) ? l.id : "", type: l.type, stem: l.type === "drawing" && l.struct ? l.struct.id : "", assetId: l.type === "image" && l.asset ? l.asset.id : "" };
+      },
+      findBlock: (id) => {
+        const e = ui.core && ui.core.current();
+        const l = e ? localLines(e.local).find((x) => x.id === id) : null;
+        if (!l) return null;
+        return { type: l.type, stem: l.type === "drawing" && l.struct ? l.struct.id : "", assetId: l.type === "image" && l.asset ? l.asset.id : "" };
+      },
+      refreshRemote: async () => {
+        // TRUE only when an authoritative poll of the notebook succeeded just now. poll() returns at once while another poll is in
+        // flight (wait for it) and swallows failures (it records st.pollOk), so success is read from the result, never assumed.
+        try {
+          if (!ui.core || !ui.core.st) return false;
+          for (let i = 0; i < 50 && ui.core.st.polling; i += 1) await new Promise((r) => setTimeout(r, 60));
+          if (ui.core.st.polling) return false;
+          ui.core.st.pollOk = null;
+          await ui.core.poll();
+          return ui.core.st.pollOk === true;
+        } catch (_) {
+          return false;
+        }
+      },
+      pageState: (id) => {
+        const c = ui.core;
+        const e = c && c.entry(id);
+        if (!e || e.orphan) return null;
+        return { trashed: c.isTrashed(e), rev: e.serverRev, dirty: !!(c.isDirty(e) || e.inflight), conflict: !!e.conflict };
+      },
+      openPage: async (id) => {
+        const c = ui.core;
+        if (!c || !c.entry(id) || c.isTrashed(c.entry(id))) return false;
+        openPage(id);
+        return c.st.currentId === id;
+      },
+      reveal: (blockId) => {
+        const w = ui.editor && ui.editor.querySelector('[data-carnet-block-id="' + blockId + '"]');
+        if (!w) return false;
+        if (w.scrollIntoView) w.scrollIntoView({ block: "center", behavior: "auto" });
+        w.setAttribute("data-struct-hit", "true");
+        setTimeout(() => w.removeAttribute("data-struct-hit"), 2500);
+        const f = w.querySelector("button,input,textarea,select");
+        if (f && finePointer()) f.focus({ preventScroll: true });
+        return true;
+      },
+      refreshPreviews: () => {
+        if (structUi()) ui.structUi.refreshPreviews();
+      },
+      offerVersion: (blockId, from, to) => (structUi() ? ui.structUi.offerVersion(blockId, from, to) : false),
+      insertDrawing: (o) => dessinerInsert(o),
+    });
+    return ui.dessinerUi;
+  }
+
+  /** ONE normal draft edit: the reference goes after its anchor (an empty paragraph anchor is replaced), through the ordinary commit path. */
+  function dessinerInsert(o) {
+    const e = curEntry();
+    if (!e || !structUi()) return -1;
+    const lines = Rich.parseEditor(ui.editor);
+    const line = Rich.structLine("drawing", { id: o.stem });
+    if (!line) return -1;
+    let idx = lines.length;
+    if (o.anchorId) {
+      const at = lines.findIndex((l) => l.id === o.anchorId);
+      if (at < 0) return -1;
+      idx = at + 1;
+      if (o.replaceEmpty && lines[at].type === "paragraph" && lines[at].text === "") {
+        lines.splice(at, 1, line);
+        idx = at;
+      } else lines.splice(idx, 0, line);
+    } else {
+      const last = lines[lines.length - 1];
+      if (o.replaceEmpty && last && last.type === "paragraph" && last.text === "") {
+        lines.splice(lines.length - 1, 1, line);
+        idx = lines.length - 1;
+      } else lines.push(line);
+    }
+    const after = lines[idx + 1];
+    if (!after || Rich.isAtom(after)) lines.splice(idx + 1, 0, Rich.newLine("", "paragraph"));
+    const lim = Rich.structLimits(lines);
+    if (lim) {
+      flashMsg(STRUCT_LIMIT_MSG[lim], DESSINER_FLASH_MS);
+      return -1;
+    }
+    return commitLines(lines, null) ? idx : -1;
+  }
+
+  /** "Croquis" from + Insérer: the caret line is the anchor (resolved against the SAVED state once the page is saved). */
+  function dessinerNew() {
+    const D = dessinerUi();
+    if (!D) return flashMsg("Dessiner indisponible");
+    if (!curEntry()) return flashMsg(IMG_MSG.readonly);
+    const sel = currentSel();
+    const caret = Rich.locate(sel.lines, sel.start).line;
+    D.start("new", { anchorIndex: caret }).then(() => {}, () => {});
+  }
+
+  function dessinerOpen(wrapper, stem) {
+    const D = dessinerUi();
+    if (!D) return flashMsg("Dessiner indisponible");
+    const id = wrapper && wrapper.getAttribute("data-carnet-block-id");
+    if (!id) return flashMsg("Enregistre d'abord la page", DESSINER_FLASH_MS);
+    D.start("open", { blockId: id, stem }).then(() => {}, () => {});
+  }
+
+  function dessinerAnnotateSelected() {
+    const D = dessinerUi();
+    if (!D) return flashMsg("Dessiner indisponible");
+    const b = imgBound();
+    if (!b) return;
+    const assetId = b.lines[b.idx].asset.id;
+    const anchorIndex = b.idx;
+    closeImageTools("");
+    D.start("annotate", { anchorIndex, assetId }).then(() => {}, () => {});
   }
 
   function openAttachment(refId) {
@@ -6119,6 +6299,7 @@
       if (ui.active && finePointer()) focusEditor(true);
       startPoll();
       processPending();
+      dessinerResume();
       scheduleHome();
     } catch (err) {
       ui.phase = "failed";
@@ -6139,7 +6320,14 @@
       startPoll();
       layoutLibrary();
       processPending();
+      dessinerResume();
     }
+  }
+
+  /** Back from Dessiner: navigation first; the context is single-shot and validated (see hq-carnet-dessiner.js). */
+  function dessinerResume() {
+    const D = dessinerUi();
+    if (D && D.hasContext()) D.resume().then(() => {}, (err) => console.error(err));
   }
 
   /** Home launcher requests run once the (single) editor is ready. */

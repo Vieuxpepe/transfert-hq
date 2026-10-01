@@ -824,8 +824,8 @@
 
     /**
      * Open a stored HQ reference through the EXISTING navigation. Missing / moved targets fail safe with a message.
-     * Notes and projects are local to Carnet; Lecteur uses hqPlayerOpen; a drawing only switches to Dessiner
-     * (the existing UI cannot open one exact drawing) and names the stem.
+     * Notes and projects are local to Carnet; Lecteur uses hqPlayerOpen; a drawing opens in Dessiner by its exact stem
+     * (Phase 3; the host falls back to just switching view when the exact entry point is missing).
      */
     async function openRef(kind, id) {
       const ref = Rich.checkRef({ kind, id });
@@ -854,6 +854,7 @@
             host.flash(MSG.missing);
             return false;
           }
+          if (typeof host.openDrawing === "function") return host.openDrawing(id); // Phase 3: the EXACT stem, by identity only
           host.setView("dessiner");
           host.flash("Dessin « " + id + " » — ouvre-le depuis Dessiner");
           return true;

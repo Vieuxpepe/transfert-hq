@@ -97,8 +97,9 @@ CONTENT_VERSION = 2
 LEGACY_CONTENT_VERSION = 1
 
 TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE = "table", "callout", "toggle", "imagegroup"
-STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE)
-STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group"}  # block type -> payload key
+DRAWING_TYPE = "drawing"  # Phase 3: a reference to ONE immutable Dessiner stem; Dessiner owns the drawing, Carnet stores only the id
+STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE, DRAWING_TYPE)
+STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group", DRAWING_TYPE: "drawing"}  # block type -> payload key
 BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image") + eng.ENG_TYPES + STRUCT_TYPES
 TABLE_ROWS_MAX, TABLE_COLS_MAX = 20, 10
 CELL_U16_MAX, CELL_BYTES_MAX = 200, 800
@@ -111,6 +112,7 @@ NOTES_PER_PAGE_MAX = 100  # callouts + toggles
 GROUP_LAYOUTS = {"two": 2, "three": 3, "compare": 2}  # layout -> exact number of children
 GROUP_ITEM_KEYS = {"id", "mime", "w", "h", "caption"}
 GROUPS_PER_PAGE_MAX = 16
+DRAWINGS_PER_PAGE_MAX = 32
 STRUCT_BYTES_MAX = 96 * 1024  # visible structured text per page (UTF-8 bytes of the strings, never the JSON overhead)
 IMAGE_TYPE = "image"  # Stage 06 (additive to V2): metadata only, see ``check_asset``
 ASSET_ID_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")
@@ -492,6 +494,24 @@ def block_assets(block: dict) -> list[dict]:
     return []
 
 
+def block_drawings(block: dict) -> list[str]:
+    """Drawing stems a block references: a drawing block, or an inline link mark to a drawing (Phase 3 backup closure)."""
+    if not isinstance(block, dict):
+        return []
+    out = []
+    if block.get("type") == DRAWING_TYPE and isinstance(block.get("drawing"), dict) and isinstance(block["drawing"].get("id"), str):
+        out.append(block["drawing"]["id"])
+    for mark in block.get("marks") or []:
+        ref = mark.get("ref") if isinstance(mark, dict) and mark.get("type") == "link" else None
+        if isinstance(ref, dict) and ref.get("kind") == "drawing" and isinstance(ref.get("id"), str):
+            out.append(ref["id"])
+    return [x for x in out if _STEM_RE.match(x)]
+
+
+def drawings_of(content: dict) -> list[str]:
+    return [d for b in content["blocks"] for d in block_drawings(b)]
+
+
 def assets_of(content: dict) -> list[dict]:
     """All image assets of a page in document order (single images AND image-group children): the ONE scanner that backup
     closure, media verification, export packaging and the report use."""
@@ -591,7 +611,23 @@ def check_group(group: Any) -> dict:
     return {"layout": group["layout"], "items": out}
 
 
-_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group}
+def check_drawing(drawing: Any) -> dict:
+    """Drawing reference: EXACTLY ``{"id": <stem>}`` (the canonical Dessiner stem). No name, thumbnail, path, URL or drawing state:
+    existence and access are resolved by Dessiner's own API, never trusted from the browser."""
+    if not isinstance(drawing, dict) or set(drawing) != {"id"} or not isinstance(drawing["id"], str) or not _STEM_RE.match(drawing["id"]):
+        raise ContentError("Référence de croquis invalide")
+    return {"id": drawing["id"]}
+
+
+_DRAWING_SUFFIX_RE = re.compile(r"_HQWeb(?:-Mobile|-Desktop)?\Z")
+
+
+def drawing_label(stem: str) -> str:
+    """Readable name derived from the stem itself (the stem already carries the user's base name); never stored."""
+    return _DRAWING_SUFFIX_RE.sub("", stem) or stem
+
+
+_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group, DRAWING_TYPE: check_drawing}
 
 
 def check_struct(kind: str, payload: Any) -> dict:
@@ -728,7 +764,7 @@ def parse_content(
     images = 0
     atoms = 0
     decisions = 0
-    tables = notes = groups = 0
+    tables = notes = groups = drawings = 0
     struct_bytes = 0
     for incoming in blocks:
         if not isinstance(incoming, dict):
@@ -778,6 +814,10 @@ def parse_content(
                 tables += 1
                 if tables > TABLES_PER_PAGE_MAX:
                     raise ContentError(f"Trop de tableaux sur la page (max {TABLES_PER_PAGE_MAX})")
+            elif kind == DRAWING_TYPE:
+                drawings += 1
+                if drawings > DRAWINGS_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de croquis sur la page (max {DRAWINGS_PER_PAGE_MAX})")
             elif kind == GROUP_TYPE:
                 groups += 1
                 images += len(sdata["items"])
@@ -1033,6 +1073,8 @@ def _txt_struct(block: dict) -> list[str]:
     if kind == TOGGLE_TYPE:
         t = block["toggle"]
         return ["[Section] " + t["summary"]] + (t["body"].split("\n") if t["body"] else [])
+    if kind == DRAWING_TYPE:
+        return [f"[Croquis : {drawing_label(block['drawing']['id'])}]"]
     g = block["group"]  # image group: one line per child, labelled for a before/after pair
     labels = GROUP_ITEM_LABEL.get(g["layout"])
     out = []
@@ -1071,6 +1113,8 @@ def _md_struct(block: dict, asset_paths: dict[str, str] | None) -> str:
         parts = ["**" + _md_escape(t["summary"]) + "**"]
         parts += [_md_line_start_escape(_md_escape(line)) for line in t["body"].split("\n") if line.strip()]
         return "\n\n".join(parts)
+    if kind == DRAWING_TYPE:  # a text label only: no path, no URL, no preview asset (Dessiner owns the drawing)
+        return f"*\\[Croquis : {_md_escape(drawing_label(block['drawing']['id']))}\\]*"
     g = block["group"]
     labels = GROUP_ITEM_LABEL.get(g["layout"])
     parts = []

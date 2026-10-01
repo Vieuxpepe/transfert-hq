@@ -112,7 +112,7 @@ class LibraryStaticTests(unittest.TestCase):
     def test_no_html_sinks_and_fixed_endpoints(self):
         for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
             self.assertNotIn(sink, self.js)
-        self.assertEqual(sorted(set(re.findall(r'"(/api/[^"]*)"', self.js))), ["/api/carnet", "/api/carnet?meta=1", "/api/me"])
+        self.assertEqual(sorted(set(re.findall(r'"(/api/[^"]*)"', self.js))), ["/api/carnet", "/api/carnet?meta=1", "/api/drawings", "/api/me"])
         self.assertNotIn("/api/carnet", iphone_bridge.UPLOAD_GET_EXACT)
         self.assertNotIn("/api/carnet", iphone_bridge.UPLOAD_POST_EXACT)
 

@@ -52,6 +52,8 @@ def refs_of_content(content: dict) -> Counter:
                 out[(mark["ref"]["kind"], mark["ref"]["id"])] += 1
             elif mark["type"] == "citation":
                 out[("source", mark["cite"]["src"])] += 1
+        if block["type"] == rich.DRAWING_TYPE:  # Phase 3: a drawing block is a reference like a drawing link mark
+            out[("drawing", block["drawing"]["id"])] += 1
         if block["type"] == "measure":
             link = block["measure"].get("link")
             if isinstance(link, dict) and isinstance(link.get("kind"), str) and isinstance(link.get("id"), str):

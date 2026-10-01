@@ -13,6 +13,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import hq_carnet_rich as rich  # noqa: E402
+import hq_drawings as dr  # noqa: E402
 
 A = {"id": "asset-" + "a" * 24, "mime": "image/png", "w": 10, "h": 8, "caption": ""}
 B = {"id": "asset-" + "b" * 24, "mime": "image/jpeg", "w": 16, "h": 12, "caption": "avant"}
@@ -94,6 +95,20 @@ CASES = [
     ("group huge px", "imagegroup", {"layout": "two", "items": [{**A, "w": 2561}, B]}),
     ("group bool dim", "imagegroup", {"layout": "two", "items": [{**A, "w": True}, B]}),
     ("group extra key", "imagegroup", {"layout": "two", "items": [A, B], "extra": 1}),
+    ("drawing ok", "drawing", {"id": "Plan-A_HQWeb-Mobile"}),
+    ("drawing plain stem", "drawing", {"id": "Croquis1"}),
+    ("drawing 120", "drawing", {"id": "a" * 120}),
+    ("drawing 121", "drawing", {"id": "a" * 121}),
+    ("drawing empty", "drawing", {"id": ""}),
+    ("drawing leading dash", "drawing", {"id": "-x"}),
+    ("drawing slash", "drawing", {"id": "../x"}),
+    ("drawing dot", "drawing", {"id": "a.hqdraw"}),
+    ("drawing space", "drawing", {"id": "a b"}),
+    ("drawing int id", "drawing", {"id": 1}),
+    ("drawing extra key", "drawing", {"id": "ok", "url": "/api/x"}),
+    ("drawing thumb key", "drawing", {"id": "ok", "png": "data:x"}),
+    ("drawing missing id", "drawing", {}),
+    ("drawing not object", "drawing", "ok"),
 ]
 
 
@@ -123,6 +138,12 @@ def build() -> dict:
             ("callout", {"kind": "info", "title": "<b>", "body": "[l](http://x)\n- item\n# h\n> q"}),
             ("toggle", {"summary": "<i>", "body": "`c`\n1. n\n| p"}),
         ]),
+        ("drawings", [
+            ("drawing", {"id": "Plan-A_HQWeb-Mobile"}),
+            ("drawing", {"id": "Cote_HQWeb"}),
+            ("drawing", {"id": "Croquis_2"}),
+            ("table", {"header": True, "rows": [["a", "b"]]}),
+        ]),
     ]
     for name, blocks in renders:
         content = {"version": 2, "blocks": [{"id": f"block-{i}", "type": k, "text": "", "marks": [], rich.STRUCT_KEY[k]: verdict(k, p)} for i, (k, p) in enumerate(blocks)]}
@@ -133,6 +154,26 @@ def build() -> dict:
             "search_struct": "\n".join(x for b in content["blocks"] for x in rich.structured_strings(b)),
             "bytes": rich.structured_bytes(content),
         })
+    out["underlay"] = []
+    for units in ("mm", "cm", "m", "in", "km", "", None):
+        for w, h in ((100, 100), (4, 3), (3, 4), (2560, 1920), (1, 2560), (1, 1), (0, 5), (5, -1), (True, 5)):
+            try:
+                r = dr.underlay_rect(units, w, h)
+            except dr.DrawingError:
+                r = None
+            out["underlay"].append({"units": units, "w": w, "h": h, "rect": r})
+    out["underlay_check"] = []
+    good = {"asset_id": "asset-" + "a" * 24, "fit": "contain"}
+    for name, val, ver in (
+        ("ok v3", good, 3), ("v2 refuses", good, 2), ("fit cover", {**good, "fit": "cover"}, 3), ("extra key", {**good, "x": 0}, 3),
+        ("short id", {"asset_id": "asset-abc", "fit": "contain"}, 3), ("upper hex", {"asset_id": "asset-" + "A" * 24, "fit": "contain"}, 3),
+        ("not object", "asset", 3), ("missing fit", {"asset_id": good["asset_id"]}, 3),
+    ):
+        try:
+            res = dr.check_underlay(val, ver)
+        except dr.DrawingError:
+            res = None
+        out["underlay_check"].append({"name": name, "value": val, "version": ver, "out": res})
     return out
 
 

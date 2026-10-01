@@ -434,7 +434,7 @@ scenario("HQ links open through the existing navigation: file, Lecteur, drawing 
   writeFileSync(path.join(srv.root, "Inbox", "sub", "plan.pdf"), "%PDF-1.4\n");
   writeFileSync(path.join(srv.root, "Inbox", "clip.mp4"), Buffer.alloc(64));
   writeFileSync(path.join(srv.root, "Inbox", "piece.stl"), "solid x\nendsolid x\n");
-  writeFileSync(path.join(srv.root, "Inbox", "Drawings", "plan-1.hqdraw.json"), "{}");
+  writeFileSync(path.join(srv.root, "Inbox", "Drawings", "plan-1.hqdraw.json"), JSON.stringify({ format: "transfert-hq-sketch", version: 2, units: "mm", points: [], objects: [], constraints: [] })); // a real (empty) drawing document
   const ctx = await context(srv);
   const p = await openPage(ctx, srv);
   const link = (kind, id) => p.locator(`#hq-carnet-editor a[data-ref-kind="${kind}"][data-ref-id="${id}"]`);
@@ -458,7 +458,8 @@ scenario("HQ links open through the existing navigation: file, Lecteur, drawing 
   await until(async () => /introuvable/.test(await flash(p)), "absent drawing: visible message");
   check(await p.evaluate(() => document.body.dataset.view === "carnet"), "absent drawing: stays in Carnet");
   await link("drawing", "plan-1").click({ modifiers: ["Control"] });
-  await until(() => p.evaluate(() => document.body.dataset.view === "dessiner"), "existing drawing: switches to Dessiner (tab switch only)");
+  await until(() => p.evaluate(() => document.body.dataset.view === "dessiner"), "existing drawing: switches to Dessiner");
+  await until(() => p.evaluate(() => window.hqSketchState && window.hqSketchState().stem === "plan-1"), "Phase 3: the EXACT stem is opened (identity, not a tab switch)");
   await ctx.close();
 });
 

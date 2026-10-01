@@ -1,4 +1,4 @@
-/* Transfert HQ — Carnet Product Phase 2: editor UI of the structured blocks (table, callout, toggle, image group).
+/* Transfert HQ — Carnet Product Phase 2/3: editor UI of the structured blocks (table, callout, toggle, image group, drawing).
  *
  * Safe DOM only (createElement / textContent / setAttribute; no HTML-string sinks, no dynamic code). Every user action is
  * ONE logical edit through the host (the normal draft / revision / conflict path): a structural change (row, column, layout,
@@ -39,12 +39,17 @@
     groupMin: "Un groupe garde au moins deux images",
     groupMax: "Un groupe contient trois images au maximum",
     noMove: "Déplacement impossible",
+    drawingGone: "Croquis indisponible",
+    drawingRelinked: "Référence mise à jour",
+    drawingNoList: "Aucun croquis enregistré",
+    newVersion: "Nouvelle version enregistrée",
   };
 
   const KIND_LABEL = { note: "Note", info: "Info", warning: "Attention" };
   const KIND_GLYPH = { note: "✎", info: "ℹ", warning: "⚠" }; // derived from the kind, never stored
   const LAYOUT_LABEL = { two: "Deux images côte à côte", three: "Trois images", compare: "Avant / après" };
   const ASSET_URL = "/api/carnet/asset/";
+  const DRAWING_FILE_URL = "/api/drawings/file?stem="; // the existing Dessiner preview route; a stem is immutable so a preview is never stale
   const ATTACH_EXT = { pdf: "PDF", doc: "DOC", docx: "DOC", xls: "XLS", xlsx: "XLS", csv: "CSV", txt: "TXT", md: "MD", zip: "ZIP", step: "CAO", stp: "CAO", stl: "STL", dxf: "DXF", dwg: "DWG", png: "IMG", jpg: "IMG", jpeg: "IMG", webp: "IMG", gif: "IMG", mp4: "VID", mov: "VID", mp3: "AUDIO" };
 
   /** Pure: type chip + safe display parts of a file ref id ("Inbox/Dir/file.pdf"). Never an absolute path: refs are root-relative by construction. */
@@ -60,7 +65,7 @@
     const doc = host.doc;
     const Rich = host.rich;
     const Struct = Rich.Struct;
-    const S = { open: new Map(), focus: null, picker: null };
+    const S = { open: new Map(), focus: null, picker: null, offers: new Map() };
 
     function el(tag, attrs, text) {
       const n = doc.createElement(tag);
@@ -578,6 +583,141 @@
       return null;
     }
 
+    // ------------------------------------------------------------------ drawing (Phase 3)
+    // The block is only a REFERENCE to one immutable Dessiner stem. Removing the block never deletes the drawing. A drawing that no
+    // longer resolves keeps its block and shows an explicit "Croquis indisponible" state (remove / relink stay available).
+
+    function paintOffer(wrapper, holder) {
+      holder.textContent = "";
+      const key = stateKey(wrapper);
+      const offer = key ? S.offers.get(key) : null;
+      holder.hidden = !offer;
+      if (!offer) return;
+      holder.appendChild(el("strong", {}, MSG.newVersion));
+      holder.appendChild(el("span", { class: "carnet-drawing-offer-name" }, " " + Struct.drawingLabel(offer.to)));
+      if (!host.readOnly()) {
+        holder.appendChild(button("Utiliser cette version", "carnet-drawing-use", () => {
+          const cur = current(wrapper);
+          if (!cur || cur.id !== offer.from) return host.flash(MSG.stale);
+          S.offers.delete(key);
+          commit(wrapper, { id: offer.to }, { rerender: true });
+          host.flash(MSG.drawingRelinked);
+        }, { "aria-label": "Utiliser cette version : " + Struct.drawingLabel(offer.to) }));
+      }
+      holder.appendChild(button("Ignorer", "", () => {
+        S.offers.delete(key);
+        paintOffer(wrapper, holder);
+      }, { "aria-label": "Ignorer la nouvelle version" }));
+    }
+
+    /** A new stem was saved in Dessiner from this block: offer it (never applied automatically). */
+    function offerVersion(blockId, from, to) {
+      const r = editorRoot();
+      const w = r ? r.querySelector('[data-carnet-block-id="' + blockId + '"][data-carnet-struct="drawing"]') : null;
+      if (!w) return false;
+      S.offers.set(blockId, { from, to });
+      const holder = w.querySelector(".carnet-drawing-offer");
+      if (holder) paintOffer(w, holder);
+      return !!holder;
+    }
+
+    /** Reload every preview (after returning from Dessiner): clears the unavailable state first. */
+    function refreshPreviews() {
+      const r = editorRoot();
+      if (!r) return;
+      r.querySelectorAll(".carnet-drawing").forEach((card) => {
+        const img = card.querySelector("img.carnet-drawing-img");
+        if (!img) return;
+        const base = img.getAttribute("data-base") || img.getAttribute("src").split("&r=")[0];
+        img.setAttribute("data-base", base);
+        card.setAttribute("data-state", "loading");
+        img.hidden = false;
+        const gone = card.querySelector(".carnet-drawing-missing");
+        if (gone) gone.hidden = true;
+        img.setAttribute("src", base + "&r=" + Date.now());
+      });
+    }
+
+    function buildDrawing(wrapper, p, idx, box) {
+      const ro = host.readOnly();
+      const name = Struct.drawingLabel(p.id);
+      const card = el("figure", { class: "carnet-drawing", "data-state": "loading", "data-stem": p.id });
+      const base = DRAWING_FILE_URL + encodeURIComponent(p.id) + "&kind=png";
+      const img = el("img", { class: "carnet-drawing-img", src: base, "data-base": base, alt: "Croquis : " + name, loading: "lazy", decoding: "async", draggable: "false" });
+      const gone = el("div", { class: "carnet-drawing-missing", role: "note", hidden: "" });
+      gone.appendChild(el("strong", {}, MSG.drawingGone));
+      gone.appendChild(el("span", { class: "carnet-drawing-missing-name" }, " " + name));
+      const open = button("Ouvrir dans Dessiner", "carnet-drawing-open", () => host.openDrawing(wrapper, p.id), { "aria-label": "Ouvrir dans Dessiner : " + name, hidden: "" });
+      const retry = button("Réessayer", "carnet-drawing-retry", () => refreshPreviews(), { "aria-label": "Réessayer l'aperçu : " + name, hidden: "" });
+      img.addEventListener("load", () => {
+        card.setAttribute("data-state", "ok");
+        gone.hidden = true;
+        open.hidden = false;
+        retry.hidden = true;
+      });
+      img.addEventListener("error", () => {
+        card.setAttribute("data-state", "missing");
+        img.hidden = true;
+        gone.hidden = false;
+        open.hidden = true; // an Open action only exists while the drawing still resolves
+        retry.hidden = false;
+      });
+      card.appendChild(img);
+      card.appendChild(gone);
+      card.appendChild(el("figcaption", { class: "carnet-caption" }, "Croquis : " + name));
+      const offerBox = el("div", { class: "carnet-drawing-offer", role: "status", "aria-live": "polite", hidden: "" });
+      card.appendChild(offerBox);
+      const bar = el("div", { class: "carnet-struct-bar carnet-drawing-bar", role: "toolbar", "aria-label": "Croquis : " + name });
+      bar.appendChild(open);
+      bar.appendChild(retry);
+      if (!ro) {
+        const pickerHost = el("div", { class: "carnet-drawing-picker", hidden: "" });
+        bar.appendChild(button("Relier à un autre croquis", "", async () => {
+          if (!pickerHost.hidden) {
+            pickerHost.hidden = true;
+            return;
+          }
+          pickerHost.textContent = "";
+          let list = [];
+          try {
+            list = await host.listDrawings();
+          } catch (_) {
+            list = [];
+          }
+          if (!list.length) return say(box, MSG.drawingNoList);
+          const sel = el("select", { class: "carnet-drawing-select", "aria-label": "Croquis à relier" });
+          for (const stem of list) {
+            const o = el("option", { value: stem }, stem);
+            if (stem === p.id) o.selected = true;
+            sel.appendChild(o);
+          }
+          pickerHost.appendChild(sel);
+          pickerHost.appendChild(button("Utiliser", "", () => {
+            const cur = current(wrapper);
+            if (!cur) return;
+            if (sel.value === cur.id) {
+              pickerHost.hidden = true;
+              return;
+            }
+            S.offers.delete(stateKey(wrapper));
+            commit(wrapper, { id: sel.value }, { rerender: true });
+            host.flash(MSG.drawingRelinked);
+          }, { "aria-label": "Relier ce bloc au croquis choisi" }));
+          pickerHost.hidden = false;
+          sel.focus();
+        }, { "aria-label": "Relier à un autre croquis : " + name }));
+        card.appendChild(pickerHost);
+      }
+      card.appendChild(bar);
+      box.appendChild(card);
+      const key = stateKey(wrapper);
+      if (key && S.offers.has(key)) {
+        if (S.offers.get(key).from === p.id) paintOffer(wrapper, offerBox);
+        else S.offers.delete(key);
+      }
+      return null;
+    }
+
     function p2(wrapper) {
       const r = editorRoot();
       return r && r.contains(wrapper) ? Rich.getStructPayload(r, wrapper) : null;
@@ -585,7 +725,7 @@
 
     // ------------------------------------------------------------------ block frame (installed as the editor's renderer)
 
-    const TITLE = { table: "Tableau", callout: "Encadré", toggle: "Section repliable", imagegroup: "Groupe d'images" };
+    const TITLE = { table: "Tableau", callout: "Encadré", toggle: "Section repliable", imagegroup: "Groupe d'images", drawing: "Croquis" };
 
     function render(d, wrapper, type, payload, idx) {
       const box = el("div", { class: "carnet-struct", "data-struct": type });
@@ -594,26 +734,31 @@
       if (type === "table") bar = buildTable(wrapper, payload, idx, box);
       else if (type === "callout") buildCallout(wrapper, payload, idx, box);
       else if (type === "toggle") buildToggle(wrapper, payload, idx, box);
+      else if (type === "drawing") buildDrawing(wrapper, payload, idx, box);
       else buildGroup(wrapper, payload, idx, box);
       if (bar) box.appendChild(bar);
       const foot = el("div", { class: "carnet-struct-foot" });
       foot.appendChild(el("span", { class: "carnet-struct-msg", role: "status", "aria-live": "polite" }));
       if (!host.readOnly()) {
         let armed = null;
-        const del = button("Supprimer le bloc", "carnet-struct-del", () => {
+        // A drawing block only references a drawing: removing it NEVER deletes the drawing (it stays in Dessiner).
+        const isDrawing = type === "drawing";
+        const delLabel = isDrawing ? "Retirer du carnet" : "Supprimer le bloc";
+        const delAria = isDrawing ? "Retirer la référence au croquis du carnet (le croquis reste dans Dessiner)" : "Supprimer le bloc";
+        const del = button(delLabel, "carnet-struct-del", () => {
           if (!armed) {
-            del.textContent = "Confirmer la suppression";
-            del.setAttribute("aria-label", "Confirmer la suppression : " + TITLE[type]);
+            del.textContent = isDrawing ? "Confirmer le retrait" : "Confirmer la suppression";
+            del.setAttribute("aria-label", (isDrawing ? "Confirmer le retrait : " : "Confirmer la suppression : ") + TITLE[type]);
             armed = host.timeout(() => {
               armed = null;
-              del.textContent = "Supprimer le bloc";
-              del.setAttribute("aria-label", "Supprimer le bloc");
+              del.textContent = delLabel;
+              del.setAttribute("aria-label", delAria);
             }, 4000);
             return;
           }
           host.clear(armed);
           host.remove(wrapper);
-        }, { "aria-label": "Supprimer le bloc" });
+        }, { "aria-label": delAria });
         foot.appendChild(del);
       }
       box.appendChild(foot);
@@ -644,7 +789,7 @@
       return w;
     }
 
-    return { render, reveal, state: S };
+    return { render, reveal, offerVersion, refreshPreviews, state: S };
   }
 
   /** A fresh payload for a new block (valid by construction). */

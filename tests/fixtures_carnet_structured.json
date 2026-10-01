@@ -2067,6 +2067,122 @@
    "name": "group extra key",
    "out": null,
    "type": "imagegroup"
+  },
+  {
+   "in": {
+    "id": "Plan-A_HQWeb-Mobile"
+   },
+   "name": "drawing ok",
+   "out": {
+    "id": "Plan-A_HQWeb-Mobile"
+   },
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "Croquis1"
+   },
+   "name": "drawing plain stem",
+   "out": {
+    "id": "Croquis1"
+   },
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "name": "drawing 120",
+   "out": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "name": "drawing 121",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": ""
+   },
+   "name": "drawing empty",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "-x"
+   },
+   "name": "drawing leading dash",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "../x"
+   },
+   "name": "drawing slash",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "a.hqdraw"
+   },
+   "name": "drawing dot",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "a b"
+   },
+   "name": "drawing space",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": 1
+   },
+   "name": "drawing int id",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "ok",
+    "url": "/api/x"
+   },
+   "name": "drawing extra key",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {
+    "id": "ok",
+    "png": "data:x"
+   },
+   "name": "drawing thumb key",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": {},
+   "name": "drawing missing id",
+   "out": null,
+   "type": "drawing"
+  },
+  {
+   "in": "ok",
+   "name": "drawing not object",
+   "out": null,
+   "type": "drawing"
   }
  ],
  "render": [
@@ -2238,7 +2354,627 @@
    "search": "\n\n\n<script>x</script>\n*b*\na|b\n`c`\n<b>\n[l](http://x)\n- item\n# h\n> q\n<i>\n`c`\n1. n\n| p",
    "search_struct": "<script>x</script>\n*b*\na|b\n`c`\n<b>\n[l](http://x)\n- item\n# h\n> q\n<i>\n`c`\n1. n\n| p",
    "txt": "[Tableau]\n<script>x</script> | *b*\na|b | `c`\n[Info] <b>\n[l](http://x)\n- item\n# h\n> q\n[Section] <i>\n`c`\n1. n\n| p\n"
+  },
+  {
+   "blocks": [
+    {
+     "payload": {
+      "id": "Plan-A_HQWeb-Mobile"
+     },
+     "type": "drawing"
+    },
+    {
+     "payload": {
+      "id": "Cote_HQWeb"
+     },
+     "type": "drawing"
+    },
+    {
+     "payload": {
+      "id": "Croquis_2"
+     },
+     "type": "drawing"
+    },
+    {
+     "payload": {
+      "header": true,
+      "rows": [
+       [
+        "a",
+        "b"
+       ]
+      ]
+     },
+     "type": "table"
+    }
+   ],
+   "bytes": 2,
+   "md": "*\\[Croquis : Plan-A\\]*\n\n*\\[Croquis : Cote\\]*\n\n*\\[Croquis : Croquis\\_2\\]*\n\n| a | b |\n|---|---|\n",
+   "md_nopaths": "*\\[Croquis : Plan-A\\]*\n\n*\\[Croquis : Cote\\]*\n\n*\\[Croquis : Croquis\\_2\\]*\n\n| a | b |\n|---|---|\n",
+   "name": "drawings",
+   "paths": {
+    "asset-aaaaaaaaaaaaaaaaaaaaaaaa": "n.assets/figure-01.png",
+    "asset-bbbbbbbbbbbbbbbbbbbbbbbb": "n.assets/figure-02.jpg",
+    "asset-cccccccccccccccccccccccc": "n.assets/figure 03#.webp"
+   },
+   "search": "\n\n\n\na\nb",
+   "search_struct": "a\nb",
+   "txt": "[Croquis : Plan-A]\n[Croquis : Cote]\n[Croquis : Croquis_2]\n[Tableau]\na | b\n"
   }
  ],
- "search": []
+ "search": [],
+ "underlay": [
+  {
+   "h": 100,
+   "rect": {
+    "x0": -500.0,
+    "x1": 500.0,
+    "y0": -500.0,
+    "y1": 500.0
+   },
+   "units": "mm",
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": {
+    "x0": -500.0,
+    "x1": 500.0,
+    "y0": -375.0,
+    "y1": 375.0
+   },
+   "units": "mm",
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": {
+    "x0": -375.0,
+    "x1": 375.0,
+    "y0": -500.0,
+    "y1": 500.0
+   },
+   "units": "mm",
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": {
+    "x0": -500.0,
+    "x1": 500.0,
+    "y0": -375.0,
+    "y1": 375.0
+   },
+   "units": "mm",
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": {
+    "x0": -0.1953125,
+    "x1": 0.1953125,
+    "y0": -500.0,
+    "y1": 500.0
+   },
+   "units": "mm",
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": {
+    "x0": -500.0,
+    "x1": 500.0,
+    "y0": -500.0,
+    "y1": 500.0
+   },
+   "units": "mm",
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "mm",
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": "mm",
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "mm",
+   "w": true
+  },
+  {
+   "h": 100,
+   "rect": {
+    "x0": -50.0,
+    "x1": 50.0,
+    "y0": -50.0,
+    "y1": 50.0
+   },
+   "units": "cm",
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": {
+    "x0": -50.0,
+    "x1": 50.0,
+    "y0": -37.5,
+    "y1": 37.5
+   },
+   "units": "cm",
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": {
+    "x0": -37.5,
+    "x1": 37.5,
+    "y0": -50.0,
+    "y1": 50.0
+   },
+   "units": "cm",
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": {
+    "x0": -50.0,
+    "x1": 50.0,
+    "y0": -37.5,
+    "y1": 37.5
+   },
+   "units": "cm",
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": {
+    "x0": -0.01953125,
+    "x1": 0.01953125,
+    "y0": -50.0,
+    "y1": 50.0
+   },
+   "units": "cm",
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": {
+    "x0": -50.0,
+    "x1": 50.0,
+    "y0": -50.0,
+    "y1": 50.0
+   },
+   "units": "cm",
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "cm",
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": "cm",
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "cm",
+   "w": true
+  },
+  {
+   "h": 100,
+   "rect": {
+    "x0": -0.5,
+    "x1": 0.5,
+    "y0": -0.5,
+    "y1": 0.5
+   },
+   "units": "m",
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": {
+    "x0": -0.5,
+    "x1": 0.5,
+    "y0": -0.375,
+    "y1": 0.375
+   },
+   "units": "m",
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": {
+    "x0": -0.375,
+    "x1": 0.375,
+    "y0": -0.5,
+    "y1": 0.5
+   },
+   "units": "m",
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": {
+    "x0": -0.5,
+    "x1": 0.5,
+    "y0": -0.375,
+    "y1": 0.375
+   },
+   "units": "m",
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": {
+    "x0": -0.0001953125,
+    "x1": 0.0001953125,
+    "y0": -0.5,
+    "y1": 0.5
+   },
+   "units": "m",
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": {
+    "x0": -0.5,
+    "x1": 0.5,
+    "y0": -0.5,
+    "y1": 0.5
+   },
+   "units": "m",
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "m",
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": "m",
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "m",
+   "w": true
+  },
+  {
+   "h": 100,
+   "rect": {
+    "x0": -19.68503937007874,
+    "x1": 19.68503937007874,
+    "y0": -19.68503937007874,
+    "y1": 19.68503937007874
+   },
+   "units": "in",
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": {
+    "x0": -19.68503937007874,
+    "x1": 19.68503937007874,
+    "y0": -14.763779527559056,
+    "y1": 14.763779527559056
+   },
+   "units": "in",
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": {
+    "x0": -14.763779527559056,
+    "x1": 14.763779527559056,
+    "y0": -19.68503937007874,
+    "y1": 19.68503937007874
+   },
+   "units": "in",
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": {
+    "x0": -19.68503937007874,
+    "x1": 19.68503937007874,
+    "y0": -14.763779527559056,
+    "y1": 14.763779527559056
+   },
+   "units": "in",
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": {
+    "x0": -0.007689468503937008,
+    "x1": 0.007689468503937008,
+    "y0": -19.68503937007874,
+    "y1": 19.68503937007874
+   },
+   "units": "in",
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": {
+    "x0": -19.68503937007874,
+    "x1": 19.68503937007874,
+    "y0": -19.68503937007874,
+    "y1": 19.68503937007874
+   },
+   "units": "in",
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "in",
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": "in",
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "in",
+   "w": true
+  },
+  {
+   "h": 100,
+   "rect": null,
+   "units": "km",
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": null,
+   "units": "km",
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": null,
+   "units": "km",
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": null,
+   "units": "km",
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": null,
+   "units": "km",
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": null,
+   "units": "km",
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "km",
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": "km",
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "km",
+   "w": true
+  },
+  {
+   "h": 100,
+   "rect": null,
+   "units": "",
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": null,
+   "units": "",
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": null,
+   "units": "",
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": null,
+   "units": "",
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": null,
+   "units": "",
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": null,
+   "units": "",
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "",
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": "",
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": "",
+   "w": true
+  },
+  {
+   "h": 100,
+   "rect": null,
+   "units": null,
+   "w": 100
+  },
+  {
+   "h": 3,
+   "rect": null,
+   "units": null,
+   "w": 4
+  },
+  {
+   "h": 4,
+   "rect": null,
+   "units": null,
+   "w": 3
+  },
+  {
+   "h": 1920,
+   "rect": null,
+   "units": null,
+   "w": 2560
+  },
+  {
+   "h": 2560,
+   "rect": null,
+   "units": null,
+   "w": 1
+  },
+  {
+   "h": 1,
+   "rect": null,
+   "units": null,
+   "w": 1
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": null,
+   "w": 0
+  },
+  {
+   "h": -1,
+   "rect": null,
+   "units": null,
+   "w": 5
+  },
+  {
+   "h": 5,
+   "rect": null,
+   "units": null,
+   "w": true
+  }
+ ],
+ "underlay_check": [
+  {
+   "name": "ok v3",
+   "out": {
+    "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "fit": "contain"
+   },
+   "value": {
+    "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "fit": "contain"
+   },
+   "version": 3
+  },
+  {
+   "name": "v2 refuses",
+   "out": null,
+   "value": {
+    "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "fit": "contain"
+   },
+   "version": 2
+  },
+  {
+   "name": "fit cover",
+   "out": null,
+   "value": {
+    "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "fit": "cover"
+   },
+   "version": 3
+  },
+  {
+   "name": "extra key",
+   "out": null,
+   "value": {
+    "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "fit": "contain",
+    "x": 0
+   },
+   "version": 3
+  },
+  {
+   "name": "short id",
+   "out": null,
+   "value": {
+    "asset_id": "asset-abc",
+    "fit": "contain"
+   },
+   "version": 3
+  },
+  {
+   "name": "upper hex",
+   "out": null,
+   "value": {
+    "asset_id": "asset-AAAAAAAAAAAAAAAAAAAAAAAA",
+    "fit": "contain"
+   },
+   "version": 3
+  },
+  {
+   "name": "not object",
+   "out": null,
+   "value": "asset",
+   "version": 3
+  },
+  {
+   "name": "missing fit",
+   "out": null,
+   "value": {
+    "asset_id": "asset-aaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "version": 3
+  }
+ ]
 }

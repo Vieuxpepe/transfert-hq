@@ -69,6 +69,23 @@ STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$")
 WIN_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
+UNDERLAY_ASSET_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")  # a Carnet Stage-06 asset id (the SAME shape Carnet validates)
+UNDERLAY_FITS = ("contain",)
+# Underlay placement contract (permanent for this key): the image is scaled UNIFORMLY (aspect ratio taken from the image itself)
+# to fit inside the square of side UNDERLAY_BOX_MM millimetres centred on the document origin (0, 0), expressed in the
+# document's own units. There is no x / y / scale / rotation / crop: the key is only an asset id + the word "contain".
+UNDERLAY_BOX_MM = 1000.0
+UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
+
+
+def underlay_rect(units: str, w: int, h: int) -> dict:
+    """The document-space rectangle of an underlay image of ``w`` x ``h`` pixels (the shared contract; hq-sketch-core.js mirrors it)."""
+    if units not in UNIT_MM or any(type(v) is not int or v < 1 for v in (w, h)):
+        raise DrawingError("Fond de dessin invalide")
+    box = UNDERLAY_BOX_MM / UNIT_MM[units]
+    k = box / max(w, h)
+    half_w, half_h = w * k / 2, h * k / 2
+    return {"x0": -half_w, "y0": -half_h, "x1": half_w, "y1": half_h}
 
 LAYERS = {
     # name: (ACI color, linetype)
@@ -198,6 +215,15 @@ def _xy(v, what: str) -> list[float]:
     return [_num(v[0], what), _num(v[1], what)]
 
 
+def check_underlay(value, version=VERSION) -> dict:
+    """Optional fixed underlay: ``{"asset_id": "asset-<24 hex>", "fit": "contain"}`` and nothing else (version 3 only)."""
+    if version < 3 or not isinstance(value, dict) or set(value) != {"asset_id", "fit"}:
+        raise DrawingError("Fond de dessin invalide")
+    if not isinstance(value["asset_id"], str) or not UNDERLAY_ASSET_RE.match(value["asset_id"]) or value["fit"] not in UNDERLAY_FITS:
+        raise DrawingError("Fond de dessin invalide")
+    return {"asset_id": value["asset_id"], "fit": value["fit"]}
+
+
 def validate_document(doc) -> dict:
     """Validate + normalize a client document. Returns a clean copy (known keys only)."""
     if not isinstance(doc, dict):
@@ -235,6 +261,8 @@ def validate_document(doc) -> dict:
             "y0": _num(view.get("y0", 0), "vue"),
             "ppu": _num(view.get("ppu", 4), "zoom", lo=1e-6, hi=1e6),
         }
+    if doc.get("underlay") is not None:
+        out["underlay"] = check_underlay(doc["underlay"], doc["version"])
     if "nextId" in doc:
         out["nextId"] = int(_num(doc.get("nextId"), "nextId", lo=0, hi=1e9))
 
@@ -726,10 +754,36 @@ def _unlink_quiet(p: Path) -> None:
         pass
 
 
-def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
+def _require_parent(root: Path, base) -> str:
+    """``base`` establishes LINEAGE only: a canonical stem whose drawing document exists now. Never a path, never overwritten,
+    never an implicit 'latest'."""
+    if not isinstance(base, str):
+        raise DrawingError("Version précédente invalide")
+    stem = valid_stem(base)
+    directory = drawings_dir(root, create=False)
+    if directory is None:
+        raise DrawingError("Version précédente introuvable", 409)
+    try:
+        st = os.lstat(directory / (stem + DOC_SUFFIX))
+    except FileNotFoundError:
+        raise DrawingError("Version précédente introuvable", 409)
+    if _is_link_or_reparse(st) or not stat.S_ISREG(st.st_mode):
+        raise DrawingError("Version précédente refusée", 400)
+    return stem
+
+
+def save_drawing(root: Path, payload: dict, *, now=time.time, asset_exists=None) -> dict:
     if not isinstance(payload, dict):
         raise DrawingError("Requête invalide")
     doc = validate_document(payload.get("doc"))
+    if "underlay" in doc:
+        try:
+            found = asset_exists is not None and bool(asset_exists(doc["underlay"]["asset_id"]))
+        except Exception:  # an unreadable asset store is "not verified", never "present"
+            found = False
+        if not found:
+            raise DrawingError("Image du fond introuvable", 409)
+    parent = _require_parent(root, payload["base"]) if payload.get("base") not in (None, "") else None
     png = decode_png(payload.get("png"))
     base = sanitize_base_name(payload.get("name"))
     suffix = source_suffix(payload.get("source"))
@@ -762,6 +816,7 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
                     "name": base,
                     "source": suffix.lstrip("_"),
                     "saved_at": saved_at,
+                    **({"parent": parent} if parent else {}),
                     "files": {"png": names[1], "dxf": names[2], **({"stl": names[3]} if stl_tmp is not None else {})},
                 }
                 body = json.dumps(doc_out, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -792,6 +847,7 @@ def save_drawing(root: Path, payload: dict, *, now=time.time) -> dict:
                     "ok": True,
                     "stem": stem,
                     "saved_at": saved_at,
+                    **({"parent": parent} if parent else {}),
                     "files": {k: rel_for(nm) for k, nm in zip(("json", "png", "dxf", "stl"), names)},
                 }
             raise DrawingError("Trop de dessins portant ce nom", 409)
@@ -867,6 +923,8 @@ def open_drawing(root: Path, stem) -> dict:
             "source": _text(meta.get("source"), "source", max_len=40) if isinstance(meta.get("source"), str) else "",
             "saved_at": _text(meta.get("saved_at"), "date", max_len=40) if isinstance(meta.get("saved_at"), str) else "",
         }
+        if isinstance(meta.get("parent"), str) and STEM_RE.match(meta["parent"]):
+            doc["meta"]["parent"] = meta["parent"]
     return {"ok": True, "stem": stem, "doc": doc}
 
 
@@ -921,3 +979,29 @@ def list_drawings(root: Path) -> dict:
             })
     items.sort(key=lambda x: (-x["mtime"], x["stem"]))
     return {"ok": True, "dir": "/".join(SUBDIR), "items": items[:LIST_MAX], "total": len(items)}
+
+
+def underlay_assets(root: Path, stems) -> dict:
+    """Carnet backup closure, ONE hop: the Stage-06 underlay asset of each referenced drawing.
+
+    Read-only. ``ids``: asset ids found; ``missing``: drawings that do not exist (a broken reference is not an error);
+    ``invalid``: drawings that exist but are unreadable / malformed / oversized (the caller fails closed). Stems are
+    re-validated here and never joined to a path before that; nothing is followed recursively."""
+    ids: set[str] = set()
+    missing = invalid = 0
+    for stem in sorted(set(stems)):
+        try:
+            opened = open_drawing(root, stem)
+        except DrawingError as e:
+            if e.status == 404:
+                missing += 1
+            else:
+                invalid += 1
+            continue
+        except OSError:
+            invalid += 1
+            continue
+        under = opened["doc"].get("underlay")
+        if under:
+            ids.add(under["asset_id"])
+    return {"ids": ids, "missing": missing, "invalid": invalid}

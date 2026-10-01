@@ -15,6 +15,20 @@
   const UNIT_MM = { mm: 1, cm: 10, m: 1000, in: 25.4 };
   const LINE_TYPES = { line: 1, centerline: 1 };
   const EPS = 1e-9;
+  // Phase 3 underlay (mirror of hq_drawings.py): ONE Carnet Stage-06 asset id + the word "contain", nothing else. Placement is a
+  // permanent contract: uniform scale into the square of UNDERLAY_BOX_MM millimetres centred on the origin; no x / y / scale / crop.
+  const UNDERLAY_BOX_MM = 1000;
+  const UNDERLAY_ASSET_RE = /^asset-[0-9a-f]{24}$/;
+  function checkUnderlay(u, version) {
+    if (version < 3 || !u || typeof u !== "object" || Array.isArray(u) || Object.keys(u).sort().join(",") !== "asset_id,fit") return null;
+    return typeof u.asset_id === "string" && UNDERLAY_ASSET_RE.test(u.asset_id) && u.fit === "contain" ? { asset_id: u.asset_id, fit: "contain" } : null;
+  }
+  /** Document-space rectangle of an underlay image of w x h pixels, or null. */
+  function underlayRect(units, w, h) {
+    if (!UNIT_MM[units] || !Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1) return null;
+    const k = (UNDERLAY_BOX_MM / UNIT_MM[units]) / Math.max(w, h);
+    return { x0: -w * k / 2, y0: -h * k / 2, x1: w * k / 2, y1: h * k / 2 };
+  }
   const LIMITS = { points: 20000, objects: 5000, constraints: 2000, strokePts: 4000, text: 500, coord: 1e6 };
 
   function clone(doc) { return JSON.parse(JSON.stringify(doc)); }
@@ -575,8 +589,14 @@
     const ppu = Math.max(minPpu || 1e-4, Math.min(maxPpu || 1e5, view.ppu * factor));
     return { x0: m.x - sx / ppu, y0: m.y - (H - sy) / ppu, ppu: ppu };
   }
-  function fitView(doc, W, H, margin) {
-    const e = extents(doc), m = margin == null ? 40 : margin;
+  /** Union of the drawing extents and an extra rectangle (the underlay), or whichever exists. */
+  function extentsWith(doc, extra) {
+    const e = extents(doc);
+    if (!extra) return e;
+    return e ? { x0: Math.min(e.x0, extra.x0), y0: Math.min(e.y0, extra.y0), x1: Math.max(e.x1, extra.x1), y1: Math.max(e.y1, extra.y1) } : { x0: extra.x0, y0: extra.y0, x1: extra.x1, y1: extra.y1 };
+  }
+  function fitView(doc, W, H, margin, extra) {
+    const e = extentsWith(doc, extra), m = margin == null ? 40 : margin;
     if (!e) return { x0: -doc.grid.spacing * 2, y0: -doc.grid.spacing * 2, ppu: Math.max(0.01, 24 / doc.grid.spacing) };
     const w = Math.max(e.x1 - e.x0, doc.grid.spacing), h = Math.max(e.y1 - e.y0, doc.grid.spacing);
     const ppu = Math.max(1e-4, Math.min((W - 2 * m) / w, (H - 2 * m) / h));
@@ -599,6 +619,7 @@
       if (!UNIT_MM[doc.units]) throw new Error("Unités invalides");
       if (!doc.grid || !(doc.grid.spacing > 0)) throw new Error("Grille invalide");
       for (const k of ["points", "objects", "constraints"]) if (!Array.isArray(doc[k])) throw new Error(k + " invalides");
+      if (doc.underlay !== undefined && !checkUnderlay(doc.underlay, doc.version)) throw new Error("Fond de dessin invalide");
       if (doc.points.length > LIMITS.points || doc.objects.length > LIMITS.objects || doc.constraints.length > LIMITS.constraints) throw new Error("Dessin trop volumineux");
       const ids = new Set(), pts = new Set(), lines = new Map();
       const idOk = v => typeof v === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(v);
@@ -684,7 +705,7 @@
     addText, addDimLinear, addDimAngle, measureLinear, measureAngle, linesAtPoint, otherEnd, sharedVertex, lineLength,
     angleBetween, component, checkConstraints, setLineLength, setAngle, removeConstraint, addFeature, removeFeature, addFaceFeature, removeFaceFeature, addRoundFeature, removeRoundFeature, moveObjects, movePoint, deleteObjects,
     updateObject, hitTest, hitAll, objectDistance, dimLinearGeom, textBox, snapGrid, snapAngle, snapSegmentEnd, simplify,
-    convertUnits, fmt, extents, toScreen, toModel, zoomAt, fitView, sourceHint, validateDoc, createHistory,
+    convertUnits, fmt, extents, extentsWith, underlayRect, checkUnderlay, UNDERLAY_BOX_MM, toScreen, toModel, zoomAt, fitView, sourceHint, validateDoc, createHistory,
     saveDraft, loadDraft, clearDraft,
   };
 });

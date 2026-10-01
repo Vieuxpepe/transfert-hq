@@ -538,6 +538,23 @@ def limits() -> dict:
 # ---------------------------------------------------------------- backup
 
 
+def referenced_drawings(data: Any) -> set[str]:
+    """Drawing stems that a restore of any retained checkpoint / restore pre-image would bring back (backup closure, read-only)."""
+    out: set[str] = set()
+    if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+        return out
+    for event in data["events"]:
+        if not isinstance(event, dict) or event.get("status") == "failed" or not isinstance(event.get("data"), dict):
+            continue
+        field = {"checkpoint": "content", "restore": "pre_content"}.get(event.get("kind"))
+        content = event["data"].get(field) if field else None
+        if not isinstance(content, dict) or content.get("version") != rich.CONTENT_VERSION or not isinstance(content.get("blocks"), list):
+            continue
+        for block in content["blocks"]:
+            out.update(rich.block_drawings(block))
+    return out
+
+
 def referenced_assets(data: Any) -> set[str]:
     """Image asset ids that a restore of any retained checkpoint / restore pre-image would bring back (Stage 08 backup closure).
 
