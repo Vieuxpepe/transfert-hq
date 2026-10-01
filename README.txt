@@ -655,6 +655,7 @@ Commandes
   (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_media_playwright.mjs
   (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_eng_playwright.mjs
   (optionnel, Playwright Node + Chromium uniquement — WebKit/iPhone/iPad physiques NON VÉRIFIÉS ici ; même serveur jetable, copie jetable) node tests/visual_carnet_history_playwright.mjs
+  (optionnel, Playwright Node + Chromium uniquement — WebKit/appareils physiques NON VÉRIFIÉS ici ; même serveur jetable, copie jetable) node tests/visual_carnet_ux_playwright.mjs
 
 Carnet — images (étape 06)
 --------------------------
@@ -941,3 +942,66 @@ Carnet — historique, opérations groupées, rapport (étape 08)
   Tests      python -m unittest tests.test_hq_carnet_history tests.test_hq_carnet_links_report ; node
              tests/check_hq_carnet_history.mjs ; node tests/visual_carnet_history_playwright.mjs (Chromium ; WebKit et
              appareils physiques iPhone/iPad NON VÉRIFIÉS ici).
+
+Carnet — passe UX + manipulation directe des images (post-acceptation, hors étapes 01-08)
+------------------------------------------------------------------------------------------
+  Schéma     asset.layout vaut "inline" | "center" | "right" (alignement borné dans le flux ; "inline" = comportement
+             accepté de l'étape 06, désormais rendu aligné à gauche). Aucune clé nouvelle (id, mime, w, h, width,
+             layout, caption), aucune position x/y, aucun CSS persisté. width reste le contrôle de taille (30-100, pas de 5).
+             Python et JS valident à l'identique (booléen/NaN/Infinity/hors plage refusés). Un ancien contenu n'est jamais
+             réécrit par une simple consultation : la migration passe uniquement par une sauvegarde/édition normale.
+             Encodage canonique JS (brouillons/bases) : la ligne image garde 6 éléments pour "inline" (octets inchangés),
+             un 7e élément "center"/"right" n'existe que pour les alignements non par défaut.
+  Interface  « + Insérer » visible au-dessus de l'éditeur (Image, Appareil photo, Fichier et Dessin = liens HQ, Mesure,
+             Calcul, Décision) ; les outils avancés restent derrière « … » (Plus d'outils). L'en-tête de la bibliothèque
+             est structurel (titre + fermer sur une ligne, actions sur la suivante) ; Corbeille est séparée des filtres.
+  Images     Insertion : menu, panneau existant, glisser-déposer d'un fichier image (surbrillance), collage depuis le
+             presse-papiers : TOUS passent par le pipeline accepté de l'étape 06 (préparation navigateur -> POST
+             /api/carnet/asset admin + CSRF). Image sélectionnée : poignée de déplacement (réordonne les blocs
+             uniquement), poignées de taille (pas de 5 %, ratio conservé), barre contextuelle : Monter, Descendre,
+             Plus petite, Plus grande, Gauche/Centre/Droite, Légende, Remplacer, Retirer. Un geste = une seule édition
+             locale (brouillon + sauvegarde différée 450 ms) = au plus une révision serveur ; aucune sauvegarde pendant
+             le déplacement du pointeur ; un geste obsolète (page, révision, génération de l'éditeur) est abandonné.
+  Export     Markdown/TXT/rapport : image + légende, texte identique pour inline/center/right (pas d'alignement en
+             Markdown). Impression : alignement et largeur conservés dans la zone imprimable.
+  Tests      python -m unittest tests.test_hq_carnet_media ; node tests/check_hq_carnet_media.mjs ;
+             node tests/check_hq_carnet_image_ui.mjs ; node tests/visual_carnet_ux_playwright.mjs (Chromium ; WebKit et
+             appareils physiques NON VÉRIFIÉS ici).
+
+
+Carnet — passe d'édition (phase 2 de la passe UX, post-acceptation, hors étapes 01-08)
+---------------------------------------------------------------------------------------
+  Schéma     AUCUN changement (Python et JS inchangés dans cette phase). Rien de ce qui suit n'est stocké, exporté ni
+             envoyé au serveur : titre visuel, barres flottantes, menus, rail de bloc, badge de taille sont de la
+             présentation éphémère. Une seule action = une seule édition locale normale (brouillon + sauvegarde 450 ms).
+  Titre      Le premier bloc texte (texte/titre/puce/numéro/case) reçoit un attribut visuel non persisté ; derive_title()
+             (première ligne non vide) reste seul juge. Jamais appliqué à une image / un calcul / une mesure / une
+             décision, même en première position. Page vide : aide « Tape / pour les commandes » (tactile : « + Insérer »).
+  Sélection  Barre flottante près de la sélection (au-dessus au pointeur, en dessous au tactile, toujours dans l'écran) :
+             Gras, Italique, Souligné, Surligné, Code, Lien, Référence, Effacer la mise en forme. Alt+F10 la focalise,
+             flèches/Début/Fin, Échap la ferme et rend focus + sélection. La sélection est revalidée à l'application
+             (page + génération + offsets) ; une sélection périmée ne fait rien (message visible, pas de nouvel essai).
+  Commandes  Registre unique (assets/hq-carnet-commands.js) pour « + Insérer », le menu « / », le « + » entre blocs et le
+             menu de bloc ; toutes les commandes finissent dans runInsert. « / » en début de ligne vide ou après un
+             espace (jamais pendant une composition IME, jamais mi-mot) est annulé et ouvre le menu (recherche propre,
+             haut/bas/Entrée/Échap, aria-expanded/aria-selected). Choisir une commande consomme la barre oblique.
+             Fermeture ordinaire (Échap, clic ailleurs, Tab) : UNE barre oblique littérale est remise à l'endroit d'origine
+             si page/bloc/texte/génération sont inchangés ; sinon rien n'est modifié (jamais dans un autre bloc).
+  Blocs      Rail flottant unique (glisser, +, ⋯) dans la marge gauche au survol (tactile : bloc du curseur, boutons 44 px) ;
+             « + » entre deux blocs près d'une jointure ; menu ⋯ : Monter, Descendre, Dupliquer (nouvel id ; plafonds
+             32 images / décisions respectés), Insérer au-dessus/en dessous, Convertir (texte/titre/puce/numéro/case
+             seulement, jamais un atome), Supprimer (confirmation si le bloc n'est pas vide). Clavier : Alt+Maj+↑/↓
+             déplace le bloc du curseur, Alt+Maj+B ouvre le menu. Le glisser réutilise le code de geste des images :
+             ids conservés, une édition, aucune écriture pendant le déplacement, geste obsolète abandonné.
+  Images     Barre contextuelle flottante ancrée à l'image (feuille du bas au tactile/étroit), badge « 70 % · centré »,
+             état sélectionné renforcé, légende/Remplacer/Retirer visibles.
+  Bibliothèque  Compteurs dérivés à côté des filtres ; Projets/Catégories repliables (état EN MÉMOIRE de la page seulement :
+             ni brouillons hq_carnet_drafts_v1, ni stockage navigateur) ; la section repliée garde la puce du filtre actif ;
+             page courante marquée ; états vides explicites.
+  Thèmes     Sombre par défaut, clair via prefers-color-scheme (pas de bascule) ; texte sur accent à contraste ≥ 4.5.
+  Reporté    Boutons Annuler/Rétablir visibles dans l'éditeur (l'annulation native de frappe et les raccourcis restent ;
+             l'annulation groupée de l'étape 08 est inchangée), groupes d'images/côte à côte, rotation/recadrage, tri de
+             la bibliothèque, redimensionnement de la barre latérale, lien vers un bloc, cartes de pièces jointes.
+  Tests      node tests/check_hq_carnet_commands.mjs ; node tests/check_hq_carnet_editor_ui.mjs ;
+             node tests/visual_carnet_editor_playwright.mjs (Chromium, schémas de couleur émulés, IME via CDP ; WebKit,
+             Firefox et appareils physiques NON VÉRIFIÉS ici).

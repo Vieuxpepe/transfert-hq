@@ -28,6 +28,7 @@ const I = (asset) => R.imageLine(asset);
   assert.ok(R.checkAsset(ASSET("a")));
   const bad = [
     ASSET("a", { width: 29 }), ASSET("a", { width: 101 }), ASSET("a", { width: 50.5 }), ASSET("a", { width: "60" }), ASSET("a", { layout: "free" }),
+    ASSET("a", { layout: "left" }), ASSET("a", { layout: "CENTER" }), ASSET("a", { layout: true }), ASSET("a", { layout: 1 }), ASSET("a", { layout: null }),
     ASSET("a", { caption: "x".repeat(301) }), ASSET("a", { caption: "a\nb" }), ASSET("a", { caption: 5 }), ASSET("a", { w: 0 }), ASSET("a", { w: 2561 }),
     ASSET("a", { id: "asset-../x" }), ASSET("a", { id: "asset-" + "A".repeat(24) }), ASSET("a", { mime: "image/gif" }), ASSET("a", { mime: "image/heic" }),
     Object.assign(ASSET("a"), { path: "/etc/passwd" }), null, [], "asset",
@@ -37,6 +38,25 @@ const I = (asset) => R.imageLine(asset);
   delete noCaption.caption;
   assert.equal(R.checkAsset(noCaption), null, "every field is required");
   for (const w of [30, 100]) assert.ok(R.checkAsset(ASSET("a", { width: w })), "boundary " + w);
+  for (const lay of ["inline", "center", "right"]) assert.equal(R.checkAsset(ASSET("a", { layout: lay })).layout, lay);
+  // fmt: an inline image row keeps the Stage-06 6-element encoding; center/right add a 7th; round-trips exactly.
+  {
+    const enc = (lay) => R.fmtOf([R.imageLine(ASSET("a", { layout: lay }))]);
+    const row = (lay) => JSON.parse(enc(lay))[0][3];
+    assert.equal(row("inline").length, 6);
+    assert.equal(row("center").length, 7);
+    assert.equal(row("right")[6], "right");
+    for (const lay of ["inline", "center", "right"]) {
+      const back = R.linesFromTextFmt("", enc(lay), [null]);
+      assert.ok(back && back[0].asset.layout === lay, "fmt round trip " + lay);
+      assert.equal(R.fmtOf(back), enc(lay));
+    }
+    const fake = JSON.parse(enc("center"));
+    fake[0][3][6] = "inline"; // the default is never written as a 7th element
+    assert.equal(R.linesFromTextFmt("", JSON.stringify(fake), [null]), null);
+    fake[0][3][6] = "left";
+    assert.equal(R.linesFromTextFmt("", JSON.stringify(fake), [null]), null);
+  }
   assert.equal(R.checkAsset(ASSET("a", { caption: "x".repeat(300) })).caption.length, 300);
   ok();
 }

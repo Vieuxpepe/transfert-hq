@@ -279,7 +279,9 @@
    },
    "txt": "[Image]\n[Image : l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00]\n",
    "md": "![](Rapport%20%231%20%C3%A9%3F%25.assets/figure-01.jpg)\n\n![l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00](Rapport%20%231%20%C3%A9%3F%25.assets/figure-02.png)\n\n*l\u00e9gende \u65e5\u672c\u8a9e \ud83d\ude00*\n"
-  }
+  },
+   {"name": "aligned image (center): same text as inline (documented fallback)", "blocks": [{"type": "paragraph", "text": "avant", "marks": []}, {"type": "image", "text": "", "marks": [], "asset": {"id": "asset-cccccccccccccccccccccccc", "mime": "image/png", "w": 640, "h": 480, "width": 45, "layout": "center", "caption": "Fig. center"}}, {"type": "paragraph", "text": "après", "marks": []}], "paths": {"asset-cccccccccccccccccccccccc": "note.assets/figure-01.png"}, "txt": "avant\n[Image : Fig. center]\naprès\n", "md": "avant\n\n![Fig. center](note.assets/figure-01.png)\n\n*Fig. center*\n\naprès\n"},
+   {"name": "aligned image (right): same text as inline (documented fallback)", "blocks": [{"type": "paragraph", "text": "avant", "marks": []}, {"type": "image", "text": "", "marks": [], "asset": {"id": "asset-cccccccccccccccccccccccc", "mime": "image/png", "w": 640, "h": 480, "width": 45, "layout": "right", "caption": "Fig. right"}}, {"type": "paragraph", "text": "après", "marks": []}], "paths": {"asset-cccccccccccccccccccccccc": "note.assets/figure-01.png"}, "txt": "avant\n[Image : Fig. right]\naprès\n", "md": "avant\n\n![Fig. right](note.assets/figure-01.png)\n\n*Fig. right*\n\naprès\n"}
  ],
  "captions": [
   {

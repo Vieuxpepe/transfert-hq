@@ -28,6 +28,7 @@ import hq_carnet_media as media  # noqa: E402
 import hq_carnet_rich as rich  # noqa: E402
 import hq_state  # noqa: E402
 import iphone_bridge  # noqa: E402
+from test_hq_carnet_history import Stage08Base, para as _para08  # noqa: E402,F401
 from test_hq_carnet import ApiTests as _ApiBase  # noqa: E402
 from test_hq_carnet import CarnetBase, NOW, _dir_symlink, _file_symlink, _fixture, _http  # noqa: E402
 
@@ -43,10 +44,10 @@ def upload(data: bytes, declared: str | None = None) -> dict:
     return media.store_upload(io.BytesIO(data).read, len(data), declared)["asset"]
 
 
-def image_block(asset: dict, *, width=60, caption="", block_id=None) -> dict:
+def image_block(asset: dict, *, width=60, caption="", block_id=None, layout="inline") -> dict:
     block = {
         "type": "image", "text": "", "marks": [],
-        "asset": {"id": asset["id"], "mime": asset["mime"], "w": asset["w"], "h": asset["h"], "width": width, "layout": "inline", "caption": caption},
+        "asset": {"id": asset["id"], "mime": asset["mime"], "w": asset["w"], "h": asset["h"], "width": width, "layout": layout, "caption": caption},
     }
     if block_id:
         block["id"] = block_id
@@ -531,6 +532,28 @@ class QuotaTests(MediaBase):
 
 
 class ContentTests(MediaBase):
+    def test_aligned_images_roundtrip_and_a_reorder_keeps_ids_in_one_revision(self):
+        page = self.new_page()
+        a = upload(F.png(10, 8))
+        page = self.save_blocks(page, [image_block(a, layout="center", width=70), para("texte"), image_block(a, layout="right", width=40, caption="d")])
+        blocks = page["content"]["blocks"]
+        self.assertEqual([b["asset"]["layout"] for b in blocks if b["type"] == "image"], ["center", "right"])
+        self.assertEqual([b["asset"]["width"] for b in blocks if b["type"] == "image"], [70, 40])
+        ids = [b["id"] for b in blocks]
+        # UX pass: a drag reorder sends the SAME blocks (ids kept) in another order
+        moved = self.save_blocks(page, [blocks[1], blocks[2], blocks[0]])
+        self.assertEqual(moved["rev"], page["rev"] + 1, "one reorder = one revision")
+        self.assertEqual([b["id"] for b in moved["content"]["blocks"]], [ids[1], ids[2], ids[0]])
+        self.assertEqual(moved["content"]["blocks"][2]["asset"]["layout"], "center")
+        # persisted bytes: exactly the declared keys, no position/CSS state
+        stored = json.loads(self.path.read_text(encoding="utf-8"))
+        for blk in stored["pages"][-1]["content"]["blocks"]:
+            if blk["type"] == "image":
+                self.assertEqual(set(blk["asset"]), {"id", "mime", "w", "h", "width", "layout", "caption"})
+        # an old-client style payload (layout "inline") is untouched by this change
+        again = self.save_blocks(moved, [image_block(a, layout="inline", block_id=ids[0])])
+        self.assertEqual(again["content"]["blocks"][0]["asset"]["layout"], "inline")
+
     def test_binary_absent_from_notebook_json_and_no_paths(self):
         page = self.new_page()
         data = F.jpeg(64, 48)
@@ -577,6 +600,7 @@ class ContentTests(MediaBase):
 
         bad = [
             asset_with(width=29), asset_with(width=101), asset_with(width=50.5), asset_with(width=True), asset_with(layout="free"),
+            asset_with(layout="left"), asset_with(layout="CENTER"), asset_with(layout=True), asset_with(layout=1), asset_with(layout=None), asset_with(layout=["center"]),
             asset_with(caption="a" * 301), asset_with(caption="two\nlines"), asset_with(caption=5), asset_with(w=0), asset_with(w=2561),
             asset_with(id="asset-../x"), asset_with(mime="image/gif"),
             {**ok, "text": "caption here"}, {**ok, "marks": [{"type": "bold", "start": 0, "end": 1}]}, {**ok, "checked": True},
@@ -588,6 +612,10 @@ class ContentTests(MediaBase):
         for blk in bad:
             with self.assertRaises(hq_carnet.CarnetError, msg=json.dumps(blk)[:120]):
                 self.save_blocks(page, [blk])
+        # UX pass: the bounded alignments are accepted and round-trip exactly (never normalised back to inline).
+        for layout in ("inline", "center", "right"):
+            page = self.save_blocks(page, [asset_with(layout=layout)])
+            self.assertEqual(page["content"]["blocks"][0]["asset"]["layout"], layout)
         for width in (30, 100):  # boundaries are accepted
             page = self.save_blocks(page, [image_block(asset, width=width)])
         self.assertEqual(rich.assets_of(page["content"])[0]["width"], 100)
@@ -753,6 +781,36 @@ class ContentTests(MediaBase):
 # ---------------------------------------------------------------- export
 
 
+class AlignedExportTests(MediaBase):
+    """Markdown/TXT have no alignment: center/right use the SAME deterministic text as inline (documented fallback)."""
+
+    def test_markdown_and_txt_are_layout_independent_and_deterministic(self):
+        a = upload(F.png(10, 8))
+        page = self.new_page()
+        outputs = {}
+        for layout in ("inline", "center", "right"):
+            content = {"version": 2, "blocks": [para("avant"), image_block(a, layout=layout, caption="Fig. 1", width=50), para("après")]}
+            parsed = rich.parse_content(content, existing=None, text_limit=10_000)
+            blocks = [{**b, "id": f"block-{i:012d}"} for i, b in enumerate(parsed["blocks"])]
+            doc = {"version": 2, "blocks": blocks}
+            paths = {a["id"]: "note.assets/figure-01.png"}
+            outputs[layout] = (rich.render_markdown(doc, paths), rich.render_txt(doc), rich.render_markdown(doc, paths))
+            self.assertEqual(outputs[layout][0], outputs[layout][2], "deterministic")
+        self.assertEqual(outputs["inline"], outputs["center"])
+        self.assertEqual(outputs["inline"], outputs["right"])
+        self.assertIn("![Fig. 1](note.assets/figure-01.png)", outputs["right"][0])
+        self.assertNotRegex(outputs["right"][0], r"(?i)center|right|align|style=|<div")
+
+    def test_package_export_with_a_right_aligned_image(self):
+        a = upload(F.png(10, 8))
+        page = self.save_blocks(self.new_page(), [para("t"), image_block(a, layout="right", caption="c")])
+        out = hq_carnet.export_copy({"action": "page_export", "id": page["id"], "expected_rev": page["rev"], "format": "md", "dir": "Inbox", "filename": "al"})
+        md = (self.tmp / "Inbox" / "al.md").read_text(encoding="utf-8")
+        self.assertIn("![c](al.assets/figure-01.png)", md)
+        self.assertNotIn(str(self.tmp), md)
+        self.assertEqual(out["assets"], 1)
+
+
 class ExportTests(MediaBase):
     def setUp(self):
         super().setUp()
@@ -848,6 +906,48 @@ class ExportTests(MediaBase):
 # ---------------------------------------------------------------- backup
 
 
+class AlignedHistoryBulkTests(Stage08Base):
+    """UX pass: history restore / bulk operations / report keep an aligned image exactly (layout + width + order)."""
+
+    def setUp(self):
+        super().setUp()
+        saved = dict(media._cb)
+        self.addCleanup(lambda: (media._cb.clear(), media._cb.update(saved)))
+        hq_carnet.bind(root=self.tmp, now=lambda: self.clock[0], folders=lambda: ["Inbox", "Uni", "Print"],
+                       system_names=iphone_bridge.SYSTEM_NAMES, safe_leaf_name=iphone_bridge.safe_leaf_name)
+        self.asset = upload(F.png(10, 8))
+
+    def blocks(self, layout="center", width=70):
+        return [para("avant avec alpha"), image_block(self.asset, layout=layout, width=width, caption="Fig"), para("apres")]
+
+    def test_restore_returns_the_exact_aligned_image_and_order(self):
+        page = self.make_page(self.blocks("center", 70))
+        want = [(b["id"], b["type"], b.get("asset")) for b in page["content"]["blocks"]]
+        cp = hq_carnet.http_post({"action": "history_checkpoint", "page_id": page["id"], "expected_rev": page["rev"]})[1]["event_id"]
+        edited_blocks = [dict(b) for b in page["content"]["blocks"]]
+        edited_blocks[1] = {**edited_blocks[1], "asset": {**edited_blocks[1]["asset"], "layout": "right", "width": 40}}
+        edited_blocks = [edited_blocks[1], edited_blocks[0], edited_blocks[2]]  # also moved
+        edited = hq_carnet.mutate({"action": "page_save", "id": page["id"], "expected_rev": page["rev"], "content": {"version": 2, "blocks": edited_blocks}})["page"]
+        status, out = hq_carnet.http_post({"action": "history_restore", "page_id": page["id"], "event_id": cp, "expected_rev": edited["rev"], "confirm": True})
+        self.assertEqual(status, 200, out)
+        got = [(b["id"], b["type"], b.get("asset")) for b in self.cur(page["id"])["content"]["blocks"]]
+        self.assertEqual(got, want)
+
+    def test_bulk_replace_leaves_an_aligned_image_block_untouched(self):
+        page = self.make_page(self.blocks("right", 55))
+        pv = self.preview("replace", {"find": "alpha", "replace": "OMEGA"}, [page["id"]])
+        out = self.apply("replace", pv["params"], [{"id": page["id"], "rev": page["rev"]}], expected=1)
+        self.assertEqual(out["outcome"], "complete", out)
+        blocks = self.cur(page["id"])["content"]["blocks"]
+        self.assertEqual(blocks[0]["text"], "avant avec OMEGA")
+        self.assertEqual(blocks[1]["asset"]["layout"], "right")
+        self.assertEqual(blocks[1]["asset"]["width"], 55)
+        undo = self.undo(out["event_id"])
+        self.assertTrue(undo.get("ok"), undo)
+        blocks = self.cur(page["id"])["content"]["blocks"]
+        self.assertEqual((blocks[0]["text"], blocks[1]["asset"]["layout"]), ("avant avec alpha", "right"))
+
+
 class BackupMediaTests(_retention.RetentionBase):
     def setUp(self):
         super().setUp()
@@ -875,6 +975,18 @@ class BackupMediaTests(_retention.RetentionBase):
     def backup(self) -> tuple[dict, Path]:
         info = cc_ext.run_backup(force=True)
         return info, Path(info["path"]) / "Carnet"
+
+    def test_backup_keeps_a_non_default_layout_and_its_asset(self):
+        a1 = upload(F.png(9, 9))
+        nb = hq_carnet.mutate({"action": "page_create", "expected_notebook_rev": hq_carnet.get_notebook()["notebook_rev"]})["page"]
+        hq_carnet.mutate({"action": "page_save", "id": nb["id"], "expected_rev": nb["rev"],
+                          "content": {"version": 2, "blocks": [image_block(a1, layout="center", width=65, caption="Fig")]}})
+        info, dest = self.backup()
+        self.assertTrue(info["carnet"]["valid"])
+        saved = json.loads((dest / "notebook.json").read_text(encoding="utf-8"))
+        asset = [b for p in saved["pages"] for b in p["content"]["blocks"] if b["type"] == "image"][0]["asset"]
+        self.assertEqual((asset["layout"], asset["width"]), ("center", 65))
+        self.assertEqual((dest / "assets" / (a1["id"] + ".png")).read_bytes(), F.png(9, 9))
 
     def test_no_assets_keeps_the_accepted_status_shape(self):
         self.page_with()
@@ -1213,7 +1325,7 @@ class StaticMediaTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parent.parent
 
     def test_browser_modules_have_no_dangerous_sinks(self):
-        for name in ("hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js"):
+        for name in ("hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js", "hq-carnet-image-ui.js", "hq-carnet-commands.js", "hq-carnet-editor-ui.js"):
             text = (self.ROOT / "assets" / name).read_text(encoding="utf-8")
             for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "importScripts", "XMLHttpRequest", "sendBeacon", "WebSocket"):
                 self.assertNotIn(bad, text, f"{name}: {bad}")
@@ -1230,7 +1342,7 @@ class StaticMediaTests(unittest.TestCase):
         self.assertLess(media_i, rich_i)
         self.assertLess(rich_i, core_i)
         # Stage 07 inserts the engineering modules: eng (model, needed by rich) after media, eng-ui (lazy UI) before the editor
-        self.assertIn("load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet.js'", text)
+        self.assertIn("load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js'", text)
         self.assertIn("load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-rich.js'", text)
 
     def test_handler_security_headers_default_is_unchanged(self):

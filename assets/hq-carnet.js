@@ -1769,7 +1769,7 @@
     toolsOpen: false,
     swipe: null,
     role: null, // confirmed /api/me role (drives Home privacy)
-    lib: { open: false, collapsed: false, manage: false, sel: { filter: "all", id: null }, query: "", timer: null, sig: "", scopeSig: "" },
+    lib: { open: false, collapsed: false, fold: { projects: false, categories: false }, manage: false, sel: { filter: "all", id: null }, query: "", timer: null, sig: "", scopeSig: "" },
     libEl: null,
     ctxOpen: false,
     focus: false,
@@ -1946,7 +1946,7 @@
     const pin = iconButton("btn-carnet-pin", "Épingler", ICON.pin, { "aria-pressed": "false" });
     const library = iconButton("btn-carnet-library", "Bibliothèque", ICON.library, { "aria-expanded": "false", "aria-controls": "hq-carnet-library" });
     const focusBtn = iconButton("btn-carnet-focus", "Mode concentration", ICON.focus, { "aria-pressed": "false" });
-    const more = iconButton("btn-carnet-more", "Symboles et outils", ICON.more, { "aria-expanded": "false", "aria-controls": "carnet-quick-tools" });
+    const more = iconButton("btn-carnet-more", "Plus d'outils (symboles, recherche, export, historique…)", ICON.more, { "aria-expanded": "false", "aria-controls": "carnet-quick-tools" });
     const top = el("div", { class: "carnet-bar carnet-bar-top" }, [
       context,
       el("div", { class: "carnet-status-wrap" }, [status, attention, exportFlag, flash]),
@@ -2038,7 +2038,7 @@
       spellcheck: "true",
       autocapitalize: "sentences",
       autocorrect: "on",
-      "data-placeholder": "Écris…",
+      "data-placeholder": "Commence à écrire… ou glisse une image",
     });
     installEditorShim(editor);
     const formatBar = buildFormatBar();
@@ -2062,7 +2062,8 @@
     ]);
     const focusExit = iconButton("btn-carnet-focus-exit", "Quitter le mode concentration (Échap)", ICON.unfocus, { class: "carnet-btn carnet-focus-exit" });
 
-    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, formatBar, linkPanel, findPanel, exportPanel, imagePanel, imageTools, stage, bottom, focusExit]);
+    const insertRow = buildInsertRow();
+    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, insertRow, formatBar, linkPanel, findPanel, exportPanel, imagePanel, imageTools, stage, bottom, focusExit]);
     const lib = buildLibrary();
     const libBackdrop = el("div", { class: "carnet-lib-backdrop", "aria-hidden": "true", hidden: true });
     root.append(lib, libBackdrop, main);
@@ -2070,6 +2071,7 @@
     host.appendChild(root);
 
     ui.root = root;
+    wireImageDrop(root);
     ui.editor = editor;
     ui.paper = paper;
     ui.statusEl = status;
@@ -2082,6 +2084,7 @@
     ui.lib.scopeSig = "";
 
     bindEditor(editor);
+    ui.eui = mountEditorUi();
     prev.addEventListener("click", () => navigate(-1));
     next.addEventListener("click", () => navigate(1));
     add.addEventListener("click", () => newPage(null)); // global New: always "À classer"
@@ -2180,13 +2183,179 @@
 
   // ---------------------------------------------------------------- library (Bibliothèque)
 
+  // ---- visible "+ Insérer" (UX pass): the primary way to add content; advanced tools stay behind "Plus" (…)
+
+  const INSERT_FALLBACK = [
+    ["image", "Image", "Photos et fichiers de cet appareil"],
+    ["camera", "Appareil photo", "Prendre une photo"],
+    ["file", "Fichier", "Lien vers un fichier du carnet (sélectionner du texte)"],
+    ["drawing", "Dessin", "Lien vers un dessin (sélectionner du texte)"],
+    ["measure", "Mesure", "Valeur mesurée et tolérance"],
+    ["calc", "Calcul", "Expression avec résultat"],
+    ["decision", "Décision", "Marquer la ligne comme décision"],
+  ];
+  /** ONE registry (hq-carnet-commands.js) feeds "+ Insérer", the "/" menu, the between-block "+" and the block menu. */
+  function insertItems() {
+    const R = global.HqCarnetCommands;
+    return R ? R.insertItems().map((c) => [c.id, c.label, c.hint]) : INSERT_FALLBACK;
+  }
+
+  function buildInsertRow() {
+    const btn = el("button", {
+      type: "button", id: "btn-carnet-insert", class: "carnet-small carnet-primary carnet-insert-btn",
+      "aria-haspopup": "menu", "aria-expanded": "false", "aria-controls": "hq-carnet-insert-menu",
+    });
+    btn.appendChild(el("span", { class: "carnet-insert-plus", "aria-hidden": "true", text: "+" }));
+    btn.appendChild(el("span", { text: "Insérer" }));
+    keepFocus(btn);
+    const menu = el("div", { id: "hq-carnet-insert-menu", class: "carnet-insert-menu", role: "menu", "aria-label": "Insérer", hidden: true });
+    for (const [key, label, hint] of insertItems()) {
+      const it = el("button", { type: "button", role: "menuitem", class: "carnet-insert-item", "data-carnet-insert": key, tabindex: "-1" }, [
+        el("span", { class: "carnet-insert-label", text: label }),
+        el("span", { class: "carnet-insert-hint", text: hint }),
+      ]);
+      keepFocus(it);
+      menu.appendChild(it);
+    }
+    const row = el("div", { class: "carnet-insert-row" }, [btn, menu]);
+    const items = () => Array.prototype.slice.call(menu.querySelectorAll("[data-carnet-insert]"));
+    const close = (refocus) => {
+      menu.hidden = true;
+      btn.setAttribute("aria-expanded", "false");
+      if (refocus) btn.focus({ preventScroll: true });
+    };
+    const open = () => {
+      if (!curEntry()) {
+        flashMsg(IMG_MSG.readonly);
+        return;
+      }
+      const sel = currentSel(); // the caret BEFORE the menu takes focus: new content goes there
+      ui.selCache = { start: sel.start, end: sel.end };
+      menu.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+      const first = items()[0];
+      if (first) first.focus({ preventScroll: true });
+    };
+    btn.addEventListener("click", () => (menu.hidden ? open() : close(true)));
+    btn.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" && menu.hidden) {
+        e.preventDefault();
+        open();
+      }
+    });
+    menu.addEventListener("keydown", (e) => {
+      const list = items();
+      const at = list.indexOf(doc.activeElement);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close(true);
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const next = (at + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
+        list[next].focus({ preventScroll: true });
+      } else if (e.key === "Home" || e.key === "End") {
+        e.preventDefault();
+        list[e.key === "Home" ? 0 : list.length - 1].focus({ preventScroll: true });
+      } else if (e.key === "Tab") close(false);
+    });
+    menu.addEventListener("click", (e) => {
+      const b = e.target && e.target.closest ? e.target.closest("[data-carnet-insert]") : null;
+      if (!b) return;
+      const key = b.getAttribute("data-carnet-insert");
+      close(false);
+      runInsert(key);
+    });
+    doc.addEventListener("pointerdown", (e) => {
+      if (!menu.hidden && !row.contains(e.target)) close(false);
+      if (ui.eui) ui.eui.onPointerDown(e); // the editor's floating menus dismiss on an outside press (same single listener)
+    });
+    return row;
+  }
+
+  /** The single insertion path: every menu (Insérer, "/", "+", block menu) ends here. */
+  function runInsert(key) {
+    if (!curEntry()) return flashMsg(IMG_MSG.readonly);
+    const R = global.HqCarnetCommands;
+    const cmd = R ? R.byId(key) : null;
+    if (cmd && cmd.kind === "block") return runBlockCommand(cmd);
+    if (key === "cite") return openCitePicker();
+    if (key === "time") return insertText(timeMarker(new Date()));
+    if (key === "image") return pickImage("photos", null);
+    if (key === "camera") return pickImage("camera", null);
+    const eu = engUi();
+    if (!eu) return;
+    if (key === "file" || key === "drawing") return eu.openTool("link", key);
+    eu.openTool(key);
+  }
+
+  /** Re-type the caret's text block to the command's type (never an atom; never toggles back to a paragraph). */
+  function runBlockCommand(cmd) {
+    const R = global.HqCarnetCommands;
+    const sel = currentSel();
+    const at = Rich.locate(sel.lines, sel.start);
+    const res = R.convert(Rich, sel.lines, at.line, cmd.type);
+    if (res.error) return flashMsg("Ce bloc ne peut pas être converti");
+    if (commitLines(res.lines, { start: sel.start, end: sel.start }) && doc.activeElement !== ui.editor) focusEditor(false);
+  }
+
+
+  // ---- editor UI host (selection toolbar, "/" menu, block rail): thin adapters over the normal edit path
+  function mountEditorUi() {
+    const M = global.HqCarnetEditorUi;
+    const R = global.HqCarnetCommands;
+    const I = global.HqCarnetImageUi;
+    if (!M || !R) return null;
+    const host = {
+      doc, win: global, root: ui.root, rich: Rich, commands: R,
+      editor: () => ui.editor,
+      fine: finePointer,
+      state: () => {
+        const e = curEntry();
+        return e ? { pageId: e.id, rev: e.serverRev, gen: e.generation } : null;
+      },
+      sel: readSel,
+      setSel,
+      lines: () => Rich.parseEditor(ui.editor),
+      focusEditor: () => focusEditor(false),
+      insertText,
+      commit: (lines, sel) => commitLines(lines, sel),
+      status: (t, isErr) => flashMsg(t, isErr),
+      format: (kind) => applyFormat(kind),
+      cite: () => openCitePicker(),
+      command: (id) => runInsert(id),
+      isOn: (kind, sel) => {
+        if (Rich.INLINE.indexOf(kind) >= 0) return Rich.hasMark(sel.lines, sel.start, sel.end, kind);
+        return false;
+      },
+      clearFormat: (start, end) => {
+        let lines = Rich.cloneLines(Rich.parseEditor(ui.editor));
+        for (const t of Rich.INLINE) lines = Rich.setMark(lines, start, end, t, false);
+        const unlinked = Rich.setLink(lines, start, end, null);
+        if (unlinked) lines = unlinked;
+        commitLines(lines, { start, end });
+      },
+      dragging: () => false,
+    };
+    const api = M.mount(host);
+    if (I && typeof I.mount === "function") {
+      const dm = I.mount(api.dragHost());
+      host.bindMove = dm.bindMove;
+      host.dragging = dm.active;
+      api.drag = dm;
+    }
+    return api;
+  }
+
   function buildLibrary() {
     const aside = el("aside", { id: "hq-carnet-library", class: "carnet-library", "aria-label": "Bibliothèque", hidden: true });
+    // Structure (not font size) keeps the header from colliding: the title (+ close) owns row 1, the actions own row 2.
     const head = el("div", { class: "carnet-lib-head" }, [
       el("h3", { class: "carnet-lib-title", text: "Bibliothèque" }),
-      el("button", { type: "button", id: "btn-carnet-lib-new", class: "carnet-small", text: "+ Nouvelle page" }),
-      el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
       iconButton("btn-carnet-lib-close", "Fermer la bibliothèque", ICON.close, { class: "carnet-btn carnet-lib-close" }),
+      el("div", { class: "carnet-lib-actions" }, [
+        el("button", { type: "button", id: "btn-carnet-lib-new", class: "carnet-small carnet-primary", text: "+ Nouvelle page" }),
+        el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small carnet-quiet", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
+      ]),
     ]);
     const search = el("input", {
       type: "search", id: "hq-carnet-search", class: "carnet-input carnet-search", placeholder: "Rechercher…",
@@ -2194,7 +2363,11 @@
     });
     const filters = el("div", { class: "carnet-filters", role: "group", "aria-label": "Filtres" });
     for (const [key, label] of FILTERS.concat([["trash", "Corbeille"]])) {
-      filters.appendChild(el("button", { type: "button", class: "carnet-chip" + (key === "trash" ? " carnet-chip-trash" : ""), "data-carnet-filter": key, "aria-pressed": "false", text: label }));
+      if (key === "trash") filters.appendChild(el("span", { class: "carnet-filter-sep", role: "separator", "aria-orientation": "horizontal" }));
+      filters.appendChild(el("button", { type: "button", class: "carnet-chip" + (key === "trash" ? " carnet-chip-trash" : ""), "data-carnet-filter": key, "aria-pressed": "false" }, [
+        el("span", { class: "carnet-chip-name", text: label }),
+        el("span", { class: "carnet-count", "data-carnet-fcount": key, text: "" }),
+      ]));
     }
     const scopes = el("div", { class: "carnet-lib-scopes" });
     const list = el("div", { id: "carnet-library-list", class: "carnet-lib-list", role: "list", "aria-label": "Pages" });
@@ -2379,6 +2552,7 @@
     newBtn.textContent = inherit ? "+ Nouvelle page ici" : "+ Nouvelle page";
     newBtn.hidden = sel.filter === "trash";
     const items = c.libraryItems();
+    renderFilterCounts(items);
     renderScopes(items);
     const label = lib.querySelector(".carnet-lib-scope");
     let scopeText = "";
@@ -2387,6 +2561,26 @@
     label.textContent = scopeText;
     label.hidden = !scopeText;
     renderList(items);
+  }
+
+  /** Derived counts beside the filters (one pass; nothing stored). */
+  function renderFilterCounts(items) {
+    const n = { all: 0, pinned: 0, unfiled: 0, decisions: 0, trash: 0, recent: 0 };
+    for (const it of items) {
+      if (it.deleted) {
+        n.trash += 1;
+        continue;
+      }
+      n.all += 1;
+      if (it.pinned) n.pinned += 1;
+      if (!it.project_id && !it.category_id) n.unfiled += 1;
+      if (it.hasDecision) n.decisions += 1;
+    }
+    n.recent = selectPages(items, { filter: "recent" }, Date.now()).groups.reduce((a, g) => a + g.items.length, 0);
+    for (const node of ui.libEl.querySelectorAll("[data-carnet-fcount]")) {
+      const v = String(n[node.getAttribute("data-carnet-fcount")] || 0);
+      if (node.textContent !== v) node.textContent = v;
+    }
   }
 
   function countBy(items, key) {
@@ -2401,7 +2595,7 @@
     const sel = ui.lib.sel;
     const pc = countBy(items, "project_id");
     const cc = countBy(items, "category_id");
-    const sig = JSON.stringify([c.st.projects, c.st.categories, sel, ui.lib.manage, [...pc], [...cc]]);
+    const sig = JSON.stringify([c.st.projects, c.st.categories, sel, ui.lib.manage, ui.lib.fold, [...pc], [...cc]]);
     if (sig === ui.lib.scopeSig) return;
     if (box.contains(doc.activeElement) && doc.activeElement.tagName !== "BUTTON") return; // never rebuild under typing
     ui.lib.scopeSig = sig;
@@ -2410,12 +2604,16 @@
     const active = c.st.projects.filter((p) => isObj(p) && !p.archived);
     const archived = c.st.projects.filter((p) => isObj(p) && p.archived);
 
+    // Collapsing is a view preference kept in memory for this page only (never in the draft store, never persisted).
+    // A section that holds the active filter keeps showing that one chip, so the filter state stays visible.
+    const foldP = ui.lib.fold.projects && !manage;
+    const foldC = ui.lib.fold.categories && !manage;
     const projHead = el("div", { class: "carnet-lib-sec-head" }, [
-      el("h4", { text: "Projets" }),
-      el("button", { type: "button", class: "carnet-small", "data-carnet-act": "manage", "aria-pressed": manage ? "true" : "false", text: manage ? "Terminé" : "Gérer" }),
+      foldButton("projects", "Projets", active.length, foldP),
+      el("button", { type: "button", class: "carnet-small carnet-quiet", "data-carnet-act": "manage", "aria-pressed": manage ? "true" : "false", text: manage ? "Terminé" : "Gérer" }),
     ]);
-    const projList = el("div", { class: "carnet-chips" });
-    for (const p of active) projList.appendChild(scopeChip("project", p, pc.get(p.id) || 0, sel));
+    const projList = el("div", { class: "carnet-chips", id: "carnet-sec-projects", hidden: false });
+    for (const p of active) if (!foldP || (sel.filter === "project" && sel.id === p.id)) projList.appendChild(scopeChip("project", p, pc.get(p.id) || 0, sel));
     if (!active.length && !manage) projList.appendChild(el("p", { class: "hint carnet-empty", text: "Aucun projet" }));
     box.append(projHead, projList);
     if (manage) {
@@ -2431,15 +2629,23 @@
       box.appendChild(det);
     }
 
-    const catHead = el("div", { class: "carnet-lib-sec-head" }, [el("h4", { text: "Catégories" })]);
-    const catList = el("div", { class: "carnet-chips" });
-    for (const k of c.st.categories.filter(isObj)) catList.appendChild(scopeChip("category", k, cc.get(k.id) || 0, sel));
+    const catHead = el("div", { class: "carnet-lib-sec-head" }, [foldButton("categories", "Catégories", c.st.categories.filter(isObj).length, foldC)]);
+    const catList = el("div", { class: "carnet-chips", id: "carnet-sec-categories" });
+    for (const k of c.st.categories.filter(isObj)) if (!foldC || (sel.filter === "category" && sel.id === k.id)) catList.appendChild(scopeChip("category", k, cc.get(k.id) || 0, sel));
     if (!c.st.categories.length && !manage) catList.appendChild(el("p", { class: "hint carnet-empty", text: "Aucune catégorie" }));
     box.append(catHead, catList);
     if (manage) {
       for (const k of c.st.categories.filter(isObj)) box.appendChild(categoryRow(k));
       box.appendChild(createForm("category"));
     }
+  }
+
+  function foldButton(key, label, n, folded) {
+    const b = el("button", { type: "button", class: "carnet-fold", "data-carnet-fold": key, "aria-expanded": folded ? "false" : "true", "aria-controls": "carnet-sec-" + key });
+    b.appendChild(el("span", { class: "carnet-fold-chev", "aria-hidden": "true", text: folded ? "▸" : "▾" }));
+    b.appendChild(el("span", { class: "carnet-fold-name", text: label }));
+    b.appendChild(el("span", { class: "carnet-count", text: String(n) }));
+    return el("h4", { class: "carnet-fold-h" }, [b]);
   }
 
   function scopeChip(kind, item, count, sel) {
@@ -2569,7 +2775,11 @@
         count += 1;
       }
     }
-    if (!count) list.appendChild(el("p", { class: "hint carnet-empty", text: result.searching ? MSG.noResults : trash ? "Corbeille vide" : MSG.noPages }));
+    if (!count) {
+      list.appendChild(el("p", { class: "hint carnet-empty", text: result.searching ? MSG.noResults : trash ? "Corbeille vide" : MSG.noPages }));
+      const more = result.searching ? "Essaie un autre mot, ou vide la recherche." : trash ? "Les pages supprimées apparaissent ici ; tu peux les restaurer." : sel.filter === "all" ? "Crée ta première page avec + Nouvelle page." : "Choisis « Toutes » pour voir toutes les pages.";
+      list.appendChild(el("p", { class: "hint carnet-empty-hint", text: more }));
+    }
     if (focusedId) {
       const again = list.querySelector('[data-carnet-page-id="' + (global.CSS && CSS.escape ? CSS.escape(focusedId) : focusedId) + '"]');
       if (again) again.focus({ preventScroll: true });
@@ -2601,6 +2811,17 @@
     if (b.id === "btn-carnet-lib-close") return closeLibrary(true);
     if (b.id === "btn-carnet-lib-new") return newPage(scopeCreateContext() || {});
     if (b.id === "btn-carnet-lib-bulk") return openHistory("bulk", b);
+    if (b.dataset.carnetFold) {
+      const k = b.dataset.carnetFold;
+      if (k === "projects" || k === "categories") {
+        ui.lib.fold[k] = !ui.lib.fold[k];
+        ui.lib.scopeSig = "";
+        renderLibrary();
+        const again = ui.libEl.querySelector('[data-carnet-fold="' + k + '"]');
+        if (again) again.focus({ preventScroll: true });
+      }
+      return;
+    }
     if (b.dataset.carnetFilter) {
       ui.lib.sel = { filter: b.dataset.carnetFilter, id: null };
       return renderLibrary();
@@ -3036,6 +3257,7 @@
     if (Rich.flat(cur) === local.text && Rich.fmtOf(cur) === local.fmt) return;
     const sel = keepCaret && doc.activeElement === ed ? readSel() : null;
     renderEditor(localLines(local));
+    if (ui.eui) ui.eui.invalidate(); // a remote/restored version replaced the text: floating UIs never act on the old one
     if (sel) setSel(Math.min(sel.start, local.text.length), Math.min(sel.end, local.text.length));
   }
 
@@ -3049,6 +3271,7 @@
     findRefresh();
     closeLink();
     closeImageTools();
+    if (ui.eui) ui.eui.invalidate();
     if (ui.eng) ui.eng.onPageChange(e ? e.id : null);
   }
 
@@ -3237,17 +3460,48 @@
     ed.setSelectionRange = (a, b) => setSel(a, b);
   }
 
-  function markEmpty(ed) {
+  function markEmpty(ed, parsed) {
     const e = ed || ui.editor;
     if (!e) return;
     const first = e.children.length === 1 && e.firstChild && e.firstChild.getAttribute("data-line-type") === "paragraph" && !e.firstChild.textContent;
     if (first) e.setAttribute("data-empty", "true");
     else e.removeAttribute("data-empty");
+    decorateTitle(e, parsed);
+  }
+
+  /**
+   * Visual page-title treatment ONLY: a non-persisted attribute on the first block when it is an editable text-like block.
+   * derive_title() stays authoritative (first non-empty line, unchanged); nothing is stored or exported for this.
+   * The input is the real parsed model (the same parser that feeds every save), never text synthesised from rendered DOM:
+   * presentation text (a decision's "DÉCISION · time" label, an image caption, a calculation result) is not block text.
+   * The whole page is scanned (it is bounded by BLOCKS_MAX) and the scan stops at the first non-empty model line.
+   */
+  function decorateTitle(e, parsed) {
+    const R = global.HqCarnetCommands;
+    let want = null;
+    if (R) {
+      const lines = parsed || Rich.parseEditor(e);
+      const at = R.titleIndex(lines);
+      // parseEditor normalises lines (no element reference) but guarantees a unique id per line, written back on the block
+      const id = at >= 0 && lines[at] ? lines[at].id : null;
+      if (id) {
+        for (const k of e.children) {
+          if (k.getAttribute("data-carnet-block-id") === id || k.getAttribute("data-carnet-tmp") === id) {
+            want = k;
+            break;
+          }
+        }
+      }
+    }
+    for (const n of e.querySelectorAll(":scope > [data-title]")) if (n !== want) n.removeAttribute("data-title");
+    if (want && !want.hasAttribute("data-title")) want.setAttribute("data-title", "true");
   }
 
   function renderEditor(lines) {
     Rich.renderInto(ui.editor, lines);
     markEmpty();
+    // a full re-render rebuilt every line: a selected image that is still the same block keeps its selected look and tools
+    if (ui.image && ui.image.sel) refreshImageUi();
   }
 
   /** {start, end, lines} for the selection inside the editor, or null when it lies elsewhere. */
@@ -3332,7 +3586,7 @@
     if (!c || !c.st.currentId) return;
     const lines = Rich.parseEditor(ui.editor);
     Rich.renumber(ui.editor);
-    markEmpty();
+    markEmpty(ui.editor, lines);
     ui.pendingMarks = null;
     if (!c.edit(c.st.currentId, { text: Rich.flat(lines), fmt: Rich.fmtOf(lines), ids: Rich.idsOf(lines) })) {
       const e = c.current();
@@ -3384,6 +3638,8 @@
           commitLines(Rich.setBlockType(sel.lines, sel.start, sel.start, sel.lines[at.line].type), sel);
         }
       }
+    } else if (t === "insertText" && ev.data === "/" && ui.eui && ui.eui.slashKey(ev)) {
+      return; // the menu took the keystroke: no "/" enters the document unless it is dismissed in a still-valid context
     } else if (t === "insertText" && ev.data && ui.pendingMarks && ev.data.indexOf("\n") < 0) {
       const sel = readSel();
       if (sel && ui.pendingMarks.pos === sel.start) {
@@ -3404,10 +3660,99 @@
     return String(text).replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
   }
 
+  // ---- image drop / paste (UX pass): both routes end in imageFromFile() = the accepted Stage-06 pipeline (prepare -> upload -> edit)
+
+  /** The routing hint only (`type`): Media.prepare re-reads the real bytes and refuses anything that is not JPEG/PNG/WebP. */
+  function firstImageFile(dt) {
+    if (!dt) return null;
+    for (const f of dt.files || []) if (f && /^image\//i.test(f.type || "")) return f;
+    for (const it of dt.items || []) {
+      if (it && it.kind === "file" && /^image\//i.test(it.type || "")) {
+        const f = it.getAsFile();
+        if (f) return f;
+      }
+    }
+    return null;
+  }
+
+  function hasFiles(dt) {
+    return !!dt && Array.prototype.indexOf.call(dt.types || [], "Files") >= 0;
+  }
+
+  function setDropState(on) {
+    if (ui.paper) {
+      if (on) ui.paper.setAttribute("data-drop", "true");
+      else ui.paper.removeAttribute("data-drop");
+    }
+  }
+
+  /** Where a dropped image goes: the block slot under the pointer (decided NOW, re-checked when the upload lands). */
+  function imgDropTarget(e, clientY) {
+    const lines = Rich.parseEditor(ui.editor);
+    const kids = ui.editor.children;
+    let slot = 0;
+    for (let i = 0; i < kids.length; i += 1) {
+      const r = kids[i].getBoundingClientRect();
+      if (clientY > r.top + r.height / 2) slot = i + 1;
+    }
+    if (!lines.length) return null;
+    const idx = Math.max(0, Math.min(lines.length - 1, slot === 0 ? 0 : slot - 1));
+    return { pageId: e.id, mode: slot === 0 ? "before" : "after", anchorId: lines[idx].id, replace: null };
+  }
+
+  function insertImageFile(file, origin) {
+    const I = ui.image;
+    if (!Media) return imgNote(IMG_MSG.unavailable, true);
+    const e = curEntry();
+    if (!e) return imgNote(IMG_MSG.readonly, true);
+    if (I.busy) return imgNote(IMG_MSG.busy, true);
+    if (Rich.assetsOf(localLines(e.local)).length >= Rich.IMAGES_PER_PAGE_MAX) return imgNote(IMG_MSG.tooMany, true);
+    imageFromFile(file, origin || imgCaptureTarget(e));
+  }
+
+  function wireImageDrop(root) {
+    let depth = 0;
+    root.addEventListener("dragenter", (ev) => {
+      if (!hasFiles(ev.dataTransfer)) return;
+      depth += 1;
+      ev.preventDefault();
+      if (curEntry()) setDropState(true);
+    });
+    root.addEventListener("dragover", (ev) => {
+      if (!hasFiles(ev.dataTransfer)) return;
+      ev.preventDefault(); // otherwise the browser would navigate to the dropped file
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = curEntry() ? "copy" : "none";
+    });
+    root.addEventListener("dragleave", () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) setDropState(false);
+    });
+    root.addEventListener("drop", (ev) => {
+      if (!hasFiles(ev.dataTransfer)) return;
+      ev.preventDefault();
+      depth = 0;
+      setDropState(false);
+      const e = curEntry();
+      if (!e) return imgNote(IMG_MSG.readonly, true);
+      const file = firstImageFile(ev.dataTransfer);
+      if (!file) return flashMsg("Seules les images JPEG, PNG ou WebP peuvent être déposées.");
+      insertImageFile(file, imgDropTarget(e, ev.clientY));
+    });
+    root.addEventListener("dragend", () => {
+      depth = 0;
+      setDropState(false);
+    });
+  }
+
   function onPaste(ev) {
     ev.preventDefault(); // plain text only: no clipboard HTML ever reaches the note
     const e = curEntry();
     if (!e) return;
+    const pic = firstImageFile(ev.clipboardData);
+    if (pic) {
+      insertImageFile(pic, null);
+      return;
+    }
     const data = ev.clipboardData && ev.clipboardData.getData ? ev.clipboardData.getData("text/plain") : "";
     const text = cleanPasted(data);
     const sel = readSel();
@@ -3417,6 +3762,7 @@
   }
 
   function onEditorKey(ev) {
+    if (ui.eui && ui.eui.onKeydown(ev)) return;
     if (onImageKey(ev)) return;
     const atomEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-eng]") : null;
     if (atomEl && ui.editor.contains(atomEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
@@ -3505,7 +3851,7 @@
     ed.addEventListener("input", onEditorInput);
     ed.addEventListener("beforeinput", onBeforeInput);
     ed.addEventListener("paste", onPaste);
-    ed.addEventListener("drop", (ev) => ev.preventDefault());
+    ed.addEventListener("drop", (ev) => ev.preventDefault()); // (the root-level handler inserts dropped images)
     ed.addEventListener("keydown", onEditorKey);
     ed.addEventListener("click", onEditorClick);
     ed.addEventListener("error", onImageError, true); // <img> errors do not bubble: capture
@@ -3519,7 +3865,22 @@
     });
   }
 
+  /** One global scroll/resize listener (registered once in init): floating UIs re-anchor, nothing else. */
+  function onViewportChange(ev) {
+    if (ui.phase !== "ready" || !ui.editor) return;
+    const I = ui.image;
+    if (I && I.sel) {
+      const b = imgBound(false);
+      if (b) placeImageTools(ui.editor.children[b.idx]);
+    }
+    if (ui.eui) {
+      if (ev && ev.type === "resize") ui.eui.onResize();
+      ui.eui.onViewport();
+    }
+  }
+
   function onSelectionChange() {
+    if (ui.eui && ui.phase === "ready") ui.eui.onSelectionChange();
     if (ui.phase !== "ready" || !ui.editor) return;
     const sel = global.getSelection ? global.getSelection() : null;
     if (!sel || !sel.rangeCount || !ui.editor.contains(sel.getRangeAt(0).startContainer)) return;
@@ -4368,7 +4729,7 @@
   const Media = global.HqCarnetMedia || null;
 
   function imgSig(a) {
-    return a.id + "|" + a.width + "|" + a.caption;
+    return a.id + "|" + a.width + "|" + a.layout + "|" + a.caption;
   }
 
   function imgFind(lines, blockId, e) {
@@ -4437,13 +4798,26 @@
       placeholder: "Légende", "aria-label": "Légende de l'image",
     });
     const btn = (id, text, extra) => el("button", Object.assign({ type: "button", id, class: "carnet-small", text }, extra || {}));
+    const ctl = (id, text, label, extra) => el("button", Object.assign({ type: "button", id, class: "carnet-small carnet-touch", text, "aria-label": label, "data-carnet-image-act": id.replace("btn-carnet-image-", "") }, extra || {}));
     const tools = el("div", { id: "hq-carnet-image-tools", class: "carnet-panel carnet-image-tools", role: "group", "aria-label": "Outils de l'image", "data-carnet-image-tools": "", hidden: true }, [
+      el("div", { class: "carnet-panel-row carnet-image-act-row", role: "group", "aria-label": "Position" }, [
+        ctl("btn-carnet-image-up", "↑ Monter", "Déplacer l'image vers le haut"),
+        ctl("btn-carnet-image-down", "↓ Descendre", "Déplacer l'image vers le bas"),
+        ctl("btn-carnet-image-smaller", "− Plus petite", "Réduire l'image"),
+        ctl("btn-carnet-image-larger", "+ Plus grande", "Agrandir l'image"),
+      ]),
+      el("div", { class: "carnet-panel-row carnet-image-act-row", role: "group", "aria-label": "Alignement" }, [
+        ctl("btn-carnet-image-left", "Gauche", "Aligner l'image à gauche", { "aria-pressed": "false" }),
+        ctl("btn-carnet-image-center", "Centre", "Centrer l'image", { "aria-pressed": "false" }),
+        ctl("btn-carnet-image-right", "Droite", "Aligner l'image à droite", { "aria-pressed": "false" }),
+      ]),
       el("div", { class: "carnet-panel-row carnet-image-width-row" }, [
         el("label", { class: "carnet-image-width-label", for: "carnet-image-width", text: "Largeur" }), range, out,
       ]),
       el("div", { class: "carnet-panel-row" }, [caption]),
       el("div", { class: "carnet-panel-row" }, [
-        btn("btn-carnet-image-replace", "Remplacer…"),
+        ctl("btn-carnet-image-caption-focus", "Légende", "Modifier la légende de l'image"),
+        btn("btn-carnet-image-replace", "Remplacer…", { "aria-label": "Remplacer l'image" }),
         btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),
         btn("btn-carnet-image-done", "Terminé"),
       ]),
@@ -4469,6 +4843,15 @@
       if (b.id === "btn-carnet-image-done") closeImageTools("", true);
       else if (b.id === "btn-carnet-image-replace") replaceSelectedImage();
       else if (b.id === "btn-carnet-image-remove") removeSelectedImage();
+      else if (b.id === "btn-carnet-image-caption-focus") {
+        caption.focus();
+      } else if (b.id === "btn-carnet-image-up") imgNudge(-1);
+      else if (b.id === "btn-carnet-image-down") imgNudge(1);
+      else if (b.id === "btn-carnet-image-smaller") imgStep(-5);
+      else if (b.id === "btn-carnet-image-larger") imgStep(5);
+      else if (b.id === "btn-carnet-image-left") imgAlign("inline");
+      else if (b.id === "btn-carnet-image-center") imgAlign("center");
+      else if (b.id === "btn-carnet-image-right") imgAlign("right");
     });
     return tools;
   }
@@ -4681,6 +5064,116 @@
     return ok;
   }
 
+  /** One-step controls (also the keyboard alternative to the pointer gestures). */
+  function imgStep(delta) {
+    const b = imgBound();
+    if (!b) return;
+    const w = b.lines[b.idx].asset.width;
+    const next = clampWidth(w + delta);
+    if (next === w) {
+      imgToolsNote(delta < 0 ? "Taille minimale atteinte" : "Taille maximale atteinte");
+      return;
+    }
+    if (imgMutate((a) => Object.assign({}, a, { width: next }))) imgToolsNote("Largeur : " + next + " %");
+  }
+
+  function imgAlign(layout) {
+    const b = imgBound();
+    if (!b) return;
+    if (b.lines[b.idx].asset.layout === layout) return;
+    if (imgMutate((a) => Object.assign({}, a, { layout }))) imgToolsNote(layout === "inline" ? "Aligné à gauche" : layout === "center" ? "Centré" : "Aligné à droite");
+  }
+
+  /** Reorder whole blocks: ids and content are untouched, only the order changes (one normal edit). */
+  function imgMoveTo(toIndex, token) {
+    const I = ui.image;
+    const b = imgBound();
+    if (!b) return false;
+    if (token && !imgTokenValid(token)) return false;
+    const to = Math.max(0, Math.min(b.lines.length - 1, toIndex));
+    if (to === b.idx) return false;
+    if (imgSig(b.lines[b.idx].asset) !== I.sel.sig) {
+      imgTools(b, true);
+      imgToolsNote(IMG_MSG.staleTool);
+      return false;
+    }
+    const moved = b.lines.splice(b.idx, 1)[0];
+    b.lines.splice(to, 0, moved);
+    if (!imgCommit(b.lines, null, true)) return false;
+    I.sel.rev = b.e.serverRev;
+    imgToolsNote("Image déplacée : bloc " + (to + 1) + " sur " + b.lines.length);
+    refreshImageUi();
+    return true;
+  }
+
+  function imgNudge(dir) {
+    const b = imgBound();
+    if (!b) return;
+    const to = b.idx + dir;
+    if (to < 0 || to >= b.lines.length) {
+      imgToolsNote(dir < 0 ? "Déjà en haut de la page" : "Déjà en bas de la page");
+      return;
+    }
+    if (imgMoveTo(to, null)) {
+      const fig = ui.editor.children[to] && ui.editor.children[to].querySelector("figure");
+      const btn = doc.getElementById(dir < 0 ? "btn-carnet-image-up" : "btn-carnet-image-down");
+      if (btn && !btn.disabled) btn.focus({ preventScroll: true });
+      else if (fig) fig.focus({ preventScroll: true });
+    }
+  }
+
+  /** A gesture's proof of "same state": page, revision, editor generation and the very DOM line. */
+  function imgToken(lineEl) {
+    const I = ui.image;
+    const e = curEntry();
+    if (!e || !I.sel || e.id !== I.sel.pageId || !ui.editor.contains(lineEl) || isReadOnly(e)) return null;
+    const b = imgBound(false);
+    if (!b || ui.editor.children[b.idx] !== lineEl) return null;
+    return { pageId: e.id, rev: e.serverRev, gen: e.generation, lineEl, blockId: I.sel.blockId, assetId: I.sel.assetId, sig: I.sel.sig };
+  }
+
+  function imgTokenValid(t) {
+    const e = curEntry();
+    const I = ui.image;
+    if (!t || !e || !I.sel || e.id !== t.pageId || e.serverRev !== t.rev || e.generation !== t.gen) return false;
+    if (!t.lineEl.isConnected || !ui.editor.contains(t.lineEl)) return false;
+    const b = imgBound(false);
+    return !!b && ui.editor.children[b.idx] === t.lineEl && imgSig(b.lines[b.idx].asset) === t.sig;
+  }
+
+  function imageUi() {
+    if (ui.imageUi) return ui.imageUi;
+    const M = global.HqCarnetImageUi;
+    if (!M || typeof M.mount !== "function") return null;
+    const cur = (t) => {
+      const b = imgBound(false);
+      return b ? b.lines[b.idx].asset : null;
+    };
+    ui.imageUi = M.mount({
+      doc,
+      editor: () => ui.editor,
+      token: (lineEl) => imgToken(lineEl),
+      valid: (t) => imgTokenValid(t),
+      widthOf: (t) => (cur(t) ? cur(t).width : 100),
+      layoutOf: (t) => (cur(t) ? cur(t).layout : "inline"),
+      status: (text, isError) => {
+        imgToolsNote(text);
+        if (isError) flashMsg(text);
+      },
+      commitWidth: (t, width) => {
+        if (imgTokenValid(t) && imgMutate((a) => Object.assign({}, a, { width: clampWidth(width) }))) imgToolsNote("Largeur : " + clampWidth(width) + " %");
+        else refreshImageUi();
+      },
+      commitMove: (t, to) => {
+        if (!imgMoveTo(to, t)) refreshImageUi();
+      },
+      nudge: (dir) => imgNudge(dir),
+      raf: (fn) => (global.requestAnimationFrame ? global.requestAnimationFrame(fn) : setTimeout(fn, 16)),
+      cancelRaf: (h) => (global.cancelAnimationFrame ? global.cancelAnimationFrame(h) : clearTimeout(h)),
+    });
+    return ui.imageUi;
+  }
+
   function imgToolsNote(text) {
     const n = doc.getElementById("carnet-image-tools-msg");
     if (n) n.textContent = text || "";
@@ -4697,6 +5190,18 @@
     if (force || doc.activeElement !== cap) cap.value = a.caption;
     out.textContent = a.width + " %";
     I.sel.sig = imgSig(a);
+    imgPressed(a);
+  }
+
+  /** Alignment buttons expose the CURRENT layout (aria-pressed), refreshed on every state change. */
+  function imgPressed(a) {
+    const setPressed = (id, on) => {
+      const n = doc.getElementById(id);
+      if (n) n.setAttribute("aria-pressed", on ? "true" : "false");
+    };
+    setPressed("btn-carnet-image-left", a.layout === "inline");
+    setPressed("btn-carnet-image-center", a.layout === "center");
+    setPressed("btn-carnet-image-right", a.layout === "right");
   }
 
   function selectImageLine(lineEl) {
@@ -4726,6 +5231,10 @@
     const tools = doc.getElementById("hq-carnet-image-tools");
     if (tools) tools.hidden = true;
     if (ui.editor) for (const n of ui.editor.querySelectorAll("[data-selected]")) n.removeAttribute("data-selected");
+    if (ui.imageUi) {
+      ui.imageUi.abort();
+      ui.imageUi.clearHandles();
+    }
     const rm = doc.getElementById("btn-carnet-image-remove");
     if (rm) rm.textContent = IMG_MSG.remove;
     if (had && note) flashMsg(note);
@@ -4766,6 +5275,63 @@
     }
     const replace = doc.getElementById("btn-carnet-image-replace");
     if (replace) replace.disabled = I.busy;
+    const dis = (id, v) => {
+      const n = doc.getElementById(id);
+      if (n) n.disabled = !!v;
+    };
+    imgPressed(a);
+    dis("btn-carnet-image-up", b.idx === 0);
+    dis("btn-carnet-image-down", b.idx === b.lines.length - 1);
+    dis("btn-carnet-image-smaller", a.width <= Rich.ASSET_WIDTH_MIN);
+    dis("btn-carnet-image-larger", a.width >= Rich.ASSET_WIDTH_MAX);
+    const iu = imageUi();
+    if (iu && !iu.active()) iu.decorate(ui.editor.children[b.idx], a.layout);
+    const fig = ui.editor.children[b.idx].querySelector("figure");
+    if (fig) {
+      // presentation only (not part of the content model): the selected image states its width and alignment
+      const label = a.width + " % · " + (a.layout === "center" ? "centré" : a.layout === "right" ? "à droite" : "à gauche");
+      if (fig.getAttribute("data-badge") !== label) fig.setAttribute("data-badge", label);
+    }
+    for (const f of ui.editor.querySelectorAll("figure[data-badge]")) if (f !== fig) f.removeAttribute("data-badge");
+    placeImageTools(ui.editor.children[b.idx]);
+  }
+
+  /**
+   * The image toolbar floats next to the selected image (below it, else above it, else docked at the bottom of the viewport),
+   * clamped to the viewport; on coarse pointers it is a bottom sheet. Pure presentation: no state, nothing persisted.
+   */
+  function placeImageTools(lineEl) {
+    const tools = doc.getElementById("hq-carnet-image-tools");
+    if (!tools || tools.hidden || !lineEl) return;
+    const vw = global.innerWidth || doc.documentElement.clientWidth;
+    const vh = global.innerHeight || doc.documentElement.clientHeight;
+    if (!finePointer() || vw < 600) {
+      tools.setAttribute("data-float", "sheet");
+      tools.style.top = "";
+      tools.style.left = "";
+      return;
+    }
+    const fig = lineEl.querySelector("figure") || lineEl;
+    const r = fig.getBoundingClientRect();
+    const w = Math.min(560, vw - 16);
+    tools.style.width = w + "px";
+    const h = tools.offsetHeight;
+    const margin = 8;
+    const nav = 72;
+    let top = r.bottom + 10;
+    let mode = "below";
+    if (top + h > vh - nav) {
+      top = r.top - h - 10;
+      mode = "above";
+    }
+    if (top < margin) {
+      top = Math.max(margin, vh - nav - h);
+      mode = "dock";
+    }
+    const left = Math.max(margin, Math.min(r.left + r.width / 2 - w / 2, vw - w - margin));
+    tools.setAttribute("data-float", mode);
+    tools.style.top = Math.round(top) + "px";
+    tools.style.left = Math.round(left) + "px";
   }
 
   function replaceSelectedImage() {
@@ -5023,6 +5589,8 @@
     ui.listeners = true;
     doc.addEventListener("keydown", onKey);
     doc.addEventListener("selectionchange", onSelectionChange);
+    global.addEventListener("scroll", onViewportChange, true);
+    global.addEventListener("resize", onViewportChange);
     doc.addEventListener("visibilitychange", () => {
       if (ui.phase !== "ready") return;
       if (doc.visibilityState === "hidden") {

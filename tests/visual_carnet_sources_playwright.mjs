@@ -403,7 +403,9 @@ async function main() {
 
     // ================================================================ 5. supersession + migration (per citation, explicit)
     console.log("-- supersession: old citation stays correct; migration is explicit [desktop]");
-    await p.locator('.carnet-line').first().click();
+    // Click the START of the line: the first block now wears the page-title treatment (larger type), so the old centre-of-line
+    // click could land on the citation atom and open it. The assertion that follows is unchanged.
+    await p.locator('.carnet-line').first().click({ position: { x: 4, y: 8 } });
     await typeAtEnd(p, " ");
     await openPicker(p);
     await p.locator('.carnet-src-item[data-edition="' + S.e11.id + '"]').click();

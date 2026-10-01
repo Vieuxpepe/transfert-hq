@@ -292,13 +292,13 @@
       S.panel.focus({ preventScroll: true }); // Escape / Tab now act inside the panel
     }
 
-    function openTool(kind) {
+    function openTool(kind, preset) {
       if (kind === "calc") return toolCalc();
       if (kind === "measure") return toolMeasure();
       if (kind === "decision") return toolDecision();
       if (kind === "convert") return toolConvert();
       if (kind === "task") return toolTask();
-      if (kind === "link") return toolLink();
+      if (kind === "link") return toolLink(preset);
       return openMenu();
     }
 
@@ -765,7 +765,7 @@
       return out.slice(0, 300);
     }
 
-    function toolLink() {
+    function toolLink(preset) {
       const b = capture("link");
       if (!b) return;
       show("link", "Lien HQ");
@@ -774,7 +774,7 @@
         S.body.appendChild(el(doc, "p", { class: "hint", text: MSG.linkNeedSel }));
         return;
       }
-      const kind = select("Type", "hq-carnet-eng-l-kind", LINK_KINDS_UI, "note");
+      const kind = select("Type", "hq-carnet-eng-l-kind", LINK_KINDS_UI, LINK_KINDS_UI.some((k) => k[0] === preset) ? preset : "note");
       const target = select("Cible", "hq-carnet-eng-l-target", [["", "—"]], "");
       const ins = button("btn-carnet-eng-link", "Lier");
       ins.disabled = true;

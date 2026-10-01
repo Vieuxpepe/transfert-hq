@@ -809,7 +809,7 @@ scenario("quota exhaustion is explicit; orphans keep counting; nothing is stored
   await ctx.close();
 });
 
-scenario("editing safety: select-all delete then native undo; pasted/dropped image files are never inserted", async () => {
+scenario("editing safety: select-all delete then native undo; a pasted/dropped file that is not a real image is refused before any upload", async () => {
   const srv = await server(textNb());
   const ctx = await context(srv);
   const p = await openPage(ctx, srv);
@@ -818,7 +818,7 @@ scenario("editing safety: select-all delete then native undo; pasted/dropped ima
   await seeImage(p);
   await p.click("#btn-carnet-image-done");
   await saved(p);
-  // paste / drop with an image file: ignored (plain text only), no figure appears, nothing uploaded
+  // UX pass: paste/drop of an image file now reaches the Stage-06 pipeline, which sniffs the BYTES and refuses this fake PNG before any upload
   let posts = 0;
   p.on("request", (r) => { if (r.url().endsWith("/api/carnet/asset") && r.method() === "POST") posts += 1; });
   await p.evaluate(() => {
@@ -830,7 +830,7 @@ scenario("editing safety: select-all delete then native undo; pasted/dropped ima
     ed.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
   });
   await sleep(300);
-  check((await figs(p).count()) === 1 && posts === 0, "paste/drop of an image file changed nothing and uploaded nothing");
+  check((await figs(p).count()) === 1 && posts === 0, "paste/drop of a fake image (bytes 1,2,3) changed nothing and uploaded nothing");
   // select all + Delete
   await p.click("#hq-carnet-editor p, #hq-carnet-editor [data-line-type='paragraph']");
   await p.keyboard.press("Control+a");

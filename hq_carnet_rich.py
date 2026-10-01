@@ -46,7 +46,7 @@ only bounded metadata, never bytes or a path::
     {"id": "block-…", "type": "image", "text": "", "marks": [],
      "asset": {"id": "asset-<24 hex>", "mime": "image/jpeg|png|webp", "w": 1600, "h": 1200,
                "width": 30..100,            # percent of the content width
-               "layout": "inline",          # the only layout (free position is not implemented)
+               "layout": "inline"|"center"|"right",  # bounded alignment in the flow (no free position; old images are "inline")
                "caption": "one line"}}
 
 ``text`` is always empty (an image line occupies no text offset: marks, find/replace and titles never touch
@@ -93,6 +93,7 @@ IMAGES_PER_PAGE_MAX = 32
 ENG_ATOMS_PER_PAGE_MAX = 50  # calc + measure atoms per page (bounds the notebook file size)
 DECISIONS_PER_PAGE_MAX = 100
 ASSET_KEYS = {"id", "mime", "w", "h", "width", "layout", "caption"}
+ASSET_LAYOUTS = ("inline", "center", "right")
 INLINE_MARKS = ("bold", "italic", "underline", "highlight", "code")
 MARK_ORDER = INLINE_MARKS + ("link", "citation")
 REF_KINDS = ("note", "file", "drawing", "model", "media", "project")
@@ -438,10 +439,11 @@ def check_asset(asset: Any) -> dict:
     width = asset["width"]
     if not _is_int(width) or not ASSET_WIDTH_MIN <= width <= ASSET_WIDTH_MAX:
         raise ContentError("Largeur d'image invalide")
-    if asset["layout"] != "inline":
+    layout = asset["layout"]
+    if not isinstance(layout, str) or layout not in ASSET_LAYOUTS:
         raise ContentError("Disposition d'image non prise en charge")
     caption = check_caption(asset["caption"])
-    return {"id": ident, "mime": asset["mime"], "w": asset["w"], "h": asset["h"], "width": width, "layout": "inline", "caption": caption}
+    return {"id": ident, "mime": asset["mime"], "w": asset["w"], "h": asset["h"], "width": width, "layout": layout, "caption": caption}
 
 
 def asset_key(asset: dict) -> tuple:

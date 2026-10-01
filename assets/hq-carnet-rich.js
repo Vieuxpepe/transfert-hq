@@ -10,7 +10,7 @@
  *           citation or a link; part of canonical equality (fmt) so two citations with the same label but
  *           another edition / locator / PDF page / verified flag / provenance are different content.
  *   image (Stage 06): an ATOM line with `asset` = {id: asset-<24 hex>, mime, w, h, width: 30..100 (%), layout:
- *           "inline", caption}. Its `text` is always "" and it never has marks: it occupies no text offset,
+ *           "inline"|"center"|"right" (UX pass: bounded alignment, no free position), caption}. Its `text` is always "" and it never has marks: it occupies no text offset,
  *           so marks, find/replace, offsets and titles never touch it. The bytes live on the server
  *           (/api/carnet/asset/<id>); a page only ever carries this bounded metadata.
  *   calc / measure (Stage 07): ATOM lines like an image (text "", no marks, no caret inside) carrying a bounded declarative
@@ -56,6 +56,7 @@
   const ASSET_CAPTION_MAX = 300;
   const IMAGES_PER_PAGE_MAX = 32;
   const ASSET_URL = "/api/carnet/asset/";
+  const ASSET_LAYOUTS = ["inline", "center", "right"];
   const INLINE = ["bold", "italic", "underline", "highlight", "code"];
   const MARK_ORDER = INLINE.concat(["link", "citation"]);
   const LOCATOR_KINDS = ["page", "section", "clause", "chapter", "figure", "table", "custom"];
@@ -342,9 +343,9 @@
     if (!isObj(a) || Object.keys(a).sort().join(",") !== "caption,h,id,layout,mime,w,width") return null;
     if (typeof a.id !== "string" || !ASSET_ID.test(a.id) || ASSET_MIMES.indexOf(a.mime) < 0) return null;
     if (!isInt(a.w) || !isInt(a.h) || a.w < 1 || a.h < 1 || a.w > ASSET_LONG_SIDE_MAX || a.h > ASSET_LONG_SIDE_MAX) return null;
-    if (!isInt(a.width) || a.width < ASSET_WIDTH_MIN || a.width > ASSET_WIDTH_MAX || a.layout !== "inline") return null;
+    if (!isInt(a.width) || a.width < ASSET_WIDTH_MIN || a.width > ASSET_WIDTH_MAX || ASSET_LAYOUTS.indexOf(a.layout) < 0) return null;
     if (!captionOk(a.caption)) return null;
-    return { id: a.id, mime: a.mime, w: a.w, h: a.h, width: a.width, layout: "inline", caption: a.caption };
+    return { id: a.id, mime: a.mime, w: a.w, h: a.h, width: a.width, layout: a.layout, caption: a.caption };
   }
 
   function isEngType(type) {
@@ -493,7 +494,12 @@
       ];
       // Only image rows carry a 4th element (fixed order, never object keys): every other row is
       // byte-identical to the pre-Stage-06 encoding, so existing drafts/bases stay comparable.
-      if (l.type === "image") row.push([l.asset.id, l.asset.mime, l.asset.w, l.asset.h, l.asset.width, l.asset.caption]);
+      // The layout is a 7th element ONLY when it is not the default "inline": every Stage-06 image row stays byte-identical.
+      if (l.type === "image") {
+        const ar = [l.asset.id, l.asset.mime, l.asset.w, l.asset.h, l.asset.width, l.asset.caption];
+        if (l.asset.layout !== "inline") ar.push(l.asset.layout);
+        row.push(ar);
+      }
       else if (isEngType(l.type)) row.push(Eng.encode(l.type, l.eng)); // Stage 07: same 4th-element rule, fixed-order arrays
       return row;
     }));
@@ -539,8 +545,9 @@
       }
       if (type === "image") {
         const a = row[3];
-        if (base[i] !== "" || row[2].length || !Array.isArray(a) || a.length !== 6) return null;
-        const asset = checkAsset({ id: a[0], mime: a[1], w: a[2], h: a[3], width: a[4], layout: "inline", caption: a[5] });
+        if (base[i] !== "" || row[2].length || !Array.isArray(a) || (a.length !== 6 && a.length !== 7)) return null;
+        if (a.length === 7 && a[6] !== "center" && a[6] !== "right") return null; // canonical: "inline" is never written
+        const asset = checkAsset({ id: a[0], mime: a[1], w: a[2], h: a[3], width: a[4], layout: a.length === 7 ? a[6] : "inline", caption: a[5] });
         if (!asset) return null;
         images += 1;
         if (images > IMAGES_PER_PAGE_MAX) return null;
@@ -1363,7 +1370,7 @@
   /** An image atom: <div.carnet-line contenteditable=false><figure><img><figcaption></figure></div>. Safe DOM only. */
   function renderImage(doc, l, idx, reg) {
     const a = l.asset;
-    const div = el(doc, "div", { class: "carnet-line carnet-image-line", "data-carnet-line": String(idx), "data-line-type": "image", "data-carnet-asset": a.id, contenteditable: "false" });
+    const div = el(doc, "div", { class: "carnet-line carnet-image-line", "data-carnet-line": String(idx), "data-line-type": "image", "data-carnet-asset": a.id, "data-layout": a.layout, contenteditable: "false" });
     if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
     else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
     if (reg) {
@@ -1524,6 +1531,7 @@
     if (!areg.has(key) || !fig || !img) return false;
     areg.set(key, Object.assign({}, clean));
     lineEl.setAttribute("data-carnet-asset", clean.id);
+    lineEl.setAttribute("data-layout", clean.layout);
     fig.style.width = clean.width + "%";
     fig.setAttribute("aria-label", "Image" + (clean.caption ? " : " + clean.caption : ""));
     if (img.getAttribute("src") !== ASSET_URL + clean.id) {
