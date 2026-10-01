@@ -13,6 +13,9 @@
  *           "inline", caption}. Its `text` is always "" and it never has marks: it occupies no text offset,
  *           so marks, find/replace, offsets and titles never touch it. The bytes live on the server
  *           (/api/carnet/asset/<id>); a page only ever carries this bounded metadata.
+ *   calc / measure (Stage 07): ATOM lines like an image (text "", no marks, no caret inside) carrying a bounded declarative
+ *           payload in `eng` (see hq-carnet-eng.js): never executable, never recomputed silently.
+ *   decision (Stage 07): an ordinary text line (text + marks) with `eng` = {at}; shown as "DÉCISION · time".
  * Flat page text = lines.map(l => l.text).join("\n").
  * Every line may carry an `id`: a server block id (block-…, authoritative, kept through typing,
  * Enter/split, insertion, deletion and formatting) or a client-only temporary key (tmp-N) for a
@@ -38,9 +41,13 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function (global) {
   "use strict";
 
-  const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"];
-  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i" };
-  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image" };
+  // Stage 07 engineering core (pure). In a browser it is loaded before this file; without it the three engineering
+  // block types are simply unknown (their pages fail closed instead of being rewritten).
+  const Eng = typeof module === "object" && module && module.exports ? require("./hq-carnet-eng.js") : global.HqCarnetEng || null;
+  const ENG_TYPES = Eng ? Eng.ENG_TYPES.slice() : [];
+  const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"].concat(ENG_TYPES);
+  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d" };
+  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision" };
   const ASSET_ID = /^asset-[0-9a-f]{24}$/;
   const ASSET_MIMES = ["image/jpeg", "image/png", "image/webp"];
   const ASSET_LONG_SIDE_MAX = 2560; // server: hq_carnet_media.MAX_LONG_SIDE
@@ -55,7 +62,7 @@
   const LOCATOR_TEXT_MAX = 120;
   const CITE_PAGE_MAX = 100000;
   const EDITION_ID = /^srce-[A-Za-z0-9_-]{1,64}$/;
-  const REF_KINDS = ["note", "file", "drawing", "model", "media"];
+  const REF_KINDS = ["note", "file", "drawing", "model", "media", "project"];
   const BLOCKS_MAX = 8192; // structured lines per page (server: hq_carnet_rich.BLOCKS_MAX)
   const MARKS_PER_BLOCK_MAX = 128;
   const MARKS_TOTAL_MAX = 4000;
@@ -97,6 +104,8 @@
     if (REF_KINDS.indexOf(kind) < 0 || typeof id !== "string") return null;
     if (kind === "note") {
       if (!/^page-[A-Za-z0-9_-]{1,64}$/.test(id)) return null;
+    } else if (kind === "project") {
+      if (!/^proj-[A-Za-z0-9_-]{1,64}$/.test(id)) return null;
     } else if (kind === "drawing") {
       if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/.test(id)) return null;
     } else {
@@ -338,16 +347,75 @@
     return { id: a.id, mime: a.mime, w: a.w, h: a.h, width: a.width, layout: "inline", caption: a.caption };
   }
 
-  function newLine(text, type, checked, marks, id, asset) {
+  function isEngType(type) {
+    return ENG_TYPES.indexOf(type) >= 0;
+  }
+
+  /** An atom line has no text, no marks and no caret inside: an image, a calculation or a measurement. */
+  function isAtomType(type) {
+    return type === "image" || (!!Eng && Eng.ATOM_TYPES.indexOf(type) >= 0);
+  }
+
+  function isAtom(l) {
+    return !!l && isAtomType(l.type);
+  }
+
+  function cloneEng(p) {
+    return p ? JSON.parse(JSON.stringify(p)) : null;
+  }
+
+  /** Optional link of a measurement: a Stage-05 source edition, or a stable HQ reference (media / drawing / file). */
+  function measureLink(link) {
+    if (!isObj(link) || Object.keys(link).sort().join(",") !== "id,kind" || !Eng || Eng.LINK_KINDS.indexOf(link.kind) < 0) return null;
+    if (link.kind === "source") return Eng.linkShape(link);
+    return checkRef(link);
+  }
+
+  /** Strict payload check of a Stage-07 block (mirrors hq_carnet_rich.check_eng). Clean copy or null. */
+  function engPayload(type, p) {
+    return Eng && isEngType(type) ? Eng.checkPayload(type, p, measureLink) : null;
+  }
+
+  function newLine(text, type, checked, marks, id, asset, eng) {
     const image = type === "image";
+    const atom = isAtomType(type);
     return {
-      type: type || "paragraph", checked: type === "check" ? !!checked : false, text: image ? "" : text || "", marks: image ? [] : marks || [],
-      id: cleanId(id), asset: image && asset ? Object.assign({}, asset) : null,
+      type: type || "paragraph", checked: type === "check" ? !!checked : false, text: atom ? "" : text || "", marks: atom ? [] : marks || [],
+      id: cleanId(id), asset: image && asset ? Object.assign({}, asset) : null, eng: isEngType(type) && eng ? cloneEng(eng) : null,
     };
   }
 
   function cloneLine(l) {
-    return { type: l.type, checked: l.checked, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)), id: l.id || null, asset: l.asset ? Object.assign({}, l.asset) : null };
+    return {
+      type: l.type, checked: l.checked, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)), id: l.id || null,
+      asset: l.asset ? Object.assign({}, l.asset) : null, eng: l.eng ? cloneEng(l.eng) : null,
+    };
+  }
+
+  /** A new calculation / measurement atom (no id yet). null when the payload is not valid. */
+  function engLine(type, payload) {
+    const clean = Eng && Eng.ATOM_TYPES.indexOf(type) >= 0 ? engPayload(type, payload) : null;
+    return clean ? newLine("", type, false, [], null, null, clean) : null;
+  }
+
+  /** A new decision line carrying `text` (one line) and the decision time (epoch seconds). */
+  function decisionLine(text, at) {
+    const clean = engPayload("decision", { at });
+    return clean && typeof text === "string" && text.indexOf("\n") < 0 ? newLine(text, "decision", false, [], null, null, clean) : null;
+  }
+
+  function engOf(lines) {
+    return lines.filter((l) => isEngType(l.type) && l.eng).map((l) => ({ type: l.type, payload: l.eng }));
+  }
+
+  /** Local display time of a decision/calculation: HH:MM today, else DD/MM HH:MM (device time zone, UI only). */
+  function localTimeLabel(at, nowMs) {
+    const d = new Date(at * 1000);
+    const n = new Date(nowMs === undefined ? Date.now() : nowMs);
+    const p2 = (x) => (x < 10 ? "0" + x : String(x));
+    const hm = p2(d.getHours()) + ":" + p2(d.getMinutes());
+    const same = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+    return same ? hm : p2(d.getDate()) + "/" + p2(d.getMonth() + 1) + " " + hm;
   }
 
   /** A new image line (no id yet: the editor gives it a temporary key, the server the real id). */
@@ -401,8 +469,14 @@
       if (asset) return { type, checked: false, text: "", marks: [], id: cleanId(l.id), asset };
       type = "paragraph"; // an image without valid metadata is not an image
     }
+    let eng = null;
+    if (isEngType(type)) {
+      eng = engPayload(type, l.eng);
+      if (!eng) type = "paragraph"; // an engineering block without a valid payload is not one
+      else if (isAtomType(type)) return { type, checked: false, text: "", marks: [], id: cleanId(l.id), asset: null, eng };
+    }
     const marks = canonicalMarks(l.marks || []);
-    return { type, checked: type === "check" ? !!l.checked : false, text: l.text, marks: marks || [], id: cleanId(l.id), asset: null };
+    return { type, checked: type === "check" ? !!l.checked : false, text: l.text, marks: marks || [], id: cleanId(l.id), asset: null, eng };
   }
 
   function fmtOf(lines) {
@@ -420,6 +494,7 @@
       // Only image rows carry a 4th element (fixed order, never object keys): every other row is
       // byte-identical to the pre-Stage-06 encoding, so existing drafts/bases stay comparable.
       if (l.type === "image") row.push([l.asset.id, l.asset.mime, l.asset.w, l.asset.h, l.asset.width, l.asset.caption]);
+      else if (isEngType(l.type)) row.push(Eng.encode(l.type, l.eng)); // Stage 07: same 4th-element rule, fixed-order arrays
       return row;
     }));
   }
@@ -439,13 +514,29 @@
     const out = [];
     let total = 0;
     let images = 0;
+    let atoms = 0;
+    let decisions = 0;
     for (let i = 0; i < arr.length; i += 1) {
       const row = arr[i];
       if (!Array.isArray(row) || (row.length !== 3 && row.length !== 4)) return null;
       const type = CODE_TYPE[row[0]];
       if (!type || (row[1] !== 0 && row[1] !== 1) || (row[1] === 1 && type !== "check") || !Array.isArray(row[2])) return null;
       if (row[2].length > MARKS_PER_BLOCK_MAX) return null;
-      if ((row.length === 4) !== (type === "image")) return null;
+      if ((row.length === 4) !== (type === "image" || isEngType(type))) return null;
+      let payload = null;
+      if (isEngType(type)) {
+        payload = Eng.decode(type, row[3], measureLink);
+        if (!payload) return null;
+        if (isAtomType(type)) {
+          if (base[i] !== "" || row[2].length) return null;
+          atoms += 1;
+          if (atoms > Eng.ATOMS_PER_PAGE_MAX) return null;
+          out.push(newLine("", type, false, [], idAt(i), null, payload));
+          continue;
+        }
+        decisions += 1;
+        if (decisions > Eng.DECISIONS_PER_PAGE_MAX) return null;
+      }
       if (type === "image") {
         const a = row[3];
         if (base[i] !== "" || row[2].length || !Array.isArray(a) || a.length !== 6) return null;
@@ -481,7 +572,7 @@
       if (total > MARKS_TOTAL_MAX) return null;
       const canon = canonicalMarks(marks);
       if (!canon) return null;
-      out.push(newLine(base[i], type, row[1] === 1, canon, idAt(i)));
+      out.push(newLine(base[i], type, row[1] === 1, canon, idAt(i), null, payload));
     }
     return out;
   }
@@ -507,6 +598,17 @@
         continue;
       }
       if (b.asset !== undefined) return null;
+      let payload = null;
+      if (Eng) for (const k of ENG_TYPES) if (b[k] !== undefined && k !== b.type) return null; // a payload only under its own type
+      if (isEngType(b.type)) {
+        payload = engPayload(b.type, b[b.type]);
+        if (!payload || b.checked !== undefined) return null;
+        if (isAtomType(b.type)) {
+          if (b.text !== "" || (Array.isArray(b.marks) && b.marks.length)) return null;
+          out.push(newLine("", b.type, false, [], isRealId(b.id) ? b.id : null, null, payload));
+          continue;
+        }
+      }
       const marks = [];
       for (const m of Array.isArray(b.marks) ? b.marks : []) {
         if (!isObj(m) || MARK_ORDER.indexOf(m.type) < 0 || !isInt(m.start) || !isInt(m.end)) return null;
@@ -528,7 +630,7 @@
       }
       const canon = canonicalMarks(marks);
       if (!canon) return null;
-      out.push(newLine(b.text, b.type, b.checked === true, canon, isRealId(b.id) ? b.id : null));
+      out.push(newLine(b.text, b.type, b.checked === true, canon, isRealId(b.id) ? b.id : null, null, payload));
     }
     return ensureUnique(out);
   }
@@ -556,6 +658,7 @@
         const b = { type: l.type, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)) };
         if (l.type === "check") b.checked = !!l.checked;
         if (l.type === "image") b.asset = Object.assign({}, l.asset);
+        if (isEngType(l.type)) b[l.type] = cloneEng(l.eng);
         if (isRealId(l.id) && (!allowed || allowed.has(l.id)) && !used.has(l.id)) {
           used.add(l.id);
           b.id = l.id;
@@ -627,7 +730,7 @@
    * Never produces empty, negative or out-of-bounds ranges.
    */
   function replaceRange(lines, s, e, rep) {
-    if (!lines.some((l) => l.type === "image")) return replaceRangeText(lines, s, e, rep);
+    if (!lines.some(isAtom)) return replaceRangeText(lines, s, e, rep);
     return replaceRangeAround(lines, s, e, rep);
   }
 
@@ -642,25 +745,25 @@
     const hi = Math.max(s, e);
     const a = locate(lines, lo);
     if (lo === hi) {
-      if (lines[a.line].type !== "image") return replaceRangeText(lines, lo, hi, rep);
+      if (!isAtom(lines[a.line])) return replaceRangeText(lines, lo, hi, rep);
       const work = lines.slice(0, a.line).map(cloneLine).concat([newLine("", "paragraph")], lines.slice(a.line).map(cloneLine));
       const at = lineStarts(work)[a.line];
       return replaceRangeText(work, at, at, rep);
     }
     const b = locate(lines, hi);
-    const endRetained = b.line > a.line && lines[b.line].type === "image"; // the range stops right before this image
+    const endRetained = b.line > a.line && isAtom(lines[b.line]); // the range stops right before this atom
     const last = endRetained ? b.line - 1 : b.line;
     const mid = [];
     for (let i = a.line; i <= last; i += 1) {
       const l = lines[i];
-      if (l.type !== "image") mid.push(cloneLine(l));
+      if (!isAtom(l)) mid.push(cloneLine(l));
       else if (i === a.line || i === last) mid.push(newLine("", "paragraph")); // an endpoint needs a line to sit in
     }
     const work = lines.slice(0, a.line).map(cloneLine).concat(mid, lines.slice(last + 1).map(cloneLine));
     const starts = lineStarts(work);
-    const startOff = lines[a.line].type === "image" ? 0 : a.off;
+    const startOff = isAtom(lines[a.line]) ? 0 : a.off;
     const endLine = a.line + mid.length - 1;
-    const endOff = endRetained ? (lines[last].type === "image" ? 0 : lines[last].text.length) : b.off;
+    const endOff = endRetained ? (isAtom(lines[last]) ? 0 : lines[last].text.length) : b.off;
     return replaceRangeText(work, starts[a.line] + startOff, starts[endLine] + endOff, rep);
   }
 
@@ -718,7 +821,7 @@
       // through the newline of the next) leaves the LAST line's content: it keeps that block's identity.
       const owner = takeLast ? last : first;
       const keeps = idToLast ? k === pieces.length - 1 : k === 0;
-      built.push(normalizeLine({ type: owner.type, checked: keeps ? owner.checked : false, text, marks, id: keeps ? owner.id : null }));
+      built.push(normalizeLine({ type: owner.type, checked: keeps ? owner.checked : false, text, marks, id: keeps ? owner.id : null, eng: keeps ? owner.eng : null }));
     }
     const out = lines.slice(0, a.line).map(cloneLine).concat(built, lines.slice(b.line + 1).map(cloneLine));
     const starts = lineStarts(out);
@@ -892,13 +995,13 @@
 
   /** Set block type of every line touched by [s, e]; same type on all lines toggles back to paragraph. */
   function setBlockType(lines, s, e, type) {
-    if (BLOCK_TYPES.indexOf(type) < 0 || type === "image") return lines;
+    if (BLOCK_TYPES.indexOf(type) < 0 || type === "image" || isEngType(type)) return lines; // atoms and decisions are made by their own tools
     const a = locate(lines, Math.min(s, e)).line;
     const b = locate(lines, Math.max(s, e)).line;
     let all = true;
     let any = false;
     for (let i = a; i <= b; i += 1) {
-      if (lines[i].type === "image") continue; // an image is never re-typed
+      if (isAtom(lines[i])) continue; // an atom is never re-typed
       any = true;
       if (lines[i].type !== type) all = false;
     }
@@ -906,8 +1009,9 @@
     const target = all ? "paragraph" : type;
     const out = cloneLines(lines);
     for (let i = a; i <= b; i += 1) {
-      if (out[i].type === "image") continue;
+      if (isAtom(out[i])) continue;
       out[i].type = target;
+      out[i].eng = null; // a decision re-typed to a plain block stops being a decision
       if (target !== "check") out[i].checked = false;
     }
     return out;
@@ -925,7 +1029,7 @@
     const at = locate(lines, Math.min(s, e));
     const cur = lines[at.line];
     const collapsed = s === e;
-    if (collapsed && cur.type === "image") {
+    if (collapsed && isAtom(cur)) {
       // Enter on an image atom opens ONE empty paragraph above it; the image keeps its place and identity
       const out = cloneLines(lines);
       out.splice(at.line, 0, newLine("", "paragraph"));
@@ -942,12 +1046,12 @@
     if (res.idToLast) {
       // caret at the start of a non-empty line: the new block is the one ABOVE it
       const above = res.lines[idx - 1];
-      above.type = cur.type === "heading" ? "paragraph" : cur.type;
+      above.type = cur.type === "heading" || cur.type === "decision" ? "paragraph" : cur.type;
       above.checked = false;
       return res;
     }
     const next = res.lines[idx];
-    if (cur.type === "heading") next.type = "paragraph";
+    if (cur.type === "heading" || cur.type === "decision") next.type = "paragraph"; // a heading / a decision is one line
     else next.type = cur.type;
     next.checked = false;
     return res;
@@ -1041,6 +1145,8 @@
     const labels = numberLabels(lines);
     const out = lines.map((l, i) => {
       if (l.type === "image") return l.asset.caption ? "[Image : " + l.asset.caption + "]" : "[Image]";
+      if (l.type === "calc") return "[" + Eng.describeCalc(l.eng) + "]";
+      if (l.type === "measure") return "[" + Eng.describeMeasure(l.eng) + "]";
       let text = l.text;
       const links = l.marks.filter((m) => m.type === "link" && m.href != null).sort((x, y) => x.start - y.start);
       if (links.length) {
@@ -1052,6 +1158,7 @@
         }
         text = s + l.text.slice(pos);
       }
+      if (l.type === "decision") return Eng.decisionLabel(l.eng) + (text ? " \u2014 " + text : "");
       if (l.type === "bullet") return "- " + text;
       if (l.type === "number") return labels[i] + ". " + text;
       if (l.type === "check") return (l.checked ? "[x] " : "[ ] ") + text;
@@ -1137,6 +1244,18 @@
         gap = false;
         return;
       }
+      if (l.type === "calc" || l.type === "measure") {
+        const inner = l.type === "calc" ? Eng.describeCalc(l.eng) : Eng.describeMeasure(l.eng);
+        parts.push([l.type, "*\\[" + mdEscape(inner) + "\\]*", gap]);
+        gap = false;
+        return;
+      }
+      if (l.type === "decision") {
+        const body = mdInline(l);
+        parts.push(["decision", "**" + mdEscape(Eng.decisionLabel(l.eng)) + "**" + (body ? " \u2014 " + body : ""), gap]);
+        gap = false;
+        return;
+      }
       if ((l.type === "paragraph" || l.type === "heading") && !l.text.trim()) {
         gap = true; // a blank line ends any list: numbering restarts, like the TXT export
         return;
@@ -1197,6 +1316,8 @@
   const REGISTRIES = new WeakMap(); // editor root -> Map(cite key -> payload). No user text goes into attributes.
   const ASSET_KEY_ATTR = "data-asset-key";
   const ASSET_REGS = new WeakMap(); // editor root -> Map(asset key -> image metadata). Attributes only carry the opaque asset id.
+  const ENG_KEY_ATTR = "data-eng-key";
+  const ENG_REGS = new WeakMap(); // editor root -> Map(eng key -> {type, payload}). Payloads never travel in attributes or text.
 
   function segNodes(doc, l, from, to) {
     const out = [];
@@ -1264,9 +1385,70 @@
     return div;
   }
 
+  function textEl(doc, tag, cls, value) {
+    const n = el(doc, tag, cls ? { class: cls } : null);
+    n.appendChild(doc.createTextNode(value));
+    return n;
+  }
+
+  function engKey(reg, l, div) {
+    if (!reg || !reg.engs) return;
+    reg.en += 1;
+    const key = "e" + reg.en;
+    reg.engs.set(key, { type: l.type, payload: cloneEng(l.eng) });
+    div.setAttribute(ENG_KEY_ATTR, key);
+  }
+
+  const STATUS_LABEL = { in: "Dans la tol\u00e9rance", out: "Hors tol\u00e9rance", incompatible: "Unit\u00e9s incompatibles \u2014 non compar\u00e9", none: "" };
+
+  /** A calculation / measurement atom: <div.carnet-line contenteditable=false> with a readable summary. Safe DOM only. */
+  function renderEngAtom(doc, l, idx, reg) {
+    const p = l.eng;
+    const div = el(doc, "div", {
+      class: "carnet-line carnet-eng-line", "data-carnet-line": String(idx), "data-line-type": l.type, "data-carnet-eng": l.type, contenteditable: "false",
+      tabindex: "0", role: "group", "aria-label": l.type === "calc" ? "Calcul" : "Mesure",
+    });
+    if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
+    else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
+    engKey(reg, l, div);
+    const box = el(doc, "div", { class: "carnet-eng-card" });
+    if (l.type === "calc") {
+      box.appendChild(textEl(doc, "div", "carnet-eng-head", "Calcul \u00b7 " + localTimeLabel(p.at)));
+      const body = el(doc, "div", { class: "carnet-eng-body" });
+      body.appendChild(textEl(doc, "span", "carnet-eng-expr", p.expr));
+      body.appendChild(textEl(doc, "span", "carnet-eng-eq", " = "));
+      body.appendChild(textEl(doc, "strong", "carnet-eng-result", p.result + (p.unit ? " " + p.unit : "")));
+      box.appendChild(body);
+    } else {
+      const v = Eng.evaluate(p);
+      box.appendChild(textEl(doc, "div", "carnet-eng-head", "Mesure \u00b7 " + p.label + " \u00b7 " + localTimeLabel(p.at)));
+      box.appendChild(textEl(doc, "div", "carnet-eng-body", p.observed.v + (p.observed.u ? " " + p.observed.u : "")));
+      const bits = [];
+      if (p.nominal) bits.push("nominal " + p.nominal.v + (p.nominal.u ? " " + p.nominal.u : ""));
+      if (p.mode === "sym") bits.push("\u00b1" + p.tol.t + (p.tol.u ? " " + p.tol.u : ""));
+      else if (p.mode === "pct") bits.push("\u00b1" + p.tol.p + " %");
+      else if (p.mode === "bounds") bits.push("limites " + p.tol.lo + " \u2026 " + p.tol.hi + (p.tol.u ? " " + p.tol.u : ""));
+      if (v.deviation !== null) bits.push("\u00e9cart " + (v.deviation !== "0" && v.deviation.charAt(0) !== "-" ? "+" : "") + v.deviation + (p.observed.u ? " " + p.observed.u : ""));
+      if (bits.length) box.appendChild(textEl(doc, "div", "carnet-eng-meta", bits.join(" \u00b7 ")));
+      if (STATUS_LABEL[v.status]) {
+        const badge = textEl(doc, "span", "carnet-eng-status", STATUS_LABEL[v.status]);
+        badge.setAttribute("data-status", v.status);
+        box.appendChild(badge);
+      }
+      box.appendChild(textEl(doc, "div", "carnet-eng-note", "Aide de carnet \u2014 non certifi\u00e9 (pas de la m\u00e9trologie)"));
+    }
+    div.appendChild(box);
+    return div;
+  }
+
   function renderLine(doc, l, idx, num, reg) {
     if (l.type === "image") return renderImage(doc, l, idx, reg);
+    if (isAtomType(l.type)) return renderEngAtom(doc, l, idx, reg);
     const div = el(doc, "div", { class: "carnet-line", "data-carnet-line": String(idx), "data-line-type": l.type });
+    if (l.type === "decision") {
+      engKey(reg, l, div);
+      div.appendChild(el(doc, "span", { class: "carnet-decision-label", contenteditable: "false", [NS_SKIP]: "" })).appendChild(doc.createTextNode("D\u00c9CISION \u00b7 " + localTimeLabel(l.eng.at)));
+    }
     if (l.type === "number") div.setAttribute("data-num", String(num));
     if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
     else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
@@ -1319,9 +1501,10 @@
     while (rootEl.firstChild) rootEl.removeChild(rootEl.firstChild);
     const labels = numberLabels(lines);
     ensureKeys(lines);
-    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0 };
+    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0, engs: new Map(), en: 0 };
     REGISTRIES.set(rootEl, reg.map);
     ASSET_REGS.set(rootEl, reg.assets);
+    ENG_REGS.set(rootEl, reg.engs);
     lines.forEach((l, i) => rootEl.appendChild(renderLine(doc, l, i, labels[i], reg)));
   }
 
@@ -1432,12 +1615,14 @@
   function parseEditor(rootEl, map) {
     const reg = REGISTRIES.get(rootEl) || null;
     const areg = ASSET_REGS.get(rootEl) || null;
+    const ereg = ENG_REGS.get(rootEl) || null;
+    const engUsed = new Set(); // a payload key is honoured once: a line the browser cloned natively never duplicates a payload
     const lines = [];
     let cur = null;
     const open = (type, checked, el) => {
       const real = el ? el.getAttribute("data-carnet-block-id") : null;
       const tmp = el ? el.getAttribute("data-carnet-tmp") : null;
-      cur = { type: BLOCK_TYPES.indexOf(type) >= 0 ? type : "paragraph", checked: type === "check" && checked, text: "", marks: [], id: isRealId(real) ? real : isTmpId(tmp) ? tmp : null, el, asset: null };
+      cur = { type: BLOCK_TYPES.indexOf(type) >= 0 ? type : "paragraph", checked: type === "check" && checked, text: "", marks: [], id: isRealId(real) ? real : isTmpId(tmp) ? tmp : null, el, asset: null, eng: null };
       lines.push(cur);
     };
     const close = () => {
@@ -1481,6 +1666,19 @@
             }
             continue;
           }
+          if (child.parentNode === rootEl && child.hasAttribute("data-carnet-eng") && BLOCK_TAGS[child.nodeName]) {
+            // calculation / measurement atom: the payload comes from the registry built by renderInto, never from attributes/text
+            close();
+            const key = child.getAttribute(ENG_KEY_ATTR);
+            const meta = ereg && !engUsed.has(key) ? ereg.get(key) : null;
+            if (meta && isAtomType(meta.type)) {
+              engUsed.add(key);
+              open(meta.type, false, child);
+              cur.eng = cloneEng(meta.payload);
+              close();
+            }
+            continue;
+          }
           if (child.hasAttribute(NS_SKIP) || child.getAttribute("contenteditable") === "false") continue;
           const tag = child.nodeName;
           if (tag === "BR") continue;
@@ -1488,6 +1686,14 @@
             close();
             const type = child.getAttribute("data-line-type") || "paragraph";
             open(type, child.getAttribute("data-checked") === "true", child);
+            if (type === "decision") {
+              const key = child.getAttribute(ENG_KEY_ATTR);
+              const meta = ereg && !engUsed.has(key) ? ereg.get(key) : null;
+              if (meta && meta.type === "decision") {
+                engUsed.add(key);
+                cur.eng = cloneEng(meta.payload);
+              }
+            }
             walk(child, active, false);
             close();
           } else {
@@ -1497,7 +1703,7 @@
       }
     }
     walk(rootEl, [], true);
-    if (!lines.length) lines.push({ type: "paragraph", checked: false, text: "", marks: [], id: null, el: null });
+    if (!lines.length) lines.push({ type: "paragraph", checked: false, text: "", marks: [], id: null, el: null, eng: null });
     // Identity of DOM lines: keep server ids / temporary keys; a line the browser created natively
     // (or a duplicated id) gets a fresh temporary key, written back so it stays stable.
     const seen = new Set();
@@ -1559,7 +1765,7 @@
     const at = locate(lines, pos);
     const lineEl = rootEl.children[at.line];
     if (!lineEl) return { node: rootEl, off: rootEl.childNodes.length };
-    if (lines[at.line] && lines[at.line].type === "image") return { node: rootEl, off: at.line }; // never a caret INSIDE an atom
+    if (isAtom(lines[at.line])) return { node: rootEl, off: at.line }; // never a caret INSIDE an atom
     let best = null;
     for (const [t, p] of map || []) {
       if (p.line !== at.line || !lineEl.contains(t)) continue;
@@ -1590,6 +1796,7 @@
     checkCite, citeKey, citationLabel, locatorLabel, citationAt, citationsOf, insertCitation, setCitationPayload,
     safeHref, checkRef, canonicalMarks, newLine, cloneLines, ensureKeys, idsOf, isRealId, isTmpId, wireContent, adoptIds, syncIds, flat, plainLines, isPlain, fmtOf,
     linesFromTextFmt, linesFromContent, contentFromLines, contentFromTextFmt, lineStarts, locate,
+    Eng, ENG_TYPES, isAtom, isEngType, engPayload, engLine, decisionLine, engOf, localTimeLabel, measureLink,
     checkAsset, captionOk, cleanCaptionText, imageLine, assetsOf, patchImage, ASSET_URL, ASSET_LONG_SIDE_MAX, ASSET_WIDTH_MIN, ASSET_WIDTH_MAX, ASSET_CAPTION_MAX, IMAGES_PER_PAGE_MAX, ASSET_MIMES,
     replaceRange, toggleMark, setMark, hasMark, setLink, linkAt, setBlockType, toggleChecked, splitAt, findAll, replaceMatches,
     renderTxt, renderMarkdown, exportFilename, renderInto, renumber, parseEditor, pointToOffset, offsetToPoint,

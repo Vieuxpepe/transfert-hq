@@ -1,0 +1,2926 @@
+{
+ "note": "Shared Python/JS vectors for Carnet Stage 07 (tests/test_hq_carnet_eng.py, tests/check_hq_carnet_eng.mjs). Expected values are hand-derived; 'describe' strings were reviewed against the spec text. (JSON 1.0 == 1 in JavaScript, so integral floats are covered by the Python test only.)",
+ "at": 1790000000,
+ "calc_ok": [
+  {
+   "expr": "1 + 2",
+   "result": "3",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "1 + 2",
+   "result": "3",
+   "unit": "mm",
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "-1/2",
+   "result": "-0.5",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "123456789*987654321",
+   "result": "1.21932631113e+17",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "1e-100",
+   "result": "1e-100",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "1 + 2",
+   "result": "3",
+   "unit": null,
+   "at": 946684800,
+   "v": 1
+  },
+  {
+   "expr": "1 + 2",
+   "result": "3",
+   "unit": null,
+   "at": 4102444800,
+   "v": 1
+  },
+  {
+   "expr": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1",
+   "result": "3",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "1 + 1",
+   "result": "3",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "1e3+1E-3",
+   "result": "1000.001",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  },
+  {
+   "expr": "15e9",
+   "result": "1.5e+10",
+   "unit": null,
+   "at": 1790000000,
+   "v": 1
+  }
+ ],
+ "calc_bad": [
+  {
+   "label": "expr alpha",
+   "payload": {
+    "expr": "sqrt(4)",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr empty",
+   "payload": {
+    "expr": "",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr long",
+   "payload": {
+    "expr": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr fullwidth",
+   "payload": {
+    "expr": "\uff11+\uff11",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr newline",
+   "payload": {
+    "expr": "1+\n1",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr U+2028",
+   "payload": {
+    "expr": "1+\u20281",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result word",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "three",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result -0",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "-0",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result leading zero",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "03",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result long",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "11111111111111111111111111111111111111111",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result space",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3 ",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "unit bad",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": "km",
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "unit empty",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": "",
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "unit number",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": 5,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "v 2",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 2
+   }
+  },
+  {
+   "label": "v bool",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": true
+   }
+  },
+  {
+   "label": "at low",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 946684799,
+    "v": 1
+   }
+  },
+  {
+   "label": "at high",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 4102444801,
+    "v": 1
+   }
+  },
+  {
+   "label": "at bool",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": true,
+    "v": 1
+   }
+  },
+  {
+   "label": "at float",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000.5,
+    "v": 1
+   }
+  },
+  {
+   "label": "at str",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": "1790000000",
+    "v": 1
+   }
+  },
+  {
+   "label": "extra key",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1,
+    "note": "x"
+   }
+  },
+  {
+   "label": "missing key",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000
+   }
+  },
+  {
+   "label": "array",
+   "payload": []
+  },
+  {
+   "label": "null",
+   "payload": null
+  },
+  {
+   "label": "string",
+   "payload": "1+2"
+  },
+  {
+   "label": "expr tab",
+   "payload": {
+    "expr": "1+\t1",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr NBSP",
+   "payload": {
+    "expr": "1+\u00a01",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr astral",
+   "payload": {
+    "expr": "1+\ud83d\ude00",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr lone surrogate",
+   "payload": {
+    "expr": "1+\ud800",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr comma",
+   "payload": {
+    "expr": "1,5+1",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "expr 201 chars",
+   "payload": {
+    "expr": "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result e-notation without sign",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "1e5",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result 4-digit exponent",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "1e+1000",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result nan",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "nan",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "result unicode digit",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "\u0663",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "unit alias",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": "mm ",
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "unit lowercase",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": "n",
+    "at": 1790000000,
+    "v": 1
+   }
+  },
+  {
+   "label": "unit \u00b5",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": "\u00b5m",
+    "at": 1790000000,
+    "v": 1
+   }
+  }
+ ],
+ "measure_ok": [
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "none",
+   "nominal": null,
+   "tol": null,
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "none",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": null,
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "bounds",
+   "nominal": null,
+   "tol": {
+    "lo": "9.98",
+    "hi": "10.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "pct",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "p": "0"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "pct",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "p": "100"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "98.6",
+    "u": "\u00b0F"
+   },
+   "mode": "none",
+   "nominal": {
+    "v": "37",
+    "u": "\u00b0C"
+   },
+   "tol": null,
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "-12.5",
+    "u": "N\u00b7m"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "-12",
+    "u": "N\u00b7m"
+   },
+   "tol": {
+    "t": "0.5",
+    "u": "N\u00b7m"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "5",
+    "u": ""
+   },
+   "mode": "none",
+   "nominal": null,
+   "tol": null,
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": {
+    "kind": "media",
+    "id": "Inbox/photo.jpg"
+   }
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": {
+    "kind": "drawing",
+    "id": "plan-1"
+   }
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": {
+    "kind": "file",
+    "id": "Uni/cours/a.pdf"
+   }
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": {
+    "kind": "source",
+    "id": "srce-abc123"
+   }
+  },
+  {
+   "label": "a",
+   "observed": {
+    "v": "123456789012345",
+    "u": "mm"
+   },
+   "mode": "none",
+   "nominal": null,
+   "tol": null,
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "\u4e2d\u6587 \u0639\u0631\u0628\u064a",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": "a\u200db",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  },
+  {
+   "label": " a ",
+   "observed": {
+    "v": "10.02",
+    "u": "mm"
+   },
+   "mode": "sym",
+   "nominal": {
+    "v": "10",
+    "u": "mm"
+   },
+   "tol": {
+    "t": "0.02",
+    "u": "mm"
+   },
+   "at": 1790000000,
+   "link": null
+  }
+ ],
+ "measure_bad": [
+  {
+   "label": "label empty",
+   "payload": {
+    "label": "",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label spaces",
+   "payload": {
+    "label": "   ",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label long",
+   "payload": {
+    "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label newline",
+   "payload": {
+    "label": "a\nb",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label NUL",
+   "payload": {
+    "label": "a\u0000b",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label C1",
+   "payload": {
+    "label": "a\u0085b",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs exp",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1e3",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs leading zero",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "01",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs -0",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "-0",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs -0.0",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "-0.0",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs .5",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": ".5",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs 5.",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "5.",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs comma",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1,5",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs number",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": 10.02,
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs bool",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": true,
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs 16 digits",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1234567890123456",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs plus",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "+1",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs NaN",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "NaN",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs Infinity",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "Infinity",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs arabic digit",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "\u0661",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "unit km",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1",
+     "u": "km"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "unit alias",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1",
+     "u": "MM"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "unit null",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1",
+     "u": null
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs extra key",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1",
+     "u": "mm",
+     "x": 1
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "mode unknown",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "range",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "mode none with tol",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "none",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "sym without nominal",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": null,
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "pct without nominal",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": null,
+    "tol": {
+     "p": "1"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "sym negative t",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "-0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "bounds lo>hi",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "lo": "10.02",
+     "hi": "9.98",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "bounds missing hi",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "lo": "9.98",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "pct >100",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "100.1"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "pct negative",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "-1"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "pct with unit",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "1",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "tol extra key",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm",
+     "x": 1
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "tol not object",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": "0.02",
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "nominal bad unit",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "toise"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "nominal bad value",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "ten",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "at low",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1,
+    "link": null
+   }
+  },
+  {
+   "label": "at bool",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": true,
+    "link": null
+   }
+  },
+  {
+   "label": "link bad kind",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "note",
+     "id": "page-a"
+    }
+   }
+  },
+  {
+   "label": "link unknown kind",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "url",
+     "id": "x"
+    }
+   }
+  },
+  {
+   "label": "link extra key",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "file",
+     "id": "Uni/a.pdf",
+     "x": 1
+    }
+   }
+  },
+  {
+   "label": "link source shape",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "source",
+     "id": "srce-../x"
+    }
+   }
+  },
+  {
+   "label": "extra key",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null,
+    "verdict": "in"
+   }
+  },
+  {
+   "label": "missing key",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000
+   }
+  },
+  {
+   "label": "null",
+   "payload": null
+  },
+  {
+   "label": "array",
+   "payload": []
+  },
+  {
+   "label": "label 41 astral = 82 UTF-16 units",
+   "payload": {
+    "label": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label lone high surrogate",
+   "payload": {
+    "label": "a\ud800b",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label lone low surrogate",
+   "payload": {
+    "label": "a\udc00b",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label U+2028",
+   "payload": {
+    "label": "a\u2028b",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label tab",
+   "payload": {
+    "label": "a\tb",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label DEL",
+   "payload": {
+    "label": "a\u007fb",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "label only NBSP/ideographic space",
+   "payload": {
+    "label": "\u00a0\u3000",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs 15 digits + fraction (16 digits)",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "1234567890123.456",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  },
+  {
+   "label": "obs very long zero fraction",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "0.0000000000000000001",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   }
+  }
+ ],
+ "decision_ok": [
+  {
+   "at": 1790000000
+  },
+  {
+   "at": 946684800
+  },
+  {
+   "at": 4102444800
+  }
+ ],
+ "decision_bad": [
+  {
+   "at": 946684799
+  },
+  {
+   "at": 4102444801
+  },
+  {
+   "at": true
+  },
+  {
+   "at": 1.5
+  },
+  {
+   "at": "1790000000"
+  },
+  {},
+  {
+   "at": 1790000000,
+   "x": 1
+  },
+  null,
+  [],
+  "at",
+  {
+   "at": 9007199254740992
+  },
+  {
+   "at": -1
+  },
+  {
+   "at": 0
+  }
+ ],
+ "evaluate": [
+  {
+   "label": "upper bound inclusive",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "0.02",
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "just above upper",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.020001",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "out",
+    "deviation": "0.020001",
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "lower bound inclusive",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "9.98",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "-0.02",
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "below lower",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "9.97",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "out",
+    "deviation": "-0.03",
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "float trap 0.3 vs 0.1\u00b10.2",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "0.3",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "0.1",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.2",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "0.2",
+    "lo": "-0.1",
+    "hi": "0.3"
+   }
+  },
+  {
+   "label": "float trap 0.30000001",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "0.30000001",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "0.1",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.2",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "out",
+    "deviation": "0.20000001",
+    "lo": "-0.1",
+    "hi": "0.3"
+   }
+  },
+  {
+   "label": "bounds inclusive low",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "9.98",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": null,
+    "tol": {
+     "lo": "9.98",
+     "hi": "10.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": null,
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "bounds inclusive high",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": null,
+    "tol": {
+     "lo": "9.98",
+     "hi": "10.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": null,
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "bounds out",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.03",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": null,
+    "tol": {
+     "lo": "9.98",
+     "hi": "10.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "out",
+    "deviation": null,
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "bounds with nominal deviation",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.01",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "lo": "9.98",
+     "hi": "10.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "0.01",
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "pct inclusive",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "101",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "1"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "1",
+    "lo": "99",
+    "hi": "101"
+   }
+  },
+  {
+   "label": "pct out",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "101.01",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "1"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "out",
+    "deviation": "1.01",
+    "lo": "99",
+    "hi": "101"
+   }
+  },
+  {
+   "label": "pct negative nominal uses |nominal|",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "-101",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "-100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "1"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "-1",
+    "lo": "-101",
+    "hi": "-99"
+   }
+  },
+  {
+   "label": "pct zero tolerance exact",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "100",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "0"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "0",
+    "lo": "100",
+    "hi": "100"
+   }
+  },
+  {
+   "label": "pct 100 percent",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "0",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "100"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "-100",
+    "lo": "0",
+    "hi": "200"
+   }
+  },
+  {
+   "label": "pct fractional percent",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "100.25",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "0.25"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "0.25",
+    "lo": "99.75",
+    "hi": "100.25"
+   }
+  },
+  {
+   "label": "none with nominal",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.5",
+     "u": "mm"
+    },
+    "mode": "none",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": null,
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "none",
+    "deviation": "0.5",
+    "lo": null,
+    "hi": null
+   }
+  },
+  {
+   "label": "none without nominal",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "none",
+    "nominal": null,
+    "tol": null,
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "none",
+    "deviation": null,
+    "lo": null,
+    "hi": null
+   }
+  },
+  {
+   "label": "incompatible nominal unit",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "in"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "in"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "incompatible",
+    "deviation": null,
+    "lo": null,
+    "hi": null
+   }
+  },
+  {
+   "label": "incompatible sym tol unit",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "in"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "incompatible",
+    "deviation": "0",
+    "lo": null,
+    "hi": null
+   }
+  },
+  {
+   "label": "incompatible bounds unit",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": null,
+    "tol": {
+     "lo": "9",
+     "hi": "11",
+     "u": "in"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "incompatible",
+    "deviation": null,
+    "lo": null,
+    "hi": null
+   }
+  },
+  {
+   "label": "deviation zero is plain 0",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "10",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "0",
+    "lo": "9.98",
+    "hi": "10.02"
+   }
+  },
+  {
+   "label": "15 digit values",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "123456789012345",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "123456789012344",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "1",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "1",
+    "lo": "123456789012343",
+    "hi": "123456789012345"
+   }
+  },
+  {
+   "label": "negative range",
+   "measure": {
+    "label": "a",
+    "observed": {
+     "v": "-5.5",
+     "u": "N"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "-5",
+     "u": "N"
+    },
+    "tol": {
+     "t": "0.5",
+     "u": "N"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "expect": {
+    "status": "in",
+    "deviation": "-0.5",
+    "lo": "-5.5",
+    "hi": "-4.5"
+   }
+  }
+ ],
+ "describe": [
+  {
+   "kind": "calc",
+   "payload": {
+    "expr": "1 + 2",
+    "result": "3",
+    "unit": null,
+    "at": 1790000000,
+    "v": 1
+   },
+   "text": "Calcul : 1 + 2 = 3 \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "calc",
+   "payload": {
+    "expr": "12.5*(3+4)^2",
+    "result": "612.5",
+    "unit": "mm",
+    "at": 1790000000,
+    "v": 1
+   },
+   "text": "Calcul : 12.5*(3+4)^2 = 612.5 mm \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "measure",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "text": "Mesure : a \u2014 observ\u00e9 10.02 mm ; nominal 10 mm ; \u00b10.02 mm ; \u00e9cart +0.02 mm ; dans la tol\u00e9rance \u2014 aide de carnet, non certifi\u00e9 \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "measure",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "none",
+    "nominal": null,
+    "tol": null,
+    "at": 1790000000,
+    "link": null
+   },
+   "text": "Mesure : a \u2014 observ\u00e9 10.02 mm \u2014 aide de carnet, non certifi\u00e9 \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "measure",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "101",
+     "u": "mm"
+    },
+    "mode": "pct",
+    "nominal": {
+     "v": "100",
+     "u": "mm"
+    },
+    "tol": {
+     "p": "1"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "text": "Mesure : a \u2014 observ\u00e9 101 mm ; nominal 100 mm ; \u00b11 % ; \u00e9cart +1 mm ; dans la tol\u00e9rance \u2014 aide de carnet, non certifi\u00e9 \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "measure",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.03",
+     "u": "mm"
+    },
+    "mode": "bounds",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "lo": "9.98",
+     "hi": "10.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "text": "Mesure : a \u2014 observ\u00e9 10.03 mm ; nominal 10 mm ; limites 9.98 \u2026 10.02 mm ; \u00e9cart +0.03 mm ; hors tol\u00e9rance \u2014 aide de carnet, non certifi\u00e9 \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "measure",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "in"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "in"
+    },
+    "at": 1790000000,
+    "link": null
+   },
+   "text": "Mesure : a \u2014 observ\u00e9 10 mm ; nominal 10 in ; \u00b10.02 in ; unit\u00e9s incompatibles (comparaison non faite) \u2014 aide de carnet, non certifi\u00e9 \u2014 2026-09-21 14:13 UTC"
+  },
+  {
+   "kind": "decision",
+   "payload": {
+    "at": 1790000000
+   },
+   "text": "D\u00c9CISION \u00b7 2026-09-21 14:13 UTC"
+  }
+ ],
+ "measure_bad_link": [
+  {
+   "label": "link traversal",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "file",
+     "id": "Uni/../x.pdf"
+    }
+   }
+  },
+  {
+   "label": "link absolute",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "file",
+     "id": "/etc/passwd"
+    }
+   }
+  },
+  {
+   "label": "link backslash",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "file",
+     "id": "Uni\\a.pdf"
+    }
+   }
+  },
+  {
+   "label": "link bad root",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "file",
+     "id": "Secret/a.pdf"
+    }
+   }
+  },
+  {
+   "label": "link drawing shape",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "drawing",
+     "id": "../x"
+    }
+   }
+  },
+  {
+   "label": "link media ext",
+   "payload": {
+    "label": "a",
+    "observed": {
+     "v": "10.02",
+     "u": "mm"
+    },
+    "mode": "sym",
+    "nominal": {
+     "v": "10",
+     "u": "mm"
+    },
+    "tol": {
+     "t": "0.02",
+     "u": "mm"
+    },
+    "at": 1790000000,
+    "link": {
+     "kind": "media",
+     "id": "Inbox/a.txt"
+    }
+   }
+  }
+ ]
+}

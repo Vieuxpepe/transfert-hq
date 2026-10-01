@@ -631,7 +631,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py hq_carnet_media.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py hq_carnet_media.py hq_carnet_eng.py
   node tests/check_hq_features.mjs
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
@@ -642,6 +642,7 @@ Commandes
   node tests/check_hq_carnet_rich.mjs
   node tests/check_hq_carnet_sources.mjs
   node tests/check_hq_carnet_media.mjs
+  node tests/check_hq_carnet_eng.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
@@ -651,6 +652,7 @@ Commandes
   (optionnel, Playwright Chromium bureau + WebKit iPad/iPhone ; serveur loopback jetable inclus, saute si absent) python tests/visual_carnet_playwright.py [--part stage02|stage03]
   (optionnel, Playwright Node + Chromium ; serveur loopback jetable via tests/carnet_test_server.py, à lancer depuis une copie jetable) node tests/visual_carnet_rich_playwright.mjs
   (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_media_playwright.mjs
+  (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_eng_playwright.mjs
 
 Carnet — images (étape 06)
 --------------------------
@@ -673,6 +675,29 @@ Carnet — images (étape 06)
   Sauvegarde Les images RÉFÉRENCÉES par le carnet copié sont ajoutées sous Carnet/assets/ ; un fichier manquant ou
              des métadonnées invalides rendent la copie « valid: false » (la purge des anciens backups est alors
              suspendue). Export Markdown avec images : <nom>.md + <nom>.assets/ (liens relatifs).
+
+Carnet — outils d'ingénierie (étape 07)
+---------------------------------------
+  Accès      Un seul bouton « Ingénierie » dans le plateau « Symboles et outils » (replié par défaut) : rien de
+             nouveau sur la page tant qu'on n'y touche pas. Le bouton « Heure » existant insère « HH:MM — ».
+  Blocs      calc (calcul) et measure (mesure) sont des blocs atomiques sans texte ; decision est une ligne de texte
+             avec un statut daté. Charges utiles strictes (clés inconnues refusées, décimaux canoniques <= 15
+             chiffres, unités d'une liste fermée) ; <= 50 calculs/mesures et <= 100 décisions par page.
+  Calcul     Arithmétique seulement : nombres, + - * / ^, parenthèses, signes unaires ; « , » = séparateur décimal ;
+             pas de fonctions, pas de multiplication implicite. Jamais évalué côté serveur ni par eval/Function.
+             Résultat 12 chiffres significatifs ; |x| entre 1e-100 et 1e100 ; erreurs visibles (division par zéro,
+             hors plage, syntaxe). Virgule flottante binaire : après une forte annulation, les derniers chiffres
+             peuvent porter du bruit.
+  Conversion mm/in, N/lbf, N·m/lb·ft, bar/psi, °C/°F, kg/lb (constantes exactes) ; le résultat est ajouté APRÈS le
+             texte d'origine, jamais à sa place.
+  Mesure     Tolérance : ± symétrique, bornes absolues, ± % du nominal, ou aucune. Verdict DÉRIVÉ (jamais stocké),
+             arithmétique décimale exacte, bornes incluses ; unités différentes = « incompatible » (aucune
+             conversion silencieuse). Toujours étiqueté « aide de carnet, non certifié ».
+  Tâches     « Tâche » crée UNE carte dans « À faire » du tableau existant (action carnet task_extract) ; le texte de
+             la note n'est jamais modifié et aucun lien retour n'est enregistré (le tableau n'a pas ce champ).
+             Liées à la page, au bloc, à la plage UTF-16 et au texte exact ; request_id contre le double envoi.
+  Liens HQ   note, projet, fichier, Lecteur (média/3D), dessin : la cible est vérifiée à l'ouverture ; un dessin
+             ouvre seulement l'onglet Dessiner (pas d'ouverture du dessin exact). Annotation : reportée.
 
 Lecteur 3D (.stl, .glb)
 -----------------------

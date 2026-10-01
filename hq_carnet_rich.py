@@ -52,6 +52,16 @@ only bounded metadata, never bytes or a path::
 ``text`` is always empty (an image line occupies no text offset: marks, find/replace and titles never touch
 it) and ``marks`` is always empty. The caption lives in ``asset.caption``.
 
+Engineering blocks (Stage 07, additive: pages without them are byte-identical to Stage 06) carry one bounded,
+declarative payload under a key named like the block type (see ``hq_carnet_eng``)::
+
+    {"id": "block-…", "type": "calc",     "text": "", "marks": [], "calc":     {expr, result, unit, at, v}}
+    {"id": "block-…", "type": "measure",  "text": "", "marks": [], "measure":  {label, observed, mode, nominal, tol, at, link}}
+    {"id": "block-…", "type": "decision", "text": "one line", "marks": [...], "decision": {at}}
+
+``calc`` and ``measure`` are atoms (no text, no marks); a ``decision`` is an ordinary text line. Nothing executable is ever
+stored and a stored result is never recomputed silently.
+
 Canonical form: marks sorted, non-empty, same-type/same-target marks merged when they
 overlap or touch. The browser (``hq-carnet-rich.js``) implements the same rules; the
 shared vectors in the tests keep both in step. Page text never appears in errors.
@@ -59,6 +69,7 @@ shared vectors in the tests keep both in step. Page text never appears in errors
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import secrets
@@ -66,10 +77,12 @@ import unicodedata
 from typing import Any
 from urllib.parse import urlsplit
 
+import hq_carnet_eng as eng
+
 CONTENT_VERSION = 2
 LEGACY_CONTENT_VERSION = 1
 
-BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image")
+BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image") + eng.ENG_TYPES
 IMAGE_TYPE = "image"  # Stage 06 (additive to V2): metadata only, see ``check_asset``
 ASSET_ID_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")
 ASSET_MIMES = ("image/jpeg", "image/png", "image/webp")
@@ -77,10 +90,12 @@ ASSET_LONG_SIDE_MAX = 2560
 ASSET_WIDTH_MIN, ASSET_WIDTH_MAX = 30, 100
 ASSET_CAPTION_MAX = 300
 IMAGES_PER_PAGE_MAX = 32
+ENG_ATOMS_PER_PAGE_MAX = 50  # calc + measure atoms per page (bounds the notebook file size)
+DECISIONS_PER_PAGE_MAX = 100
 ASSET_KEYS = {"id", "mime", "w", "h", "width", "layout", "caption"}
 INLINE_MARKS = ("bold", "italic", "underline", "highlight", "code")
 MARK_ORDER = INLINE_MARKS + ("link", "citation")
-REF_KINDS = ("note", "file", "drawing", "model", "media")
+REF_KINDS = ("note", "file", "drawing", "model", "media", "project")
 LOCATOR_KINDS = ("page", "section", "clause", "chapter", "figure", "table", "custom")
 LOCATOR_TEXT_MAX = 120
 CITE_PAGE_MAX = 100000
@@ -98,6 +113,7 @@ MEDIA_EXT = (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".mp4",
 
 _BLOCK_ID_RE = re.compile(r"^block-[A-Za-z0-9_-]{1,64}\Z")
 _PAGE_ID_RE = re.compile(r"^page-[A-Za-z0-9_-]{1,64}\Z")
+_PROJECT_ID_RE = re.compile(r"^proj-[A-Za-z0-9_-]{1,64}\Z")
 _STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,119}\Z")
 _TEXT_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _URL_BAD_RE = re.compile(r"[\x00-\x20\x7f\\<>\"'`]")
@@ -191,6 +207,9 @@ def check_ref(ref: Any, folders: tuple[str, ...] | None = _DEFAULT_FOLDERS, syst
         raise ContentError("Référence invalide")
     if kind == "note":
         if not _PAGE_ID_RE.match(ident):
+            raise ContentError("Référence invalide")
+    elif kind == "project":
+        if not _PROJECT_ID_RE.match(ident):
             raise ContentError("Référence invalide")
     elif kind == "drawing":
         if not _STEM_RE.match(ident):
@@ -434,6 +453,28 @@ def assets_of(content: dict) -> list[dict]:
     return [b["asset"] for b in content["blocks"] if b.get("type") == IMAGE_TYPE]
 
 
+def check_eng(kind: str, payload: Any, folders: tuple[str, ...] | None = _DEFAULT_FOLDERS, system_names: frozenset[str] = frozenset()) -> dict:
+    """Validate the payload of a Stage-07 block; returns a clean copy. The measurement link reuses ``check_ref``."""
+
+    def link_check(link: Any) -> dict:
+        if not isinstance(link, dict) or set(link) != {"kind", "id"} or link["kind"] not in eng.LINK_KINDS or not isinstance(link["id"], str):
+            raise ContentError("Mesure invalide")
+        if link["kind"] == "source":
+            if not eng.check_source_id(link["id"]):
+                raise ContentError("Mesure invalide")
+            return {"kind": "source", "id": link["id"]}
+        return check_ref(link, folders, system_names)
+
+    try:
+        return eng.check_payload(kind, payload, link_check)
+    except eng.EngError as e:
+        raise ContentError(str(e)) from e
+
+
+def eng_payloads(content: dict) -> list[dict]:
+    return [b[b["type"]] for b in content["blocks"] if b.get("type") in eng.ENG_TYPES]
+
+
 def _check_line(text: Any) -> str:
     if not isinstance(text, str) or "\n" in text or _TEXT_CTRL_RE.search(text):
         raise ContentError("Texte invalide")
@@ -508,10 +549,12 @@ def parse_content(
     total_marks = 0
     plain = True
     images = 0
+    atoms = 0
+    decisions = 0
     for incoming in blocks:
         if not isinstance(incoming, dict):
             raise ContentError("Bloc invalide")
-        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset"} or not {"type", "text"} <= set(incoming):
+        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset", *eng.ENG_TYPES} or not {"type", "text"} <= set(incoming):
             raise ContentError("Bloc invalide")
         kind = incoming["type"]
         if kind not in BLOCK_TYPES:
@@ -525,6 +568,24 @@ def parse_content(
             if images > IMAGES_PER_PAGE_MAX:
                 raise ContentError(f"Trop d'images sur la page (max {IMAGES_PER_PAGE_MAX})")
         elif "asset" in incoming:
+            raise ContentError("Bloc invalide")
+        payload = None
+        carried = set(incoming) & set(eng.ENG_TYPES)
+        if kind in eng.ENG_TYPES:
+            if carried != {kind} or "checked" in incoming or "asset" in incoming:
+                raise ContentError("Bloc invalide")
+            if kind in eng.ATOM_TYPES:
+                if incoming["text"] != "" or incoming.get("marks", []) != []:
+                    raise ContentError("Bloc invalide")
+                atoms += 1
+                if atoms > ENG_ATOMS_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de calculs/mesures sur la page (max {ENG_ATOMS_PER_PAGE_MAX})")
+            else:
+                decisions += 1
+                if decisions > DECISIONS_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de décisions sur la page (max {DECISIONS_PER_PAGE_MAX})")
+            payload = check_eng(kind, incoming[kind], folders, system_names)
+        elif carried:
             raise ContentError("Bloc invalide")
         checked = False
         if kind == "check":
@@ -545,6 +606,8 @@ def parse_content(
             block["checked"] = checked
         if asset is not None:
             block["asset"] = asset
+        if payload is not None:
+            block[kind] = payload
         if kind != "paragraph" or marks:
             plain = False
         out.append(block)
@@ -597,6 +660,8 @@ def store_content(parsed: dict, existing: dict, *, blocks_limit: int | None = No
                 item["checked"] = block["checked"]
             if block["type"] == IMAGE_TYPE:
                 item["asset"] = dict(block["asset"])
+            if block["type"] in eng.ENG_TYPES:
+                item[block["type"]] = copy.deepcopy(block[block["type"]])
             out.append(item)
         return {"version": CONTENT_VERSION, "blocks": out}
     if legacy and parsed["plain"]:
@@ -617,6 +682,8 @@ def strip_ids(content: dict) -> list:
         row = (block["type"], bool(block.get("checked", False)), block["text"], [_mark_key(m) for m in block["marks"]])
         if block["type"] == IMAGE_TYPE:
             row += (tuple(sorted(block["asset"].items())),)
+        if block["type"] in eng.ENG_TYPES:
+            row += (json.dumps(block[block["type"]], sort_keys=True, ensure_ascii=True),)
         out.append(row)
     return out
 
@@ -662,8 +729,15 @@ def valid_v2(content: Any) -> bool:
             keys = {"id", "type", "text", "marks"} | ({"checked"} if block.get("type") == "check" else set())
             if block.get("type") == IMAGE_TYPE:
                 keys = {"id", "type", "text", "marks", "asset"}
+            if block.get("type") in eng.ENG_TYPES:
+                keys = {"id", "type", "text", "marks", block["type"]}
             if set(block) != keys or block["type"] not in BLOCK_TYPES:
                 return False
+            if block["type"] in eng.ENG_TYPES:
+                if block["type"] in eng.ATOM_TYPES and (block["text"] != "" or block["marks"] != []):
+                    return False
+                if check_eng(block["type"], block[block["type"]], None, frozenset()) != block[block["type"]]:
+                    return False
             if block["type"] == IMAGE_TYPE:
                 if block["text"] != "" or block["marks"] != [] or check_asset(block["asset"]) != block["asset"]:
                     return False
@@ -735,6 +809,16 @@ def render_txt(content: dict) -> str:
         if kind == IMAGE_TYPE:
             caption = block["asset"]["caption"]
             lines.append(f"[Image : {caption}]" if caption else "[Image]")
+            continue
+        if kind == "calc":
+            lines.append("[" + eng.describe_calc(block["calc"]) + "]")
+            continue
+        if kind == "measure":
+            lines.append("[" + eng.describe_measure(block["measure"]) + "]")
+            continue
+        if kind == "decision":
+            body = _txt_inline(block)
+            lines.append(eng.decision_label(block["decision"]) + (" \u2014 " + body if body else ""))
             continue
         text = _txt_inline(block)
         if kind == "bullet":
@@ -851,6 +935,16 @@ def render_markdown(content: dict, asset_paths: dict[str, str] | None = None) ->
             else:
                 text = f"*\\[Image : {_md_escape(caption)}\\]*" if caption else "*\\[Image\\]*"
             parts.append(("img", text, gap))
+            gap = False
+            continue
+        if kind in ("calc", "measure"):
+            inner = eng.describe_calc(block["calc"]) if kind == "calc" else eng.describe_measure(block["measure"])
+            parts.append((kind, f"*\\[{_md_escape(inner)}\\]*", gap))
+            gap = False
+            continue
+        if kind == "decision":
+            body = _md_inline(block)
+            parts.append(("decision", "**" + _md_escape(eng.decision_label(block["decision"])) + "**" + (" \u2014 " + body if body else ""), gap))
             gap = False
             continue
         if kind in ("paragraph", "heading") and not block["text"].strip():

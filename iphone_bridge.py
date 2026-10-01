@@ -2119,6 +2119,8 @@ def bind_hq() -> None:
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
         system_names=SYSTEM_NAMES,
         safe_leaf_name=safe_leaf_name,
+        task_add=cc_ext.kanban_add,  # Stage 07: selection -> card of the EXISTING Kanban board (no second task engine)
+        task_path=cc_ext.kanban_path,
     )
 
     def _agent_journal(kind, message, **extra):
@@ -2549,13 +2551,13 @@ function hqCarnetMissing() {
     };
     // Stage 04/05: the structured-content and sources modules must load before the editor.
     // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet.js', () => {
+    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    }))), true);
+    }))))), true);
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5310,8 +5312,10 @@ def render_app() -> bytes:
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
+<script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-rich.js"></script>
 <script src="/assets/hq-carnet-sources.js"></script>
+<script src="/assets/hq-carnet-eng-ui.js"></script>
 <script src="/assets/hq-carnet.js"></script>
 <script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>

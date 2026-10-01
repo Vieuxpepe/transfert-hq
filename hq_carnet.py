@@ -16,6 +16,10 @@ never deleted by Carnet in Stage 06: orphans count against the quota). ``page_sa
 referenced asset against the real file; backup copies exactly the referenced assets; a Markdown export with
 images is a package (``<name>.md`` + ``<name>.assets/``).
 
+Engineering (Stage 07, ``hq_carnet_eng``): ``calc`` / ``measure`` atoms and ``decision`` lines are ordinary V2 blocks with a
+bounded declarative payload. ``task_extract`` turns a selection into a card of the EXISTING Kanban board through the
+``task_add`` callback bound by the host (no second task engine, no Carnet-only task store); it never writes the notebook.
+
 Revisions:
 - every page has its own ``rev`` (``page_save`` checks ``expected_rev``);
 - structural actions check ``expected_notebook_rev``;
@@ -32,6 +36,7 @@ import re
 import secrets
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +67,12 @@ UNTITLED = "Page sans titre"
 
 EXPORT_ACTION = "page_export"  # read-only snapshot into Inbox/Uni/Print; never mutates the notebook
 EXPORT_FORMATS = ("txt", "md")
+
+TASK_ACTION = "task_extract"  # selection -> card of the existing Kanban board; never mutates the notebook
+TASK_TITLE_MAX = 120  # the Kanban card title limit (cc_ext.kanban_add cuts at 120)
+TASK_TEXT_MAX = 500  # UTF-16 units of selected text accepted
+TASK_SEEN_MAX = 256  # bounded in-memory idempotency memory (per process)
+TASK_TEXT_TYPES = ("paragraph", "heading", "bullet", "number", "check", "decision")
 EXPORT_DEPTH_MAX = 6
 EXPORT_PART_MAX = 80
 
@@ -90,6 +101,9 @@ _CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _cb: dict[str, Any] = {}
 _ready = False
 _guard = threading.Lock()
+_task_lock = threading.Lock()
+_task_seen: "OrderedDict[str, dict]" = OrderedDict()
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
 
 
 class CarnetError(ValueError):
@@ -114,6 +128,13 @@ class CarnetConflict(RuntimeError):
     def __init__(self, payload: dict):
         super().__init__(str(payload.get("error") or "Conflit"))
         self.payload = payload
+
+
+class CarnetTaskUnavailable(RuntimeError):
+    """The task system cannot take a card right now (HTTP 503). Nothing was created, the note is untouched."""
+
+    status = 503
+    code = "tasks_unavailable"
 
 
 class CarnetStorageError(RuntimeError):
@@ -212,6 +233,9 @@ def limits() -> dict:
         "page_blocks": rich.BLOCKS_MAX,
         "notebook_blocks": rich.NOTEBOOK_BLOCKS_MAX,
         "marks_per_block": rich.MARKS_PER_BLOCK_MAX,
+        "eng_atoms_per_page": rich.ENG_ATOMS_PER_PAGE_MAX,
+        "decisions_per_page": rich.DECISIONS_PER_PAGE_MAX,
+        "task_title_chars": TASK_TITLE_MAX,
         **media.limits(),
     }
 
@@ -890,6 +914,143 @@ def mutate(data: Any) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- task extraction (Stage 07)
+
+
+def _u16_slice(text: str, start: int, end: int) -> str | None:
+    """``text[start:end]`` in UTF-16 code units, or None when the range is outside the text or cuts a surrogate pair."""
+    raw = text.encode("utf-16-le")
+    if end * 2 > len(raw):
+        return None
+    try:
+        return raw[start * 2 : end * 2].decode("utf-16-le")
+    except UnicodeDecodeError:
+        return None
+
+
+def _task_title(value: Any) -> str:
+    if not isinstance(value, str) or _CTRL_RE.search(value) or not value.strip() or len(value) > TASK_TITLE_MAX:
+        raise CarnetError("Titre de tâche invalide")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as e:
+        raise CarnetError("Titre de tâche invalide") from e
+    return value
+
+
+def _task_board_ok() -> None:
+    """Refuse (before anything is written) when the Kanban file exists but is not a usable board.
+
+    The Kanban helpers silently replace an unreadable board by the default one on the next save; Carnet must never
+    trigger that: a malformed ``kanban.json`` is preserved byte for byte and the extraction fails closed.
+    A missing file is normal (the board creates its default).
+    """
+    path_fn = _cb.get("task_path")
+    try:
+        path = Path(path_fn()) if callable(path_fn) else None
+    except Exception as e:
+        raise CarnetTaskUnavailable("Tâches indisponibles") from e
+    if path is None:
+        raise CarnetTaskUnavailable("Tâches indisponibles")
+    if not os.path.lexists(path):
+        return
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise CarnetTaskUnavailable("Tâches indisponibles")
+        board = json.loads(path.read_bytes().decode("utf-8"))
+    except CarnetTaskUnavailable:
+        raise
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        raise CarnetTaskUnavailable("Tâches indisponibles — tableau illisible, conservé") from e
+    cols = board.get("columns") if isinstance(board, dict) else None
+    bad = CarnetTaskUnavailable("Tâches indisponibles — tableau illisible, conservé")
+    if not isinstance(cols, list) or not cols:
+        raise bad
+    todo_seen = False
+    for col in cols:  # shape only: nothing is repaired, anything unexpected fails closed
+        if not isinstance(col, dict) or not isinstance(col.get("id"), str) or not col["id"]:
+            raise bad
+        cards = col.get("cards", [])
+        if not isinstance(cards, list) or not all(isinstance(c, dict) for c in cards):
+            raise bad
+        if col["id"] == "todo":
+            todo_seen = True
+    if not todo_seen:
+        raise bad
+
+
+def task_extract(data: Any) -> dict:
+    """Create ONE Kanban card (column ``todo``) from text selected in a note.
+
+    The request is bound to the object it was opened against: page id + ``expected_rev`` + block id + UTF-16 range +
+    the exact selected text. Any mismatch fails closed (409 ``stale_selection`` / ``revision_conflict``) and creates
+    nothing. The notebook is never written: the original text stays as it is. ``request_id`` makes a repeated submit
+    return the first card instead of creating another (bounded, per process). No backlink is stored: the Kanban
+    card model has no source field and Stage 07 does not extend it.
+    """
+    if not isinstance(data, dict):
+        raise CarnetError("Requête invalide")
+    _only_keys(data, {"action", "page_id", "expected_rev", "block_id", "start", "end", "text", "title", "request_id"})
+    page_id = _req_id(data, "page_id", "page")
+    block_id = _req_id(data, "block_id", "block")
+    expected = _req_int(data, "expected_rev")
+    start = _req_int(data, "start")
+    end = _req_int(data, "end")
+    request_id = data.get("request_id")
+    if not isinstance(request_id, str) or not _REQUEST_ID_RE.match(request_id):
+        raise CarnetError("request_id invalide")
+    text = data.get("text")
+    if not isinstance(text, str) or not text or rich.u16_len(text) > TASK_TEXT_MAX or _CTRL_RE.search(text):
+        raise CarnetError("Texte sélectionné invalide")
+    title = _task_title(data.get("title"))
+    if not end > start:
+        raise CarnetError("Sélection vide")
+    add = _cb.get("task_add")
+    if not callable(add):
+        raise CarnetTaskUnavailable("Tâches indisponibles")
+    # Lock order: _task_lock -> notebook lock. The notebook lock is HELD until the card is created and confirmed, so the
+    # selection cannot change between validation and the Kanban side effect (a concurrent save waits, then bumps rev).
+    with _task_lock:
+        known = _task_seen.get(request_id)
+        if known is not None:
+            return {"ok": True, "duplicate": True, "task": dict(known), "rev": expected}
+        with hq_state.path_lock(_path()):
+            state = _load_locked(create=False)
+            page = _find(state["pages"], page_id, "Page")
+            _check_page_rev(state, page, expected)
+            nb_rev = state["notebook_rev"]
+            if page["deleted_at"] is not None:
+                raise CarnetError("Page dans la corbeille")
+            content = page["content"]
+            block = None
+            if content.get("version") == rich.CONTENT_VERSION:
+                block = next((b for b in content["blocks"] if b["id"] == block_id), None)
+            stale = {"error": "Sélection modifiée — aucune tâche créée", "code": "stale_selection", "page": _copy(page), "notebook_rev": nb_rev}
+            if block is None or block["type"] not in TASK_TEXT_TYPES:
+                raise CarnetConflict(stale)
+            if _u16_slice(block["text"], start, end) != text:
+                raise CarnetConflict(stale)
+            _task_board_ok()
+            try:
+                board = add("todo", title)
+            except (OSError, ValueError, TypeError, AttributeError) as e:
+                raise CarnetTaskUnavailable("Tâches indisponibles") from e
+            card = None
+            try:
+                todo = next(c for c in board["columns"] if c.get("id") == "todo")
+                first = (todo.get("cards") or [None])[0]
+                if isinstance(first, dict) and isinstance(first.get("id"), str) and first.get("title") == title:
+                    card = {"id": first["id"][:80], "title": title, "column": "todo"}
+            except (StopIteration, KeyError, TypeError, AttributeError):
+                card = None
+            if card is None:
+                raise CarnetTaskUnavailable("Tâche non confirmée — vérifie le tableau des tâches")
+            _task_seen[request_id] = card
+            while len(_task_seen) > TASK_SEEN_MAX:
+                _task_seen.popitem(last=False)
+            return {"ok": True, "duplicate": False, "task": dict(card), "rev": expected}
+
+
 # ---------------------------------------------------------------- export (snapshot copy into Transfert)
 
 _EXPORT_PART_BAD = re.compile(r'[<>"|?*\x00-\x1f\x7f]')
@@ -1095,6 +1256,8 @@ def http_post(data: Any) -> tuple[int, dict]:
     try:
         if isinstance(data, dict) and data.get("action") == EXPORT_ACTION:
             return 200, export_copy(data)
+        if isinstance(data, dict) and data.get("action") == TASK_ACTION:
+            return 200, task_extract(data)
         if isinstance(data, dict) and isinstance(data.get("action"), str) and data["action"].startswith("source_"):
             return 200, sources.mutate(data)
         return 200, mutate(data)
@@ -1104,7 +1267,7 @@ def http_post(data: Any) -> tuple[int, dict]:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}
-    except CarnetStorageError as e:
+    except (CarnetStorageError, CarnetTaskUnavailable) as e:
         return e.status, {"error": str(e), "code": e.code}
     except OSError:
         # Never echo OS error text: it can contain absolute paths.

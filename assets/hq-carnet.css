@@ -382,3 +382,37 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
   body.carnet-printing #hq-carnet-print .carnet-img{display:block;width:100%;height:auto;max-height:23cm;object-fit:contain;background:none;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   body.carnet-printing #hq-carnet-print .carnet-caption{color:#000;font-size:.85em;text-align:center;break-before:avoid;page-break-before:avoid}
 }
+
+/* Stage 07 — engineering tools. Collapsed by default: nothing below is visible on the plain paper. */
+.carnet-eng-line{display:block;margin:.35em 0;line-height:1.35;cursor:pointer;-webkit-user-select:none;user-select:none}
+.carnet-eng-card{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:6px 10px;background:color-mix(in srgb,var(--panel) 70%,transparent);font-size:.92em}
+.carnet-eng-line:focus-visible .carnet-eng-card{outline:2px solid var(--accent);outline-offset:2px}
+.carnet-eng-head{font-size:var(--text-sm);color:var(--muted)}
+.carnet-eng-body{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.carnet-eng-body strong{font-size:1.05em}
+.carnet-eng-meta{font-size:var(--text-sm);color:var(--muted);font-variant-numeric:tabular-nums}
+.carnet-eng-status{display:inline-block;margin-top:2px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);font-size:var(--text-sm);font-weight:700}
+.carnet-eng-status[data-status="in"]{border-color:var(--accent);color:var(--accent)}
+.carnet-eng-status[data-status="out"]{border-color:var(--danger);color:var(--danger)}
+.carnet-eng-status[data-status="incompatible"]{border-color:var(--warn);color:var(--warn)}
+.carnet-eng-note{font-size:var(--text-sm);color:var(--muted);margin:2px 0 0}
+.carnet-decision-label{font-size:var(--text-sm);font-weight:700;letter-spacing:.02em;color:var(--accent);margin-right:.5em;-webkit-user-select:none;user-select:none}
+.carnet-eng-panel[hidden]{display:none}
+.carnet-eng-headrow{justify-content:space-between}
+.carnet-eng-menu{display:flex;flex-wrap:wrap;gap:6px}
+.carnet-eng-tool{min-height:var(--carnet-tap);padding:0 14px}
+.carnet-eng-form{display:flex;flex-direction:column;gap:8px}
+.carnet-eng-field{display:flex;flex-direction:column;gap:2px;flex:1 1 150px;min-width:0}
+.carnet-eng-field[hidden]{display:none}
+.carnet-eng-label{font-size:var(--text-sm);color:var(--muted)}
+.carnet-eng-out{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.carnet-eng-out[data-bad="true"]{color:var(--danger)}
+.carnet-eng-out[data-status="out"]{color:var(--danger);font-weight:700}
+.carnet-eng-panel .carnet-msg[data-bad="true"]{color:var(--danger)}
+@media print{
+  body.carnet-printing #hq-carnet-print .carnet-eng-line{display:block;margin:.4em 0;break-inside:avoid;page-break-inside:avoid}
+  body.carnet-printing #hq-carnet-print .carnet-eng-card{border:1px solid #000;border-left:4px solid #000;background:none;color:#000;padding:4px 8px}
+  body.carnet-printing #hq-carnet-print .carnet-eng-head,body.carnet-printing #hq-carnet-print .carnet-eng-meta,body.carnet-printing #hq-carnet-print .carnet-eng-note,body.carnet-printing #hq-carnet-print .carnet-decision-label{color:#000}
+  body.carnet-printing #hq-carnet-print .carnet-eng-status{color:#000;border-color:#000}
+  .carnet-eng-panel{display:none!important}
+}

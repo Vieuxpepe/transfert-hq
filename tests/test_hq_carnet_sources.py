@@ -707,7 +707,8 @@ class StaticAndParityTests(unittest.TestCase):
         core = text.index('<script src="/assets/hq-carnet.js"></script>')
         self.assertLess(rich, srcs)
         self.assertLess(srcs, core)
-        self.assertIn("load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet.js'", text)
+        # Stage 07: the lazy engineering UI module loads between the sources module and the editor
+        self.assertIn("load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet.js'", text)
 
     def test_editor_hooks_use_the_single_state_machine(self):
         js = (self.ROOT / "assets" / "hq-carnet.js").read_text(encoding="utf-8")

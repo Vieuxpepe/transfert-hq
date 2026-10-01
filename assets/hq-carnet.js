@@ -124,6 +124,7 @@
     ["pinned", "Épinglées"],
     ["recent", "Récentes"],
     ["unfiled", "À classer"],
+    ["decisions", "Décisions"],
   ];
   const BUCKETS = [
     ["today", "Aujourd'hui"],
@@ -264,6 +265,7 @@
     else if (f === "category") pool = pool.filter((it) => it.category_id === s.id);
     else if (f === "pinned") pool = pool.filter((it) => it.pinned);
     else if (f === "unfiled") pool = pool.filter((it) => !it.project_id && !it.category_id);
+    else if (f === "decisions") pool = pool.filter((it) => it.hasDecision);
     if (queryTokens(s.query).length) return { searching: true, groups: [{ key: "results", label: "", items: searchPages(pool, s.query) }] };
     if (f === "recent") return { searching: false, groups: groupRecents(pool, nowMs) };
     if (f === "trash") {
@@ -1621,6 +1623,7 @@
           updated: Math.max(Number(srv.updated_at) || 0, localTs),
           conflict: !!e.conflict,
           dirty: busy(e),
+          hasDecision: typeof e.local.fmt === "string" && e.local.fmt.indexOf('["d",0,') >= 0,
         });
       }
       return out;
@@ -1752,6 +1755,7 @@
     phase: "idle", // idle | booting | ready | denied | failed
     active: false,
     core: null,
+    eng: null,
     drafts: null,
     host: null,
     root: null,
@@ -1970,6 +1974,7 @@
     tools.appendChild(toolBtn("btn-carnet-find", "Rechercher et remplacer dans la page", "Rechercher"));
     tools.appendChild(toolBtn("btn-carnet-cite", "Insérer une référence (source, page)", "Référence"));
     tools.appendChild(toolBtn("btn-carnet-image", "Insérer une image (appareil photo, photos, fichiers)", "Image"));
+    tools.appendChild(toolBtn("btn-carnet-eng", "Outils d'ingénierie (calcul, mesure, décision, conversion, tâche, lien)", "Ingénierie"));
     tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
@@ -2114,6 +2119,7 @@
       else if (b.id === "btn-carnet-cite") openCitePicker();
       else if (b.id === "btn-carnet-export") toggleExport();
       else if (b.id === "btn-carnet-image") toggleImagePanel();
+      else if (b.id === "btn-carnet-eng") openEngMenu();
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -3036,6 +3042,7 @@
     findRefresh();
     closeLink();
     closeImageTools();
+    if (ui.eng) ui.eng.onPageChange(e ? e.id : null);
   }
 
   /**
@@ -3359,6 +3366,8 @@
       ev.preventDefault(); // never let the browser create its own formatting/HTML
     } else if ((t === "deleteContentBackward" || t === "deleteContentForward") && imgKeyAdjacent(ev)) {
       return; // next to an image: Backspace/Delete selected it instead of deleting it
+    } else if ((t === "deleteContentBackward" || t === "deleteContentForward") && engKeyAdjacent(ev)) {
+      return; // next to a calculation/measurement: Backspace/Delete opened it instead of deleting it
     } else if (t === "deleteContentBackward") {
       const sel = readSel();
       if (sel && sel.start === sel.end) {
@@ -3402,6 +3411,15 @@
 
   function onEditorKey(ev) {
     if (onImageKey(ev)) return;
+    const atomEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-eng]") : null;
+    if (atomEl && ui.editor.contains(atomEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      if (curEntry()) {
+        const eu = engUi();
+        if (eu) eu.openAtom(atomEl);
+      }
+      return;
+    }
     if ((ev.key === "Enter" || ev.key === " ") && ev.target && ev.target.closest && ev.target.closest("[data-carnet-citation]") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       const w = ev.target.closest("[data-carnet-citation]");
       if (w && ui.editor.contains(w)) {
@@ -3439,6 +3457,15 @@
     if (fig && ui.editor.contains(fig)) {
       ev.preventDefault();
       selectImageLine(fig.closest("[data-carnet-line]"));
+      return;
+    }
+    const atom = t.closest("[data-carnet-eng]");
+    if (atom && ui.editor.contains(atom)) {
+      ev.preventDefault();
+      if (curEntry()) {
+        const eu = engUi();
+        if (eu) eu.openAtom(atom);
+      } else flashMsg("Page en lecture seule");
       return;
     }
     if (ui.image.sel) closeImageTools(""); // a click in the text leaves the image
@@ -3718,11 +3745,9 @@
     } else if (kind === "note") {
       if (ui.core && ui.core.entry(value) && !ui.core.isTrashed(ui.core.entry(value))) openPage(value);
       else flashMsg(MSG.linkMissing);
-    } else if (kind === "file" || kind === "media" || kind === "model") {
-      const ref = Rich.checkRef({ kind, id: value });
-      if (ref) global.open("/files/" + ref.id.split("/").map(encodeURIComponent).join("/"), "_blank", "noopener,noreferrer");
-    } else if (kind === "drawing") {
-      if (typeof global.setView === "function") global.setView("dessiner");
+    } else if (kind === "project" || kind === "media" || kind === "model" || kind === "drawing" || kind === "file") {
+      const eu = engUi();
+      if (eu) eu.openRef(kind, value); // existence is verified at open time; a missing target fails safe
     }
   }
 
@@ -3737,6 +3762,96 @@
     if (!m) return;
     if (m.href) openLinkTarget("external", m.href);
     else openLinkTarget(m.ref.kind, m.ref.id);
+  }
+
+  // ---------------------------------------------------------------- engineering tools (Stage 07)
+
+  /** Lazily mounts the engineering UI (hq-carnet-eng-ui.js). Nothing is built until a tool is opened. */
+  function engUi() {
+    if (ui.eng) return ui.eng;
+    const U = global.HqCarnetEngUi;
+    if (!U || typeof U.mount !== "function") {
+      flashMsg("Module ingénierie non chargé");
+      return null;
+    }
+    const core = () => ui.core;
+    ui.eng = U.mount({
+      doc,
+      root: (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      now: () => Date.now(),
+      editorEl: () => ui.editor,
+      api: { get: (url) => apiCall(url, { timeoutMs: 12000 }), post: (payload) => request(payload) },
+      flash: flashMsg,
+      editor: {
+        entry: curEntry,
+        sel: currentSel,
+        lines: (e) => localLines(e.local),
+        commit: commitLines,
+      },
+      notes: () => {
+        const c = core();
+        const out = [];
+        if (c) for (const e of c.st.entries.values()) if (!e.orphan && !c.isTrashed(e)) out.push({ id: e.id, title: deriveTitle(e.local.text) });
+        return out;
+      },
+      projects: () => {
+        const c = core();
+        return c ? c.st.projects.filter((p) => isObj(p) && typeof p.id === "string" && typeof p.name === "string") : [];
+      },
+      openNote: (id) => {
+        const c = core();
+        if (c && c.entry(id) && !c.isTrashed(c.entry(id))) {
+          openPage(id);
+          return true;
+        }
+        return false;
+      },
+      openProject: (id) => {
+        ui.lib.sel = { filter: "project", id };
+        ui.lib.query = "";
+        openLibrary();
+        renderLibrary();
+      },
+      openFile: (rel) => {
+        const ref = Rich.checkRef({ kind: "file", id: rel });
+        if (ref) global.open("/files/" + ref.id.split("/").map(encodeURIComponent).join("/"), "_blank", "noopener,noreferrer");
+      },
+      playerOpen: (rel) => {
+        if (typeof global.hqPlayerOpen === "function") global.hqPlayerOpen(rel, false);
+        else if (Rich.checkRef({ kind: "file", id: rel })) global.open("/files/" + rel.split("/").map(encodeURIComponent).join("/"), "_blank", "noopener,noreferrer");
+      },
+      setView: (v) => {
+        if (typeof global.setView === "function") global.setView(v);
+      },
+      onClose: (refocus) => {
+        if (refocus && finePointer()) focusEditor(false);
+      },
+    });
+    return ui.eng;
+  }
+
+  function openEngMenu() {
+    const eu = engUi();
+    if (!eu) return;
+    const sel = currentSel(); // the caret/selection BEFORE the panel takes focus
+    ui.selCache = { start: sel.start, end: sel.end };
+    eu.openMenu();
+  }
+
+  function engKeyAdjacent(ev) {
+    if (!ui.eng) {
+      // the module is only built on demand: check cheaply whether an atom is even adjacent before building it
+      const sel = readSel();
+      if (!sel || sel.start !== sel.end) return false;
+      const at = Rich.locate(sel.lines, sel.start);
+      const back = ev.inputType === "deleteContentBackward";
+      const prev = back && at.off === 0 && at.line > 0 ? sel.lines[at.line - 1] : null;
+      const next = !back && at.off === sel.lines[at.line].text.length ? sel.lines[at.line + 1] : null;
+      const a = prev || next;
+      if (!a || !Rich.isAtom(a) || a.type === "image") return false;
+    }
+    const eu = engUi();
+    return !!eu && eu.keyAdjacent(ev);
   }
 
   // ---------------------------------------------------------------- sources / citations (Stage 05)
