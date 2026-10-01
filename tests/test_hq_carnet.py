@@ -161,7 +161,8 @@ class CarnetBase(unittest.TestCase):
         return hq_carnet.mutate({"action": "page_save", "id": page_id, "expected_rev": rev, "content": _content(text), **extra})
 
     def assert_no_residue(self):
-        self.assertEqual(sorted(os.listdir(self.path.parent)), ["notebook.json"])
+        # Stage 08: a trash/restore/delete also appends a metadata-only lifecycle event to history.json (never a temp file)
+        self.assertEqual([f for f in sorted(os.listdir(self.path.parent)) if f != "history.json"], ["notebook.json"])
 
 
 class InitTests(CarnetBase):
@@ -550,7 +551,8 @@ class StorageTests(CarnetBase):
         self.assertEqual(target.read_bytes(), payload)
         self.assertTrue(self.path.is_symlink())
         self.assertEqual(sorted(os.listdir(target.parent)), ["notebook.json"])
-        self.assertEqual(sorted(os.listdir(self.path.parent)), ["notebook.json"])
+        # Stage 08: a trash/restore/delete also appends a metadata-only lifecycle event to history.json (never a temp file)
+        self.assertEqual([f for f in sorted(os.listdir(self.path.parent)) if f != "history.json"], ["notebook.json"])
 
     def test_carnet_dir_symlink_rejected(self):
         payload = json.dumps(_fixture()).encode("utf-8")

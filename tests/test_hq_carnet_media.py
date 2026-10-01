@@ -1213,7 +1213,7 @@ class StaticMediaTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parent.parent
 
     def test_browser_modules_have_no_dangerous_sinks(self):
-        for name in ("hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js"):
+        for name in ("hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js"):
             text = (self.ROOT / "assets" / name).read_text(encoding="utf-8")
             for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "importScripts", "XMLHttpRequest", "sendBeacon", "WebSocket"):
                 self.assertNotIn(bad, text, f"{name}: {bad}")
@@ -1230,7 +1230,7 @@ class StaticMediaTests(unittest.TestCase):
         self.assertLess(media_i, rich_i)
         self.assertLess(rich_i, core_i)
         # Stage 07 inserts the engineering modules: eng (model, needed by rich) after media, eng-ui (lazy UI) before the editor
-        self.assertIn("load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet.js'", text)
+        self.assertIn("load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet.js'", text)
         self.assertIn("load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-rich.js'", text)
 
     def test_handler_security_headers_default_is_unchanged(self):

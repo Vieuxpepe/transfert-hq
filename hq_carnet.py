@@ -20,6 +20,12 @@ Engineering (Stage 07, ``hq_carnet_eng``): ``calc`` / ``measure`` atoms and ``de
 bounded declarative payload. ``task_extract`` turns a selection into a card of the EXISTING Kanban board through the
 ``task_add`` callback bound by the host (no second task engine, no Carnet-only task store); it never writes the notebook.
 
+History / bulk / reports (Stage 08): ``hq_carnet_history`` keeps a bounded, separate ``history.json`` of MEANINGFUL events only
+(explicit restore points, restores, bulk operations and their Undo, single-page lifecycle moves; never autosaves);
+``hq_carnet_bulk`` is the one reusable scope -> preview -> confirm -> revision-aware apply -> Undo framework;
+``hq_carnet_restore`` takes restore points and restores them as a new revision; ``hq_carnet_links`` derives "Liée depuis…"
+lazily from the stored references; ``hq_carnet_report`` assembles an explicit, ordered, read-only report.
+
 Revisions:
 - every page has its own ``rev`` (``page_save`` checks ``expected_rev``);
 - structural actions check ``expected_notebook_rev``;
@@ -40,7 +46,12 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+import hq_carnet_bulk as bulk
+import hq_carnet_history as history
+import hq_carnet_links as links
 import hq_carnet_media as media
+import hq_carnet_report as report
+import hq_carnet_restore as restore
 import hq_carnet_rich as rich
 import hq_carnet_sources as sources
 import hq_state
@@ -156,6 +167,7 @@ def bind(**kwargs: Any) -> None:
         _cb.update(kwargs)
         sources.bind(**kwargs)  # Stage 05: sources share the root / confinement callbacks
         media.bind(**kwargs)  # Stage 06: image storage shares the root
+        history.bind(**kwargs)  # Stage 08: the history file shares the root and clock
         _ready = _cb.get("root") is not None
 
 
@@ -911,7 +923,25 @@ def mutate(data: Any) -> dict:
             _write(state)
         out = {"ok": True, "notebook_rev": state["notebook_rev"]}
         out.update(_copy(result))
+        if write and action in _LIFECYCLE:
+            _record_lifecycle(action, out, now)
     return out
+
+
+_LIFECYCLE = {"page_trash": "trash", "page_restore": "restore", "page_delete_permanent": "delete_permanent"}
+_LIFECYCLE_TEXT = {"trash": "Page mise à la corbeille", "restore": "Page restaurée de la corbeille", "delete_permanent": "Page supprimée définitivement"}
+
+
+def _record_lifecycle(action: str, out: dict, now: float) -> None:
+    """Single-page trash / restore / permanent delete -> a metadata-only history event. BEST EFFORT: the lifecycle change is
+    already committed and a damaged or full history must never block it (the audit trail is the only thing lost)."""
+    kind = _LIFECYCLE[action]
+    page = out.get("page")
+    page_id = page["id"] if isinstance(page, dict) else out.get("id")
+    try:
+        history.append("lifecycle", "applied", _LIFECYCLE_TEXT[kind], {"page_id": page_id, "action": kind, "rev_after": page["rev"] if isinstance(page, dict) else None}, now=now)
+    except (history.HistoryStorageError, OSError, KeyError, TypeError):
+        pass
 
 
 # ---------------------------------------------------------------- task extraction (Stage 07)
@@ -1146,8 +1176,28 @@ def export_copy(data: dict) -> dict:
     if callable(leaf_ok) and leaf_ok(name) is None:
         raise CarnetError("Nom de fichier invalide")
     directory = _export_dir(_cb["root"], parts)
-    target = directory / name
     images = rich.assets_of(content) if fmt == "md" else []
+    size, package, assets = _write_export(directory, name, images, lambda paths: render_export(content, fmt, paths), leaf_ok)
+    return {
+        "ok": True,
+        "path": "/".join(parts + [name]),
+        "name": name,
+        "bytes": size,
+        "rev": rev,
+        "format": fmt,
+        "exported_at": _now(),
+        **({"assets_dir": "/".join(parts + [package.name]), "assets": assets} if package is not None else {}),
+    }
+
+
+def _write_export(directory: Path, name: str, images: list[dict], render, leaf_ok) -> tuple[int, Path | None, int]:
+    """Write ``<name>`` (+ ``<stem>.assets/figure-NN.<ext>`` when ``images``) below the confined ``directory``.
+
+    Shared by the page export and the Stage-08 report export: an existing file is NEVER overwritten (409
+    ``export_exists``), nothing is left behind on failure, links are relative. ``render(asset_paths) -> str``.
+    Returns ``(bytes written, package dir or None, number of assets)``.
+    """
+    target = directory / name
     package: Path | None = None
     asset_paths: dict[str, str] = {}
     exists = CarnetConflict({"error": "Un fichier du même nom existe déjà — choisis un autre nom", "code": "export_exists"})
@@ -1164,7 +1214,7 @@ def export_copy(data: dict) -> dict:
         for asset in images:
             if asset["id"] not in asset_paths:
                 asset_paths[asset["id"]] = f"{package_name}/figure-{len(asset_paths) + 1:02d}{media.MIME_EXT[asset['mime']]}"
-    payload = render_export(content, fmt, asset_paths or None).encode("utf-8")
+    payload = render(asset_paths or None).encode("utf-8")
     created: list[Path] = []
     made_package = False
 
@@ -1209,26 +1259,28 @@ def export_copy(data: dict) -> dict:
     except OSError as e:
         _undo()
         raise CarnetStorageError("Écriture de la copie impossible", 503) from e
-    return {
-        "ok": True,
-        "path": "/".join(parts + [name]),
-        "name": name,
-        "bytes": len(payload),
-        "rev": rev,
-        "format": fmt,
-        "exported_at": _now(),
-        **({"assets_dir": "/".join(parts + [package.name]), "assets": len(asset_paths)} if package is not None else {}),
-    }
+    return len(payload), package, len(asset_paths)
 
 
 # ---------------------------------------------------------------- HTTP helpers
 
 
 def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
-    """``query`` is ``parse_qs`` output. Only ``meta=1`` (page metadata) or ``sources=1`` (Stage 05) is accepted."""
+    """``query`` is ``parse_qs`` output. Accepted (one at a time): ``meta=1`` (page metadata), ``sources=1`` (Stage 05),
+    ``history=1[&page=<page-id>]`` and ``backlinks=<kind>&id=<id>`` (Stage 08, read-only, nothing is written)."""
     try:
-        extra = set(query) - {"meta", "sources"}
+        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "id"}
         if extra:
+            raise CarnetError("Paramètre inconnu")
+        if "history" in query:
+            if query["history"] != ["1"] or (set(query) - {"history", "page"}) or ("page" in query and len(query["page"]) != 1):
+                raise CarnetError("history invalide")
+            return 200, history.list_events(query["page"][0] if "page" in query else None)
+        if "backlinks" in query:
+            if set(query) != {"backlinks", "id"} or len(query["backlinks"]) != 1 or len(query["id"]) != 1:
+                raise CarnetError("backlinks invalide")
+            return 200, links.backlinks(query["backlinks"][0], query["id"][0])
+        if "page" in query or "id" in query:
             raise CarnetError("Paramètre inconnu")
         if "sources" in query:
             if query["sources"] != ["1"] or "meta" in query:
@@ -1241,15 +1293,27 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
                 raise CarnetError("meta invalide")
             meta = True
         return 200, get_notebook(meta=meta)
+    except history.HistoryError as e:
+        return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}
-    except CarnetStorageError as e:
+    except (CarnetStorageError, history.HistoryStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except OSError:
         # Never echo OS error text: it can contain absolute paths.
         return 503, {"error": "Carnet inaccessible", "code": "storage_error"}
+
+
+_STAGE08 = {
+    "bulk_preview": bulk.preview,
+    "bulk_apply": bulk.apply,
+    "bulk_undo": bulk.undo,
+    "history_checkpoint": restore.checkpoint,
+    "history_restore": restore.restore,
+    "report_build": report.build,
+}
 
 
 def http_post(data: Any) -> tuple[int, dict]:
@@ -1260,9 +1324,16 @@ def http_post(data: Any) -> tuple[int, dict]:
             return 200, task_extract(data)
         if isinstance(data, dict) and isinstance(data.get("action"), str) and data["action"].startswith("source_"):
             return 200, sources.mutate(data)
+        action = data.get("action") if isinstance(data, dict) else None
+        if action in _STAGE08:
+            return 200, _STAGE08[action](data)
         return 200, mutate(data)
     except (CarnetConflict, sources.SourceConflict) as e:
         return e.status, e.payload
+    except history.HistoryError as e:
+        return e.status, {"error": str(e), "code": e.code}
+    except history.HistoryStorageError as e:
+        return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
@@ -1319,7 +1390,7 @@ def _write_exclusive(out: Path, payload: bytes) -> None:
 
 
 def snapshot_to(root: Path | str, dest_dir: Path) -> dict:
-    """Copy committed Carnet bytes into ``dest_dir``: ``notebook.json``, (Stage 05) ``sources.json`` and
+    """Copy committed Carnet bytes into ``dest_dir``: ``notebook.json``, (Stage 05) ``sources.json``, (Stage 08) ``history.json`` and
     (Stage 06) the image assets the snapshotted notebook references, under ``assets/``.
 
     Each file is taken under its own path lock (coherent with writers); citations only carry edition
@@ -1365,7 +1436,16 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         src_payload, src_valid = sources.snapshot_bytes(root)
     except sources.SourceStorageError as e:
         raise CarnetStorageError(str(e)) from e
-    if payload is None and src_payload is None:
+    try:
+        hist_payload, hist_valid = history.snapshot_bytes(root)  # Stage 08: its own file, its own lock
+    except history.HistoryStorageError as e:
+        raise CarnetStorageError(str(e)) from e
+    if hist_payload is not None and hist_valid:  # Stage 08: the media closure of every retained restore point travels with it
+        try:
+            refs = refs | history.referenced_assets(json.loads(hist_payload.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError):
+            hist_valid = False
+    if payload is None and src_payload is None and hist_payload is None:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
         try:
@@ -1377,14 +1457,18 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         _write_exclusive(dest_dir / FILE_NAME, payload)
     if src_payload is not None:
         _write_exclusive(dest_dir / sources.FILE_NAME, src_payload)
+    if hist_payload is not None:
+        _write_exclusive(dest_dir / history.FILE_NAME, hist_payload)
     assets_report: dict | None = None
     if refs:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
         if assets_report["missing"]:
             valid = False
-    out: dict = {"ok": True, "included": True, "status": "included", "bytes": len(payload or b""), "valid": bool(valid and src_valid)}
+    out: dict = {"ok": True, "included": True, "status": "included", "bytes": len(payload or b""), "valid": bool(valid and src_valid and hist_valid)}
     if src_payload is not None:  # the accepted Stage-01 status shape is unchanged when there are no sources
         out["sources"] = {"bytes": len(src_payload), "valid": bool(src_valid)}
+    if hist_payload is not None:  # ... and when there is no history
+        out["history"] = {"bytes": len(hist_payload), "valid": bool(hist_valid)}
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
     return out

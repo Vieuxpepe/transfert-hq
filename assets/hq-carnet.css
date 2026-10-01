@@ -416,3 +416,34 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
   body.carnet-printing #hq-carnet-print .carnet-eng-status{color:#000;border-color:#000}
   .carnet-eng-panel{display:none!important}
 }
+
+/* Stage 08 — history, bulk operations, report, "Liée depuis…". One modal dialog, created lazily; nothing on the plain paper. */
+.carnet-hx{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
+.carnet-hx[hidden]{display:none}
+@media (min-width:900px){.carnet-hx{inset:5vh 12vw;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.45)}}
+.carnet-hx-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.carnet-hx-head h3{margin:0}
+.carnet-hx-tabs{display:flex;flex-wrap:wrap;gap:6px}
+.carnet-hx-tab{min-height:var(--carnet-tap)}
+.carnet-hx-body{display:flex;flex-direction:column;gap:10px;min-width:0}
+.carnet-hx-sec h4{margin:0 0 4px}
+.carnet-hx-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow:auto}
+.carnet-hx-event,.carnet-hx-target,.carnet-hx-pick,.carnet-hx-item{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border:1px solid var(--line);border-radius:10px;min-width:0}
+.carnet-hx-event-text{flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
+.carnet-hx-target[data-hx-status="conflicted"],.carnet-hx-target[data-hx-status="failed"]{border-color:var(--danger)}
+.carnet-hx-target[data-hx-status="applied"]{border-color:color-mix(in srgb,var(--accent) 55%,var(--line))}
+.carnet-hx-sample{flex-basis:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--text-sm);overflow-wrap:anywhere;color:var(--muted)}
+.carnet-hx-field{display:flex;flex-direction:column;gap:2px;min-width:0}
+.carnet-hx-field>span{font-size:var(--text-sm);color:var(--muted)}
+.carnet-hx-check{display:flex;align-items:center;gap:8px;min-height:var(--carnet-tap)}
+.carnet-hx-check input,.carnet-hx-pick input{width:24px;height:24px;flex:0 0 auto}
+.carnet-hx-pick label{flex:1 1 160px;min-height:var(--carnet-tap);display:flex;align-items:center;overflow-wrap:anywhere}
+.carnet-hx-btn{min-width:var(--carnet-tap)}
+.carnet-hx-warn{color:var(--danger);font-weight:600}
+.carnet-hx-outcome[data-hx-outcome="partial"],.carnet-hx-outcome[data-hx-outcome="none"]{color:var(--danger);font-weight:700}
+.carnet-hx-md{margin:0;padding:8px;max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
+.carnet-hx :focus-visible,.carnet-hx button:focus-visible,.carnet-hx select:focus-visible,.carnet-hx input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){.carnet-hx,.carnet-hx *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+@media print{.carnet-hx{display:none!important}
+  body.carnet-printing #hq-carnet-print h1{font-size:1.6em;margin:0 0 .6em}
+  body.carnet-printing #hq-carnet-print h2{font-size:1.15em;margin:1.2em 0 .4em;break-after:avoid}}

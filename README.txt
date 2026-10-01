@@ -631,7 +631,7 @@ Migration depuis v6
 Commandes
 ---------
   python -m unittest discover -s tests -v
-  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py hq_carnet_media.py hq_carnet_eng.py
+  python -W error::SyntaxWarning -m py_compile iphone_bridge.py cc_ext.py hq_events.py hq_devices.py hq_automation.py hq_calendar.py hq_state.py hq_companion.py hq_jobs.py hq_agent_ops.py hq_agent_protocol.py companion_agent.py companion_ops.py hqctl.py hq_planner.py hq_drawings.py hq_solid.py hq_face_solid.py hq_round_solid.py hq_earcut.py hq_carnet.py hq_carnet_rich.py hq_carnet_sources.py hq_carnet_media.py hq_carnet_eng.py hq_carnet_history.py hq_carnet_bulk.py hq_carnet_restore.py hq_carnet_links.py hq_carnet_report.py
   node tests/check_hq_features.mjs
   node tests/check_hq_sketch.mjs
   node tests/check_hq_solid.mjs
@@ -643,6 +643,7 @@ Commandes
   node tests/check_hq_carnet_sources.mjs
   node tests/check_hq_carnet_media.mjs
   node tests/check_hq_carnet_eng.mjs
+  node tests/check_hq_carnet_history.mjs
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_playwright.py
   (optionnel, Playwright + racine jetable) python tests/visual_dessiner_3d_playwright.py
   (optionnel, Playwright + manifold3d ; serveur loopback jetable inclus) python tests/visual_face_playwright.py
@@ -653,6 +654,7 @@ Commandes
   (optionnel, Playwright Node + Chromium ; serveur loopback jetable via tests/carnet_test_server.py, à lancer depuis une copie jetable) node tests/visual_carnet_rich_playwright.mjs
   (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_media_playwright.mjs
   (optionnel, Playwright Node + Chromium uniquement — WebKit/iOS NON VÉRIFIÉ ici ; même serveur jetable, copie jetable) node tests/visual_carnet_eng_playwright.mjs
+  (optionnel, Playwright Node + Chromium uniquement — WebKit/iPhone/iPad physiques NON VÉRIFIÉS ici ; même serveur jetable, copie jetable) node tests/visual_carnet_history_playwright.mjs
 
 Carnet — images (étape 06)
 --------------------------
@@ -872,3 +874,70 @@ SECURITY INVARIANTS
   Journal / push
     - Les métadonnées pin, token, commande, webhook sont retirées du journal.
     - hq_vapid.json et les abonnements push restent hors git.
+
+Carnet — historique, opérations groupées, rapport (étape 08)
+-----------------------------------------------------------
+  Accès      Rien sur la page par défaut. « Historique » (plateau « Symboles et outils », replié) et « Opérations… »
+             (en-tête de la bibliothèque) ouvrent UNE boîte de dialogue modale créée à la demande : Historique,
+             Opérations groupées, Rapport, « Liée depuis… ». Aucune donnée n'est gardée dans le navigateur.
+  Historique Fichier séparé <ROOT>/.hq-carnet/history.json (sa propre révision ; ne touche jamais notebook.json /
+             sources.json hors opération). AUCUN instantané automatique : seuls un point de restauration demandé, une
+             restauration, une opération groupée, son annulation et la corbeille/restauration/suppression d'une page
+             (métadonnées seules) y figurent ; la frappe et l'enregistrement automatique n'y laissent rien.
+             Bornes : 200 événements, 20 points par page, 4 Mo au total, 1 Mo par événement, 256 Ko par instantané,
+             fenêtre d'annulation = 10 dernières opérations, 64 cibles par opération. L'élagage retire les plus
+             anciens non protégés (les 10 dernières opérations annulables sont protégées) et compte pruned_total ;
+             si un événement ne tient pas, l'OPÉRATION est refusée. Octets illisibles : conservés tels quels, jamais
+             réparés ; les opérations d'historique sont refusées (503 history_unavailable), la note reste modifiable.
+             Verrous : carnet (extérieur) puis historique (intérieur) ; l'événement « pending » est écrit AVANT la
+             donnée puis finalisé : un arrêt brutal laisse un événement visible, jamais un état « avant » perdu.
+  Restaurer  Confirmation explicite + expected_rev : crée une NOUVELLE révision (jamais de retour en arrière), ne supprime
+             rien de l'historique, et son avant-état permet de revenir. Révision périmée = 409, rien n'est modifié.
+  Groupées   Portée → nombre affecté → aperçu (même code sur une copie) → confirmation (confirm + expected_count) →
+             application sensible aux révisions → Annuler → UN événement logique. Application PARTIELLE : chaque cible
+             est appliquée / ignorée / en conflit / en échec ; jamais de « succès » global trompeur ; l'événement
+             n'enregistre que ce qui a réellement été appliqué. Opérations : remplacer du texte (les occurrences qui
+             touchent une mise en forme, un lien ou une référence sont ignorées), déplacer vers un projet/catégorie,
+             corbeille/restauration (la dernière page active n'est jamais mise à la corbeille), migration de sources,
+             remplacement du fichier lié. Une page avec brouillon local non enregistré n'est jamais touchée.
+  Plan       L'aperçu renvoie un jeton opaque « plan-… » (900 s, 64 max, en mémoire du processus) lié à
+             {opération, paramètres normalisés, ids+révisions exacts des cibles « will_apply », nombre}. L'application
+             l'EXIGE : absent = 400 ; inconnu/expiré/déjà utilisé = 409 plan_expired ; paramètres, opération, cible
+             ou révision différents = 409 plan_mismatch (rien n'est écrit, le plan reste valable). La confirmation doit
+             rendre compte EXACTEMENT de l'ensemble prévisualisé : cibles envoyées ∪ client_skipped = cibles du plan (ni
+             oubli, ni ajout, ni doublon) et expected_count = nombre prévisualisé − nombre de client_skipped. Le plan est
+             RÉSERVÉ atomiquement (prêt → en cours) au moment de la validation : une 2e requête avec le même jeton reçoit
+             409 plan_in_use ; consommé après succès ; libéré si l'application échoue sans rien écrire (nouvelle tentative).
+             Un seul aperçu = au plus UNE opération groupée / UN événement. Un redémarrage du serveur invalide les plans : refaire l'aperçu.
+  Verrous    Ordre documenté : carnet → sources → historique. La migration de sources garde le verrou sources de la
+             validation de la révision de l'édition cible jusqu'à l'écriture du carnet ; une édition concurrente
+             attend, puis une révision périmée échoue sans rien changer. Le module sources ne prend jamais le
+             verrou du carnet (pas d'interblocage).
+  Migration  Sémantique « nouvelle édition — à vérifier » (étape 05) : src = nouvelle édition, emplacement VIDE (type
+             conservé), pdf null, ok false ; l'ancien emplacement/page PDF ne sont conservés que dans « from »
+             (provenance) et affichés dans l'aperçu ; aucun calibrage n'est appliqué.
+  Fichier lié Seul sources.json change. Si un calibrage existe : avertissement en tête de l'aperçu + confirmation
+             explicite ; le succès EFFACE le calibrage (aucun recalibrage automatique) ; Annuler rend l'ancien
+             fichier ET l'ancien calibrage ; une révision de source périmée échoue sans rien changer.
+  Annuler    Seulement parmi les 10 dernières opérations, une fois, sans « rétablir » ; chaque cible n'est annulée que si
+             sa révision est encore celle écrite par l'opération (le travail plus récent n'est jamais écrasé) ;
+             annulation partielle explicite. Annuler une restauration de corbeille remet à la corbeille (date neuve).
+  Liée depuis… Dérivé des références structurées existantes (liens note/projet/fichier/média/dessin, références de
+             sources, lien de mesure) : jamais de texte libre. Rien n'est stocké ; consulter n'écrit rien. Mémo
+             paresseux par (page, rev, updated_at), borné (1024) ; target_exists est résolu pour chaque type
+             (true/false, null = illisible, jamais de chemin) et target_archived pour les sources ; pages à la corbeille listées à part ; aucune
+             opération par frappe. GET /api/carnet?backlinks=<type>&id=<id>.
+  Rapport    Liste ORDONNÉE par l'utilisateur (notes, mesures, décisions, photos, sources) ; chaque page est liée à sa
+             révision (409 report_stale si elle a changé : rien n'est généré). Aucun texte rédigé : seulement le
+             contenu existant + libellés structurels fixes + annexe « Sources citées ». Affiché en ligne, exportable en
+             .md + <nom>.assets/ (liens relatifs, jamais d'écrasement, même écrivain confiné que l'export de page) ou
+             imprimé. Lecture seule vis-à-vis du carnet ; aucun chemin absolu.
+  QR         REPORTÉ (décision D3) : aucun routage par hash, aucune navigation propre au QR.
+  Sauvegarde history.json est copié avec notebook.json/sources.json sous Carnet/ (octets illisibles copiés tels quels,
+             copie « valid: false » qui suspend la purge) ; l'index « Liée depuis… » se reconstruit depuis le carnet.
+             Fermeture média : les images référencées par le carnet COURANT et par les points de restauration conservés
+             (checkpoint.content, restore.pre_content) sont copiées une seule fois sous Carnet/assets ; une image
+             historique manquante rend la sauvegarde « valid: false » (octets conservés) ; historique illisible = invalide.
+  Tests      python -m unittest tests.test_hq_carnet_history tests.test_hq_carnet_links_report ; node
+             tests/check_hq_carnet_history.mjs ; node tests/visual_carnet_history_playwright.mjs (Chromium ; WebKit et
+             appareils physiques iPhone/iPad NON VÉRIFIÉS ici).

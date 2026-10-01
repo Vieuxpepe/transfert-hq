@@ -1,0 +1,788 @@
+{
+ "cases": [
+  {
+   "old": {
+    "src": "srce-old000000000000000000",
+    "loc": {
+     "kind": "page",
+     "text": "417"
+    },
+    "pdf": 439,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "page",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000000",
+     "loc": {
+      "kind": "page",
+      "text": "417"
+     },
+     "pdf": 439,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, p. 417]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000000",
+    "loc": {
+     "kind": "page",
+     "text": "417"
+    },
+    "pdf": 439,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "page",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000000",
+     "loc": {
+      "kind": "page",
+      "text": "417"
+     },
+     "pdf": 439,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, p. 417]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000001",
+    "loc": {
+     "kind": "section",
+     "text": "3.2"
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "section",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000001",
+     "loc": {
+      "kind": "section",
+      "text": "3.2"
+     },
+     "pdf": null,
+     "ok": false
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, § 3.2]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000001",
+    "loc": {
+     "kind": "section",
+     "text": "3.2"
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "section",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000001",
+     "loc": {
+      "kind": "section",
+      "text": "3.2"
+     },
+     "pdf": null,
+     "ok": false
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, § 3.2]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000002",
+    "loc": {
+     "kind": "clause",
+     "text": "4.2.1"
+    },
+    "pdf": 77,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "clause",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000002",
+     "loc": {
+      "kind": "clause",
+      "text": "4.2.1"
+     },
+     "pdf": 77,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, art. 4.2.1]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000002",
+    "loc": {
+     "kind": "clause",
+     "text": "4.2.1"
+    },
+    "pdf": 77,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "clause",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000002",
+     "loc": {
+      "kind": "clause",
+      "text": "4.2.1"
+     },
+     "pdf": 77,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, art. 4.2.1]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000003",
+    "loc": {
+     "kind": "chapter",
+     "text": "7"
+    },
+    "pdf": null,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "chapter",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000003",
+     "loc": {
+      "kind": "chapter",
+      "text": "7"
+     },
+     "pdf": null,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, chap. 7]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000003",
+    "loc": {
+     "kind": "chapter",
+     "text": "7"
+    },
+    "pdf": null,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "chapter",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000003",
+     "loc": {
+      "kind": "chapter",
+      "text": "7"
+     },
+     "pdf": null,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, chap. 7]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000004",
+    "loc": {
+     "kind": "figure",
+     "text": "12-3"
+    },
+    "pdf": 200,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "figure",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000004",
+     "loc": {
+      "kind": "figure",
+      "text": "12-3"
+     },
+     "pdf": 200,
+     "ok": false
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, fig. 12-3]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000004",
+    "loc": {
+     "kind": "figure",
+     "text": "12-3"
+    },
+    "pdf": 200,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "figure",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000004",
+     "loc": {
+      "kind": "figure",
+      "text": "12-3"
+     },
+     "pdf": 200,
+     "ok": false
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, fig. 12-3]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000005",
+    "loc": {
+     "kind": "table",
+     "text": "T5"
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "table",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000005",
+     "loc": {
+      "kind": "table",
+      "text": "T5"
+     },
+     "pdf": null,
+     "ok": false
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, tab. T5]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000005",
+    "loc": {
+     "kind": "table",
+     "text": "T5"
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "table",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000005",
+     "loc": {
+      "kind": "table",
+      "text": "T5"
+     },
+     "pdf": null,
+     "ok": false
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, tab. T5]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000006",
+    "loc": {
+     "kind": "custom",
+     "text": "annexe B"
+    },
+    "pdf": 12,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "custom",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000006",
+     "loc": {
+      "kind": "custom",
+      "text": "annexe B"
+     },
+     "pdf": 12,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, annexe B]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000006",
+    "loc": {
+     "kind": "custom",
+     "text": "annexe B"
+    },
+    "pdf": 12,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "custom",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000006",
+     "loc": {
+      "kind": "custom",
+      "text": "annexe B"
+     },
+     "pdf": 12,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, annexe B]",
+   "new_label": "[Plain, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000007",
+    "loc": {
+     "kind": "page",
+     "text": ""
+    },
+    "pdf": 9,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new000000000000000000",
+    "title": "Machinery's Handbook",
+    "author": "Oberg",
+    "edition": "30e",
+    "year": 2016,
+    "identifier": "ISBN-1"
+   },
+   "new": {
+    "src": "srce-new000000000000000000",
+    "loc": {
+     "kind": "page",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "author": "Oberg",
+     "edition": "30e",
+     "ident": "ISBN-1",
+     "year": 2016
+    },
+    "from": {
+     "src": "srce-old000000000000000007",
+     "loc": {
+      "kind": "page",
+      "text": ""
+     },
+     "pdf": 9,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, p. PDF 9]",
+   "new_label": "[Machinery's Handbook 30e, à vérifier]"
+  },
+  {
+   "old": {
+    "src": "srce-old000000000000000007",
+    "loc": {
+     "kind": "page",
+     "text": ""
+    },
+    "pdf": 9,
+    "ok": true,
+    "snap": {
+     "title": "Machinery's Handbook",
+     "edition": "29e"
+    },
+    "from": null
+   },
+   "edition": {
+    "id": "srce-new111111111111111111",
+    "title": "Plain",
+    "author": "",
+    "edition": "",
+    "year": null,
+    "identifier": ""
+   },
+   "new": {
+    "src": "srce-new111111111111111111",
+    "loc": {
+     "kind": "page",
+     "text": ""
+    },
+    "pdf": null,
+    "ok": false,
+    "snap": {
+     "title": "Plain"
+    },
+    "from": {
+     "src": "srce-old000000000000000007",
+     "loc": {
+      "kind": "page",
+      "text": ""
+     },
+     "pdf": 9,
+     "ok": true
+    }
+   },
+   "old_label": "[Machinery's Handbook 29e, p. PDF 9]",
+   "new_label": "[Plain, à vérifier]"
+  }
+ ]
+}

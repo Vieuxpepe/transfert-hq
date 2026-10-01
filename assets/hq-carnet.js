@@ -1976,6 +1976,7 @@
     tools.appendChild(toolBtn("btn-carnet-image", "Insérer une image (appareil photo, photos, fichiers)", "Image"));
     tools.appendChild(toolBtn("btn-carnet-eng", "Outils d'ingénierie (calcul, mesure, décision, conversion, tâche, lien)", "Ingénierie"));
     tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
+    tools.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
@@ -2120,6 +2121,7 @@
       else if (b.id === "btn-carnet-export") toggleExport();
       else if (b.id === "btn-carnet-image") toggleImagePanel();
       else if (b.id === "btn-carnet-eng") openEngMenu();
+      else if (b.id === "btn-carnet-history") openHistory("history", b);
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -2183,6 +2185,7 @@
     const head = el("div", { class: "carnet-lib-head" }, [
       el("h3", { class: "carnet-lib-title", text: "Bibliothèque" }),
       el("button", { type: "button", id: "btn-carnet-lib-new", class: "carnet-small", text: "+ Nouvelle page" }),
+      el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
       iconButton("btn-carnet-lib-close", "Fermer la bibliothèque", ICON.close, { class: "carnet-btn carnet-lib-close" }),
     ]);
     const search = el("input", {
@@ -2594,6 +2597,7 @@
     if (!c || !b || !ui.libEl.contains(b)) return;
     if (b.id === "btn-carnet-lib-close") return closeLibrary(true);
     if (b.id === "btn-carnet-lib-new") return newPage(scopeCreateContext() || {});
+    if (b.id === "btn-carnet-lib-bulk") return openHistory("bulk", b);
     if (b.dataset.carnetFilter) {
       ui.lib.sel = { filter: b.dataset.carnetFilter, id: null };
       return renderLibrary();
@@ -3854,6 +3858,83 @@
     return !!eu && eu.keyAdjacent(ev);
   }
 
+  // ---------------------------------------------------------------- history / bulk / report / backlinks (Stage 08)
+
+  /** Lazily mounts the history UI (hq-carnet-history-ui.js). Nothing is built until it is opened; the server stays the authority. */
+  function historyUi() {
+    if (ui.hx) return ui.hx;
+    const H = global.HqCarnetHistoryUi;
+    if (!H || typeof H.mount !== "function") {
+      flashMsg("Module historique non chargé");
+      return null;
+    }
+    const core = () => ui.core;
+    const curInfo = (e) => (e ? { id: e.id, rev: e.serverRev, dirty: !!(core().isDirty(e) || e.inflight || e.conflict), trashed: core().isTrashed(e) } : null);
+    ui.hx = H.mount({
+      doc,
+      root: (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { get: (url) => apiCall(url, { timeoutMs: 12000 }), post: (payload) => request(payload) },
+      flash: flashMsg,
+      roots: EXPORT_ROOTS,
+      storage: safeStorage,
+      draftPrefix: DRAFT_PREFIX,
+      current: () => {
+        const c = core();
+        return c ? curInfo(c.current()) : null;
+      },
+      pageRev: (id) => {
+        const c = core();
+        return c ? curInfo(c.entry(id)) : null;
+      },
+      scope: () => {
+        const c = core();
+        if (!c) return { label: "", items: [] };
+        const sel = Object.assign({}, ui.lib.sel, { query: ui.lib.query });
+        const res = selectPages(c.libraryItems(), sel, Date.now());
+        const items = [];
+        for (const g of res.groups) for (const i of g.items) items.push({ id: i.id, title: i.title, dirty: !!i.dirty, deleted: !!i.deleted });
+        let label = "";
+        if (sel.filter === "project") label = nameOf(c.st.projects, sel.id);
+        else if (sel.filter === "category") label = nameOf(c.st.categories, sel.id);
+        else if (sel.filter === "trash") label = "Corbeille";
+        return { label, items };
+      },
+      projects: () => (core() ? core().st.projects.filter((p) => isObj(p) && typeof p.id === "string" && typeof p.name === "string" && !p.archived) : []),
+      categories: () => (core() ? core().st.categories.filter((p) => isObj(p) && typeof p.id === "string" && typeof p.name === "string") : []),
+      blocks: () => {
+        const c = core();
+        const e = c && c.current();
+        const content = e && e.latest ? e.latest.content : null;
+        const out = [];
+        if (content && content.version === 2 && Array.isArray(content.blocks)) {
+          for (const b of content.blocks) {
+            if (!isObj(b) || typeof b.id !== "string") continue;
+            if (b.type === "measure" && isObj(b.measure)) out.push({ id: b.id, type: "measure", label: String(b.measure.label || "mesure").slice(0, 60) });
+            else if (b.type === "decision") out.push({ id: b.id, type: "decision", label: String(b.text || "décision").slice(0, 60) });
+            else if (b.type === "image" && isObj(b.asset)) out.push({ id: b.id, type: "photo", label: String(b.asset.caption || "image").slice(0, 60) });
+          }
+        }
+        return out.slice(0, 100);
+      },
+      refresh: () => (core() ? core().refreshFull() : Promise.resolve([])),
+      openNote: (id) => {
+        const c = core();
+        if (c && c.entry(id) && !c.isTrashed(c.entry(id))) {
+          openPage(id);
+          return true;
+        }
+        return false;
+      },
+      onClose: () => {}, // focus returns to the control that opened the dialog (never stolen by the editor)
+    });
+    return ui.hx;
+  }
+
+  function openHistory(tab, opener) {
+    const h = historyUi();
+    if (h) h.open(tab, opener || null);
+  }
+
   // ---------------------------------------------------------------- sources / citations (Stage 05)
 
   /** Lazily mounts the sources UI (hq-carnet-sources.js). The editor state machine stays the single writer. */
@@ -4895,6 +4976,15 @@
 
   function onKey(e) {
     if (ui.phase !== "ready" || !doc.body || doc.body.dataset.view !== "carnet") return;
+    if (ui.hx && ui.hx.isOpen()) {
+      // The history / operations dialog is modal: nothing runs behind it (its own handler owns Tab and Escape).
+      if (pageNavDelta(e)) e.preventDefault();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        ui.hx.close(true);
+      }
+      return;
+    }
     if (ui.sources && ui.sources.isOpen()) {
       // The sources overlay is modal too: page navigation never runs behind it (its actions are bound to the page it was opened on).
       if (pageNavDelta(e)) e.preventDefault();
