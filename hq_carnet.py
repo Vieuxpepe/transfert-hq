@@ -55,6 +55,7 @@ import hq_carnet_report as report
 import hq_carnet_restore as restore
 import hq_carnet_rich as rich
 import hq_carnet_sources as sources
+import hq_carnet_voice as voice
 import hq_state
 
 DIR_NAME = ".hq-carnet"
@@ -171,6 +172,7 @@ def bind(**kwargs: Any) -> None:
         _cb.update(kwargs)
         sources.bind(**kwargs)  # Stage 05: sources share the root / confinement callbacks
         media.bind(**kwargs)  # Stage 06: image storage shares the root
+        voice.bind(**kwargs)  # Phase 4: voice-note storage shares the root
         history.bind(**kwargs)  # Stage 08: the history file shares the root and clock
         _ready = _cb.get("root") is not None
 
@@ -252,7 +254,9 @@ def limits() -> dict:
         "eng_atoms_per_page": rich.ENG_ATOMS_PER_PAGE_MAX,
         "decisions_per_page": rich.DECISIONS_PER_PAGE_MAX,
         "task_title_chars": TASK_TITLE_MAX,
+        "derived_blocks_per_page": rich.DERIVED_BLOCKS_PER_PAGE_MAX,
         **media.limits(),
+        **voice.limits(),
     }
 
 
@@ -760,8 +764,12 @@ def _verify_media(old: dict, new: dict) -> None:
     References already stored on the page are not re-verified (a missing file there is preserved state, never a
     reason to block unrelated edits). Assets are write-once, so no assets lock is needed here (lock order:
     the assets lock is always OUTER; ``page_save`` holds only the notebook lock).
+
+    Phase 4: a NEWLY added voice note is verified on its real container, and a newly added provenance (``from``) must point at
+    a stored image asset / voice note (existence only: provenance never re-validates the source's content).
     """
-    known = {rich.asset_key(a) for a in rich.assets_of(old)} if old["version"] == rich.CONTENT_VERSION else set()
+    old_v2 = old["version"] == rich.CONTENT_VERSION
+    known = {rich.asset_key(a) for a in rich.assets_of(old)} if old_v2 else set()
     checked: set[tuple] = set()
     for asset in rich.assets_of(new):
         key = rich.asset_key(asset)
@@ -774,6 +782,30 @@ def _verify_media(old: dict, new: dict) -> None:
             if e.status >= 500:
                 raise CarnetStorageError(str(e), 503) from e
             raise CarnetError(str(e)) from e
+    if new["version"] != rich.CONTENT_VERSION:
+        return
+    known_voice = {tuple(sorted(v.items())) for v in rich.voice_blocks_of(old)} if old_v2 else set()
+    seen_voice: set[tuple] = set()
+    for payload in rich.voice_blocks_of(new):
+        key = tuple(sorted(payload.items()))
+        if key in known_voice or key in seen_voice:
+            continue
+        seen_voice.add(key)
+        try:
+            voice.verify_voice(payload)
+        except voice.VoiceError as e:
+            if e.status >= 500:
+                raise CarnetStorageError(str(e), 503) from e
+            raise CarnetError(str(e)) from e
+    old_sources = {(b["from"]["source_kind"], b["from"]["source_id"]) for b in old["blocks"] if "from" in b} if old_v2 else set()
+    for block in new["blocks"]:
+        src = block.get("from")
+        if src is None or (src["source_kind"], src["source_id"]) in old_sources:
+            continue
+        old_sources.add((src["source_kind"], src["source_id"]))
+        exists = media.asset_exists(src["source_id"]) if src["source_kind"] == "asset" else voice.voice_exists(src["source_id"])
+        if not exists:
+            raise CarnetError("Source de provenance inconnue du carnet")
 
 
 def referenced_assets(state: dict) -> set[str]:
@@ -783,6 +815,17 @@ def referenced_assets(state: dict) -> set[str]:
         content = page["content"]
         if content.get("version") == rich.CONTENT_VERSION:
             out.update(a["id"] for a in rich.assets_of(content))
+            out.update(x for b in content["blocks"] for x in rich.block_provenance_assets(b))  # OCR sources are kept as evidence
+    return out
+
+
+def referenced_voices(state: dict) -> set[str]:
+    """Voice asset ids referenced by any page (trash included): voice blocks and transcript provenance. Derived, never stored."""
+    out: set[str] = set()
+    for page in state["pages"]:
+        content = page["content"]
+        if content.get("version") == rich.CONTENT_VERSION:
+            out.update(rich.voices_of(content))
     return out
 
 
@@ -1424,6 +1467,42 @@ def http_asset_upload(read, length: Any, declared_mime: str | None) -> tuple[int
         return 503, {"error": "Enregistrement de l'image impossible", "code": "storage_error"}
 
 
+def http_voice_upload(read, length: Any, declared_mime: str | None) -> tuple[int, dict]:
+    """``POST /api/carnet/voice``: raw-body voice upload. Every refusal is path-free."""
+    try:
+        return 200, voice.store_upload(read, length, declared_mime)
+    except voice.VoiceError as e:
+        return e.status, {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, {"error": "Enregistrement de la note vocale impossible", "code": "storage_error"}
+
+
+def http_voice_usage() -> tuple[int, dict]:
+    try:
+        return 200, voice.usage()
+    except voice.VoiceError as e:
+        return e.status, {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, {"error": "Notes vocales inaccessibles", "code": "storage_error"}
+
+
+def http_voice_transcribe(voice_id: str, read, length: Any) -> tuple[int, dict]:
+    """``POST /api/carnet/voice/<id>/transcribe``: the optional adapter. 501 'Transcription non configurée' without an engine."""
+    cmd_fn = _cb.get("transcribe_command")
+    command = cmd_fn() if callable(cmd_fn) else None
+    try:
+        return 200, voice.transcribe(voice_id, read, length, command)
+    except voice.VoiceError as e:
+        return e.status, {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, {"error": "Transcription impossible", "code": "transcribe_failed"}
+
+
+def http_transcribe_status() -> tuple[int, dict]:
+    cmd_fn = _cb.get("transcribe_command")
+    return 200, voice.transcribe_status(cmd_fn() if callable(cmd_fn) else None)
+
+
 def http_asset_usage() -> tuple[int, dict]:
     try:
         return 200, media.usage()
@@ -1490,6 +1569,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
                 raise CarnetStorageError("notebook.json n'est pas un fichier — conservé")
             payload = src.read_bytes()
     refs: set[str] = set()
+    voices: set[str] = set()  # Phase 4: voice notes / transcript sources the notebook and history reference
     stems: set[str] = set()  # Phase 3: drawing stems the notebook / history reference (one-hop underlay closure)
     if payload is not None:
         try:
@@ -1499,6 +1579,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             valid = False
         if valid:
             refs = referenced_assets(parsed)
+            voices = referenced_voices(parsed)
             stems = referenced_drawings(parsed)
     try:
         src_payload, src_valid = sources.snapshot_bytes(root)
@@ -1512,6 +1593,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         try:
             hist_data = json.loads(hist_payload.decode("utf-8"))
             refs = refs | history.referenced_assets(hist_data)
+            voices = voices | history.referenced_voices(hist_data)
             stems = stems | history.referenced_drawings(hist_data)
         except (UnicodeDecodeError, ValueError):
             hist_valid = False
@@ -1537,6 +1619,11 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             media.confined_assets_dir(root)  # a redirected assets directory is refused before anything is written
         except media.MediaError as e:
             raise CarnetStorageError(str(e), e.status if e.status >= 500 else 409) from e
+    if voices:
+        try:
+            voice.confined_voice_dir(root)  # a redirected voice directory is refused before anything is written
+        except voice.VoiceError as e:
+            raise CarnetStorageError(str(e), e.status if e.status >= 500 else 409) from e
     dest_dir.mkdir(parents=True, exist_ok=True)
     if payload is not None:
         _write_exclusive(dest_dir / FILE_NAME, payload)
@@ -1549,6 +1636,11 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
         if assets_report["missing"]:
             valid = False
+    voice_report: dict | None = None
+    if voices:
+        voice_report = voice.copy_voices_to(root, sorted(voices), dest_dir / "voice")
+        if voice_report["missing"]:
+            valid = False
     out: dict = {"ok": True, "included": True, "status": "included", "bytes": len(payload or b""), "valid": bool(valid and src_valid and hist_valid)}
     if src_payload is not None:  # the accepted Stage-01 status shape is unchanged when there are no sources
         out["sources"] = {"bytes": len(src_payload), "valid": bool(src_valid)}
@@ -1558,4 +1650,6 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["assets"] = assets_report
     if drawings_report is not None:  # ... and when there are no drawing references
         out["drawings"] = drawings_report
+    if voice_report is not None:  # ... and when there are no voice notes
+        out["voice"] = voice_report
     return out

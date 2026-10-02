@@ -870,13 +870,13 @@ class StaticSecurityTests(unittest.TestCase):
         import ast
 
         stdlib = set(sys.stdlib_module_names)
-        for name in ("hq_carnet_rich.py", "hq_carnet.py", "hq_carnet_media.py", "hq_carnet_eng.py"):  # Stage 06 media module, Stage 07 engineering module
+        for name in ("hq_carnet_rich.py", "hq_carnet.py", "hq_carnet_media.py", "hq_carnet_voice.py", "hq_carnet_eng.py"):  # Stage 06 media module, Stage 07 engineering module
             tree = ast.parse((self.ROOT / name).read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 mods = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
                 for mod in mods:
                     top = mod.split(".")[0]
-                    self.assertTrue(top in stdlib or top in ("hq_state", "hq_carnet_rich", "hq_carnet_sources", "hq_carnet_media", "hq_carnet_eng", "hq_carnet_bulk", "hq_carnet_history", "hq_carnet_links", "hq_carnet_report", "hq_carnet_restore", "hq_drawings", "__future__"), f"{name}: {mod}")  # + Stage 08 modules
+                    self.assertTrue(top in stdlib or top in ("hq_state", "hq_carnet_rich", "hq_carnet_sources", "hq_carnet_media", "hq_carnet_voice", "hq_carnet_eng", "hq_carnet_bulk", "hq_carnet_history", "hq_carnet_links", "hq_carnet_report", "hq_carnet_restore", "hq_drawings", "__future__"), f"{name}: {mod}")  # + Stage 08 modules
 
 
 class ExportHttpTests(unittest.TestCase):

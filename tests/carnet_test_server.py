@@ -7,8 +7,10 @@ until killed. The root is a temp directory chosen by the caller; assets are copi
 serves /assets from ROOT). Never run this against the live Transfert root.
 """
 import json
+import os
 import shutil
 import sys
+import tempfile
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +34,21 @@ def main() -> None:
         "pin": "", "discord_webhook_url": "", "push_enabled": False,
         "users": [{"name": "admin-test", "pin": "424242", "role": "admin"}, {"name": "upload-test", "pin": "111111", "role": "upload"}],
     })
+    engine = os.environ.get("CARNET_TEST_ENGINE")
+    if engine:
+        # Phase 4: a FAKE transcription engine (never a real model): ok | empty | fail | slow. Lives outside the empty root.
+        eng_dir = Path(tempfile.mkdtemp(prefix="hq-fake-engine-"))
+        script = eng_dir / "fake_engine.py"
+        script.write_text(
+            "import sys, time\n"
+            "mode = %r\n"
+            "if mode == 'fail':\n    sys.exit(3)\n"
+            "if mode == 'slow':\n    time.sleep(4)\n"
+            "if mode == 'empty':\n    sys.exit(0)\n"
+            "sys.stdout.write('Premier paragraphe dicté.\\nDeuxième ligne de la note.')\n" % engine,
+            encoding="utf-8",
+        )
+        B.CONFIG["transcribe_command"] = [sys.executable, str(script), "{input}"]
     B.bind_cc_ext()
     B.bind_hq()
     if len(sys.argv) > 2:

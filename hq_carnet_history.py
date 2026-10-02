@@ -576,6 +576,24 @@ def referenced_assets(data: Any) -> set[str]:
                 ident = asset.get("id")
                 if isinstance(ident, str) and rich.ASSET_ID_RE.match(ident):
                     out.add(ident)
+            out.update(rich.block_provenance_assets(block))  # Phase 4: an OCR source stays part of the restore closure
+    return out
+
+
+def referenced_voices(data: Any) -> set[str]:
+    """Voice asset ids a restore of any retained checkpoint / restore pre-image would bring back (Phase 4 backup closure)."""
+    out: set[str] = set()
+    if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+        return out
+    for event in data["events"]:
+        if not isinstance(event, dict) or event.get("status") == "failed" or not isinstance(event.get("data"), dict):
+            continue
+        field = {"checkpoint": "content", "restore": "pre_content"}.get(event.get("kind"))
+        content = event["data"].get(field) if field else None
+        if not isinstance(content, dict) or content.get("version") != rich.CONTENT_VERSION or not isinstance(content.get("blocks"), list):
+            continue
+        for block in content["blocks"]:
+            out.update(rich.block_voices(block))
     return out
 
 

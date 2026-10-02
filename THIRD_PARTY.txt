@@ -21,3 +21,24 @@ Optional face-solid runtime packages
 manifold3d 3.5.4 (Apache-2.0) and NumPy 2.5.3 (BSD-3-Clause and bundled
 notices) are installed separately from PyPI when planar-face features are
 needed. No wheel is vendored in this repository. See requirements-face3d.txt.
+
+Browser OCR (Carnet Phase 4) — vendored, loaded only when "Extraire le texte" is used
+------------------------------------------------------------------------------------
+Everything runs in the browser; no network request leaves the origin. Full Apache-2.0 text: TESSERACT-LICENSE.txt.
+Installed from the npm registry with --ignore-scripts, files copied unchanged.
+
+assets/vendor-tesseract.min.js              tesseract.js 7.0.0 dist/tesseract.min.js          Apache-2.0 (bundles MIT/BSD-3 helpers: see file banner)
+                                            62,961 bytes   SHA-256 000c27d9cd0def655f77b36c72a389c0ab13793aa31cb4d7aab56d09c0afbc7e
+assets/vendor-tesseract-worker.min.js       tesseract.js 7.0.0 dist/worker.min.js             Apache-2.0
+                                            111,307 bytes  SHA-256 576b7df7e3393e137e51849357c9adb53fe7ac1bb69bfa06cf3d61520f182c6d
+assets/vendor-tesseract-core-simd-lstm.wasm.js
+                                            tesseract.js-core 7.0.0 tesseract-core-simd-lstm.wasm.js   Apache-2.0 (WASM inlined; LSTM only, WASM SIMD)
+                                            3,899,472 bytes SHA-256 c58b46a4c796c0b8afccf77591d5b875b6896b45d402bbce8caa6f5362447b38
+assets/eng.traineddata.gz                   @tesseract.js-data/eng 1.0.0, 4.0.0_best_int/eng.traineddata.gz   data package MIT (derived from Tesseract tessdata_best, Apache-2.0)
+                                            2,952,873 bytes SHA-256 45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91
+assets/fra.traineddata.gz                   @tesseract.js-data/fra 1.0.0, 4.0.0_best_int/fra.traineddata.gz   same licensing as above
+                                            707,406 bytes   SHA-256 d611139672b3752c7097e671e4a1d9209dfd37f2aeb081ef6487fba3351e9255
+Total added: 7,734,019 bytes (+ TESSERACT-LICENSE.txt).
+Deviation (disclosed): the official tessdata_fast files could not be fetched in the build environment (GitHub raw returned 403 through the
+egress proxy). The *_best_int* data is smaller than tessdata_fast would be for French and English (2.9 MB and 0.7 MB gzip) and is integer-quantised
+for CPU speed. Variants not vendored: relaxedsimd and non-SIMD cores (OCR reports "indisponible" on a browser without WASM SIMD).

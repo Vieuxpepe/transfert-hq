@@ -311,11 +311,11 @@ scenario("menu: four categories in order, icons, concise descriptions, honest sh
   await openSlash(p);
   check(JSON.stringify(await groupLabels(p)) === JSON.stringify(["Écrire", "Ajouter", "Ingénierie", "Projet"]), "groups: " + (await groupLabels(p)));
   const rows = await cmdRows(p);
-  check(rows.length === 20, "all 20 commands listed once (15 + 4 Phase-2 structured blocks + Croquis): " + rows.length);
+  check(rows.length === 23, "all 23 commands listed once (15 + 4 Phase-2 structured blocks + Croquis + Phase-4 Scanner, Note vocale, Lire le texte): " + rows.length);
   const byGroup = {};
   for (const r of rows) (byGroup[r.group] = byGroup[r.group] || []).push(r.id);
   check(JSON.stringify(byGroup.write) === '["paragraph","heading","bullet","number","check"]', "Écrire: " + byGroup.write);
-  check(JSON.stringify(byGroup.add) === '["image","camera","table","callout","toggle","imagegroup","sketch","file","drawing"]', "Ajouter: " + byGroup.add);
+  check(JSON.stringify(byGroup.add) === '["image","camera","scan","voice","ocr","table","callout","toggle","imagegroup","sketch","file","drawing"]', "Ajouter: " + byGroup.add);
   check(JSON.stringify(byGroup.eng) === '["measure","calc","decision"]', "Ingénierie: " + byGroup.eng);
   check(JSON.stringify(byGroup.project) === '["task","cite","time"]', "Projet: " + byGroup.project);
   const meta = await p.evaluate(() => [...document.querySelectorAll("#carnet-cmd-list .carnet-cmd-item")].map((o) => ({
@@ -367,7 +367,7 @@ scenario("menu: keyboard — arrows wrap, PageUp/PageDown jump groups, activedes
   check((await activeId(p)) === "carnet-cmd-0", "starts on the first command: " + (await activeId(p)));
   await p.keyboard.press("ArrowUp");
   let rows = await cmdRows(p);
-  check(rows[rows.length - 1].sel && (await activeId(p)) === "carnet-cmd-19", "ArrowUp from the first wraps to the last");
+  check(rows[rows.length - 1].sel && (await activeId(p)) === "carnet-cmd-22", "ArrowUp from the first wraps to the last");
   await p.keyboard.press("ArrowDown");
   check((await cmdRows(p))[0].sel, "ArrowDown from the last wraps to the first");
   await p.keyboard.press("PageDown");
@@ -381,7 +381,7 @@ scenario("menu: keyboard — arrows wrap, PageUp/PageDown jump groups, activedes
   await p.keyboard.press("PageUp");
   check((await cmdRows(p)).find((r) => r.sel).id === "image", "PageUp at a group start -> the previous group's first command");
   const live = await p.evaluate(() => document.querySelector("#carnet-cmd-menu [role=status]").textContent);
-  check(/20 commandes/.test(live), "live region announces the count: " + live);
+  check(/23 commandes/.test(live), "live region announces the count: " + live);
   const aria = await p.evaluate(() => { const i = document.getElementById("carnet-cmd-input"); return [i.getAttribute("role"), i.getAttribute("aria-expanded"), i.getAttribute("aria-controls"), document.getElementById("carnet-cmd-list").getAttribute("role"), document.querySelectorAll("#carnet-cmd-list [role=group]").length, [...document.querySelectorAll("#carnet-cmd-list [role=group]")].every((g) => document.getElementById(g.getAttribute("aria-labelledby")))]; });
   check(JSON.stringify(aria) === JSON.stringify(["combobox", "true", "carnet-cmd-list", "listbox", 4, true]), "combobox/listbox/group semantics with labelled groups: " + JSON.stringify(aria));
   await p.keyboard.press("Escape");

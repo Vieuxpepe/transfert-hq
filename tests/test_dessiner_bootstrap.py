@@ -17,7 +17,7 @@ SOURCE = Path(iphone_bridge.__file__).resolve().parent
 JS = "application/javascript; charset=utf-8"
 CSS = "text/css; charset=utf-8"
 DESSINER_JS = ("hq-sketch-core.js", "hq-solid-view.js", "hq-face-sketch.js", "hq-dessiner.js")
-CSP = ("default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+CSP = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
        "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 SENTINEL = b"HQ-OUTSIDE-ASSETS-SENTINEL"
 

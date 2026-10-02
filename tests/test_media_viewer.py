@@ -434,7 +434,7 @@ class LecteurTabStaticTests(unittest.TestCase):
         probe = Probe()
         B.Handler._security_headers(probe)
         csp = dict(probe.headers)["Content-Security-Policy"]
-        self.assertEqual(csp, "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+        self.assertEqual(csp, "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
                               "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 
 

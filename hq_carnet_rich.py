@@ -15,6 +15,15 @@ uses), never splitting a surrogate pair::
     {"type": "link", "start": 0, "end": 3, "href": "https://…"}                 # http/https only
     {"type": "link", "start": 0, "end": 3, "ref": {"kind": "note", "id": "page-…"}}
 
+Phase 4 additions (field capture), both strictly validated and both optional:
+
+- a ``voice`` atom block ``{"id": "block-…", "type": "voice", "voice": {"id": "voice-<24 hex>", "mime", "dur_ms",
+  "recorded_at"}}`` referencing an immutable audio file in the sibling voice store (``hq_carnet_voice``); the block id and the
+  voice id are distinct and the payload is exactly that reference (no path, no URL, no text);
+- ``from`` on a *paragraph* only: ``{"kind": "ocr|transcript", "source_kind": "asset|voice", "source_id": …}`` marking text that was
+  DERIVED from a scan (asset id) or a voice note (voice id). The pairing is fixed (ocr↔asset, transcript↔voice); the key is
+  absent everywhere else, so pre-Phase-4 pages are byte-identical.
+
 Legacy V1 content (one text block ``{"id","type":"text","text","marks":[]}``) stays valid
 forever and is migrated LAZILY, page by page, only when that page is written:
 
@@ -98,8 +107,9 @@ LEGACY_CONTENT_VERSION = 1
 
 TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE = "table", "callout", "toggle", "imagegroup"
 DRAWING_TYPE = "drawing"  # Phase 3: a reference to ONE immutable Dessiner stem; Dessiner owns the drawing, Carnet stores only the id
-STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE, DRAWING_TYPE)
-STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group", DRAWING_TYPE: "drawing"}  # block type -> payload key
+VOICE_TYPE = "voice"  # Phase 4: a reference to ONE immutable voice asset (hq_carnet_voice); audio never enters the notebook
+STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE, DRAWING_TYPE, VOICE_TYPE)
+STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group", DRAWING_TYPE: "drawing", VOICE_TYPE: "voice"}  # block type -> payload key
 BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image") + eng.ENG_TYPES + STRUCT_TYPES
 TABLE_ROWS_MAX, TABLE_COLS_MAX = 20, 10
 CELL_U16_MAX, CELL_BYTES_MAX = 200, 800
@@ -113,6 +123,15 @@ GROUP_LAYOUTS = {"two": 2, "three": 3, "compare": 2}  # layout -> exact number o
 GROUP_ITEM_KEYS = {"id", "mime", "w", "h", "caption"}
 GROUPS_PER_PAGE_MAX = 16
 DRAWINGS_PER_PAGE_MAX = 32
+VOICES_PER_PAGE_MAX = 32
+VOICE_KEYS = {"id", "mime", "dur_ms", "recorded_at"}
+VOICE_ID_RE = re.compile(r"^voice-[0-9a-f]{24}\Z")
+VOICE_MIMES = ("audio/webm", "audio/mp4", "audio/ogg")
+VOICE_DUR_MS_MAX = 10 * 60 * 1000
+_RECORDED_AT_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z\Z")
+FROM_KEYS = {"kind", "source_kind", "source_id"}
+FROM_KINDS = {"ocr": "asset", "transcript": "voice"}  # derived-content kind -> the ONLY source kind it may point at
+DERIVED_BLOCKS_PER_PAGE_MAX = 600
 STRUCT_BYTES_MAX = 96 * 1024  # visible structured text per page (UTF-8 bytes of the strings, never the JSON overhead)
 IMAGE_TYPE = "image"  # Stage 06 (additive to V2): metadata only, see ``check_asset``
 ASSET_ID_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")
@@ -619,7 +638,96 @@ def check_drawing(drawing: Any) -> dict:
     return {"id": drawing["id"]}
 
 
+def check_voice(voice: Any) -> dict:
+    """Voice reference: EXACTLY ``{id, mime, dur_ms, recorded_at}``. ``id`` is the VOICE ASSET id (``voice-<24 hex>``), never the
+    block id. ``dur_ms`` is bounded display metadata (the server cannot decode audio: byte size and quota stay authoritative);
+    ``recorded_at`` is a UTC ISO-8601 second-precision stamp shown to the user."""
+    if not isinstance(voice, dict) or set(voice) != VOICE_KEYS:
+        raise ContentError("Note vocale invalide")
+    ident, mime, dur, at = voice["id"], voice["mime"], voice["dur_ms"], voice["recorded_at"]
+    if not isinstance(ident, str) or not VOICE_ID_RE.match(ident) or mime not in VOICE_MIMES:
+        raise ContentError("Note vocale invalide")
+    if isinstance(dur, bool) or not isinstance(dur, int) or not 1 <= dur <= VOICE_DUR_MS_MAX:
+        raise ContentError("Durée de note vocale invalide")
+    m = _RECORDED_AT_RE.match(at) if isinstance(at, str) else None
+    if not m:
+        raise ContentError("Horodatage de note vocale invalide")
+    y, mo, d, h, mi, se = (int(x) for x in m.groups())
+    if not (2000 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31 and h <= 23 and mi <= 59 and se <= 59):
+        raise ContentError("Horodatage de note vocale invalide")
+    try:
+        import datetime as _dt
+
+        _dt.datetime(y, mo, d, h, mi, se)
+    except ValueError as e:
+        raise ContentError("Horodatage de note vocale invalide") from e
+    return {"id": ident, "mime": mime, "dur_ms": dur, "recorded_at": at}
+
+
+def check_from(value: Any) -> dict:
+    """Provenance of DERIVED text (Phase 4): EXACTLY ``{kind, source_kind, source_id}`` with canonical identity only.
+
+    ``ocr`` -> a Stage-06 image asset (``asset-<24 hex>``); ``transcript`` -> a voice asset (``voice-<24 hex>``). Never a path,
+    URL, confidence or engine metadata. Only the explicit OCR / transcript insertion flows mint it (the browser editor drops
+    it from any block it types into, splits or retypes); the server only guarantees its shape and its single-purpose pairing."""
+    if not isinstance(value, dict) or set(value) != FROM_KEYS:
+        raise ContentError("Provenance invalide")
+    kind, source_kind, ident = value["kind"], value["source_kind"], value["source_id"]
+    if not isinstance(kind, str) or kind not in FROM_KINDS or source_kind != FROM_KINDS[kind] or not isinstance(ident, str):
+        raise ContentError("Provenance invalide")
+    pattern = ASSET_ID_RE if source_kind == "asset" else VOICE_ID_RE
+    if not pattern.match(ident):
+        raise ContentError("Provenance invalide")
+    return {"kind": kind, "source_kind": source_kind, "source_id": ident}
+
+
+def block_voices(block: dict) -> list[str]:
+    """Voice asset ids a block depends on: a voice block, or the source of a transcript (backup/history closure)."""
+    if not isinstance(block, dict):
+        return []
+    out = []
+    if block.get("type") == VOICE_TYPE and isinstance(block.get("voice"), dict) and isinstance(block["voice"].get("id"), str):
+        out.append(block["voice"]["id"])
+    src = block.get("from")
+    if isinstance(src, dict) and src.get("source_kind") == "voice" and isinstance(src.get("source_id"), str):
+        out.append(src["source_id"])
+    return [x for x in out if VOICE_ID_RE.match(x)]
+
+
+def block_provenance_assets(block: dict) -> list[str]:
+    """Image asset ids that only a provenance (OCR) reference points at: kept by the backup/history closure as evidence."""
+    src = block.get("from") if isinstance(block, dict) else None
+    if isinstance(src, dict) and src.get("source_kind") == "asset" and isinstance(src.get("source_id"), str) and ASSET_ID_RE.match(src["source_id"]):
+        return [src["source_id"]]
+    return []
+
+
+def voices_of(content: dict) -> list[str]:
+    return [v for b in content["blocks"] for v in block_voices(b)]
+
+
+def voice_blocks_of(content: dict) -> list[dict]:
+    """The ``voice`` payloads of a page (what ``page_save`` verifies on the real file)."""
+    return [b["voice"] for b in content["blocks"] if b.get("type") == VOICE_TYPE and isinstance(b.get("voice"), dict)]
+
+
 _DRAWING_SUFFIX_RE = re.compile(r"_HQWeb(?:-Mobile|-Desktop)?\Z")
+
+
+def voice_label(voice: dict) -> str:
+    """Readable label of a voice note for text exports: ``[Note vocale · m:ss]`` (never an id, path or URL)."""
+    secs = (voice["dur_ms"] + 500) // 1000  # half-up, identical in the browser (never Python's banker's rounding)
+    return f"[Note vocale \u00b7 {secs // 60}:{secs % 60:02d}]"
+
+
+DERIVED_LABEL = {"ocr": "Texte extrait d'un scan (OCR)", "transcript": "Transcription d'une note vocale"}
+
+
+def derived_marker(prev: dict | None, cur: dict | None) -> str | None:
+    """Export marker emitted once before each run of derived paragraphs (the provenance survives a text export)."""
+    if cur is None or (prev is not None and prev == cur):
+        return None
+    return DERIVED_LABEL[cur["kind"]]
 
 
 def drawing_label(stem: str) -> str:
@@ -627,7 +735,7 @@ def drawing_label(stem: str) -> str:
     return _DRAWING_SUFFIX_RE.sub("", stem) or stem
 
 
-_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group, DRAWING_TYPE: check_drawing}
+_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group, DRAWING_TYPE: check_drawing, VOICE_TYPE: check_voice}
 
 
 def check_struct(kind: str, payload: Any) -> dict:
@@ -764,12 +872,12 @@ def parse_content(
     images = 0
     atoms = 0
     decisions = 0
-    tables = notes = groups = drawings = 0
+    tables = notes = groups = drawings = voices = derived = 0
     struct_bytes = 0
     for incoming in blocks:
         if not isinstance(incoming, dict):
             raise ContentError("Bloc invalide")
-        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset", *eng.ENG_TYPES, *STRUCT_KEY.values()} or not {"type", "text"} <= set(incoming):
+        if not set(incoming) <= {"id", "type", "text", "marks", "checked", "asset", "from", *eng.ENG_TYPES, *STRUCT_KEY.values()} or not {"type", "text"} <= set(incoming):
             raise ContentError("Bloc invalide")
         kind = incoming["type"]
         if kind not in BLOCK_TYPES:
@@ -818,6 +926,10 @@ def parse_content(
                 drawings += 1
                 if drawings > DRAWINGS_PER_PAGE_MAX:
                     raise ContentError(f"Trop de croquis sur la page (max {DRAWINGS_PER_PAGE_MAX})")
+            elif kind == VOICE_TYPE:
+                voices += 1
+                if voices > VOICES_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de notes vocales sur la page (max {VOICES_PER_PAGE_MAX})")
             elif kind == GROUP_TYPE:
                 groups += 1
                 images += len(sdata["items"])
@@ -834,6 +946,14 @@ def parse_content(
                 raise ContentError("Trop de texte structuré sur la page")
         elif set(incoming) & set(STRUCT_KEY.values()):
             raise ContentError("Bloc invalide")
+        derived_from = None
+        if "from" in incoming:
+            if kind != "paragraph":  # only an ordinary paragraph can carry provenance: retyping a block drops it
+                raise ContentError("Provenance invalide")
+            derived_from = check_from(incoming["from"])
+            derived += 1
+            if derived > DERIVED_BLOCKS_PER_PAGE_MAX:
+                raise ContentError(f"Trop de lignes dérivées (OCR/transcription) sur la page (max {DERIVED_BLOCKS_PER_PAGE_MAX})")
         checked = False
         if kind == "check":
             checked = incoming.get("checked", False)
@@ -857,7 +977,9 @@ def parse_content(
             block[kind] = payload
         if sdata is not None:
             block[STRUCT_KEY[kind]] = sdata
-        if kind != "paragraph" or marks:
+        if derived_from is not None:
+            block["from"] = derived_from
+        if kind != "paragraph" or marks or derived_from is not None:
             plain = False
         out.append(block)
     _check_size(out, text_limit)
@@ -913,6 +1035,8 @@ def store_content(parsed: dict, existing: dict, *, blocks_limit: int | None = No
                 item[block["type"]] = copy.deepcopy(block[block["type"]])
             if block["type"] in STRUCT_TYPES:
                 item[STRUCT_KEY[block["type"]]] = copy.deepcopy(block[STRUCT_KEY[block["type"]]])
+            if "from" in block:
+                item["from"] = dict(block["from"])
             out.append(item)
         return {"version": CONTENT_VERSION, "blocks": out}
     if legacy and parsed["plain"]:
@@ -937,6 +1061,8 @@ def strip_ids(content: dict) -> list:
             row += (json.dumps(block[block["type"]], sort_keys=True, ensure_ascii=True),)
         if block["type"] in STRUCT_TYPES:
             row += (json.dumps(block[STRUCT_KEY[block["type"]]], sort_keys=True, ensure_ascii=True),)
+        if "from" in block:
+            row += (("from",) + tuple(sorted(block["from"].items())),)
         out.append(row)
     return out
 
@@ -986,6 +1112,10 @@ def valid_v2(content: Any) -> bool:
                 keys = {"id", "type", "text", "marks", block["type"]}
             if block.get("type") in STRUCT_TYPES:
                 keys = {"id", "type", "text", "marks", STRUCT_KEY[block["type"]]}
+            if "from" in block:  # Phase 4: derived text (paragraph only), canonical shape required
+                if block.get("type") != "paragraph" or check_from(block["from"]) != block["from"]:
+                    return False
+                keys = keys | {"from"}
             if set(block) != keys or block["type"] not in BLOCK_TYPES:
                 return False
             if block["type"] in STRUCT_TYPES:
@@ -1075,6 +1205,8 @@ def _txt_struct(block: dict) -> list[str]:
         return ["[Section] " + t["summary"]] + (t["body"].split("\n") if t["body"] else [])
     if kind == DRAWING_TYPE:
         return [f"[Croquis : {drawing_label(block['drawing']['id'])}]"]
+    if kind == VOICE_TYPE:
+        return [voice_label(block["voice"])]
     g = block["group"]  # image group: one line per child, labelled for a before/after pair
     labels = GROUP_ITEM_LABEL.get(g["layout"])
     out = []
@@ -1115,6 +1247,8 @@ def _md_struct(block: dict, asset_paths: dict[str, str] | None) -> str:
         return "\n\n".join(parts)
     if kind == DRAWING_TYPE:  # a text label only: no path, no URL, no preview asset (Dessiner owns the drawing)
         return f"*\\[Croquis : {_md_escape(drawing_label(block['drawing']['id']))}\\]*"
+    if kind == VOICE_TYPE:  # a text label only: the audio is never packaged into a text export
+        return "*\\[" + _md_escape(voice_label(block["voice"])[1:-1]) + "\\]*"
     g = block["group"]
     labels = GROUP_ITEM_LABEL.get(g["layout"])
     parts = []
@@ -1138,8 +1272,13 @@ def render_txt(content: dict) -> str:
     """Deterministic plain text (a snapshot, not a source of truth)."""
     labels = _number_labels(content["blocks"])
     lines = []
+    prev_from = None
     for block, label in zip(content["blocks"], labels):
         kind = block["type"]
+        marker = derived_marker(prev_from, block.get("from"))
+        prev_from = block.get("from")
+        if marker:
+            lines.append(f"[{marker}]")
         if kind == IMAGE_TYPE:
             caption = block["asset"]["caption"]
             lines.append(f"[Image : {caption}]" if caption else "[Image]")
@@ -1259,8 +1398,14 @@ def render_markdown(content: dict, asset_paths: dict[str, str] | None = None) ->
     labels = _number_labels(content["blocks"])
     parts: list[tuple[str, str, bool]] = []  # (kind, rendered, after a blank separator)
     gap = False
+    prev_from = None
     for block, label in zip(content["blocks"], labels):
         kind = block["type"]
+        marker = derived_marker(prev_from, block.get("from"))
+        prev_from = block.get("from")
+        if marker:
+            parts.append(("struct", "*\\[" + _md_escape(marker) + "\\]*", gap))
+            gap = False
         if kind == IMAGE_TYPE:
             asset = block["asset"]
             caption = asset["caption"]

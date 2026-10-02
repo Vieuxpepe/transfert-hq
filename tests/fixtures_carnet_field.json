@@ -1,0 +1,681 @@
+{
+ "from": [
+  {
+   "in": {
+    "kind": "ocr",
+    "source_id": "asset-cccccccccccccccccccccccc",
+    "source_kind": "asset"
+   },
+   "name": "ocr asset",
+   "out": {
+    "kind": "ocr",
+    "source_id": "asset-cccccccccccccccccccccccc",
+    "source_kind": "asset"
+   }
+  },
+  {
+   "in": {
+    "kind": "transcript",
+    "source_id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_kind": "voice"
+   },
+   "name": "transcript voice",
+   "out": {
+    "kind": "transcript",
+    "source_id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_kind": "voice"
+   }
+  },
+  {
+   "in": {
+    "kind": "ocr",
+    "source_id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_kind": "voice"
+   },
+   "name": "ocr voice",
+   "out": null
+  },
+  {
+   "in": {
+    "kind": "transcript",
+    "source_id": "asset-cccccccccccccccccccccccc",
+    "source_kind": "asset"
+   },
+   "name": "transcript asset",
+   "out": null
+  },
+  {
+   "in": {
+    "kind": "ai",
+    "source_id": "asset-cccccccccccccccccccccccc",
+    "source_kind": "asset"
+   },
+   "name": "unknown kind",
+   "out": null
+  },
+  {
+   "in": {
+    "kind": "ocr",
+    "source_id": "/etc/passwd",
+    "source_kind": "asset"
+   },
+   "name": "path source",
+   "out": null
+  },
+  {
+   "in": {
+    "kind": "ocr",
+    "source_id": "https://x/a.png",
+    "source_kind": "asset"
+   },
+   "name": "url source",
+   "out": null
+  },
+  {
+   "in": {
+    "confidence": 0.9,
+    "kind": "ocr",
+    "source_id": "asset-cccccccccccccccccccccccc",
+    "source_kind": "asset"
+   },
+   "name": "extra key",
+   "out": null
+  },
+  {
+   "in": {
+    "kind": "ocr",
+    "source_kind": "asset"
+   },
+   "name": "missing key",
+   "out": null
+  },
+  {
+   "in": {
+    "kind": "ocr",
+    "source_id": "asset-abc",
+    "source_kind": "asset"
+   },
+   "name": "short id",
+   "out": null
+  },
+  {
+   "in": "ocr",
+   "name": "not object",
+   "out": null
+  }
+ ],
+ "render": [
+  {
+   "blocks": [
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 83000,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    }
+   ],
+   "md": "*\\[Note vocale \u00b7 1:23\\]*\n",
+   "name": "voice only",
+   "txt": "[Note vocale \u00b7 1:23]\n"
+  },
+  {
+   "blocks": [
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 499,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 500,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 1499,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 1500,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 59500,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 600000,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    }
+   ],
+   "md": "*\\[Note vocale \u00b7 0:00\\]*\n\n*\\[Note vocale \u00b7 0:01\\]*\n\n*\\[Note vocale \u00b7 0:01\\]*\n\n*\\[Note vocale \u00b7 0:02\\]*\n\n*\\[Note vocale \u00b7 1:00\\]*\n\n*\\[Note vocale \u00b7 10:00\\]*\n",
+   "name": "voice rounding",
+   "txt": "[Note vocale \u00b7 0:00]\n[Note vocale \u00b7 0:01]\n[Note vocale \u00b7 0:01]\n[Note vocale \u00b7 0:02]\n[Note vocale \u00b7 1:00]\n[Note vocale \u00b7 10:00]\n"
+  },
+  {
+   "blocks": [
+    {
+     "marks": [],
+     "text": "avant",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "Un",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "Deux",
+     "type": "paragraph"
+    },
+    {
+     "marks": [],
+     "text": "apr\u00e8s",
+     "type": "paragraph"
+    }
+   ],
+   "md": "avant\n\n*\\[Texte extrait d'un scan (OCR)\\]*\n\nUn\n\nDeux\n\napr\u00e8s\n",
+   "name": "ocr run",
+   "txt": "avant\n[Texte extrait d'un scan (OCR)]\nUn\nDeux\napr\u00e8s\n"
+  },
+  {
+   "blocks": [
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "Un",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-dddddddddddddddddddddddd",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "Deux",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-dddddddddddddddddddddddd",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "Trois",
+     "type": "paragraph"
+    }
+   ],
+   "md": "*\\[Texte extrait d'un scan (OCR)\\]*\n\nUn\n\n*\\[Texte extrait d'un scan (OCR)\\]*\n\nDeux\n\nTrois\n",
+   "name": "two ocr runs",
+   "txt": "[Texte extrait d'un scan (OCR)]\nUn\n[Texte extrait d'un scan (OCR)]\nDeux\nTrois\n"
+  },
+  {
+   "blocks": [
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 83000,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "from": {
+      "kind": "transcript",
+      "source_id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_kind": "voice"
+     },
+     "marks": [],
+     "text": "Dict\u00e9",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "transcript",
+      "source_id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_kind": "voice"
+     },
+     "marks": [],
+     "text": "Suite",
+     "type": "paragraph"
+    }
+   ],
+   "md": "*\\[Note vocale \u00b7 1:23\\]*\n\n*\\[Transcription d'une note vocale\\]*\n\nDict\u00e9\n\nSuite\n",
+   "name": "transcript after voice",
+   "txt": "[Note vocale \u00b7 1:23]\n[Transcription d'une note vocale]\nDict\u00e9\nSuite\n"
+  },
+  {
+   "blocks": [
+    {
+     "marks": [],
+     "text": "x",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "A",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "transcript",
+      "source_id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_kind": "voice"
+     },
+     "marks": [],
+     "text": "B",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "C",
+     "type": "paragraph"
+    },
+    {
+     "marks": [],
+     "text": "",
+     "type": "voice",
+     "voice": {
+      "dur_ms": 7000,
+      "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+      "mime": "audio/webm",
+      "recorded_at": "2026-10-02T14:05:09Z"
+     }
+    },
+    {
+     "marks": [],
+     "text": "fin",
+     "type": "paragraph"
+    }
+   ],
+   "md": "x\n\n*\\[Texte extrait d'un scan (OCR)\\]*\n\nA\n\n*\\[Transcription d'une note vocale\\]*\n\nB\n\n*\\[Texte extrait d'un scan (OCR)\\]*\n\nC\n\n*\\[Note vocale \u00b7 0:07\\]*\n\nfin\n",
+   "name": "mixed",
+   "txt": "x\n[Texte extrait d'un scan (OCR)]\nA\n[Transcription d'une note vocale]\nB\n[Texte extrait d'un scan (OCR)]\nC\n[Note vocale \u00b7 0:07]\nfin\n"
+  },
+  {
+   "blocks": [
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "# titre *gras* <b>",
+     "type": "paragraph"
+    },
+    {
+     "from": {
+      "kind": "ocr",
+      "source_id": "asset-cccccccccccccccccccccccc",
+      "source_kind": "asset"
+     },
+     "marks": [],
+     "text": "- liste | pipe",
+     "type": "paragraph"
+    }
+   ],
+   "md": "*\\[Texte extrait d'un scan (OCR)\\]*\n\n\\# titre \\*gras\\* \\<b\\>\n\n\\- liste \\| pipe\n",
+   "name": "markdown specials",
+   "txt": "[Texte extrait d'un scan (OCR)]\n# titre *gras* <b>\n- liste | pipe\n"
+  }
+ ],
+ "voice": [
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "ok webm",
+   "out": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   }
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/mp4",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "ok mp4",
+   "out": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/mp4",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   }
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/ogg",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "ok ogg",
+   "out": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/ogg",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   }
+  },
+  {
+   "in": {
+    "dur_ms": 1,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "ok 1 ms",
+   "out": {
+    "dur_ms": 1,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   }
+  },
+  {
+   "in": {
+    "dur_ms": 600000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "ok 10 min",
+   "out": {
+    "dur_ms": 600000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   }
+  },
+  {
+   "in": {
+    "dur_ms": 0,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "zero ms",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 600001,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "over 10 min",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 1.5,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "float ms",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": true,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "bool ms",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": "5",
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "string ms",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/wav",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "bad mime",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm;codecs=opus",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "mime params",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "asset-cccccccccccccccccccccccc",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "asset id",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-abc",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "short id",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-AAAAAAAAAAAAAAAAAAAAAAAA",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "upper id",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "block-000001",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "block id",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09"
+   },
+   "name": "no stamp tz",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09.000Z"
+   },
+   "name": "stamp millis",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T14:05:09+02:00"
+   },
+   "name": "stamp offset",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-13-02T14:05:09Z"
+   },
+   "name": "stamp bad month",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-02-30T14:05:09Z"
+   },
+   "name": "stamp feb 30",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "2026-10-02T24:05:09Z"
+   },
+   "name": "stamp hour 24",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "recorded_at": "1999-10-02T14:05:09Z"
+   },
+   "name": "stamp year 1999",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm",
+    "path": "x",
+    "recorded_at": "2026-10-02T14:05:09Z"
+   },
+   "name": "extra key",
+   "out": null
+  },
+  {
+   "in": {
+    "dur_ms": 83000,
+    "id": "voice-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "mime": "audio/webm"
+   },
+   "name": "missing key",
+   "out": null
+  },
+  {
+   "in": [
+    "voice-aaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "name": "not object",
+   "out": null
+  }
+ ]
+}

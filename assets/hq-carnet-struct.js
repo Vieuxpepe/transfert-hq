@@ -7,6 +7,7 @@
  *   toggle     {summary, body}                                              plain text body, nesting depth 0, open/closed is UI state
  *   imagegroup {layout: two|three|compare, items: [{id,mime,w,h,caption}]}  2-3 DISTINCT Stage-06 assets
  *   drawing    {id}                                                         (Phase 3) ONE immutable Dessiner stem; Dessiner owns the drawing
+ *   voice      {id, mime, dur_ms, recorded_at}                              (Phase 4) ONE immutable voice asset (id = voice-<24 hex>, never the block id)
  * Every string is one line (no C0/DEL/C1 control, no U+2028/9, no unpaired surrogate) except the multi-line `body`
  * fields ("\n" only). Offsets, marks, find/replace, titles and previews never touch these blocks. No HTML anywhere.
  *
@@ -23,9 +24,14 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const TYPES = ["table", "callout", "toggle", "imagegroup", "drawing"];
-  const KEY = { table: "table", callout: "callout", toggle: "toggle", imagegroup: "group", drawing: "drawing" };
+  const TYPES = ["table", "callout", "toggle", "imagegroup", "drawing", "voice"];
+  const KEY = { table: "table", callout: "callout", toggle: "toggle", imagegroup: "group", drawing: "drawing", voice: "voice" };
   const DRAWINGS_PER_PAGE_MAX = 32;
+  const VOICES_PER_PAGE_MAX = 32;
+  const VOICE_ID_RE = /^voice-[0-9a-f]{24}$/;
+  const VOICE_MIMES = ["audio/webm", "audio/mp4", "audio/ogg"];
+  const VOICE_DUR_MS_MAX = 10 * 60 * 1000;
+  const RECORDED_AT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/;
   const STEM_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
   const DRAWING_SUFFIX_RE = /_HQWeb(?:-Mobile|-Desktop)?$/;
   const TABLE_ROWS_MAX = 20;
@@ -145,6 +151,29 @@
     return { id: d.id };
   }
 
+  /**
+   * Voice reference: EXACTLY {id, mime, dur_ms, recorded_at}. `id` is the VOICE ASSET id (voice-<24 hex>), never the block id.
+   * `dur_ms` is bounded display metadata (the server cannot decode audio); `recorded_at` is a UTC ISO-8601 second-precision stamp.
+   */
+  function checkVoice(v) {
+    if (!isObj(v) || Object.keys(v).sort().join(",") !== "dur_ms,id,mime,recorded_at") return null;
+    if (typeof v.id !== "string" || !VOICE_ID_RE.test(v.id) || VOICE_MIMES.indexOf(v.mime) < 0) return null;
+    if (!Number.isInteger(v.dur_ms) || v.dur_ms < 1 || v.dur_ms > VOICE_DUR_MS_MAX) return null;
+    const m = typeof v.recorded_at === "string" ? RECORDED_AT_RE.exec(v.recorded_at) : null;
+    if (!m) return null;
+    const [y, mo, d, h, mi, se] = m.slice(1).map(Number);
+    if (!(y >= 2000 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h <= 23 && mi <= 59 && se <= 59)) return null;
+    const probe = new Date(Date.UTC(y, mo - 1, d, h, mi, se));
+    if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+    return { id: v.id, mime: v.mime, dur_ms: v.dur_ms, recorded_at: v.recorded_at };
+  }
+
+  /** "[Note vocale · m:ss]" for text exports (half-up seconds, identical to the server). */
+  function voiceLabel(v) {
+    const secs = Math.floor((v.dur_ms + 500) / 1000);
+    return "[Note vocale \u00b7 " + Math.floor(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + (secs % 60) + "]";
+  }
+
   /** Readable name derived from the stem itself (never stored). */
   function drawingLabel(stem) {
     return stem.replace(DRAWING_SUFFIX_RE, "") || stem;
@@ -157,6 +186,7 @@
     if (type === "toggle") return checkToggle(p);
     if (type === "imagegroup") return checkGroup(p, checkAsset);
     if (type === "drawing") return checkDrawing(p);
+    if (type === "voice") return checkVoice(p);
     return null;
   }
 
@@ -170,7 +200,7 @@
     if (type === "callout") return [p.title, p.body].filter(Boolean);
     if (type === "toggle") return [p.summary, p.body].filter(Boolean);
     if (type === "imagegroup") return p.items.map((a) => a.caption).filter(Boolean);
-    return []; // a drawing contributes no text of its own
+    return []; // a drawing / a voice note contributes no text of its own
   }
 
   function bytesOf(type, p) {
@@ -184,6 +214,7 @@
     if (type === "callout") return [CALLOUT_KINDS.indexOf(p.kind), p.title, p.body];
     if (type === "toggle") return [p.summary, p.body];
     if (type === "drawing") return [p.id];
+    if (type === "voice") return [p.id, p.mime, p.dur_ms, p.recorded_at];
     return [GROUP_LAYOUT_ORDER.indexOf(p.layout), p.items.map((a) => [a.id, a.mime, a.w, a.h, a.caption])];
   }
 
@@ -193,6 +224,7 @@
     if (type === "callout") return a.length === 3 && CALLOUT_KINDS[a[0]] ? checkCallout({ kind: CALLOUT_KINDS[a[0]], title: a[1], body: a[2] }) : null;
     if (type === "toggle") return a.length === 2 ? checkToggle({ summary: a[0], body: a[1] }) : null;
     if (type === "drawing") return a.length === 1 ? checkDrawing({ id: a[0] }) : null;
+    if (type === "voice") return a.length === 4 ? checkVoice({ id: a[0], mime: a[1], dur_ms: a[2], recorded_at: a[3] }) : null;
     if (type === "imagegroup") {
       if (a.length !== 2 || !GROUP_LAYOUT_ORDER[a[0]] || !Array.isArray(a[1])) return null;
       const items = [];
@@ -373,6 +405,7 @@
     if (type === "callout") return ["[" + CALLOUT_LABEL[p.kind] + "]" + (p.title ? " " + p.title : "")].concat(p.body ? p.body.split("\n") : []);
     if (type === "toggle") return ["[Section] " + p.summary].concat(p.body ? p.body.split("\n") : []);
     if (type === "drawing") return ["[Croquis : " + drawingLabel(p.id) + "]"];
+    if (type === "voice") return [voiceLabel(p)];
     const labels = GROUP_ITEM_LABEL[p.layout];
     return p.items.map((a, n) => {
       const label = labels ? labels[n] : "Image";
@@ -400,6 +433,7 @@
       return parts.join("\n\n");
     }
     if (type === "drawing") return "*\\[Croquis : " + h.esc(drawingLabel(p.id)) + "\\]*"; // a text label only: no path, URL or preview asset
+    if (type === "voice") return "*\\[" + h.esc(voiceLabel(p).slice(1, -1)) + "\\]*"; // a text label only: the audio is never packaged
     const labels = GROUP_ITEM_LABEL[p.layout];
     return p.items.map((a, n) => {
       const rel = assetPaths && assetPaths[a.id];
@@ -417,8 +451,8 @@
   return {
     TYPES, KEY, TABLE_ROWS_MAX, TABLE_COLS_MAX, CELL_U16_MAX, CELL_BYTES_MAX, TABLE_BYTES_MAX, TABLES_PER_PAGE_MAX, CALLOUT_KINDS, CALLOUT_TITLE_MAX,
     CALLOUT_BODY_MAX, CALLOUT_BODY_LINES_MAX, TOGGLE_SUMMARY_MAX, TOGGLE_BODY_MAX, TOGGLE_BODY_LINES_MAX, NOTES_PER_PAGE_MAX, GROUP_LAYOUTS,
-    GROUP_LAYOUT_ORDER, GROUPS_PER_PAGE_MAX, DRAWINGS_PER_PAGE_MAX, STEM_RE, STRUCT_BYTES_MAX, CALLOUT_LABEL, GROUP_ITEM_LABEL,
-    checkPayload, checkTable, checkCallout, checkToggle, checkGroup, checkDrawing, drawingLabel, clone, strings, bytesOf, utf8Len, encode, decode,
+    GROUP_LAYOUT_ORDER, GROUPS_PER_PAGE_MAX, DRAWINGS_PER_PAGE_MAX, VOICES_PER_PAGE_MAX, VOICE_ID_RE, VOICE_MIMES, VOICE_DUR_MS_MAX, STEM_RE, STRUCT_BYTES_MAX, CALLOUT_LABEL, GROUP_ITEM_LABEL,
+    checkPayload, checkTable, checkCallout, checkToggle, checkGroup, checkDrawing, checkVoice, voiceLabel, drawingLabel, clone, strings, bytesOf, utf8Len, encode, decode,
     addRow, removeRow, addCol, removeCol, cleanCell, groupFrom, groupAdd, groupRemove, groupMove, groupReplace, groupSetLayout, layoutFor, formatTsv, parseTsv, pasteGrid, txtLines, mdBlock,
   };
 });

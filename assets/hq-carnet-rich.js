@@ -49,8 +49,8 @@
   const STRUCT_TYPES = Struct ? Struct.TYPES.slice() : [];
   const ENG_TYPES = Eng ? Eng.ENG_TYPES.slice() : [];
   const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"].concat(ENG_TYPES, STRUCT_TYPES);
-  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j", drawing: "w" };
-  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup", w: "drawing" };
+  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j", drawing: "w", voice: "v" };
+  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup", w: "drawing", v: "voice" };
   const ASSET_ID = /^asset-[0-9a-f]{24}$/;
   const ASSET_MIMES = ["image/jpeg", "image/png", "image/webp"];
   const ASSET_LONG_SIDE_MAX = 2560; // server: hq_carnet_media.MAX_LONG_SIDE
@@ -68,6 +68,30 @@
   const EDITION_ID = /^srce-[A-Za-z0-9_-]{1,64}$/;
   const REF_KINDS = ["note", "file", "drawing", "model", "media", "project"];
   const BLOCKS_MAX = 8192; // structured lines per page (server: hq_carnet_rich.BLOCKS_MAX)
+  // Phase 4 provenance of DERIVED text (OCR / transcript): EXACTLY {kind, source_kind, source_id} with canonical identity only.
+  const FROM_KINDS = { ocr: "asset", transcript: "voice" }; // kind -> the ONLY source kind it may point at (server: FROM_KINDS)
+  const FROM_CODE = { ocr: "o", transcript: "t" };
+  const CODE_FROM = { o: "ocr", t: "transcript" };
+  const DERIVED_BLOCKS_PER_PAGE_MAX = 600;
+  const DERIVED_LABEL = { ocr: "Texte extrait d'un scan (OCR)", transcript: "Transcription d'une note vocale" }; // same words as the server
+  const VOICE_ID = /^voice-[0-9a-f]{24}$/;
+
+  /** Strict provenance check (mirrors hq_carnet_rich.check_from). Clean copy or null. */
+  function checkFrom(f) {
+    if (!isObj(f) || Object.keys(f).sort().join(",") !== "kind,source_id,source_kind") return null;
+    if (typeof f.kind !== "string" || !Object.prototype.hasOwnProperty.call(FROM_KINDS, f.kind) || f.source_kind !== FROM_KINDS[f.kind]) return null;
+    if (typeof f.source_id !== "string" || !(f.source_kind === "asset" ? ASSET_ID : VOICE_ID).test(f.source_id)) return null;
+    return { kind: f.kind, source_kind: f.source_kind, source_id: f.source_id };
+  }
+
+  function sameFrom(a, b) {
+    return !!a && !!b && a.kind === b.kind && a.source_kind === b.source_kind && a.source_id === b.source_id;
+  }
+
+  /** A new provenance record for explicit derived-content flows (the ONLY way a line acquires one). */
+  function fromOf(kind, sourceId) {
+    return checkFrom({ kind, source_kind: FROM_KINDS[kind], source_id: sourceId });
+  }
   const MARKS_PER_BLOCK_MAX = 128;
   const MARKS_TOTAL_MAX = 4000;
   const HREF_MAX = 2048;
@@ -394,21 +418,26 @@
     return Eng && isEngType(type) ? Eng.checkPayload(type, p, measureLink) : null;
   }
 
-  function newLine(text, type, checked, marks, id, asset, eng, struct) {
+  function newLine(text, type, checked, marks, id, asset, eng, struct, from) {
     const image = type === "image";
     const atom = isAtomType(type);
-    return {
+    const line = {
       type: type || "paragraph", checked: type === "check" ? !!checked : false, text: atom ? "" : text || "", marks: atom ? [] : marks || [],
       id: cleanId(id), asset: image && asset ? Object.assign({}, asset) : null, eng: isEngType(type) && eng ? cloneEng(eng) : null,
       struct: isStructType(type) && struct ? cloneEng(struct) : null,
     };
+    const f = (type || "paragraph") === "paragraph" && from ? checkFrom(from) : null;
+    if (f) line.from = f; // the key exists ONLY on derived paragraphs: every other line is byte-identical to Phase 3.5
+    return line;
   }
 
   function cloneLine(l) {
-    return {
+    const out = {
       type: l.type, checked: l.checked, text: l.text, marks: l.marks.map((m) => copyMark(m, m.start, m.end)), id: l.id || null,
       asset: l.asset ? Object.assign({}, l.asset) : null, eng: l.eng ? cloneEng(l.eng) : null, struct: l.struct ? cloneEng(l.struct) : null,
     };
+    if (l.from) out.from = Object.assign({}, l.from);
+    return out;
   }
 
   /** A new calculation / measurement atom (no id yet). null when the payload is not valid. */
@@ -437,6 +466,14 @@
     return same ? hm : p2(d.getDate()) + "/" + p2(d.getMonth() + 1) + " " + hm;
   }
 
+  /** Local display time of a voice note ("DD/MM HH:MM", device time zone, UI only) from its UTC stamp. */
+  function localStampLabel(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const p2 = (x) => (x < 10 ? "0" + x : String(x));
+    return p2(d.getDate()) + "/" + p2(d.getMonth() + 1) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+  }
+
   /** A new image line (no id yet: the editor gives it a temporary key, the server the real id). */
   function imageLine(asset) {
     const clean = checkAsset(asset);
@@ -450,6 +487,23 @@
       if (l.type === "image" && l.asset) out.push(l.asset);
       else if (l.type === "imagegroup" && l.struct) for (const a of l.struct.items) out.push(a);
     }
+    return out;
+  }
+
+  /** Voice asset ids referenced by the page (voice blocks) plus the voice sources of transcript paragraphs. */
+  function voicesOf(lines) {
+    const out = [];
+    for (const l of lines) {
+      if (l.type === "voice" && l.struct && l.struct.id) out.push(l.struct.id);
+      else if (l.from && l.from.source_kind === "voice") out.push(l.from.source_id);
+    }
+    return out;
+  }
+
+  /** Image asset ids that derived (OCR) paragraphs point at: a provenance reference keeps the scan alive in the backup closure. */
+  function provenanceAssetsOf(lines) {
+    const out = [];
+    for (const l of lines) if (l.from && l.from.source_kind === "asset") out.push(l.from.source_id);
     return out;
   }
 
@@ -495,9 +549,12 @@
     let notes = 0;
     let groups = 0;
     let drawings = 0;
+    let voices = 0;
+    let derived = 0;
     let images = 0;
     let bytes = 0;
     for (const l of lines) {
+      if (l.from && l.type === "paragraph") derived += 1;
       if (l.type === "image") images += 1;
       if (!isStructType(l.type) || !l.struct) continue;
       if (l.type === "table") tables += 1;
@@ -505,6 +562,7 @@
         groups += 1;
         images += l.struct.items.length;
       } else if (l.type === "drawing") drawings += 1;
+      else if (l.type === "voice") voices += 1;
       else notes += 1;
       bytes += Struct.bytesOf(l.type, l.struct);
     }
@@ -512,6 +570,8 @@
     if (notes > Struct.NOTES_PER_PAGE_MAX) return "notes";
     if (groups > Struct.GROUPS_PER_PAGE_MAX) return "groups";
     if (drawings > Struct.DRAWINGS_PER_PAGE_MAX) return "drawings";
+    if (voices > Struct.VOICES_PER_PAGE_MAX) return "voices";
+    if (derived > DERIVED_BLOCKS_PER_PAGE_MAX) return "derived";
     if (images > IMAGES_PER_PAGE_MAX) return "images";
     if (bytes > Struct.STRUCT_BYTES_MAX) return "bytes";
     return null;
@@ -548,7 +608,7 @@
   }
 
   function isPlain(lines) {
-    return lines.every((l) => l.type === "paragraph" && !l.marks.length);
+    return lines.every((l) => l.type === "paragraph" && !l.marks.length && !l.from);
   }
 
   function normalizeLine(l) {
@@ -570,7 +630,10 @@
       else if (isAtomType(type)) return { type, checked: false, text: "", marks: [], id: cleanId(l.id), asset: null, eng };
     }
     const marks = canonicalMarks(l.marks || []);
-    return { type, checked: type === "check" ? !!l.checked : false, text: l.text, marks: marks || [], id: cleanId(l.id), asset: null, eng };
+    const out = { type, checked: type === "check" ? !!l.checked : false, text: l.text, marks: marks || [], id: cleanId(l.id), asset: null, eng };
+    const f = type === "paragraph" && l.from ? checkFrom(l.from) : null;
+    if (f) out.from = f; // derived text is a paragraph only: retyping a block drops its provenance
+    return out;
   }
 
   function fmtOf(lines) {
@@ -595,6 +658,7 @@
       }
       else if (isStructType(l.type)) row.push(Struct.encode(l.type, l.struct)); // Phase 2: same rule, fixed-order arrays
       else if (isEngType(l.type)) row.push(Eng.encode(l.type, l.eng)); // Stage 07: same 4th-element rule, fixed-order arrays
+      else if (l.from && l.type === "paragraph") row.push([FROM_CODE[l.from.kind], l.from.source_id]); // Phase 4: ONLY a derived paragraph has a 4th element (fixed order)
       return row;
     }));
   }
@@ -622,7 +686,14 @@
       const type = CODE_TYPE[row[0]];
       if (!type || (row[1] !== 0 && row[1] !== 1) || (row[1] === 1 && type !== "check") || !Array.isArray(row[2])) return null;
       if (row[2].length > MARKS_PER_BLOCK_MAX) return null;
-      if ((row.length === 4) !== (type === "image" || isEngType(type) || isStructType(type))) return null;
+      const derivedRow = type === "paragraph" && row.length === 4;
+      if ((row.length === 4) !== (type === "image" || isEngType(type) || isStructType(type) || derivedRow)) return null;
+      let derivedFrom = null;
+      if (derivedRow) {
+        const code = Array.isArray(row[3]) && row[3].length === 2 ? CODE_FROM[row[3][0]] : null;
+        derivedFrom = code ? fromOf(code, row[3][1]) : null;
+        if (!derivedFrom) return null;
+      }
       let payload = null;
       if (isStructType(type)) {
         const sp = Struct.decode(type, row[3], checkAsset);
@@ -679,7 +750,7 @@
       if (total > MARKS_TOTAL_MAX) return null;
       const canon = canonicalMarks(marks);
       if (!canon) return null;
-      out.push(newLine(base[i], type, row[1] === 1, canon, idAt(i), null, payload));
+      out.push(newLine(base[i], type, row[1] === 1, canon, idAt(i), null, payload, null, derivedFrom));
     }
     return structLimits(out) ? null : out;
   }
@@ -705,6 +776,11 @@
         continue;
       }
       if (b.asset !== undefined) return null;
+      let derivedFrom = null;
+      if (b.from !== undefined) {
+        derivedFrom = b.type === "paragraph" ? checkFrom(b.from) : null;
+        if (!derivedFrom) return null; // provenance is paragraph-only and strictly shaped: anything else fails closed
+      }
       if (isStructType(b.type)) {
         const key = Struct.KEY[b.type];
         for (const t of STRUCT_TYPES) if (b[Struct.KEY[t]] !== undefined && t !== b.type) return null; // a payload only under its own type
@@ -746,7 +822,7 @@
       }
       const canon = canonicalMarks(marks);
       if (!canon) return null;
-      out.push(newLine(b.text, b.type, b.checked === true, canon, isRealId(b.id) ? b.id : null, null, payload));
+      out.push(newLine(b.text, b.type, b.checked === true, canon, isRealId(b.id) ? b.id : null, null, payload, null, derivedFrom));
     }
     return ensureUnique(out);
   }
@@ -776,6 +852,7 @@
         if (l.type === "image") b.asset = Object.assign({}, l.asset);
         if (isEngType(l.type)) b[l.type] = cloneEng(l.eng);
         if (isStructType(l.type)) b[Struct.KEY[l.type]] = cloneEng(l.struct);
+        if (l.from && l.type === "paragraph") b.from = Object.assign({}, l.from); // provenance is paragraph-only, even if a caller retyped the line
         if (isRealId(l.id) && (!allowed || allowed.has(l.id)) && !used.has(l.id)) {
           used.add(l.id);
           b.id = l.id;
@@ -938,7 +1015,15 @@
       // through the newline of the next) leaves the LAST line's content: it keeps that block's identity.
       const owner = takeLast ? last : first;
       const keeps = idToLast ? k === pieces.length - 1 : k === 0;
-      built.push(normalizeLine({ type: owner.type, checked: keeps ? owner.checked : false, text, marks, id: keeps ? owner.id : null, eng: keeps ? owner.eng : null }));
+      // Phase 4 provenance (conservative, never over-claims): editing INSIDE a derived line keeps it; a split keeps it on the piece that
+      // keeps the block's identity (the new block never inherits it); merging two lines keeps it only when both come from the same source.
+      let pieceFrom = null;
+      if (keeps) {
+        if (takeLast) pieceFrom = last.from || null;
+        else if (a.line === b.line) pieceFrom = first.from || null;
+        else pieceFrom = sameFrom(first.from, last.from) ? first.from : null;
+      }
+      built.push(normalizeLine({ type: owner.type, checked: keeps ? owner.checked : false, text, marks, id: keeps ? owner.id : null, eng: keeps ? owner.eng : null, from: pieceFrom }));
     }
     const out = lines.slice(0, a.line).map(cloneLine).concat(built, lines.slice(b.line + 1).map(cloneLine));
     const starts = lineStarts(out);
@@ -1130,6 +1215,7 @@
       out[i].type = target;
       out[i].eng = null; // a decision re-typed to a plain block stops being a decision
       if (target !== "check") out[i].checked = false;
+      if (target !== "paragraph") delete out[i].from; // derived text is a paragraph only
     }
     return out;
   }
@@ -1258,31 +1344,43 @@
     });
   }
 
+  /** Export marker emitted once before each run of derived paragraphs (the provenance survives a text export; same words as the server). */
+  function derivedMarker(prev, cur) {
+    if (!cur || (prev && sameFrom(prev, cur))) return null;
+    return DERIVED_LABEL[cur.kind];
+  }
+
   function renderTxt(lines) {
     const labels = numberLabels(lines);
     const out = lines.map((l, i) => {
-      if (isStructType(l.type)) return Struct.txtLines(l.type, l.struct).join("\n");
-      if (l.type === "image") return l.asset.caption ? "[Image : " + l.asset.caption + "]" : "[Image]";
-      if (l.type === "calc") return "[" + Eng.describeCalc(l.eng) + "]";
-      if (l.type === "measure") return "[" + Eng.describeMeasure(l.eng) + "]";
-      let text = l.text;
-      const links = l.marks.filter((m) => m.type === "link" && m.href != null).sort((x, y) => x.start - y.start);
-      if (links.length) {
-        let s = "";
-        let pos = 0;
-        for (const m of links) {
-          s += l.text.slice(pos, m.end) + " (" + m.href + ")";
-          pos = m.end;
-        }
-        text = s + l.text.slice(pos);
-      }
-      if (l.type === "decision") return Eng.decisionLabel(l.eng) + (text ? " \u2014 " + text : "");
-      if (l.type === "bullet") return "- " + text;
-      if (l.type === "number") return labels[i] + ". " + text;
-      if (l.type === "check") return (l.checked ? "[x] " : "[ ] ") + text;
-      return text;
+      const mark = derivedMarker(i > 0 ? lines[i - 1].from : null, l.type === "paragraph" ? l.from : null);
+      if (mark) return "[" + mark + "]\n" + renderTxtLine(lines, labels, l, i);
+      return renderTxtLine(lines, labels, l, i);
     });
     return out.join("\n") + "\n";
+  }
+
+  function renderTxtLine(lines, labels, l, i) {
+    if (isStructType(l.type)) return Struct.txtLines(l.type, l.struct).join("\n");
+    if (l.type === "image") return l.asset.caption ? "[Image : " + l.asset.caption + "]" : "[Image]";
+    if (l.type === "calc") return "[" + Eng.describeCalc(l.eng) + "]";
+    if (l.type === "measure") return "[" + Eng.describeMeasure(l.eng) + "]";
+    let text = l.text;
+    const links = l.marks.filter((m) => m.type === "link" && m.href != null).sort((x, y) => x.start - y.start);
+    if (links.length) {
+      let s = "";
+      let pos = 0;
+      for (const m of links) {
+        s += l.text.slice(pos, m.end) + " (" + m.href + ")";
+        pos = m.end;
+      }
+      text = s + l.text.slice(pos);
+    }
+    if (l.type === "decision") return Eng.decisionLabel(l.eng) + (text ? " \u2014 " + text : "");
+    if (l.type === "bullet") return "- " + text;
+    if (l.type === "number") return labels[i] + ". " + text;
+    if (l.type === "check") return (l.checked ? "[x] " : "[ ] ") + text;
+    return text;
   }
 
   function mdEscape(t) {
@@ -1350,6 +1448,11 @@
     const parts = [];
     let gap = false;
     lines.forEach((l, i) => {
+      const mark = derivedMarker(i > 0 ? lines[i - 1].from : null, l.type === "paragraph" ? l.from : null);
+      if (mark) {
+        parts.push(["struct", "*\\[" + mdEscape(mark) + "\\]*", gap]);
+        gap = false;
+      }
       if (isStructType(l.type)) {
         parts.push(["struct", Struct.mdBlock(l.type, l.struct, assetPaths, { esc: mdEscape, lineStart: mdLineStart, alt: mdAlt, path: mdPath }), gap]);
         gap = false;
@@ -1442,6 +1545,8 @@
   const ENG_KEY_ATTR = "data-eng-key";
   const ENG_REGS = new WeakMap(); // editor root -> Map(eng key -> {type, payload}). Payloads never travel in attributes or text.
   const STRUCT_KEY_ATTR = "data-struct-key";
+  const FROM_KEY_ATTR = "data-carnet-from-key"; // Phase 4: an opaque key into FROM_REGS (a native DOM clone never duplicates provenance)
+  const FROM_REGS = new WeakMap(); // editor root -> Map(from key -> {kind, source_kind, source_id}). Provenance never travels in attributes alone.
   const STRUCT_REGS = new WeakMap(); // editor root -> Map(struct key -> {type, payload}). Phase 2: payloads never travel in attributes or text.
   let structRenderer = null; // (doc, wrapper, type, payload, idx) -> fills the wrapper; installed by hq-carnet-structured-ui.js
 
@@ -1517,6 +1622,12 @@
       fig.appendChild(gone);
       fig.appendChild(textEl(doc, "figcaption", "carnet-caption", "Croquis : " + name));
       box.appendChild(fig);
+    } else if (type === "voice") {
+      // Read-only (print / PDF / fallback): a text label only (duration and recording time). Never a player, a path or an id.
+      const card = el(doc, "div", { class: "carnet-voice carnet-voice-static", role: "note" });
+      card.appendChild(textEl(doc, "span", "carnet-voice-label", Struct.voiceLabel(p).slice(1, -1)));
+      card.appendChild(textEl(doc, "span", "carnet-voice-when", localStampLabel(p.recorded_at)));
+      box.appendChild(card);
     } else {
       const card = el(doc, "div", { class: "carnet-group", "data-layout": p.layout, role: "group" });
       const grid = el(doc, "div", { class: "carnet-group-grid" });
@@ -1536,7 +1647,7 @@
 
   /** A table / callout / toggle / image-group atom: <div.carnet-line contenteditable=false>. Safe DOM only. */
   function renderStruct(doc, l, idx, reg, print) {
-    const label = { table: "Tableau", callout: "Encadr\u00e9", toggle: "Section repliable", imagegroup: "Groupe d'images", drawing: "Croquis" }[l.type];
+    const label = { table: "Tableau", callout: "Encadr\u00e9", toggle: "Section repliable", imagegroup: "Groupe d'images", drawing: "Croquis", voice: "Note vocale" }[l.type];
     const div = el(doc, "div", {
       class: "carnet-line carnet-struct-line", "data-carnet-line": String(idx), "data-line-type": l.type, "data-carnet-struct": l.type, contenteditable: "false",
       role: "group", "aria-label": label,
@@ -1719,7 +1830,23 @@
     return badge;
   }
 
-  function renderLine(doc, l, idx, num, reg, print) {
+  /** Non-editable badge opening a run of derived text: its kind in words, a thumbnail of the exact scan (OCR), and one named action. */
+  function derivedBadge(doc, from) {
+    const badge = el(doc, "span", { class: "carnet-derived-badge", contenteditable: "false", [NS_SKIP]: "", "data-carnet-derived-badge": from.kind });
+    if (from.source_kind === "asset") {
+      badge.appendChild(el(doc, "img", { class: "carnet-derived-thumb", src: ASSET_URL + from.source_id, alt: "", width: "28", height: "28", draggable: "false", decoding: "async", loading: "lazy" }));
+    }
+    badge.appendChild(textEl(doc, "span", "carnet-derived-text", DERIVED_LABEL[from.kind]));
+    const open = el(doc, "span", {
+      class: "carnet-derived-open", role: "button", tabindex: "0", "data-carnet-derived-open": from.kind, "data-carnet-source-kind": from.source_kind,
+      "data-carnet-source-id": from.source_id, "aria-label": from.kind === "ocr" ? "Voir le scan source" : "Voir la note vocale source",
+    });
+    open.appendChild(doc.createTextNode(from.kind === "ocr" ? "Voir le scan" : "Voir la note"));
+    badge.appendChild(open);
+    return badge;
+  }
+
+  function renderLine(doc, l, idx, num, reg, print, runStart) {
     if (l.type === "image") return renderImage(doc, l, idx, reg);
     if (isStructType(l.type)) return renderStruct(doc, l, idx, reg, print);
     if (isAtomType(l.type)) return renderEngAtom(doc, l, idx, reg);
@@ -1743,6 +1870,17 @@
     }
     if (isRealId(l.id)) div.setAttribute("data-carnet-block-id", l.id);
     else if (isTmpId(l.id)) div.setAttribute("data-carnet-tmp", l.id);
+    if (l.from && l.type === "paragraph") {
+      div.setAttribute("data-carnet-derived", l.from.kind);
+      div.className += " carnet-derived";
+      if (reg && reg.froms) {
+        reg.fn += 1;
+        const key = "f" + reg.fn;
+        reg.froms.set(key, Object.assign({}, l.from));
+        div.setAttribute(FROM_KEY_ATTR, key);
+      }
+      if (runStart) div.appendChild(derivedBadge(doc, l.from));
+    }
     if (l.type === "check") {
       div.setAttribute("data-checked", l.checked ? "true" : "false");
       const box = el(doc, "span", {
@@ -1792,13 +1930,17 @@
     while (rootEl.firstChild) rootEl.removeChild(rootEl.firstChild);
     const labels = numberLabels(lines);
     ensureKeys(lines);
-    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0, engs: new Map(), en: 0, structs: new Map(), sn: 0 };
+    const reg = { map: new Map(), n: 0, assets: new Map(), an: 0, engs: new Map(), en: 0, structs: new Map(), sn: 0, froms: new Map(), fn: 0 };
+    FROM_REGS.set(rootEl, reg.froms);
     STRUCT_REGS.set(rootEl, reg.structs);
     REGISTRIES.set(rootEl, reg.map);
     ASSET_REGS.set(rootEl, reg.assets);
     ENG_REGS.set(rootEl, reg.engs);
     const print = !!(opts && opts.print);
-    lines.forEach((l, i) => rootEl.appendChild(renderLine(doc, l, i, labels[i], reg, print)));
+    lines.forEach((l, i) => {
+      const runStart = !!(l.from && l.type === "paragraph" && !sameFrom(i > 0 ? lines[i - 1].from : null, l.from));
+      rootEl.appendChild(renderLine(doc, l, i, labels[i], reg, print, runStart));
+    });
   }
 
   /**
@@ -1911,6 +2053,8 @@
     const areg = ASSET_REGS.get(rootEl) || null;
     const ereg = ENG_REGS.get(rootEl) || null;
     const sreg = STRUCT_REGS.get(rootEl) || null;
+    const freg = FROM_REGS.get(rootEl) || null;
+    const fromUsed = new Set(); // like payload keys: honoured once, so a natively cloned DOM line never duplicates provenance
     const structUsed = new Set();
     const engUsed = new Set(); // a payload key is honoured once: a line the browser cloned natively never duplicates a payload
     const lines = [];
@@ -1995,6 +2139,14 @@
             close();
             const type = child.getAttribute("data-line-type") || "paragraph";
             open(type, child.getAttribute("data-checked") === "true", child);
+            if (type === "paragraph" && freg && child.hasAttribute(FROM_KEY_ATTR)) {
+              const fk = child.getAttribute(FROM_KEY_ATTR);
+              const meta = !fromUsed.has(fk) ? freg.get(fk) : null;
+              if (meta) {
+                fromUsed.add(fk);
+                cur.from = Object.assign({}, meta);
+              }
+            }
             if (type === "decision") {
               const key = child.getAttribute(ENG_KEY_ATTR);
               const meta = ereg && !engUsed.has(key) ? ereg.get(key) : null;
@@ -2105,9 +2257,9 @@
     checkCite, citeKey, citationLabel, locatorLabel, citationAt, citationsOf, insertCitation, setCitationPayload,
     safeHref, checkRef, canonicalMarks, newLine, cloneLines, ensureKeys, idsOf, isRealId, isTmpId, wireContent, adoptIds, syncIds, flat, plainLines, isPlain, fmtOf,
     linesFromTextFmt, linesFromContent, contentFromLines, contentFromTextFmt, lineStarts, locate,
-    attachmentOf, portalOf, setPortalRenderer, PORTAL_KINDS, Struct, STRUCT_TYPES, isStructType, isEngAtom, structPayload, structLine, structLimits, structSearchText, setStructRenderer, getStructPayload, setStructPayload,
+    attachmentOf, portalOf, setPortalRenderer, PORTAL_KINDS, FROM_KINDS, FROM_CODE, DERIVED_LABEL, DERIVED_BLOCKS_PER_PAGE_MAX, checkFrom, sameFrom, fromOf, derivedMarker, localStampLabel, Struct, STRUCT_TYPES, isStructType, isEngAtom, structPayload, structLine, structLimits, structSearchText, setStructRenderer, getStructPayload, setStructPayload,
     Eng, ENG_TYPES, isAtom, isEngType, engPayload, engLine, decisionLine, engOf, localTimeLabel, measureLink,
-    checkAsset, captionOk, cleanCaptionText, imageLine, assetsOf, patchImage, ASSET_URL, ASSET_LONG_SIDE_MAX, ASSET_WIDTH_MIN, ASSET_WIDTH_MAX, ASSET_CAPTION_MAX, IMAGES_PER_PAGE_MAX, ASSET_MIMES,
+    checkAsset, captionOk, cleanCaptionText, imageLine, assetsOf, voicesOf, provenanceAssetsOf, patchImage, ASSET_URL, ASSET_LONG_SIDE_MAX, ASSET_WIDTH_MIN, ASSET_WIDTH_MAX, ASSET_CAPTION_MAX, IMAGES_PER_PAGE_MAX, ASSET_MIMES,
     replaceRange, toggleMark, setMark, hasMark, setLink, linkAt, setBlockType, toggleChecked, splitAt, findAll, replaceMatches,
     renderTxt, renderMarkdown, exportFilename, renderInto, renumber, parseEditor, pointToOffset, offsetToPoint,
   };

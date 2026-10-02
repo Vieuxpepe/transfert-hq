@@ -104,6 +104,7 @@ ASSET_CONTENT_TYPES = {
     ".png": "image/png",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
+    ".gz": "application/gzip",  # Phase 4: the vendored OCR language data (served raw; the engine inflates it itself)
 }
 UPLOAD_POST_EXACT = {
     "/login", "/logout",
@@ -169,6 +170,7 @@ SYSTEM_NAMES = {
     "hq_earcut.py",
     "requirements-face3d.txt",
     "earcut-license.txt",
+    "tesseract-license.txt",
     "hq_state.py",
     "hq_events.json",
     "hq_automation.json",
@@ -2121,6 +2123,7 @@ def bind_hq() -> None:
         safe_leaf_name=safe_leaf_name,
         task_add=cc_ext.kanban_add,  # Stage 07: selection -> card of the EXISTING Kanban board (no second task engine)
         task_path=cc_ext.kanban_path,
+        transcribe_command=lambda: CONFIG.get("transcribe_command"),  # Phase 4: optional, never downloaded or installed by the bridge
     )
 
     def _agent_journal(kind, message, **extra):
@@ -2551,13 +2554,13 @@ function hqCarnetMissing() {
     };
     // Stage 04/05: the structured-content and sources modules must load before the editor.
     // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
+    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    }))))))))))))))), true);
+    }))))))))))))))))), true);
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5315,6 +5318,8 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-struct.js"></script>
 <script src="/assets/hq-carnet-rich.js"></script>
+<script src="/assets/hq-carnet-field.js"></script>
+<script src="/assets/hq-carnet-field-ui.js"></script>
 <script src="/assets/hq-carnet-sources.js"></script>
 <script src="/assets/hq-carnet-eng-ui.js"></script>
 <script src="/assets/hq-carnet-history-ui.js"></script>
@@ -5444,13 +5449,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "SAMEORIGIN" if frame_self else "DENY")
         # same-origin: keep Referer for CSRF on same-host GETs (logout); never leak off-origin
         self.send_header("Referrer-Policy", "same-origin")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+        policy = (
+            "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
             + ("frame-ancestors 'self'" if frame_self else "frame-ancestors 'none'")
-            + "; base-uri 'self'",
+            + "; base-uri 'self'"
         )
+        if getattr(self, "_wasm_ok", False):  # Phase 4: set ONLY while serving the vendored OCR worker script
+            policy = policy.replace("script-src 'self' 'unsafe-inline';", "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';", 1)
+        self.send_header("Content-Security-Policy", policy)
 
     def _request_is_https(self) -> bool:
         xf = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
@@ -5902,6 +5909,17 @@ class Handler(BaseHTTPRequestHandler):
         if raw.startswith("/api/carnet/asset/"):
             self._carnet_asset_get(raw[len("/api/carnet/asset/"):])
             return True
+        if raw == "/api/carnet/voice":
+            code, payload = hq_carnet.http_voice_usage()
+            self._json(code, payload)
+            return True
+        if raw == "/api/carnet/transcribe":
+            code, payload = hq_carnet.http_transcribe_status()
+            self._json(code, payload)
+            return True
+        if raw.startswith("/api/carnet/voice/"):
+            self._carnet_voice_get(raw[len("/api/carnet/voice/"):])
+            return True
         return False
 
     def _carnet_asset_get(self, asset_id: str) -> None:
@@ -5918,7 +5936,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         etag = f'"{asset_id}"'  # assets are write-once: the id IS the version
         with handle:
-            if (self.headers.get("If-None-Match") or "").strip() == etag:
+            if (self.headers.get("If-None-Match") or "").strip() == etag and not self.headers.get("Range"):
                 self.send_response(304)
                 self.send_header("ETag", etag)
                 self.send_header("Cache-Control", "private, no-cache")
@@ -5926,9 +5944,33 @@ class Handler(BaseHTTPRequestHandler):
                 self._security_headers()
                 self.end_headers()
                 return
-            self.send_response(200)
+            # Phase 4 (r3): ONE bounded byte range, only when the client asks for it (the field capture's existence probe asks for 1 byte).
+            # A request without Range is byte-for-byte what it always was.
+            start, end, status = 0, size - 1, 200
+            m = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+            if m and (m.group(1) or m.group(2)):
+                if m.group(1) == "":
+                    n = int(m.group(2))
+                    start = max(0, size - n) if n > 0 else size
+                else:
+                    start = int(m.group(1))
+                    if m.group(2):
+                        end = min(int(m.group(2)), size - 1)
+                if start >= size or start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self._security_headers()
+                    self.end_headers()
+                    return
+                status = 206
+            length = end - start + 1
+            self.send_response(status)
             self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Length", str(length))
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.send_header("Accept-Ranges", "bytes")
             self.send_header("ETag", etag)
             # private + no-cache: the browser may keep the bytes but MUST revalidate (auth is checked on every
             # request; an unchanged image costs a 304). Keeps the editor from re-downloading on every re-render.
@@ -5937,13 +5979,95 @@ class Handler(BaseHTTPRequestHandler):
             self._security_headers()
             self.send_header("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox; frame-ancestors 'none'")
             self.end_headers()
+            handle.seek(start)
             sent = 0
-            while sent < size:
-                chunk = handle.read(min(CHUNK, size - sent))
+            while sent < length:
+                chunk = handle.read(min(CHUNK, length - sent))
                 if not chunk:
                     break
                 self.wfile.write(chunk)
                 sent += len(chunk)
+
+    def _carnet_voice_get(self, voice_id: str) -> None:
+        """Phase 4: serve one confined voice note, with a single bounded byte range (an <audio> element needs it to seek).
+        Admin-only (the caller already enforced the role). Fixed Content-Type from the stored extension, nosniff, locked-down CSP."""
+        voice = hq_carnet.voice
+        try:
+            handle, mime, size = voice.open_voice(voice_id)
+        except voice.VoiceError as e:
+            self._json(e.status, {"error": str(e), "code": e.code})
+            return
+        except OSError:
+            self._json(503, {"error": "Notes vocales inaccessibles", "code": "storage_error"})
+            return
+        etag = f'"{voice_id}"'
+        with handle:
+            if (self.headers.get("If-None-Match") or "").strip() == etag and not self.headers.get("Range"):
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, no-cache")
+                self.send_header("Content-Length", "0")
+                self._security_headers()
+                self.end_headers()
+                return
+            start, end, status = 0, size - 1, 200
+            m = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+            if m and (m.group(1) or m.group(2)):
+                if m.group(1) == "":
+                    n = int(m.group(2))
+                    start = max(0, size - n) if n > 0 else size
+                else:
+                    start = int(m.group(1))
+                    if m.group(2):
+                        end = min(int(m.group(2)), size - 1)
+                if start >= size or start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self._security_headers()
+                    self.end_headers()
+                    return
+                status = 206
+            length = end - start + 1
+            self.send_response(status)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "private, no-cache")
+            self.send_header("Content-Disposition", "inline")
+            self._security_headers()
+            self.send_header("Content-Security-Policy", "default-src 'none'; media-src 'self'; sandbox; frame-ancestors 'none'")
+            self.end_headers()
+            handle.seek(start)
+            sent = 0
+            while sent < length:
+                chunk = handle.read(min(CHUNK, length - sent))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                sent += len(chunk)
+
+    def _carnet_voice_post(self, voice_id: str | None) -> None:
+        """Phase 4: raw-body voice upload (``voice_id`` None) or the optional transcription of one stored note."""
+        if self.headers.get("Transfer-Encoding"):
+            self.close_connection = True
+            self._json(411, {"error": "Content-Length requis", "code": "bad_length"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        if voice_id is None:
+            declared = (self.headers.get("X-Carnet-Mime") or "").strip().lower() or None
+            code, payload = hq_carnet.http_voice_upload(self.rfile.read, length, declared)
+        else:
+            code, payload = hq_carnet.http_voice_transcribe(voice_id, self.rfile.read, length)
+        if code != 200:
+            self.close_connection = True  # the unread body must never be parsed as the next request
+        self._json(code, payload)
 
     def _carnet_asset_post(self) -> None:
         """Stage 06: raw-body image upload (no JSON/base64, no client file name or path). Bounded by
@@ -6082,6 +6206,13 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/carnet/asset":
             self._carnet_asset_post()
             return True
+        if raw == "/api/carnet/voice":
+            self._carnet_voice_post(None)
+            return True
+        _vm = re.fullmatch(r"/api/carnet/voice/(voice-[0-9a-f]{24})/transcribe", raw)
+        if _vm:
+            self._carnet_voice_post(_vm.group(1))
+            return True
         if raw == "/api/carnet":
             try:
                 data = self._read_json()
@@ -6169,7 +6300,13 @@ class Handler(BaseHTTPRequestHandler):
             path = ROOT / "assets" / name
             if path.is_file():
                 ctype = ASSET_CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
-                self._send(200, path.read_bytes(), ctype)
+                # Phase 4: ONLY the vendored OCR worker script is allowed to compile WebAssembly (its own response CSP);
+                # the page and every other response keep the unchanged policy.
+                self._wasm_ok = name == "vendor-tesseract-worker.min.js"
+                try:
+                    self._send(200, path.read_bytes(), ctype)
+                finally:
+                    self._wasm_ok = False
                 return
             self._send(404, b"missing")
             return

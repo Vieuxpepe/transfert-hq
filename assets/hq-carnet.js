@@ -2112,6 +2112,11 @@
     structUi(); // before the first render: the editor draws structured blocks through it
     bindEditor(editor);
     ui.eui = mountEditorUi();
+    const fu = fieldUi();
+    if (fu) {
+      fu.mountHud(main);
+      fu.recover(main);
+    }
     prev.addEventListener("click", () => navigate(-1));
     next.addEventListener("click", () => navigate(1));
     add.addEventListener("click", () => newPage(null)); // global New: always "À classer"
@@ -2350,6 +2355,7 @@
     if (key === "camera") return pickImage("camera", null);
     if (key === "table" || key === "callout" || key === "toggle" || key === "imagegroup") return structInsert(key);
     if (key === "sketch") return dessinerNew();
+    if (key === "scan" || key === "voice" || key === "ocr") return fieldRun(key);
     const eu = engUi();
     if (!eu) return;
     if (key === "file" || key === "drawing") return eu.openTool("link", key);
@@ -3477,6 +3483,7 @@
     closeLink();
     closeImageTools();
     if (ui.eui) ui.eui.invalidate();
+    if (ui.fieldUi) ui.fieldUi.refreshHud();
     if (ui.eng) ui.eng.onPageChange(e ? e.id : null);
   }
 
@@ -3976,6 +3983,12 @@
       portalActivate(attEl);
       return;
     }
+    const dEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-derived-open]") : null;
+    if (dEl && ui.editor.contains(dEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      derivedOpen(dEl);
+      return;
+    }
     const atomEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-eng]") : null;
     if (atomEl && ui.editor.contains(atomEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       ev.preventDefault();
@@ -4063,6 +4076,12 @@
         const eu = engUi();
         if (eu) eu.openAtom(atom);
       } else flashMsg("Page en lecture seule");
+      return;
+    }
+    const dOpen = t.closest("[data-carnet-derived-open]");
+    if (dOpen && ui.editor.contains(dOpen)) {
+      ev.preventDefault();
+      derivedOpen(dOpen);
       return;
     }
     if (ui.image.sel) closeImageTools(""); // a click in the text leaves the image
@@ -5080,6 +5099,7 @@
         btn("btn-carnet-image-group", "Grouper…", { "aria-label": "Grouper avec une ou deux autres images" }),
         ctl("btn-carnet-image-inspect", "Inspecter", "Inspecter l'image (zoom et déplacement, sans rien modifier)"),
         ctl("btn-carnet-image-annotate", "Annoter…", "Annoter l'image dans Dessiner (l'image d'origine reste inchangée)"),
+        btn("btn-carnet-image-ocr", "Lire le texte…", { "aria-label": "Extraire le texte de l'image (reconnaissance locale)" }),
         btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),
         btn("btn-carnet-image-done", "Terminé"),
       ]),
@@ -5109,6 +5129,7 @@
         const bnd = imgBound();
         if (bnd) inspectOpen({ kind: "image", assetId: bnd.lines[bnd.idx].asset.id, blockId: bnd.lines[bnd.idx].id || "" }, b);
       } else if (b.id === "btn-carnet-image-annotate") dessinerAnnotateSelected();
+      else if (b.id === "btn-carnet-image-ocr") fieldRun("ocr", b);
       else if (b.id === "btn-carnet-image-remove") removeSelectedImage();
       else if (b.id === "btn-carnet-image-caption-focus") {
         caption.focus();
@@ -5408,6 +5429,105 @@
     return !!b && ui.editor.children[b.idx] === t.lineEl && imgSig(b.lines[b.idx].asset) === t.sig;
   }
 
+  // ---------------------------------------------------------------- Product Phase 4: Field Capture (HUD, scanner, OCR, voice)
+  // The host side is thin: it owns the page, the single edit path and the target of an insertion. The capture surfaces live in
+  // hq-carnet-field-ui.js; their pure decisions in hq-carnet-field.js. A capture never writes anything by itself: it ends in fieldInsert().
+
+  function fieldUi() {
+    if (ui.fieldUi) return ui.fieldUi;
+    const M = global.HqCarnetFieldUi;
+    const F = global.HqCarnetField;
+    if (!M || typeof M.mount !== "function" || !F || !ui.root) return null;
+    ui.fieldUi = M.mount({
+      win: global,
+      doc,
+      field: F,
+      rich: Rich,
+      media: Media,
+      api: (url, init) => apiCall(url, init),
+      editable: () => !!curEntry(),
+      status: (t, isErr) => flashMsg(t, isErr ? 4200 : 2600),
+      focusEditor: () => focusEditor(false),
+      command: (id) => runInsert(id),
+      captureTarget: () => {
+        const e = curEntry();
+        return e ? imgCaptureTarget(e) : null;
+      },
+      afterTarget: (blockId) => {
+        const e = curEntry();
+        return e && blockId ? { pageId: e.id, mode: "after", anchorId: blockId, replace: null } : e ? imgCaptureTarget(e) : null;
+      },
+      selectedImage: () => {
+        const b = imgBound(false);
+        if (!b) return null;
+        const l = b.lines[b.idx];
+        return l && l.asset ? { asset: l.asset, blockId: l.id } : null;
+      },
+      limits: () => ({ page_blocks: Rich.BLOCKS_MAX, page_text_bytes: PAGE_TEXT_BYTES, derived_blocks_per_page: Rich.DERIVED_BLOCKS_PER_PAGE_MAX }),
+      used: (extraBlocks) => {
+        const e = curEntry();
+        const lines = e ? localLines(e.local) : [];
+        let derived = 0;
+        for (const l of lines) if (l.from) derived += 1;
+        return { blocks: lines.length + (extraBlocks | 0), bytes: utf8Bytes(Rich.flat(lines)), derived };
+      },
+      insert: (items, target) => fieldInsert(items, target),
+    });
+    return ui.fieldUi;
+  }
+
+  /** The three field commands (insert menu, "/", HUD). OCR needs a selected image; scan and voice need an editable page. */
+  function fieldRun(key, opener) {
+    const f = fieldUi();
+    if (!f) return flashMsg("Capture terrain indisponible");
+    if (!curEntry()) return flashMsg(IMG_MSG.readonly);
+    const op = opener || doc.activeElement;
+    if (key === "scan") f.openScanner(op);
+    else if (key === "voice") f.openVoice(op);
+    else f.openOcr(op);
+  }
+
+  /**
+   * ONE logical mutation for a capture: every item (image, image group, voice block, derived paragraphs with provenance) is checked
+   * and spliced in, then committed through the normal edit path ONCE. Any refusal (stale page, invalid item, a page limit)
+   * changes nothing. Returns {ok} or {ok:false, reason, message}.
+   */
+  function fieldInsert(items, target) {
+    const e = curEntry();
+    if (!e || !target || e.id !== target.pageId) return { ok: false, reason: "stale" };
+    const lines = localLines(e.local);
+    const idx = imgFind(lines, target.anchorId, e);
+    if (idx < 0) return { ok: false, reason: "stale" };
+    const add = [];
+    for (const it of items || []) {
+      if (it.type === "image") add.push(Rich.imageLine(it.asset));
+      else if (it.type === "imagegroup") add.push(it.payload ? Rich.structLine("imagegroup", it.payload) : null);
+      else if (it.type === "voice") add.push(Rich.structLine("voice", it.payload));
+      else if (it.type === "derived" && it.from && Array.isArray(it.chunks) && it.chunks.length) {
+        for (const text of it.chunks) add.push(Rich.newLine(text, "paragraph", false, [], null, null, null, null, it.from));
+      } else add.push(null);
+    }
+    if (!add.length || add.some((l) => !l)) return { ok: false, reason: "invalid", message: "Contenu invalide : rien n'a été inséré" };
+    const at = target.mode === "before" ? idx : idx + 1;
+    lines.splice(at, 0, ...add);
+    const after = lines[at + add.length];
+    if (!after || Rich.isAtom(after)) lines.splice(at + add.length, 0, Rich.newLine("", "paragraph"));
+    const lim = Rich.structLimits(lines);
+    if (lim) return { ok: false, reason: "limit", message: (STRUCT_LIMIT_MSG[lim] || "Limite de la page atteinte") + " : rien n'a été inséré" };
+    if (lines.length > Rich.BLOCKS_MAX) return { ok: false, reason: "limit", message: MSG.tooManyLines + " : rien n'a été inséré" };
+    if (utf8Bytes(Rich.flat(lines)) > PAGE_TEXT_BYTES) return { ok: false, reason: "limit", message: "La page deviendrait trop volumineuse : rien n'a été inséré" };
+    return commitLines(lines, null) ? { ok: true } : { ok: false, reason: "refused", message: "Modification refusée : rien n'a été inséré" };
+  }
+
+  /** A derived paragraph's badge opened its source: the scan (OCR) or the voice note (transcript), by canonical identity only. */
+  function derivedOpen(node) {
+    const f = fieldUi();
+    if (!f) return;
+    const kind = node.getAttribute("data-carnet-derived-open");
+    const id = node.getAttribute("data-carnet-source-id");
+    if (kind === "ocr" || kind === "transcript") f.openSource(kind, id, node);
+  }
+
   function imageUi() {
     if (ui.imageUi) return ui.imageUi;
     const M = global.HqCarnetImageUi;
@@ -5451,6 +5571,8 @@
     images: "Trop d'images sur la page (32 au maximum)",
     bytes: "Trop de texte structuré sur la page",
     drawings: "Trop de croquis sur la page (32 au maximum)",
+    voices: "Trop de notes vocales sur la page (32 au maximum)",
+    derived: "Trop de blocs de texte dérivé sur la page (600 au maximum)",
   };
 
   function structUi() {
@@ -5473,6 +5595,10 @@
       remove: (wrapper) => structRemove(wrapper),
       ungroup: (wrapper, payload) => structUngroup(wrapper, payload),
       pickImages: (req) => structPick(req || {}),
+      renderVoice: (w, p, i, b, ro) => {
+        const f = fieldUi();
+        if (f) f.renderVoice(w, p, i, b, ro);
+      },
       openDrawing: (wrapper, stem) => dessinerOpen(wrapper, stem),
       inspect: (input, trigger) => inspectOpen(input, trigger),
       listDrawings: async () => {
