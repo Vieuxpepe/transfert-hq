@@ -619,7 +619,31 @@
       openPage: (id) => (typeof win.hqCarnetOpen === "function" ? win.hqCarnetOpen(id) : null),
     });
     win.hqCapture = h;
+    trackKeyboard(win, doc);
     return h;
+  }
+
+  /**
+   * Product Phase 3.5 — positioning only: while the on-screen keyboard is open, lift the launcher (and the sheet's bottom) above it
+   * through the --hq-kb custom property (visualViewport). Without visualViewport the property stays 0 and the CSS layout is unchanged.
+   * It touches no capture state, request id, category or persistence.
+   */
+  function trackKeyboard(win, doc) {
+    const vv = win.visualViewport;
+    if (!vv || typeof vv.addEventListener !== "function") return;
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      const kb = Math.max(0, Math.round(win.innerHeight - vv.height - vv.offsetTop));
+      doc.documentElement.style.setProperty("--hq-kb", (kb > 80 ? kb : 0) + "px"); // small deltas are browser chrome, not a keyboard
+    };
+    const schedule = () => {
+      if (raf) return;
+      raf = typeof win.requestAnimationFrame === "function" ? win.requestAnimationFrame(apply) : (apply(), 0);
+    };
+    vv.addEventListener("resize", schedule);
+    vv.addEventListener("scroll", schedule);
+    schedule();
   }
 
   const api = { MODES, MSG, TEXT_BYTES_MAX, stamp, decimal, measureFrom, buildCapture, contentOf, staleSelection, mount, boot };

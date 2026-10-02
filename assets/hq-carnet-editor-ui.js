@@ -31,7 +31,7 @@
     ["clear", "Effacer", "Effacer la mise en forme"],
   ];
 
-  const CMD_SEL = "[data-carnet-cmd],[data-carnet-cmd-recent]";
+  const CMD_SEL = "[data-carnet-cmd],[data-carnet-cmd-recent],[data-carnet-cmd-suggest]";
 
   const MSG = {
     stale: "Le contexte a changé : action annulée, rien n'a été modifié",
@@ -320,7 +320,8 @@
       list.addEventListener("click", (e) => {
         const opt = e.target && e.target.closest ? e.target.closest(CMD_SEL) : null;
         if (!opt) return;
-        const c = C.byId(opt.getAttribute("data-carnet-cmd") || opt.getAttribute("data-carnet-cmd-recent"));
+        const at = Array.prototype.indexOf.call(M.list.querySelectorAll(CMD_SEL), opt);
+        const c = M.items[at];
         if (c) choose(M, c);
       });
       box.addEventListener("focusout", (e) => {
@@ -335,9 +336,41 @@
       return S.menuState || (S.menuState = buildMenu());
     }
 
+    /** Deterministic suggestions for the insertion point (pure rules in HqCarnetNav.suggestFor; the host supplies them). */
+    function suggestionsFor(M) {
+      M.prevIndex = -1;
+      if (!host.suggest || !M.ctx) return [];
+      const lines = host.lines();
+      const where = M.ctx.where || (M.origin === "slash" ? "slash" : "below");
+      const at = where === "below" ? M.ctx.lineIndex : M.ctx.lineIndex - 1;
+      const l = lines[at];
+      if (!l) return [];
+      let list = [];
+      try {
+        list = host.suggest({ type: l.type, assetId: l.asset && l.asset.id ? l.asset.id : "" }) || [];
+      } catch (_) {
+        list = [];
+      }
+      M.prevIndex = at;
+      const out = [];
+      for (const sgst of list) {
+        if (sgst.action === "annotate") {
+          if (host.annotate) out.push({ id: "annotate", label: sgst.label, hint: "Dessiner par-dessus l'image dans Dessiner", cat: "", _annotate: true });
+        } else {
+          const c = C.byId(sgst.id);
+          if (c) out.push(c);
+        }
+      }
+      return out;
+    }
+
     function renderMenu(M) {
       const query = M.input.value;
       const groups = C.catalog({ query, recents: host.recents ? host.recents() : [] });
+      // Phase 3.5: an ADDITIVE "Suggéré" group above the catalog (empty query only). It never removes / reorders commands, never
+      // touches recents and never changes ranking: the catalog below is exactly what it was.
+      const sugg = query ? [] : suggestionsFor(M);
+      if (sugg.length) groups.unshift({ id: "suggest", label: "Suggéré", items: sugg });
       const items = C.flatten(groups); // the keyboard order (a command may appear in Récents AND in its category)
       M.items = items;
       M.active = Math.min(M.active, Math.max(0, items.length - 1));
@@ -350,7 +383,7 @@
         ]);
         for (const c of g.items) {
           // a command repeated under "Récents" carries data-carnet-cmd-recent so [data-carnet-cmd="id"] stays unique (the category row)
-          const opt = el("div", { id: "carnet-cmd-" + n, class: "carnet-cmd-item", role: "option", [g.id === "recent" ? "data-carnet-cmd-recent" : "data-carnet-cmd"]: c.id, "data-carnet-group": g.id, "aria-selected": n === M.active ? "true" : "false" });
+          const opt = el("div", { id: "carnet-cmd-" + n, class: "carnet-cmd-item", role: "option", [g.id === "recent" ? "data-carnet-cmd-recent" : g.id === "suggest" ? "data-carnet-cmd-suggest" : "data-carnet-cmd"]: c.id, "data-carnet-group": g.id, "aria-selected": n === M.active ? "true" : "false" });
           opt.appendChild(commandRow(doc, c, { category: g.id === "results" ? (C.category(c.cat) || {}).label : "" }));
           box.appendChild(opt);
           n += 1;
@@ -449,6 +482,19 @@
       M.input.setAttribute("aria-expanded", "false");
       M.ctx = null;
       let ok = true;
+      if (cmd._annotate) {
+        // Annoter: the Phase-3 annotation path on the image just before the insertion point. No block is inserted here.
+        const valid = origin === "slash" ? ctxValid(ctx) : blockValid(ctx);
+        const idx = M.prevIndex;
+        M.closing = false;
+        if (!valid || idx < 0) {
+          say(MSG.stale, true);
+          return false;
+        }
+        host.focusEditor();
+        host.annotate(idx);
+        return true;
+      }
       if (origin === "slash") {
         if (!ctxValid(ctx)) {
           say(MSG.stale, true);
@@ -768,6 +814,8 @@
           items.push(["convert:" + id, "Convertir : " + cmd.label, l.type === id]);
         }
       }
+      // Phase 3.5: a block deep link needs a real (saved) block id; an unsaved block has none yet
+      if (host.copyBlockLink) items.push(["link", "Copier le lien vers ce bloc", !(l && typeof l.id === "string" && /^block-/.test(l.id))]);
       items.push(["delete", "Supprimer", false]);
       return items;
     }
@@ -828,6 +876,11 @@
       closeBlockMenu(false);
       if (id === "below") {
         if (blockValid(ctx)) openMenu("gap", Object.assign({}, ctx, { where: "below" }), rectOf((editor().children[ctx.lineIndex] || editor()).getBoundingClientRect()));
+        else say(MSG.stale, true);
+        return;
+      }
+      if (id === "link") {
+        if (blockValid(ctx) && host.copyBlockLink) host.copyBlockLink(ctx.lineIndex);
         else say(MSG.stale, true);
         return;
       }

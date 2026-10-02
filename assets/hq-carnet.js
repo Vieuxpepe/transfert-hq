@@ -1792,6 +1792,9 @@
     confirmRev: null, // the exact authoritative revision the human is confirming
     deleteNotice: null, // {id, text}: a stale confirmation was invalidated
     pending: null, // Home launcher request processed once the editor is ready
+    pendingAnchor: null, // Phase 3.5: a validated #carnet/<page>/<block> waiting for the editor
+    portalKnown: new Map(), // Phase 3.5: session-local "kind:id" -> "ok" | "missing" (never persisted)
+    polish: null,
     home: { busy: false, timer: null },
     mqBound: false,
     fmtOpen: false,
@@ -1951,7 +1954,9 @@
   function build(host) {
     const root = el("div", { class: "carnet" });
 
-    const status = el("p", { id: "hq-carnet-status", class: "carnet-status", role: "status", "aria-live": "polite" });
+    // Phase 3.5: the visible save state is the pill; this element keeps the full (instant) text for tests / failures / notices and
+    // never speaks (the debounced live region next to the pill does).
+    const status = el("p", { id: "hq-carnet-status", class: "carnet-status", role: "status", "aria-live": "off" });
     const flash = el("span", { class: "carnet-flash", role: "status", "aria-live": "polite" });
     const attention = el("button", { type: "button", id: "btn-carnet-attention", class: "carnet-attention", hidden: true });
     const exportFlag = el("span", { id: "carnet-export-flag", class: "carnet-export-flag", hidden: true, text: MSG.exportStale });
@@ -1963,10 +1968,13 @@
     const library = iconButton("btn-carnet-library", "Bibliothèque", ICON.library, { "aria-expanded": "false", "aria-controls": "hq-carnet-library" });
     const focusBtn = iconButton("btn-carnet-focus", "Mode concentration", ICON.focus, { "aria-pressed": "false" });
     const more = iconButton("btn-carnet-more", "Plus d'outils (symboles, recherche, export, historique…)", ICON.more, { "aria-expanded": "false", "aria-controls": "carnet-quick-tools" });
+    const P = polishUi();
+    const saveN = P ? P.saveNodes() : null;
+    const outN = P ? P.outlineNodes() : null;
     const top = el("div", { class: "carnet-bar carnet-bar-top" }, [
       context,
-      el("div", { class: "carnet-status-wrap" }, [status, attention, exportFlag, flash]),
-      el("div", { class: "carnet-actions" }, [pin, library, focusBtn, more]),
+      el("div", { class: "carnet-status-wrap" }, saveN ? [saveN.pill, saveN.pop, saveN.live, status, attention, exportFlag, flash] : [status, attention, exportFlag, flash]),
+      el("div", { class: "carnet-actions" }, outN ? [pin, outN.button, library, focusBtn, more] : [pin, library, focusBtn, more]),
     ]);
 
     const tools = el("div", { id: "carnet-quick-tools", class: "carnet-tools", role: "toolbar", "aria-label": "Symboles", hidden: true });
@@ -2084,6 +2092,7 @@
     const lib = buildLibrary();
     const libBackdrop = el("div", { class: "carnet-lib-backdrop", "aria-hidden": "true", hidden: true });
     root.append(lib, libBackdrop, main);
+    if (outN) root.appendChild(outN.panel);
     host.textContent = "";
     host.appendChild(root);
 
@@ -2175,6 +2184,13 @@
         return;
       }
       const t = e.touches[0];
+      // Phase 3.5: a gesture that starts over a table, image, group, drawing or an open sheet belongs to that element (scroll / pan /
+      // slider), never to the page flip.
+      const over = e.target && e.target.closest ? e.target.closest("table,[data-carnet-struct=table],[data-carnet-image],.carnet-group,.carnet-drawing,.carnet-insp-viewport,.carnet-outline,.carnet-inspector") : null;
+      if (over) {
+        ui.swipe = null;
+        return;
+      }
       ui.swipe = { x: t.clientX, y: t.clientY, t: Date.now(), multi: false };
     }, { passive: true });
     stage.addEventListener("touchmove", (e) => {
@@ -2389,6 +2405,12 @@
         commitLines(lines, { start, end });
       },
       dragging: () => false,
+      copyBlockLink: (index) => copyBlockLink(index),
+      suggest: (prev) => {
+        const N = nav();
+        return N ? N.suggestFor(prev) : [];
+      },
+      annotate: (index) => dessinerAnnotateAt(index),
     };
     const api = M.mount(host);
     if (I && typeof I.mount === "function") {
@@ -3369,6 +3391,14 @@
     const s = statusFor();
     ui.statusEl.textContent = s.text;
     ui.statusEl.dataset.kind = s.kind;
+    const P = polishUi();
+    if (P) {
+      const r = P.saveUpdate(saveSnapshot(), e && e.error ? String(e.error) : "");
+      // the pill carries the state; the full text stays visible only where it adds information (a hard failure, a notice)
+      ui.statusEl.classList.toggle("carnet-vh", !!r.label && s.kind !== "err");
+      P.outlineSchedule();
+      P.inspectRecheck();
+    }
     const att = doc.getElementById("btn-carnet-attention");
     const n = s.attention.length;
     att.hidden = !n;
@@ -3943,7 +3973,7 @@
     const attEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-attach-open]") : null;
     if (attEl && ui.editor.contains(attEl) && (ev.key === "Enter" || ev.key === " ") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
       ev.preventDefault();
-      openAttachment(attEl.getAttribute("data-carnet-attach-open"));
+      portalActivate(attEl);
       return;
     }
     const atomEl = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-eng]") : null;
@@ -3985,6 +4015,32 @@
     }
   }
 
+  /**
+   * Double-click / double-tap on an image opens the inspector. Detected on pointerdown (before the first click re-lays the page out
+   * by opening the image tools), keyed by the block, not the element. Presentation only: nothing is selected, resized or saved.
+   */
+  function onEditorPointerDown(ev) {
+    if (!ev.isPrimary || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+    const now = Date.now();
+    const tap = ui.lastImgTap;
+    // the second press counts by TIME and DISTANCE only: the first click opens the image tools, which may move the page under the pointer
+    if (tap && now - tap.at < 380 && Math.abs(ev.clientX - tap.x) < 32 && Math.abs(ev.clientY - tap.y) < 32 && ui.editor.contains(ev.target)) {
+      ui.lastImgTap = null;
+      const line = tap.id ? ui.editor.querySelector('[data-carnet-block-id="' + tap.id + '"]') : tap.line;
+      if (line && line.isConnected) {
+        ev.preventDefault();
+        inspectImageLine(line, line.querySelector("[data-carnet-image]"));
+        return;
+      }
+    }
+    ui.lastImgTap = null;
+    const fig = ev.target && ev.target.closest ? ev.target.closest("[data-carnet-image]") : null;
+    if (!fig || !ui.editor.contains(fig)) return;
+    const line = fig.closest("[data-carnet-line]");
+    if (!line) return;
+    ui.lastImgTap = { id: line.getAttribute("data-carnet-block-id") || "", line, at: now, x: ev.clientX, y: ev.clientY };
+  }
+
   function onEditorClick(ev) {
     const t = ev.target && ev.target.closest ? ev.target : null;
     if (!t) return;
@@ -3997,7 +4053,7 @@
     const att = t.closest("[data-carnet-attach-open]");
     if (att && ui.editor.contains(att)) {
       ev.preventDefault();
-      openAttachment(att.getAttribute("data-carnet-attach-open"));
+      portalActivate(att);
       return;
     }
     const atom = t.closest("[data-carnet-eng]");
@@ -4042,6 +4098,7 @@
     ed.addEventListener("drop", (ev) => ev.preventDefault()); // (the root-level handler inserts dropped images)
     ed.addEventListener("keydown", onEditorKey);
     ed.addEventListener("click", onEditorClick);
+    ed.addEventListener("pointerdown", onEditorPointerDown);
     ed.addEventListener("error", onImageError, true); // <img> errors do not bubble: capture
     ed.addEventListener("mousedown", (ev) => {
       if (ev.target && ev.target.closest && ev.target.closest("[data-carnet-check]")) ev.preventDefault();
@@ -5021,6 +5078,7 @@
         ctl("btn-carnet-image-caption-focus", "Légende", "Modifier la légende de l'image"),
         btn("btn-carnet-image-replace", "Remplacer…", { "aria-label": "Remplacer l'image" }),
         btn("btn-carnet-image-group", "Grouper…", { "aria-label": "Grouper avec une ou deux autres images" }),
+        ctl("btn-carnet-image-inspect", "Inspecter", "Inspecter l'image (zoom et déplacement, sans rien modifier)"),
         ctl("btn-carnet-image-annotate", "Annoter…", "Annoter l'image dans Dessiner (l'image d'origine reste inchangée)"),
         btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),
         btn("btn-carnet-image-done", "Terminé"),
@@ -5047,7 +5105,10 @@
       if (b.id === "btn-carnet-image-done") closeImageTools("", true);
       else if (b.id === "btn-carnet-image-replace") replaceSelectedImage();
       else if (b.id === "btn-carnet-image-group") structGroupSelected();
-      else if (b.id === "btn-carnet-image-annotate") dessinerAnnotateSelected();
+      else if (b.id === "btn-carnet-image-inspect") {
+        const bnd = imgBound();
+        if (bnd) inspectOpen({ kind: "image", assetId: bnd.lines[bnd.idx].asset.id, blockId: bnd.lines[bnd.idx].id || "" }, b);
+      } else if (b.id === "btn-carnet-image-annotate") dessinerAnnotateSelected();
       else if (b.id === "btn-carnet-image-remove") removeSelectedImage();
       else if (b.id === "btn-carnet-image-caption-focus") {
         caption.focus();
@@ -5413,6 +5474,7 @@
       ungroup: (wrapper, payload) => structUngroup(wrapper, payload),
       pickImages: (req) => structPick(req || {}),
       openDrawing: (wrapper, stem) => dessinerOpen(wrapper, stem),
+      inspect: (input, trigger) => inspectOpen(input, trigger),
       listDrawings: async () => {
         const d = await apiCall("/api/drawings", { timeoutMs: 12000 });
         return ((d && d.items) || []).map((it) => it && it.stem).filter((x) => typeof x === "string" && Rich.Struct.STEM_RE.test(x));
@@ -5651,6 +5713,314 @@
   // ---------------------------------------------------------------- Product Phase 3: Dessiner (orchestration; Dessiner owns the drawing)
 
   const DESSINER_FLASH_MS = 6000;
+
+
+  // ================================================================== Product Phase 3.5: interaction polish (host side)
+  //
+  // Pure rules live in hq-carnet-nav.js (checked in Node); the DOM pieces in hq-carnet-polish-ui.js. Nothing here persists anything:
+  // anchors are read-only navigation, the outline is a view over the parsed lines, the inspector is inspection-only and portal
+  // cards are live renderers over canonical refs.
+
+  const POLISH_MSG = {
+    pageGone: "Page introuvable",
+    blockGone: "Bloc introuvable",
+    reached: "Bloc atteint",
+    linkCopied: "Lien du bloc copié",
+    linkNeedsSave: "Enregistre d'abord la page : ce bloc n'a pas encore d'identifiant",
+    previewGone: "Aperçu indisponible",
+  };
+  const PULSE_MS = 1800;
+
+  function nav() {
+    return global.HqCarnetNav || null;
+  }
+
+  function saveSnapshot() {
+    const c = ui.core;
+    const e = c && c.current();
+    return {
+      hasEntry: !!e,
+      trashed: !!e && isReadOnly(e),
+      conflict: !!(e && e.conflict),
+      error: !!(e && e.error),
+      storageFailed: !!(ui.drafts && ui.drafts.failed),
+      dirty: !!(e && c.isDirty(e)),
+      inflight: !!(e && e.inflight),
+      offline: !!(c && c.st.offline),
+      savedOnce: !!(c && c.st.savedOnce),
+      notice: c && c.st.notice ? String(c.st.notice) : "",
+    };
+  }
+
+  function polishUi() {
+    if (ui.polish) return ui.polish;
+    const M = global.HqCarnetPolishUi;
+    const N = nav();
+    if (!M || typeof M.mount !== "function" || !N) return null;
+    ui.polish = M.mount({
+      doc, win: global, nav: N,
+      now: () => (global.performance && typeof global.performance.now === "function" ? global.performance.now() : Date.now()),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (h) => clearTimeout(h),
+      lines: () => {
+        const e = ui.core && ui.core.current();
+        return e ? localLines(e.local) : null;
+      },
+      titleIndex: (lines) => (global.HqCarnetCommands ? global.HqCarnetCommands.titleIndex(lines) : -1),
+      reveal: (index, blockId) => revealBlock(blockId, index, false),
+      api: (path) => apiCall(path, { timeoutMs: 12000 }),
+      drawingLabel: (stem) => (Rich.Struct && Rich.Struct.drawingLabel ? Rich.Struct.drawingLabel(stem) : stem),
+      openDrawing: (stem, blockId) => {
+        const w = blockId && ui.editor ? ui.editor.querySelector('[data-carnet-block-id="' + blockId + '"][data-carnet-struct="drawing"]') : null;
+        if (w) dessinerOpen(w, stem);
+        else flashMsg(POLISH_MSG.previewGone);
+      },
+      offer: (id) => (ui.structUi && ui.structUi.offerFor ? ui.structUi.offerFor(id) : null),
+      useOffer: (id) => (ui.structUi && ui.structUi.useOffer ? ui.structUi.useOffer(id) : false),
+      readOnly: () => !curEntry(),
+      flash: (t) => flashMsg(t, 2600),
+      mobile: () => libMode() === "sheet",
+      fallbackFocus: () => (finePointer() && ui.editor && ui.editor.isConnected ? ui.editor : doc.getElementById("btn-carnet-outline")),
+    });
+    if (Rich.setPortalRenderer) Rich.setPortalRenderer(portalCard);
+    return ui.polish;
+  }
+
+  function inspectOpen(input, trigger) {
+    const P = polishUi();
+    if (!P) return flashMsg(POLISH_MSG.previewGone);
+    const blockId = input && input.blockId;
+    const restore = () => {
+      if (!ui.editor) return null;
+      const w = blockId ? ui.editor.querySelector('[data-carnet-block-id="' + blockId + '"]') : null;
+      return (w && w.querySelector(".carnet-drawing-inspect,.carnet-group-inspect,[data-carnet-image]")) || (finePointer() ? ui.editor : doc.getElementById("btn-carnet-outline"));
+    };
+    return P.inspectOpen(input, trigger, { restore });
+  }
+
+  /** Inspect the image of an editor line (single image figure). */
+  function inspectImageLine(lineEl, trigger) {
+    if (!lineEl) return;
+    const assetId = lineEl.getAttribute("data-carnet-asset") || "";
+    inspectOpen({ kind: "image", assetId, blockId: lineEl.getAttribute("data-carnet-block-id") || "" }, trigger || lineEl.querySelector("[data-carnet-image]"));
+  }
+
+  /**
+   * Scroll to a block and give it a brief pulse (never a permanent highlight, never a focus / selection / content change).
+   * strict: only the real block id counts (deep links). Otherwise an outline item may fall back to its line index.
+   */
+  function revealBlock(blockId, index, strict) {
+    const ed = ui.editor;
+    if (!ed) return false;
+    let node = blockId ? ed.querySelector('[data-carnet-block-id="' + blockId + '"]') : null;
+    if (!node && !strict && typeof index === "number" && index >= 0) node = ed.children[index] || null;
+    if (!node) return false;
+    const idx = Array.prototype.indexOf.call(ed.children, node);
+    if (ui.structUi && node.hasAttribute("data-carnet-struct") && idx >= 0) ui.structUi.reveal(idx); // opens a toggle (UI state only)
+    try {
+      node.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+    } catch (_) {}
+    for (const old of ed.querySelectorAll("[data-carnet-pulse]")) old.removeAttribute("data-carnet-pulse");
+    node.setAttribute("data-carnet-pulse", "1");
+    setTimeout(() => node.removeAttribute("data-carnet-pulse"), PULSE_MS);
+    return true;
+  }
+
+  // ---- block anchors: #carnet/<pageId>/<blockId>
+
+  /** Resolve a validated anchor. Navigation only: through the library's own openPage (drafts stay safe), never a mutation. */
+  async function applyAnchor(a) {
+    const c = ui.core;
+    if (!a || !c || ui.phase !== "ready") return "ignored";
+    let e = c.entry(a.pageId);
+    if (!e) {
+      try {
+        await c.poll(); // the page may simply not be known yet
+      } catch (_) {}
+      e = c.entry(a.pageId);
+    }
+    if (!e) {
+      flashMsg(POLISH_MSG.pageGone, 3500);
+      return "missing-page";
+    }
+    if (c.st.currentId !== a.pageId) openPage(a.pageId);
+    if (!revealBlock(a.blockId, -1, true)) {
+      flashMsg(POLISH_MSG.blockGone, 3500);
+      return "missing-block";
+    }
+    flashMsg(POLISH_MSG.reached, 1400);
+    return "ok";
+  }
+
+  function processAnchor() {
+    const a = ui.pendingAnchor;
+    if (!a || ui.phase !== "ready" || !ui.core) return;
+    ui.pendingAnchor = null;
+    applyAnchor(a).then(() => {}, (err) => console.error(err));
+  }
+
+  function currentHashAnchor() {
+    const N = nav();
+    return N && global.location ? N.parseAnchor(global.location.hash) : null;
+  }
+
+  /** Initial load, hashchange, Back / Forward: a malformed fragment is ignored whole (no partial navigation). */
+  function onHashChange() {
+    const a = currentHashAnchor();
+    if (!a) return;
+    ui.pendingAnchor = a;
+    if (doc.body && doc.body.dataset.view !== "carnet") goCarnet();
+    else processAnchor();
+  }
+
+  /** Copy the deep link of the block at editor line `index`. Never touches history, selection or the notebook. */
+  async function copyBlockLink(index) {
+    const N = nav();
+    const e = ui.core && ui.core.current();
+    const l = e ? Rich.parseEditor(ui.editor)[index] : null;
+    const url = N && e && l && l.id ? N.makeUrl(global.location, e.id, l.id) : null;
+    if (!url) return flashMsg(POLISH_MSG.linkNeedsSave, 3000);
+    let ok = false;
+    try {
+      if (global.navigator && global.navigator.clipboard && global.isSecureContext) {
+        await global.navigator.clipboard.writeText(url);
+        ok = true;
+      }
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok) ok = legacyCopy(url);
+    flashMsg(ok ? POLISH_MSG.linkCopied : MSG.copyFail, 2000);
+  }
+
+  // ---- portal cards (file / drawing / model / media): live renderers over the canonical ref
+
+  function portalKey(ref) {
+    return ref.kind + ":" + ref.id;
+  }
+
+  function portalCard(d, ref) {
+    const N = nav();
+    if (!N) return null;
+    const known = ui.portalKnown.get(portalKey(ref)) || "unknown";
+    const m = N.portalModel(ref, known, { drawingLabel: (stem) => (Rich.Struct && Rich.Struct.drawingLabel ? Rich.Struct.drawingLabel(stem) : stem) });
+    if (!m) return null;
+    const mk = (tag, cls, text) => {
+      const n = d.createElement(tag);
+      if (cls) n.className = cls;
+      if (text) n.textContent = text;
+      return n;
+    };
+    const badge = mk("span", "carnet-attach-badge carnet-portal-badge");
+    badge.setAttribute("contenteditable", "false");
+    badge.setAttribute("data-carnet-skip", "");
+    badge.setAttribute("data-portal-kind", m.kind);
+    badge.setAttribute("data-portal-key", portalKey(ref));
+    badge.setAttribute("data-state", m.unavailable ? "missing" : "ok");
+    badge.appendChild(mk("span", "carnet-attach-chip", m.chip));
+    if (m.preview) {
+      const img = mk("img", "carnet-portal-thumb");
+      img.setAttribute("alt", "");
+      img.setAttribute("loading", "lazy");
+      img.setAttribute("decoding", "async");
+      img.setAttribute("draggable", "false");
+      img.setAttribute("src", m.preview);
+      img.addEventListener("load", () => {
+        if (!ui.portalKnown.has(portalKey(ref))) ui.portalKnown.set(portalKey(ref), "ok");
+      });
+      img.addEventListener("error", () => portalSet(ref, "missing"));
+      badge.appendChild(img);
+    }
+    if (m.subtitle) badge.appendChild(mk("span", "carnet-attach-dir", m.subtitle));
+    if (m.unavailable) {
+      const note = mk("span", "carnet-portal-gone", m.message);
+      note.setAttribute("role", "note");
+      badge.appendChild(note);
+    }
+    const open = mk("span", "carnet-attach-open", m.unavailable ? "Réessayer" : m.openLabel);
+    open.setAttribute("role", "button");
+    open.setAttribute("tabindex", "0");
+    open.setAttribute("data-carnet-attach-open", ref.id);
+    open.setAttribute("data-carnet-portal-kind", m.kind);
+    open.setAttribute("aria-label", (m.unavailable ? "Réessayer : " : "") + (m.openAria || "Ouvrir dans Dessiner : " + m.title));
+    badge.appendChild(open);
+    return badge;
+  }
+
+  /** Learn a target's availability for this session and repaint the matching cards in place (the ref itself is never touched). */
+  function portalSet(ref, state) {
+    const key = portalKey(ref);
+    if (ui.portalKnown.get(key) === state) return;
+    ui.portalKnown.set(key, state);
+    if (!ui.editor) return;
+    const had = doc.activeElement;
+    let refocus = null;
+    for (const old of ui.editor.querySelectorAll('[data-portal-key="' + key.replace(/"/g, "") + '"]')) {
+      const fresh = portalCard(doc, ref);
+      if (!fresh) continue;
+      if (old.contains(had)) refocus = fresh;
+      old.replaceWith(fresh);
+    }
+    if (refocus) {
+      const b = refocus.querySelector("[data-carnet-attach-open]");
+      if (b) b.focus({ preventScroll: true });
+    }
+  }
+
+  async function portalExists(kind, id) {
+    if (kind === "drawing") {
+      const d = await apiCall("/api/drawings", { timeoutMs: 12000 });
+      const list = (d && (d.items || d.drawings)) || [];
+      return list.some((it) => it && it.stem === id);
+    }
+    const parts = id.split("/");
+    const base = parts.pop();
+    const d = await apiCall("/api/files?folder=" + encodeURIComponent(parts.join("/")) + "&q=" + encodeURIComponent(base), { timeoutMs: 12000 });
+    return ((d && d.files) || []).some((it) => it && it.rel === id);
+  }
+
+  /** Open a portal card's target. A target that disappeared since the render is reported, the card flips to its unavailable state. */
+  async function portalActivate(node) {
+    const id = node.getAttribute("data-carnet-attach-open");
+    const kind = node.getAttribute("data-carnet-portal-kind");
+    if (!kind) return openAttachment(id); // Phase-2 file card (no portal renderer)
+    const ref = Rich.checkRef({ kind, id });
+    if (!ref) return flashMsg("Référence invalide");
+    let ok = false;
+    try {
+      ok = await portalExists(kind, id);
+    } catch (_) {
+      flashMsg("Vérification impossible : réessaie");
+      return;
+    }
+    if (!ok) {
+      portalSet(ref, "missing");
+      flashMsg(kind === "drawing" ? "Croquis indisponible" : "Fichier indisponible", 2600);
+      return;
+    }
+    portalSet(ref, "ok");
+    if (kind === "file") return openAttachment(id);
+    if (kind === "drawing") {
+      const D = dessinerUi();
+      const w = node.closest("[data-carnet-block-id]");
+      void w;
+      const eu = engUi();
+      if (eu) eu.openRef("drawing", id);
+      else if (D) flashMsg("Ouvre le croquis depuis Dessiner");
+      return;
+    }
+    const eu = engUi();
+    if (eu) eu.openRef(kind, id);
+  }
+
+  /** Annoter (suggested after an image): the Phase-3 annotation path on the image line at `index`. */
+  function dessinerAnnotateAt(index) {
+    const D = dessinerUi();
+    if (!D) return flashMsg("Dessiner indisponible");
+    const l = Rich.parseEditor(ui.editor)[index];
+    if (!l || l.type !== "image" || !l.asset || !l.asset.id) return flashMsg(POLISH_MSG.previewGone);
+    D.start("annotate", { anchorIndex: index, assetId: l.asset.id }).then(() => {}, () => {});
+  }
 
   function dessinerUi() {
     if (ui.dessinerUi) return ui.dessinerUi;
@@ -6299,6 +6669,7 @@
       if (ui.active && finePointer()) focusEditor(true);
       startPoll();
       processPending();
+      processAnchor();
       dessinerResume();
       scheduleHome();
     } catch (err) {
@@ -6320,6 +6691,7 @@
       startPoll();
       layoutLibrary();
       processPending();
+      processAnchor();
       dessinerResume();
     }
   }
@@ -6516,7 +6888,28 @@
       focus: ui.focus,
       library: ui.libEl ? { mode: libMode(), visible: !ui.libEl.hidden } : null,
       role: ui.role,
+      polish: ui.polish ? { outline: ui.polish.outlineState(), save: ui.polish.saveState() } : null,
     };
   };
+  // Phase 3.5: block deep links (#carnet/<pageId>/<blockId>): initial load, hashchange, Back / Forward. Zero authority: the normal
+  // admin check still decides everything, and a malformed fragment is ignored whole.
+  if (global.addEventListener) {
+    global.addEventListener("hashchange", () => {
+      try {
+        onHashChange();
+      } catch (e) {
+        console.error(e);
+      }
+    });
+    const initial = currentHashAnchor();
+    if (initial) {
+      ui.pendingAnchor = initial;
+      const go = () => {
+        if (ui.pendingAnchor) goCarnet();
+      };
+      if (doc.readyState === "complete") setTimeout(go, 0);
+      else global.addEventListener("load", () => setTimeout(go, 0), { once: true });
+    }
+  }
   if (doc.body && doc.body.dataset.view === "accueil") global.hqCarnetHome();
 })(typeof window !== "undefined" ? window : globalThis);

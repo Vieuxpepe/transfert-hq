@@ -558,6 +558,28 @@
         grid.appendChild(fig);
       });
       card.appendChild(grid);
+      // Phase 3.5: inspection (zoom / pan, and the before / after slider for a "compare" group). Presentation only: never persisted.
+      const inspectGroup = (index, trigger) => {
+        const cur = p2(wrapper) || p;
+        if (host.inspect) host.inspect({ kind: "imagegroup", assetIds: cur.items.map((a) => a.id), layout: cur.layout, index, blockId: wrapper.getAttribute("data-carnet-block-id") || "" }, trigger);
+      };
+      let lastTap = { i: -1, t: 0 };
+      grid.addEventListener("click", (ev) => {
+        const im = ev.target && ev.target.closest ? ev.target.closest("img.carnet-img") : null;
+        const f = im && im.closest(".carnet-group-item");
+        if (!f) return;
+        const i = Number(f.getAttribute("data-index"));
+        const now = Date.now();
+        if (lastTap.i === i && now - lastTap.t < 380) {
+          lastTap = { i: -1, t: 0 };
+          inspectGroup(i, card.querySelector(".carnet-group-inspect") || im);
+        } else lastTap = { i, t: now };
+      });
+      if (host.inspect) {
+        const ibar = el("div", { class: "carnet-struct-bar carnet-group-inspectbar" });
+        ibar.appendChild(button(p.layout === "compare" ? "Inspecter (avant / après)" : "Inspecter", "carnet-group-inspect", (ev) => inspectGroup(0, ev && ev.currentTarget), { "aria-label": p.layout === "compare" ? "Inspecter le groupe : comparaison avant / après" : "Inspecter les images du groupe" }));
+        card.appendChild(ibar);
+      }
       if (!ro) {
         const bar = el("div", { class: "carnet-struct-bar", role: "toolbar", "aria-label": "Groupe d'images" });
         if (p.layout !== "three") {
@@ -649,10 +671,16 @@
       gone.appendChild(el("span", { class: "carnet-drawing-missing-name" }, " " + name));
       const open = button("Ouvrir dans Dessiner", "carnet-drawing-open", () => host.openDrawing(wrapper, p.id), { "aria-label": "Ouvrir dans Dessiner : " + name, hidden: "" });
       const retry = button("Réessayer", "carnet-drawing-retry", () => refreshPreviews(), { "aria-label": "Réessayer l'aperçu : " + name, hidden: "" });
+      // Phase 3.5: inspection-only slide-over (zoom / pan / exact stem / parent). Needs a loaded preview, like "Ouvrir".
+      const inspect = button("Inspecter", "carnet-drawing-inspect", () => {
+        const id = wrapper.getAttribute("data-carnet-block-id") || "";
+        if (host.inspect) host.inspect({ kind: "drawing", stem: p.id, blockId: id }, inspect);
+      }, { "aria-label": "Inspecter le croquis : " + name, hidden: "" });
       img.addEventListener("load", () => {
         card.setAttribute("data-state", "ok");
         gone.hidden = true;
         open.hidden = false;
+        inspect.hidden = !host.inspect;
         retry.hidden = true;
       });
       img.addEventListener("error", () => {
@@ -660,7 +688,11 @@
         img.hidden = true;
         gone.hidden = false;
         open.hidden = true; // an Open action only exists while the drawing still resolves
+        inspect.hidden = true;
         retry.hidden = false;
+      });
+      img.addEventListener("click", () => {
+        if (card.getAttribute("data-state") === "ok") inspect.click();
       });
       card.appendChild(img);
       card.appendChild(gone);
@@ -669,6 +701,7 @@
       card.appendChild(offerBox);
       const bar = el("div", { class: "carnet-struct-bar carnet-drawing-bar", role: "toolbar", "aria-label": "Croquis : " + name });
       bar.appendChild(open);
+      bar.appendChild(inspect);
       bar.appendChild(retry);
       if (!ro) {
         const pickerHost = el("div", { class: "carnet-drawing-picker", hidden: "" });
@@ -789,7 +822,26 @@
       return w;
     }
 
-    return { render, reveal, offerVersion, refreshPreviews, state: S };
+    /** The pending Phase-3 version offer of a drawing block (read-only accessor for the inspector). */
+    function offerFor(blockId) {
+      return blockId && S.offers.has(blockId) ? S.offers.get(blockId) : null;
+    }
+
+    /** "Utiliser cette version" from the inspector: exactly the card's own action (explicit, never automatic). */
+    function useOffer(blockId) {
+      const r = editorRoot();
+      const w = r && blockId ? r.querySelector('[data-carnet-block-id="' + blockId + '"][data-carnet-struct="drawing"]') : null;
+      const offer = offerFor(blockId);
+      if (!w || !offer || host.readOnly()) return false;
+      const cur = current(w);
+      if (!cur || cur.id !== offer.from) return false;
+      S.offers.delete(blockId);
+      commit(w, { id: offer.to }, { rerender: true });
+      host.flash(MSG.drawingRelinked);
+      return true;
+    }
+
+    return { render, reveal, offerVersion, refreshPreviews, offerFor, useOffer, state: S };
   }
 
   /** A fresh payload for a new block (valid by construction). */

@@ -1688,6 +1688,20 @@
     return checkRef(m.ref);
   }
 
+  // Phase 3.5 portal cards: the same rendering-only treatment for the other EXISTING canonical ref kinds. The card is a live renderer
+  // over the ref (nothing is stored on it); the host supplies the DOM through setPortalRenderer (null => Phase-2 behaviour).
+  const PORTAL_KINDS = ["file", "drawing", "model", "media"];
+  let portalRenderer = null;
+  function setPortalRenderer(fn) {
+    portalRenderer = typeof fn === "function" ? fn : null;
+  }
+  function portalOf(l) {
+    if (!l || l.type !== "paragraph" || !l.text || l.marks.length !== 1) return null;
+    const m = l.marks[0];
+    if (m.type !== "link" || !m.ref || PORTAL_KINDS.indexOf(m.ref.kind) < 0 || m.start !== 0 || m.end !== l.text.length || l.text !== l.text.trim()) return null;
+    return checkRef(m.ref);
+  }
+
   const ATTACH_CHIP = { pdf: "PDF", doc: "DOC", docx: "DOC", xls: "XLS", xlsx: "XLS", csv: "CSV", txt: "TXT", md: "MD", zip: "ZIP", step: "CAO", stp: "CAO", stl: "STL", dxf: "DXF", dwg: "DWG", png: "IMG", jpg: "IMG", jpeg: "IMG", webp: "IMG", gif: "IMG", mp4: "VID", mov: "VID", mp3: "AUDIO" };
 
   /** Non-editable badge of an attachment card: type chip, root-relative folder (never an absolute path), a named open action. */
@@ -1715,8 +1729,14 @@
       div.appendChild(el(doc, "span", { class: "carnet-decision-label", contenteditable: "false", [NS_SKIP]: "" })).appendChild(doc.createTextNode("D\u00c9CISION \u00b7 " + localTimeLabel(l.eng.at)));
     }
     if (l.type === "number") div.setAttribute("data-num", String(num));
-    const attach = attachmentOf(l);
-    if (attach) {
+    const portal = !print && portalRenderer ? portalOf(l) : null;
+    const portalNode = portal ? portalRenderer(doc, portal) : null;
+    const attach = portalNode ? null : attachmentOf(l);
+    if (portalNode) {
+      div.setAttribute("data-carnet-attachment", portal.kind);
+      div.setAttribute("class", "carnet-line carnet-attachment carnet-portal");
+      div.appendChild(portalNode);
+    } else if (attach) {
       div.setAttribute("data-carnet-attachment", "file");
       div.setAttribute("class", "carnet-line carnet-attachment");
       div.appendChild(attachmentBadge(doc, attach));
@@ -2085,7 +2105,7 @@
     checkCite, citeKey, citationLabel, locatorLabel, citationAt, citationsOf, insertCitation, setCitationPayload,
     safeHref, checkRef, canonicalMarks, newLine, cloneLines, ensureKeys, idsOf, isRealId, isTmpId, wireContent, adoptIds, syncIds, flat, plainLines, isPlain, fmtOf,
     linesFromTextFmt, linesFromContent, contentFromLines, contentFromTextFmt, lineStarts, locate,
-    attachmentOf, Struct, STRUCT_TYPES, isStructType, isEngAtom, structPayload, structLine, structLimits, structSearchText, setStructRenderer, getStructPayload, setStructPayload,
+    attachmentOf, portalOf, setPortalRenderer, PORTAL_KINDS, Struct, STRUCT_TYPES, isStructType, isEngAtom, structPayload, structLine, structLimits, structSearchText, setStructRenderer, getStructPayload, setStructPayload,
     Eng, ENG_TYPES, isAtom, isEngType, engPayload, engLine, decisionLine, engOf, localTimeLabel, measureLink,
     checkAsset, captionOk, cleanCaptionText, imageLine, assetsOf, patchImage, ASSET_URL, ASSET_LONG_SIDE_MAX, ASSET_WIDTH_MIN, ASSET_WIDTH_MAX, ASSET_CAPTION_MAX, IMAGES_PER_PAGE_MAX, ASSET_MIMES,
     replaceRange, toggleMark, setMark, hasMark, setLink, linkAt, setBlockType, toggleChecked, splitAt, findAll, replaceMatches,

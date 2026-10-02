@@ -81,7 +81,7 @@ class CarnetShellTests(unittest.TestCase):
         self.assertNotIn("sendBeacon", code)  # would drop required same-origin/CSRF behaviour
         self.assertNotIn("console.log", code)
         # No note content in URLs: only fixed endpoints.
-        self.assertEqual(sorted(set(re.findall(r'"(/api/[^"]*)"', code))), ["/api/carnet", "/api/carnet?meta=1", "/api/drawings", "/api/me"])
+        self.assertEqual(sorted(set(re.findall(r'"(/api/[^"]*)"', code))), ["/api/carnet", "/api/carnet?meta=1", "/api/drawings", "/api/files?folder=", "/api/me"])
 
     def test_drafts_only_after_admin_identity(self):
         boot = self.js.split("async function boot()", 1)[1]

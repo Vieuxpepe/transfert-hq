@@ -6,7 +6,7 @@
 // Runs on a throwaway loopback HQ (tests/carnet_test_server.py, temp root, fake PINs); run it from a disposable copy of the checkout.
 import { createRequire } from "node:module";
 import { spawn, execSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -630,6 +630,9 @@ scenario("attachment card: a whole-line file link is a card (chip, safe folder, 
     fileLink(" espace.pdf", "Inbox/espace.pdf"),
   ])]);
   const { srv, p } = await openEditor("desktop", nb);
+  // Phase 3.5: Open now verifies the target first (an unavailable file is reported, not opened), so the file must really exist
+  mkdirSync(path.join(srv.root, "Uni", "Projet X"), { recursive: true });
+  writeFileSync(path.join(srv.root, "Uni", "Projet X", "plan-moteur.pdf"), "%PDF-1.4 test");
   const cards = p.locator("#hq-carnet-editor [data-carnet-attachment]");
   check((await cards.count()) === 1, "exactly one card: " + (await cards.count()));
   const info = await p.evaluate(() => {
@@ -648,11 +651,11 @@ scenario("attachment card: a whole-line file link is a card (chip, safe folder, 
   const blocks = blocksOf(srv);
   check(blocks[1].text === "plan-moteur.pdf!" && blocks[1].marks.length === 1 && blocks[1].marks[0].ref.id === "Uni/Projet X/plan-moteur.pdf", "badge is not part of the text: " + JSON.stringify(blocks[1].text));
   // typing outside the whole-line link keeps the extended text ordinary or a card per predicate
-  const popup = p.waitForEvent("popup");
+  const req = p.context().waitForEvent("request", (r) => /\/files\/Uni\/Projet%20X\/plan-moteur\.pdf$/.test(r.url()), { timeout: 8000 });
   await p.locator("#hq-carnet-editor .carnet-attach-open").first().click();
-  const pop = await popup;
-  check(/\/files\/Uni\/Projet%20X\/plan-moteur\.pdf$/.test(pop.url()), "Open goes to the existing /files/ route: " + pop.url());
-  await pop.close();
+  const r = await req;
+  check(/\/files\/Uni\/Projet%20X\/plan-moteur\.pdf$/.test(r.url()), "Open goes to the existing /files/ route: " + r.url());
+  for (const pg of p.context().pages()) if (pg !== p) await pg.close().catch(() => {});
   await shot(p, "attachment-desktop");
 });
 
