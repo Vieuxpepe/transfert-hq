@@ -51,9 +51,11 @@ import hq_carnet_bulk as bulk
 import hq_carnet_history as history
 import hq_carnet_links as links
 import hq_carnet_media as media
+import hq_carnet_evidence as evidence
 import hq_carnet_report as report
 import hq_carnet_restore as restore
 import hq_carnet_review as review
+import hq_carnet_reviews as reviews
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snapshots
 import hq_carnet_sources as sources
@@ -177,6 +179,7 @@ def bind(**kwargs: Any) -> None:
         voice.bind(**kwargs)  # Phase 4: voice-note storage shares the root
         history.bind(**kwargs)  # Stage 08: the history file shares the root and clock
         snapshots.bind(**kwargs)  # Phase 5: the write-once snapshot store shares the root and clock
+        reviews.bind(**kwargs)  # Phase 7: the review-pack store shares the root and clock
         _ready = _cb.get("root") is not None
 
 
@@ -1381,11 +1384,14 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
     """``query`` is ``parse_qs`` output. Accepted (one at a time): ``meta=1`` (page metadata), ``sources=1`` (Stage 05),
     ``history=1[&page=<page-id>]`` and ``backlinks=<kind>&id=<id>`` (Stage 08, read-only, nothing is written)."""
     try:
-        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "id", "cockpit", "snapshots", "snapshot", "verify", "view", "baselines", "diff", "base", "to", "project", "at"}
+        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "id", "cockpit", "snapshots", "snapshot", "verify", "view", "baselines", "diff", "base", "to", "project", "at", "reviews", "review", "freshness"}
         if extra:
             raise CarnetError("Paramètre inconnu")
         if any(len(v) != 1 for v in query.values()):
             raise CarnetError("Paramètre invalide")
+        phase7 = _phase7_get(query)
+        if phase7 is not None:
+            return 200, phase7
         phase5 = _phase5_get(query)
         if phase5 is not None:
             return 200, phase5
@@ -1410,17 +1416,41 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
                 raise CarnetError("meta invalide")
             meta = True
         return 200, get_notebook(meta=meta)
-    except (history.HistoryError, snapshots.SnapshotError) as e:
+    except reviews.ReviewConflict as e:
+        return e.status, e.payload
+    except (history.HistoryError, snapshots.SnapshotError, reviews.ReviewError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (CarnetStorageError, history.HistoryStorageError, snapshots.SnapshotStorageError) as e:
+    except (CarnetStorageError, history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except OSError:
         # Never echo OS error text: it can contain absolute paths.
         return 503, {"error": "Carnet inaccessible", "code": "storage_error"}
+
+
+def _phase7_get(query: dict[str, list[str]]) -> dict | None:
+    """Phase 7 review packs (read-only). ``reviews=1[&project=]`` lists; ``review=<id>[&freshness=1]`` reads one (freshness is observed, never written)."""
+    keys = set(query)
+    if "reviews" in keys:
+        if query["reviews"] != ["1"] or keys - {"reviews", "project"}:
+            raise CarnetError("reviews invalide")
+        project = query["project"][0] if "project" in keys else None
+        if project is not None and not _ID_RE["proj"].match(project):
+            raise CarnetError("Projet invalide")
+        return reviews.list_reviews(project)
+    if "review" in keys:
+        if keys - {"review", "freshness"} or ("freshness" in keys and query["freshness"] != ["1"]):
+            raise CarnetError("review invalide")
+        got = reviews.get(query["review"][0])
+        if "freshness" in keys:
+            return {"ok": True, "review_id": got["review"]["id"], "rev": got["review"]["rev"], "freshness": evidence.freshness(got["review"])}
+        return {"ok": True, **got}
+    if "freshness" in keys:
+        raise CarnetError("Paramètre inconnu")
+    return None
 
 
 def _phase5_get(query: dict[str, list[str]]) -> dict | None:
@@ -1464,6 +1494,21 @@ def _phase5_get(query: dict[str, list[str]]) -> dict | None:
     return None
 
 
+def http_review_export(review_id: str) -> tuple[int, str, Any]:
+    """``(200, filename, zip bytes)`` or ``(status, "", error payload)``. Read-only; the observation is made now, the stored pack is untouched."""
+    try:
+        got = reviews.get(review_id)
+        pack = got["review"]
+        data = evidence.export_zip(pack, evidence.freshness(pack), got["integrity"])
+        return 200, f"carnet-review-{pack['id']}-r{pack['rev']}.zip", data
+    except reviews.ReviewError as e:
+        return e.status, "", {"error": str(e), "code": e.code}
+    except reviews.ReviewStorageError as e:
+        return e.status, "", {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, "", {"error": "Carnet inaccessible", "code": "storage_error"}
+
+
 _STAGE08 = {
     "bulk_preview": bulk.preview,
     "bulk_apply": bulk.apply,
@@ -1484,15 +1529,17 @@ def http_post(data: Any) -> tuple[int, dict]:
             return 200, task_extract(data)
         if isinstance(data, dict) and isinstance(data.get("action"), str) and data["action"].startswith("source_"):
             return 200, sources.mutate(data)
+        if isinstance(data, dict) and isinstance(data.get("action"), str) and data["action"].startswith("review_"):
+            return 200, reviews.mutate(data)
         action = data.get("action") if isinstance(data, dict) else None
         if action in _STAGE08:
             return 200, _STAGE08[action](data)
         return 200, mutate(data)
-    except (CarnetConflict, sources.SourceConflict) as e:
+    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict) as e:
         return e.status, e.payload
-    except (history.HistoryError, snapshots.SnapshotError) as e:
+    except (history.HistoryError, snapshots.SnapshotError, reviews.ReviewError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (history.HistoryStorageError, snapshots.SnapshotStorageError) as e:
+    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
@@ -1649,6 +1696,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         except (UnicodeDecodeError, ValueError):
             hist_valid = False
     snap_closure = snapshots.closure(root)  # Phase 5: the write-once freezes and the media they pinned travel with the backup
+    rev_closure = reviews.closure(root)  # Phase 7: every review pack file, byte-for-byte (no binaries: referenced material follows the closures above)
     refs = refs | snap_closure["assets"]
     voices = voices | snap_closure["voices"]
     stems = stems | snap_closure["stems"]
@@ -1667,7 +1715,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         drawings_report = {"referenced": len(stems), "missing": found["missing"], "invalid": found["invalid"], "underlays": len(found["ids"])}
         if found["invalid"]:
             valid = False
-    if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"]:
+    if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"]:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
         try:
@@ -1696,6 +1744,16 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         snap_report = {"count": len(snap_closure["files"]), "bytes": snap_bytes, "valid": bool(snap_closure["valid"])}
         if not snap_closure["valid"]:
             valid = False
+    rev_report: dict | None = None
+    if rev_closure["files"] or not rev_closure["valid"]:
+        if rev_closure["files"]:
+            (dest_dir / reviews.REV_DIR).mkdir(parents=True, exist_ok=True)
+            rev_bytes = reviews.copy_to(root, dest_dir / reviews.REV_DIR, rev_closure["files"])
+        else:
+            rev_bytes = 0
+        rev_report = {"count": len(rev_closure["files"]), "bytes": rev_bytes, "valid": bool(rev_closure["valid"])}
+        if not rev_closure["valid"]:
+            valid = False
     assets_report: dict | None = None
     if refs:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
@@ -1713,6 +1771,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["history"] = {"bytes": len(hist_payload), "valid": bool(hist_valid)}
     if snap_report is not None:  # ... and when there are no snapshots
         out["snapshots"] = snap_report
+    if rev_report is not None:  # ... and when there are no review packs
+        out["reviews"] = rev_report
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
     if drawings_report is not None:  # ... and when there are no drawing references

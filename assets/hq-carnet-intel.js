@@ -271,7 +271,7 @@
     const label = kind === "drawing" ? row.stem : kind === "source" ? row.title || row.edition_id : row.path;
     const first = Array.isArray(row.refs) && row.refs[0] ? row.refs[0] : null;
     return {
-      kind, label, state: row.state, stateLabel: STATE_LABEL[row.state] || STATE_LABEL.unknown, archived: !!row.archived, count: row.refs_total || 0,
+      kind, id: kind === "drawing" ? row.stem : kind === "source" ? row.edition_id : row.path, label, state: row.state, stateLabel: STATE_LABEL[row.state] || STATE_LABEL.unknown, archived: !!row.archived, count: row.refs_total || 0,
       first: first ? target(first.page_id, first.block_id) : null, firstTitle: first ? first.page_title : "",
       kindLabel: kind === "file" || kind === "model" || kind === "media" ? KIND_LABEL[row.kind] || "Fichier" : KIND_LABEL[kind],
     };

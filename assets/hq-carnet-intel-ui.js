@@ -22,6 +22,7 @@
 
   const node = typeof module === "object" && module && module.exports;
   const I = node ? require("./hq-carnet-intel.js") : global.HqCarnetIntel;
+  const RV = node ? require("./hq-carnet-reviews.js") : global.HqCarnetReviews;
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   const TABS = [
@@ -312,6 +313,14 @@
       return el(doc, "div", { class: "carnet-banner carnet-ix-error", role: "alert" }, kids);
     }
 
+    /** "Ajouter au dossier de revue": identity only (the server seals); hidden when the host has no review store. */
+    function reviewBtn(kind, ident, label) {
+      if (typeof host.addToReview !== "function" || !RV) return null;
+      const attrs = { "data-ix": "review", "data-rkind": kind, "data-rlabel": String(label || "").slice(0, 120), class: "carnet-small carnet-hx-btn carnet-ix-review-btn", "aria-label": "Ajouter au dossier de revue : " + String(label || kind).slice(0, 80) };
+      for (const k of Object.keys(ident || {})) attrs["data-r" + k] = ident[k];
+      return btn("Ajouter au dossier de revue", attrs);
+    }
+
     function btn(text, attrs) {
       return el(doc, "button", Object.assign({ type: "button", class: "carnet-small carnet-hx-btn", text }, attrs || {}));
     }
@@ -401,6 +410,7 @@
       for (const s of sections) body.appendChild(s);
       const item = I.reportItem(r);
       if (item && !state.snapView) body.appendChild(el(doc, "div", { class: "carnet-panel-row" }, [btn("Ajouter la synthèse au rapport", { "data-ix": "report", id: "btn-carnet-ix-report" })]));
+      if (state.project && state.project !== "none") body.appendChild(el(doc, "div", { class: "carnet-panel-row" }, [reviewBtn("overview", {}, "Vue d'ensemble du projet")]));
     }
 
     function refNode(r) {
@@ -408,6 +418,7 @@
       kids.push(el(doc, "span", { class: "carnet-ix-state", "data-state": r.state, text: r.stateLabel + (r.archived ? " (archivée)" : "") }));
       kids.push(el(doc, "span", { class: "hint", text: r.count + " référence" + (r.count > 1 ? "s" : "") }));
       if (r.first) kids.push(linkBtn("Ouvrir la source", r.first, "Ouvrir la source de " + r.label + " dans « " + r.firstTitle + " »"));
+      if (r.kind === "drawing" || r.kind === "source") kids.push(reviewBtn(r.kind, r.kind === "drawing" ? { stem: r.id } : { edition: r.id }, r.label));
       return row(kids);
     }
 
@@ -553,6 +564,7 @@
         el(doc, "span", { class: "carnet-ix-when", text: I.fmtDate(d.at) }),
         linkBtn(d.text || "(décision vide)", { pageId: d.page_id, blockId: d.block_id }, "Aller à la décision : " + d.text),
         el(doc, "span", { class: "hint", text: d.page_title }),
+        reviewBtn("decision", { page: d.page_id, block: d.block_id }, d.text || "Décision"),
       ];
       if (ev.length) {
         const evl = el(doc, "ul", { class: "carnet-ix-evidence", "aria-label": "Preuves liées sur cette ligne" });
@@ -636,7 +648,7 @@
         return el(doc, "tr", { "data-verdict": r.mark }, [
           el(doc, "td", { text: r.date }), el(doc, "td", { text: r.value }), el(doc, "td", { text: r.nominal }), el(doc, "td", { text: r.tolerance }),
           el(doc, "td", { text: r.mark + " " + r.verdict }),
-          el(doc, "td", null, [t ? linkBtn(r.page || "Ouvrir", t, "Aller à la mesure du " + r.date + " dans « " + r.page + " »") : null]),
+          el(doc, "td", null, [t ? linkBtn(r.page || "Ouvrir", t, "Aller à la mesure du " + r.date + " dans « " + r.page + " »") : null, reviewBtn("measurement", { page: r.pageId, block: r.blockId }, s.label + " " + r.date)]),
         ]);
       });
       const table = el(doc, "table", { class: "carnet-ix-table", id: id + "-table" }, [el(doc, "caption", { text: "Mesures de « " + s.label + " »" + (s.unit ? " en " + s.unit : "") }), el(doc, "thead", null, [head]), el(doc, "tbody", null, trs)]);
@@ -763,6 +775,8 @@
       const wrap = el(doc, "section", { class: "carnet-panel carnet-ix-diff", id: "hq-carnet-ix-diff", "aria-label": "Résultat de la comparaison" });
       wrap.appendChild(el(doc, "h4", { text: "Depuis : " + dm.base + " → " + dm.to }));
       wrap.appendChild(el(doc, "p", { class: "hint", id: "hq-carnet-ix-idnote", text: dm.note }));
+      const dsp = diffReviewSpec();
+      if (dsp) wrap.appendChild(reviewBtn("diff", {}, dsp.label));
       if (dm.scope === "page") {
         const d = dm.pages[0].diff;
         wrap.appendChild(pageDiffNode(dm.pages[0].pageId, d, null));
@@ -782,6 +796,13 @@
         }
       }
       return wrap;
+    }
+
+    function diffReviewSpec() {
+      const d = state.diff;
+      if (!d || !d.base || typeof d.base.id !== "string") return null;
+      const to = d.to && d.to.kind === "snapshot" ? d.to.id : null;
+      return RV.diffSpec(d.base.id, to, null, null, "Comparaison — " + (d.base.label || "jalon") + " → " + (to ? "jalon" : "état actuel"));
     }
 
     function overlayButton(pageId, d) {
@@ -815,6 +836,7 @@
         s.note ? el(doc, "span", { class: "hint", text: s.note }) : null,
         btn("Ouvrir", { "data-ix": "snap-open", "data-id": s.id, "aria-label": "Ouvrir le jalon « " + s.label + " »", disabled: s.ok ? null : "" }),
         btn("Comparer à l'actuel", { "data-ix": "snap-diff", "data-id": s.id, "aria-label": "Comparer le jalon « " + s.label + " » à l'état actuel", disabled: s.ok ? null : "" }),
+        s.ok ? reviewBtn("snapshot", { snapshot: s.id }, "Jalon « " + s.label + " »") : null,
       ]));
       body.appendChild(section("Jalons du projet", [rows.length ? el(doc, "ul", { class: "carnet-hx-list", id: "hq-carnet-ix-snaplist", "aria-label": "Jalons" }, lis) : el(doc, "p", { class: "hint", id: "hq-carnet-ix-nosnap", text: "Aucun jalon. Un jalon n'est créé que sur demande." }), el(doc, "p", { class: "hint", text: MSG.utc })]));
     }
@@ -1026,6 +1048,23 @@
       render();
     }
 
+    function addToReview(t) {
+      const kind = t.getAttribute("data-rkind");
+      const label = t.getAttribute("data-rlabel") || "";
+      let item = null;
+      if (kind === "overview") item = RV.overviewSpec();
+      else if (kind === "decision" || kind === "measurement") item = RV.blockSpec(kind, t.getAttribute("data-rpage"), t.getAttribute("data-rblock"), label);
+      else if (kind === "drawing") item = RV.drawingSpec(t.getAttribute("data-rstem"));
+      else if (kind === "source") item = RV.sourceSpec(t.getAttribute("data-redition"), label);
+      else if (kind === "snapshot") item = RV.snapshotSpec(t.getAttribute("data-rsnapshot"), label);
+      else if (kind === "diff") item = diffReviewSpec();
+      if (!item) return host.flash("Cette preuve ne peut pas être ajoutée.", 3000);
+      const opener = state.opener;
+      const pid = state.project && state.project !== "none" ? state.project : null;
+      close(false);
+      if (!host.addToReview(Object.assign({ projectId: pid }, item), opener)) host.flash("Revues indisponibles.", 3000);
+    }
+
     function addToReport() {
       const item = I.reportItem(view());
       if (!item) return;
@@ -1120,6 +1159,7 @@
       } else if (act === "sheet") openSheet(t.getAttribute("data-kind"));
       else if (act === "sheet-close") closeSheet(true);
       else if (act === "report") addToReport();
+      else if (act === "review") addToReview(t);
       else if (act === "snap-create") createSnapshot();
       else if (act === "snap-open") openSnapshot(t.getAttribute("data-id"));
       else if (act === "unpin") {

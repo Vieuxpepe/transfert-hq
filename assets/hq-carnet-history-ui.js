@@ -774,6 +774,7 @@
       if (it.kind === "source") return "Source — " + (it.label || it.edition_id);
       if (it.kind === "project_overview") return "Synthèse du projet — " + (it.label || "");
       if (it.kind === "ask_evidence") return "Preuves du carnet — " + (it.label || "");
+      if (it.kind === "review_pack") return "Dossier de revue — " + (it.label || it.review_id);
       const k = { note: "Note", measure: "Mesure", decision: "Décision", photo: "Photo", drawing: "Croquis" }[it.kind];
       return k + " — " + (it.label || it.page_id);
     }
@@ -832,7 +833,7 @@
     }
 
     function wireItems(items) {
-      return items.map((it) => (it.kind === "ask_evidence" ? { kind: it.kind, question: it.question, scope: it.scope, fingerprint: it.fingerprint } : it.kind === "project_overview" ? (it.snapshot_id ? { kind: it.kind, snapshot_id: it.snapshot_id } : { kind: it.kind, project_id: it.project_id, fingerprint: it.fingerprint }) : it.kind === "source" ? { kind: "source", edition_id: it.edition_id } : it.kind === "note" ? { kind: "note", page_id: it.page_id, rev: it.rev } : { kind: it.kind, page_id: it.page_id, rev: it.rev, block_id: it.block_id }));
+      return items.map((it) => (it.kind === "review_pack" ? { kind: it.kind, review_id: it.review_id } : it.kind === "ask_evidence" ? { kind: it.kind, question: it.question, scope: it.scope, fingerprint: it.fingerprint } : it.kind === "project_overview" ? (it.snapshot_id ? { kind: it.kind, snapshot_id: it.snapshot_id } : { kind: it.kind, project_id: it.project_id, fingerprint: it.fingerprint }) : it.kind === "source" ? { kind: "source", edition_id: it.edition_id } : it.kind === "note" ? { kind: "note", page_id: it.page_id, rev: it.rev } : { kind: it.kind, page_id: it.page_id, rev: it.rev, block_id: it.block_id }));
     }
 
     async function buildReport(exportOpts) {
@@ -903,6 +904,22 @@
       if (items.length) hostEl.appendChild(el(doc, "ul", null, items));
     }
 
+    function printReview(hostEl, sec) {
+      const r = sec.review || {};
+      const f = (sec.freshness && sec.freshness.counts) || {};
+      hostEl.appendChild(el(doc, "h2", { text: sec.label + " — " + (r.title || "") }));
+      hostEl.appendChild(el(doc, "p", { text: "Révision " + r.rev + " · sceau " + r.content_sha256 + (sec.integrity === "ok" ? "" : " · FICHIER ALTÉRÉ") }));
+      hostEl.appendChild(el(doc, "p", { text: "Fraîcheur observée à la génération — inchangé : " + (f.unchanged || 0) + ", modifié depuis la sélection : " + (f.changed || 0) + ", introuvable : " + (f.missing || 0) + ", non vérifiable : " + (f.unknown || 0) }));
+      const obs = (sec.freshness && sec.freshness.items) || {};
+      const words = { unchanged: "inchangé", changed: "modifié depuis la sélection", missing: "introuvable", unknown: "non vérifiable" };
+      const items = (r.items || []).map((i) => el(doc, "li", { text: i.kind + " — " + i.label + " (" + (words[(obs[i.id] || {}).state] || "non observé") + ")" }));
+      if (items.length) hostEl.appendChild(el(doc, "ul", null, items));
+      const checks = (r.checklist || []).map((c) => el(doc, "li", { text: (c.checked ? "[x] " : "[ ] ") + c.text }));
+      if (checks.length) hostEl.appendChild(el(doc, "ul", null, checks));
+      const qs = (r.questions || []).map((q) => el(doc, "li", { text: (q.state === "resolved" ? "Marquée résolue par l'utilisateur : " : "Ouverte : ") + q.text }));
+      if (qs.length) hostEl.appendChild(el(doc, "ul", null, qs));
+    }
+
     function printReport() {
       const res = state.report.result;
       if (!res || !Array.isArray(res.sections)) return;
@@ -923,6 +940,10 @@
         }
         if (sec.kind === "ask_evidence") {
           printAsk(hostEl, sec);
+          continue;
+        }
+        if (sec.kind === "review_pack") {
+          printReview(hostEl, sec);
           continue;
         }
         hostEl.appendChild(el(doc, "h2", { text: sec.label + " — " + sec.page_title }));
@@ -1127,6 +1148,13 @@
       if (isObj(item) && item.kind === "ask_evidence" && r.items.length < ITEMS_MAX) {
         if (r.items.some((x) => x.kind === "ask_evidence" && x.fingerprint === item.fingerprint && x.question === item.question && JSON.stringify(x.scope) === JSON.stringify(item.scope))) return true;
         r.items.push({ kind: item.kind, question: item.question, scope: item.scope, fingerprint: item.fingerprint, label: String(item.label || "").slice(0, 100) });
+        r.result = null;
+        return true;
+      }
+      if (isObj(item) && item.kind === "review_pack" && typeof item.review_id === "string" && r.items.length < ITEMS_MAX) {
+        // the pack is rendered as stored (its revision + seal are in the report), freshness observed at build time: never stale-pinned
+        if (r.items.some((x) => x.kind === "review_pack" && x.review_id === item.review_id)) return true;
+        r.items.push({ kind: item.kind, review_id: item.review_id, label: String(item.label || "").slice(0, 100) });
         r.result = null;
         return true;
       }

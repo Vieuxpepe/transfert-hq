@@ -27,6 +27,8 @@ import hq_carnet_ask as ask
 import hq_carnet_media as media
 import hq_carnet_intel as intel
 import hq_carnet_review as review
+import hq_carnet_evidence as evidence
+import hq_carnet_reviews as reviews
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snapshots
 import hq_carnet_sources as sources
@@ -34,10 +36,10 @@ import hq_state
 
 ITEMS_MAX = 200
 TITLE_MAX = 120
-KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence")  # a drawing is its OWN kind: never a photo
+KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence", "review_pack")  # a drawing is its OWN kind: never a photo
 BLOCK_KIND = {"measure": "measure", "decision": "decision", "photo": "image", "drawing": "drawing"}
 LABELS = {
-    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet",
+    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet", "review_pack": "Dossier de revue",
     "sources_cited": "Sources citées", "default_title": "Rapport",
 }
 FIELD_LABELS = (("author", "Auteur"), ("edition", "Édition"), ("year", "Année"), ("publisher", "Éditeur"), ("identifier", "Identifiant"), ("type", "Type"), ("url", "Lien"), ("file_ref", "Fichier"))
@@ -71,6 +73,12 @@ def _item(raw: Any) -> dict:
                 and isinstance(raw["fingerprint"], str) and re.match(r"^[0-9a-f]{32}\Z", raw["fingerprint"])):
             return {"kind": kind, "project_id": raw["project_id"], "fingerprint": raw["fingerprint"]}
         raise _err("Élément de rapport invalide")
+    if kind == "review_pack":
+        # HISTORICAL by default: the pack is rendered as it is stored (its own revision and seal are shown), with a separate freshness
+        # observation made now. It is never "stale"-pinned: evidence that changed is marked in the section, not refused.
+        if set(raw) != {"kind", "review_id"} or not isinstance(raw["review_id"], str) or not reviews.ID_RE.match(raw["review_id"]):
+            raise _err("Élément de rapport invalide")
+        return {"kind": kind, "review_id": raw["review_id"]}
     if kind == "ask_evidence":
         # an EXPLICIT user action: the search is re-run at build time and refused (report_stale) if its scope changed since
         q, sc = raw.get("question"), raw.get("scope")
@@ -146,6 +154,7 @@ def build(data: Any) -> dict:
     sections: list[dict] = []
     overview_items: list[tuple[int, dict]] = []
     ask_items: list[tuple[int, dict]] = []
+    review_items: list[tuple[int, dict]] = []
     stale: list[str] = []
     page_revs: dict[str, int] = {}
     with hq_state.path_lock(hc._path()):  # ONE consistent snapshot of the notebook
@@ -158,6 +167,10 @@ def build(data: Any) -> dict:
             if item["kind"] == "project_overview":
                 overview_items.append((len(sections), item))
                 sections.append({"kind": "project_overview"})
+                continue
+            if item["kind"] == "review_pack":
+                review_items.append((len(sections), item))
+                sections.append({"kind": "review_pack"})
                 continue
             if item["kind"] == "ask_evidence":
                 ask_items.append((len(sections), item))
@@ -203,6 +216,9 @@ def build(data: Any) -> dict:
             stale.append(item["scope"].get("id") or "notebook")
             continue
         sections[index].update(ask=res)
+    for index, item in review_items:  # the stored pack + a separate observation; one unreadable pack refuses the report, nothing is guessed
+        got = reviews.get(item["review_id"])
+        sections[index].update(review=got["review"], integrity=got["integrity"], freshness=evidence.freshness(got["review"]))
     if stale:
         raise hc.CarnetConflict({"error": "Des pages ont changé depuis la sélection — rien n'a été généré", "code": "report_stale", "stale": stale, "notebook_rev": notebook_rev})
     try:
@@ -233,6 +249,11 @@ def build(data: Any) -> dict:
             if sec["kind"] == "project_overview":
                 out.append(f"## {label} — " + rich._md_escape(sec["overview"]["project"]["name"] or "Sans projet"))
                 out.append(intel.render_overview_markdown(sec["overview"], sec["snapshot"], heading=False))
+                continue
+            if sec["kind"] == "review_pack":
+                body = evidence.render_markdown(sec["review"], sec["freshness"], sec["integrity"]).splitlines()
+                out.append(f"## {label} — " + rich._md_escape(sec["review"]["title"]))
+                out.append("\n".join(("##" + ln) if ln.startswith("#") else ln for ln in body[1:]).strip("\n"))
                 continue
             if sec["kind"] == "ask_evidence":
                 out.append(f"## {label} — « " + rich._md_escape(sec["ask"]["question"]) + " »")
@@ -282,6 +303,8 @@ def _public_edition(ed: dict | None, ident: str) -> dict:
 def _public_section(sec: dict) -> dict:
     if sec["kind"] == "project_overview":
         return {"kind": "project_overview", "label": LABELS["project_overview"], "overview": sec["overview"], "snapshot": sec["snapshot"]}
+    if sec["kind"] == "review_pack":
+        return {"kind": "review_pack", "label": LABELS["review_pack"], "review": sec["review"], "integrity": sec["integrity"], "freshness": sec["freshness"]}
     if sec["kind"] == "ask_evidence":
         return {"kind": "ask_evidence", "label": LABELS["ask_evidence"], "ask": sec["ask"]}
     if sec["kind"] == "source":

@@ -1059,3 +1059,30 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ask-live[data-ask-live="changed"],.carnet-ask-live[data-ask-live="gone"]{color:var(--danger);font-weight:600}
 .carnet-ask-goto{min-height:var(--carnet-tap);text-align:left;overflow-wrap:anywhere}
 @media print{#hq-carnet-ask{display:none!important}}
+
+/* Phase 7 — review packs ("Revues"): same shell as the cockpit / Ask; state is always TEXT (mark + word), never colour alone */
+.carnet-rv-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.carnet-rv-head h4{margin:0;overflow-wrap:anywhere}
+.carnet-rv .carnet-hx-tabs{display:flex;flex-wrap:wrap;gap:4px}
+.carnet-rv .carnet-hx-tab,.carnet-rv-body button,.carnet-rv-body input[type="text"],.carnet-rv-body select,.carnet-rv-body textarea,.carnet-rv-body a.carnet-btn{min-height:var(--carnet-tap)}
+.carnet-rv-body a.carnet-btn{display:inline-flex;align-items:center;text-decoration:none}
+.carnet-rv-body [aria-disabled="true"]{opacity:.55;cursor:not-allowed}
+.carnet-rv-row,.carnet-rv-item,.carnet-rv-check,.carnet-rv-question{flex-direction:column;align-items:stretch;gap:6px}
+.carnet-rv-copy,.carnet-rv-obs{margin:2px 0;padding:6px 8px;border:1px solid var(--line);border-radius:8px}
+.carnet-rv-copy{background:var(--panel-2)}
+.carnet-rv-obs{border-style:dashed}
+.carnet-rv-obs p,.carnet-rv-copy p{margin:2px 0;font-size:var(--text-sm)}
+.carnet-rv-copy-lines{margin:2px 0;padding-left:18px;overflow-wrap:anywhere}
+.carnet-rv-state{font-weight:700}
+.carnet-rv-state[data-rv-state="changed"],.carnet-rv-state[data-rv-state="missing"]{text-decoration:underline}
+.carnet-rv-refs{margin:2px 0;padding-left:18px;font-size:var(--text-sm)}
+.carnet-rv-refs li[data-rv-dangling="1"]{font-style:italic}
+.carnet-rv-counts{display:flex;flex-wrap:wrap;gap:6px 14px;list-style:none;margin:6px 0;padding:0}
+.carnet-rv-meta{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:6px 0}
+.carnet-rv-meta dt{color:var(--muted)}
+.carnet-rv-meta dd{margin:0;overflow-wrap:anywhere}
+.carnet-rv-picker{border:1px solid var(--line);border-radius:8px;margin:6px 0}
+.carnet-ix-review-btn{min-height:var(--carnet-tap)}
+.carnet-rv-body p,.carnet-rv-body a,.carnet-rv-body li,.carnet-rv-body dd,.carnet-rv-body strong{overflow-wrap:anywhere}
+.carnet-rv-body .carnet-hx-row{flex-wrap:wrap}
+@media (max-width:480px){.carnet-lib-actions{gap:6px}.carnet-lib-actions button{padding-inline:9px}}

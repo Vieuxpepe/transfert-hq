@@ -2004,6 +2004,7 @@
     tools.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
     tools.appendChild(toolBtn("btn-carnet-intel", "Cockpit du projet : décisions, mesures, changements et jalons", "Cockpit"));
     tools.appendChild(toolBtn("btn-carnet-ask", "Preuves du carnet : retrouver les passages qui répondent à une question (aucune réponse générée)", "Preuves"));
+    tools.appendChild(toolBtn("btn-carnet-reviews", "Revues : dossiers de preuves à relire, liste de contrôle et questions (rien n'est déduit)", "Revues"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
@@ -2162,6 +2163,7 @@
       else if (b.id === "btn-carnet-history") openHistory("history", b);
       else if (b.id === "btn-carnet-intel") openIntel("overview", b);
       else if (b.id === "btn-carnet-ask") openAsk(b);
+      else if (b.id === "btn-carnet-reviews") openReviews(b);
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -2444,6 +2446,7 @@
         el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small carnet-quiet", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
         el("button", { type: "button", id: "btn-carnet-lib-intel", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Cockpit du projet : décisions, mesures, changements et jalons", text: "Cockpit" }),
         el("button", { type: "button", id: "btn-carnet-lib-ask", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Preuves du carnet : retrouver les passages qui répondent à une question", text: "Preuves" }),
+        el("button", { type: "button", id: "btn-carnet-lib-reviews", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Revues : dossiers de preuves à relire", text: "Revues" }),
       ]),
     ]);
     const search = el("input", {
@@ -2907,6 +2910,11 @@
       const opener = libMode() === "dock" ? b : doc.getElementById("btn-carnet-library");
       if (libMode() !== "dock") closeLibrary(false);
       return openAsk(opener);
+    }
+    if (b.id === "btn-carnet-lib-reviews") {
+      const opener = libMode() === "dock" ? b : doc.getElementById("btn-carnet-library");
+      if (libMode() !== "dock") closeLibrary(false);
+      return openReviews(opener);
     }
     if (b.id === "btn-carnet-lib-intel") {
       // The sheet/drawer library sits above the cockpit (z-index) and would swallow its taps: close it, focus returns to the Bibliothèque button.
@@ -4654,6 +4662,7 @@
         const h = historyUi();
         return !!(h && h.addExternal && h.addExternal(item));
       },
+      addToReview: (item, opener) => addToReview(item, opener),
       onClose: () => {},
     });
     return ui.intel;
@@ -4697,14 +4706,66 @@
         const h = historyUi();
         return !!(h && h.addExternal && h.addExternal(item));
       },
+      addToReview: (item, opener) => addToReview(item, opener),
       onClose: () => {},
     });
     return ui.ask;
   }
 
-  function openAsk(opener) {
+  function openAsk(opener, prefill) {
     const m = askUi();
-    if (m) m.open(opener || null);
+    if (m) m.open(opener || null, prefill || null);
+  }
+
+  /** Lazily mounts the Phase-7 review packs UI (hq-carnet-reviews-ui.js). Packs live on the server; this holds only the open dialog. */
+  function reviewsUi() {
+    if (ui.reviews) return ui.reviews;
+    const M = global.HqCarnetReviewsUi;
+    if (!M || typeof M.mount !== "function") {
+      flashMsg("Module revues non chargé");
+      return null;
+    }
+    const core = () => ui.core;
+    ui.reviews = M.mount({
+      doc,
+      root: (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { get: (url) => apiCall(url, { timeoutMs: 20000 }), post: (payload) => request(payload) },
+      flash: flashMsg,
+      storage: safeStorage,
+      online: () => !(global.navigator && global.navigator.onLine === false),
+      rng: () => {
+        const bytes = new Uint8Array(16);
+        if (global.crypto && typeof global.crypto.getRandomValues === "function") global.crypto.getRandomValues(bytes);
+        else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+        return bytes;
+      },
+      currentProjectId: () => {
+        const c = core();
+        if (!c) return null;
+        const e = c.current();
+        const pid = e ? (e.latest || e.server || {}).project_id || null : null;
+        if (pid) return pid;
+        return ui.lib && ui.lib.sel && ui.lib.sel.filter === "project" ? ui.lib.sel.id : null;
+      },
+      openAsk: (question, scope) => openAsk(null, { question, scope }),
+      addToReport: (item) => {
+        const h = historyUi();
+        return !!(h && h.addExternal && h.addExternal(item));
+      },
+      onClose: () => {},
+    });
+    return ui.reviews;
+  }
+
+  function openReviews(opener) {
+    const m = reviewsUi();
+    if (m) m.open(opener || null, null);
+  }
+
+  /** "Ajouter au dossier de revue" from the cockpit / Ask: ``item`` = {spec, label} built by HqCarnetReviews (identity only). */
+  function addToReview(item, opener) {
+    const m = reviewsUi();
+    return !!(m && m.addItem(item, opener || null));
   }
 
   // ---------------------------------------------------------------- sources / citations (Stage 05)

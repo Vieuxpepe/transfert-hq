@@ -19,6 +19,7 @@
 
   const node = typeof module === "object" && module && module.exports;
   const A = node ? require("./hq-carnet-ask.js") : global.HqCarnetAsk;
+  const R = node ? require("./hq-carnet-reviews.js") : global.HqCarnetReviews;
   const MSG = {
     title: "Preuves du carnet",
     intro: "Trouve les passages du carnet qui contiennent les termes de ta question, tels qu'ils sont écrits. Aucune réponse n'est générée.",
@@ -136,6 +137,15 @@
 
     function paintScopes() {
       state.choices = A.scopeChoices(context());
+      if (state.prefillScope) {
+        // opened from a review ("Rechercher dans Ask Carnet"): the scope the review recorded, when it still exists as a choice
+        const want = JSON.stringify(state.prefillScope);
+        const hit = state.choices.find((c) => JSON.stringify(c.scope) === want);
+        if (hit) {
+          state.scopeValue = hit.value;
+          state.prefillScope = null;
+        }
+      }
       if (!state.choices.some((c) => c.value === state.scopeValue)) state.scopeValue = A.defaultScope(state.choices);
       select.textContent = "";
       for (const c of state.choices) select.appendChild(el(doc, "option", { value: c.value, text: c.label, selected: c.value === state.scopeValue }));
@@ -164,7 +174,7 @@
 
     // ------------------------------------------------------------ lifecycle
 
-    function open(opener) {
+    function open(opener, prefill) {
       if (!dlg) build();
       state.opener = opener || doc.activeElement || null;
       state.open = true;
@@ -175,6 +185,13 @@
       state.result = null;
       state.error = "";
       input.value = "";
+      state.prefillScope = null;
+      if (prefill && typeof prefill.question === "string") {
+        // a prefill only fills the form: nothing is searched until the user presses the button
+        state.question = prefill.question.slice(0, A.QUESTION_MAX);
+        input.value = state.question;
+        state.prefillScope = isObj(prefill.scope) ? prefill.scope : null;
+      }
       dlg.hidden = false;
       paintScopes();
       renderOut();
@@ -334,7 +351,11 @@
         for (const s of m.sources) ul.appendChild(sourceNode(s));
         out.appendChild(ul);
       }
-      if (m.canReport) out.appendChild(el(doc, "div", { class: "carnet-hx-row" }, [el(doc, "button", { type: "button", id: "btn-carnet-ask-report", class: "carnet-btn", "data-ask": "report", text: "Ajouter au rapport" })]));
+      if (m.canReport) {
+        const row = el(doc, "div", { class: "carnet-hx-row" }, [el(doc, "button", { type: "button", id: "btn-carnet-ask-report", class: "carnet-btn", "data-ask": "report", text: "Ajouter au rapport" })]);
+        if (typeof host.addToReview === "function" && R && A.reportItem(state.result, state.resultScope)) row.appendChild(el(doc, "button", { type: "button", id: "btn-carnet-ask-review", class: "carnet-btn", "data-ask": "review", text: "Ajouter au dossier de revue" }));
+        out.appendChild(row);
+      }
     }
 
     async function gotoTarget(pageId, blockId) {
@@ -357,6 +378,14 @@
       else if (act === "report") {
         const item = A.reportItem(state.result, state.resultScope);
         if (item && host.addToReport(item)) host.flash(MSG.reportAdded, 2500);
+      } else if (act === "review") {
+        const item = R.askSpec(state.result, state.resultScope, 10);
+        if (!item) return;
+        const opener = state.opener;
+        close(false);
+        const sc = state.resultScope;
+        const pid = sc && sc.kind === "project" && sc.id !== "none" ? sc.id : null;
+        if (!host.addToReview(Object.assign({ projectId: pid }, item), opener)) host.flash("Revues indisponibles.", 3000);
       }
     }
 

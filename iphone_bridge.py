@@ -2554,13 +2554,13 @@ function hqCarnetMissing() {
     };
     // Stage 04/05: the structured-content and sources modules must load before the editor.
     // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
+    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    }))))))))))))))))))))), true);
+    }))))))))))))))))))))))), true);
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5323,10 +5323,12 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-sources.js"></script>
 <script src="/assets/hq-carnet-eng-ui.js"></script>
 <script src="/assets/hq-carnet-history-ui.js"></script>
+<script src="/assets/hq-carnet-reviews.js"></script>
 <script src="/assets/hq-carnet-intel.js"></script>
 <script src="/assets/hq-carnet-intel-ui.js"></script>
 <script src="/assets/hq-carnet-ask.js"></script>
 <script src="/assets/hq-carnet-ask-ui.js"></script>
+<script src="/assets/hq-carnet-reviews-ui.js"></script>
 <script src="/assets/hq-carnet-image-ui.js"></script>
 <script src="/assets/hq-carnet-structured-ui.js"></script>
 <script src="/assets/hq-carnet-nav.js"></script>
@@ -5924,7 +5926,27 @@ class Handler(BaseHTTPRequestHandler):
         if raw.startswith("/api/carnet/voice/"):
             self._carnet_voice_get(raw[len("/api/carnet/voice/"):])
             return True
+        if raw.startswith("/api/carnet/review-export/"):
+            self._carnet_review_export(raw[len("/api/carnet/review-export/"):])
+            return True
         return False
+
+    def _carnet_review_export(self, review_id: str) -> None:
+        """Phase 7: the deterministic review handoff package (ZIP of review.json, review.md, manifest.json). Admin-only like every
+        /api/carnet route; read-only, no-cache, always a download (never rendered), nosniff."""
+        code, name, data = hq_carnet.http_review_export(review_id)
+        if code != 200:
+            self._json(code, data)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Cache-Control", "no-store")
+        self._security_headers()
+        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(data)
 
     def _carnet_asset_get(self, asset_id: str) -> None:
         """Stage 06: serve one confined Carnet image. Admin-only (the caller already enforced the role).

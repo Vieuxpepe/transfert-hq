@@ -1,0 +1,647 @@
+{
+ "conflict": {
+  "code": "review_conflict",
+  "error": "La revue a changé depuis ta lecture — recharge-la",
+  "rev": 12
+ },
+ "freshness": {
+  "freshness": {
+   "counts": {
+    "changed": 4,
+    "missing": 0,
+    "unchanged": 4,
+    "unknown": 0
+   },
+   "items": {
+    "ri-0af1ac9e8fe6b770": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-0af1ac9e8fe6b770",
+     "observed": {
+      "content_sha256": "a76ede12eef67fe4eba79c88ff9349367a45d7b82d7388d1be05f49d672bbfd6",
+      "rev": 3
+     },
+     "reason": null,
+     "state": "changed"
+    },
+    "ri-0f6eac7c0bd2efd9": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-0f6eac7c0bd2efd9",
+     "observed": {
+      "content_sha256": "2a9ea1d4af960e4185626da792af220afcc8c19b6bb89f7a22d50e0a9e611121"
+     },
+     "reason": null,
+     "state": "unchanged"
+    },
+    "ri-11ea6b7a3566a48e": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-11ea6b7a3566a48e",
+     "observed": {
+      "fingerprint": "161a339b17612018f454bf4e10f41b24"
+     },
+     "reason": null,
+     "state": "changed"
+    },
+    "ri-4006e6ac121bc5c9": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-4006e6ac121bc5c9",
+     "observed": {
+      "diff_sha256": "4d1cafbd2e12220fe617adb54eff7c3487b3783667d4cf1bd1590952fa54d6bd",
+      "target": "3fd3b93e5c76464148269b3ad0b2912a74382a1216a9aee451f89e171ca159bf"
+     },
+     "reason": null,
+     "state": "changed"
+    },
+    "ri-a613b3d9912d855a": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-a613b3d9912d855a",
+     "observed": {
+      "fingerprint": "809bd19796601808ca1877c5a788e3ba"
+     },
+     "reason": null,
+     "state": "changed"
+    },
+    "ri-ced8e3ddb41947b9": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-ced8e3ddb41947b9",
+     "observed": {
+      "block_sha256": "ae768e04173d4758444dd986b123d6c6dd9606e8a02be1c8c09f8729a755325a",
+      "type": "decision"
+     },
+     "reason": null,
+     "state": "unchanged"
+    },
+    "ri-df6b73d45c26a9e4": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-df6b73d45c26a9e4",
+     "observed": {
+      "sha256": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+      "size": 7
+     },
+     "reason": null,
+     "state": "unchanged"
+    },
+    "ri-ecc12a69590a1f9d": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-ecc12a69590a1f9d",
+     "observed": {
+      "block_sha256": "247ca1436b604e1a48cc9699f64ca8164aad79f90702d61c80e0e52a4ea840c4",
+      "type": "measure"
+     },
+     "reason": null,
+     "state": "unchanged"
+    }
+   }
+  },
+  "ok": true,
+  "rev": 12,
+  "review_id": "rvw-5c31209e451514fa4dcf2580"
+ },
+ "list": {
+  "limits": {
+   "check_text": 500,
+   "checklist": 100,
+   "item_bytes": 16384,
+   "items": 250,
+   "note": 2000,
+   "pack_bytes": 2097152,
+   "per_project": 100,
+   "question_text": 1000,
+   "questions": 100,
+   "refs": 20,
+   "store_bytes": 104857600,
+   "title": 120
+  },
+  "ok": true,
+  "reviews": [
+   {
+    "baseline": "live",
+    "checked": 1,
+    "checklist": 1,
+    "created_at": 1790100000,
+    "id": "rvw-5c31209e451514fa4dcf2580",
+    "integrity": "ok",
+    "items": 8,
+    "open_questions": 1,
+    "project_id": "proj-e6a3924f7989c5dd45ae4187",
+    "questions": 1,
+    "rev": 12,
+    "status": "draft",
+    "title": "Revue conception banc",
+    "updated_at": 1790100000
+   }
+  ],
+  "unavailable": []
+ },
+ "pack": {
+  "integrity": "ok",
+  "ok": true,
+  "review": {
+   "baseline": {
+    "kind": "live"
+   },
+   "checklist": [
+    {
+     "checked": true,
+     "created_at": 1790100000,
+     "id": "rc-d9442356d470d132",
+     "refs": [
+      "ri-0af1ac9e8fe6b770"
+     ],
+     "text": "Vérifier l'ajustement H7",
+     "updated_at": 1790100000
+    }
+   ],
+   "content_sha256": "6cf104b96d5a3316ef81fb059640ef017b9d50e0a607cca87e27376818dc931b",
+   "created_at": 1790100000,
+   "id": "rvw-5c31209e451514fa4dcf2580",
+   "items": [
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "excerpt": "Le palier avant est usiné en H7 Retenir H7",
+      "rev": 2,
+      "title": "Le palier avant est usiné en H7",
+      "updated_at": 1790100000.0
+     },
+     "id": "ri-0af1ac9e8fe6b770",
+     "key": {
+      "page_id": "page-24634968017c59aa6abac9fb"
+     },
+     "kind": "page",
+     "label": "Le palier avant est usiné en H7",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "content_sha256": "e9105805da699063e52ac24e6a6472ef2ba8799e59552a137de255871528ef87",
+      "rev": 2
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "at": 1790000010,
+      "page_title": "Le palier avant est usiné en H7",
+      "summary": "Retenir H7",
+      "text": "Retenir H7",
+      "type": "decision"
+     },
+     "id": "ri-ced8e3ddb41947b9",
+     "key": {
+      "block_id": "block-b99d9b327ea79d338bd4cd56",
+      "page_id": "page-24634968017c59aa6abac9fb"
+     },
+     "kind": "decision",
+     "label": "Retenir H7",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "block_sha256": "ae768e04173d4758444dd986b123d6c6dd9606e8a02be1c8c09f8729a755325a",
+      "type": "decision"
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "measure": {
+       "at": 1790000020,
+       "label": "Alésage",
+       "link": null,
+       "mode": "sym",
+       "nominal": {
+        "u": "mm",
+        "v": "30"
+       },
+       "observed": {
+        "u": "mm",
+        "v": "30.012"
+       },
+       "tol": {
+        "t": "0.02",
+        "u": "mm"
+       }
+      },
+      "page_title": "Le palier avant est usiné en H7",
+      "summary": "Alésage : 30.012 mm",
+      "type": "measure"
+     },
+     "id": "ri-ecc12a69590a1f9d",
+     "key": {
+      "block_id": "block-400779d1fffb726b55085c42",
+      "page_id": "page-24634968017c59aa6abac9fb"
+     },
+     "kind": "measurement",
+     "label": "Alésage : 30.012 mm",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "block_sha256": "247ca1436b604e1a48cc9699f64ca8164aad79f90702d61c80e0e52a4ea840c4",
+      "type": "measure"
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "label": "plan-1",
+      "size": 7,
+      "stem": "plan-1"
+     },
+     "id": "ri-df6b73d45c26a9e4",
+     "key": {
+      "stem": "plan-1"
+     },
+     "kind": "drawing",
+     "label": "plan-1",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "sha256": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+      "size": 7
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "created_at": 1790100000,
+      "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+      "id": "snap-922fc2072d3df4aebcd6863a",
+      "integrity": "ok",
+      "label": "Gel conception",
+      "note": "",
+      "notebook_rev": 3,
+      "pages": 1,
+      "project_id": "proj-e6a3924f7989c5dd45ae4187",
+      "project_name": "Banc d'essai"
+     },
+     "id": "ri-0f6eac7c0bd2efd9",
+     "key": {
+      "snapshot_id": "snap-922fc2072d3df4aebcd6863a"
+     },
+     "kind": "snapshot",
+     "label": "Gel conception",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "content_sha256": "2a9ea1d4af960e4185626da792af220afcc8c19b6bb89f7a22d50e0a9e611121"
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "counts": {
+       "decisions": 1,
+       "drawings": 0,
+       "files": 0,
+       "images": 0,
+       "measurements": 1,
+       "out_of_tolerance": 0,
+       "pages": 1,
+       "sources": 0,
+       "voices": 0
+      },
+      "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+      "measurements": {
+       "in": 1,
+       "incompatible": 0,
+       "none": 0,
+       "out": 0,
+       "total": 1
+      },
+      "truncated": {
+       "decisions": false,
+       "pages": false,
+       "points": false,
+       "series": false
+      }
+     },
+     "id": "ri-11ea6b7a3566a48e",
+     "key": {
+      "project_id": "proj-e6a3924f7989c5dd45ae4187",
+      "snapshot_id": null
+     },
+     "kind": "project_overview",
+     "label": "Vue d'ensemble du projet",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5"
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "cards": [
+       {
+        "block_id": "block-6e6c1ffddf0e1c444bdb939e",
+        "class": "primary",
+        "coverage": 1.0,
+        "excerpt": "Le palier avant est usiné en H7",
+        "id": "ask-23a7f40d532b6213",
+        "kind": "note",
+        "link": "#carnet/page-24634968017c59aa6abac9fb/block-6e6c1ffddf0e1c444bdb939e",
+        "marks": [
+         [
+          3,
+          9
+         ],
+         [
+          29,
+          31
+         ]
+        ],
+        "matched": [
+         "palier",
+         "h7"
+        ],
+        "page_id": "page-24634968017c59aa6abac9fb",
+        "page_title": "Le palier avant est usiné en H7",
+        "provenance": null,
+        "refs": [],
+        "score": 1.611
+       }
+      ],
+      "counts": {
+       "derived_shown": 0,
+       "evidence": 1,
+       "matched": 2,
+       "pages": 1,
+       "shown": 1,
+       "units": 3
+      },
+      "fingerprint": "c82ead08536791bdd7424231817355b0",
+      "frozen": null,
+      "incomplete": false,
+      "limits": {
+       "cards": 20,
+       "cards_default": 10,
+       "cited_in": 5,
+       "excerpt_chars": 240,
+       "pages_scanned": 256,
+       "partial_cards": 5,
+       "question_chars": 300,
+       "refs_per_card": 20,
+       "terms": 12,
+       "units_scanned": 40000
+      },
+      "note": "Aucune réponse n'est générée : seules les preuves du carnet sont listées, telles qu'elles sont écrites. Aucun auteur, statut, approbation ni justification n'est déduit.",
+      "notebook_rev": 3,
+      "ok": true,
+      "partial": false,
+      "question": "palier H7",
+      "reason": null,
+      "scope": {
+       "id": "proj-e6a3924f7989c5dd45ae4187",
+       "kind": "project",
+       "label": "Banc d'essai"
+      },
+      "scope_fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+      "sources": [],
+      "sources_available": true,
+      "status": "evidence",
+      "terms": [
+       "palier",
+       "h7"
+      ],
+      "terms_truncated": false,
+      "unmatched_terms": []
+     },
+     "id": "ri-a613b3d9912d855a",
+     "key": {
+      "limit": 10,
+      "question": "palier H7",
+      "scope": {
+       "id": "proj-e6a3924f7989c5dd45ae4187",
+       "kind": "project"
+      }
+     },
+     "kind": "ask_result",
+     "label": "Ask Carnet — palier H7",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "fingerprint": "c82ead08536791bdd7424231817355b0"
+     },
+     "supersedes": []
+    },
+    {
+     "added_at": 1790100000,
+     "copy": {
+      "base": {
+       "at": 1790100000,
+       "id": "snap-922fc2072d3df4aebcd6863a",
+       "kind": "snapshot",
+       "label": "Gel conception",
+       "project_id": "proj-e6a3924f7989c5dd45ae4187"
+      },
+      "rows": [],
+      "rows_total": 0,
+      "scope": "project",
+      "to": {
+       "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+       "kind": "current",
+       "project_id": "proj-e6a3924f7989c5dd45ae4187"
+      },
+      "truncated": false
+     },
+     "id": "ri-4006e6ac121bc5c9",
+     "key": {
+      "base": "snap-922fc2072d3df4aebcd6863a",
+      "page_id": null,
+      "project_id": null,
+      "to": null
+     },
+     "kind": "diff",
+     "label": "Comparaison — Gel conception → current",
+     "scope": {
+      "kind": "live"
+     },
+     "seal": {
+      "diff_sha256": "4844bd4ebe88850d89a45acec67facdead6df2e1baa1be131e5ac10eb8129926",
+      "target": "81e185841ccc07f0e98893e7c0af352e5cfe1fa0a7416f67fec68edea5bccb55"
+     },
+     "supersedes": []
+    }
+   ],
+   "note": "Avant fabrication",
+   "project_id": "proj-e6a3924f7989c5dd45ae4187",
+   "questions": [
+    {
+     "created_at": 1790100000,
+     "id": "rq-1fcdbee34f4800b3",
+     "refs": [],
+     "resolution_note": "",
+     "state": "open",
+     "text": "Qui valide la cote ?",
+     "updated_at": 1790100000
+    }
+   ],
+   "request_id": "07a5882bc69e4e21adc5553f82029e32",
+   "rev": 12,
+   "status": "draft",
+   "title": "Revue conception banc",
+   "updated_at": 1790100000,
+   "version": 1
+  }
+ },
+ "shape": {
+  "freshness": {
+   "freshness": {
+    "counts": {
+     "changed": "int",
+     "missing": "int",
+     "unchanged": "int",
+     "unknown": "int"
+    },
+    "items": {
+     "<item-id>": {
+      "anomaly": "null",
+      "current_differs": "null",
+      "frozen": "null",
+      "id": "str",
+      "observed": {
+       "content_sha256": "str",
+       "rev": "int"
+      },
+      "reason": "null",
+      "state": "str"
+     }
+    }
+   },
+   "ok": "bool",
+   "rev": "int",
+   "review_id": "str"
+  },
+  "list": {
+   "limits": {
+    "check_text": "int",
+    "checklist": "int",
+    "item_bytes": "int",
+    "items": "int",
+    "note": "int",
+    "pack_bytes": "int",
+    "per_project": "int",
+    "question_text": "int",
+    "questions": "int",
+    "refs": "int",
+    "store_bytes": "int",
+    "title": "int"
+   },
+   "ok": "bool",
+   "reviews": [
+    {
+     "baseline": "str",
+     "checked": "int",
+     "checklist": "int",
+     "created_at": "int",
+     "id": "str",
+     "integrity": "str",
+     "items": "int",
+     "open_questions": "int",
+     "project_id": "str",
+     "questions": "int",
+     "rev": "int",
+     "status": "str",
+     "title": "str",
+     "updated_at": "int"
+    }
+   ],
+   "unavailable": []
+  },
+  "pack": {
+   "integrity": "str",
+   "ok": "bool",
+   "review": {
+    "baseline": {
+     "kind": "str"
+    },
+    "checklist": [
+     {
+      "checked": "bool",
+      "created_at": "int",
+      "id": "str",
+      "refs": [
+       "str"
+      ],
+      "text": "str",
+      "updated_at": "int"
+     }
+    ],
+    "content_sha256": "str",
+    "created_at": "int",
+    "id": "str",
+    "items": [
+     {
+      "added_at": "int",
+      "copy": {
+       "excerpt": "str",
+       "rev": "int",
+       "title": "str",
+       "updated_at": "float"
+      },
+      "id": "str",
+      "key": {
+       "page_id": "str"
+      },
+      "kind": "str",
+      "label": "str",
+      "scope": {
+       "kind": "str"
+      },
+      "seal": {
+       "content_sha256": "str",
+       "rev": "int"
+      },
+      "supersedes": []
+     }
+    ],
+    "note": "str",
+    "project_id": "str",
+    "questions": [
+     {
+      "created_at": "int",
+      "id": "str",
+      "refs": [],
+      "resolution_note": "str",
+      "state": "str",
+      "text": "str",
+      "updated_at": "int"
+     }
+    ],
+    "request_id": "str",
+    "rev": "int",
+    "status": "str",
+    "title": "str",
+    "updated_at": "int",
+    "version": "int"
+   }
+  }
+ }
+}
