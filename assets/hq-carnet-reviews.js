@@ -334,6 +334,7 @@
         put("Note", c.page_title);
         put("Type", c.type);
         put("Texte", c.text || c.summary);
+        if (isObj(c.portal)) put("Portail (référence capturée)", String(c.portal.kind) + " " + String(c.portal.id));
         break;
       case "decision":
         put("Note", c.page_title);
@@ -381,7 +382,7 @@
   }
 
   function observationModel(obs, scope) {
-    if (!isObj(obs)) return { state: "unknown", mark: STATE_MARK.unknown, label: "Non observé", reason: "", anomaly: "", frozen: "", currentDiffers: "" };
+    if (!isObj(obs)) return { state: "unknown", mark: STATE_MARK.unknown, label: "Non observé", reason: "", anomaly: "", frozen: "", target: null, currentDiffers: "" };
     const st = STATE_LABEL[obs.state] ? obs.state : "unknown";
     const snap = isObj(scope) && scope.kind === "snapshot";
     return {
@@ -391,6 +392,7 @@
       reason: obs.reason ? REASON_LABEL[obs.reason] || "raison inconnue" : "",
       anomaly: obs.anomaly ? ANOMALY_LABEL[obs.anomaly] || "Anomalie d'intégrité." : "",
       frozen: snap ? (obs.frozen === "ok" ? "Évalué sur l'état figé du jalon" : "Jalon figé indisponible") : "",
+      target: isObj(obs.target) && typeof obs.target.state === "string" ? { state: obs.target.state, label: "Cible du portail : " + String(obs.target.state_label || "").slice(0, 80) + (obs.target.title ? " (" + String(obs.target.title).slice(0, 120) + ")" : "") } : null,
       currentDiffers: snap ? (obs.current_differs === true ? "L'état actuel diffère de l'état figé" : obs.current_differs === false ? "L'état actuel est identique à l'état figé" : "État actuel non vérifiable") : "",
     };
   }

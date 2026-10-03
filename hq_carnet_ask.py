@@ -180,6 +180,11 @@ def units_of(page: dict) -> list[dict]:
                     out.append(_unit(page, i, block, "image", item["caption"], {"item": k}))
         elif t == rich.DRAWING_TYPE:
             out.append(_unit(page, i, block, "drawing", rich.drawing_label(block["drawing"]["id"])))
+        elif t == rich.PORTAL_TYPE:
+            # Phase 8: STORED identity only (fixed kind label + the id/path actually in the page). Never the target's current title,
+            # contents or status: searching a frozen page must not mix its frozen reference with mutable live metadata.
+            ref = block["portal"]["ref"]
+            out.append(_unit(page, i, block, "portal", f"Portail {rich.PORTAL_LABEL[ref['kind']]} {ref['id']}"))
     return out
 
 
@@ -359,9 +364,10 @@ def _search(question: Any, pages: list[dict], ctx: intel.Ctx, *, scope: dict, so
     need = _needed(len(parsed["terms"]))
     order = lambda r: (-r["coverage"], -r["score"], 1 if r["unit"]["block"].get("from") else 0, r["unit"]["page"]["id"], r["unit"]["index"], r["unit"].get("row", -1))  # noqa: E731
     scored.sort(key=order)
-    strong = [r for r in scored if len(r["hit"]) >= need]
+    strong = [r for r in scored if len(r["hit"]) >= need and r["unit"]["kind"] != "portal"]  # a portal card is a REFERENCE, never primary evidence
+    portal_hits = [r for r in scored if len(r["hit"]) >= need and r["unit"]["kind"] == "portal"]
     if strong:
-        status, chosen = "evidence", strong[:limit]
+        status, chosen = "evidence", strong[:limit] + portal_hits[: LIMITS["partial_cards"]]
     elif scored:
         status, chosen = "partial", scored[: LIMITS["partial_cards"]]
     else:
@@ -378,7 +384,7 @@ def _search(question: Any, pages: list[dict], ctx: intel.Ctx, *, scope: dict, so
         card: dict[str, Any] = {
             "id": _card_id(page["id"], bid, u.get("row", u.get("item"))),
             "kind": u["kind"],
-            "class": "derived" if prov else "primary",
+            "class": "reference" if u["kind"] == "portal" else ("derived" if prov else "primary"),
             "page_id": page["id"], "page_title": ctx.title(page), "block_id": bid,
             "link": None if frozen else intel._anchor(page["id"], bid),
             "excerpt": text, "marks": marks, "matched": r["hit"], "coverage": round(r["coverage"], 4), "score": round(r["score"], 3),
@@ -402,6 +408,8 @@ def _search(question: Any, pages: list[dict], ctx: intel.Ctx, *, scope: dict, so
                 "nominal": copy.deepcopy(p["nominal"]), "tol": copy.deepcopy(p["tol"]), "verdict": intel._verdict_text(ev["status"]),
                 "lo": ev["lo"], "hi": ev["hi"],
             }
+        elif btype == "portal":
+            card["portal"] = {"kind": block["portal"]["ref"]["kind"], "id": block["portal"]["ref"]["id"]}  # the stored reference, nothing resolved
         elif btype == "drawing":
             card["drawing"] = {"stem": block["drawing"]["id"], "state": state("drawing", block["drawing"]["id"])}
             if current is not None:

@@ -955,6 +955,11 @@
           part.appendChild(el(doc, "p", { text: "(contenu non affichable)" }));
         }
         hostEl.appendChild(part);
+        if (Array.isArray(sec.portals) && sec.portals.length) {
+          const ul = el(doc, "ul", { class: "carnet-hx-portals", "aria-label": "Portails — état à la génération du rapport" });
+          for (const r of sec.portals) ul.appendChild(el(doc, "li", { text: "Portail " + String(r.kind_label) + " — " + String(r.title || (r.ref && r.ref.id) || "") + " : " + String(r.state_label) + " (état à la génération du rapport)" }));
+          hostEl.appendChild(ul);
+        }
       }
       doc.body.appendChild(hostEl);
       doc.body.classList.add("carnet-printing");

@@ -49,6 +49,7 @@
     { id: "sketch", cat: "add", kind: "tool", label: "Croquis", hint: "Nouveau dessin technique", icon: "M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM4 20h7M13.5 7l3.5 3.5", keys: ["croquis", "sketch", "schema", "schéma", "esquisse"] },
     { id: "file", cat: "add", kind: "tool", label: "Fichier", hint: "Lier un fichier", icon: "M7 3h7l5 5v13H7zM14 3v5h5", keys: ["fichier", "file", "lien", "piece"] },
     { id: "drawing", cat: "add", kind: "tool", label: "Dessin", hint: "Lier un dessin", icon: "M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM4 20h7", keys: ["dessin", "drawing", "plan"] },
+    { id: "portal", cat: "add", kind: "tool", label: "Insérer un portail", hint: "Objet HQ en lecture seule", icon: "M4 6h16v12H4zM8 10h8M8 14h5", keys: ["portail", "portal", "source", "jalon", "revue", "modele", "modèle", "media", "média", "fichier", "carte"] },
     { id: "measure", cat: "eng", kind: "tool", label: "Mesure", hint: "Valeur et tolérance", icon: "M3 15L15 3l6 6L9 21zM7 11l2 2M10 8l2 2M13 5l2 2", keys: ["mesure", "measure", "cote", "tolerance", "tolérance", "releve"] },
     { id: "calc", cat: "eng", kind: "tool", label: "Calcul", hint: "Expression et résultat", icon: "M6 3h12v18H6zM9 7h6M9 12h.01M12 12h.01M15 12h.01M9 16h.01M12 16h.01M15 16h.01", keys: ["calcul", "calc", "formule", "math"] },
     { id: "decision", cat: "eng", kind: "tool", label: "Décision", hint: "Marquer une décision", icon: "M12 3v6M12 9l-6 6M12 9l6 6M6 15v6M18 15v6", keys: ["decision", "décision", "choix"] },

@@ -13,104 +13,112 @@
     "unknown": 0
    },
    "items": {
-    "ri-0af1ac9e8fe6b770": {
+    "ri-1ef7e9380559ceca": {
      "anomaly": null,
      "current_differs": null,
      "frozen": null,
-     "id": "ri-0af1ac9e8fe6b770",
+     "id": "ri-1ef7e9380559ceca",
      "observed": {
-      "content_sha256": "a76ede12eef67fe4eba79c88ff9349367a45d7b82d7388d1be05f49d672bbfd6",
+      "content_sha256": "31779fdd7719446915992fb7cc255428a38558f619ac781cbb61eb02003fbb96",
       "rev": 3
      },
      "reason": null,
-     "state": "changed"
+     "state": "changed",
+     "target": null
     },
-    "ri-0f6eac7c0bd2efd9": {
+    "ri-65177afa0ea472b0": {
      "anomaly": null,
      "current_differs": null,
      "frozen": null,
-     "id": "ri-0f6eac7c0bd2efd9",
+     "id": "ri-65177afa0ea472b0",
      "observed": {
-      "content_sha256": "2a9ea1d4af960e4185626da792af220afcc8c19b6bb89f7a22d50e0a9e611121"
-     },
-     "reason": null,
-     "state": "unchanged"
-    },
-    "ri-11ea6b7a3566a48e": {
-     "anomaly": null,
-     "current_differs": null,
-     "frozen": null,
-     "id": "ri-11ea6b7a3566a48e",
-     "observed": {
-      "fingerprint": "161a339b17612018f454bf4e10f41b24"
-     },
-     "reason": null,
-     "state": "changed"
-    },
-    "ri-4006e6ac121bc5c9": {
-     "anomaly": null,
-     "current_differs": null,
-     "frozen": null,
-     "id": "ri-4006e6ac121bc5c9",
-     "observed": {
-      "diff_sha256": "4d1cafbd2e12220fe617adb54eff7c3487b3783667d4cf1bd1590952fa54d6bd",
-      "target": "3fd3b93e5c76464148269b3ad0b2912a74382a1216a9aee451f89e171ca159bf"
-     },
-     "reason": null,
-     "state": "changed"
-    },
-    "ri-a613b3d9912d855a": {
-     "anomaly": null,
-     "current_differs": null,
-     "frozen": null,
-     "id": "ri-a613b3d9912d855a",
-     "observed": {
-      "fingerprint": "809bd19796601808ca1877c5a788e3ba"
-     },
-     "reason": null,
-     "state": "changed"
-    },
-    "ri-ced8e3ddb41947b9": {
-     "anomaly": null,
-     "current_differs": null,
-     "frozen": null,
-     "id": "ri-ced8e3ddb41947b9",
-     "observed": {
-      "block_sha256": "ae768e04173d4758444dd986b123d6c6dd9606e8a02be1c8c09f8729a755325a",
+      "block_sha256": "ac11f84773edfa0776db29e7eef53e217460cf88667b55969b984978b545222e",
       "type": "decision"
      },
      "reason": null,
-     "state": "unchanged"
+     "state": "unchanged",
+     "target": null
     },
-    "ri-df6b73d45c26a9e4": {
+    "ri-842465569aeb340f": {
      "anomaly": null,
      "current_differs": null,
      "frozen": null,
-     "id": "ri-df6b73d45c26a9e4",
+     "id": "ri-842465569aeb340f",
+     "observed": {
+      "fingerprint": "92f82413f55478b4fe0014bd534b205e"
+     },
+     "reason": null,
+     "state": "changed",
+     "target": null
+    },
+    "ri-87f616db37cec330": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-87f616db37cec330",
+     "observed": {
+      "fingerprint": "5336ac7a16dcafafb2b90bd6672f4f21"
+     },
+     "reason": null,
+     "state": "changed",
+     "target": null
+    },
+    "ri-8e8cd580bf6b07f0": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-8e8cd580bf6b07f0",
+     "observed": {
+      "content_sha256": "6b704418213c03a92fde410e7831b1f8e76587bf3ba6dcee124336859e4557c3"
+     },
+     "reason": null,
+     "state": "unchanged",
+     "target": null
+    },
+    "ri-be031f26699a54cc": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-be031f26699a54cc",
+     "observed": {
+      "diff_sha256": "201c573b060929b643a64b15672782319a81c53d77d2f67d6948ff233c966fda",
+      "target": "1c9eff325dca9b7db9844da5628c9689a001245d1d9562832fd43eeeb885ca9a"
+     },
+     "reason": null,
+     "state": "changed",
+     "target": null
+    },
+    "ri-c8e247574fb5c7bf": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-c8e247574fb5c7bf",
+     "observed": {
+      "block_sha256": "36242ee0e2128953d08d13407b420918636c1062d70bf7037ac4e3dfe19f2294",
+      "type": "measure"
+     },
+     "reason": null,
+     "state": "unchanged",
+     "target": null
+    },
+    "ri-cddc15e3df979a70": {
+     "anomaly": null,
+     "current_differs": null,
+     "frozen": null,
+     "id": "ri-cddc15e3df979a70",
      "observed": {
       "sha256": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
       "size": 7
      },
      "reason": null,
-     "state": "unchanged"
-    },
-    "ri-ecc12a69590a1f9d": {
-     "anomaly": null,
-     "current_differs": null,
-     "frozen": null,
-     "id": "ri-ecc12a69590a1f9d",
-     "observed": {
-      "block_sha256": "247ca1436b604e1a48cc9699f64ca8164aad79f90702d61c80e0e52a4ea840c4",
-      "type": "measure"
-     },
-     "reason": null,
-     "state": "unchanged"
+     "state": "unchanged",
+     "target": null
     }
    }
   },
   "ok": true,
   "rev": 12,
-  "review_id": "rvw-5c31209e451514fa4dcf2580"
+  "review_id": "rvw-86707f3685bea56f13b61b3b"
  },
  "list": {
   "limits": {
@@ -134,11 +142,11 @@
     "checked": 1,
     "checklist": 1,
     "created_at": 1790100000,
-    "id": "rvw-5c31209e451514fa4dcf2580",
+    "id": "rvw-86707f3685bea56f13b61b3b",
     "integrity": "ok",
     "items": 8,
     "open_questions": 1,
-    "project_id": "proj-e6a3924f7989c5dd45ae4187",
+    "project_id": "proj-d89d4e8650f6ef142fa70964",
     "questions": 1,
     "rev": 12,
     "status": "draft",
@@ -159,17 +167,17 @@
     {
      "checked": true,
      "created_at": 1790100000,
-     "id": "rc-d9442356d470d132",
+     "id": "rc-bf906d6f70a178a5",
      "refs": [
-      "ri-0af1ac9e8fe6b770"
+      "ri-1ef7e9380559ceca"
      ],
      "text": "Vérifier l'ajustement H7",
      "updated_at": 1790100000
     }
    ],
-   "content_sha256": "6cf104b96d5a3316ef81fb059640ef017b9d50e0a607cca87e27376818dc931b",
+   "content_sha256": "ab9eb3076f95ae061e54a6560253016895b884864f26171836ee392d5d47f8c3",
    "created_at": 1790100000,
-   "id": "rvw-5c31209e451514fa4dcf2580",
+   "id": "rvw-86707f3685bea56f13b61b3b",
    "items": [
     {
      "added_at": 1790100000,
@@ -179,9 +187,9 @@
       "title": "Le palier avant est usiné en H7",
       "updated_at": 1790100000.0
      },
-     "id": "ri-0af1ac9e8fe6b770",
+     "id": "ri-1ef7e9380559ceca",
      "key": {
-      "page_id": "page-24634968017c59aa6abac9fb"
+      "page_id": "page-89b21de962836d23499f8ac0"
      },
      "kind": "page",
      "label": "Le palier avant est usiné en H7",
@@ -189,7 +197,7 @@
       "kind": "live"
      },
      "seal": {
-      "content_sha256": "e9105805da699063e52ac24e6a6472ef2ba8799e59552a137de255871528ef87",
+      "content_sha256": "5d50fed44ed58be589b2c4a429f86ca3aa5948efddcf79f712f6dfe1d8ca6084",
       "rev": 2
      },
      "supersedes": []
@@ -203,10 +211,10 @@
       "text": "Retenir H7",
       "type": "decision"
      },
-     "id": "ri-ced8e3ddb41947b9",
+     "id": "ri-65177afa0ea472b0",
      "key": {
-      "block_id": "block-b99d9b327ea79d338bd4cd56",
-      "page_id": "page-24634968017c59aa6abac9fb"
+      "block_id": "block-b387530297b7c76c7c8b5452",
+      "page_id": "page-89b21de962836d23499f8ac0"
      },
      "kind": "decision",
      "label": "Retenir H7",
@@ -214,7 +222,7 @@
       "kind": "live"
      },
      "seal": {
-      "block_sha256": "ae768e04173d4758444dd986b123d6c6dd9606e8a02be1c8c09f8729a755325a",
+      "block_sha256": "ac11f84773edfa0776db29e7eef53e217460cf88667b55969b984978b545222e",
       "type": "decision"
      },
      "supersedes": []
@@ -244,10 +252,10 @@
       "summary": "Alésage : 30.012 mm",
       "type": "measure"
      },
-     "id": "ri-ecc12a69590a1f9d",
+     "id": "ri-c8e247574fb5c7bf",
      "key": {
-      "block_id": "block-400779d1fffb726b55085c42",
-      "page_id": "page-24634968017c59aa6abac9fb"
+      "block_id": "block-080d6c0d8cfeef3db1659b7a",
+      "page_id": "page-89b21de962836d23499f8ac0"
      },
      "kind": "measurement",
      "label": "Alésage : 30.012 mm",
@@ -255,7 +263,7 @@
       "kind": "live"
      },
      "seal": {
-      "block_sha256": "247ca1436b604e1a48cc9699f64ca8164aad79f90702d61c80e0e52a4ea840c4",
+      "block_sha256": "36242ee0e2128953d08d13407b420918636c1062d70bf7037ac4e3dfe19f2294",
       "type": "measure"
      },
      "supersedes": []
@@ -267,7 +275,7 @@
       "size": 7,
       "stem": "plan-1"
      },
-     "id": "ri-df6b73d45c26a9e4",
+     "id": "ri-cddc15e3df979a70",
      "key": {
       "stem": "plan-1"
      },
@@ -286,19 +294,19 @@
      "added_at": 1790100000,
      "copy": {
       "created_at": 1790100000,
-      "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
-      "id": "snap-922fc2072d3df4aebcd6863a",
+      "fingerprint": "82588a1c9d0f5c9924039266a7acf0f8",
+      "id": "snap-66caed8608d667d6f782d643",
       "integrity": "ok",
       "label": "Gel conception",
       "note": "",
       "notebook_rev": 3,
       "pages": 1,
-      "project_id": "proj-e6a3924f7989c5dd45ae4187",
+      "project_id": "proj-d89d4e8650f6ef142fa70964",
       "project_name": "Banc d'essai"
      },
-     "id": "ri-0f6eac7c0bd2efd9",
+     "id": "ri-8e8cd580bf6b07f0",
      "key": {
-      "snapshot_id": "snap-922fc2072d3df4aebcd6863a"
+      "snapshot_id": "snap-66caed8608d667d6f782d643"
      },
      "kind": "snapshot",
      "label": "Gel conception",
@@ -306,7 +314,7 @@
       "kind": "live"
      },
      "seal": {
-      "content_sha256": "2a9ea1d4af960e4185626da792af220afcc8c19b6bb89f7a22d50e0a9e611121"
+      "content_sha256": "6b704418213c03a92fde410e7831b1f8e76587bf3ba6dcee124336859e4557c3"
      },
      "supersedes": []
     },
@@ -324,7 +332,7 @@
        "sources": 0,
        "voices": 0
       },
-      "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+      "fingerprint": "82588a1c9d0f5c9924039266a7acf0f8",
       "measurements": {
        "in": 1,
        "incompatible": 0,
@@ -339,9 +347,9 @@
        "series": false
       }
      },
-     "id": "ri-11ea6b7a3566a48e",
+     "id": "ri-87f616db37cec330",
      "key": {
-      "project_id": "proj-e6a3924f7989c5dd45ae4187",
+      "project_id": "proj-d89d4e8650f6ef142fa70964",
       "snapshot_id": null
      },
      "kind": "project_overview",
@@ -350,7 +358,7 @@
       "kind": "live"
      },
      "seal": {
-      "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5"
+      "fingerprint": "82588a1c9d0f5c9924039266a7acf0f8"
      },
      "supersedes": []
     },
@@ -359,13 +367,13 @@
      "copy": {
       "cards": [
        {
-        "block_id": "block-6e6c1ffddf0e1c444bdb939e",
+        "block_id": "block-8d72f605fa84022e68c7af36",
         "class": "primary",
         "coverage": 1.0,
         "excerpt": "Le palier avant est usiné en H7",
-        "id": "ask-23a7f40d532b6213",
+        "id": "ask-3182c91b9b239996",
         "kind": "note",
-        "link": "#carnet/page-24634968017c59aa6abac9fb/block-6e6c1ffddf0e1c444bdb939e",
+        "link": "#carnet/page-89b21de962836d23499f8ac0/block-8d72f605fa84022e68c7af36",
         "marks": [
          [
           3,
@@ -380,7 +388,7 @@
          "palier",
          "h7"
         ],
-        "page_id": "page-24634968017c59aa6abac9fb",
+        "page_id": "page-89b21de962836d23499f8ac0",
         "page_title": "Le palier avant est usiné en H7",
         "provenance": null,
         "refs": [],
@@ -395,7 +403,7 @@
        "shown": 1,
        "units": 3
       },
-      "fingerprint": "c82ead08536791bdd7424231817355b0",
+      "fingerprint": "e14feaf5ae66dcd237f4ddcc12ca2459",
       "frozen": null,
       "incomplete": false,
       "limits": {
@@ -417,11 +425,11 @@
       "question": "palier H7",
       "reason": null,
       "scope": {
-       "id": "proj-e6a3924f7989c5dd45ae4187",
+       "id": "proj-d89d4e8650f6ef142fa70964",
        "kind": "project",
        "label": "Banc d'essai"
       },
-      "scope_fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+      "scope_fingerprint": "82588a1c9d0f5c9924039266a7acf0f8",
       "sources": [],
       "sources_available": true,
       "status": "evidence",
@@ -432,12 +440,12 @@
       "terms_truncated": false,
       "unmatched_terms": []
      },
-     "id": "ri-a613b3d9912d855a",
+     "id": "ri-842465569aeb340f",
      "key": {
       "limit": 10,
       "question": "palier H7",
       "scope": {
-       "id": "proj-e6a3924f7989c5dd45ae4187",
+       "id": "proj-d89d4e8650f6ef142fa70964",
        "kind": "project"
       }
      },
@@ -447,7 +455,7 @@
       "kind": "live"
      },
      "seal": {
-      "fingerprint": "c82ead08536791bdd7424231817355b0"
+      "fingerprint": "e14feaf5ae66dcd237f4ddcc12ca2459"
      },
      "supersedes": []
     },
@@ -456,24 +464,24 @@
      "copy": {
       "base": {
        "at": 1790100000,
-       "id": "snap-922fc2072d3df4aebcd6863a",
+       "id": "snap-66caed8608d667d6f782d643",
        "kind": "snapshot",
        "label": "Gel conception",
-       "project_id": "proj-e6a3924f7989c5dd45ae4187"
+       "project_id": "proj-d89d4e8650f6ef142fa70964"
       },
       "rows": [],
       "rows_total": 0,
       "scope": "project",
       "to": {
-       "fingerprint": "29b60a4b3a2751fbaa7bd4ef6f6dd2f5",
+       "fingerprint": "82588a1c9d0f5c9924039266a7acf0f8",
        "kind": "current",
-       "project_id": "proj-e6a3924f7989c5dd45ae4187"
+       "project_id": "proj-d89d4e8650f6ef142fa70964"
       },
       "truncated": false
      },
-     "id": "ri-4006e6ac121bc5c9",
+     "id": "ri-be031f26699a54cc",
      "key": {
-      "base": "snap-922fc2072d3df4aebcd6863a",
+      "base": "snap-66caed8608d667d6f782d643",
       "page_id": null,
       "project_id": null,
       "to": null
@@ -484,18 +492,18 @@
       "kind": "live"
      },
      "seal": {
-      "diff_sha256": "4844bd4ebe88850d89a45acec67facdead6df2e1baa1be131e5ac10eb8129926",
-      "target": "81e185841ccc07f0e98893e7c0af352e5cfe1fa0a7416f67fec68edea5bccb55"
+      "diff_sha256": "614d91810a56c6d52d8af012c2245d7afe538ad717beef56e405ab5a2a6c25c5",
+      "target": "f758fd1df4fc0d21dd1d87e544d24f5afd810e3a58356b1c81ba78a8c91a1029"
      },
      "supersedes": []
     }
    ],
    "note": "Avant fabrication",
-   "project_id": "proj-e6a3924f7989c5dd45ae4187",
+   "project_id": "proj-d89d4e8650f6ef142fa70964",
    "questions": [
     {
      "created_at": 1790100000,
-     "id": "rq-1fcdbee34f4800b3",
+     "id": "rq-c438cf3ba7adf602",
      "refs": [],
      "resolution_note": "",
      "state": "open",
@@ -503,7 +511,7 @@
      "updated_at": 1790100000
     }
    ],
-   "request_id": "07a5882bc69e4e21adc5553f82029e32",
+   "request_id": "2a39824bef9941dd8e73cbe69c1590cc",
    "rev": 12,
    "status": "draft",
    "title": "Revue conception banc",
@@ -531,7 +539,8 @@
        "rev": "int"
       },
       "reason": "null",
-      "state": "str"
+      "state": "str",
+      "target": "null"
      }
     }
    },

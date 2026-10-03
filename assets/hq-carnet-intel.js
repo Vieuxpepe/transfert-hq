@@ -47,7 +47,7 @@
     text: "Texte modifié", checked: "Case cochée ou décochée", type: "Type de bloc changé", format: "Mise en forme modifiée", ref: "Lien modifié",
     source: "Source ou citation modifiée", provenance: "Provenance modifiée", decision: "Décision modifiée", measure: "Mesure modifiée", calc: "Calcul modifié",
     drawing_version: "Version du croquis changée", image: "Image modifiée", image_group: "Groupe d'images modifié", voice: "Note vocale modifiée",
-    table: "Tableau modifié", callout: "Encadré modifié", toggle: "Bloc repliable modifié", other: "Modifié",
+    table: "Tableau modifié", callout: "Encadré modifié", toggle: "Bloc repliable modifié", portal_ref: "Cible du portail changée", portal_view: "Présentation du portail modifiée", other: "Modifié",
   };
   const FIELD_LABEL = { label: "libellé", value: "valeur", nominal: "cote nominale", tolerance: "tolérance", link: "lien", date: "date" };
   const STATE_WORD = { added: "Ajouté", changed: "Modifié", removed: "Supprimé" };

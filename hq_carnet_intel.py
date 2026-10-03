@@ -74,6 +74,18 @@ def _anchor(page_id: str, block_id: str | None) -> str:
     return "#carnet/" + page_id + ("/" + block_id if block_id else "")
 
 
+PORTAL_SNAPSHOT_KINDS = ("source", "file", "model", "media")  # the portal kinds Phase 5 already seals; snapshot/review portals stay reference-only
+
+
+def portal_refs(block: dict) -> list[dict]:
+    """The canonical references a PORTAL block adds to a snapshot's closure. Deliberately separate from ``block_refs``: a source
+    portal is a document-level card, not a citation, so it must never be counted as one (Ask, cockpit, diff all use ``block_refs``)."""
+    if block.get("type") != rich.PORTAL_TYPE or not isinstance(block.get("portal"), dict):
+        return []
+    ref = block["portal"]["ref"]
+    return [{"kind": ref["kind"], "id": ref["id"]}] if ref["kind"] in PORTAL_SNAPSHOT_KINDS else []
+
+
 # ---------------------------------------------------------------- evidence of one block (canonical refs already on that line)
 
 
@@ -281,7 +293,7 @@ def cockpit(project: dict | None, pages: list[dict], ctx: Ctx, events: list[dict
 
 # ---------------------------------------------------------------- diff (exact: stable block ids + canonical payloads)
 
-_PAYLOAD_KEYS = tuple(["asset", "group", "drawing", "voice", "table", "callout", "toggle"]) + eng.ENG_TYPES
+_PAYLOAD_KEYS = tuple(["asset", "group", "drawing", "voice", "table", "callout", "toggle", "portal"]) + eng.ENG_TYPES
 
 
 def _canon(value: Any) -> str:
@@ -315,6 +327,8 @@ def block_summary(block: dict) -> str:
         return _short(block["callout"]["title"] or block["callout"]["body"])
     if t == "toggle":
         return _short(block["toggle"]["summary"])
+    if t == "portal":  # the STORED reference only (a fixed label + the id): the target's current title is never read here
+        return _short(rich.portal_label(block["portal"])[1:-1])
     return _short(block.get("text", ""))
 
 
@@ -379,6 +393,9 @@ def classify_change(old: dict, new: dict) -> tuple[list[str], dict]:
             tags.append("voice")
         elif t in ("table", "callout", "toggle") and _canon(_payload_of(old)) != _canon(_payload_of(new)):
             tags.append(t)
+        elif t == "portal" and _canon(old["portal"]) != _canon(new["portal"]):
+            tags.append("portal_ref" if old["portal"]["ref"] != new["portal"]["ref"] else "portal_view")
+            detail["from_ref"], detail["to_ref"] = copy.deepcopy(old["portal"]["ref"]), copy.deepcopy(new["portal"]["ref"])
     if not tags:
         tags.append("other")
     return tags, detail

@@ -108,8 +108,9 @@ LEGACY_CONTENT_VERSION = 1
 TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE = "table", "callout", "toggle", "imagegroup"
 DRAWING_TYPE = "drawing"  # Phase 3: a reference to ONE immutable Dessiner stem; Dessiner owns the drawing, Carnet stores only the id
 VOICE_TYPE = "voice"  # Phase 4: a reference to ONE immutable voice asset (hq_carnet_voice); audio never enters the notebook
-STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE, DRAWING_TYPE, VOICE_TYPE)
-STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group", DRAWING_TYPE: "drawing", VOICE_TYPE: "voice"}  # block type -> payload key
+PORTAL_TYPE = "portal"  # Phase 8: a read-only window onto an object owned elsewhere; the page stores ONLY the stable reference + a presentation choice
+STRUCT_TYPES = (TABLE_TYPE, CALLOUT_TYPE, TOGGLE_TYPE, GROUP_TYPE, DRAWING_TYPE, VOICE_TYPE, PORTAL_TYPE)
+STRUCT_KEY = {TABLE_TYPE: "table", CALLOUT_TYPE: "callout", TOGGLE_TYPE: "toggle", GROUP_TYPE: "group", DRAWING_TYPE: "drawing", VOICE_TYPE: "voice", PORTAL_TYPE: "portal"}  # block type -> payload key
 BLOCK_TYPES = ("paragraph", "heading", "bullet", "number", "check", "image") + eng.ENG_TYPES + STRUCT_TYPES
 TABLE_ROWS_MAX, TABLE_COLS_MAX = 20, 10
 CELL_U16_MAX, CELL_BYTES_MAX = 200, 800
@@ -124,6 +125,11 @@ GROUP_ITEM_KEYS = {"id", "mime", "w", "h", "caption"}
 GROUPS_PER_PAGE_MAX = 16
 DRAWINGS_PER_PAGE_MAX = 32
 VOICES_PER_PAGE_MAX = 32
+PORTALS_PER_PAGE_MAX = 100
+PORTAL_KINDS = ("source", "file", "model", "media", "snapshot", "review")  # a CLOSED set; drawing stays the specialized drawing block, note/project are link-mark kinds
+PORTAL_VIEWS = ("compact", "card")
+_SNAPSHOT_ID_RE = re.compile(r"^snap-[0-9a-f]{24}\Z")  # mirrors hq_carnet_snapshots.ID_RE (pinned by a test)
+_REVIEW_ID_RE = re.compile(r"^rvw-[0-9a-f]{24}\Z")  # mirrors hq_carnet_reviews.ID_RE (pinned by a test)
 VOICE_KEYS = {"id", "mime", "dur_ms", "recorded_at"}
 VOICE_ID_RE = re.compile(r"^voice-[0-9a-f]{24}\Z")
 VOICE_MIMES = ("audio/webm", "audio/mp4", "audio/ogg")
@@ -638,6 +644,48 @@ def check_drawing(drawing: Any) -> dict:
     return {"id": drawing["id"]}
 
 
+def check_portal(portal: Any, folders: tuple[str, ...] | None = None, system_names: frozenset[str] = frozenset()) -> dict:
+    """Portal payload: EXACTLY ``{"ref": {"kind", "id"}, "view": "compact"|"card"}``. The reference is the only thing about the target
+    that the page ever stores: no title, state, revision, size, path of a copy or any resolved data (the resolver answers live).
+    ``note``/``project``/``drawing`` are refused here on purpose (link marks and the drawing block own those contracts); ``REF_KINDS``
+    is deliberately not extended. ``folders=None`` (stored data) skips root membership, like every stored reference."""
+    if not isinstance(portal, dict) or set(portal) != {"ref", "view"} or portal["view"] not in PORTAL_VIEWS:
+        raise ContentError("Portail invalide")
+    ref = portal["ref"]
+    if not isinstance(ref, dict) or set(ref) != {"kind", "id"} or ref["kind"] not in PORTAL_KINDS or not isinstance(ref["id"], str):
+        raise ContentError("Portail invalide")
+    kind, ident = ref["kind"], ref["id"]
+    if kind in ("file", "model", "media"):
+        try:
+            check_ref({"kind": kind, "id": ident}, folders, system_names)
+        except ContentError as e:
+            raise ContentError("Portail invalide") from e
+    elif kind == "source":
+        if not _EDITION_ID_RE.match(ident):
+            raise ContentError("Portail invalide")
+    elif kind == "snapshot":
+        if not _SNAPSHOT_ID_RE.match(ident):
+            raise ContentError("Portail invalide")
+    elif not _REVIEW_ID_RE.match(ident):
+        raise ContentError("Portail invalide")
+    return {"ref": {"kind": kind, "id": ident}, "view": portal["view"]}
+
+
+PORTAL_LABEL = {"source": "Source", "file": "Fichier", "model": "Modèle", "media": "Média", "snapshot": "Jalon", "review": "Dossier de revue"}
+
+
+def portal_label(portal: dict) -> str:
+    """Fixed-vocabulary text of the STORED reference only (never a resolved title)."""
+    return f"[Portail {PORTAL_LABEL[portal['ref']['kind']]} : {portal['ref']['id']}]"
+
+
+def portals_of(content: dict) -> list[dict]:
+    """The portal references of a V2 page (stored identity only), in reading order."""
+    if content.get("version") != CONTENT_VERSION:
+        return []
+    return [b["portal"]["ref"] for b in content["blocks"] if b.get("type") == PORTAL_TYPE and isinstance(b.get("portal"), dict)]
+
+
 def check_voice(voice: Any) -> dict:
     """Voice reference: EXACTLY ``{id, mime, dur_ms, recorded_at}``. ``id`` is the VOICE ASSET id (``voice-<24 hex>``), never the
     block id. ``dur_ms`` is bounded display metadata (the server cannot decode audio: byte size and quota stay authoritative);
@@ -735,7 +783,7 @@ def drawing_label(stem: str) -> str:
     return _DRAWING_SUFFIX_RE.sub("", stem) or stem
 
 
-_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group, DRAWING_TYPE: check_drawing, VOICE_TYPE: check_voice}
+_STRUCT_CHECK = {TABLE_TYPE: check_table, CALLOUT_TYPE: check_callout, TOGGLE_TYPE: check_toggle, GROUP_TYPE: check_group, DRAWING_TYPE: check_drawing, VOICE_TYPE: check_voice, PORTAL_TYPE: check_portal}
 
 
 def check_struct(kind: str, payload: Any) -> dict:
@@ -872,7 +920,7 @@ def parse_content(
     images = 0
     atoms = 0
     decisions = 0
-    tables = notes = groups = drawings = voices = derived = 0
+    tables = notes = groups = drawings = voices = derived = portals = 0
     struct_bytes = 0
     for incoming in blocks:
         if not isinstance(incoming, dict):
@@ -917,8 +965,12 @@ def parse_content(
                 raise ContentError("Bloc invalide")
             if incoming["text"] != "" or incoming.get("marks", []) != []:
                 raise ContentError("Bloc invalide")
-            sdata = check_struct(kind, incoming[key])
-            if kind == TABLE_TYPE:
+            sdata = check_portal(incoming[key], folders, system_names) if kind == PORTAL_TYPE else check_struct(kind, incoming[key])
+            if kind == PORTAL_TYPE:
+                portals += 1
+                if portals > PORTALS_PER_PAGE_MAX:
+                    raise ContentError(f"Trop de portails sur la page (max {PORTALS_PER_PAGE_MAX})")
+            elif kind == TABLE_TYPE:
                 tables += 1
                 if tables > TABLES_PER_PAGE_MAX:
                     raise ContentError(f"Trop de tableaux sur la page (max {TABLES_PER_PAGE_MAX})")
@@ -1207,6 +1259,8 @@ def _txt_struct(block: dict) -> list[str]:
         return [f"[Croquis : {drawing_label(block['drawing']['id'])}]"]
     if kind == VOICE_TYPE:
         return [voice_label(block["voice"])]
+    if kind == PORTAL_TYPE:
+        return [portal_label(block["portal"])]
     g = block["group"]  # image group: one line per child, labelled for a before/after pair
     labels = GROUP_ITEM_LABEL.get(g["layout"])
     out = []
@@ -1220,7 +1274,7 @@ def _md_cell(text: str) -> str:
     return _md_escape(text)
 
 
-def _md_struct(block: dict, asset_paths: dict[str, str] | None) -> str:
+def _md_struct(block: dict, asset_paths: dict[str, str] | None, portal_states: dict | None = None) -> str:
     kind = block["type"]
     if kind == TABLE_TYPE:
         rows = block["table"]["rows"]
@@ -1249,6 +1303,12 @@ def _md_struct(block: dict, asset_paths: dict[str, str] | None) -> str:
         return f"*\\[Croquis : {_md_escape(drawing_label(block['drawing']['id']))}\\]*"
     if kind == VOICE_TYPE:  # a text label only: the audio is never packaged into a text export
         return "*\\[" + _md_escape(voice_label(block["voice"])[1:-1]) + "\\]*"
+    if kind == PORTAL_TYPE:  # the STORED reference; the report layer may add the state resolved AT BUILD TIME (never stored in the page)
+        text = portal_label(block["portal"])[1:-1]
+        row = (portal_states or {}).get((block["portal"]["ref"]["kind"], block["portal"]["ref"]["id"]))
+        if row is not None:
+            text += (f" \u2014 \u00ab {row['title']} \u00bb" if row.get("title") and row["title"] != block["portal"]["ref"]["id"] else "") + " \u2014 " + row["state_label"]
+        return "*\\[" + _md_escape(text) + "\\]*"
     g = block["group"]
     labels = GROUP_ITEM_LABEL.get(g["layout"])
     parts = []
@@ -1389,7 +1449,7 @@ def _md_alt(text: str) -> str:
     return re.sub(r"([\\\[\]])", r"\\\1", text)
 
 
-def render_markdown(content: dict, asset_paths: dict[str, str] | None = None) -> str:
+def render_markdown(content: dict, asset_paths: dict[str, str] | None = None, portal_states: dict | None = None) -> str:
     """Deterministic Markdown for the supported structure (a snapshot).
 
     ``asset_paths`` maps an asset id to its path RELATIVE to the export package (never absolute); an image
@@ -1420,7 +1480,7 @@ def render_markdown(content: dict, asset_paths: dict[str, str] | None = None) ->
             gap = False
             continue
         if kind in STRUCT_TYPES:
-            parts.append(("struct", _md_struct(block, asset_paths), gap))
+            parts.append(("struct", _md_struct(block, asset_paths, portal_states), gap))
             gap = False
             continue
         if kind in ("calc", "measure"):

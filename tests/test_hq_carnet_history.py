@@ -1231,7 +1231,7 @@ class ParityTests(unittest.TestCase):
 class FrameworkSurfaceTests(Stage08Base):
     def test_only_the_five_operations_exist_and_share_one_flow(self):
         self.assertEqual(bulk.OPS, ("replace", "context_move", "trash", "source_migrate", "file_replace"))
-        self.assertEqual(set(hq_carnet._STAGE08), {"bulk_preview", "bulk_apply", "bulk_undo", "history_checkpoint", "history_restore", "report_build", "snapshot_create", "ask"})
+        self.assertEqual(set(hq_carnet._STAGE08), {"bulk_preview", "bulk_apply", "bulk_undo", "history_checkpoint", "history_restore", "report_build", "snapshot_create", "ask", "portal_resolve"})
 
     def test_modules_do_not_use_dangerous_primitives(self):
         root = Path(__file__).resolve().parents[1]
@@ -1241,7 +1241,7 @@ class FrameworkSurfaceTests(Stage08Base):
                 self.assertNotIn(banned, text, f"{name}: {banned}")
             imports = {line.split()[1].split(".")[0] for line in text.splitlines() if line.startswith("import ")}
             imports |= {line.split()[1].split(".")[0] for line in text.splitlines() if line.startswith("from ") and " import " in line}
-            self.assertLessEqual(imports, {"__future__", "copy", "json", "os", "re", "secrets", "time", "threading", "collections", "pathlib", "typing", "hq_state", "hq_carnet_rich", "hq_carnet_history", "hq_carnet_sources", "hq_carnet_media", "contextlib", "hq_carnet_intel", "hq_carnet_review", "hq_carnet_snapshots", "hq_carnet_ask", "hq_carnet_reviews", "hq_carnet_evidence"}, name)  # + Phase 5 + Phase 6 derivation modules
+            self.assertLessEqual(imports, {"__future__", "copy", "json", "os", "re", "secrets", "time", "threading", "collections", "pathlib", "typing", "hq_state", "hq_carnet_rich", "hq_carnet_history", "hq_carnet_sources", "hq_carnet_media", "contextlib", "hq_carnet_intel", "hq_carnet_review", "hq_carnet_snapshots", "hq_carnet_ask", "hq_carnet_reviews", "hq_carnet_evidence", "hq_carnet_portals"}, name)  # + Phase 5 + Phase 6 derivation modules + the Phase 8 read-only resolver
 
     def test_no_new_route_was_added(self):
         src = (Path(__file__).resolve().parents[1] / "iphone_bridge.py").read_text(encoding="utf-8")

@@ -2360,6 +2360,7 @@
     if (key === "image") return pickImage("photos", null);
     if (key === "camera") return pickImage("camera", null);
     if (key === "table" || key === "callout" || key === "toggle" || key === "imagegroup") return structInsert(key);
+    if (key === "portal") return portalInsert();
     if (key === "sketch") return dessinerNew();
     if (key === "scan" || key === "voice" || key === "ocr") return fieldRun(key);
     const eu = engUi();
@@ -5767,6 +5768,7 @@
     bytes: "Trop de texte structuré sur la page",
     drawings: "Trop de croquis sur la page (32 au maximum)",
     voices: "Trop de notes vocales sur la page (32 au maximum)",
+    portals: "Trop de portails sur la page (100 au maximum)",
     derived: "Trop de blocs de texte dérivé sur la page (600 au maximum)",
   };
 
@@ -5794,6 +5796,10 @@
         const f = fieldUi();
         if (f) f.renderVoice(w, p, i, b, ro);
       },
+      renderPortal: (w, p, i, b, ro, api) => {
+        const pu = portalsUi();
+        if (pu) pu.render(w, p, i, b, ro, api);
+      },
       openDrawing: (wrapper, stem) => dessinerOpen(wrapper, stem),
       inspect: (input, trigger) => inspectOpen(input, trigger),
       listDrawings: async () => {
@@ -5803,6 +5809,66 @@
     });
     Rich.setStructRenderer((d, w, type, payload, idx) => ui.structUi.render(d, w, type, payload, idx));
     return ui.structUi;
+  }
+
+  /** Phase 8: portal blocks (read-only windows onto objects owned by other modules). Lazy mount; keeps nothing but an in-memory last-state map. */
+  function portalsUi() {
+    if (ui.portals) return ui.portals;
+    const M = global.HqCarnetPortalsUi;
+    if (!M || typeof M.mount !== "function") {
+      flashMsg("Module portails non chargé");
+      return null;
+    }
+    ui.portals = M.mount({
+      doc,
+      root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { post: (payload) => request(payload) },
+      online: () => !(global.navigator && global.navigator.onLine === false),
+      timeout: (fn, ms) => global.setTimeout(fn, ms),
+      checkRef: (ref) => !!Rich.checkRef(ref),
+      list: async (kind) => {
+        if (kind === "source") {
+          const d = await apiCall("/api/carnet?sources=1", { timeoutMs: 12000 });
+          return ((d && d.editions) || []).filter((x) => x && typeof x.id === "string").map((x) => ({ id: x.id, label: (x.title || x.id) + (x.archived ? " (archivée)" : "") }));
+        }
+        const e = ui.core && ui.core.current();
+        const pid = e ? (e.latest || e.server || {}).project_id || null : null;
+        if (!pid) return [];
+        if (kind === "snapshot") {
+          const d = await apiCall("/api/carnet?snapshots=1&project=" + encodeURIComponent(pid), { timeoutMs: 12000 });
+          return ((d && d.snapshots) || []).filter((x) => x && x.integrity === "ok").map((x) => ({ id: x.id, label: x.label || x.id }));
+        }
+        const d = await apiCall("/api/carnet?reviews=1&project=" + encodeURIComponent(pid), { timeoutMs: 12000 });
+        return ((d && d.reviews) || []).filter((x) => x && typeof x.id === "string").map((x) => ({ id: x.id, label: x.title || x.id }));
+      },
+      open: (ref) => {
+        if (ref.kind === "file") return openAttachment(ref.id);
+        if (ref.kind === "source") {
+          const s = sourcesUi();
+          return s && s.openManage();
+        }
+        if (ref.kind === "snapshot") {
+          const m = intelUi();
+          return m && m.openSnapshotById(ref.id, null);
+        }
+        if (ref.kind === "review") {
+          const m = reviewsUi();
+          return m && m.openPack(ref.id, null);
+        }
+        const eu = engUi();
+        if (eu) eu.openRef(ref.kind, ref.id);
+      },
+    });
+    return ui.portals;
+  }
+
+  /** "Insérer un portail": pick an existing object first, then insert ONE normal block holding only the reference. */
+  function portalInsert() {
+    if (!curEntry()) return flashMsg(IMG_MSG.readonly);
+    if (!structUi()) return flashMsg("Blocs structurés indisponibles");
+    const pu = portalsUi();
+    if (!pu) return;
+    pu.openPicker({ title: "Insérer un portail", onPick: (p) => structInsertBlock("portal", p), onCancel: () => focusEditor(false) });
   }
 
   /** One logical edit from a structured block: typing = draft only (no re-render); a structural change = one re-render. */

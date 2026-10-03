@@ -15,7 +15,7 @@ for (const c of C.COMMANDS) assert.ok(c.label && c.hint && Array.isArray(c.keys)
 assert.deepEqual(C.CATEGORIES.map((c) => c.label), ["Écrire", "Ajouter", "Ingénierie", "Projet"]);
 const byCat = (cat) => C.COMMANDS.filter((c) => c.cat === cat).map((c) => c.label);
 assert.deepEqual(byCat("write"), ["Texte", "Titre", "Liste", "Liste numérotée", "Checklist"]);
-assert.deepEqual(byCat("add"), ["Image", "Photo", "Scanner", "Note vocale", "Lire le texte", "Tableau", "Encadré", "Section repliable", "Groupe d'images", "Croquis", "Fichier", "Dessin"]);
+assert.deepEqual(byCat("add"), ["Image", "Photo", "Scanner", "Note vocale", "Lire le texte", "Tableau", "Encadré", "Section repliable", "Groupe d'images", "Croquis", "Fichier", "Dessin", "Insérer un portail"]);
 assert.deepEqual(byCat("eng"), ["Mesure", "Calcul", "Décision"]);
 assert.deepEqual(byCat("project"), ["Tâche", "Référence", "Heure"]);
 for (const c of C.COMMANDS) {

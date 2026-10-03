@@ -25,7 +25,7 @@
   const SNAP_RE = /^snap-[0-9a-f]{24}$/;
   const FP_RE = /^[0-9a-f]{32}$/;
   const LINK_RE = /^#carnet\/page-[A-Za-z0-9_-]{1,64}\/block-[A-Za-z0-9_-]{1,64}$/;
-  const KIND_LABEL = { note: "Note", table: "Tableau", decision: "Décision", measure: "Mesure", drawing: "Croquis", callout: "Encadré", toggle: "Bloc repliable", image: "Image", source: "Source" };
+  const KIND_LABEL = { note: "Note", table: "Tableau", decision: "Décision", measure: "Mesure", drawing: "Croquis", callout: "Encadré", toggle: "Bloc repliable", image: "Image", source: "Source", portal: "Portail" };
   const STATE_LABEL = { ok: "Disponible", missing: "Introuvable", unknown: "État inconnu" };
   const LIVE_LABEL = { unchanged: "Identique dans le carnet actuel", changed: "Modifié depuis le jalon", gone: "Absent du carnet actuel" };
   const VERDICT_LABEL = { in: "Dans la tolérance", out: "Hors tolérance", none: "Sans tolérance", incompatible: "Unités incompatibles" };
@@ -191,7 +191,8 @@
       kind: card.kind,
       kindLabel: KIND_LABEL[card.kind] || "Passage",
       derived: card.class === "derived",
-      classLabel: card.class === "derived" ? "Texte dérivé" : "Écrit dans le carnet",
+      reference: card.class === "reference",
+      classLabel: card.class === "derived" ? "Texte dérivé" : card.class === "reference" ? "Référence stockée (cible non lue)" : "Écrit dans le carnet",
       pageId: card.page_id,
       pageTitle: String(card.page_title || ""),
       blockId: card.block_id || null,

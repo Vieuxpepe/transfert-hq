@@ -1086,3 +1086,24 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-rv-body p,.carnet-rv-body a,.carnet-rv-body li,.carnet-rv-body dd,.carnet-rv-body strong{overflow-wrap:anywhere}
 .carnet-rv-body .carnet-hx-row{flex-wrap:wrap}
 @media (max-width:480px){.carnet-lib-actions{gap:6px}.carnet-lib-actions button{padding-inline:9px}}
+
+/* Phase 8: portal blocks (read-only windows onto objects owned by other modules). Text states, never colour alone. */
+.carnet-pb{display:flex;gap:10px;flex-wrap:wrap;margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.carnet-pb[data-view="compact"]{padding:6px 10px;gap:6px}
+.carnet-pb-head{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 200px}
+.carnet-pb-kind{font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.carnet-pb-title{font-weight:700;overflow-wrap:anywhere}
+.carnet-pb-sub,.carnet-pb-note{font-size:.85rem;overflow-wrap:anywhere}
+.carnet-pb-state{font-size:.85rem;font-weight:600}
+.carnet-pb[data-state="missing"],.carnet-pb[data-state="corrupt"],.carnet-pb[data-state="anomaly"]{border-style:dashed}
+.carnet-pb[data-stale="1"] .carnet-pb-state{font-style:italic}
+.carnet-pb-thumb img{max-width:96px;max-height:96px;border-radius:8px;display:block}
+.carnet-pb-meta{display:grid;grid-template-columns:max-content 1fr;gap:2px 10px;margin:0;font-size:.85rem;flex:1 1 100%}
+.carnet-pb-meta dt{font-weight:600}.carnet-pb-meta dd{margin:0;overflow-wrap:anywhere}
+.carnet-pb[data-view="compact"] .carnet-pb-meta{display:none}
+.carnet-pb-bar button,.carnet-pb-picker button,.carnet-pb-inspector button{min-height:var(--carnet-tap,44px);box-sizing:border-box}
+.carnet-pb-picker,.carnet-pb-inspector{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);padding:16px}
+.carnet-pb-picker-body{background:var(--panel,#fff);color:inherit;border-radius:14px;padding:16px;max-width:min(520px,100%);width:100%;max-height:85vh;overflow:auto;display:flex;flex-direction:column;gap:10px}
+.carnet-pb-picker-list{display:flex;flex-direction:column;gap:6px}
+.carnet-pb-choice{text-align:left}
+@media print{body.carnet-printing #hq-carnet-print .carnet-pb-bar,body.carnet-printing #hq-carnet-print .carnet-pb-note{display:none}}

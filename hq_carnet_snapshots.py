@@ -330,7 +330,7 @@ def collect_refs(pages: list[dict]) -> dict:
             for b in content["blocks"]:
                 for x in rich.block_provenance_assets(b):
                     assets[x] = None
-                for ref in intel.block_refs(b):
+                for ref in intel.block_refs(b) + intel.portal_refs(b):
                     if ref["kind"] == "drawing":
                         drawings.add(ref["id"])
                     elif ref["kind"] in ("file", "model", "media"):
@@ -358,7 +358,7 @@ def build(project: dict, pages: list[dict], categories: list[dict], notebook_rev
         if content.get("version") != rich.CONTENT_VERSION:
             continue
         for b in content["blocks"]:
-            for ref in intel.block_refs(b):
+            for ref in intel.block_refs(b) + intel.portal_refs(b):
                 if ref["kind"] == "source":
                     ed = editions.get(ref["id"])
                     cited[ref["id"]] = _edition_info(ed) if ed else {"id": ref["id"], "missing": True}

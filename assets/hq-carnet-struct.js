@@ -8,6 +8,8 @@
  *   imagegroup {layout: two|three|compare, items: [{id,mime,w,h,caption}]}  2-3 DISTINCT Stage-06 assets
  *   drawing    {id}                                                         (Phase 3) ONE immutable Dessiner stem; Dessiner owns the drawing
  *   voice      {id, mime, dur_ms, recorded_at}                              (Phase 4) ONE immutable voice asset (id = voice-<24 hex>, never the block id)
+ *   portal     {ref: {kind, id}, view: compact|card}                        (Phase 8) a read-only window onto an object owned ELSEWHERE; the page stores
+ *                                                                           the stable reference + a presentation choice and NOTHING resolved
  * Every string is one line (no C0/DEL/C1 control, no U+2028/9, no unpaired surrogate) except the multi-line `body`
  * fields ("\n" only). Offsets, marks, find/replace, titles and previews never touch these blocks. No HTML anywhere.
  *
@@ -24,8 +26,13 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const TYPES = ["table", "callout", "toggle", "imagegroup", "drawing", "voice"];
-  const KEY = { table: "table", callout: "callout", toggle: "toggle", imagegroup: "group", drawing: "drawing", voice: "voice" };
+  const TYPES = ["table", "callout", "toggle", "imagegroup", "drawing", "voice", "portal"];
+  const KEY = { table: "table", callout: "callout", toggle: "toggle", imagegroup: "group", drawing: "drawing", voice: "voice", portal: "portal" };
+  const PORTALS_PER_PAGE_MAX = 100;
+  const PORTAL_KINDS = ["source", "file", "model", "media", "snapshot", "review"]; // a CLOSED set; drawing stays the drawing block, note/project are link-mark kinds
+  const PORTAL_VIEWS = ["compact", "card"];
+  const PORTAL_LABEL = { source: "Source", file: "Fichier", model: "Modèle", media: "Média", snapshot: "Jalon", review: "Dossier de revue" };
+  const PORTAL_ID_RE = { source: /^srce-[A-Za-z0-9_-]{1,64}$/, snapshot: /^snap-[0-9a-f]{24}$/, review: /^rvw-[0-9a-f]{24}$/ };
   const DRAWINGS_PER_PAGE_MAX = 32;
   const VOICES_PER_PAGE_MAX = 32;
   const VOICE_ID_RE = /^voice-[0-9a-f]{24}$/;
@@ -168,6 +175,25 @@
     return { id: v.id, mime: v.mime, dur_ms: v.dur_ms, recorded_at: v.recorded_at };
   }
 
+  /**
+   * Portal payload: EXACTLY {ref: {kind, id}, view}. file/model/media go through the injected `checkRef` (hq-carnet-rich.js: the same
+   * rules as link marks); source/snapshot/review use their owners' id patterns. note / project / drawing and anything else are refused.
+   */
+  function checkPortal(p, checkRef) {
+    if (!isObj(p) || Object.keys(p).sort().join(",") !== "ref,view" || PORTAL_VIEWS.indexOf(p.view) < 0) return null;
+    const r = p.ref;
+    if (!isObj(r) || Object.keys(r).sort().join(",") !== "id,kind" || PORTAL_KINDS.indexOf(r.kind) < 0 || typeof r.id !== "string") return null;
+    if (r.kind === "file" || r.kind === "model" || r.kind === "media") {
+      if (typeof checkRef !== "function" || !checkRef({ kind: r.kind, id: r.id })) return null;
+    } else if (!PORTAL_ID_RE[r.kind].test(r.id)) return null;
+    return { ref: { kind: r.kind, id: r.id }, view: p.view };
+  }
+
+  /** "[Portail Source : srce-…]" — the STORED reference only (same words as the server). */
+  function portalLabel(p) {
+    return "[Portail " + PORTAL_LABEL[p.ref.kind] + " : " + p.ref.id + "]";
+  }
+
   /** "[Note vocale · m:ss]" for text exports (half-up seconds, identical to the server). */
   function voiceLabel(v) {
     const secs = Math.floor((v.dur_ms + 500) / 1000);
@@ -180,13 +206,14 @@
   }
 
   /** Strict payload check of one structured block. Clean copy or null. */
-  function checkPayload(type, p, checkAsset) {
+  function checkPayload(type, p, checkAsset, checkRef) {
     if (type === "table") return checkTable(p);
     if (type === "callout") return checkCallout(p);
     if (type === "toggle") return checkToggle(p);
     if (type === "imagegroup") return checkGroup(p, checkAsset);
     if (type === "drawing") return checkDrawing(p);
     if (type === "voice") return checkVoice(p);
+    if (type === "portal") return checkPortal(p, checkRef);
     return null;
   }
 
@@ -200,7 +227,13 @@
     if (type === "callout") return [p.title, p.body].filter(Boolean);
     if (type === "toggle") return [p.summary, p.body].filter(Boolean);
     if (type === "imagegroup") return p.items.map((a) => a.caption).filter(Boolean);
-    return []; // a drawing / a voice note contributes no text of its own
+    return []; // a drawing / a voice note / a portal contributes no text of its own (portals: see searchStrings)
+  }
+
+  /** What LIBRARY SEARCH may match: `strings` plus, for a portal, its kind label and STORED identity (never a resolved title). */
+  function searchStrings(type, p) {
+    if (type === "portal") return ["Portail", PORTAL_LABEL[p.ref.kind], p.ref.id];
+    return strings(type, p);
   }
 
   function bytesOf(type, p) {
@@ -215,16 +248,18 @@
     if (type === "toggle") return [p.summary, p.body];
     if (type === "drawing") return [p.id];
     if (type === "voice") return [p.id, p.mime, p.dur_ms, p.recorded_at];
+    if (type === "portal") return [p.ref.kind, p.ref.id, p.view];
     return [GROUP_LAYOUT_ORDER.indexOf(p.layout), p.items.map((a) => [a.id, a.mime, a.w, a.h, a.caption])];
   }
 
-  function decode(type, a, checkAsset) {
+  function decode(type, a, checkAsset, checkRef) {
     if (!Array.isArray(a)) return null;
     if (type === "table") return a.length === 2 && (a[0] === 0 || a[0] === 1) ? checkTable({ header: a[0] === 1, rows: a[1] }) : null;
     if (type === "callout") return a.length === 3 && CALLOUT_KINDS[a[0]] ? checkCallout({ kind: CALLOUT_KINDS[a[0]], title: a[1], body: a[2] }) : null;
     if (type === "toggle") return a.length === 2 ? checkToggle({ summary: a[0], body: a[1] }) : null;
     if (type === "drawing") return a.length === 1 ? checkDrawing({ id: a[0] }) : null;
     if (type === "voice") return a.length === 4 ? checkVoice({ id: a[0], mime: a[1], dur_ms: a[2], recorded_at: a[3] }) : null;
+    if (type === "portal") return a.length === 3 ? checkPortal({ ref: { kind: a[0], id: a[1] }, view: a[2] }, checkRef) : null;
     if (type === "imagegroup") {
       if (a.length !== 2 || !GROUP_LAYOUT_ORDER[a[0]] || !Array.isArray(a[1])) return null;
       const items = [];
@@ -406,6 +441,7 @@
     if (type === "toggle") return ["[Section] " + p.summary].concat(p.body ? p.body.split("\n") : []);
     if (type === "drawing") return ["[Croquis : " + drawingLabel(p.id) + "]"];
     if (type === "voice") return [voiceLabel(p)];
+    if (type === "portal") return [portalLabel(p)];
     const labels = GROUP_ITEM_LABEL[p.layout];
     return p.items.map((a, n) => {
       const label = labels ? labels[n] : "Image";
@@ -434,6 +470,7 @@
     }
     if (type === "drawing") return "*\\[Croquis : " + h.esc(drawingLabel(p.id)) + "\\]*"; // a text label only: no path, URL or preview asset
     if (type === "voice") return "*\\[" + h.esc(voiceLabel(p).slice(1, -1)) + "\\]*"; // a text label only: the audio is never packaged
+    if (type === "portal") return "*\\[" + h.esc(portalLabel(p).slice(1, -1)) + "\\]*"; // the STORED reference only
     const labels = GROUP_ITEM_LABEL[p.layout];
     return p.items.map((a, n) => {
       const rel = assetPaths && assetPaths[a.id];
@@ -452,6 +489,7 @@
     TYPES, KEY, TABLE_ROWS_MAX, TABLE_COLS_MAX, CELL_U16_MAX, CELL_BYTES_MAX, TABLE_BYTES_MAX, TABLES_PER_PAGE_MAX, CALLOUT_KINDS, CALLOUT_TITLE_MAX,
     CALLOUT_BODY_MAX, CALLOUT_BODY_LINES_MAX, TOGGLE_SUMMARY_MAX, TOGGLE_BODY_MAX, TOGGLE_BODY_LINES_MAX, NOTES_PER_PAGE_MAX, GROUP_LAYOUTS,
     GROUP_LAYOUT_ORDER, GROUPS_PER_PAGE_MAX, DRAWINGS_PER_PAGE_MAX, VOICES_PER_PAGE_MAX, VOICE_ID_RE, VOICE_MIMES, VOICE_DUR_MS_MAX, STEM_RE, STRUCT_BYTES_MAX, CALLOUT_LABEL, GROUP_ITEM_LABEL,
+    PORTALS_PER_PAGE_MAX, PORTAL_KINDS, PORTAL_VIEWS, PORTAL_LABEL, checkPortal, portalLabel, searchStrings,
     checkPayload, checkTable, checkCallout, checkToggle, checkGroup, checkDrawing, checkVoice, voiceLabel, drawingLabel, clone, strings, bytesOf, utf8Len, encode, decode,
     addRow, removeRow, addCol, removeCol, cleanCell, groupFrom, groupAdd, groupRemove, groupMove, groupReplace, groupSetLayout, layoutFor, formatTsv, parseTsv, pasteGrid, txtLines, mdBlock,
   };

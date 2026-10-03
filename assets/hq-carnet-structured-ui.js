@@ -758,7 +758,7 @@
 
     // ------------------------------------------------------------------ block frame (installed as the editor's renderer)
 
-    const TITLE = { table: "Tableau", callout: "Encadré", toggle: "Section repliable", imagegroup: "Groupe d'images", drawing: "Croquis", voice: "Note vocale" };
+    const TITLE = { table: "Tableau", callout: "Encadré", toggle: "Section repliable", imagegroup: "Groupe d'images", drawing: "Croquis", voice: "Note vocale", portal: "Portail" };
 
     function render(d, wrapper, type, payload, idx) {
       const box = el("div", { class: "carnet-struct", "data-struct": type });
@@ -768,7 +768,9 @@
       else if (type === "callout") buildCallout(wrapper, payload, idx, box);
       else if (type === "toggle") buildToggle(wrapper, payload, idx, box);
       else if (type === "drawing") buildDrawing(wrapper, payload, idx, box);
-      else if (type === "voice") {
+      else if (type === "portal") {
+        if (typeof host.renderPortal === "function") host.renderPortal(wrapper, payload, idx, box, host.readOnly(), { commit, current });
+      } else if (type === "voice") {
         if (typeof host.renderVoice === "function") host.renderVoice(wrapper, payload, idx, box, host.readOnly());
       } else buildGroup(wrapper, payload, idx, box);
       if (bar) box.appendChild(bar);
@@ -777,9 +779,9 @@
       if (!host.readOnly()) {
         let armed = null;
         // A drawing block only references a drawing: removing it NEVER deletes the drawing (it stays in Dessiner).
-        const isDrawing = type === "drawing" || type === "voice";
+        const isDrawing = type === "drawing" || type === "voice" || type === "portal";
         const delLabel = isDrawing ? "Retirer du carnet" : "Supprimer le bloc";
-        const delAria = type === "voice" ? "Retirer la note vocale du carnet (l'enregistrement reste conservé dans l'historique)" : isDrawing ? "Retirer la référence au croquis du carnet (le croquis reste dans Dessiner)" : "Supprimer le bloc";
+        const delAria = type === "portal" ? "Retirer le portail du carnet (l'objet reste dans son module)" : type === "voice" ? "Retirer la note vocale du carnet (l'enregistrement reste conservé dans l'historique)" : isDrawing ? "Retirer la référence au croquis du carnet (le croquis reste dans Dessiner)" : "Supprimer le bloc";
         const del = button(delLabel, "carnet-struct-del", () => {
           if (!armed) {
             del.textContent = isDrawing ? "Confirmer le retrait" : "Confirmer la suppression";

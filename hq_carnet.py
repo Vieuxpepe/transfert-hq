@@ -52,6 +52,7 @@ import hq_carnet_history as history
 import hq_carnet_links as links
 import hq_carnet_media as media
 import hq_carnet_evidence as evidence
+import hq_carnet_portals as portals
 import hq_carnet_report as report
 import hq_carnet_restore as restore
 import hq_carnet_review as review
@@ -1518,6 +1519,7 @@ _STAGE08 = {
     "report_build": report.build,
     "snapshot_create": snapshots.create,
     "ask": review.ask,
+    "portal_resolve": portals.resolve,  # Phase 8: READ-ONLY (a POST only because 100 references do not fit a query string)
 }
 
 
@@ -1541,7 +1543,7 @@ def http_post(data: Any) -> tuple[int, dict]:
         return e.status, {"error": str(e), "code": e.code}
     except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (sources.SourceError, sources.SourceStorageError) as e:
+    except (sources.SourceError, sources.SourceStorageError, portals.PortalError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}

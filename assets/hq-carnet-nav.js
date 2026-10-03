@@ -62,7 +62,7 @@
 
   // ------------------------------------------------------------------ 2. outline
   const LABEL_MAX = 80;
-  const KIND_LABEL = { title: "Titre de la page", heading: "Titre", table: "Tableau", image: "Image", imagegroup: "Groupe d'images", drawing: "Croquis", decision: "Décision", measure: "Mesure" };
+  const KIND_LABEL = { title: "Titre de la page", heading: "Titre", table: "Tableau", image: "Image", imagegroup: "Groupe d'images", drawing: "Croquis", portal: "Portail", decision: "Décision", measure: "Mesure" };
 
   function clip(s) {
     const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
@@ -86,6 +86,10 @@
       case "drawing": {
         const f = opts && typeof opts.drawingLabel === "function" && l.struct ? opts.drawingLabel(l.struct.id) : l.struct ? l.struct.id : "";
         return f ? "Croquis · " + clip(f) : "Croquis";
+      }
+      case "portal": {
+        const k = l.struct && l.struct.ref ? { source: "Source", file: "Fichier", model: "Modèle", media: "Média", snapshot: "Jalon", review: "Dossier de revue" }[l.struct.ref.kind] : "";
+        return k ? "Portail · " + k + " · " + clip(l.struct.ref.id) : "Portail";
       }
       case "decision":
         return l.text && l.text.trim() ? "Décision · " + clip(l.text) : "Décision";
@@ -124,7 +128,7 @@
       } else if (l.type === "heading") {
         label = clip(l.text);
         if (label) kind = "heading";
-      } else if (["table", "image", "imagegroup", "drawing", "decision", "measure"].indexOf(l.type) >= 0) {
+      } else if (["table", "image", "imagegroup", "drawing", "portal", "decision", "measure"].indexOf(l.type) >= 0) {
         kind = l.type;
         label = nodeLabel(l, o);
       }

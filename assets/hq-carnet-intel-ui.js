@@ -1199,6 +1199,10 @@
 
     return {
       open, close, isOpen: () => state.open, el: () => dlg,
+      openSnapshotById: (id, opener) => {
+        open("overview", opener || null);
+        return openSnapshot(id);
+      },
       overlayActive: () => !!overlay, overlayClear: () => overlayClear(false),
       state: () => ({ tab: state.tab, project: state.project, pinned: !!state.snapView, sheet: state.sheet, overlay: !!overlay }),
     };

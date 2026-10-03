@@ -26,6 +26,7 @@ from typing import Any
 import hq_carnet_ask as ask
 import hq_carnet_media as media
 import hq_carnet_intel as intel
+import hq_carnet_portals as portals
 import hq_carnet_review as review
 import hq_carnet_evidence as evidence
 import hq_carnet_reviews as reviews
@@ -219,6 +220,17 @@ def build(data: Any) -> dict:
     for index, item in review_items:  # the stored pack + a separate observation; one unreadable pack refuses the report, nothing is guessed
         got = reviews.get(item["review_id"])
         sections[index].update(review=got["review"], integrity=got["integrity"], freshness=evidence.freshness(got["review"]))
+    refs_seen: dict[tuple[str, str], dict] = {}
+    for sec in sections:  # Phase 8: the CURRENT state of every portal in the rendered blocks, resolved in bounded batches (read-only)
+        for b in sec.get("blocks", ()):
+            if b.get("type") == rich.PORTAL_TYPE:
+                r = b["portal"]["ref"]
+                refs_seen.setdefault((r["kind"], r["id"]), {"kind": r["kind"], "id": r["id"]})
+    portal_states: dict[tuple[str, str], dict] = {}
+    pending = list(refs_seen.values())
+    for at in range(0, len(pending), portals.REFS_MAX):
+        for row in portals.resolve({"action": "portal_resolve", "refs": pending[at : at + portals.REFS_MAX]})["results"]:
+            portal_states[(row["ref"]["kind"], row["ref"]["id"])] = row
     if stale:
         raise hc.CarnetConflict({"error": "Des pages ont changé depuis la sélection — rien n'a été généré", "code": "report_stale", "stale": stale, "notebook_rev": notebook_rev})
     try:
@@ -265,7 +277,7 @@ def build(data: Any) -> dict:
                 out.append(_md_edition(ed, sec["edition_id"]))
                 continue
             out.append(f"## {label} — " + rich._md_escape(sec["page_title"]))
-            out.append(rich.render_markdown({"version": rich.CONTENT_VERSION, "blocks": sec["blocks"]}, asset_paths).rstrip("\n"))
+            out.append(rich.render_markdown({"version": rich.CONTENT_VERSION, "blocks": sec["blocks"]}, asset_paths, portal_states).rstrip("\n"))
         if include_sources and cited:
             out.append("## " + LABELS["sources_cited"])
             out.append("\n".join(_md_edition(editions.get(i), i) for i in cited))
@@ -274,7 +286,7 @@ def build(data: Any) -> dict:
     name_stem = title
     result: dict[str, Any] = {
         "ok": True, "title": title, "items": len(items), "page_revs": page_revs, "sources_rev": sstate["sources_rev"], "notebook_rev": notebook_rev,
-        "sections": [_public_section(s) for s in sections], "cited": [_public_edition(editions.get(i), i) for i in cited] if include_sources else [],
+        "sections": [_public_section(s, portal_states) for s in sections], "cited": [_public_edition(editions.get(i), i) for i in cited] if include_sources else [],
     }
     if parts is None:
         stem = rich.sanitize_stem(name_stem, "rapport")
@@ -300,7 +312,7 @@ def _public_edition(ed: dict | None, ident: str) -> dict:
     return {"id": ed["id"], "title": ed["title"], "author": ed["author"], "edition": ed["edition"], "year": ed["year"], "publisher": ed["publisher"], "identifier": ed["identifier"], "type": ed["type"], "url": ed["url"], "file_ref": ed["file_ref"]}
 
 
-def _public_section(sec: dict) -> dict:
+def _public_section(sec: dict, portal_states: dict | None = None) -> dict:
     if sec["kind"] == "project_overview":
         return {"kind": "project_overview", "label": LABELS["project_overview"], "overview": sec["overview"], "snapshot": sec["snapshot"]}
     if sec["kind"] == "review_pack":
@@ -309,4 +321,8 @@ def _public_section(sec: dict) -> dict:
         return {"kind": "ask_evidence", "label": LABELS["ask_evidence"], "ask": sec["ask"]}
     if sec["kind"] == "source":
         return {"kind": "source", "edition": _public_edition(sec["edition"], sec["edition_id"])}
-    return {"kind": sec["kind"], "label": LABELS[sec["kind"]], "page_id": sec["page_id"], "page_title": sec["page_title"], "blocks": sec["blocks"]}
+    out = {"kind": sec["kind"], "label": LABELS[sec["kind"]], "page_id": sec["page_id"], "page_title": sec["page_title"], "blocks": sec["blocks"]}
+    found = [(portal_states or {}).get((b["portal"]["ref"]["kind"], b["portal"]["ref"]["id"])) for b in sec["blocks"] if b.get("type") == rich.PORTAL_TYPE]
+    if found:  # the state resolved at build time, beside (never inside) the stored blocks
+        out["portals"] = [{"ref": r["ref"], "kind_label": r["kind_label"], "state": r["state"], "state_label": r["state_label"], "title": r["title"]} for r in found if r is not None]
+    return out

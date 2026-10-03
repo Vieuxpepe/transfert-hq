@@ -502,6 +502,7 @@
         el(doc, "p", { class: "carnet-rv-state", "data-rv-state": o.state, text: o.mark + " " + o.label + (o.reason ? " — " + o.reason : "") }),
       ];
       if (o.anomaly) kids.push(el(doc, "p", { class: "carnet-hx-warn", "data-rv": "anomaly", text: o.anomaly }));
+      if (o.target) kids.push(el(doc, "p", { class: "carnet-rv-target", "data-rv": "portal-target", "data-rv-target": o.target.state, text: o.target.label + " — distinct de l'état du bloc" }));
       if (o.frozen) kids.push(el(doc, "p", { class: "hint", text: o.frozen }));
       if (o.currentDiffers) kids.push(el(doc, "p", { class: "hint", "data-rv": "current-differs", text: o.currentDiffers }));
       return el(doc, "div", { class: "carnet-rv-obs", "data-rv-obs": o.state }, kids);
@@ -815,7 +816,13 @@
       createFromForm(!!state.adding);
     }
 
-    return { open, close, isOpen: () => state.open, addItem, el: () => dlg };
+    return {
+      open, close, isOpen: () => state.open, addItem, el: () => dlg,
+      openPack: (id, opener) => {
+        open(opener || null, null);
+        return loadPack(id);
+      },
+    };
   }
 
   return { MSG, mount };

@@ -648,7 +648,7 @@ scenario("17 command menu: the Suggéré group is additive above the untouched c
   check(g1[0] === "suggest", "Suggéré is the first group: " + g1);
   check(JSON.stringify(await itemsOf("suggest")) === JSON.stringify(["Texte", "Checklist", "Tableau", "Image"]), "after a heading: " + JSON.stringify(await itemsOf("suggest")));
   const catalogAfter = await p.evaluate(() => [...document.querySelectorAll(".carnet-cmd-item[data-carnet-cmd]")].map((n) => n.getAttribute("data-carnet-cmd")));
-  check(catalogAfter.length === 23 && JSON.stringify(catalogAfter) === JSON.stringify(baseItems.filter((x) => x !== "r")), "the 23-command catalog (20 + Phase-4 Scanner, Note vocale, Lire le texte) is unchanged and in the same order");
+  check(catalogAfter.length === 24 && JSON.stringify(catalogAfter) === JSON.stringify(baseItems.filter((x) => x !== "r")), "the 24-command catalog (20 + Phase-8 portal; was 20 + Phase-4 Scanner, Note vocale, Lire le texte) is unchanged and in the same order");
   await p.keyboard.type("tab");
   await sleep(120);
   check(!(await groups()).includes("suggest"), "typing a query shows the normal results only (no hidden ranking)");

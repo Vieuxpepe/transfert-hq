@@ -27,6 +27,7 @@ from typing import Any
 import hq_carnet_history as history
 import hq_carnet_intel as intel
 import hq_carnet_reviews as reviews
+import hq_carnet_portals as portals
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snaps
 
@@ -85,6 +86,8 @@ class World:
         self._snaps: dict[str, tuple[str, dict | None]] = {}
         self._asks: dict[str, dict] = {}
         self._files: dict[str, Any] = {}
+        self.portal_cache: dict = {}
+        self._targets: dict[tuple[str, str], dict] = {}
         self.pages = {p["id"]: p for p in self.state["pages"] if p["deleted_at"] is None}
 
     def editions(self) -> dict[str, dict]:
@@ -113,6 +116,14 @@ class World:
             except snaps.SnapshotStorageError as e:
                 raise _Unknown("drawing_unreadable") from e
         return self._files[stem]
+
+    def portal_target(self, kind: str, ident: str) -> dict:
+        """The LIVE state of a portal target (read-only, memoised for this one operation). Never part of the stored layer."""
+        key = (kind, ident)
+        if key not in self._targets:
+            row = portals.resolve_one({"kind": kind, "id": ident}, self.root, self.portal_cache)
+            self._targets[key] = {"state": row["state"], "state_label": row["state_label"], "integrity": row.get("integrity"), "title": row["title"]}
+        return self._targets[key]
 
     def project_pages(self, project_id: str) -> list[dict]:
         return [p for p in self.pages.values() if p["project_id"] == project_id]
@@ -261,7 +272,7 @@ def _snapshot_of_scope(item: dict, world: World) -> dict | None:
 
 def freshness_of(item: dict, world: World) -> dict:
     """The observation of ONE item. Never raises: any failure is the item's own ``unknown`` (with a reason)."""
-    out: dict[str, Any] = {"id": item["id"], "state": "unknown", "reason": None, "observed": None, "frozen": None, "current_differs": None, "anomaly": None}
+    out: dict[str, Any] = {"id": item["id"], "state": "unknown", "reason": None, "observed": None, "frozen": None, "current_differs": None, "anomaly": None, "target": None}
     kind = item["kind"]
     try:
         if kind in ("ask_result", "diff"):
@@ -289,6 +300,12 @@ def freshness_of(item: dict, world: World) -> dict:
                 out["anomaly"] = "drawing_bytes_changed"  # stems are immutable versions: same stem, other bytes = integrity anomaly
             if out["state"] == "changed" and kind == "snapshot":
                 out["anomaly"] = "snapshot_seal_changed"
+        portal = (item.get("copy") or {}).get("portal") if kind == "block" else None
+        if isinstance(portal, dict):  # Phase 8, layer 2: the portal BLOCK (above) and its TARGET (here) are two separate facts
+            try:
+                out["target"] = world.portal_target(portal["kind"], portal["id"])
+            except Exception:  # noqa: BLE001
+                out["target"] = {"state": "unknown", "state_label": "État inconnu", "integrity": None, "title": portal.get("id", "")}
     except _Unknown as e:
         out["state"], out["reason"] = "unknown", e.reason
         if out["frozen"] is None and item["scope"]["kind"] != "live":
@@ -303,7 +320,7 @@ def freshness(pack: dict) -> dict:
     try:
         world = World()
     except Exception:  # noqa: BLE001
-        rows = {i["id"]: {"id": i["id"], "state": "unknown", "reason": "notebook_unavailable", "observed": None, "frozen": None, "current_differs": None, "anomaly": None} for i in pack["items"]}
+        rows = {i["id"]: {"id": i["id"], "state": "unknown", "reason": "notebook_unavailable", "observed": None, "frozen": None, "current_differs": None, "anomaly": None, "target": None} for i in pack["items"]}
         return {"items": rows, "counts": _counts(rows.values())}
     rows = {i["id"]: freshness_of(i, world) for i in pack["items"]}
     return {"items": rows, "counts": _counts(rows.values())}
@@ -380,6 +397,8 @@ def build_item(spec: Any, pack: dict) -> dict:
         item["seal"] = _block_obs(block)
         item["label"] = _short(intel.block_summary(block), reviews.LABEL_MAX)
         cp: dict[str, Any] = {"page_title": _short(_page_title(page), 200), "type": block["type"], "summary": intel.block_summary(block)}
+        if block["type"] == rich.PORTAL_TYPE:  # the captured IDENTITY of the target (no title/state): its current state is observed separately
+            cp["portal"] = {"kind": block["portal"]["ref"]["kind"], "id": block["portal"]["ref"]["id"]}
         if kind == "decision":
             cp.update(text=_short(block["text"]), at=block["decision"]["at"])
         elif kind == "measurement":
@@ -605,8 +624,10 @@ def render_markdown(pack: dict, fresh: dict | None, integrity: str = "ok") -> st
 
 def _item_md(i: dict, o: dict | None) -> list[str]:
     state = LABELS["state"][o["state"]] if o else "Non observé"
-    out = [f"### {LABELS['kind'][i['kind']]} — {_md(i['label'])}", "", f"- Fraîcheur : {state}" + ("" if not o or not o.get("anomaly") else " — anomalie d'intégrité"),
-           f"- Ajoutée : {_utc(i['added_at'])}", "- Copie capturée à la sélection (jamais actualisée) :"]
+    out = [f"### {LABELS['kind'][i['kind']]} — {_md(i['label'])}", "", f"- Fraîcheur : {state}" + ("" if not o or not o.get("anomaly") else " — anomalie d'intégrité")]
+    if o and o.get("target"):
+        out.append(f"- Cible du portail (état actuel, distinct du bloc) : {_md(o['target']['state_label'])}")
+    out += [f"- Ajoutée : {_utc(i['added_at'])}", "- Copie capturée à la sélection (jamais actualisée) :"]
     cp = i["copy"] or {}
     if i["kind"] == "ask_result":
         out.append(f"  - Question : {_md(i['key']['question'])}")

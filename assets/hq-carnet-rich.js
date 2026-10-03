@@ -49,8 +49,8 @@
   const STRUCT_TYPES = Struct ? Struct.TYPES.slice() : [];
   const ENG_TYPES = Eng ? Eng.ENG_TYPES.slice() : [];
   const BLOCK_TYPES = ["paragraph", "heading", "bullet", "number", "check", "image"].concat(ENG_TYPES, STRUCT_TYPES);
-  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j", drawing: "w", voice: "v" };
-  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup", w: "drawing", v: "voice" };
+  const TYPE_CODE = { paragraph: "p", heading: "h", bullet: "b", number: "n", check: "c", image: "i", calc: "k", measure: "m", decision: "d", table: "t", callout: "o", toggle: "g", imagegroup: "j", drawing: "w", voice: "v", portal: "q" };
+  const CODE_TYPE = { p: "paragraph", h: "heading", b: "bullet", n: "number", c: "check", i: "image", k: "calc", m: "measure", d: "decision", t: "table", o: "callout", g: "toggle", j: "imagegroup", w: "drawing", v: "voice", q: "portal" };
   const ASSET_ID = /^asset-[0-9a-f]{24}$/;
   const ASSET_MIMES = ["image/jpeg", "image/png", "image/webp"];
   const ASSET_LONG_SIDE_MAX = 2560; // server: hq_carnet_media.MAX_LONG_SIDE
@@ -395,7 +395,7 @@
   }
 
   function structPayload(type, p) {
-    return Struct && isStructType(type) ? Struct.checkPayload(type, p, checkAsset) : null;
+    return Struct && isStructType(type) ? Struct.checkPayload(type, p, checkAsset, checkRef) : null;
   }
 
   function isAtom(l) {
@@ -514,7 +514,7 @@
    * does not decode contributes nothing. "" when the page has none (the common case costs one regexp test).
    */
   function structSearchText(fmt) {
-    if (!Struct || typeof fmt !== "string" || !/\["[togj]",0,/.test(fmt)) return "";
+    if (!Struct || typeof fmt !== "string" || !/\["[togjq]",0,/.test(fmt)) return "";
     if (STRUCT_TEXT_CACHE.has(fmt)) return STRUCT_TEXT_CACHE.get(fmt);
     let out = [];
     try {
@@ -523,8 +523,8 @@
         for (const row of arr) {
           const type = Array.isArray(row) ? CODE_TYPE[row[0]] : null;
           if (!type || !isStructType(type) || row.length !== 4) continue;
-          const p = Struct.decode(type, row[3], checkAsset);
-          if (p) out = out.concat(Struct.strings(type, p));
+          const p = Struct.decode(type, row[3], checkAsset, checkRef);
+          if (p) out = out.concat(Struct.searchStrings(type, p));
         }
       }
     } catch (_) {
@@ -550,6 +550,7 @@
     let groups = 0;
     let drawings = 0;
     let voices = 0;
+    let portals = 0;
     let derived = 0;
     let images = 0;
     let bytes = 0;
@@ -563,6 +564,7 @@
         images += l.struct.items.length;
       } else if (l.type === "drawing") drawings += 1;
       else if (l.type === "voice") voices += 1;
+      else if (l.type === "portal") portals += 1;
       else notes += 1;
       bytes += Struct.bytesOf(l.type, l.struct);
     }
@@ -571,6 +573,7 @@
     if (groups > Struct.GROUPS_PER_PAGE_MAX) return "groups";
     if (drawings > Struct.DRAWINGS_PER_PAGE_MAX) return "drawings";
     if (voices > Struct.VOICES_PER_PAGE_MAX) return "voices";
+    if (portals > Struct.PORTALS_PER_PAGE_MAX) return "portals";
     if (derived > DERIVED_BLOCKS_PER_PAGE_MAX) return "derived";
     if (images > IMAGES_PER_PAGE_MAX) return "images";
     if (bytes > Struct.STRUCT_BYTES_MAX) return "bytes";
@@ -696,7 +699,7 @@
       }
       let payload = null;
       if (isStructType(type)) {
-        const sp = Struct.decode(type, row[3], checkAsset);
+        const sp = Struct.decode(type, row[3], checkAsset, checkRef);
         if (!sp || base[i] !== "" || row[2].length) return null;
         out.push(newLine("", type, false, [], idAt(i), null, null, sp));
         continue;

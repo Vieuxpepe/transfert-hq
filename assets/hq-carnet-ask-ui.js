@@ -289,7 +289,7 @@
     }
 
     function cardNode(c) {
-      const li = el(doc, "li", { class: "carnet-hx-item carnet-ask-card", "data-ask-card": c.id, "data-ask-class": c.derived ? "derived" : "primary", "data-ask-kind": c.kind });
+      const li = el(doc, "li", { class: "carnet-hx-item carnet-ask-card", "data-ask-card": c.id, "data-ask-class": c.derived ? "derived" : c.reference ? "reference" : "primary", "data-ask-kind": c.kind });
       li.appendChild(el(doc, "p", { class: "carnet-ask-meta" }, [
         el(doc, "span", { class: "carnet-chip", text: c.kindLabel }),
         el(doc, "span", { class: "carnet-chip" + (c.derived ? " carnet-ask-derived" : ""), text: c.classLabel }),
