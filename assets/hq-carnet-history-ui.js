@@ -772,6 +772,7 @@
 
     function itemLabel(it) {
       if (it.kind === "source") return "Source — " + (it.label || it.edition_id);
+      if (it.kind === "project_overview") return "Synthèse du projet — " + (it.label || "");
       const k = { note: "Note", measure: "Mesure", decision: "Décision", photo: "Photo", drawing: "Croquis" }[it.kind];
       return k + " — " + (it.label || it.page_id);
     }
@@ -830,7 +831,7 @@
     }
 
     function wireItems(items) {
-      return items.map((it) => (it.kind === "source" ? { kind: "source", edition_id: it.edition_id } : it.kind === "note" ? { kind: "note", page_id: it.page_id, rev: it.rev } : { kind: it.kind, page_id: it.page_id, rev: it.rev, block_id: it.block_id }));
+      return items.map((it) => (it.kind === "project_overview" ? (it.snapshot_id ? { kind: it.kind, snapshot_id: it.snapshot_id } : { kind: it.kind, project_id: it.project_id, fingerprint: it.fingerprint }) : it.kind === "source" ? { kind: "source", edition_id: it.edition_id } : it.kind === "note" ? { kind: "note", page_id: it.page_id, rev: it.rev } : { kind: it.kind, page_id: it.page_id, rev: it.rev, block_id: it.block_id }));
     }
 
     async function buildReport(exportOpts) {
@@ -873,6 +874,22 @@
       return wrap;
     }
 
+    function printOverview(hostEl, sec) {
+      const ov = sec.overview || {};
+      const c = ov.counts || {};
+      hostEl.appendChild(el(doc, "h2", { text: sec.label + " — " + ((ov.project && ov.project.name) || "Sans projet") }));
+      if (sec.snapshot) hostEl.appendChild(el(doc, "p", { text: "Jalon figé : " + sec.snapshot.label + " — " + when(sec.snapshot.created_at) }));
+      hostEl.appendChild(el(doc, "p", { text: "Notes " + c.pages + " · Décisions " + c.decisions + " · Mesures " + c.measurements + " (hors tolérance : " + c.out_of_tolerance + ") · Images " + c.images + " · Croquis " + c.drawings + " · Sources " + c.sources }));
+      if ((ov.decisions || []).length) {
+        hostEl.appendChild(el(doc, "h3", { text: "Journal des décisions" }));
+        hostEl.appendChild(el(doc, "ul", null, ov.decisions.map((d) => el(doc, "li", { text: when(d.at) + " — " + d.text + " · " + d.page_title }))));
+      }
+      for (const s of ov.series || []) {
+        hostEl.appendChild(el(doc, "h3", { text: s.label + (s.unit ? " (" + s.unit + ")" : "") }));
+        hostEl.appendChild(el(doc, "ul", null, s.points.map((p) => el(doc, "li", { text: when(p.at) + " — " + p.value + " — " + ({ in: "dans la tolérance", out: "hors tolérance", none: "sans tolérance", incompatible: "unités incompatibles" }[p.verdict] || "") }))));
+      }
+    }
+
     function printReport() {
       const res = state.report.result;
       if (!res || !Array.isArray(res.sections)) return;
@@ -885,6 +902,10 @@
           const e = sec.edition || {};
           hostEl.appendChild(el(doc, "h2", { text: "Source — " + (e.title || "") }));
           hostEl.appendChild(el(doc, "p", { text: [e.author, e.edition, e.year, e.publisher].filter((x) => x).join(" · ") }));
+          continue;
+        }
+        if (sec.kind === "project_overview") {
+          printOverview(hostEl, sec);
           continue;
         }
         hostEl.appendChild(el(doc, "h2", { text: sec.label + " — " + sec.page_title }));
@@ -1083,8 +1104,20 @@
       }
     }
 
+    /** Phase 5: the cockpit adds a derived project overview (live, pinned by fingerprint, or a frozen snapshot) to the report. */
+    function addExternal(item) {
+      const r = state.report;
+      if (!isObj(item) || item.kind !== "project_overview" || r.items.length >= ITEMS_MAX) return false;
+      const key = item.snapshot_id ? "s:" + item.snapshot_id : "p:" + item.project_id + ":" + item.fingerprint;
+      if (r.items.some((x) => x.kind === "project_overview" && (x.snapshot_id ? "s:" + x.snapshot_id : "p:" + x.project_id + ":" + x.fingerprint) === key)) return true;
+      r.items.push({ kind: item.kind, snapshot_id: item.snapshot_id, project_id: item.project_id, fingerprint: item.fingerprint, label: String(item.label || "").slice(0, 100) });
+      r.result = null;
+      return true;
+    }
+
     return {
       open,
+      addExternal,
       close,
       isOpen: () => state.open,
       el: () => dlg,

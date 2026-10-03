@@ -20,19 +20,23 @@ page export; otherwise it is only returned.
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 import hq_carnet_media as media
+import hq_carnet_intel as intel
+import hq_carnet_review as review
 import hq_carnet_rich as rich
+import hq_carnet_snapshots as snapshots
 import hq_carnet_sources as sources
 import hq_state
 
 ITEMS_MAX = 200
 TITLE_MAX = 120
-KINDS = ("note", "measure", "decision", "photo", "drawing", "source")  # a drawing is its OWN kind: never a photo
+KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview")  # a drawing is its OWN kind: never a photo
 BLOCK_KIND = {"measure": "measure", "decision": "decision", "photo": "image", "drawing": "drawing"}
 LABELS = {
-    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source",
+    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet",
     "sources_cited": "Sources citées", "default_title": "Rapport",
 }
 FIELD_LABELS = (("author", "Auteur"), ("edition", "Édition"), ("year", "Année"), ("publisher", "Éditeur"), ("identifier", "Identifiant"), ("type", "Type"), ("url", "Lien"), ("file_ref", "Fichier"))
@@ -57,6 +61,15 @@ def _item(raw: Any) -> dict:
         if set(raw) != {"kind", "edition_id"} or not isinstance(raw["edition_id"], str) or not sources._ID_RE["srce"].match(raw["edition_id"]):
             raise _err("Élément de rapport invalide")
         return {"kind": kind, "edition_id": raw["edition_id"]}
+    if kind == "project_overview":
+        # LIVE (pinned by the fingerprint of the project's page revisions) or FROZEN (an immutable snapshot id)
+        if set(raw) == {"kind", "snapshot_id"} and isinstance(raw["snapshot_id"], str) and snapshots.ID_RE.match(raw["snapshot_id"]):
+            return {"kind": kind, "snapshot_id": raw["snapshot_id"]}
+        if (set(raw) == {"kind", "project_id", "fingerprint"} and isinstance(raw["project_id"], str)
+                and (raw["project_id"] == "none" or hc._ID_RE["proj"].match(raw["project_id"]))
+                and isinstance(raw["fingerprint"], str) and re.match(r"^[0-9a-f]{32}\Z", raw["fingerprint"])):
+            return {"kind": kind, "project_id": raw["project_id"], "fingerprint": raw["fingerprint"]}
+        raise _err("Élément de rapport invalide")
     keys = {"kind", "page_id", "rev"} | (set() if kind == "note" else {"block_id"})
     if set(raw) != keys or not isinstance(raw["page_id"], str) or not hc._ID_RE["page"].match(raw["page_id"]) or not hc._is_int(raw["rev"]) or raw["rev"] < 1:
         raise _err("Élément de rapport invalide")
@@ -121,6 +134,7 @@ def build(data: Any) -> dict:
         if filename is not None and (not isinstance(filename, str) or len(filename) > 200):
             raise _err("Nom de fichier invalide")
     sections: list[dict] = []
+    overview_items: list[tuple[int, dict]] = []
     stale: list[str] = []
     page_revs: dict[str, int] = {}
     with hq_state.path_lock(hc._path()):  # ONE consistent snapshot of the notebook
@@ -129,6 +143,10 @@ def build(data: Any) -> dict:
         for item in items:
             if item["kind"] == "source":
                 sections.append({"kind": "source", "edition_id": item["edition_id"]})
+                continue
+            if item["kind"] == "project_overview":
+                overview_items.append((len(sections), item))
+                sections.append({"kind": "project_overview"})
                 continue
             page = pages.get(item["page_id"])
             if page is None:
@@ -154,6 +172,16 @@ def build(data: Any) -> dict:
                 blocks = [copy.deepcopy(found)]
             sections.append({"kind": item["kind"], "page_id": page["id"], "page_title": ptitle, "blocks": blocks})
         notebook_rev = state["notebook_rev"]
+    for index, item in overview_items:  # derived views, computed after the page capture; a changed project is STALE, never silently newer
+        if "snapshot_id" in item:
+            ov = review.snapshot_cockpit(item["snapshot_id"], trusted=True)
+            sections[index].update(overview=ov, snapshot=ov["snapshot"])
+        else:
+            ov = review.cockpit(item["project_id"])
+            if ov["fingerprint"] != item["fingerprint"]:
+                stale.append(item["project_id"])
+                continue
+            sections[index].update(overview=ov, snapshot=None)
     if stale:
         raise hc.CarnetConflict({"error": "Des pages ont changé depuis la sélection — rien n'a été généré", "code": "report_stale", "stale": stale, "notebook_rev": notebook_rev})
     try:
@@ -181,6 +209,10 @@ def build(data: Any) -> dict:
         out = ["# " + rich._md_escape(title)]
         for sec in sections:
             label = LABELS[sec["kind"]]
+            if sec["kind"] == "project_overview":
+                out.append(f"## {label} — " + rich._md_escape(sec["overview"]["project"]["name"] or "Sans projet"))
+                out.append(intel.render_overview_markdown(sec["overview"], sec["snapshot"], heading=False))
+                continue
             if sec["kind"] == "source":
                 ed = sec["edition"]
                 out.append(f"## {label} — " + rich._md_escape(ed["title"] if ed else sec["edition_id"]))
@@ -223,6 +255,8 @@ def _public_edition(ed: dict | None, ident: str) -> dict:
 
 
 def _public_section(sec: dict) -> dict:
+    if sec["kind"] == "project_overview":
+        return {"kind": "project_overview", "label": LABELS["project_overview"], "overview": sec["overview"], "snapshot": sec["snapshot"]}
     if sec["kind"] == "source":
         return {"kind": "source", "edition": _public_edition(sec["edition"], sec["edition_id"])}
     return {"kind": sec["kind"], "label": LABELS[sec["kind"]], "page_id": sec["page_id"], "page_title": sec["page_title"], "blocks": sec["blocks"]}

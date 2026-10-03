@@ -1,0 +1,984 @@
+{
+ "baselines": {
+  "checkpoints": [
+   {
+    "at": 1790100000.0,
+    "id": "hev-ef17f4a8189776251a054441",
+    "kind": "checkpoint",
+    "label": "avant essai",
+    "page_id": "page-5aba572f7e5067aa2021388a",
+    "page_rev": 2
+   }
+  ],
+  "latest_checkpoint": {
+   "at": 1790100000.0,
+   "id": "hev-ef17f4a8189776251a054441",
+   "kind": "checkpoint",
+   "label": "avant essai",
+   "page_id": "page-5aba572f7e5067aa2021388a",
+   "page_rev": 2
+  },
+  "latest_snapshot": {
+   "at": 1790100000,
+   "id": "snap-2dd6f9627dd5d0b69f8142d6",
+   "integrity": "ok",
+   "kind": "snapshot",
+   "label": "Gel conception",
+   "project_id": "proj-27ff67430af40dd7d4961c8a"
+  },
+  "ok": true,
+  "resolved": {
+   "at": 1790200000,
+   "checkpoint": {
+    "at": 1790100000.0,
+    "id": "hev-ef17f4a8189776251a054441",
+    "kind": "checkpoint",
+    "label": "avant essai",
+    "page_id": "page-5aba572f7e5067aa2021388a",
+    "page_rev": 2
+   },
+   "snapshot": {
+    "at": 1790100000,
+    "id": "snap-2dd6f9627dd5d0b69f8142d6",
+    "integrity": "ok",
+    "kind": "snapshot",
+    "label": "Gel conception",
+    "project_id": "proj-27ff67430af40dd7d4961c8a"
+   }
+  },
+  "snapshots": [
+   {
+    "at": 1790100000,
+    "id": "snap-2dd6f9627dd5d0b69f8142d6",
+    "integrity": "ok",
+    "kind": "snapshot",
+    "label": "Gel conception",
+    "project_id": "proj-27ff67430af40dd7d4961c8a"
+   }
+  ]
+ },
+ "cockpit": {
+  "activity": [
+   {
+    "at": 1790100000.0,
+    "block_id": null,
+    "kind": "checkpoint",
+    "label": "avant essai",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790100000.0,
+    "block_id": null,
+    "kind": "page",
+    "label": "Seconde note",
+    "page_id": "page-340a349cee13efbc61f7b139"
+   },
+   {
+    "at": 1790100000.0,
+    "block_id": null,
+    "kind": "page",
+    "label": "Banc d'essai arbre (rév. B)",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000050,
+    "block_id": "block-13647ee54ee0635ff956b9d8",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000040,
+    "block_id": "block-69dc53d639dd1adb0e96fb7b",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000030,
+    "block_id": "block-c5c71b0ab71ccba4118ef81a",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000020,
+    "block_id": "block-6937dec79a7ca0e08dd697f1",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   }
+  ],
+  "counts": {
+   "decisions": 0,
+   "drawings": 2,
+   "files": 0,
+   "images": 0,
+   "measurements": 4,
+   "out_of_tolerance": 2,
+   "pages": 2,
+   "sources": 0,
+   "voices": 0
+  },
+  "decisions": [],
+  "decisions_total": 0,
+  "drawings": [
+   {
+    "refs": [
+     {
+      "block_id": "block-7141ea392a8ab3fb83769725",
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre (rév. B)"
+     }
+    ],
+    "refs_total": 1,
+    "state": "missing",
+    "stem": "plan-2"
+   },
+   {
+    "refs": [
+     {
+      "block_id": "block-1000b8245828d4f5103b1a7f",
+      "page_id": "page-340a349cee13efbc61f7b139",
+      "page_title": "Seconde note"
+     }
+    ],
+    "refs_total": 1,
+    "state": "missing",
+    "stem": "plan-9"
+   }
+  ],
+  "files": [],
+  "fingerprint": "2dc807f9e26537066b00f78f650e6d6b",
+  "history_available": true,
+  "limits": {
+   "decisions": 500,
+   "diff_items": 500,
+   "pages_scanned": 256,
+   "points_per_series": 1000,
+   "recent_activity": 100,
+   "recent_notes": 50,
+   "refs_per_item": 20,
+   "series": 200
+  },
+  "measurements": {
+   "in": 2,
+   "incompatible": 0,
+   "none": 0,
+   "out": 2,
+   "total": 4
+  },
+  "notebook_rev": 4,
+  "ok": true,
+  "project": {
+   "archived": false,
+   "id": "proj-27ff67430af40dd7d4961c8a",
+   "name": "Banc d'essai"
+  },
+  "recent_notes": [
+   {
+    "anchor": "#carnet/page-340a349cee13efbc61f7b139",
+    "category_id": null,
+    "page_id": "page-340a349cee13efbc61f7b139",
+    "project_id": "proj-27ff67430af40dd7d4961c8a",
+    "title": "Seconde note",
+    "updated_at": 1790100000.0
+   },
+   {
+    "anchor": "#carnet/page-5aba572f7e5067aa2021388a",
+    "category_id": null,
+    "page_id": "page-5aba572f7e5067aa2021388a",
+    "project_id": "proj-27ff67430af40dd7d4961c8a",
+    "title": "Banc d'essai arbre (rév. B)",
+    "updated_at": 1790100000.0
+   }
+  ],
+  "series": [
+   {
+    "band": {
+     "state": "variable"
+    },
+    "key": "ø arbre\u0000mm",
+    "label": "Ø arbre",
+    "out": 2,
+    "points": [
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-6937dec79a7ca0e08dd697f1",
+      "at": 1790000020,
+      "block_id": "block-6937dec79a7ca0e08dd697f1",
+      "deviation": "0.2",
+      "hi": "10.02",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "9.98",
+      "mode": "sym",
+      "nominal": {
+       "u": "mm",
+       "v": "10"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre (rév. B)",
+      "tol": {
+       "t": "0.02",
+       "u": "mm"
+      },
+      "unit": "mm",
+      "value": "10.2",
+      "verdict": "out"
+     },
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-c5c71b0ab71ccba4118ef81a",
+      "at": 1790000030,
+      "block_id": "block-c5c71b0ab71ccba4118ef81a",
+      "deviation": "0.04",
+      "hi": "10.02",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "9.98",
+      "mode": "sym",
+      "nominal": {
+       "u": "mm",
+       "v": "10"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre (rév. B)",
+      "tol": {
+       "t": "0.02",
+       "u": "mm"
+      },
+      "unit": "mm",
+      "value": "10.04",
+      "verdict": "out"
+     },
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-69dc53d639dd1adb0e96fb7b",
+      "at": 1790000040,
+      "block_id": "block-69dc53d639dd1adb0e96fb7b",
+      "deviation": "0.03",
+      "hi": "10.05",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "9.95",
+      "mode": "sym",
+      "nominal": {
+       "u": "mm",
+       "v": "10"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre (rév. B)",
+      "tol": {
+       "t": "0.05",
+       "u": "mm"
+      },
+      "unit": "mm",
+      "value": "10.03",
+      "verdict": "in"
+     }
+    ],
+    "points_total": 3,
+    "truncated": false,
+    "unit": "mm"
+   },
+   {
+    "band": {
+     "hi": "0.395",
+     "lo": "0.393",
+     "state": "exact",
+     "unit": "in"
+    },
+    "key": "ø arbre\u0000in",
+    "label": "Ø arbre",
+    "out": 0,
+    "points": [
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-13647ee54ee0635ff956b9d8",
+      "at": 1790000050,
+      "block_id": "block-13647ee54ee0635ff956b9d8",
+      "deviation": "0.001",
+      "hi": "0.395",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "0.393",
+      "mode": "sym",
+      "nominal": {
+       "u": "in",
+       "v": "0.394"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre (rév. B)",
+      "tol": {
+       "t": "0.001",
+       "u": "in"
+      },
+      "unit": "in",
+      "value": "0.395",
+      "verdict": "in"
+     }
+    ],
+    "points_total": 1,
+    "truncated": false,
+    "unit": "in"
+   }
+  ],
+  "series_total": 2,
+  "snapshots": [
+   {
+    "created_at": 1790100000,
+    "fingerprint": "93c3670426368cd8d2d7b2a4490e0cdb",
+    "id": "snap-2dd6f9627dd5d0b69f8142d6",
+    "integrity": "ok",
+    "label": "Gel conception",
+    "note": "avant fabrication",
+    "notebook_rev": 4,
+    "pages": 2,
+    "project_id": "proj-27ff67430af40dd7d4961c8a",
+    "project_name": "Banc d'essai"
+   }
+  ],
+  "snapshots_available": true,
+  "snapshots_total": 1,
+  "sources": [],
+  "tasks": {
+   "available": false,
+   "reason": "no_canonical_project_association"
+  },
+  "truncated": {
+   "decisions": false,
+   "pages": false,
+   "points": false,
+   "series": false
+  }
+ },
+ "diff_checkpoint": {
+  "base": {
+   "at": 1790100000.0,
+   "id": "hev-ef17f4a8189776251a054441",
+   "kind": "checkpoint",
+   "label": "avant essai",
+   "page_id": "page-5aba572f7e5067aa2021388a",
+   "page_rev": 2
+  },
+  "diff": {
+   "added": [
+    {
+     "id": "block-5310bfb816d140dab3fa0896",
+     "summary": "Ajout après revue",
+     "type": "paragraph"
+    }
+   ],
+   "changed": [
+    {
+     "after": "Banc d'essai arbre (rév. B)",
+     "before": "Banc d'essai arbre",
+     "detail": {},
+     "id": "block-63ea7899ca84f60164bd811f",
+     "tags": [
+      "text"
+     ],
+     "type": "paragraph"
+    },
+    {
+     "after": "Ø arbre : 10.2 mm",
+     "before": "Ø arbre : 10.01 mm",
+     "detail": {
+      "fields": [
+       "value"
+      ]
+     },
+     "id": "block-6937dec79a7ca0e08dd697f1",
+     "tags": [
+      "measure"
+     ],
+     "type": "measure"
+    },
+    {
+     "after": "plan-2",
+     "before": "plan-1",
+     "detail": {
+      "from_stem": "plan-1",
+      "to_stem": "plan-2"
+     },
+     "id": "block-7141ea392a8ab3fb83769725",
+     "tags": [
+      "drawing_version"
+     ],
+     "type": "drawing"
+    }
+   ],
+   "counts": {
+    "added": 1,
+    "changed": 3,
+    "removed": 1
+   },
+   "mode": "blocks",
+   "removed": [
+    {
+     "after_id": "block-63ea7899ca84f60164bd811f",
+     "id": "block-ae8386efd09e3b327a8b9a71",
+     "summary": "Retenir l'alésage H7",
+     "type": "decision"
+    }
+   ],
+   "states": {
+    "block-5310bfb816d140dab3fa0896": "added",
+    "block-63ea7899ca84f60164bd811f": "changed",
+    "block-6937dec79a7ca0e08dd697f1": "changed",
+    "block-7141ea392a8ab3fb83769725": "changed"
+   },
+   "truncated": false,
+   "unchanged": 3
+  },
+  "note": "La comparaison est exacte (identifiant de bloc + contenu). Un bloc dont l'identifiant a changé — par exemple recréé par une restauration — apparaît comme supprimé puis ajouté. Les déplacements de blocs ne sont pas signalés. Aucun auteur n'est enregistré.",
+  "ok": true,
+  "page_id": "page-5aba572f7e5067aa2021388a",
+  "scope": "page",
+  "to": {
+   "kind": "current",
+   "page_id": "page-5aba572f7e5067aa2021388a",
+   "page_rev": 3,
+   "trashed": false
+  }
+ },
+ "diff_snapshot": {
+  "base": {
+   "at": 1790100000,
+   "id": "snap-2dd6f9627dd5d0b69f8142d6",
+   "kind": "snapshot",
+   "label": "Gel conception",
+   "project_id": "proj-27ff67430af40dd7d4961c8a"
+  },
+  "counts": {
+   "added": 0,
+   "changed": 1,
+   "removed": 0,
+   "unchanged": 1
+  },
+  "note": "La comparaison est exacte (identifiant de bloc + contenu). Un bloc dont l'identifiant a changé — par exemple recréé par une restauration — apparaît comme supprimé puis ajouté. Les déplacements de blocs ne sont pas signalés. Aucun auteur n'est enregistré.",
+  "ok": true,
+  "pages": [
+   {
+    "counts": {
+     "added": 1,
+     "changed": 3,
+     "removed": 1
+    },
+    "diff": {
+     "added": [
+      {
+       "id": "block-5310bfb816d140dab3fa0896",
+       "summary": "Ajout après revue",
+       "type": "paragraph"
+      }
+     ],
+     "changed": [
+      {
+       "after": "Banc d'essai arbre (rév. B)",
+       "before": "Banc d'essai arbre",
+       "detail": {},
+       "id": "block-63ea7899ca84f60164bd811f",
+       "tags": [
+        "text"
+       ],
+       "type": "paragraph"
+      },
+      {
+       "after": "Ø arbre : 10.2 mm",
+       "before": "Ø arbre : 10.01 mm",
+       "detail": {
+        "fields": [
+         "value"
+        ]
+       },
+       "id": "block-6937dec79a7ca0e08dd697f1",
+       "tags": [
+        "measure"
+       ],
+       "type": "measure"
+      },
+      {
+       "after": "plan-2",
+       "before": "plan-1",
+       "detail": {
+        "from_stem": "plan-1",
+        "to_stem": "plan-2"
+       },
+       "id": "block-7141ea392a8ab3fb83769725",
+       "tags": [
+        "drawing_version"
+       ],
+       "type": "drawing"
+      }
+     ],
+     "counts": {
+      "added": 1,
+      "changed": 3,
+      "removed": 1
+     },
+     "mode": "blocks",
+     "removed": [
+      {
+       "after_id": "block-63ea7899ca84f60164bd811f",
+       "id": "block-ae8386efd09e3b327a8b9a71",
+       "summary": "Retenir l'alésage H7",
+       "type": "decision"
+      }
+     ],
+     "states": {
+      "block-5310bfb816d140dab3fa0896": "added",
+      "block-63ea7899ca84f60164bd811f": "changed",
+      "block-6937dec79a7ca0e08dd697f1": "changed",
+      "block-7141ea392a8ab3fb83769725": "changed"
+     },
+     "truncated": false,
+     "unchanged": 3
+    },
+    "page_id": "page-5aba572f7e5067aa2021388a",
+    "rev_after": 3,
+    "rev_before": 2,
+    "status": "changed",
+    "title": "Banc d'essai arbre (rév. B)"
+   },
+   {
+    "counts": {
+     "added": 0,
+     "changed": 0,
+     "removed": 0
+    },
+    "diff": null,
+    "page_id": "page-340a349cee13efbc61f7b139",
+    "rev_after": 2,
+    "rev_before": 2,
+    "status": "unchanged",
+    "title": "Seconde note"
+   }
+  ],
+  "scope": "project",
+  "to": {
+   "fingerprint": "2dc807f9e26537066b00f78f650e6d6b",
+   "kind": "current",
+   "project_id": "proj-27ff67430af40dd7d4961c8a"
+  }
+ },
+ "snapshot_cockpit": {
+  "activity": [
+   {
+    "at": 1790100000.0,
+    "block_id": null,
+    "kind": "page",
+    "label": "Seconde note",
+    "page_id": "page-340a349cee13efbc61f7b139"
+   },
+   {
+    "at": 1790100000.0,
+    "block_id": null,
+    "kind": "page",
+    "label": "Banc d'essai arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000050,
+    "block_id": "block-13647ee54ee0635ff956b9d8",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000040,
+    "block_id": "block-69dc53d639dd1adb0e96fb7b",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000030,
+    "block_id": "block-c5c71b0ab71ccba4118ef81a",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000020,
+    "block_id": "block-6937dec79a7ca0e08dd697f1",
+    "kind": "measure",
+    "label": "Ø arbre",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   },
+   {
+    "at": 1790000010,
+    "block_id": "block-ae8386efd09e3b327a8b9a71",
+    "kind": "decision",
+    "label": "Retenir l'alésage H7",
+    "page_id": "page-5aba572f7e5067aa2021388a"
+   }
+  ],
+  "counts": {
+   "decisions": 1,
+   "drawings": 2,
+   "files": 1,
+   "images": 0,
+   "measurements": 4,
+   "out_of_tolerance": 1,
+   "pages": 2,
+   "sources": 0,
+   "voices": 0
+  },
+  "decisions": [
+   {
+    "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-ae8386efd09e3b327a8b9a71",
+    "at": 1790000010,
+    "block_id": "block-ae8386efd09e3b327a8b9a71",
+    "evidence": [
+     {
+      "id": "Inbox/a.pdf",
+      "kind": "file",
+      "state": "ok"
+     }
+    ],
+    "page_id": "page-5aba572f7e5067aa2021388a",
+    "page_title": "Banc d'essai arbre",
+    "text": "Retenir l'alésage H7"
+   }
+  ],
+  "decisions_total": 1,
+  "drawings": [
+   {
+    "refs": [
+     {
+      "block_id": "block-7141ea392a8ab3fb83769725",
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre"
+     }
+    ],
+    "refs_total": 1,
+    "state": "ok",
+    "stem": "plan-1"
+   },
+   {
+    "refs": [
+     {
+      "block_id": "block-1000b8245828d4f5103b1a7f",
+      "page_id": "page-340a349cee13efbc61f7b139",
+      "page_title": "Seconde note"
+     }
+    ],
+    "refs_total": 1,
+    "state": "missing",
+    "stem": "plan-9"
+   }
+  ],
+  "files": [
+   {
+    "kind": "file",
+    "path": "Inbox/a.pdf",
+    "refs": [
+     {
+      "block_id": "block-ae8386efd09e3b327a8b9a71",
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre"
+     }
+    ],
+    "refs_total": 1,
+    "state": "ok"
+   }
+  ],
+  "fingerprint": "93c3670426368cd8d2d7b2a4490e0cdb",
+  "limits": {
+   "decisions": 500,
+   "diff_items": 500,
+   "pages_scanned": 256,
+   "points_per_series": 1000,
+   "recent_activity": 100,
+   "recent_notes": 50,
+   "refs_per_item": 20,
+   "series": 200
+  },
+  "measurements": {
+   "in": 3,
+   "incompatible": 0,
+   "none": 0,
+   "out": 1,
+   "total": 4
+  },
+  "notebook_rev": 4,
+  "ok": true,
+  "project": {
+   "archived": false,
+   "id": "proj-27ff67430af40dd7d4961c8a",
+   "name": "Banc d'essai"
+  },
+  "recent_notes": [
+   {
+    "anchor": "#carnet/page-340a349cee13efbc61f7b139",
+    "category_id": null,
+    "page_id": "page-340a349cee13efbc61f7b139",
+    "project_id": "proj-27ff67430af40dd7d4961c8a",
+    "title": "Seconde note",
+    "updated_at": 1790100000.0
+   },
+   {
+    "anchor": "#carnet/page-5aba572f7e5067aa2021388a",
+    "category_id": null,
+    "page_id": "page-5aba572f7e5067aa2021388a",
+    "project_id": "proj-27ff67430af40dd7d4961c8a",
+    "title": "Banc d'essai arbre",
+    "updated_at": 1790100000.0
+   }
+  ],
+  "series": [
+   {
+    "band": {
+     "state": "variable"
+    },
+    "key": "ø arbre\u0000mm",
+    "label": "Ø arbre",
+    "out": 1,
+    "points": [
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-6937dec79a7ca0e08dd697f1",
+      "at": 1790000020,
+      "block_id": "block-6937dec79a7ca0e08dd697f1",
+      "deviation": "0.01",
+      "hi": "10.02",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "9.98",
+      "mode": "sym",
+      "nominal": {
+       "u": "mm",
+       "v": "10"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre",
+      "tol": {
+       "t": "0.02",
+       "u": "mm"
+      },
+      "unit": "mm",
+      "value": "10.01",
+      "verdict": "in"
+     },
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-c5c71b0ab71ccba4118ef81a",
+      "at": 1790000030,
+      "block_id": "block-c5c71b0ab71ccba4118ef81a",
+      "deviation": "0.04",
+      "hi": "10.02",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "9.98",
+      "mode": "sym",
+      "nominal": {
+       "u": "mm",
+       "v": "10"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre",
+      "tol": {
+       "t": "0.02",
+       "u": "mm"
+      },
+      "unit": "mm",
+      "value": "10.04",
+      "verdict": "out"
+     },
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-69dc53d639dd1adb0e96fb7b",
+      "at": 1790000040,
+      "block_id": "block-69dc53d639dd1adb0e96fb7b",
+      "deviation": "0.03",
+      "hi": "10.05",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "9.95",
+      "mode": "sym",
+      "nominal": {
+       "u": "mm",
+       "v": "10"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre",
+      "tol": {
+       "t": "0.05",
+       "u": "mm"
+      },
+      "unit": "mm",
+      "value": "10.03",
+      "verdict": "in"
+     }
+    ],
+    "points_total": 3,
+    "truncated": false,
+    "unit": "mm"
+   },
+   {
+    "band": {
+     "hi": "0.395",
+     "lo": "0.393",
+     "state": "exact",
+     "unit": "in"
+    },
+    "key": "ø arbre\u0000in",
+    "label": "Ø arbre",
+    "out": 0,
+    "points": [
+     {
+      "anchor": "#carnet/page-5aba572f7e5067aa2021388a/block-13647ee54ee0635ff956b9d8",
+      "at": 1790000050,
+      "block_id": "block-13647ee54ee0635ff956b9d8",
+      "deviation": "0.001",
+      "hi": "0.395",
+      "label": "Ø arbre",
+      "link": null,
+      "lo": "0.393",
+      "mode": "sym",
+      "nominal": {
+       "u": "in",
+       "v": "0.394"
+      },
+      "page_id": "page-5aba572f7e5067aa2021388a",
+      "page_title": "Banc d'essai arbre",
+      "tol": {
+       "t": "0.001",
+       "u": "in"
+      },
+      "unit": "in",
+      "value": "0.395",
+      "verdict": "in"
+     }
+    ],
+    "points_total": 1,
+    "truncated": false,
+    "unit": "in"
+   }
+  ],
+  "series_total": 2,
+  "snapshot": {
+   "created_at": 1790100000,
+   "fingerprint": "93c3670426368cd8d2d7b2a4490e0cdb",
+   "id": "snap-2dd6f9627dd5d0b69f8142d6",
+   "integrity": "ok",
+   "label": "Gel conception",
+   "note": "avant fabrication",
+   "notebook_rev": 4,
+   "pages": 2,
+   "project_id": "proj-27ff67430af40dd7d4961c8a",
+   "project_name": "Banc d'essai"
+  },
+  "snapshot_refs": {
+   "assets": {
+    "missing": 0,
+    "total": 0
+   },
+   "drawings": {
+    "missing": 1,
+    "total": 2
+   },
+   "files": {
+    "missing": 0,
+    "total": 1
+   },
+   "sources": {
+    "missing": 0,
+    "total": 0
+   },
+   "voices": {
+    "missing": 0,
+    "total": 0
+   }
+  },
+  "sources": [],
+  "tasks": {
+   "available": false,
+   "reason": "no_canonical_project_association"
+  },
+  "truncated": {
+   "decisions": false,
+   "pages": false,
+   "points": false,
+   "series": false
+  }
+ },
+ "snapshots": {
+  "invalid": 0,
+  "limits": {
+   "bytes": 2097152,
+   "per_project": 50,
+   "store_bytes": 104857600
+  },
+  "ok": true,
+  "snapshots": [
+   {
+    "created_at": 1790100000,
+    "fingerprint": "93c3670426368cd8d2d7b2a4490e0cdb",
+    "id": "snap-2dd6f9627dd5d0b69f8142d6",
+    "integrity": "ok",
+    "label": "Gel conception",
+    "note": "avant fabrication",
+    "notebook_rev": 4,
+    "pages": 2,
+    "project_id": "proj-27ff67430af40dd7d4961c8a",
+    "project_name": "Banc d'essai"
+   }
+  ]
+ },
+ "verify": {
+  "counts": {
+   "appeared": 0,
+   "missing": 0,
+   "modified": 1,
+   "still_missing": 1,
+   "unchanged": 1
+  },
+  "id": "snap-2dd6f9627dd5d0b69f8142d6",
+  "integrity": "ok",
+  "ok": true,
+  "refs": {
+   "drawings": [
+    {
+     "now": {
+      "sha256": "2b5442799fccc3af2e7e790017697373913b7afcac933d72fb5876de994f659a",
+      "size": 7,
+      "state": "ok"
+     },
+     "ref": "plan-1",
+     "status": "modified",
+     "was": {
+      "sha256": "afbf9d0f3560b0fd7795e81c42a0a79ee6b6fc67e064f77826aee642cad28d91",
+      "size": 7,
+      "state": "ok"
+     }
+    },
+    {
+     "now": {
+      "sha256": null,
+      "size": null,
+      "state": "missing"
+     },
+     "ref": "plan-9",
+     "status": "still_missing",
+     "was": {
+      "sha256": null,
+      "size": null,
+      "state": "missing"
+     }
+    }
+   ],
+   "files": [
+    {
+     "now": {
+      "sha256": "14bcd090baf31edba64e9cbd8cdfc15f943344aa72cb3675ad8e91bfcbce03ad",
+      "size": 15,
+      "state": "ok"
+     },
+     "ref": "Inbox/a.pdf",
+     "status": "unchanged",
+     "was": {
+      "sha256": "14bcd090baf31edba64e9cbd8cdfc15f943344aa72cb3675ad8e91bfcbce03ad",
+      "size": 15,
+      "state": "ok"
+     }
+    }
+   ]
+  }
+ }
+}

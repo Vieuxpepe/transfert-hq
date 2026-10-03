@@ -53,7 +53,9 @@ import hq_carnet_links as links
 import hq_carnet_media as media
 import hq_carnet_report as report
 import hq_carnet_restore as restore
+import hq_carnet_review as review
 import hq_carnet_rich as rich
+import hq_carnet_snapshots as snapshots
 import hq_carnet_sources as sources
 import hq_carnet_voice as voice
 import hq_state
@@ -174,6 +176,7 @@ def bind(**kwargs: Any) -> None:
         media.bind(**kwargs)  # Stage 06: image storage shares the root
         voice.bind(**kwargs)  # Phase 4: voice-note storage shares the root
         history.bind(**kwargs)  # Stage 08: the history file shares the root and clock
+        snapshots.bind(**kwargs)  # Phase 5: the write-once snapshot store shares the root and clock
         _ready = _cb.get("root") is not None
 
 
@@ -1378,9 +1381,14 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
     """``query`` is ``parse_qs`` output. Accepted (one at a time): ``meta=1`` (page metadata), ``sources=1`` (Stage 05),
     ``history=1[&page=<page-id>]`` and ``backlinks=<kind>&id=<id>`` (Stage 08, read-only, nothing is written)."""
     try:
-        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "id"}
+        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "id", "cockpit", "snapshots", "snapshot", "verify", "view", "baselines", "diff", "base", "to", "project", "at"}
         if extra:
             raise CarnetError("Paramètre inconnu")
+        if any(len(v) != 1 for v in query.values()):
+            raise CarnetError("Paramètre invalide")
+        phase5 = _phase5_get(query)
+        if phase5 is not None:
+            return 200, phase5
         if "history" in query:
             if query["history"] != ["1"] or (set(query) - {"history", "page"}) or ("page" in query and len(query["page"]) != 1):
                 raise CarnetError("history invalide")
@@ -1402,17 +1410,58 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
                 raise CarnetError("meta invalide")
             meta = True
         return 200, get_notebook(meta=meta)
-    except history.HistoryError as e:
+    except (history.HistoryError, snapshots.SnapshotError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (CarnetStorageError, history.HistoryStorageError) as e:
+    except (CarnetStorageError, history.HistoryStorageError, snapshots.SnapshotStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except OSError:
         # Never echo OS error text: it can contain absolute paths.
         return 503, {"error": "Carnet inaccessible", "code": "storage_error"}
+
+
+def _phase5_get(query: dict[str, list[str]]) -> dict | None:
+    """Phase 5 read-only views. Each form accepts EXACTLY its own keys; ``None`` means "not a Phase 5 query"."""
+    keys = set(query)
+    one = lambda k: query[k][0]  # noqa: E731
+    if "cockpit" in keys:
+        if keys != {"cockpit"}:
+            raise CarnetError("cockpit invalide")
+        return review.cockpit(one("cockpit"))
+    if "snapshots" in keys:
+        if query["snapshots"] != ["1"] or keys - {"snapshots", "project"}:
+            raise CarnetError("snapshots invalide")
+        project = one("project") if "project" in keys else None
+        if project is not None and not _ID_RE["proj"].match(project):
+            raise CarnetError("Projet invalide")
+        return snapshots.list_snapshots(project)
+    if "snapshot" in keys:
+        if keys - {"snapshot", "verify", "view"} or ("verify" in keys and "view" in keys):
+            raise CarnetError("snapshot invalide")
+        if "verify" in keys:
+            if query["verify"] != ["1"]:
+                raise CarnetError("verify invalide")
+            return snapshots.verify(one("snapshot"))
+        view = one("view") if "view" in keys else "cockpit"
+        if view == "cockpit":
+            return review.snapshot_cockpit(one("snapshot"))
+        if view == "full":
+            return {"ok": True, **snapshots.get(one("snapshot"))}
+        raise CarnetError("view invalide")
+    if "baselines" in keys:
+        if query["baselines"] != ["1"] or keys - {"baselines", "project", "page", "at"}:
+            raise CarnetError("baselines invalide")
+        return review.baselines(one("project") if "project" in keys else None, one("page") if "page" in keys else None, one("at") if "at" in keys else None)
+    if "diff" in keys:
+        if query["diff"] != ["1"] or keys - {"diff", "base", "to", "page", "project"} or "base" not in keys:
+            raise CarnetError("diff invalide")
+        return review.diff(one("base"), one("to") if "to" in keys else None, one("page") if "page" in keys else None, one("project") if "project" in keys else None)
+    if keys & {"verify", "view", "base", "to", "project", "at"}:
+        raise CarnetError("Paramètre inconnu")
+    return None
 
 
 _STAGE08 = {
@@ -1422,6 +1471,7 @@ _STAGE08 = {
     "history_checkpoint": restore.checkpoint,
     "history_restore": restore.restore,
     "report_build": report.build,
+    "snapshot_create": snapshots.create,
 }
 
 
@@ -1439,9 +1489,9 @@ def http_post(data: Any) -> tuple[int, dict]:
         return 200, mutate(data)
     except (CarnetConflict, sources.SourceConflict) as e:
         return e.status, e.payload
-    except history.HistoryError as e:
+    except (history.HistoryError, snapshots.SnapshotError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except history.HistoryStorageError as e:
+    except (history.HistoryStorageError, snapshots.SnapshotStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
@@ -1597,6 +1647,10 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             stems = stems | history.referenced_drawings(hist_data)
         except (UnicodeDecodeError, ValueError):
             hist_valid = False
+    snap_closure = snapshots.closure(root)  # Phase 5: the write-once freezes and the media they pinned travel with the backup
+    refs = refs | snap_closure["assets"]
+    voices = voices | snap_closure["voices"]
+    stems = stems | snap_closure["stems"]
     drawings_report: dict | None = None
     if stems:
         # Dessiner owns the drawings (the legacy Inbox/ backup copies them). Carnet only follows ONE hop: the Stage-06 underlay
@@ -1612,7 +1666,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         drawings_report = {"referenced": len(stems), "missing": found["missing"], "invalid": found["invalid"], "underlays": len(found["ids"])}
         if found["invalid"]:
             valid = False
-    if payload is None and src_payload is None and hist_payload is None:
+    if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"]:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
         try:
@@ -1631,6 +1685,16 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         _write_exclusive(dest_dir / sources.FILE_NAME, src_payload)
     if hist_payload is not None:
         _write_exclusive(dest_dir / history.FILE_NAME, hist_payload)
+    snap_report: dict | None = None
+    if snap_closure["files"] or not snap_closure["valid"]:
+        if snap_closure["files"]:
+            (dest_dir / snapshots.SNAP_DIR).mkdir(parents=True, exist_ok=True)
+            snap_bytes = snapshots.copy_to(root, dest_dir / snapshots.SNAP_DIR, snap_closure["files"])
+        else:
+            snap_bytes = 0
+        snap_report = {"count": len(snap_closure["files"]), "bytes": snap_bytes, "valid": bool(snap_closure["valid"])}
+        if not snap_closure["valid"]:
+            valid = False
     assets_report: dict | None = None
     if refs:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
@@ -1646,6 +1710,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["sources"] = {"bytes": len(src_payload), "valid": bool(src_valid)}
     if hist_payload is not None:  # ... and when there is no history
         out["history"] = {"bytes": len(hist_payload), "valid": bool(hist_valid)}
+    if snap_report is not None:  # ... and when there are no snapshots
+        out["snapshots"] = snap_report
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
     if drawings_report is not None:  # ... and when there are no drawing references
