@@ -393,4 +393,19 @@ await m.clear();
 assert.deepEqual(await m.list(), []);
 groups += 1;
 
+// Network recovery has ONE global listener (the host's), fanned out to module UIs: no module registers its own window "online" handler.
+{
+  const { readdirSync } = await import("node:fs");
+  const dir = new URL("../assets/", import.meta.url);
+  const owners = [];
+  for (const name of readdirSync(dir).filter((n) => /^hq-carnet.*\.js$/.test(n))) {
+    const src = readFileSync(new URL(name, dir), "utf8");
+    if (/addEventListener\(\s*["']online["']/.test(src)) owners.push(name);
+  }
+  assert.deepEqual(owners, ["hq-carnet.js"], "exactly one module owns the window online listener: " + owners.join(","));
+  const fieldUi = readFileSync(new URL("hq-carnet-field-ui.js", dir), "utf8");
+  assert.ok(/host\.onOnline\(/.test(fieldUi), "the field UI subscribes through the host");
+  groups += 1;
+}
+
 console.log(`check_hq_carnet_field: ${groups} groups ok`);

@@ -5512,6 +5512,9 @@
   // The host side is thin: it owns the page, the single edit path and the target of an insertion. The capture surfaces live in
   // hq-carnet-field-ui.js; their pure decisions in hq-carnet-field.js. A capture never writes anything by itself: it ends in fieldInsert().
 
+  /** Subscribers of network recovery (module UIs that mount lazily): the ONE global "online" listener below fans out to them. */
+  const onlineSubs = [];
+
   function fieldUi() {
     if (ui.fieldUi) return ui.fieldUi;
     const M = global.HqCarnetFieldUi;
@@ -5520,6 +5523,7 @@
     ui.fieldUi = M.mount({
       win: global,
       doc,
+      onOnline: (fn) => onlineSubs.push(fn),
       field: F,
       rich: Rich,
       media: Media,
@@ -6824,9 +6828,17 @@
       if (ui.phase === "ready") ui.core.flushAll({ keepalive: true });
     });
     global.addEventListener("online", () => {
-      if (ui.phase !== "ready") return;
-      ui.core.retryAll();
-      if (ui.active) ui.core.poll();
+      if (ui.phase === "ready") {
+        ui.core.retryAll();
+        if (ui.active) ui.core.poll();
+      }
+      for (const fn of onlineSubs.slice()) {
+        try {
+          fn();
+        } catch (_) {
+          /* one subscriber never blocks the others */
+        }
+      }
     });
     if (typeof MutationObserver === "function" && doc.body) {
       new MutationObserver(() => {

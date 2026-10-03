@@ -1885,7 +1885,8 @@
         S.banner = null;
       }
 
-      win.addEventListener("online", () => {
+      // Network recovery is fanned out by the host (ONE window "online" listener for the whole Carnet): subscribe, never listen globally here.
+      host.onOnline(() => {
         if (S.sheet) say("Connexion rétablie : vous pouvez reprendre l'envoi");
       });
 
