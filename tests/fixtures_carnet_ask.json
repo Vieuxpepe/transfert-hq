@@ -1,0 +1,502 @@
+{
+ "empty": {
+  "cards": [],
+  "counts": {
+   "evidence": 0,
+   "matched": 0,
+   "pages": 1,
+   "units": 0
+  },
+  "fingerprint": "a1a6da1cb69d0cc3f42de1a275ec7560",
+  "frozen": null,
+  "incomplete": false,
+  "limits": {
+   "cards": 20,
+   "cards_default": 10,
+   "cited_in": 5,
+   "excerpt_chars": 240,
+   "pages_scanned": 256,
+   "partial_cards": 5,
+   "question_chars": 300,
+   "refs_per_card": 20,
+   "terms": 12,
+   "units_scanned": 40000
+  },
+  "note": "Aucune réponse n'est générée : seules les preuves du carnet sont listées, telles qu'elles sont écrites. Aucun auteur, statut, approbation ni justification n'est déduit.",
+  "notebook_rev": 3,
+  "ok": true,
+  "partial": false,
+  "question": "le la de",
+  "reason": "stop_words_only",
+  "scope": {
+   "id": "proj-96e845c9b6d2ba16206b70d1",
+   "kind": "project",
+   "label": "Banc d'essai"
+  },
+  "scope_fingerprint": "991941107d0789ea1f715b941f14cd83",
+  "sources_available": true,
+  "status": "empty_query",
+  "terms": [],
+  "terms_truncated": false,
+  "unmatched_terms": []
+ },
+ "evidence": {
+  "cards": [
+   {
+    "block_id": "block-82f040de47ca97c38a444f9e",
+    "class": "primary",
+    "coverage": 1.0,
+    "excerpt": "Le couple de serrage du palier avant est de 45 N·m",
+    "id": "ask-feaa6ef0e89fb26f",
+    "kind": "note",
+    "link": "#carnet/page-e17135f1b26966a6b021bbbe/block-82f040de47ca97c38a444f9e",
+    "marks": [
+     [
+      3,
+      9
+     ],
+     [
+      13,
+      20
+     ],
+     [
+      24,
+      30
+     ],
+     [
+      31,
+      36
+     ]
+    ],
+    "matched": [
+     "couple",
+     "serrage",
+     "palier",
+     "avant"
+    ],
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 45 N·m",
+    "provenance": null,
+    "refs": [],
+    "score": 3.508
+   }
+  ],
+  "counts": {
+   "derived_shown": 0,
+   "evidence": 1,
+   "matched": 4,
+   "pages": 1,
+   "shown": 1,
+   "units": 4
+  },
+  "fingerprint": "0edba9668f0e6af1bc8b9ccd0f789227",
+  "frozen": null,
+  "incomplete": false,
+  "limits": {
+   "cards": 20,
+   "cards_default": 10,
+   "cited_in": 5,
+   "excerpt_chars": 240,
+   "pages_scanned": 256,
+   "partial_cards": 5,
+   "question_chars": 300,
+   "refs_per_card": 20,
+   "terms": 12,
+   "units_scanned": 40000
+  },
+  "note": "Aucune réponse n'est générée : seules les preuves du carnet sont listées, telles qu'elles sont écrites. Aucun auteur, statut, approbation ni justification n'est déduit.",
+  "notebook_rev": 3,
+  "ok": true,
+  "partial": false,
+  "question": "couple de serrage palier avant",
+  "reason": null,
+  "scope": {
+   "id": "proj-96e845c9b6d2ba16206b70d1",
+   "kind": "project",
+   "label": "Banc d'essai"
+  },
+  "scope_fingerprint": "991941107d0789ea1f715b941f14cd83",
+  "sources": [],
+  "sources_available": true,
+  "status": "evidence",
+  "terms": [
+   "couple",
+   "serrage",
+   "palier",
+   "avant"
+  ],
+  "terms_truncated": false,
+  "unmatched_terms": []
+ },
+ "frozen": {
+  "cards": [
+   {
+    "block_id": "block-a995bfcef788f6340ed992d8",
+    "class": "derived",
+    "coverage": 1.0,
+    "excerpt": "serrage palier arrière 35 Nm",
+    "id": "ask-888504a9d7cc84fc",
+    "kind": "note",
+    "link": null,
+    "live_link": "#carnet/page-e17135f1b26966a6b021bbbe/block-a995bfcef788f6340ed992d8",
+    "live_state": "unchanged",
+    "marks": [
+     [
+      0,
+      7
+     ],
+     [
+      8,
+      14
+     ]
+    ],
+    "matched": [
+     "serrage",
+     "palier"
+    ],
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 40 N·m",
+    "provenance": {
+     "derived": true,
+     "kind": "ocr",
+     "label": "Texte extrait d'un scan (OCR)",
+     "source": {
+      "block": {
+       "block_id": "block-fbddc6aa6aac6c822af3afc9",
+       "link": null,
+       "page_id": "page-e17135f1b26966a6b021bbbe",
+       "page_title": "Le couple de serrage du palier avant est de 40 N·m",
+       "type": "image"
+      },
+      "current_state": "ok",
+      "id": "asset-44af7d5ab9f2241afb52c47e",
+      "kind": "asset",
+      "state": "ok"
+     }
+    },
+    "refs": [],
+    "score": 1.844
+   },
+   {
+    "block_id": "block-82f040de47ca97c38a444f9e",
+    "class": "primary",
+    "coverage": 1.0,
+    "excerpt": "Le couple de serrage du palier avant est de 40 N·m",
+    "id": "ask-feaa6ef0e89fb26f",
+    "kind": "note",
+    "link": null,
+    "live_link": null,
+    "live_state": "changed",
+    "marks": [
+     [
+      13,
+      20
+     ],
+     [
+      24,
+      30
+     ]
+    ],
+    "matched": [
+     "serrage",
+     "palier"
+    ],
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 40 N·m",
+    "provenance": null,
+    "refs": [],
+    "score": 1.332
+   }
+  ],
+  "counts": {
+   "derived_shown": 1,
+   "evidence": 2,
+   "matched": 4,
+   "pages": 1,
+   "shown": 2,
+   "units": 4
+  },
+  "fingerprint": "d8de146e019e468d185e34ebb3faa57a",
+  "frozen": {
+   "created_at": 1790100000,
+   "fingerprint": "1e1ce17763df5306b2ec1967023841ea",
+   "label": "Gel conception",
+   "project_id": "proj-96e845c9b6d2ba16206b70d1",
+   "snapshot_id": "snap-39edb907b040fd64a0b7dae8"
+  },
+  "incomplete": false,
+  "limits": {
+   "cards": 20,
+   "cards_default": 10,
+   "cited_in": 5,
+   "excerpt_chars": 240,
+   "pages_scanned": 256,
+   "partial_cards": 5,
+   "question_chars": 300,
+   "refs_per_card": 20,
+   "terms": 12,
+   "units_scanned": 40000
+  },
+  "note": "Aucune réponse n'est générée : seules les preuves du carnet sont listées, telles qu'elles sont écrites. Aucun auteur, statut, approbation ni justification n'est déduit.",
+  "notebook_rev": 3,
+  "ok": true,
+  "partial": false,
+  "question": "serrage palier",
+  "reason": null,
+  "scope": {
+   "id": "snap-39edb907b040fd64a0b7dae8",
+   "kind": "snapshot",
+   "label": "Gel conception"
+  },
+  "scope_fingerprint": "1e1ce17763df5306b2ec1967023841ea",
+  "sources": [],
+  "sources_available": true,
+  "status": "evidence",
+  "terms": [
+   "serrage",
+   "palier"
+  ],
+  "terms_truncated": false,
+  "unmatched_terms": []
+ },
+ "insufficient": {
+  "cards": [],
+  "counts": {
+   "derived_shown": 0,
+   "evidence": 0,
+   "matched": 0,
+   "pages": 1,
+   "shown": 0,
+   "units": 4
+  },
+  "fingerprint": "67ad23fbec3627ff77f0f78fa8268cd3",
+  "frozen": null,
+  "incomplete": false,
+  "limits": {
+   "cards": 20,
+   "cards_default": 10,
+   "cited_in": 5,
+   "excerpt_chars": 240,
+   "pages_scanned": 256,
+   "partial_cards": 5,
+   "question_chars": 300,
+   "refs_per_card": 20,
+   "terms": 12,
+   "units_scanned": 40000
+  },
+  "note": "Aucune réponse n'est générée : seules les preuves du carnet sont listées, telles qu'elles sont écrites. Aucun auteur, statut, approbation ni justification n'est déduit.",
+  "notebook_rev": 3,
+  "ok": true,
+  "partial": false,
+  "question": "turbine hydraulique",
+  "reason": "no_match",
+  "scope": {
+   "id": "proj-96e845c9b6d2ba16206b70d1",
+   "kind": "project",
+   "label": "Banc d'essai"
+  },
+  "scope_fingerprint": "991941107d0789ea1f715b941f14cd83",
+  "sources": [],
+  "sources_available": true,
+  "status": "insufficient",
+  "terms": [
+   "turbine",
+   "hydraulique"
+  ],
+  "terms_truncated": false,
+  "unmatched_terms": [
+   "turbine",
+   "hydraulique"
+  ]
+ },
+ "partial": {
+  "cards": [
+   {
+    "block_id": "block-a995bfcef788f6340ed992d8",
+    "class": "derived",
+    "coverage": 0.5,
+    "excerpt": "serrage palier arrière 35 Nm",
+    "id": "ask-888504a9d7cc84fc",
+    "kind": "note",
+    "link": "#carnet/page-e17135f1b26966a6b021bbbe/block-a995bfcef788f6340ed992d8",
+    "marks": [
+     [
+      0,
+      7
+     ],
+     [
+      8,
+      14
+     ]
+    ],
+    "matched": [
+     "serrage",
+     "palier"
+    ],
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 45 N·m",
+    "provenance": {
+     "derived": true,
+     "kind": "ocr",
+     "label": "Texte extrait d'un scan (OCR)",
+     "source": {
+      "block": {
+       "block_id": "block-fbddc6aa6aac6c822af3afc9",
+       "link": "#carnet/page-e17135f1b26966a6b021bbbe/block-fbddc6aa6aac6c822af3afc9",
+       "page_id": "page-e17135f1b26966a6b021bbbe",
+       "page_title": "Le couple de serrage du palier avant est de 45 N·m",
+       "type": "image"
+      },
+      "id": "asset-44af7d5ab9f2241afb52c47e",
+      "kind": "asset",
+      "state": "ok"
+     }
+    },
+    "refs": [],
+    "score": 1.844
+   },
+   {
+    "block_id": "block-82f040de47ca97c38a444f9e",
+    "class": "primary",
+    "coverage": 0.5,
+    "excerpt": "Le couple de serrage du palier avant est de 45 N·m",
+    "id": "ask-feaa6ef0e89fb26f",
+    "kind": "note",
+    "link": "#carnet/page-e17135f1b26966a6b021bbbe/block-82f040de47ca97c38a444f9e",
+    "marks": [
+     [
+      13,
+      20
+     ],
+     [
+      24,
+      30
+     ]
+    ],
+    "matched": [
+     "serrage",
+     "palier"
+    ],
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 45 N·m",
+    "provenance": null,
+    "refs": [],
+    "score": 1.332
+   },
+   {
+    "at": 1790000010,
+    "block_id": "block-91df0b3426f65792e7e49181",
+    "class": "primary",
+    "coverage": 0.25,
+    "excerpt": "Retenir le serrage de 40 N·m",
+    "id": "ask-9990e6199cc1446b",
+    "kind": "decision",
+    "link": "#carnet/page-e17135f1b26966a6b021bbbe/block-91df0b3426f65792e7e49181",
+    "marks": [
+     [
+      11,
+      18
+     ]
+    ],
+    "matched": [
+     "serrage"
+    ],
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 45 N·m",
+    "provenance": null,
+    "refs": [],
+    "score": 0.574
+   },
+   {
+    "at": 1790000020,
+    "block_id": "block-2fd4067feb82eb861aee5efc",
+    "class": "primary",
+    "coverage": 0.25,
+    "excerpt": "Couple de serrage 39.5 N·m 40 N·m 1 N·m",
+    "id": "ask-6969f6fd2475c94e",
+    "kind": "measure",
+    "link": "#carnet/page-e17135f1b26966a6b021bbbe/block-2fd4067feb82eb861aee5efc",
+    "marks": [
+     [
+      10,
+      17
+     ]
+    ],
+    "matched": [
+     "serrage"
+    ],
+    "measure": {
+     "hi": "41",
+     "label": "Couple de serrage",
+     "lo": "39",
+     "mode": "sym",
+     "nominal": {
+      "u": "N·m",
+      "v": "40"
+     },
+     "tol": {
+      "t": "1",
+      "u": "N·m"
+     },
+     "unit": "N·m",
+     "value": "39.5",
+     "verdict": "in"
+    },
+    "page_id": "page-e17135f1b26966a6b021bbbe",
+    "page_title": "Le couple de serrage du palier avant est de 45 N·m",
+    "provenance": null,
+    "refs": [],
+    "score": 0.552
+   }
+  ],
+  "counts": {
+   "derived_shown": 1,
+   "evidence": 0,
+   "matched": 4,
+   "pages": 1,
+   "shown": 4,
+   "units": 4
+  },
+  "fingerprint": "544a862a99a091ea366728fb65f768a4",
+  "frozen": null,
+  "incomplete": false,
+  "limits": {
+   "cards": 20,
+   "cards_default": 10,
+   "cited_in": 5,
+   "excerpt_chars": 240,
+   "pages_scanned": 256,
+   "partial_cards": 5,
+   "question_chars": 300,
+   "refs_per_card": 20,
+   "terms": 12,
+   "units_scanned": 40000
+  },
+  "note": "Aucune réponse n'est générée : seules les preuves du carnet sont listées, telles qu'elles sont écrites. Aucun auteur, statut, approbation ni justification n'est déduit.",
+  "notebook_rev": 3,
+  "ok": true,
+  "partial": true,
+  "question": "serrage palier rectifié grenaillé",
+  "reason": "weak_match",
+  "scope": {
+   "id": "proj-96e845c9b6d2ba16206b70d1",
+   "kind": "project",
+   "label": "Banc d'essai"
+  },
+  "scope_fingerprint": "991941107d0789ea1f715b941f14cd83",
+  "sources": [],
+  "sources_available": true,
+  "status": "partial",
+  "terms": [
+   "serrage",
+   "palier",
+   "rectifie",
+   "grenaille"
+  ],
+  "terms_truncated": false,
+  "unmatched_terms": [
+   "rectifie",
+   "grenaille"
+  ]
+ }
+}

@@ -2003,6 +2003,7 @@
     tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
     tools.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
     tools.appendChild(toolBtn("btn-carnet-intel", "Cockpit du projet : décisions, mesures, changements et jalons", "Cockpit"));
+    tools.appendChild(toolBtn("btn-carnet-ask", "Preuves du carnet : retrouver les passages qui répondent à une question (aucune réponse générée)", "Preuves"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
@@ -2160,6 +2161,7 @@
       else if (b.id === "btn-carnet-eng") openEngMenu();
       else if (b.id === "btn-carnet-history") openHistory("history", b);
       else if (b.id === "btn-carnet-intel") openIntel("overview", b);
+      else if (b.id === "btn-carnet-ask") openAsk(b);
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -2441,6 +2443,7 @@
         el("button", { type: "button", id: "btn-carnet-lib-templates", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", text: "Modèles" }),
         el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small carnet-quiet", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
         el("button", { type: "button", id: "btn-carnet-lib-intel", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Cockpit du projet : décisions, mesures, changements et jalons", text: "Cockpit" }),
+        el("button", { type: "button", id: "btn-carnet-lib-ask", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Preuves du carnet : retrouver les passages qui répondent à une question", text: "Preuves" }),
       ]),
     ]);
     const search = el("input", {
@@ -2900,6 +2903,11 @@
     if (b.id === "btn-carnet-lib-new") return newPage(scopeCreateContext() || {});
     if (b.id === "btn-carnet-lib-templates") return openTemplates(scopeCreateContext() || {}, b);
     if (b.id === "btn-carnet-lib-bulk") return openHistory("bulk", b);
+    if (b.id === "btn-carnet-lib-ask") {
+      const opener = libMode() === "dock" ? b : doc.getElementById("btn-carnet-library");
+      if (libMode() !== "dock") closeLibrary(false);
+      return openAsk(opener);
+    }
     if (b.id === "btn-carnet-lib-intel") {
       // The sheet/drawer library sits above the cockpit (z-index) and would swallow its taps: close it, focus returns to the Bibliothèque button.
       const opener = libMode() === "dock" ? b : doc.getElementById("btn-carnet-library");
@@ -4654,6 +4662,49 @@
   function openIntel(tab, opener) {
     const m = intelUi();
     if (m) m.open(tab, opener || null);
+  }
+
+  /** Lazily mounts Ask Carnet (hq-carnet-ask-ui.js): an evidence finder. Holds no state beyond the open dialog; saves nothing. */
+  function askUi() {
+    if (ui.ask) return ui.ask;
+    const M = global.HqCarnetAskUi;
+    if (!M || typeof M.mount !== "function") {
+      flashMsg("Module preuves non chargé");
+      return null;
+    }
+    const core = () => ui.core;
+    ui.ask = M.mount({
+      doc,
+      root: (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { get: (url) => apiCall(url, { timeoutMs: 20000 }), post: (payload) => request(payload) },
+      flash: flashMsg,
+      projects: () => (core() ? core().st.projects.filter((p) => isObj(p) && typeof p.id === "string" && typeof p.name === "string" && !p.archived) : []),
+      currentProjectId: () => {
+        const c = core();
+        if (!c) return null;
+        const e = c.current();
+        const pid = e ? (e.latest || e.server || {}).project_id || null : null;
+        if (pid) return pid;
+        return ui.lib && ui.lib.sel && ui.lib.sel.filter === "project" ? ui.lib.sel.id : null;
+      },
+      currentPage: () => {
+        const c = core();
+        const e = c && c.current();
+        return e ? { id: e.id, project_id: (e.latest || e.server || {}).project_id || null } : null;
+      },
+      goto: gotoBlock,
+      addToReport: (item) => {
+        const h = historyUi();
+        return !!(h && h.addExternal && h.addExternal(item));
+      },
+      onClose: () => {},
+    });
+    return ui.ask;
+  }
+
+  function openAsk(opener) {
+    const m = askUi();
+    if (m) m.open(opener || null);
   }
 
   // ---------------------------------------------------------------- sources / citations (Stage 05)

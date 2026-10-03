@@ -773,6 +773,7 @@
     function itemLabel(it) {
       if (it.kind === "source") return "Source — " + (it.label || it.edition_id);
       if (it.kind === "project_overview") return "Synthèse du projet — " + (it.label || "");
+      if (it.kind === "ask_evidence") return "Preuves du carnet — " + (it.label || "");
       const k = { note: "Note", measure: "Mesure", decision: "Décision", photo: "Photo", drawing: "Croquis" }[it.kind];
       return k + " — " + (it.label || it.page_id);
     }
@@ -831,7 +832,7 @@
     }
 
     function wireItems(items) {
-      return items.map((it) => (it.kind === "project_overview" ? (it.snapshot_id ? { kind: it.kind, snapshot_id: it.snapshot_id } : { kind: it.kind, project_id: it.project_id, fingerprint: it.fingerprint }) : it.kind === "source" ? { kind: "source", edition_id: it.edition_id } : it.kind === "note" ? { kind: "note", page_id: it.page_id, rev: it.rev } : { kind: it.kind, page_id: it.page_id, rev: it.rev, block_id: it.block_id }));
+      return items.map((it) => (it.kind === "ask_evidence" ? { kind: it.kind, question: it.question, scope: it.scope, fingerprint: it.fingerprint } : it.kind === "project_overview" ? (it.snapshot_id ? { kind: it.kind, snapshot_id: it.snapshot_id } : { kind: it.kind, project_id: it.project_id, fingerprint: it.fingerprint }) : it.kind === "source" ? { kind: "source", edition_id: it.edition_id } : it.kind === "note" ? { kind: "note", page_id: it.page_id, rev: it.rev } : { kind: it.kind, page_id: it.page_id, rev: it.rev, block_id: it.block_id }));
     }
 
     async function buildReport(exportOpts) {
@@ -890,6 +891,18 @@
       }
     }
 
+    function printAsk(hostEl, sec) {
+      const a = sec.ask || {};
+      hostEl.appendChild(el(doc, "h2", { text: sec.label + " — « " + (a.question || "") + " »" }));
+      hostEl.appendChild(el(doc, "p", { text: (a.scope && a.scope.label ? "Périmètre : " + a.scope.label + ". " : "") + (a.note || "") }));
+      const items = (a.cards || []).map((c) => {
+        const pv = c.provenance;
+        const txt = (c.kind ? c.kind + " — " : "") + (c.page_title || "") + " : " + (c.excerpt || "") + (pv && pv.derived ? " [" + pv.label + " ; source : " + ((pv.source && pv.source.block && pv.source.block.page_title) || "introuvable") + "]" : "");
+        return el(doc, "li", { text: txt });
+      });
+      if (items.length) hostEl.appendChild(el(doc, "ul", null, items));
+    }
+
     function printReport() {
       const res = state.report.result;
       if (!res || !Array.isArray(res.sections)) return;
@@ -906,6 +919,10 @@
         }
         if (sec.kind === "project_overview") {
           printOverview(hostEl, sec);
+          continue;
+        }
+        if (sec.kind === "ask_evidence") {
+          printAsk(hostEl, sec);
           continue;
         }
         hostEl.appendChild(el(doc, "h2", { text: sec.label + " — " + sec.page_title }));
@@ -1107,6 +1124,12 @@
     /** Phase 5: the cockpit adds a derived project overview (live, pinned by fingerprint, or a frozen snapshot) to the report. */
     function addExternal(item) {
       const r = state.report;
+      if (isObj(item) && item.kind === "ask_evidence" && r.items.length < ITEMS_MAX) {
+        if (r.items.some((x) => x.kind === "ask_evidence" && x.fingerprint === item.fingerprint && x.question === item.question && JSON.stringify(x.scope) === JSON.stringify(item.scope))) return true;
+        r.items.push({ kind: item.kind, question: item.question, scope: item.scope, fingerprint: item.fingerprint, label: String(item.label || "").slice(0, 100) });
+        r.result = null;
+        return true;
+      }
       if (!isObj(item) || item.kind !== "project_overview" || r.items.length >= ITEMS_MAX) return false;
       const key = item.snapshot_id ? "s:" + item.snapshot_id : "p:" + item.project_id + ":" + item.fingerprint;
       if (r.items.some((x) => x.kind === "project_overview" && (x.snapshot_id ? "s:" + x.snapshot_id : "p:" + x.project_id + ":" + x.fingerprint) === key)) return true;

@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import hq_carnet_ask as ask_mod
 import hq_carnet_history as history
 import hq_carnet_intel as intel
 import hq_carnet_links as links
@@ -56,6 +57,8 @@ def _make_ctx(hc, state: dict, root: Path, editions: dict[str, dict] | None) -> 
             return "ok" if ident in editions else "missing"
         if kind == "drawing":
             return "ok" if links._plain_file(root / "Inbox" / "Drawings", ident + ".hqdraw.json") else "missing"
+        if kind in ("asset", "voice"):  # canonical sources of derived (OCR / transcript) text
+            return "ok" if snaps._locate(kind, ident, root) is not None else "missing"
         return "ok" if links._plain_file(root, ident) else "missing"
 
     def source_info(ident: str) -> dict | None:
@@ -263,4 +266,111 @@ def snapshot_cockpit(snap_id: Any, trusted: bool = False) -> dict:
     out = intel.cockpit(project, copy.deepcopy(snap["pages"]), ctx, None, snap["notebook_rev"])
     out["snapshot"] = snaps.header(snap, got["integrity"])
     out["snapshot_refs"] = snaps.ref_summary(snap)
+    return out
+
+
+# ---------------------------------------------------------------- Ask Carnet (Phase 6): evidence-only, nothing stored
+
+
+def _scope(hc, state: dict, raw: Any) -> tuple[dict, list[dict], dict | None, dict | None, dict | None]:
+    """``(scope echo, pages, frozen info or None, live blocks or None, the verified snapshot or None)``; raises on anything not exactly valid."""
+    if not isinstance(raw, dict) or raw.get("kind") not in ask_mod.SCOPES:
+        raise _err("Périmètre invalide")
+    kind = raw["kind"]
+    allowed = {"kind"} if kind == "notebook" else {"kind", "id"}
+    if set(raw) != allowed:
+        raise _err("Périmètre invalide")
+    live = [p for p in state["pages"] if p["deleted_at"] is None]
+    if kind == "notebook":
+        return {"kind": "notebook", "id": None, "label": "Tout le carnet"}, live, None, None, None
+    ident = raw["id"]
+    if not isinstance(ident, str):
+        raise _err("Périmètre invalide")
+    if kind == "page":
+        if not hc._ID_RE["page"].match(ident):
+            raise _err("Note invalide")
+        page = next((p for p in live if p["id"] == ident), None)
+        if page is None:
+            raise hc.CarnetNotFound("Note introuvable")
+        return {"kind": "page", "id": ident, "label": hc.derive_title(rich.flat_text(page["content"]))}, [page], None, None, None
+    if kind == "project":
+        if ident == "none":
+            return {"kind": "project", "id": "none", "label": "Sans projet"}, [p for p in live if p["project_id"] is None], None, None, None
+        if not hc._ID_RE["proj"].match(ident):
+            raise _err("Projet invalide")
+        project = next((p for p in state["projects"] if p["id"] == ident), None)
+        if project is None:
+            raise hc.CarnetNotFound("Projet introuvable")
+        return {"kind": "project", "id": ident, "label": project["name"]}, [p for p in live if p["project_id"] == ident], None, None, None
+    got = snaps.get(ident)  # snapshot: used as frozen project state => its seal MUST verify
+    if got["integrity"] != "ok":
+        raise snaps.SnapshotStorageError("Intégrité du jalon compromise — recherche refusée", 503)
+    snap = got["snapshot"]
+    pid = snap["project"]["id"]
+    frozen = {"snapshot_id": snap["id"], "label": snap["label"], "created_at": snap["created_at"], "fingerprint": snap["fingerprint"], "project_id": pid}
+    live_blocks = {}
+    for page in live:
+        if page["project_id"] == pid:
+            for b in (page["content"].get("blocks") or []):
+                if isinstance(b, dict) and b.get("id"):
+                    live_blocks[(page["id"], b["id"])] = b
+    pages = [{"id": p["id"], "rev": p["rev"], "content": p["content"], "project_id": p["project_id"], "category_id": p.get("category_id"),
+              "updated_at": p["updated_at"], "created_at": p["created_at"], "deleted_at": None} for p in copy.deepcopy(snap["pages"])]
+    return {"kind": "snapshot", "id": ident, "label": snap["label"]}, pages, frozen, live_blocks, snap
+
+
+def _frozen_ctx(live: intel.Ctx, snap: dict):
+    """``(ctx, sources, current)`` describing the SNAPSHOT: reference states and source metadata as sealed at freeze time."""
+    sealed: dict[tuple[str, str], str] = {}
+    for bucket, kind, field in (("drawings", "drawing", "stem"), ("assets", "asset", "id"), ("voices", "voice", "id")):
+        for row in snap["refs"][bucket]:
+            sealed[(kind, row[field])] = row["state"]
+    for row in snap["refs"]["files"]:  # file-family links keep their ORIGINAL kind (file / model / media): that is the key evidence asks with
+        sealed[(row["kind"], row["path"])] = row["state"]
+    infos: dict[str, dict] = {}
+    for row in snap["refs"]["sources"]:
+        sealed[("source", row["id"])] = row["state"]
+        if not row.get("missing") and row.get("state") == "ok":
+            infos[row["id"]] = row
+
+    def ref_state(kind: str, ident: str) -> str:
+        return sealed.get((kind, ident)) or live.state(kind, ident)
+
+    def source_info(ident: str) -> dict | None:
+        row = infos.get(ident)
+        if row is None:
+            return None
+        return {"title": row.get("title"), "archived": bool(row.get("archived")), "file_state": (row.get("file") or {}).get("state")}
+
+    ctx = intel.Ctx(live.title, ref_state, source_info)
+    sources = {k: {f: v.get(f) for f in ("title", "author", "year", "edition")} for k, v in infos.items()}
+    return ctx, sources, live.state
+
+
+def ask(data: Any) -> dict:
+    """``{action: "ask", question, scope: {kind, id?}, limit?}`` -> evidence cards. Read-only: writes nothing, stores nothing."""
+    hc = _hc()
+    if not isinstance(data, dict):
+        raise _err("Requête invalide")
+    hc._only_keys(data, {"action", "question", "scope", "limit"})
+    question = data.get("question")
+    if not isinstance(question, str) or len(question) > ask_mod.LIMITS["question_chars"] or any(ord(c) < 32 or 0x7F <= ord(c) <= 0x9F for c in question):
+        raise _err(f"Question invalide (texte de {ask_mod.LIMITS['question_chars']} caractères au plus)")
+    limit = data.get("limit", ask_mod.LIMITS["cards_default"])
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= ask_mod.LIMITS["cards"]:
+        raise _err("Limite invalide")
+    state = _load_state()
+    scope, pages, frozen, live_blocks, snap = _scope(hc, state, data.get("scope"))
+    root = Path(os.path.abspath(os.fspath(hc._cb["root"])))
+    editions = _editions()
+    ctx = _make_ctx(hc, state, root, editions)
+    sources = {k: {f: v.get(f) for f in ("title", "author", "year", "edition")} for k, v in (editions or {}).items()}
+    current = None
+    if snap is not None:
+        # a frozen scope speaks of the frozen state: source metadata and reference states are those SEALED in the snapshot;
+        # what exists NOW is reported separately (current_state), never mixed in
+        ctx, sources, current = _frozen_ctx(ctx, snap)
+    out = ask_mod.search(question, pages, ctx, scope=scope, sources=sources, limit=limit, frozen=frozen, live_blocks=live_blocks,
+                         notebook_rev=state["notebook_rev"], current=current)
+    out["sources_available"] = editions is not None
     return out

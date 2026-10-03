@@ -1472,6 +1472,7 @@ _STAGE08 = {
     "history_restore": restore.restore,
     "report_build": report.build,
     "snapshot_create": snapshots.create,
+    "ask": review.ask,
 }
 
 

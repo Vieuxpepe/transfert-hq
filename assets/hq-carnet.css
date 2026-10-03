@@ -1034,3 +1034,28 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ix :focus-visible,.carnet-ix button:focus-visible,.carnet-ix select:focus-visible,.carnet-ix input:focus-visible,.carnet-ix textarea:focus-visible,.carnet-ix summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 @media (max-width:700px){.carnet-ix-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.carnet-ix-filters{grid-template-columns:1fr}}
 @media print{.carnet-ix,#hq-carnet-diffbar{display:none}[data-carnet-diff]{box-shadow:none}[data-carnet-diff]::after,[data-carnet-diff]::before{content:none}}
+
+/* ---- Phase 6: Ask Carnet — evidence finder (lazy dialog #hq-carnet-ask; reuses the .carnet-hx shell) */
+.carnet-ask-form{align-items:flex-end}
+.carnet-ask-qf{flex:2 1 220px}
+.carnet-ask-form .carnet-hx-field{flex:1 1 160px}
+.carnet-ask-form input,.carnet-ask-form select,.carnet-ask-form button{min-height:var(--carnet-tap)}
+.carnet-ask-banner{margin:0;padding:10px 12px;border:1px solid var(--line);border-left-width:6px;border-radius:10px;background:var(--panel-2)}
+.carnet-ask-banner p{margin:2px 0}
+.carnet-ask-banner[data-ask-tone="evidence"]{border-left-color:var(--accent)}
+.carnet-ask-banner[data-ask-tone="partial"],.carnet-ask-banner[data-ask-tone="insufficient"],.carnet-ask-banner[data-ask-tone="empty"]{border-left-style:dashed;border-left-color:var(--muted)}
+.carnet-ask-banner[data-ask-tone="error"]{border-left-color:var(--danger);color:var(--danger);font-weight:600}
+.carnet-ask-list{max-height:none}
+.carnet-ask-card{flex-direction:column;align-items:stretch;gap:4px}
+.carnet-ask-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0}
+.carnet-ask-page{font-weight:600;overflow-wrap:anywhere}
+.carnet-ask-excerpt{margin:0;overflow-wrap:anywhere}
+.carnet-ask-hit{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;border-radius:3px;text-decoration:underline}
+.carnet-ask-extra{margin:0;font-size:var(--text-sm);color:var(--muted)}
+.carnet-ask-prov{margin:2px 0;padding:6px 8px;border:1px dashed var(--line);border-radius:8px}
+.carnet-ask-prov p{margin:2px 0;font-size:var(--text-sm)}
+.carnet-ask-prov[data-ask-source-state="missing"] .carnet-ask-prov-state{color:var(--danger);font-weight:700}
+.carnet-ask-derived{border-style:dashed}
+.carnet-ask-live[data-ask-live="changed"],.carnet-ask-live[data-ask-live="gone"]{color:var(--danger);font-weight:600}
+.carnet-ask-goto{min-height:var(--carnet-tap);text-align:left;overflow-wrap:anywhere}
+@media print{#hq-carnet-ask{display:none!important}}

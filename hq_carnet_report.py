@@ -23,6 +23,7 @@ import copy
 import re
 from typing import Any
 
+import hq_carnet_ask as ask
 import hq_carnet_media as media
 import hq_carnet_intel as intel
 import hq_carnet_review as review
@@ -33,10 +34,10 @@ import hq_state
 
 ITEMS_MAX = 200
 TITLE_MAX = 120
-KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview")  # a drawing is its OWN kind: never a photo
+KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence")  # a drawing is its OWN kind: never a photo
 BLOCK_KIND = {"measure": "measure", "decision": "decision", "photo": "image", "drawing": "drawing"}
 LABELS = {
-    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet",
+    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet",
     "sources_cited": "Sources citées", "default_title": "Rapport",
 }
 FIELD_LABELS = (("author", "Auteur"), ("edition", "Édition"), ("year", "Année"), ("publisher", "Éditeur"), ("identifier", "Identifiant"), ("type", "Type"), ("url", "Lien"), ("file_ref", "Fichier"))
@@ -70,6 +71,15 @@ def _item(raw: Any) -> dict:
                 and isinstance(raw["fingerprint"], str) and re.match(r"^[0-9a-f]{32}\Z", raw["fingerprint"])):
             return {"kind": kind, "project_id": raw["project_id"], "fingerprint": raw["fingerprint"]}
         raise _err("Élément de rapport invalide")
+    if kind == "ask_evidence":
+        # an EXPLICIT user action: the search is re-run at build time and refused (report_stale) if its scope changed since
+        q, sc = raw.get("question"), raw.get("scope")
+        ok_scope = (isinstance(sc, dict) and sc.get("kind") in ask.SCOPES and set(sc) == ({"kind"} if sc.get("kind") == "notebook" else {"kind", "id"})
+                    and (sc.get("kind") == "notebook" or isinstance(sc.get("id"), str)))
+        if (set(raw) != {"kind", "question", "scope", "fingerprint"} or not isinstance(q, str) or not q.strip() or len(q) > ask.LIMITS["question_chars"]
+                or not ok_scope or not isinstance(raw["fingerprint"], str) or not re.match(r"^[0-9a-f]{32}\Z", raw["fingerprint"])):
+            raise _err("Élément de rapport invalide")
+        return {"kind": kind, "question": q, "scope": dict(sc), "fingerprint": raw["fingerprint"]}
     keys = {"kind", "page_id", "rev"} | (set() if kind == "note" else {"block_id"})
     if set(raw) != keys or not isinstance(raw["page_id"], str) or not hc._ID_RE["page"].match(raw["page_id"]) or not hc._is_int(raw["rev"]) or raw["rev"] < 1:
         raise _err("Élément de rapport invalide")
@@ -135,6 +145,7 @@ def build(data: Any) -> dict:
             raise _err("Nom de fichier invalide")
     sections: list[dict] = []
     overview_items: list[tuple[int, dict]] = []
+    ask_items: list[tuple[int, dict]] = []
     stale: list[str] = []
     page_revs: dict[str, int] = {}
     with hq_state.path_lock(hc._path()):  # ONE consistent snapshot of the notebook
@@ -147,6 +158,10 @@ def build(data: Any) -> dict:
             if item["kind"] == "project_overview":
                 overview_items.append((len(sections), item))
                 sections.append({"kind": "project_overview"})
+                continue
+            if item["kind"] == "ask_evidence":
+                ask_items.append((len(sections), item))
+                sections.append({"kind": "ask_evidence"})
                 continue
             page = pages.get(item["page_id"])
             if page is None:
@@ -182,6 +197,12 @@ def build(data: Any) -> dict:
                 stale.append(item["project_id"])
                 continue
             sections[index].update(overview=ov, snapshot=None)
+    for index, item in ask_items:  # evidence is searched NOW; a scope that changed since the selection is stale, never silently newer
+        res = review.ask({"action": "ask", "question": item["question"], "scope": item["scope"]})
+        if res["fingerprint"] != item["fingerprint"]:
+            stale.append(item["scope"].get("id") or "notebook")
+            continue
+        sections[index].update(ask=res)
     if stale:
         raise hc.CarnetConflict({"error": "Des pages ont changé depuis la sélection — rien n'a été généré", "code": "report_stale", "stale": stale, "notebook_rev": notebook_rev})
     try:
@@ -212,6 +233,10 @@ def build(data: Any) -> dict:
             if sec["kind"] == "project_overview":
                 out.append(f"## {label} — " + rich._md_escape(sec["overview"]["project"]["name"] or "Sans projet"))
                 out.append(intel.render_overview_markdown(sec["overview"], sec["snapshot"], heading=False))
+                continue
+            if sec["kind"] == "ask_evidence":
+                out.append(f"## {label} — « " + rich._md_escape(sec["ask"]["question"]) + " »")
+                out.append(ask.render_markdown(sec["ask"], heading=False))
                 continue
             if sec["kind"] == "source":
                 ed = sec["edition"]
@@ -257,6 +282,8 @@ def _public_edition(ed: dict | None, ident: str) -> dict:
 def _public_section(sec: dict) -> dict:
     if sec["kind"] == "project_overview":
         return {"kind": "project_overview", "label": LABELS["project_overview"], "overview": sec["overview"], "snapshot": sec["snapshot"]}
+    if sec["kind"] == "ask_evidence":
+        return {"kind": "ask_evidence", "label": LABELS["ask_evidence"], "ask": sec["ask"]}
     if sec["kind"] == "source":
         return {"kind": "source", "edition": _public_edition(sec["edition"], sec["edition_id"])}
     return {"kind": sec["kind"], "label": LABELS[sec["kind"]], "page_id": sec["page_id"], "page_title": sec["page_title"], "blocks": sec["blocks"]}
