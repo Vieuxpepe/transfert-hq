@@ -52,6 +52,7 @@
     let handle = null;
     let token = 0; // every open / replace bumps it: a late answer for a previous view never paints
     let st = null; // {spec, result, plan, page, loaded, trigger}
+    let rsnPanel = null; // the related decisions / assumptions panel of the CURRENT view (register records, read now); destroyed with the view
     let verPanel = null; // the related-verifications panel of the CURRENT view (workflow records, current / non-frozen); destroyed with the view
     let annPanel = null; // the live-annotations panel of the CURRENT view (commentary, never evidence); destroyed with the view
 
@@ -289,6 +290,7 @@
       viewerBox(viewer, model);
       annotationsPanel(body, origin, model);
       verificationsPanel(body, origin);
+      reasoningPanel(body, origin);
       if (blocks) citationList(body, origin, blocks);
     }
 
@@ -368,6 +370,40 @@
         },
       });
       body.appendChild(verPanel.node);
+    }
+
+    // ------------------------------------------------------------------ decisions & assumptions (register records: read NOW, never part of the evidence shown)
+
+    function reasoningPanel(body, origin) {
+      if (rsnPanel) {
+        rsnPanel.destroy();
+        rsnPanel = null;
+      }
+      const ui = host.reasoning;
+      const RS = global.HqCarnetReasoning || (node ? require("./hq-carnet-reasoning.js") : null);
+      if (!ui || !RS || typeof ui.panel !== "function") return;
+      const spec = st.spec;
+      const refs = [];
+      const cite = spec.citation;
+      if (origin && origin.kind === "citation" && origin.pageId && origin.blockId && cite) {
+        const r = RS.ref.citation(origin.pageId, origin.blockId, cite);
+        if (r) refs.push({ key: "citation", label: "Cette citation", ref: r });
+      }
+      const src = RS.ref.source(spec.sourceId);
+      if (src) refs.push({ key: "source", label: "Cette source", ref: src });
+      if (!refs.length) return;
+      const frozen = !!(spec.context && (spec.context.kind === "review" || spec.context.kind === "snapshot"));
+      rsnPanel = ui.panel({
+        id: "hq-carnet-reader-rsn",
+        refs,
+        frozen,
+        projectId: typeof host.currentProjectId === "function" ? host.currentProjectId() : null,
+        say: (t) => {
+          const live = layer && layer.querySelector("#hq-carnet-reader-rsn [role=status]");
+          if (live) live.textContent = t;
+        },
+      });
+      body.appendChild(rsnPanel.node);
     }
 
     // ------------------------------------------------------------------ "Citations de cette page" (one batched, bounded request)
@@ -495,6 +531,10 @@
       if (verPanel) {
         verPanel.destroy();
         verPanel = null;
+      }
+      if (rsnPanel) {
+        rsnPanel.destroy();
+        rsnPanel = null;
       }
       layer = null;
       st = null;

@@ -58,7 +58,7 @@
     const state = {
       open: false, opener: null, projectId: null, mode: "list", tab: "overview", token: 0, busy: false, error: "", notice: "",
       list: null, snaps: [], pack: null, integrity: "ok", fresh: null, freshBusy: false, confirmDelete: null, pendingCreate: null, definiteError: false,
-      thread: null, threadFailed: false, vOpen: {}, vPanels: {}, cOpen: {}, cDraft: {}, cSupersedes: {}, cPending: null, cBusy: false,
+      thread: null, threadFailed: false, vOpen: {}, vPanels: {}, rOpen: {}, rPanels: {}, cOpen: {}, cDraft: {}, cSupersedes: {}, cPending: null, cBusy: false,
       adding: null, draft: { title: "", note: "", baseline: "", check: "", question: "", resolution: {}, edit: {} },
     };
     let dlg = null;
@@ -352,6 +352,7 @@
       state.threadFailed = false;
       dropVerPanels();
       state.vOpen = {};
+      state.rOpen = {};
       state.cOpen = {};
       state.cDraft = {};
       state.cSupersedes = {};
@@ -616,6 +617,8 @@
         kids.push(commentsBlock(i));
         const vb = verificationsBlock(i);
         if (vb) kids.push(vb);
+        const rb = reasoningBlock(i);
+        if (rb) kids.push(rb);
         ul.appendChild(el(doc, "li", { class: "carnet-hx-item carnet-rv-item", "data-rv-item": i.id, "data-rv-kind": i.kind, "data-rv-state": i.observation.state }, kids));
       }
       sec.appendChild(ul);
@@ -644,6 +647,33 @@
         } catch (_) { /* a failed destroy leaves nothing behind that matters */ }
       }
       state.vPanels = {};
+      for (const k of Object.keys(state.rPanels || {})) {
+        try {
+          state.rPanels[k].destroy();
+        } catch (_) { /* a failed destroy leaves nothing behind that matters */ }
+      }
+      state.rPanels = {};
+    }
+
+    // ------------------------------------------------------------ related decisions / assumptions (the register: governance objects, read NOW, never part of the frozen pack)
+
+    function reasoningBlock(i) {
+      const RS = global.HqCarnetReasoning || (node ? require("./hq-carnet-reasoning.js") : null);
+      if (!host.reasoning || !RS || typeof host.reasoning.panel !== "function" || !state.pack) return null;
+      const r = RS.ref.reviewItem(state.pack.id, i.id);
+      if (!r) return null;
+      const open = !!state.rOpen[i.id];
+      const wrap = el(doc, "div", { class: "carnet-rv-reasoning", "data-rv-reasoning": i.id });
+      wrap.appendChild(btn("Décisions et hypothèses liées", { "data-rv": "r-toggle", "data-id": i.id, "aria-expanded": open ? "true" : "false", id: "hq-carnet-rv-rtoggle-" + i.id, "aria-label": "Décisions et hypothèses liées à « " + i.label + " »" }));
+      if (!open) return wrap;
+      const key = state.pack.id + ":" + i.id;
+      let p = state.rPanels[key];
+      if (!p) {
+        p = host.reasoning.panel({ id: "hq-carnet-rv-rsn-" + i.id, refs: [{ key: "item", label: "Cet élément de revue", ref: r }], frozen: true, expanded: true, projectId: state.raw ? state.raw.project_id : null });
+        state.rPanels[key] = p;
+      }
+      wrap.appendChild(p.node);
+      return wrap;
     }
 
     function verificationsBlock(i) {
@@ -924,6 +954,17 @@
         }
         render();
         const tg = doc.getElementById("hq-carnet-rv-vtoggle-" + id);
+        if (tg) tg.focus({ preventScroll: true });
+        return;
+      }
+      if (a === "r-toggle") {
+        state.rOpen[id] = !state.rOpen[id];
+        if (!state.rOpen[id] && state.pack && state.rPanels[state.pack.id + ":" + id]) {
+          state.rPanels[state.pack.id + ":" + id].destroy();
+          delete state.rPanels[state.pack.id + ":" + id];
+        }
+        render();
+        const tg = doc.getElementById("hq-carnet-rv-rtoggle-" + id);
         if (tg) tg.focus({ preventScroll: true });
         return;
       }

@@ -658,6 +658,13 @@ def list_verifications(data: Any) -> dict:
             "counts": counts, "unavailable": len(bad), "total": len(rows), "limits": limits(), "disclosure": DISCLOSURE}
 
 
+def headers_for(ids: list[str]) -> dict[str, dict]:
+    """READ-ONLY. ``{id: public header}`` for the given verification ids (absent ids are simply not returned). Used by the Phase 12 reasoning
+    register to SUMMARISE linked verifications (status / integrity / project); it never mutates anything and this module never imports it."""
+    rows = {h["id"]: h for h in _headers(_root())}
+    return {i: _public_header(rows[i]) for i in ids if i in rows}
+
+
 def get(data: Any) -> dict:
     """READ-ONLY. One verification in full (corrupt ones too: read-only)."""
     if not isinstance(data, dict):

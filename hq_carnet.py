@@ -60,6 +60,7 @@ import hq_carnet_restore as restore
 import hq_carnet_review as review
 import hq_carnet_reviews as reviews
 import hq_carnet_rcomments as rcomments
+import hq_carnet_reasoning as reasoning
 import hq_carnet_verifications as verifications
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snapshots
@@ -1558,6 +1559,19 @@ _STAGE08 = {
     "verification_status": verifications.mutate,
     "verification_signoff": verifications.mutate,  # the ONLY way to reach "verified"
     "verification_delete": verifications.mutate,
+    "reasoning_list": reasoning.read,  # Phase 12: READ-ONLY register headers (bounded, filtered server-side)
+    "reasoning_get": reasoning.read,  # Phase 12: READ-ONLY
+    "reasoning_resolve": reasoning.read,  # Phase 12: READ-ONLY batched current-state observation of the evidence of 1..25 records
+    "reasoning_related": reasoning.read,  # Phase 12: READ-ONLY reverse lookup from the header index (<=10 identities)
+    "reasoning_create": reasoning.mutate,  # Phase 12: a decision / assumption (reasoning object — NEVER evidence, never touches a page / source / review)
+    "reasoning_supersede": reasoning.mutate,  # explicit two-record operation: the ONLY way a record becomes "superseded"
+    "reasoning_update": reasoning.mutate,
+    "reasoning_evidence_add": reasoning.mutate,
+    "reasoning_evidence_remove": reasoning.mutate,
+    "reasoning_verification_link": reasoning.mutate,
+    "reasoning_verification_unlink": reasoning.mutate,
+    "reasoning_status": reasoning.mutate,
+    "reasoning_delete": reasoning.mutate,
 }
 
 
@@ -1575,11 +1589,11 @@ def http_post(data: Any) -> tuple[int, dict]:
         if action in _STAGE08:
             return 200, _STAGE08[action](data)
         return 200, mutate(data)
-    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict, annotations.AnnotationError, verifications.VerificationError) as e:
+    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict, annotations.AnnotationError, verifications.VerificationError, reasoning.ReasoningError) as e:
         return e.status, getattr(e, "payload", None) or {"error": str(e), "code": e.code}
     except (history.HistoryError, snapshots.SnapshotError, reviews.ReviewError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError, annotations.AnnotationStorageError, verifications.VerificationStorageError) as e:
+    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError, annotations.AnnotationStorageError, verifications.VerificationStorageError, reasoning.ReasoningStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError, portals.PortalError, reader.ReaderError) as e:
         return e.status, {"error": str(e), "code": e.code}
@@ -1739,6 +1753,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
     rev_closure = reviews.closure(root)  # Phase 7: every review pack file, byte-for-byte (no binaries: referenced material follows the closures above)
     ann_closure = annotations.closure(root)  # Phase 10: every live-annotation shard, byte-for-byte (a referenced source / PDF / page is NOT followed)
     rcm_closure = rcomments.closure(root)  # Phase 10: the comment thread of every EXISTING pack, byte-for-byte (an orphan thread is unreachable: skipped)
+    rsn_closure = reasoning.closure(root)  # Phase 12: every register file, byte-for-byte (referenced evidence / foreign files are NOT followed)
     ver_closure = verifications.closure(root)  # Phase 11: every verification file, byte-for-byte (referenced evidence / foreign files are NOT followed)
     refs = refs | snap_closure["assets"]
     voices = voices | snap_closure["voices"]
@@ -1759,7 +1774,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         if found["invalid"]:
             valid = False
     if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"] \
-            and not ann_closure["files"] and ann_closure["valid"] and not rcm_closure["files"] and rcm_closure["valid"] and not ver_closure["files"] and ver_closure["valid"]:
+            and not ann_closure["files"] and ann_closure["valid"] and not rcm_closure["files"] and rcm_closure["valid"] and not ver_closure["files"] and ver_closure["valid"] \
+            and not rsn_closure["files"] and rsn_closure["valid"]:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
         try:
@@ -1837,6 +1853,19 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             ver_report["refused"] = len(ver_refused)  # redirected / replaced / vanished between validation and copy: never followed, not copied
         if not ver_closure["valid"] or ver_refused:
             valid = False
+    rsn_refused: list = []
+    rsn_report: dict | None = None
+    if rsn_closure["files"] or not rsn_closure["valid"]:
+        if rsn_closure["files"]:
+            (dest_dir / reasoning.REASONING_DIR).mkdir(parents=True, exist_ok=True)
+            rsn_bytes = reasoning.copy_to(root, dest_dir / reasoning.REASONING_DIR, rsn_closure["files"], rsn_refused)
+        else:
+            rsn_bytes = 0
+        rsn_report = {"count": len(rsn_closure["files"]) - len(rsn_refused), "bytes": rsn_bytes, "valid": bool(rsn_closure["valid"]) and not rsn_refused}
+        if rsn_refused:
+            rsn_report["refused"] = len(rsn_refused)  # redirected / replaced / vanished between validation and copy: never followed, not copied
+        if not rsn_closure["valid"] or rsn_refused:
+            valid = False
     assets_report: dict | None = None
     if refs:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
@@ -1862,6 +1891,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["review_comments"] = rcm_report
     if ver_report is not None:  # ... and when there are no verifications
         out["verifications"] = ver_report
+    if rsn_report is not None:  # ... and when there is no reasoning register
+        out["reasoning"] = rsn_report
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
     if drawings_report is not None:  # ... and when there are no drawing references

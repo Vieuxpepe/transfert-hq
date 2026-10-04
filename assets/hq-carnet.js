@@ -2006,6 +2006,7 @@
     tools.appendChild(toolBtn("btn-carnet-ask", "Preuves du carnet : retrouver les passages qui répondent à une question (aucune réponse générée)", "Preuves"));
     tools.appendChild(toolBtn("btn-carnet-reviews", "Revues : dossiers de preuves à relire, liste de contrôle et questions (rien n'est déduit)", "Revues"));
     tools.appendChild(toolBtn("btn-carnet-verifications", "Vérifications : contrôles consignés contre un état précis des preuves (aucune identité n'est enregistrée)", "Vérifications"));
+    tools.appendChild(toolBtn("btn-carnet-reasoning", "Registre des décisions et hypothèses : ce qui a été choisi, ce qui est tenu pour vrai pour l'instant (ni l'un ni l'autre n'est une preuve)", "Registre"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
@@ -2166,6 +2167,7 @@
       else if (b.id === "btn-carnet-ask") openAsk(b);
       else if (b.id === "btn-carnet-reviews") openReviews(b);
       else if (b.id === "btn-carnet-verifications") openVerifications(b);
+      else if (b.id === "btn-carnet-reasoning") openReasoning(b);
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -4754,6 +4756,7 @@
       openAsk: (question, scope) => openAsk(null, { question, scope }),
       openReader: (spec) => openReader(spec),
       verifications: verificationsUi(),
+      reasoning: reasoningUi(),
       addToReport: (item) => {
         const h = historyUi();
         return !!(h && h.addExternal && h.addExternal(item));
@@ -4861,6 +4864,50 @@
     m.open(opener || null, null);
   }
 
+  /** Decisions & assumptions register (Phase 12). Optional: the Reader and the Review Pack work without it. A record is never evidence and never edits evidence. */
+  function reasoningUi() {
+    if (ui.reasoning) return ui.reasoning;
+    const M = global.HqCarnetReasoningUi;
+    if (!M || typeof M.mount !== "function") return null;
+    ui.reasoning = M.mount({
+      doc,
+      root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { post: (payload) => request(payload) },
+      online: () => !(global.navigator && global.navigator.onLine === false),
+      crypto: global.crypto,
+      projects: () => {
+        const c = ui.core;
+        return c && c.st && Array.isArray(c.st.projects) ? c.st.projects.filter((p) => isObj(p)).map((p) => ({ id: p.id, name: p.name })) : [];
+      },
+      openReader: (spec) => openReader(spec),
+      openVerification: (spec) => {
+        const v = verificationsUi();
+        if (v) v.openDetail(spec.id, spec.trigger || null);
+      },
+      onClose: () => {},
+    });
+    return ui.reasoning;
+  }
+
+  function openReasoning(opener) {
+    const m = reasoningUi();
+    if (!m) {
+      flashMsg("Module registre non chargé");
+      return;
+    }
+    m.open(opener || null, null);
+  }
+
+  /** The project of what is on screen, for creating a register record from the Reader. */
+  function currentProjectNow() {
+    const c = ui.core;
+    if (!c) return null;
+    const e = c.current();
+    const pid = e ? (e.latest || e.server || {}).project_id || null : null;
+    if (pid) return pid;
+    return ui.lib && ui.lib.sel && ui.lib.sel.filter === "project" ? ui.lib.sel.id : null;
+  }
+
   function readerUi() {
     if (ui.reader) return ui.reader;
     const M = global.HqCarnetReaderUi;
@@ -4872,6 +4919,8 @@
       doc,
       annotations: annotationsUi(),
       verifications: verificationsUi(),
+      reasoning: reasoningUi(),
+      currentProjectId: () => currentProjectNow(),
       root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
       api: { post: (payload) => request(payload) },
       page: readerPage,

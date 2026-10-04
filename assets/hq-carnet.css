@@ -1178,3 +1178,33 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 @media print{.carnet-ver,.carnet-ver-panel{display:none!important}}
 /* Phase 11: the workspace can be opened from inside the Reader (z 140) and must sit above it */
 #hq-carnet-ver{z-index:150}
+/* ---- Phase 12: decisions & assumptions register (lazy dialog #hq-carnet-rsn + related panel; reuses the .carnet-hx shell). Not evidence: dashed / quiet styling. */
+.carnet-rsn-panel{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:8px 10px;border:1px dashed var(--line);border-left:4px solid var(--muted);border-radius:12px;background:var(--panel-2)}
+.carnet-rsn-panel[data-frozen="1"]{border-left-style:double}
+.carnet-rsn-toggle{min-height:var(--carnet-tap,44px);text-align:left;display:flex;flex-wrap:wrap;gap:4px;align-items:center;overflow-wrap:anywhere}
+.carnet-rsn-heading{font-weight:700}
+.carnet-rsn-panel-body{display:flex;flex-direction:column;gap:8px;min-width:0}
+.carnet-rsn-row{list-style:none;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff);min-width:0}
+.carnet-rsn-q{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+.carnet-rsn-form{display:flex;flex-direction:column;gap:6px}
+.carnet-rsn-body{gap:12px}
+.carnet-rsn-block{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--line);border-radius:12px}
+.carnet-rsn-block>h4{margin:0}
+.carnet-rsn-block[data-rsn-block="evidence"]{border-left:4px solid var(--accent)}
+.carnet-rsn-block[data-rsn-block="verifications"]{border-style:dotted}
+.carnet-rsn-block[data-rsn-block="current"]{border-style:dashed}
+.carnet-rsn-block[data-rsn-block="history"]{background:var(--panel-2)}
+.carnet-rsn-group{display:flex;flex-direction:column;gap:6px}
+.carnet-rsn-overall[data-rsn-overall="changed"],.carnet-rsn-overall[data-rsn-overall="integrity_anomaly"],.carnet-rsn-overall[data-rsn-overall="corrupt"]{font-weight:700;text-decoration:underline}
+.carnet-rsn-actions{display:flex;flex-direction:column;gap:8px}
+.carnet-rsn-confirm{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--danger);border-radius:10px}
+.carnet-rsn-row[data-integrity]:not([data-integrity="ok"]){border-color:var(--danger)}
+.carnet-rsn-filters{display:flex;flex-wrap:wrap;gap:8px}
+.carnet-rsn-relation{overflow-wrap:anywhere}
+.carnet-rsn button,.carnet-rsn select,.carnet-rsn input,.carnet-rsn textarea,.carnet-rsn-panel button,.carnet-rsn-panel select,.carnet-rsn-panel textarea{min-height:var(--carnet-tap,44px);box-sizing:border-box}
+.carnet-rsn button,.carnet-rsn-panel button{white-space:normal;max-width:100%;overflow-wrap:anywhere}
+.carnet-rsn [aria-disabled="true"],.carnet-rsn-panel [aria-disabled="true"]{opacity:.55;cursor:not-allowed}
+.carnet-rsn textarea,.carnet-rsn-panel textarea{width:100%;min-height:4.5em}
+@media print{.carnet-rsn,.carnet-rsn-panel{display:none!important}}
+/* the workspace can be opened from inside the Reader (z 140) and from a Review Pack: it must sit above them */
+#hq-carnet-rsn{z-index:150}

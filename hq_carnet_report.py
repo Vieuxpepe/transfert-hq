@@ -37,10 +37,10 @@ import hq_state
 
 ITEMS_MAX = 200
 TITLE_MAX = 120
-KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence", "review_pack", "verification")  # a drawing is its OWN kind: never a photo
+KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence", "review_pack", "verification", "reasoning")  # a drawing is its OWN kind: never a photo
 BLOCK_KIND = {"measure": "measure", "decision": "decision", "photo": "image", "drawing": "drawing"}
 LABELS = {
-    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet", "review_pack": "Dossier de revue", "verification": "Vérification",
+    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet", "review_pack": "Dossier de revue", "verification": "Vérification", "reasoning": "Registre des décisions et hypothèses",
     "sources_cited": "Sources citées", "default_title": "Rapport",
 }
 FIELD_LABELS = (("author", "Auteur"), ("edition", "Édition"), ("year", "Année"), ("publisher", "Éditeur"), ("identifier", "Identifiant"), ("type", "Type"), ("url", "Lien"), ("file_ref", "Fichier"))
@@ -80,6 +80,12 @@ def _item(raw: Any) -> dict:
         if set(raw) != {"kind", "verification_id"} or not isinstance(raw["verification_id"], str) or not verifications.ID_RE.match(raw["verification_id"]):
             raise _err("Élément de rapport invalide")
         return {"kind": kind, "verification_id": raw["verification_id"]}
+    if kind == "reasoning":
+        import hq_carnet_reasoning as reasoning  # lazy: an OPTIONAL section; Ask / snapshots never import the register (kind is "reasoning", never "decision")
+
+        if set(raw) != {"kind", "reasoning_id"} or not isinstance(raw["reasoning_id"], str) or not reasoning.ID_RE.match(raw["reasoning_id"]):
+            raise _err("Élément de rapport invalide")
+        return {"kind": kind, "reasoning_id": raw["reasoning_id"]}
     if kind == "review_pack":
         # HISTORICAL by default: the pack is rendered as it is stored (its own revision and seal are shown), with a separate freshness
         # observation made now. It is never "stale"-pinned: evidence that changed is marked in the section, not refused.
@@ -199,6 +205,7 @@ def build(data: Any) -> dict:
     ask_items: list[tuple[int, dict]] = []
     review_items: list[tuple[int, dict]] = []
     verification_items: list[tuple[int, dict]] = []
+    reasoning_items: list[tuple[int, dict]] = []
     stale: list[str] = []
     page_revs: dict[str, int] = {}
     with hq_state.path_lock(hc._path()):  # ONE consistent snapshot of the notebook
@@ -215,6 +222,10 @@ def build(data: Any) -> dict:
             if item["kind"] == "verification":
                 verification_items.append((len(sections), item))
                 sections.append({"kind": "verification"})
+                continue
+            if item["kind"] == "reasoning":
+                reasoning_items.append((len(sections), item))
+                sections.append({"kind": "reasoning"})
                 continue
             if item["kind"] == "review_pack":
                 review_items.append((len(sections), item))
@@ -274,6 +285,13 @@ def build(data: Any) -> dict:
             sections[index].update(verification=verifications.report_summary(item["verification_id"]))
         except verifications.VerificationConflict as e:
             raise hc.CarnetConflict({"error": str(e), "code": e.code}) from e
+    for index, item in reasoning_items:  # stored facts about a decision / assumption (never evaluated); a corrupt record refuses the report
+        import hq_carnet_reasoning as reasoning
+
+        try:
+            sections[index].update(reasoning=reasoning.report_summary(item["reasoning_id"]))
+        except reasoning.ReasoningConflict as e:
+            raise hc.CarnetConflict({"error": str(e), "code": e.code}) from e
     refs_seen: dict[tuple[str, str], dict] = {}
     for sec in sections:  # Phase 8: the CURRENT state of every portal in the rendered blocks, resolved in bounded batches (read-only)
         for b in sec.get("blocks", ()):
@@ -327,6 +345,12 @@ def build(data: Any) -> dict:
 
                 out.append(f"## {label}")
                 out.append(verifications.render_markdown(sec["verification"]))
+                continue
+            if sec["kind"] == "reasoning":
+                import hq_carnet_reasoning as reasoning
+
+                out.append(f"## {label}")
+                out.append(reasoning.render_markdown(sec["reasoning"]))
                 continue
             if sec["kind"] == "ask_evidence":
                 out.append(f"## {label} — « " + rich._md_escape(sec["ask"]["question"]) + " »")
@@ -384,6 +408,8 @@ def _public_section(sec: dict, portal_states: dict | None = None) -> dict:
         return {"kind": "review_pack", "label": LABELS["review_pack"], "review": sec["review"], "integrity": sec["integrity"], "freshness": sec["freshness"]}
     if sec["kind"] == "verification":
         return {"kind": "verification", "label": LABELS["verification"], "verification": sec["verification"]}
+    if sec["kind"] == "reasoning":
+        return {"kind": "reasoning", "label": LABELS["reasoning"], "reasoning": sec["reasoning"]}
     if sec["kind"] == "ask_evidence":
         return {"kind": "ask_evidence", "label": LABELS["ask_evidence"], "ask": sec["ask"]}
     if sec["kind"] == "source":
