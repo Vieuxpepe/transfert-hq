@@ -1,8 +1,9 @@
 /* Transfert HQ — Carnet Phase 9: Reader modal.
  *
  * The Reader VIEWS evidence (a source edition, a PDF-backed source, a citation, frozen Review Pack / snapshot evidence). It never
- * transforms, summarises or reinterprets it, never writes anything (its only request is the read-only POST reader_resolve) and
- * keeps nothing: the origin context, the page being viewed and the answers live in memory for this view only.
+ * transforms, summarises or reinterprets it and never writes EVIDENCE (its own request is the read-only POST reader_resolve). Phase 10 adds
+ * an optional, clearly separate ANNOTATIONS panel (host.annotations): commentary attached to the evidence, labelled current / non-frozen,
+ * which can never change the evidence. The Reader keeps nothing: the origin context, the page being viewed and the answers live in memory for this view only.
  *
  *   - ONE active Reader (a new open replaces the content; never nested). Escape / Tab containment / exact focus return come from the
  *     shared HqCarnetModal utility, like the portal dialogs and the Sources dialog.
@@ -51,6 +52,7 @@
     let handle = null;
     let token = 0; // every open / replace bumps it: a late answer for a previous view never paints
     let st = null; // {spec, result, plan, page, loaded, trigger}
+    let annPanel = null; // the live-annotations panel of the CURRENT view (commentary, never evidence); destroyed with the view
 
     const isOpen = () => !!(handle && !handle.closed && layer);
 
@@ -284,7 +286,53 @@
       const viewer = el(doc, "div", { class: "carnet-reader-viewer", id: "hq-carnet-reader-viewer" });
       body.appendChild(viewer);
       viewerBox(viewer, model);
+      annotationsPanel(body, origin, model);
       if (blocks) citationList(body, origin, blocks);
+    }
+
+    // ------------------------------------------------------------------ live annotations (commentary: current, never part of the evidence shown)
+
+    function annotationsPanel(body, origin, model) {
+      if (annPanel) {
+        annPanel.destroy();
+        annPanel = null;
+      }
+      const ui = host.annotations;
+      const A = global.HqCarnetAnnotations || (node ? require("./hq-carnet-annotations.js") : null);
+      if (!ui || !A || typeof ui.panel !== "function") return;
+      const spec = st.spec;
+      const targets = [];
+      const cite = spec.citation;
+      const hasCite = origin && origin.kind === "citation" && origin.pageId && origin.blockId && cite;
+      if (hasCite) {
+        const t = A.citationTarget(origin.pageId, origin.blockId, cite);
+        if (t) targets.push({ key: "citation", label: "Cette citation", target: t });
+      }
+      const src = A.sourceTarget(spec.sourceId);
+      if (src) targets.push({ key: "source", label: "Cette source", target: src });
+      if (!targets.length) return;
+      const frozen = !!(spec.context && (spec.context.kind === "review" || spec.context.kind === "snapshot"));
+      annPanel = ui.panel({
+        id: "hq-carnet-reader-ann",
+        targets,
+        defaultKey: targets[0].key,
+        frozen,
+        getPage: () => (st && Number.isInteger(st.page) && st.page >= 1 ? st.page : null),
+        getAnchor: () => (hasCite && cite.loc && cite.loc.text ? { loc: R.locatorText(cite.loc) } : null),
+        say: (t) => {
+          const live = layer && layer.querySelector("#hq-carnet-reader-ann [role=status]");
+          if (live) live.textContent = t;
+        },
+        onView: (a, tr) => {
+          if (a.target && a.target.kind === "citation" && origin && origin.pageId === a.target.page_id) return gotoBlock(origin, a.target.block_id);
+          if (a.anchor && Number.isInteger(a.anchor.pdf) && st && st.plan && st.plan.mode !== "none") {
+            const box = layer && layer.querySelector("#hq-carnet-reader-viewer");
+            if (box) step(box, model, a.anchor.pdf);
+          }
+          return null;
+        },
+      });
+      body.appendChild(annPanel.node);
     }
 
     // ------------------------------------------------------------------ "Citations de cette page" (one batched, bounded request)
@@ -405,6 +453,10 @@
       token++;
       if (unguard) unguard();
       const ok = h.close(!!refocus);
+      if (annPanel) {
+        annPanel.destroy();
+        annPanel = null;
+      }
       layer = null;
       st = null;
       return ok;

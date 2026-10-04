@@ -4819,6 +4819,15 @@
     };
   }
 
+  /** Live annotations panel factory (Phase 10): commentary attached to evidence. Optional: the Reader works without it. */
+  function annotationsUi() {
+    if (ui.annotations) return ui.annotations;
+    const M = global.HqCarnetAnnotationsUi;
+    if (!M || typeof M.mount !== "function") return null;
+    ui.annotations = M.mount({ doc, api: { post: (payload) => request(payload) }, online: () => !(global.navigator && global.navigator.onLine === false), crypto: global.crypto });
+    return ui.annotations;
+  }
+
   function readerUi() {
     if (ui.reader) return ui.reader;
     const M = global.HqCarnetReaderUi;
@@ -4828,6 +4837,7 @@
     }
     ui.reader = M.mount({
       doc,
+      annotations: annotationsUi(),
       root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
       api: { post: (payload) => request(payload) },
       page: readerPage,

@@ -479,7 +479,7 @@ scenario("13 two clients: a stale write gets 409, the server version is reloaded
   const other = await cpost(srv, ctx, { action: "review_update", id: pk.id, expected_rev: pk.rev, title: "Titre de l'autre client" });
   check(other.status === 200, "other client wrote rev 2");
   const posts = [];
-  p.on("request", (r) => { if (r.method() === "POST" && (r.postData() || "").includes("review_")) posts.push(r.postData()); });
+  p.on("request", (r) => { if (r.method() === "POST" && (r.postData() || "").includes('"action":"review_')) posts.push(r.postData()); }); // review_* actions only: the read-only rcomment_list thread read is a different store
   await p.click("#btn-carnet-rv-check-add");
   await until(async () => (await p.locator("#hq-carnet-rv-notice").count()) === 1, "conflict notice shown");
   check((await txt(p, "#hq-carnet-rv-notice")).includes("rien n'a été fusionné"), "says nothing was merged");

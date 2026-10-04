@@ -227,7 +227,9 @@ async function citationToReader(p, blockId, opener = "#btn-carnet-src-reader") {
   await painted(p);
 }
 const readerPosts = (p, bag) => p.on("request", (r) => { if (r.method() === "POST" && (r.postData() || "").includes('"reader_resolve"')) bag.push(JSON.parse(r.postData())); });
-const otherPosts = (p, bag) => p.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/carnet") && !(r.postData() || "").includes('"reader_resolve"')) bag.push(r.postData() || ""); });
+// Phase 10: the Reader hosts a SEPARATE annotations panel whose only open-time request is the read-only batched annotation_list. It is a read of commentary,
+// not of evidence, so it is excluded here; every WRITE (and any other POST) must still be absent. tests/visual_carnet_annotations_playwright.mjs pins the panel itself.
+const otherPosts = (p, bag) => p.on("request", (r) => { const d = r.postData() || ""; if (r.method() === "POST" && r.url().endsWith("/api/carnet") && !d.includes('"reader_resolve"') && !d.includes('"annotation_list"')) bag.push(d); });
 const pdfGets = (p, bag) => p.on("request", (r) => { if (r.method() === "GET" && /\/files\/Uni\/.*\.pdf/.test(r.url())) bag.push(r.url()); });
 async function withCites(srv, ctx, specs, extraBlocks = []) {
   // specs: [{ed, o, id}] -> citation blocks appended to page-a (another "device" edit), then the browser reloads

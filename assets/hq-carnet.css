@@ -1132,3 +1132,18 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-pb-picker-list{display:flex;flex-direction:column;gap:6px}
 .carnet-pb-choice{text-align:left}
 @media print{body.carnet-printing #hq-carnet-print .carnet-pb-bar,body.carnet-printing #hq-carnet-print .carnet-pb-note{display:none}}
+/* Phase 10: live annotations + Review Pack comments. Commentary, visibly distinct from evidence. */
+.carnet-ann{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:10px;border:1px dashed var(--line);border-radius:12px;background:var(--panel-2)}
+.carnet-ann[data-frozen="1"]{border-style:double}
+.carnet-ann-group{display:flex;flex-direction:column;gap:6px}
+.carnet-ann-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.carnet-ann-item{padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff)}
+.carnet-ann-item[data-status="resolved"]{opacity:.8}
+.carnet-ann-item[data-integrity]:not([data-integrity="ok"]){border-color:#b00020}
+.carnet-ann-body,.carnet-rv-comment-body{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+.carnet-ann-text,.carnet-rv-ctext{width:100%;min-height:4.5em;box-sizing:border-box}
+.carnet-ann-form{display:flex;flex-direction:column;gap:6px}
+.carnet-ann-confirm{padding:6px 8px;border:1px solid #b00020;border-radius:10px}
+.carnet-rv-comments{margin-top:6px;display:flex;flex-direction:column;gap:6px}
+.carnet-rv-comment{padding:6px 8px;border-left:3px solid var(--line)}
+.carnet-rv-removed{margin-top:12px;padding:8px;border:1px dashed var(--line);border-radius:10px}

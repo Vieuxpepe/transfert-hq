@@ -47,6 +47,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+import hq_carnet_annotations as annotations
 import hq_carnet_bulk as bulk
 import hq_carnet_history as history
 import hq_carnet_links as links
@@ -58,6 +59,7 @@ import hq_carnet_report as report
 import hq_carnet_restore as restore
 import hq_carnet_review as review
 import hq_carnet_reviews as reviews
+import hq_carnet_rcomments as rcomments
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snapshots
 import hq_carnet_sources as sources
@@ -182,6 +184,7 @@ def bind(**kwargs: Any) -> None:
         history.bind(**kwargs)  # Stage 08: the history file shares the root and clock
         snapshots.bind(**kwargs)  # Phase 5: the write-once snapshot store shares the root and clock
         reviews.bind(**kwargs)  # Phase 7: the review-pack store shares the root and clock
+        annotations.bind(**kwargs)  # Phase 10: the live-annotation store (review comments reuse its root and clock)
         _ready = _cb.get("root") is not None
 
 
@@ -1501,11 +1504,13 @@ def http_review_export(review_id: str) -> tuple[int, str, Any]:
     try:
         got = reviews.get(review_id)
         pack = got["review"]
-        data = evidence.export_zip(pack, evidence.freshness(pack), got["integrity"])
+        data = evidence.export_zip(pack, evidence.freshness(pack), got["integrity"], rcomments.thread(pack["id"]))
         return 200, f"carnet-review-{pack['id']}-r{pack['rev']}.zip", data
     except reviews.ReviewError as e:
         return e.status, "", {"error": str(e), "code": e.code}
     except reviews.ReviewStorageError as e:
+        return e.status, "", {"error": str(e), "code": e.code}
+    except (annotations.AnnotationError, annotations.AnnotationStorageError) as e:  # the comment thread is part of the handoff: never silently dropped
         return e.status, "", {"error": str(e), "code": e.code}
     except OSError:
         return 503, "", {"error": "Carnet inaccessible", "code": "storage_error"}
@@ -1534,6 +1539,12 @@ _STAGE08 = {
     "ask": review.ask,
     "portal_resolve": portals.resolve,  # Phase 8: READ-ONLY (a POST only because 100 references do not fit a query string)
     "reader_resolve": reader.resolve,  # Phase 9: READ-ONLY, identities in / captured-current-integrity out
+    "annotation_list": annotations.list_targets,  # Phase 10: READ-ONLY, batched by target
+    "annotation_create": annotations.mutate,  # Phase 10: live commentary (never evidence; never touches a page / source / review)
+    "annotation_update": annotations.mutate,
+    "annotation_delete": annotations.mutate,
+    "rcomment_list": rcomments.mutate,  # Phase 10: READ-ONLY thread of one review
+    "rcomment_add": rcomments.mutate,  # Phase 10: append-only review comment, request_id idempotent
 }
 
 
@@ -1551,11 +1562,11 @@ def http_post(data: Any) -> tuple[int, dict]:
         if action in _STAGE08:
             return 200, _STAGE08[action](data)
         return 200, mutate(data)
-    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict) as e:
-        return e.status, e.payload
+    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict, annotations.AnnotationError) as e:
+        return e.status, getattr(e, "payload", None) or {"error": str(e), "code": e.code}
     except (history.HistoryError, snapshots.SnapshotError, reviews.ReviewError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError) as e:
+    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError, annotations.AnnotationStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError, portals.PortalError, reader.ReaderError) as e:
         return e.status, {"error": str(e), "code": e.code}
@@ -1713,6 +1724,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             hist_valid = False
     snap_closure = snapshots.closure(root)  # Phase 5: the write-once freezes and the media they pinned travel with the backup
     rev_closure = reviews.closure(root)  # Phase 7: every review pack file, byte-for-byte (no binaries: referenced material follows the closures above)
+    ann_closure = annotations.closure(root)  # Phase 10: every live-annotation shard, byte-for-byte (a referenced source / PDF / page is NOT followed)
+    rcm_closure = rcomments.closure(root)  # Phase 10: the comment thread of every EXISTING pack, byte-for-byte (an orphan thread is unreachable: skipped)
     refs = refs | snap_closure["assets"]
     voices = voices | snap_closure["voices"]
     stems = stems | snap_closure["stems"]
@@ -1731,7 +1744,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         drawings_report = {"referenced": len(stems), "missing": found["missing"], "invalid": found["invalid"], "underlays": len(found["ids"])}
         if found["invalid"]:
             valid = False
-    if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"]:
+    if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"] \
+            and not ann_closure["files"] and ann_closure["valid"] and not rcm_closure["files"] and rcm_closure["valid"]:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
         try:
@@ -1770,6 +1784,32 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         rev_report = {"count": len(rev_closure["files"]), "bytes": rev_bytes, "valid": bool(rev_closure["valid"])}
         if not rev_closure["valid"]:
             valid = False
+    ann_refused: list = []
+    rcm_refused: list = []
+    ann_report: dict | None = None
+    if ann_closure["files"] or not ann_closure["valid"]:
+        if ann_closure["files"]:
+            (dest_dir / annotations.ANN_DIR).mkdir(parents=True, exist_ok=True)
+            ann_bytes = annotations.copy_to(root, dest_dir / annotations.ANN_DIR, ann_closure["files"], ann_refused)
+        else:
+            ann_bytes = 0
+        ann_report = {"count": len(ann_closure["files"]) - len(ann_refused), "bytes": ann_bytes, "valid": bool(ann_closure["valid"]) and not ann_refused}
+        if ann_refused:
+            ann_report["refused"] = len(ann_refused)  # redirected / replaced / vanished between validation and copy: never followed, not copied
+        if not ann_closure["valid"] or ann_refused:
+            valid = False
+    rcm_report: dict | None = None
+    if rcm_closure["files"] or not rcm_closure["valid"]:
+        if rcm_closure["files"]:
+            (dest_dir / rcomments.COMMENT_DIR).mkdir(parents=True, exist_ok=True)
+            rcm_bytes = rcomments.copy_to(root, dest_dir / rcomments.COMMENT_DIR, rcm_closure["files"], rcm_refused)
+        else:
+            rcm_bytes = 0
+        rcm_report = {"count": len(rcm_closure["files"]) - len(rcm_refused), "bytes": rcm_bytes, "valid": bool(rcm_closure["valid"]) and not rcm_refused}
+        if rcm_refused:
+            rcm_report["refused"] = len(rcm_refused)  # redirected / replaced / vanished between validation and copy: never followed, not copied
+        if not rcm_closure["valid"] or rcm_refused:
+            valid = False
     assets_report: dict | None = None
     if refs:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
@@ -1789,6 +1829,10 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["snapshots"] = snap_report
     if rev_report is not None:  # ... and when there are no review packs
         out["reviews"] = rev_report
+    if ann_report is not None:  # ... and when there are no live annotations
+        out["annotations"] = ann_report
+    if rcm_report is not None:  # ... and when there are no review comments
+        out["review_comments"] = rcm_report
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
     if drawings_report is not None:  # ... and when there are no drawing references

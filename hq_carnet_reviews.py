@@ -659,7 +659,17 @@ def _delete(data: dict) -> dict:
             os.unlink(directory / (rid + ".json"))
         except OSError as e:
             raise ReviewStorageError("Suppression impossible") from e
-    return {"ok": True, "deleted": rid}
+        # Phase 10: the pack is gone FIRST (the safe crash direction: an orphan thread is unreachable; the reverse could destroy comments of a
+        # live pack). The owned thread is removed immediately, under the same lock order (review -> comment); bounded orphan sweep alongside.
+        cleanup = "none"
+        try:
+            import hq_carnet_rcomments as rcomments
+
+            cleanup = "removed" if rcomments.delete_for_review(_root(), rid) else "none"
+            rcomments.sweep_orphans(_root())
+        except Exception:  # noqa: BLE001 - the deletion itself succeeded; a leftover thread is unreachable and skipped by backup
+            cleanup = "failed"
+    return {"ok": True, "deleted": rid, "comments": cleanup}
 
 
 def _item_add(data: dict) -> dict:

@@ -564,7 +564,7 @@ def _utc(at: Any) -> str:
         return "?"
 
 
-def render_markdown(pack: dict, fresh: dict | None, integrity: str = "ok") -> str:
+def render_markdown(pack: dict, fresh: dict | None, integrity: str = "ok", thread: dict | None = None) -> str:
     """Fixed order: identity, project, status, baseline, observation summary, checklist, open questions, evidence, comparisons, provenance.
     Fixed labels only; user text verbatim. No overall verdict is ever produced."""
     items = pack["items"]
@@ -572,7 +572,11 @@ def render_markdown(pack: dict, fresh: dict | None, integrity: str = "ok") -> st
     L = [f"# {_md(pack['title'])}", "", "## Identité de la revue", "",
          f"- Identifiant : {pack['id']}", f"- Révision : {pack['rev']}", f"- Projet : {pack['project_id']}",
          f"- Statut (défini par l'utilisateur) : {LABELS['status'][pack['status']]}", f"- Créée : {_utc(pack['created_at'])}", f"- Mise à jour : {_utc(pack['updated_at'])}",
-         f"- Sceau : {pack['content_sha256']}", f"- Intégrité du fichier : {'vérifiée' if integrity == 'ok' else 'ALTÉRÉE — lecture seule'}", ""]
+         f"- Sceau : {pack['content_sha256']}", f"- Intégrité du fichier : {'vérifiée' if integrity == 'ok' else 'ALTÉRÉE — lecture seule'}"]
+    cm = _comments_by_item(thread)
+    if thread and thread.get("comments"):
+        L.append(f"- Commentaires de revue : révision {thread['rev']} du fil, sceau {thread['content_sha256']}, intégrité {'vérifiée' if thread['integrity'] == 'ok' else 'ALTÉRÉE'}")
+    L.append("")
     if pack["note"]:
         L += ["## Note de l'auteur", "", _md_block(pack["note"]), ""]
     b = pack["baseline"]
@@ -601,15 +605,16 @@ def render_markdown(pack: dict, fresh: dict | None, integrity: str = "ok") -> st
     L += ["", "## Preuves (copies capturées à la sélection)", ""]
     plain = [i for i in items if i["kind"] not in ("diff",)]
     for i in plain:
-        L += _item_md(i, obs.get(i["id"]))
+        L += _item_md(i, obs.get(i["id"]), cm.get(i["id"]))
     if not plain:
         L.append("(aucune preuve)")
     L += ["", "## Comparaisons", ""]
     diffs = [i for i in items if i["kind"] == "diff"]
     for i in diffs:
-        L += _item_md(i, obs.get(i["id"]))
+        L += _item_md(i, obs.get(i["id"]), cm.get(i["id"]))
     if not diffs:
         L.append("(aucune comparaison)")
+    L += _removed_comments_md(cm, {i["id"] for i in items})
     L += ["", "## Détails de provenance", ""]
     for i in items:
         L.append(f"- {i['id']} · {LABELS['kind'][i['kind']]} · ajoutée {_utc(i['added_at'])} · portée : {i['scope']['kind']}" + (f" {i['scope']['id']}" if i["scope"]["kind"] == "snapshot" else "")
@@ -622,7 +627,35 @@ def render_markdown(pack: dict, fresh: dict | None, integrity: str = "ok") -> st
     return "\n".join(L)
 
 
-def _item_md(i: dict, o: dict | None) -> list[str]:
+def _comments_by_item(thread: dict | None) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for c in (thread or {}).get("comments", []):
+        out.setdefault(c["item"]["item_id"], []).append(c)
+    return out
+
+
+def _comment_md(c: dict) -> list[str]:
+    head = f"- {c['id']} · {_utc(c['created_at'])}" + (f" · corrige {c['supersedes']}" if c["supersedes"] else "")
+    return [head, _md_block(c["body"])]
+
+
+def _removed_comments_md(cm: dict[str, list[dict]], present: set[str]) -> list[str]:
+    """Review comments about an item that is no longer in the pack are NEVER omitted from the handoff: they are exported under their
+    captured item identity (id, kind, label, fingerprint)."""
+    gone = {k: v for k, v in cm.items() if k not in present}
+    if not gone:
+        return []
+    out = ["", "## Commentaires sur preuves retirées", ""]
+    for item_id in sorted(gone):
+        ident = gone[item_id][0]["item"]
+        out += [f"### {item_id} · {LABELS['kind'].get(ident['item_kind'], ident['item_kind'])} — {_md(ident['item_label'])}", "",
+                f"- Empreinte de la preuve capturée : {ident['item_fingerprint']}", ""]
+        for c in gone[item_id]:
+            out += _comment_md(c) + [""]
+    return out
+
+
+def _item_md(i: dict, o: dict | None, comments: list[dict] | None = None) -> list[str]:
     state = LABELS["state"][o["state"]] if o else "Non observé"
     out = [f"### {LABELS['kind'][i['kind']]} — {_md(i['label'])}", "", f"- Fraîcheur : {state}" + ("" if not o or not o.get("anomaly") else " — anomalie d'intégrité")]
     if o and o.get("target"):
@@ -645,15 +678,23 @@ def _item_md(i: dict, o: dict | None) -> list[str]:
         for k in sorted(cp):
             if isinstance(cp[k], (str, int, float, bool)) or cp[k] is None:
                 out.append(f"  - {k} : {_md(cp[k])}")
+    if comments:
+        out += ["", f"- Commentaires de revue ({len(comments)}) — commentaires de la revue, distincts de la preuve capturée :"]
+        for c in comments:
+            out += ["  " + line for line in _comment_md(c)]
     out.append("")
     return out
 
 
-def export_zip(pack: dict, fresh: dict | None, integrity: str = "ok") -> bytes:
+def export_zip(pack: dict, fresh: dict | None, integrity: str = "ok", thread: dict | None = None) -> bytes:
     """The review HANDOFF package (not a self-contained archive): review.json, review.md, manifest.json. Deterministic: stdlib zipfile,
     ZIP_STORED, fixed timestamps and attributes, sorted names, no generated time anywhere in the content."""
-    review_json = reviews.canon_bytes({"review": pack, "integrity": integrity, "observation": fresh})
-    md = render_markdown(pack, fresh, integrity).encode("utf-8")
+    with_comments = bool(thread and thread.get("comments"))
+    doc = {"review": pack, "integrity": integrity, "observation": fresh}
+    if with_comments:  # a pack without comments exports byte-for-byte as before (no key, no section)
+        doc["review_comments"] = {"rev": thread["rev"], "content_sha256": thread["content_sha256"], "integrity": thread["integrity"], "comments": thread["comments"]}
+    review_json = reviews.canon_bytes(doc)
+    md = render_markdown(pack, fresh, integrity, thread if with_comments else None).encode("utf-8")
     manifest = {
         "kind": "carnet-review-handoff", "version": 1, "review_id": pack["id"], "rev": pack["rev"], "project_id": pack["project_id"],
         "content_sha256": pack["content_sha256"], "integrity": integrity,
@@ -662,6 +703,8 @@ def export_zip(pack: dict, fresh: dict | None, integrity: str = "ok") -> bytes:
                    "freshness": ((fresh or {}).get("items") or {}).get(i["id"], {}).get("state")} for i in pack["items"]],
         "note": "Review handoff package: the review file and its references. Referenced canonical binaries are NOT included.",
     }
+    if with_comments:  # Review Pack rev N + review-comment thread rev M is the fully identified exported state; live annotations are never included
+        manifest["review_comments"] = {"rev": thread["rev"], "content_sha256": thread["content_sha256"], "integrity": thread["integrity"], "count": len(thread["comments"])}
     manifest_b = reviews.canon_bytes(manifest)
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:

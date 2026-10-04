@@ -20,6 +20,8 @@
 
   const node = typeof module === "object" && module && module.exports;
   const R = node ? require("./hq-carnet-reviews.js") : global.HqCarnetReviews;
+  const A = node ? require("./hq-carnet-annotations.js") : global.HqCarnetAnnotations; // Phase 10: Review Pack comments (append-only discussion, NOT live annotations)
+  const CM = A ? A.MSG : {};
   const LAST_KEY = "hq.carnet.review.last";
   const TABS = [["overview", "Vue d'ensemble"], ["evidence", "Preuves"], ["checklist", "Liste de contrôle"], ["questions", "Questions"], ["freshness", "Fraîcheur"], ["report", "Rapport"]];
   const MSG = {
@@ -56,6 +58,7 @@
     const state = {
       open: false, opener: null, projectId: null, mode: "list", tab: "overview", token: 0, busy: false, error: "", notice: "",
       list: null, snaps: [], pack: null, integrity: "ok", fresh: null, freshBusy: false, confirmDelete: null, pendingCreate: null, definiteError: false,
+      thread: null, threadFailed: false, cOpen: {}, cDraft: {}, cSupersedes: {}, cPending: null, cBusy: false,
       adding: null, draft: { title: "", note: "", baseline: "", check: "", question: "", resolution: {}, edit: {} },
     };
     let dlg = null;
@@ -180,6 +183,7 @@
         state.error = "";
         remember(id);
         loadFreshness();
+        loadThread(id);
         return true;
       } catch (err) {
         if (tok === state.token) state.error = R.conflictInfo(err).message;
@@ -187,6 +191,71 @@
       } finally {
         if (tok === state.token) state.busy = false;
         if (state.open) render();
+      }
+    }
+
+    /** The review discussion lives in its OWN store (own rev + seal). Reading it never changes the pack. */
+    async function loadThread(id) {
+      const tok = state.token;
+      state.threadFailed = false;
+      const bodyObj = A && A.commentListBody(id);
+      if (!bodyObj) return;
+      try {
+        const res = await host.api.post(bodyObj);
+        if (tok !== state.token || !state.open || !state.raw || state.raw.id !== id) return;
+        state.thread = isObj(res) && Array.isArray(res.comments) ? res : null;
+        state.threadFailed = !state.thread;
+      } catch (_) {
+        if (tok !== state.token || !state.open) return;
+        state.thread = null;
+        state.threadFailed = true;
+      }
+      render();
+    }
+
+    /** Append ONE comment. Append-only: no edit, no delete. A retry after a lost answer reuses the same request id. A refusal keeps the typed text. */
+    async function addComment(itemId) {
+      if (state.cBusy || !state.raw || !A) return;
+      const text = state.cDraft[itemId] || "";
+      const v = A.validateBody(text);
+      if (!v.ok) {
+        state.error = v.reason;
+        render();
+        return;
+      }
+      if (!online()) {
+        state.error = MSG.offline;
+        render();
+        return;
+      }
+      const sup = state.cSupersedes[itemId] || null;
+      const sig = JSON.stringify([state.raw.id, itemId, text, sup]);
+      if (!state.cPending || state.cPending.sig !== sig) state.cPending = { sig, requestId: A.newRequestId(global.crypto || { getRandomValues: (b) => { const r = host.rng ? host.rng() : b; for (let i = 0; i < b.length; i++) b[i] = r[i] || 0; return b; } }) };
+      const bodyObj = A.commentBody(state.raw.id, itemId, text, state.cPending.requestId, sup);
+      if (!bodyObj) {
+        state.error = MSG.failed;
+        render();
+        return;
+      }
+      state.cBusy = true;
+      state.error = "";
+      render();
+      try {
+        await host.api.post(bodyObj);
+        state.cBusy = false;
+        state.cDraft[itemId] = "";
+        state.cSupersedes[itemId] = null;
+        state.cPending = null;
+        state.notice = "";
+        say(CM.commentDone);
+        await loadThread(state.raw.id);
+      } catch (err) {
+        state.cBusy = false;
+        const info = A.errorInfo(err);
+        if (info.definite) state.cPending = null;
+        state.error = info.full ? CM.commentFull : info.corrupt ? CM.commentCorrupt : info.message;
+        render();
+        say(state.error);
       }
     }
 
@@ -279,6 +348,12 @@
       state.notice = "";
       state.adding = null;
       state.confirmDelete = null;
+      state.thread = null;
+      state.threadFailed = false;
+      state.cOpen = {};
+      state.cDraft = {};
+      state.cSupersedes = {};
+      state.cPending = null;
       resetDraft();
       dlg.hidden = false;
       render();
@@ -303,6 +378,7 @@
       state.pack = null;
       state.raw = null;
       state.fresh = null;
+      state.thread = null;
       body.textContent = "";
       dlg.hidden = true;
       say("");
@@ -534,9 +610,77 @@
         }
         row.appendChild(mut("Retirer de la revue", { "data-rv": "item-remove", "data-id": i.id, "aria-label": "Retirer « " + i.label + " » de la revue" }));
         kids.push(row);
+        kids.push(commentsBlock(i));
         ul.appendChild(el(doc, "li", { class: "carnet-hx-item carnet-rv-item", "data-rv-item": i.id, "data-rv-kind": i.kind, "data-rv-state": i.observation.state }, kids));
       }
       sec.appendChild(ul);
+      removedComments(sec, p);
+    }
+
+    // ------------------------------------------------------------ review comments (the discussion around a captured item)
+
+    function commentNode(c) {
+      const kids = [
+        el(doc, "p", { class: "carnet-ask-meta" }, [
+          el(doc, "span", { class: "hint", text: R.fmtDate ? R.fmtDate(c.created_at) : "" }),
+          c.supersedes ? el(doc, "span", { class: "carnet-chip", "data-rv": "c-supersedes", text: CM.commentCorrects + " " + c.supersedes }) : null,
+        ]),
+        el(doc, "p", { class: "carnet-rv-comment-body", text: c.body }), // textContent: never interpreted
+      ];
+      return el(doc, "li", { class: "carnet-rv-comment", "data-rv-comment": c.id }, kids);
+    }
+
+    function commentsBlock(i) {
+      const g = state.thread && A ? A.groupThread(state.thread, state.pack ? state.pack.items.map((x) => x.id) : []) : null;
+      const list = g ? g.byItem(i.id) : [];
+      const open = !!state.cOpen[i.id];
+      const wrap = el(doc, "div", { class: "carnet-rv-comments", "data-rv-comments": i.id });
+      const toggle = btn(CM.commentsHeading + " (" + list.length + ")", { "data-rv": "c-toggle", "data-id": i.id, "aria-expanded": open ? "true" : "false", id: "hq-carnet-rv-ctoggle-" + i.id, "aria-label": CM.commentsHeading + " sur « " + i.label + " » : " + list.length });
+      wrap.appendChild(toggle);
+      if (!open) return wrap;
+      if (state.threadFailed) wrap.appendChild(el(doc, "p", { class: "carnet-hx-warn", role: "alert", text: "Commentaires non disponibles pour le moment." }));
+      if (state.thread && state.thread.integrity === "corrupt") wrap.appendChild(el(doc, "p", { class: "carnet-hx-warn", role: "alert", text: CM.commentCorrupt }));
+      if (state.thread && state.thread.integrity === "invalid") wrap.appendChild(el(doc, "p", { class: "carnet-hx-warn", role: "alert", text: CM.commentInvalid }));
+      wrap.appendChild(el(doc, "p", { class: "hint", text: CM.commentHelp }));
+      wrap.appendChild(el(doc, "p", { class: "hint", text: CM.commentNotLive }));
+      if (list.length) {
+        const ul = el(doc, "ul", { class: "carnet-hx-list", "aria-label": CM.commentsHeading + " : " + i.label });
+        for (const c of list) {
+          const li = commentNode(c);
+          if (!(state.thread && state.thread.integrity !== "ok")) li.appendChild(btn("Corriger", { "data-rv": "c-correct", "data-id": c.id, "data-item": i.id, "aria-label": "Corriger ce commentaire par un nouveau commentaire" }));
+          ul.appendChild(li);
+        }
+        wrap.appendChild(ul);
+      }
+      const readOnly = !state.thread || state.thread.integrity !== "ok";
+      if (!readOnly) {
+        const sup = state.cSupersedes[i.id];
+        if (sup) wrap.appendChild(el(doc, "p", { class: "hint", "data-rv": "c-correcting", text: CM.commentSupersedes + " (" + sup + ")." }));
+        const ta = el(doc, "textarea", { id: "hq-carnet-rv-cnew-" + i.id, class: "carnet-rv-ctext", rows: "3", "aria-label": CM.commentLabel, "data-rv-comment-draft": i.id });
+        ta.value = state.cDraft[i.id] || "";
+        wrap.appendChild(ta);
+        wrap.appendChild(btn(CM.commentAdd, { "data-rv": "c-add", "data-id": i.id, "aria-disabled": state.cBusy || !online() ? "true" : null }));
+        if (sup) wrap.appendChild(btn("Annuler la correction", { "data-rv": "c-uncorrect", "data-id": i.id }));
+      }
+      return wrap;
+    }
+
+    function removedComments(sec, p) {
+      if (!state.thread || !A) return;
+      const g = A.groupThread(state.thread, p.items.map((x) => x.id));
+      if (!g.removed.length) return;
+      const box = el(doc, "section", { class: "carnet-rv-removed", id: "hq-carnet-rv-removed", "aria-labelledby": "hq-carnet-rv-removed-h" });
+      box.appendChild(el(doc, "h4", { id: "hq-carnet-rv-removed-h", text: CM.commentRemovedGroup }));
+      box.appendChild(el(doc, "p", { class: "hint", text: CM.commentRemovedNote }));
+      for (const r of g.removed) {
+        const ul = el(doc, "ul", { class: "carnet-hx-list", "aria-label": CM.commentsHeading + " : " + r.item.item_label });
+        for (const c of r.comments) ul.appendChild(commentNode(c));
+        box.appendChild(el(doc, "div", { class: "carnet-rv-removed-item", "data-rv-removed": r.item_id }, [
+          el(doc, "p", { class: "carnet-ask-meta" }, [el(doc, "strong", { text: r.item.item_label }), el(doc, "span", { class: "hint", text: r.item.item_kind + " · " + r.item_id + " · empreinte " + String(r.item.item_fingerprint).slice(0, 12) })]),
+          ul,
+        ]));
+      }
+      sec.appendChild(box);
     }
 
     function refsNode(refs) {
@@ -636,6 +780,8 @@
       const t = ev.target;
       const key = t && t.getAttribute ? t.getAttribute("data-rv-draft") : null;
       if (key) setDraft(key, t.value);
+      const ck = t && t.getAttribute ? t.getAttribute("data-rv-comment-draft") : null;
+      if (ck) state.cDraft[ck] = t.value;
     }
 
     function pickedRefs(prefixId) {
@@ -735,12 +881,33 @@
       const a = t.getAttribute("data-rv");
       const id = t.getAttribute("data-id");
       const raw = state.raw;
-      if (a === "open") loadPack(id);
+      if (a === "c-toggle") {
+        state.cOpen[id] = !state.cOpen[id];
+        render();
+        const tg = doc.getElementById("hq-carnet-rv-ctoggle-" + id);
+        if (tg) tg.focus({ preventScroll: true });
+        if (state.cOpen[id]) {
+          const ta = doc.getElementById("hq-carnet-rv-cnew-" + id);
+          if (ta) ta.focus({ preventScroll: true });
+        }
+      } else if (a === "c-add") addComment(id);
+      else if (a === "c-correct") {
+        const item = t.getAttribute("data-item");
+        state.cSupersedes[item] = id;
+        state.cOpen[item] = true;
+        render();
+        const ta = doc.getElementById("hq-carnet-rv-cnew-" + item);
+        if (ta) ta.focus({ preventScroll: true });
+      } else if (a === "c-uncorrect") {
+        state.cSupersedes[id] = null;
+        render();
+      } else if (a === "open") loadPack(id);
       else if (a === "back") {
         state.mode = "list";
         state.pack = null;
         state.raw = null;
         state.fresh = null;
+        state.thread = null;
         state.confirmDelete = null;
         state.notice = "";
         render();
