@@ -256,6 +256,11 @@ def _observe_diff(item: dict, world: World) -> dict | None:
     return None if res is None else _diff_seal(res)
 
 
+def observe(kind: str, key: dict, world: World) -> dict | None:
+    """Public live observation of ONE item (Phase 11 verification capture): the seal fields now, ``None`` = absent; raises ``_Unknown``."""
+    return _observe(kind, key, world, None)
+
+
 def _snapshot_of_scope(item: dict, world: World) -> dict | None:
     sc = item["scope"]
     if sc["kind"] == "live":

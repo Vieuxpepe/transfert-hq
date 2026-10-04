@@ -52,6 +52,7 @@
     let handle = null;
     let token = 0; // every open / replace bumps it: a late answer for a previous view never paints
     let st = null; // {spec, result, plan, page, loaded, trigger}
+    let verPanel = null; // the related-verifications panel of the CURRENT view (workflow records, current / non-frozen); destroyed with the view
     let annPanel = null; // the live-annotations panel of the CURRENT view (commentary, never evidence); destroyed with the view
 
     const isOpen = () => !!(handle && !handle.closed && layer);
@@ -287,6 +288,7 @@
       body.appendChild(viewer);
       viewerBox(viewer, model);
       annotationsPanel(body, origin, model);
+      verificationsPanel(body, origin);
       if (blocks) citationList(body, origin, blocks);
     }
 
@@ -333,6 +335,39 @@
         },
       });
       body.appendChild(annPanel.node);
+    }
+
+    // ------------------------------------------------------------------ verifications (workflow records about a human check: current, never part of the evidence shown)
+
+    function verificationsPanel(body, origin) {
+      if (verPanel) {
+        verPanel.destroy();
+        verPanel = null;
+      }
+      const ui = host.verifications;
+      const V = global.HqCarnetVerifications || (node ? require("./hq-carnet-verifications.js") : null);
+      if (!ui || !V || typeof ui.panel !== "function") return;
+      const spec = st.spec;
+      const refs = [];
+      const cite = spec.citation;
+      if (origin && origin.kind === "citation" && origin.pageId && origin.blockId && cite) {
+        const r = V.ref.citation(origin.pageId, origin.blockId, cite);
+        if (r) refs.push({ key: "citation", label: "Cette citation", ref: r });
+      }
+      const src = V.ref.source(spec.sourceId);
+      if (src) refs.push({ key: "source", label: "Cette source", ref: src });
+      if (!refs.length) return;
+      const frozen = !!(spec.context && (spec.context.kind === "review" || spec.context.kind === "snapshot"));
+      verPanel = ui.panel({
+        id: "hq-carnet-reader-ver",
+        refs,
+        frozen,
+        say: (t) => {
+          const live = layer && layer.querySelector("#hq-carnet-reader-ver [role=status]");
+          if (live) live.textContent = t;
+        },
+      });
+      body.appendChild(verPanel.node);
     }
 
     // ------------------------------------------------------------------ "Citations de cette page" (one batched, bounded request)
@@ -456,6 +491,10 @@
       if (annPanel) {
         annPanel.destroy();
         annPanel = null;
+      }
+      if (verPanel) {
+        verPanel.destroy();
+        verPanel = null;
       }
       layer = null;
       st = null;

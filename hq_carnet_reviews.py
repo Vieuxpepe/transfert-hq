@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import hq_carnet_canon as canon
 import hq_state
 
 DIR_NAME = ".hq-carnet"
@@ -320,12 +321,11 @@ def _read_one(directory: Path, rid: str) -> tuple[dict | None, str]:
     """``(pack or None, integrity)`` with integrity ``ok`` | ``corrupt`` | ``invalid``. Unreadable bytes raise."""
     path = directory / (rid + ".json")
     try:
-        st = os.lstat(path)
-        if _stat.S_ISLNK(st.st_mode) or not _stat.S_ISREG(st.st_mode) or st.st_size > PACK_BYTES_MAX + 4096:
-            return None, "invalid"
-        raw = path.read_bytes()
+        raw = canon.read_regular(path, PACK_BYTES_MAX)  # descriptor-bound: a swapped-in link is never followed (Phase 11 trust path)
     except FileNotFoundError as e:
         raise ReviewNotFound("Revue introuvable") from e
+    except canon.Noncanonical:
+        return None, "invalid"
     except OSError as e:
         raise ReviewStorageError("Revue illisible") from e
     try:

@@ -2005,6 +2005,7 @@
     tools.appendChild(toolBtn("btn-carnet-intel", "Cockpit du projet : décisions, mesures, changements et jalons", "Cockpit"));
     tools.appendChild(toolBtn("btn-carnet-ask", "Preuves du carnet : retrouver les passages qui répondent à une question (aucune réponse générée)", "Preuves"));
     tools.appendChild(toolBtn("btn-carnet-reviews", "Revues : dossiers de preuves à relire, liste de contrôle et questions (rien n'est déduit)", "Revues"));
+    tools.appendChild(toolBtn("btn-carnet-verifications", "Vérifications : contrôles consignés contre un état précis des preuves (aucune identité n'est enregistrée)", "Vérifications"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
@@ -2164,6 +2165,7 @@
       else if (b.id === "btn-carnet-intel") openIntel("overview", b);
       else if (b.id === "btn-carnet-ask") openAsk(b);
       else if (b.id === "btn-carnet-reviews") openReviews(b);
+      else if (b.id === "btn-carnet-verifications") openVerifications(b);
     });
     trashed.addEventListener("click", (e) => {
       const b = e.target && e.target.closest ? e.target.closest("button") : null;
@@ -4751,6 +4753,7 @@
       },
       openAsk: (question, scope) => openAsk(null, { question, scope }),
       openReader: (spec) => openReader(spec),
+      verifications: verificationsUi(),
       addToReport: (item) => {
         const h = historyUi();
         return !!(h && h.addExternal && h.addExternal(item));
@@ -4828,6 +4831,36 @@
     return ui.annotations;
   }
 
+  /** Verification workspace + related-verifications panel (Phase 11). Optional: the Reader and the Review Pack work without it. Workflow records only: nothing here edits evidence. */
+  function verificationsUi() {
+    if (ui.verifications) return ui.verifications;
+    const M = global.HqCarnetVerificationsUi;
+    if (!M || typeof M.mount !== "function") return null;
+    ui.verifications = M.mount({
+      doc,
+      root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { post: (payload) => request(payload) },
+      online: () => !(global.navigator && global.navigator.onLine === false),
+      crypto: global.crypto,
+      projects: () => {
+        const c = ui.core;
+        return c && c.st && Array.isArray(c.st.projects) ? c.st.projects.filter((p) => isObj(p)).map((p) => ({ id: p.id, name: p.name })) : [];
+      },
+      openReader: (spec) => openReader(spec),
+      onClose: () => {},
+    });
+    return ui.verifications;
+  }
+
+  function openVerifications(opener) {
+    const m = verificationsUi();
+    if (!m) {
+      flashMsg("Module vérifications non chargé");
+      return;
+    }
+    m.open(opener || null, null);
+  }
+
   function readerUi() {
     if (ui.reader) return ui.reader;
     const M = global.HqCarnetReaderUi;
@@ -4838,6 +4871,7 @@
     ui.reader = M.mount({
       doc,
       annotations: annotationsUi(),
+      verifications: verificationsUi(),
       root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
       api: { post: (payload) => request(payload) },
       page: readerPage,

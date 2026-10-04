@@ -58,7 +58,7 @@
     const state = {
       open: false, opener: null, projectId: null, mode: "list", tab: "overview", token: 0, busy: false, error: "", notice: "",
       list: null, snaps: [], pack: null, integrity: "ok", fresh: null, freshBusy: false, confirmDelete: null, pendingCreate: null, definiteError: false,
-      thread: null, threadFailed: false, cOpen: {}, cDraft: {}, cSupersedes: {}, cPending: null, cBusy: false,
+      thread: null, threadFailed: false, vOpen: {}, vPanels: {}, cOpen: {}, cDraft: {}, cSupersedes: {}, cPending: null, cBusy: false,
       adding: null, draft: { title: "", note: "", baseline: "", check: "", question: "", resolution: {}, edit: {} },
     };
     let dlg = null;
@@ -350,6 +350,8 @@
       state.confirmDelete = null;
       state.thread = null;
       state.threadFailed = false;
+      dropVerPanels();
+      state.vOpen = {};
       state.cOpen = {};
       state.cDraft = {};
       state.cSupersedes = {};
@@ -373,6 +375,7 @@
       if (!dlg || !state.open) return;
       state.open = false;
       state.token += 1;
+      dropVerPanels();
       state.adding = null;
       state.confirmDelete = null;
       state.pack = null;
@@ -611,6 +614,8 @@
         row.appendChild(mut("Retirer de la revue", { "data-rv": "item-remove", "data-id": i.id, "aria-label": "Retirer « " + i.label + " » de la revue" }));
         kids.push(row);
         kids.push(commentsBlock(i));
+        const vb = verificationsBlock(i);
+        if (vb) kids.push(vb);
         ul.appendChild(el(doc, "li", { class: "carnet-hx-item carnet-rv-item", "data-rv-item": i.id, "data-rv-kind": i.kind, "data-rv-state": i.observation.state }, kids));
       }
       sec.appendChild(ul);
@@ -628,6 +633,36 @@
         el(doc, "p", { class: "carnet-rv-comment-body", text: c.body }), // textContent: never interpreted
       ];
       return el(doc, "li", { class: "carnet-rv-comment", "data-rv-comment": c.id }, kids);
+    }
+
+    // ------------------------------------------------------------ related verifications (workflow records about a human check; created AFTER the captured evidence)
+
+    function dropVerPanels() {
+      for (const k of Object.keys(state.vPanels || {})) {
+        try {
+          state.vPanels[k].destroy();
+        } catch (_) { /* a failed destroy leaves nothing behind that matters */ }
+      }
+      state.vPanels = {};
+    }
+
+    function verificationsBlock(i) {
+      const V = global.HqCarnetVerifications || (node ? require("./hq-carnet-verifications.js") : null);
+      if (!host.verifications || !V || typeof host.verifications.panel !== "function" || !state.pack) return null;
+      const r = V.ref.reviewItem(state.pack.id, i.id);
+      if (!r) return null;
+      const open = !!state.vOpen[i.id];
+      const wrap = el(doc, "div", { class: "carnet-rv-verifs", "data-rv-verifs": i.id });
+      wrap.appendChild(btn("Vérifications liées", { "data-rv": "v-toggle", "data-id": i.id, "aria-expanded": open ? "true" : "false", id: "hq-carnet-rv-vtoggle-" + i.id, "aria-label": "Vérifications liées à « " + i.label + " »" }));
+      if (!open) return wrap;
+      const key = state.pack.id + ":" + i.id;
+      let p = state.vPanels[key];
+      if (!p) {
+        p = host.verifications.panel({ id: "hq-carnet-rv-ver-" + i.id, refs: [{ key: "item", label: "Cet élément de revue", ref: r }], frozen: true, expanded: true, projectId: state.raw ? state.raw.project_id : null });
+        state.vPanels[key] = p;
+      }
+      wrap.appendChild(p.node);
+      return wrap;
     }
 
     function commentsBlock(i) {
@@ -881,6 +916,17 @@
       const a = t.getAttribute("data-rv");
       const id = t.getAttribute("data-id");
       const raw = state.raw;
+      if (a === "v-toggle") {
+        state.vOpen[id] = !state.vOpen[id];
+        if (!state.vOpen[id] && state.pack && state.vPanels[state.pack.id + ":" + id]) {
+          state.vPanels[state.pack.id + ":" + id].destroy();
+          delete state.vPanels[state.pack.id + ":" + id];
+        }
+        render();
+        const tg = doc.getElementById("hq-carnet-rv-vtoggle-" + id);
+        if (tg) tg.focus({ preventScroll: true });
+        return;
+      }
       if (a === "c-toggle") {
         state.cOpen[id] = !state.cOpen[id];
         render();

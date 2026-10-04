@@ -60,6 +60,7 @@ import hq_carnet_restore as restore
 import hq_carnet_review as review
 import hq_carnet_reviews as reviews
 import hq_carnet_rcomments as rcomments
+import hq_carnet_verifications as verifications
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snapshots
 import hq_carnet_sources as sources
@@ -185,6 +186,7 @@ def bind(**kwargs: Any) -> None:
         snapshots.bind(**kwargs)  # Phase 5: the write-once snapshot store shares the root and clock
         reviews.bind(**kwargs)  # Phase 7: the review-pack store shares the root and clock
         annotations.bind(**kwargs)  # Phase 10: the live-annotation store (review comments reuse its root and clock)
+        # Phase 11: the verification store reuses the annotation module's root / clock binding (no separate bind)
         _ready = _cb.get("root") is not None
 
 
@@ -1545,6 +1547,17 @@ _STAGE08 = {
     "annotation_delete": annotations.mutate,
     "rcomment_list": rcomments.mutate,  # Phase 10: READ-ONLY thread of one review
     "rcomment_add": rcomments.mutate,  # Phase 10: append-only review comment, request_id idempotent
+    "verification_list": verifications.read,  # Phase 11: READ-ONLY header list (bounded, filtered server-side)
+    "verification_get": verifications.read,  # Phase 11: READ-ONLY
+    "verification_resolve": verifications.read,  # Phase 11: READ-ONLY batched current-state observation of one verification
+    "verification_related": verifications.read,  # Phase 11: READ-ONLY reverse lookup from the header index (<=10 identities)
+    "verification_create": verifications.mutate,  # Phase 11: workflow record about a human check (never evidence; never touches a page / source / review)
+    "verification_update": verifications.mutate,
+    "verification_evidence_add": verifications.mutate,
+    "verification_evidence_remove": verifications.mutate,
+    "verification_status": verifications.mutate,
+    "verification_signoff": verifications.mutate,  # the ONLY way to reach "verified"
+    "verification_delete": verifications.mutate,
 }
 
 
@@ -1562,11 +1575,11 @@ def http_post(data: Any) -> tuple[int, dict]:
         if action in _STAGE08:
             return 200, _STAGE08[action](data)
         return 200, mutate(data)
-    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict, annotations.AnnotationError) as e:
+    except (CarnetConflict, sources.SourceConflict, reviews.ReviewConflict, annotations.AnnotationError, verifications.VerificationError) as e:
         return e.status, getattr(e, "payload", None) or {"error": str(e), "code": e.code}
     except (history.HistoryError, snapshots.SnapshotError, reviews.ReviewError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError, annotations.AnnotationStorageError) as e:
+    except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError, annotations.AnnotationStorageError, verifications.VerificationStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except (sources.SourceError, sources.SourceStorageError, portals.PortalError, reader.ReaderError) as e:
         return e.status, {"error": str(e), "code": e.code}
@@ -1726,6 +1739,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
     rev_closure = reviews.closure(root)  # Phase 7: every review pack file, byte-for-byte (no binaries: referenced material follows the closures above)
     ann_closure = annotations.closure(root)  # Phase 10: every live-annotation shard, byte-for-byte (a referenced source / PDF / page is NOT followed)
     rcm_closure = rcomments.closure(root)  # Phase 10: the comment thread of every EXISTING pack, byte-for-byte (an orphan thread is unreachable: skipped)
+    ver_closure = verifications.closure(root)  # Phase 11: every verification file, byte-for-byte (referenced evidence / foreign files are NOT followed)
     refs = refs | snap_closure["assets"]
     voices = voices | snap_closure["voices"]
     stems = stems | snap_closure["stems"]
@@ -1745,7 +1759,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         if found["invalid"]:
             valid = False
     if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"] \
-            and not ann_closure["files"] and ann_closure["valid"] and not rcm_closure["files"] and rcm_closure["valid"]:
+            and not ann_closure["files"] and ann_closure["valid"] and not rcm_closure["files"] and rcm_closure["valid"] and not ver_closure["files"] and ver_closure["valid"]:
         return {"ok": True, "included": False, "status": "absent"}
     if refs:
         try:
@@ -1810,6 +1824,19 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
             rcm_report["refused"] = len(rcm_refused)  # redirected / replaced / vanished between validation and copy: never followed, not copied
         if not rcm_closure["valid"] or rcm_refused:
             valid = False
+    ver_refused: list = []
+    ver_report: dict | None = None
+    if ver_closure["files"] or not ver_closure["valid"]:
+        if ver_closure["files"]:
+            (dest_dir / verifications.VER_DIR).mkdir(parents=True, exist_ok=True)
+            ver_bytes = verifications.copy_to(root, dest_dir / verifications.VER_DIR, ver_closure["files"], ver_refused)
+        else:
+            ver_bytes = 0
+        ver_report = {"count": len(ver_closure["files"]) - len(ver_refused), "bytes": ver_bytes, "valid": bool(ver_closure["valid"]) and not ver_refused}
+        if ver_refused:
+            ver_report["refused"] = len(ver_refused)  # redirected / replaced / vanished between validation and copy: never followed, not copied
+        if not ver_closure["valid"] or ver_refused:
+            valid = False
     assets_report: dict | None = None
     if refs:
         assets_report = media.copy_assets_to(root, sorted(refs), dest_dir / "assets")
@@ -1833,6 +1860,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         out["annotations"] = ann_report
     if rcm_report is not None:  # ... and when there are no review comments
         out["review_comments"] = rcm_report
+    if ver_report is not None:  # ... and when there are no verifications
+        out["verifications"] = ver_report
     if assets_report is not None:  # ... and when there are no images
         out["assets"] = assets_report
     if drawings_report is not None:  # ... and when there are no drawing references

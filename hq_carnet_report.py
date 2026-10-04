@@ -37,10 +37,10 @@ import hq_state
 
 ITEMS_MAX = 200
 TITLE_MAX = 120
-KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence", "review_pack")  # a drawing is its OWN kind: never a photo
+KINDS = ("note", "measure", "decision", "photo", "drawing", "source", "project_overview", "ask_evidence", "review_pack", "verification")  # a drawing is its OWN kind: never a photo
 BLOCK_KIND = {"measure": "measure", "decision": "decision", "photo": "image", "drawing": "drawing"}
 LABELS = {
-    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet", "review_pack": "Dossier de revue",
+    "note": "Note", "measure": "Mesure", "decision": "Décision", "photo": "Photo", "drawing": "Croquis", "source": "Source", "project_overview": "Synthèse du projet", "ask_evidence": "Preuves du carnet", "review_pack": "Dossier de revue", "verification": "Vérification",
     "sources_cited": "Sources citées", "default_title": "Rapport",
 }
 FIELD_LABELS = (("author", "Auteur"), ("edition", "Édition"), ("year", "Année"), ("publisher", "Éditeur"), ("identifier", "Identifiant"), ("type", "Type"), ("url", "Lien"), ("file_ref", "Fichier"))
@@ -74,6 +74,12 @@ def _item(raw: Any) -> dict:
                 and isinstance(raw["fingerprint"], str) and re.match(r"^[0-9a-f]{32}\Z", raw["fingerprint"])):
             return {"kind": kind, "project_id": raw["project_id"], "fingerprint": raw["fingerprint"]}
         raise _err("Élément de rapport invalide")
+    if kind == "verification":
+        import hq_carnet_verifications as verifications  # lazy: an OPTIONAL section; Ask / snapshots never import the verification store
+
+        if set(raw) != {"kind", "verification_id"} or not isinstance(raw["verification_id"], str) or not verifications.ID_RE.match(raw["verification_id"]):
+            raise _err("Élément de rapport invalide")
+        return {"kind": kind, "verification_id": raw["verification_id"]}
     if kind == "review_pack":
         # HISTORICAL by default: the pack is rendered as it is stored (its own revision and seal are shown), with a separate freshness
         # observation made now. It is never "stale"-pinned: evidence that changed is marked in the section, not refused.
@@ -192,6 +198,7 @@ def build(data: Any) -> dict:
     overview_items: list[tuple[int, dict]] = []
     ask_items: list[tuple[int, dict]] = []
     review_items: list[tuple[int, dict]] = []
+    verification_items: list[tuple[int, dict]] = []
     stale: list[str] = []
     page_revs: dict[str, int] = {}
     with hq_state.path_lock(hc._path()):  # ONE consistent snapshot of the notebook
@@ -204,6 +211,10 @@ def build(data: Any) -> dict:
             if item["kind"] == "project_overview":
                 overview_items.append((len(sections), item))
                 sections.append({"kind": "project_overview"})
+                continue
+            if item["kind"] == "verification":
+                verification_items.append((len(sections), item))
+                sections.append({"kind": "verification"})
                 continue
             if item["kind"] == "review_pack":
                 review_items.append((len(sections), item))
@@ -256,6 +267,13 @@ def build(data: Any) -> dict:
     for index, item in review_items:  # the stored pack + a separate observation; one unreadable pack refuses the report, nothing is guessed
         got = reviews.get(item["review_id"])
         sections[index].update(review=got["review"], integrity=got["integrity"], freshness=evidence.freshness(got["review"]))
+    for index, item in verification_items:  # procedural facts about a recorded human check + the CURRENT evidence state; a corrupt record refuses the report
+        import hq_carnet_verifications as verifications
+
+        try:
+            sections[index].update(verification=verifications.report_summary(item["verification_id"]))
+        except verifications.VerificationConflict as e:
+            raise hc.CarnetConflict({"error": str(e), "code": e.code}) from e
     refs_seen: dict[tuple[str, str], dict] = {}
     for sec in sections:  # Phase 8: the CURRENT state of every portal in the rendered blocks, resolved in bounded batches (read-only)
         for b in sec.get("blocks", ()):
@@ -303,6 +321,12 @@ def build(data: Any) -> dict:
                 body = evidence.render_markdown(sec["review"], sec["freshness"], sec["integrity"]).splitlines()
                 out.append(f"## {label} — " + rich._md_escape(sec["review"]["title"]))
                 out.append("\n".join(("##" + ln) if ln.startswith("#") else ln for ln in body[1:]).strip("\n"))
+                continue
+            if sec["kind"] == "verification":
+                import hq_carnet_verifications as verifications
+
+                out.append(f"## {label}")
+                out.append(verifications.render_markdown(sec["verification"]))
                 continue
             if sec["kind"] == "ask_evidence":
                 out.append(f"## {label} — « " + rich._md_escape(sec["ask"]["question"]) + " »")
@@ -358,6 +382,8 @@ def _public_section(sec: dict, portal_states: dict | None = None) -> dict:
         return {"kind": "project_overview", "label": LABELS["project_overview"], "overview": sec["overview"], "snapshot": sec["snapshot"]}
     if sec["kind"] == "review_pack":
         return {"kind": "review_pack", "label": LABELS["review_pack"], "review": sec["review"], "integrity": sec["integrity"], "freshness": sec["freshness"]}
+    if sec["kind"] == "verification":
+        return {"kind": "verification", "label": LABELS["verification"], "verification": sec["verification"]}
     if sec["kind"] == "ask_evidence":
         return {"kind": "ask_evidence", "label": LABELS["ask_evidence"], "ask": sec["ask"]}
     if sec["kind"] == "source":

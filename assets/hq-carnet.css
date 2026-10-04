@@ -1147,3 +1147,34 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-rv-comments{margin-top:6px;display:flex;flex-direction:column;gap:6px}
 .carnet-rv-comment{padding:6px 8px;border-left:3px solid var(--line)}
 .carnet-rv-removed{margin-top:12px;padding:8px;border:1px dashed var(--line);border-radius:10px}
+/* Phase 11: verifications — workflow records about a human check. Visibly distinct from evidence AND from annotations (solid accent edge, never dashed). */
+.carnet-ver-panel{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:8px 10px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;background:var(--panel-2)}
+.carnet-ver-panel[data-frozen="1"]{border-left-style:double}
+.carnet-ver-toggle{min-height:var(--carnet-tap,44px);text-align:left;display:flex;flex-wrap:wrap;gap:4px;align-items:center;overflow-wrap:anywhere}
+.carnet-ver-heading{font-weight:700}
+.carnet-ver-panel-body{display:flex;flex-direction:column;gap:8px;min-width:0}
+.carnet-ver-row{list-style:none;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff);min-width:0}
+.carnet-ver-q,.carnet-ver-followup{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+.carnet-ver-form{display:flex;flex-direction:column;gap:6px}
+.carnet-ver-body{gap:12px}
+.carnet-ver-block{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--line);border-radius:12px}
+.carnet-ver-block>h4{margin:0}
+.carnet-ver-block[data-ver-block="evidence"]{border-left:4px solid var(--accent)}
+.carnet-ver-block[data-ver-block="current"]{border-style:dashed}
+.carnet-ver-block[data-ver-block="history"]{background:var(--panel-2)}
+.carnet-ver-block[data-ver-block="note"]{border-style:dotted}
+.carnet-ver-group{display:flex;flex-direction:column;gap:6px}
+.carnet-ver-group h4{margin:8px 0 2px}
+.carnet-ver-evidence,.carnet-ver-signoff{flex-wrap:wrap}
+.carnet-ver-evidence[data-state="changed"],.carnet-ver-evidence[data-state="missing"],.carnet-ver-evidence[data-state="changed_or_removed"],.carnet-ver-evidence[data-state="integrity_anomaly"],.carnet-ver-evidence[data-state="corrupt"]{border-color:var(--danger)}
+.carnet-ver-overall[data-ver-overall="changed"],.carnet-ver-overall[data-ver-overall="integrity_anomaly"],.carnet-ver-overall[data-ver-overall="corrupt"]{font-weight:700;text-decoration:underline}
+.carnet-ver-actions{display:flex;flex-direction:column;gap:8px}
+.carnet-ver-confirm{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--danger);border-radius:10px}
+.carnet-ver-row[data-integrity]:not([data-integrity="ok"]){border-color:var(--danger)}
+.carnet-ver-filters{display:flex;flex-wrap:wrap;gap:8px}
+.carnet-ver button,.carnet-ver select,.carnet-ver input,.carnet-ver textarea,.carnet-ver-panel button,.carnet-ver-panel select,.carnet-ver-panel textarea{min-height:var(--carnet-tap,44px);box-sizing:border-box}
+.carnet-ver [aria-disabled="true"],.carnet-ver-panel [aria-disabled="true"]{opacity:.55;cursor:not-allowed}
+.carnet-ver textarea,.carnet-ver-panel textarea{width:100%;min-height:4.5em}
+@media print{.carnet-ver,.carnet-ver-panel{display:none!important}}
+/* Phase 11: the workspace can be opened from inside the Reader (z 140) and must sit above it */
+#hq-carnet-ver{z-index:150}

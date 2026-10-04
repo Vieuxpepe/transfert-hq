@@ -37,6 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import hq_carnet_canon as canon
 import hq_carnet_intel as intel
 import hq_carnet_rich as rich
 import hq_state
@@ -454,12 +455,11 @@ def _read_one(directory: Path, snap_id: str) -> tuple[dict | None, str]:
     """``(snapshot or None, integrity)`` with integrity ``ok`` | ``corrupt`` | ``invalid``. Unreadable bytes raise."""
     path = directory / (snap_id + ".json")
     try:
-        st = os.lstat(path)
-        if _stat.S_ISLNK(st.st_mode) or not _stat.S_ISREG(st.st_mode) or st.st_size > SNAPSHOT_BYTES_MAX + 4096:
-            return None, "invalid"
-        raw = path.read_bytes()
+        raw = canon.read_regular(path, SNAPSHOT_BYTES_MAX)  # descriptor-bound: a swapped-in link is never followed (Phase 11 trust path)
     except FileNotFoundError as e:
         raise SnapshotNotFound("Jalon introuvable") from e
+    except canon.Noncanonical:
+        return None, "invalid"
     except OSError as e:
         raise SnapshotStorageError("Jalon illisible") from e
     try:
