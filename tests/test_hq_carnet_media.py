@@ -1325,7 +1325,7 @@ class StaticMediaTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parent.parent
 
     def test_browser_modules_have_no_dangerous_sinks(self):
-        for name in ("hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js", "hq-carnet-reviews.js", "hq-carnet-intel.js", "hq-carnet-intel-ui.js", "hq-carnet-ask.js", "hq-carnet-ask-ui.js", "hq-carnet-reviews-ui.js", "hq-carnet-portals.js", "hq-carnet-portals-ui.js", "hq-carnet-image-ui.js", "hq-carnet-struct.js", "hq-carnet-structured-ui.js", "hq-carnet-nav.js", "hq-carnet-polish-ui.js", "hq-carnet-dessiner.js", "hq-carnet-commands.js", "hq-carnet-editor-ui.js", "hq-carnet-templates.js", "hq-carnet-capture.js"):
+        for name in ("hq-carnet-modal.js", "hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js", "hq-carnet-reviews.js", "hq-carnet-intel.js", "hq-carnet-intel-ui.js", "hq-carnet-ask.js", "hq-carnet-ask-ui.js", "hq-carnet-reviews-ui.js", "hq-carnet-portals.js", "hq-carnet-portals-ui.js", "hq-carnet-image-ui.js", "hq-carnet-struct.js", "hq-carnet-structured-ui.js", "hq-carnet-nav.js", "hq-carnet-polish-ui.js", "hq-carnet-dessiner.js", "hq-carnet-commands.js", "hq-carnet-editor-ui.js", "hq-carnet-templates.js", "hq-carnet-capture.js"):
             text = (self.ROOT / "assets" / name).read_text(encoding="utf-8")
             for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "importScripts", "XMLHttpRequest", "sendBeacon", "WebSocket"):
                 self.assertNotIn(bad, text, f"{name}: {bad}")
@@ -1349,7 +1349,11 @@ class StaticMediaTests(unittest.TestCase):
         text = (self.ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
         self.assertEqual(text.count('frame-ancestors \'self\''), 1, "only the Stage-05 PDF frame exception exists")
         self.assertIn("def _security_headers(self, *, frame_self: bool = False)", text)
-        self.assertNotIn("frame_self=True", text)  # no image response is ever framed
+        # no image response is ever framed: the only explicit frame_self=True uses are the Phase 9 r2 verified frozen-PDF route (body + readable refusal)
+        start = text.index("def _carnet_reader_pdf(")
+        end = text.index("    def _carnet_asset_get(")
+        self.assertEqual(text.count("frame_self=True"), 2)
+        self.assertEqual(text[start:end].count("frame_self=True"), 2, "both belong to the verified PDF route")
 
     def test_no_asset_deletion_api_exists(self):
         source = (self.ROOT / "hq_carnet_media.py").read_text(encoding="utf-8")

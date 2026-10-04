@@ -1231,7 +1231,7 @@ class ParityTests(unittest.TestCase):
 class FrameworkSurfaceTests(Stage08Base):
     def test_only_the_five_operations_exist_and_share_one_flow(self):
         self.assertEqual(bulk.OPS, ("replace", "context_move", "trash", "source_migrate", "file_replace"))
-        self.assertEqual(set(hq_carnet._STAGE08), {"bulk_preview", "bulk_apply", "bulk_undo", "history_checkpoint", "history_restore", "report_build", "snapshot_create", "ask", "portal_resolve"})
+        self.assertEqual(set(hq_carnet._STAGE08), {"bulk_preview", "bulk_apply", "bulk_undo", "history_checkpoint", "history_restore", "report_build", "snapshot_create", "ask", "portal_resolve", "reader_resolve"})
 
     def test_modules_do_not_use_dangerous_primitives(self):
         root = Path(__file__).resolve().parents[1]

@@ -412,6 +412,7 @@
       copyNote: COPY_NOTE,
       supersedes: (i.supersedes || []).map((s) => ({ fingerprint: s.fingerprint, replaced: fmtDate(s.replaced_at) })),
       observation: observationModel(obsById[i.id], i.scope),
+      sourceId: i.kind === "source" && isObj(i.key) && typeof i.key.edition_id === "string" ? i.key.edition_id : null,
       replaceable: i.kind === "ask_result",
       question: i.kind === "ask_result" && i.key ? i.key.question : null,
       askScope: i.kind === "ask_result" && i.key ? i.key.scope : null,

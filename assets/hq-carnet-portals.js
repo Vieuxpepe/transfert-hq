@@ -28,6 +28,7 @@
     failed: "État actuel indisponible",
     refresh: "Actualiser",
     open: "Ouvrir",
+    openReader: "Ouvrir dans le lecteur",
     inspect: "Inspecter",
     replace: "Remplacer la cible",
     remove: "Retirer du carnet",

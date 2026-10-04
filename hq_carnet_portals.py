@@ -154,18 +154,45 @@ def _identity(st: os.stat_result) -> tuple:
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
-def _hash_confined(root: Path, rel: str) -> tuple[str, int] | None:
+class _TooLarge(OSError):
+    """The file exceeds the size cap: distinct from an unreadable file so callers can say so."""
+
+
+def _hash_confined(root: Path, rel: str, sink: Any = None, limit: int | None = None) -> tuple[str, int] | None:
     """``(sha256, size)`` of ``rel`` below ``root``, bound to the SAME directory / file objects that were validated.
     POSIX: every component is opened with ``O_NOFOLLOW`` relative to the previous directory handle (``dir_fd``) and the file is
     read through its own handle, so a parent swapped for a symlink after any earlier probe is simply never followed.
     Elsewhere (no ``dir_fd`` / ``O_NOFOLLOW``): probe, hash, then re-probe and compare identity; any change -> OSError (``unknown``);
     that fallback narrows the race but cannot make "never opened beyond a redirect" absolute.
-    None = genuinely absent; ``_NonCanonical`` = redirected / non-regular; OSError = any other failure or a change while reading."""
+    None = genuinely absent; ``_NonCanonical`` = redirected / non-regular; OSError = any other failure or a change while reading.
+    ``sink`` (a binary file object): every chunk that is hashed is ALSO written to it, so the bytes kept are exactly the bytes hashed
+    (one observation, no second read of the path). ``limit`` lowers the size cap (OSError above it)."""
+    cap = snaps.HASH_FILE_MAX if limit is None else min(limit, snaps.HASH_FILE_MAX)
     parts = rel.split("/")
     if not _CONFINED:
         before = _plain_regular(root, rel)
         if before is None:
             return None
+        if sink is not None:
+            digest = hashlib.sha256()
+            total = 0
+            fd = os.open(str(root / rel), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            try:
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > cap:
+                        raise _TooLarge("fichier trop volumineux")
+                    digest.update(chunk)
+                    sink.write(chunk)
+            finally:
+                os.close(fd)
+            after = _plain_regular(root, rel)
+            if after is None or _identity(before) != _identity(after) or total != before.st_size:
+                raise OSError("cible modifiée pendant la lecture")
+            return digest.hexdigest(), total
         got = snaps.hash_file(root / rel)
         after = _plain_regular(root, rel)
         if got is None or after is None or _identity(before) != _identity(after):
@@ -194,8 +221,8 @@ def _hash_confined(root: Path, rel: str) -> tuple[str, int] | None:
         st = os.fstat(ffd)
         if not _stat.S_ISREG(st.st_mode):
             raise _NonCanonical(rel)
-        if st.st_size > snaps.HASH_FILE_MAX:
-            raise OSError("fichier trop volumineux")
+        if st.st_size > cap:
+            raise _TooLarge("fichier trop volumineux")
         digest = hashlib.sha256()
         total = 0
         while True:
@@ -203,9 +230,11 @@ def _hash_confined(root: Path, rel: str) -> tuple[str, int] | None:
             if not chunk:
                 break
             total += len(chunk)
-            if total > snaps.HASH_FILE_MAX:
-                raise OSError("fichier trop volumineux")
+            if total > cap:
+                raise _TooLarge("fichier trop volumineux")
             digest.update(chunk)
+            if sink is not None:
+                sink.write(chunk)
         end = os.fstat(ffd)
         if _identity(end) != _identity(st) or total != st.st_size:
             raise OSError("cible modifiée pendant la lecture")

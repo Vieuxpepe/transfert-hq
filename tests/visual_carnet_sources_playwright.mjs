@@ -329,7 +329,7 @@ async function main() {
     await p.locator('[data-carnet-citation="' + S.e12.id + '"]').click();
     const pdfReqs = [];
     p.on("request", (r) => { if (r.url().includes("/files/Uni/Shigley/12e.pdf")) pdfReqs.push(r.url()); });
-    await p.click("#btn-carnet-src-open");
+    await p.click("#btn-carnet-src-view");
     await p.waitForSelector("#hq-carnet-src-frame");
     check((await p.getAttribute("#hq-carnet-src-frame", "src")) === "/files/Uni/Shigley/12e.pdf#page=439&zoom=100", "iframe: same-origin /files/ URL with the citation's PDF page");
     check((await p.getAttribute("#hq-carnet-src-frame", "sandbox")) === null, "no sandbox attribute (would break the PDF viewer)");
@@ -525,7 +525,7 @@ async function main() {
       check((await p.locator("[data-carnet-citation]").count()) >= 1, `${profile}: citation present`);
       await p.locator("[data-carnet-citation]").last().tap();
       await p.waitForSelector("#hq-carnet-src-desc");
-      await p.tap("#btn-carnet-src-open");
+      await p.tap("#btn-carnet-src-view");
       await p.waitForSelector("#hq-carnet-src-frame");
       check(true, `${profile}: viewer opens (fallback: browser PDF viewer; #page support not guaranteed on iOS)`);
       const vb = await p.locator("#hq-carnet-sources-layer").boundingBox();

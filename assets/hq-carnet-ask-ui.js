@@ -319,6 +319,13 @@
         const b = gotoBtn(c.link, "Citée dans : " + (c.pageTitle || "note"), { "data-ask-role": "cited" });
         if (b) li.appendChild(b);
       }
+      if (typeof host.openReader === "function" && typeof s.id === "string") {
+        // Reader = inspection only: it opens above this dialog on the stored identity, never touches the answer. A frozen answer reads frozen evidence.
+        const sc = state.resultScope;
+        const rb = el(doc, "button", { type: "button", class: "carnet-btn carnet-ask-reader", "data-ask-role": "reader", text: "Ouvrir dans le lecteur", "aria-label": "Ouvrir dans le lecteur : " + (s.title || s.id) });
+        rb.addEventListener("click", () => host.openReader(Object.assign({ sourceId: s.id, trigger: rb }, sc && sc.kind === "snapshot" && typeof sc.id === "string" ? { context: { kind: "snapshot", id: sc.id } } : {})));
+        li.appendChild(rb);
+      }
       return li;
     }
 

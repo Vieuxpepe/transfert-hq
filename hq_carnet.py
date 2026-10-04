@@ -53,6 +53,7 @@ import hq_carnet_links as links
 import hq_carnet_media as media
 import hq_carnet_evidence as evidence
 import hq_carnet_portals as portals
+import hq_carnet_reader as reader
 import hq_carnet_report as report
 import hq_carnet_restore as restore
 import hq_carnet_review as review
@@ -1510,6 +1511,18 @@ def http_review_export(review_id: str) -> tuple[int, str, Any]:
         return 503, "", {"error": "Carnet inaccessible", "code": "storage_error"}
 
 
+def http_reader_pdf(qs: dict) -> tuple[int, Any, Any]:
+    """``(200, name, (spool, size))`` or ``(status, "", error payload)``. Read-only. The hash is bound to the streamed bytes (see reader)."""
+    try:
+        context, sid = reader.parse_verified_query(qs)
+        spool, size, name = reader.open_verified_pdf(context, sid)
+        return 200, name, (spool, size)
+    except reader.ReaderError as e:
+        return e.status, "", {"error": str(e), "code": e.code}
+    except OSError:
+        return 503, "", {"error": "Carnet inaccessible", "code": "storage_error"}
+
+
 _STAGE08 = {
     "bulk_preview": bulk.preview,
     "bulk_apply": bulk.apply,
@@ -1520,6 +1533,7 @@ _STAGE08 = {
     "snapshot_create": snapshots.create,
     "ask": review.ask,
     "portal_resolve": portals.resolve,  # Phase 8: READ-ONLY (a POST only because 100 references do not fit a query string)
+    "reader_resolve": reader.resolve,  # Phase 9: READ-ONLY, identities in / captured-current-integrity out
 }
 
 
@@ -1543,7 +1557,7 @@ def http_post(data: Any) -> tuple[int, dict]:
         return e.status, {"error": str(e), "code": e.code}
     except (history.HistoryStorageError, snapshots.SnapshotStorageError, reviews.ReviewStorageError) as e:
         return e.status, {"error": str(e), "code": e.code}
-    except (sources.SourceError, sources.SourceStorageError, portals.PortalError) as e:
+    except (sources.SourceError, sources.SourceStorageError, portals.PortalError, reader.ReaderError) as e:
         return e.status, {"error": str(e), "code": e.code}
     except CarnetError as e:
         return e.status, {"error": str(e), "code": e.code}

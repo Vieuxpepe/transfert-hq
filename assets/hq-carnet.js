@@ -4703,6 +4703,7 @@
         return e ? { id: e.id, project_id: (e.latest || e.server || {}).project_id || null } : null;
       },
       goto: gotoBlock,
+      openReader: (spec) => openReader(spec),
       addToReport: (item) => {
         const h = historyUi();
         return !!(h && h.addExternal && h.addExternal(item));
@@ -4749,6 +4750,7 @@
         return ui.lib && ui.lib.sel && ui.lib.sel.filter === "project" ? ui.lib.sel.id : null;
       },
       openAsk: (question, scope) => openAsk(null, { question, scope }),
+      openReader: (spec) => openReader(spec),
       addToReport: (item) => {
         const h = historyUi();
         return !!(h && h.addExternal && h.addExternal(item));
@@ -4796,11 +4798,54 @@
           return e && e.local && e.local.project_id ? e.local.project_id : null;
         },
       },
+      openReader: (spec) => openReader(spec),
       onClose: (refocus) => {
         if (refocus && finePointer()) focusEditor(false);
       },
     });
     return ui.sources;
+  }
+
+  // ---------------------------------------------------------------- Reader (Phase 9): inspection + navigation only, nothing persisted
+
+  /** The page the Reader was opened from, as parsed from the editor (real block ids only): citations + portal payloads. Read-only. */
+  function readerPage() {
+    const e = ui.core && ui.core.current();
+    if (!e || !ui.editor) return null;
+    const lines = Rich.parseEditor(ui.editor);
+    return {
+      id: e.id,
+      blocks: lines.filter((l) => Rich.isRealId(l.id)).map((l) => ({ id: l.id, type: l.type, marks: l.marks, portal: l.type === "portal" && l.struct ? { ref: l.struct.ref } : null })),
+    };
+  }
+
+  function readerUi() {
+    if (ui.reader) return ui.reader;
+    const M = global.HqCarnetReaderUi;
+    if (!M || typeof M.mount !== "function") {
+      flashMsg("Lecteur non chargé");
+      return null;
+    }
+    ui.reader = M.mount({
+      doc,
+      root: () => (ui.root && ui.root.querySelector(".carnet-main")) || ui.root,
+      api: { post: (payload) => request(payload) },
+      page: readerPage,
+      goto: async (pageId, blockId) => {
+        const s = ui.sources;
+        if (s && s.isOpen && s.isOpen()) s.close(false); // the Sources dialog that opened the Reader is left too: no stranded dialog
+        const ok = await gotoBlock(pageId, blockId); // navigation only; a gone block falls back to the page with the usual message
+        const w = ok && ui.editor ? ui.editor.querySelector('[data-carnet-block-id="' + blockId + '"] [data-carnet-citation], [data-carnet-block-id="' + blockId + '"][data-carnet-citation]') : null;
+        if (w && typeof w.focus === "function") w.focus({ preventScroll: true });
+      },
+    });
+    return ui.reader;
+  }
+
+  /** Opens the Reader for ONE piece of evidence ({sourceId, citation?, context?, origin?, trigger?}). Never mutates anything. */
+  function openReader(spec) {
+    const r = readerUi();
+    return !!(r && r.open(spec));
   }
 
   function openCitePicker() {
@@ -4824,7 +4869,9 @@
     if (!hit) return;
     ui.selCache = { start: hit.end, end: hit.end }; // a new citation made from the viewer goes AFTER this one, never over it
     if (curEntry()) setSel(hit.end, hit.end);
-    s.openCitation({ cite: hit.mark.cite, start: hit.start, end: hit.end, readonly: !curEntry() });
+    const cur = ui.core && ui.core.current();
+    const bid = lines[p.line] && Rich.isRealId(lines[p.line].id) ? lines[p.line].id : null;
+    s.openCitation({ cite: hit.mark.cite, start: hit.start, end: hit.end, readonly: !curEntry(), origin: cur && bid ? { kind: "citation", pageId: cur.id, blockId: bid } : null, trigger: node });
   }
 
   // ---------------------------------------------------------------- find / replace (current note only)
@@ -5841,11 +5888,12 @@
         const d = await apiCall("/api/carnet?reviews=1&project=" + encodeURIComponent(pid), { timeoutMs: 12000 });
         return ((d && d.reviews) || []).filter((x) => x && typeof x.id === "string").map((x) => ({ id: x.id, label: x.title || x.id }));
       },
-      open: (ref) => {
+      open: (ref, row, ctx) => {
         if (ref.kind === "file") return openAttachment(ref.id);
         if (ref.kind === "source") {
-          const s = sourcesUi();
-          return s && s.openManage();
+          const cur = ui.core && ui.core.current();
+          const bid = ctx && ctx.wrapper ? ctx.wrapper.getAttribute("data-carnet-block-id") : null;
+          return openReader({ sourceId: ref.id, origin: cur && Rich.isRealId(bid) ? { kind: "portal", pageId: cur.id, blockId: bid } : null, trigger: ctx && ctx.trigger ? ctx.trigger : null });
         }
         if (ref.kind === "snapshot") {
           const m = intelUi();

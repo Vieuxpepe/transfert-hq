@@ -2554,13 +2554,13 @@ function hqCarnetMissing() {
     };
     // Stage 04/05: the structured-content and sources modules must load before the editor.
     // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-portals.js', () => load('/assets/hq-carnet-portals-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
+    load('/assets/hq-carnet-modal.js', () => load('/assets/hq-carnet-reader.js', () => load('/assets/hq-carnet-reader-ui.js', () => load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-portals.js', () => load('/assets/hq-carnet-portals-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
       carnetRetrying = false;
       app.textContent = '';
       if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    }))))))))))))))))))))))))), true);
+    }))))))))))))))))))))))))), true))));
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -5320,6 +5320,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-rich.js"></script>
 <script src="/assets/hq-carnet-field.js"></script>
 <script src="/assets/hq-carnet-field-ui.js"></script>
+<script src="/assets/hq-carnet-modal.js"></script>
 <script src="/assets/hq-carnet-sources.js"></script>
 <script src="/assets/hq-carnet-eng-ui.js"></script>
 <script src="/assets/hq-carnet-history-ui.js"></script>
@@ -5331,6 +5332,8 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-reviews-ui.js"></script>
 <script src="/assets/hq-carnet-portals.js"></script>
 <script src="/assets/hq-carnet-portals-ui.js"></script>
+<script src="/assets/hq-carnet-reader.js"></script>
+<script src="/assets/hq-carnet-reader-ui.js"></script>
 <script src="/assets/hq-carnet-image-ui.js"></script>
 <script src="/assets/hq-carnet-structured-ui.js"></script>
 <script src="/assets/hq-carnet-nav.js"></script>
@@ -5637,7 +5640,10 @@ class Handler(BaseHTTPRequestHandler):
         # Static/login already handled; for authenticated GETs enforce allowlist.
         method = "GET"
         if not self._upload_allowed(method, raw):
-            self._json(403, {"error": "Réservé admin"})
+            if raw == "/api/carnet/reader-pdf":
+                self._carnet_reader_pdf_refusal(403, {"error": "Réservé admin"})  # frame-readable (see above)
+            else:
+                self._json(403, {"error": "Réservé admin"})
             return False
         return True
 
@@ -5652,7 +5658,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(size))
-        self.send_header("Accept-Ranges", "bytes")
+        # No "Accept-Ranges": this route streams the whole file and never answers a Range request (the media / voice routes do).
         self.send_header("Cache-Control", "no-store")
         self._security_headers(frame_self=(ext == ".pdf" and not as_download))
         if force_attach and ext in FORCE_ATTACHMENT_EXTS:
@@ -5931,7 +5937,32 @@ class Handler(BaseHTTPRequestHandler):
         if raw.startswith("/api/carnet/review-export/"):
             self._carnet_review_export(raw[len("/api/carnet/review-export/"):])
             return True
+        if raw == "/api/carnet/reader-pdf":
+            self._carnet_reader_pdf(parse_qs(parsed.query, keep_blank_values=True))
+            return True
         return False
+
+    def _carnet_reader_pdf(self, qs: dict) -> None:
+        """Phase 9 r2: the frozen PDF whose seal matched, streamed from the very bytes that were hashed (a spool; the pathname is not
+        reopened). Admin-only like every /api/carnet route; identities in, never a path; refused (409) if the file no longer matches."""
+        code, name, got = hq_carnet.http_reader_pdf(qs)
+        if code != 200:
+            self._carnet_reader_pdf_refusal(code, got)
+            return
+        spool, size = got
+        with spool:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers(frame_self=True)
+            self.send_header("Content-Disposition", f"inline; filename=\"{name}\"; filename*=UTF-8''{quote(name)}")
+            self.end_headers()
+            while True:
+                chunk = spool.read(CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
     def _carnet_review_export(self, review_id: str) -> None:
         """Phase 7: the deterministic review handoff package (ZIP of review.json, review.md, manifest.json). Admin-only like every
@@ -5949,6 +5980,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'none'; sandbox; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(data)
+
+    def _carnet_reader_pdf_refusal(self, code: int, obj: dict) -> None:
+        """Every refusal of THIS iframe route (its own, and the generic 401 / 403 gates) is a same-origin, no-store JSON body that the
+        Reader can read inside its frame; a blocked frame would leave the sealed-match state standing. No file bytes, nothing sensitive."""
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._security_headers(frame_self=True)
+        self.end_headers()
+        self.wfile.write(body)
 
     def _carnet_asset_get(self, asset_id: str) -> None:
         """Stage 06: serve one confined Carnet image. Admin-only (the caller already enforced the role).
@@ -6353,6 +6396,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not self._auth():
+            if raw == "/api/carnet/reader-pdf":
+                self._carnet_reader_pdf_refusal(401, {"error": "PIN requis"})  # frame-readable: the Reader shows the access state
+                return
             if raw.startswith(("/api/", "/files/", "/download/", "/media/")):
                 self._json(401, {"error": "PIN requis"})
                 return

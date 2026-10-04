@@ -34,6 +34,8 @@
     throw new Error("hq-carnet-rich.js manquant");
   })();
 
+  const M = (global && global.HqCarnetModal) || (typeof require === "function" ? (function () { try { return require("./hq-carnet-modal.js"); } catch (e) { return null; } })() : null);
+
   const TYPES = ["book", "standard", "article", "datasheet", "catalogue", "procedure", "web", "other"];
   const TYPE_LABEL = {
     book: "Livre", standard: "Norme", article: "Article", datasheet: "Fiche technique", catalogue: "Catalogue fabricant",
@@ -298,24 +300,23 @@
     // ---- shell
     function ensureLayer() {
       if (layer) return layer;
-      layer = el("div", { id: "hq-carnet-sources-layer", class: "carnet-src-layer", hidden: true });
+      layer = el("div", { id: "hq-carnet-sources-layer", class: "carnet-src-layer", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-carnet-sources-title", hidden: true });
       host.root.appendChild(layer);
-      layer.addEventListener("keydown", (ev) => {
-        if (ev.key === "Escape") {
-          ev.stopPropagation();
-          close(true);
-        }
-      });
       return layer;
     }
 
+    let modal = null; // handle of the shared modal utility while the dialog is open (the layer node itself is kept, only hidden)
+
     function show(view, title, nodes) {
       const l = ensureLayer();
+      const active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+      const opener = modal ? null : state.pendingTrigger && state.pendingTrigger.isConnected ? state.pendingTrigger : active; // exact opener, captured on first open only
+      if (!modal) state.pendingTrigger = null;
       state.view = view;
       l.textContent = "";
       l.setAttribute("data-view", view);
       const head = el("div", { class: "carnet-src-head" }, [
-        el("h2", { class: "carnet-src-title", text: title }),
+        el("h2", { class: "carnet-src-title", id: "hq-carnet-sources-title", text: title }),
         btn("btn-carnet-src-close", view === "view" ? "Retour à la note" : "Fermer", { "aria-label": view === "view" ? "Retour à la note" : "Fermer" }),
       ]);
       head.lastChild.addEventListener("click", () => close(true));
@@ -323,15 +324,23 @@
       for (const n of nodes) l.appendChild(n);
       l.hidden = false;
       if (host.onOpen) host.onOpen();
+      if (M) {
+        if (!modal) modal = M.open(doc, l, { trigger: opener, keep: true, onEscape: () => close(true) });
+        else modal.focus(); // a view switch inside the open dialog: focus moves into the new content, never stays on a removed node
+      }
     }
 
     function close(refocus) {
-      if (layer) {
-        layer.hidden = true;
-        layer.textContent = "";
+      let restored = false;
+      if (layer) layer.hidden = true;
+      if (modal) {
+        const m = modal;
+        modal = null;
+        restored = m.close(!!refocus); // true only when the exact opener took focus
       }
+      if (layer) layer.textContent = "";
       state.view = null;
-      if (host.onClose) host.onClose(!!refocus);
+      if (host.onClose) host.onClose(!!refocus && !restored);
     }
 
     function msgBox() {
@@ -514,6 +523,7 @@
     // ---- source view (a citation, or a PDF opened from the picker)
     function openCitation(hit) {
       hit.pageId = (host.editor.current() || {}).id || null; // every later action is bound to THIS page
+      state.pendingTrigger = hit.trigger || null; // the citation element the person used (the editor takes focus while the dialog loads)
       state.origin = { id: hit.pageId, sel: null, edit: hit.readonly ? null : hit };
       loadRecent();
       refresh().then(
@@ -524,6 +534,8 @@
         (err) => renderCitation(hit, null, errText(err)),
       );
     }
+
+    const pdfPage = (ed, cite) => resolvePdf(ed, cite.loc, cite.pdf);
 
     function renderCitation(hit, ed, problem) {
       const cite = hit.cite;
@@ -540,10 +552,24 @@
         nodes.push(el("p", { class: "hint", id: "hq-carnet-src-from", text: "Migrée depuis " + (old ? editionTitle(old) : "une édition précédente") + " — " + (cite.from.loc.text ? (KIND_LABEL[cite.from.loc.kind] || "") + " " + cite.from.loc.text : "sans emplacement") + (cite.from.pdf ? ", PDF " + cite.from.pdf : "") + (cite.from.ok ? " (vérifié)" : "") }));
       }
       const row = el("div", { class: "carnet-panel-row" });
+      // Reader = inspection only. It opens ABOVE this dialog (never nested in it) and returns focus to the exact button used here.
+      const readerOpen = (b) => {
+        if (typeof host.openReader !== "function") return;
+        host.openReader({ sourceId: cite.src, citation: cite, origin: hit.origin || null, trigger: b });
+      };
+      if (typeof host.openReader === "function") {
+        const rb = btn("btn-carnet-src-reader", "Ouvrir dans le lecteur");
+        rb.addEventListener("click", () => readerOpen(rb));
+        row.appendChild(rb);
+      }
       if (ed && ed.file_ref && ed.file_state === "ok") {
         const b = btn("btn-carnet-src-open", "Voir le PDF");
-        b.addEventListener("click", () => openView(ed, resolvePdf(ed, cite.loc, cite.pdf) || 1, hit));
+        b.addEventListener("click", () => (typeof host.openReader === "function" ? readerOpen(b) : openView(ed, pdfPage(ed, cite) || 1, hit)));
         row.appendChild(b);
+        // Management stays here: the in-dialog viewer is where "Citer cette page" lives (the Reader only inspects).
+        const vb = btn("btn-carnet-src-view", "Citer depuis le PDF");
+        vb.addEventListener("click", () => openView(ed, pdfPage(ed, cite) || 1, hit));
+        row.appendChild(vb);
       } else if (ed && ed.file_ref) {
         nodes.push(el("p", { class: "hint", text: ed.file_state === "unsafe" ? "Le PDF lié n'est pas utilisable." : "Le PDF lié est introuvable sur ce PC." }));
       } else if (ed) nodes.push(el("p", { class: "hint", text: "Aucun PDF lié à cette édition." }));

@@ -876,7 +876,7 @@ class StaticSecurityTests(unittest.TestCase):
                 mods = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module] if isinstance(node, ast.ImportFrom) and node.module else []
                 for mod in mods:
                     top = mod.split(".")[0]
-                    self.assertTrue(top in stdlib or top in ("hq_state", "hq_carnet_rich", "hq_carnet_sources", "hq_carnet_media", "hq_carnet_voice", "hq_carnet_eng", "hq_carnet_bulk", "hq_carnet_history", "hq_carnet_links", "hq_carnet_report", "hq_carnet_restore", "hq_drawings", "hq_carnet_intel", "hq_carnet_review", "hq_carnet_snapshots", "hq_carnet_ask", "hq_carnet_reviews", "hq_carnet_evidence", "hq_carnet_portals", "__future__"), f"{name}: {mod}")  # + Stage 08, Phase 5 and Phase 6 modules
+                    self.assertTrue(top in stdlib or top in ("hq_state", "hq_carnet_rich", "hq_carnet_sources", "hq_carnet_media", "hq_carnet_voice", "hq_carnet_eng", "hq_carnet_bulk", "hq_carnet_history", "hq_carnet_links", "hq_carnet_report", "hq_carnet_reader", "hq_carnet_restore", "hq_drawings", "hq_carnet_intel", "hq_carnet_review", "hq_carnet_snapshots", "hq_carnet_ask", "hq_carnet_reviews", "hq_carnet_evidence", "hq_carnet_portals", "__future__"), f"{name}: {mod}")  # + Stage 08, Phase 5 and Phase 6 modules
 
 
 class ExportHttpTests(unittest.TestCase):

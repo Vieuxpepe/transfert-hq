@@ -113,6 +113,40 @@ def _cited_editions(blocks: list[dict]) -> list[str]:
     return out
 
 
+LOC_LABEL = {"page": "Page", "section": "Section", "clause": "Article / clause", "chapter": "Chapitre", "figure": "Figure", "table": "Tableau", "custom": "Autre"}
+
+
+def _cited_citations(sections: list[dict]) -> dict[str, list[dict]]:
+    """Distinct citations (as stored) per edition, in order of first appearance. Nothing is resolved or interpreted."""
+    out: dict[str, list[dict]] = {}
+    seen: set[str] = set()
+    for sec in sections:
+        if sec["kind"] not in ("note", "measure", "decision", "photo"):
+            continue
+        for block in sec["blocks"]:
+            for mark in block["marks"]:
+                if mark["type"] != "citation":
+                    continue
+                cite = mark["cite"]
+                key = rich.cite_key(cite)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.setdefault(cite["src"], []).append(cite)
+    return out
+
+
+def _md_citation(cite: dict) -> str:
+    """One deterministic line: the citation AS STORED. The locator and the PDF page stay separate; ``ok`` is only ever the location flag."""
+    snap = cite["snap"]
+    who = snap["title"] + (" " + snap["edition"] if snap.get("edition") else "") + (f" ({snap['year']})" if snap.get("year") else "")
+    loc = cite["loc"]
+    where = (LOC_LABEL.get(loc["kind"], "") + " " + loc["text"]).strip() if loc["text"] else "non renseigné"
+    pdf = f"Page PDF {cite['pdf']}" if cite["pdf"] else "Page PDF non renseignée"
+    flag = "Emplacement vérifié" if cite["ok"] else "Emplacement non vérifié"
+    return "  - Citation : " + rich._md_escape(who) + " — Emplacement : " + rich._md_escape(where) + " ; " + pdf + " ; " + flag
+
+
 def _md_edition(ed: dict | None, ident: str) -> str:
     if ed is None:
         return f"- {rich._md_escape(ident)} (édition introuvable)"
@@ -123,6 +157,8 @@ def _md_edition(ed: dict | None, ident: str) -> str:
         if value in (None, "", 0):
             continue
         parts.append(f"{label} : {rich._md_escape(str(value))}")
+    if ed.get("archived"):
+        parts.append("Statut : archivée")
     return "- " + head + (" — " + " ; ".join(parts) if parts else "")
 
 
@@ -248,6 +284,7 @@ def build(data: Any) -> dict:
             for ident in _cited_editions(sec["blocks"]):
                 if ident not in cited:
                     cited.append(ident)
+    cites = _cited_citations(sections)
     images: list[dict] = []
     for sec in sections:
         if sec["kind"] in ("note", "photo"):
@@ -280,7 +317,11 @@ def build(data: Any) -> dict:
             out.append(rich.render_markdown({"version": rich.CONTENT_VERSION, "blocks": sec["blocks"]}, asset_paths, portal_states).rstrip("\n"))
         if include_sources and cited:
             out.append("## " + LABELS["sources_cited"])
-            out.append("\n".join(_md_edition(editions.get(i), i) for i in cited))
+            lines: list[str] = []
+            for i in cited:
+                lines.append(_md_edition(editions.get(i), i))
+                lines.extend(_md_citation(c) for c in cites.get(i, []))
+            out.append("\n".join(lines))
         return "\n\n".join(out) + "\n"
 
     name_stem = title

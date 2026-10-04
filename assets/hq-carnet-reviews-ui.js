@@ -526,6 +526,12 @@
         for (const s of i.supersedes) kids.push(el(doc, "p", { class: "hint", "data-rv": "supersedes", text: "Remplace une recherche précédente (empreinte " + s.fingerprint + ", " + s.replaced + ")." }));
         const row = el(doc, "div", { class: "carnet-hx-row" });
         if (i.question) row.appendChild(btn("Rechercher dans Ask Carnet", { "data-rv": "ask-again", "data-id": i.id, "aria-label": "Relancer la recherche « " + i.question + " » dans Ask Carnet" }));
+        if (i.sourceId && typeof host.openReader === "function") {
+          // Reader = inspection only (read-only; reads the item's captured copy and, for a frozen scope, compares the seal). Not a mutation: never `aria-disabled` when offline-readonly.
+          const rb = btn("Ouvrir dans le lecteur", { "data-rv": "open-reader", "data-id": i.id, "aria-label": "Ouvrir dans le lecteur : " + i.label });
+          rb.addEventListener("click", () => host.openReader({ sourceId: i.sourceId, context: { kind: "review", id: state.pack.id, item_id: i.id }, trigger: rb }));
+          row.appendChild(rb);
+        }
         row.appendChild(mut("Retirer de la revue", { "data-rv": "item-remove", "data-id": i.id, "aria-label": "Retirer « " + i.label + " » de la revue" }));
         kids.push(row);
         ul.appendChild(el(doc, "li", { class: "carnet-hx-item carnet-rv-item", "data-rv-item": i.id, "data-rv-kind": i.kind, "data-rv-state": i.observation.state }, kids));

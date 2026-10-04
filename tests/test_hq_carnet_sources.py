@@ -619,6 +619,33 @@ class SourceHttpTests(unittest.TestCase):
         self.assertEqual(self.get("/files/Uni/book.pdf", cookie=self.upload)[0], 403, "a PDF existing on disk gives the upload role nothing")
         self.assertFalse((self.tmp / ".hq-carnet" / "sources.json").exists() and b"Nope" in (self.tmp / ".hq-carnet" / "sources.json").read_bytes())
 
+    def test_reader_pdf_route_is_admin_only_and_validates_identities(self):
+        q = "/api/carnet/reader-pdf?snapshot=snap-" + "0" * 24 + "&source=srce-x"
+        for cookie, want in ((self.upload, 403), ("", 401)):
+            status, headers, body = self.get(q, cookie=cookie)
+            self.assertEqual(status, want)
+            # r4: this iframe route's gate refusals are frame-readable JSON (the Reader shows the access state), never a blocked frame
+            self.assertEqual(headers.get("X-Frame-Options"), "SAMEORIGIN")
+            self.assertTrue(headers.get("Content-Type", "").startswith("application/json"))
+            self.assertEqual(headers.get("Cache-Control"), "no-store")
+            self.assertIn("frame-ancestors 'self'", headers.get("Content-Security-Policy", ""))
+            self.assertEqual(set(json.loads(body)), {"error"}, "generic text only: no code, no identities echoed")
+        for other in ("/api/carnet?sources=1", "/api/carnet/review-export/rvw-" + "0" * 24):
+            for cookie in (self.upload, ""):
+                self.assertEqual(self.get(other, cookie=cookie)[1].get("X-Frame-Options"), "DENY", "every other refusal stays non-frameable: " + other)
+        self.assertEqual(self.get(q)[0], 404, "a well-formed but unknown identity")
+        for bad in ("/api/carnet/reader-pdf", "/api/carnet/reader-pdf?path=Uni/book.pdf", "/api/carnet/reader-pdf?snapshot=../x&source=srce-x"):
+            status, _h, body = self.get(bad)
+            self.assertEqual(status, 400, bad)
+            self.assertNotIn(str(self.tmp), body.decode())
+
+    def test_files_route_does_not_advertise_byte_ranges_it_does_not_serve(self):
+        status, headers, body = self.get("/files/Uni/book.pdf")
+        self.assertEqual(status, 200)
+        self.assertIsNone(headers.get("Accept-Ranges"), "/files streams the whole file: no false Accept-Ranges")
+        status, headers, _b = self.get("/files/Uni/note.txt")
+        self.assertIsNone(headers.get("Accept-Ranges"))
+
     def test_pdf_is_frameable_same_origin_only_and_nothing_else_is(self):
         status, headers, body = self.get("/files/Uni/book.pdf")
         self.assertEqual(status, 200)

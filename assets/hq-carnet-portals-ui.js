@@ -16,6 +16,7 @@
 
   const node = typeof module === "object" && module && module.exports;
   const P = node ? require("./hq-carnet-portals.js") : global.HqCarnetPortals;
+  const M = node ? require("./hq-carnet-modal.js") : global.HqCarnetModal;
   const PICK_MSG = {
     title: "Insérer un portail",
     replaceTitle: "Remplacer la cible du portail",
@@ -95,46 +96,12 @@
 
     // ------------------------------------------------------------------ picker (insert / replace)
 
-    // ---- modal containment (same pattern as the other Carnet dialogs: Tab / Shift+Tab wrap, focus cannot leave, Escape, focus return)
+    // ---- modal containment: the ONE shared Carnet utility (Tab / Shift+Tab wrap, focus cannot leave, exact focus return)
     let modal = null;
-
-    function focusables(node) {
-      return Array.prototype.filter.call(node.querySelectorAll("button, input, select, textarea, a[href], [tabindex]"), (n) => !n.disabled && !n.hidden && n.tabIndex >= 0 && !n.closest("[hidden]"));
-    }
 
     function openModal(node, trigger, initial) {
       closeModal(false);
-      node.setAttribute("tabindex", "-1");
-      const onKey = (ev) => {
-        if (ev.key !== "Tab") return;
-        const list = focusables(node);
-        if (!list.length) {
-          ev.preventDefault();
-          node.focus({ preventScroll: true });
-          return;
-        }
-        const first = list[0];
-        const last = list[list.length - 1];
-        const out = !node.contains(doc.activeElement);
-        if (ev.shiftKey && (doc.activeElement === first || doc.activeElement === node || out)) {
-          ev.preventDefault();
-          last.focus({ preventScroll: true });
-        } else if (!ev.shiftKey && (doc.activeElement === last || out)) {
-          ev.preventDefault();
-          first.focus({ preventScroll: true });
-        }
-      };
-      const onFocusIn = (ev) => {
-        if (modal && !node.contains(ev.target)) {
-          const list = focusables(node);
-          (list[0] || node).focus({ preventScroll: true }); // focus can never move into the editor / library behind an open modal
-        }
-      };
-      node.addEventListener("keydown", onKey);
-      doc.addEventListener("focusin", onFocusIn, true);
-      modal = { node, trigger: trigger || null, onFocusIn };
-      host.root().appendChild(node);
-      (initial || node).focus({ preventScroll: true });
+      modal = { node, handle: M.open(doc, node, { trigger, initial, mount: () => host.root().appendChild(node) }) };
     }
 
     /** Removes the open modal. ``refocus`` returns focus to the control that opened it (when it still exists). */
@@ -142,10 +109,7 @@
       if (!modal) return false;
       const m = modal;
       modal = null;
-      doc.removeEventListener("focusin", m.onFocusIn, true);
-      m.node.remove();
-      if (refocus && m.trigger && m.trigger.isConnected) m.trigger.focus({ preventScroll: true });
-      return !!(refocus && m.trigger && doc.activeElement === m.trigger); // a hidden / detached opener cannot take focus: the caller falls back
+      return m.handle.close(refocus); // true only when the exact opener took focus: the caller falls back otherwise
     }
 
     function closeLayer() {
@@ -341,7 +305,7 @@
       const note = el(doc, "div", { class: "carnet-pb-note" }, P.MSG.live);
       let lastRow = rows.get(keyOf(payload.ref)) || null;
 
-      const openBtn = button(P.MSG.open, "carnet-pb-open", () => host.open(payload.ref, lastRow), null);
+      const openBtn = button(payload.ref.kind === "source" ? P.MSG.openReader : P.MSG.open, "carnet-pb-open", () => host.open(payload.ref, lastRow, { trigger: openBtn, wrapper }), null);
       const inspectBtn = button(P.MSG.inspect, "carnet-pb-inspect", () => inspectPanel(payload.ref, lastRow, inspectBtn), null);
       const refreshBtn = button(P.MSG.refresh, "carnet-pb-refresh", () => {
         state.textContent = P.MSG.loading;
