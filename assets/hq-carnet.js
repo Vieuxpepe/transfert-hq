@@ -7136,10 +7136,30 @@
     navigate(d);
   }
 
+  /**
+   * Keyboard focus is never left clipped (WCAG 2.4.11 / 2.4.7 in practice): when focus moves by keyboard and the control is only partly
+   * visible inside a scroller (phone toolbar rows, modal bodies, wrap-around), it is scrolled into view, instantly (no smooth scrolling, so
+   * prefers-reduced-motion is respected by construction). Pointer focus is never touched; text editing surfaces keep the browser's own caret scrolling.
+   */
+  function bindKeyboardFocusReveal() {
+    let kbd = false;
+    doc.addEventListener("keydown", (e) => { if (e.key === "Tab" || e.key === "Enter" || e.key === " " || /^Arrow|^Home$|^End$|^Page/.test(e.key)) kbd = true; }, true);
+    doc.addEventListener("pointerdown", () => { kbd = false; }, true);
+    doc.addEventListener("focusin", (e) => {
+      const t = e.target;
+      if (!kbd || !t || t.nodeType !== 1 || typeof t.scrollIntoView !== "function") return;
+      if (t.matches("textarea, input[type='text'], input[type='search'], [contenteditable], [contenteditable] *") || (ui.editor && ui.editor.contains(t))) return;
+      try {
+        t.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+      } catch (_) {}
+    }, true);
+  }
+
   function bindGlobal() {
     if (ui.listeners) return;
     ui.listeners = true;
     doc.addEventListener("keydown", onKey);
+    bindKeyboardFocusReveal();
     doc.addEventListener("selectionchange", onSelectionChange);
     global.addEventListener("scroll", onViewportChange, true);
     global.addEventListener("resize", onViewportChange);

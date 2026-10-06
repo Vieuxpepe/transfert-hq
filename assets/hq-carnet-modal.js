@@ -30,7 +30,7 @@
   function stackOf(doc) {
     let s = stacks.get(doc);
     if (!s) {
-      s = { list: [], onFocusIn: null };
+      s = { list: [], onFocusIn: null, onDocKey: null, onPointer: null, mo: null, kbd: false };
       stacks.set(doc, s);
     }
     return s;
@@ -44,6 +44,47 @@
   function focusInside(h) {
     const list = focusables(h.node);
     (h.initial && h.node.contains(h.initial) ? h.initial : list[0] || h.node).focus({ preventScroll: true });
+  }
+
+
+  // Phase 14: a re-rendered control must not drop keyboard focus to <body> inside an open modal. The identity of the focused control
+  // (id, else tag + data-* attributes) is remembered; when focus is lost to <body> in keyboard modality the equivalent control is refocused.
+  function sigOf(el) {
+    if (!el || el.nodeType !== 1) return null;
+    if (el.id) return "#" + (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(el.id) : el.id);
+    let q = el.tagName.toLowerCase();
+    let n = 0;
+    for (const a of Array.prototype.slice.call(el.attributes)) {
+      if (/^data-/.test(a.name) && a.name !== "data-carnet-pulse") {
+        q += "[" + a.name + '="' + String(a.value).replace(/["\\]/g, "\\$&") + '"]';
+        n++;
+      }
+    }
+    return n ? q : null;
+  }
+
+  function rescue(doc) {
+    const s = stacks.get(doc);
+    const t = top(doc);
+    if (!s || !t || !s.kbd) return;
+    const a = doc.activeElement;
+    if (a && a !== doc.body && a !== doc.documentElement) return; // focus is somewhere: nothing was lost
+    let target = null;
+    if (t.lastSig) {
+      try { target = t.node.querySelector(t.lastSig); } catch (_) { target = null; }
+      if (target && focusables(t.node).indexOf(target) < 0) target = null;
+    }
+    (target || focusables(t.node)[0] || t.node).focus({ preventScroll: true });
+  }
+
+  function watch(doc) {
+    const s = stacks.get(doc);
+    if (!s) return;
+    if (s.mo) { s.mo.disconnect(); s.mo = null; }
+    const t = top(doc);
+    if (!t || typeof MutationObserver !== "function") return;
+    s.mo = new MutationObserver(() => rescue(doc));
+    s.mo.observe(t.node, { childList: true, subtree: true });
   }
 
   /**
@@ -85,10 +126,10 @@
       const out = !node.contains(act);
       if (ev.shiftKey && (act === first || act === node || out)) {
         ev.preventDefault();
-        last.focus({ preventScroll: true });
+        last.focus();
       } else if (!ev.shiftKey && (act === last || out)) {
         ev.preventDefault();
-        first.focus({ preventScroll: true });
+        first.focus();
       }
     };
     h.close = (refocus) => close(h, refocus);
@@ -97,15 +138,32 @@
     if (!s.onFocusIn) {
       s.onFocusIn = (ev) => {
         const t = top(doc);
-        if (t && !t.node.contains(ev.target)) focusInside(t); // focus can never move into the editor / library behind an open modal
+        if (!t) return;
+        if (!t.node.contains(ev.target)) focusInside(t); // focus can never move into the editor / library behind an open modal
+        else t.lastSig = sigOf(ev.target);
       };
       doc.addEventListener("focusin", s.onFocusIn, true);
+      // keyboard modality (the user last pressed a key, not a pointer) + Escape that reaches the document because focus sits on <body>
+      s.onDocKey = (ev) => {
+        s.kbd = true;
+        const t = top(doc);
+        if (!t || ev.key !== "Escape" || ev.defaultPrevented || t.node.contains(ev.target)) return;
+        if (t.onEscape) {
+          ev.preventDefault();
+          t.onEscape(ev);
+        }
+      };
+      s.onPointer = () => { s.kbd = false; };
+      doc.addEventListener("keydown", s.onDocKey, false);
+      doc.addEventListener("pointerdown", s.onPointer, true);
     }
     const below = top(doc);
     if (below && o.suspend !== false) suspend(below);
     s.list.push(h);
     if (typeof o.mount === "function") o.mount(node);
     focusInside(h);
+    h.lastSig = sigOf(doc.activeElement);
+    watch(doc);
     return h;
   }
 
@@ -145,12 +203,17 @@
     if (!s.list.length && s.onFocusIn) {
       doc.removeEventListener("focusin", s.onFocusIn, true);
       s.onFocusIn = null;
+      doc.removeEventListener("keydown", s.onDocKey, false);
+      doc.removeEventListener("pointerdown", s.onPointer, true);
+      s.onDocKey = s.onPointer = null;
     }
+    if (!s.list.length && s.mo) { s.mo.disconnect(); s.mo = null; }
     if (wasTop) {
       const t = top(doc);
       if (t) resume(t); // the parent is active again BEFORE focus is returned (an inert node cannot take focus)
     }
     if (!h.keep) h.node.remove();
+    if (wasTop) watch(doc);
     if (!refocus) {
       if (wasTop) {
         const t = top(doc);

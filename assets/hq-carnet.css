@@ -1,7 +1,7 @@
 /* Transfert HQ — Carnet (Stages 02–03). Paper first; system fonts; CSS-only paper. One editor on every device. */
 /* Phase 13: NAMED layer scale for the Carnet overlays (page chrome < sheet < sources < reader < workspace < nested).
    HqCarnetModal keeps ONE active surface (a modal opened over another suspends it), so these values only order overlays against the page chrome. */
-:root{--carnet-z-sheet:60;--carnet-z-sources:130;--carnet-z-reader:140;--carnet-z-workspace:150;--carnet-z-nested:160}
+:root{--carnet-z-sheet:125;--carnet-z-sources:130;--carnet-z-reader:140;--carnet-z-workspace:150;--carnet-z-nested:160}
 [data-carnet-suspended]{visibility:hidden}
 /* Phase 13: shared tokens for the repeated panel dialects (Reader / vérifications / registre / annotations / revue): one padding, one gap, one metadata size, one radius */
 :root{--carnet-pad-panel:8px 10px;--carnet-gap-section:8px;--carnet-fs-meta:.85rem;--carnet-radius-panel:10px;--carnet-radius-pill:999px}
@@ -481,7 +481,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 }
 
 /* Stage 08 — history, bulk operations, report, "Liée depuis…". One modal dialog, created lazily; nothing on the plain paper. */
-.carnet-hx{position:fixed;inset:0;z-index:var(--carnet-z-sheet,60);display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
+.carnet-hx{position:fixed;inset:0;z-index:var(--carnet-z-sheet,125);display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
 .carnet-hx[hidden]{display:none}
 @media (min-width:900px){.carnet-hx{inset:5vh 12vw;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.45)}}
 .carnet-hx-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -1152,7 +1152,7 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-pb-meta dt{font-weight:600}.carnet-pb-meta dd{margin:0;overflow-wrap:anywhere}
 .carnet-pb[data-view="compact"] .carnet-pb-meta{display:none}
 .carnet-pb-bar button,.carnet-pb-picker button,.carnet-pb-inspector button{min-height:var(--carnet-tap,44px);box-sizing:border-box}
-.carnet-pb-picker,.carnet-pb-inspector{position:fixed;inset:0;z-index:var(--carnet-z-sheet,60);display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);padding:16px}
+.carnet-pb-picker,.carnet-pb-inspector{position:fixed;inset:0;z-index:var(--carnet-z-sheet,125);display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);padding:16px}
 .carnet-pb-picker-body{background:var(--panel,#fff);color:inherit;border-radius:14px;padding:16px;max-width:min(520px,100%);width:100%;max-height:85vh;overflow:auto;display:flex;flex-direction:column;gap:10px}
 .carnet-pb-picker-list{display:flex;flex-direction:column;gap:6px}
 .carnet-pb-choice{text-align:left}
@@ -1252,3 +1252,11 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
   .carnet-sym-strip{display:flex;flex:0 0 100%;min-width:0;max-width:100%;flex-wrap:nowrap;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding-bottom:2px}
   .carnet-sym-strip .carnet-sym{flex:0 0 auto}
 }
+
+/* ---- Phase 14: accessibility & device hardening */
+/* WCAG 2.5.8: the radio / checkbox + its label form one target of at least 24 px (44 px on phones, like every other control). */
+.carnet-ann-form label{display:flex;align-items:center;gap:8px;min-height:24px;box-sizing:border-box}
+.carnet-ann-form label input[type="radio"],.carnet-ann-form label input[type="checkbox"]{flex:none;margin:0}
+@media (max-width:599px){.carnet-ann-form label{min-height:var(--carnet-tap,44px)}}
+/* Fixed bottom chrome (Field HUD 61 px above the 64 px bottom nav) must not cover a keyboard-focused control: scrolling reveals it above that chrome. */
+@media (max-width:720px){html{scroll-padding-bottom:calc(var(--nav-h,64px) + 72px + env(safe-area-inset-bottom,0px))}}
