@@ -294,7 +294,7 @@
 
     function errText(err) {
       if (err && err.status === 409) return "Modifié ailleurs — la liste a été rechargée, recommence.";
-      return err && err.message ? String(err.message).slice(0, 200) : "Erreur";
+      return err && err.message ? String(err.message).slice(0, 200) : (global && global.HqCarnetErrors ? global.HqCarnetErrors.message(err, 200) : "Échec inattendu : rien n'est confirmé.");
     }
 
     // ---- shell
@@ -325,7 +325,7 @@
       l.hidden = false;
       if (host.onOpen) host.onOpen();
       if (M) {
-        if (!modal) modal = M.open(doc, l, { trigger: opener, keep: true, onEscape: () => close(true) });
+        if (!modal) modal = M.open(doc, l, { layer: "sources", trigger: opener, keep: true, onEscape: () => close(true) });
         else modal.focus(); // a view switch inside the open dialog: focus moves into the new content, never stays on a removed node
       }
     }
@@ -454,7 +454,7 @@
       text.addEventListener("input", upd);
       const go = btn("btn-carnet-cite-insert", edit ? "Enregistrer" : "Insérer");
       const back = btn("btn-carnet-cite-back", "Changer de source");
-      const view = btn("btn-carnet-cite-view", "Voir le PDF", { disabled: !ed.file_ref || ed.file_state !== "ok" });
+      const view = btn("btn-carnet-cite-view", "Ouvrir le PDF", { disabled: !ed.file_ref || ed.file_state !== "ok" });
       show("locator", editionTitle(ed), [
         el("p", { class: "hint", text: [TYPE_LABEL[ed.type], ed.author, ed.year || ""].filter(Boolean).join(" · ") }),
         label("Type d'emplacement", kind), label("Emplacement", text), label("Page PDF", pdf), hint,
@@ -558,14 +558,17 @@
         host.openReader({ sourceId: cite.src, citation: cite, origin: hit.origin || null, trigger: b });
       };
       if (typeof host.openReader === "function") {
-        const rb = btn("btn-carnet-src-reader", "Ouvrir dans le lecteur");
+        const rb = btn("btn-carnet-src-reader", "Lire la preuve");
         rb.addEventListener("click", () => readerOpen(rb));
         row.appendChild(rb);
       }
       if (ed && ed.file_ref && ed.file_state === "ok") {
-        const b = btn("btn-carnet-src-open", "Voir le PDF");
-        b.addEventListener("click", () => (typeof host.openReader === "function" ? readerOpen(b) : openView(ed, pdfPage(ed, cite) || 1, hit)));
-        row.appendChild(b);
+        // Phase 13: with the Reader available, "Lire la preuve" IS the way to see the PDF (the old "Voir le PDF" opened the very same Reader: a duplicate entry).
+        if (typeof host.openReader !== "function") {
+          const b = btn("btn-carnet-src-open", "Ouvrir le PDF");
+          b.addEventListener("click", () => openView(ed, pdfPage(ed, cite) || 1, hit));
+          row.appendChild(b);
+        }
         // Management stays here: the in-dialog viewer is where "Citer cette page" lives (the Reader only inspects).
         const vb = btn("btn-carnet-src-view", "Citer depuis le PDF");
         vb.addEventListener("click", () => openView(ed, pdfPage(ed, cite) || 1, hit));
@@ -704,7 +707,7 @@
         state.origin = { id: pageId, sel: null, edit: null };
         insert(c);
       });
-      const tab = url ? el("a", { id: "btn-carnet-src-tab", class: "carnet-small", href: url, target: "_blank", rel: "noopener", text: "Ouvrir dans un onglet" }) : null;
+      const tab = url ? el("a", { id: "btn-carnet-src-tab", class: "carnet-small", href: url, target: "_blank", rel: "noopener", text: "Ouvrir le PDF dans un onglet" }) : null;
       show("view", editionTitle(ed), [
         el("div", { class: "carnet-panel-row carnet-src-bar" }, [prev, pageIn, apply, next, zout, zin]),
         info, warn,

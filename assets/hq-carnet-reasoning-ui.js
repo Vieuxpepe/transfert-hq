@@ -87,7 +87,7 @@
       closeBtn.addEventListener("click", () => close(true));
       const head = el(doc, "div", { class: "carnet-hx-head" }, [el(doc, "h3", { id: "hq-carnet-rsn-title", text: MSG.title }), closeBtn]);
       ws.dlg = el(doc, "div", { id: "hq-carnet-rsn", class: "carnet-hx carnet-rsn", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-carnet-rsn-title" }, [head, ws.live, ws.body]);
-      ws.handle = M.open(doc, ws.dlg, { trigger: opener || null, initial: closeBtn, mount: (n) => rootNode().appendChild(n), onEscape });
+      ws.handle = M.open(doc, ws.dlg, { layer: "workspace", trigger: opener || null, initial: closeBtn, mount: (n) => rootNode().appendChild(n), onEscape });
       ws.detail = null;
       ws.createForm = null;
       ws.notice = ws.error = "";
@@ -402,7 +402,7 @@
     async function run(bodyObj, onOk, quiet) {
       if (ws.busy) return null;
       if (!bodyObj) {
-        setNotice("Action impossible.", true);
+        setNotice("Saisie invalide : rien n'a été envoyé.", true);
         paint();
         return null;
       }
@@ -526,7 +526,7 @@
             el(doc, "span", { class: "carnet-chip", text: R.EV_LABEL[e.ref.kind] || "" }),
             el(doc, "span", { class: "carnet-hx-event-text", text: R.refText(e.ref) }),
           ]);
-          if (row) li.appendChild(el(doc, "span", { class: "hint", "data-rsn": "evidence-state", text: res.has_capture ? R.freshText(row.freshness) : R.existsText(row.exists) }));
+          if (row) li.appendChild(el(doc, "span", { class: "hint", "data-rsn": "evidence-state", "data-fresh": row.freshness || row.exists || "", text: res.has_capture ? R.freshText(row.freshness) : R.existsText(row.exists) }));
           if (e.ref.kind === "source" && typeof host.openReader === "function") li.appendChild(btn("Lire", { "data-rsn-act": "reader", "aria-label": "Lire cette source dans le lecteur" }, (evn) => host.openReader({ sourceId: e.ref.source_id, trigger: evn.currentTarget })));
           if (active) li.appendChild(btn(MSG.removeEvidence, { "data-rsn-act": "evidence-remove", "data-id": e.id, "aria-label": "Retirer cette preuve : " + R.refText(e.ref), "aria-disabled": ws.busy || !online() ? "true" : null }, () => run(R.evidenceRemoveBody(r, e.id), () => setNotice(MSG.evidenceRemoved, false))));
           ul.appendChild(li);
@@ -574,7 +574,7 @@
 
       // ---- HISTORY
       const h = section("history", MSG.sections.history + " (" + r.history.length + ")");
-      if (!r.history.length) h.appendChild(el(doc, "p", { class: "hint", text: "Aucun changement de statut." }));
+      if (!r.history.length) h.appendChild(el(doc, "p", { class: "hint", text: "Aucun changement de statut : cet enregistrement est toujours actif." }));
       else {
         const ul = el(doc, "ul", { class: "carnet-hx-list", "aria-label": MSG.sections.history });
         for (const e of r.history.slice().reverse()) {
@@ -639,7 +639,7 @@
       const c = ws.confirm;
       if (c && c.type === "status") {
         const summary = ws.detail.resolved ? R.verificationSummaryText(ws.detail.resolved.verification_summary) : "";
-        const kids = [el(doc, "p", { text: c.status === "confirmed" ? MSG.confirmHelp : MSG.terminalHelp })];
+        const kids = [el(doc, "p", { text: c.status === "confirmed" ? MSG.confirmHelp : c.status === "withdrawn" ? MSG.terminalHelpDecision : MSG.terminalHelp })];
         if (c.status === "confirmed") kids.push(el(doc, "p", { class: "hint", "data-rsn": "confirm-verifications", text: summary }));
         kids.push(el(doc, "div", { class: "carnet-panel-row" }, [
           btn(c.status === "confirmed" ? MSG.confirmYes : MSG.terminalYes, { id: "btn-carnet-rsn-status-yes", "data-rsn-act": "status-confirm", "aria-disabled": dis }, () => run(R.statusBody(r, c.status), () => { ws.confirm = null; setNotice(c.status === "confirmed" ? MSG.confirmDone : MSG.terminalDone, false); })),
@@ -761,7 +761,7 @@
 
       async function act(bodyObj, okText) {
         if (st.busy) return false;
-        if (!bodyObj) { st.error = "Action impossible."; paint(); return false; }
+        if (!bodyObj) { st.error = "Saisie invalide : rien n'a été envoyé."; paint(); return false; }
         if (!online()) { st.error = MSG.offline; paint(); return false; }
         st.busy = true;
         paint();
@@ -839,7 +839,7 @@
         rootEl.textContent = "";
         const rows = allRows();
         const label = st.loading && !st.results.size ? MSG.loading : st.failed ? MSG.loadFailed : R.summaryText(counts());
-        const toggle = el(doc, "button", { type: "button", class: "carnet-small carnet-rsn-toggle", id: pid + "-toggle", "aria-expanded": st.expanded ? "true" : "false", "aria-controls": pid + "-body" });
+        const toggle = el(doc, "button", { type: "button", class: "carnet-small carnet-rsn-toggle", id: pid + "-toggle", "data-reader-panel": "rsn", "aria-expanded": st.expanded ? "true" : "false", "aria-controls": pid + "-body" });
         toggle.appendChild(el(doc, "span", { id: pid + "-h", class: "carnet-rsn-heading", text: (spec.frozen ? MSG.frozenHeading : MSG.liveHeading) + " : " }));
         toggle.appendChild(el(doc, "span", { "data-rsn": "summary", text: label }));
         toggle.addEventListener("click", () => { st.expanded = !st.expanded; paint(); });
@@ -852,7 +852,7 @@
         if (st.error) bodyEl.appendChild(el(doc, "p", { class: "carnet-hx-warn", role: "alert", "data-rsn": "error", text: st.error }));
         if (st.failed) bodyEl.appendChild(btn("Réessayer", { "data-rsn-act": "retry" }, load));
         if (st.unavailable) bodyEl.appendChild(el(doc, "p", { class: "hint", text: st.unavailable + " " + MSG.untrusted }));
-        if (!st.loading && !st.failed && !rows.length) bodyEl.appendChild(el(doc, "p", { class: "hint", text: MSG.none }));
+        if (!st.loading && !st.failed && !rows.length) bodyEl.appendChild(el(doc, "p", { class: "hint", text: MSG.noneHere }));
         if (rows.length) {
           const ul = el(doc, "ul", { class: "carnet-hx-list", "aria-label": MSG.liveHeading });
           for (const x of rows) ul.appendChild(rowNode(x));

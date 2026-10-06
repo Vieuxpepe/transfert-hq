@@ -239,6 +239,16 @@
 
     function paint(body, model) {
       body.textContent = "";
+      if (!body.dataset.panelExclusive) {
+        // Phase 13: on a phone only ONE secondary workflow panel (annotations / vérifications / décisions et hypothèses) is open at a time; desktop keeps them independent
+        body.dataset.panelExclusive = "1";
+        body.addEventListener("click", (ev) => {
+          const t = ev.target && ev.target.closest ? ev.target.closest("[data-reader-panel]") : null;
+          if (!t || t.getAttribute("aria-expanded") !== "false") return;
+          if (!(global.matchMedia && global.matchMedia("(max-width: 599px)").matches)) return;
+          for (const o of body.querySelectorAll("[data-reader-panel][aria-expanded='true']")) if (o !== t) o.click();
+        }, true);
+      }
       body.appendChild(el(doc, "h3", { class: "carnet-reader-name", id: "hq-carnet-reader-name" }, model.title));
       if (model.reason) body.appendChild(el(doc, "p", { class: "carnet-src-warn", id: "hq-carnet-reader-reason", role: "alert" }, model.reason));
       if (model.verified) {
@@ -253,6 +263,12 @@
       body.appendChild(stat);
       if (model.banner) body.appendChild(el(doc, "p", { class: "carnet-reader-banner", id: "hq-carnet-reader-banner", "data-state": model.banner.key, role: "status" }, model.banner.text));
       if (model.rows.length) {
+        // Phase 13: the captured-vs-current comparison stays OPEN whenever something differs (or there is no captured side); when every field is
+        // identical it folds into one line, so the evidence (viewer) is not pushed below the first screen by a table that says « Identique » five times.
+        const differing = model.rows.filter((r) => r.differs).length;
+        const meta = el(doc, "details", { class: "carnet-reader-meta", id: "hq-carnet-reader-meta" });
+        if (differing || !model.hasCaptured) meta.setAttribute("open", "");
+        meta.appendChild(el(doc, "summary", { class: "carnet-reader-meta-sum", id: "hq-carnet-reader-meta-sum" }, !model.hasCaptured ? "Métadonnées de la source actuelle" : differing ? "Métadonnées : " + differing + (differing > 1 ? " champs diffèrent" : " champ diffère") + " de ce qui était enregistré" : "Métadonnées : identiques à ce qui était enregistré"));
         const table = el(doc, "table", { class: "carnet-reader-table", id: "hq-carnet-reader-table" });
         table.appendChild(el(doc, "caption", { class: "hint" }, "Métadonnées : ce qui était enregistré, et la source actuelle"));
         const head = el(doc, "tr");
@@ -266,7 +282,8 @@
           tr.appendChild(el(doc, "td", { class: "carnet-reader-flag" }, model.hasCaptured ? (r.differs ? MSG.differs : MSG.same) : ""));
           table.appendChild(tr);
         }
-        body.appendChild(table);
+        meta.appendChild(table);
+        body.appendChild(meta);
       }
       const origin = st.spec.origin || null;
       const blocks = pageBlocks(origin);
@@ -502,7 +519,7 @@
       layer = buildLayer();
       guard();
       st = { spec, result: null, plan: null, page: null, loaded: false };
-      handle = M.open(doc, layer, { trigger, initial: layer.querySelector("#btn-carnet-reader-close"), mount: (n) => host.root().appendChild(n), onEscape: () => close(true) });
+      handle = M.open(doc, layer, { layer: "reader", trigger, initial: layer.querySelector("#btn-carnet-reader-close"), mount: (n) => host.root().appendChild(n), onEscape: () => close(true) });
       load(spec);
       return true;
     }

@@ -16,6 +16,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  const E = (typeof module === "object" && module && module.exports && typeof require === "function") ? require("./hq-carnet-errors.js") : globalThis.HqCarnetErrors; // Phase 13: typed fallback message
+
   const BODY_MAX = 4000;
   const TARGETS_PER_LIST_MAX = 10;
   const LIST_MAX = 100;
@@ -34,9 +36,9 @@
   const MSG = {
     section: "Annotations",
     sectionHelp: "Commentaire attaché à cette preuve. Il ne fait pas partie de la preuve et ne la modifie jamais.",
-    frozenHeading: "Annotations actuelles — non incluses dans l'évidence figée",
+    frozenHeading: "Annotations actuelles — non incluses dans la preuve figée",
     liveHeading: "Annotations actuelles",
-    none: "Aucune annotation.",
+    none: "Aucune annotation pour cette preuve.",
     loading: "Chargement des annotations…",
     loadFailed: "Annotations non disponibles pour le moment.",
     label: "Annotation",
@@ -46,7 +48,7 @@
     edit: "Modifier",
     resolve: "Marquer comme résolue",
     reopen: "Rouvrir",
-    del: "Supprimer",
+    del: "Supprimer l'annotation",
     confirmDelete: "Supprimer définitivement cette annotation ? La preuve n'est pas touchée.",
     confirmYes: "Oui, supprimer l'annotation",
     deleted: "Annotation supprimée. La preuve n'est pas touchée.",
@@ -56,7 +58,7 @@
     corrupt: "Cette annotation est altérée : elle est affichée en lecture seule et n'est pas modifiable.",
     offline: "Hors ligne : les annotations restent lisibles, mais aucune modification n'est possible.",
     full: "Limite d'annotations atteinte pour cette preuve.",
-    viewEvidence: "Voir l'évidence",
+    viewEvidence: "Lire la preuve",
     attachPage: "Attacher à la page PDF",
     noPage: "Sans page PDF",
     truncated: "Les premières annotations sont listées (limite atteinte).",
@@ -248,7 +250,7 @@
       corrupt: code === "annotation_corrupt" || code === "review_comment_corrupt" || code === "review_corrupt",
       full: code === "annotation_limit" || code === "review_comment_limit",
       definite: !!code, // a coded refusal is a known outcome; a bare network error is not (the retry then reuses the same request id)
-      message: String(d.error || (err && err.message) || "Erreur").slice(0, 200),
+      message: E.message(err, 200),
     };
   }
 

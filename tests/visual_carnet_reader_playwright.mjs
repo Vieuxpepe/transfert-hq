@@ -265,23 +265,24 @@ scenario("01 Sources dialog hardening: dialog semantics, Tab / Shift+Tab contain
   check(a.cite, "focus returned to the exact citation that opened it: " + a.tag + "." + a.cls);
 });
 
-scenario("02 Sources → Voir le PDF opens the Reader ABOVE the dialog; Escape returns to the exact 'Voir le PDF' button; locator and PDF page 417 are separate", async () => {
+scenario("02 Sources → Lire la preuve opens the Reader ABOVE the dialog; Escape returns to the exact 'Lire la preuve' button; locator and PDF page 417 are separate", async () => {
   const { srv, ctx, p } = await world();
   const ed = await mkEd(srv, ctx);
   await withCites(srv, ctx, [{ ed, id: "block-c1", o: { loc: { kind: "page", text: "412" }, pdf: 417, ok: true } }]);
   await reopen(p);
   const posts = [];
   readerPosts(p, posts);
-  await citationToReader(p, "block-c1", "#btn-carnet-src-open");
+  await citationToReader(p, "block-c1", "#btn-carnet-src-reader");
   check((await rtxt(p, "#hq-carnet-reader-line-locator")).includes("Page 412") && (await rtxt(p, "#hq-carnet-reader-line-pdf")).includes("417"), "locator 'Page 412' and PDF page 417 on separate lines");
   check((await iframeSrc(p)) === "/files/Uni/" + ed._name + "#page=417", "the viewer opens PDF page 417 exactly: " + (await iframeSrc(p)));
   check((await rtxt(p, "#hq-carnet-reader-page")).includes("Page PDF 417"), "announcement 'Page PDF 417'");
   const at = await p.evaluate(() => ({ role: document.getElementById("hq-carnet-reader").getAttribute("role"), modal: document.getElementById("hq-carnet-reader").getAttribute("aria-modal") }));
   check(at.role === "dialog" && at.modal === "true", "Reader is a modal dialog");
-  check(await p.locator(SL).isVisible(), "the Sources dialog is still open underneath (never nested in it)");
+  // Phase 13: the Sources dialog is SUSPENDED (kept, inert, hidden) under the Reader, so exactly one surface is active; Escape resumes it
+  check((await p.locator(SL).count()) === 1 && (await p.locator(SL).getAttribute("data-carnet-suspended")) !== null && !(await p.locator(SL).isVisible()), "the Sources dialog is suspended underneath (kept, never two active surfaces)");
   await p.keyboard.press("Escape");
   await until(async () => (await p.locator(R).count()) === 0, "Escape closes the Reader only");
-  check((await activeInfo(p, SL)).id === "btn-carnet-src-open", "focus is back on the exact 'Voir le PDF' opener: " + (await activeInfo(p, SL)).id);
+  check((await activeInfo(p, SL)).id === "btn-carnet-src-reader", "focus is back on the exact 'Lire la preuve' opener: " + (await activeInfo(p, SL)).id);
   check(await p.locator(SL).isVisible(), "Sources dialog still open");
   await p.keyboard.press("Escape");
   await until(async () => await p.locator(SL).isHidden(), "second Escape closes Sources");
@@ -536,9 +537,9 @@ scenario("13 Review Pack frozen evidence: sealed hash match → normal viewing; 
   const refused = await p.evaluate(async (u) => { const r = await fetch(u); return { status: r.status, text: await r.text() }; }, await iframeSrc(p));
   check(refused.status === 409 && !refused.text.includes("%PDF") && !refused.text.includes("other bytes"), "replaced file: no byte of the replacement is sent: " + refused.status);
   await until(async () => (await p.locator("#hq-carnet-reader-autherr").isVisible()), "refusal shown");
-  check((await rtxt(p, "#hq-carnet-reader-autherr")) === "Le fichier a changé depuis le scellé : l’évidence figée n’est pas affichée.", "the frozen viewer says it refused");
+  check((await rtxt(p, "#hq-carnet-reader-autherr")) === "Le fichier a changé depuis le scellé : la preuve figée n’est pas affichée.", "the frozen viewer says it refused");
   check(await p.locator("#hq-carnet-reader-frame").isHidden(), "the replacement is not displayed");
-  check((await rtxt(p, "#hq-carnet-reader-banner")) === "Le fichier a changé depuis le scellé : l’évidence figée n’est pas affichée.", "the 'identique' banner is replaced, never left contradicting the refusal");
+  check((await rtxt(p, "#hq-carnet-reader-banner")) === "Le fichier a changé depuis le scellé : la preuve figée n’est pas affichée.", "the 'identique' banner is replaced, never left contradicting the refusal");
   await p.unroute("**/api/carnet/reader-pdf*");
   await p.keyboard.press("Escape");
   await until(async () => (await p.locator(R).count()) === 0, "closed");
@@ -553,7 +554,7 @@ scenario("13 Review Pack frozen evidence: sealed hash match → normal viewing; 
   await shot(p, "13-frozen-differs-desktop");
   await p.click("#btn-carnet-reader-open-current");
   await p.waitForSelector("#hq-carnet-reader-frame");
-  check((await rtxt(p, "#hq-carnet-reader-viewer-label")) === "Fichier actuel — différent de l’évidence figée", "unmistakable label");
+  check((await rtxt(p, "#hq-carnet-reader-viewer-label")) === "Fichier actuel — différent de la preuve figée", "unmistakable label");
   await shot(p, "13-frozen-open-current-labelled");
   check(gets.length >= 1 || (await iframeSrc(p)) === "/files/Uni/" + ed._name, "now the current file loads");
   await p.keyboard.press("Escape");
@@ -574,7 +575,7 @@ scenario("14 source portal → Reader: portal stays live, 'Retour au portail', e
   await reopen(p);
   await until(async () => (await p.locator("#hq-carnet-editor .carnet-pb").count()) === 1 && (await p.locator("#hq-carnet-editor .carnet-pb").getAttribute("data-state")) !== "loading", "portal resolved");
   const dig = carnetDigest(srv);
-  check((await p.locator(".carnet-pb-open").textContent()) === "Ouvrir dans le lecteur", "portal action is named");
+  check((await p.locator(".carnet-pb-open").textContent()) === "Lire la preuve", "portal action is named");
   await p.click(".carnet-pb-open");
   await p.waitForSelector(R);
   await painted(p);
@@ -847,11 +848,11 @@ scenario("25 verified frozen PDF: every refusal has its own wording (changed / g
     await painted(p);
   };
   const T = {
-    changed: "Le fichier a changé depuis le scellé : l’évidence figée n’est pas affichée.",
-    gone: "Le fichier scellé n’est plus disponible : l’évidence figée ne peut pas être affichée.",
-    unreadable: "Le fichier scellé ne peut être ni vérifié ni lu : l’évidence figée n’est pas affichée.",
-    large: "Le fichier scellé est trop volumineux pour être vérifié et affiché ici : l’évidence figée n’est pas affichée.",
-    unavail: "L’évidence figée n’est pas disponible (instantané illisible ou sans fichier scellé) : aucun fichier n’est affiché.",
+    changed: "Le fichier a changé depuis le scellé : la preuve figée n’est pas affichée.",
+    gone: "Le fichier scellé n’est plus disponible : la preuve figée ne peut pas être affichée.",
+    unreadable: "Le fichier scellé ne peut être ni vérifié ni lu : la preuve figée n’est pas affichée.",
+    large: "Le fichier scellé est trop volumineux pour être vérifié et affiché ici : la preuve figée n’est pas affichée.",
+    unavail: "La preuve figée n’est pas disponible (instantané illisible ou sans fichier scellé) : aucun fichier n’est affiché.",
     access: "Session expirée ou accès refusé : le document ne peut pas être affiché.",
   };
   const upCtx = await browser.newContext();

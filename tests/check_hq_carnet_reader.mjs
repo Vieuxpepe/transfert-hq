@@ -124,7 +124,7 @@ assert.equal(R.cardModel(frozen("matches_seal")).banner.text, "Fichier actuel id
 const diff = R.viewerPlan(frozen("differs_from_seal"));
 assert.equal(diff.mode, "explicit", "a different live PDF is NEVER loaded on its own");
 assert.equal(diff.action, "Ouvrir le fichier actuel (différent)");
-assert.equal(diff.label, "Fichier actuel — différent de l’évidence figée");
+assert.equal(diff.label, "Fichier actuel — différent de la preuve figée");
 assert.equal(R.cardModel(frozen("differs_from_seal")).banner.text, "Le fichier actuel diffère du fichier scellé lors de cette revue / de ce jalon.");
 const gone = R.viewerPlan(frozen("sealed_file_missing", { route: null }));
 assert.deepEqual([gone.mode, gone.route], ["none", null]);

@@ -34,6 +34,10 @@
     throw new Error("hq-carnet-rich.js manquant");
   })();
 
+  /** Phase 13: a failed request without a server message says WHAT KIND of failure it was (HqCarnetErrors), never the bare word « Erreur ». */
+  function typedFallback(err) {
+    return global.HqCarnetErrors ? global.HqCarnetErrors.message(err, 160) : "Échec inattendu : rien n'est confirmé.";
+  }
   const DRAFT_PREFIX = "hq_carnet_drafts_v1:";
   const DEBOUNCE_MS = 450;
   const POLL_MS = 5000;
@@ -982,7 +986,7 @@
         return;
       }
       if (status === 401) e.error = MSG.session;
-      else e.error = String((data && data.error) || (err && err.message) || "Erreur").slice(0, 160);
+      else e.error = String((data && data.error) || typedFallback(err)).slice(0, 160);
       onChange({ type: "error", id: e.id });
       if ((status === 400 || status === 404) && Object.keys(inflight.org).length) {
         // A project/category target vanished or was archived meanwhile: refresh the
@@ -1332,7 +1336,7 @@
             st.lastCode = data && typeof data.code === "string" ? data.code : "";
             if (!status || status >= 500) st.offline = true;
             st.notice = !status || status >= 500 ? MSG.offlineClean + " — nouvelle page impossible" :
-              String((data && data.error) || (err && err.message) || "Erreur").slice(0, 160);
+              String((data && data.error) || typedFallback(err)).slice(0, 160);
             onChange({ type: "notice" });
             return null;
           }
@@ -1355,7 +1359,7 @@
     function userMessage(err) {
       const { status, data } = errInfo(err);
       if (!status || status >= 500) return MSG.offlineClean;
-      return String((data && data.error) || (err && err.message) || "Erreur").slice(0, 160);
+      return String((data && data.error) || typedFallback(err)).slice(0, 160);
     }
 
     function userError(msg) {
@@ -1978,39 +1982,45 @@
     ]);
 
     const tools = el("div", { id: "carnet-quick-tools", class: "carnet-tools", role: "toolbar", "aria-label": "Symboles", hidden: true });
+    const mkGroup = (label) => { const g = el("div", { class: "carnet-tool-group", role: "group", "aria-label": label }, [el("span", { class: "carnet-tool-group-label", "aria-hidden": "true", text: label })]); tools.appendChild(g); return g; };
+    let grp = mkGroup("Insérer");
+    const strip = el("div", { class: "carnet-sym-strip" }); // phone: one scrollable line instead of three wrapped rows
     for (const sym of SYMBOLS) {
       const b = el("button", { type: "button", class: "carnet-sym", "data-carnet-symbol": sym, "aria-label": "Insérer " + sym, text: sym });
       keepFocus(b);
-      tools.appendChild(b);
+      strip.appendChild(b);
     }
+    grp.appendChild(strip);
     const time = el("button", { type: "button", id: "btn-carnet-time", class: "carnet-sym carnet-time", "aria-label": "Insérer l'heure" });
     time.appendChild(svgIcon(ICON.clock));
     time.appendChild(el("span", { text: "Heure" }));
     keepFocus(time);
-    tools.appendChild(time);
+    grp.appendChild(time);
     const toolBtn = (id, label, text) => {
       const b = el("button", { type: "button", id, class: "carnet-sym carnet-tool", "data-carnet-tool": "", "aria-label": label, "aria-expanded": "false" });
       b.appendChild(el("span", { text }));
       keepFocus(b);
       return b;
     };
-    tools.appendChild(toolBtn("btn-carnet-format", "Mise en forme", "Aa"));
-    tools.appendChild(toolBtn("btn-carnet-find", "Rechercher et remplacer dans la page", "Rechercher"));
-    tools.appendChild(toolBtn("btn-carnet-cite", "Insérer une référence (source, page)", "Référence"));
-    tools.appendChild(toolBtn("btn-carnet-image", "Insérer une image (appareil photo, photos, fichiers)", "Image"));
-    tools.appendChild(toolBtn("btn-carnet-eng", "Outils d'ingénierie (calcul, mesure, décision, conversion, tâche, lien)", "Ingénierie"));
-    tools.appendChild(toolBtn("btn-carnet-templates", "Nouvelle page depuis un modèle", "Modèles"));
-    tools.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
-    tools.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
-    tools.appendChild(toolBtn("btn-carnet-intel", "Cockpit du projet : décisions, mesures, changements et jalons", "Cockpit"));
-    tools.appendChild(toolBtn("btn-carnet-ask", "Preuves du carnet : retrouver les passages qui répondent à une question (aucune réponse générée)", "Preuves"));
-    tools.appendChild(toolBtn("btn-carnet-reviews", "Revues : dossiers de preuves à relire, liste de contrôle et questions (rien n'est déduit)", "Revues"));
-    tools.appendChild(toolBtn("btn-carnet-verifications", "Vérifications : contrôles consignés contre un état précis des preuves (aucune identité n'est enregistrée)", "Vérifications"));
-    tools.appendChild(toolBtn("btn-carnet-reasoning", "Registre des décisions et hypothèses : ce qui a été choisi, ce qui est tenu pour vrai pour l'instant (ni l'un ni l'autre n'est une preuve)", "Registre"));
+    grp.appendChild(toolBtn("btn-carnet-format", "Aa : mise en forme", "Aa"));
+    grp.appendChild(toolBtn("btn-carnet-cite", "Insérer une référence (source, page)", "Référence"));
+    grp.appendChild(toolBtn("btn-carnet-image", "Insérer une image (appareil photo, photos, fichiers)", "Image"));
+    grp.appendChild(toolBtn("btn-carnet-eng", "Outils d'ingénierie (calcul, mesure, décision, conversion, tâche, lien)", "Ingénierie"));
+    grp.appendChild(toolBtn("btn-carnet-templates", "Modèles : nouvelle page depuis un modèle", "Modèles"));
+    grp = mkGroup("Page");
+    grp.appendChild(toolBtn("btn-carnet-find", "Rechercher et remplacer dans la page", "Rechercher"));
+    grp.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
+    grp.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
     const trash = el("button", { type: "button", class: "carnet-sym carnet-trash-btn", "data-carnet-trash": "", "aria-label": "Mettre la page à la corbeille" });
     trash.appendChild(svgIcon(ICON.trash));
     trash.appendChild(el("span", { text: "Corbeille" }));
-    tools.appendChild(trash);
+    grp.appendChild(trash);
+    grp = mkGroup("Modules");
+    grp.appendChild(toolBtn("btn-carnet-intel", "Cockpit du projet : décisions, mesures, changements et jalons", "Cockpit"));
+    grp.appendChild(toolBtn("btn-carnet-ask", "Preuves du carnet : retrouver les passages qui répondent à une question (aucune réponse générée)", "Preuves"));
+    grp.appendChild(toolBtn("btn-carnet-reviews", "Revues : dossiers de preuves à relire, liste de contrôle et questions (rien n'est déduit)", "Revues"));
+    grp.appendChild(toolBtn("btn-carnet-verifications", "Vérifications : contrôles consignés contre un état précis des preuves (aucune identité n'est enregistrée)", "Vérifications"));
+    grp.appendChild(toolBtn("btn-carnet-reasoning", "Registre des décisions et hypothèses : ce qui a été choisi, ce qui est tenu pour vrai pour l'instant (ni l'un ni l'autre n'est une preuve)", "Registre"));
 
     const conflict = el("div", { id: "hq-carnet-conflict", class: "carnet-conflict", role: "alert", hidden: true }, [
       el("p", { class: "carnet-conflict-msg", text: MSG.conflict }),
@@ -2895,7 +2905,7 @@
       await fn();
       if (okMsg) flashMsg(okMsg);
     } catch (err) {
-      flashMsg(ui.core ? ui.core.userMessage(err) : "Erreur");
+      flashMsg(ui.core ? ui.core.userMessage(err) : typedFallback(err));
     }
     ui.lib.scopeSig = "";
     ui.lib.sig = "";
@@ -4753,7 +4763,7 @@
         if (pid) return pid;
         return ui.lib && ui.lib.sel && ui.lib.sel.filter === "project" ? ui.lib.sel.id : null;
       },
-      openAsk: (question, scope) => openAsk(null, { question, scope }),
+      openAsk: (question, scope, opener) => openAsk(opener || null, { question, scope }),
       openReader: (spec) => openReader(spec),
       verifications: verificationsUi(),
       reasoning: reasoningUi(),
@@ -5429,7 +5439,7 @@
         ctl("btn-carnet-image-caption-focus", "Légende", "Modifier la légende de l'image"),
         btn("btn-carnet-image-replace", "Remplacer…", { "aria-label": "Remplacer l'image" }),
         btn("btn-carnet-image-group", "Grouper…", { "aria-label": "Grouper avec une ou deux autres images" }),
-        ctl("btn-carnet-image-inspect", "Inspecter", "Inspecter l'image (zoom et déplacement, sans rien modifier)"),
+        ctl("btn-carnet-image-inspect", "Agrandir", "Agrandir l'image (zoom et déplacement, sans rien modifier)"),
         ctl("btn-carnet-image-annotate", "Annoter…", "Annoter l'image dans Dessiner (l'image d'origine reste inchangée)"),
         btn("btn-carnet-image-ocr", "Lire le texte…", { "aria-label": "Extraire le texte de l'image (reconnaissance locale)" }),
         btn("btn-carnet-image-remove", IMG_MSG.remove, { class: "carnet-small carnet-danger" }),

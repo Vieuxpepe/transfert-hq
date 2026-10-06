@@ -260,7 +260,12 @@ function digestExcept(srv, skip) {
   return h.digest("hex");
 }
 const annPosts = (p, bag) => p.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/carnet") && /"(annotation|rcomment)_/.test(r.postData() || "")) bag.push(JSON.parse(r.postData())); });
-const panelReady = (p) => until(async () => (await p.locator(ANN + " .carnet-ann-group").count()) > 0, "annotations panel loaded");
+// Phase 13: the annotations panel is a quiet collapsed summary (count) until opened: wait for the summary, open it, then wait for the groups
+const panelReady = async (p) => {
+  await until(async () => (await p.locator(ANN + "-toggle").count()) > 0 && !(await p.locator(ANN + ' [data-ann-summary]').textContent()).includes("Chargement"), "annotations summary loaded");
+  if ((await p.locator(ANN + "-toggle").getAttribute("aria-expanded")) === "false") await p.click(ANN + "-toggle");
+  return until(async () => (await p.locator(ANN + " .carnet-ann-group").count()) > 0, "annotations panel loaded");
+};
 async function readerOnCitation(profile = "desktop", titleOpts) {
   const { srv, ctx, p } = await world(profile);
   const ed = await mkEd(srv, ctx, "Machinery");
@@ -512,7 +517,7 @@ scenario("07 confirm refused when evidence is missing (fail closed) and withdraw
   await openDetail(p, d.id);
   await p.click(RSN + " #btn-carnet-rsn-withdrawn");
   await p.click(RSN + " #btn-carnet-rsn-status-yes");
-  await until(async () => (await statusOf(p)) === "Retirée", "withdrawn although the evidence is unavailable");
+  await until(async () => (await statusOf(p)) === "Décision retirée", "withdrawn although the evidence is unavailable");
   const rec = rsnRecs(srv).find((x) => x.id === d.id);
   check(rec.history[0].evidence[0].state === "missing" && rec.history[0].evidence[0].seal === null, "missing recorded, not blocking");
 });

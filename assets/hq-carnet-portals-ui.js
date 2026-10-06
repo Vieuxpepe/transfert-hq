@@ -21,7 +21,7 @@
     title: "Insérer un portail",
     replaceTitle: "Remplacer la cible du portail",
     intro: "Le portail affiche l’objet en lecture seule. Le carnet ne garde que la référence.",
-    none: "Aucun objet disponible.",
+    none: "Aucun objet de ce type disponible.",
     unavailable: "Liste indisponible.",
     pathLabel: "Chemin dans HQ",
     pathHint: "Ex. Inbox/Models/pièce.glb",
@@ -101,7 +101,7 @@
 
     function openModal(node, trigger, initial) {
       closeModal(false);
-      modal = { node, handle: M.open(doc, node, { trigger, initial, mount: () => host.root().appendChild(node) }) };
+      modal = { node, handle: M.open(doc, node, { layer: "sheet", trigger, initial, mount: () => host.root().appendChild(node) }) };
     }
 
     /** Removes the open modal. ``refocus`` returns focus to the control that opened it (when it still exists). */

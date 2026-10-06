@@ -20,6 +20,7 @@
 
   const node = typeof module === "object" && module && module.exports;
   const R = node ? require("./hq-carnet-reviews.js") : global.HqCarnetReviews;
+  const M = node ? require("./hq-carnet-modal.js") : global.HqCarnetModal; // Phase 13: ONE modal / focus / Escape contract (stack, suspend / resume)
   const A = node ? require("./hq-carnet-annotations.js") : global.HqCarnetAnnotations; // Phase 10: Review Pack comments (append-only discussion, NOT live annotations)
   const CM = A ? A.MSG : {};
   const LAST_KEY = "hq.carnet.review.last";
@@ -29,7 +30,7 @@
     needProject: "Les revues sont liées à un projet : ouvre une note d'un projet ou choisis un projet dans la bibliothèque.",
     offline: "Hors ligne : la revue reste lisible, mais aucune modification n'est possible.",
     loading: "Chargement…",
-    failed: "Action impossible.",
+    failed: "Saisie ou réponse invalide : rien n'a été modifié.",
     conflict: "La revue a changé ailleurs : la version du serveur est affichée. Ton texte non enregistré est conservé ci-dessous ; rien n'a été fusionné.",
     deleted: "Revue supprimée définitivement.",
     added: "Ajouté à la revue",
@@ -56,7 +57,7 @@
   function mount(host) {
     const doc = host.doc;
     const state = {
-      open: false, opener: null, projectId: null, mode: "list", tab: "overview", token: 0, busy: false, error: "", notice: "",
+      open: false, handle: null, opener: null, projectId: null, mode: "list", tab: "overview", token: 0, busy: false, error: "", notice: "",
       list: null, snaps: [], pack: null, integrity: "ok", fresh: null, freshBusy: false, confirmDelete: null, pendingCreate: null, definiteError: false,
       thread: null, threadFailed: false, vOpen: {}, vPanels: {}, rOpen: {}, rPanels: {}, cOpen: {}, cDraft: {}, cSupersedes: {}, cPending: null, cBusy: false,
       adding: null, draft: { title: "", note: "", baseline: "", check: "", question: "", resolution: {}, edit: {} },
@@ -74,7 +75,6 @@
       const head = el(doc, "div", { class: "carnet-hx-head" }, [el(doc, "h3", { id: "hq-carnet-rv-title", text: MSG.title }), close]);
       dlg = el(doc, "div", { id: "hq-carnet-rv", class: "carnet-hx carnet-rv", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-carnet-rv-title", tabindex: "-1", hidden: "" }, [head, live, body]);
       dlg.addEventListener("click", onClick);
-      dlg.addEventListener("keydown", onKey);
       dlg.addEventListener("input", onInput);
       dlg.addEventListener("change", onChange);
       dlg.addEventListener("submit", onSubmit);
@@ -85,36 +85,16 @@
       if (live) live.textContent = text || "";
     }
 
-    function focusables() {
-      return Array.prototype.filter.call(dlg.querySelectorAll("button, input, select, textarea, a[href], [tabindex]"), (n) => !n.disabled && !n.hidden && n.tabIndex >= 0 && !n.closest("[hidden]"));
-    }
-
-    function onKey(ev) {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (state.confirmDelete) {
-          state.confirmDelete = null;
-          render();
-          const d = doc.getElementById("btn-carnet-rv-delete");
-          if (d) d.focus({ preventScroll: true });
-          return;
-        }
-        close(true);
+    /** Escape on the TOP surface only (HqCarnetModal): a pending delete confirmation steps back first, then the dialog closes. */
+    function onEscape() {
+      if (state.confirmDelete) {
+        state.confirmDelete = null;
+        render();
+        const d = doc.getElementById("btn-carnet-rv-delete");
+        if (d) d.focus({ preventScroll: true });
         return;
       }
-      if (ev.key !== "Tab") return;
-      const list = focusables();
-      if (!list.length) return;
-      const first = list[0];
-      const last = list[list.length - 1];
-      if (ev.shiftKey && (doc.activeElement === first || !dlg.contains(doc.activeElement))) {
-        ev.preventDefault();
-        last.focus();
-      } else if (!ev.shiftKey && (doc.activeElement === last || !dlg.contains(doc.activeElement))) {
-        ev.preventDefault();
-        first.focus();
-      }
+      close(true);
     }
 
     const online = () => (typeof host.online === "function" ? !!host.online() : true);
@@ -360,6 +340,7 @@
       resetDraft();
       dlg.hidden = false;
       render();
+      if (!state.handle) state.handle = M.open(doc, dlg, { layer: "sheet", keep: true, trigger: state.opener, labelledby: "hq-carnet-rv-title", onEscape });
       if (state.projectId) {
         loadList();
         loadSnaps();
@@ -384,11 +365,12 @@
       state.fresh = null;
       state.thread = null;
       body.textContent = "";
+      const hd = state.handle;
+      state.handle = null;
+      state.opener = null;
+      if (hd) hd.close(!!refocus);
       dlg.hidden = true;
       say("");
-      const o = state.opener;
-      state.opener = null;
-      if (refocus && o && typeof o.focus === "function" && doc.contains(o)) o.focus({ preventScroll: true });
       if (typeof host.onClose === "function") host.onClose(!!refocus);
     }
 
@@ -567,11 +549,11 @@
       if (state.confirmDelete) {
         sec.appendChild(el(doc, "div", { class: "carnet-banner", role: "alertdialog", id: "hq-carnet-rv-confirm", "aria-label": "Confirmer la suppression" }, [
           el(doc, "p", { class: "carnet-hx-warn", text: "Suppression définitive de « " + p.title + " » (révision " + state.confirmDelete.rev + "). Aucune restauration n'est possible depuis l'application." }),
-          mut("Supprimer définitivement", { "data-rv": "delete-confirm", id: "btn-carnet-rv-delete-confirm", class: "carnet-btn carnet-danger" }),
+          mut("Supprimer définitivement la revue", { "data-rv": "delete-confirm", id: "btn-carnet-rv-delete-confirm", class: "carnet-btn carnet-danger" }),
           btn("Annuler", { "data-rv": "delete-cancel", id: "btn-carnet-rv-delete-cancel" }),
         ]));
       } else {
-        sec.appendChild(el(doc, "div", { class: "carnet-hx-row" }, [mut("Supprimer…", { "data-rv": "delete-open", id: "btn-carnet-rv-delete" })]));
+        sec.appendChild(el(doc, "div", { class: "carnet-hx-row" }, [mut("Supprimer la revue…", { "data-rv": "delete-open", id: "btn-carnet-rv-delete" })]));
       }
     }
 
@@ -608,11 +590,11 @@
         if (i.question) row.appendChild(btn("Rechercher dans Ask Carnet", { "data-rv": "ask-again", "data-id": i.id, "aria-label": "Relancer la recherche « " + i.question + " » dans Ask Carnet" }));
         if (i.sourceId && typeof host.openReader === "function") {
           // Reader = inspection only (read-only; reads the item's captured copy and, for a frozen scope, compares the seal). Not a mutation: never `aria-disabled` when offline-readonly.
-          const rb = btn("Ouvrir dans le lecteur", { "data-rv": "open-reader", "data-id": i.id, "aria-label": "Ouvrir dans le lecteur : " + i.label });
+          const rb = btn("Lire la preuve", { "data-rv": "open-reader", "data-id": i.id, "aria-label": "Lire la preuve : " + i.label });
           rb.addEventListener("click", () => host.openReader({ sourceId: i.sourceId, context: { kind: "review", id: state.pack.id, item_id: i.id }, trigger: rb }));
           row.appendChild(rb);
         }
-        row.appendChild(mut("Retirer de la revue", { "data-rv": "item-remove", "data-id": i.id, "aria-label": "Retirer « " + i.label + " » de la revue" }));
+        row.appendChild(mut("Retirer l'élément de la revue", { "data-rv": "item-remove", "data-id": i.id, "aria-label": "Retirer « " + i.label + " » de la revue" }));
         kids.push(row);
         kids.push(commentsBlock(i));
         const vb = verificationsBlock(i);
@@ -775,7 +757,7 @@
         ul.appendChild(el(doc, "li", { class: "carnet-hx-item carnet-rv-check", "data-rv-check-row": c.id, "data-checked": c.checked ? "1" : "0" }, [
           el(doc, "div", { class: "carnet-hx-pick" }, [cb, el(doc, "label", { for: "hq-carnet-rv-c-" + c.id, text: c.text }), el(doc, "span", { class: "hint", text: c.checked ? "Cochée" : "Non cochée" })]),
           refsNode(c.refs),
-          mut("Retirer", { "data-rv": "check-remove", "data-id": c.id, "aria-label": "Retirer le point « " + c.text + " »" }),
+          mut("Retirer le point", { "data-rv": "check-remove", "data-id": c.id, "aria-label": "Retirer le point « " + c.text + " »" }),
         ]));
       }
       sec.appendChild(ul);
@@ -800,7 +782,7 @@
           mut(q.state === "open" ? "Marquer comme résolue" : "Rouvrir", { "data-rv": "q-toggle", "data-id": q.id }),
           mut("Enregistrer la note", { "data-rv": "q-note", "data-id": q.id }),
           btn("Rechercher dans Ask Carnet", { "data-rv": "q-ask", "data-id": q.id, "aria-label": "Rechercher « " + q.text.slice(0, 60) + " » dans Ask Carnet" }),
-          mut("Retirer", { "data-rv": "q-remove", "data-id": q.id, "aria-label": "Retirer la question" }),
+          mut("Retirer la question", { "data-rv": "q-remove", "data-id": q.id, "aria-label": "Retirer la question" }),
         ]);
         kids.push(row);
         ul.appendChild(el(doc, "li", { class: "carnet-hx-item carnet-rv-question", "data-rv-question": q.id, "data-state": q.state }, kids));
@@ -929,8 +911,9 @@
 
     function askAgain(question, scope) {
       if (typeof host.openAsk !== "function") return;
+      const op = state.opener; // Phase 13: Ask gets a logical opener (the control that opened the pack) instead of null
       close(false);
-      host.openAsk(question, scope || null);
+      host.openAsk(question, scope || null, op);
     }
 
     function onClick(ev) {

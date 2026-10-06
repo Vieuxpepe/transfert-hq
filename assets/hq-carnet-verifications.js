@@ -17,6 +17,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  const E = (typeof module === "object" && module && module.exports && typeof require === "function") ? require("./hq-carnet-errors.js") : globalThis.HqCarnetErrors; // Phase 13: typed fallback message
+
   const TEXT_MAX = 4000;
   const LIST_MAX = 100;
   const RELATED_MAX = 10;
@@ -64,14 +66,15 @@
     noIdentity: "Aucune identité de relecteur n'est enregistrée.",
     loading: "Chargement des vérifications…",
     loadFailed: "Vérifications non disponibles pour le moment.",
-    none: "Aucune vérification.",
+    none: "Aucune vérification pour ce projet.",
+    noneHere: "Aucune vérification liée à cette preuve.",
     noneFiltered: "Aucune vérification ne correspond aux filtres.",
     summaryNone: "Aucune vérification",
     questionLabel: "Question à vérifier",
     questionHelp: "Une question précise, par exemple « Le palier avant est-il usiné en H7 ? ».",
     create: "Créer une vérification",
     createDone: "Vérification créée (ouverte).",
-    view: "Voir",
+    view: "Détails",
     addEvidence: "Ajouter cette preuve",
     addEvidenceTo: "Ajouter à la vérification",
     evidenceAdded: "Preuve ajoutée. Le statut n'a pas changé.",
@@ -97,7 +100,7 @@
     signoffRace: "Les preuves ont changé pendant l'enregistrement. Rien n'a été enregistré ; réessaie.",
     unavailable: "Impossible d'enregistrer la vérification : certaines preuves ne peuvent pas être vérifiées actuellement.",
     needReady: "La vérification doit être « Prête à vérifier » avec au moins une preuve.",
-    del: "Supprimer",
+    del: "Supprimer la vérification",
     delConfirm: "Supprimer définitivement cette vérification ? Elle n'a pas d'historique d'enregistrements ; les preuves ne sont pas touchées.",
     delConfirmYes: "Oui, supprimer la vérification",
     deleted: "Vérification supprimée. Les preuves ne sont pas touchées.",
@@ -382,7 +385,7 @@
   function errorInfo(err) {
     const d = err && isObj(err.data) ? err.data : {};
     const code = typeof d.code === "string" ? d.code : "";
-    let message = String(d.error || (err && err.message) || "Erreur").slice(0, 200);
+    let message = E.message(err, 200);
     if (code === "verification_evidence_unavailable") message = MSG.unavailable;
     else if (code === "verification_capture_race") message = MSG.signoffRace;
     else if (code === "verification_has_signoff") message = MSG.hasSignoff;

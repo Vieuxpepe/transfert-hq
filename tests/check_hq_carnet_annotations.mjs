@@ -112,7 +112,7 @@ assert.equal(A.targetStateText({ target: { kind: "source" }, target_state: "???"
 assert.equal(A.identicalNote({ identical_count: 2 }), "2 citations identiques dans ce bloc");
 assert.equal(A.identicalNote({ identical_count: 1 }), "");
 assert.equal(A.identicalNote({ identical_count: null }), "");
-assert.match(A.MSG.frozenHeading, /non incluses dans l'évidence figée/);
+assert.match(A.MSG.frozenHeading, /non incluses dans la preuve figée/);
 
 const e409 = A.errorInfo({ status: 409, data: { code: "annotation_conflict", current_rev: 4, error: "x" } });
 assert.deepEqual([e409.conflict, e409.currentRev, e409.definite], [true, 4, true]);

@@ -20,6 +20,8 @@
   const node = typeof module === "object" && module && module.exports;
   const A = node ? require("./hq-carnet-ask.js") : global.HqCarnetAsk;
   const R = node ? require("./hq-carnet-reviews.js") : global.HqCarnetReviews;
+  const M = node ? require("./hq-carnet-modal.js") : global.HqCarnetModal; // Phase 13: ONE modal / focus / Escape contract
+  const E = node ? require("./hq-carnet-errors.js") : global.HqCarnetErrors; // Phase 13: typed fallback message (never the bare word « Erreur »)
   const MSG = {
     title: "Preuves du carnet",
     intro: "Trouve les passages du carnet qui contiennent les termes de ta question, tels qu'ils sont écrits. Aucune réponse n'est générée.",
@@ -52,12 +54,12 @@
 
   function errText(err) {
     const d = err && isObj(err.data) ? err.data : {};
-    return String(d.error || (err && err.message) || "Erreur").slice(0, 200);
+    return E.message(err, 200);
   }
 
   function mount(host) {
     const doc = host.doc;
-    const state = { open: false, opener: null, scopeValue: "", question: "", busy: false, token: 0, result: null, resultScope: null, error: "", snaps: [], choices: [] };
+    const state = { open: false, handle: null, opener: null, scopeValue: "", question: "", busy: false, token: 0, result: null, resultScope: null, error: "", snaps: [], choices: [] };
     let dlg = null;
     let form = null;
     let out = null;
@@ -93,37 +95,11 @@
       const intro = el(doc, "p", { id: "hq-carnet-ask-intro", class: "hint", text: MSG.intro });
       dlg = el(doc, "div", { id: "hq-carnet-ask", class: "carnet-hx carnet-ask", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-carnet-ask-title", tabindex: "-1", hidden: "" }, [head, intro, form, live, out]);
       dlg.addEventListener("click", onClick);
-      dlg.addEventListener("keydown", onKey);
       host.root.appendChild(dlg);
     }
 
     function say(text) {
       if (live) live.textContent = text || "";
-    }
-
-    function focusables() {
-      return Array.prototype.filter.call(dlg.querySelectorAll("button, input, select, a[href], [tabindex]"), (n) => !n.disabled && !n.hidden && n.tabIndex >= 0 && !n.closest("[hidden]"));
-    }
-
-    function onKey(ev) {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        close(true);
-        return;
-      }
-      if (ev.key !== "Tab") return;
-      const list = focusables();
-      if (!list.length) return;
-      const first = list[0];
-      const last = list[list.length - 1];
-      if (ev.shiftKey && (doc.activeElement === first || !dlg.contains(doc.activeElement))) {
-        ev.preventDefault();
-        last.focus();
-      } else if (!ev.shiftKey && (doc.activeElement === last || !dlg.contains(doc.activeElement))) {
-        ev.preventDefault();
-        first.focus();
-      }
     }
 
     // ------------------------------------------------------------ scope
@@ -193,6 +169,7 @@
         state.prefillScope = isObj(prefill.scope) ? prefill.scope : null;
       }
       dlg.hidden = false;
+      if (!state.handle) state.handle = M.open(doc, dlg, { layer: "sheet", keep: true, trigger: state.opener, initial: input, labelledby: "hq-carnet-ask-title", onEscape: () => close(true) });
       paintScopes();
       renderOut();
       say("");
@@ -210,11 +187,12 @@
       state.error = "";
       input.value = "";
       out.textContent = "";
+      const hd = state.handle;
+      state.handle = null;
+      state.opener = null;
+      if (hd) hd.close(!!refocus);
       dlg.hidden = true;
       say("");
-      const o = state.opener;
-      state.opener = null;
-      if (refocus && o && typeof o.focus === "function" && doc.contains(o)) o.focus({ preventScroll: true });
       if (typeof host.onClose === "function") host.onClose(!!refocus);
     }
 
@@ -322,7 +300,7 @@
       if (typeof host.openReader === "function" && typeof s.id === "string") {
         // Reader = inspection only: it opens above this dialog on the stored identity, never touches the answer. A frozen answer reads frozen evidence.
         const sc = state.resultScope;
-        const rb = el(doc, "button", { type: "button", class: "carnet-btn carnet-ask-reader", "data-ask-role": "reader", text: "Ouvrir dans le lecteur", "aria-label": "Ouvrir dans le lecteur : " + (s.title || s.id) });
+        const rb = el(doc, "button", { type: "button", class: "carnet-btn carnet-ask-reader", "data-ask-role": "reader", text: "Lire la preuve", "aria-label": "Lire la preuve : " + (s.title || s.id) });
         rb.addEventListener("click", () => host.openReader(Object.assign({ sourceId: s.id, trigger: rb }, sc && sc.kind === "snapshot" && typeof sc.id === "string" ? { context: { kind: "snapshot", id: sc.id } } : {})));
         li.appendChild(rb);
       }

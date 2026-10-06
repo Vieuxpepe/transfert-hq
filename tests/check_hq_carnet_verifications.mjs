@@ -158,7 +158,8 @@ assert.equal(V.errorInfo({ status: 409, data: { code: "verification_state_invali
 assert.equal(V.errorInfo({ status: 409, data: { code: "verification_corrupt" } }).corrupt, true);
 assert.equal(V.errorInfo({ status: 409, data: { code: "verification_limit" } }).full, true);
 assert.equal(V.errorInfo(new Error("network")).definite, false, "a bare network error is not a known outcome: the retry reuses the same request id");
-assert.equal(V.errorInfo(null).message, "Erreur");
+assert.notEqual(V.errorInfo(null).message, "Erreur", "Phase 13: never the bare word");
+assert.match(V.errorInfo(null).message, /rien n.est confirmé/, "typed fallback, not a generic word");
 
 // ---- UI modules are sink-free
 for (const f of ["../assets/hq-carnet-verifications.js", "../assets/hq-carnet-verifications-ui.js"]) {

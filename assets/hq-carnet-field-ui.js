@@ -580,7 +580,7 @@
             acts.appendChild(btn("Monter", "quiet", () => scanMove(i, -1), { "aria-label": "Monter la page " + (i + 1), disabled: i === 0 }));
             acts.appendChild(btn("Descendre", "quiet", () => scanMove(i, 1), { "aria-label": "Descendre la page " + (i + 1), disabled: i === kept - 1 }));
             acts.appendChild(btn("Refaire", "quiet", () => scanRetake(i), { "aria-label": "Refaire le cadrage de la page " + (i + 1) }));
-            acts.appendChild(btn("Retirer", "quiet", () => scanRemove(i), { "aria-label": "Retirer la page " + (i + 1) }));
+            acts.appendChild(btn("Retirer la page", "quiet", () => scanRemove(i), { "aria-label": "Retirer la page " + (i + 1) }));
             li.appendChild(acts);
             list.appendChild(li);
           });
@@ -1475,7 +1475,7 @@
         } else if (st.state === "recording") {
           foot.push(btn("Arrêter", "primary", () => voiceStop(v, ""), { "data-field-stop": "", "aria-label": "Arrêter l'enregistrement" }));
         } else if (st.state === "stopped") {
-          foot.push(btn("Supprimer", "quiet", () => voiceDiscard(v), { "data-field-discard": "" }));
+          foot.push(btn("Écarter la note vocale", "quiet", () => voiceDiscard(v), { "data-field-discard": "" }));
           foot.push(btn("Réenregistrer", "", () => voiceAgain(v), { "data-field-again": "" }));
           foot.push(btn("Insérer la note", "primary", () => voiceKeep(v), { "data-field-keep": "" }));
         } else if (st.state === "uploading") {
@@ -1776,6 +1776,7 @@
         if (S.sheet || S.busy) return;
         const items = (await stash.prune()).filter((i) => i && i.blob);
         openSheet({ title: "Captures en attente", name: "recovery", opener });
+        let confirmId = null; // Phase 13: discarding a local capture destroys unrecovered work, so it asks first (inline, inside this already-trapped sheet)
         const render = async () => {
           const list = (await stash.prune()).filter((i) => i && i.blob);
           const nodes = [para("Ces captures n'ont pas été insérées dans une page. Elles restent sur cet appareil, au plus 24 heures, puis sont effacées. Aucune synchronisation.", "carnet-field-note")];
@@ -1793,12 +1794,25 @@
             }
             const acts = el("span", { class: "carnet-field-page-actions" });
             acts.appendChild(btn("Insérer", "", () => recoverInsert(it), { "data-recover-insert": "", "aria-label": it.kind === "scan" ? "Insérer cette page dans la page ouverte" : "Insérer cette note vocale dans la page ouverte" }));
-            acts.appendChild(btn("Supprimer", "quiet", async () => {
-              await stash.del(it.id);
-              say("Capture supprimée");
-              render();
-              recover();
-            }, { "data-recover-delete": "", "aria-label": "Supprimer cette capture en attente" }));
+            if (confirmId === it.id) {
+              acts.appendChild(el("span", { class: "carnet-field-confirm", role: "alertdialog", "aria-label": "Écarter cette capture locale ?", "data-recover-confirm": "" }, [
+                el("strong", { text: "Écarter cette capture locale ?" }),
+                el("span", { class: "carnet-field-note", text: " Les données non enregistrées de cette capture seront perdues." }),
+              ]));
+              acts.appendChild(btn("Annuler", "", () => { confirmId = null; render().then(() => { const b = S.sheet && S.sheet.panel && S.sheet.panel.querySelector('[data-recover-delete="' + it.id + '"]'); if (b) b.focus({ preventScroll: true }); }); }, { "data-recover-cancel": "" }));
+              acts.appendChild(btn("Écarter la capture", "quiet", async () => {
+                await stash.del(it.id);
+                confirmId = null;
+                say("Capture locale écartée");
+                render();
+                recover();
+              }, { "data-recover-confirm-yes": "" }));
+            } else {
+              acts.appendChild(btn("Écarter la capture locale", "quiet", () => {
+                confirmId = it.id;
+                render().then(() => { const b = S.sheet && S.sheet.panel && S.sheet.panel.querySelector("[data-recover-cancel]"); if (b) b.focus({ preventScroll: true }); });
+              }, { "data-recover-delete": it.id, "aria-label": "Écarter cette capture locale en attente" }));
+            }
             li.appendChild(acts);
             ul.appendChild(li);
           }

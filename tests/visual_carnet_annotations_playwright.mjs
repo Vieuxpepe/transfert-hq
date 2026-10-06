@@ -260,7 +260,12 @@ function digestExcept(srv, skip) {
   return h.digest("hex");
 }
 const annPosts = (p, bag) => p.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/carnet") && /"(annotation|rcomment)_/.test(r.postData() || "")) bag.push(JSON.parse(r.postData())); });
-const panelReady = (p) => until(async () => (await p.locator(ANN + " .carnet-ann-group").count()) > 0, "annotations panel loaded");
+// Phase 13: the annotations panel is a quiet collapsed summary (count) until opened: wait for the summary, open it, then wait for the groups
+const panelReady = async (p) => {
+  await until(async () => (await p.locator(ANN + "-toggle").count()) > 0 && !(await p.locator(ANN + ' [data-ann-summary]').textContent()).includes("Chargement"), "annotations summary loaded");
+  if ((await p.locator(ANN + "-toggle").getAttribute("aria-expanded")) === "false") await p.click(ANN + "-toggle");
+  return until(async () => (await p.locator(ANN + " .carnet-ann-group").count()) > 0, "annotations panel loaded");
+};
 async function readerOnCitation(profile = "desktop", titleOpts) {
   const { srv, ctx, p } = await world(profile);
   const ed = await mkEd(srv, ctx, "Machinery");
@@ -313,7 +318,7 @@ scenario("01 Reader panel: add an annotation to the opened citation; it is comme
   await shotEl(p, ANN, "01-reader-annotation");
 });
 
-scenario("02 source-level annotation with an explicit PDF page anchor; 'Voir l'évidence' moves the viewer; the anchor never changes the target", async () => {
+scenario("02 source-level annotation with an explicit PDF page anchor; 'Lire la preuve' moves the viewer; the anchor never changes the target", async () => {
   const { srv, ctx, p, ed } = await readerOnCitation();
   await addAnn(p, "Table 5 à relire", { target: "source", page: true });
   check((await rtxt(p, "#hq-carnet-reader-page")).includes("417"), "viewer is on the cited page");
@@ -325,7 +330,7 @@ scenario("02 source-level annotation with an explicit PDF page anchor; 'Voir l'�
   await p.click(`${R} #btn-carnet-reader-next`);
   check((await rtxt(p, "#hq-carnet-reader-page")).includes("418"), "moved to PDF page 418");
   await p.click(`${ANN} [data-ann-target="source"] [data-ann]:has([data-ann-anchor]:has-text("page PDF 417")) [data-ann-act="view"]`);
-  await until(async () => (await rtxt(p, "#hq-carnet-reader-page")).includes("417"), "Voir l'évidence returns to PDF page 417");
+  await until(async () => (await rtxt(p, "#hq-carnet-reader-page")).includes("417"), "Lire la preuve returns to PDF page 417");
 });
 
 scenario("03 hostile text is text: <script>, <img onerror>, javascript: links are shown literally and never run", async () => {
@@ -404,7 +409,7 @@ scenario("07 frozen Reader (Review Pack item): the panel is labelled current / n
   await p.waitForSelector(R);
   await painted(p);
   await panelReady(p);
-  check((await txt(p, ANN + " h3")).includes("non incluses dans l'évidence figée"), "heading: 'Annotations actuelles — non incluses dans l'évidence figée'");
+  check((await txt(p, ANN + " h3")).includes("non incluses dans la preuve figée"), "heading: 'Annotations actuelles — non incluses dans la preuve figée'");
   check((await p.locator(ANN + ' [data-ann="not-frozen"]').count()) === 1, "explicit note that these are not part of the frozen copy");
   check((await p.locator(ANN + " .carnet-ann-body").allTextContents()).includes("NOTE-VIVANTE-42"), "the live annotation is shown (current), separately");
   check(readFileSync(path.join(srv.root, ".hq-carnet", "reviews", pk.id + ".json"), "utf8") === packBefore, "the Review Pack file is byte-identical: no annotation entered it");

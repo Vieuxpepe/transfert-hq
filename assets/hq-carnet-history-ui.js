@@ -23,6 +23,8 @@
 
   const node = typeof module === "object" && module && module.exports;
   const Rich = node ? require("./hq-carnet-rich.js") : global.HqCarnetRich;
+  const M = node ? require("./hq-carnet-modal.js") : global.HqCarnetModal; // Phase 13: ONE modal / focus / Escape contract
+  const E = node ? require("./hq-carnet-errors.js") : global.HqCarnetErrors; // Phase 13: typed fallback message (never the bare word « Erreur »)
 
   const TARGETS_MAX = 64;
   const ITEMS_MAX = 200;
@@ -84,7 +86,7 @@
 
   function errText(err) {
     const d = err && isObj(err.data) ? err.data : {};
-    return String(d.error || (err && err.message) || "Erreur").slice(0, 200);
+    return E.message(err, 200);
   }
 
   function errCode(err) {
@@ -160,7 +162,7 @@
    */
   function mount(host) {
     const doc = host.doc;
-    const state = { open: false, tab: "history", opener: null, status: null, history: null, bulk: freshBulk(), report: freshReport(), back: { kind: "note", id: "" }, busy: false };
+    const state = { open: false, handle: null, tab: "history", opener: null, status: null, history: null, bulk: freshBulk(), report: freshReport(), back: { kind: "note", id: "" }, busy: false };
     let dlg = null;
     let body = null;
     let live = null;
@@ -193,33 +195,11 @@
       dlg.addEventListener("click", onClick);
       dlg.addEventListener("change", onChange);
       dlg.addEventListener("input", onInput);
-      dlg.addEventListener("keydown", onKey);
       host.root.appendChild(dlg);
     }
 
     function focusables() {
-      return Array.prototype.filter.call(dlg.querySelectorAll("button, input, select, textarea, summary, [tabindex]"), (n) => !n.disabled && !n.hidden && n.tabIndex >= 0 && !n.closest("[hidden]"));
-    }
-
-    function onKey(ev) {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        close(true);
-        return;
-      }
-      if (ev.key !== "Tab") return;
-      const list = focusables();
-      if (!list.length) return;
-      const first = list[0];
-      const last = list[list.length - 1];
-      if (ev.shiftKey && (doc.activeElement === first || !dlg.contains(doc.activeElement))) {
-        ev.preventDefault();
-        last.focus();
-      } else if (!ev.shiftKey && (doc.activeElement === last || !dlg.contains(doc.activeElement))) {
-        ev.preventDefault();
-        first.focus();
-      }
+      return M.focusables(dlg);
     }
 
     function open(tab, opener) {
@@ -229,6 +209,7 @@
       state.status = null;
       state.bulk = freshBulk();
       dlg.hidden = false;
+      if (!state.handle) state.handle = M.open(doc, dlg, { layer: "sheet", keep: true, trigger: state.opener, labelledby: "hq-carnet-hx-title", onEscape: () => close(true) });
       setTab(tab || "history");
       const x = dlg.querySelector("#btn-carnet-hx-close");
       const f = focusables();
@@ -238,11 +219,12 @@
     function close(refocus) {
       if (!dlg || !state.open) return;
       state.open = false;
+      const hd = state.handle;
+      state.handle = null;
+      state.opener = null;
+      if (hd) hd.close(!!refocus);
       dlg.hidden = true;
       say("");
-      const o = state.opener;
-      state.opener = null;
-      if (refocus && o && typeof o.focus === "function" && doc.contains(o)) o.focus({ preventScroll: true });
       if (typeof host.onClose === "function") host.onClose(!!refocus);
     }
 

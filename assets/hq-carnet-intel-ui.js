@@ -23,6 +23,8 @@
   const node = typeof module === "object" && module && module.exports;
   const I = node ? require("./hq-carnet-intel.js") : global.HqCarnetIntel;
   const RV = node ? require("./hq-carnet-reviews.js") : global.HqCarnetReviews;
+  const M = node ? require("./hq-carnet-modal.js") : global.HqCarnetModal; // Phase 13: ONE modal / focus / Escape contract
+  const E = node ? require("./hq-carnet-errors.js") : global.HqCarnetErrors; // Phase 13: typed fallback message (never the bare word « Erreur »)
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   const TABS = [
@@ -85,7 +87,7 @@
 
   function errText(err) {
     const d = err && isObj(err.data) ? err.data : {};
-    return String(d.error || (err && err.message) || "Erreur").slice(0, 200);
+    return E.message(err, 200);
   }
 
   function errCode(err) {
@@ -96,7 +98,7 @@
   function mount(host) {
     const doc = host.doc;
     const state = {
-      open: false, tab: "overview", opener: null, project: null, token: 0,
+      open: false, handle: null, tab: "overview", opener: null, project: null, token: 0,
       cockpit: null, loading: false, error: "", snapView: null, verify: null,
       filters: { dec: { query: "", page: "", from: "", to: "", evidence: false }, mes: { verdict: "all", unit: "", query: "", from: "", to: "" } },
       sheet: null, showAllActivity: false,
@@ -140,19 +142,14 @@
         onClick({ target: tg });
         return;
       }
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (state.sheet) closeSheet(true);
-        else close(true);
-        return;
-      }
-      if (ev.key !== "Tab") return;
-      const scope = state.sheet ? dlg.querySelector(".carnet-ix-sheet") || dlg : dlg;
+      // Escape and the dialog-wide Tab containment belong to HqCarnetModal; only the open filter SHEET (a sub-surface of this dialog) keeps its own Tab loop
+      if (ev.key !== "Tab" || !state.sheet) return;
+      const scope = dlg.querySelector(".carnet-ix-sheet") || dlg;
       const list = focusables(scope);
       if (!list.length) return;
       const first = list[0];
       const last = list[list.length - 1];
+      ev.stopImmediatePropagation(); // the shared dialog-wide wrap must not undo the sheet loop
       if (ev.shiftKey && (doc.activeElement === first || !scope.contains(doc.activeElement))) {
         ev.preventDefault();
         last.focus();
@@ -182,6 +179,7 @@
       state.snapResult = null;
       state.project = projectId || initialProject();
       dlg.hidden = false;
+      if (!state.handle) state.handle = M.open(doc, dlg, { layer: "sheet", keep: true, trigger: state.opener, labelledby: "hq-carnet-ix-title", onEscape: () => (state.sheet ? closeSheet(true) : close(true)) });
       setTab(tab || "overview", true);
       loadAll();
       const f = focusables().find((n) => n.id !== "btn-carnet-ix-close");
@@ -193,11 +191,12 @@
       state.open = false;
       state.sheet = null;
       state.token += 1;
+      const hd = state.handle;
+      state.handle = null;
+      state.opener = null;
+      if (hd) hd.close(!!refocus);
       dlg.hidden = true;
       say("");
-      const o = state.opener;
-      state.opener = null;
-      if (refocus && o && typeof o.focus === "function" && doc.contains(o)) o.focus({ preventScroll: true });
       if (typeof host.onClose === "function") host.onClose(!!refocus);
     }
 

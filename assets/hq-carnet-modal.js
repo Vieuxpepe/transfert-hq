@@ -1,7 +1,11 @@
 /* Transfert HQ — Carnet: ONE shared modal / focus-containment utility (no network, no storage, no clock).
  *
- * Used by every Carnet dialog (portal picker / inspector, Sources dialog, Reader). Behaviour, per document:
+ * Used by the Carnet dialogs (portal picker / inspector, Sources dialog, Reader, workspaces, Review Pack, Ask, History, Cockpit).
+ * Behaviour, per document:
  *   - a stack of open modals; only the TOP one is active (Tab / Shift+Tab wrap inside it, focus cannot move outside it);
+ *   - Phase 13: a modal opened over another SUSPENDS it (inert, aria-hidden, data-carnet-suspended, painted hidden but kept in the DOM so its
+ *     view / selection / scroll survive); closing the child resumes the parent untouched. There is never more than one ACTIVE surface, so the
+ *     z-index of a parent can no longer hide a child. ``layer`` names the surface class (sheet | workspace | reader | nested), see the CSS scale.
  *   - Escape on the top modal calls its ``onEscape`` (default: nothing — the owner decides what closing means);
  *   - ``close(refocus)`` returns focus to the exact trigger, and reports true ONLY if that trigger really took focus
  *     (a hidden / detached opener cannot), so the caller can fall back.
@@ -16,7 +20,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const FOCUSABLE = "button, input, select, textarea, a[href], [tabindex]";
+  const FOCUSABLE = "button, input, select, textarea, summary, a[href], [tabindex]";
   const stacks = new WeakMap(); // document -> {list: handle[], onFocusIn}
 
   function focusables(node) {
@@ -51,7 +55,13 @@
     const o = opts || {};
     const s = stackOf(doc);
     node.setAttribute("tabindex", "-1");
-    const h = { node, trigger: o.trigger || null, initial: o.initial || null, keep: !!o.keep, onEscape: typeof o.onEscape === "function" ? o.onEscape : null, closed: false, onKey: null, doc };
+    clearSuspension(node); // a reused (keep:true) node must never carry a stale suspension from an earlier life
+    const h = { node, trigger: o.trigger || null, initial: o.initial || null, keep: !!o.keep, onEscape: typeof o.onEscape === "function" ? o.onEscape : null, closed: false, onKey: null, doc, layer: o.layer || null, suspended: false };
+    if (!node.hasAttribute("role")) node.setAttribute("role", "dialog");
+    node.setAttribute("aria-modal", "true");
+    if (o.labelledby && !node.hasAttribute("aria-labelledby")) node.setAttribute("aria-labelledby", o.labelledby);
+    else if (o.label && !node.hasAttribute("aria-label") && !node.hasAttribute("aria-labelledby")) node.setAttribute("aria-label", o.label);
+    if (h.layer) node.setAttribute("data-carnet-layer", h.layer);
     h.onKey = (ev) => {
       if (top(doc) !== h) return;
       if (ev.key === "Escape") {
@@ -91,10 +101,34 @@
       };
       doc.addEventListener("focusin", s.onFocusIn, true);
     }
+    const below = top(doc);
+    if (below && o.suspend !== false) suspend(below);
     s.list.push(h);
     if (typeof o.mount === "function") o.mount(node);
     focusInside(h);
     return h;
+  }
+
+  function suspend(h) {
+    if (h.suspended) return;
+    h.suspended = true;
+    h.node.setAttribute("data-carnet-suspended", "");
+    h.node.setAttribute("aria-hidden", "true");
+    h.node.inert = true;
+    h.node.setAttribute("inert", "");
+  }
+
+  function clearSuspension(node) {
+    node.removeAttribute("data-carnet-suspended");
+    node.removeAttribute("aria-hidden");
+    node.inert = false;
+    node.removeAttribute("inert");
+  }
+
+  function resume(h) {
+    if (!h.suspended) return;
+    h.suspended = false;
+    clearSuspension(h.node);
   }
 
   /** Closes one modal. Returns true only when ``refocus`` was asked for AND the exact trigger took focus. */
@@ -107,9 +141,14 @@
     const i = s.list.indexOf(h);
     if (i >= 0) s.list.splice(i, 1);
     h.node.removeEventListener("keydown", h.onKey);
+    if (h.suspended) resume(h); // closed while suspended (not on top): leave a kept node reusable, without activating or focusing it
     if (!s.list.length && s.onFocusIn) {
       doc.removeEventListener("focusin", s.onFocusIn, true);
       s.onFocusIn = null;
+    }
+    if (wasTop) {
+      const t = top(doc);
+      if (t) resume(t); // the parent is active again BEFORE focus is returned (an inert node cannot take focus)
     }
     if (!h.keep) h.node.remove();
     if (!refocus) {
@@ -135,5 +174,11 @@
     return s ? s.list.length : 0;
   }
 
-  return { open, close, top, depth, focusables };
+  /** The open modals, bottom to top (tests / diagnostics). */
+  function stack(doc) {
+    const s = stacks.get(doc);
+    return s ? s.list.map((h) => ({ node: h.node, layer: h.layer, suspended: h.suspended, handle: h })) : [];
+  }
+
+  return { open, close, top, depth, stack, focusables };
 });

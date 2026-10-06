@@ -16,6 +16,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  const E = (typeof module === "object" && module && module.exports && typeof require === "function") ? require("./hq-carnet-errors.js") : globalThis.HqCarnetErrors; // Phase 13: typed fallback message
+
   const STATEMENT_MAX = 4000;
   const RATIONALE_MAX = 8000;
   const LIST_MAX = 100;
@@ -43,10 +45,10 @@
   const ALL_STATUSES = ["active", "confirmed", "invalidated", "retired", "withdrawn", "superseded"];
   const EFFECTIVE_EXTRA = ["supersession_pending", "supersession_indeterminate"];
   const STATUS_LABEL = {
-    active: "Active", confirmed: "Confirmée", invalidated: "Invalidée", retired: "Retirée", withdrawn: "Retirée (décision)", superseded: "Remplacée",
+    active: "Active", confirmed: "Confirmée", invalidated: "Invalidée", retired: "Hypothèse retirée", withdrawn: "Décision retirée", superseded: "Remplacée",
     supersession_pending: "Remplacement en cours", supersession_indeterminate: "Remplacement indéterminé",
   };
-  const DEC_STATUS_LABEL = { active: "Active", withdrawn: "Retirée", superseded: "Remplacée" };
+  const DEC_STATUS_LABEL = { active: "Active", withdrawn: "Décision retirée", superseded: "Remplacée" };
   const GROUPS = [
     { id: "dec-active", kind: KIND_DECISION, label: "Décisions actives", statuses: ["active"] },
     { id: "dec-history", kind: KIND_DECISION, label: "Décisions historiques", statuses: ["withdrawn", "superseded"] },
@@ -70,7 +72,7 @@
     integrity_anomaly: "Anomalie d'intégrité : mêmes nom, octets différents",
     not_captured: "Non capturé lors de la transition",
   };
-  const EVENT_LABEL = { confirmed: "Confirmée", invalidated: "Invalidée", retired: "Retirée", withdrawn: "Retirée", superseded: "Remplacée" };
+  const EVENT_LABEL = { confirmed: "Confirmée", invalidated: "Invalidée", retired: "Hypothèse retirée du raisonnement", withdrawn: "Décision retirée", superseded: "Remplacée" };
 
   const MSG = {
     title: "Registre des décisions et hypothèses",
@@ -79,7 +81,8 @@
     journalDistinct: "Distinct des blocs « Décision » du journal : ceux-ci sont du contenu de page, ce registre est un objet de gouvernance.",
     loading: "Chargement du registre…",
     loadFailed: "Registre non disponible pour le moment.",
-    none: "Aucune décision ni hypothèse.",
+    none: "Aucune décision ni hypothèse pour ce projet.",
+    noneHere: "Aucune décision ni hypothèse liée à cette preuve.",
     noneFiltered: "Aucun enregistrement ne correspond aux filtres.",
     summaryNone: "Aucun enregistrement",
     statementLabel: "Énoncé",
@@ -91,7 +94,7 @@
     createAssumption: "Créer une hypothèse",
     create: "Créer",
     createDone: "Enregistrement créé (actif).",
-    view: "Voir",
+    view: "Détails",
     save: "Enregistrer",
     cancel: "Annuler",
     saved: "Enregistré.",
@@ -104,7 +107,7 @@
     linkVerificationYes: "Lier",
     unlink: "Délier",
     addEvidence: "Ajouter cette preuve",
-    removeEvidence: "Retirer",
+    removeEvidence: "Retirer la preuve",
     evidenceAdded: "Preuve ajoutée. Le statut n'a pas changé.",
     evidenceRemoved: "Preuve retirée.",
     linked: "Vérification liée. Le statut n'a pas changé.",
@@ -117,9 +120,10 @@
     noEvidenceConfirm: "Au moins une preuve est nécessaire pour confirmer une hypothèse.",
     race: "Les preuves ont changé pendant la confirmation. Rien n'a été enregistré ; réessaie.",
     invalidate: "Invalider",
-    retire: "Retirer",
+    retire: "Retirer l'hypothèse",
     withdraw: "Retirer la décision",
-    terminalHelp: "Action explicite et définitive : l'enregistrement devient historique (lecture seule). L'état des preuves est consigné au mieux, sans bloquer.",
+    terminalHelp: "Cette transition est définitive. L'hypothèse restera consultable dans l'historique et ne pourra plus être modifiée. L'état des preuves est consigné au mieux, sans bloquer.",
+    terminalHelpDecision: "Cette transition est définitive. La décision restera consultable dans l'historique et ne pourra plus être modifiée. L'état des preuves est consigné au mieux, sans bloquer.",
     terminalYes: "Oui, continuer",
     terminalDone: "Enregistrement mis à jour.",
     supersede: "Remplacer",
@@ -133,7 +137,7 @@
     indeterminate: "État de supersession indéterminé — successeur altéré",
     requestCorrupt: "Une requête portant ce numéro existe déjà dans un enregistrement altéré : réutilisation refusée, rien n'a été créé ni réparé.",
     indeterminateHelp: "Le successeur est altéré : aucune modification ni nouveau remplacement tant que le fichier n'est pas traité hors des chemins normaux.",
-    del: "Supprimer",
+    del: "Supprimer l'enregistrement",
     delConfirm: "Supprimer définitivement cet enregistrement ? Il n'a jamais changé de statut ni été remplacé ; les preuves ne sont pas touchées.",
     delConfirmYes: "Oui, supprimer",
     deleted: "Enregistrement supprimé. Les preuves ne sont pas touchées.",
@@ -429,7 +433,7 @@
   function errorInfo(err) {
     const d = err && isObj(err.data) ? err.data : {};
     const code = typeof d.code === "string" ? d.code : "";
-    let message = String(d.error || (err && err.message) || "Erreur").slice(0, 200);
+    let message = E.message(err, 200);
     if (code === "reasoning_evidence_unavailable") message = MSG.unavailable;
     else if (code === "reasoning_capture_race") message = MSG.race;
     else if (code === "reasoning_no_evidence") message = MSG.noEvidenceConfirm;

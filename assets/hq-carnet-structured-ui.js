@@ -577,7 +577,7 @@
       });
       if (host.inspect) {
         const ibar = el("div", { class: "carnet-struct-bar carnet-group-inspectbar" });
-        ibar.appendChild(button(p.layout === "compare" ? "Inspecter (avant / après)" : "Inspecter", "carnet-group-inspect", (ev) => inspectGroup(0, ev && ev.currentTarget), { "aria-label": p.layout === "compare" ? "Inspecter le groupe : comparaison avant / après" : "Inspecter les images du groupe" }));
+        ibar.appendChild(button(p.layout === "compare" ? "Agrandir (avant / après)" : "Agrandir", "carnet-group-inspect", (ev) => inspectGroup(0, ev && ev.currentTarget), { "aria-label": p.layout === "compare" ? "Inspecter le groupe : comparaison avant / après" : "Inspecter les images du groupe" }));
         card.appendChild(ibar);
       }
       if (!ro) {
@@ -672,10 +672,10 @@
       const open = button("Ouvrir dans Dessiner", "carnet-drawing-open", () => host.openDrawing(wrapper, p.id), { "aria-label": "Ouvrir dans Dessiner : " + name, hidden: "" });
       const retry = button("Réessayer", "carnet-drawing-retry", () => refreshPreviews(), { "aria-label": "Réessayer l'aperçu : " + name, hidden: "" });
       // Phase 3.5: inspection-only slide-over (zoom / pan / exact stem / parent). Needs a loaded preview, like "Ouvrir".
-      const inspect = button("Inspecter", "carnet-drawing-inspect", () => {
+      const inspect = button("Agrandir", "carnet-drawing-inspect", () => {
         const id = wrapper.getAttribute("data-carnet-block-id") || "";
         if (host.inspect) host.inspect({ kind: "drawing", stem: p.id, blockId: id }, inspect);
-      }, { "aria-label": "Inspecter le croquis : " + name, hidden: "" });
+      }, { "aria-label": "Agrandir le croquis : " + name, hidden: "" });
       img.addEventListener("load", () => {
         card.setAttribute("data-state", "ok");
         gone.hidden = true;

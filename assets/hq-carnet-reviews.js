@@ -19,6 +19,8 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  const E = (typeof module === "object" && module && module.exports && typeof require === "function") ? require("./hq-carnet-errors.js") : globalThis.HqCarnetErrors; // Phase 13: typed fallback message
+
   const LIMITS = { title: 120, note: 2000, check: 500, question: 1000, resolution: 1000, refs: 20, items: 250, checklist: 100, questions: 100, packs: 100 };
   const PAGE_RE = /^page-[A-Za-z0-9_-]{1,64}$/;
   const BLOCK_RE = /^block-[A-Za-z0-9_-]{1,64}$/;
@@ -448,7 +450,7 @@
       conflict: code === "review_conflict" || code === "review_corrupt" || code === "review_baseline_locked",
       reload: code === "review_conflict",
       evidenceChanged: code === "review_evidence_changed",
-      message: String(d.error || (err && err.message) || "Erreur").slice(0, 200),
+      message: E.message(err, 200),
     };
   }
 

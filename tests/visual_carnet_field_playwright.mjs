@@ -918,6 +918,43 @@ scenario("24 reconnect / process later: after a reload the captures are offered 
   await until(async () => !(await banner.isVisible()), "the banner goes away");
 });
 
+scenario("24b Phase 13: discarding a local capture asks first; Annuler keeps the bytes, Écarter la capture discards them", async () => {
+  const { srv, p } = await openEditor("iphone", NB(), VOICE_PERMS);
+  const ph = await smallDoc(p, ["A ECARTER"]);
+  await startField(p, "scanner", "iphone");
+  await viaChooser(p, "[data-field-take]", ph.file);
+  await frameFromPhoto(p, ph);
+  await acceptPage(p, 1);
+  await p.click("[data-field-close]");
+  await p.click("[data-field-close]");
+  await p.keyboard.press("Escape");
+  await p.keyboard.press("Escape");
+  await until(async () => (await sheetOpen(p)) === 0, "closed with a pending scan");
+  const n0 = await stashCount(p);
+  check(n0 >= 1, "a capture is held in the stash: " + n0);
+  await p.reload();
+  await showCarnet(p);
+  await p.click("[data-field-recover-open]");
+  await p.waitForSelector('[data-field-sheet="recovery"]');
+  const del = p.locator("[data-recover-delete]").first();
+  check(/Écarter la capture locale/.test(await del.innerText()), "the button names the object: " + (await del.innerText()));
+  await del.click();
+  const dlg = p.locator('[role="alertdialog"][aria-label="Écarter cette capture locale ?"]');
+  await dlg.waitFor({ state: "visible" });
+  const dt = await dlg.innerText();
+  check(/Les données non enregistrées de cette capture seront perdues\./.test(dt), "the consequence is stated");
+  check((await stashCount(p)) === n0, "nothing is discarded before the answer");
+  check(await p.evaluate(() => /Annuler/.test(document.activeElement.textContent || "")), "focus starts on Annuler");
+  await p.locator("[data-recover-cancel]").click();
+  await until(async () => (await dlg.count()) === 0, "Annuler closes the confirmation");
+  check((await stashCount(p)) === n0, "Annuler preserves the bytes");
+  await p.locator("[data-recover-delete]").first().click();
+  await dlg.waitFor({ state: "visible" });
+  await p.locator("[data-recover-confirm-yes]").click();
+  await until(async () => (await stashCount(p)) === n0 - 1, "Écarter la capture discards it");
+  check(srv.assets().length === 0, "nothing was ever uploaded");
+});
+
 scenario("25 save / reload: scan + OCR text + voice survive a reload exactly (atomic scan-with-text insertion)", async () => {
   const { srv, p } = await openEditor("iphone", NB(), VOICE_PERMS);
   const ph = await docPhoto(p, { w: 900, h: 600 });

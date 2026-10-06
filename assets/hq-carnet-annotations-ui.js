@@ -56,7 +56,7 @@
     function panel(spec) {
       const st = {
         results: new Map(), loading: true, failed: false, truncated: false, busy: false, notice: "", error: "",
-        draft: "", choice: spec.defaultKey, attachPage: false, pending: null, editing: null, editDraft: "", confirm: null, stale: false, alive: true,
+        expanded: false, draft: "", choice: spec.defaultKey, attachPage: false, pending: null, editing: null, editDraft: "", confirm: null, stale: false, alive: true,
       };
       const root = el(doc, "section", { class: "carnet-ann", id: spec.id || "hq-carnet-ann", "aria-labelledby": (spec.id || "hq-carnet-ann") + "-h", "data-frozen": spec.frozen ? "1" : "0" });
       let token = 0;
@@ -107,7 +107,7 @@
       async function run(bodyObj, onOk) {
         if (st.busy) return null;
         if (!bodyObj) {
-          setNotice("Action impossible.", true);
+          setNotice("Saisie invalide : rien n'a été envoyé.", true);
           paint();
           return null;
         }
@@ -314,25 +314,49 @@
         const had = root.contains(doc.activeElement) ? doc.activeElement : null;
         const hadId = had && had.id ? had.id : null;
         root.textContent = "";
-        root.appendChild(el(doc, "h3", { id: (spec.id || "hq-carnet-ann") + "-h", text: spec.frozen ? MSG.frozenHeading : MSG.liveHeading }));
-        root.appendChild(el(doc, "p", { class: "hint", id: (spec.id || "hq-carnet-ann") + "-help", text: MSG.sectionHelp }));
-        if (spec.frozen) root.appendChild(el(doc, "p", { class: "hint", "data-ann": "not-frozen", text: "Ces annotations sont lues maintenant : elles ne font pas partie de la copie figée affichée." }));
-        if (st.notice) root.appendChild(el(doc, "p", { class: "hint", role: "status", "data-ann": "notice", text: st.notice }));
-        if (st.error) root.appendChild(el(doc, "p", { class: "carnet-src-warn", role: "alert", "data-ann": "error", text: st.error }));
-        if (st.loading && !st.results.size) root.appendChild(el(doc, "p", { class: "hint", role: "status", text: MSG.loading }));
+        // Phase 13: a quiet collapsed summary with the count (the Reader answers « what am I reading? » first); the whole panel is one click away
+        const pid = spec.id || "hq-carnet-ann";
+        let open = 0;
+        let resolved = 0;
+        for (const r of st.results.values()) for (const a of (r && Array.isArray(r.annotations) ? r.annotations : [])) (a && a.status === "resolved" ? resolved++ : open++);
+        const summary = st.loading && !st.results.size ? MSG.loading : st.failed ? MSG.loadFailed : open + resolved === 0 ? MSG.none : (open + resolved) + (open + resolved > 1 ? " annotations" : " annotation") + (resolved ? " (" + open + " ouverte" + (open > 1 ? "s" : "") + " · " + resolved + " résolue" + (resolved > 1 ? "s" : "") + ")" : "");
+        const toggle = el(doc, "button", { type: "button", class: "carnet-small carnet-ann-toggle", id: pid + "-toggle", "data-reader-panel": "ann", "aria-expanded": st.expanded ? "true" : "false", "aria-controls": pid + "-body" });
+        toggle.appendChild(el(doc, "span", { class: "carnet-ann-heading", text: (spec.frozen ? MSG.frozenHeading : MSG.liveHeading) + " : " }));
+        toggle.appendChild(el(doc, "span", { "data-ann-summary": "1", text: summary }));
+        toggle.addEventListener("click", () => { st.expanded = !st.expanded; paint(); });
+        root.appendChild(el(doc, "h3", { id: pid + "-h" }, [toggle]));
+        if (st.failed && !st.expanded) {
+          const retry0 = el(doc, "button", { type: "button", class: "carnet-small", "data-ann-act": "retry", text: "Réessayer" });
+          retry0.addEventListener("click", load);
+          root.appendChild(retry0);
+        }
+        if (!st.expanded) {
+          if (hadId) {
+            const again = root.querySelector("#" + hadId.replace(/([^\w-])/g, "\\$1"));
+            if (again && again !== doc.activeElement) again.focus({ preventScroll: true });
+          }
+          return;
+        }
+        const bodyBox = el(doc, "div", { class: "carnet-ann-body-box", id: pid + "-body" });
+        bodyBox.appendChild(el(doc, "p", { class: "hint", id: (spec.id || "hq-carnet-ann") + "-help", text: MSG.sectionHelp }));
+        if (spec.frozen) bodyBox.appendChild(el(doc, "p", { class: "hint", "data-ann": "not-frozen", text: "Ces annotations sont lues maintenant : elles ne font pas partie de la copie figée affichée." }));
+        if (st.notice) bodyBox.appendChild(el(doc, "p", { class: "hint", role: "status", "data-ann": "notice", text: st.notice }));
+        if (st.error) bodyBox.appendChild(el(doc, "p", { class: "carnet-src-warn", role: "alert", "data-ann": "error", text: st.error }));
+        if (st.loading && !st.results.size) bodyBox.appendChild(el(doc, "p", { class: "hint", role: "status", text: MSG.loading }));
         else if (st.failed) {
-          root.appendChild(el(doc, "p", { class: "carnet-src-warn", role: "alert", text: MSG.loadFailed }));
+          bodyBox.appendChild(el(doc, "p", { class: "carnet-src-warn", role: "alert", text: MSG.loadFailed }));
           const retry = el(doc, "button", { type: "button", class: "carnet-small", "data-ann-act": "retry", text: "Réessayer" });
           retry.addEventListener("click", load);
-          root.appendChild(retry);
+          bodyBox.appendChild(retry);
         } else {
           for (const t of spec.targets) {
             const r = st.results.get(t.key);
-            if (r) root.appendChild(group(t, r));
+            if (r) bodyBox.appendChild(group(t, r));
           }
-          if (st.truncated) root.appendChild(el(doc, "p", { class: "hint", text: MSG.truncated }));
+          if (st.truncated) bodyBox.appendChild(el(doc, "p", { class: "hint", text: MSG.truncated }));
         }
-        root.appendChild(form());
+        bodyBox.appendChild(form());
+        root.appendChild(bodyBox);
         if (hadId) {
           const again = root.querySelector("#" + hadId.replace(/([^\w-])/g, "\\$1"));
           if (again && again !== doc.activeElement) again.focus({ preventScroll: true });

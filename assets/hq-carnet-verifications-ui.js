@@ -88,7 +88,7 @@
       closeBtn.addEventListener("click", () => close(true));
       const head = el(doc, "div", { class: "carnet-hx-head" }, [el(doc, "h3", { id: "hq-carnet-ver-title", text: MSG.title }), closeBtn]);
       ws.dlg = el(doc, "div", { id: "hq-carnet-ver", class: "carnet-hx carnet-ver", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-carnet-ver-title" }, [head, ws.live, ws.body]);
-      ws.handle = M.open(doc, ws.dlg, { trigger: opener || null, initial: closeBtn, mount: (n) => rootNode().appendChild(n), onEscape: onEscape });
+      ws.handle = M.open(doc, ws.dlg, { layer: "workspace", trigger: opener || null, initial: closeBtn, mount: (n) => rootNode().appendChild(n), onEscape: onEscape });
       ws.detail = null;
       ws.notice = ws.error = "";
       if (opts && opts.id) openDetail(opts.id);
@@ -330,7 +330,7 @@
     async function run(bodyObj, onOk) {
       if (ws.busy) return null;
       if (!bodyObj) {
-        setNotice("Action impossible.", true);
+        setNotice("Saisie invalide : rien n'a été envoyé.", true);
         paint();
         return null;
       }
@@ -429,7 +429,7 @@
       const t = section("target", MSG.sections.target, MSG.targetHelp);
       t.appendChild(el(doc, "p", { "data-ver": "target", text: V.refText(v.target) }));
       if (res) t.appendChild(el(doc, "p", { class: "hint", "data-ver": "target-state", text: res.has_signoff ? V.freshText(res.target.freshness) : V.existsText(res.target.exists) }));
-      if (v.target.kind === "source" && typeof host.openReader === "function") t.appendChild(btn("Ouvrir dans le lecteur", { "data-ver-act": "reader", "aria-label": "Ouvrir la source cible dans le lecteur" }, (ev) => host.openReader({ sourceId: v.target.source_id, trigger: ev.currentTarget })));
+      if (v.target.kind === "source" && typeof host.openReader === "function") t.appendChild(btn("Lire la preuve", { "data-ver-act": "reader", "aria-label": "Lire la source cible dans le lecteur" }, (ev) => host.openReader({ sourceId: v.target.source_id, trigger: ev.currentTarget })));
       box.appendChild(t);
 
       // ---- EVIDENCE
@@ -443,9 +443,9 @@
             el(doc, "span", { class: "carnet-chip", text: V.KIND_LABEL[ev.ref.kind] || "" }),
             el(doc, "span", { class: "carnet-hx-event-text", text: V.refText(ev.ref) }),
           ]);
-          if (row) li.appendChild(el(doc, "span", { class: "hint", "data-ver": "evidence-state", text: res.has_signoff ? V.freshText(row.freshness) : V.existsText(row.exists) }));
+          if (row) li.appendChild(el(doc, "span", { class: "hint", "data-ver": "evidence-state", "data-fresh": row.freshness || row.exists || "", text: res.has_signoff ? V.freshText(row.freshness) : V.existsText(row.exists) }));
           if (ev.ref.kind === "source" && typeof host.openReader === "function") li.appendChild(btn("Lire", { "data-ver-act": "reader", "aria-label": "Lire cette source dans le lecteur" }, (evn) => host.openReader({ sourceId: ev.ref.source_id, trigger: evn.currentTarget })));
-          if (editable) li.appendChild(btn("Retirer", { "data-ver-act": "evidence-remove", "data-id": ev.id, "aria-label": "Retirer cette preuve : " + V.refText(ev.ref), "aria-disabled": ws.busy || !online() ? "true" : null }, () => run(V.evidenceRemoveBody(v, ev.id), () => setNotice(MSG.evidenceRemoved, false))));
+          if (editable) li.appendChild(btn("Retirer la preuve", { "data-ver-act": "evidence-remove", "data-id": ev.id, "aria-label": "Retirer cette preuve : " + V.refText(ev.ref), "aria-disabled": ws.busy || !online() ? "true" : null }, () => run(V.evidenceRemoveBody(v, ev.id), () => setNotice(MSG.evidenceRemoved, false))));
           ul.appendChild(li);
         }
         e.appendChild(ul);
@@ -466,7 +466,7 @@
       // ---- SIGNOFF HISTORY
       const h = section("history", MSG.sections.history + " (" + v.signoffs.length + ")");
       h.appendChild(el(doc, "p", { class: "hint", "data-ver": "no-identity", text: MSG.disclosure }));
-      if (!v.signoffs.length) h.appendChild(el(doc, "p", { class: "hint", text: "Aucun enregistrement." }));
+      if (!v.signoffs.length) h.appendChild(el(doc, "p", { class: "hint", text: "Aucune vérification enregistrée : rien n'a encore été consigné contre l'état de ces preuves." }));
       else {
         const ul = el(doc, "ul", { class: "carnet-hx-list", "aria-label": MSG.sections.history });
         for (const s of v.signoffs.slice().reverse()) {
@@ -635,7 +635,7 @@
 
       async function act(bodyObj, okText) {
         if (st.busy) return false;
-        if (!bodyObj) { st.error = "Action impossible."; paint(); return false; }
+        if (!bodyObj) { st.error = "Saisie invalide : rien n'a été envoyé."; paint(); return false; }
         if (!online()) { st.error = MSG.offline; paint(); return false; }
         st.busy = true;
         paint();
@@ -713,7 +713,7 @@
         rootEl.textContent = "";
         const rows = allRows();
         const label = st.loading && !st.results.size ? MSG.loading : st.failed ? MSG.loadFailed : V.summaryText(counts());
-        const toggle = el(doc, "button", { type: "button", class: "carnet-small carnet-ver-toggle", id: pid + "-toggle", "aria-expanded": st.expanded ? "true" : "false", "aria-controls": pid + "-body" });
+        const toggle = el(doc, "button", { type: "button", class: "carnet-small carnet-ver-toggle", id: pid + "-toggle", "data-reader-panel": "ver", "aria-expanded": st.expanded ? "true" : "false", "aria-controls": pid + "-body" });
         toggle.appendChild(el(doc, "span", { id: pid + "-h", class: "carnet-ver-heading", text: (spec.frozen ? MSG.frozenHeading : MSG.liveHeading) + " : " }));
         toggle.appendChild(el(doc, "span", { "data-ver": "summary", text: label }));
         toggle.addEventListener("click", () => { st.expanded = !st.expanded; paint(); });
@@ -726,7 +726,7 @@
         if (st.error) bodyEl.appendChild(el(doc, "p", { class: "carnet-hx-warn", role: "alert", "data-ver": "error", text: st.error }));
         if (st.failed) bodyEl.appendChild(btn("Réessayer", { "data-ver-act": "retry" }, load));
         if (st.unavailable) bodyEl.appendChild(el(doc, "p", { class: "hint", text: st.unavailable + " " + MSG.untrusted }));
-        if (!st.loading && !st.failed && !rows.length) bodyEl.appendChild(el(doc, "p", { class: "hint", text: MSG.none }));
+        if (!st.loading && !st.failed && !rows.length) bodyEl.appendChild(el(doc, "p", { class: "hint", text: MSG.noneHere }));
         if (rows.length) {
           const ul = el(doc, "ul", { class: "carnet-hx-list", "aria-label": MSG.liveHeading });
           for (const x of rows) ul.appendChild(rowNode(x));

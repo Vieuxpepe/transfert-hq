@@ -1,4 +1,26 @@
 /* Transfert HQ — Carnet (Stages 02–03). Paper first; system fonts; CSS-only paper. One editor on every device. */
+/* Phase 13: NAMED layer scale for the Carnet overlays (page chrome < sheet < sources < reader < workspace < nested).
+   HqCarnetModal keeps ONE active surface (a modal opened over another suspends it), so these values only order overlays against the page chrome. */
+:root{--carnet-z-sheet:60;--carnet-z-sources:130;--carnet-z-reader:140;--carnet-z-workspace:150;--carnet-z-nested:160}
+[data-carnet-suspended]{visibility:hidden}
+/* Phase 13: shared tokens for the repeated panel dialects (Reader / vérifications / registre / annotations / revue): one padding, one gap, one metadata size, one radius */
+:root{--carnet-pad-panel:8px 10px;--carnet-gap-section:8px;--carnet-fs-meta:.85rem;--carnet-radius-panel:10px;--carnet-radius-pill:999px}
+/* Phase 13: ONE glyph grammar for freshness / existence — the marks the review list already used (= ≠ ∅ ?). The TEXT stays authoritative; the glyph is a second channel, never the only one. */
+[data-fresh="unchanged"]::before,[data-ver-overall="unchanged"]::before,[data-rsn-overall="unchanged"]::before{content:"= "}
+[data-fresh="changed"]::before,[data-fresh="changed_or_removed"]::before,[data-ver-overall="changed"]::before,[data-rsn-overall="changed"]::before{content:"≠ "}
+[data-fresh="missing"]::before,[data-fresh="unavailable"]::before,[data-ver-overall="missing"]::before,[data-rsn-overall="missing"]::before{content:"∅ "}
+[data-fresh="unknown"]::before,[data-ver-overall="unknown"]::before,[data-rsn-overall="unknown"]::before{content:"? "}
+[data-fresh="corrupt"]::before,[data-ver-overall="corrupt"]::before,[data-rsn-overall="corrupt"]::before{content:"✕ "}
+[data-fresh="integrity_anomaly"]::before,[data-ver-overall="integrity_anomaly"]::before,[data-rsn-overall="integrity_anomaly"]::before{content:"⚠ "}
+[data-fresh="not_captured"]::before{content:"– "}
+/* Phase 13: the error family is NOT one red box — changed (warn, solid) · missing (danger, dashed) · corrupt (danger, solid) · integrity anomaly (danger, double) */
+.carnet-ver-evidence[data-state="changed"],.carnet-ver-evidence[data-state="changed_or_removed"],.carnet-rsn-evidence[data-state="changed"],.carnet-rsn-evidence[data-state="changed_or_removed"]{border-color:var(--warn)}
+.carnet-ver-evidence[data-state="missing"],.carnet-ver-evidence[data-state="unavailable"],.carnet-rsn-evidence[data-state="missing"],.carnet-rsn-evidence[data-state="unavailable"]{border-color:var(--danger);border-style:dashed}
+.carnet-ver-evidence[data-state="corrupt"],.carnet-rsn-evidence[data-state="corrupt"]{border-color:var(--danger);border-style:solid}
+.carnet-ver-evidence[data-state="integrity_anomaly"],.carnet-rsn-evidence[data-state="integrity_anomaly"]{border-color:var(--danger);border-style:double;border-width:3px}
+/* Phase 13: the Reader's metadata comparison folds when nothing differs */
+.carnet-reader-meta>summary{cursor:pointer;min-height:var(--carnet-tap,44px);display:flex;align-items:center;font-size:var(--carnet-fs-meta);color:var(--muted)}
+.carnet-reader-meta[open]>summary{margin-bottom:4px}
 .hq-carnet{
   --carnet-paper:#1d2127;
   --carnet-ink:#eef1f4;
@@ -51,7 +73,10 @@
 .carnet-indicator{min-width:4.5em;text-align:center;font-size:var(--text-sm);color:var(--muted);font-variant-numeric:tabular-nums}
 
 /* ---- quick tools */
-.carnet-tools{display:flex;flex-wrap:wrap;gap:6px}
+.carnet-tools{display:flex;flex-wrap:wrap;gap:6px 14px}
+.carnet-tool-group{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.carnet-tool-group-label{font-size:var(--carnet-fs-meta);font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+.carnet.is-focus .carnet-tool-group-label{display:none}
 .carnet-sym{min-width:var(--carnet-tap);min-height:var(--carnet-tap);padding:0 10px;border-radius:10px;background:var(--panel-2);color:var(--text);
   border:1px solid var(--line);font:inherit;font-size:1.05rem;display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;touch-action:manipulation}
 .carnet-time span{font-size:var(--text-sm);font-weight:700}
@@ -365,7 +390,7 @@ body.carnet-focus .topbar,body.carnet-focus .view-bar,body.carnet-focus .bottom-
 .carnet-editor .carnet-citation:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .carnet-editor .carnet-citation[data-cite-ok="true"]::after{content:" \2713";font-weight:700}
 .carnet-editor .carnet-citation[data-cite-todo="true"]{color:var(--warn);border-bottom-style:dashed}
-.carnet-src-layer{position:absolute;inset:0;z-index:130;display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;
+.carnet-src-layer{position:absolute;inset:0;z-index:var(--carnet-z-sources,130);display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;
   background:var(--panel);border:1px solid var(--line);border-radius:12px;min-height:60vh}
 .carnet-src-layer[hidden]{display:none}
 .carnet-src-head{display:flex;gap:8px;align-items:center;justify-content:space-between;position:sticky;top:-12px;background:var(--panel);z-index:1;padding:4px 0}
@@ -382,14 +407,14 @@ body.carnet-focus .topbar,body.carnet-focus .view-bar,body.carnet-focus .bottom-
 .carnet-src-verified{margin:0;color:var(--accent);font-weight:700}
 .carnet-src-warn{margin:0;color:var(--warn)}
 .carnet-src-migrate{display:flex;flex-direction:column;gap:6px;padding:10px;border:1px solid var(--warn);border-radius:10px}
-.carnet-src-frame{flex:1 1 auto;width:100%;min-height:50vh;border:1px solid var(--line);border-radius:8px;background:#fff}
+.carnet-src-frame{flex:1 1 auto;width:100%;min-height:50vh;min-height:50dvh;border:1px solid var(--line);border-radius:8px;background:#fff}
 .carnet-src-bar .carnet-input{width:5.5em}
 .carnet-src-msg:empty{display:none}
 a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 @media print{.carnet-src-layer{display:none!important}}
 
 /* ---- Phase 9: Reader (inspection only). Same tokens as the rest of the Carnet; status is always TEXT (never colour alone). ---- */
-.carnet-reader{position:fixed;inset:0;z-index:140;display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
+.carnet-reader{position:fixed;inset:0;z-index:var(--carnet-z-reader,140);display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
 @media (min-width:900px){.carnet-reader{inset:4vh 10vw;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.45)}}
 .carnet-reader .carnet-src-head{top:-12px;background:var(--bg)}
 .carnet-reader-body{display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -407,7 +432,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-reader-viewer{display:flex;flex-direction:column;gap:6px;min-width:0}
 .carnet-reader-viewer-label{margin:0;padding:8px 10px;border:2px solid var(--warn);border-radius:10px;font-weight:700}
 .carnet-reader-warn{margin:0;color:var(--warn)}
-.carnet-reader-frame{min-height:55vh}
+.carnet-reader-frame{min-height:55vh;min-height:55dvh}
 .carnet-reader-cite-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .carnet-reader-cite{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
 .carnet-reader-cite-text{flex:1 1 12em;min-width:0;overflow-wrap:anywhere}
@@ -456,7 +481,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 }
 
 /* Stage 08 — history, bulk operations, report, "Liée depuis…". One modal dialog, created lazily; nothing on the plain paper. */
-.carnet-hx{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
+.carnet-hx{position:fixed;inset:0;z-index:var(--carnet-z-sheet,60);display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);overflow:auto;overscroll-behavior:contain}
 .carnet-hx[hidden]{display:none}
 @media (min-width:900px){.carnet-hx{inset:5vh 12vw;border:1px solid var(--line);border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.45)}}
 .carnet-hx-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -465,7 +490,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-hx-tab{min-height:var(--carnet-tap)}
 .carnet-hx-body{display:flex;flex-direction:column;gap:10px;min-width:0}
 .carnet-hx-sec h4{margin:0 0 4px}
-.carnet-hx-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:40vh;overflow:auto}
+.carnet-hx-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:40vh;max-height:40dvh;overflow:auto}
 .carnet-hx-event,.carnet-hx-target,.carnet-hx-pick,.carnet-hx-item{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px;border:1px solid var(--line);border-radius:10px;min-width:0}
 .carnet-hx-event-text{flex:1 1 200px;min-width:0;overflow-wrap:anywhere}
 .carnet-hx-target[data-hx-status="conflicted"],.carnet-hx-target[data-hx-status="failed"]{border-color:var(--danger)}
@@ -1127,7 +1152,7 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-pb-meta dt{font-weight:600}.carnet-pb-meta dd{margin:0;overflow-wrap:anywhere}
 .carnet-pb[data-view="compact"] .carnet-pb-meta{display:none}
 .carnet-pb-bar button,.carnet-pb-picker button,.carnet-pb-inspector button{min-height:var(--carnet-tap,44px);box-sizing:border-box}
-.carnet-pb-picker,.carnet-pb-inspector{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);padding:16px}
+.carnet-pb-picker,.carnet-pb-inspector{position:fixed;inset:0;z-index:var(--carnet-z-sheet,60);display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);padding:16px}
 .carnet-pb-picker-body{background:var(--panel,#fff);color:inherit;border-radius:14px;padding:16px;max-width:min(520px,100%);width:100%;max-height:85vh;overflow:auto;display:flex;flex-direction:column;gap:10px}
 .carnet-pb-picker-list{display:flex;flex-direction:column;gap:6px}
 .carnet-pb-choice{text-align:left}
@@ -1139,18 +1164,18 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ann-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .carnet-ann-item{padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff)}
 .carnet-ann-item[data-status="resolved"]{opacity:.8}
-.carnet-ann-item[data-integrity]:not([data-integrity="ok"]){border-color:#b00020}
+.carnet-ann-item[data-integrity]:not([data-integrity="ok"]){border-color:var(--danger,#b00020)}
 .carnet-ann-body,.carnet-rv-comment-body{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
 .carnet-ann-text,.carnet-rv-ctext{width:100%;min-height:4.5em;box-sizing:border-box}
 .carnet-ann-form{display:flex;flex-direction:column;gap:6px}
-.carnet-ann-confirm{padding:6px 8px;border:1px solid #b00020;border-radius:10px}
+.carnet-ann-confirm{padding:6px 8px;border:1px solid var(--danger,#b00020);border-radius:10px}
 .carnet-rv-comments{margin-top:6px;display:flex;flex-direction:column;gap:6px}
 .carnet-rv-comment{padding:6px 8px;border-left:3px solid var(--line)}
 .carnet-rv-removed{margin-top:12px;padding:8px;border:1px dashed var(--line);border-radius:10px}
 /* Phase 11: verifications — workflow records about a human check. Visibly distinct from evidence AND from annotations (solid accent edge, never dashed). */
 .carnet-ver-panel{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:8px 10px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;background:var(--panel-2)}
 .carnet-ver-panel[data-frozen="1"]{border-left-style:double}
-.carnet-ver-toggle{min-height:var(--carnet-tap,44px);text-align:left;display:flex;flex-wrap:wrap;gap:4px;align-items:center;overflow-wrap:anywhere}
+.carnet-ver-toggle,.carnet-rsn-toggle,.carnet-ann-toggle{min-height:var(--carnet-tap,44px);text-align:left;display:flex;flex-wrap:wrap;gap:4px;align-items:center;overflow-wrap:anywhere;white-space:normal}
 .carnet-ver-heading{font-weight:700}
 .carnet-ver-panel-body{display:flex;flex-direction:column;gap:8px;min-width:0}
 .carnet-ver-row{list-style:none;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff);min-width:0}
@@ -1166,7 +1191,6 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ver-group{display:flex;flex-direction:column;gap:6px}
 .carnet-ver-group h4{margin:8px 0 2px}
 .carnet-ver-evidence,.carnet-ver-signoff{flex-wrap:wrap}
-.carnet-ver-evidence[data-state="changed"],.carnet-ver-evidence[data-state="missing"],.carnet-ver-evidence[data-state="changed_or_removed"],.carnet-ver-evidence[data-state="integrity_anomaly"],.carnet-ver-evidence[data-state="corrupt"]{border-color:var(--danger)}
 .carnet-ver-overall[data-ver-overall="changed"],.carnet-ver-overall[data-ver-overall="integrity_anomaly"],.carnet-ver-overall[data-ver-overall="corrupt"]{font-weight:700;text-decoration:underline}
 .carnet-ver-actions{display:flex;flex-direction:column;gap:8px}
 .carnet-ver-confirm{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--danger);border-radius:10px}
@@ -1176,12 +1200,11 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ver [aria-disabled="true"],.carnet-ver-panel [aria-disabled="true"]{opacity:.55;cursor:not-allowed}
 .carnet-ver textarea,.carnet-ver-panel textarea{width:100%;min-height:4.5em}
 @media print{.carnet-ver,.carnet-ver-panel{display:none!important}}
-/* Phase 11: the workspace can be opened from inside the Reader (z 140) and must sit above it */
-#hq-carnet-ver{z-index:150}
+/* Phase 11/13: the workspace and the Reader suspend each other (HqCarnetModal), whichever opens the other */
+#hq-carnet-ver{z-index:var(--carnet-z-workspace,150)}
 /* ---- Phase 12: decisions & assumptions register (lazy dialog #hq-carnet-rsn + related panel; reuses the .carnet-hx shell). Not evidence: dashed / quiet styling. */
 .carnet-rsn-panel{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:8px 10px;border:1px dashed var(--line);border-left:4px solid var(--muted);border-radius:12px;background:var(--panel-2)}
 .carnet-rsn-panel[data-frozen="1"]{border-left-style:double}
-.carnet-rsn-toggle{min-height:var(--carnet-tap,44px);text-align:left;display:flex;flex-wrap:wrap;gap:4px;align-items:center;overflow-wrap:anywhere}
 .carnet-rsn-heading{font-weight:700}
 .carnet-rsn-panel-body{display:flex;flex-direction:column;gap:8px;min-width:0}
 .carnet-rsn-row{list-style:none;padding:6px 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel,#fff);min-width:0}
@@ -1207,4 +1230,25 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-rsn textarea,.carnet-rsn-panel textarea{width:100%;min-height:4.5em}
 @media print{.carnet-rsn,.carnet-rsn-panel{display:none!important}}
 /* the workspace can be opened from inside the Reader (z 140) and from a Review Pack: it must sit above them */
-#hq-carnet-rsn{z-index:150}
+#hq-carnet-rsn{z-index:var(--carnet-z-workspace,150)}
+
+/* ---- Phase 13 P8: phone polish (bounded). Fields scrolled into view stay clear of the on-screen keyboard and the sticky footer; no horizontal overflow. */
+.carnet-reader,.carnet-hx,.carnet-rsn,.carnet-ver,.carnet-rv{overflow-x:hidden;overscroll-behavior:contain}
+.carnet-reader textarea,.carnet-hx textarea,.carnet-rsn textarea,.carnet-ver textarea,.carnet-rv textarea,.carnet-reader input,.carnet-rsn input,.carnet-ver input,.carnet-rv input{scroll-margin-bottom:calc(var(--hq-kb,0px) + 96px);max-width:100%;box-sizing:border-box}
+@media (max-width:599px){
+  .carnet-reader button,.carnet-hx button,.carnet-rsn button,.carnet-ver button,.carnet-rv button,.carnet-src-layer button{min-height:var(--carnet-tap,44px)}
+  .carnet-reader,.carnet-hx,.carnet-rsn,.carnet-ver,.carnet-rv{padding-bottom:calc(12px + var(--hq-kb,0px) + env(safe-area-inset-bottom))}
+}
+
+/* ---- Phase 13 r2: quieter Plus toolbar on phones (same actions, less height) */
+.carnet-sym-strip{display:contents}
+@media (max-width:599px){
+  .carnet-tools{gap:4px 10px}
+  .carnet-tool-group{flex:1 1 100%;min-width:0;max-width:100%}
+  .carnet-tool-group:first-of-type .carnet-tool-group-label{flex:0 0 100%;margin:0;line-height:1.1}
+  .carnet-tool-group{gap:4px 6px}
+  .carnet-tool-group:not(:first-of-type){flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding-bottom:2px}
+  .carnet-tool-group:not(:first-of-type)>*{flex:0 0 auto}
+  .carnet-sym-strip{display:flex;flex:0 0 100%;min-width:0;max-width:100%;flex-wrap:nowrap;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding-bottom:2px}
+  .carnet-sym-strip .carnet-sym{flex:0 0 auto}
+}
