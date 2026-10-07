@@ -2835,7 +2835,7 @@
 
   function card(it, current, trash) {
     const main = el("button", { type: "button", class: "carnet-card-main", "data-carnet-page-id": it.id, "aria-current": current ? "true" : null });
-    const top = el("span", { class: "carnet-card-top" }, [el("span", { class: "carnet-card-title", text: it.title })]);
+    const top = el("span", { class: "carnet-card-top" }, [el("span", { class: "carnet-card-title", text: it.title, title: it.title })]);
     if (it.pinned) {
       const pinMark = el("span", { class: "carnet-card-pin", title: "Épinglée" });
       pinMark.appendChild(svgIcon(ICON.pin));

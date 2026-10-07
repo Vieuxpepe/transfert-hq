@@ -1260,3 +1260,21 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 @media (max-width:599px){.carnet-ann-form label{min-height:var(--carnet-tap,44px)}}
 /* Fixed bottom chrome (Field HUD 61 px above the 64 px bottom nav) must not cover a keyboard-focused control: scrolling reveals it above that chrome. */
 @media (max-width:720px){html{scroll-padding-bottom:calc(var(--nav-h,64px) + 72px + env(safe-area-inset-bottom,0px))}}
+
+/* ---- Phase 14.1: desktop library cleanup (presentation only) */
+/* A: the page list must never be squeezed. It lives inside a scrolling, max-height flex column, so with min-height:0 it (and each overflow:hidden row) used to shrink to its borders and clip the rows. */
+.carnet-lib-list{flex:0 0 auto;min-height:auto}
+.carnet-lib-list>*{flex-shrink:0}
+/* B: a <button> defaults to align-items:flex-start, so the title row sized to its full text and overflowed the card; stretch it so the existing nowrap+ellipsis title is bounded by the row. */
+.carnet-card-main{align-items:stretch}
+/* C: .carnet-card clips its children (overflow:hidden), which swallowed the keyboard focus ring drawn on the button. Draw the ring on the row itself (outside the clip); browsers without :has() keep an inset ring on the button. */
+.carnet-card-main:focus-visible{outline:3px solid var(--accent);outline-offset:-3px;border-radius:inherit}
+@supports selector(:has(*)){
+  .carnet-card:has(.carnet-card-main:focus-visible){outline:3px solid var(--accent);outline-offset:2px}
+  .carnet-card-main:focus-visible{outline:none}
+}
+/* keyboard / scrollIntoView reveals leave room for that ring inside the scrolling library */
+.carnet-library{scroll-padding:8px}
+/* E: the desktop Capture FAB stays viewport-fixed (right-anchored on purpose), but its 84px offset assumed no bottom bar: the Carnet bottom bar is pinned var(--nav-h) above the viewport floor on desktop too, so the FAB sat on top of its
+   "Copier / Nouvelle page" buttons. Lift it clear of the bar at both resting positions: pinned (bar top = nav-h + ~56px) and end-of-page (bar rests a little higher, buttons up to ~nav-h + 90px). */
+@media (min-width:900px){body[data-view="carnet"] .hq-capture-fab{bottom:calc(var(--nav-h,64px) + 104px + env(safe-area-inset-bottom,0px))}}
