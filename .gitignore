@@ -11,6 +11,7 @@ hq_ssh.ppk
 bridge.pid
 bridge_stdout.log
 bridge_stderr.log
+hq-startup-error.txt
 bridge_activity.json
 bridge_transfers.json
 bridge_presence_history.json

@@ -34,6 +34,8 @@ import cc_ext
 import hq_automation
 import hq_calendar
 import hq_carnet
+import hq_diagnostics
+import hq_diagnostics_ui
 import hq_drawings
 import hq_companion
 import hq_planner
@@ -780,7 +782,11 @@ def load_config(*, write: bool = True) -> dict:
 
 
 
-CONFIG = load_config()
+try:
+    CONFIG = load_config()
+except SystemExit as _fatal:  # Phase 15: a malformed config otherwise dies in a hidden console and nobody sees why
+    hq_diagnostics.record_startup_fatal(ROOT, _fatal.code if isinstance(_fatal.code, str) else "startup aborted")
+    raise
 
 
 def save_config() -> None:
@@ -5398,6 +5404,69 @@ def _login_fail(ip: str) -> None:
         hits.append(time.time())
 
 
+_DIAG_STATE: dict = {"root": None, "assets": None, "last_probe": None}
+_DIAG_LOCK = threading.Lock()
+
+
+def _diag_ensure() -> None:
+    """Lazy, once-per-ROOT: capture identity (build SHA read from .git ONCE) and attach the bounded error log."""
+    with _DIAG_LOCK:
+        if _DIAG_STATE["root"] == str(ROOT):
+            return
+        hq_diagnostics.init_identity(ROOT, version="7.0", started_at=_STARTED_AT)
+        hq_diagnostics.ERRORS.attach(ROOT)
+        _DIAG_STATE["root"] = str(ROOT)
+        _DIAG_STATE["assets"] = None
+
+
+def _diag_asset_names() -> list[str]:
+    with _DIAG_LOCK:
+        if _DIAG_STATE["assets"] is None:
+            _DIAG_STATE["assets"] = hq_diagnostics.required_assets(render_app)
+        return list(_DIAG_STATE["assets"])
+
+
+# Capture the build identity when the module is LOADED (the code in memory is the code that matters): a later `git pull` moves HEAD
+# on disk but not this process, and /api/diag/info reports that difference as restart_pending.
+_diag_ensure()
+
+
+def _diag_record_exc(handler, exc: BaseException) -> str:
+    try:
+        _diag_ensure()
+        sub = hq_diagnostics.path_category(getattr(handler, "path", ""))
+        return hq_diagnostics.ERRORS.record(sub, exc=exc, path=getattr(handler, "path", ""), status=500)
+    except Exception:
+        return ""
+
+
+_LOG_QUERY = re.compile(r"\?\S*")
+_LOG_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _log_safe_arg(a):
+    """Access-log argument with any query string / fragment removed. A request line that does not parse as
+    ``METHOD target VERSION`` is replaced outright (a malformed line may hold query text across spaces)."""
+    if not isinstance(a, str) or ("?" not in a and "#" not in a):
+        return a
+    if a.count(" ") != 2:
+        return "<malformed request>"
+    return re.sub(r"[?#]\S*", "?<q>", a)
+
+
+def _diag_record_5xx(handler, code: int, obj) -> None:
+    try:
+        _diag_ensure()
+        path = getattr(handler, "path", "")
+        sub = hq_diagnostics.path_category(path)
+        if sub == "/api/diag":  # readiness / probe 503 is the designed signal, not an application fault (and must not flood the log)
+            return
+        fixed = obj.get("code") if isinstance(obj, dict) and isinstance(obj.get("code"), str) else None
+        hq_diagnostics.ERRORS.record(sub, path=path, status=code, code=fixed or f"http_{code}")
+    except Exception:
+        pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "TransfertBridge/7.0"
 
@@ -5430,7 +5499,15 @@ class Handler(BaseHTTPRequestHandler):
             _REQ_SEM.release()
 
     def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+        # Access log keeps client / method / path / status / size but never the query string (it can carry
+        # search text, tokens or ids): same policy as the scrubbed error log.
+        try:
+            line = fmt % tuple(_log_safe_arg(a) for a in args)
+            line = _LOG_QUERY.sub("?<q>", line)
+            line = _LOG_CTRL.sub(" ", line)[:400]
+        except Exception:
+            line = "<log line unavailable>"
+        sys.stderr.write("%s - %s\n" % (self.address_string(), line))
 
     def _token(self) -> str | None:
         raw = self.headers.get("Cookie", "")
@@ -5588,6 +5665,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             body = json.dumps({"error": "Réponse JSON invalide"}).encode("utf-8")
             code = 500
+        if code >= 500:  # Phase 15: bounded local record (category + fixed error code only; never the message or the body)
+            _diag_record_5xx(self, code, obj)
         self._send(code, body, "application/json; charset=utf-8", headers)
 
     def _agent_v1(self) -> None:
@@ -5639,6 +5718,70 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             return any(raw.startswith(p) for p in UPLOAD_POST_PREFIX)
         return False
+
+    # ---- Phase 15: local diagnostics (admin-only; read-only except the explicit write probe) ----
+    def _diag_get(self, raw: str, parsed) -> bool:
+        if raw != "/diagnostics" and not raw.startswith("/api/diag/"):
+            return False
+        if not self._require_admin():
+            return True
+        try:
+            _diag_ensure()
+            qs = parse_qs(parsed.query)
+            if raw == "/diagnostics":
+                self._send(200, hq_diagnostics_ui.render_page().encode("utf-8"), "text/html; charset=utf-8")
+            elif raw == "/api/diag/live":
+                self._json(200, hq_diagnostics.liveness())
+            elif raw == "/api/diag/ready":
+                rep = hq_diagnostics.readiness(root=ROOT, config=CONFIG, config_path=CONFIG_PATH, asset_names=_diag_asset_names(), voice_mod=None)
+                self._json(200 if rep["status"] != "not_ready" else 503, rep)
+            elif raw == "/api/diag/info":
+                exp = (qs.get("expect", [""])[0] or "").strip() or None
+                info = hq_diagnostics.identity(ROOT, expect=exp)
+                info["version"] = info.get("version") or "7.0"
+                fatal = hq_diagnostics.startup_fatal(ROOT)
+                if fatal:
+                    fatal["before_current_start"] = bool(fatal.get("at", "") < info.get("started_at_utc", ""))
+                    info["last_startup_error"] = fatal
+                info["errors"] = hq_diagnostics.ERRORS.summary()
+                self._json(200, info)
+            elif raw == "/api/diag/subsystems":
+                self._json(200, hq_diagnostics.subsystems(root=ROOT, config=CONFIG, carnet=hq_carnet, asset_names=_diag_asset_names()))
+            elif raw == "/api/diag/backup":
+                verify = (qs.get("verify", [""])[0] or "") in ("1", "true", "yes")
+                self._json(200, hq_diagnostics.backup_report(config=CONFIG, root=ROOT, verify=verify))
+            elif raw == "/api/diag/errors":
+                try:
+                    lim = int((qs.get("limit", ["50"])[0] or "50"))
+                except ValueError:
+                    lim = 50
+                self._json(200, {"errors": hq_diagnostics.ERRORS.recent(lim), "summary": hq_diagnostics.ERRORS.summary()})
+            else:
+                self._json(404, {"error": "Inconnu"})
+        except Exception as e:  # a diagnostics bug must answer, not crash the handler thread
+            rid = hq_diagnostics.ERRORS.record("diagnostics", exc=e, path=raw)
+            self._json(500, {"error": "diagnostic_failed", "request_id": rid})
+        return True
+
+    def _diag_post(self, raw: str) -> bool:
+        if not raw.startswith("/api/diag/"):
+            return False
+        if not self._require_admin():
+            return True
+        if raw != "/api/diag/write-probe":
+            self._json(404, {"error": "Inconnu"})
+            return True
+        try:
+            _diag_ensure()
+            res = hq_diagnostics.write_probe(ROOT)
+            if res.get("status") != "ok":
+                hq_diagnostics.ERRORS.record("diagnostics.write_probe", message=f"write probe failed at {res.get('failed_step')}", path=raw)
+            _DIAG_STATE["last_probe"] = res
+            self._json(200 if res.get("status") == "ok" else 503, res)
+        except Exception as e:
+            rid = hq_diagnostics.ERRORS.record("diagnostics", exc=e, path=raw)
+            self._json(500, {"error": "diagnostic_failed", "request_id": rid})
+        return True
 
     def _guard_admin_path(self, raw: str) -> bool:
         """Return False if blocked (response already sent). Allowlist for upload role."""
@@ -6310,10 +6453,11 @@ class Handler(BaseHTTPRequestHandler):
         except ConnectionResetError:
             return
         except Exception as e:
-            sys.stderr.write(f"GET error {self.path}: {e}\n")
+            rid = _diag_record_exc(self, e)
+            sys.stderr.write(f"GET error {hq_diagnostics.path_category(self.path)} #{rid}: {type(e).__name__}: {hq_diagnostics.scrub(e, ROOT)}\n")
             try:
                 if self.path.startswith("/api/"):
-                    self._json(500, {"error": str(e)[:300]})
+                    self._json(500, {"error": hq_diagnostics.scrub(str(e), ROOT, 300), "request_id": rid})
                 else:
                     self._send(500, b"Internal error")
             except Exception:
@@ -6413,6 +6557,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not self._guard_admin_path(raw):
+            return
+
+        if self._diag_get(raw, parsed):
             return
 
         if self._hq_get(raw, parsed):
@@ -6632,9 +6779,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         except Exception as e:
-            sys.stderr.write(f"POST error {self.path}: {e}\n")
+            rid = _diag_record_exc(self, e)
+            sys.stderr.write(f"POST error {hq_diagnostics.path_category(self.path)} #{rid}: {type(e).__name__}: {hq_diagnostics.scrub(e, ROOT)}\n")
             try:
-                self._json(500, {"error": str(e)[:300]})
+                self._json(500, {"error": hq_diagnostics.scrub(str(e), ROOT, 300), "request_id": rid})
             except Exception:
                 pass
 
@@ -6693,6 +6841,9 @@ class Handler(BaseHTTPRequestHandler):
         # upload role: explicit allowlist only
         if self._role() != "admin" and not self._upload_allowed("POST", raw):
             self._json(403, {"error": "Réservé admin"})
+            return
+
+        if self._diag_post(raw):
             return
 
         if self._hq_post(raw):
@@ -7451,4 +7602,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as _fatal:
+        if isinstance(_fatal.code, str):  # config / bind aborts: leave one scrubbed line a human can find
+            hq_diagnostics.record_startup_fatal(ROOT, _fatal.code)
+        raise
