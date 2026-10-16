@@ -46,6 +46,7 @@ MAX_ZIP_ENTRIES = QUOTA_IMAGES + 2
 MAX_ZIP_MEMBER = 32 * 1024 * 1024
 MAX_ZIP_UNCOMPRESSED = BACKUP_MAX * 2
 MAX_ZIP_RATIO = 64
+MAX_INDEX_BYTES = 256 * 1024
 MAX_FAILURE_SLOTS = 32
 _REPARSE = 0x400
 
@@ -825,6 +826,82 @@ def _read_index(root: Path, master: bytes) -> list:
     return [item for item in items if isinstance(item, dict) and ID_RE.fullmatch(str(item.get("id") or ""))]
 
 
+def _authenticate_restored_objects(root: Path, master: bytes) -> None:
+    """Decrypt every indexed object before the live vault is replaced.
+
+    Plaintext is discarded one image at a time. The index and each ciphertext
+    stay within the zip and quota caps.
+    """
+    path = root / "index.bin"
+    if not path.is_file() or _is_reparse(path):
+        raise VaultError("corrupt")
+    try:
+        index_size = path.stat().st_size
+    except OSError:
+        raise VaultError("corrupt") from None
+    if index_size > MAX_INDEX_BYTES or index_size > MAX_ZIP_MEMBER:
+        raise VaultError("validation")
+    try:
+        raw = _open(master, path.read_bytes(), _AAD_INDEX)
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, json.JSONDecodeError, VaultError):
+        raise VaultError("corrupt") from None
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list) or len(items) > _quota_images:
+        raise VaultError("validation" if isinstance(items, list) else "corrupt")
+    known: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise VaultError("corrupt")
+        image_id = item.get("id")
+        if not isinstance(image_id, str) or not ID_RE.fullmatch(image_id) or image_id in known:
+            raise VaultError("corrupt")
+        known.add(image_id)
+    folder = root / "objects"
+    if not folder.is_dir() or _is_reparse(folder):
+        raise VaultError("corrupt")
+    files: dict[str, Path] = {}
+    total = 0
+    for child in folder.iterdir():
+        if _is_reparse(child) or not child.is_file() or not ID_RE.fullmatch(child.stem):
+            raise VaultError("corrupt")
+        if child.stem in files:
+            raise VaultError("corrupt")
+        try:
+            size = child.stat().st_size
+        except OSError:
+            raise VaultError("corrupt") from None
+        if size > MAX_ZIP_MEMBER:
+            raise VaultError("validation")
+        total += size
+        if total > _quota_bytes or total > MAX_ZIP_UNCOMPRESSED:
+            raise VaultError("validation")
+        files[child.stem] = child
+    if set(files) != known or len(files) > _quota_images:
+        raise VaultError("corrupt" if set(files) != known else "validation")
+    for item in items:
+        image_id = str(item.get("id"))
+        try:
+            meta, png, thumb = _read_object(root, master, image_id)
+        except VaultError:
+            raise VaultError("corrupt") from None
+        try:
+            if meta.get("id") != image_id:
+                raise VaultError("corrupt")
+            declared = item.get("bytes")
+            if isinstance(declared, bool) or (declared is not None and not isinstance(declared, int)):
+                raise VaultError("corrupt")
+            if isinstance(declared, int) and declared != len(png):
+                raise VaultError("corrupt")
+            meta_bytes = meta.get("bytes")
+            if isinstance(meta_bytes, int) and not isinstance(meta_bytes, bool) and meta_bytes != len(png):
+                raise VaultError("corrupt")
+            if len(png) > IMPORT_MAX or len(thumb) > IMPORT_MAX:
+                raise VaultError("validation")
+        finally:
+            del png, thumb, meta
+
+
 def _write_index(root: Path, master: bytes, items: list) -> None:
     payload = json.dumps({"items": items}, separators=(",", ":")).encode("utf-8")
     _atomic(root / "index.bin", _seal(bytes(master), payload, _AAD_INDEX))
@@ -1139,8 +1216,10 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
         if header is None:
             raise VaultError("corrupt")
         master = _unwrap(header, _passphrase_bytes(passphrase), "passphrase")
-        _read_index(staging, master)
-        _wipe(bytearray(master))
+        try:
+            _authenticate_restored_objects(staging, master)
+        finally:
+            _wipe(bytearray(master))
         if _restore_fault == "before_retire":
             raise OSError("injected")
         if _header_path(root).is_file():
@@ -1151,10 +1230,13 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
             raise OSError("injected")
         os.replace(staging, root)
         promoted = True
-        if _restore_fault == "after_promote":
-            raise OSError("injected")
-        if previous.exists() or previous.is_symlink():
-            _remove_tree_nofollow(previous)
+        try:
+            if _restore_fault == "after_promote":
+                raise OSError("injected")
+            if previous.exists() or previous.is_symlink():
+                _remove_tree_nofollow(previous)
+        except (OSError, VaultError):
+            raise VaultError("cleanup") from None
     except VaultError:
         if not promoted:
             _rollback_restore(root, staging, previous)
@@ -1182,6 +1264,7 @@ def http_status(code: str) -> int:
         "validation": 400,
         "no_pillow": 503,
         "bad_root": 503,
+        "cleanup": 409,
     }.get(code, 400)
 
 
@@ -1200,5 +1283,6 @@ def public_error(code: str) -> str:
         "validation": "Les données ne sont pas acceptées.",
         "no_pillow": "Le traitement d'image n'est pas disponible.",
         "bad_root": "Le dossier du coffre n'est pas utilisable.",
+        "cleanup": "La sauvegarde est en place, mais l'ancienne copie n'a pas pu être retirée.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
     }.get(code, "Le coffre a refusé l'opération.")

@@ -37,6 +37,21 @@ def _token(name: str) -> str:
     return ("session-" + name + "-0123456789abcdef").replace(" ", "")[:40]
 
 
+def _rebuild_zip(payload: bytes, replacements: dict[str, bytes | None]) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(payload)) as source, zipfile.ZipFile(output, "w") as rebuilt:
+        for info in source.infolist():
+            name = info.filename.replace("\\", "/")
+            if name in replacements and replacements[name] is None:
+                continue
+            data = replacements[name] if name in replacements else source.read(info)
+            rebuilt.writestr(name, data)
+        for name, data in replacements.items():
+            if data is not None and name not in {info.filename.replace("\\", "/") for info in source.infolist()}:
+                rebuilt.writestr(name, data)
+    return output.getvalue()
+
+
 class Vault(unittest.TestCase):
     def setUp(self) -> None:
         F.reset_for_tests()
@@ -413,6 +428,91 @@ class Vault(unittest.TestCase):
         (self.store / "vault.json").unlink()
         V.cleanup_partials(self.hq)
         self.assertEqual((previous / "keep.txt").read_text(encoding="utf-8"), "keep")
+
+    def _snapshot(self) -> dict[str, bytes]:
+        files = {"vault.json": (self.store / "vault.json").read_bytes()}
+        for path in (self.store / "objects").glob("*.bin"):
+            files[path.name] = path.read_bytes()
+        return files
+
+    def _assert_live_unchanged(self, first: dict, second: dict, snapshot: dict[str, bytes]) -> None:
+        self.assertFalse(self.store.with_name(self.store.name + ".previous").exists())
+        self.assertFalse(self.store.with_name(self.store.name + ".restore").exists())
+        self.assertEqual((self.store / "vault.json").read_bytes(), snapshot["vault.json"])
+        self.assertEqual((self.store / "objects" / (first["id"] + ".bin")).read_bytes(), snapshot[first["id"] + ".bin"])
+        self.assertEqual((self.store / "objects" / (second["id"] + ".bin")).read_bytes(), snapshot[second["id"] + ".bin"])
+        self.assertEqual(V.detail(self.hq, self.admin, first["id"])["id"], first["id"])
+        self.assertEqual(V.detail(self.hq, self.admin, second["id"])["id"], second["id"])
+        V.lock(self.admin)
+        V.unlock(self.hq, self.admin, PASS)
+
+    def test_tampered_backup_objects_are_rejected_before_promotion(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        first = V.store_image(self.hq, self.admin, _png(), None)
+        payload = V.backup_bytes(self.hq, self.admin)
+        second = V.store_image(self.hq, self.admin, _png(), None)
+        snapshot = self._snapshot()
+        name = "objects/" + first["id"] + ".bin"
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            original = archive.read(name)
+            index_blob = archive.read("index.bin")
+        flipped = bytearray(original)
+        flipped[-1] ^= 0x01
+        header = json.loads((self.store / "vault.json").read_text(encoding="utf-8"))
+        master = V._unwrap(header, V._passphrase_bytes(PASS), "passphrase")
+        indexed = json.loads(V._open(master, index_blob, V._AAD_INDEX))
+        indexed["items"].append(dict(indexed["items"][0]))
+        duplicate = V._seal(master, json.dumps(indexed).encode("utf-8"), V._AAD_INDEX)
+        indexed["items"].pop()
+        indexed["items"][0]["bytes"] = 1
+        inconsistent = V._seal(master, json.dumps(indexed).encode("utf-8"), V._AAD_INDEX)
+        V._wipe(bytearray(master))
+        cases = [
+            _rebuild_zip(payload, {name: bytes(flipped)}),
+            _rebuild_zip(payload, {name: None}),
+            _rebuild_zip(payload, {name: original[:8]}),
+            _rebuild_zip(payload, {"objects/pvt-" + "ab" * 12 + ".bin": b"extra"}),
+            _rebuild_zip(payload, {"index.bin": duplicate}),
+            _rebuild_zip(payload, {"index.bin": inconsistent}),
+        ]
+        for bad in cases:
+            with self.assertRaises(V.VaultError) as caught:
+                V.restore_backup(self.hq, self.admin, bad, PASS)
+            self.assertEqual(caught.exception.code, "corrupt")
+            self._assert_live_unchanged(first, second, snapshot)
+        V.set_quota_for_tests(image_cap=0)
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, payload, PASS)
+        self.assertEqual(caught.exception.code, "validation")
+        V.set_quota_for_tests()
+        self._assert_live_unchanged(first, second, snapshot)
+        V.set_quota_for_tests(byte_cap=10)
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, payload, PASS)
+        self.assertEqual(caught.exception.code, "validation")
+        V.set_quota_for_tests()
+        self._assert_live_unchanged(first, second, snapshot)
+
+    def test_post_promotion_cleanup_failure_keeps_the_promoted_vault(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        first = V.store_image(self.hq, self.admin, _png(), None)
+        payload = V.backup_bytes(self.hq, self.admin)
+        second = V.store_image(self.hq, self.admin, _png(), None)
+        V.set_restore_fault_for_tests("after_promote")
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, payload, PASS)
+        self.assertEqual(caught.exception.code, "cleanup")
+        V.set_restore_fault_for_tests(None)
+        previous = self.store.with_name(self.store.name + ".previous")
+        self.assertTrue((previous / "objects" / (second["id"] + ".bin")).is_file())
+        self.assertEqual(V.detail(self.hq, self.admin, first["id"])["id"], first["id"])
+        V.lock(self.admin)
+        V.unlock(self.hq, self.admin, PASS)
+        self.assertEqual(V.file_bytes(self.hq, self.admin, first["id"], "original")[1], "image/png")
+        with self.assertRaises(V.VaultError):
+            V.detail(self.hq, self.admin, second["id"])
 
 
 if __name__ == "__main__":
