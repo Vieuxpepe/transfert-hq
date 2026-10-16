@@ -405,6 +405,14 @@ def catalog(*, transport=None) -> dict:
     return payload
 
 
+def read_progress(*, transport=None) -> dict:
+    transport = _resolve(transport)
+    value = _call(transport, "/sdapi/v1/progress", "?skip_current_image=true")
+    if not isinstance(value, dict):
+        raise _Probe("forge_error")
+    return value
+
+
 def post_json(path: str, payload: dict, *, timeout: float, transport=None) -> dict:
     """POST one allowlisted JSON route. The only route is txt2img."""
     if path != SUBMIT_PATH or not isinstance(payload, dict):

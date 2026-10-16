@@ -42,6 +42,8 @@ import hq_planner
 import hq_devices
 import hq_events
 import hq_forge
+import hq_forge_gallery
+import hq_forge_jobs
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
@@ -5933,17 +5935,92 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, result)
         return True
 
-    def _forge_get(self, raw: str) -> bool:
-        if raw not in ("/api/forge/status", "/api/forge/catalog"):
+    def _forge_get(self, raw: str, parsed) -> bool:
+        if not raw.startswith("/api/forge/"):
             return False
         if not self._require_admin():
             return True
-        payload = hq_forge.status() if raw == "/api/forge/status" else hq_forge.catalog()
-        self._json(200, payload)
+        hq_forge_jobs.recover(ROOT)
+        if raw == "/api/forge/status":
+            self._json(200, hq_forge.status())
+            return True
+        if raw == "/api/forge/catalog":
+            self._json(200, hq_forge.catalog())
+            return True
+        served = hq_forge_gallery.serve_file(ROOT, raw)
+        if served is not None:
+            code, body, ctype, headers = served
+            if isinstance(body, dict):
+                self._json(code, body)
+            else:
+                self._send(code, body, ctype, headers)
+            return True
+        if raw == "/api/forge/gallery":
+            qs = parse_qs(parsed.query)
+            try:
+                limit = int((qs.get("limit") or ["24"])[0])
+            except ValueError:
+                limit = 24
+            cursor = (qs.get("cursor") or [None])[0] or None
+            try:
+                self._json(200, hq_forge_gallery.page(ROOT, limit=limit, cursor=cursor))
+            except hq_forge_gallery.GalleryError:
+                self._json(400, {"error": "Introuvable"})
+            return True
+        prefix = "/api/forge/gallery/"
+        if raw.startswith(prefix) and "/" not in raw[len(prefix):]:
+            try:
+                self._json(200, hq_forge_gallery.get(ROOT, raw[len(prefix):]))
+            except hq_forge_gallery.GalleryError:
+                self._json(404, {"error": "Introuvable"})
+            return True
+        got = hq_forge_jobs.serve_get(ROOT, raw, parsed.query)
+        if got is None:
+            self._json(404, {"error": "Inconnu"})
+            return True
+        self._json(got[0], got[1])
+        return True
+
+    def _forge_post(self, raw: str) -> bool:
+        if not raw.startswith("/api/forge/"):
+            return False
+        if not self._require_admin():
+            return True
+        hq_forge_jobs.recover(ROOT)
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "JSON invalide"})
+            return True
+        if length < 0 or length > 65536:
+            self._json(413, {"error": "Requête trop grande."})
+            return True
+        blob = self.rfile.read(length) if length else b"{}"
+        try:
+            data = json.loads(blob.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            self._json(400, {"error": "JSON invalide"})
+            return True
+        if not isinstance(data, dict):
+            self._json(400, {"error": "JSON invalide"})
+            return True
+        prefix = "/api/forge/gallery/"
+        if raw.startswith(prefix) and raw.endswith("/delete"):
+            image_id = raw[len(prefix):-len("/delete")]
+            try:
+                self._json(200, hq_forge_gallery.delete(ROOT, image_id))
+            except hq_forge_gallery.GalleryError:
+                self._json(404, {"error": "Introuvable"})
+            return True
+        got = hq_forge_jobs.serve_post(ROOT, raw, data, (self.headers.get("Idempotency-Key") or "").strip())
+        if got is None:
+            self._json(404, {"error": "Inconnu"})
+            return True
+        self._json(got[0], got[1])
         return True
 
     def _hq_get(self, raw: str, parsed) -> bool:
-        if self._forge_get(raw):
+        if self._forge_get(raw, parsed):
             return True
         if self._drawings_get(raw, parsed):
             return True
@@ -6321,6 +6398,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(code, payload)
 
     def _hq_post(self, raw: str) -> bool:
+        if self._forge_post(raw):
+            return True
         if self._drawings_post(raw):
             return True
         if raw == "/api/agent":

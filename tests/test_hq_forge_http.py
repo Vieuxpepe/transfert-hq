@@ -19,6 +19,7 @@ sys.path.insert(0, str(SOURCE))
 
 import hq_diagnostics as D  # noqa: E402
 import hq_forge as F  # noqa: E402
+import hq_forge_jobs as J  # noqa: E402
 import iphone_bridge as B  # noqa: E402
 
 ADMIN_PIN, UPLOAD_PIN = "424242", "111111"
@@ -105,6 +106,7 @@ class ForgeHttp(unittest.TestCase):
 
     def setUp(self) -> None:
         F.reset_for_tests()
+        J.reset_for_tests()
         F.set_transport_for_tests(lambda method, url, timeout: (_ for _ in ()).throw(ConnectionRefusedError()))
 
     def tearDown(self) -> None:
@@ -131,10 +133,10 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(self.upload.req("/api/forge/status")[0], 403)
         self.assertEqual(self.upload.req("/api/forge/catalog")[0], 403)
 
-    def test_post_is_csrf_gated_and_generation_is_absent(self):
+    def test_post_is_csrf_gated_and_empty_generation_is_rejected(self):
         self.assertEqual(self.admin.req("/api/forge/status", "POST", b"{}", origin=False)[0], 403)
         self.assertEqual(self.admin.req("/api/forge/jobs", "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)
-        self.assertEqual(self.admin.req("/api/forge/jobs", "POST", b"{}")[0], 404)
+        self.assertEqual(self.admin.req("/api/forge/jobs", "POST", b"{}")[0], 400)
         self.assertEqual(self.admin.req("/api/forge/jobs/job-1/cancel", "POST", b"{}")[0], 404)
 
     def test_readiness_does_not_depend_on_forge(self):
