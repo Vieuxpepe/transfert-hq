@@ -41,6 +41,7 @@ import hq_companion
 import hq_planner
 import hq_devices
 import hq_events
+import hq_forge
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
@@ -5932,7 +5933,18 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, result)
         return True
 
+    def _forge_get(self, raw: str) -> bool:
+        if raw not in ("/api/forge/status", "/api/forge/catalog"):
+            return False
+        if not self._require_admin():
+            return True
+        payload = hq_forge.status() if raw == "/api/forge/status" else hq_forge.catalog()
+        self._json(200, payload)
+        return True
+
     def _hq_get(self, raw: str, parsed) -> bool:
+        if self._forge_get(raw):
+            return True
         if self._drawings_get(raw, parsed):
             return True
         if raw == "/hq-sw.js":
