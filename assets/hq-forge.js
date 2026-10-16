@@ -32,6 +32,7 @@
   const vaultViewerImg = $("forge-vault-viewer-img");
   let pollTimer = 0;
   let idleTimer = 0;
+  let submitGuard = false;
   let cursor = null;
   let openFrom = null;
   let currentDetail = null;
@@ -190,6 +191,7 @@
       }
     }
     syncActions(active);
+    if (!active) submitGuard = false;
     if (active) {
       sessionStorage.setItem("hqForgeJob", job.job_id);
       clearTimeout(pollTimer);
@@ -243,6 +245,8 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (submitGuard) return;
+    submitGuard = true;
     generateBtn.disabled = true;
     progressBox.hidden = false;
     progressLabel.textContent = "Envoi…";
@@ -265,6 +269,7 @@
         return;
       } catch (_) { /* the POST itself failed */ }
       progressLabel.textContent = error.message || "La génération n'a pas pu démarrer.";
+      submitGuard = false;
       syncActions(false);
     }
   });
@@ -278,6 +283,8 @@
       return;
     }
     if (!vaultState.private_generation) return;
+    if (submitGuard) return;
+    submitGuard = true;
     privateBtn.disabled = true;
     progressBox.hidden = false;
     progressLabel.textContent = "Envoi privé…";
@@ -290,6 +297,7 @@
       showJob(payload.job);
     } catch (error) {
       progressLabel.textContent = error.message || "La génération privée n'a pas démarré.";
+      submitGuard = false;
       syncActions(false);
     }
   }

@@ -46,6 +46,9 @@ _MESSAGES = {
     "quota": "Le quota de la galerie est atteint. Rien n'a été effacé.",
     "disk": "Espace disque insuffisant.",
     "forge_error": "Forge a renvoyé une réponse inutilisable.",
+    "forge_http": "Forge a répondu par un code d'erreur.",
+    "forge_malformed": "Forge a renvoyé un JSON illisible.",
+    "forge_schema": "Forge a renvoyé un résultat inattendu.",
     "hq_restart": "HQ a redémarré pendant ce travail. Il n'a pas été relancé.",
     "stopped": "Forge s'est arrêté.",
     "cancelled": "Annulé avant l'envoi à Forge.",
@@ -170,6 +173,7 @@ def _public(job: dict, *, unlocked: bool = False) -> dict:
         "locked": bool(private and not unlocked),
         "created": job.get("created"),
         "updated": job.get("updated"),
+        "diagnostic": _diagnostic(job.get("diagnostic")),
     }
 
 
@@ -343,8 +347,36 @@ def _seed_used(parsed: dict, requested: int) -> int | None:
     return None
 
 
-def _fail(root: Path, job_id: str, token: int, code: str) -> None:
-    _mutate(root, job_id, token, state="failed", error=code, message=_MESSAGES.get(code, _MESSAGES["forge_error"]), progress_stale=False)
+def _diagnostic(value) -> dict | None:
+    """Safe failure details only. Upstream bodies and prompts never qualify."""
+    if not isinstance(value, dict):
+        return None
+    status = value.get("http_status")
+    elapsed = value.get("elapsed_ms")
+    classification = value.get("classification")
+    if not isinstance(classification, str) or not classification.isascii() or len(classification) > 40:
+        classification = ""
+    return {
+        "classification": classification,
+        "http_status": status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None,
+        "elapsed_ms": elapsed if isinstance(elapsed, int) and not isinstance(elapsed, bool) and 0 <= elapsed <= 3_600_000 else None,
+    }
+
+
+def _fail(root: Path, job_id: str, token: int, code: str, *, http_status: int | None = None, elapsed_ms: int | None = None) -> None:
+    diagnostic = _diagnostic({
+        "classification": code,
+        "http_status": http_status,
+        "elapsed_ms": elapsed_ms,
+    })
+    _mutate(
+        root, job_id, token,
+        state="failed",
+        error=code,
+        message=_MESSAGES.get(code, _MESSAGES["forge_error"]),
+        progress_stale=False,
+        diagnostic=diagnostic,
+    )
 
 
 def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, session_token: str | None = None) -> None:
@@ -399,10 +431,22 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
     except forge._Probe as exc:
         stop.set()
         code = "stopped" if exc.code == "forge_offline" else exc.code
+        if code not in _MESSAGES:
+            code = "forge_error"
         if exc.code == "forge_timeout":
-            _mutate(root, job_id, token, state="unknown", error="forge_timeout", message=_MESSAGES["forge_timeout"])
+            _mutate(
+                root, job_id, token,
+                state="unknown",
+                error="forge_timeout",
+                message=_MESSAGES["forge_timeout"],
+                diagnostic=_diagnostic({
+                    "classification": "forge_timeout",
+                    "http_status": exc.http_status,
+                    "elapsed_ms": exc.elapsed_ms,
+                }),
+            )
         else:
-            _fail(root, job_id, token, code if code in _MESSAGES else "forge_error")
+            _fail(root, job_id, token, code, http_status=exc.http_status, elapsed_ms=exc.elapsed_ms)
         return
     except Exception:
         stop.set()

@@ -262,6 +262,97 @@ class Jobs(unittest.TestCase):
         release.set()
         self.assertEqual(self._wait(payload["job"]["job_id"])["state"], "completed")
 
+    def test_http_failure_keeps_only_a_safe_diagnostic(self):
+        secret = "PRIVATE-PROMPT-NOT-IN-DIAGNOSTIC"
+
+        def post(_body):
+            return 422, json.dumps({"detail": "raw-upstream-body", "prompt": secret}).encode("utf-8")
+
+        transport = Transport(post=post)
+        _code, payload = J.create_job(self.root, _body(prompt=secret), "idem-http-safe-01", transport=transport)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["error"], "forge_http")
+        self.assertEqual(job["diagnostic"], {
+            "classification": "forge_http",
+            "http_status": 422,
+            "elapsed_ms": job["diagnostic"]["elapsed_ms"],
+        })
+        self.assertIsInstance(job["diagnostic"]["elapsed_ms"], int)
+        blob = json.dumps(job["diagnostic"])
+        self.assertNotIn(secret, blob)
+        self.assertNotIn("raw-upstream-body", blob)
+        stored = (self.root / ".hq-forge" / "jobs.json").read_text(encoding="utf-8")
+        self.assertNotIn("raw-upstream-body", stored)
+
+    def test_malformed_and_schema_stay_distinct(self):
+        transport = Transport(post=lambda _body: (200, b"not-json"))
+        _code, payload = J.create_job(self.root, _body(), "idem-malformed-01", transport=transport)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["error"], "forge_malformed")
+        self.assertEqual(job["diagnostic"]["http_status"], 200)
+        self.assertNotIn("not-json", json.dumps(job["diagnostic"]))
+
+        transport = Transport(post=lambda _body: (200, json.dumps({"images": 1}).encode("utf-8")))
+        _code, payload = J.create_job(self.root, _body(), "idem-schema-0001", transport=transport)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["error"], "forge_schema")
+        self.assertNotIn("images", json.dumps(job["diagnostic"]))
+
+    def test_one_idempotency_key_makes_one_upstream_post(self):
+        gate = threading.Event()
+        transport = Transport()
+        original = transport.__call__
+
+        def delayed(method, url, timeout, body=None):
+            if method == "GET" and url.endswith("/sdapi/v1/sd-models"):
+                gate.wait(2)
+            return original(method, url, timeout, body)
+
+        transport.__call__ = delayed
+        results = []
+        errors = []
+
+        def go() -> None:
+            try:
+                results.append(J.create_job(self.root, _body(), "idem-shared-0001", transport=transport))
+            except Exception as exc:  # noqa: BLE001 - the test records it
+                errors.append(exc)
+
+        threads = [threading.Thread(target=go) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        time.sleep(0.05)
+        gate.set()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(item[0] for item in results), [200, 202])
+        ids = {item[1]["job"]["job_id"] for item in results}
+        self.assertEqual(len(ids), 1)
+        self.assertEqual(self._wait(ids.pop())["state"], "completed")
+        posts = [url for url in transport.calls if url.endswith("/sdapi/v1/txt2img")]
+        self.assertEqual(len(posts), 1)
+
+    def test_a_second_key_cannot_start_while_one_job_is_active(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def post(_body):
+            started.set()
+            release.wait(2)
+            return 200, json.dumps({"images": [_png_b64()], "info": "{\"seed\": 1}"}).encode("utf-8")
+
+        transport = Transport(post=post)
+        _code, payload = J.create_job(self.root, _body(), "idem-active-0001", transport=transport)
+        self.assertTrue(started.wait(2))
+        code, rejected = J.create_job(self.root, _body(), "idem-active-0002", transport=transport)
+        self.assertEqual((code, rejected["code"]), (409, "active"))
+        self.assertEqual(rejected["active_job_id"], payload["job"]["job_id"])
+        posts = [url for url in transport.calls if url.endswith("/sdapi/v1/txt2img")]
+        self.assertEqual(len(posts), 1)
+        release.set()
+        self.assertEqual(self._wait(payload["job"]["job_id"])["state"], "completed")
+
 
 if __name__ == "__main__":
     unittest.main()

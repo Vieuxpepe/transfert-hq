@@ -46,6 +46,9 @@ _MESSAGES = {
     "forge_timeout": "Forge n’a pas répondu à temps.",
     "forge_auth": "Forge a refusé la lecture.",
     "forge_error": "Forge a renvoyé une réponse inutilisable.",
+    "forge_http": "Forge a répondu par un code d'erreur.",
+    "forge_malformed": "Forge a renvoyé un JSON illisible.",
+    "forge_schema": "Forge a renvoyé un résultat inattendu.",
     "busy": "Forge est déjà en train de générer.",
     "ready": "Forge est en ligne.",
 }
@@ -60,8 +63,10 @@ _LOOPBACK_ORIGIN = re.compile(r"^http://127\.0\.0\.1:([0-9]{1,5})$")
 
 
 class _Probe(Exception):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, http_status: int | None = None, elapsed_ms: int | None = None) -> None:
         self.code = code
+        self.http_status = http_status if isinstance(http_status, int) and 100 <= http_status <= 599 else None
+        self.elapsed_ms = elapsed_ms if isinstance(elapsed_ms, int) and 0 <= elapsed_ms <= 3_600_000 else None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -177,7 +182,10 @@ def _default_transport(method: str, url: str, timeout: float, body: bytes | None
     if max_bytes is not None:
         cap = min(cap, int(max_bytes))
     timeout = min(float(timeout), JOB_TIMEOUT_SEC if method == "POST" else PROBE_TIMEOUT_SEC)
-    request = urllib.request.Request(url, data=body, method=method)
+    headers = {"Accept": "application/json"}
+    if method == "POST":
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
         with _opener().open(request, timeout=timeout) as response:
             final = response.geturl()
@@ -197,9 +205,12 @@ def _default_transport(method: str, url: str, timeout: float, body: bytes | None
             raise TimeoutError from None
         if isinstance(reason, ConnectionRefusedError):
             raise ConnectionRefusedError from None
-        if isinstance(reason, OSError) and getattr(reason, "winerror", None) == 10061:
-            raise ConnectionRefusedError from None
-        if isinstance(reason, OSError) and getattr(reason, "winerror", None) == 10060:
+        if isinstance(reason, (ConnectionResetError, ConnectionAbortedError)):
+            raise ConnectionResetError from None
+        winerror = getattr(reason, "winerror", None)
+        if winerror in (10061, 10054, 10053):
+            raise ConnectionResetError from None
+        if winerror == 10060:
             raise TimeoutError from None
         raise OSError("forge") from None
 
@@ -241,6 +252,8 @@ def _call(transport, path: str, query: str = ""):
     except TimeoutError:
         raise _Probe("forge_timeout") from None
     except ConnectionRefusedError:
+        raise _Probe("forge_offline") from None
+    except ConnectionResetError:
         raise _Probe("forge_offline") from None
     except OSError:
         raise _Probe("forge_error") from None
@@ -422,6 +435,10 @@ def read_progress(*, transport=None) -> dict:
     return value
 
 
+def _elapsed_ms(started: float) -> int:
+    return max(0, min(3_600_000, int((time.monotonic() - started) * 1000)))
+
+
 def post_json(path: str, payload: dict, *, timeout: float, transport=None) -> dict:
     """POST one allowlisted JSON route. The only route is txt2img."""
     if path != SUBMIT_PATH or not isinstance(payload, dict):
@@ -431,27 +448,36 @@ def post_json(path: str, payload: dict, *, timeout: float, transport=None) -> di
         raise _Probe("forge_error")
     transport = _resolve(transport)
     url = _upstream + path
+    started = time.monotonic()
     try:
         try:
             status, raw = transport("POST", url, float(timeout), body)
         except TypeError:
-            raise _Probe("forge_error") from None
+            raise _Probe("forge_error", elapsed_ms=_elapsed_ms(started)) from None
     except TimeoutError:
-        raise _Probe("forge_timeout") from None
+        raise _Probe("forge_timeout", elapsed_ms=_elapsed_ms(started)) from None
     except ConnectionRefusedError:
-        raise _Probe("forge_offline") from None
+        raise _Probe("forge_offline", elapsed_ms=_elapsed_ms(started)) from None
+    except ConnectionResetError:
+        raise _Probe("forge_offline", elapsed_ms=_elapsed_ms(started)) from None
     except OSError:
-        raise _Probe("forge_error") from None
+        raise _Probe("forge_error", elapsed_ms=_elapsed_ms(started)) from None
+    elapsed = _elapsed_ms(started)
     if not isinstance(status, int) or not isinstance(raw, (bytes, bytearray)):
-        raise _Probe("forge_error")
+        raise _Probe("forge_error", elapsed_ms=elapsed)
     if len(raw) > MAX_SUBMIT_BYTES:
-        raise _Probe("forge_error")
+        raise _Probe("forge_error", http_status=status if isinstance(status, int) else None, elapsed_ms=elapsed)
     if status != 200:
-        raise _Probe("forge_error")
+        raise _Probe("forge_http", http_status=status, elapsed_ms=elapsed)
     try:
         parsed = json.loads(bytes(raw).decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
-        raise _Probe("forge_error") from None
+        raise _Probe("forge_malformed", http_status=status, elapsed_ms=elapsed) from None
     if not isinstance(parsed, dict):
-        raise _Probe("forge_error")
+        raise _Probe("forge_schema", http_status=status, elapsed_ms=elapsed)
+    images = parsed.get("images")
+    if "images" in parsed and (
+        not isinstance(images, list) or any(not isinstance(item, str) for item in images)
+    ):
+        raise _Probe("forge_schema", http_status=status, elapsed_ms=elapsed)
     return parsed
