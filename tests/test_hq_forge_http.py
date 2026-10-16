@@ -195,6 +195,26 @@ class ForgeHttp(unittest.TestCase):
         self.admin.json("/api/forge/vault/lock", "POST", data=b"{}")
         again, _again = self.admin.json("/api/forge/vault/gallery")
         self.assertEqual(again, 401)
+        self.admin.json("/api/forge/vault/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
+        changed, changed_body = self.admin.json(
+            "/api/forge/vault/passphrase", "POST",
+            data=json.dumps({
+                "current": "correct horse battery",
+                "passphrase": "replacement horse",
+                "confirm": "replacement horse",
+            }).encode(),
+        )
+        self.assertEqual(changed, 200)
+        self.assertTrue(changed_body["recovery_key_unchanged"])
+        self.assertNotIn("recovery_key", changed_body)
+        token = next(cookie.value for cookie in self.admin.jar if cookie.name == "transfert_session")
+        saved = B.CONFIG.get("auth_generation")
+        try:
+            B.CONFIG["auth_generation"] = int(saved or 0) + 1
+            self.assertIsNone(B.session_info(token))
+            self.assertEqual(self.admin.req("/api/forge/vault/gallery")[0], 401)
+        finally:
+            B.CONFIG["auth_generation"] = saved
 
     def _vault_setup(self):
         status, headers, body = self.admin.req(

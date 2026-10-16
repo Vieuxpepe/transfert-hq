@@ -13,7 +13,7 @@ import io
 import json
 import os
 import re
-import shutil
+import stat
 import struct
 import subprocess
 import threading
@@ -42,10 +42,23 @@ KDF_LENGTH = 32
 PAGE_MAX = 48
 IMPORT_MAX = 8 * 1024 * 1024
 BACKUP_MAX = 64 * 1024 * 1024
+MAX_ZIP_ENTRIES = QUOTA_IMAGES + 2
+MAX_ZIP_MEMBER = 32 * 1024 * 1024
+MAX_ZIP_UNCOMPRESSED = BACKUP_MAX * 2
+MAX_ZIP_RATIO = 64
+MAX_FAILURE_SLOTS = 32
+_REPARSE = 0x400
 
 _LOCK = threading.Lock()
+_FAIL_LOCK = threading.Lock()
 _sessions: dict[str, dict] = {}
 _failures: dict[str, tuple[int, float]] = {}
+_global_fails = 0
+_global_until = 0.0
+_inflight = 0
+_session_alive = None
+_write_fault = None
+_restore_fault = None
 _test_dir: Path | None = None
 _disk = True
 _ttl = UNLOCK_TTL_SEC
@@ -67,11 +80,18 @@ class VaultError(Exception):
 
 def reset_for_tests() -> None:
     global _test_dir, _ttl, _quota_bytes, _quota_images, _apply_acl, _private_generation, _disk
+    global _global_fails, _global_until, _inflight, _write_fault, _restore_fault
     _disk = False
+    _global_fails = 0
+    _global_until = 0.0
+    _inflight = 0
+    _write_fault = None
+    _restore_fault = None
     with _LOCK:
         for entry in _sessions.values():
             _wipe(entry.get("key"))
         _sessions.clear()
+    with _FAIL_LOCK:
         _failures.clear()
     _test_dir = None
     _ttl = UNLOCK_TTL_SEC
@@ -101,6 +121,38 @@ def set_quota_for_tests(byte_cap: int | None = None, image_cap: int | None = Non
 def set_acl_for_tests(enabled: bool) -> None:
     global _apply_acl
     _apply_acl = bool(enabled)
+
+
+def set_write_fault_for_tests(kind: str | None) -> None:
+    """'fsync' or 'replace'. The next encrypted write raises before that step."""
+    global _write_fault
+    _write_fault = kind
+
+
+def set_restore_fault_for_tests(kind: str | None) -> None:
+    """'before_retire', 'after_retire', or 'after_promote'."""
+    global _restore_fault
+    _restore_fault = kind
+
+
+def bind_session_checker(fn) -> None:
+    """HQ installs session_valid. Unit tests leave this unset."""
+    global _session_alive
+    _session_alive = fn
+
+
+def failure_slots_for_tests() -> int:
+    with _FAIL_LOCK:
+        return len(_failures)
+
+
+def retain_only(live: set[str]) -> None:
+    """Drop unlock keys whose HQ session is gone."""
+    with _LOCK:
+        stale = [token for token in _sessions if token not in live]
+        removed = [_sessions.pop(token) for token in stale]
+    for entry in removed:
+        _wipe(entry.get("key"))
 
 
 def set_private_generation_for_tests(enabled: bool) -> None:
@@ -240,13 +292,32 @@ def _outside_hq(path: Path, hq_root: Path) -> None:
     raise VaultError("bad_root")
 
 
-def _reparse(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    if os.name != "nt" or not path.exists():
+def _is_reparse(path: Path) -> bool:
+    try:
+        info = os.lstat(path)
+    except OSError:
         return False
-    attrs = ctypes_attributes(str(path))
-    return attrs is not None and bool(attrs & 0x400)
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attrs = getattr(info, "st_file_attributes", 0) or 0
+    if attrs & _REPARSE:
+        return True
+    if os.name == "nt":
+        extra = ctypes_attributes(str(path))
+        if extra is not None and extra & _REPARSE:
+            return True
+    return False
+
+
+def _refuse_reparse_chain(path: Path) -> None:
+    current = path
+    for _ in range(80):
+        if _is_reparse(current):
+            raise VaultError("bad_root")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
 
 
 def ctypes_attributes(path: str):
@@ -259,12 +330,19 @@ def ctypes_attributes(path: str):
 
 def _root(hq_root: Path, *, create: bool = False) -> Path:
     path = _default_dir()
+    anchor = path if path.exists() else path.parent
+    _refuse_reparse_chain(anchor)
     _outside_hq(path, hq_root)
-    if _reparse(path):
+    if path.exists() and _is_reparse(path):
         raise VaultError("bad_root")
     if create:
-        path.mkdir(parents=True, exist_ok=True)
-        if _reparse(path):
+        parent = path.parent
+        if not parent.exists():
+            parent.mkdir(parents=True)
+        _refuse_reparse_chain(parent)
+        if not path.exists():
+            path.mkdir()
+        if _is_reparse(path):
             raise VaultError("bad_root")
     return path
 
@@ -275,7 +353,7 @@ def _header_path(root: Path) -> Path:
 
 def _read_header(root: Path) -> dict | None:
     path = _header_path(root)
-    if not path.is_file() or path.is_symlink() or _reparse(path):
+    if not path.is_file() or _is_reparse(path):
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -291,19 +369,56 @@ def _write_header(root: Path, data: dict) -> None:
 
 
 def _atomic(path: Path, payload: bytes) -> None:
+    if _is_reparse(path.parent) or (path.exists() and _is_reparse(path)):
+        raise VaultError("bad_root")
     temporary = path.with_suffix(path.suffix + ".partial")
+    if temporary.exists() and _is_reparse(temporary):
+        raise VaultError("bad_root")
     try:
         with temporary.open("wb") as handle:
             handle.write(payload)
             handle.flush()
+            if _write_fault == "fsync":
+                raise OSError("injected")
             os.fsync(handle.fileno())
+        if _write_fault == "replace":
+            raise OSError("injected")
         os.replace(temporary, path)
     except OSError as exc:
-        temporary.unlink(missing_ok=True)
+        if temporary.exists() and not _is_reparse(temporary):
+            temporary.unlink(missing_ok=True)
         winerror = getattr(exc, "winerror", None)
-        if getattr(exc, "errno", None) in (28, 112) or winerror == 112:
+        if getattr(exc, "errno", None) in (28, 112) or winerror == 112 or str(exc) == "injected":
             raise VaultError("disk") from None
         raise VaultError("disk") from None
+
+
+def _delete_partials(folder: Path) -> None:
+    if _is_reparse(folder):
+        raise VaultError("bad_root")
+    for child in list(folder.iterdir()):
+        if _is_reparse(child) or not child.is_file():
+            continue
+        if child.name.endswith(".partial"):
+            child.unlink()
+
+
+def _remove_tree_nofollow(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if _is_reparse(path):
+        raise VaultError("bad_root")
+    if not path.is_dir():
+        path.unlink()
+        return
+    for child in list(path.iterdir()):
+        if _is_reparse(child):
+            raise VaultError("bad_root")
+        if child.is_dir():
+            _remove_tree_nofollow(child)
+        else:
+            child.unlink()
+    path.rmdir()
 
 
 def cleanup_partials(hq_root: Path) -> None:
@@ -311,12 +426,21 @@ def cleanup_partials(hq_root: Path) -> None:
         root = _root(hq_root)
     except VaultError:
         return
-    if not root.is_dir():
+    if not root.is_dir() or _is_reparse(root):
         return
-    for path in root.rglob("*.partial"):
-        if path.is_symlink() or _reparse(path):
-            continue
-        path.unlink(missing_ok=True)
+    try:
+        _delete_partials(root)
+        objects = root / "objects"
+        if objects.is_dir() and not _is_reparse(objects):
+            _delete_partials(objects)
+        staging = root.with_name(root.name + ".restore")
+        if staging.exists() or staging.is_symlink():
+            _remove_tree_nofollow(staging)
+        previous = root.with_name(root.name + ".previous")
+        if _header_path(root).is_file() and (previous.exists() or previous.is_symlink()):
+            _remove_tree_nofollow(previous)
+    except VaultError:
+        return
 
 
 def _restrict(path: Path) -> str:
@@ -343,21 +467,68 @@ def _token(token: str | None) -> str:
     return token
 
 
-def _throttle(token: str) -> None:
-    count, until = _failures.get(token, (0, 0.0))
-    if count >= FAILS_BEFORE_THROTTLE and time.monotonic() < until:
-        raise VaultError("throttled")
+def _sweep_failures_locked(now: float) -> None:
+    stale = [token for token, (_count, until) in _failures.items() if until and until <= now]
+    for token in stale:
+        _failures.pop(token, None)
+    overflow = len(_failures) - MAX_FAILURE_SLOTS
+    if overflow > 0:
+        ordered = sorted(_failures, key=lambda token: _failures[token][1])
+        for token in ordered[:overflow]:
+            _failures.pop(token, None)
 
 
-def _fail(token: str) -> None:
+def _record_failure_locked(token: str) -> None:
+    global _global_fails, _global_until
     count, _until = _failures.get(token, (0, 0.0))
     count += 1
     until = time.monotonic() + THROTTLE_SEC if count >= FAILS_BEFORE_THROTTLE else 0.0
     _failures[token] = (count, until)
+    _global_fails += 1
+    if _global_fails >= FAILS_BEFORE_THROTTLE:
+        _global_until = time.monotonic() + THROTTLE_SEC
+    _sweep_failures_locked(time.monotonic())
 
 
-def _succeed(token: str) -> None:
-    _failures.pop(token, None)
+def _expire_global_locked(now: float) -> None:
+    global _global_fails, _global_until
+    if _global_until and now >= _global_until:
+        _global_fails = 0
+        _global_until = 0.0
+
+
+def _begin_attempt(token: str) -> None:
+    global _inflight
+    with _FAIL_LOCK:
+        now = time.monotonic()
+        _expire_global_locked(now)
+        _sweep_failures_locked(now)
+        if now < _global_until:
+            raise VaultError("throttled")
+        count, until = _failures.get(token, (0, 0.0))
+        if count >= FAILS_BEFORE_THROTTLE and now < until:
+            raise VaultError("throttled")
+        if _global_fails + _inflight >= FAILS_BEFORE_THROTTLE:
+            raise VaultError("throttled")
+        _inflight += 1
+
+
+def _finish_attempt(token: str, ok: bool, *, count_failure: bool = True) -> None:
+    global _inflight, _global_fails, _global_until
+    with _FAIL_LOCK:
+        _inflight = max(0, _inflight - 1)
+        if ok:
+            _failures.pop(token, None)
+            _global_fails = 0
+            _global_until = 0.0
+            return
+        if count_failure:
+            _record_failure_locked(token)
+
+
+def _fail(token: str) -> None:
+    with _FAIL_LOCK:
+        _record_failure_locked(token)
 
 
 def _install(token: str, master: bytes, epoch: int) -> None:
@@ -373,11 +544,11 @@ def _install(token: str, master: bytes, epoch: int) -> None:
 
 
 def drop_session(token: str | None) -> None:
+    """Forget the unlock key. Failure counts stay, so logout does not reset guessing."""
     if not isinstance(token, str):
         return
     with _LOCK:
         previous = _sessions.pop(token, None)
-        _failures.pop(token, None)
     if previous:
         _wipe(previous.get("key"))
 
@@ -390,8 +561,17 @@ def lock_all() -> None:
         _wipe(entry.get("key"))
 
 
-def _master(hq_root: Path, token: str | None) -> tuple[Path, bytearray, dict]:
-    key_token = _token(token)
+def _require_live(token: str | None) -> str:
+    key = _token(token)
+    checker = _session_alive
+    if checker is not None and not checker(key):
+        drop_session(key)
+        raise VaultError("locked")
+    return key
+
+
+def _master(hq_root: Path, token: str | None) -> tuple[Path, bytes, dict]:
+    key_token = _require_live(token)
     root = _root(hq_root)
     header = _read_header(root)
     if header is None:
@@ -462,42 +642,52 @@ def setup(hq_root: Path, passphrase: str, confirm: str) -> dict:
     return {"configured": True, "recovery_key": shown, "acl": header["acl"]}
 
 
-def unlock(hq_root: Path, token: str | None, passphrase: str) -> dict:
-    key_token = _token(token)
-    _throttle(key_token)
-    root = _root(hq_root)
-    header = _read_header(root)
-    if header is None:
-        raise VaultError("missing")
-    secret = _passphrase_bytes(passphrase) if isinstance(passphrase, str) and len(passphrase) <= 128 else b""
+def _open_with_budget(token: str | None, opener):
+    key_token = _require_live(token)
+    _begin_attempt(key_token)
+    ok = False
+    count_failure = True
     try:
+        master, epoch, extra = opener()
+        ok = True
+        return key_token, master, epoch, extra
+    except VaultError as exc:
+        count_failure = exc.code not in ("missing", "bad_root")
+        if exc.code in ("corrupt", "passphrase"):
+            raise VaultError("passphrase") from None
+        raise
+    finally:
+        _finish_attempt(key_token, ok, count_failure=count_failure)
+
+
+def unlock(hq_root: Path, token: str | None, passphrase: str) -> dict:
+    def opener():
+        header = _read_header(_root(hq_root))
+        if header is None:
+            raise VaultError("missing")
+        secret = _passphrase_bytes(passphrase) if isinstance(passphrase, str) and len(passphrase) <= 128 else b""
         master = _unwrap(header, secret, "passphrase")
-    except VaultError:
-        _fail(key_token)
-        raise VaultError("passphrase") from None
-    _succeed(key_token)
-    _install(key_token, master, int(header.get("epoch") or 0))
+        return master, int(header.get("epoch") or 0), None
+
+    _key, master, epoch, _extra = _open_with_budget(token, opener)
+    _install(_key, master, epoch)
     _wipe(bytearray(master))
     return {"unlocked": True}
 
 
 def unlock_with_recovery(hq_root: Path, token: str | None, recovery_key: str) -> dict:
-    key_token = _token(token)
-    _throttle(key_token)
-    raw = _recovery_bytes(recovery_key)
-    header = _read_header(_root(hq_root))
-    if header is None:
-        raise VaultError("missing")
-    if raw is None:
-        _fail(key_token)
-        raise VaultError("passphrase")
-    try:
+    def opener():
+        header = _read_header(_root(hq_root))
+        if header is None:
+            raise VaultError("missing")
+        raw = _recovery_bytes(recovery_key)
+        if raw is None:
+            raise VaultError("passphrase")
         master = _unwrap(header, raw, "recovery")
-    except VaultError:
-        _fail(key_token)
-        raise VaultError("passphrase") from None
-    _succeed(key_token)
-    _install(key_token, master, int(header.get("epoch") or 0))
+        return master, int(header.get("epoch") or 0), None
+
+    _key, master, epoch, _extra = _open_with_budget(token, opener)
+    _install(_key, master, epoch)
     _wipe(bytearray(master))
     return {"unlocked": True, "recovery": True}
 
@@ -538,7 +728,37 @@ def change_passphrase(hq_root: Path, token: str | None, current: str, new_value:
     header["epoch"] = int(header.get("epoch") or 1) + 1
     _write_header(root, header)
     lock_all()
-    return {"changed": True, "unlocked": False}
+    return {"changed": True, "unlocked": False, "recovery_key_unchanged": True}
+
+
+def rotate_recovery(hq_root: Path, token: str | None, passphrase: str) -> dict:
+    """Replace the recovery wrap. The previous recovery key stops working.
+
+    Changing the passphrase does not call this and does not revoke the recovery key.
+    """
+    root, master, header = _master(hq_root, token)
+    try:
+        check = _unwrap(header, _passphrase_bytes(passphrase or ""), "passphrase")
+    except VaultError:
+        _fail(_token(token))
+        raise VaultError("passphrase") from None
+    if not hmac.compare_digest(check, bytes(master)):
+        _wipe(bytearray(check))
+        _fail(_token(token))
+        raise VaultError("passphrase")
+    _wipe(bytearray(check))
+    recovery = os.urandom(32)
+    params = _kdf_params(os.urandom(16))
+    header["recovery"] = {
+        "kdf": params,
+        "wrap": _b64(_seal(_derive(params, recovery), bytes(master), _AAD_RECOVERY)),
+    }
+    header["epoch"] = int(header.get("epoch") or 1) + 1
+    _write_header(root, header)
+    shown = _recovery_text(recovery)
+    _wipe(bytearray(recovery))
+    lock_all()
+    return {"rotated": True, "unlocked": False, "recovery_key": shown, "previous_recovery_key": "revoked"}
 
 
 def status(hq_root: Path, token: str | None) -> dict:
@@ -567,7 +787,7 @@ def status(hq_root: Path, token: str | None) -> dict:
 
 def _objects(root: Path) -> Path:
     path = root / "objects"
-    if path.is_symlink() or _reparse(path):
+    if _is_reparse(path):
         raise VaultError("bad_root")
     path.mkdir(exist_ok=True)
     return path
@@ -580,7 +800,7 @@ def _object_path(root: Path, image_id: str) -> Path:
     path = folder / (image_id + ".bin")
     if path.name != image_id + ".bin" or ":" in path.name:
         raise VaultError("bad_id")
-    if path.exists() and (path.is_symlink() or _reparse(path)):
+    if path.exists() and _is_reparse(path):
         raise VaultError("bad_id")
     resolved = path.resolve()
     if resolved.parent != folder.resolve():
@@ -592,7 +812,7 @@ def _read_index(root: Path, master: bytes) -> list:
     path = root / "index.bin"
     if not path.is_file():
         return []
-    if path.is_symlink() or _reparse(path):
+    if _is_reparse(path):
         raise VaultError("corrupt")
     try:
         raw = _open(master, path.read_bytes(), _AAD_INDEX)
@@ -802,57 +1022,146 @@ def backup_bytes(hq_root: Path, token: str | None) -> bytes:
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in ("vault.json", "index.bin"):
             path = root / name
-            if path.is_file() and not path.is_symlink():
+            if path.is_file() and not _is_reparse(path):
                 archive.write(path, name)
         folder = root / "objects"
-        if folder.is_dir() and not folder.is_symlink():
+        if folder.is_dir() and not _is_reparse(folder):
             for child in sorted(folder.iterdir()):
-                if child.is_file() and not child.is_symlink() and ID_RE.fullmatch(child.stem):
+                if child.is_file() and not _is_reparse(child) and ID_RE.fullmatch(child.stem):
                     archive.write(child, "objects/" + child.name)
     return buffer.getvalue()
 
 
+def _zip_member_ok(name: str) -> bool:
+    if not name or "\x00" in name or ":" in name:
+        return False
+    clean = name.replace("\\", "/")
+    if clean.startswith("/") or clean.endswith("/") or "//" in clean:
+        return False
+    parts = clean.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    if clean in ("vault.json", "index.bin"):
+        return True
+    return (
+        len(parts) == 2
+        and parts[0] == "objects"
+        and parts[1].endswith(".bin")
+        and ID_RE.fullmatch(parts[1][:-4]) is not None
+    )
+
+
+def _extract_backup(payload: bytes, staging: Path) -> None:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(payload))
+    except (zipfile.BadZipFile, ValueError, OSError):
+        raise VaultError("corrupt") from None
+    with archive:
+        infos = archive.infolist()
+        if not infos or len(infos) > MAX_ZIP_ENTRIES:
+            raise VaultError("validation")
+        seen: set[str] = set()
+        total = 0
+        for info in infos:
+            if info.is_dir() or not _zip_member_ok(info.filename):
+                raise VaultError("validation")
+            clean = info.filename.replace("\\", "/")
+            if clean in seen:
+                raise VaultError("validation")
+            seen.add(clean)
+            size = int(info.file_size)
+            if size < 0 or size > MAX_ZIP_MEMBER:
+                raise VaultError("validation")
+            total += size
+            if total > MAX_ZIP_UNCOMPRESSED:
+                raise VaultError("validation")
+            compressed = max(int(info.compress_size), 1)
+            if size > 1024 * 1024 and size / compressed > MAX_ZIP_RATIO:
+                raise VaultError("validation")
+        if "vault.json" not in seen:
+            raise VaultError("corrupt")
+        (staging / "objects").mkdir()
+        for info in infos:
+            clean = info.filename.replace("\\", "/")
+            target = staging / clean
+            if _is_reparse(target.parent):
+                raise VaultError("bad_root")
+            remaining = int(info.file_size)
+            try:
+                source = archive.open(info, "r")
+            except (zipfile.BadZipFile, RuntimeError, ValueError, OSError):
+                raise VaultError("corrupt") from None
+            with source, target.open("wb") as handle:
+                while remaining:
+                    chunk = source.read(min(65536, remaining))
+                    if not chunk or len(chunk) > remaining:
+                        raise VaultError("validation")
+                    remaining -= len(chunk)
+                    handle.write(chunk)
+                if remaining:
+                    raise VaultError("corrupt")
+                handle.flush()
+                os.fsync(handle.fileno())
+
+
+def _rollback_restore(root: Path, staging: Path, previous: Path) -> None:
+    if root.exists() or root.is_symlink():
+        if staging.exists() or staging.is_symlink():
+            _remove_tree_nofollow(staging)
+        return
+    if not previous.is_dir() or _is_reparse(previous):
+        return
+    if staging.exists() or staging.is_symlink():
+        _remove_tree_nofollow(staging)
+    os.replace(previous, root)
+
+
 def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase: str) -> dict:
-    _token(token)
+    _require_live(token)
     if not isinstance(payload, (bytes, bytearray)) or not payload or len(payload) > BACKUP_MAX:
         raise VaultError("validation")
     if not passphrase_acceptable(passphrase):
         raise VaultError("passphrase")
     root = _root(hq_root, create=True)
     staging = root.with_name(root.name + ".restore")
-    if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)
+    previous = root.with_name(root.name + ".previous")
+    for sibling in (staging, previous):
+        if sibling.exists() or sibling.is_symlink():
+            if _is_reparse(sibling):
+                raise VaultError("bad_root")
+    if staging.exists() or staging.is_symlink():
+        _remove_tree_nofollow(staging)
     staging.mkdir()
+    promoted = False
     try:
-        with zipfile.ZipFile(io.BytesIO(bytes(payload))) as archive:
-            names = archive.namelist()
-            if any(name.startswith("/") or ".." in name.replace("\\", "/") or name.endswith(":") for name in names):
-                raise VaultError("validation")
-            allowed = {"vault.json", "index.bin"}
-            for name in names:
-                clean = name.replace("\\", "/")
-                if clean in allowed or (clean.startswith("objects/pvt-") and clean.endswith(".bin") and ID_RE.fullmatch(Path(clean).stem)):
-                    continue
-                raise VaultError("validation")
-            archive.extractall(staging)
+        _extract_backup(bytes(payload), staging)
         header = _read_header(staging)
         if header is None:
             raise VaultError("corrupt")
         master = _unwrap(header, _passphrase_bytes(passphrase), "passphrase")
+        _read_index(staging, master)
         _wipe(bytearray(master))
-        previous = root.with_name(root.name + ".previous")
-        if previous.exists():
-            shutil.rmtree(previous, ignore_errors=True)
+        if _restore_fault == "before_retire":
+            raise OSError("injected")
         if _header_path(root).is_file():
+            if previous.exists() or previous.is_symlink():
+                _remove_tree_nofollow(previous)
             os.replace(root, previous)
+        if _restore_fault == "after_retire":
+            raise OSError("injected")
         os.replace(staging, root)
-        if previous.exists():
-            shutil.rmtree(previous, ignore_errors=True)
+        promoted = True
+        if _restore_fault == "after_promote":
+            raise OSError("injected")
+        if previous.exists() or previous.is_symlink():
+            _remove_tree_nofollow(previous)
     except VaultError:
-        shutil.rmtree(staging, ignore_errors=True)
+        if not promoted:
+            _rollback_restore(root, staging, previous)
         raise
     except (OSError, zipfile.BadZipFile, ValueError):
-        shutil.rmtree(staging, ignore_errors=True)
+        if not promoted:
+            _rollback_restore(root, staging, previous)
         raise VaultError("corrupt") from None
     lock_all()
     return {"restored": True, "unlocked": False}

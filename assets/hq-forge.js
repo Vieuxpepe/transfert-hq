@@ -445,6 +445,7 @@
       $("forge-vault-new").value = "";
       $("forge-vault-confirm").value = "";
       $("forge-vault-recovery-key").value = payload.recovery_key || "";
+      $("forge-vault-recovery-extra").hidden = true;
       $("forge-vault-recovery").hidden = false;
       $("forge-vault-setup").hidden = true;
     } catch (error) {
@@ -454,6 +455,8 @@
   });
   $("forge-vault-recovery-ok").addEventListener("click", () => {
     $("forge-vault-recovery-key").value = "";
+    $("forge-vault-recovery-extra").textContent = "";
+    $("forge-vault-recovery-extra").hidden = true;
     $("forge-vault-recovery").hidden = true;
     refreshVault().catch(() => {});
   });
@@ -525,6 +528,25 @@
       await refreshVault();
     } catch (error) {
       $("forge-vault-error").textContent = error.message || "La phrase n'a pas changé.";
+    }
+  });
+  $("forge-vault-rekey").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const payload = await api("/api/forge/vault/recovery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passphrase: $("forge-vault-rekey-pass").value })
+      });
+      $("forge-vault-rekey-pass").value = "";
+      $("forge-vault-recovery-key").value = payload.recovery_key || "";
+      $("forge-vault-recovery-extra").textContent = "L'ancienne clé de récupération ne fonctionne plus.";
+      $("forge-vault-recovery-extra").hidden = false;
+      $("forge-vault-recovery").hidden = false;
+      $("forge-vault-open-tools").hidden = true;
+    } catch (error) {
+      $("forge-vault-rekey-pass").value = "";
+      $("forge-vault-error").textContent = error.message || "La clé n'a pas été remplacée.";
     }
   });
 

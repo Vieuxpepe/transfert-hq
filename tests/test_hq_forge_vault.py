@@ -8,8 +8,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 
 from PIL import Image
@@ -50,6 +52,7 @@ class Vault(unittest.TestCase):
         self.other = _token("other")
 
     def tearDown(self) -> None:
+        V.bind_session_checker(None)
         V.reset_for_tests()
         F.reset_for_tests()
         self.tmp.cleanup()
@@ -234,6 +237,182 @@ class Vault(unittest.TestCase):
         V.lock(self.admin)
         with self.assertRaises(V.VaultError):
             V.file_bytes(self.hq, self.admin, image_id, "original")
+
+    def test_new_session_and_logout_do_not_reset_the_guess_budget(self):
+        self._setup()
+        for _ in range(5):
+            with self.assertRaises(V.VaultError) as caught:
+                V.unlock(self.hq, self.admin, "wrong horse battery")
+            self.assertEqual(caught.exception.code, "passphrase")
+        V.drop_session(self.admin)
+        with self.assertRaises(V.VaultError) as caught:
+            V.unlock(self.hq, self.other, PASS)
+        self.assertEqual(caught.exception.code, "throttled")
+
+    def test_concurrent_guesses_share_one_budget_and_the_map_stays_bounded(self):
+        self._setup()
+        codes = []
+        lock = threading.Lock()
+
+        def guess(index: int) -> None:
+            try:
+                V.unlock(self.hq, _token(f"c{index:02d}"), "wrong horse battery")
+            except V.VaultError as exc:
+                with lock:
+                    codes.append(exc.code)
+
+        threads = [threading.Thread(target=guess, args=(index,)) for index in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(codes), 8)
+        self.assertLessEqual(codes.count("passphrase"), 5)
+        self.assertGreaterEqual(codes.count("throttled"), 1)
+        for index in range(40):
+            try:
+                V.unlock(self.hq, _token(f"g{index:02d}"), "wrong horse battery")
+            except V.VaultError:
+                pass
+        self.assertLessEqual(V.failure_slots_for_tests(), 32)
+
+    def test_revoked_session_and_retain_only_drop_unlock_keys(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        V.unlock(self.hq, self.other, PASS)
+        live = {self.admin, self.other}
+        V.bind_session_checker(lambda token: token in live)
+        self.assertEqual(V.page(self.hq, self.admin)["images"], [])
+        live.remove(self.admin)
+        with self.assertRaises(V.VaultError) as caught:
+            V.page(self.hq, self.admin)
+        self.assertEqual(caught.exception.code, "locked")
+        V.retain_only(set(live))
+        self.assertEqual(V.page(self.hq, self.other)["images"], [])
+
+    def test_passphrase_change_keeps_recovery_and_rotation_revokes_it(self):
+        recovery = self._setup()
+        before = json.loads((self.store / "vault.json").read_text(encoding="utf-8"))["recovery"]["wrap"]
+        V.unlock(self.hq, self.admin, PASS)
+        changed = V.change_passphrase(self.hq, self.admin, PASS, "replacement horse", "replacement horse")
+        after = json.loads((self.store / "vault.json").read_text(encoding="utf-8"))["recovery"]["wrap"]
+        self.assertEqual(before, after)
+        self.assertTrue(changed["recovery_key_unchanged"])
+        self.assertNotIn("recovery_key", changed)
+        V.unlock(self.hq, self.admin, "replacement horse")
+        rotated = V.rotate_recovery(self.hq, self.admin, "replacement horse")
+        renewed = json.loads((self.store / "vault.json").read_text(encoding="utf-8"))["recovery"]["wrap"]
+        self.assertNotEqual(before, renewed)
+        self.assertEqual(rotated["previous_recovery_key"], "revoked")
+        with self.assertRaises(V.VaultError) as caught:
+            V.unlock_with_recovery(self.hq, self.other, recovery)
+        self.assertEqual(caught.exception.code, "passphrase")
+        V.unlock_with_recovery(self.hq, self.other, rotated["recovery_key"])
+        V.lock(self.other)
+        V.unlock(self.hq, self.admin, "replacement horse")
+
+    def test_zip_limits_leave_the_original_vault(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        stored = V.store_image(self.hq, self.admin, _png(), None)
+        many = io.BytesIO()
+        with zipfile.ZipFile(many, "w") as archive:
+            archive.writestr("vault.json", b"{}")
+            for index in range(500):
+                archive.writestr(f"objects/pvt-{index:024x}.bin", b"x")
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, many.getvalue(), PASS)
+        self.assertEqual(caught.exception.code, "validation")
+        huge = io.BytesIO()
+        with zipfile.ZipFile(huge, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("vault.json", b"\0" * (2 * 1024 * 1024))
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, huge.getvalue(), PASS)
+        self.assertEqual(caught.exception.code, "validation")
+        self.assertEqual(len(list((self.store / "objects").glob("*.bin"))), 1)
+        self.assertEqual(V.detail(self.hq, self.admin, stored["id"])["id"], stored["id"])
+
+    def test_restore_and_write_faults_keep_committed_data(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        first = V.store_image(self.hq, self.admin, _png(), None)
+        payload = V.backup_bytes(self.hq, self.admin)
+        second = V.store_image(self.hq, self.admin, _png(), None)
+        for fault in ("before_retire", "after_retire"):
+            V.set_restore_fault_for_tests(fault)
+            with self.assertRaises(V.VaultError) as caught:
+                V.restore_backup(self.hq, self.admin, payload, PASS)
+            self.assertEqual(caught.exception.code, "corrupt")
+            V.set_restore_fault_for_tests(None)
+            self.assertEqual(V.detail(self.hq, self.admin, first["id"])["id"], first["id"])
+            self.assertEqual(V.detail(self.hq, self.admin, second["id"])["id"], second["id"])
+        V.set_restore_fault_for_tests("after_promote")
+        with self.assertRaises(V.VaultError):
+            V.restore_backup(self.hq, self.admin, payload, PASS)
+        V.set_restore_fault_for_tests(None)
+        previous = self.store.with_name(self.store.name + ".previous")
+        self.assertTrue((previous / "objects" / (second["id"] + ".bin")).is_file())
+        self.assertEqual(V.detail(self.hq, self.admin, first["id"])["id"], first["id"])
+        with self.assertRaises(V.VaultError):
+            V.detail(self.hq, self.admin, second["id"])
+        V.set_write_fault_for_tests("replace")
+        with self.assertRaises(V.VaultError) as caught:
+            V.store_image(self.hq, self.admin, _png(), None)
+        self.assertEqual(caught.exception.code, "disk")
+        V.set_write_fault_for_tests("fsync")
+        with self.assertRaises(V.VaultError) as caught:
+            V.change_passphrase(self.hq, self.admin, PASS, "replacement horse", "replacement horse")
+        self.assertEqual(caught.exception.code, "disk")
+        V.set_write_fault_for_tests(None)
+        self.assertFalse(list(self.store.rglob("*.partial")))
+        V.lock(self.admin)
+        V.unlock(self.hq, self.admin, PASS)
+        self.assertEqual(V.detail(self.hq, self.admin, first["id"])["id"], first["id"])
+
+    def test_cleanup_does_not_follow_junctions_or_drop_a_crash_copy(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        stored = V.store_image(self.hq, self.admin, _png(), None)
+        outside = Path(self.tmp.name) / "outside-staging"
+        outside.mkdir()
+        (outside / "marker.txt").write_text("keep", encoding="utf-8")
+        staging = self.store.with_name(self.store.name + ".restore")
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(staging), str(outside)], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("junction not available")
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, b"PK\x03\x04" + b"x" * 32, PASS)
+        self.assertEqual(caught.exception.code, "bad_root")
+        V.cleanup_partials(self.hq)
+        self.assertEqual((outside / "marker.txt").read_text(encoding="utf-8"), "keep")
+        self.assertEqual(V.detail(self.hq, self.admin, stored["id"])["id"], stored["id"])
+        os.rmdir(staging)
+        parent = Path(self.tmp.name) / "linked-parent"
+        real = Path(self.tmp.name) / "real-target"
+        real.mkdir()
+        (real / "marker.txt").write_text("keep", encoding="utf-8")
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(parent), str(real)], capture_output=True, text=True)
+        if made.returncode != 0:
+            self.skipTest("junction not available")
+        V.set_root_for_tests(parent / "forge-vault")
+        with self.assertRaises(V.VaultError) as caught:
+            V.setup(self.hq, PASS, PASS)
+        self.assertEqual(caught.exception.code, "bad_root")
+        self.assertFalse((real / "forge-vault").exists())
+        self.assertEqual((real / "marker.txt").read_text(encoding="utf-8"), "keep")
+
+    def test_cleanup_keeps_previous_when_the_live_header_is_gone(self):
+        self._setup()
+        previous = self.store.with_name(self.store.name + ".previous")
+        previous.mkdir()
+        (previous / "keep.txt").write_text("keep", encoding="utf-8")
+        V.cleanup_partials(self.hq)
+        self.assertFalse(previous.exists())
+        previous.mkdir()
+        (previous / "keep.txt").write_text("keep", encoding="utf-8")
+        (self.store / "vault.json").unlink()
+        V.cleanup_partials(self.hq)
+        self.assertEqual((previous / "keep.txt").read_text(encoding="utf-8"), "keep")
 
 
 if __name__ == "__main__":

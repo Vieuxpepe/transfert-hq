@@ -941,32 +941,35 @@ def session_info(token: str | None) -> dict | None:
         return None
     if not token:
         return None
+    changed = False
+    now = time.time()
+    generation = auth_generation()
     with _SESSIONS_LOCK:
-        info = _SESSIONS.get(token)
-        if not info:
-            return None
-        if isinstance(info, (int, float)):
-            if info < time.time():
-                _SESSIONS.pop(token, None)
-                info = None
-            else:
-                info = {"user": "admin", "role": "admin", "exp": info, "gen": 0}
-                _SESSIONS[token] = info
-        elif float(info.get("exp") or 0) < time.time():
-            _SESSIONS.pop(token, None)
-            info = None
-        elif int(info.get("gen") or 0) != auth_generation():
-            _SESSIONS.pop(token, None)
-            info = None
-        else:
-            info = dict(info)
-    if info is None:
+        for key, raw in list(_SESSIONS.items()):
+            if isinstance(raw, (int, float)):
+                if raw < now:
+                    _SESSIONS.pop(key, None)
+                    changed = True
+                else:
+                    _SESSIONS[key] = {"user": "admin", "role": "admin", "exp": raw, "gen": 0}
+                    changed = True
+            elif float(raw.get("exp") or 0) < now or int(raw.get("gen") or 0) != generation:
+                _SESSIONS.pop(key, None)
+                changed = True
+        current = _SESSIONS.get(token)
+        info = dict(current) if isinstance(current, dict) else None
+        live = set(_SESSIONS)
+    if changed:
         _persist_sessions()
+    hq_forge_vault.retain_only(live)
     return info
 
 
 def session_valid(token: str | None) -> bool:
     return session_info(token) is not None
+
+
+hq_forge_vault.bind_session_checker(session_valid)
 
 
 def session_role(token: str | None) -> str:
@@ -5213,6 +5216,7 @@ def render_app() -> bytes:
       </form>
       <div id="forge-vault-recovery" hidden>
         <p class="forge-note">Conservez cette clé hors de HQ. Elle ne sera plus affichée.</p>
+        <p id="forge-vault-recovery-extra" class="forge-note" hidden></p>
         <textarea id="forge-vault-recovery-key" readonly rows="3"></textarea>
         <button type="button" id="forge-vault-recovery-ok">J'ai enregistré la clé</button>
       </div>
@@ -5225,10 +5229,16 @@ def render_app() -> bytes:
         <details>
           <summary>Changer la phrase</summary>
           <form id="forge-vault-rotate">
+            <p class="forge-note">Changer la phrase ne retire pas la clé de récupération actuelle.</p>
             <div class="field"><label for="forge-vault-current">Phrase actuelle</label><input id="forge-vault-current" type="password" autocomplete="current-password"/></div>
             <div class="field"><label for="forge-vault-next">Nouvelle phrase</label><input id="forge-vault-next" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
             <div class="field"><label for="forge-vault-next-confirm">Confirmation</label><input id="forge-vault-next-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
             <button type="submit">Enregistrer la phrase</button>
+          </form>
+          <form id="forge-vault-rekey">
+            <p class="forge-note">Remplacer la clé de récupération invalide l'ancienne. La phrase du coffre ne change pas.</p>
+            <div class="field"><label for="forge-vault-rekey-pass">Phrase actuelle</label><input id="forge-vault-rekey-pass" type="password" autocomplete="current-password" required/></div>
+            <button type="submit" class="secondary">Remplacer la clé de récupération</button>
           </form>
         </details>
         <section aria-labelledby="forge-vault-gallery-title">
@@ -6131,6 +6141,8 @@ class Handler(BaseHTTPRequestHandler):
                     ROOT, token, str(data.get("current") or ""), str(data.get("passphrase") or ""),
                     str(data.get("confirm") or ""), recovery_key=data.get("recovery_key") if isinstance(data.get("recovery_key"), str) else None,
                 ))
+            elif raw == "/api/forge/vault/recovery":
+                self._json(200, hq_forge_vault.rotate_recovery(ROOT, token, str(data.get("passphrase") or "")))
             elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/delete"):
                 image_id = raw[len("/api/forge/vault/images/"):-len("/delete")]
                 self._json(200, hq_forge_vault.delete(ROOT, token, image_id))
