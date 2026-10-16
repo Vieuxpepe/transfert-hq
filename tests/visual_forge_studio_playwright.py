@@ -35,10 +35,21 @@ def contrast(a: str, b: str) -> float:
     return (max(left, right) + 0.05) / (min(left, right) + 0.05)
 
 
+def _png_bytes() -> bytes:
+    import io
+    from PIL import Image
+    image = Image.new("RGB", (256, 256), (12, 40, 180))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def main() -> None:
     root = Path(tempfile.mkdtemp(prefix="hq-forge-ui-"))
+    vault = Path(tempfile.mkdtemp(prefix="hq-forge-vault-"))
     env = os.environ.copy()
     env["HQ_FORGE_MOCK"] = "ready"
+    env["HQ_FORGE_VAULT_DIR"] = str(vault)
     proc = subprocess.Popen(
         [sys.executable, str(HERE / "carnet_test_server.py"), str(root)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
@@ -78,6 +89,37 @@ def main() -> None:
             page.locator('.bottom-nav [data-nav="forge"]').click()
             page.wait_for_function("() => /en ligne/i.test(document.querySelector('#forge-status').textContent || '')")
             check("Générer" in page.locator("#forge-studio h1").inner_text(), "forge heading")
+            page.locator('input[name="forge-destination"][value="private"]').check()
+            page.locator("#forge-vault").wait_for()
+            check("copie en clair" in page.locator("#forge-private-note").inner_text(), "private generation stays disabled")
+            check(page.locator("#forge-generate-private").is_disabled(), "private generate is disabled")
+            page.locator("#forge-vault-new").fill("synthetic horse battery")
+            page.locator("#forge-vault-confirm").fill("synthetic horse battery")
+            page.locator("#forge-vault-create").click()
+            page.locator("#forge-vault-recovery-key").wait_for()
+            check(len(page.locator("#forge-vault-recovery-key").input_value()) > 20, "recovery key is shown once")
+            if SHOTS:
+                page.screenshot(path=str(SHOTS / "forge-vault-recovery.png"), full_page=True)
+            page.locator("#forge-vault-recovery-ok").click()
+            page.locator("#forge-vault-pass").wait_for()
+            check("0 image" not in page.locator("#forge-vault").inner_text(), "locked vault hides inventory")
+            page.locator("#forge-vault-pass").fill("synthetic horse battery")
+            page.locator("#forge-vault-open").click()
+            page.locator("#forge-vault-lock").wait_for()
+            image = page.request.post(
+                base + "/api/forge/vault/import",
+                data=_png_bytes(),
+                headers={"origin": base, "content-type": "application/octet-stream"},
+            )
+            check(image.status == 201, "private import is accepted while unlocked")
+            image_id = image.json()["id"]
+            opened = page.request.get(base + "/api/forge/vault/images/" + image_id + "/thumb")
+            check(opened.status == 200 and "no-store" in opened.headers.get("cache-control", ""), "private thumb is not cached")
+            page.locator("#forge-vault-lock").click()
+            page.locator("#forge-vault-pass").wait_for()
+            closed = page.request.get(base + "/api/forge/vault/images/" + image_id + "/thumb")
+            check(closed.status == 401, "private thumb is refused after lock")
+            page.locator('input[name="forge-destination"][value="normal"]').check()
             check("autre travail" in page.locator("#forge-cancel-note").inner_text(), "cancel limitation is visible")
             colors = page.eval_on_selector("#forge-status", "node => [getComputedStyle(node).color, getComputedStyle(node).backgroundColor]")
             check(contrast(colors[0], colors[1]) >= 4.5, "status contrast")
@@ -134,6 +176,7 @@ def main() -> None:
     finally:
         proc.kill()
         shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(vault, ignore_errors=True)
 
 
 if __name__ == "__main__":

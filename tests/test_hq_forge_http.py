@@ -166,6 +166,44 @@ class ForgeHttp(unittest.TestCase):
         self.assertNotIn("hidden", json.dumps(payload))
         self.assertEqual(payload["models"][0]["title"], "example")
 
+    def test_vault_is_admin_only_and_locked_until_its_own_secret(self):
+        import hq_forge_vault as vault
+        vault.set_root_for_tests(Path(self.tmp) / "vault")
+        vault.set_acl_for_tests(False)
+        self.assertEqual(self.anon.req("/api/forge/vault/status")[0], 401)
+        self.assertEqual(self.upload.req("/api/forge/vault/status")[0], 403)
+        self.assertEqual(self.admin.req("/api/forge/vault/setup", "POST", b"{}", origin=False)[0], 403)
+        status, payload = self.admin.json("/api/forge/vault/status")
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["configured"])
+        self.assertNotIn("images", payload)
+        self.assertFalse(payload["private_generation"])
+        refused, body = self.admin.json("/api/forge/vault/setup", "POST", data=json.dumps({"passphrase": "123456", "confirm": "123456"}).encode())
+        self.assertEqual(refused, 400)
+        self.assertNotIn("recovery_key", body)
+        created_status, created, headers = self._vault_setup()
+        self.assertEqual(created_status, 201)
+        self.assertIn("recovery_key", created)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        locked, _locked_body = self.admin.json("/api/forge/vault/gallery")
+        self.assertEqual(locked, 401)
+        other = Client(self.base, ADMIN_PIN)
+        opened, _opened = self.admin.json("/api/forge/vault/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
+        self.assertEqual(opened, 200)
+        denied, _denied = other.json("/api/forge/vault/gallery")
+        self.assertEqual(denied, 401)
+        self.admin.json("/api/forge/vault/lock", "POST", data=b"{}")
+        again, _again = self.admin.json("/api/forge/vault/gallery")
+        self.assertEqual(again, 401)
+
+    def _vault_setup(self):
+        status, headers, body = self.admin.req(
+            "/api/forge/vault/setup", "POST",
+            json.dumps({"passphrase": "correct horse battery", "confirm": "correct horse battery"}).encode(),
+            {"Content-Type": "application/json"},
+        )
+        return status, json.loads(body.decode("utf-8")), {key: value for key, value in headers.items()}
+
 
 if __name__ == "__main__":
     unittest.main()

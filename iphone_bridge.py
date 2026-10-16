@@ -44,6 +44,7 @@ import hq_events
 import hq_forge
 import hq_forge_gallery
 import hq_forge_jobs
+import hq_forge_vault
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
@@ -982,6 +983,7 @@ def revoke_session(token: str | None) -> None:
     with _SESSIONS_LOCK:
         _SESSIONS.pop(token, None)
     _persist_sessions()
+    hq_forge_vault.drop_session(token)
 
 
 def slugify(text: str) -> str:
@@ -5178,6 +5180,64 @@ def render_app() -> bytes:
       <h1>Générer</h1>
       <p id="forge-status" class="forge-status" role="status" aria-live="polite">Lecture de Forge…</p>
     </header>
+    <div class="forge-dest" role="radiogroup" aria-label="Destination">
+      <label><input type="radio" name="forge-destination" value="normal" checked/> Galerie</label>
+      <label><input type="radio" name="forge-destination" value="private"/> Coffre privé</label>
+    </div>
+    <section id="forge-vault" class="forge-vault" hidden>
+      <div class="forge-vault-banner">
+        <span class="forge-lock" aria-hidden="true">&#128274;</span>
+        <div>
+          <h2 id="forge-vault-title">Coffre privé</h2>
+          <p id="forge-vault-lead">Un chiffrement séparé protège ces images. Le PIN HQ ne les déverrouille pas.</p>
+        </div>
+      </div>
+      <p id="forge-private-note" class="forge-note">La génération privée reste désactivée tant que cette installation de Forge n'a pas prouvé qu'elle n'écrit pas de copie en clair.</p>
+      <form id="forge-vault-setup" hidden>
+        <div class="field"><label for="forge-vault-new">Phrase du coffre</label><input id="forge-vault-new" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
+        <div class="field"><label for="forge-vault-confirm">Confirmation</label><input id="forge-vault-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
+        <p class="forge-note">Au moins 12 caractères, et pas seulement des chiffres.</p>
+        <button type="submit" id="forge-vault-create">Créer le coffre</button>
+      </form>
+      <form id="forge-vault-unlock" hidden>
+        <div class="field">
+          <label for="forge-vault-pass">Phrase du coffre</label>
+          <input id="forge-vault-pass" type="password" maxlength="128" autocomplete="current-password" required/>
+        </div>
+        <div class="forge-actions">
+          <button type="button" id="forge-vault-reveal" aria-pressed="false">Afficher</button>
+          <button type="submit" id="forge-vault-open">Déverrouiller</button>
+        </div>
+        <p id="forge-vault-error" class="forge-note" role="alert"></p>
+        <button type="button" class="secondary" id="forge-vault-back">Retour à la galerie</button>
+      </form>
+      <div id="forge-vault-recovery" hidden>
+        <p class="forge-note">Conservez cette clé hors de HQ. Elle ne sera plus affichée.</p>
+        <textarea id="forge-vault-recovery-key" readonly rows="3"></textarea>
+        <button type="button" id="forge-vault-recovery-ok">J'ai enregistré la clé</button>
+      </div>
+      <div id="forge-vault-open-tools" hidden>
+        <div class="forge-actions">
+          <button type="button" id="forge-vault-lock" class="secondary">Verrouiller le coffre</button>
+          <button type="button" id="forge-vault-backup" class="secondary">Sauvegarde chiffrée</button>
+          <label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label>
+        </div>
+        <details>
+          <summary>Changer la phrase</summary>
+          <form id="forge-vault-rotate">
+            <div class="field"><label for="forge-vault-current">Phrase actuelle</label><input id="forge-vault-current" type="password" autocomplete="current-password"/></div>
+            <div class="field"><label for="forge-vault-next">Nouvelle phrase</label><input id="forge-vault-next" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
+            <div class="field"><label for="forge-vault-next-confirm">Confirmation</label><input id="forge-vault-next-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
+            <button type="submit">Enregistrer la phrase</button>
+          </form>
+        </details>
+        <section aria-labelledby="forge-vault-gallery-title">
+          <h2 id="forge-vault-gallery-title">Coffre</h2>
+          <div id="forge-vault-gallery" class="forge-grid"></div>
+          <p id="forge-vault-empty" class="forge-note">Le coffre ne contient pas encore d'image.</p>
+        </section>
+      </div>
+    </section>
     <form id="forge-form">
       <div class="field">
         <label for="forge-prompt">Prompt</label>
@@ -5205,6 +5265,7 @@ def render_app() -> bytes:
       <p id="forge-cancel-note" class="forge-note">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
       <div class="forge-actions">
         <button type="submit" id="forge-generate">Générer</button>
+        <button type="button" id="forge-generate-private" hidden>Générer en privé</button>
         <button type="button" id="forge-cancel" disabled>Annuler</button>
       </div>
       <div id="forge-progress" class="forge-progress" hidden>
@@ -5212,11 +5273,26 @@ def render_app() -> bytes:
         <span id="forge-progress-label" aria-live="polite"></span>
       </div>
     </form>
-    <section class="forge-block" aria-labelledby="forge-results-title">
+    <dialog id="forge-vault-viewer" aria-labelledby="forge-vault-viewer-title">
+      <form method="dialog">
+        <header class="forge-viewer-bar">
+          <h2 id="forge-vault-viewer-title">Image privée</h2>
+          <button type="button" id="forge-vault-viewer-close" class="secondary">Fermer</button>
+        </header>
+        <img id="forge-vault-viewer-img" alt=""/>
+        <p id="forge-vault-viewer-meta"></p>
+        <div class="forge-actions">
+          <button type="button" id="forge-vault-download">Télécharger l'original</button>
+          <button type="button" id="forge-vault-reuse">Réutiliser les réglages</button>
+          <button type="button" id="forge-vault-delete" class="secondary">Supprimer du coffre</button>
+        </div>
+      </form>
+    </dialog>
+    <section class="forge-block" id="forge-normal-results" aria-labelledby="forge-results-title">
       <h2 id="forge-results-title">Résultat</h2>
       <div id="forge-results" class="forge-grid"></div>
     </section>
-    <section class="forge-block" aria-labelledby="forge-gallery-title">
+    <section class="forge-block" id="forge-normal-gallery" aria-labelledby="forge-gallery-title">
       <h2 id="forge-gallery-title">Galerie</h2>
       <div id="forge-gallery" class="forge-grid"></div>
       <button type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
@@ -6010,10 +6086,124 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, result)
         return True
 
+    def _forge_vault_binary(self, raw: str, token: str | None) -> bool:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "Requête invalide"})
+            return True
+        cap = hq_forge_vault.BACKUP_MAX + 4096 if raw.endswith("/restore") else hq_forge_vault.IMPORT_MAX
+        if length <= 0 or length > cap:
+            self._json(413, {"error": "Requête trop grande."})
+            return True
+        blob = self.rfile.read(length)
+        try:
+            if raw.endswith("/import"):
+                self._json(201, hq_forge_vault.store_image(ROOT, token, blob, None))
+                return True
+            if length < 5:
+                raise hq_forge_vault.VaultError("validation")
+            meta_len = struct.unpack(">I", blob[:4])[0]
+            if meta_len <= 0 or meta_len > 4096 or 4 + meta_len > len(blob):
+                raise hq_forge_vault.VaultError("validation")
+            meta = json.loads(blob[4:4 + meta_len].decode("utf-8"))
+            if not isinstance(meta, dict):
+                raise hq_forge_vault.VaultError("validation")
+            self._json(200, hq_forge_vault.restore_backup(ROOT, token, blob[4 + meta_len:], str(meta.get("passphrase") or "")))
+        except hq_forge_vault.VaultError as exc:
+            self._vault_error(exc)
+        except (UnicodeError, json.JSONDecodeError, struct.error):
+            self._json(400, {"error": hq_forge_vault.public_error("validation"), "code": "validation"})
+        return True
+
+    def _forge_vault_post(self, raw: str, data: dict, token: str | None) -> None:
+        try:
+            if raw == "/api/forge/vault/setup":
+                self._json(201, hq_forge_vault.setup(ROOT, str(data.get("passphrase") or ""), str(data.get("confirm") or "")))
+            elif raw == "/api/forge/vault/unlock":
+                self._json(200, hq_forge_vault.unlock(ROOT, token, str(data.get("passphrase") or "")))
+            elif raw == "/api/forge/vault/recover":
+                self._json(200, hq_forge_vault.unlock_with_recovery(ROOT, token, str(data.get("recovery_key") or "")))
+            elif raw == "/api/forge/vault/lock":
+                self._json(200, hq_forge_vault.lock(token))
+            elif raw == "/api/forge/vault/passphrase":
+                self._json(200, hq_forge_vault.change_passphrase(
+                    ROOT, token, str(data.get("current") or ""), str(data.get("passphrase") or ""),
+                    str(data.get("confirm") or ""), recovery_key=data.get("recovery_key") if isinstance(data.get("recovery_key"), str) else None,
+                ))
+            elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/delete"):
+                image_id = raw[len("/api/forge/vault/images/"):-len("/delete")]
+                self._json(200, hq_forge_vault.delete(ROOT, token, image_id))
+            else:
+                self._json(404, {"error": "Inconnu"})
+        except hq_forge_vault.VaultError as exc:
+            self._vault_error(exc)
+
+    def _vault_error(self, exc: hq_forge_vault.VaultError) -> None:
+        self._json(hq_forge_vault.http_status(exc.code), {"error": hq_forge_vault.public_error(exc.code), "code": exc.code})
+
+    def _forge_vault_get(self, raw: str, parsed) -> bool:
+        if not raw.startswith("/api/forge/vault"):
+            return False
+        token = self._token()
+        if raw == "/api/forge/vault/status":
+            self._json(200, hq_forge_vault.status(ROOT, token))
+            return True
+        if raw == "/api/forge/vault/backup":
+            try:
+                payload = hq_forge_vault.backup_bytes(ROOT, token)
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
+                return True
+            self._send(200, payload, "application/zip", [("Content-Disposition", 'attachment; filename="coffre-chiffre.zip"')])
+            return True
+        if raw == "/api/forge/vault/gallery":
+            qs = parse_qs(parsed.query)
+            try:
+                limit = int((qs.get("limit") or ["24"])[0])
+            except ValueError:
+                limit = 24
+            cursor = (qs.get("cursor") or [None])[0] or None
+            try:
+                self._json(200, hq_forge_vault.page(ROOT, token, limit=limit, cursor=cursor))
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
+            return True
+        prefix = "/api/forge/vault/images/"
+        if not raw.startswith(prefix):
+            self._json(404, {"error": "Inconnu"})
+            return True
+        rest = raw[len(prefix):]
+        kind = ""
+        if rest.endswith("/original"):
+            image_id, kind = rest[: -len("/original")], "original"
+        elif rest.endswith("/thumb"):
+            image_id, kind = rest[: -len("/thumb")], "thumb"
+        else:
+            image_id = rest
+        if kind:
+            try:
+                payload, ctype, disposition = hq_forge_vault.file_bytes(ROOT, token, image_id, kind)
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
+                return True
+            self._send(200, payload, ctype, [("Content-Disposition", disposition)])
+            return True
+        if "/" in image_id:
+            self._json(404, {"error": "Inconnu"})
+            return True
+        try:
+            self._json(200, hq_forge_vault.detail(ROOT, token, image_id))
+        except hq_forge_vault.VaultError as exc:
+            self._vault_error(exc)
+        return True
+
     def _forge_get(self, raw: str, parsed) -> bool:
         if not raw.startswith("/api/forge/"):
             return False
         if not self._require_admin():
+            return True
+        if self._forge_vault_get(raw, parsed):
             return True
         hq_forge_jobs.recover(ROOT)
         if raw == "/api/forge/status":
@@ -6049,7 +6239,7 @@ class Handler(BaseHTTPRequestHandler):
             except hq_forge_gallery.GalleryError:
                 self._json(404, {"error": "Introuvable"})
             return True
-        got = hq_forge_jobs.serve_get(ROOT, raw, parsed.query)
+        got = hq_forge_jobs.serve_get(ROOT, raw, parsed.query, self._token())
         if got is None:
             self._json(404, {"error": "Inconnu"})
             return True
@@ -6061,6 +6251,9 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not self._require_admin():
             return True
+        token = self._token()
+        if raw in ("/api/forge/vault/import", "/api/forge/vault/restore"):
+            return self._forge_vault_binary(raw, token)
         hq_forge_jobs.recover(ROOT)
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -6087,7 +6280,10 @@ class Handler(BaseHTTPRequestHandler):
             except hq_forge_gallery.GalleryError:
                 self._json(404, {"error": "Introuvable"})
             return True
-        got = hq_forge_jobs.serve_post(ROOT, raw, data, (self.headers.get("Idempotency-Key") or "").strip())
+        if raw.startswith("/api/forge/vault/"):
+            self._forge_vault_post(raw, data, token)
+            return True
+        got = hq_forge_jobs.serve_post(ROOT, raw, data, (self.headers.get("Idempotency-Key") or "").strip(), token)
         if got is None:
             self._json(404, {"error": "Inconnu"})
             return True

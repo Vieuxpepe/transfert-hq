@@ -74,6 +74,12 @@ def _opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
+def _require_json(header: str | None) -> None:
+    media = str(header or "").split(";", 1)[0].strip().lower()
+    if media != "application/json":
+        raise OSError("forge")
+
+
 def reset_for_tests() -> None:
     global _test_transport, _upstream, _probe_timeout, _catalog_ttl
     _test_transport = None
@@ -177,8 +183,11 @@ def _default_transport(method: str, url: str, timeout: float, body: bytes | None
             final = response.geturl()
             if urllib.parse.urlsplit(final).hostname != "127.0.0.1":
                 raise OSError("forge")
+            _require_json(response.headers.get("Content-Type"))
             return response.status, response.read(cap + 1)
     except urllib.error.HTTPError as exc:
+        if exc.code == 200:
+            _require_json(exc.headers.get("Content-Type") if exc.headers else None)
         return exc.code, exc.read(cap + 1)
     except TimeoutError:
         raise

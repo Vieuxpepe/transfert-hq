@@ -48,6 +48,17 @@ class _Quiet(BaseHTTPRequestHandler):
         if mode == "hang":
             time.sleep(3)
             return
+        if mode == "slow_headers":
+            time.sleep(2)
+            mode = "ready"
+        if mode == "badtype":
+            payload = _ready(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if mode == "redirect":
             self.send_response(302)
             self.send_header("Location", getattr(self.server, "redirect_to", "/stolen"))
@@ -143,6 +154,20 @@ class TransportHttp(unittest.TestCase):
         got = F.status()
         self.assertEqual(got["forge"], "error")
         self.assertNotIn("not-json", json.dumps(got))
+
+        F.reset_for_tests()
+        self._serve("badtype")
+        got = F.status()
+        self.assertEqual(got["forge"], "error")
+        self.assertNotIn("example.safetensors", json.dumps(got))
+
+    def test_slow_headers_time_out(self):
+        F.set_probe_timeout_for_tests(0.3)
+        self._serve("slow_headers")
+        started = time.monotonic()
+        got = F.status()
+        self.assertEqual(got["code"], "forge_timeout")
+        self.assertLess(time.monotonic() - started, 2.0)
 
     def test_connection_refused(self):
         sock = socket.socket()

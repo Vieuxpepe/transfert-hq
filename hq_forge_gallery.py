@@ -187,6 +187,11 @@ def _atomic_bytes(path: Path, payload: bytes) -> None:
         raise GalleryError("disk") from None
 
 
+def prepare_image(raw: bytes) -> tuple[bytes, bytes, int, int]:
+    """Re-encode a PNG, JPEG, or WEBP. Callers store the result; nothing is written here."""
+    return _decode(raw)
+
+
 def store(root: Path, raw: bytes, settings: dict) -> dict:
     png, thumb, width, height = _decode(raw)
     safe = _settings(settings)

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import hq_forge as forge
 import hq_forge_gallery as gallery
+import hq_forge_vault as vault
 
 TERMINAL = {"completed", "failed", "cancelled", "unknown"}
 ACTIVE = {"queued", "starting", "generating", "saving"}
@@ -26,6 +27,7 @@ TASK_RE = re.compile(r"^task\(hq-[0-9a-f]{24}\)$")
 BODY_KEYS = {
     "prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler",
     "width", "height", "steps", "cfg_scale", "seed", "n_iter", "batch_size",
+    "destination",
 }
 
 _LOCK = threading.Lock()
@@ -50,6 +52,10 @@ _MESSAGES = {
     "deferred": "HQ ne peut pas arrêter une génération déjà envoyée à Forge. L'interruption globale pourrait couper un autre travail.",
     "active": "Une génération HQ est déjà en cours.",
     "validation": "Les réglages ne sont pas acceptés.",
+    "disabled": vault.public_error("disabled"),
+    "locked": vault.public_error("locked"),
+    "missing": vault.public_error("missing"),
+    "vault_locked": "Le coffre s'est verrouillé avant l'enregistrement. L'image n'a pas été conservée.",
 }
 
 
@@ -61,6 +67,7 @@ def reset_for_tests() -> None:
     _job_timeout = forge.JOB_TIMEOUT_SEC
     _poll_interval = 1.0
     gallery.reset_for_tests()
+    vault.reset_for_tests()
 
 
 def set_before_submit_for_tests(callback) -> None:
@@ -119,6 +126,7 @@ def recover(root: Path) -> None:
             return
         _recovered = True
         gallery.cleanup_partials(root)
+        vault.cleanup_partials(root)
         data = _load(root)
         changed = False
         for job in data["jobs"]:
@@ -132,14 +140,23 @@ def recover(root: Path) -> None:
             _save(root, data)
 
 
-def _public(job: dict) -> dict:
+def _public(job: dict, *, unlocked: bool = False) -> dict:
+    private = job.get("destination") == "private"
     images = []
     for item in job.get("images") or []:
-        if isinstance(item, dict) and gallery.IMG_RE.fullmatch(str(item.get("id") or "")):
-            images.append({"id": item["id"], "width": item.get("width"), "height": item.get("height")})
+        if not isinstance(item, dict):
+            continue
+        image_id = str(item.get("id") or "")
+        if private:
+            if not unlocked or not vault.ID_RE.fullmatch(image_id):
+                continue
+        elif not gallery.IMG_RE.fullmatch(image_id):
+            continue
+        images.append({"id": image_id, "width": item.get("width"), "height": item.get("height")})
     return {
         "job_id": job.get("id"),
         "state": job.get("state"),
+        "destination": "private" if private else "normal",
         "progress": job.get("progress") or 0,
         "step": job.get("step") or 0,
         "steps": job.get("steps") or 0,
@@ -147,12 +164,22 @@ def _public(job: dict) -> dict:
         "message": job.get("message") or "",
         "error": job.get("error") or "",
         "images": images,
-        "settings": job.get("settings") or {},
-        "seed_used": job.get("seed_used"),
+        "settings": {} if private else (job.get("settings") or {}),
+        "seed_used": None if private and not unlocked else job.get("seed_used"),
         "cancel": "unchanged" if job.get("state") in TERMINAL else ("deferred" if job.get("submitted") else "local"),
+        "locked": bool(private and not unlocked),
         "created": job.get("created"),
         "updated": job.get("updated"),
     }
+
+
+def _session_open(root: Path, token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        return bool(vault.status(root, token).get("unlocked"))
+    except Exception:
+        return False
 
 
 def _find(data: dict, job_id: str) -> dict | None:
@@ -320,7 +347,7 @@ def _fail(root: Path, job_id: str, token: int, code: str) -> None:
     _mutate(root, job_id, token, state="failed", error=code, message=_MESSAGES.get(code, _MESSAGES["forge_error"]), progress_stale=False)
 
 
-def _run(root: Path, job_id: str, token: int, transport) -> None:
+def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, session_token: str | None = None) -> None:
     with _LOCK:
         data = _load(root)
         job = _find(data, job_id)
@@ -329,7 +356,8 @@ def _run(root: Path, job_id: str, token: int, transport) -> None:
         job["state"] = "starting"
         job["updated"] = _now()
         _save(root, data)
-        settings = dict(job["settings"])
+        settings = dict(inline_settings) if inline_settings is not None else dict(job["settings"])
+        destination = job.get("destination") or "normal"
         task_id = job["task_id"]
     if _before_submit is not None:
         _before_submit(job_id)
@@ -393,7 +421,14 @@ def _run(root: Path, job_id: str, token: int, transport) -> None:
             if not isinstance(item, str):
                 raise gallery.GalleryError("bad_image")
             raw = base64.b64decode(item, validate=True)
-            stored.append(gallery.store(root, raw, settings))
+            if destination == "private":
+                stored.append(vault.store_image(root, session_token, raw, settings))
+            else:
+                stored.append(gallery.store(root, raw, settings))
+    except vault.VaultError as exc:
+        code = "vault_locked" if exc.code == "locked" else exc.code
+        _fail(root, job_id, token, code if code in _MESSAGES else "bad_image")
+        return
     except gallery.GalleryError as exc:
         _fail(root, job_id, token, exc.code if exc.code in _MESSAGES else "bad_image")
         return
@@ -412,10 +447,40 @@ def _run(root: Path, job_id: str, token: int, transport) -> None:
     )
 
 
-def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None) -> tuple[int, dict]:
+def _destination(data: dict) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    value = data.get("destination", "normal")
+    if value not in ("normal", "private"):
+        return None
+    return value
+
+
+def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, session_token: str | None = None) -> tuple[int, dict]:
     recover(root)
     if not KEY_RE.fullmatch(idempotency_key or ""):
         return 400, {"error": _MESSAGES["validation"], "code": "validation"}
+    destination = _destination(data)
+    if destination is None:
+        return 400, {"error": _MESSAGES["validation"], "code": "validation"}
+    with _LOCK:
+        stored = _load(root)
+        found = stored["idempotency"].get(idempotency_key)
+        existing = _find(stored, found) if isinstance(found, str) else None
+    if existing is not None:
+        if (existing.get("destination") or "normal") != destination:
+            return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
+        return 200, {"job": _public(existing, unlocked=_session_open(root, session_token))}
+    if destination == "private":
+        if not vault.private_generation_enabled():
+            return 403, {"error": _MESSAGES["disabled"], "code": "disabled"}
+        info = vault.status(root, session_token)
+        if info.get("code") == "bad_root":
+            return 503, {"error": vault.public_error("bad_root"), "code": "bad_root"}
+        if not info.get("configured"):
+            return 409, {"error": _MESSAGES["missing"], "code": "missing"}
+        if not info.get("unlocked"):
+            return 401, {"error": _MESSAGES["locked"], "code": "locked"}
     try:
         catalog = forge.catalog(transport=transport)
     except Exception:
@@ -436,7 +501,9 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None) 
         if isinstance(existing, str):
             job = _find(stored, existing)
             if job is not None:
-                return 200, {"job": _public(job)}
+                if (job.get("destination") or "normal") != destination:
+                    return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
+                return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
         active = _active_job(stored)
         if active is not None:
             return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
@@ -454,7 +521,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None) 
             "created": _now(),
             "updated": _now(),
             "idempotency_key": idempotency_key,
-            "settings": validated,
+            "destination": destination,
+            "settings": {} if destination == "private" else validated,
             "submitted": False,
             "progress": 0,
             "step": 0,
@@ -471,11 +539,17 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None) 
         _trim_keys(stored)
         _save(root, stored)
         token = _generation
-    threading.Thread(target=_run, args=(root, job_id, token, transport), name="hq-forge-job", daemon=True).start()
-    return 202, {"job": _public(job)}
+    inline = validated if destination == "private" else None
+    threading.Thread(
+        target=_run,
+        args=(root, job_id, token, transport, inline, session_token),
+        name="hq-forge-job",
+        daemon=True,
+    ).start()
+    return 202, {"job": _public(job, unlocked=destination == "private")}
 
 
-def get_job(root: Path, job_id: str) -> tuple[int, dict]:
+def get_job(root: Path, job_id: str, session_token: str | None = None) -> tuple[int, dict]:
     recover(root)
     if not JOB_RE.fullmatch(job_id):
         return 404, {"error": "Introuvable"}
@@ -483,10 +557,11 @@ def get_job(root: Path, job_id: str) -> tuple[int, dict]:
         job = _find(_load(root), job_id)
     if job is None:
         return 404, {"error": "Introuvable"}
-    return 200, {"job": _public(job)}
+    unlocked = _session_open(root, session_token) if job.get("destination") == "private" else False
+    return 200, {"job": _public(job, unlocked=unlocked)}
 
 
-def find_idempotency(root: Path, key: str) -> tuple[int, dict]:
+def find_idempotency(root: Path, key: str, session_token: str | None = None) -> tuple[int, dict]:
     recover(root)
     if not KEY_RE.fullmatch(key or ""):
         return 400, {"error": _MESSAGES["validation"], "code": "validation"}
@@ -496,21 +571,24 @@ def find_idempotency(root: Path, key: str) -> tuple[int, dict]:
         job = _find(data, job_id) if isinstance(job_id, str) else None
     if job is None:
         return 404, {"error": "Introuvable"}
-    return 200, {"job": _public(job)}
+    unlocked = _session_open(root, session_token) if job.get("destination") == "private" else False
+    return 200, {"job": _public(job, unlocked=unlocked)}
 
 
-def list_jobs(root: Path) -> tuple[int, dict]:
+def list_jobs(root: Path, session_token: str | None = None) -> tuple[int, dict]:
     recover(root)
     with _LOCK:
         jobs = [job for job in _load(root)["jobs"] if isinstance(job, dict)]
     jobs.sort(key=lambda job: job.get("created") or "", reverse=True)
-    return 200, {"jobs": [_public(job) for job in jobs[:30]]}
+    opened = _session_open(root, session_token)
+    return 200, {"jobs": [_public(job, unlocked=opened) for job in jobs[:30]]}
 
 
-def cancel_job(root: Path, job_id: str) -> tuple[int, dict]:
+def cancel_job(root: Path, job_id: str, session_token: str | None = None) -> tuple[int, dict]:
     recover(root)
     if not JOB_RE.fullmatch(job_id):
         return 404, {"error": "Introuvable"}
+    opened = _session_open(root, session_token)
     with _LOCK:
         data = _load(root)
         job = _find(data, job_id)
@@ -522,34 +600,34 @@ def cancel_job(root: Path, job_id: str) -> tuple[int, dict]:
                 job["message"] = _MESSAGES["deferred"]
                 job["updated"] = _now()
                 _save(root, data)
-            return 200, {"cancel": kind, "message": _MESSAGES["deferred"] if kind == "deferred" else job.get("message") or "", "job": _public(job)}
+            return 200, {"cancel": kind, "message": _MESSAGES["deferred"] if kind == "deferred" else job.get("message") or "", "job": _public(job, unlocked=opened)}
         job["state"] = "cancelled"
         job["error"] = "cancelled"
         job["message"] = _MESSAGES["cancelled"]
         job["updated"] = _now()
         _save(root, data)
-        snapshot = _public(job)
+        snapshot = _public(job, unlocked=opened)
     return 200, {"cancel": "cancelled", "message": _MESSAGES["cancelled"], "job": snapshot}
 
 
-def serve_get(root: Path, raw: str, query: str) -> tuple[int, dict] | None:
+def serve_get(root: Path, raw: str, query: str, session_token: str | None = None) -> tuple[int, dict] | None:
     if raw == "/api/forge/jobs":
         from urllib.parse import parse_qs
         key = (parse_qs(query or "").get("idempotency_key") or [""])[0]
         if key:
-            return find_idempotency(root, key)
-        return list_jobs(root)
+            return find_idempotency(root, key, session_token)
+        return list_jobs(root, session_token)
     prefix = "/api/forge/jobs/"
     if raw.startswith(prefix) and "/" not in raw[len(prefix):]:
-        return get_job(root, raw[len(prefix):])
+        return get_job(root, raw[len(prefix):], session_token)
     return None
 
 
-def serve_post(root: Path, raw: str, data: dict, idempotency_key: str) -> tuple[int, dict] | None:
+def serve_post(root: Path, raw: str, data: dict, idempotency_key: str, session_token: str | None = None) -> tuple[int, dict] | None:
     if raw == "/api/forge/jobs":
-        return create_job(root, data, idempotency_key)
+        return create_job(root, data, idempotency_key, session_token=session_token)
     prefix = "/api/forge/jobs/"
     suffix = "/cancel"
     if raw.startswith(prefix) and raw.endswith(suffix):
-        return cancel_job(root, raw[len(prefix):-len(suffix)])
+        return cancel_job(root, raw[len(prefix):-len(suffix)], session_token)
     return None
