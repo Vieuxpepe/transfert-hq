@@ -171,7 +171,13 @@ class Jobs(unittest.TestCase):
         self.assertEqual(job["state"], "cancelled")
         self.assertFalse(any(url.endswith("/sdapi/v1/txt2img") for url in transport.calls))
 
-    def test_timeout_does_not_interrupt(self):
+    def test_connection_loss_does_not_interrupt(self):
+        transport = Transport(fail_post=ConnectionRefusedError())
+        _code, payload = J.create_job(self.root, _body(), "idem-key-10", transport=transport)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertEqual(job["error"], "stopped")
+        self.assertFalse(any("interrupt" in url for url in transport.calls))
         transport = Transport(fail_post=TimeoutError())
         _code, payload = J.create_job(self.root, _body(), "idem-key-4", transport=transport)
         job = self._wait(payload["job"]["job_id"])

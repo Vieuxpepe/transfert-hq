@@ -95,7 +95,20 @@ class Gallery(unittest.TestCase):
         with self.assertRaises(G.GalleryError):
             G.file_bytes(self.root, "img-" + "ab" * 12, "original")
 
-    def test_page_is_bounded(self):
+    def test_disk_full_leaves_no_image(self):
+        original = G._atomic_bytes
+
+        def boom(path, payload):
+            raise G.GalleryError("disk")
+
+        G._atomic_bytes = boom
+        try:
+            with self.assertRaises(G.GalleryError) as raised:
+                G.store(self.root, _png(), _settings())
+            self.assertEqual(raised.exception.code, "disk")
+        finally:
+            G._atomic_bytes = original
+        self.assertEqual(list(G.gallery_dir(self.root).glob("img-*")), [])
         ids = [G.store(self.root, _png(64, 64), _settings())["id"] for _ in range(3)]
         first = G.page(self.root, limit=2)
         self.assertEqual(len(first["images"]), 2)

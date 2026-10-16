@@ -51,6 +51,36 @@ def main() -> None:
         B.CONFIG["transcribe_command"] = [sys.executable, str(script), "{input}"]
     B.bind_cc_ext()
     B.bind_hq()
+    if os.environ.get("HQ_FORGE_MOCK") == "ready":
+        import base64
+        import io
+        from PIL import Image
+        import hq_forge as forge_client
+
+        image = Image.new("RGB", (256, 256), (24, 72, 48))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        def forge_transport(method, url, timeout, body=None):
+            path = url.split("://", 1)[-1]
+            path = path[path.find("/"):].split("?", 1)[0]
+            if method == "POST":
+                payload = {"images": [encoded], "info": "{\"seed\": 4, \"all_seeds\": [4]}"}
+                return 200, json.dumps(payload).encode("utf-8")
+            table = {
+                "/sdapi/v1/samplers": [{"name": "Euler"}],
+                "/sdapi/v1/schedulers": [{"name": "automatic", "label": "Automatic"}],
+                "/sdapi/v1/sd-models": [{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd", "sha256": None}],
+                "/sdapi/v1/options": {"sd_model_checkpoint": "example.safetensors"},
+                "/sdapi/v1/progress": {"progress": 0, "state": {"job": "", "job_count": 0, "sampling_step": 0, "sampling_steps": 0}},
+                "/internal/pending-tasks": {"size": 0, "tasks": []},
+            }
+            if path not in table:
+                return 404, b"{}"
+            return 200, json.dumps(table[path]).encode("utf-8")
+
+        forge_client.set_transport_for_tests(forge_transport)
     if len(sys.argv) > 2:
         nb = root / ".hq-carnet" / "notebook.json"
         nb.parent.mkdir(parents=True, exist_ok=True)
