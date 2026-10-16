@@ -2442,7 +2442,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -2621,6 +2621,11 @@ function setView(name) {
     try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
   }
   if (view === 'dessiner') hqSketchStart();
+  if (view === 'forge' && window.hqForgeShow) {
+    try { window.hqForgeShow(); } catch (e) { console.error(e); }
+  } else if (window.hqForgeHide) {
+    try { window.hqForgeHide(); } catch (e) { console.error(e); }
+  }
 }
 function isSimpleMode() {
   try { return (localStorage.getItem('tf_hq_mode') || 'simple') === 'simple'; } catch (_) { return true; }
@@ -4336,6 +4341,7 @@ body[data-view="dessiner"] [data-panel="dessiner"],
 body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="lecteur"] [data-panel="lecteur"],
+body[data-view="forge"] [data-panel="forge"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
 .player-name{margin:0;font-weight:800;font-size:1.05rem;word-break:break-word}
 .player-where{margin:2px 0 12px}
@@ -4774,6 +4780,7 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
 <link rel="stylesheet" href="/assets/hq-carnet.css"/>
+<link rel="stylesheet" href="/assets/hq-forge.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
@@ -4783,6 +4790,7 @@ def render_app() -> bytes:
   <button type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
   <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
   <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
+  <button type="button" data-nav="forge"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 16l4.2-3.2 2.6 2.2L15 11l5 4"/></svg></span><span class="nav-label">Forge</span></button>
   <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
   <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
@@ -5164,6 +5172,72 @@ def render_app() -> bytes:
     </details>
   </div>
 
+  <div data-panel="forge" id="forge-studio">
+    <header class="forge-head">
+      <p class="forge-kicker">Forge Studio</p>
+      <h1>Générer</h1>
+      <p id="forge-status" class="forge-status" role="status" aria-live="polite">Lecture de Forge…</p>
+    </header>
+    <form id="forge-form">
+      <div class="field">
+        <label for="forge-prompt">Prompt</label>
+        <textarea id="forge-prompt" name="prompt" required maxlength="2000" rows="4" placeholder="Décris l'image"></textarea>
+      </div>
+      <div class="field">
+        <label for="forge-negative">Prompt négatif</label>
+        <textarea id="forge-negative" name="negative_prompt" maxlength="1000" rows="2" placeholder="Ce qu'il faut éviter"></textarea>
+      </div>
+      <details id="forge-advanced">
+        <summary>Réglages</summary>
+        <div class="forge-grid-fields">
+          <div class="field"><label for="forge-checkpoint">Modèle</label><select id="forge-checkpoint"></select></div>
+          <div class="field"><label for="forge-sampler">Échantillonneur</label><select id="forge-sampler"></select></div>
+          <div class="field"><label for="forge-scheduler">Planificateur</label><select id="forge-scheduler"></select></div>
+          <div class="field"><label for="forge-width">Largeur</label><input id="forge-width" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/></div>
+          <div class="field"><label for="forge-height">Hauteur</label><input id="forge-height" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/></div>
+          <div class="field"><label for="forge-steps">Pas</label><input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/></div>
+          <div class="field"><label for="forge-cfg">CFG</label><input id="forge-cfg" type="number" min="1" max="15" step="0.5" value="7" inputmode="decimal"/></div>
+          <div class="field"><label for="forge-seed">Graine</label><input id="forge-seed" type="number" min="-1" max="4294967295" step="1" value="-1" inputmode="numeric"/></div>
+          <div class="field"><label for="forge-iter">Itérations</label><select id="forge-iter"><option value="1" selected>1</option><option value="2">2</option></select></div>
+          <div class="field"><label for="forge-batch">Taille de lot</label><input id="forge-batch" type="text" value="1" readonly tabindex="-1"/></div>
+        </div>
+      </details>
+      <p id="forge-cancel-note" class="forge-note">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
+      <div class="forge-actions">
+        <button type="submit" id="forge-generate">Générer</button>
+        <button type="button" id="forge-cancel" disabled>Annuler</button>
+      </div>
+      <div id="forge-progress" class="forge-progress" hidden>
+        <progress id="forge-progress-bar" max="1" value="0" aria-labelledby="forge-progress-label"></progress>
+        <span id="forge-progress-label" aria-live="polite"></span>
+      </div>
+    </form>
+    <section class="forge-block" aria-labelledby="forge-results-title">
+      <h2 id="forge-results-title">Résultat</h2>
+      <div id="forge-results" class="forge-grid"></div>
+    </section>
+    <section class="forge-block" aria-labelledby="forge-gallery-title">
+      <h2 id="forge-gallery-title">Galerie</h2>
+      <div id="forge-gallery" class="forge-grid"></div>
+      <button type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
+    </section>
+    <dialog id="forge-viewer" aria-labelledby="forge-viewer-title">
+      <form method="dialog">
+        <header class="forge-viewer-bar">
+          <h2 id="forge-viewer-title">Image</h2>
+          <button type="button" id="forge-viewer-close" class="secondary">Fermer</button>
+        </header>
+        <img id="forge-viewer-img" alt=""/>
+        <p id="forge-viewer-meta"></p>
+        <div class="forge-actions">
+          <a id="forge-download" href="#" download>Télécharger l'original</a>
+          <button type="button" id="forge-reuse">Réutiliser les réglages</button>
+          <button type="button" id="forge-delete" class="secondary">Supprimer la copie HQ</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+
   <div data-panel="plus">
     <nav class="sys-jump" aria-label="Sections Système">
       <button type="button" data-jump="system-session">Session</button>
@@ -5364,6 +5438,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
 <script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
+<script src="/assets/hq-forge.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
