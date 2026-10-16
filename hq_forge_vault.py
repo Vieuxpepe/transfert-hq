@@ -66,7 +66,7 @@ _ttl = UNLOCK_TTL_SEC
 _quota_bytes = QUOTA_BYTES
 _quota_images = QUOTA_IMAGES
 _apply_acl = True
-_private_generation = False
+_private_generation = True
 
 _AAD_PASS = b"hq-forge-vault-v1-passphrase"
 _AAD_RECOVERY = b"hq-forge-vault-v1-recovery"
@@ -99,7 +99,7 @@ def reset_for_tests() -> None:
     _quota_bytes = QUOTA_BYTES
     _quota_images = QUOTA_IMAGES
     _apply_acl = True
-    _private_generation = False
+    _private_generation = True
 
 
 def set_root_for_tests(path: Path | None) -> None:
@@ -157,7 +157,7 @@ def retain_only(live: set[str]) -> None:
 
 
 def set_private_generation_for_tests(enabled: bool) -> None:
-    """Tests may exercise the pipeline. Production stays disabled."""
+    """Turn the build flag on or off. A Windows vault still has to be restricted to this account."""
     global _private_generation
     _private_generation = bool(enabled)
 
@@ -450,9 +450,11 @@ def _restrict(path: Path) -> str:
     user = os.environ.get("USERNAME") or ""
     if not user or any(ch in user for ch in '\\"/&|<>'):
         return "unverified"
+    # Directory ACEs must propagate. The same inherit-only flags on a file grant nothing to that file.
+    grant = user + (":(OI)(CI)F" if path.is_dir() else ":(F)")
     try:
         result = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", user + ":(OI)(CI)F"],
+            ["icacls", str(path), "/inheritance:r", "/grant:r", grant],
             capture_output=True,
             timeout=15,
             check=False,
@@ -460,6 +462,33 @@ def _restrict(path: Path) -> str:
     except (OSError, subprocess.TimeoutExpired):
         return "unverified"
     return "restricted" if result.returncode == 0 else "unverified"
+
+
+def _seal_acl(root: Path) -> str:
+    """Remove inherited ACEs from the vault tree, including files a restore already created."""
+    if not _apply_acl or os.name != "nt":
+        return "skipped"
+    paths = [root]
+    objects = root / "objects"
+    if objects.is_dir() and not _is_reparse(objects):
+        paths.append(objects)
+        paths.extend(child for child in objects.iterdir() if child.is_file() and not _is_reparse(child))
+    paths.extend(child for child in root.iterdir() if child.is_file() and not _is_reparse(child))
+    states = [_restrict(path) for path in paths]
+    state = "restricted" if states and all(item == "restricted" for item in states) else "unverified"
+    header = _read_header(root)
+    if isinstance(header, dict) and header.get("acl") != state:
+        header["acl"] = state
+        _write_header(root, header)
+    return state
+
+
+def private_generation_ready(header) -> bool:
+    if not _private_generation:
+        return False
+    if os.name != "nt" or not _apply_acl:
+        return True
+    return isinstance(header, dict) and header.get("acl") == "restricted"
 
 
 def _token(token: str | None) -> str:
@@ -632,10 +661,13 @@ def setup(hq_root: Path, passphrase: str, confirm: str) -> dict:
             "kdf": recovery_params,
             "wrap": _b64(_seal(_derive(recovery_params, recovery), master, _AAD_RECOVERY)),
         },
-        "acl": _restrict(root),
+        "acl": "unverified",
     }
-    _write_header(root, header)
     (root / "objects").mkdir(exist_ok=True)
+    root_acl = _restrict(root)
+    object_acl = _restrict(root / "objects")
+    header["acl"] = "restricted" if root_acl == "restricted" and object_acl == "restricted" else "unverified"
+    _write_header(root, header)
     _write_index(root, master, [])
     shown = _recovery_text(recovery)
     _wipe(bytearray(master))
@@ -764,13 +796,13 @@ def rotate_recovery(hq_root: Path, token: str | None, passphrase: str) -> dict:
 
 def status(hq_root: Path, token: str | None) -> dict:
     if not _disk and _test_dir is None:
-        return {"configured": False, "unlocked": False, "private_generation": _private_generation, "acl": "skipped"}
+        return {"configured": False, "unlocked": False, "private_generation": private_generation_ready(None), "acl": "skipped"}
     cleanup_partials(hq_root)
     try:
         root = _root(hq_root)
         header = _read_header(root) if root.is_dir() else None
     except VaultError as exc:
-        return {"configured": False, "unlocked": False, "private_generation": _private_generation, "code": exc.code}
+        return {"configured": False, "unlocked": False, "private_generation": False, "acl": "unverified", "code": exc.code}
     unlocked = False
     if header is not None and isinstance(token, str) and TOKEN_RE.fullmatch(token):
         try:
@@ -781,8 +813,8 @@ def status(hq_root: Path, token: str | None) -> dict:
     return {
         "configured": header is not None,
         "unlocked": unlocked,
-        "private_generation": _private_generation,
-        "acl": (header or {}).get("acl") or "unverified",
+        "private_generation": private_generation_ready(header),
+        "acl": "skipped" if os.name != "nt" or not _apply_acl else ((header or {}).get("acl") or "unverified"),
     }
 
 
@@ -1230,6 +1262,7 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
             raise OSError("injected")
         os.replace(staging, root)
         promoted = True
+        _seal_acl(root)
         try:
             if _restore_fault == "after_promote":
                 raise OSError("injected")

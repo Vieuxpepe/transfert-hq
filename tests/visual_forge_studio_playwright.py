@@ -77,7 +77,8 @@ def main() -> None:
                 passed += 1
                 print("  OK  ", message)
 
-            admin = browser.new_context()
+            # Layout measurements use page.evaluate. The served policy stays unchanged.
+            admin = browser.new_context(bypass_csp=True)
             login = admin.request.post(base + "/login", form={"pin": info["admin_pin"]}, headers={"origin": base}, max_redirects=0)
             if login.status != 303:
                 raise SystemExit("login failed")
@@ -91,8 +92,8 @@ def main() -> None:
             check("Générer" in page.locator("#forge-studio h1").inner_text(), "forge heading")
             page.locator('input[name="forge-destination"][value="private"]').check()
             page.locator("#forge-vault").wait_for()
-            check("copie en clair" in page.locator("#forge-private-note").inner_text(), "private generation stays disabled")
-            check(page.locator("#forge-generate-private").is_disabled(), "private generate is disabled")
+            check("compte Windows" in page.locator("#forge-private-note").inner_text(), "private generation waits for a restricted vault")
+            check(page.locator("#forge-generate-private").is_disabled(), "private generate is disabled before the vault exists")
             page.locator("#forge-vault-new").fill("synthetic horse battery")
             page.locator("#forge-vault-confirm").fill("synthetic horse battery")
             page.locator("#forge-vault-create").click()
@@ -106,6 +107,7 @@ def main() -> None:
             page.locator("#forge-vault-pass").fill("synthetic horse battery")
             page.locator("#forge-vault-open").click()
             page.locator("#forge-vault-lock").wait_for()
+            check(page.locator("#forge-generate-private").is_enabled(), "private generate enables once the vault is restricted")
             image = page.request.post(
                 base + "/api/forge/vault/import",
                 data=_png_bytes(),

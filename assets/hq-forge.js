@@ -413,7 +413,11 @@
     $("forge-vault-open-tools").hidden = !privateMode || !vaultState.unlocked;
     const note = $("forge-private-note");
     note.hidden = !privateMode || vaultState.private_generation;
-    if (!vaultState.private_generation) note.textContent = disabledCopy;
+    if (!vaultState.private_generation) {
+      note.textContent = vaultState.acl === "unverified"
+        ? "La génération privée attend un coffre limité à ce compte Windows."
+        : disabledCopy;
+    }
     if (!vaultState.unlocked) clearPrivateUi();
     else if (privateMode) await loadVaultGallery();
     syncActions(false);

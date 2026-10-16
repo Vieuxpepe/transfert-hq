@@ -198,6 +198,7 @@ class Vault(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [outside / "marker.txt"])
 
     def test_private_generation_stays_disabled_and_does_not_call_forge(self):
+        V.set_private_generation_for_tests(False)
         calls = []
 
         def transport(*_args, **_kwargs):
@@ -513,6 +514,58 @@ class Vault(unittest.TestCase):
         self.assertEqual(V.file_bytes(self.hq, self.admin, first["id"], "original")[1], "image/png")
         with self.assertRaises(V.VaultError):
             V.detail(self.hq, self.admin, second["id"])
+
+    def _aces(self, path: Path) -> list[str]:
+        completed = subprocess.run(["icacls", str(path)], capture_output=True, timeout=15, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        text = completed.stdout.decode("mbcs", errors="replace")
+        prefix = str(path)
+        found = []
+        for line in text.splitlines():
+            if ":(" not in line:
+                continue
+            body = line.strip()
+            if body.lower().startswith(prefix.lower()):
+                body = body[len(prefix):].strip()
+            found.extend(part for part in body.split() if ":(" in part)
+        return found
+
+    def _assert_current_user_only(self, path: Path, user: str, *, inherited: bool) -> None:
+        aces = self._aces(path)
+        self.assertEqual(aces, [aces[0]] if aces else [], aces)
+        self.assertEqual(len(aces), 1)
+        ace = aces[0]
+        self.assertIn(user.casefold(), ace.casefold())
+        self.assertIn("(F)", ace)
+        for banned in ("Everyone", "SYSTEM", "Administrat", "Utilisateur", "Users", "Authenticated"):
+            self.assertNotIn(banned, ace)
+        if inherited:
+            self.assertIn("(I)", ace)
+        else:
+            self.assertNotIn("(I)", ace)
+
+    def test_windows_acl_limits_the_vault_to_the_current_user(self):
+        if os.name != "nt":
+            self.skipTest("Windows ACL")
+        V.set_acl_for_tests(True)
+        created = V.setup(self.hq, PASS, PASS)
+        self.assertEqual(created["acl"], "restricted")
+        self.assertTrue(V.status(self.hq, None)["private_generation"])
+        user = os.environ["USERNAME"]
+        self._assert_current_user_only(self.store, user, inherited=False)
+        self._assert_current_user_only(self.store / "objects", user, inherited=False)
+        self._assert_current_user_only(self.store / "vault.json", user, inherited=True)
+        self._assert_current_user_only(self.store / "index.bin", user, inherited=True)
+        V.unlock(self.hq, self.admin, PASS)
+        payload = V.backup_bytes(self.hq, self.admin)
+        restored = V.restore_backup(self.hq, self.admin, payload, PASS)
+        self.assertTrue(restored["restored"])
+        self.assertEqual(V.status(self.hq, None)["acl"], "restricted")
+        self.assertTrue(V.status(self.hq, None)["private_generation"])
+        self._assert_current_user_only(self.store, user, inherited=False)
+        self._assert_current_user_only(self.store / "objects", user, inherited=False)
+        self._assert_current_user_only(self.store / "vault.json", user, inherited=False)
+        self._assert_current_user_only(self.store / "index.bin", user, inherited=False)
 
 
 if __name__ == "__main__":

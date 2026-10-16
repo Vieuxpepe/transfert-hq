@@ -177,7 +177,7 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(payload["configured"])
         self.assertNotIn("images", payload)
-        self.assertFalse(payload["private_generation"])
+        self.assertTrue(payload["private_generation"])
         refused, body = self.admin.json("/api/forge/vault/setup", "POST", data=json.dumps({"passphrase": "123456", "confirm": "123456"}).encode())
         self.assertEqual(refused, 400)
         self.assertNotIn("recovery_key", body)
