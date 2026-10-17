@@ -35,14 +35,15 @@ ALLOWED_ROUTES = frozenset({
     ("GET", "/internal/pending-tasks"),
 })
 
-_SAFE_TITLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-()\[\]]{0,180}$")
+_SAFE_TITLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-()\[\]+]{0,180}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _HEX = re.compile(r"^[0-9a-fA-F]{4,64}$")
 _SHA = re.compile(r"^[0-9a-fA-F]{64}$")
 
 _MESSAGES = {
-    "forge_offline": "Forge est hors ligne.",
-    "api_disabled": "Forge répond, mais l’API n’est pas activée.",
+    "forge_offline": "Forge n'est pas démarré.",
+    "api_disabled": "Forge est ouvert, mais son API n'est pas activée.",
+    "catalog_empty": "Forge répond, mais le catalogue utilisable est vide.",
     "forge_timeout": "Forge n’a pas répondu à temps.",
     "forge_auth": "Forge a refusé la lecture.",
     "forge_error": "Forge a renvoyé une réponse inutilisable.",
@@ -270,7 +271,7 @@ def _call(transport, path: str, query: str = ""):
     try:
         return json.loads(bytes(body).decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
-        raise _Probe("forge_error") from None
+        raise _Probe("forge_malformed") from None
 
 
 def _records(value):
@@ -389,6 +390,8 @@ def _build_catalog(transport) -> dict:
     schedulers = _rows(schedulers_raw, _scheduler_row)
     if schedulers is None:
         return _catalog_payload("forge_error")
+    if not models or not samplers or not schedulers:
+        return _catalog_payload("catalog_empty")
     return _catalog_payload("ready", models=models, samplers=samplers, schedulers=schedulers, forge="ready")
 
 

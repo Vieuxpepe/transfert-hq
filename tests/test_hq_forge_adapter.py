@@ -60,9 +60,11 @@ class Adapter(unittest.TestCase):
         transport = Transport({("GET", "/sdapi/v1/samplers"): ConnectionRefusedError()})
         got = F.status(transport=transport)
         self.assertEqual(got["forge"], "offline")
+        self.assertEqual(got["message"], "Forge n'est pas démarré.")
         self.assertIsNone(got["model"])
-        self.assertNotIn("7860", got["message"])
-        self.assertNotIn("\\", json.dumps(got))
+        text = json.dumps(got, ensure_ascii=False)
+        self.assertNotIn("7860", text)
+        self.assertNotIn("\\", text)
 
     def test_timeout_is_error_and_does_not_call_interrupt(self):
         transport = Transport({("GET", "/sdapi/v1/samplers"): TimeoutError()})
@@ -75,6 +77,8 @@ class Adapter(unittest.TestCase):
         transport = Transport({("GET", "/sdapi/v1/samplers"): (404, b"missing")})
         got = F.status(transport=transport)
         self.assertEqual(got["forge"], "api_disabled")
+        self.assertEqual(got["message"], "Forge est ouvert, mais son API n'est pas activée.")
+        self.assertNotEqual(got["code"], "catalog_empty")
 
     def test_http_401_does_not_echo_a_body(self):
         transport = Transport({("GET", "/sdapi/v1/samplers"): (401, b"secret-token")})
@@ -86,6 +90,7 @@ class Adapter(unittest.TestCase):
         transport = Transport({("GET", "/sdapi/v1/samplers"): (200, b"not-json")})
         got = F.status(transport=transport)
         self.assertEqual(got["forge"], "error")
+        self.assertEqual(got["code"], "forge_malformed")
         self.assertNotIn("not-json", json.dumps(got))
 
     def test_ready_strips_model_paths_and_preview(self):
@@ -142,7 +147,10 @@ class Adapter(unittest.TestCase):
         }]
         transport = Transport({
             ("GET", "/sdapi/v1/sd-models"): (200, _body(models)),
-            ("GET", "/sdapi/v1/samplers"): (200, _body([{"name": "Euler", "aliases": ["euler"], "options": {"path": r"C:\x"}}])),
+            ("GET", "/sdapi/v1/samplers"): (200, _body([
+                {"name": "Euler", "aliases": ["euler"], "options": {"path": r"C:\x"}},
+                {"name": "DPM++ 2M", "aliases": ["k_dpmpp_2m"]},
+            ])),
             ("GET", "/sdapi/v1/schedulers"): (200, _body([{"name": "automatic", "label": "Automatic", "aliases": None}])),
         })
         first = F.catalog(transport=transport)
@@ -153,6 +161,7 @@ class Adapter(unittest.TestCase):
         self.assertNotIn("filename", json.dumps(first))
         self.assertNotIn("private", json.dumps(first))
         self.assertEqual(first["samplers"][0]["name"], "Euler")
+        self.assertEqual(first["samplers"][1]["name"], "DPM++ 2M")
         self.assertNotIn("options", first["samplers"][0])
         self.assertEqual(first["schedulers"][0], {"name": "automatic", "label": "Automatic"})
 
@@ -186,7 +195,7 @@ class Adapter(unittest.TestCase):
         transports = []
         for index in range(12):
             transport = Transport({
-                ("GET", "/sdapi/v1/sd-models"): (200, _body([])),
+                ("GET", "/sdapi/v1/sd-models"): (200, _body([{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd"}])),
                 ("GET", "/sdapi/v1/samplers"): (200, _body([{"name": "Euler"}])),
                 ("GET", "/sdapi/v1/schedulers"): (200, _body([{"name": "automatic", "label": "Automatic"}])),
             })
@@ -199,6 +208,18 @@ class Adapter(unittest.TestCase):
         self.assertEqual(again["forge"], "ready")
         self.assertEqual(len(transports[-1].calls), 6)
         self.assertLessEqual(F.cache_entry_count_for_tests(), F.MAX_CACHE_ENTRIES)
+
+    def test_empty_catalog_is_not_a_ready_list(self):
+        transport = Transport({
+            ("GET", "/sdapi/v1/sd-models"): (200, _body([])),
+            ("GET", "/sdapi/v1/samplers"): (200, _body([{"name": "Euler"}])),
+            ("GET", "/sdapi/v1/schedulers"): (200, _body([{"name": "automatic", "label": "Automatic"}])),
+        })
+        got = F.catalog(transport=transport)
+        self.assertEqual(got["code"], "catalog_empty")
+        self.assertEqual(got["forge"], "error")
+        self.assertEqual(got["models"], [])
+        self.assertNotEqual(got["code"], "api_disabled")
 
     def test_upstream_override_rejects_non_loopback(self):
         with self.assertRaises(ValueError):

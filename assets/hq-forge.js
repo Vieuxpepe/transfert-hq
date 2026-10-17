@@ -37,7 +37,10 @@
   let openFrom = null;
   let currentDetail = null;
   let forgeState = "offline";
+  let catalogState = "offline";
   let vaultState = { configured: false, unlocked: false, private_generation: false };
+  const choiceNote = $("forge-choice-note");
+  const reasonEl = $("forge-generate-reason");
   const privateUrls = new Set();
 
   function key() {
@@ -75,21 +78,61 @@
     select.appendChild(node);
   }
 
-  function fillSelect(select, items, pick) {
-    const current = select.value;
+  function fillSelect(select, items, pick, prefer) {
+    const previous = select.value;
     select.replaceChildren();
     items.forEach((item) => {
       const chosen = pick(item);
       if (chosen) option(select, chosen.value, chosen.label);
     });
-    if ([...select.options].some((item) => item.value === current)) select.value = current;
+    const values = [...select.options].map((item) => item.value);
+    if (previous && values.includes(previous)) {
+      select.value = previous;
+      return false;
+    }
+    if (prefer && values.includes(prefer)) select.value = prefer;
+    else if (select.options.length) select.value = select.options[0].value;
+    return !!previous;
+  }
+
+  function clearChoices(text) {
+    [checkpointEl, samplerEl, schedulerEl].forEach((select) => {
+      select.replaceChildren();
+      option(select, "", "Indisponible");
+      select.value = "";
+    });
+    if (choiceNote) choiceNote.textContent = text || "";
+  }
+
+  function describeChoices(stale) {
+    const model = checkpointEl.selectedOptions[0];
+    const sampler = samplerEl.selectedOptions[0];
+    const scheduler = schedulerEl.selectedOptions[0];
+    if (!choiceNote) return;
+    if (!model || !model.value) {
+      choiceNote.textContent = "";
+      return;
+    }
+    const dropped = stale ? " Le choix précédent n'est plus proposé." : "";
+    choiceNote.textContent = "Modèle : " + model.textContent + ". Échantillonneur : " + (sampler ? sampler.textContent : "") + ". Planificateur : " + (scheduler ? scheduler.textContent : "") + "." + dropped;
+  }
+
+  function statusCopy(payload) {
+    const code = payload && payload.code || "";
+    if (code === "forge_offline" || (payload && payload.forge === "offline")) {
+      return "Forge n'est pas démarré. Ouvrez-le avec le lanceur API de ce compte. Le lanceur habituel ne l'active pas.";
+    }
+    if (code === "api_disabled" || (payload && payload.forge === "api_disabled")) {
+      return "Forge est ouvert, mais son API n'est pas activée.";
+    }
+    const model = payload && payload.model ? " Modèle chargé : " + payload.model + "." : "";
+    return ((payload && payload.message) || "Forge est indisponible.") + model;
   }
 
   function setStatus(payload) {
     forgeState = payload && payload.forge || "error";
-    statusEl.dataset.state = forgeState;
-    const model = payload && payload.model ? " Modèle chargé : " + payload.model + "." : "";
-    statusEl.textContent = ((payload && payload.message) || "Forge est indisponible.") + model;
+    statusEl.dataset.state = forgeState === "loading" ? "busy" : forgeState;
+    statusEl.textContent = statusCopy(payload);
     syncActions();
   }
 
@@ -102,26 +145,62 @@
     const privateMode = destination() === "private";
     generateBtn.hidden = privateMode;
     privateBtn.hidden = !privateMode;
-    generateBtn.disabled = !!active || forgeState !== "ready";
-    privateBtn.disabled = !!active || forgeState !== "ready" || !vaultState.private_generation;
+    const ready = !active && forgeState === "ready" && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
+    generateBtn.disabled = !ready;
+    privateBtn.disabled = !ready || !vaultState.private_generation;
+    if (reasonEl) {
+      if (active) reasonEl.textContent = "Générer est désactivé : une génération est déjà en cours.";
+      else if (forgeState === "offline") reasonEl.textContent = "Générer est désactivé : Forge n'est pas démarré.";
+      else if (forgeState === "api_disabled") reasonEl.textContent = "Générer est désactivé : l'API Forge n'est pas activée.";
+      else if (forgeState !== "ready" || catalogState !== "ready") reasonEl.textContent = "Générer est désactivé : le catalogue n'est pas disponible.";
+      else if (!checkpointEl.value) reasonEl.textContent = "Générer est désactivé : aucun modèle n'est choisi.";
+      else if (!samplerEl.value) reasonEl.textContent = "Générer est désactivé : aucun échantillonneur n'est choisi.";
+      else if (!schedulerEl.value) reasonEl.textContent = "Générer est désactivé : aucun planificateur n'est choisi.";
+      else reasonEl.textContent = "";
+    }
     $("forge-normal-results").hidden = privateMode;
     $("forge-normal-gallery").hidden = privateMode;
     studio.classList.toggle("forge-private", privateMode);
   }
 
   async function refreshStatus() {
+    const first = catalogState === "offline" && forgeState === "offline" && !checkpointEl.options.length;
+    if (first) {
+      statusEl.dataset.state = "busy";
+      statusEl.textContent = "Connexion à Forge…";
+    }
     try {
-      setStatus(await api("/api/forge/status"));
+      const status = await api("/api/forge/status");
       const catalog = await api("/api/forge/catalog");
-      if (catalog.forge === "ready") {
-        fillSelect(checkpointEl, catalog.models || [], (item) => item.title ? { value: item.title, label: item.title } : null);
-        fillSelect(samplerEl, catalog.samplers || [], (item) => item.name ? { value: item.name, label: item.name } : null);
-        fillSelect(schedulerEl, catalog.schedulers || [], (item) => item.name ? { value: item.name, label: item.label || item.name } : null);
+      catalogState = catalog && catalog.forge === "ready" ? "ready" : (catalog && catalog.code) || "error";
+      setStatus(status);
+      if (catalog && catalog.forge === "ready") {
+        const staleModel = fillSelect(checkpointEl, catalog.models || [], (item) => item.title ? { value: item.title, label: item.title } : null, "");
+        const staleSampler = fillSelect(samplerEl, catalog.samplers || [], (item) => item.name ? { value: item.name, label: item.name } : null, "Euler a");
+        const stalePlan = fillSelect(schedulerEl, catalog.schedulers || [], (item) => item.name ? { value: item.name, label: item.label || item.name } : null, "automatic");
+        describeChoices(staleModel || staleSampler || stalePlan);
+      } else if (catalog && catalog.code === "catalog_empty") {
+        clearChoices("Forge répond, mais le catalogue utilisable est vide. Ce n'est pas une API absente.");
+      } else if (catalog && (catalog.code === "forge_malformed" || catalog.code === "forge_schema")) {
+        clearChoices("Le catalogue renvoyé par Forge est illisible. Les menus ne sont pas remplis.");
+      } else if (status && (status.code === "forge_offline" || status.forge === "offline")) {
+        clearChoices("Forge n'est pas démarré. Les menus se rempliront quand le lanceur API sera prêt.");
+      } else if (status && (status.code === "api_disabled" || status.forge === "api_disabled")) {
+        clearChoices("Forge est ouvert, mais son API n'est pas activée.");
+      } else {
+        clearChoices("Le catalogue n'est pas disponible. Les menus restent vides.");
       }
+      syncActions();
     } catch (error) {
+      catalogState = "error";
+      forgeState = "error";
       statusEl.dataset.state = "error";
       statusEl.textContent = error.message || "Forge est indisponible.";
+      clearChoices("La lecture de Forge a échoué.");
+      syncActions();
       generateBtn.disabled = true;
+      privateBtn.disabled = true;
+      if (reasonEl) reasonEl.textContent = "Générer est désactivé : Forge n'a pas répondu.";
     }
   }
 
@@ -172,6 +251,8 @@
     const path = "/api/forge/gallery?limit=24" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
     const page = await api(path);
     (page.images || []).forEach((image) => gallery.appendChild(card(image)));
+    const galleryEmpty = $("forge-gallery-empty");
+    if (galleryEmpty) galleryEmpty.hidden = gallery.children.length > 0;
     cursor = page.next_cursor || null;
     moreBtn.hidden = !cursor;
   }
@@ -188,6 +269,8 @@
       } else if (job.images && job.images.length) {
         results.replaceChildren();
         job.images.forEach((image) => results.appendChild(card({ id: image.id, thumb: "/api/forge/gallery/" + image.id + "/thumb" })));
+        const resultsEmpty = $("forge-results-empty");
+        if (resultsEmpty) resultsEmpty.hidden = true;
       }
     }
     syncActions(active);
@@ -245,7 +328,7 @@
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (submitGuard) return;
+    if (submitGuard || generateBtn.disabled) return;
     submitGuard = true;
     generateBtn.disabled = true;
     progressBox.hidden = false;
@@ -282,7 +365,7 @@
       if (pass) pass.focus();
       return;
     }
-    if (!vaultState.private_generation) return;
+    if (!vaultState.private_generation || privateBtn.disabled) return;
     if (submitGuard) return;
     submitGuard = true;
     privateBtn.disabled = true;

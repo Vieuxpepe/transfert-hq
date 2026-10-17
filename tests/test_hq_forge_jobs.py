@@ -117,6 +117,13 @@ class Jobs(unittest.TestCase):
             time.sleep(0.05)
         self.fail(last)
 
+    def test_empty_checkpoint_is_rejected(self):
+        transport = Transport()
+        code, payload = J.create_job(self.root, _body(checkpoint=""), "idempo-empty-ckpt", transport=transport)
+        self.assertEqual(code, 400)
+        self.assertEqual(payload.get("code"), "validation")
+        self.assertFalse(any(url.endswith("/sdapi/v1/txt2img") for url in transport.calls))
+
     def test_submission_never_enables_scripts_or_saving(self):
         body = J.submission_body(_body(), "task(hq-" + "ab" * 12 + ")")
         self.assertNotIn("enable_hr", body)

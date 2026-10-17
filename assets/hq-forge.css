@@ -2,8 +2,9 @@
 #forge-studio{
   --forge-accent:#2f3fbe;
   --forge-accent-text:#fff;
-  display:flex;flex-direction:column;gap:18px;padding-bottom:calc(var(--nav-h) + 12px)
+  gap:18px;padding-bottom:calc(var(--nav-h) + 12px)
 }
+body[data-view="forge"] #forge-studio{display:flex;flex-direction:column}
 @media (prefers-color-scheme: dark){
   #forge-studio{--forge-accent:#9aa6ff;--forge-accent-text:#10131f}
 }
@@ -25,7 +26,14 @@ body.theme-oled #forge-studio, body.theme-midnight #forge-studio{--forge-accent:
 .forge-status[data-state="ready"]{border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
 .forge-status[data-state="busy"]{border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
 #forge-form{display:flex;flex-direction:column;gap:12px}
+.forge-choices{margin:0;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
+.forge-choices legend{padding:0 6px;font-weight:800}
 #forge-form textarea,#forge-form input,#forge-form select{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:var(--tap-min)}
+#forge-form select,#forge-form option{color:var(--text);background:var(--panel)}
+@media (prefers-color-scheme: dark){#forge-studio select{color-scheme:dark}}
+@media (prefers-color-scheme: light){#forge-studio select{color-scheme:light}}
+body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{color-scheme:dark}
+#forge-generate-reason:empty,#forge-choice-note:empty{display:none}
 #forge-prompt{min-height:7.5rem;resize:vertical}
 #forge-advanced{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel-2);padding:0 12px 12px}
 #forge-advanced summary{cursor:pointer;min-height:var(--tap-min);display:flex;align-items:center;font-weight:700}

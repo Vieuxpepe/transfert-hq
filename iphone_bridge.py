@@ -2447,7 +2447,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -5179,8 +5179,8 @@ def render_app() -> bytes:
 
   <div data-panel="forge" id="forge-studio">
     <header class="forge-head">
-      <p class="forge-kicker">Forge Studio</p>
-      <h1>Générer</h1>
+      <p class="forge-kicker">Espace indépendant</p>
+      <h1>Forge Studio</h1>
       <p id="forge-status" class="forge-status" role="status" aria-live="polite">Lecture de Forge…</p>
     </header>
     <div class="forge-dest" role="radiogroup" aria-label="Destination">
@@ -5257,12 +5257,18 @@ def render_app() -> bytes:
         <label for="forge-negative">Prompt négatif</label>
         <textarea id="forge-negative" name="negative_prompt" maxlength="1000" rows="2" placeholder="Ce qu'il faut éviter"></textarea>
       </div>
-      <details id="forge-advanced">
-        <summary>Réglages</summary>
+      <fieldset class="forge-choices">
+        <legend>Modèle et échantillonnage</legend>
         <div class="forge-grid-fields">
           <div class="field"><label for="forge-checkpoint">Modèle</label><select id="forge-checkpoint"></select></div>
           <div class="field"><label for="forge-sampler">Échantillonneur</label><select id="forge-sampler"></select></div>
           <div class="field"><label for="forge-scheduler">Planificateur</label><select id="forge-scheduler"></select></div>
+        </div>
+        <p id="forge-choice-note" class="forge-note" role="status"></p>
+      </fieldset>
+      <details id="forge-advanced">
+        <summary>Réglages avancés</summary>
+        <div class="forge-grid-fields">
           <div class="field"><label for="forge-width">Largeur</label><input id="forge-width" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/></div>
           <div class="field"><label for="forge-height">Hauteur</label><input id="forge-height" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/></div>
           <div class="field"><label for="forge-steps">Pas</label><input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/></div>
@@ -5273,6 +5279,7 @@ def render_app() -> bytes:
         </div>
       </details>
       <p id="forge-cancel-note" class="forge-note">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
+      <p id="forge-generate-reason" class="forge-note" role="status"></p>
       <div class="forge-actions">
         <button type="submit" id="forge-generate">Générer</button>
         <button type="button" id="forge-generate-private" hidden>Générer en privé</button>
@@ -5300,10 +5307,12 @@ def render_app() -> bytes:
     </dialog>
     <section class="forge-block" id="forge-normal-results" aria-labelledby="forge-results-title">
       <h2 id="forge-results-title">Résultat</h2>
+      <p id="forge-results-empty" class="forge-note">Le résultat de la génération apparaîtra ici.</p>
       <div id="forge-results" class="forge-grid"></div>
     </section>
     <section class="forge-block" id="forge-normal-gallery" aria-labelledby="forge-gallery-title">
       <h2 id="forge-gallery-title">Galerie</h2>
+      <p id="forge-gallery-empty" class="forge-note">La galerie HQ est vide. Les images de Forge ne sont pas copiées ici toutes seules.</p>
       <div id="forge-gallery" class="forge-grid"></div>
       <button type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
     </section>

@@ -89,7 +89,22 @@ def main() -> None:
             page.goto(base + "/")
             page.locator('.bottom-nav [data-nav="forge"]').click()
             page.wait_for_function("() => /en ligne/i.test(document.querySelector('#forge-status').textContent || '')")
-            check("Générer" in page.locator("#forge-studio h1").inner_text(), "forge heading")
+            page.locator('[data-nav="carnet"]').click()
+            check(page.evaluate("() => getComputedStyle(document.querySelector('#forge-studio')).display") == "none", "forge panel is hidden while Carnet is open")
+            check(page.locator('[data-panel="carnet"] #forge-generate').count() == 0, "forge generate is not inside the Carnet panel")
+            page.locator('.bottom-nav [data-nav="forge"]').click()
+            page.wait_for_function("() => document.querySelectorAll('#forge-checkpoint option').length > 0 && document.querySelector('#forge-checkpoint').value")
+            check("Forge Studio" in page.locator("#forge-studio h1").inner_text(), "forge heading")
+            page.locator("#forge-checkpoint").focus()
+            check(page.evaluate("() => document.activeElement.id") == "forge-checkpoint", "model selector takes keyboard focus")
+            page.locator("#forge-sampler").focus()
+            check(page.evaluate("() => document.activeElement.id") == "forge-sampler", "sampler selector takes keyboard focus")
+            page.locator("#forge-scheduler").focus()
+            check(page.evaluate("() => document.activeElement.id") == "forge-scheduler", "scheduler selector takes keyboard focus")
+            page.locator("#forge-checkpoint").select_option(index=0)
+            page.locator("#forge-sampler").select_option(index=0)
+            page.locator("#forge-scheduler").select_option(index=0)
+            check("example.safetensors" in page.locator("#forge-choice-note").inner_text(), "selected model is written beside the menu")
             page.locator('input[name="forge-destination"][value="private"]').check()
             page.locator("#forge-vault").wait_for()
             check("compte Windows" in page.locator("#forge-private-note").inner_text(), "private generation waits for a restricted vault")
@@ -161,7 +176,9 @@ def main() -> None:
             check(boxes["button"] <= boxes["nav"] + 1, "generate sits above the nav")
             check(boxes["width"] >= 44 and boxes["height"] >= 44, "generate meets the touch size")
             if SHOTS:
-                phone.screenshot(path=str(SHOTS / "forge-phone.png"), full_page=True)
+                for width, height, name in ((360, 800, "forge-360.png"), (390, 844, "forge-phone.png"), (834, 1112, "forge-834.png"), (1280, 900, "forge-1280.png"), (1440, 900, "forge-1440.png")):
+                    phone.set_viewport_size({"width": width, "height": height})
+                    phone.screenshot(path=str(SHOTS / name), full_page=True)
 
             upload = browser.new_context()
             upload.request.post(base + "/login", form={"pin": info["upload_pin"]}, headers={"origin": base}, max_redirects=0)
@@ -173,6 +190,137 @@ def main() -> None:
             print("FAILED_URLS", " | ".join(failed))
             check(not [item for item in errors if "pageerror" in item or "TypeError" in item or "ReferenceError" in item], "no page errors: " + " | ".join(errors))
             check(not [item for item in failed if "/api/forge/" in item or "/assets/hq-forge" in item], "no forge 404s: " + " | ".join(failed))
+
+            scripted = {}
+
+            def scripted_route(route):
+                payload = scripted["status"] if route.request.url.endswith("/api/forge/status") else scripted["catalog"]
+                route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+            page.route("**/api/forge/status", scripted_route)
+            page.route("**/api/forge/catalog", scripted_route)
+
+            def open_forge():
+                page.locator('[data-nav="carnet"]').click()
+                page.locator('.bottom-nav [data-nav="forge"]').click()
+
+            scripted["status"] = {"forge": "offline", "code": "forge_offline", "message": "Forge n'est pas démarré.", "model": None}
+            scripted["catalog"] = {"forge": "offline", "code": "forge_offline", "message": "Forge n'est pas démarré.", "models": [], "samplers": [], "schedulers": []}
+            open_forge()
+            page.wait_for_function("() => (document.querySelector('#forge-status').textContent || '').includes(\"n'est pas démarré\")")
+            check("lanceur API" in page.locator("#forge-status").inner_text(), "offline explains the owner launcher")
+            check(page.locator("#forge-generate").is_disabled(), "generate stays disabled while Forge is stopped")
+            check("Indisponible" in page.locator("#forge-checkpoint").inner_text(), "stopped Forge does not leave a blank model menu")
+
+            scripted["status"] = {"forge": "api_disabled", "code": "api_disabled", "message": "Forge est ouvert, mais son API n'est pas activée.", "model": None}
+            scripted["catalog"] = {"forge": "api_disabled", "code": "api_disabled", "message": "Forge est ouvert, mais son API n'est pas activée.", "models": [], "samplers": [], "schedulers": []}
+            open_forge()
+            page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes(\"n'est pas activée\")")
+            check("n'est pas activée" in page.locator("#forge-choice-note").inner_text(), "missing API is distinct from an empty catalog")
+
+            scripted["status"] = {"forge": "ready", "code": "ready", "message": "Forge est en ligne.", "model": "example.safetensors"}
+            scripted["catalog"] = {"forge": "error", "code": "catalog_empty", "message": "Forge répond, mais le catalogue utilisable est vide.", "models": [], "samplers": [], "schedulers": []}
+            open_forge()
+            page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('vide')")
+            check(page.locator("#forge-generate").is_disabled(), "empty catalog does not enable generate")
+
+            scripted["catalog"] = {"forge": "error", "code": "forge_malformed", "message": "Forge a renvoyé un JSON illisible.", "models": [], "samplers": [], "schedulers": []}
+            open_forge()
+            page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('illisible')")
+            check("illisible" in page.locator("#forge-choice-note").inner_text(), "malformed catalog is explained")
+
+            scripted["catalog"] = {
+                "forge": "ready", "code": "ready", "message": "Forge est en ligne.",
+                "models": [{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd"}],
+                "samplers": [{"name": "Euler a"}, {"name": "DPM++ 2M"}],
+                "schedulers": [{"name": "automatic", "label": "Automatic"}],
+            }
+            open_forge()
+            page.wait_for_function("() => [...document.querySelectorAll('#forge-sampler option')].some((item) => item.textContent.includes('DPM++'))")
+            page.locator("#forge-sampler").select_option(label="DPM++ 2M")
+            check(page.locator("#forge-generate").is_enabled(), "generate enables when the catalog is valid")
+            scripted["catalog"]["samplers"] = [{"name": "Euler a"}]
+            open_forge()
+            page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('plus proposé')")
+            check("Euler a" == page.locator("#forge-sampler").input_value(), "a removed sampler is not kept")
+
+            page.unroute("**/api/forge/status", scripted_route)
+            page.unroute("**/api/forge/catalog", scripted_route)
+
+            def abort_forge(route):
+                route.abort()
+
+            page.route("**/api/forge/**", abort_forge)
+            open_forge()
+            page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('échoué')")
+            check(page.locator("#forge-generate").is_disabled(), "a lost connection disables generate")
+            check("Indisponible" in page.locator("#forge-checkpoint").inner_text(), "a lost connection clears the model menu")
+
+            page.unroute("**/api/forge/**", abort_forge)
+            open_forge()
+            page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
+            page.locator('input[name="forge-destination"][value="private"]').check()
+            page.locator("#forge-vault-pass").fill("synthetic horse battery")
+            page.locator("#forge-vault-open").click()
+            page.locator("#forge-vault-lock").wait_for()
+            check(page.locator("#forge-generate-private").is_enabled(), "private generate is enabled with a ready catalog and an unlocked vault")
+            failed_refresh = page.evaluate("""() => new Promise((resolve) => {
+              const original = window.fetch.bind(window);
+              window.__forgeFetch = original;
+              window.fetch = (url, options) => {
+                const target = String(url);
+                if (target.includes('/api/forge/status') || target.includes('/api/forge/catalog')) {
+                  return Promise.reject(new TypeError('Failed to fetch'));
+                }
+                if (target.includes('/api/forge/vault/status')) return new Promise(() => {});
+                return original(url, options);
+              };
+              window.hqForgeShow();
+              const watch = () => {
+                const note = document.querySelector('#forge-choice-note').textContent || '';
+                if (!note.includes('échoué')) {
+                  requestAnimationFrame(watch);
+                  return;
+                }
+                const text = (id) => document.querySelector(id).textContent || '';
+                const value = (id) => document.querySelector(id).value;
+                resolve({
+                  generateDisabled: document.querySelector('#forge-generate').disabled,
+                  privateDisabled: document.querySelector('#forge-generate-private').disabled,
+                  checkpoint: text('#forge-checkpoint'),
+                  sampler: text('#forge-sampler'),
+                  scheduler: text('#forge-scheduler'),
+                  checkpointValue: value('#forge-checkpoint'),
+                  samplerValue: value('#forge-sampler'),
+                  schedulerValue: value('#forge-scheduler'),
+                  note,
+                  reason: text('#forge-generate-reason')
+                });
+              };
+              watch();
+            })""")
+            check(failed_refresh["generateDisabled"] and failed_refresh["privateDisabled"], "a lost catalog disables normal and private generate")
+            check(
+                failed_refresh["checkpointValue"] == "" and failed_refresh["samplerValue"] == "" and failed_refresh["schedulerValue"] == ""
+                and "Indisponible" in failed_refresh["checkpoint"] and "Indisponible" in failed_refresh["sampler"] and "Indisponible" in failed_refresh["scheduler"],
+                "a lost catalog makes the selectors unavailable",
+            )
+            check("échoué" in failed_refresh["note"] and "n'a pas répondu" in failed_refresh["reason"], "a lost catalog shows the connection error")
+            page.evaluate("() => { window.fetch = window.__forgeFetch; window.hqForgeShow(); }")
+            page.wait_for_function("() => document.querySelector('#forge-checkpoint').value && !document.querySelector('#forge-generate-private').disabled && !document.querySelector('#forge-generate').disabled")
+            check(page.locator("#forge-generate-private").is_enabled(), "private generate recovers when the catalog returns")
+            check(page.locator("#forge-generate").is_enabled(), "generate recovers when the catalog returns")
+            check("Indisponible" not in page.locator("#forge-sampler").inner_text(), "selectors recover when the catalog returns")
+            check(page.locator("#forge-generate-reason").inner_text() == "", "the connection error clears when the catalog returns")
+
+            loading = admin.new_page()
+            loading.goto(base + "/")
+            connecting = loading.evaluate("""() => {
+              window.fetch = () => new Promise(() => {});
+              window.hqForgeShow();
+              return document.querySelector('#forge-status').textContent || '';
+            }""")
+            check("Connexion à Forge" in connecting, "connecting shows a loading state before the catalog returns")
             browser.close()
         print("PASSED", passed)
     finally:

@@ -38,8 +38,9 @@ _job_timeout = forge.JOB_TIMEOUT_SEC
 _poll_interval = 1.0
 
 _MESSAGES = {
-    "forge_offline": "Forge est hors ligne.",
-    "api_disabled": "Forge répond, mais l’API n’est pas activée.",
+    "forge_offline": "Forge n'est pas démarré.",
+    "api_disabled": "Forge est ouvert, mais son API n'est pas activée.",
+    "catalog_empty": "Forge répond, mais le catalogue utilisable est vide.",
     "forge_timeout": "HQ a cessé d'attendre. Forge n'a pas été interrompu.",
     "forge_busy": "Forge est déjà en train de générer.",
     "bad_image": "Forge a renvoyé une image inutilisable.",
@@ -289,7 +290,7 @@ def _validate(data: dict, catalog: dict) -> dict | tuple:
         return ("validation",)
     checkpoint = data.get("checkpoint") or ""
     titles = {item.get("title") for item in catalog.get("models") or [] if isinstance(item, dict)}
-    if checkpoint and (not isinstance(checkpoint, str) or checkpoint not in titles):
+    if not isinstance(checkpoint, str) or not checkpoint or checkpoint not in titles:
         return ("validation",)
     return {
         "prompt": prompt,
