@@ -144,7 +144,11 @@ def main() -> None:
                 page.screenshot(path=str(SHOTS / "forge-desktop-dark.png"), full_page=True)
             page.locator("#forge-prompt").fill("un cercle rouge")
             page.locator("#forge-prompt").press("Tab")
-            check(page.evaluate("() => document.activeElement.id") == "forge-negative", "tab leaves the prompt")
+            landed = page.evaluate("() => document.activeElement.getAttribute('aria-controls') || document.activeElement.id")
+            check(landed in ("forge-help-negative", "forge-negative"), "tab leaves the prompt")
+            if landed != "forge-negative":
+                page.keyboard.press("Tab")
+            check(page.evaluate("() => document.activeElement.id") == "forge-negative", "the next field after help is the negative prompt")
             page.locator("#forge-generate").click()
             page.locator("#forge-results img").wait_for(timeout=10000)
             check(page.locator("#forge-results img").count() >= 1, "result preview")

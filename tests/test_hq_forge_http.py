@@ -133,6 +133,167 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(self.upload.req("/api/forge/status")[0], 403)
         self.assertEqual(self.upload.req("/api/forge/catalog")[0], 403)
 
+    def _clear_presets(self) -> None:
+        path = self.root / ".hq-forge" / "presets.json"
+        if path.exists():
+            path.unlink()
+
+    def test_presets_are_admin_only_and_csrf_gated(self):
+        self._clear_presets()
+        self.assertEqual(self.anon.req("/api/forge/presets")[0], 401)
+        self.assertEqual(self.upload.req("/api/forge/presets")[0], 403)
+        self.assertEqual(self.admin.req("/api/forge/presets", "POST", b"{}", origin=False)[0], 403)
+        status, payload = self.admin.json("/api/forge/presets")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["presets"], [])
+        body = json.dumps({
+            "action": "create",
+            "name": "Rapide",
+            "kind": "technical",
+            "prompt": "secret de prompt",
+            "negative_prompt": "flou",
+            "checkpoint": "example.safetensors [abcd]",
+            "sampler_name": "Euler a",
+            "scheduler": "automatic",
+            "width": 512,
+            "height": 512,
+            "steps": 20,
+            "cfg_scale": 7,
+            "seed": -1,
+            "n_iter": 1,
+            "batch_size": 1,
+        }).encode()
+        created, stored = self.admin.json("/api/forge/presets", "POST", data=body, headers={"Content-Type": "application/json"})
+        self.assertEqual(created, 200)
+        self.assertEqual(stored["presets"][0]["prompt"], "")
+        self.assertEqual(self.upload.req("/api/forge/presets", "POST", body)[0], 403)
+
+    def _preset(self, **overrides) -> bytes:
+        body = {
+            "action": "create",
+            "name": "Rapide",
+            "kind": "technical",
+            "prompt": "",
+            "negative_prompt": "",
+            "checkpoint": "example.safetensors [abcd]",
+            "sampler_name": "Euler a",
+            "scheduler": "automatic",
+            "width": 512,
+            "height": 512,
+            "steps": 20,
+            "cfg_scale": 7,
+            "seed": -1,
+            "n_iter": 1,
+            "batch_size": 1,
+        }
+        body.update(overrides)
+        return json.dumps(body).encode()
+
+    def test_multiline_prompts_round_trip_over_http(self):
+        self._clear_presets()
+        positive = "  first line  \r\nsecond line\n"
+        negative = "blur\r\nwatermark  "
+        status, stored = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(kind="creative", name="Lignes", prompt=positive, negative_prompt=negative),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(stored["presets"][-1]["prompt"], positive)
+        self.assertEqual(stored["presets"][-1]["negative_prompt"], negative)
+        ident = stored["presets"][-1]["id"]
+        revised = "alpha  beta\r\n\ngamma  "
+        status, updated = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(action="update", id=ident, prompt=revised, negative_prompt="une\ndeux"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        current = next(item for item in updated["presets"] if item["id"] == ident)
+        self.assertEqual(current["prompt"], revised)
+        self.assertEqual(current["negative_prompt"], "une\ndeux")
+        status, listed = self.admin.json("/api/forge/presets")
+        exported = next(item for item in listed["presets"] if item["id"] == ident)
+        self.assertEqual(exported["prompt"], revised)
+        status, removed = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=json.dumps({"action": "delete", "id": ident}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        status, imported = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=json.dumps({"action": "import", "version": 1, "presets": [exported]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        restored = next(item for item in imported["presets"] if item["name"] == "Lignes")
+        self.assertNotEqual(restored["id"], ident)
+        self.assertEqual(restored["prompt"], revised)
+        self.assertEqual(restored["negative_prompt"], "une\ndeux")
+        status, again = self.admin.json("/api/forge/presets")
+        reloaded = next(item for item in again["presets"] if item["name"] == "Lignes")
+        self.assertEqual(reloaded["prompt"], revised)
+
+    def test_http_presets_keep_multiline_negatives_and_reject_controls_and_overlong_text(self):
+        self._clear_presets()
+        status, technical = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(name="Technique lignes", prompt="first\nsecond", negative_prompt="blur\nwatermark"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        stored = next(item for item in technical["presets"] if item["name"] == "Technique lignes")
+        self.assertEqual(stored["prompt"], "")
+        self.assertEqual(stored["negative_prompt"], "blur\nwatermark")
+        status, creative = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(kind="creative", name="Créatif lignes", prompt="première\ndeuxième", negative_prompt="flou\r\ntexte"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        creative_row = next(item for item in creative["presets"] if item["name"] == "Créatif lignes")
+        self.assertEqual(creative_row["prompt"], "première\ndeuxième")
+        self.assertEqual(creative_row["negative_prompt"], "flou\r\ntexte")
+        for prompt in ("a\x00b", "\x01", "\x7f"):
+            status, _payload = self.admin.json(
+                "/api/forge/presets", "POST",
+                data=self._preset(kind="creative", name="Interdit", prompt=prompt),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 400)
+        status, _payload = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(name="Négatif interdit", negative_prompt="blur\x00watermark"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        status, _payload = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(name="Nom\nligne", prompt="ok"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        status, accepted = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(kind="creative", name="Pile", prompt=("x" * 1999) + "\n", negative_prompt="y" * 1000),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(next(item for item in accepted["presets"] if item["name"] == "Pile")["prompt"]), 2000)
+        status, _payload = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(kind="creative", name="Trop long", prompt=("x" * 2000) + "\n"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        status, _payload = self.admin.json(
+            "/api/forge/presets", "POST",
+            data=self._preset(name="Négatif trop long", negative_prompt=("y" * 999) + "\r\n"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+
     def test_post_is_csrf_gated_and_empty_generation_is_rejected(self):
         self.assertEqual(self.admin.req("/api/forge/status", "POST", b"{}", origin=False)[0], 403)
         self.assertEqual(self.admin.req("/api/forge/jobs", "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)

@@ -105,16 +105,16 @@
   }
 
   function describeChoices(stale) {
+    if (!choiceNote) return;
+    const parts = [];
     const model = checkpointEl.selectedOptions[0];
     const sampler = samplerEl.selectedOptions[0];
     const scheduler = schedulerEl.selectedOptions[0];
-    if (!choiceNote) return;
-    if (!model || !model.value) {
-      choiceNote.textContent = "";
-      return;
-    }
+    if (model && model.value) parts.push("Modèle : " + model.textContent);
+    if (sampler && sampler.value) parts.push("Échantillonneur : " + sampler.textContent);
+    if (scheduler && scheduler.value) parts.push("Planificateur : " + scheduler.textContent);
     const dropped = stale ? " Le choix précédent n'est plus proposé." : "";
-    choiceNote.textContent = "Modèle : " + model.textContent + ". Échantillonneur : " + (sampler ? sampler.textContent : "") + ". Planificateur : " + (scheduler ? scheduler.textContent : "") + "." + dropped;
+    choiceNote.textContent = parts.length ? parts.join(". ") + "." + dropped : "";
   }
 
   function statusCopy(payload) {
@@ -713,8 +713,317 @@
     loadVaultGallery().catch(() => {});
   });
 
+  let presets = [];
+  let loadedPreset = null;
+  let cleanSnapshot = "";
+  let editorMode = "create";
+  const presetList = $("forge-preset-list");
+  const presetState = $("forge-preset-state");
+  const presetEditor = $("forge-preset-editor");
+
+  function presetKind() {
+    const chosen = document.querySelector('input[name="forge-preset-kind"]:checked');
+    return chosen && chosen.value === "creative" ? "creative" : "technical";
+  }
+
+  function currentSettings(kind) {
+    return {
+      kind: kind,
+      prompt: kind === "creative" ? promptEl.value : "",
+      negative_prompt: negativeEl.value,
+      checkpoint: checkpointEl.value,
+      sampler_name: samplerEl.value,
+      scheduler: schedulerEl.value,
+      width: Number($("forge-width").value),
+      height: Number($("forge-height").value),
+      steps: Number($("forge-steps").value),
+      cfg_scale: Number($("forge-cfg").value),
+      seed: forgeSeed(),
+      n_iter: Number($("forge-iter").value),
+      batch_size: 1
+    };
+  }
+
+  function snapshotOf(settings) {
+    const copy = Object.assign({}, settings);
+    if (copy.kind !== "creative") copy.prompt = "";
+    return JSON.stringify(copy);
+  }
+
+  function renderPresetList() {
+    const current = presetList.value;
+    presetList.replaceChildren();
+    option(presetList, "", "Aucun");
+    presets.forEach((item) => option(presetList, item.id, item.name + (item.kind === "creative" ? " · créatif" : " · technique")));
+    if ([...presetList.options].some((item) => item.value === current)) presetList.value = current;
+  }
+
+  function selectedPreset() {
+    return presets.find((item) => item.id === presetList.value) || null;
+  }
+
+  function refreshPresetState() {
+    $("forge-preset-update").disabled = !loadedPreset;
+    $("forge-preset-rename").disabled = !selectedPreset();
+    $("forge-preset-duplicate").disabled = !selectedPreset();
+    $("forge-preset-delete").disabled = !selectedPreset();
+    if (!loadedPreset) return;
+    const dirty = snapshotOf(currentSettings(loadedPreset.kind)) !== cleanSnapshot;
+    const partial = presetState.dataset.partial || "";
+    presetState.textContent = (dirty ? "Modifié par rapport à « " + loadedPreset.name + " ». " : "Correspond à « " + loadedPreset.name + " ». ") + partial;
+  }
+
+  async function loadPresetList() {
+    const data = await api("/api/forge/presets");
+    presets = data.presets || [];
+    renderPresetList();
+    if (data.storage === "malformed") presetState.textContent = data.message || "Le fichier de préréglages est illisible.";
+    else if (!loadedPreset) presetState.textContent = presets.length ? "" : "Aucun préréglage enregistré.";
+    refreshPresetState();
+  }
+
+  function applyPreset(preset) {
+    const missing = [];
+    const take = (select, value, label) => {
+      if ([...select.options].some((item) => item.value === value)) {
+        select.value = value;
+        return;
+      }
+      let empty = [...select.options].find((item) => item.value === "");
+      if (!empty) {
+        empty = document.createElement("option");
+        empty.value = "";
+        select.prepend(empty);
+      }
+      empty.textContent = "Indisponible";
+      select.value = "";
+      missing.push(label + " « " + value + " »");
+    };
+    take(checkpointEl, preset.checkpoint, "modèle");
+    take(samplerEl, preset.sampler_name, "échantillonneur");
+    take(schedulerEl, preset.scheduler, "planificateur");
+    if (preset.include_prompt) promptEl.value = preset.prompt || "";
+    negativeEl.value = preset.negative_prompt || "";
+    $("forge-width").value = String(preset.width);
+    $("forge-height").value = String(preset.height);
+    $("forge-steps").value = String(preset.steps);
+    $("forge-cfg").value = String(preset.cfg_scale);
+    $("forge-seed").value = String(preset.seed);
+    $("forge-iter").value = String(preset.n_iter);
+    describeChoices(false);
+    syncActions();
+    loadedPreset = preset;
+    cleanSnapshot = snapshotOf(currentSettings(preset.kind));
+    presetState.dataset.partial = missing.length ? "Introuvable : " + missing.join(", ") + "." : "";
+    presetList.value = preset.id;
+    refreshPresetState();
+  }
+
+  function syncPresetPrivacy() {
+    const creative = editorMode === "create" && presetKind() === "creative";
+    $("forge-preset-privacy").hidden = !creative;
+    $("forge-preset-privacy-vault").hidden = !creative || destination() !== "private";
+    const ack = $("forge-preset-privacy-ack");
+    if (!creative) ack.checked = false;
+    $("forge-preset-confirm").disabled = creative && !ack.checked;
+  }
+
+  function openPresetEditor(mode) {
+    editorMode = mode;
+    const current = mode === "rename" ? selectedPreset() : null;
+    $("forge-preset-name").value = current ? current.name : "";
+    const kind = current && current.kind === "creative" ? "creative" : "technical";
+    document.querySelector('input[name="forge-preset-kind"][value="' + kind + '"]').checked = true;
+    document.querySelectorAll('input[name="forge-preset-kind"]').forEach((input) => { input.disabled = mode === "rename"; });
+    $("forge-preset-privacy-ack").checked = false;
+    presetEditor.hidden = false;
+    syncPresetPrivacy();
+    $("forge-preset-name").focus();
+  }
+
+  async function commitPresetUpdate() {
+    await postPreset(Object.assign({ action: "update", id: loadedPreset.id }, currentSettings(loadedPreset.kind)));
+    const fresh = presets.find((item) => item.id === loadedPreset.id);
+    if (fresh) applyPreset(fresh);
+  }
+
+  async function postPreset(body) {
+    const data = await api("/api/forge/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    presets = data.presets || [];
+    renderPresetList();
+    return data;
+  }
+
+  if (presetList) {
+    [checkpointEl, samplerEl, schedulerEl].forEach((select) => {
+      select.addEventListener("change", () => {
+        describeChoices(false);
+        syncActions();
+        refreshPresetState();
+      });
+    });
+    [promptEl, negativeEl, $("forge-width"), $("forge-height"), $("forge-steps"), $("forge-cfg"), $("forge-seed"), $("forge-iter")].forEach((field) => {
+      field.addEventListener("input", refreshPresetState);
+      field.addEventListener("change", refreshPresetState);
+    });
+    presetList.addEventListener("change", refreshPresetState);
+    $("forge-preset-load").addEventListener("click", () => {
+      const item = selectedPreset();
+      if (item) applyPreset(item);
+    });
+    $("forge-preset-save").addEventListener("click", () => openPresetEditor("create"));
+    $("forge-preset-rename").addEventListener("click", () => { if (selectedPreset()) openPresetEditor("rename"); });
+    $("forge-preset-cancel").addEventListener("click", () => { presetEditor.hidden = true; });
+    document.querySelectorAll('input[name="forge-preset-kind"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        $("forge-preset-privacy-ack").checked = false;
+        syncPresetPrivacy();
+      });
+    });
+    $("forge-preset-privacy-ack").addEventListener("change", syncPresetPrivacy);
+    presetEditor.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (editorMode === "create" && presetKind() === "creative" && !$("forge-preset-privacy-ack").checked) {
+        syncPresetPrivacy();
+        return;
+      }
+      const name = $("forge-preset-name").value.trim();
+      try {
+        if (editorMode === "rename") {
+          await postPreset({ action: "rename", id: selectedPreset().id, name: name });
+          if (loadedPreset && loadedPreset.id === presetList.value) loadedPreset.name = name;
+        } else {
+          await postPreset(Object.assign({ action: "create", name: name }, currentSettings(presetKind())));
+          const created = presets.find((item) => item.name === name);
+          if (created) applyPreset(created);
+        }
+        presetEditor.hidden = true;
+        refreshPresetState();
+      } catch (error) {
+        presetState.textContent = error.message || "Le préréglage n'a pas été enregistré.";
+      }
+    });
+    $("forge-preset-update").addEventListener("click", async () => {
+      if (!loadedPreset) return;
+      if (loadedPreset.kind === "creative") {
+        $("forge-preset-update-gate").hidden = false;
+        $("forge-preset-update-vault").hidden = destination() !== "private";
+        $("forge-preset-update-ack").checked = false;
+        $("forge-preset-update-confirm").disabled = true;
+        return;
+      }
+      try {
+        await commitPresetUpdate();
+      } catch (error) {
+        presetState.textContent = error.message || "La mise à jour a échoué.";
+      }
+    });
+    $("forge-preset-update-ack").addEventListener("change", () => {
+      $("forge-preset-update-confirm").disabled = !$("forge-preset-update-ack").checked;
+    });
+    $("forge-preset-update-cancel").addEventListener("click", () => { $("forge-preset-update-gate").hidden = true; });
+    $("forge-preset-update-confirm").addEventListener("click", async () => {
+      if (!loadedPreset || loadedPreset.kind !== "creative" || !$("forge-preset-update-ack").checked) return;
+      try {
+        await commitPresetUpdate();
+        $("forge-preset-update-gate").hidden = true;
+      } catch (error) {
+        presetState.textContent = error.message || "La mise à jour a échoué.";
+      }
+    });
+    $("forge-preset-duplicate").addEventListener("click", async () => {
+      const item = selectedPreset();
+      if (!item) return;
+      try {
+        await postPreset({ action: "duplicate", id: item.id });
+        refreshPresetState();
+      } catch (error) {
+        presetState.textContent = error.message || "La copie a échoué.";
+      }
+    });
+    $("forge-preset-delete").addEventListener("click", async () => {
+      const item = selectedPreset();
+      if (!item || !window.confirm("Supprimer le préréglage « " + item.name + " » ?")) return;
+      try {
+        await postPreset({ action: "delete", id: item.id });
+        if (loadedPreset && loadedPreset.id === item.id) loadedPreset = null;
+        presetState.dataset.partial = "";
+        presetState.textContent = "Préréglage supprimé.";
+        refreshPresetState();
+      } catch (error) {
+        presetState.textContent = error.message || "La suppression a échoué.";
+      }
+    });
+    $("forge-preset-export").addEventListener("click", () => {
+      $("forge-preset-export-gate").hidden = false;
+      $("forge-preset-export-vault").hidden = destination() !== "private";
+    });
+    $("forge-preset-export-cancel").addEventListener("click", () => { $("forge-preset-export-gate").hidden = true; });
+    $("forge-preset-export-confirm").addEventListener("click", async () => {
+      if ($("forge-preset-export-gate").hidden) return;
+      const data = await api("/api/forge/presets");
+      const blob = new Blob([JSON.stringify({ version: data.version, presets: data.presets }, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "forge-presets.json";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      $("forge-preset-export-gate").hidden = true;
+    });
+    document.querySelectorAll('input[name="forge-destination"]').forEach((input) => {
+      input.addEventListener("change", () => {
+        if (!$("forge-preset-privacy").hidden) $("forge-preset-privacy-ack").checked = false;
+        if (!$("forge-preset-update-gate").hidden) {
+          $("forge-preset-update-ack").checked = false;
+          $("forge-preset-update-confirm").disabled = true;
+        }
+        syncPresetPrivacy();
+        $("forge-preset-privacy-vault").hidden = destination() !== "private" || $("forge-preset-privacy").hidden;
+        $("forge-preset-export-vault").hidden = destination() !== "private";
+        $("forge-preset-update-vault").hidden = destination() !== "private";
+      });
+    });
+    $("forge-preset-import").addEventListener("change", async () => {
+      const file = $("forge-preset-import").files && $("forge-preset-import").files[0];
+      $("forge-preset-import").value = "";
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        await postPreset({ action: "import", version: parsed.version, presets: parsed.presets });
+        presetState.textContent = "Import terminé.";
+      } catch (error) {
+        presetState.textContent = error.message || "L'import a été refusé.";
+      }
+    });
+    document.querySelectorAll("#forge-studio .forge-help").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const wrap = button.closest(".forge-help-wrap");
+        const open = wrap.classList.contains("is-open");
+        document.querySelectorAll("#forge-studio .forge-help-wrap.is-open").forEach((item) => {
+          item.classList.remove("is-open");
+          const control = item.querySelector(".forge-help");
+          if (control) control.setAttribute("aria-expanded", "false");
+        });
+        if (!open) {
+          wrap.classList.add("is-open");
+          button.setAttribute("aria-expanded", "true");
+        }
+      });
+    });
+    refreshPresetState();
+  }
+
   window.hqForgeShow = function () {
-    refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true)])).catch(() => {});
+    refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});
   };
   window.hqForgeHide = function () {
     clearTimeout(pollTimer);

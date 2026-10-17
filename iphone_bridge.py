@@ -44,6 +44,7 @@ import hq_events
 import hq_forge
 import hq_forge_gallery
 import hq_forge_jobs
+import hq_forge_presets
 import hq_forge_vault
 
 PORT = 8765
@@ -5184,8 +5185,16 @@ def render_app() -> bytes:
       <p id="forge-status" class="forge-status" role="status" aria-live="polite">Lecture de Forge…</p>
     </header>
     <div class="forge-dest" role="radiogroup" aria-label="Destination">
-      <label><input type="radio" name="forge-destination" value="normal" checked/> Galerie</label>
-      <label><input type="radio" name="forge-destination" value="private"/> Coffre privé</label>
+      <div class="forge-help-wrap">
+        <label><input type="radio" name="forge-destination" value="normal" checked/> Galerie</label>
+        <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-gallery">Aide</button>
+        <p id="forge-help-gallery" class="forge-help-pop" role="tooltip">L'image est enregistrée dans la galerie de cet HQ. Elle n'entre pas dans le coffre privé.</p>
+      </div>
+      <div class="forge-help-wrap">
+        <label><input type="radio" name="forge-destination" value="private"/> Coffre privé</label>
+        <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-private">Aide</button>
+        <p id="forge-help-private" class="forge-help-pop" role="tooltip">L'image n'est gardée que si le coffre est déverrouillé et limité à ce compte Windows. Un préréglage n'enregistre jamais ces images ni la clé du coffre. Un préréglage créatif copie le prompt en clair, hors du coffre.</p>
+      </div>
     </div>
     <section id="forge-vault" class="forge-vault" hidden>
       <div class="forge-vault-banner">
@@ -5248,34 +5257,121 @@ def render_app() -> bytes:
         </section>
       </div>
     </section>
+    <section id="forge-presets" class="forge-presets" aria-labelledby="forge-presets-title">
+      <h2 id="forge-presets-title">Préréglages</h2>
+      <div class="field">
+        <label for="forge-preset-list">Préréglage enregistré</label>
+        <select id="forge-preset-list"><option value="">Aucun</option></select>
+      </div>
+      <p id="forge-preset-state" class="forge-note" role="status"></p>
+      <div class="forge-actions">
+        <button type="button" id="forge-preset-load">Charger</button>
+        <button type="button" id="forge-preset-save">Enregistrer</button>
+        <button type="button" id="forge-preset-update">Mettre à jour</button>
+        <button type="button" id="forge-preset-rename">Renommer</button>
+        <button type="button" id="forge-preset-duplicate">Dupliquer</button>
+        <button type="button" id="forge-preset-delete" class="secondary">Supprimer</button>
+        <button type="button" id="forge-preset-export" class="secondary">Exporter</button>
+        <label class="secondary forge-file" for="forge-preset-import">Importer<input id="forge-preset-import" type="file" accept="application/json,.json"/></label>
+      </div>
+      <div id="forge-preset-export-gate" class="forge-privacy" hidden>
+        <p id="forge-preset-export-plain">Le fichier exporté contient les prompts en clair. Le coffre privé ne les chiffre pas.</p>
+        <p id="forge-preset-export-vault" hidden>Génération privée : cet export n'est pas une sauvegarde du coffre. Les prompts du fichier restent lisibles.</p>
+        <div class="forge-actions">
+          <button type="button" id="forge-preset-export-confirm">Télécharger le fichier en clair</button>
+          <button type="button" id="forge-preset-export-cancel" class="secondary">Annuler</button>
+        </div>
+      </div>
+      <div id="forge-preset-update-gate" class="forge-privacy" hidden>
+        <p id="forge-preset-update-plain">La mise à jour copie le prompt en clair dans les préréglages, hors du coffre privé.</p>
+        <p id="forge-preset-update-vault" hidden>Génération privée : le coffre ne protège pas cette copie. Le prompt actuel quitte le coffre et reste lisible.</p>
+        <label class="forge-privacy-ack" for="forge-preset-update-ack"><input id="forge-preset-update-ack" type="checkbox"/> Je copie ce prompt en clair, hors du coffre</label>
+        <div class="forge-actions">
+          <button type="button" id="forge-preset-update-confirm" disabled>Confirmer la mise à jour</button>
+          <button type="button" id="forge-preset-update-cancel" class="secondary">Annuler</button>
+        </div>
+      </div>
+      <form id="forge-preset-editor" hidden>
+        <div class="field"><label for="forge-preset-name">Nom</label><input id="forge-preset-name" maxlength="60" autocomplete="off"/></div>
+        <div class="forge-dest" role="radiogroup" aria-label="Contenu du préréglage">
+          <label><input type="radio" name="forge-preset-kind" value="technical" checked/> Technique, sans le prompt</label>
+          <label><input type="radio" name="forge-preset-kind" value="creative"/> Créatif, avec le prompt</label>
+        </div>
+        <div id="forge-preset-privacy" class="forge-privacy" hidden>
+          <p id="forge-preset-privacy-plain">Le prompt est enregistré en clair dans les préréglages. Ce n'est pas un stockage chiffré.</p>
+          <p id="forge-preset-privacy-vault" hidden>Génération privée : le coffre privé ne chiffre pas les préréglages. Confirmer copie ce prompt hors du coffre, où il reste lisible.</p>
+          <label class="forge-privacy-ack" for="forge-preset-privacy-ack"><input id="forge-preset-privacy-ack" type="checkbox"/> J'enregistre ce prompt en clair, hors du coffre</label>
+        </div>
+        <div class="forge-actions">
+          <button type="submit" id="forge-preset-confirm">Confirmer</button>
+          <button type="button" id="forge-preset-cancel" class="secondary">Annuler</button>
+        </div>
+      </form>
+    </section>
     <form id="forge-form">
       <div class="field">
         <label for="forge-prompt">Prompt</label>
         <textarea id="forge-prompt" name="prompt" required maxlength="2000" rows="4" placeholder="Décris l'image"></textarea>
       </div>
       <div class="field">
-        <label for="forge-negative">Prompt négatif</label>
+        <div class="forge-label-row">
+          <label for="forge-negative">Prompt négatif</label>
+          <span class="forge-help-wrap">
+            <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-negative">Aide</button>
+            <p id="forge-help-negative" class="forge-help-pop" role="tooltip">Décrivez ce qu'il faut éviter, par exemple le flou ou le texte illisible. Ce champ ne remplace pas le prompt.</p>
+          </span>
+        </div>
         <textarea id="forge-negative" name="negative_prompt" maxlength="1000" rows="2" placeholder="Ce qu'il faut éviter"></textarea>
       </div>
       <fieldset class="forge-choices">
         <legend>Modèle et échantillonnage</legend>
         <div class="forge-grid-fields">
-          <div class="field"><label for="forge-checkpoint">Modèle</label><select id="forge-checkpoint"></select></div>
-          <div class="field"><label for="forge-sampler">Échantillonneur</label><select id="forge-sampler"></select></div>
-          <div class="field"><label for="forge-scheduler">Planificateur</label><select id="forge-scheduler"></select></div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-checkpoint">Modèle</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-checkpoint">Aide</button><p id="forge-help-checkpoint" class="forge-help-pop" role="tooltip">Le modèle dessine l'image. Un modèle illustré et un modèle photo ne donnent pas le même résultat.</p></span></div>
+            <select id="forge-checkpoint"></select>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-sampler">Échantillonneur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-sampler">Aide</button><p id="forge-help-sampler" class="forge-help-pop" role="tooltip">C'est la méthode qui construit l'image pas à pas. Euler a est un bon départ. Les méthodes DPM sont souvent plus nettes.</p></span></div>
+            <select id="forge-sampler"></select>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-scheduler">Planificateur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-scheduler">Aide</button><p id="forge-help-scheduler" class="forge-help-pop" role="tooltip">Il répartit les pas du début à la fin. Automatic convient presque toujours.</p></span></div>
+            <select id="forge-scheduler"></select>
+          </div>
         </div>
         <p id="forge-choice-note" class="forge-note" role="status"></p>
       </fieldset>
       <details id="forge-advanced">
         <summary>Réglages avancés</summary>
         <div class="forge-grid-fields">
-          <div class="field"><label for="forge-width">Largeur</label><input id="forge-width" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/></div>
-          <div class="field"><label for="forge-height">Hauteur</label><input id="forge-height" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/></div>
-          <div class="field"><label for="forge-steps">Pas</label><input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/></div>
-          <div class="field"><label for="forge-cfg">CFG</label><input id="forge-cfg" type="number" min="1" max="15" step="0.5" value="7" inputmode="decimal"/></div>
-          <div class="field"><label for="forge-seed">Graine</label><input id="forge-seed" type="number" min="-1" max="4294967295" step="1" value="-1" inputmode="numeric"/></div>
-          <div class="field"><label for="forge-iter">Itérations</label><select id="forge-iter"><option value="1" selected>1</option><option value="2">2</option></select></div>
-          <div class="field"><label for="forge-batch">Taille de lot</label><input id="forge-batch" type="text" value="1" readonly tabindex="-1"/></div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-width">Largeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-width">Aide</button><p id="forge-help-width" class="forge-help-pop" role="tooltip">Largeur en pixels, multiple de 64. Une image plus grande demande plus de mémoire.</p></span></div>
+            <input id="forge-width" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-height">Hauteur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-height">Aide</button><p id="forge-help-height" class="forge-help-pop" role="tooltip">Hauteur en pixels, multiple de 64. Augmentez-la avec la largeur si vous voulez une image plus grande.</p></span></div>
+            <input id="forge-height" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-steps">Pas</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-steps">Aide</button><p id="forge-help-steps" class="forge-help-pop" role="tooltip">Plus de pas affine l'image et prend plus de temps. Vingt est un équilibre courant.</p></span></div>
+            <input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-cfg">CFG</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-cfg">Aide</button><p id="forge-help-cfg" class="forge-help-pop" role="tooltip">Indique à quel point Forge suit le prompt. Autour de 7, le prompt guide sans figer l'image.</p></span></div>
+            <input id="forge-cfg" type="number" min="1" max="15" step="0.5" value="7" inputmode="decimal"/>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-seed">Graine</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-seed">Aide</button><p id="forge-help-seed" class="forge-help-pop" role="tooltip">-1 tire une image différente à chaque fois. Un nombre fixe refait une base proche si les autres réglages ne changent pas.</p></span></div>
+            <input id="forge-seed" type="number" min="-1" max="4294967295" step="1" value="-1" inputmode="numeric"/>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-iter">Itérations</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-iter">Aide</button><p id="forge-help-iter" class="forge-help-pop" role="tooltip">Nombre d'images lancées l'une après l'autre. Deux prend environ deux fois plus de temps.</p></span></div>
+            <select id="forge-iter"><option value="1" selected>1</option><option value="2">2</option></select>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-batch">Taille de lot</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-batch">Aide</button><p id="forge-help-batch" class="forge-help-pop" role="tooltip">HQ envoie une seule image à la fois. Ce champ reste à 1.</p></span></div>
+            <input id="forge-batch" type="text" value="1" readonly tabindex="-1"/>
+          </div>
         </div>
       </details>
       <p id="forge-cancel-note" class="forge-note">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
@@ -6233,6 +6329,10 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/forge/catalog":
             self._json(200, hq_forge.catalog())
             return True
+        presets = hq_forge_presets.serve_get(ROOT, raw)
+        if presets is not None:
+            self._json(presets[0], presets[1])
+            return True
         served = hq_forge_gallery.serve_file(ROOT, raw)
         if served is not None:
             code, body, ctype, headers = served
@@ -6281,7 +6381,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": "JSON invalide"})
             return True
-        if length < 0 or length > 65536:
+        max_length = 262144 if raw == "/api/forge/presets" else 65536
+        if length < 0 or length > max_length:
             self._json(413, {"error": "Requête trop grande."})
             return True
         blob = self.rfile.read(length) if length else b"{}"
@@ -6303,6 +6404,10 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if raw.startswith("/api/forge/vault/"):
             self._forge_vault_post(raw, data, token)
+            return True
+        presets = hq_forge_presets.serve_post(ROOT, raw, data)
+        if presets is not None:
+            self._json(presets[0], presets[1])
             return True
         got = hq_forge_jobs.serve_post(ROOT, raw, data, (self.headers.get("Idempotency-Key") or "").strip(), token)
         if got is None:
