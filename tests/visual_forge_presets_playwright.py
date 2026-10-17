@@ -69,6 +69,7 @@ def main() -> None:
             page.goto(base + "/")
             page.locator('.bottom-nav [data-nav="forge"]').click()
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
+            page.evaluate("() => { document.querySelector('#forge-sampling').open = true; document.querySelector('#forge-negative-fold').open = true; }")
             page.locator("#forge-sampler").select_option(label="DPM++ 2M")
             check("DPM++ 2M" in page.locator("#forge-choice-note").inner_text(), "selection sentence updates immediately")
             page.locator("#forge-scheduler").select_option(label="Karras")
@@ -131,6 +132,7 @@ def main() -> None:
             page.reload()
             page.locator('.bottom-nav [data-nav="forge"]').click()
             page.wait_for_function("() => [...document.querySelectorAll('#forge-preset-list option')].some((item) => item.textContent.includes('Créatif'))")
+            page.evaluate("() => { document.querySelector('#forge-sampling').open = true; document.querySelector('#forge-negative-fold').open = true; }")
             check(any("Créatif" in text for text in page.locator("#forge-preset-list option").all_inner_texts()), "presets remain after a refresh")
             page.locator("#forge-preset-list").select_option(label="Créatif · créatif")
             page.locator("#forge-prompt").fill("")
@@ -177,6 +179,7 @@ def main() -> None:
             page.wait_for_function("() => (document.querySelector('#forge-preset-state').textContent || '').includes('Correspond')")
             check("Correspond" in page.locator("#forge-preset-state").inner_text(), "updating the preset stores the repaired sampler")
 
+            page.evaluate("() => { document.querySelector('#forge-sampling').open = true; }")
             help_button = page.locator('#forge-help-sampler').locator("xpath=preceding-sibling::button")
             help_button.focus()
             check(page.locator("#forge-help-sampler").evaluate("node => getComputedStyle(node).display") == "block", "keyboard focus shows sampler help")

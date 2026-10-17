@@ -316,6 +316,8 @@ class ForgeHttp(unittest.TestCase):
                 body = [{"name": "Euler", "aliases": []}]
             elif url.endswith("/sdapi/v1/schedulers"):
                 body = [{"name": "automatic", "label": "Automatic"}]
+            elif url.endswith("/sdapi/v1/upscalers"):
+                body = [{"name": "R-ESRGAN 4x+"}, {"name": "None"}]
             else:
                 raise AssertionError(url)
             return 200, json.dumps(body).encode("utf-8")

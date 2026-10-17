@@ -152,11 +152,13 @@ class Adapter(unittest.TestCase):
                 {"name": "DPM++ 2M", "aliases": ["k_dpmpp_2m"]},
             ])),
             ("GET", "/sdapi/v1/schedulers"): (200, _body([{"name": "automatic", "label": "Automatic", "aliases": None}])),
+            ("GET", "/sdapi/v1/upscalers"): (200, _body([{"name": "R-ESRGAN 4x+"}, {"name": "None"}, {"name": "../secret"}])),
         })
         first = F.catalog(transport=transport)
         second = F.catalog(transport=transport)
         self.assertEqual(first, second)
-        self.assertEqual(len(transport.calls), 3)
+        self.assertEqual(len(transport.calls), 4)
+        self.assertEqual(first["upscalers"], [{"name": "R-ESRGAN 4x+"}])
         self.assertEqual(set(first["models"][0]), {"title", "model_name", "hash", "sha256"})
         self.assertNotIn("filename", json.dumps(first))
         self.assertNotIn("private", json.dumps(first))
@@ -198,6 +200,7 @@ class Adapter(unittest.TestCase):
                 ("GET", "/sdapi/v1/sd-models"): (200, _body([{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd"}])),
                 ("GET", "/sdapi/v1/samplers"): (200, _body([{"name": "Euler"}])),
                 ("GET", "/sdapi/v1/schedulers"): (200, _body([{"name": "automatic", "label": "Automatic"}])),
+                ("GET", "/sdapi/v1/upscalers"): (200, _body([{"name": "Lanczos"}])),
             })
             transport.forge_cache_key = f"slot-{index}"
             transports.append(transport)
@@ -206,7 +209,7 @@ class Adapter(unittest.TestCase):
         time.sleep(0.08)
         again = F.catalog(transport=transports[-1])
         self.assertEqual(again["forge"], "ready")
-        self.assertEqual(len(transports[-1].calls), 6)
+        self.assertEqual(len(transports[-1].calls), 8)
         self.assertLessEqual(F.cache_entry_count_for_tests(), F.MAX_CACHE_ENTRIES)
 
     def test_empty_catalog_is_not_a_ready_list(self):
@@ -214,9 +217,11 @@ class Adapter(unittest.TestCase):
             ("GET", "/sdapi/v1/sd-models"): (200, _body([])),
             ("GET", "/sdapi/v1/samplers"): (200, _body([{"name": "Euler"}])),
             ("GET", "/sdapi/v1/schedulers"): (200, _body([{"name": "automatic", "label": "Automatic"}])),
+            ("GET", "/sdapi/v1/upscalers"): (404, _body({})),
         })
         got = F.catalog(transport=transport)
         self.assertEqual(got["code"], "catalog_empty")
+        self.assertEqual(got["upscalers"], [])
         self.assertEqual(got["forge"], "error")
         self.assertEqual(got["models"], [])
         self.assertNotEqual(got["code"], "api_disabled")

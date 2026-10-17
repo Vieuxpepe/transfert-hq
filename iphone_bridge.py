@@ -5314,22 +5314,44 @@ def render_app() -> bytes:
         <textarea id="forge-prompt" name="prompt" required maxlength="2000" rows="4" placeholder="Décris l'image"></textarea>
       </div>
       <div class="field">
-        <div class="forge-label-row">
-          <label for="forge-negative">Prompt négatif</label>
-          <span class="forge-help-wrap">
-            <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-negative">Aide</button>
-            <p id="forge-help-negative" class="forge-help-pop" role="tooltip">Décrivez ce qu'il faut éviter, par exemple le flou ou le texte illisible. Ce champ ne remplace pas le prompt.</p>
-          </span>
-        </div>
-        <textarea id="forge-negative" name="negative_prompt" maxlength="1000" rows="2" placeholder="Ce qu'il faut éviter"></textarea>
+        <div class="forge-label-row"><label for="forge-checkpoint">Modèle</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-checkpoint">Aide</button><p id="forge-help-checkpoint" class="forge-help-pop" role="tooltip">Le modèle dessine l'image. Un modèle illustré et un modèle photo ne donnent pas le même résultat.</p></span></div>
+        <select id="forge-checkpoint"></select>
       </div>
-      <fieldset class="forge-choices">
-        <legend>Modèle et échantillonnage</legend>
-        <div class="forge-grid-fields">
+      <p id="forge-choice-note" class="forge-note" role="status"></p>
+      <div class="forge-ratios" role="group" aria-label="Format">
+        <button type="button" class="forge-ratio" data-forge-ratio="1:1" data-width="1024" data-height="1024" aria-pressed="false">1:1</button>
+        <button type="button" class="forge-ratio" data-forge-ratio="3:2" data-width="1152" data-height="768" aria-pressed="false">3:2</button>
+        <button type="button" class="forge-ratio" data-forge-ratio="2:3" data-width="768" data-height="1152" aria-pressed="false">2:3</button>
+        <button type="button" class="forge-ratio" data-forge-ratio="4:3" data-width="1024" data-height="768" aria-pressed="false">4:3</button>
+        <button type="button" class="forge-ratio" data-forge-ratio="3:4" data-width="768" data-height="1024" aria-pressed="false">3:4</button>
+        <button type="button" class="forge-ratio" data-forge-ratio="16:9" data-width="1024" data-height="576" aria-pressed="false">16:9</button>
+        <button type="button" class="forge-ratio" data-forge-ratio="9:16" data-width="576" data-height="1024" aria-pressed="false">9:16</button>
+      </div>
+      <div class="field">
+        <div class="forge-label-row"><label id="forge-steps-label" for="forge-steps">Pas</label><span id="forge-steps-live" class="forge-live">20</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-steps">Aide</button><p id="forge-help-steps" class="forge-help-pop" role="tooltip">Plus de pas affine l'image et prend plus de temps. Vingt est un équilibre courant.</p></span></div>
+        <div class="forge-slider">
+          <input id="forge-steps-range" type="range" min="1" max="40" step="1" value="20" aria-labelledby="forge-steps-label"/>
+          <input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/>
+        </div>
+      </div>
+      <details class="forge-fold" id="forge-negative-fold">
+        <summary>Prompt négatif</summary>
+        <div class="forge-fold-body">
           <div class="field">
-            <div class="forge-label-row"><label for="forge-checkpoint">Modèle</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-checkpoint">Aide</button><p id="forge-help-checkpoint" class="forge-help-pop" role="tooltip">Le modèle dessine l'image. Un modèle illustré et un modèle photo ne donnent pas le même résultat.</p></span></div>
-            <select id="forge-checkpoint"></select>
+            <div class="forge-label-row">
+              <label for="forge-negative">À éviter</label>
+              <span class="forge-help-wrap">
+                <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-negative">Aide</button>
+                <p id="forge-help-negative" class="forge-help-pop" role="tooltip">Décrivez ce qu'il faut éviter, par exemple le flou ou le texte illisible. Ce champ ne remplace pas le prompt.</p>
+              </span>
+            </div>
+            <textarea id="forge-negative" name="negative_prompt" maxlength="1000" rows="2" placeholder="Ce qu'il faut éviter"></textarea>
           </div>
+        </div>
+      </details>
+      <details class="forge-fold" id="forge-sampling">
+        <summary>Échantillonneur et planificateur</summary>
+        <div class="forge-fold-body forge-grid-fields">
           <div class="field">
             <div class="forge-label-row"><label for="forge-sampler">Échantillonneur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-sampler">Aide</button><p id="forge-help-sampler" class="forge-help-pop" role="tooltip">C'est la méthode qui construit l'image pas à pas. Euler a est un bon départ. Les méthodes DPM sont souvent plus nettes.</p></span></div>
             <select id="forge-sampler"></select>
@@ -5339,39 +5361,89 @@ def render_app() -> bytes:
             <select id="forge-scheduler"></select>
           </div>
         </div>
-        <p id="forge-choice-note" class="forge-note" role="status"></p>
-      </fieldset>
-      <details id="forge-advanced">
-        <summary>Réglages avancés</summary>
-        <div class="forge-grid-fields">
+      </details>
+      <details class="forge-fold" id="forge-cfg-fold">
+        <summary>CFG</summary>
+        <div class="forge-fold-body">
           <div class="field">
-            <div class="forge-label-row"><label for="forge-width">Largeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-width">Aide</button><p id="forge-help-width" class="forge-help-pop" role="tooltip">Largeur en pixels, multiple de 64. Une image plus grande demande plus de mémoire.</p></span></div>
+            <div class="forge-label-row"><label id="forge-cfg-label" for="forge-cfg">Suivi du prompt</label><span id="forge-cfg-live" class="forge-live">7</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-cfg">Aide</button><p id="forge-help-cfg" class="forge-help-pop" role="tooltip">Indique à quel point Forge suit le prompt. Autour de 7, le prompt guide sans figer l'image.</p></span></div>
+            <div class="forge-slider">
+              <input id="forge-cfg-range" type="range" min="1" max="15" step="0.5" value="7" aria-labelledby="forge-cfg-label"/>
+              <input id="forge-cfg" type="number" min="1" max="15" step="0.5" value="7" inputmode="decimal"/>
+            </div>
+          </div>
+        </div>
+      </details>
+      <details class="forge-fold" id="forge-seed-fold">
+        <summary>Graine</summary>
+        <div class="forge-fold-body">
+          <div class="forge-seed-modes" role="radiogroup" aria-label="Graine">
+            <label><input type="radio" name="forge-seed-mode" value="random" checked/> Aléatoire</label>
+            <label><input type="radio" name="forge-seed-mode" value="fixed"/> Fixe</label>
+          </div>
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-seed">Valeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-seed">Aide</button><p id="forge-help-seed" class="forge-help-pop" role="tooltip">Aléatoire change l'image à chaque fois. Fixe répète une base proche si les autres réglages ne changent pas. Réutiliser reprend la dernière graine de la galerie normale.</p></span></div>
+            <input id="forge-seed" type="number" min="0" max="4294967295" step="1" value="0" inputmode="numeric" disabled/>
+          </div>
+          <div class="forge-actions">
+            <button type="button" id="forge-seed-reuse">Réutiliser</button>
+          </div>
+          <p id="forge-seed-note" class="forge-note" role="status"></p>
+        </div>
+      </details>
+      <details class="forge-fold" id="forge-advanced">
+        <summary>Dimensions exactes</summary>
+        <div class="forge-fold-body forge-grid-fields">
+          <div class="field">
+            <div class="forge-label-row"><label for="forge-width">Largeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-width">Aide</button><p id="forge-help-width" class="forge-help-pop" role="tooltip">Largeur en pixels, multiple de 64, entre 256 et 1536. Une image plus grande demande plus de mémoire.</p></span></div>
             <input id="forge-width" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/>
           </div>
           <div class="field">
-            <div class="forge-label-row"><label for="forge-height">Hauteur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-height">Aide</button><p id="forge-help-height" class="forge-help-pop" role="tooltip">Hauteur en pixels, multiple de 64. Augmentez-la avec la largeur si vous voulez une image plus grande.</p></span></div>
+            <div class="forge-label-row"><label for="forge-height">Hauteur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-height">Aide</button><p id="forge-help-height" class="forge-help-pop" role="tooltip">Hauteur en pixels, multiple de 64, entre 256 et 1536.</p></span></div>
             <input id="forge-height" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/>
           </div>
+        </div>
+      </details>
+      <details class="forge-fold" id="forge-batch-fold">
+        <summary>Lot</summary>
+        <div class="forge-fold-body forge-grid-fields">
           <div class="field">
-            <div class="forge-label-row"><label for="forge-steps">Pas</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-steps">Aide</button><p id="forge-help-steps" class="forge-help-pop" role="tooltip">Plus de pas affine l'image et prend plus de temps. Vingt est un équilibre courant.</p></span></div>
-            <input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/>
-          </div>
-          <div class="field">
-            <div class="forge-label-row"><label for="forge-cfg">CFG</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-cfg">Aide</button><p id="forge-help-cfg" class="forge-help-pop" role="tooltip">Indique à quel point Forge suit le prompt. Autour de 7, le prompt guide sans figer l'image.</p></span></div>
-            <input id="forge-cfg" type="number" min="1" max="15" step="0.5" value="7" inputmode="decimal"/>
-          </div>
-          <div class="field">
-            <div class="forge-label-row"><label for="forge-seed">Graine</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-seed">Aide</button><p id="forge-help-seed" class="forge-help-pop" role="tooltip">-1 tire une image différente à chaque fois. Un nombre fixe refait une base proche si les autres réglages ne changent pas.</p></span></div>
-            <input id="forge-seed" type="number" min="-1" max="4294967295" step="1" value="-1" inputmode="numeric"/>
-          </div>
-          <div class="field">
-            <div class="forge-label-row"><label for="forge-iter">Itérations</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-iter">Aide</button><p id="forge-help-iter" class="forge-help-pop" role="tooltip">Nombre d'images lancées l'une après l'autre. Deux prend environ deux fois plus de temps.</p></span></div>
+            <div class="forge-label-row"><label for="forge-iter">Images à la suite</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-iter">Aide</button><p id="forge-help-iter" class="forge-help-pop" role="tooltip">Une ou deux images, l'une après l'autre. Deux prend environ deux fois plus de temps.</p></span></div>
             <select id="forge-iter"><option value="1" selected>1</option><option value="2">2</option></select>
           </div>
           <div class="field">
-            <div class="forge-label-row"><label for="forge-batch">Taille de lot</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-batch">Aide</button><p id="forge-help-batch" class="forge-help-pop" role="tooltip">HQ envoie une seule image à la fois. Ce champ reste à 1.</p></span></div>
+            <div class="forge-label-row"><label for="forge-batch">Taille de lot</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-batch">Aide</button><p id="forge-help-batch" class="forge-help-pop" role="tooltip">HQ garde une seule image par passage. La taille de lot reste à 1.</p></span></div>
             <input id="forge-batch" type="text" value="1" readonly tabindex="-1"/>
           </div>
+        </div>
+      </details>
+      <details class="forge-fold" id="forge-hr-fold">
+        <summary>Hires. fix</summary>
+        <div class="forge-fold-body">
+          <p id="forge-hr-private" class="forge-note">Réservé à la galerie normale. La génération privée n'accepte pas ce second passage.</p>
+          <label class="forge-privacy-ack" for="forge-hr"><input id="forge-hr" type="checkbox"/> Activer le second passage</label>
+          <div class="forge-grid-fields">
+            <div class="field">
+              <div class="forge-label-row"><label for="forge-hr-scale">Échelle</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-scale">Aide</button><p id="forge-help-hr-scale" class="forge-help-pop" role="tooltip">1,5 ou 2. Le résultat de chaque côté doit rester d'au plus 2048 pixels.</p></span></div>
+              <select id="forge-hr-scale"><option value="1.5">1,5</option><option value="2" selected>2</option></select>
+            </div>
+            <div class="field">
+              <div class="forge-label-row"><label for="forge-hr-upscaler">Agrandisseur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-upscaler">Aide</button><p id="forge-help-hr-upscaler" class="forge-help-pop" role="tooltip">Méthode du second passage, parmi celles proposées par Forge.</p></span></div>
+              <select id="forge-hr-upscaler"></select>
+            </div>
+            <div class="field">
+              <div class="forge-label-row"><label for="forge-hr-steps">Pas du second passage</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-steps">Aide</button><p id="forge-help-hr-steps" class="forge-help-pop" role="tooltip">0 reprend le nombre de pas du premier passage. Sinon, de 1 à 20.</p></span></div>
+              <input id="forge-hr-steps" type="number" min="0" max="20" step="1" value="0" inputmode="numeric"/>
+            </div>
+            <div class="field">
+              <div class="forge-label-row"><label id="forge-hr-denoise-label" for="forge-hr-denoise">Force</label><span id="forge-hr-denoise-live" class="forge-live">0,5</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-denoise">Aide</button><p id="forge-help-hr-denoise" class="forge-help-pop" role="tooltip">De 0,2 à 0,7. Plus la force est haute, plus le second passage s'éloigne de la première image.</p></span></div>
+              <div class="forge-slider">
+                <input id="forge-hr-denoise-range" type="range" min="0.2" max="0.7" step="0.05" value="0.5" aria-labelledby="forge-hr-denoise-label"/>
+                <input id="forge-hr-denoise" type="number" min="0.2" max="0.7" step="0.05" value="0.5" inputmode="decimal"/>
+              </div>
+            </div>
+          </div>
+          <p id="forge-hr-note" class="forge-note" role="status"></p>
         </div>
       </details>
       <p id="forge-cancel-note" class="forge-note">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>

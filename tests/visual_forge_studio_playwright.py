@@ -97,6 +97,7 @@ def main() -> None:
             check("Forge Studio" in page.locator("#forge-studio h1").inner_text(), "forge heading")
             page.locator("#forge-checkpoint").focus()
             check(page.evaluate("() => document.activeElement.id") == "forge-checkpoint", "model selector takes keyboard focus")
+            page.locator("#forge-sampling summary").click()
             page.locator("#forge-sampler").focus()
             check(page.evaluate("() => document.activeElement.id") == "forge-sampler", "sampler selector takes keyboard focus")
             page.locator("#forge-scheduler").focus()
@@ -145,10 +146,10 @@ def main() -> None:
             page.locator("#forge-prompt").fill("un cercle rouge")
             page.locator("#forge-prompt").press("Tab")
             landed = page.evaluate("() => document.activeElement.getAttribute('aria-controls') || document.activeElement.id")
-            check(landed in ("forge-help-negative", "forge-negative"), "tab leaves the prompt")
-            if landed != "forge-negative":
+            check(landed in ("forge-help-checkpoint", "forge-checkpoint"), "tab leaves the prompt for the model")
+            if landed != "forge-checkpoint":
                 page.keyboard.press("Tab")
-            check(page.evaluate("() => document.activeElement.id") == "forge-negative", "the next field after help is the negative prompt")
+            check(page.evaluate("() => document.activeElement.id") == "forge-checkpoint", "the next field after help is the model")
             page.locator("#forge-generate").click()
             page.locator("#forge-results img").wait_for(timeout=10000)
             check(page.locator("#forge-results img").count() >= 1, "result preview")

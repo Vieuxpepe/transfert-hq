@@ -95,13 +95,42 @@
     return !!previous;
   }
 
+  function fillUpscalers(items) {
+    const select = $("forge-hr-upscaler");
+    const previous = select.value;
+    select.replaceChildren();
+    items.forEach((item) => {
+      if (item && item.name) option(select, item.name, item.name);
+    });
+    const values = [...select.options].map((item) => item.value);
+    $("forge-hr").disabled = !values.length;
+    if (!values.length) {
+      option(select, "", "Indisponible");
+      select.value = "";
+      $("forge-hr").checked = false;
+      return;
+    }
+    if (previous && values.includes(previous)) {
+      select.value = previous;
+      return;
+    }
+    if (previous) {
+      option(select, "", "Indisponible");
+      select.value = "";
+      return;
+    }
+    if (values.includes("R-ESRGAN 4x+")) select.value = "R-ESRGAN 4x+";
+    else select.value = select.options[0].value;
+  }
+
   function clearChoices(text) {
-    [checkpointEl, samplerEl, schedulerEl].forEach((select) => {
+    [checkpointEl, samplerEl, schedulerEl, $("forge-hr-upscaler")].forEach((select) => {
       select.replaceChildren();
       option(select, "", "Indisponible");
       select.value = "";
     });
     if (choiceNote) choiceNote.textContent = text || "";
+    syncHiresNote();
   }
 
   function describeChoices(stale) {
@@ -141,27 +170,61 @@
     return chosen && chosen.value === "private" ? "private" : "normal";
   }
 
+  function hiresOn() {
+    return $("forge-hr").checked;
+  }
+
+  function hiresFits() {
+    const scale = Number($("forge-hr-scale").value);
+    return Number($("forge-width").value) * scale <= 2048 && Number($("forge-height").value) * scale <= 2048;
+  }
+
+  function syncHiresNote() {
+    const note = $("forge-hr-note");
+    const upscaler = $("forge-hr-upscaler");
+    if (!note || !upscaler) return;
+    const unavailable = !upscaler.options.length || (upscaler.options.length === 1 && !upscaler.value);
+    if (unavailable) {
+      note.textContent = "Aucun agrandisseur n'est proposé. Hires. fix reste indisponible.";
+      return;
+    }
+    if (hiresOn() && !hiresFits()) {
+      note.textContent = "Cette échelle dépasse 2048 pixels. Choisissez 1,5 ou une image plus petite.";
+      return;
+    }
+    note.textContent = "";
+  }
+
   function syncActions(active) {
     const privateMode = destination() === "private";
     generateBtn.hidden = privateMode;
     privateBtn.hidden = !privateMode;
-    const ready = !active && forgeState === "ready" && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
+    const hiresPrivate = hiresOn() && privateMode;
+    const hiresMissing = hiresOn() && !$("forge-hr-upscaler").value;
+    const hiresLarge = hiresOn() && !hiresFits();
+    const ready = !active && !hiresPrivate && !hiresMissing && !hiresLarge && forgeState === "ready" && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
     generateBtn.disabled = !ready;
     privateBtn.disabled = !ready || !vaultState.private_generation;
     if (reasonEl) {
       if (active) reasonEl.textContent = "Générer est désactivé : une génération est déjà en cours.";
       else if (forgeState === "offline") reasonEl.textContent = "Générer est désactivé : Forge n'est pas démarré.";
       else if (forgeState === "api_disabled") reasonEl.textContent = "Générer est désactivé : l'API Forge n'est pas activée.";
+      else if (forgeUnreachable) reasonEl.textContent = "Générer est désactivé : Forge n'a pas répondu.";
       else if (forgeState !== "ready" || catalogState !== "ready") reasonEl.textContent = "Générer est désactivé : le catalogue n'est pas disponible.";
       else if (!checkpointEl.value) reasonEl.textContent = "Générer est désactivé : aucun modèle n'est choisi.";
       else if (!samplerEl.value) reasonEl.textContent = "Générer est désactivé : aucun échantillonneur n'est choisi.";
       else if (!schedulerEl.value) reasonEl.textContent = "Générer est désactivé : aucun planificateur n'est choisi.";
+      else if (hiresPrivate) reasonEl.textContent = "Générer est désactivé : Hires. fix n'est pas disponible en génération privée.";
+      else if (hiresMissing) reasonEl.textContent = "Générer est désactivé : l'agrandisseur n'est pas disponible.";
+      else if (hiresLarge) reasonEl.textContent = "Générer est désactivé : le second passage dépasserait 2048 pixels.";
       else reasonEl.textContent = "";
     }
     $("forge-normal-results").hidden = privateMode;
     $("forge-normal-gallery").hidden = privateMode;
     studio.classList.toggle("forge-private", privateMode);
   }
+
+  let forgeUnreachable = false;
 
   async function refreshStatus() {
     const first = catalogState === "offline" && forgeState === "offline" && !checkpointEl.options.length;
@@ -172,13 +235,16 @@
     try {
       const status = await api("/api/forge/status");
       const catalog = await api("/api/forge/catalog");
+      forgeUnreachable = false;
       catalogState = catalog && catalog.forge === "ready" ? "ready" : (catalog && catalog.code) || "error";
       setStatus(status);
       if (catalog && catalog.forge === "ready") {
         const staleModel = fillSelect(checkpointEl, catalog.models || [], (item) => item.title ? { value: item.title, label: item.title } : null, "");
         const staleSampler = fillSelect(samplerEl, catalog.samplers || [], (item) => item.name ? { value: item.name, label: item.name } : null, "Euler a");
         const stalePlan = fillSelect(schedulerEl, catalog.schedulers || [], (item) => item.name ? { value: item.name, label: item.label || item.name } : null, "automatic");
+        fillUpscalers(catalog.upscalers || []);
         describeChoices(staleModel || staleSampler || stalePlan);
+        syncHiresNote();
       } else if (catalog && catalog.code === "catalog_empty") {
         clearChoices("Forge répond, mais le catalogue utilisable est vide. Ce n'est pas une API absente.");
       } else if (catalog && (catalog.code === "forge_malformed" || catalog.code === "forge_schema")) {
@@ -192,6 +258,7 @@
       }
       syncActions();
     } catch (error) {
+      forgeUnreachable = true;
       catalogState = "error";
       forgeState = "error";
       statusEl.dataset.state = "error";
@@ -316,14 +383,58 @@
       cfg_scale: Number($("forge-cfg").value),
       seed: seed,
       n_iter: Number($("forge-iter").value),
-      batch_size: 1
+      batch_size: 1,
+      enable_hr: $("forge-hr").checked,
+      hr_scale: Number($("forge-hr-scale").value),
+      hr_upscaler: $("forge-hr-upscaler").value,
+      hr_second_pass_steps: Number($("forge-hr-steps").value),
+      denoising_strength: Number($("forge-hr-denoise").value)
     };
   }
 
+  function seedMode() {
+    const chosen = document.querySelector('input[name="forge-seed-mode"]:checked');
+    return chosen && chosen.value === "fixed" ? "fixed" : "random";
+  }
+
   function forgeSeed() {
+    if (seedMode() !== "fixed") return -1;
     const raw = $("forge-seed").value.trim();
     if (raw === "") return -1;
     return Number(raw);
+  }
+
+  function syncSeedMode() {
+    $("forge-seed").disabled = seedMode() !== "fixed";
+  }
+
+  function applySeed(seed) {
+    const fixed = Number(seed) >= 0;
+    document.querySelector('input[name="forge-seed-mode"][value="' + (fixed ? "fixed" : "random") + '"]').checked = true;
+    if (fixed) $("forge-seed").value = String(Math.trunc(Number(seed)));
+    syncSeedMode();
+  }
+
+  function syncRanges() {
+    $("forge-steps-range").value = $("forge-steps").value;
+    $("forge-cfg-range").value = $("forge-cfg").value;
+    $("forge-hr-denoise-range").value = $("forge-hr-denoise").value;
+    $("forge-steps-live").textContent = $("forge-steps").value;
+    $("forge-cfg-live").textContent = $("forge-cfg").value;
+    $("forge-hr-denoise-live").textContent = String($("forge-hr-denoise").value).replace(".", ",");
+    document.querySelectorAll(".forge-ratio").forEach((button) => {
+      const selected = button.dataset.width === String($("forge-width").value) && button.dataset.height === String($("forge-height").value);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
+  function applyHires(settings) {
+    $("forge-hr").checked = !!(settings && settings.enable_hr);
+    if (settings && settings.hr_scale) $("forge-hr-scale").value = String(settings.hr_scale);
+    if (settings && settings.hr_second_pass_steps != null) $("forge-hr-steps").value = String(settings.hr_second_pass_steps);
+    if (settings && settings.denoising_strength != null) $("forge-hr-denoise").value = String(settings.denoising_strength);
+    syncRanges();
+    syncHiresNote();
   }
 
   form.addEventListener("submit", async (event) => {
@@ -465,8 +576,9 @@
     if (settings.height) $("forge-height").value = settings.height;
     if (settings.steps) $("forge-steps").value = settings.steps;
     if (settings.cfg_scale) $("forge-cfg").value = settings.cfg_scale;
-    if (settings.seed != null) $("forge-seed").value = settings.seed;
+    if (settings.seed != null) applySeed(settings.seed);
     if (settings.n_iter) $("forge-iter").value = String(settings.n_iter);
+    applyHires(settings);
     closeViewer();
     promptEl.focus();
   });
@@ -523,7 +635,11 @@
   }
 
   document.querySelectorAll('input[name="forge-destination"]').forEach((input) => {
-    input.addEventListener("change", () => { refreshVault().catch((error) => { statusEl.textContent = error.message; }); });
+    input.addEventListener("change", () => {
+      syncActions();
+      syncHiresNote();
+      refreshVault().catch((error) => { statusEl.textContent = error.message; });
+    });
   });
   privateBtn.addEventListener("click", () => privateGenerate());
   studio.addEventListener("pointerdown", bumpIdle);
@@ -656,8 +772,14 @@
     if (settings.height) $("forge-height").value = settings.height;
     if (settings.steps) $("forge-steps").value = settings.steps;
     if (settings.cfg_scale) $("forge-cfg").value = settings.cfg_scale;
-    if (settings.seed != null) $("forge-seed").value = settings.seed;
+    if (settings.seed != null) applySeed(settings.seed);
     if (settings.n_iter) $("forge-iter").value = String(settings.n_iter);
+    applyHires(settings);
+    const upscaler = $("forge-hr-upscaler");
+    if (settings.enable_hr && settings.hr_upscaler && [...upscaler.options].some((item) => item.value === settings.hr_upscaler)) {
+      upscaler.value = settings.hr_upscaler;
+    }
+    syncActions();
   }
 
   async function openPrivate(id, from) {
@@ -740,7 +862,12 @@
       cfg_scale: Number($("forge-cfg").value),
       seed: forgeSeed(),
       n_iter: Number($("forge-iter").value),
-      batch_size: 1
+      batch_size: 1,
+      enable_hr: $("forge-hr").checked,
+      hr_scale: Number($("forge-hr-scale").value),
+      hr_upscaler: $("forge-hr-upscaler").value,
+      hr_second_pass_steps: Number($("forge-hr-steps").value),
+      denoising_strength: Number($("forge-hr-denoise").value)
     };
   }
 
@@ -808,8 +935,10 @@
     $("forge-height").value = String(preset.height);
     $("forge-steps").value = String(preset.steps);
     $("forge-cfg").value = String(preset.cfg_scale);
-    $("forge-seed").value = String(preset.seed);
+    applySeed(preset.seed);
     $("forge-iter").value = String(preset.n_iter);
+    applyHires(preset);
+    if (preset.enable_hr) take($("forge-hr-upscaler"), preset.hr_upscaler, "agrandisseur");
     describeChoices(false);
     syncActions();
     loadedPreset = preset;
@@ -866,9 +995,49 @@
         refreshPresetState();
       });
     });
-    [promptEl, negativeEl, $("forge-width"), $("forge-height"), $("forge-steps"), $("forge-cfg"), $("forge-seed"), $("forge-iter")].forEach((field) => {
-      field.addEventListener("input", refreshPresetState);
-      field.addEventListener("change", refreshPresetState);
+    [promptEl, negativeEl, $("forge-width"), $("forge-height"), $("forge-steps"), $("forge-cfg"), $("forge-seed"), $("forge-iter"), $("forge-hr"), $("forge-hr-scale"), $("forge-hr-upscaler"), $("forge-hr-steps"), $("forge-hr-denoise")].forEach((field) => {
+      field.addEventListener("input", () => { syncRanges(); syncHiresNote(); if (progressBox.hidden) syncActions(false); refreshPresetState(); });
+      field.addEventListener("change", () => { syncRanges(); syncHiresNote(); if (progressBox.hidden) syncActions(false); refreshPresetState(); });
+    });
+    document.querySelectorAll('input[name="forge-seed-mode"]').forEach((input) => {
+      input.addEventListener("change", () => { syncSeedMode(); syncActions(); refreshPresetState(); });
+    });
+    document.querySelectorAll(".forge-ratio").forEach((button) => {
+      button.addEventListener("click", () => {
+        $("forge-width").value = button.dataset.width;
+        $("forge-height").value = button.dataset.height;
+        syncRanges();
+        syncHiresNote();
+        if (progressBox.hidden) syncActions(false);
+        refreshPresetState();
+      });
+    });
+    const bindPair = (rangeId, numberId) => {
+      $(rangeId).addEventListener("input", () => {
+        $(numberId).value = $(rangeId).value;
+        $(numberId).dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    bindPair("forge-steps-range", "forge-steps");
+    bindPair("forge-cfg-range", "forge-cfg");
+    bindPair("forge-hr-denoise-range", "forge-hr-denoise");
+    $("forge-seed-reuse").addEventListener("click", async () => {
+      const note = $("forge-seed-note");
+      try {
+        const payload = await api("/api/forge/jobs");
+        const found = (payload.jobs || []).find((job) => job.destination !== "private" && Number.isInteger(job.seed_used) && job.seed_used >= 0);
+        if (!found) {
+          note.textContent = "Aucune graine de la galerie normale à réutiliser.";
+          return;
+        }
+        applySeed(found.seed_used);
+        note.textContent = "Graine reprise : " + found.seed_used + ".";
+        $("forge-seed-fold").open = true;
+        $("forge-seed").focus();
+        refreshPresetState();
+      } catch (_) {
+        note.textContent = "La liste des travaux n'a pas répondu.";
+      }
     });
     presetList.addEventListener("change", refreshPresetState);
     $("forge-preset-load").addEventListener("click", () => {
@@ -1021,6 +1190,9 @@
     });
     refreshPresetState();
   }
+
+  syncSeedMode();
+  syncRanges();
 
   window.hqForgeShow = function () {
     refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});

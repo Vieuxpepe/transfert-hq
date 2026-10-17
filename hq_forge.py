@@ -30,6 +30,7 @@ ALLOWED_ROUTES = frozenset({
     ("GET", "/sdapi/v1/samplers"),
     ("GET", "/sdapi/v1/schedulers"),
     ("GET", "/sdapi/v1/sd-models"),
+    ("GET", "/sdapi/v1/upscalers"),
     ("GET", "/sdapi/v1/options"),
     ("GET", "/sdapi/v1/progress"),
     ("GET", "/internal/pending-tasks"),
@@ -232,13 +233,14 @@ def _status_payload(code: str, *, model: str | None = None, forge: str | None = 
     }
 
 
-def _catalog_payload(code: str, *, models=None, samplers=None, schedulers=None, forge: str | None = None) -> dict:
+def _catalog_payload(code: str, *, models=None, samplers=None, schedulers=None, upscalers=None, forge: str | None = None) -> dict:
     kind = forge or _public(code)
     return {
         "forge": kind,
         "models": models or [],
         "samplers": samplers or [],
         "schedulers": schedulers or [],
+        "upscalers": upscalers or [],
         "message": _MESSAGES.get(code, _MESSAGES["forge_error"]),
         "code": code,
     }
@@ -324,6 +326,26 @@ def _sampler_row(item) -> dict | None:
     return row
 
 
+def _upscaler_row(item) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    name = item.get("name")
+    if not isinstance(name, str) or name in {"None", "none"} or not _SAFE_TITLE.fullmatch(name):
+        return None
+    return {"name": name}
+
+
+def _safe_upscalers(transport) -> list:
+    """Upscalers are optional. A missing list leaves Hires. fix unavailable."""
+    try:
+        rows = _rows(_records(_call(transport, "/sdapi/v1/upscalers")), _upscaler_row)
+    except _Probe:
+        return []
+    if not rows:
+        return []
+    return rows[:32]
+
+
 def _scheduler_row(item) -> dict | None:
     if not isinstance(item, dict):
         return None
@@ -390,9 +412,12 @@ def _build_catalog(transport) -> dict:
     schedulers = _rows(schedulers_raw, _scheduler_row)
     if schedulers is None:
         return _catalog_payload("forge_error")
+    upscalers = _safe_upscalers(transport)
     if not models or not samplers or not schedulers:
-        return _catalog_payload("catalog_empty")
-    return _catalog_payload("ready", models=models, samplers=samplers, schedulers=schedulers, forge="ready")
+        return _catalog_payload("catalog_empty", upscalers=upscalers)
+    return _catalog_payload(
+        "ready", models=models, samplers=samplers, schedulers=schedulers, upscalers=upscalers, forge="ready"
+    )
 
 
 def _cache_key(transport) -> str:

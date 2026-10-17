@@ -87,7 +87,10 @@ try {
 
   await page.locator("#forge-prompt").fill("un cercle rouge");
   await page.locator("#forge-prompt").press("Tab");
-  check(await page.evaluate(() => document.activeElement.id === "forge-negative"), "tab leaves the prompt");
+  const landed = await page.evaluate(() => document.activeElement.getAttribute("aria-controls") || document.activeElement.id);
+  check(landed === "forge-help-checkpoint" || landed === "forge-checkpoint", "tab leaves the prompt");
+  if (landed !== "forge-checkpoint") await page.keyboard.press("Tab");
+  check(await page.evaluate(() => document.activeElement.id === "forge-checkpoint"), "tab reaches the model");
   await page.locator("#forge-generate").click();
   await page.locator("#forge-results img").waitFor({ timeout: 10000 });
   check(await page.locator("#forge-results img").count() >= 1, "result preview");

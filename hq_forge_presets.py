@@ -8,6 +8,9 @@ prompt, and discards the positive prompt. A creative preset stores both.
 A missing file is an empty list. A malformed file is left untouched and
 blocks later writes, so an unreadable file is never replaced by accident.
 
+Version 1 stays readable. Hires. fix fields are optional on read and are
+filled with the disabled defaults. A file is not rewritten just to add them.
+
 Positive and negative prompts keep their text, including line breaks and
 surrounding spaces. Names, models, samplers, and schedulers stay a single
 line. NUL and other control characters are rejected. A prompt that exceeds
@@ -17,6 +20,7 @@ its limit is rejected whole; it is not trimmed to fit.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import threading
@@ -86,13 +90,62 @@ def _int(value, low: int, high: int) -> int | None:
     return None
 
 
-def _number(value, low: float, high: float) -> float | None:
+def _finite(value) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _number(value, low: float, high: float) -> float | None:
+    number = _finite(value)
+    if number is None:
+        return None
     if low <= number <= high:
         return number
     return None
+
+
+def _scale(value) -> float | None:
+    number = _finite(value)
+    if number is None:
+        return None
+    if abs(number - 1.5) < 1e-6:
+        return 1.5
+    if abs(number - 2.0) < 1e-6:
+        return 2.0
+    return None
+
+
+def _hires(data: dict) -> dict | None:
+    enabled = data.get("enable_hr", False)
+    if enabled in (False, None):
+        return {
+            "enable_hr": False,
+            "hr_scale": 2.0,
+            "hr_upscaler": "",
+            "hr_second_pass_steps": 0,
+            "denoising_strength": 0.5,
+        }
+    if enabled is not True:
+        return None
+    scale = _scale(data.get("hr_scale"))
+    second = _int(data.get("hr_second_pass_steps", 0), 0, 20)
+    denoise = _number(data.get("denoising_strength"), 0.2, 0.7)
+    if denoise is not None:
+        denoise = round(float(denoise), 2)
+    upscaler = _text(data.get("hr_upscaler", ""), 180, required=True)
+    if scale is None or second is None or denoise is None or upscaler is None:
+        return None
+    return {
+        "enable_hr": True,
+        "hr_scale": scale,
+        "hr_upscaler": upscaler,
+        "hr_second_pass_steps": second,
+        "denoising_strength": float(denoise),
+    }
 
 
 def _settings(data: dict, *, kind: str) -> dict | None:
@@ -117,6 +170,9 @@ def _settings(data: dict, *, kind: str) -> dict | None:
         return None
     if width % 64 or height % 64:
         return None
+    hires = _hires(data)
+    if hires is None:
+        return None
     include_prompt = kind == "creative"
     return {
         "include_prompt": include_prompt,
@@ -132,6 +188,7 @@ def _settings(data: dict, *, kind: str) -> dict | None:
         "seed": seed,
         "n_iter": n_iter,
         "batch_size": 1,
+        **hires,
     }
 
 
@@ -147,7 +204,8 @@ def _valid_stored(item) -> dict | None:
     if set(item) - {
         "id", "name", "kind", "include_prompt", "prompt", "negative_prompt", "checkpoint",
         "sampler_name", "scheduler", "width", "height", "steps", "cfg_scale", "seed",
-        "n_iter", "batch_size", "updated",
+        "n_iter", "batch_size", "enable_hr", "hr_scale", "hr_upscaler",
+        "hr_second_pass_steps", "denoising_strength", "updated",
     }:
         return None
     ident = item.get("id")

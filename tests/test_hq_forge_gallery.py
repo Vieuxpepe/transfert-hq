@@ -124,6 +124,25 @@ class Gallery(unittest.TestCase):
         text = json.dumps(G.page(self.root, limit=10))
         self.assertNotIn("prompt", text)
 
+    def test_non_finite_hires_numbers_do_not_change_gallery_metadata(self):
+        settings = _settings()
+        settings.update(enable_hr=True, hr_scale=1.5, hr_upscaler="R-ESRGAN 4x+", hr_second_pass_steps=8, denoising_strength=0.4)
+        saved = G.store(self.root, _png(), settings)
+        meta = G.gallery_dir(self.root) / saved["id"] / "meta.json"
+        before = meta.read_bytes()
+        self.assertIn(b"0.4", before)
+        for value in (float("nan"), float("inf"), float("-inf")):
+            for field in ("denoising_strength", "hr_scale"):
+                bad = dict(settings)
+                bad[field] = value
+                with self.assertRaises(G.GalleryError) as raised:
+                    G.store(self.root, _png(), bad)
+                self.assertEqual(raised.exception.code, "bad_image")
+        self.assertEqual(meta.read_bytes(), before)
+        self.assertEqual(len(list(G.gallery_dir(self.root).glob("img-*"))), 1)
+        self.assertNotIn("NaN", meta.read_text(encoding="utf-8"))
+        self.assertNotIn("Infinity", meta.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

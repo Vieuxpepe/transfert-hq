@@ -222,6 +222,101 @@ class PresetStore(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual((self.tmp / ".hq-forge" / "presets.json").read_bytes(), before)
 
+    def test_old_preset_keeps_its_settings_and_new_hires_fields_round_trip(self) -> None:
+        folder = self.tmp / ".hq-forge"
+        folder.mkdir()
+        path = folder / "presets.json"
+        raw = {
+            "version": 1,
+            "presets": [{
+                "id": "preset-" + "ab" * 8,
+                "name": "Ancien",
+                "kind": "technical",
+                "include_prompt": False,
+                "prompt": "",
+                "negative_prompt": "flou",
+                "checkpoint": "example.safetensors [abcd]",
+                "sampler_name": "Euler a",
+                "scheduler": "automatic",
+                "width": 512,
+                "height": 768,
+                "steps": 20,
+                "cfg_scale": 7,
+                "seed": 12,
+                "n_iter": 2,
+                "batch_size": 1,
+                "updated": "2020-01-01T00:00:00Z",
+            }],
+        }
+        path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        before = path.read_bytes()
+        listed = P.list_presets(self.tmp)
+        self.assertEqual(listed["version"], 1)
+        self.assertEqual(listed["storage"], "ready")
+        old = listed["presets"][0]
+        self.assertEqual((old["width"], old["height"], old["seed"], old["n_iter"]), (512, 768, 12, 2))
+        self.assertFalse(old["enable_hr"])
+        self.assertEqual(path.read_bytes(), before)
+        status, created = P.create_preset(self.tmp, sample(
+            name="Second", enable_hr=True, hr_scale=1.5, hr_upscaler="R-ESRGAN 4x+",
+            hr_second_pass_steps=0, denoising_strength=0.55,
+        ))
+        self.assertEqual(status, 200)
+        kept = next(item for item in created["presets"] if item["name"] == "Ancien")
+        self.assertEqual(kept["height"], 768)
+        self.assertEqual(kept["negative_prompt"], "flou")
+        fresh = next(item for item in created["presets"] if item["name"] == "Second")
+        self.assertTrue(fresh["enable_hr"])
+        self.assertEqual(fresh["hr_upscaler"], "R-ESRGAN 4x+")
+        self.assertEqual(fresh["denoising_strength"], 0.55)
+        status, rejected = P.create_preset(self.tmp, sample(
+            name="Mauvais", enable_hr=True, hr_scale=4, hr_upscaler="R-ESRGAN 4x+",
+            hr_second_pass_steps=0, denoising_strength=0.5,
+        ))
+        self.assertEqual(status, 400)
+        status, absent = P.create_preset(self.tmp, sample(
+            name="Absent", enable_hr=True, hr_scale=2, hr_upscaler="Pas installé",
+            hr_second_pass_steps=4, denoising_strength=0.3,
+        ))
+        self.assertEqual(status, 200)
+        self.assertEqual(next(item for item in absent["presets"] if item["name"] == "Absent")["hr_upscaler"], "Pas installé")
+
+    def test_non_finite_hires_numbers_do_not_change_a_preset(self) -> None:
+        status, created = P.create_preset(self.tmp, sample(
+            name="Stable", enable_hr=True, hr_scale=1.5, hr_upscaler="R-ESRGAN 4x+",
+            hr_second_pass_steps=8, denoising_strength=0.4,
+        ))
+        self.assertEqual(status, 200)
+        ident = created["presets"][0]["id"]
+        path = self.tmp / ".hq-forge" / "presets.json"
+        before = path.read_bytes()
+        for value in (float("nan"), float("inf"), float("-inf")):
+            for field in ("denoising_strength", "hr_scale", "cfg_scale"):
+                created_body = sample(
+                    name="Instable", enable_hr=True, hr_scale=1.5, hr_upscaler="R-ESRGAN 4x+",
+                    hr_second_pass_steps=8, denoising_strength=0.4,
+                )
+                created_body[field] = value
+                status, rejected = P.create_preset(self.tmp, created_body)
+                self.assertEqual(status, 400, (field, value))
+                self.assertNotIn("presets", rejected)
+                updated_body = sample(
+                    id=ident, name="Stable", enable_hr=True, hr_scale=1.5, hr_upscaler="R-ESRGAN 4x+",
+                    hr_second_pass_steps=8, denoising_strength=0.4,
+                )
+                updated_body[field] = value
+                status, rejected = P.update_preset(self.tmp, updated_body)
+                self.assertEqual(status, 400, (field, value))
+                self.assertEqual(path.read_bytes(), before)
+        listed = P.list_presets(self.tmp)
+        self.assertEqual(listed["storage"], "ready")
+        kept = listed["presets"][0]
+        self.assertEqual(kept["hr_scale"], 1.5)
+        self.assertEqual(kept["denoising_strength"], 0.4)
+        self.assertEqual(kept["hr_second_pass_steps"], 8)
+        self.assertNotIn("NaN", path.read_text(encoding="utf-8"))
+        self.assertNotIn("Infinity", path.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

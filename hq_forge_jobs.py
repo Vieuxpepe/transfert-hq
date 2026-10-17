@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import threading
@@ -27,6 +28,7 @@ TASK_RE = re.compile(r"^task\(hq-[0-9a-f]{24}\)$")
 BODY_KEYS = {
     "prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler",
     "width", "height", "steps", "cfg_scale", "seed", "n_iter", "batch_size",
+    "enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength",
     "destination",
 }
 
@@ -56,6 +58,7 @@ _MESSAGES = {
     "deferred": "HQ ne peut pas arrêter une génération déjà envoyée à Forge. L'interruption globale pourrait couper un autre travail.",
     "active": "Une génération HQ est déjà en cours.",
     "validation": "Les réglages ne sont pas acceptés.",
+    "private_restricted": "Hires. fix n'est pas disponible en génération privée.",
     "disabled": vault.public_error("disabled"),
     "locked": vault.public_error("locked"),
     "missing": vault.public_error("missing"),
@@ -259,7 +262,77 @@ def submission_body(settings: dict, task_id: str) -> dict:
     }
     if settings.get("checkpoint"):
         body["override_settings"] = {"sd_model_checkpoint": settings["checkpoint"]}
+    if settings.get("enable_hr"):
+        body["enable_hr"] = True
+        body["hr_scale"] = settings["hr_scale"]
+        body["hr_upscaler"] = settings["hr_upscaler"]
+        body["hr_second_pass_steps"] = settings["hr_second_pass_steps"]
+        body["denoising_strength"] = settings["denoising_strength"]
+        body["hr_resize_x"] = 0
+        body["hr_resize_y"] = 0
     return body
+
+
+def _finite(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _scale(value) -> float | None:
+    number = _finite(value)
+    if number is None:
+        return None
+    if abs(number - 1.5) < 1e-6:
+        return 1.5
+    if abs(number - 2.0) < 1e-6:
+        return 2.0
+    return None
+
+
+def _denoise(value) -> float | None:
+    number = _finite(value)
+    if number is None:
+        return None
+    number = round(number, 2)
+    if number < 0.2 or number > 0.7:
+        return None
+    return number
+
+
+def _hires(data: dict, catalog: dict, width: int, height: int) -> dict | tuple:
+    enabled = data.get("enable_hr", False)
+    if enabled in (False, None):
+        return {
+            "enable_hr": False,
+            "hr_scale": 2.0,
+            "hr_upscaler": "",
+            "hr_second_pass_steps": 0,
+            "denoising_strength": 0.5,
+        }
+    if enabled is not True:
+        return ("validation",)
+    scale = _scale(data.get("hr_scale", 2))
+    second = _int(data.get("hr_second_pass_steps", 0), 0, 20)
+    denoise = _denoise(data.get("denoising_strength", 0.5))
+    upscaler = data.get("hr_upscaler")
+    names = {item.get("name") for item in catalog.get("upscalers") or [] if isinstance(item, dict)}
+    if scale is None or second is None or denoise is None:
+        return ("validation",)
+    if not isinstance(upscaler, str) or not upscaler or upscaler not in names:
+        return ("validation",)
+    if round(width * scale) > 2048 or round(height * scale) > 2048:
+        return ("validation",)
+    return {
+        "enable_hr": True,
+        "hr_scale": scale,
+        "hr_upscaler": upscaler,
+        "hr_second_pass_steps": second,
+        "denoising_strength": denoise,
+    }
 
 
 def _validate(data: dict, catalog: dict) -> dict | tuple:
@@ -292,6 +365,9 @@ def _validate(data: dict, catalog: dict) -> dict | tuple:
     titles = {item.get("title") for item in catalog.get("models") or [] if isinstance(item, dict)}
     if not isinstance(checkpoint, str) or not checkpoint or checkpoint not in titles:
         return ("validation",)
+    hires = _hires(data, catalog, width, height)
+    if isinstance(hires, tuple):
+        return hires
     return {
         "prompt": prompt,
         "negative_prompt": negative,
@@ -305,6 +381,7 @@ def _validate(data: dict, catalog: dict) -> dict | tuple:
         "seed": seed,
         "n_iter": n_iter,
         "batch_size": 1,
+        **hires,
     }
 
 
@@ -508,6 +585,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
     destination = _destination(data)
     if destination is None:
         return 400, {"error": _MESSAGES["validation"], "code": "validation"}
+    if destination == "private" and data.get("enable_hr") is True:
+        return 403, {"error": _MESSAGES["private_restricted"], "code": "private_restricted"}
     with _LOCK:
         stored = _load(root)
         found = stored["idempotency"].get(idempotency_key)

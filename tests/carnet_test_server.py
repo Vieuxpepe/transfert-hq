@@ -71,6 +71,7 @@ def main() -> None:
             table = {
                 "/sdapi/v1/samplers": [{"name": "Euler"}],
                 "/sdapi/v1/schedulers": [{"name": "automatic", "label": "Automatic"}],
+                "/sdapi/v1/upscalers": [{"name": "R-ESRGAN 4x+"}, {"name": "None"}],
                 "/sdapi/v1/sd-models": [{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd", "sha256": None}],
                 "/sdapi/v1/options": {"sd_model_checkpoint": "example.safetensors"},
                 "/sdapi/v1/progress": {"progress": 0, "state": {"job": "", "job_count": 0, "sampling_step": 0, "sampling_steps": 0}},

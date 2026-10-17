@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -105,6 +106,27 @@ def _settings(value: dict) -> dict:
     if not isinstance(cfg, (int, float)) or isinstance(cfg, bool):
         raise GalleryError("bad_image")
     out["cfg_scale"] = float(cfg)
+    enabled = value.get("enable_hr", False)
+    if enabled is True:
+        upscaler = value.get("hr_upscaler", "")
+        scale = value.get("hr_scale")
+        second = value.get("hr_second_pass_steps")
+        denoise = value.get("denoising_strength")
+        if not isinstance(upscaler, str) or not upscaler or len(upscaler) > 180 or "\\" in upscaler or ".." in upscaler:
+            raise GalleryError("bad_image")
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)):
+            raise GalleryError("bad_image")
+        if isinstance(second, bool) or not isinstance(second, int):
+            raise GalleryError("bad_image")
+        if isinstance(denoise, bool) or not isinstance(denoise, (int, float)) or not math.isfinite(float(denoise)):
+            raise GalleryError("bad_image")
+        out["enable_hr"] = True
+        out["hr_scale"] = float(scale)
+        out["hr_upscaler"] = upscaler
+        out["hr_second_pass_steps"] = second
+        out["denoising_strength"] = float(denoise)
+    elif enabled is not False:
+        raise GalleryError("bad_image")
     return out
 
 

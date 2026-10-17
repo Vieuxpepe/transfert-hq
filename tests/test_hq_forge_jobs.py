@@ -33,6 +33,7 @@ def _catalog() -> dict:
         ("GET", "/sdapi/v1/sd-models"): [{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd", "sha256": None}],
         ("GET", "/sdapi/v1/samplers"): [{"name": "Euler"}],
         ("GET", "/sdapi/v1/schedulers"): [{"name": "automatic", "label": "Automatic"}],
+        ("GET", "/sdapi/v1/upscalers"): [{"name": "R-ESRGAN 4x+"}, {"name": "None"}],
         ("GET", "/sdapi/v1/options"): {"sd_model_checkpoint": "example.safetensors"},
         ("GET", "/internal/pending-tasks"): {"size": 0, "tasks": ["task(foreign)"]},
     }
@@ -359,6 +360,114 @@ class Jobs(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         release.set()
         self.assertEqual(self._wait(payload["job"]["job_id"])["state"], "completed")
+
+    def test_hires_batch_and_seed_bounds(self):
+        plain = J.submission_body(_body(), "task(hq-" + "ab" * 12 + ")")
+        self.assertNotIn("enable_hr", plain)
+        self.assertEqual(plain["n_iter"], 1)
+        self.assertEqual(plain["batch_size"], 1)
+        self.assertNotIn("sd_vae", plain)
+        self.assertNotIn("CLIP_stop_at_last_layers", plain.get("override_settings", {}))
+
+        transport = Transport()
+        code, rejected = J.create_job(
+            self.root,
+            _body(destination="private", enable_hr=True, hr_scale=2, hr_upscaler="R-ESRGAN 4x+", hr_second_pass_steps=0, denoising_strength=0.5),
+            "idem-hr-private1",
+            transport=transport,
+        )
+        self.assertEqual((code, rejected["code"]), (403, "private_restricted"))
+        self.assertFalse(transport.calls)
+
+        for index, extra in enumerate((
+            {"batch_size": 2},
+            {"batch_size": 0},
+            {"n_iter": 3},
+            {"n_iter": 0},
+            {"seed": -2},
+            {"seed": 2**32},
+            {"width": 192},
+            {"width": 128},
+            {"height": 1600},
+            {"steps": 41},
+            {"cfg_scale": 16},
+            {"enable_hr": True, "hr_scale": 3, "hr_upscaler": "R-ESRGAN 4x+", "hr_second_pass_steps": 0, "denoising_strength": 0.5},
+            {"enable_hr": True, "hr_scale": 2, "hr_upscaler": "Missing", "hr_second_pass_steps": 0, "denoising_strength": 0.5},
+            {"enable_hr": True, "hr_scale": 2, "hr_upscaler": "R-ESRGAN 4x+", "hr_second_pass_steps": 21, "denoising_strength": 0.5},
+            {"enable_hr": True, "hr_scale": 2, "hr_upscaler": "R-ESRGAN 4x+", "hr_second_pass_steps": 0, "denoising_strength": 0.9},
+            {"width": 1536, "height": 1536, "enable_hr": True, "hr_scale": 2, "hr_upscaler": "R-ESRGAN 4x+", "hr_second_pass_steps": 0, "denoising_strength": 0.5},
+            {"sd_vae": "Automatic"},
+            {"clip_skip": 2},
+        )):
+            code, rejected = J.create_job(self.root, _body(**extra), f"idem-bound-{index:02d}xxxx", transport=Transport())
+            self.assertEqual(code, 400, extra)
+            self.assertEqual(rejected["code"], "validation")
+
+        transport = Transport()
+        code, payload = J.create_job(
+            self.root,
+            _body(n_iter=2, seed=7, enable_hr=True, hr_scale=1.5, hr_upscaler="R-ESRGAN 4x+", hr_second_pass_steps=8, denoising_strength=0.4),
+            "idem-hr-normal01",
+            transport=transport,
+        )
+        self.assertEqual(code, 202)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["state"], "completed")
+        posted = json.loads(transport.bodies[-1])
+        self.assertEqual(posted["enable_hr"], True)
+        self.assertEqual(posted["hr_scale"], 1.5)
+        self.assertEqual(posted["hr_upscaler"], "R-ESRGAN 4x+")
+        self.assertEqual(posted["hr_second_pass_steps"], 8)
+        self.assertEqual(posted["denoising_strength"], 0.4)
+        self.assertEqual(posted["n_iter"], 2)
+        self.assertEqual(posted["batch_size"], 1)
+        self.assertEqual(posted["seed"], 7)
+        self.assertEqual(posted["save_images"], False)
+        self.assertEqual(posted["alwayson_scripts"], {})
+        self.assertEqual(posted["hr_resize_x"], 0)
+        self.assertNotIn("sd_vae", posted.get("override_settings", {}))
+
+    def test_non_finite_hires_numbers_are_rejected_before_forge(self):
+        transport = Transport()
+        code, payload = J.create_job(
+            self.root,
+            _body(enable_hr=True, hr_scale=2, hr_upscaler="R-ESRGAN 4x+", hr_second_pass_steps=0, denoising_strength=0.5),
+            "idem-finite-ok1",
+            transport=transport,
+        )
+        self.assertEqual(code, 202)
+        kept = self._wait(payload["job"]["job_id"])
+        self.assertEqual(kept["state"], "completed")
+        self.assertEqual(kept["settings"]["denoising_strength"], 0.5)
+        before = (self.root / ".hq-forge" / "jobs.json").read_bytes()
+        posts = [url for url in transport.calls if url.endswith("/sdapi/v1/txt2img")]
+        self.assertEqual(len(posts), 1)
+        for index, value in enumerate((float("nan"), float("inf"), float("-inf"))):
+            for field in ("denoising_strength", "hr_scale"):
+                attempt = Transport()
+                body = _body(enable_hr=True, hr_scale=2, hr_upscaler="R-ESRGAN 4x+", hr_second_pass_steps=0, denoising_strength=0.5)
+                body[field] = value
+                code, rejected = J.create_job(
+                    self.root,
+                    body,
+                    f"idem-nf-{index}-{field[:1]}",
+                    transport=attempt,
+                )
+                self.assertEqual(code, 400, (field, value))
+                self.assertEqual(rejected["code"], "validation")
+                self.assertNotIn("job", rejected)
+                self.assertFalse(any(url.endswith("/sdapi/v1/txt2img") for url in attempt.calls))
+        self.assertEqual((self.root / ".hq-forge" / "jobs.json").read_bytes(), before)
+        private = Transport()
+        code, rejected = J.create_job(
+            self.root,
+            _body(destination="private", enable_hr=True, hr_scale=float("nan"), hr_upscaler="R-ESRGAN 4x+", hr_second_pass_steps=0, denoising_strength=float("nan")),
+            "idem-nf-private1",
+            transport=private,
+        )
+        self.assertEqual((code, rejected["code"]), (403, "private_restricted"))
+        self.assertFalse(private.calls)
+        self.assertEqual((self.root / ".hq-forge" / "jobs.json").read_bytes(), before)
 
 
 if __name__ == "__main__":
