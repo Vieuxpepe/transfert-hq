@@ -33,6 +33,10 @@ TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 QUOTA_IMAGES = 400
 UNLOCK_TTL_SEC = 300.0
+# Browser status may reuse one DACL reading for this long. An external permission
+# change can remain unseen by that poll during the interval. A private job does
+# not use the cache: it reads the DACL again before it is accepted.
+ACL_OBSERVATION_SEC = 15.0
 FAILS_BEFORE_THROTTLE = 5
 THROTTLE_SEC = 60.0
 KDF_MEMORY = 19456
@@ -81,7 +85,7 @@ class VaultError(Exception):
 
 def reset_for_tests() -> None:
     global _test_dir, _ttl, _quota_bytes, _quota_images, _apply_acl, _private_generation, _disk
-    global _global_fails, _global_until, _inflight, _write_fault, _restore_fault
+    global _global_fails, _global_until, _inflight, _write_fault, _restore_fault, _user_sid_bytes
     _disk = False
     _global_fails = 0
     _global_until = 0.0
@@ -100,6 +104,9 @@ def reset_for_tests() -> None:
     _quota_images = QUOTA_IMAGES
     _apply_acl = True
     _private_generation = True
+    _user_sid_bytes = None
+    with _acl_lock:
+        _acl_cache.clear()
 
 
 def set_root_for_tests(path: Path | None) -> None:
@@ -491,6 +498,214 @@ def private_generation_ready(header) -> bool:
     return isinstance(header, dict) and header.get("acl") == "restricted"
 
 
+_acl_lock = threading.Lock()
+_acl_cache: dict[str, tuple[float, bool]] = {}
+_user_sid_bytes: bytes | None = None
+_FILE_ALL_ACCESS = 0x001F01FF
+_INHERIT_ONLY_ACE = 0x08
+_ACCESS_ALLOWED_ACE_TYPE = 0
+
+
+def _status_private_generation(root: Path, header) -> bool:
+    """Header gate plus a cached DACL reading. Polls skip the reading until ACL_OBSERVATION_SEC elapses."""
+    if not private_generation_ready(header):
+        return False
+    if os.name != "nt" or not _apply_acl:
+        return True
+    return _acl_restricted(root, fresh=False)
+
+
+def confirm_private_generation(hq_root: Path) -> bool:
+    """Read the live DACL before a private job is accepted. Status polls do not call this."""
+    if not _private_generation:
+        return False
+    if os.name != "nt" or not _apply_acl:
+        return True
+    try:
+        root = _root(hq_root)
+        header = _read_header(root) if root.is_dir() else None
+    except VaultError:
+        return False
+    if not private_generation_ready(header):
+        return False
+    return _acl_restricted(root, fresh=True)
+
+
+def _acl_restricted(root: Path, *, fresh: bool) -> bool:
+    try:
+        key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        return False
+    now = time.monotonic()
+    with _acl_lock:
+        cached = _acl_cache.get(key)
+        if not fresh and cached is not None and now - cached[0] < ACL_OBSERVATION_SEC:
+            return cached[1]
+        ok = _dacl_is_restricted(root)
+        _acl_cache[key] = (now, ok)
+        if len(_acl_cache) > 8:
+            oldest = min(_acl_cache, key=lambda item: _acl_cache[item][0])
+            _acl_cache.pop(oldest, None)
+        return ok
+
+
+def _current_user_sid() -> bytes | None:
+    global _user_sid_bytes
+    if _user_sid_bytes:
+        return _user_sid_bytes
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = ctypes.c_void_p
+    advapi.OpenProcessToken.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    advapi.GetLengthSid.argtypes = [ctypes.c_void_p]
+    advapi.GetLengthSid.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class TokenUser(ctypes.Structure):
+        _fields_ = [("User", SidAndAttributes)]
+
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        return None
+    try:
+        needed = wintypes.DWORD(0)
+        advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
+        if needed.value <= 0 or needed.value > 1024:
+            return None
+        buffer = ctypes.create_string_buffer(needed.value)
+        if not advapi.GetTokenInformation(token, 1, buffer, needed, ctypes.byref(needed)):
+            return None
+        user = ctypes.cast(buffer, ctypes.POINTER(TokenUser)).contents
+        length = advapi.GetLengthSid(user.User.Sid)
+        if length <= 0 or length > 256:
+            return None
+        raw = ctypes.string_at(user.User.Sid, length)
+    finally:
+        kernel.CloseHandle(token)
+    _user_sid_bytes = raw
+    return raw
+
+
+def _dacl_is_restricted(root: Path) -> bool:
+    """True only when every vault object is owned by this user and grants only this user full control."""
+    sid = _current_user_sid()
+    paths = _acl_targets(root)
+    if sid is None or paths is None:
+        return False
+    return all(_dacl_only_user(path, sid) for path in paths)
+
+
+def _acl_targets(root: Path) -> list[Path] | None:
+    objects = root / "objects"
+    required = [root, objects, root / "vault.json", root / "index.bin"]
+    for path in required:
+        if _is_reparse(path):
+            return None
+        if path in (root, objects):
+            if not path.is_dir():
+                return None
+        elif not path.is_file():
+            return None
+    try:
+        children = list(objects.iterdir())
+    except OSError:
+        return None
+    if len(children) > QUOTA_IMAGES:
+        return None
+    files: list[Path] = []
+    for child in children:
+        if _is_reparse(child) or not child.is_file() or child.suffix != ".bin" or not ID_RE.fullmatch(child.stem):
+            return None
+        files.append(child)
+    return required + files
+
+
+def _dacl_only_user(path: Path, sid: bytes) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi.GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    advapi.EqualSid.restype = wintypes.BOOL
+    advapi.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+    advapi.GetAce.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+
+    class Acl(ctypes.Structure):
+        _fields_ = [
+            ("AclRevision", ctypes.c_byte),
+            ("Sbz1", ctypes.c_byte),
+            ("AclSize", wintypes.WORD),
+            ("AceCount", wintypes.WORD),
+            ("Sbz2", wintypes.WORD),
+        ]
+
+    class AceHeader(ctypes.Structure):
+        _fields_ = [("AceType", ctypes.c_byte), ("AceFlags", ctypes.c_byte), ("AceSize", wintypes.WORD)]
+
+    class AllowAce(ctypes.Structure):
+        _fields_ = [("Header", AceHeader), ("Mask", wintypes.DWORD), ("SidStart", wintypes.DWORD)]
+
+    owner = ctypes.c_void_p()
+    group = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    sacl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    try:
+        status = advapi.GetNamedSecurityInfoW(
+            str(path),
+            1,
+            0x00000001 | 0x00000004,
+            ctypes.byref(owner),
+            ctypes.byref(group),
+            ctypes.byref(dacl),
+            ctypes.byref(sacl),
+            ctypes.byref(descriptor),
+        )
+        if status != 0 or not descriptor.value or not owner.value or not dacl.value:
+            return False
+        user = ctypes.create_string_buffer(sid)
+        if not advapi.EqualSid(owner, user):
+            return False
+        acl = ctypes.cast(dacl, ctypes.POINTER(Acl)).contents
+        if acl.AceCount != 1:
+            return False
+        ace = ctypes.c_void_p()
+        if not advapi.GetAce(dacl, 0, ctypes.byref(ace)) or not ace.value:
+            return False
+        header = ctypes.cast(ace, ctypes.POINTER(AceHeader)).contents
+        if header.AceType != _ACCESS_ALLOWED_ACE_TYPE or header.AceFlags & _INHERIT_ONLY_ACE:
+            return False
+        mask = ctypes.cast(ace, ctypes.POINTER(AllowAce)).contents.Mask
+        if mask & _FILE_ALL_ACCESS != _FILE_ALL_ACCESS:
+            return False
+        return bool(advapi.EqualSid(ctypes.c_void_p(ace.value + 8), user))
+    except (OSError, AttributeError, ValueError, OverflowError):
+        return False
+    finally:
+        if descriptor.value:
+            kernel.LocalFree(descriptor)
+
+
 def _token(token: str | None) -> str:
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
         raise VaultError("locked")
@@ -813,7 +1028,7 @@ def status(hq_root: Path, token: str | None) -> dict:
     return {
         "configured": header is not None,
         "unlocked": unlocked,
-        "private_generation": private_generation_ready(header),
+        "private_generation": _status_private_generation(root, header),
         "acl": "skipped" if os.name != "nt" or not _apply_acl else ((header or {}).get("acl") or "unverified"),
     }
 

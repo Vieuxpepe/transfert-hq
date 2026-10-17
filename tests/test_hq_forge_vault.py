@@ -567,6 +567,94 @@ class Vault(unittest.TestCase):
         self._assert_current_user_only(self.store / "vault.json", user, inherited=False)
         self._assert_current_user_only(self.store / "index.bin", user, inherited=False)
 
+    def test_widened_dacl_rejects_the_next_private_job_until_permissions_are_restored(self):
+        if os.name != "nt":
+            self.skipTest("Windows ACL")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("forge_jobs_cases", SOURCE / "tests" / "test_hq_forge_jobs.py")
+        cases = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cases)
+        V.set_acl_for_tests(True)
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        targets = [self.store, self.store / "objects", self.store / "vault.json", self.store / "index.bin"]
+        for path in targets:
+            completed = subprocess.run(
+                ["icacls", str(path), "/grant", "*S-1-1-0:(R)"],
+                capture_output=True, timeout=15, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        header = json.loads((self.store / "vault.json").read_text(encoding="utf-8"))
+        self.assertEqual(header["acl"], "restricted")
+        calls: list[bool] = []
+
+        def transport(*_args, **_kwargs):
+            calls.append(True)
+            raise AssertionError("forge")
+
+        code, payload = J.create_job(
+            self.hq, cases._body(destination="private"), "idem-acl-wide",
+            transport=transport, session_token=self.admin,
+        )
+        self.assertEqual((code, payload["code"]), (403, "disabled"))
+        self.assertEqual(calls, [])
+        self.assertFalse((self.hq / ".hq-forge" / "jobs.json").exists())
+        user = os.environ["USERNAME"]
+        for path in targets:
+            grant = user + (":(OI)(CI)F" if path.is_dir() else ":(F)")
+            replaced = subprocess.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", grant],
+                capture_output=True, timeout=15, check=False,
+            )
+            self.assertEqual(replaced.returncode, 0, replaced.stderr)
+            # /grant:r replaces this account's ACE and leaves the extra SID in place.
+            removed = subprocess.run(
+                ["icacls", str(path), "/remove:g", "*S-1-1-0"],
+                capture_output=True, timeout=15, check=False,
+            )
+            self.assertEqual(removed.returncode, 0, removed.stderr)
+        header = json.loads((self.store / "vault.json").read_text(encoding="utf-8"))
+        self.assertEqual(header["acl"], "restricted")
+        J.set_poll_interval_for_tests(0.05)
+        restored = cases.Transport()
+        code, payload = J.create_job(
+            self.hq, cases._body(destination="private"), "idem-acl-restored",
+            transport=restored, session_token=self.admin,
+        )
+        self.assertEqual(code, 202, payload)
+        deadline = time.monotonic() + 5
+        job: dict = {}
+        while time.monotonic() < deadline:
+            job = J.get_job(self.hq, payload["job"]["job_id"], self.admin)[1]["job"]
+            if job["state"] in J.TERMINAL:
+                break
+            time.sleep(0.05)
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(job["destination"], "private")
+        self.assertFalse((self.hq / ".hq-forge" / "gallery").exists())
+
+    def test_status_reuses_a_dacl_reading_and_a_private_job_reads_it_again(self):
+        if os.name != "nt":
+            self.skipTest("Windows ACL")
+        V.set_acl_for_tests(True)
+        self._setup()
+        calls: list[Path] = []
+        real = V._dacl_is_restricted
+
+        def counted(root: Path) -> bool:
+            calls.append(root)
+            return real(root)
+
+        V._dacl_is_restricted = counted
+        try:
+            self.assertTrue(V.status(self.hq, None)["private_generation"])
+            self.assertTrue(V.status(self.hq, None)["private_generation"])
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(V.confirm_private_generation(self.hq))
+            self.assertEqual(len(calls), 2)
+        finally:
+            V._dacl_is_restricted = real
+
 
 if __name__ == "__main__":
     unittest.main()

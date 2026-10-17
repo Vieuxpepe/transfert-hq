@@ -516,6 +516,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
         return 200, {"job": _public(existing, unlocked=_session_open(root, session_token))}
     if destination == "private":
+        if not vault.confirm_private_generation(root):
+            return 403, {"error": _MESSAGES["disabled"], "code": "disabled"}
         info = vault.status(root, session_token)
         if not info.get("private_generation"):
             return 403, {"error": _MESSAGES["disabled"], "code": "disabled"}
