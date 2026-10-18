@@ -1,9 +1,9 @@
 """Local lifecycle listener.
 
-The listener is a separate process from HQ. It binds 127.0.0.1 on a port the
-caller chooses. This development build refuses ports 7860, 8765, and 8776.
-Binding the intended production listener port is a later maintenance window,
-not this module's default.
+The listener is a separate process from HQ. Ordinary calls bind 127.0.0.1 on
+an ephemeral port and refuse 7860, 8765, and 8776. The only fixed endpoint
+this module can name is 127.0.0.1:8776, and both the configuration gate and
+the bind latch stay false, so this process does not open that port.
 
 Authorization reads the persisted session record. It does not call the
 HQ session-role helper and it does not rewrite the role field.
@@ -63,6 +63,33 @@ def assert_isolated_session_path(path: Path) -> None:
 def assert_development_port(port: int) -> None:
     if int(port) in RESERVED_PORTS:
         raise RuntimeError("refusing to bind a reserved port")
+
+
+FIXED_LISTENER_HOST = "127.0.0.1"
+FIXED_LISTENER_PORT = 8776
+# Both stay false until a separate maintenance authorization. The decision
+# function can name 127.0.0.1:8776 only when the first flag is set. The socket
+# is opened only when the second flag is also set. Neither flag is read from
+# the environment or from a state file.
+EXACT_PORT_LISTENER_ENABLED = False
+EXACT_PORT_BIND_PERMITTED = False
+
+
+def fixed_listener_decision(*, authorized: bool) -> tuple[str, int]:
+    """Name the only fixed listener endpoint. This does not bind a socket."""
+    if authorized is not True or EXACT_PORT_LISTENER_ENABLED is not True:
+        raise RuntimeError("fixed listener port is disabled")
+    return (FIXED_LISTENER_HOST, FIXED_LISTENER_PORT)
+
+
+def assert_fixed_listener_bind(port: int, *, authorized: bool) -> tuple[str, int]:
+    """Allow a socket only for the gated loopback endpoint."""
+    host, decided = fixed_listener_decision(authorized=authorized)
+    if type(port) is not int or port != decided or host != FIXED_LISTENER_HOST:
+        raise RuntimeError("fixed listener port is disabled")
+    if EXACT_PORT_BIND_PERMITTED is not True:
+        raise RuntimeError("fixed listener bind is not permitted")
+    return host, decided
 
 
 def set_browser_binding_for_tests(page_host: str | None, listener_origin: str | None) -> None:
@@ -356,6 +383,29 @@ def _make_server(handler_type):
     raise RuntimeError("no free listener port")
 
 
+def _make_bound_server(handler_type, host: str, port: int):
+    """Bind the gated endpoint. The latch is checked again before the socket."""
+    from http.server import ThreadingHTTPServer
+
+    host, port = assert_fixed_listener_bind(port, authorized=True)
+    if EXACT_PORT_LISTENER_ENABLED is not True:
+        raise RuntimeError("fixed listener port is disabled")
+
+    class Server(ThreadingHTTPServer):
+        allow_reuse_address = False
+
+        def server_bind(self) -> None:
+            if self.server_address != (FIXED_LISTENER_HOST, FIXED_LISTENER_PORT):
+                raise RuntimeError("listener left the fixed endpoint")
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
+            if self.server_address != (FIXED_LISTENER_HOST, FIXED_LISTENER_PORT):
+                raise RuntimeError("listener left the fixed endpoint")
+
+    return Server((host, port), handler_type)
+
+
 class LifecycleListener:
     """Credentialed loopback listener. The request body cannot choose a command."""
 
@@ -368,6 +418,9 @@ class LifecycleListener:
         hq_pid: int,
         hq_creation: int,
         probe: Callable[[], str],
+        *,
+        listen_port: int | None = None,
+        fixed_port_authorized: bool = False,
     ) -> None:
         from http.server import BaseHTTPRequestHandler
 
@@ -524,9 +577,19 @@ class LifecycleListener:
                 encoded = json.dumps({"code": result["code"], "signaled": result["signaled"]}).encode("utf-8")
                 self._send(200 if result["ok"] else 409, encoded, True)
 
-        self._server = _make_server(Handler)
-        self.port = int(self._server.server_address[1])
-        assert_development_port(self.port)
+        if listen_port not in (None, 0):
+            assert_fixed_listener_bind(listen_port, authorized=fixed_port_authorized)
+            self._server = _make_bound_server(Handler, FIXED_LISTENER_HOST, FIXED_LISTENER_PORT)
+            self.port = int(self._server.server_address[1])
+            if self.port != FIXED_LISTENER_PORT:
+                self._server.server_close()
+                raise RuntimeError("listener left the fixed endpoint")
+        else:
+            if fixed_port_authorized is not False:
+                raise RuntimeError("authorization does not select a port")
+            self._server = _make_server(Handler)
+            self.port = int(self._server.server_address[1])
+            assert_development_port(self.port)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
