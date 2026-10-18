@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -30,6 +31,12 @@ import importlib.util  # noqa: E402
 _PAGE_SPEC = importlib.util.spec_from_file_location("m2b_exact_port_page", Path(__file__).with_name("m2b_exact_port_page.py"))
 page_launcher = importlib.util.module_from_spec(_PAGE_SPEC)
 _PAGE_SPEC.loader.exec_module(page_launcher)
+_PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "m2b_publication_tests",
+    Path(__file__).with_name("m2b_publication.py"),
+)
+publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
+_PUBLICATION_SPEC.loader.exec_module(publication)
 
 PAGE_BIND_PERMITTED = page_launcher.PAGE_BIND_PERMITTED
 PIN = page_launcher.PIN
@@ -188,8 +195,9 @@ def observer_for(body: dict):
 class Checkout(unittest.TestCase):
     def test_worktree_identity_and_disposable_sessions(self) -> None:
         facts = assert_checkout(fixed=False)
-        self.assertEqual(facts["head"], recovery.WORKTREE_HEAD)
-        self.assertFalse(facts["clean"])
+        self.assertEqual(facts["baseline"], "7fb650bb4097c789cc2027164f20a7b44cfe99c2")
+        self.assertEqual(facts["tree"], recovery.WORKTREE_HEAD)
+        self.assertEqual(len(facts["head"]), 40)
         self.assertEqual(facts["root"], str(recovery.PAGE_SCRIPT and Path(r"C:\Transfert-worktrees\forge-lifecycle-m1")))
         with self.assertRaises(RuntimeError):
             assert_disposable_session_path(Path(r"C:\Transfert\bridge_sessions.json"))
@@ -199,6 +207,93 @@ class Checkout(unittest.TestCase):
             gate.assert_isolated_session_path(Path(r"C:\Transfert\bridge_sessions.json"))
         disposable = assert_disposable_session_path(Path(tempfile.gettempdir()) / "m2b-exact-not-created.json")
         self.assertNotIn(Path(r"C:\Transfert").resolve(), disposable.parents)
+
+    def test_approved_checkpoint_validates_and_other_heads_are_refused(self) -> None:
+        baseline = "7fb650bb4097c789cc2027164f20a7b44cfe99c2"
+        unrelated = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        self.assertEqual(page_launcher.source_identity.APPROVED_BASELINE, baseline)
+        self.assertEqual(page_launcher.source_identity.APPROVED_TREE, recovery.WORKTREE_HEAD)
+        self.assertEqual(assert_checkout(fixed=False)["tree"], recovery.WORKTREE_HEAD)
+        accepted = recovery.validate_payload(payload_for("ports-free"), now=NOW)
+        self.assertEqual(accepted["worktree_head"], recovery.WORKTREE_HEAD)
+        rejected = payload_for("ports-free")
+        rejected["worktree_head"] = unrelated
+        with self.assertRaises(recovery.RecoveryError) as caught:
+            recovery.validate_payload(rejected, now=NOW)
+        self.assertEqual(caught.exception.code, "inconsistent")
+
+    def test_disposable_commit_accepts_the_approved_tree(self) -> None:
+        import shutil
+        root = Path(tempfile.mkdtemp(prefix="m2b-exact-"))
+        other = Path(tempfile.mkdtemp(prefix="m2b-exact-"))
+        try:
+            self.assertEqual(self._git(root, "init", "-b", "fixture").returncode, 0)
+            marker = root / "marker.txt"
+            identity = root / "hq_forge_source_identity.py"
+            marker.write_bytes(b"baseline\n")
+            identity.write_bytes(b'APPROVED_TREE = "0000000000000000000000000000000000000000"\n')
+            self.assertEqual(self._git(root, "add", "--", "marker.txt", "hq_forge_source_identity.py").returncode, 0)
+            self._commit(root, "baseline")
+            baseline = self._git(root, "rev-parse", "HEAD").stdout.decode("ascii").strip()
+            marker.write_bytes(b"approved\n")
+            tree = page_launcher.source_identity.reviewed_tree(root)
+            identity.write_bytes(f'APPROVED_TREE = "{tree}"\n'.encode("ascii"))
+            self.assertEqual(page_launcher.source_identity.reviewed_tree(root), tree)
+            self.assertEqual(self._git(root, "add", "--", "marker.txt", "hq_forge_source_identity.py").returncode, 0)
+            self._commit(root, "approved")
+            approved_head = self._git(root, "rev-parse", "HEAD").stdout.decode("ascii").strip()
+            self.assertNotEqual(approved_head, baseline)
+            self.assertEqual(page_launcher.source_identity.reviewed_tree(root), tree)
+            accepted = page_launcher.assert_source_tree(root, baseline=baseline, tree=tree, fixed=True)
+            recovered = recovery.assert_source_tree(root, baseline=baseline, tree=tree, fixed=True)
+            self.assertEqual(accepted["tree"], tree)
+            self.assertEqual(recovered["tree"], tree)
+            self.assertTrue(accepted["clean"])
+            self.assertEqual(accepted["head"], approved_head)
+            self._commit(root, "same tree", allow_empty=True)
+            later_head = self._git(root, "rev-parse", "HEAD").stdout.decode("ascii").strip()
+            self.assertNotEqual(later_head, approved_head)
+            later = page_launcher.assert_source_tree(root, baseline=baseline, tree=tree, fixed=True)
+            self.assertEqual(later["head"], later_head)
+            self.assertEqual(later["tree"], tree)
+            self.assertEqual(recovery.assert_source_tree(root, baseline=baseline, tree=tree, fixed=True)["tree"], tree)
+            marker.write_bytes(b"changed\n")
+            with self.assertRaises(page_launcher.source_identity.IdentityError):
+                page_launcher.assert_source_tree(root, baseline=baseline, tree=tree, fixed=True)
+            with self.assertRaises(recovery.RecoveryError) as caught:
+                recovery.assert_source_tree(root, baseline=baseline, tree=tree, fixed=False)
+            self.assertEqual(caught.exception.code, "inconsistent")
+            self.assertEqual(self._git(other, "init", "-b", "fixture").returncode, 0)
+            (other / "marker.txt").write_bytes(b"other\n")
+            self.assertEqual(self._git(other, "add", "--", "marker.txt").returncode, 0)
+            self._commit(other, "unrelated")
+            with self.assertRaises(page_launcher.source_identity.IdentityError):
+                page_launcher.assert_source_tree(other, baseline=baseline, tree=tree, fixed=True)
+            with self.assertRaises(recovery.RecoveryError) as unrelated:
+                recovery.assert_source_tree(other, baseline=baseline, tree=tree, fixed=True)
+            self.assertEqual(unrelated.exception.code, "inconsistent")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(other, ignore_errors=True)
+
+    def _git(self, root: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=False,
+            capture_output=True,
+        )
+
+    def _commit(self, root: Path, message: str, allow_empty: bool = False) -> None:
+        command = [
+            "git", "-C", str(root),
+            "-c", "user.name=fixture",
+            "-c", "user.email=fixture@example.invalid",
+            "commit", "-m", message,
+        ]
+        if allow_empty:
+            command.append("--allow-empty")
+        completed = subprocess.run(command, check=False, capture_output=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", errors="replace"))
 
     def test_ephemeral_page_imports_the_worktree_bridge(self) -> None:
         before = listening()
@@ -286,18 +381,24 @@ class PageProcess(unittest.TestCase):
         identity_path = root / "identity.json"
         stop_flag = root / "stop.flag"
         origin_file = root / "origin.txt"
+        stderr_path = root / "stderr.txt"
+        stderr_handle = stderr_path.open("wb", buffering=0)
         process = subprocess.Popen(
             [str(PYTHON), str(SOURCE / "tests" / "m2b_exact_port_page.py"), "--ephemeral", str(identity_path), str(stop_flag), str(origin_file)],
             cwd=str(SOURCE),
+            stderr=stderr_handle,
         )
         try:
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and not identity_path.is_file():
-                if process.poll() is not None:
-                    break
-                time.sleep(0.05)
-            self.assertTrue(identity_path.is_file(), "page process did not publish its identity")
-            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+            try:
+                identity = publication.wait_until_ready(
+                    identity_path,
+                    publication.parse_json_record,
+                    process,
+                    20,
+                    stderr_path,
+                )
+            except publication.PublicationError as exc:
+                self.fail(f"page publication {exc.code} exit={exc.returncode} stderr={exc.stderr[:500]}")
             self.assertEqual(str(identity["executable"]).casefold(), str(PYTHON).casefold())
             self.assertEqual(str(identity["script"]).casefold(), str((SOURCE / "tests" / "m2b_exact_port_page.py").resolve()).casefold())
             self.assertEqual(identity["pid"], process.pid)
@@ -314,6 +415,7 @@ class PageProcess(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+            stderr_handle.close()
             import shutil
             shutil.rmtree(root, ignore_errors=True)
         self.assertFalse(life.process_alive(process.pid))
@@ -763,6 +865,173 @@ class RecoveryCli(unittest.TestCase):
         with self.assertRaises(recovery.RecoveryError) as caught:
             recovery.load_state(self.state, now=now)
         self.assertEqual(caught.exception.code, "unauthorized")
+
+
+class _Alive:
+    def poll(self):
+        return None
+
+
+class Publication(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="m2b-exact-"))
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_delayed_publication_waits_for_the_complete_port(self) -> None:
+        path = self.root / "port.txt"
+        helper = Path(__file__).with_name("m2b_publication.py")
+        stderr_path = self.root / "stderr.txt"
+        stderr_handle = stderr_path.open("wb", buffering=0)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import importlib.util,sys,time; from pathlib import Path; time.sleep(float(sys.argv[1])); spec=importlib.util.spec_from_file_location('m2b_publication', sys.argv[2]); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); module.publish_port(Path(sys.argv[3]), int(sys.argv[4]))",
+                "0.4",
+                str(helper),
+                str(path),
+                "34567",
+            ],
+            stderr=stderr_handle,
+        )
+        started = time.monotonic()
+        try:
+            port = publication.wait_until_ready(path, publication.parse_port, process, 3, stderr_path)
+        finally:
+            process.wait(timeout=5)
+            stderr_handle.close()
+        self.assertEqual(port, 34567)
+        self.assertGreaterEqual(time.monotonic() - started, 0.3)
+        self.assertIsNone(publication.parse_port(b"34567"))
+        self.assertEqual(publication.parse_port(path.read_bytes()), 34567)
+
+    def test_partial_file_is_not_ready(self) -> None:
+        path = self.root / "port.txt"
+        path.write_bytes(b"3456")
+        self.assertIsNone(publication.parse_port(path.read_bytes()))
+        started = time.monotonic()
+        with self.assertRaises(publication.PublicationError) as caught:
+            publication.wait_until_ready(path, publication.parse_port, _Alive(), 0.2)
+        self.assertEqual(caught.exception.code, "timeout")
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(path.read_bytes().endswith(b"\n"))
+
+    def test_malformed_records_fail_before_the_timeout(self) -> None:
+        cases = [
+            (self.root / "port.txt", b"nope\n", publication.parse_port),
+            (self.root / "zero.txt", b"0\n", publication.parse_port),
+            (self.root / "wide.txt", b"65536\n", publication.parse_port),
+            (self.root / "record.json", b"[]\n", publication.parse_json_record),
+            (self.root / "pair.json", b'{"a":1}\n{"b":2}\n', publication.parse_json_record),
+            (self.root / "origin.txt", b"http://10.0.0.1:80\n", publication.parse_origin),
+        ]
+        for path, raw, parser in cases:
+            path.write_bytes(raw)
+            started = time.monotonic()
+            with self.assertRaises(publication.PublicationError) as caught:
+                publication.wait_until_ready(path, parser, _Alive(), 5)
+            self.assertEqual(caught.exception.code, "malformed", raw)
+            self.assertLess(time.monotonic() - started, 0.5)
+        self.assertIsNone(publication.parse_json_record(b'{"port":1'))
+        self.assertIsNone(publication.parse_origin(b"http://127.0.0.1:80"))
+
+    def test_early_process_exit_reports_status_and_stderr(self) -> None:
+        path = self.root / "port.txt"
+        stderr_path = self.root / "stderr.txt"
+        stderr_handle = stderr_path.open("wb", buffering=0)
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stderr.write('boom\\n'); raise SystemExit(7)"],
+            stderr=stderr_handle,
+        )
+        started = time.monotonic()
+        try:
+            with self.assertRaises(publication.PublicationError) as caught:
+                publication.wait_until_ready(path, publication.parse_port, process, 5, stderr_path)
+        finally:
+            process.wait(timeout=5)
+            stderr_handle.close()
+        self.assertEqual(caught.exception.code, "exited")
+        self.assertEqual(caught.exception.returncode, 7)
+        self.assertIn("boom", caught.exception.stderr)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertFalse(path.exists())
+
+    def test_concurrent_publishers_yield_complete_records(self) -> None:
+        helper = Path(__file__).with_name("m2b_publication.py")
+        code = (
+            "import importlib.util,sys; from pathlib import Path; "
+            "spec=importlib.util.spec_from_file_location('m2b_publication', sys.argv[1]); "
+            "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+            "module.publish_port(Path(sys.argv[2]), int(sys.argv[4])); "
+            "module.publish_json(Path(sys.argv[3]), {'port': int(sys.argv[4])})"
+        )
+        processes = []
+        expected = {}
+        for port in (18111, 18112, 18113, 18114):
+            port_path = self.root / f"{port}.port"
+            record_path = self.root / f"{port}.json"
+            stderr_path = self.root / f"{port}.stderr"
+            stderr_handle = stderr_path.open("wb", buffering=0)
+            process = subprocess.Popen(
+                [sys.executable, "-c", code, str(helper), str(port_path), str(record_path), str(port)],
+                stderr=stderr_handle,
+            )
+            processes.append((process, stderr_handle, port_path, record_path, stderr_path, port))
+            expected[port] = port
+        try:
+            for process, _handle, port_path, record_path, stderr_path, port in processes:
+                found = publication.wait_until_ready(port_path, publication.parse_port, process, 5, stderr_path)
+                record = publication.wait_until_ready(record_path, publication.parse_json_record, process, 5, stderr_path)
+                self.assertEqual(found, port)
+                self.assertEqual(record, {"port": port})
+        finally:
+            for process, handle, *_rest in processes:
+                process.wait(timeout=5)
+                handle.close()
+        names = sorted(item.name for item in self.root.iterdir())
+        self.assertEqual(names, sorted(f"{port}.{suffix}" for port in expected for suffix in ("json", "port", "stderr")))
+
+    def test_replace_publication_does_not_expose_a_partial_record(self) -> None:
+        path = self.root / "port.txt"
+        seen: list[object] = []
+        stop = threading.Event()
+
+        def read() -> None:
+            while not stop.is_set():
+                if not path.is_file():
+                    continue
+                try:
+                    raw = path.read_bytes()
+                except OSError:
+                    continue
+                try:
+                    value = publication.parse_port(raw)
+                except publication.PublicationError:
+                    seen.append("malformed")
+                    return
+                if value is None:
+                    seen.append("partial")
+                    return
+                seen.append(value)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        try:
+            for port in range(21000, 21100):
+                publication.publish_port(path, port)
+        finally:
+            stop.set()
+            reader.join(timeout=2)
+        self.assertFalse(reader.is_alive())
+        self.assertNotIn("partial", seen)
+        self.assertNotIn("malformed", seen)
+        self.assertTrue(seen)
+        self.assertTrue(all(21000 <= item <= 21099 for item in seen))
+        self.assertEqual(publication.parse_port(path.read_bytes()), 21099)
+        self.assertEqual([item.name for item in self.root.iterdir()], ["port.txt"])
 
 
 if __name__ == "__main__":

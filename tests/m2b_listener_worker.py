@@ -14,6 +14,14 @@ sys.path.insert(0, str(SOURCE))
 
 import hq_forge_lifecycle as life  # noqa: E402
 import hq_forge_lifecycle_listener as listener  # noqa: E402
+import importlib.util  # noqa: E402
+
+_PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "m2b_publication",
+    SOURCE / "tests" / "m2b_publication.py",
+)
+publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
+_PUBLICATION_SPEC.loader.exec_module(publication)
 
 
 def main() -> int:
@@ -40,7 +48,7 @@ def main() -> int:
         hq_creation,
         lambda: "ready",
     )
-    port_file.write_text(str(server.port), encoding="ascii")
+    publication.publish_port(port_file, int(server.port))
     try:
         threading.Event().wait()
     finally:

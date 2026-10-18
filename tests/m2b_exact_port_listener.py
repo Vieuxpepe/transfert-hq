@@ -17,6 +17,14 @@ if str(SOURCE) not in sys.path:
 
 import hq_forge_lifecycle as life  # noqa: E402
 import hq_forge_lifecycle_listener as listener  # noqa: E402
+import importlib.util  # noqa: E402
+
+_PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "m2b_publication",
+    Path(__file__).with_name("m2b_publication.py"),
+)
+publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
+_PUBLICATION_SPEC.loader.exec_module(publication)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,8 +78,8 @@ def main(argv: list[str] | None = None) -> int:
             "script": str(Path(__file__).resolve()),
             "port": server.port,
         }
-        identity_file.write_text(json.dumps(identity, sort_keys=True) + "\n", encoding="utf-8")
-        port_file.write_text(str(server.port), encoding="ascii")
+        publication.publish_port(port_file, int(server.port))
+        publication.publish_json(identity_file, identity)
         while not stop_flag.is_file():
             time.sleep(0.05)
     finally:

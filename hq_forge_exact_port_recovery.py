@@ -15,9 +15,11 @@ import tempfile
 from ctypes import wintypes
 from pathlib import Path
 
+import hq_forge_source_identity as source_identity
+
 MAX_AGE_SEC = 7200
 PRODUCTION_HEAD = "17831623039814a7a010537848efa5424294cea8"
-WORKTREE_HEAD = "75214254a7de365a58e239b2b1bf4103a209f14d"
+WORKTREE_HEAD = source_identity.APPROVED_TREE
 PRODUCTION_ROOT = Path(r"C:\Transfert")
 PYTHON_EXE = r"C:\Python313\python.exe"
 PY_EXE = r"C:\Windows\py.exe"
@@ -89,6 +91,14 @@ def _exe(value: str) -> str:
 
 def canonical_payload(payload: dict) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def assert_source_tree(root: Path, *, baseline: str, tree: str, fixed: bool) -> dict:
+    """Use the launcher's reviewed-tree contract. This does not restore anything."""
+    try:
+        return source_identity.assert_reviewed_source(root, baseline=baseline, tree=tree, fixed=fixed)
+    except source_identity.IdentityError as exc:
+        raise RecoveryError("inconsistent") from exc
 
 
 def checksum_wrapper(payload: dict) -> dict:

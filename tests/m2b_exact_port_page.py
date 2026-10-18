@@ -23,8 +23,16 @@ if str(SOURCE) not in sys.path:
     sys.path.insert(0, str(SOURCE))
 
 import hq_forge_lifecycle_listener as gate  # noqa: E402
+import hq_forge_source_identity as source_identity  # noqa: E402
+import importlib.util  # noqa: E402
 
-EXPECTED_HEAD = "75214254a7de365a58e239b2b1bf4103a209f14d"
+_PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "m2b_publication",
+    Path(__file__).with_name("m2b_publication.py"),
+)
+publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
+_PUBLICATION_SPEC.loader.exec_module(publication)
+
 PRODUCTION_HEAD = "17831623039814a7a010537848efa5424294cea8"
 WORKTREE = Path(r"C:\Transfert-worktrees\forge-lifecycle-m1")
 PRODUCTION_ROOT = Path(r"C:\Transfert")
@@ -36,9 +44,11 @@ REQUIRED_FILES = (
     "hq_forge_lifecycle.py",
     "hq_forge_lifecycle_listener.py",
     "hq_forge_csrf_key.py",
+    "hq_forge_source_identity.py",
     "hq_forge_exact_port_recovery.py",
     "tests/m2b_exact_port_page.py",
     "tests/m2b_exact_port_listener.py",
+    "tests/m2b_publication.py",
 )
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
@@ -77,19 +87,28 @@ def assert_checkout(*, fixed: bool) -> dict:
         raise RuntimeError("refusing the production checkout")
     if Path(_git(root, "rev-parse", "--show-toplevel")).resolve() != root:
         raise RuntimeError("checkout identity mismatch")
-    head = _git(root, "rev-parse", "HEAD")
-    if head != EXPECTED_HEAD:
-        raise RuntimeError("checkout identity mismatch")
     if _git(production, "rev-parse", "HEAD") != PRODUCTION_HEAD:
         raise RuntimeError("production checkout mismatch")
     for name in REQUIRED_FILES:
         path = (root / name).resolve()
         if not _regular_file(path) or root not in path.parents or production in path.parents:
             raise RuntimeError("checkout file missing")
-    clean = _git(root, "status", "--porcelain") == ""
-    if fixed and not clean:
-        raise RuntimeError("fixed page port requires a clean reviewed tree")
-    return {"head": head, "clean": clean, "root": str(root)}
+    try:
+        facts = assert_source_tree(
+            root,
+            baseline=source_identity.APPROVED_BASELINE,
+            tree=source_identity.APPROVED_TREE,
+            fixed=fixed,
+        )
+    except source_identity.IdentityError as exc:
+        raise RuntimeError(str(exc)) from exc
+    facts["root"] = str(root)
+    return facts
+
+
+def assert_source_tree(root: Path, *, baseline: str, tree: str, fixed: bool) -> dict:
+    """Same reviewed-tree contract the recovery schema uses."""
+    return source_identity.assert_reviewed_source(root, baseline=baseline, tree=tree, fixed=fixed)
 
 
 def fixed_page_decision(*, authorized: bool, clean: bool) -> tuple[str, int]:
@@ -201,7 +220,12 @@ def start_ephemeral_page(*, origin_file: Path | None = None) -> PageHandle:
         def _refresh(self) -> None:
             if origin_file is None or not origin_file.is_file():
                 return
-            text = origin_file.read_text(encoding="ascii").strip()
+            try:
+                text = publication.parse_origin(origin_file.read_bytes())
+            except (OSError, publication.PublicationError):
+                return
+            if text is None:
+                return
             port = gate._port_of(gate._ORIGIN_RE, text)
             if port in RESERVED:
                 return
@@ -297,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     origin_file = Path(args[3])
     handle = start_ephemeral_page(origin_file=origin_file)
     try:
-        identity_path.write_text(json.dumps(handle.identity, sort_keys=True) + "\n", encoding="utf-8")
+        publication.publish_json(identity_path, handle.identity)
         while not stop_flag.is_file():
             time.sleep(0.05)
     finally:

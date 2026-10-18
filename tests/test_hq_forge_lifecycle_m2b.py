@@ -24,6 +24,14 @@ sys.path.insert(0, str(SOURCE))
 
 import hq_forge_lifecycle as life  # noqa: E402
 import hq_forge_lifecycle_listener as gate  # noqa: E402
+import importlib.util  # noqa: E402
+
+_PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "m2b_publication",
+    Path(__file__).with_name("m2b_publication.py"),
+)
+publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
+_PUBLICATION_SPEC.loader.exec_module(publication)
 
 EVIDENCE: list[dict] = []
 ORPHANS: list[dict] = []
@@ -438,6 +446,8 @@ class SeparateProcess(unittest.TestCase):
         self.assertEqual(sessions.read_bytes(), before)
         self.assertTrue(credential)
         port_file = root / "port.txt"
+        stderr_path = root / "listener.stderr"
+        stderr_handle = stderr_path.open("wb", buffering=0)
         nonce = uuid.uuid4().hex[:12]
         creation = life.process_creation(os.getpid())
         proc = subprocess.Popen(
@@ -454,15 +464,13 @@ class SeparateProcess(unittest.TestCase):
                 nonce,
             ],
             cwd=str(SOURCE),
+            stderr=stderr_handle,
         )
         try:
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and not port_file.is_file():
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.05)
-            self.assertTrue(port_file.is_file(), "listener did not start")
-            port = int(port_file.read_text(encoding="ascii"))
+            try:
+                port = publication.wait_until_ready(port_file, publication.parse_port, proc, 10, stderr_path)
+            except publication.PublicationError as exc:
+                self.fail(f"listener publication {exc.code} exit={exc.returncode} stderr={exc.stderr[:500]}")
             self.assertNotIn(port, gate.RESERVED_PORTS)
             self.assertNotEqual(proc.pid, os.getpid())
             request = Request(
@@ -491,6 +499,7 @@ class SeparateProcess(unittest.TestCase):
         finally:
             proc.kill()
             proc.wait(5)
+            stderr_handle.close()
             tmp.cleanup()
 
 

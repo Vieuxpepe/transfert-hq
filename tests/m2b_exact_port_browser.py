@@ -10,7 +10,6 @@ import json
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1]
@@ -20,6 +19,13 @@ import hq_forge_lifecycle as life  # noqa: E402
 import hq_forge_lifecycle_listener as gate  # noqa: E402
 import importlib.util  # noqa: E402
 
+_PUBLICATION_SPEC = importlib.util.spec_from_file_location(
+    "m2b_publication",
+    Path(__file__).with_name("m2b_publication.py"),
+)
+publication = importlib.util.module_from_spec(_PUBLICATION_SPEC)
+_PUBLICATION_SPEC.loader.exec_module(publication)
+
 _PAGE_SPEC = importlib.util.spec_from_file_location("m2b_exact_port_page", Path(__file__).with_name("m2b_exact_port_page.py"))
 page_launcher = importlib.util.module_from_spec(_PAGE_SPEC)
 _PAGE_SPEC.loader.exec_module(page_launcher)
@@ -28,17 +34,6 @@ PIN = page_launcher.PIN
 PYTHON = Path(r"C:\Python313\python.exe")
 OUT = Path(r"C:\Transfert-reviews\forge-lifecycle-exact-port\browser-fixture.json")
 RESERVED = {7860, 8765, 8776}
-
-
-def wait_file(path: Path, process: subprocess.Popen, seconds: float = 20) -> bool:
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if path.is_file():
-            return True
-        if process.poll() is not None:
-            return False
-        time.sleep(0.05)
-    return path.is_file()
 
 
 def self_text(tab, previous: str | None = None) -> str:
@@ -66,17 +61,28 @@ def main() -> int:
     }
     page = None
     listener = None
+    page_stderr = None
+    listener_stderr = None
     try:
+        page_stderr_path = root / "page.stderr"
+        page_stderr = page_stderr_path.open("wb", buffering=0)
         page = subprocess.Popen(
             [str(PYTHON), str(SOURCE / "tests" / "m2b_exact_port_page.py"), "--ephemeral", str(page_identity_path), str(page_stop), str(origin_file)],
             cwd=str(SOURCE),
+            stderr=page_stderr,
         )
-        if not wait_file(page_identity_path, page):
-            raise RuntimeError("page process did not start")
-        page_identity = json.loads(page_identity_path.read_text(encoding="utf-8"))
+        page_identity = publication.wait_until_ready(
+            page_identity_path,
+            publication.parse_json_record,
+            page,
+            20,
+            page_stderr_path,
+        )
         if int(page_identity["port"]) in RESERVED:
             raise RuntimeError("page selected a reserved port")
         origin = f"http://127.0.0.1:{page_identity['port']}"
+        listener_stderr_path = root / "listener.stderr"
+        listener_stderr = listener_stderr_path.open("wb", buffering=0)
         listener = subprocess.Popen(
             [
                 str(PYTHON),
@@ -92,14 +98,19 @@ def main() -> int:
                 str(listener_stop),
             ],
             cwd=str(SOURCE),
+            stderr=listener_stderr,
         )
-        if not wait_file(listener_identity_path, listener):
-            raise RuntimeError("listener process did not start")
-        listener_identity = json.loads(listener_identity_path.read_text(encoding="utf-8"))
+        listener_identity = publication.wait_until_ready(
+            listener_identity_path,
+            publication.parse_json_record,
+            listener,
+            20,
+            listener_stderr_path,
+        )
         if int(listener_identity["port"]) in RESERVED:
             raise RuntimeError("listener selected a reserved port")
         listener_origin = f"http://127.0.0.1:{listener_identity['port']}"
-        origin_file.write_text(listener_origin + "\n", encoding="ascii")
+        publication.publish_origin(origin_file, listener_origin)
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
@@ -118,6 +129,13 @@ def main() -> int:
         report["page_executable"] = page_identity["executable"]
         report["listener_executable"] = listener_identity["executable"]
         report["ok"] = report["authenticated_status"] == "200" and report["production_pair_exercised"] is False
+    except publication.PublicationError as exc:
+        report["ok"] = False
+        report["error_type"] = type(exc).__name__
+        message = f"publication {exc.code} exit={exc.returncode} stderr={exc.stderr}"
+        message = message.replace(PIN, "<redacted>")
+        message = gate._CSRF_RE.sub("<redacted>", message)
+        report["error"] = message[:500]
     except Exception as exc:
         report["ok"] = False
         report["error_type"] = type(exc).__name__
@@ -153,6 +171,10 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 page.kill()
                 page.wait(timeout=5)
+        if listener_stderr is not None:
+            listener_stderr.close()
+        if page_stderr is not None:
+            page_stderr.close()
         import shutil
         shutil.rmtree(root, ignore_errors=True)
         if disposable is not None:
