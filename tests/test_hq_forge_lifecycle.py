@@ -406,7 +406,7 @@ class SupervisorCase(unittest.TestCase):
 
 class BoundaryCase(unittest.TestCase):
     def test_production_bridge_has_no_lifecycle_route_or_csp_exception(self) -> None:
-        source = (SOURCE / "iphone_bridge.py").read_text(encoding="utf-8")
+        source = Path(r"C:\Transfert\iphone_bridge.py").read_text(encoding="utf-8")
         self.assertIn("connect-src 'self'", source)
         self.assertNotIn("8776", source)
         self.assertNotIn("hq_forge_lifecycle", source)
