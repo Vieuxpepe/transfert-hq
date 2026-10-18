@@ -295,10 +295,121 @@ class CsrfKeyAcl(unittest.TestCase):
         self.assert_tight(csrf_key.describe_csrf_key_acl(self.sessions))
         EVIDENCE.append({"test": "concurrent", "processes": 8, "equal": True, "acceptable": True})
 
+    def test_zero_byte_exact_key_is_recovered_once(self) -> None:
+        csrf_key.ensure_csrf_key(self.sessions)
+        key_path = self.root / "lifecycle-csrf.key"
+        raw_write(key_path, b"")
+        self.assertEqual(key_path.stat().st_size, 0)
+        recovered = csrf_key.ensure_csrf_key(self.sessions)
+        self.assertEqual(len(recovered), 32)
+        self.assertEqual(raw_read(key_path), recovered)
+        self.assertEqual(csrf_key.ensure_csrf_key(self.sessions), recovered)
+        self.assert_tight(csrf_key.describe_csrf_key_acl(self.sessions))
+        EVIDENCE.append({"test": "zero-recovery", "completed": True, "stable": True})
+
+    def test_unsafe_zero_byte_file_is_not_recovered(self) -> None:
+        key_path = self.root / "lifecycle-csrf.key"
+        key_path.write_bytes(b"")
+        with self.assertRaises(RuntimeError) as caught:
+            csrf_key.ensure_csrf_key(self.sessions)
+        self.assertEqual(str(caught.exception), "csrf key rejected")
+        self.assertEqual(key_path.stat().st_size, 0)
+        self.assertFalse(csrf_key.describe_csrf_key_acl(self.sessions)["acceptable"])
+        self.assertIsNone(csrf_key.load_csrf_key(self.sessions))
+        EVIDENCE.append({"test": "unsafe-zero", "repaired": False})
+
+    def test_missing_parent_fails_closed(self) -> None:
+        missing = self.root / "missing-parent" / "bridge_sessions.json"
+        with self.assertRaises(RuntimeError) as caught:
+            csrf_key.ensure_csrf_key(missing)
+        self.assertEqual(str(caught.exception), "csrf key path rejected")
+        self.assertFalse(missing.parent.exists())
+        EVIDENCE.append({"test": "missing-parent", "created": False})
+
+    def test_symlink_and_mount_point_tag_are_rejected(self) -> None:
+        target = self.root / "mount-target"
+        target.mkdir()
+        (target / "bridge_sessions.json").write_text("{}", encoding="utf-8")
+        junction = self.root / "mount-junction"
+        completed = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        tag = _reparse_tag(junction)
+        self.assertEqual(tag, 0xA0000003)
+        with self.assertRaises(RuntimeError):
+            csrf_key.ensure_csrf_key(junction / "bridge_sessions.json")
+        self.assertFalse((target / "lifecycle-csrf.key").exists())
+        link = self.root / "sym-dir"
+        completed = subprocess.run(["cmd", "/c", "mklink", "/D", str(link), str(target)], capture_output=True, text=True)
+        if completed.returncode == 0:
+            with self.assertRaises(RuntimeError):
+                csrf_key.ensure_csrf_key(link / "bridge_sessions.json")
+            self.assertFalse((target / "lifecycle-csrf.key").exists())
+            symlink = "rejected"
+        else:
+            symlink = "not-created"
+        EVIDENCE.append({"test": "mount-point", "tag": hex(tag), "symlink": symlink, "followed": False})
+
+    def test_concurrent_recovery_agrees(self) -> None:
+        csrf_key.ensure_csrf_key(self.sessions)
+        raw_write(self.root / "lifecycle-csrf.key", b"")
+        code = (
+            "import sys\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(SOURCE)!r})\n"
+            "import hq_forge_csrf_key as key\n"
+            "value = key.ensure_csrf_key(Path(sys.argv[1]))\n"
+            "Path(sys.argv[2]).write_bytes(value)\n"
+        )
+        procs = []
+        outs = []
+        for index in range(8):
+            out = self.root / f"recover-{index}.bin"
+            outs.append(out)
+            procs.append(subprocess.Popen(
+                [sys.executable, "-c", code, str(self.sessions), str(out)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            ))
+        failures = []
+        for proc in procs:
+            _stdout, err = proc.communicate(timeout=30)
+            if proc.returncode != 0:
+                failures.append((err or b"").decode("utf-8", errors="replace")[-240:])
+        blobs = [path.read_bytes() for path in outs if path.is_file()]
+        for path in outs:
+            if path.exists():
+                path.unlink()
+        self.assertEqual(failures, [])
+        self.assertEqual(len(blobs), 8)
+        self.assertTrue(all(item == blobs[0] for item in blobs))
+        self.assertEqual(len(blobs[0]), 32)
+        self.assert_tight(csrf_key.describe_csrf_key_acl(self.sessions))
+        EVIDENCE.append({"test": "concurrent-recovery", "processes": 8, "equal": True})
+
     def test_production_path_is_refused(self) -> None:
         with self.assertRaises(RuntimeError):
             csrf_key.ensure_csrf_key(Path(r"C:\Transfert\bridge_sessions.json"))
         self.assertFalse(Path(r"C:\Transfert\lifecycle-csrf.key").exists())
+
+
+def _reparse_tag(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = _kernel()
+    handle = kernel.CreateFileW(str(path), 0x80, 1, None, 3, 0x02200000, None)
+    invalid = wintypes.HANDLE(-1).value
+    if not handle or handle == invalid:
+        raise OSError(ctypes.get_last_error())
+    try:
+        class Tag(ctypes.Structure):
+            _fields_ = (("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD))
+        kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        info = Tag()
+        if not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            raise OSError(ctypes.get_last_error())
+        return int(info.ReparseTag)
+    finally:
+        kernel.CloseHandle(handle)
 
 
 def tearDownModule() -> None:

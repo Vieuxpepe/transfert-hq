@@ -1,9 +1,15 @@
 """Windows ACL for the lifecycle CSRF key.
 
-The key file is created with a protected DACL before its secret bytes are
-written. An existing file is used only when that same descriptor is already
-present. This module does not rewrite an untrusted file and does not log
-the key.
+Directory components are opened with NtCreateFile relative to the previous
+handle and FILE_OPEN_REPARSE_POINT. A reparse tag rejects that component, so
+a junction or symlink is not followed. The key is created relative to the
+verified parent handle, with the protected DACL set before any secret bytes
+are written.
+
+An existing regular file is read only when its owner and DACL match that
+policy and its length is 32. A length of 0 with that same policy is completed
+on the same handle. Any other file is left unchanged. This module does not
+log the key.
 """
 
 from __future__ import annotations
@@ -25,19 +31,8 @@ _OWNER_MASK = _FILE_READ_DATA | _FILE_WRITE_DATA | _FILE_READ_ATTRIBUTES | _READ
 _READER_MASK = _FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE
 OWNER_ACCESS_MASK = _OWNER_MASK
 READER_ACCESS_MASK = _READER_MASK
-_CREATE_NEW = 1
-_OPEN_EXISTING = 3
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_FILE_SHARE_READ = 0x00000001
-_FILE_SHARE_DELETE = 0x00000004
-_INVALID_ATTRIBUTES = 0xFFFFFFFF
-_ERROR_FILE_NOT_FOUND = 2
-_ERROR_PATH_NOT_FOUND = 3
-_ERROR_ACCESS_DENIED = 5
-_ERROR_SHARING_VIOLATION = 32
-_ERROR_FILE_EXISTS = 80
 _SE_DACL_PRESENT = 0x0004
 _SE_DACL_DEFAULTED = 0x0008
 _SE_DACL_PROTECTED = 0x1000
@@ -55,6 +50,33 @@ _WIN_BUILTIN_ADMINISTRATORS_SID = 26
 
 _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
 _advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+_ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+
+# NT dispositions. FILE_CREATE is 2 here; Win32 CREATE_NEW is a different number.
+_FILE_OPEN = 1
+_FILE_CREATE = 2
+_FILE_DIRECTORY_FILE = 0x00000001
+_FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
+_FILE_NON_DIRECTORY_FILE = 0x00000040
+_FILE_OPEN_REPARSE_POINT_NT = 0x00200000
+_OBJ_CASE_INSENSITIVE = 0x00000040
+_FILE_LIST_DIRECTORY = 0x0001
+_FILE_TRAVERSE = 0x0020
+_FILE_SHARE_READ_NT = 0x00000001
+_FILE_SHARE_WRITE_NT = 0x00000002
+_FILE_SHARE_DELETE_NT = 0x00000004
+_STATUS_ACCESS_DENIED = 0xC0000022
+_STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
+_STATUS_OBJECT_NAME_COLLISION = 0xC0000035
+_STATUS_OBJECT_PATH_NOT_FOUND = 0xC000003A
+_STATUS_SHARING_VIOLATION = 0xC0000043
+_FILE_NAME_OPENED = 0x8
+_FileAttributeTagInfo = 9
+_DIR_ACCESS = _FILE_LIST_DIRECTORY | _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE
+_PARENT_ACCESS = _DIR_ACCESS | _FILE_WRITE_DATA
+_DIR_OPTIONS = _FILE_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT_NT | _FILE_SYNCHRONOUS_IO_NONALERT
+_FILE_OPTIONS = _FILE_NON_DIRECTORY_FILE | _FILE_OPEN_REPARSE_POINT_NT | _FILE_SYNCHRONOUS_IO_NONALERT
+_DIR_SHARE = _FILE_SHARE_READ_NT | _FILE_SHARE_WRITE_NT | _FILE_SHARE_DELETE_NT
 
 
 class _SECURITY_ATTRIBUTES(ctypes.Structure):
@@ -97,12 +119,38 @@ class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
     )
 
 
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = (
+        ("Length", wintypes.USHORT),
+        ("MaximumLength", wintypes.USHORT),
+        ("Buffer", wintypes.LPWSTR),
+    )
+
+
+class _IO_STATUS_BLOCK(ctypes.Structure):
+    class _Union(ctypes.Union):
+        _fields_ = (("Status", wintypes.LONG), ("Pointer", ctypes.c_void_p))
+
+    _anonymous_ = ("_union",)
+    _fields_ = (("_union", _Union), ("Information", ctypes.c_size_t))
+
+
+class _OBJECT_ATTRIBUTES(ctypes.Structure):
+    _fields_ = (
+        ("Length", wintypes.ULONG),
+        ("RootDirectory", wintypes.HANDLE),
+        ("ObjectName", ctypes.POINTER(_UNICODE_STRING)),
+        ("Attributes", wintypes.ULONG),
+        ("SecurityDescriptor", ctypes.c_void_p),
+        ("SecurityQualityOfService", ctypes.c_void_p),
+    )
+
+
+class _FILE_ATTRIBUTE_TAG_INFO(ctypes.Structure):
+    _fields_ = (("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD))
+
+
 def _setup() -> None:
-    _kernel.CreateFileW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-    ]
-    _kernel.CreateFileW.restype = wintypes.HANDLE
     _kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel.CloseHandle.restype = wintypes.BOOL
     _kernel.WriteFile.argtypes = [
@@ -115,10 +163,6 @@ def _setup() -> None:
     _kernel.ReadFile.restype = wintypes.BOOL
     _kernel.FlushFileBuffers.argtypes = [wintypes.HANDLE]
     _kernel.FlushFileBuffers.restype = wintypes.BOOL
-    _kernel.DeleteFileW.argtypes = [wintypes.LPCWSTR]
-    _kernel.DeleteFileW.restype = wintypes.BOOL
-    _kernel.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
-    _kernel.GetFileAttributesW.restype = wintypes.DWORD
     _kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
     _kernel.GetFileInformationByHandle.restype = wintypes.BOOL
     _kernel.GetCurrentProcess.restype = wintypes.HANDLE
@@ -175,6 +219,16 @@ def _setup() -> None:
     _advapi.GetAce.restype = wintypes.BOOL
     _advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
     _advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    _kernel.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    _kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    _kernel.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    _kernel.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    _ntdll.NtCreateFile.argtypes = [
+        ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, ctypes.POINTER(_OBJECT_ATTRIBUTES),
+        ctypes.POINTER(_IO_STATUS_BLOCK), ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    _ntdll.NtCreateFile.restype = wintypes.LONG
 
 
 _setup()
@@ -253,43 +307,172 @@ def assert_isolated_session_path(path: Path) -> None:
         raise RuntimeError("refusing a production session path")
 
 
+def _nt_status(status: int) -> int:
+    return status & 0xFFFFFFFF
+
+
+def _component_ok(name: str) -> bool:
+    return bool(name) and name not in {".", ".."} and "\\" not in name and "/" not in name and ":" not in name
+
+
+def _unicode(text: str) -> tuple[_UNICODE_STRING, ctypes.Array]:
+    buffer = ctypes.create_unicode_buffer(text)
+    item = _UNICODE_STRING()
+    item.Buffer = ctypes.cast(buffer, wintypes.LPWSTR)
+    item.Length = len(text) * 2
+    item.MaximumLength = (len(text) + 1) * 2
+    return item, buffer
+
+
+def _nt_create(
+    root: int | None,
+    name: str,
+    access: int,
+    share: int,
+    disposition: int,
+    options: int,
+    security: ctypes.c_void_p | None,
+) -> tuple[int, int]:
+    """Return a handle and an NTSTATUS. The name is one component, or the DOS device path."""
+    item, _buffer = _unicode(name)
+    attributes = _OBJECT_ATTRIBUTES()
+    attributes.Length = ctypes.sizeof(_OBJECT_ATTRIBUTES)
+    attributes.RootDirectory = root or None
+    attributes.ObjectName = ctypes.pointer(item)
+    attributes.Attributes = _OBJ_CASE_INSENSITIVE
+    attributes.SecurityDescriptor = security
+    attributes.SecurityQualityOfService = None
+    handle = wintypes.HANDLE()
+    iosb = _IO_STATUS_BLOCK()
+    status = _nt_status(_ntdll.NtCreateFile(
+        ctypes.byref(handle), access, ctypes.byref(attributes), ctypes.byref(iosb),
+        None, _FILE_ATTRIBUTE_NORMAL, share, disposition, options, None, 0,
+    ))
+    if status & 0x80000000:
+        return 0, status
+    value = int(handle.value or 0)
+    if _invalid_handle(value):
+        return 0, status
+    return value, status
+
+
+def _reject_reparse(handle: int) -> None:
+    info = _FILE_ATTRIBUTE_TAG_INFO()
+    if not _kernel.GetFileInformationByHandleEx(
+        handle, _FileAttributeTagInfo, ctypes.byref(info), ctypes.sizeof(info),
+    ):
+        raise RuntimeError("csrf key path rejected")
+    if info.ReparseTag != 0 or info.FileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        raise RuntimeError("csrf key path rejected")
+
+
+def _opened_path(handle: int) -> str:
+    # FILE_NAME_OPENED reports the path that was opened. It is compared with the
+    # requested path; the reparse tag, not this string, is what stops a junction.
+    buffer = ctypes.create_unicode_buffer(1024)
+    length = _kernel.GetFinalPathNameByHandleW(handle, buffer, 1024, _FILE_NAME_OPENED)
+    if length == 0 or length >= 1024:
+        raise RuntimeError("csrf key path rejected")
+    return buffer.value
+
+
+def _same_path(opened: str, expected: Path) -> bool:
+    wanted = "\\\\?\\" + os.path.abspath(expected)
+    return os.path.normcase(opened.rstrip("\\")) == os.path.normcase(wanted.rstrip("\\"))
+
+
+def _identity(handle: int) -> tuple[int, int, int]:
+    info = _BY_HANDLE_FILE_INFORMATION()
+    if not _kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        raise RuntimeError("csrf key unreadable")
+    return int(info.dwVolumeSerialNumber), int(info.nFileIndexHigh), int(info.nFileIndexLow)
+
+
+def _file_size(handle: int) -> int:
+    info = _BY_HANDLE_FILE_INFORMATION()
+    if not _kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+        raise RuntimeError("csrf key unreadable")
+    return (int(info.nFileSizeHigh) << 32) | int(info.nFileSizeLow)
+
+
+def _close_all(handles: list[int]) -> None:
+    for handle in reversed(handles):
+        if handle:
+            _kernel.CloseHandle(handle)
+
+
+def _open_directories(path: Path) -> tuple[int, list[int]]:
+    """Open each existing directory component and return the parent handle.
+
+    FILE_OPEN_REPARSE_POINT makes a junction or symlink the opened object.
+    A non-zero reparse tag rejects it before the next component is opened.
+    The returned parent handle stays open so the key create cannot switch to
+    a directory substituted under the same path string.
+    """
+    absolute = Path(os.path.abspath(path))
+    assert_isolated_session_path(absolute)
+    drive = absolute.drive
+    if len(drive) != 2 or drive[1] != ":":
+        raise RuntimeError("csrf key path rejected")
+    names = list(absolute.parts[1:])
+    if not names or any(not _component_ok(name) for name in names):
+        raise RuntimeError("csrf key path rejected")
+    opened: list[int] = []
+    try:
+        root, status = _nt_create(
+            None, "\\??\\" + drive + "\\", _DIR_ACCESS, _DIR_SHARE, _FILE_OPEN, _DIR_OPTIONS, None,
+        )
+        if root == 0:
+            raise RuntimeError("csrf key path rejected")
+        opened.append(root)
+        _reject_reparse(root)
+        if not _same_path(_opened_path(root), Path(drive + "\\")):
+            raise RuntimeError("csrf key path rejected")
+        parent = root
+        built = Path(drive + "\\")
+        for name in names[:-1]:
+            built = built / name
+            handle, status = _nt_create(
+                parent, name, _PARENT_ACCESS if name == names[-2] else _DIR_ACCESS,
+                _DIR_SHARE, _FILE_OPEN, _DIR_OPTIONS, None,
+            )
+            if handle == 0:
+                raise RuntimeError("csrf key path rejected")
+            opened.append(handle)
+            _reject_reparse(handle)
+            if not _same_path(_opened_path(handle), built):
+                raise RuntimeError("csrf key path rejected")
+            parent = handle
+        return parent, opened
+    except Exception:
+        _close_all(opened)
+        raise
+
+
 def assert_direct_path(path: Path) -> Path:
     """Absolute path whose existing components are not reparse points."""
     absolute = Path(os.path.abspath(path))
-    assert_isolated_session_path(absolute)
-    built = Path(absolute.anchor)
-    missing_final_only = False
-    parts = absolute.parts
-    for index, part in enumerate(parts[1:], start=1):
-        built = built / part
-        attrs = _kernel.GetFileAttributesW(str(built))
-        if attrs == _INVALID_ATTRIBUTES:
-            error = ctypes.get_last_error()
-            final = index == len(parts) - 1
-            if error in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND) and final:
-                missing_final_only = True
-                break
+    _parent, opened = _open_directories(absolute)
+    try:
+        leaf, status = _nt_create(
+            _parent, absolute.name, _DIR_ACCESS, _DIR_SHARE, _FILE_OPEN, _FILE_OPTIONS, None,
+        )
+        if leaf == 0:
+            if status in (_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_OBJECT_PATH_NOT_FOUND):
+                return absolute
             raise RuntimeError("csrf key path rejected")
-        if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
-            raise RuntimeError("csrf key path rejected")
-    if missing_final_only:
+        try:
+            _reject_reparse(leaf)
+        finally:
+            _kernel.CloseHandle(leaf)
         return absolute
-    return absolute
+    finally:
+        _close_all(opened)
 
 
 def csrf_key_path(sessions: Path) -> Path:
     absolute = assert_direct_path(Path(sessions))
     return assert_direct_path(absolute.with_name("lifecycle-csrf.key"))
-
-
-def _attributes(path: Path) -> int | None:
-    attrs = _kernel.GetFileAttributesW(str(path))
-    if attrs == _INVALID_ATTRIBUTES:
-        error = ctypes.get_last_error()
-        if error in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND):
-            return None
-        raise RuntimeError("csrf key path rejected")
-    return int(attrs)
 
 
 def _security_attributes() -> tuple[_SECURITY_ATTRIBUTES, list[object]]:
@@ -390,102 +573,119 @@ def _verify_handle(handle: int) -> None:
         raise RuntimeError("csrf key rejected")
 
 
-def _open(path: Path, access: int, share: int, disposition: int, security: object | None) -> int:
-    security_ptr = None if security is None else ctypes.cast(ctypes.addressof(security), ctypes.c_void_p)
-    handle = _kernel.CreateFileW(
-        str(path), access, share, security_ptr, disposition,
-        _FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT, None,
-    )
-    if _invalid_handle(handle):
-        return 0
-    return handle
-
-
-def _delete(path: Path) -> None:
-    _kernel.DeleteFileW(str(path))
-
-
-def _create_key(path: Path) -> bytes:
-    key = secrets.token_bytes(32)
-    attributes, kept = _security_attributes()
-    handle = _open(path, _OWNER_MASK, _FILE_SHARE_DELETE, _CREATE_NEW, attributes)
-    del kept
-    if handle == 0:
-        if ctypes.get_last_error() == _ERROR_FILE_EXISTS:
-            return _read_existing(path)
+def _write_secret(handle: int, secret: bytes, identity: tuple[int, int, int]) -> None:
+    """Write 32 bytes on this handle. A short write is left in place and refused later."""
+    if _identity(handle) != identity:
+        raise RuntimeError("csrf key rejected")
+    _verify_handle(handle)
+    _reject_reparse(handle)
+    written = wintypes.DWORD()
+    buffer = ctypes.create_string_buffer(secret)
+    if not _kernel.WriteFile(handle, buffer, 32, ctypes.byref(written), None) or written.value != 32:
         raise RuntimeError("csrf key unreadable")
-    try:
-        try:
-            _verify_handle(handle)
-        except RuntimeError:
-            _delete(path)
-            raise
-        written = wintypes.DWORD()
-        buffer = ctypes.create_string_buffer(key)
-        if not _kernel.WriteFile(handle, buffer, 32, ctypes.byref(written), None) or written.value != 32:
-            _delete(path)
-            raise RuntimeError("csrf key unreadable")
-        if not _kernel.FlushFileBuffers(handle):
-            _delete(path)
-            raise RuntimeError("csrf key unreadable")
-    finally:
-        _kernel.CloseHandle(handle)
-    return key
-
-
-def _read_handle(handle: int) -> bytes:
-    info = _BY_HANDLE_FILE_INFORMATION()
-    if not _kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+    if not _kernel.FlushFileBuffers(handle):
         raise RuntimeError("csrf key unreadable")
-    if info.dwFileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT:
-        raise RuntimeError("csrf key path rejected")
-    size = (int(info.nFileSizeHigh) << 32) | int(info.nFileSizeLow)
-    if size != 32:
+    if _identity(handle) != identity or _file_size(handle) != 32:
+        raise RuntimeError("csrf key unreadable")
+    _verify_handle(handle)
+
+
+def _read_secret(handle: int, identity: tuple[int, int, int]) -> bytes:
+    if _identity(handle) != identity or _file_size(handle) != 32:
         raise RuntimeError("csrf key unreadable")
     _verify_handle(handle)
     buffer = ctypes.create_string_buffer(32)
     read = wintypes.DWORD()
     if not _kernel.ReadFile(handle, buffer, 32, ctypes.byref(read), None) or read.value != 32:
         raise RuntimeError("csrf key unreadable")
+    if _identity(handle) != identity:
+        raise RuntimeError("csrf key rejected")
     return buffer.raw
 
 
-def _read_existing(path: Path) -> bytes:
+def _use_existing(parent: int, name: str, *, recover: bool) -> bytes | None:
+    """Read a verified key. Recovery writes only a zero-length exact file."""
     deadline = time.monotonic() + 2
     while True:
-        attrs = _attributes(path)
-        if attrs is None:
-            raise RuntimeError("csrf key unreadable")
-        if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
-            raise RuntimeError("csrf key path rejected")
-        handle = _open(path, _READER_MASK, _FILE_SHARE_READ | _FILE_SHARE_DELETE, _OPEN_EXISTING, None)
+        handle, status = _nt_create(
+            parent, name, _OWNER_MASK, 0, _FILE_OPEN, _FILE_OPTIONS, None,
+        )
         if handle == 0:
-            error = ctypes.get_last_error()
-            if error == _ERROR_SHARING_VIOLATION and time.monotonic() < deadline:
+            if status == _STATUS_SHARING_VIOLATION and time.monotonic() < deadline:
                 time.sleep(0.02)
                 continue
-            raise RuntimeError("csrf key rejected" if error == _ERROR_ACCESS_DENIED else "csrf key unreadable")
+            if status in (_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_OBJECT_PATH_NOT_FOUND):
+                return None
+            raise RuntimeError("csrf key rejected" if status == _STATUS_ACCESS_DENIED else "csrf key unreadable")
         try:
-            return _read_handle(handle)
+            _reject_reparse(handle)
+            identity = _identity(handle)
+            _verify_handle(handle)
+            size = _file_size(handle)
+            if size == 32:
+                return _read_secret(handle, identity)
+            if size == 0 and recover:
+                # Exclusive share is 0, so another recovery cannot write a second secret.
+                # A crash during WriteFile can leave 1 to 31 bytes. That length is not
+                # recovered, truncated, or deleted.
+                secret = secrets.token_bytes(32)
+                _write_secret(handle, secret, identity)
+                return secret
+            raise RuntimeError("csrf key unreadable")
         finally:
             _kernel.CloseHandle(handle)
 
 
-def describe_csrf_key_acl(sessions: Path) -> dict:
-    """Return the key file's owner and DACL. Does not read the secret."""
-    path = csrf_key_path(sessions)
-    attrs = _attributes(path)
-    if attrs is None:
-        raise RuntimeError("csrf key unreadable")
-    if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
-        raise RuntimeError("csrf key path rejected")
-    handle = _open(path, _READ_CONTROL | _FILE_READ_ATTRIBUTES, _FILE_SHARE_READ | _FILE_SHARE_DELETE, _OPEN_EXISTING, None)
+def _create_child(parent: int, name: str) -> bytes:
+    secret = secrets.token_bytes(32)
+    attributes, kept = _security_attributes()
+    security = ctypes.c_void_p(attributes.lpSecurityDescriptor)
+    handle, status = _nt_create(
+        parent, name, _OWNER_MASK, 0, _FILE_CREATE, _FILE_OPTIONS, security,
+    )
+    del kept, attributes
     if handle == 0:
-        raise RuntimeError("csrf key rejected")
+        if status == _STATUS_OBJECT_NAME_COLLISION:
+            existing = _use_existing(parent, name, recover=True)
+            if existing is None:
+                raise RuntimeError("csrf key unreadable")
+            return existing
+        raise RuntimeError("csrf key unreadable")
     try:
-        owner, protected, rows = _aces(handle)
+        _reject_reparse(handle)
+        _verify_handle(handle)
+        identity = _identity(handle)
+        if _file_size(handle) != 0:
+            raise RuntimeError("csrf key unreadable")
+        _write_secret(handle, secret, identity)
+        return secret
     finally:
         _kernel.CloseHandle(handle)
+
+
+def _with_parent(sessions: Path):
+    path = Path(os.path.abspath(sessions)).with_name("lifecycle-csrf.key")
+    parent, opened = _open_directories(path)
+    return path, parent, opened
+
+
+def describe_csrf_key_acl(sessions: Path) -> dict:
+    """Return the key file's owner and DACL. Does not read the secret."""
+    path, parent, opened = _with_parent(sessions)
+    try:
+        handle, status = _nt_create(
+            parent, path.name, _READ_CONTROL | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+            _DIR_SHARE, _FILE_OPEN, _FILE_OPTIONS, None,
+        )
+        if handle == 0:
+            raise RuntimeError("csrf key rejected" if status == _STATUS_ACCESS_DENIED else "csrf key unreadable")
+        try:
+            _reject_reparse(handle)
+            owner, protected, rows = _aces(handle)
+        finally:
+            _kernel.CloseHandle(handle)
+    finally:
+        _close_all(opened)
     return {
         "owner": owner,
         "protected": protected,
@@ -499,20 +699,28 @@ def describe_csrf_key_acl(sessions: Path) -> dict:
 
 def load_csrf_key(sessions: Path) -> bytes | None:
     try:
-        path = csrf_key_path(sessions)
-        if _attributes(path) is None:
-            return None
-        return _read_existing(path)
+        path, parent, opened = _with_parent(sessions)
     except RuntimeError:
         return None
+    try:
+        return _use_existing(parent, path.name, recover=False)
+    except RuntimeError:
+        return None
+    finally:
+        _close_all(opened)
 
 
 def ensure_csrf_key(sessions: Path) -> bytes:
     """Create the key, or read one that already has the protected DACL.
 
-    A file with any other descriptor is left unchanged and refused.
+    A zero-length file with that DACL is completed. Any other descriptor or
+    length is left unchanged and refused.
     """
-    path = csrf_key_path(sessions)
-    if _attributes(path) is None:
-        return _create_key(path)
-    return _read_existing(path)
+    path, parent, opened = _with_parent(sessions)
+    try:
+        existing = _use_existing(parent, path.name, recover=True)
+        if existing is not None:
+            return existing
+        return _create_child(parent, path.name)
+    finally:
+        _close_all(opened)
