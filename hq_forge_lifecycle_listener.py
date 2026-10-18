@@ -18,15 +18,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import re
-import secrets
 import socket
 import threading
 import time
 from pathlib import Path
 from typing import Callable
 
+import hq_forge_csrf_key as csrf_key
 import hq_forge_lifecycle as life
 
 RESERVED_PORTS = frozenset({7860, 8765, 8776})
@@ -160,39 +159,16 @@ def cookie_token(cookie_header: str) -> str:
 
 
 def csrf_key_path(sessions: Path) -> Path:
-    path = Path(sessions).resolve().with_name("lifecycle-csrf.key")
-    assert_isolated_session_path(path)
-    return path
+    return csrf_key.csrf_key_path(sessions)
 
 
 def load_csrf_key(sessions: Path) -> bytes | None:
-    path = csrf_key_path(sessions)
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if len(data) != 32:
-        return None
-    return data
+    return csrf_key.load_csrf_key(sessions)
 
 
 def ensure_csrf_key(sessions: Path) -> bytes:
-    """Create the listener key beside the session file. Does not write the session file."""
-    existing = load_csrf_key(sessions)
-    if existing is not None:
-        return existing
-    path = csrf_key_path(sessions)
-    key = secrets.token_bytes(32)
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        loaded = load_csrf_key(sessions)
-        if loaded is None:
-            raise RuntimeError("csrf key unreadable")
-        return loaded
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(key)
-    return key
+    """Create the key, or read one that already has the protected DACL."""
+    return csrf_key.ensure_csrf_key(sessions)
 
 
 def _csrf_message(session_token: str, generation: int, credential_exp: int) -> bytes:
@@ -275,8 +251,9 @@ def assess_csrf(
 def read_session_record(path: Path, token: str) -> tuple[str, dict | None]:
     """Return bad, absent, or ok. Never writes the file."""
     try:
+        csrf_key.assert_direct_path(path)
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError):
         return "bad", None
     if not isinstance(data, dict):
         return "bad", None
@@ -324,8 +301,9 @@ def classify_persisted_session(path: Path, token: str, expected_generation: int)
     if not token or type(expected_generation) is not int:
         return "anonymous"
     try:
+        csrf_key.assert_direct_path(path)
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RuntimeError):
         return "anonymous"
     if not isinstance(data, dict):
         return "anonymous"
