@@ -452,7 +452,8 @@ class BoundaryCase(unittest.TestCase):
             preflight = self._exchange(fixture.port, "OPTIONS", allowed, preflight=True)
             self.assertEqual(preflight.status, 204)
             self.assertEqual(fixture.calls[-1]["kind"], "preflight")
-            self.assertEqual(fixture.calls[-1]["cookie"], "")
+            self.assertFalse(fixture.calls[-1]["cookie_present"])
+            self.assertNotIn("cookie", fixture.calls[-1])
             anonymous = self._exchange(fixture.port, "POST", allowed, b"{}")
             self.assertEqual(anonymous.status, 401)
             foreign = self._exchange(
@@ -493,6 +494,7 @@ class BoundaryCase(unittest.TestCase):
             record = json.loads((Path(tmp.name) / "lifecycle.json").read_text(encoding="utf-8"))
             tracked.append((record["pid"], record["creation"], "cmd.exe"))
             self.assertTrue(life.process_alive(record["pid"]))
+            self.assertNotIn("m1-admin", json.dumps(fixture.calls), "session leaked")
             refused_socket = socket.socket()
             refused_socket.settimeout(2)
             try:

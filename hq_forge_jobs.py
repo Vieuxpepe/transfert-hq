@@ -8,11 +8,16 @@ calls it. A job still queued inside HQ can be cancelled locally.
 from __future__ import annotations
 
 import base64
+import ctypes
+import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import threading
+from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,8 +41,31 @@ _LOCK = threading.Lock()
 _generation = 0
 _recovered = False
 _before_submit = None
+_admission_hook = None
+_prepared_token: str | None = None
+_admission_timeout_ms = 10000
 _job_timeout = forge.JOB_TIMEOUT_SEC
 _poll_interval = 1.0
+
+# The lifecycle listener is a different process from HQ. This mutex is the
+# cross-process admission boundary. The product name stays unarmed in tests;
+# a shared root derives one Local\TransfertHQ-M1-Admission-* name instead.
+PRODUCT_ADMISSION_MUTEX = "Local\\TransfertHQ-Forge-Admission"
+_WAIT_OBJECT_0 = 0
+_WAIT_ABANDONED = 0x00000080
+_kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+_kernel.CreateMutexW.restype = wintypes.HANDLE
+_kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+_kernel.WaitForSingleObject.restype = wintypes.DWORD
+_kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+_kernel.ReleaseMutex.restype = wintypes.BOOL
+_kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel.CloseHandle.restype = wintypes.BOOL
+
+
+class _AdmissionBusy(Exception):
+    pass
 
 _MESSAGES = {
     "forge_offline": "Forge n'est pas démarré.",
@@ -57,6 +85,7 @@ _MESSAGES = {
     "cancelled": "Annulé avant l'envoi à Forge.",
     "deferred": "HQ ne peut pas arrêter une génération déjà envoyée à Forge. L'interruption globale pourrait couper un autre travail.",
     "active": "Une génération HQ est déjà en cours.",
+    "lifecycle_busy": "Un redémarrage Forge est en préparation. Aucune nouvelle génération n'est acceptée.",
     "validation": "Les réglages ne sont pas acceptés.",
     "private_restricted": "Hires. fix n'est pas disponible en génération privée.",
     "disabled": vault.public_error("disabled"),
@@ -67,10 +96,13 @@ _MESSAGES = {
 
 
 def reset_for_tests() -> None:
-    global _generation, _recovered, _before_submit, _job_timeout, _poll_interval
+    global _generation, _recovered, _before_submit, _admission_hook, _prepared_token, _admission_timeout_ms, _job_timeout, _poll_interval
     _generation += 1
     _recovered = False
     _before_submit = None
+    _admission_hook = None
+    _prepared_token = None
+    _admission_timeout_ms = 10000
     _job_timeout = forge.JOB_TIMEOUT_SEC
     _poll_interval = 1.0
     gallery.reset_for_tests()
@@ -80,6 +112,29 @@ def reset_for_tests() -> None:
 def set_before_submit_for_tests(callback) -> None:
     global _before_submit
     _before_submit = callback
+
+
+def set_admission_hook_for_tests(callback) -> None:
+    """Runs while the admission mutex is held. Tests use it as a barrier."""
+    global _admission_hook
+    _admission_hook = callback
+
+
+def set_admission_timeout_for_tests(milliseconds: int) -> None:
+    global _admission_timeout_ms
+    _admission_timeout_ms = int(milliseconds)
+
+
+def prepared_claim_token() -> str | None:
+    """Token chosen for the claim in progress. It is not on disk until the write."""
+    return _prepared_token
+
+
+def admission_mutex_name(root: Path) -> str:
+    """Name shared by every process that admits jobs or prepares a restart for this root."""
+    key = os.path.normcase(str(Path(root).resolve()))
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return "Local\\TransfertHQ-M1-Admission-" + digest
 
 
 def set_job_timeout_for_tests(seconds: float | None) -> None:
@@ -392,6 +447,292 @@ def _active_job(data: dict) -> dict | None:
     return None
 
 
+def _restart_block_reason(data: dict) -> str | None:
+    for job in data["jobs"]:
+        if not isinstance(job, dict):
+            continue
+        if job.get("state") in ACTIVE:
+            return "active"
+        if job.get("progress_stale") and job.get("state") not in TERMINAL:
+            return "progress_stale"
+    return None
+
+
+_GATE_FIELDS = frozenset({"version", "pending", "signaled", "sealed", "token", "epoch"})
+_GATE_TOKEN = re.compile(r"^[0-9a-f]{32}$")
+_GATE_EPOCH_MAX = 2_147_483_647
+
+
+def _gate_path(root: Path) -> Path:
+    return Path(root) / ".hq-forge" / "restart-gate.json"
+
+
+def _closed_gate() -> dict:
+    """Fail closed. Callers must not treat this as a record they may rewrite."""
+    return {"pending": True, "signaled": True, "sealed": True, "token": "", "epoch": 0, "valid": False}
+
+
+def _gate_blocks(gate: dict) -> bool:
+    return bool(gate.get("pending") or gate.get("signaled") or gate.get("sealed") or gate.get("valid") is False)
+
+
+def _valid_gate_record(data: object) -> dict | None:
+    """Return a normalized record, or None when the file must not be trusted."""
+    if not isinstance(data, dict) or set(data) != _GATE_FIELDS:
+        return None
+    version = data["version"]
+    pending = data["pending"]
+    signaled = data["signaled"]
+    sealed = data["sealed"]
+    token = data["token"]
+    epoch = data["epoch"]
+    if type(version) is not int or version != 1:
+        return None
+    if type(pending) is not bool or type(signaled) is not bool or type(sealed) is not bool:
+        return None
+    if type(token) is not str or type(epoch) is not int:
+        return None
+    if epoch < 0 or epoch > _GATE_EPOCH_MAX:
+        return None
+    if signaled and not sealed:
+        return None
+    if (signaled or sealed) and not pending:
+        return None
+    if pending:
+        if epoch < 1 or _GATE_TOKEN.fullmatch(token) is None:
+            return None
+    elif signaled or sealed or token != "":
+        return None
+    return {
+        "pending": pending,
+        "signaled": signaled,
+        "sealed": sealed,
+        "token": token,
+        "epoch": epoch,
+        "valid": True,
+    }
+
+
+def _read_gate(root: Path) -> dict:
+    path = _gate_path(root)
+    if not path.is_file():
+        return {"pending": False, "signaled": False, "sealed": False, "token": "", "epoch": 0, "valid": True}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return _closed_gate()
+    parsed = _valid_gate_record(data)
+    if parsed is None:
+        return _closed_gate()
+    return parsed
+
+
+def _write_gate(root: Path, *, pending: bool, signaled: bool, sealed: bool = False, token: str = "", epoch: int = 0) -> None:
+    folder = Path(root) / ".hq-forge"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = _gate_path(root)
+    temporary = path.with_suffix(".tmp")
+    payload = json.dumps({
+        "version": 1,
+        "pending": pending,
+        "signaled": signaled,
+        "sealed": sealed,
+        "token": token,
+        "epoch": int(epoch),
+    }).encode("utf-8")
+    with temporary.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _token_matches(gate: dict, token: str | None) -> bool:
+    expected = gate.get("token") or ""
+    given = token or ""
+    if not expected or not given or len(expected) != len(given):
+        return False
+    return hmac.compare_digest(expected, given)
+
+
+def _acquire_admission(root: Path):
+    name = admission_mutex_name(root)
+    if name == PRODUCT_ADMISSION_MUTEX:
+        raise _AdmissionBusy()
+    handle = _kernel.CreateMutexW(None, False, name)
+    if not handle:
+        raise _AdmissionBusy()
+    waited = int(_kernel.WaitForSingleObject(handle, _admission_timeout_ms))
+    if waited not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+        _kernel.CloseHandle(handle)
+        raise _AdmissionBusy()
+    return handle
+
+
+def _release_admission(handle) -> None:
+    if not handle:
+        return
+    _kernel.ReleaseMutex(handle)
+    _kernel.CloseHandle(handle)
+
+
+def _hook(point: str) -> None:
+    hook = _admission_hook
+    if hook is not None:
+        hook(point)
+
+
+def claim_restart(root: Path) -> tuple[bool, str, str | None]:
+    """Set restart pending only when no HQ job is already admitted.
+
+    The eligibility check and the gate write share the cross-process mutex.
+    The returned token is required to clear this preparation.
+    """
+    global _prepared_token
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return False, "lifecycle_busy", None
+    try:
+        with _LOCK:
+            _hook("claim_enter")
+            reason = _restart_block_reason(_load(root))
+            if reason:
+                return False, reason, None
+            gate = _read_gate(root)
+            if _gate_blocks(gate):
+                return False, "restart_pending", None
+            token = secrets.token_hex(16)
+            _prepared_token = token
+            _hook("before_gate_write")
+            _write_gate(
+                root,
+                pending=True,
+                signaled=False,
+                sealed=False,
+                token=token,
+                epoch=int(gate.get("epoch") or 0) + 1,
+            )
+            _hook("after_gate_write")
+            _hook("claim_held")
+            return True, "ok", token
+    finally:
+        _prepared_token = None
+        _release_admission(hold)
+
+
+def release_restart(root: Path, token: str | None = None) -> bool:
+    """Clear a preparation this caller still owns. A stale token does not write."""
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return False
+    try:
+        with _LOCK:
+            gate = _read_gate(root)
+            if gate.get("valid") is False:
+                return False
+            if not gate["pending"]:
+                return True
+            if gate["signaled"] or gate["sealed"] or not _token_matches(gate, token):
+                return False
+            _write_gate(root, pending=False, signaled=False, sealed=False, token="", epoch=gate["epoch"] + 1)
+            return True
+    finally:
+        _release_admission(hold)
+
+
+def finish_signaled_restart(root: Path, token: str | None = None) -> bool:
+    """Open admission after the signaled restart this token owns has finished."""
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return False
+    try:
+        with _LOCK:
+            gate = _read_gate(root)
+            if gate.get("valid") is False or not gate["signaled"] or not _token_matches(gate, token):
+                return False
+            _write_gate(root, pending=False, signaled=False, sealed=False, token="", epoch=gate["epoch"] + 1)
+            return True
+    finally:
+        _release_admission(hold)
+
+
+def confirm_restart(root: Path, token: str | None = None) -> tuple[bool, str]:
+    """Re-check the owned gate and HQ jobs before any signal."""
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return False, "lifecycle_busy"
+    try:
+        with _LOCK:
+            gate = _read_gate(root)
+            if gate.get("valid") is False or not _token_matches(gate, token):
+                return False, "uncertain"
+            if gate["signaled"] or gate["sealed"] or not gate["pending"]:
+                return False, "uncertain"
+            reason = _restart_block_reason(_load(root))
+            if reason:
+                _write_gate(root, pending=False, signaled=False, sealed=False, token="", epoch=gate["epoch"] + 1)
+                return False, reason
+            return True, "ok"
+    finally:
+        _release_admission(hold)
+
+
+def mark_restart_signaled(root: Path, token: str | None = None) -> bool:
+    """Record that termination was requested. A different token cannot do this."""
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return False
+    try:
+        with _LOCK:
+            gate = _read_gate(root)
+            if gate.get("valid") is False or not gate["pending"] or gate["sealed"] or not _token_matches(gate, token):
+                return False
+            _write_gate(root, pending=True, signaled=True, sealed=True, token=token or "", epoch=gate["epoch"] + 1)
+            return True
+    finally:
+        _release_admission(hold)
+
+
+def seal_restart(root: Path, token: str | None = None) -> bool:
+    """Keep admission closed when ownership cannot be proved. No signal was sent."""
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return False
+    try:
+        with _LOCK:
+            gate = _read_gate(root)
+            if gate.get("valid") is False or not _token_matches(gate, token):
+                return False
+            _write_gate(root, pending=True, signaled=False, sealed=True, token=token or "", epoch=gate["epoch"] + 1)
+            return True
+    finally:
+        _release_admission(hold)
+
+
+def abort_unsignaled_restart(root: Path, token: str | None = None) -> bool:
+    """Clear an interrupted preparation only when the token matches and nothing was sealed."""
+    return release_restart(root, token)
+
+
+def restart_gate(root: Path) -> dict:
+    try:
+        hold = _acquire_admission(root)
+    except _AdmissionBusy:
+        return {"pending": True, "signaled": True, "sealed": True, "token": "", "epoch": 0}
+    try:
+        with _LOCK:
+            gate = _read_gate(root)
+            return {key: gate[key] for key in ("pending", "signaled", "sealed", "epoch")}
+    finally:
+        _release_admission(hold)
+
+
 def _trim_keys(data: dict) -> None:
     pairs = []
     for key, job_id in data["idempotency"].items():
@@ -621,50 +962,66 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
         upstream = forge.status(transport=transport)
     except Exception:
         return 503, {"error": _MESSAGES["forge_error"], "code": "forge_error"}
-    with _LOCK:
-        stored = _load(root)
-        existing = stored["idempotency"].get(idempotency_key)
-        if isinstance(existing, str):
-            job = _find(stored, existing)
-            if job is not None:
-                if (job.get("destination") or "normal") != destination:
-                    return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
-                return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
-        active = _active_job(stored)
-        if active is not None:
-            return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
-        if upstream.get("forge") == "busy":
-            return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
-        if upstream.get("forge") != "ready":
-            code = upstream.get("code") or "forge_error"
-            return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
-        job_id = "job-" + os.urandom(12).hex()
-        task_id = "task(hq-" + os.urandom(12).hex() + ")"
-        job = {
-            "id": job_id,
-            "task_id": task_id,
-            "state": "queued",
-            "created": _now(),
-            "updated": _now(),
-            "idempotency_key": idempotency_key,
-            "destination": destination,
-            "settings": {} if destination == "private" else validated,
-            "submitted": False,
-            "progress": 0,
-            "step": 0,
-            "steps": validated["steps"],
-            "progress_stale": False,
-            "message": "En file.",
-            "error": "",
-            "images": [],
-            "seed_used": None,
-        }
-        stored["jobs"].append(job)
-        stored["jobs"] = stored["jobs"][-200:]
-        stored["idempotency"][idempotency_key] = job_id
-        _trim_keys(stored)
-        _save(root, stored)
-        token = _generation
+    try:
+        admission = _acquire_admission(root)
+    except _AdmissionBusy:
+        return 409, {"error": _MESSAGES["lifecycle_busy"], "code": "lifecycle_busy"}
+    try:
+        with _LOCK:
+            stored = _load(root)
+            existing = stored["idempotency"].get(idempotency_key)
+            if isinstance(existing, str):
+                job = _find(stored, existing)
+                if job is not None:
+                    if (job.get("destination") or "normal") != destination:
+                        return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
+                    return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
+            if _gate_blocks(_read_gate(root)):
+                return 409, {"error": _MESSAGES["lifecycle_busy"], "code": "lifecycle_busy"}
+            active = _active_job(stored)
+            if active is not None:
+                return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+            if upstream.get("forge") == "busy":
+                return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
+            if upstream.get("forge") != "ready":
+                code = upstream.get("code") or "forge_error"
+                return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
+            _hook("before_admit")
+            stored = _load(root)
+            if _gate_blocks(_read_gate(root)):
+                return 409, {"error": _MESSAGES["lifecycle_busy"], "code": "lifecycle_busy"}
+            active = _active_job(stored)
+            if active is not None:
+                return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+            job_id = "job-" + os.urandom(12).hex()
+            task_id = "task(hq-" + os.urandom(12).hex() + ")"
+            job = {
+                "id": job_id,
+                "task_id": task_id,
+                "state": "queued",
+                "created": _now(),
+                "updated": _now(),
+                "idempotency_key": idempotency_key,
+                "destination": destination,
+                "settings": {} if destination == "private" else validated,
+                "submitted": False,
+                "progress": 0,
+                "step": 0,
+                "steps": validated["steps"],
+                "progress_stale": False,
+                "message": "En file.",
+                "error": "",
+                "images": [],
+                "seed_used": None,
+            }
+            stored["jobs"].append(job)
+            stored["jobs"] = stored["jobs"][-200:]
+            stored["idempotency"][idempotency_key] = job_id
+            _trim_keys(stored)
+            _save(root, stored)
+            token = _generation
+    finally:
+        _release_admission(admission)
     inline = validated if destination == "private" else None
     threading.Thread(
         target=_run,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import threading
 from ctypes import wintypes
 from pathlib import Path
@@ -24,6 +25,9 @@ FORGE_COMMAND = (
 PRODUCT_JOB_NAME = "Local\\TransfertHQ-Forge"
 PRODUCT_MUTEX_NAME = "Local\\TransfertHQ-Forge-Lifecycle"
 PRODUCT_LISTENER_ENABLED = False
+LISTENER_PROCESS = "separate"
+PAGE_ORIGIN = "http://127.0.0.1:8765"
+LISTENER_ORIGIN = "http://127.0.0.1:8776"
 RACE_CODE = "forge_ui_race"
 RACE_WARNING = "Forge's own interface can accept work after the last check."
 UNCERTAIN = frozenset({"busy", "progress_stale", "error", "timeout", "unavailable", "uncertain"})
@@ -376,6 +380,7 @@ class Supervisor:
         occupant: Callable[[], bool] | None = None,
         pause_s: float = 0.0,
         retain_handle: bool = True,
+        jobs_root: Path | None = None,
     ) -> None:
         if job_name == PRODUCT_JOB_NAME or mutex_name == PRODUCT_MUTEX_NAME:
             raise RuntimeError("product job name is not used in M1")
@@ -390,12 +395,14 @@ class Supervisor:
         self.occupant = occupant or (lambda: False)
         self.pause_s = pause_s
         self.retain_handle = retain_handle
+        self.jobs_root = Path(jobs_root) if jobs_root is not None else None
         self.on_locked: Callable[[], None] | None = None
         self.events: list[str] = []
         self._job = None
         self._process = None
         self._thread = None
         self._guard = threading.Lock()
+        self._restart_token: str | None = None
 
     def start_product(self) -> dict:
         self.events.append("product_refused")
@@ -439,34 +446,73 @@ class Supervisor:
                 record = self._read()
                 if not record or record.get("state") != "ready" or record.get("restart_pending"):
                     return self._result(False, "not_ready", self._state_name(), signaled=False)
+                if self.jobs_root is not None:
+                    import hq_forge_jobs as jobs
+                    claimed, reason, token = jobs.claim_restart(self.jobs_root)
+                    if not claimed:
+                        return self._result(False, reason, "ready", signaled=False)
+                    self._restart_token = token
                 self._write_state("ready", restart_pending=True, identity=record)
-                first = str(probe() or "uncertain")
-                if first in UNCERTAIN or first != "ready":
-                    self._write_state("ready", restart_pending=False, identity=record)
-                    return self._result(False, "uncertain", "ready", signaled=False)
-                second = str(probe() or "uncertain")
-                if second in UNCERTAIN or second != "ready":
-                    self._write_state("ready", restart_pending=False, identity=record)
-                    return self._result(False, "uncertain", "ready", signaled=False)
-                proof = self._prove(record)
-                job = proof.get("job")
                 try:
-                    if not proof["ok"]:
-                        self._write_state("unmanaged", restart_pending=True, identity=record)
-                        return self._result(False, "unmanaged", "unmanaged", signaled=False)
-                    if not self._terminate_proven(job, record):
-                        self._write_state("failed", restart_pending=True, identity=record)
-                        return self._result(False, "terminate_failed", "failed", signaled=False)
-                    self._write_state("absent", restart_pending=False, identity=None, members=[])
-                    result = self._result(True, RACE_CODE, "absent", signaled=True)
-                    result["warning"] = RACE_WARNING
-                    result["interruption_free"] = False
-                    return result
-                finally:
-                    if job:
-                        _kernel.CloseHandle(job)
+                    first = str(probe() or "uncertain")
+                    if first in UNCERTAIN or first != "ready":
+                        self._clear_unsignaled(record)
+                        return self._result(False, "uncertain", "ready", signaled=False)
+                    second = str(probe() or "uncertain")
+                    if second in UNCERTAIN or second != "ready":
+                        self._clear_unsignaled(record)
+                        return self._result(False, "uncertain", "ready", signaled=False)
+                    if self.jobs_root is not None:
+                        import hq_forge_jobs as jobs
+                        confirmed, reason = jobs.confirm_restart(self.jobs_root, getattr(self, "_restart_token", None))
+                        if not confirmed:
+                            self._clear_unsignaled(record)
+                            return self._result(False, reason, "ready", signaled=False)
+                    proof = self._prove(record)
+                    job = proof.get("job")
+                    try:
+                        if not proof["ok"]:
+                            if self.jobs_root is not None:
+                                import hq_forge_jobs as jobs
+                                jobs.seal_restart(self.jobs_root, getattr(self, "_restart_token", None))
+                            self._write_state("unmanaged", restart_pending=True, identity=record)
+                            return self._result(False, "unmanaged", "unmanaged", signaled=False)
+                        if self.jobs_root is not None:
+                            import hq_forge_jobs as jobs
+                            if not jobs.mark_restart_signaled(self.jobs_root, getattr(self, "_restart_token", None)):
+                                self._write_state("failed", restart_pending=True, identity=record)
+                                return self._result(False, "uncertain", "failed", signaled=False)
+                        if not self._terminate_proven(job, record):
+                            self._write_state("failed", restart_pending=True, identity=record)
+                            return self._result(False, "terminate_failed", "failed", signaled=False)
+                        self._write_state("absent", restart_pending=False, identity=None, members=[])
+                        if self.jobs_root is not None:
+                            import hq_forge_jobs as jobs
+                            jobs.finish_signaled_restart(self.jobs_root, getattr(self, "_restart_token", None))
+                        result = self._result(True, RACE_CODE, "absent", signaled=True)
+                        result["warning"] = RACE_WARNING
+                        result["interruption_free"] = False
+                        return result
+                    finally:
+                        if job:
+                            _kernel.CloseHandle(job)
+                except Exception:
+                    self._clear_unsignaled(record)
+                    raise
+
+    def _clear_unsignaled(self, record: dict) -> None:
+        if self.jobs_root is not None:
+            import hq_forge_jobs as jobs
+            if jobs.restart_gate(self.jobs_root)["signaled"] or jobs.restart_gate(self.jobs_root)["sealed"]:
+                return
+            jobs.release_restart(self.jobs_root, getattr(self, "_restart_token", None))
+        self._write_state("ready", restart_pending=False, identity=record)
 
     def create_simulated_job(self) -> dict:
+        if self.jobs_root is not None:
+            import hq_forge_jobs as jobs
+            if jobs.restart_gate(self.jobs_root)["pending"]:
+                return {"status": 409, "error": "lifecycle_busy", "launch": False}
         record = self._read()
         pending = bool(record and record.get("restart_pending"))
         state = (record or {}).get("state") or "absent"
@@ -781,15 +827,113 @@ class Supervisor:
         return result
 
 
+_SECRET_RE = re.compile(
+    r"(?i)(transfert_session=|[\"']?(?:pin|cookie|token|authorization|session)[\"']?\s*[:=]\s*)\S+"
+)
+
+
+def redact_diagnostics(text: str) -> str:
+    """Remove cookies, PINs, and session identifiers from diagnostic text."""
+    cleaned = _SECRET_RE.sub(r"\1<redacted>", str(text))
+    cleaned = re.sub(r"(?i)\b(?:pin|token|cookie|session)[-_ ]?[a-z0-9]{6,}\b", "<redacted>", cleaned)
+    return cleaned
+
+
+def session_role_from_cookie(cookie_header: str) -> str:
+    """Read the HQ session cookie and return the authoritative role.
+
+    The listener is a separate process, so each check reloads the session file
+    HQ persisted and then uses session_role. The cookie header is not logged.
+    """
+    token = ""
+    for part in str(cookie_header or "").split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name == "transfert_session":
+            token = value
+            break
+    if not token:
+        return ""
+    import iphone_bridge as bridge
+    reload_persisted_sessions(bridge)
+    return bridge.session_role(token)
+
+
+def reload_persisted_sessions(bridge) -> None:
+    """Replace this process's session table with the file HQ last persisted."""
+    path = bridge.SESSIONS_PATH
+    try:
+        raw = path.read_text(encoding="utf-8") if path.is_file() else "{}"
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    import time
+    now = time.time()
+    fresh = {}
+    for tok, info in data.items():
+        if not isinstance(tok, str) or not isinstance(info, dict):
+            continue
+        try:
+            exp = float(info.get("exp") or 0)
+            generation = int(info.get("gen") or 0)
+        except (TypeError, ValueError):
+            continue
+        if exp <= now:
+            continue
+        fresh[tok] = {
+            "exp": exp,
+            "user": str(info.get("user") or "admin")[:40],
+            "role": str(info.get("role") or "admin"),
+            "gen": generation,
+        }
+    with bridge._SESSIONS_LOCK:
+        bridge._SESSIONS.clear()
+        bridge._SESSIONS.update(fresh)
+
+
+def loopback_bindable(port: int) -> bool:
+    """True when this process can bind 127.0.0.1:port. Does not keep the socket.
+
+    Ports 7860, 8765, and 8776 are refused here so a test cannot bind them.
+    """
+    if int(port) in (7860, 8765, 8776):
+        raise RuntimeError("refusing to bind a reserved port")
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", int(port)))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def loopback_open(port: int) -> bool:
+    """True when something already accepts TCP on 127.0.0.1:port. Does not bind."""
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(0.4)
+    try:
+        probe.connect(("127.0.0.1", int(port)))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
 class ActionFixture:
     """Loopback-only test listener. It never reads an executable path from HTTP."""
 
-    def __init__(self, supervisor: Supervisor, allowed_origin: str, role_for_cookie: Callable[[str], str], probe: Callable[[], str]) -> None:
+    def __init__(self, supervisor: Supervisor, allowed_origin: str, role_for_cookie: Callable[[str], str] | None, probe: Callable[[], str], *, use_hq_session: bool = False) -> None:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         self.supervisor = supervisor
         self.allowed_origin = allowed_origin
         self.role_for_cookie = role_for_cookie
+        self.use_hq_session = use_hq_session
         self.probe = probe
         self.calls: list[dict] = []
         owner = self
@@ -802,7 +946,7 @@ class ActionFixture:
                 owner.calls.append({
                     "kind": kind,
                     "origin": self.headers.get("Origin") or "",
-                    "cookie": self.headers.get("Cookie") or "",
+                    "cookie_present": bool(self.headers.get("Cookie")),
                     "referer": bool(self.headers.get("Referer")),
                     "private_network": (self.headers.get("Access-Control-Request-Private-Network") or "").lower() == "true",
                     "request_headers": self.headers.get("Access-Control-Request-Headers") or "",
@@ -820,13 +964,16 @@ class ActionFixture:
                 self.send_header("Vary", "Origin")
 
             def _send(self, status: int, body: bytes, allow: bool) -> None:
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self._cors(allow)
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self._cors(allow)
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    return
 
             def _preflight_ok(self) -> bool:
                 origin = self.headers.get("Origin") or ""
@@ -857,7 +1004,7 @@ class ActionFixture:
                 if not isinstance(payload, dict) or payload != {}:
                     self._send(400, b'{"error":"body"}', True)
                     return
-                role = owner.role_for_cookie(self.headers.get("Cookie") or "")
+                role = session_role_from_cookie(self.headers.get("Cookie") or "") if owner.use_hq_session else owner.role_for_cookie(self.headers.get("Cookie") or "")
                 if role == "":
                     self._send(401, b'{"error":"anonymous"}', True)
                     return
