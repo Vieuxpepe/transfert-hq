@@ -22,6 +22,8 @@ HERE = Path(__file__).resolve().parent
 SHOTS = Path(os.environ["FORGE_UX_SHOTS"]) if os.environ.get("FORGE_UX_SHOTS") else None
 if SHOTS:
     SHOTS.mkdir(parents=True, exist_ok=True)
+SOFT = os.environ.get("FORGE_UX_SOFT") == "1"  # evidence runs: report every failed check instead of stopping
+soft_failed: list[str] = []
 
 VIEWPORTS = [
     (320, 640, "320-portrait"), (375, 667, "375-portrait"), (390, 844, "390-portrait"), (430, 932, "430-portrait"),
@@ -82,6 +84,10 @@ def main() -> None:
             def check(cond: bool, message: str) -> None:
                 nonlocal passed
                 if not cond:
+                    if SOFT:
+                        soft_failed.append(message)
+                        print("  SOFT-FAIL", message)
+                        return
                     raise SystemExit("FAIL: " + message)
                 passed += 1
                 print("  OK  ", message)
@@ -512,6 +518,225 @@ def main() -> None:
             page.locator('.bottom-nav [data-nav="forge"]').click()
             page.wait_for_function("() => !document.querySelector('#forge-generate').disabled", timeout=15000)
 
+            # Aide tooltips stay inside the viewport (hover, keyboard focus, click/tap), every tooltip in Forge Studio
+            HELP_PROBE = """(id) => {
+  const pop = document.getElementById(id);
+  const r = pop.getBoundingClientRect();
+  const de = document.documentElement;
+  return { shown: getComputedStyle(pop).display !== 'none' && r.width > 0, l: r.left, r: r.right, t: r.top, b: r.bottom,
+    vw: de.clientWidth, vh: innerHeight, sw: de.scrollWidth };
+}"""
+            FOLD_IDS = ["forge-negative-fold", "forge-sampling", "forge-cfg-fold", "forge-seed-fold", "forge-advanced", "forge-batch-fold", "forge-hr-fold", "forge-presets"]
+
+            def help_ids(p):
+                p.evaluate("(ids) => ids.forEach((id) => { const d = document.getElementById(id); if (d) d.open = true; })", FOLD_IDS)
+                return p.evaluate("() => [...document.querySelectorAll('#forge-studio .forge-help')].filter((b) => b.offsetParent !== null && !b.closest('dialog')).map((b) => [b.id || '', b.getAttribute('aria-controls')])")
+
+            def help_ok(p, pop_id, tag):
+                h = p.evaluate(HELP_PROBE, pop_id)
+                check(h["shown"], f"{tag}: tooltip {pop_id} opens")
+                check(h["sw"] <= h["vw"] + 1, f"{tag}: tooltip {pop_id} causes no horizontal overflow ({round(h['sw'])} <= {h['vw']}) {p.evaluate(WIDE_PROBE) if h['sw'] > h['vw'] + 1 else ''}")
+                check(h["l"] >= -0.5 and h["r"] <= h["vw"] + 0.5 and h["t"] >= -0.5 and h["b"] <= h["vh"] + 0.5, f"{tag}: tooltip {pop_id} fully inside the viewport ({round(h['l'])},{round(h['t'])})-({round(h['r'])},{round(h['b'])}) in {h['vw']}x{h['vh']}")
+
+            def reset_help(p):
+                p.evaluate("() => { document.querySelectorAll('#forge-studio .forge-help-wrap.is-open').forEach((w) => { w.classList.remove('is-open'); const b = w.querySelector('.forge-help'); if (b) b.setAttribute('aria-expanded', 'false'); }); if (document.activeElement) document.activeElement.blur(); }")
+                p.mouse.move(0, 0)
+
+            for width, height, name in ((320, 640, "320-portrait"), (375, 667, "375-portrait"), (667, 375, "375-landscape"), (1440, 900, "1440-desktop")):
+                page.set_viewport_size({"width": width, "height": height})
+                page.wait_for_timeout(120)
+                ids = help_ids(page)
+                check(len(ids) >= 10, f"{name}: Aide buttons found ({len(ids)})")
+                for idx, (_bid, pop_id) in enumerate(ids):
+                    sel = f"#forge-studio .forge-help[aria-controls='{pop_id}']"
+                    btn = page.locator(sel)
+                    page.evaluate("(s) => document.querySelector(s).scrollIntoView({block: 'center', behavior: 'instant'})", sel)
+                    reset_help(page)
+                    box = btn.bounding_box()
+                    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                    page.wait_for_timeout(30)
+                    help_ok(page, pop_id, f"{name} hover")
+                    if SHOTS and pop_id == "forge-help-private" and width <= 375:
+                        page.screenshot(path=str(SHOTS / f"help-{name}-private-hover.png"))
+                    reset_help(page)
+                    btn.focus()
+                    help_ok(page, pop_id, f"{name} focus")
+                    page.keyboard.press("Enter")
+                    check(btn.get_attribute("aria-expanded") == "true", f"{name}: Enter toggles {pop_id} (aria-expanded)")
+                    help_ok(page, pop_id, f"{name} keyboard open")
+                    reset_help(page)
+                    btn.click()
+                    page.mouse.move(0, 0)
+                    help_ok(page, pop_id, f"{name} click")
+                    reset_help(page)
+                page.evaluate("(ids) => ids.forEach((id) => { const d = document.getElementById(id); if (d) d.open = false; })", FOLD_IDS)
+                page.evaluate("() => window.scrollTo({top: 0, behavior: 'instant'})")
+            page.set_viewport_size({"width": 1440, "height": 900})
+
+            touch_opts = {"is_mobile": True} if browser_name != "firefox" else {}
+            for width, height, name in ((320, 640, "320"), (375, 667, "375")):
+                ctx = browser.new_context(bypass_csp=True, viewport={"width": width, "height": height}, has_touch=True, device_scale_factor=2, **touch_opts)
+                ctx.request.post(base + "/login", form={"pin": info["admin_pin"]}, headers={"origin": base}, max_redirects=0)
+                tpp = ctx.new_page()
+                track(tpp)
+                open_forge(tpp)
+                ids = help_ids(tpp)
+                for _bid, pop_id in ids:
+                    sel = f"#forge-studio .forge-help[aria-controls='{pop_id}']"
+                    tpp.evaluate("(s) => document.querySelector(s).scrollIntoView({block: 'center', behavior: 'instant'})", sel)
+                    tpp.locator(sel).tap()
+                    help_ok(tpp, pop_id, f"touch {name} tap")
+                    if SHOTS and pop_id == "forge-help-private":
+                        tpp.screenshot(path=str(SHOTS / f"help-touch-{name}-private.png"))
+                    tpp.locator(sel).tap()
+                    check(tpp.locator(sel).get_attribute("aria-expanded") == "false", f"touch {name}: second tap closes {pop_id}")
+                    tpp.evaluate("() => document.activeElement && document.activeElement.blur()")
+                ctx.close()
+
+            # Aide tooltips next to the sticky bar / bottom nav, and at the top edge (flip below)
+            EDGE_PROBE = """(id) => {
+  const pop = document.getElementById(id);
+  const r = pop.getBoundingClientRect();
+  const hit = (b) => !(r.right <= b.left || r.left >= b.right || r.bottom <= b.top || r.top >= b.bottom);
+  const blocks = [];
+  ['#forge-actionbar', '.bottom-nav'].forEach((s) => { const n = document.querySelector(s); if (n && n.getClientRects().length && !n.contains(pop) && hit(n.getBoundingClientRect())) blocks.push(s); });
+  // corners inset past the 10px border radius
+  const pts = [[r.left + 8, r.top + 8], [r.right - 8, r.top + 8], [r.left + 8, r.bottom - 8], [r.right - 8, r.bottom - 8], [(r.left + r.right) / 2, (r.top + r.bottom) / 2]];
+  const hidden = pts.filter(([x, y]) => { const e = document.elementFromPoint(x, y); return !e || !(e === pop || pop.contains(e)); }).map(([x, y]) => { const e = document.elementFromPoint(x, y); return Math.round(x) + ',' + Math.round(y) + ':' + (e ? (e.id || e.className || e.tagName) : 'none'); });
+  return { shown: getComputedStyle(pop).display !== 'none' && r.width > 0, below: pop.classList.contains('is-below'), blocks, hidden,
+    inView: r.left >= -0.5 && r.right <= document.documentElement.clientWidth + 0.5 && r.top >= -0.5 && r.bottom <= innerHeight + 0.5,
+    sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)] };
+}"""
+            PLACE_TRIGGER = """([sel, where]) => {
+  const b = document.querySelector(sel);
+  b.scrollIntoView({block: 'center', behavior: 'instant'});
+  const limits = ['#forge-actionbar', '.bottom-nav'].map((s) => document.querySelector(s)).filter((n) => n && n.getClientRects().length && !n.contains(b)).map((n) => n.getBoundingClientRect().top).filter((t) => t > 0 && t <= innerHeight);
+  const floor = limits.length ? Math.min(...limits) : innerHeight;
+  const r = b.getBoundingClientRect();
+  const side = b.closest('.forge-side');
+  const target = where === 'bottom' ? floor - 6 - r.bottom : 70 - r.top;
+  const sc = side && side.scrollHeight > side.clientHeight + 1 ? side : null;
+  if (sc) sc.scrollBy(0, -target); else window.scrollBy(0, -target);
+  if (sc) { const r2 = b.getBoundingClientRect(); const t2 = where === 'bottom' ? floor - 6 - r2.bottom : 70 - r2.top; window.scrollBy(0, -t2); }
+  const f = b.getBoundingClientRect();
+  return [Math.round(f.top), Math.round(f.bottom), Math.round(floor)];
+}"""
+            flips = 0
+            edge_cases = 0
+            for width, height, name in ((320, 640, "320-portrait"), (375, 667, "375-portrait"), (667, 375, "375-landscape"), (844, 390, "390-landscape"), (1440, 900, "1440-desktop")):
+                page.set_viewport_size({"width": width, "height": height})
+                page.wait_for_timeout(120)
+                ids = help_ids(page)
+                for _bid, pop_id in ids:
+                    sel = f"#forge-studio .forge-help[aria-controls='{pop_id}']"
+                    for where in ("bottom", "top"):
+                        reset_help(page)
+                        pos = page.evaluate(PLACE_TRIGGER, [sel, where])
+                        if pos[0] < 0 or pos[1] > height:
+                            continue  # cannot be scrolled there (page start/end): nothing to test at this edge
+                        for mode in ("focus", "hover"):
+                            reset_help(page)
+                            if mode == "focus":
+                                page.locator(sel).focus()
+                            else:
+                                bb = page.locator(sel).bounding_box()
+                                page.mouse.move(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
+                            page.wait_for_timeout(20)
+                            e = page.evaluate(EDGE_PROBE, pop_id)
+                            edge_cases += 1
+                            flips += 1 if e["below"] else 0
+                            tag = f"{name} {where} {mode} {pop_id}"
+                            check(e["shown"] and not e["blocks"] and e["inView"] and not e["hidden"] and e["sw"] <= e["vw"] + 1,
+                                  f"{tag}: tooltip clear of the sticky bar and nav, fully visible (trigger {pos}) {e}")
+                            if SHOTS and pop_id in ("forge-help-steps", "forge-help-private", "forge-help-hr-denoise") and mode == "focus" and width < 900:
+                                page.screenshot(path=str(SHOTS / f"edge-{name}-{where}-{pop_id}.png"))
+                reset_help(page)
+                page.evaluate("(ids) => ids.forEach((id) => { const d = document.getElementById(id); if (d) d.open = false; })", FOLD_IDS)
+                page.evaluate("() => { window.scrollTo({top: 0, behavior: 'instant'}); const s = document.querySelector('.forge-side'); if (s) s.scrollTop = 0; }")
+            check(edge_cases > 100 and flips > 0, f"edge placements tested ({edge_cases}), some flipped below ({flips})")
+            page.set_viewport_size({"width": 1440, "height": 900})
+
+            # Completed generation: auto-scroll only when the user stayed idle, otherwise "Voir le résultat"
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_timeout(150)
+
+            def run_job(prompt, during=None):
+                page.evaluate("() => window.scrollTo({top: 0, behavior: 'instant'})")
+                page.locator("#forge-prompt").fill(prompt)
+                page.mouse.move(0, 0)
+                page.evaluate("() => document.activeElement && document.activeElement.blur()")
+                page.wait_for_timeout(100)
+                before = page.locator("#forge-gallery .forge-card").count()
+                page.locator("#forge-generate").click()
+                page.wait_for_function("() => document.querySelector('#forge-generate').disabled || !document.querySelector('#forge-progress').hidden", timeout=5000)
+                if during:
+                    during()
+                y0 = page.evaluate("() => scrollY")
+                page.wait_for_function("(n) => document.querySelectorAll('#forge-gallery .forge-card').length > n", arg=before, timeout=20000)
+                page.wait_for_function("() => !document.querySelector('#forge-generate').disabled", timeout=15000)
+                page.wait_for_timeout(900)
+                res = page.evaluate("() => { const r = document.querySelector('#forge-normal-results').getBoundingClientRect(); const b = document.querySelector('#forge-see-result'); return { top: r.top, y: scrollY, see: !!b && !b.hidden && b.getBoundingClientRect().height > 0 }; }")
+                res["y0"] = y0
+                return res
+
+            r = run_job("idle mock")
+            check(-2 <= r["top"] < 844 * 0.5 and r["y"] > r["y0"] + 50 and not r["see"], f"idle: the finished result is scrolled into view (top {round(r['top'])}, scrollY {r['y0']} -> {r['y']}) without the chip")
+            if SHOTS:
+                page.screenshot(path=str(SHOTS / "result-idle-390.png"))
+
+            def typing():
+                page.locator("#forge-negative-fold > summary").click()
+                page.locator("#forge-negative").click()
+                page.keyboard.type("flou", delay=20)
+
+            def setting():
+                page.locator("#forge-steps").fill("21")
+
+            def wheel():
+                page.mouse.move(195, 400)
+                page.mouse.wheel(0, 220)
+                page.wait_for_timeout(200)
+
+            for label, act in (("typing", typing), ("settings change", setting), ("user scroll", wheel)):
+                r = run_job("busy mock " + label, act)
+                check(abs(r["y"] - r["y0"]) < 6, f"{label}: no jump to the result while the user was busy (scrollY {r['y0']} -> {r['y']})")
+                check(r["see"], f"{label}: 'Voir le résultat' is offered instead")
+                if r["see"]:
+                    ov = page.evaluate("""() => {
+  const a = document.querySelector('#forge-see-result').getBoundingClientRect();
+  const hit = (b) => !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+  const bad = [];
+  ['#forge-generate', '#forge-cancel', '#forge-capture', '.bottom-nav', '#forge-generate-private', '#forge-generate-reason', '#forge-progress'].forEach((s) => { const n = document.querySelector(s); if (n && n.offsetParent !== null && hit(n.getBoundingClientRect())) bad.push(s); });
+  const e = document.elementFromPoint((a.left + a.right) / 2, (a.top + a.bottom) / 2);
+  return { bad, top: !!e && (e.id === 'forge-see-result' || !!e.closest('#forge-see-result')), h: a.height, w: a.width, inView: a.top >= 0 && a.bottom <= innerHeight && a.left >= 0 && a.right <= innerWidth };
+}""")
+                    check(not ov["bad"] and ov["top"] and ov["inView"] and ov["h"] >= 44, f"{label}: the chip is visible, >= 44px and overlaps no control {ov}")
+                    if SHOTS and label == "typing":
+                        page.screenshot(path=str(SHOTS / "result-chip-390.png"))
+                    if label == "typing":
+                        f = page.evaluate("() => { const a = document.activeElement; return [a && a.id, a && a.selectionStart, a && a.selectionEnd, a && a.value.length]; }")
+                        check(f[0] == "forge-negative" and f[1] == f[2] == f[3], f"typing: the chip does not steal focus or move the caret {f}")
+                        y1 = page.evaluate("() => scrollY")
+                        page.keyboard.type(" net", delay=15)
+                        check(page.locator("#forge-negative").input_value().endswith("flou net") and abs(page.evaluate("() => scrollY") - y1) < 6, "typing: the next words go on uninterrupted, no scroll")
+                    if label == "user scroll":
+                        page.evaluate("() => document.querySelector('#forge-normal-results').scrollIntoView({block: 'center', behavior: 'instant'})")
+                        page.wait_for_timeout(400)
+                        check(page.evaluate("() => document.querySelector('#forge-see-result').hidden"), "user scroll: the chip goes away once the result is on screen")
+                    else:
+                        page.locator("#forge-see-result").click()
+                        page.wait_for_timeout(900)
+                        after = page.evaluate("() => [document.querySelector('#forge-normal-results').getBoundingClientRect().top, document.querySelector('#forge-see-result').hidden]")
+                        check(-2 <= after[0] < 844 * 0.5 and after[1], f"{label}: tapping the chip shows the result and dismisses the chip (top {round(after[0])})")
+            # Result already mostly on screen but scrolled past its top: no chip lingers
+            r = run_job("busy mock partial", lambda: (page.mouse.move(195, 400), page.mouse.wheel(0, 30)))
+            page.evaluate("() => { const r = document.querySelector('#forge-normal-results'); window.scrollTo({top: scrollY + r.getBoundingClientRect().top + 40, behavior: 'instant'}); }")
+            page.wait_for_timeout(300)
+            check(page.evaluate("() => document.querySelector('#forge-see-result').hidden"), "result partly visible (top scrolled past): chip hidden")
+            page.locator("#forge-steps").fill("20")
+            page.locator("#forge-negative").fill("")
+            page.set_viewport_size({"width": 1440, "height": 900})
+
             for width, height, name in ((390, 844, "390"), (1440, 900, "1440")):
                 page.set_viewport_size({"width": width, "height": height})
                 page.locator("#forge-history-open").click()
@@ -588,6 +813,10 @@ def main() -> None:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(vault, ignore_errors=True)
     print("PASSED", passed)
+    if SOFT:
+        print("SOFT_FAILED", len(soft_failed))
+        if soft_failed:
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

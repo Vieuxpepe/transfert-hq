@@ -5491,6 +5491,7 @@ def render_app() -> bytes:
           <button type="button" id="forge-generate-private" hidden>Générer en privé</button>
           <button type="button" id="forge-cancel" disabled>Annuler</button>
         </div>
+        <button type="button" id="forge-see-result" class="forge-see-result" aria-controls="forge-normal-results" hidden>Voir le résultat</button>
         <div id="forge-progress" class="forge-progress" hidden>
           <progress id="forge-progress-bar" max="1" value="0" aria-labelledby="forge-progress-label"></progress>
           <span id="forge-progress-label" aria-live="polite"></span>

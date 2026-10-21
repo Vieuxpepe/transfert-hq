@@ -85,7 +85,12 @@ body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{co
 .forge-help-wrap{position:relative;display:inline-flex;align-items:center}
 .forge-help{min-width:var(--tap-min);min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:700}
 .forge-help-pop{display:none;margin:0;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);font-size:var(--text-sm);font-weight:500;line-height:1.4;width:min(42ch,70vw);box-shadow:0 8px 24px color-mix(in srgb,#000 28%,transparent)}
-.forge-help-wrap:hover .forge-help-pop,.forge-help-wrap:focus-within .forge-help-pop,.forge-help-wrap.is-open .forge-help-pop{display:block;position:absolute;z-index:30;bottom:calc(100% + 6px);left:0}
+.forge-help-wrap:hover .forge-help-pop,.forge-help-wrap:focus-within .forge-help-pop,.forge-help-wrap.is-open .forge-help-pop{display:block;position:absolute;z-index:30;bottom:calc(100% + 6px);left:var(--help-dx,0px);max-width:var(--help-max,calc(100vw - 16px))}
+/* hq-forge.js keeps an open tooltip inside the viewport: it clamps the width (--help-max), shifts its left edge (--help-dx; a layout offset, not a transform, so mobile layout viewports never widen)
+   and flips it below its button (or caps its height) when there is no room above, within clipping ancestors and above the
+   sticky bar and bottom nav. The scroll margins carry the safe-area insets it must respect. */
+.forge-help-pop{scroll-margin:calc(8px + env(safe-area-inset-top,0px)) calc(8px + env(safe-area-inset-right,0px)) 8px calc(8px + env(safe-area-inset-left,0px))}
+.forge-help-wrap .forge-help-pop.is-below{bottom:auto;top:calc(100% + 6px)}
 #forge-preset-editor{display:flex;flex-direction:column;gap:10px}
 #forge-preset-editor[hidden]{display:none}
 .forge-privacy{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
@@ -239,3 +244,6 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 @media (max-height:500px) and (max-width:899px){
   body[data-view="forge"] .forge-actionbar{bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px))}
 }
+/* "Voir le résultat": shown in the sticky bar when a finished image was not scrolled to because the user was busy. */
+.forge-see-result{align-self:center;min-height:44px;padding:6px 16px;border:1px solid var(--forge-accent,var(--accent));border-radius:999px;background:var(--panel);color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:700;cursor:pointer}
+.forge-see-result:focus-visible{outline:3px solid var(--accent);outline-offset:2px}

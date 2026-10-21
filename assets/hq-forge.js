@@ -34,6 +34,7 @@
   let idleTimer = 0;
   let submitGuard = false;
   let justSubmitted = false;
+  let resultIntent = false; // the user typed, changed a setting, focused a field or scrolled since the last submit
   let cursor = null;
   let openFrom = null;
   let currentDetail = null;
@@ -362,8 +363,9 @@
       if (payload.job.state === "completed" && payload.job.destination !== "private") {
         loadGallery(true).catch(() => {});
         if (justSubmitted && window.matchMedia && window.matchMedia("(max-width: 899px)").matches) {
-          const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-          $("forge-normal-results").scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+          // The user moved on while it rendered: do not yank the page, offer the jump instead.
+          if (resultIntent) showSeeResult();
+          else scrollToResult();
         }
       }
       if (payload.job.state !== "queued" && !["starting", "generating", "saving"].includes(payload.job.state)) justSubmitted = false;
@@ -1529,6 +1531,8 @@
     lastSubmitted = snapshot;
     lastApplied = { prompt: snapshot.prompt, negative: snapshot.negative_prompt };
     justSubmitted = true;
+    resultIntent = false;
+    hideSeeResult();
   }, true);
   promptEl.addEventListener("input", syncCount);
 
@@ -1607,6 +1611,115 @@
     }
   }
 
+  /* Aide tooltips: keep an open one fully visible. The usable box is the viewport (minus
+     safe areas), narrowed by any scrolling ancestor that would clip it (the sticky
+     settings column on wide screens) and, below the button, by the sticky action bar
+     and the bottom nav. Above is preferred; below when above does not fit; as a last
+     resort the taller side is used and the text scrolls. Measured on open (hover,
+     focus, tap) and on resize; static markup, so wired once. */
+  function placeHelp(wrap) {
+    const pop = wrap && wrap.querySelector(".forge-help-pop");
+    if (!pop) return;
+    pop.style.removeProperty("--help-dx");
+    pop.style.removeProperty("max-height");
+    pop.style.removeProperty("overflow-y");
+    pop.classList.remove("is-below");
+    const cs = getComputedStyle(pop);
+    const de = document.documentElement;
+    let left = parseFloat(cs.scrollMarginLeft) || 8;
+    let right = de.clientWidth - (parseFloat(cs.scrollMarginRight) || 8);
+    let top = parseFloat(cs.scrollMarginTop) || 8;
+    let bottom = window.innerHeight - 8;
+    for (let a = wrap.parentElement; a && a !== document.body; a = a.parentElement) {
+      const o = getComputedStyle(a);
+      if (o.overflowX === "visible" && o.overflowY === "visible") continue;
+      const k = a.getBoundingClientRect();
+      left = Math.max(left, k.left + 4);
+      right = Math.min(right, k.right - 4);
+      top = Math.max(top, k.top + 4);
+      bottom = Math.min(bottom, k.bottom - 4);
+    }
+    const anchor = wrap.getBoundingClientRect();
+    [$("forge-actionbar"), document.querySelector(".bottom-nav")].forEach((n) => {
+      if (!n || n.contains(wrap) || !n.getClientRects().length) return;
+      const k = n.getBoundingClientRect();
+      if (k.top >= anchor.bottom - 1 && k.top < bottom + 8) bottom = Math.min(bottom, k.top - 6);
+    });
+    pop.style.setProperty("--help-max", Math.max(120, right - left) + "px");
+    const r = pop.getBoundingClientRect();
+    if (!r.width) return;
+    let dx = 0;
+    if (r.right > right) dx = right - r.right;
+    if (r.left + dx < left) dx = left - r.left;
+    pop.style.setProperty("--help-dx", Math.round(dx) + "px");
+    const above = anchor.top - 6 - top;
+    const below = bottom - (anchor.bottom + 6);
+    if (r.height <= above) return;
+    if (r.height <= below || below > above) pop.classList.add("is-below");
+    const room = Math.max(below, above);
+    if (r.height > room) {
+      pop.style.maxHeight = Math.max(48, Math.floor(room)) + "px";
+      pop.style.overflowY = "auto";
+    }
+  }
+  const helpWraps = document.querySelectorAll("#forge-studio .forge-help-wrap");
+  helpWraps.forEach((wrap) => {
+    wrap.addEventListener("mouseenter", () => placeHelp(wrap));
+    wrap.addEventListener("focusin", () => placeHelp(wrap));
+    const button = wrap.querySelector(".forge-help");
+    if (button) button.addEventListener("click", () => placeHelp(wrap));
+  });
+  window.addEventListener("resize", () => {
+    helpWraps.forEach((wrap) => {
+      if (wrap.classList.contains("is-open") || wrap.matches(":hover") || wrap.matches(":focus-within")) placeHelp(wrap);
+    });
+  });
+
+  /* Finished image: auto-scroll to it only when the user stayed idle. Cheap trusted
+     signals while a submitted job runs; programmatic scrolls fire none of them. */
+  const seeResult = $("forge-see-result");
+  const resultsBox = $("forge-normal-results");
+  function reduceMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  function scrollToResult() {
+    hideSeeResult();
+    resultsBox.scrollIntoView({ block: "start", behavior: reduceMotion() ? "auto" : "smooth" });
+  }
+  function hideSeeResult() {
+    if (seeResult) seeResult.hidden = true;
+  }
+  function showSeeResult() {
+    if (!seeResult) return;
+    // Already on screen (top in view, or at least 35% visible, matching the observer below): no chip.
+    const box = resultsBox.getBoundingClientRect();
+    const seen = Math.max(0, Math.min(box.bottom, window.innerHeight) - Math.max(box.top, 0));
+    if ((box.top >= 0 && box.top < window.innerHeight * 0.6) || (box.height > 0 && seen / box.height >= 0.35)) return;
+    seeResult.hidden = false;
+  }
+  const noteIntent = (event) => { if (justSubmitted && event.isTrusted) resultIntent = true; };
+  studio.addEventListener("input", noteIntent);
+  studio.addEventListener("change", noteIntent);
+  studio.addEventListener("focusin", (event) => {
+    const t = event.target;
+    if (t && t.matches && t.matches("input, textarea, select, [contenteditable]")) noteIntent(event);
+  });
+  window.addEventListener("wheel", noteIntent, { passive: true });
+  window.addEventListener("touchmove", noteIntent, { passive: true });
+  const SCROLL_KEYS = ["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "];
+  window.addEventListener("keydown", (event) => {
+    const t = event.target;
+    if (SCROLL_KEYS.includes(event.key) && !(t && t.closest && t.closest("input, textarea, select, button, [contenteditable]"))) noteIntent(event);
+  });
+  if (seeResult) {
+    seeResult.addEventListener("click", scrollToResult);
+    if (window.IntersectionObserver) {
+      new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) hideSeeResult();
+      }, { threshold: 0.35 }).observe(resultsBox);
+    }
+  }
+
   syncCount();
   syncHistoryAvailability();
 
@@ -1617,6 +1730,7 @@
     refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});
   };
   window.hqForgeHide = function () {
+    hideSeeResult();
     if (historyDlg && historyDlg.open) historyDlg.close();
     historyItems = [];
     historyLoaded = false;
