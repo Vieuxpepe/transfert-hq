@@ -38,6 +38,7 @@ _recovered = False
 _before_submit = None
 _job_timeout = forge.JOB_TIMEOUT_SEC
 _poll_interval = 1.0
+_external_busy = None
 
 _MESSAGES = {
     "forge_offline": "Forge n'est pas démarré.",
@@ -75,6 +76,26 @@ def reset_for_tests() -> None:
     _poll_interval = 1.0
     gallery.reset_for_tests()
     vault.reset_for_tests()
+
+
+def set_external_busy(callback) -> None:
+    """Multi-device batches share the local Forge. While one of their local tasks
+    runs, the single-job path refuses a new job, exactly as for its own jobs."""
+    global _external_busy
+    _external_busy = callback
+
+
+def _external_active() -> bool:
+    try:
+        return bool(_external_busy()) if _external_busy is not None else False
+    except Exception:
+        return True
+
+
+def local_active(root: Path) -> bool:
+    """True while an HQ single job is queued or running on the local Forge."""
+    with _LOCK:
+        return _active_job(_load(root)) is not None
 
 
 def set_before_submit_for_tests(callback) -> None:
@@ -633,6 +654,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
         active = _active_job(stored)
         if active is not None:
             return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+        if _external_active():
+            return 409, {"error": _MESSAGES["active"], "code": "active"}
         if upstream.get("forge") == "busy":
             return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
         if upstream.get("forge") != "ready":

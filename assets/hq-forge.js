@@ -224,6 +224,7 @@
     $("forge-normal-results").hidden = privateMode;
     $("forge-normal-gallery").hidden = privateMode;
     studio.classList.toggle("forge-private", privateMode);
+    if (fleetBooted) fleetSync(active);
   }
 
   let forgeUnreachable = false;
@@ -1720,6 +1721,508 @@
     }
   }
 
+  /* ---------- Appareils de génération (multi-device batches) ----------
+     HQ coordinates everything server-side; this tab only reads and asks.
+     With only "Cet HQ" selected, Générer keeps the single-job path above. */
+  var fleetBooted = false; // syncActions runs before this block is initialised
+  const deviceList = $("forge-device-list");
+  const devicesNote = $("forge-devices-note");
+  const devicesCount = $("forge-devices-count");
+  const fleetCountField = $("forge-fleet-count-field");
+  const fleetCountEl = $("forge-fleet-count");
+  const fleetPrivateNote = $("forge-fleet-private");
+  const batchBox = $("forge-fleet-batch");
+  const deviceDialog = $("forge-device-dialog");
+  let devices = [];
+  let devicesTimer = 0;
+  let batchTimer = 0;
+  let codeTimer = 0;
+  let fleetGuard = false;
+  const shownBatchImages = new Set();
+  let selected = new Set((() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("hqForgeDevices") || "[]");
+      return Array.isArray(saved) && saved.length ? saved.filter((id) => typeof id === "string") : ["local"];
+    } catch (_) { return ["local"]; }
+  })());
+
+  function saveSelection() {
+    try { localStorage.setItem("hqForgeDevices", JSON.stringify([...selected])); } catch (_) { /* private browsing */ }
+  }
+
+  function remoteSelected() {
+    return devices.some((device) => device.kind === "remote" && selected.has(device.id));
+  }
+
+  function fleetMode() {
+    return destination() !== "private" && remoteSelected();
+  }
+
+  function mb(value) {
+    if (!Number.isFinite(value)) return "inconnue";
+    return value >= 1024 ? (Math.round(value / 102.4) / 10).toString().replace(".", ",") + " Go" : value + " Mo";
+  }
+
+  function compatReasons(device) {
+    const catalog = device.catalog;
+    if (!catalog) return ["Catalogue Forge inconnu."];
+    const out = [];
+    const has = (list, value) => (list || []).includes(value);
+    if (checkpointEl.value && !has(catalog.models, checkpointEl.value)) out.push("Modèle « " + checkpointEl.value + " » absent.");
+    if (samplerEl.value && !has(catalog.samplers, samplerEl.value)) out.push("Échantillonneur « " + samplerEl.value + " » absent.");
+    if (schedulerEl.value && !has(catalog.schedulers, schedulerEl.value)) out.push("Planificateur « " + schedulerEl.value + " » absent.");
+    if (hiresOn() && $("forge-hr-upscaler").value && !has(catalog.upscalers, $("forge-hr-upscaler").value)) out.push("Agrandisseur Hires. fix absent.");
+    return out;
+  }
+
+  function usable(device) {
+    return ["available", "busy", "error"].includes(device.state) && device.last_error !== "secret_unprotected";
+  }
+
+  function deviceVerdict(device) {
+    if (destination() === "private" && device.kind === "remote") return { ok: false, label: "Privé : cet HQ seulement", why: "La génération privée ne quitte pas cet HQ." };
+    if (!usable(device)) {
+      const why = {
+        disabled: "Appareil désactivé par l'admin.",
+        offline: "L'appareil ne contacte plus HQ" + (device.last_seen ? " (vu " + when(device.last_seen) + ")." : "."),
+        error: device.last_error_label || "Erreur.",
+        forge_down: device.online ? "En ligne, mais Forge ne répond pas sur cet appareil." : "Forge ne répond pas."
+      }[device.state] || "";
+      return { ok: false, label: device.state_label, why: why };
+    }
+    const reasons = compatReasons(device);
+    if (reasons.length) return { ok: false, label: "Modèle incompatible", why: reasons.join(" ") };
+    return { ok: true, label: device.state_label, why: device.state === "error" ? (device.last_error_label || "Dernière tâche en erreur.") : "" };
+  }
+
+  function specLine(label, value) {
+    const row = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    row.append(dt, dd);
+    return row;
+  }
+
+  function adminActions(device) {
+    const box = document.createElement("div");
+    box.className = "forge-device-admin";
+    const rename = document.createElement("form");
+    rename.className = "forge-device-rename";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 40;
+    input.value = device.name;
+    input.setAttribute("aria-label", "Nouveau nom de " + device.name);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "Renommer";
+    rename.append(input, save);
+    rename.addEventListener("submit", (event) => {
+      event.preventDefault();
+      deviceAction(device.id, "rename", { name: input.value });
+    });
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "secondary";
+    toggle.textContent = device.disabled ? "Réactiver" : "Désactiver";
+    toggle.addEventListener("click", () => deviceAction(device.id, device.disabled ? "enable" : "disable", {}));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary forge-danger";
+    remove.textContent = "Retirer";
+    remove.addEventListener("click", () => {
+      if (window.confirm("Retirer « " + device.name + " » ? Son accès est révoqué ; il faudra un nouveau code pour l'ajouter.")) deviceAction(device.id, "remove", {});
+    });
+    const row = document.createElement("div");
+    row.className = "forge-actions";
+    row.append(toggle, remove);
+    box.append(rename, row);
+    return box;
+  }
+
+  async function deviceAction(id, action, body) {
+    try {
+      await api("/api/forge/devices/" + encodeURIComponent(id) + "/" + action, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (document.activeElement && document.activeElement.closest && document.activeElement.closest(".forge-device-rename")) document.activeElement.blur();
+      if (action === "remove") selected.delete(id);
+      saveSelection();
+      devicesNote.textContent = { rename: "Nom enregistré.", disable: "Appareil désactivé.", enable: "Appareil réactivé.", remove: "Appareil retiré. Son accès est révoqué." }[action];
+    } catch (error) {
+      devicesNote.textContent = error.message || "Action impossible.";
+    }
+    loadDevices().catch(() => {});
+  }
+
+  function deviceCard(device) {
+    const verdict = deviceVerdict(device);
+    const li = document.createElement("li");
+    li.className = "forge-device";
+    li.dataset.id = device.id;
+    li.dataset.state = verdict.ok ? device.state : (verdict.label === "Modèle incompatible" ? "incompatible" : device.state);
+    const isOn = selected.has(device.id) && verdict.ok;
+    li.classList.toggle("is-selected", isOn);
+    const head = document.createElement("label");
+    head.className = "forge-device-pick";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = isOn;
+    box.disabled = !verdict.ok;
+    box.addEventListener("change", () => {
+      if (box.checked) selected.add(device.id); else selected.delete(device.id);
+      saveSelection();
+      renderDevices();
+      syncActions();
+    });
+    const name = document.createElement("span");
+    name.className = "forge-device-name";
+    name.textContent = device.name;
+    head.append(box, name);
+    const pills = document.createElement("div");
+    pills.className = "forge-device-pills";
+    const link = document.createElement("span");
+    link.className = "forge-pill";
+    link.dataset.kind = device.online ? "on" : "off";
+    link.textContent = device.kind === "local" ? "Cet HQ" : (device.online ? "En ligne" : "Hors ligne");
+    const state = document.createElement("span");
+    state.className = "forge-pill";
+    state.dataset.kind = verdict.ok ? (device.state === "busy" ? "busy" : (device.state === "error" ? "warn" : "ok")) : "bad";
+    state.textContent = verdict.label;
+    pills.append(link, state);
+    const gpu = document.createElement("p");
+    gpu.className = "forge-device-gpu";
+    const first = (device.hardware && device.hardware.gpus || [])[0];
+    gpu.textContent = first ? first.name + " · VRAM " + mb(first.vram_mb) : "GPU inconnu";
+    li.append(head, pills, gpu);
+    if (verdict.why) {
+      const why = document.createElement("p");
+      why.className = "forge-device-why";
+      why.textContent = verdict.why;
+      li.append(why);
+    }
+    if (device.current) {
+      const job = document.createElement("div");
+      job.className = "forge-device-job";
+      const bar = document.createElement("progress");
+      bar.max = 1;
+      bar.value = Number(device.current.progress || 0);
+      bar.setAttribute("aria-label", "Progression sur " + device.name);
+      const text = document.createElement("span");
+      text.textContent = device.current.steps ? "Pas " + device.current.step + " / " + device.current.steps : "Tâche en cours";
+      job.append(bar, text);
+      li.append(job);
+    }
+    const more = document.createElement("details");
+    more.className = "forge-device-more";
+    if (window.matchMedia && window.matchMedia("(min-width: 760px)").matches) more.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = "Caractéristiques";
+    const dl = document.createElement("dl");
+    const gpus = (device.hardware && device.hardware.gpus) || [];
+    dl.append(specLine("GPU", gpus.length ? gpus.map((g) => g.name).join(", ") : "inconnu"));
+    dl.append(specLine("VRAM", first ? mb(first.vram_mb) : "inconnue"));
+    dl.append(specLine("CPU", (device.hardware && device.hardware.cpu) || "inconnu"));
+    dl.append(specLine("RAM", mb(device.hardware && device.hardware.ram_mb)));
+    dl.append(specLine("Modèle chargé", device.model || "inconnu"));
+    if (device.kind === "remote") dl.append(specLine("Vu", device.last_seen ? when(device.last_seen) : "jamais"));
+    if (device.last_error_label) dl.append(specLine("Dernière erreur", device.last_error_label));
+    more.append(summary, dl);
+    if (device.kind === "remote") more.append(adminActions(device));
+    li.append(more);
+    li.addEventListener("click", (event) => {
+      if (event.target.closest("input, button, a, details, label, form")) return;
+      if (!box.disabled) box.click();
+    });
+    return li;
+  }
+
+  function renderDevices() {
+    const openIds = new Set([...deviceList.querySelectorAll(".forge-device-more[open]")].map((node) => node.closest(".forge-device").dataset.id));
+    const focusId = document.activeElement && document.activeElement.closest && document.activeElement.closest(".forge-device") ? document.activeElement.closest(".forge-device").dataset.id : null;
+    const typing = document.activeElement && document.activeElement.matches && document.activeElement.matches(".forge-device-rename input");
+    if (typing) return; // never rebuild under a rename in progress
+    deviceList.replaceChildren(...devices.map(deviceCard));
+    deviceList.querySelectorAll(".forge-device").forEach((node) => {
+      if (openIds.has(node.dataset.id)) node.querySelector(".forge-device-more").open = true;
+    });
+    if (focusId) {
+      const back = deviceList.querySelector('.forge-device[data-id="' + CSS.escape(focusId) + '"] input[type="checkbox"]');
+      if (back) back.focus({ preventScroll: true });
+    }
+    const chosen = devices.filter((device) => selected.has(device.id) && deviceVerdict(device).ok);
+    devicesCount.textContent = chosen.length === 0 ? "Aucun appareil choisi" : chosen.length === 1 ? "1 appareil choisi" : chosen.length + " appareils choisis";
+    const remote = devices.some((device) => device.kind === "remote");
+    $("forge-devices-all").hidden = !remote;
+    fleetCountField.hidden = !fleetMode();
+    fleetPrivateNote.hidden = !(destination() === "private" && remote);
+  }
+
+  async function loadDevices() {
+    clearTimeout(devicesTimer);
+    try {
+      const payload = await api("/api/forge/devices");
+      devices = payload.devices || [];
+      renderDevices();
+      syncActions(submitGuard);
+    } catch (error) {
+      devicesNote.textContent = error.message || "Les appareils ne sont pas lisibles.";
+    }
+    if (!document.hidden && document.body.dataset.view === "forge") devicesTimer = setTimeout(() => loadDevices().catch(() => {}), batchTimer ? 2000 : 5000);
+  }
+
+  function fleetCatalogFill() {
+    // Local Forge down: offer what every selected remote device has in common. Never a substitute model.
+    if (catalogState === "ready" || !fleetMode()) return;
+    const chosen = devices.filter((device) => device.kind === "remote" && selected.has(device.id) && usable(device) && device.catalog);
+    if (!chosen.length) return;
+    const common = (key) => chosen.map((d) => d.catalog[key] || []).reduce((a, b) => a.filter((x) => b.includes(x)));
+    const same = (select, list) => select.options.length === list.length && list.every((v, i) => select.options[i].value === v);
+    const models = common("models");
+    const samplers = common("samplers");
+    const schedulers = common("schedulers");
+    if (!same(checkpointEl, models)) fillSelect(checkpointEl, models, (v) => ({ value: v, label: v }), "");
+    if (!same(samplerEl, samplers)) fillSelect(samplerEl, samplers, (v) => ({ value: v, label: v }), "Euler a");
+    if (!same(schedulerEl, schedulers)) fillSelect(schedulerEl, schedulers, (v) => ({ value: v, label: v }), "automatic");
+    const ups = common("upscalers");
+    if ($("forge-hr-upscaler").options.length !== ups.length) fillUpscalers(ups.map((n) => ({ name: n })));
+    if (choiceNote) choiceNote.textContent = "Menus issus des appareils choisis : Forge de cet HQ ne répond pas.";
+  }
+
+  function fleetSync(active) {
+    renderDevicesLight();
+    if (!fleetMode()) return;
+    fleetCatalogFill();
+    const chosen = devices.filter((device) => selected.has(device.id));
+    const ok = chosen.filter((device) => deviceVerdict(device).ok);
+    const count = Number(fleetCountEl.value);
+    const hiresMissing = hiresOn() && !$("forge-hr-upscaler").value;
+    const hiresLarge = hiresOn() && !hiresFits();
+    let reason = "";
+    if (active || fleetGuard) reason = "Générer est désactivé : un lot est en cours d'envoi.";
+    else if (!ok.length) reason = "Générer est désactivé : aucun appareil choisi n'est disponible.";
+    else if (ok.length < chosen.length) reason = "Générer est désactivé : un appareil choisi n'est pas disponible ou compatible.";
+    else if (!checkpointEl.value || !samplerEl.value || !schedulerEl.value) reason = "Générer est désactivé : les menus ne sont pas remplis.";
+    else if (!Number.isInteger(count) || count < 1 || count > 16) reason = "Générer est désactivé : choisissez de 1 à 16 images.";
+    else if (hiresMissing) reason = "Générer est désactivé : l'agrandisseur n'est pas disponible.";
+    else if (hiresLarge) reason = "Générer est désactivé : le second passage dépasserait 2048 pixels.";
+    generateBtn.disabled = !!reason;
+    if (reasonEl) reasonEl.textContent = reason;
+    setGenerateLabel(reason ? "Générer" : "Générer " + count + " sur " + ok.length + (ok.length > 1 ? " appareils" : " appareil"));
+  }
+
+  function setGenerateLabel(text) {
+    // Only touch the DOM on a real change: WebKit drops a click whose target text node is replaced mid-press.
+    if (generateBtn.textContent !== text) generateBtn.textContent = text;
+  }
+
+  function renderDevicesLight() {
+    if (!fleetMode()) setGenerateLabel("Générer");
+    if (deviceList && devices.length) {
+      fleetCountField.hidden = !fleetMode();
+      fleetPrivateNote.hidden = !(destination() === "private" && devices.some((d) => d.kind === "remote"));
+    }
+  }
+
+  function batchKey(fresh) {
+    if (fresh) sessionStorage.removeItem("hqForgeBatchKey");
+    let value = sessionStorage.getItem("hqForgeBatchKey");
+    if (!value) {
+      value = "bt" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 38);
+      sessionStorage.setItem("hqForgeBatchKey", value);
+    }
+    return value;
+  }
+
+  async function fleetGenerate() {
+    if (fleetGuard || generateBtn.disabled) return;
+    fleetGuard = true;
+    generateBtn.disabled = true;
+    const settings = settingsFromForm();
+    delete settings.n_iter;
+    delete settings.batch_size;
+    const workers = devices.filter((device) => selected.has(device.id) && deviceVerdict(device).ok).map((device) => device.id);
+    progressBox.hidden = false;
+    progressLabel.textContent = "Envoi du lot…";
+    try {
+      const payload = await api("/api/forge/batches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": batchKey(false) },
+        body: JSON.stringify({ workers: workers, count: Number(fleetCountEl.value), settings: settings, destination: "normal" })
+      });
+      justSubmitted = true;
+      resultIntent = false;
+      results.replaceChildren();
+      shownBatchImages.clear();
+      showBatch(payload.batch);
+    } catch (error) {
+      const problems = error && error.data && error.data.problems;
+      progressLabel.textContent = (error.message || "Le lot n'a pas démarré.") + (problems ? " " + problems.map((p) => p.name + " : " + p.reasons.join(" ")).join(" ") : "");
+      batchKey(true);
+    }
+    fleetGuard = false;
+    syncActions(false);
+  }
+
+  function showBatch(batch) {
+    if (!batch) return;
+    sessionStorage.setItem("hqForgeBatch", batch.batch_id);
+    batchBox.hidden = false;
+    const c = batch.counts;
+    const running = batch.state === "running" || batch.state === "cancelling";
+    $("forge-fleet-batch-state").textContent = { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state;
+    $("forge-fleet-batch-totals").textContent = c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : "");
+    const rows = batch.workers.map((row) => {
+      const li = document.createElement("li");
+      li.className = "forge-fleet-batch-worker";
+      li.dataset.worker = row.worker_id;
+      const name = document.createElement("span");
+      name.className = "forge-device-name";
+      name.textContent = row.name;
+      const bar = document.createElement("progress");
+      bar.max = 1;
+      bar.value = row.running ? Number(row.progress || 0) : (row.done ? 1 : 0);
+      bar.setAttribute("aria-label", "Progression de " + row.name);
+      const text = document.createElement("span");
+      text.className = "forge-fleet-batch-worker-text";
+      text.textContent = row.done + " terminée" + (row.done > 1 ? "s" : "") + (row.failed ? ", " + row.failed + " en échec" : "") + (row.running ? ", 1 en cours" : "");
+      li.append(name, bar, text);
+      return li;
+    });
+    $("forge-fleet-batch-workers").replaceChildren(...rows);
+    const issues = batch.tasks.filter((task) => ["failed", "uncertain"].includes(task.state));
+    const deferred = batch.tasks.some((task) => task.cancel_deferred && ["dispatched", "running"].includes(task.state));
+    $("forge-fleet-batch-note").textContent = (deferred ? "Images déjà envoyées : chaque appareil termine la sienne. Forge n'est jamais interrompu. " : "") +
+      (issues.length ? issues.slice(0, 3).map((task) => "Image " + (task.index + 1) + (task.worker_name ? " (" + task.worker_name + ")" : "") + " : " + task.message).join(" ") : "") +
+      (batch.seed_mode === "fixed" ? " Graines " + batch.tasks[0].seed + " à " + batch.tasks[batch.tasks.length - 1].seed + "." : "");
+    $("forge-fleet-batch-cancel").hidden = !running;
+    $("forge-fleet-batch-cancel").disabled = batch.state === "cancelling";
+    $("forge-fleet-batch-close").hidden = running;
+    let added = false;
+    batch.tasks.forEach((task) => {
+      if (task.image_id && !shownBatchImages.has(task.image_id)) {
+        shownBatchImages.add(task.image_id);
+        results.appendChild(card({ id: task.image_id, thumb: "/api/forge/gallery/" + task.image_id + "/thumb" }));
+        added = true;
+      }
+    });
+    if (added) {
+      const resultsEmpty = $("forge-results-empty");
+      if (resultsEmpty) resultsEmpty.hidden = true;
+    }
+    progressBox.hidden = !running;
+    progressBar.value = c.total ? (c.done + c.failed + c.uncertain + c.cancelled) / c.total : 0;
+    progressLabel.textContent = running ? "Lot : " + c.done + " / " + c.total : "";
+    clearTimeout(batchTimer);
+    batchTimer = 0;
+    if (running) {
+      batchTimer = setTimeout(() => pollBatch(batch.batch_id), 1500);
+    } else {
+      batchKey(true);
+      loadGallery(true).catch(() => {});
+      if (justSubmitted && window.matchMedia && window.matchMedia("(max-width: 899px)").matches) {
+        if (resultIntent) showSeeResult(); else scrollToResult();
+      }
+      justSubmitted = false;
+    }
+  }
+
+  async function pollBatch(id) {
+    try {
+      const payload = await api("/api/forge/batches/" + encodeURIComponent(id));
+      showBatch(payload.batch);
+      loadDevices().catch(() => {});
+    } catch (error) {
+      $("forge-fleet-batch-note").textContent = error.message || "Suivi interrompu. Le lot continue sur HQ.";
+      batchTimer = setTimeout(() => pollBatch(id), 4000);
+    }
+  }
+
+  async function resumeBatch() {
+    try {
+      const payload = await api("/api/forge/batches");
+      const mine = sessionStorage.getItem("hqForgeBatch");
+      const live = (payload.batches || []).find((batch) => batch.state === "running" || batch.state === "cancelling") ||
+        (payload.batches || []).find((batch) => batch.batch_id === mine);
+      if (live) showBatch(live);
+    } catch (_) { /* nothing to resume */ }
+  }
+
+  form.addEventListener("submit", (event) => {
+    if (!fleetMode()) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+    fleetGenerate();
+  }, true);
+
+  $("forge-devices-all").addEventListener("click", () => {
+    devices.forEach((device) => { if (deviceVerdict(device).ok) selected.add(device.id); });
+    saveSelection();
+    renderDevices();
+    syncActions();
+  });
+  fleetCountEl.addEventListener("input", () => syncActions());
+  [checkpointEl, samplerEl, schedulerEl, $("forge-hr"), $("forge-hr-upscaler")].forEach((node) => node.addEventListener("change", () => { renderDevices(); syncActions(); }));
+  document.querySelectorAll('input[name="forge-destination"]').forEach((node) => node.addEventListener("change", () => { renderDevices(); syncActions(); }));
+
+  $("forge-fleet-batch-cancel").addEventListener("click", async () => {
+    const id = sessionStorage.getItem("hqForgeBatch");
+    if (!id) return;
+    try {
+      const payload = await api("/api/forge/batches/" + encodeURIComponent(id) + "/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      showBatch(payload.batch);
+    } catch (error) {
+      $("forge-fleet-batch-note").textContent = error.message || "Annulation impossible.";
+    }
+  });
+  $("forge-fleet-batch-close").addEventListener("click", () => {
+    batchBox.hidden = true;
+    sessionStorage.removeItem("hqForgeBatch");
+  });
+
+  function snippet() {
+    return "py -3 .\\hq_forge_worker.py pair --hq " + location.origin + ' --name "PC salon"';
+  }
+
+  $("forge-device-add").addEventListener("click", () => {
+    $("forge-device-snippet").textContent = snippet();
+    $("forge-device-code-box").hidden = true;
+    $("forge-device-code").textContent = "";
+    deviceDialog.showModal();
+  });
+  function forgetCode() {
+    clearInterval(codeTimer);
+    $("forge-device-code").textContent = "";
+    $("forge-device-code-box").hidden = true;
+  }
+  $("forge-device-dialog-close").addEventListener("click", () => { forgetCode(); deviceDialog.close(); });
+  deviceDialog.addEventListener("close", () => {
+    forgetCode();
+    $("forge-device-add").focus({ preventScroll: true });
+    loadDevices().catch(() => {});
+  });
+  $("forge-device-code-new").addEventListener("click", async () => {
+    try {
+      const payload = await api("/api/forge/devices/enroll", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      $("forge-device-code").textContent = payload.code;
+      $("forge-device-code-box").hidden = false;
+      const end = Date.now() + payload.ttl_sec * 1000;
+      const tick = () => {
+        const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+        $("forge-device-code-ttl").textContent = left ? "Expire dans " + Math.floor(left / 60) + " min " + String(left % 60).padStart(2, "0") + " s." : "Code expiré. Créez-en un autre.";
+        if (!left) { clearInterval(codeTimer); $("forge-device-code").textContent = ""; }
+      };
+      clearInterval(codeTimer);
+      tick();
+      codeTimer = setInterval(tick, 1000);
+    } catch (error) {
+      $("forge-device-code-ttl").textContent = error.message || "Le code n'a pas pu être créé.";
+      $("forge-device-code-box").hidden = false;
+    }
+  });
+
+  fleetBooted = !!deviceList;
+
   syncCount();
   syncHistoryAvailability();
 
@@ -1728,6 +2231,7 @@
 
   window.hqForgeShow = function () {
     refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});
+    refreshStatus().catch(() => {}).then(() => loadDevices()).then(() => resumeBatch()).catch(() => {});
   };
   window.hqForgeHide = function () {
     hideSeeResult();
@@ -1736,6 +2240,10 @@
     historyLoaded = false;
     clearTimeout(pollTimer);
     clearTimeout(idleTimer);
+    clearTimeout(devicesTimer);
+    clearTimeout(batchTimer);
+    batchTimer = 0;
+    if (deviceDialog && deviceDialog.open) deviceDialog.close();
     if (viewer.open) viewer.close();
     clearPrivateUi();
   };

@@ -207,7 +207,7 @@ html:has(body[data-view="forge"]){scroll-padding-bottom:calc(var(--nav-h) + 150p
    the phone order (prompt, réglages, Générer, résultat), so keyboard order
    matches what is seen in both layouts. */
 @container forge (min-width:760px){
-  #forge-studio:not([data-layout="compact"]) .forge-shell{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,1fr);grid-template-rows:repeat(7,auto) 1fr;gap:14px 18px;align-items:start}
+  #forge-studio:not([data-layout="compact"]) .forge-shell{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,1fr);grid-template-rows:repeat(9,auto) 1fr;gap:14px 18px;align-items:start}
   #forge-studio:not([data-layout="compact"]) .forge-shell > .forge-m{grid-column:1}
   #forge-studio:not([data-layout="compact"]) .forge-side{grid-column:2;grid-row:1 / -1;position:sticky;top:12px;max-height:calc(100dvh - 24px);overflow:auto;overscroll-behavior:contain;padding:0 4px 4px 0}
   #forge-studio:not([data-layout="compact"]) .forge-quick{display:flex}
@@ -217,7 +217,7 @@ html:has(body[data-view="forge"]){scroll-padding-bottom:calc(var(--nav-h) + 150p
   #forge-studio:not([data-layout="compact"]) .forge-grid-fields{grid-template-columns:1fr 1fr}
 }
 @container forge (min-width:600px){
-  #forge-studio[data-layout="expanded"] .forge-shell{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(260px,1fr);grid-template-rows:repeat(7,auto) 1fr;gap:14px 16px;align-items:start}
+  #forge-studio[data-layout="expanded"] .forge-shell{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(260px,1fr);grid-template-rows:repeat(9,auto) 1fr;gap:14px 16px;align-items:start}
   #forge-studio[data-layout="expanded"] .forge-shell > .forge-m{grid-column:1}
   #forge-studio[data-layout="expanded"] .forge-side{grid-column:2;grid-row:1 / -1}
   #forge-studio[data-layout="expanded"] .forge-quick{display:flex}
@@ -247,3 +247,54 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 /* "Voir le résultat": shown in the sticky bar when a finished image was not scrolled to because the user was busy. */
 .forge-see-result{align-self:center;min-height:44px;padding:6px 16px;border:1px solid var(--forge-accent,var(--accent));border-radius:999px;background:var(--panel);color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:700;cursor:pointer}
 .forge-see-result:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+/* Appareils de génération: cards, pills, batch monitor, pairing sheet. */
+.forge-devices{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
+.forge-devices-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.forge-devices-head h2{margin:0;font-size:1.05rem}
+#forge-devices-note:empty,#forge-fleet-batch-note:empty{display:none}
+.forge-device-list{list-style:none;margin:0;padding:0;display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(min(100%,230px),1fr))}
+.forge-device{display:flex;flex-direction:column;gap:6px;min-width:0;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);cursor:pointer}
+.forge-device.is-selected{border-color:var(--forge-accent);box-shadow:inset 0 0 0 1px var(--forge-accent)}
+.forge-device:not(.is-selected) .forge-device-pick input:disabled + .forge-device-name{opacity:.75}
+.forge-device-pick{display:flex;align-items:center;gap:10px;min-height:var(--tap-min);font-weight:800;cursor:pointer}
+.forge-device-pick input{width:22px;height:22px;flex:0 0 auto;accent-color:var(--forge-accent)}
+.forge-device-name{min-width:0;overflow-wrap:anywhere}
+.forge-device-pills{display:flex;flex-wrap:wrap;gap:6px}
+.forge-pill{display:inline-flex;align-items:center;min-height:26px;padding:2px 10px;border:1px solid var(--line);border-radius:999px;font-size:var(--text-xs);font-weight:700;background:var(--panel)}
+.forge-pill[data-kind="on"],.forge-pill[data-kind="ok"]{border-color:color-mix(in srgb,var(--ok) 60%,var(--line))}
+.forge-pill[data-kind="busy"],.forge-pill[data-kind="warn"]{border-color:color-mix(in srgb,var(--warn) 65%,var(--line))}
+.forge-pill[data-kind="off"],.forge-pill[data-kind="bad"]{border-color:color-mix(in srgb,var(--danger) 60%,var(--line))}
+.forge-device-gpu,.forge-device-why{margin:0;font-size:var(--text-sm);overflow-wrap:anywhere}
+.forge-device-why{color:var(--muted)}
+.forge-device-job{display:flex;flex-direction:column;gap:4px;font-size:var(--text-xs)}
+.forge-device-job progress,.forge-fleet-batch-worker progress{width:100%;height:8px;accent-color:var(--forge-accent)}
+.forge-device-more > summary{min-height:var(--tap-min);display:flex;align-items:center;cursor:pointer;font-size:var(--text-sm);font-weight:700}
+.forge-device-more dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 10px;margin:0 0 6px;font-size:var(--text-sm)}
+.forge-device-more dl > div{display:contents}
+.forge-device-more dt{color:var(--muted)}
+.forge-device-more dd{margin:0;overflow-wrap:anywhere}
+.forge-device-admin{display:flex;flex-direction:column;gap:6px}
+.forge-device-rename{display:flex;gap:6px}
+#forge-studio .forge-device-rename input{flex:1 1 auto;min-width:0;font:inherit;font-size:16px;min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}
+.forge-device-admin button{min-height:var(--tap-min);padding:6px 12px;font-size:var(--text-sm)}
+.forge-danger{border-color:color-mix(in srgb,var(--danger) 60%,var(--line))}
+.forge-devices-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.forge-fleet-count{display:flex;align-items:center;gap:8px;margin-left:auto;font-weight:700}
+#forge-studio .forge-fleet-count input{width:5.5rem;font:inherit;font-size:16px;min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}
+.forge-fleet-private{border-left:3px solid var(--forge-accent);padding-left:8px}
+.forge-fleet-batch{display:flex;flex-direction:column;gap:8px}
+.forge-fleet-batch-totals{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.forge-fleet-batch-workers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.forge-fleet-batch-worker{display:grid;grid-template-columns:minmax(0,9rem) minmax(0,1fr);align-items:center;gap:4px 10px;font-size:var(--text-sm)}
+.forge-fleet-batch-worker-text{grid-column:1 / -1;color:var(--muted);font-size:var(--text-xs)}
+#forge-device-dialog{border:1px solid var(--line);background:var(--panel);color:var(--text);padding:0;position:fixed;inset:auto 0 0 0;margin:0;width:100%;max-width:100%;max-height:88dvh;border-radius:18px 18px 0 0;overflow:auto}
+#forge-device-dialog::backdrop{background:color-mix(in srgb,var(--bg) 35%,#000)}
+#forge-device-dialog h2{margin:0;font-size:1.1rem}
+#forge-device-dialog .forge-viewer-bar{position:sticky;top:0;background:var(--panel);z-index:1;margin:0}
+.forge-device-code{display:block;font:700 clamp(1.4rem,6vw,2rem)/1.2 ui-monospace,Consolas,monospace;letter-spacing:.08em;padding:10px;border:1px dashed var(--forge-accent);border-radius:10px;text-align:center;overflow-wrap:anywhere;user-select:all}
+.forge-device-code-box{display:flex;flex-direction:column;gap:6px}
+.forge-device-steps{margin:0;padding-left:1.2rem;display:flex;flex-direction:column;gap:8px}
+.forge-snippet{margin:4px 0 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);font:var(--text-sm)/1.4 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+@media (min-width:900px){
+  #forge-device-dialog{inset:0 0 0 auto;height:100dvh;max-height:100dvh;width:min(480px,92vw);border-radius:18px 0 0 18px}
+}

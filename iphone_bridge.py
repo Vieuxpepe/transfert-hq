@@ -42,6 +42,7 @@ import hq_planner
 import hq_devices
 import hq_events
 import hq_forge
+import hq_forge_fleet
 import hq_forge_gallery
 import hq_forge_jobs
 import hq_forge_presets
@@ -5484,6 +5485,23 @@ def render_app() -> bytes:
             </div>
           </details>
         </aside>
+      <section id="forge-devices" class="forge-devices forge-m" aria-labelledby="forge-devices-title">
+        <div class="forge-devices-head">
+          <h2 id="forge-devices-title">Appareils de génération</h2>
+          <span id="forge-devices-count" class="forge-summary-hint" aria-live="polite"></span>
+        </div>
+        <p id="forge-devices-note" class="forge-note" role="status"></p>
+        <ul id="forge-device-list" class="forge-device-list" aria-label="Appareils"></ul>
+        <div class="forge-devices-tools">
+          <button type="button" id="forge-devices-all" class="forge-tool">Tout sélectionner (compatibles)</button>
+          <button type="button" id="forge-device-add" class="forge-tool" aria-haspopup="dialog" aria-controls="forge-device-dialog">Ajouter un appareil</button>
+          <div id="forge-fleet-count-field" class="forge-fleet-count" hidden>
+            <label for="forge-fleet-count">Images</label>
+            <input id="forge-fleet-count" type="number" min="1" max="16" step="1" value="4" inputmode="numeric"/>
+          </div>
+        </div>
+        <p id="forge-fleet-private" class="forge-note forge-fleet-private" hidden>La génération privée reste sur cet HQ. Les autres appareils ne reçoivent jamais un prompt privé.</p>
+      </section>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
         <div class="forge-actions">
@@ -5498,6 +5516,19 @@ def render_app() -> bytes:
         </div>
       </div>
         <p id="forge-cancel-note" class="forge-note forge-m">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
+      <section id="forge-fleet-batch" class="forge-block forge-m forge-fleet-batch" aria-labelledby="forge-fleet-batch-title" hidden>
+        <div class="forge-devices-head">
+          <h2 id="forge-fleet-batch-title">Lot multi-appareils</h2>
+          <span id="forge-fleet-batch-state" class="forge-summary-hint" aria-live="polite"></span>
+        </div>
+        <p id="forge-fleet-batch-totals" class="forge-fleet-batch-totals" aria-live="polite"></p>
+        <ul id="forge-fleet-batch-workers" class="forge-fleet-batch-workers"></ul>
+        <p id="forge-fleet-batch-note" class="forge-note" role="status"></p>
+        <div class="forge-actions">
+          <button type="button" id="forge-fleet-batch-cancel" class="secondary">Annuler le lot</button>
+          <button type="button" id="forge-fleet-batch-close" class="secondary" hidden>Masquer</button>
+        </div>
+      </section>
       <section class="forge-block forge-m" id="forge-normal-results" aria-labelledby="forge-results-title">
         <h2 id="forge-results-title">Résultat</h2>
         <p id="forge-results-empty" class="forge-note">Le résultat de la génération apparaîtra ici.</p>
@@ -5539,6 +5570,27 @@ def render_app() -> bytes:
           <button type="button" id="forge-delete" class="secondary">Supprimer la copie HQ</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="forge-device-dialog" class="forge-sheet" aria-labelledby="forge-device-dialog-title">
+      <div class="forge-sheet-inner">
+        <header class="forge-viewer-bar">
+          <h2 id="forge-device-dialog-title">Ajouter un appareil</h2>
+          <button type="button" id="forge-device-dialog-close" class="secondary">Fermer</button>
+        </header>
+        <p class="forge-note">Sur le PC à ajouter : Forge démarré avec <code>--api</code> sur 127.0.0.1, Python 3 et le fichier <code>hq_forge_worker.py</code>. L'appareil appelle HQ par Tailscale ; HQ ne se connecte jamais à lui.</p>
+        <button type="button" id="forge-device-code-new">Créer un code à usage unique</button>
+        <div id="forge-device-code-box" class="forge-device-code-box" hidden>
+          <p class="forge-note">Code valable 10 minutes, une seule fois. Il ne sera plus affiché.</p>
+          <output id="forge-device-code" class="forge-device-code" aria-live="polite"></output>
+          <p id="forge-device-code-ttl" class="forge-note" role="status"></p>
+        </div>
+        <ol class="forge-device-steps">
+          <li>Dans PowerShell, dans le dossier du fichier :<pre id="forge-device-snippet" class="forge-snippet"></pre></li>
+          <li>Collez le code quand il est demandé. Il n'est jamais passé en argument.</li>
+          <li>Lancez ensuite l'appareil :<pre class="forge-snippet">py -3 .&#92;hq_forge_worker.py run</pre></li>
+        </ol>
+        <p class="forge-note">Démarrage automatique : voir <code>docs/forge-workers.md</code> (tâche planifiée à l'ouverture de session).</p>
+      </div>
     </dialog>
     <dialog id="forge-history" class="forge-sheet" aria-labelledby="forge-history-title">
       <div class="forge-sheet-inner">
@@ -6090,6 +6142,21 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._json(code, payload)
 
+    def _forge_worker(self, raw: str) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "longueur invalide"})
+            return
+        if length < 0 or length > hq_forge_fleet.max_body(raw):
+            self._json(413, {"error": "Requête trop grande."})
+            return
+        body = self.rfile.read(length) if length else b""
+        hq_forge_fleet.bind(ROOT)
+        ip = self.client_address[0] if self.client_address else ""
+        code, payload = hq_forge_fleet.handle_worker(self.command or "POST", raw, self.headers, body, ip)
+        self._json(code, payload)
+
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length < 0 or length > 8 * 1024 * 1024:
@@ -6452,6 +6519,11 @@ class Handler(BaseHTTPRequestHandler):
         if self._forge_vault_get(raw, parsed):
             return True
         hq_forge_jobs.recover(ROOT)
+        hq_forge_fleet.bind(ROOT)
+        fleet = hq_forge_fleet.serve_get(raw)
+        if fleet is not None:
+            self._json(fleet[0], fleet[1])
+            return True
         if raw == "/api/forge/status":
             self._json(200, hq_forge.status())
             return True
@@ -6540,6 +6612,11 @@ class Handler(BaseHTTPRequestHandler):
         presets = hq_forge_presets.serve_post(ROOT, raw, data)
         if presets is not None:
             self._json(presets[0], presets[1])
+            return True
+        hq_forge_fleet.bind(ROOT)
+        fleet = hq_forge_fleet.serve_post(raw, data, (self.headers.get("Idempotency-Key") or "").strip())
+        if fleet is not None:
+            self._json(fleet[0], fleet[1])
             return True
         got = hq_forge_jobs.serve_post(ROOT, raw, data, (self.headers.get("Idempotency-Key") or "").strip(), token)
         if got is None:
@@ -7092,7 +7169,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Inconnu"})
             return
 
-        if raw.startswith("/agent/v1/"):
+        if raw.startswith("/agent/v1/") or raw.startswith("/forge-worker/v1/"):
             self._json(405, {"error": "POST requis"})
             return
 
@@ -7412,6 +7489,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if raw == "/local-agent" or raw.startswith("/local-agent/"):
             self._json(404, {"error": "Inconnu"})
+            return
+
+        if raw.startswith("/forge-worker/v1/"):
+            # Forge generation workers: no browser session and no CSRF (no cookie is read), HMAC on every route
+            # except the one-time-code enrollment. The body is never logged.
+            self._forge_worker(raw)
             return
 
         # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
@@ -8104,6 +8187,7 @@ def main() -> None:
     ensure_folders_and_migrate()
     bind_cc_ext()
     bind_hq()
+    hq_forge_fleet.bind(ROOT)  # resumes queued multi-device tasks; dispatched ones become uncertain
     # Resume the backup schedule from the catalog: a restart within backup_every_hours
     # of the last backup (same backup_dir) makes no new backup. Reads the index only.
     _seed = cc_ext.seed_last_backup_from_index()

@@ -214,9 +214,27 @@ def prepare_image(raw: bytes) -> tuple[bytes, bytes, int, int]:
     return _decode(raw)
 
 
-def store(root: Path, raw: bytes, settings: dict) -> dict:
+def _origin(value) -> dict | None:
+    """Optional provenance for multi-device batches: worker id/name and batch id. Short ASCII-safe text only."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise GalleryError("bad_image")
+    out = {}
+    for key, limit in (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40)):
+        item = value.get(key)
+        if item is None:
+            continue
+        if not isinstance(item, str) or len(item) > limit or any(ord(ch) < 32 for ch in item):
+            raise GalleryError("bad_image")
+        out[key] = item
+    return out or None
+
+
+def store(root: Path, raw: bytes, settings: dict, *, origin: dict | None = None) -> dict:
     png, thumb, width, height = _decode(raw)
     safe = _settings(settings)
+    provenance = _origin(origin)
     with _LOCK:
         images, used = _usage(root)
         incoming = len(png) + len(thumb) + 4096
@@ -239,6 +257,8 @@ def store(root: Path, raw: bytes, settings: dict) -> dict:
                 "bytes": len(png),
                 "settings": safe,
             }
+            if provenance:
+                meta["origin"] = provenance
             _atomic_bytes(temporary / "meta.json", json.dumps(meta, ensure_ascii=False).encode("utf-8"))
             os.replace(temporary, final)
         except Exception:
@@ -269,6 +289,7 @@ def get(root: Path, image_id: str) -> dict:
         "width": data.get("width"),
         "height": data.get("height"),
         "settings": data.get("settings") if isinstance(data.get("settings"), dict) else {},
+        "origin": data.get("origin") if isinstance(data.get("origin"), dict) else None,
         "original": f"/api/forge/gallery/{image_id}/original",
         "thumb": f"/api/forge/gallery/{image_id}/thumb",
     }

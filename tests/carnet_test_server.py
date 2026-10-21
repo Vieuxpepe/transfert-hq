@@ -94,8 +94,34 @@ def main() -> None:
             pass
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
-    print(json.dumps({"base": f"http://127.0.0.1:{httpd.server_address[1]}", "admin_pin": "424242", "upload_pin": "111111"}), flush=True)
+    if httpd.server_address[1] in (8765, 8766, 8776, 7860):
+        raise SystemExit("refusing a production port")
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    fleet = os.environ.get("HQ_FORGE_FLEET_MOCK")
+    sims = []
+    if fleet:
+        # Simulated generation PCs: real hq_forge_worker clients over loopback HTTP, each with its own mock Forge.
+        sys.path.insert(0, str(SOURCE / "tests"))
+        import hq_forge_fleet
+        import hq_forge_worker
+        from forge_fleet_mocks import MockForge, SimWorker
+
+        hq_forge_worker.POLL_SEC, hq_forge_worker.IDLE_MAX_SEC, hq_forge_worker.PROGRESS_SEC = 0.3, 0.6, 0.4
+        hq_forge_fleet.bind(root)
+        delay = float(os.environ.get("HQ_FORGE_FLEET_DELAY", "1.2"))
+        specs = [
+            ("PC salon", {"gpus": [{"name": "NVIDIA GeForce RTX 4070", "vram_mb": 12282, "source": "nvidia-smi"}], "cpu": "AMD Ryzen 7 7700X", "ram_mb": 32695, "os": "Windows 11"}, {}),
+            ("Portable", {"gpus": [{"name": "Intel(R) Iris(R) Xe Graphics", "vram_mb": None, "source": "cim"}], "cpu": "Intel(R) Core(TM) i7-1165G7", "ram_mb": 16110, "os": "Windows 11"}, {}),
+            ("Atelier", {"gpus": [{"name": "NVIDIA GeForce RTX 3060", "vram_mb": 12288, "source": "nvidia-smi"}], "cpu": None, "ram_mb": None, "os": "Windows 10"}, {"models": ("autre-modele.safetensors [ffff]",)}),
+        ][: max(0, min(3, int(fleet)))]
+        for name, hardware, extra in specs:
+            code = hq_forge_fleet.create_code()["code"]
+            mock = MockForge(delay=delay, **extra)
+            sim = SimWorker(base, code, name, mock, hardware=hardware)
+            sim.start()
+            sims.append(sim)
+    print(json.dumps({"base": base, "admin_pin": "424242", "upload_pin": "111111", "workers": [sim.id for sim in sims]}), flush=True)
     try:
         sys.stdin.read()  # exits when the parent closes stdin
     finally:
