@@ -145,11 +145,14 @@ def main() -> None:
                 page.screenshot(path=str(SHOTS / "forge-desktop-dark.png"), full_page=True)
             page.locator("#forge-prompt").fill("un cercle rouge")
             page.locator("#forge-prompt").press("Tab")
-            landed = page.evaluate("() => document.activeElement.getAttribute('aria-controls') || document.activeElement.id")
-            check(landed in ("forge-help-checkpoint", "forge-checkpoint"), "tab leaves the prompt for the model")
-            if landed != "forge-checkpoint":
+            landed = page.evaluate("() => document.activeElement.id")
+            # t85u: the prompt tools (Dernier prompt, Historique) now sit right after the prompt.
+            check(landed == "forge-last-prompt", "tab leaves the prompt for the prompt tools")
+            for _ in range(8):
+                if page.evaluate("() => document.activeElement.id") == "forge-checkpoint":
+                    break
                 page.keyboard.press("Tab")
-            check(page.evaluate("() => document.activeElement.id") == "forge-checkpoint", "the next field after help is the model")
+            check(page.evaluate("() => document.activeElement.id") == "forge-checkpoint", "keyboard reaches the model right after the prompt tools")
             page.locator("#forge-generate").click()
             page.locator("#forge-results img").wait_for(timeout=10000)
             check(page.locator("#forge-results img").count() >= 1, "result preview")

@@ -65,6 +65,8 @@ def main() -> None:
         def forge_transport(method, url, timeout, body=None):
             path = url.split("://", 1)[-1]
             path = path[path.find("/"):].split("?", 1)[0]
+            if method == "POST" and body is not None and "mock-fail" in (body.decode("utf-8", "replace") if isinstance(body, (bytes, bytearray)) else json.dumps(body)):
+                return 500, b'{"error": "mock failure"}'
             if method == "POST":
                 payload = {"images": [encoded], "info": "{\"seed\": 4, \"all_seeds\": [4]}"}
                 return 200, json.dumps(payload).encode("utf-8")

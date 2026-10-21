@@ -310,6 +310,57 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None) -> dict:
     return {"images": public, "next_cursor": next_cursor}
 
 
+HISTORY_FIELDS = ("prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height",
+                  "steps", "cfg_scale", "seed", "n_iter", "enable_hr", "hr_scale", "hr_upscaler",
+                  "hr_second_pass_steps", "denoising_strength")
+
+
+def history_page(root: Path, *, limit: int = 24, cursor: str | None = None, query: str = "") -> dict:
+    """Prompt history for Forge Studio: the normal gallery, newest first, with its
+    stored settings and an optional case-insensitive search over every retained
+    image. Same rows, retention and deletion as page(); pixels are not read."""
+    limit = 24 if not isinstance(limit, int) else max(1, min(PAGE_MAX, limit))
+    needle = (query or "").strip().casefold()[:200]
+    rows = []
+    base = gallery_dir(root)
+    if base.is_dir() and not base.is_symlink():
+        for child in base.iterdir():
+            if child.is_symlink() or not IMG_RE.fullmatch(child.name):
+                continue
+            try:
+                rows.append(_meta(root, child.name))
+            except GalleryError:
+                continue
+    rows.sort(key=lambda item: (str(item.get("created") or ""), item.get("id") or ""), reverse=True)
+    if needle:
+        def hit(item: dict) -> bool:
+            settings = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+            return any(needle in str(settings.get(key) or "").casefold() for key in ("prompt", "negative_prompt", "checkpoint"))
+        rows = [item for item in rows if hit(item)]
+    total = len(rows)
+    if cursor:
+        if not IMG_RE.fullmatch(cursor):
+            raise GalleryError("bad_id")
+        ids = [item.get("id") for item in rows]
+        if cursor in ids:
+            rows = rows[ids.index(cursor) + 1 :]
+    chosen = rows[:limit]
+    entries = []
+    for item in chosen:
+        image_id = item.get("id")
+        if not isinstance(image_id, str):
+            continue
+        settings = item.get("settings") if isinstance(item.get("settings"), dict) else {}
+        entries.append({
+            "id": image_id,
+            "created": item.get("created"),
+            "thumb": f"/api/forge/gallery/{image_id}/thumb",
+            "settings": {key: settings[key] for key in HISTORY_FIELDS if key in settings},
+        })
+    next_cursor = entries[-1]["id"] if len(rows) > limit and entries else None
+    return {"entries": entries, "next_cursor": next_cursor, "total": total}
+
+
 def file_bytes(root: Path, image_id: str, kind: str) -> tuple[bytes, str, str]:
     folder = _child(root, image_id)
     if kind == "original":

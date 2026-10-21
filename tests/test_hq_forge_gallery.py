@@ -144,5 +144,23 @@ class Gallery(unittest.TestCase):
         self.assertNotIn("Infinity", meta.read_text(encoding="utf-8"))
 
 
+    def test_history_page_searches_every_retained_image_and_respects_deletion(self):
+        ids = []
+        for index in range(30):
+            settings = _settings()
+            settings["prompt"] = ("phare ancien" if index == 0 else "forêt n" + str(index))
+            ids.append(G.store(self.root, _png(64, 64), settings)["id"])
+        first = G.history_page(self.root, limit=5)
+        self.assertEqual(len(first["entries"]), 5)
+        self.assertEqual(first["total"], 30)
+        self.assertIn("prompt", first["entries"][0]["settings"])
+        found = G.history_page(self.root, limit=5, query="PHARE")
+        self.assertEqual([item["id"] for item in found["entries"]], [ids[0]])
+        self.assertEqual(found["total"], 1)
+        self.assertEqual(G.history_page(self.root, query="zzz-absent")["entries"], [])
+        G.delete(self.root, ids[0])
+        self.assertEqual(G.history_page(self.root, query="phare")["entries"], [])
+        self.assertNotIn("prompt", json.dumps(G.page(self.root, limit=10)))
+
 if __name__ == "__main__":
     unittest.main()

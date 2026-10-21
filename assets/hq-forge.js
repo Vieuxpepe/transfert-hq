@@ -33,6 +33,7 @@
   let pollTimer = 0;
   let idleTimer = 0;
   let submitGuard = false;
+  let justSubmitted = false;
   let cursor = null;
   let openFrom = null;
   let currentDetail = null;
@@ -314,6 +315,7 @@
     if (reset) {
       cursor = null;
       gallery.replaceChildren();
+      historyLoaded = false;
     }
     const path = "/api/forge/gallery?limit=24" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
     const page = await api(path);
@@ -357,7 +359,14 @@
     try {
       const payload = await api("/api/forge/jobs/" + jobId);
       showJob(payload.job);
-      if (payload.job.state === "completed" && payload.job.destination !== "private") loadGallery(true).catch(() => {});
+      if (payload.job.state === "completed" && payload.job.destination !== "private") {
+        loadGallery(true).catch(() => {});
+        if (justSubmitted && window.matchMedia && window.matchMedia("(max-width: 899px)").matches) {
+          const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+          $("forge-normal-results").scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+        }
+      }
+      if (payload.job.state !== "queued" && !["starting", "generating", "saving"].includes(payload.job.state)) justSubmitted = false;
     } catch (error) {
       progressLabel.textContent = error.message || "Le suivi a été interrompu. Le travail peut continuer.";
     }
@@ -567,20 +576,8 @@
   viewer.addEventListener("close", () => { if (openFrom) openFrom.focus(); });
   reuseBtn.addEventListener("click", () => {
     const settings = currentDetail && currentDetail.settings || {};
-    if (settings.prompt) promptEl.value = settings.prompt;
-    negativeEl.value = settings.negative_prompt || "";
-    if (settings.checkpoint) checkpointEl.value = settings.checkpoint;
-    if (settings.sampler_name) samplerEl.value = settings.sampler_name;
-    if (settings.scheduler) schedulerEl.value = settings.scheduler;
-    if (settings.width) $("forge-width").value = settings.width;
-    if (settings.height) $("forge-height").value = settings.height;
-    if (settings.steps) $("forge-steps").value = settings.steps;
-    if (settings.cfg_scale) $("forge-cfg").value = settings.cfg_scale;
-    if (settings.seed != null) applySeed(settings.seed);
-    if (settings.n_iter) $("forge-iter").value = String(settings.n_iter);
-    applyHires(settings);
     closeViewer();
-    promptEl.focus();
+    requestRestore(settings, "all", "image de la galerie");
   });
   deleteBtn.addEventListener("click", async () => {
     if (!currentDetail || !window.confirm("Supprimer cette copie HQ ? Le fichier de Forge, s'il existe, n'est pas touché.")) return;
@@ -1191,6 +1188,428 @@
     refreshPresetState();
   }
 
+
+  /* ---- Prompt reuse and history (t85u) ----
+     History is the HQ gallery itself (normal destination only), read through the
+     existing authenticated routes. Nothing about prompts is written to
+     localStorage or sessionStorage; the cache below lives in memory and is
+     dropped when Forge Studio is hidden. Private prompts never enter it. */
+  const lastBtn = $("forge-last-prompt");
+  const historyBtn = $("forge-history-open");
+  const historyDlg = $("forge-history");
+  const historyList = $("forge-history-list");
+  const historySearch = $("forge-history-search");
+  const historyState = $("forge-history-state");
+  const historyMore = $("forge-history-more");
+  const historyNote = $("forge-history-note");
+  const restoreBox = $("forge-restore-confirm");
+  const countEl = $("forge-prompt-count");
+  const PRIVATE_HISTORY = "Dernier prompt et Historique sont désactivés en génération privée : les prompts du coffre ne sont jamais listés ni gardés hors du coffre.";
+  let historyItems = [];
+  let historyCursor = null;
+  let historyLoaded = false;
+  let historyFrom = null;
+  let pendingRestore = null;
+  let lastApplied = { prompt: "", negative: "" };
+  let lastSubmitted = null;
+
+  function syncCount() {
+    if (countEl) countEl.textContent = promptEl.value.length + " / " + (promptEl.maxLength > 0 ? promptEl.maxLength : 2000);
+  }
+
+  function pickOption(select, value) {
+    if (value == null || value === "") return true;
+    const text = String(value);
+    if (![...select.options].some((item) => item.value === text)) return false;
+    select.value = text;
+    return true;
+  }
+
+  function clampInto(id, value) {
+    const el = $(id);
+    const number = Number(value);
+    if (!el || value == null || value === "" || !Number.isFinite(number)) return;
+    const min = el.min === "" ? -Infinity : Number(el.min);
+    const max = el.max === "" ? Infinity : Number(el.max);
+    el.value = String(Math.min(max, Math.max(min, number)));
+  }
+
+  function settled() {
+    syncRanges();
+    syncHiresNote();
+    describeChoices(false);
+    if (progressBox.hidden) syncActions(false);
+    refreshPresetState();
+    syncCount();
+  }
+
+  /* Technical settings only; the prompt text is left alone. Returns what this
+     HQ cannot offer any more, so the caller can say so instead of guessing. */
+  function applyParameters(settings) {
+    const missing = [];
+    if (settings.checkpoint && !pickOption(checkpointEl, settings.checkpoint)) missing.push("modèle « " + settings.checkpoint + " »");
+    if (settings.sampler_name && !pickOption(samplerEl, settings.sampler_name)) missing.push("échantillonneur « " + settings.sampler_name + " »");
+    if (settings.scheduler && !pickOption(schedulerEl, settings.scheduler)) missing.push("planificateur « " + settings.scheduler + " »");
+    clampInto("forge-width", settings.width);
+    clampInto("forge-height", settings.height);
+    clampInto("forge-steps", settings.steps);
+    clampInto("forge-cfg", settings.cfg_scale);
+    if (settings.seed != null) applySeed(settings.seed);
+    if (settings.n_iter) pickOption($("forge-iter"), String(settings.n_iter));
+    applyHires(settings);
+    if (settings.enable_hr && settings.hr_upscaler && !pickOption($("forge-hr-upscaler"), settings.hr_upscaler)) missing.push("agrandisseur « " + settings.hr_upscaler + " »");
+    settled();
+    return missing;
+  }
+
+  function applyPromptText(settings) {
+    promptEl.value = settings.prompt || "";
+    negativeEl.value = settings.negative_prompt || "";
+    if (negativeEl.value) $("forge-negative-fold").open = true;
+    lastApplied = { prompt: promptEl.value, negative: negativeEl.value };
+    settled();
+  }
+
+  function unsaved(next) {
+    const prompt = promptEl.value;
+    const negative = negativeEl.value;
+    if (!prompt.trim() && !negative.trim()) return false;
+    if (prompt === (next.prompt || "") && negative === (next.negative_prompt || "")) return false;
+    return prompt !== lastApplied.prompt || negative !== lastApplied.negative;
+  }
+
+  function say(text) {
+    if (historyNote) historyNote.textContent = text;
+  }
+
+  function finishRestore(settings, mode, label) {
+    let missing = [];
+    if (mode !== "params") applyPromptText(settings);
+    if (mode !== "prompt") missing = applyParameters(settings);
+    const what = mode === "params" ? "Paramètres repris" : mode === "prompt" ? "Prompt repris" : "Prompt et paramètres repris";
+    say(what + (label ? " (" + label + ")" : "") + ". Rien n'est lancé : appuyez sur Générer quand vous êtes prêt." + (missing.length ? " Indisponible ici, réglage actuel gardé : " + missing.join(", ") + "." : ""));
+    promptEl.focus();
+    try { promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length); } catch (_) { /* not a text field */ }
+  }
+
+  function requestRestore(settings, mode, label) {
+    if (!settings) return;
+    pendingRestore = null;
+    restoreBox.hidden = true;
+    if (mode !== "params" && unsaved(settings)) {
+      pendingRestore = { settings: settings, mode: mode, label: label };
+      restoreBox.hidden = false;
+      $("forge-restore-replace").focus();
+      return;
+    }
+    finishRestore(settings, mode, label);
+  }
+
+  $("forge-restore-replace").addEventListener("click", () => {
+    const next = pendingRestore;
+    pendingRestore = null;
+    restoreBox.hidden = true;
+    if (next) finishRestore(next.settings, next.mode, next.label);
+  });
+  $("forge-restore-keep").addEventListener("click", () => {
+    pendingRestore = null;
+    restoreBox.hidden = true;
+    say("Votre texte est gardé.");
+    promptEl.focus();
+  });
+
+  let historyTotal = 0;
+  let historyQuery = "";
+  let historyTicket = 0;
+
+  /* One authenticated listing call per page. The server searches every retained
+     gallery image (view=history&q=…) so a match on an old page is still found. */
+  async function loadHistory(reset) {
+    const ticket = ++historyTicket;
+    const query = historySearch ? historySearch.value.trim().slice(0, 200) : "";
+    if (reset) {
+      historyItems = [];
+      historyCursor = null;
+    }
+    const page = await api("/api/forge/gallery?view=history&limit=24" + (query ? "&q=" + encodeURIComponent(query) : "") + (historyCursor ? "&cursor=" + encodeURIComponent(historyCursor) : ""));
+    if (ticket !== historyTicket) return false;
+    const seen = new Set(historyItems.map((item) => (item.settings.prompt || "") + "\u0000" + (item.settings.negative_prompt || "")));
+    (page.entries || []).forEach((entry) => {
+      const settings = entry.settings || {};
+      if (!settings.prompt) return;
+      const signature = settings.prompt + "\u0000" + (settings.negative_prompt || "");
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      historyItems.push({ id: entry.id, created: entry.created, thumb: entry.thumb, settings: settings });
+    });
+    historyCursor = page.next_cursor || null;
+    historyTotal = Number(page.total) || 0;
+    historyQuery = query;
+    historyLoaded = true;
+    return true;
+  }
+
+  function when(stamp) {
+    const date = new Date(stamp || "");
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("fr-CA", { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  function renderHistory() {
+    const query = historyQuery;
+    const shown = historyItems;
+    historyList.replaceChildren();
+    shown.forEach((item) => {
+      const s = item.settings;
+      const li = document.createElement("li");
+      li.className = "forge-history-item";
+      const img = document.createElement("img");
+      img.src = item.thumb;
+      img.alt = "";
+      img.loading = "lazy";
+      const body = document.createElement("div");
+      const text = document.createElement("p");
+      text.className = "forge-history-text";
+      text.textContent = s.prompt;
+      const meta = document.createElement("p");
+      meta.className = "forge-history-meta";
+      meta.textContent = [when(item.created), s.checkpoint ? String(s.checkpoint).replace(/\s*\[[^\]]*\]$/, "") : "", s.width && s.height ? s.width + "×" + s.height : "", s.steps ? s.steps + " pas" : "", s.negative_prompt ? "avec négatif" : ""].filter(Boolean).join(" · ");
+      body.append(text, meta);
+      const actions = document.createElement("div");
+      actions.className = "forge-actions";
+      const usePrompt = document.createElement("button");
+      usePrompt.type = "button";
+      usePrompt.textContent = "Réutiliser le prompt";
+      usePrompt.setAttribute("aria-label", "Réutiliser le prompt : " + String(s.prompt).slice(0, 80));
+      usePrompt.addEventListener("click", () => { closeHistory(false); requestRestore(s, "prompt", "historique"); });
+      const useParams = document.createElement("button");
+      useParams.type = "button";
+      useParams.className = "secondary";
+      useParams.textContent = "Réutiliser les paramètres";
+      useParams.setAttribute("aria-label", "Réutiliser les paramètres de : " + String(s.prompt).slice(0, 80));
+      useParams.addEventListener("click", () => { closeHistory(false); requestRestore(s, "params", "historique"); });
+      actions.append(usePrompt, useParams);
+      li.append(img, body, actions);
+      historyList.appendChild(li);
+    });
+    historyMore.hidden = !historyCursor;
+    if (!shown.length) historyState.textContent = query ? "Aucun prompt ne contient « " + query + " »." : "Aucun prompt dans la galerie HQ pour l'instant.";
+    else historyState.textContent = (query ? historyTotal + (historyTotal > 1 ? " images correspondent" : " image correspond") + " dans toute la galerie." : shown.length + (shown.length > 1 ? " prompts" : " prompt") + ", du plus récent au plus ancien.") + (historyCursor ? " Plus d'entrées disponibles." : "");
+  }
+
+  function historyNodes() {
+    return [...historyDlg.querySelectorAll("button, input, a")].filter((node) => !node.disabled && node.offsetParent !== null);
+  }
+
+  async function openHistory(trigger) {
+    if (destination() === "private") {
+      say(PRIVATE_HISTORY);
+      return;
+    }
+    // Safari does not focus a clicked button, so remember the trigger itself.
+    historyFrom = trigger || document.activeElement;
+    historyDlg.showModal();
+    historySearch.focus();
+    if (historyLoaded && historyQuery === historySearch.value.trim().slice(0, 200)) {
+      renderHistory();
+      return;
+    }
+    historyState.textContent = "Chargement de l'historique…";
+    try {
+      await loadHistory(true);
+      renderHistory();
+    } catch (error) {
+      historyList.replaceChildren();
+      historyMore.hidden = true;
+      historyState.textContent = error.message || "L'historique n'a pas répondu.";
+    }
+  }
+
+  function closeHistory(refocus) {
+    if (historyDlg.open) historyDlg.close();
+    if (refocus !== false && historyFrom && historyFrom.focus) historyFrom.focus();
+    historyFrom = null;
+  }
+
+  historyBtn.addEventListener("click", () => { openHistory(historyBtn); });
+  $("forge-history-close").addEventListener("click", () => closeHistory());
+  historyDlg.addEventListener("cancel", (event) => { event.preventDefault(); closeHistory(); });
+  historyDlg.addEventListener("click", (event) => { if (event.target === historyDlg) closeHistory(); });
+  historyDlg.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    const nodes = historyNodes();
+    if (!nodes.length) return;
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  let searchTimer = 0;
+  historySearch.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(async () => {
+      historyState.textContent = "Recherche…";
+      try {
+        if (await loadHistory(true)) renderHistory();
+      } catch (error) {
+        historyList.replaceChildren();
+        historyMore.hidden = true;
+        historyState.textContent = error.message || "La recherche n'a pas répondu.";
+      }
+    }, 250);
+  });
+  historyMore.addEventListener("click", async () => {
+    try {
+      await loadHistory(false);
+      renderHistory();
+    } catch (error) {
+      historyState.textContent = error.message || "La suite n'a pas répondu.";
+    }
+  });
+
+  lastBtn.addEventListener("click", async () => {
+    if (destination() === "private") {
+      say(PRIVATE_HISTORY);
+      return;
+    }
+    if (lastSubmitted) {
+      requestRestore(lastSubmitted, "prompt", "dernier envoi");
+      return;
+    }
+    try {
+      // HQ's own job records: every accepted submission, including failed,
+      // cancelled or imageless ones. Private jobs come back without settings
+      // and are skipped here as well.
+      const payload = await api("/api/forge/jobs");
+      const job = (payload.jobs || []).find((item) => item.destination === "normal" && item.settings && typeof item.settings.prompt === "string" && item.settings.prompt);
+      if (job) {
+        requestRestore(job.settings, "prompt", "dernier envoi");
+        return;
+      }
+      if (!historyLoaded || historyQuery) {
+        if (historySearch) historySearch.value = "";
+        await loadHistory(true);
+      }
+      const newest = historyItems[0];
+      if (!newest) {
+        say("Aucun prompt précédent.");
+        return;
+      }
+      requestRestore(newest.settings, "prompt", "dernière image de la galerie");
+    } catch (error) {
+      say(error.message || "HQ n'a pas répondu.");
+    }
+  });
+
+  function syncHistoryAvailability() {
+    const privateMode = destination() === "private";
+    lastBtn.disabled = privateMode;
+    historyBtn.disabled = privateMode;
+    lastBtn.title = privateMode ? PRIVATE_HISTORY : "";
+    historyBtn.title = privateMode ? PRIVATE_HISTORY : "";
+    if (privateMode) {
+      if (historyDlg.open) closeHistory(false);
+      say(PRIVATE_HISTORY);
+    } else if (historyNote && historyNote.textContent === PRIVATE_HISTORY) {
+      say("");
+    }
+  }
+
+  document.querySelectorAll('input[name="forge-destination"]').forEach((input) => {
+    input.addEventListener("change", syncHistoryAvailability);
+  });
+  form.addEventListener("submit", () => {
+    if (destination() === "private" || submitGuard || generateBtn.disabled) return;
+    const snapshot = settingsFromForm();
+    lastSubmitted = snapshot;
+    lastApplied = { prompt: snapshot.prompt, negative: snapshot.negative_prompt };
+    justSubmitted = true;
+  }, true);
+  promptEl.addEventListener("input", syncCount);
+
+  /* Layout preference: a presentation choice only, so it may live in localStorage. */
+  const layoutEl = $("forge-layout");
+  function applyLayout(value) {
+    const chosen = ["auto", "compact", "expanded"].includes(value) ? value : "auto";
+    studio.dataset.layout = chosen;
+    layoutEl.value = chosen;
+  }
+  try { applyLayout(localStorage.getItem("hqForgeLayout")); } catch (_) { applyLayout("auto"); }
+  layoutEl.addEventListener("change", () => {
+    applyLayout(layoutEl.value);
+    try { localStorage.setItem("hqForgeLayout", studio.dataset.layout); } catch (_) { /* storage off */ }
+  });
+
+  /* On-screen keyboard: let the action bar scroll with the page so it never
+     sits on top of the field being typed in. */
+  if (window.visualViewport) {
+    const viewport = window.visualViewport;
+    const syncKeyboard = () => {
+      const active = document.activeElement;
+      const typing = active && /^(TEXTAREA|INPUT|SELECT)$/.test(active.tagName) && studio.contains(active);
+      studio.classList.toggle("forge-kb", !!typing && window.innerHeight - viewport.height > 140);
+    };
+    viewport.addEventListener("resize", syncKeyboard);
+    studio.addEventListener("focusout", () => setTimeout(syncKeyboard, 50));
+  }
+
+  const presetFold = $("forge-presets");
+  if (presetFold && window.matchMedia && window.matchMedia("(max-width: 599px)").matches) presetFold.open = false;
+  const presetHint = $("forge-preset-current");
+  if (presetHint && presetList) {
+    const syncHint = () => {
+      const chosen = presetList.selectedOptions && presetList.selectedOptions[0];
+      presetHint.textContent = chosen && chosen.value ? chosen.textContent : "";
+    };
+    presetList.addEventListener("change", syncHint);
+    new MutationObserver(syncHint).observe(presetList, { childList: true });
+  }
+
+  const actionbar = $("forge-actionbar");
+  if (actionbar && window.ResizeObserver) {
+    new ResizeObserver(() => {
+      document.documentElement.style.setProperty("--forge-bar-h", Math.ceil(actionbar.getBoundingClientRect().height) + "px");
+    }).observe(actionbar);
+  }
+
+  /* Capturer: the floating HQ launcher is hidden in Forge Studio (CSS), so this
+     header button calls the very same capture open() through window.hqCapture.
+     Wired once here; view switches add no listener. The capture module boots
+     asynchronously (admins only), so the button appears once its launcher exists. */
+  const captureBtn = $("forge-capture");
+  if (captureBtn) {
+    const linkCapture = () => {
+      const fab = document.getElementById("hq-capture-fab");
+      if (!fab || !window.hqCapture || typeof window.hqCapture.open !== "function") return false;
+      captureBtn.hidden = false;
+      const mirror = () => captureBtn.setAttribute("aria-expanded", fab.getAttribute("aria-expanded") === "true" ? "true" : "false");
+      mirror();
+      if (window.MutationObserver) new MutationObserver(mirror).observe(fab, { attributes: true, attributeFilter: ["aria-expanded"] });
+      return true;
+    };
+    captureBtn.addEventListener("click", () => {
+      if (!window.hqCapture || typeof window.hqCapture.open !== "function") return;
+      // Safari does not focus a clicked button; focus it so closing the sheet returns here, not to the hidden launcher.
+      if (document.activeElement !== captureBtn) captureBtn.focus({ preventScroll: true });
+      window.hqCapture.open();
+    });
+    if (!linkCapture()) {
+      // hqCapture is set just after its launcher is appended to <body>: poll briefly, then give up (non-admins never get it).
+      let tries = 0;
+      const timer = setInterval(() => {
+        if (linkCapture() || ++tries > 120) clearInterval(timer);
+      }, 250);
+    }
+  }
+
+  syncCount();
+  syncHistoryAvailability();
+
   syncSeedMode();
   syncRanges();
 
@@ -1198,6 +1617,9 @@
     refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});
   };
   window.hqForgeHide = function () {
+    if (historyDlg && historyDlg.open) historyDlg.close();
+    historyItems = [];
+    historyLoaded = false;
     clearTimeout(pollTimer);
     clearTimeout(idleTimer);
     if (viewer.open) viewer.close();

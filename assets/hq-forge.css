@@ -25,11 +25,11 @@ body.theme-oled #forge-studio, body.theme-midnight #forge-studio{--forge-accent:
 .forge-status[data-state="offline"],.forge-status[data-state="error"],.forge-status[data-state="api_disabled"]{border-color:color-mix(in srgb,var(--danger) 55%,var(--line))}
 .forge-status[data-state="ready"]{border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
 .forge-status[data-state="busy"]{border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
-#forge-form{display:flex;flex-direction:column;gap:12px}
+#forge-form{display:flex;flex-direction:column;gap:10px}
 .forge-choices{margin:0;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
 .forge-choices legend{padding:0 6px;font-weight:800}
-#forge-form textarea,#forge-form input,#forge-form select{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:var(--tap-min)}
-#forge-form select,#forge-form option{color:var(--text);background:var(--panel)}
+#forge-studio :is(#forge-form,.forge-side,#forge-history) :is(textarea,select,input:not([type="radio"]):not([type="checkbox"]):not([type="file"])){width:100%;font:inherit;font-size:16px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-height:var(--tap-min)}
+#forge-studio :is(#forge-form,.forge-side,#forge-history) :is(select,option){color:var(--text);background:var(--panel)}
 @media (prefers-color-scheme: dark){#forge-studio select{color-scheme:dark}}
 @media (prefers-color-scheme: light){#forge-studio select{color-scheme:light}}
 body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{color-scheme:dark}
@@ -55,7 +55,6 @@ body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{co
 .forge-grid-fields{display:grid;grid-template-columns:1fr;gap:10px}
 @media (min-width:720px){.forge-grid-fields{grid-template-columns:1fr 1fr}}
 .forge-actions{display:flex;flex-wrap:wrap;gap:8px}
-#forge-form .forge-actions{position:sticky;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px));z-index:5;padding:8px 0;background:color-mix(in srgb,var(--bg) 92%,transparent)}
 #forge-generate,#forge-generate-private,#forge-reuse,#forge-download,#forge-vault-create,#forge-vault-open,#forge-vault-download,#forge-vault-reuse{background:var(--forge-accent);color:var(--forge-accent-text);border:0;border-radius:10px;min-height:var(--tap-min);padding:10px 16px;font:inherit;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
 #forge-generate:disabled,#forge-generate-private:disabled,#forge-cancel:disabled,#forge-preset-confirm:disabled,#forge-preset-update-confirm:disabled{opacity:.55}
 .forge-note{margin:0;color:var(--muted);font-size:var(--text-sm);max-width:62ch}
@@ -93,3 +92,150 @@ body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{co
 .forge-privacy[hidden],.forge-privacy [hidden]{display:none}
 .forge-privacy p{margin:0}
 .forge-privacy-ack{display:flex;align-items:flex-start;gap:8px;min-height:var(--tap-min)}
+
+/* ---- Responsive workspace (t85u) ----
+   Mobile first: one column, ordered prompt → réglages → action bar → résultat.
+   The studio is a size container, so the layout follows the space HQ gives it
+   (the desktop side nav eats 164px), not the device type. */
+#forge-studio{container-type:inline-size;container-name:forge;gap:14px}
+.forge-shell > *,.forge-side > *,#forge-studio > *{min-width:0}
+.forge-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 12px}
+.forge-head > .forge-kicker{grid-column:1;grid-row:1}
+#forge-studio .forge-head > h1{grid-column:1;grid-row:2;margin:0}
+.forge-head > .forge-head-tools{grid-column:2;grid-row:1 / 3;align-self:end;display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px}
+.forge-capture{min-height:var(--tap-min,44px);min-width:44px;padding:6px 14px;border:0;border-radius:10px;background:var(--accent);color:#04110c;font:inherit;font-size:var(--text-sm);font-weight:700;cursor:pointer}
+@media (prefers-color-scheme: light){.forge-capture{color:#ffffff}}
+.forge-capture:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.forge-head > .forge-status{grid-column:1 / -1;grid-row:3;margin-top:6px}
+@media (max-width:420px){.forge-layout-pick > label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
+/* Phone-width studio: Disposition + Capturer get their own row under the title instead of squeezing it. */
+@container forge (max-width:540px){.forge-head > .forge-head-tools{grid-column:1 / -1;grid-row:3;justify-content:flex-start}.forge-head > .forge-status{grid-row:4}}
+@media (max-height:500px){
+  .forge-kicker{display:none}
+  #forge-studio .forge-head > h1{font-size:1.4rem}
+  .forge-head > .forge-status{padding:6px 10px;font-size:var(--text-sm)}
+}
+.forge-layout-pick{display:flex;align-items:center;gap:8px;font-size:var(--text-sm);font-weight:700}
+.forge-layout-pick select{font:inherit;font-size:16px;min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}
+.forge-shell,.forge-side{display:flex;flex-direction:column;gap:14px}
+.forge-quick,.forge-advanced{display:flex;flex-direction:column;gap:10px}
+.forge-quick{padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
+.forge-quick h2,.forge-advanced h2{margin:0;font-size:1.05rem}
+.forge-advanced{gap:8px}
+/* Prompt tools */
+.forge-prompt-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.forge-tool{min-height:var(--tap-min);padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--text);font:inherit;font-weight:700}
+.forge-tool:disabled{opacity:.55}
+.forge-count{margin-left:auto;color:var(--muted);font-size:var(--text-xs);font-variant-numeric:tabular-nums}
+#forge-history-note:empty{display:none}
+#forge-prompt{min-height:6.5rem}
+.forge-confirm{border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
+.forge-confirm p{margin:0;font-weight:600}
+/* Action bar: sticky above the bottom nav and the home indicator. It sits in
+   the flow after every control, so it only overlays content that the user can
+   still scroll into view; focus targets get scroll padding below. */
+.forge-actionbar{position:sticky;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px));z-index:6;display:flex;flex-direction:column;gap:6px;
+  margin-inline:-4px;padding:8px 4px calc(8px);background:color-mix(in srgb,var(--bg) 94%,transparent);border-top:1px solid var(--line);
+  -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.forge-actionbar .forge-actions{flex-wrap:nowrap}
+.forge-actionbar .forge-actions > button{flex:1 1 0;min-height:48px}
+#forge-cancel{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;font:inherit;font-weight:700;padding:10px 16px}
+#forge-generate-reason:empty{display:none}
+#forge-studio.forge-kb .forge-actionbar{position:static}
+html:has(body[data-view="forge"]){scroll-padding-bottom:calc(var(--nav-h) + 150px + env(safe-area-inset-bottom,0px))}
+/* Presets: one primary row, the rest as compact chips. */
+.forge-presets > summary{display:flex;align-items:center;gap:10px;min-height:var(--tap-min);cursor:pointer;list-style:none}
+.forge-presets > summary::-webkit-details-marker{display:none}
+.forge-presets > summary::before{content:"▸";color:var(--muted);transition:transform .15s}
+.forge-presets[open] > summary::before{transform:rotate(90deg)}
+.forge-summary-hint{margin-left:auto;color:var(--muted);font-size:var(--text-sm);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.forge-presets-body{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.forge-preset-main > button{flex:1 1 0;min-height:var(--tap-min)}
+.forge-preset-more{gap:6px}
+.forge-preset-more > button,.forge-preset-more > .forge-file{min-height:var(--tap-min);padding:6px 12px;font-size:var(--text-sm);border-radius:999px}
+/* Images fit the screen */
+#forge-results.forge-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr))}
+#forge-viewer img,#forge-vault-viewer img{max-height:min(70vh,70dvh)}
+@media (max-width:599px){
+  #forge-viewer,#forge-vault-viewer{max-width:100vw;width:100vw;max-height:100dvh;height:100dvh;margin:0;border-radius:0;
+    padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+  #forge-viewer img,#forge-vault-viewer img{max-height:62dvh}
+  .forge-grid{grid-template-columns:repeat(auto-fill,minmax(104px,1fr))}
+  #forge-studio h1{font-size:1.6rem;margin:0 0 4px}
+  .forge-kicker{display:none}
+}
+@media (min-width:900px){
+  body[data-view="forge"] .wrap{max-width:1320px;width:100%}
+  .forge-actionbar{bottom:0;padding-bottom:max(8px,env(safe-area-inset-bottom))}
+  html:has(body[data-view="forge"]){scroll-padding-bottom:150px}
+}
+/* History: bottom sheet on narrow screens, side drawer on wide ones. */
+#forge-history{border:1px solid var(--line);background:var(--panel);color:var(--text);padding:0;
+  position:fixed;inset:auto 0 0 0;margin:0;width:100%;max-width:100%;max-height:85dvh;border-radius:18px 18px 0 0}
+#forge-history::backdrop{background:color-mix(in srgb,var(--bg) 35%,#000)}
+.forge-sheet-inner{display:flex;flex-direction:column;gap:10px;padding:14px max(14px,env(safe-area-inset-right)) max(14px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left))}
+#forge-history .forge-viewer-bar{position:sticky;top:0;background:var(--panel);z-index:1;padding-top:2px;margin:0}
+#forge-history h2{margin:0;font-size:1.1rem}
+.forge-history-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.forge-history-item{display:grid;grid-template-columns:64px minmax(0,1fr);gap:10px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.forge-history-item img{width:64px;height:64px;object-fit:cover;border-radius:8px;background:var(--panel)}
+.forge-history-text{margin:0;font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.forge-history-meta{margin:2px 0 0;color:var(--muted);font-size:var(--text-xs)}
+.forge-history-item .forge-actions{grid-column:1 / -1}
+.forge-history-item .forge-actions button{flex:1 1 9rem;min-height:var(--tap-min)}
+#forge-history-state:empty{display:none}
+@media (min-width:900px){
+  #forge-history{inset:0 0 0 auto;height:100dvh;max-height:100dvh;width:min(460px,92vw);border-radius:18px 0 0 18px}
+}
+@media (prefers-reduced-motion: no-preference){
+  #forge-history[open]{animation:forge-sheet-in .18s ease-out}
+  @keyframes forge-sheet-in{from{transform:translateY(24px);opacity:.6}to{transform:none;opacity:1}}
+}
+@media (prefers-reduced-motion: reduce){#forge-history *,#forge-history{animation:none;transition:none}}
+/* Tablet / compact: a little more air, paired fields. */
+@container forge (min-width:560px){
+  .forge-quick{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;align-items:start}
+  .forge-quick > h2,.forge-quick > .forge-ratios,.forge-quick > #forge-choice-note{grid-column:1 / -1}
+  .forge-grid-fields{grid-template-columns:1fr 1fr}
+}
+/* Two columns: main work on the left, settings on the right. The DOM keeps
+   the phone order (prompt, réglages, Générer, résultat), so keyboard order
+   matches what is seen in both layouts. */
+@container forge (min-width:760px){
+  #forge-studio:not([data-layout="compact"]) .forge-shell{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,1fr);grid-template-rows:repeat(7,auto) 1fr;gap:14px 18px;align-items:start}
+  #forge-studio:not([data-layout="compact"]) .forge-shell > .forge-m{grid-column:1}
+  #forge-studio:not([data-layout="compact"]) .forge-side{grid-column:2;grid-row:1 / -1;position:sticky;top:12px;max-height:calc(100dvh - 24px);overflow:auto;overscroll-behavior:contain;padding:0 4px 4px 0}
+  #forge-studio:not([data-layout="compact"]) .forge-quick{display:flex}
+  #forge-studio:not([data-layout="compact"]) .forge-grid-fields{grid-template-columns:1fr}
+}
+@container forge (min-width:1040px){
+  #forge-studio:not([data-layout="compact"]) .forge-grid-fields{grid-template-columns:1fr 1fr}
+}
+@container forge (min-width:600px){
+  #forge-studio[data-layout="expanded"] .forge-shell{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(260px,1fr);grid-template-rows:repeat(7,auto) 1fr;gap:14px 16px;align-items:start}
+  #forge-studio[data-layout="expanded"] .forge-shell > .forge-m{grid-column:1}
+  #forge-studio[data-layout="expanded"] .forge-side{grid-column:2;grid-row:1 / -1}
+  #forge-studio[data-layout="expanded"] .forge-quick{display:flex}
+  #forge-studio[data-layout="expanded"] .forge-grid-fields{grid-template-columns:1fr}
+}
+/* The HQ quick-capture launcher lives in the Forge Studio header (#forge-capture,
+   same open() handler), so the floating copy is hidden only in this view and
+   never covers Forge controls, the sticky bar, the bottom nav or History. */
+body[data-view="forge"] .hq-capture-fab{display:none}
+/* Forge accent for the new primary actions; neutral chips for secondary preset actions. */
+#forge-restore-replace,#forge-preset-load,#forge-preset-save,.forge-history-item .forge-actions button:not(.secondary){background:var(--forge-accent);color:var(--forge-accent-text);border:0;border-radius:10px;font:inherit;font-weight:700}
+.forge-preset-more > button{background:var(--panel);color:var(--text);border:1px solid var(--line);font:inherit;font-weight:700}
+.forge-preset-more > button:disabled{opacity:.5}
+/* Short screens (phone landscape): one slim row. The reason line shrinks
+   beside the buttons instead of stacking; targets stay at 44px. */
+@media (max-height:500px){
+  .forge-actionbar{flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:4px max(4px,env(safe-area-inset-right,0px)) 4px max(4px,env(safe-area-inset-left,0px))}
+  .forge-actionbar #forge-generate-reason{flex:1 1 14rem;order:2;font-size:var(--text-xs);line-height:1.3}
+  .forge-actionbar .forge-actions{flex:0 1 26rem;order:1;margin-left:auto}
+  .forge-actionbar .forge-actions > button{min-height:44px;padding-block:4px}
+  .forge-actionbar .forge-progress{flex:1 1 100%;order:3;flex-direction:row;align-items:center;gap:8px;font-size:var(--text-xs)}
+  .forge-actionbar .forge-progress progress{flex:1 1 auto}
+}
+@media (max-height:500px) and (max-width:899px){
+  body[data-view="forge"] .forge-actionbar{bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px))}
+}
