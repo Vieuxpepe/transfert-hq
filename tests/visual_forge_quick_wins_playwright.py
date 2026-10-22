@@ -154,7 +154,41 @@ def section_draft(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"draft": section_draft}
+def generate_once(run: Run, page, prompt: str) -> None:
+    before = page.locator("#forge-gallery .forge-card").count()
+    page.locator("#forge-prompt").fill(prompt)
+    page.locator("#forge-generate").click()
+    if not run.until(page, "(n) => document.querySelectorAll('#forge-gallery .forge-card').length > n", 20, before):
+        raise SystemExit("FAIL: generation did not finish")
+    run.until(page, "() => !document.querySelector('#forge-generate').disabled", 15)
+
+
+def section_eta(run: Run) -> None:
+    print("F4 ETA and usual duration")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    run.check(page.locator("#forge-usual-duration").is_hidden(), "no usual duration before three samples")
+    page.locator("#forge-prompt").fill("premier essai")
+    page.locator("#forge-generate").click()
+    run.check(run.until(page, "() => /\u2248 25 s restantes/.test(document.querySelector('#forge-progress-label').textContent)", 10),
+              "the progress line shows ≈ 25 s restantes from Forge's eta_relative")
+    run.shot(page, "eta", "#forge-actionbar")
+    run.until(page, "() => !document.querySelector('#forge-generate').disabled", 15)
+    run.check("restantes" not in page.locator("#forge-progress-label").inner_text(), "the ETA disappears at the end")
+    generate_once(run, page, "deuxieme essai")
+    run.check(page.locator("#forge-usual-duration").is_hidden(), "still hidden with two samples")
+    generate_once(run, page, "troisieme essai")
+    run.check(run.until(page, "() => { const n = document.querySelector('#forge-usual-duration'); return !n.hidden && /^Dur\u00e9e habituelle : ~\\d+ s$/.test(n.textContent); }", 5),
+              "Durée habituelle : ~N s appears after three samples")
+    run.shot(page, "usual-duration", "#forge-actionbar")
+    page.locator("#forge-steps").fill("13")
+    page.locator("#forge-steps").dispatch_event("change")
+    run.check(run.until(page, "() => document.querySelector('#forge-usual-duration').hidden", 5), "another bucket (steps) hides it again")
+    ctx.close()
+
+
+SECTIONS = {"draft": section_draft, "eta": section_eta}
 
 
 def main() -> None:
@@ -179,7 +213,7 @@ def main() -> None:
     print(f"PASS {total} checks ({browser_name})")
 
 
-EXTRA_ENV: dict[str, dict] = {}
+EXTRA_ENV: dict[str, dict] = {"eta": {"HQ_FORGE_MOCK_DELAY": "4"}}
 
 if __name__ == "__main__":
     main()

@@ -328,13 +328,50 @@
     moreBtn.hidden = !cursor;
   }
 
+  /* F4: Forge's own estimate, already sanitized by HQ (finite, 0 < s <= 3600). */
+  function etaCopy(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) return "";
+    if (seconds < 90) return "\u2248 " + Math.max(1, Math.round(seconds)) + " s restantes";
+    return "\u2248 " + Math.round(seconds / 60) + " min restantes";
+  }
+
+  let usualTimer = 0;
+  let usualAsked = "";
+  function usualCopy(seconds) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "";
+    return "Dur\u00e9e habituelle : ~" + (seconds < 90 ? Math.round(seconds) + " s" : Math.round(seconds / 60) + " min");
+  }
+  async function refreshUsual() {
+    const note = $("forge-usual-duration");
+    if (!note) return;
+    const query = "width=" + Number($("forge-width").value) + "&height=" + Number($("forge-height").value) +
+      "&steps=" + Number($("forge-steps").value) + "&hires=" + ($("forge-hr").checked ? "1" : "0") + "&n_iter=" + Number($("forge-iter").value || 1);
+    usualAsked = query;
+    try {
+      const payload = await api("/api/forge/jobs/durations?" + query);
+      if (usualAsked !== query) return;
+      const text = payload && payload.samples >= 3 ? usualCopy(Number(payload.seconds)) : "";
+      note.textContent = text;
+      note.hidden = !text;
+    } catch (_) {
+      note.hidden = true;
+    }
+  }
+  function queueUsual() {
+    clearTimeout(usualTimer);
+    usualTimer = setTimeout(() => { refreshUsual().catch(() => {}); }, 400);
+  }
+  window.hqForgeQueueUsual = queueUsual;
+
   function showJob(job) {
     const active = job && ["queued", "starting", "generating", "saving"].includes(job.state);
     cancelBtn.disabled = !active || job.cancel === "deferred";
     progressBox.hidden = !active && !(job && job.state === "unknown");
     if (job) {
       progressBar.value = Number(job.progress || 0);
-      progressLabel.textContent = job.message || job.state || "";
+      const eta = active ? etaCopy(job.eta) : "";
+      progressLabel.textContent = (job.message || job.state || "") + (eta ? " \u00b7 " + eta : "");
       if (job.destination === "private") {
         if (job.state === "completed" && vaultState.unlocked) refreshVault().catch(() => {});
       } else if (job.images && job.images.length) {
@@ -363,6 +400,7 @@
       showJob(payload.job);
       if (payload.job.state === "completed" && payload.job.destination !== "private") {
         loadGallery(true).catch(() => {});
+        queueUsual();
         if (justSubmitted && window.matchMedia && window.matchMedia("(max-width: 899px)").matches) {
           // The user moved on while it rendered: do not yank the page, offer the jump instead.
           if (resultIntent) showSeeResult();
@@ -2447,6 +2485,11 @@
   window.hqForgeWipeDraft = wipeDraft;
   restoreDraft();
 
+  const usualFields = new Set(["forge-width", "forge-height", "forge-steps", "forge-steps-range", "forge-iter", "forge-hr"]);
+  studio.addEventListener("change", (event) => { if (event.target && usualFields.has(event.target.id)) queueUsual(); });
+  studio.addEventListener("input", (event) => { if (event.target && usualFields.has(event.target.id)) queueUsual(); });
+  document.querySelectorAll(".forge-ratio").forEach((button) => button.addEventListener("click", queueUsual));
+
   fleetBooted = !!deviceList;
 
   syncCount();
@@ -2457,6 +2500,7 @@
 
   window.hqForgeShow = function () {
     refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});
+    queueUsual();
     refreshStatus().catch(() => {}).then(() => loadDevices()).then(() => resumeBatch()).catch(() => {});
   };
   window.hqForgeHide = function () {

@@ -13,6 +13,7 @@ import math
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -189,6 +190,7 @@ def _public(job: dict, *, unlocked: bool = False) -> dict:
         "step": job.get("step") or 0,
         "steps": job.get("steps") or 0,
         "progress_stale": bool(job.get("progress_stale")),
+        "eta": _eta_public(job),
         "message": job.get("message") or "",
         "error": job.get("error") or "",
         "images": images,
@@ -200,6 +202,70 @@ def _public(job: dict, *, unlocked: bool = False) -> dict:
         "updated": job.get("updated"),
         "diagnostic": _diagnostic(job.get("diagnostic")),
     }
+
+
+def _eta_public(job: dict) -> float | None:
+    if job.get("state") not in ACTIVE or job.get("progress_stale"):
+        return None
+    return forge.eta_seconds({"eta_relative": job.get("eta")})
+
+
+DURATION_SAMPLES = 20
+DURATION_MIN_SAMPLES = 3
+DURATION_MAX_BUCKETS = 64
+
+
+def _bucket(width, height, steps, hires) -> str | None:
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in (width, height, steps)):
+        return None
+    if not (64 <= width <= 4096 and 64 <= height <= 4096 and 1 <= steps <= 150):
+        return None
+    return f"{width}x{height}:{steps}:{'hr' if hires is True else 'base'}"
+
+
+def _record_duration(root: Path, settings: dict, seconds: float, token: int) -> None:
+    """Keep the last 20 wall-clock durations per (width, height, steps, hires).
+    Normal jobs only; nothing about a private job is kept here."""
+    if token != _generation or not math.isfinite(seconds) or seconds <= 0 or seconds > forge.JOB_TIMEOUT_SEC:
+        return
+    per_image = seconds / max(1, int(settings.get("n_iter") or 1))
+    key = _bucket(settings.get("width"), settings.get("height"), settings.get("steps"), settings.get("enable_hr"))
+    if key is None:
+        return
+    with _LOCK:
+        data = _load(root)
+        table = data.get("durations") if isinstance(data.get("durations"), dict) else {}
+        rows = [v for v in table.get(key, []) if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        rows.append(round(per_image, 1))
+        table.pop(key, None)
+        table[key] = rows[-DURATION_SAMPLES:]
+        while len(table) > DURATION_MAX_BUCKETS:
+            table.pop(next(iter(table)))
+        data["durations"] = table
+        _save(root, data)
+
+
+def usual_duration(root: Path, query: str) -> tuple[int, dict]:
+    from urllib.parse import parse_qs
+    qs = parse_qs(query or "")
+    def number(name):
+        try:
+            return int((qs.get(name) or [""])[0])
+        except ValueError:
+            return None
+    key = _bucket(number("width"), number("height"), number("steps"), (qs.get("hires") or ["0"])[0] == "1")
+    if key is None:
+        return 400, {"error": _MESSAGES["validation"], "code": "validation"}
+    count = max(1, min(2, number("n_iter") or 1))
+    with _LOCK:
+        table = _load(root).get("durations")
+    rows = table.get(key, []) if isinstance(table, dict) else []
+    rows = sorted(v for v in rows if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0)
+    if len(rows) < DURATION_MIN_SAMPLES:
+        return 200, {"samples": len(rows), "seconds": None}
+    middle = len(rows) // 2
+    median = rows[middle] if len(rows) % 2 else (rows[middle - 1] + rows[middle]) / 2
+    return 200, {"samples": len(rows), "seconds": round(median * count)}
 
 
 def _session_open(root: Path, token: str | None) -> bool:
@@ -556,9 +622,11 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 value = 0
             value = max(0.0, min(1.0, float(value)))
-            _mutate(root, job_id, token, progress=value, step=step, steps=steps, progress_stale=False)
+            _mutate(root, job_id, token, progress=value, step=step, steps=steps, progress_stale=False,
+                    eta=forge.eta_seconds(progress))
 
     threading.Thread(target=poll, name="hq-forge-progress", daemon=True).start()
+    started = time.monotonic()
     try:
         body = submission_body(settings, task_id)
         parsed = forge.post_json(forge.SUBMIT_PATH, body, timeout=_job_timeout, transport=transport)
@@ -624,7 +692,10 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         seed_used=seeds[0] if seeds and seeds[0] >= 0 else None,
         progress=1,
         progress_stale=False,
+        eta=None,
     )
+    if destination == "normal":
+        _record_duration(root, settings, time.monotonic() - started, token)
 
 
 def _destination(data: dict) -> str | None:
@@ -797,6 +868,8 @@ def cancel_job(root: Path, job_id: str, session_token: str | None = None) -> tup
 
 
 def serve_get(root: Path, raw: str, query: str, session_token: str | None = None) -> tuple[int, dict] | None:
+    if raw == "/api/forge/jobs/durations":
+        return usual_duration(root, query)
     if raw == "/api/forge/jobs":
         from urllib.parse import parse_qs
         key = (parse_qs(query or "").get("idempotency_key") or [""])[0]

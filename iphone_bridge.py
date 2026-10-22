@@ -5515,6 +5515,7 @@ def render_app() -> bytes:
       </section>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
+        <p id="forge-usual-duration" class="forge-note forge-usual" hidden></p>
         <div class="forge-actions">
           <button type="submit" id="forge-generate" form="forge-form">Générer</button>
           <button type="button" id="forge-generate-private" hidden>Générer en privé</button>

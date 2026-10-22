@@ -9,6 +9,7 @@ global interrupt.
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
@@ -453,6 +454,23 @@ def catalog(*, transport=None) -> dict:
             _catalog_cache[key] = (time.monotonic(), payload)
             _cache_sweep(time.monotonic())
     return payload
+
+
+ETA_MAX_SEC = 3600.0
+
+
+def eta_seconds(progress) -> float | None:
+    """Forge's /sdapi/v1/progress ``eta_relative`` (seconds left), sanitized:
+    finite, above 0 and at most an hour, else None (the UI hides it)."""
+    if not isinstance(progress, dict):
+        return None
+    value = progress.get("eta_relative")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number <= 0 or number > ETA_MAX_SEC:
+        return None
+    return round(number, 1)
 
 
 def read_progress(*, transport=None) -> dict:
