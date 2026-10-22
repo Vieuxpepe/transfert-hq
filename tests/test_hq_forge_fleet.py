@@ -443,6 +443,16 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual(len(self.gallery_ids()), 3)
         origins = [G.get(self.root, image_id).get("origin") or {} for image_id in self.gallery_ids()]
         self.assertIn(lost["task_id"], [o.get("task_id") for o in origins])
+        # Counts stay coherent: the source reports both of its images, the retry batch its own one.
+        self.assertEqual(sum(v for k, v in late["counts"].items() if k != "total"), late["counts"]["total"])
+        self.assertEqual((late["counts"]["done"], late["retryable"]), (2, 0))
+        again = self.admin.json(f"/api/forge/batches/{new['batch_id']}")[1]["batch"]
+        self.assertEqual((again["counts"]["done"], again["count"], again["retry_of"]), (1, 1, source_id))
+        # One retry per image: even if the retry task had failed, it is not offered again.
+        with FL._LOCK:
+            FL._find_batch(new["batch_id"])["tasks"][0]["state"] = "failed"
+        self.assertEqual(self.admin.json(f"/api/forge/batches/{new['batch_id']}")[1]["batch"]["retryable"], 0)
+        self.assertEqual(self.post(f"/api/forge/batches/{new['batch_id']}/retry", {}, key="retry-key-0003")[0], 409)
         self.assertEqual(a.forge_mock.interrupts + b.forge_mock.interrupts, 0)
 
     def test_retry_routes_need_admin_csrf_and_known_batches(self):
@@ -450,6 +460,9 @@ class FleetHttp(unittest.TestCase):
         self.assertIn(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, client=self.anon, key="retry-anon-key")[0], (401, 403))
         self.assertEqual(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, key="retry-404-key")[0], 404)
         self.assertEqual(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, key="bad")[0], 400)
+        forged = self.admin.json("/api/forge/batches/bt-" + "0" * 24 + "/retry", "POST", data=b"{}",
+                                 headers={"Content-Type": "application/json", "Idempotency-Key": "retry-csrf-key", "Origin": "http://evil.example"})
+        self.assertEqual(forged[0], 403, "a cross-origin retry is refused by CSRF")
 
     def test_retry_refuses_when_no_device_of_the_batch_is_usable(self):
         a = self.worker("PC A", start=False, mode="fail")

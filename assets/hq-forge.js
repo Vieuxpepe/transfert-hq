@@ -311,6 +311,7 @@
     if (vaultViewer && vaultViewer.open) vaultViewer.close();
     const meta = $("forge-vault-viewer-meta");
     if (meta) meta.textContent = "";
+    if (window.hqForgeDropPrivateShare) window.hqForgeDropPrivateShare();
   }
 
   async function loadGallery(reset) {
@@ -699,6 +700,12 @@
 
   const disabledCopy = $("forge-private-note") ? $("forge-private-note").textContent : "";
   let privateDetail = null;
+  window.hqForgeDropPrivateShare = () => {
+    shareFiles.private = null;
+    privateDetail = null;
+    const button = $("forge-vault-share");
+    if (button) button.hidden = true;
+  };
 
   function bumpIdle() {
     clearTimeout(idleTimer);
@@ -736,9 +743,13 @@
   }
 
   async function lockVault() {
-    await api("/api/forge/vault/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    clearPrivateUi();
-    if (window.hqForgeScrubPrivate) window.hqForgeScrubPrivate();
+    try {
+      await api("/api/forge/vault/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    } finally {
+      // Drop decrypted pixels and private text even if the lock request failed.
+      clearPrivateUi();
+      if (window.hqForgeScrubPrivate) window.hqForgeScrubPrivate();
+    }
     await refreshVault();
   }
 
@@ -818,6 +829,7 @@
   const AWAY_KEY = "hqForgeVaultAway";
   const AWAY_MS = 30 * 1000;
   let awayTimer = 0;
+  let hiddenAt = 0;
   function awayPref() {
     try { return localStorage.getItem(AWAY_KEY) === "1"; } catch (_) { return false; }
   }
@@ -831,7 +843,15 @@
   document.addEventListener("visibilitychange", () => {
     clearTimeout(awayTimer);
     awayTimer = 0;
-    if (document.visibilityState !== "hidden" || !awayPref() || !vaultState.unlocked) return;
+    if (document.visibilityState !== "hidden") {
+      // iOS freezes timers in the background: judge by wall-clock time on return.
+      const away = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = 0;
+      if (away >= AWAY_MS && awayPref() && vaultState.unlocked) lockVault().catch(() => {});
+      return;
+    }
+    hiddenAt = Date.now();
+    if (!awayPref() || !vaultState.unlocked) return;
     awayTimer = setTimeout(() => {
       awayTimer = 0;
       if (document.visibilityState === "hidden" && vaultState.unlocked) lockVault().catch(() => {});
@@ -970,6 +990,7 @@
   });
   $("forge-vault-reuse").addEventListener("click", () => {
     applySettings(privateDetail && privateDetail.settings);
+    if (window.hqForgeTaint) window.hqForgeTaint(true);
     closePrivate();
     promptEl.focus();
   });
@@ -2599,8 +2620,8 @@
     note.textContent = text;
     note.hidden = !text;
   }
-  function taint() {
-    if (destination() === "private") privateText = true;
+  function taint(always) {
+    if (always === true || destination() === "private") privateText = true;
     if (privateText) wipeDraft();
   }
   function scrubPrivate() {

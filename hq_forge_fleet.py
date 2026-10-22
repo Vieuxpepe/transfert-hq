@@ -929,7 +929,8 @@ def _batch_public(batch: dict) -> dict:
             "dispatched_at": task.get("dispatched_at"), "finished_at": task.get("finished_at"),
             "retried": bool(task.get("retried_in")),
         })
-        if state in ("failed", "uncertain") and not task.get("retried_in"):
+        # One retry per image: a task that is itself a retry is never offered again.
+        if state in ("failed", "uncertain") and not task.get("retried_in") and not task.get("retry_of_task"):
             retryable += 1
             if state == "uncertain":
                 retry_uncertain += 1
@@ -1061,7 +1062,8 @@ def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
             return 404, {"error": "Introuvable"}
         if _batch_state(source) in ("running", "cancelling"):
             return 409, {"error": MESSAGES["retry_running"], "code": "retry_running"}
-        missing = [task for task in source["tasks"] if task["state"] in ("failed", "uncertain") and not task.get("retried_in")]
+        missing = [task for task in source["tasks"] if task["state"] in ("failed", "uncertain")
+                   and not task.get("retried_in") and not task.get("retry_of_task")]
         if not missing:
             return 409, {"error": MESSAGES["retry_nothing"], "code": "retry_nothing"}
         settings_in = dict(source["settings"])

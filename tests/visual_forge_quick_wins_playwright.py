@@ -110,7 +110,7 @@ class Run:
         if not SHOTS:
             return
         width = page.viewport_size["width"]
-        path = SHOTS / f"{os.environ.get('FORGE_BROWSER', 'chromium')}-{name}-{width}.png"
+        path = SHOTS / f"{page.context.browser.browser_type.name}-{name}-{width}.png"
         if selector:
             page.locator(selector).first.scroll_into_view_if_needed()
         page.screenshot(path=str(path))
@@ -252,7 +252,14 @@ def section_wake(run: Run) -> None:
 SHARE_STUB = """(() => {
   window.__shared = [];
   Navigator.prototype.canShare = function (data) { return !!(data && data.files && data.files.length && data.files.every((f) => f.type === "image/png")); };
-  Navigator.prototype.share = async function (data) { window.__shared.push(data.files.map((f) => [f.name, f.type, f.size])); };
+  Navigator.prototype.share = async function (data) {
+    const rows = [];
+    for (const f of data.files) {
+      const text = new TextDecoder("latin1").decode(await f.arrayBuffer());
+      rows.push([f.name, f.type, f.size, text.includes("tEXtparameters") || text.includes("iTXtparameters")]);
+    }
+    window.__shared.push(rows);
+  };
 })();"""
 
 NO_SHARE = """(() => { Navigator.prototype.canShare = undefined; Navigator.prototype.share = undefined; })();"""
@@ -340,6 +347,42 @@ def section_share(run: Run) -> None:
     run.check(page.evaluate("() => window.__shared[1][0][0]") == "coffre.png", "the private file name carries no prompt or id")
     page.locator("#forge-vault-viewer-close").click()
     run.check(page.locator("#forge-vault-share").is_hidden(), "closing the vault viewer drops the prepared file")
+
+    # Parameters never leave the vault unless the box is ticked: share sheet and download paths.
+    secret = "parametre-prive-77"
+    page.locator("#forge-prompt").fill(secret)
+    run.until(page, "() => !document.querySelector('#forge-generate-private').disabled", 15)
+    before = page.locator("#forge-vault-gallery .forge-card").count()
+    page.locator("#forge-generate-private").click()
+    run.check(run.until(page, "(n) => document.querySelectorAll('#forge-vault-gallery .forge-card').length > n", 30, before), "a private image with settings is generated")
+    cards = page.locator("#forge-vault-gallery .forge-card")
+    for i in range(cards.count()):
+        cards.nth(i).click()
+        page.locator("#forge-vault-viewer").wait_for()
+        run.until(page, "() => !!document.querySelector('#forge-vault-viewer-meta').textContent", 3)
+        if secret in page.locator("#forge-vault-viewer-meta").inner_text():
+            break
+        page.locator("#forge-vault-viewer-close").click()
+    run.check(secret in page.locator("#forge-vault-viewer-meta").inner_text(), "the generated private image is open")
+    run.until(page, "() => !document.querySelector('#forge-vault-share').hidden", 5)
+    page.locator("#forge-vault-params").check()
+    count = page.evaluate("() => window.__shared.length")
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#forge-vault-share").click()
+    run.check(run.until(page, "(n) => window.__shared.length > n", 5, count), "the private share goes through after the confirm")
+    row = page.evaluate("() => window.__shared[window.__shared.length - 1][0]")
+    run.check(row[3] is False, "a shared private image carries no parameters chunk, even with Inclure les param\u00e8tres ticked: " + repr(row))
+    page.locator("#forge-vault-params").uncheck()
+    with page.expect_download() as plain:
+        page.locator("#forge-vault-download").click()
+    raw = Path(plain.value.path()).read_bytes()
+    run.check(b"parameters" not in raw and secret.encode() not in raw, "a private download without the box has no parameters chunk")
+    page.locator("#forge-vault-params").check()
+    with page.expect_download() as tagged:
+        page.locator("#forge-vault-download").click()
+    raw = Path(tagged.value.path()).read_bytes()
+    run.check(b"parameters" in raw and secret.encode() in raw, "ticking Inclure les param\u00e8tres exports them for that download only")
+    page.locator("#forge-vault-viewer-close").click()
     ctx.close()
 
 
@@ -372,6 +415,17 @@ def section_away(run: Run) -> None:
     run.check(run.until(page, "() => !document.querySelector('#forge-vault-unlock').hidden", 5), "after 30 s hidden the vault UI is locked")
     run.check(unlocked() is False, "the server session is locked too")
     run.check(page.locator("#forge-vault-gallery .forge-card").count() == 0, "the private thumbnail shown before is cleared")
+    run.check(page.evaluate("() => [...document.querySelectorAll('img')].filter((i) => (i.getAttribute('src') || '').startsWith('blob:')).length") == 0, "no decrypted blob image stays in the DOM")
+    # iOS freezes timers in the background: a long absence still locks on return.
+    page.evaluate("() => window.__setVisibility('visible')")
+    open_vault(run, page)
+    run.check(unlocked() is True, "the vault is unlocked again")
+    page.evaluate("() => window.__setVisibility('hidden')")
+    now = page.evaluate("() => Date.now()")
+    page.clock.set_system_time(now + 45_000)  # wall clock moves, no timer fires
+    page.evaluate("() => window.__setVisibility('visible')")
+    run.check(run.until(page, "() => !document.querySelector('#forge-vault-unlock').hidden", 5), "returning after 45 s with frozen timers still locks")
+    run.check(unlocked() is False, "the server session is locked on return too")
     ctx.close()
 
 
