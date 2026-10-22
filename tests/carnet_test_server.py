@@ -93,7 +93,7 @@ def main() -> None:
         def log_message(self, *_a):
             pass
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
+    httpd = B.HQServer(("127.0.0.1", 0), Quiet)  # same server class as production
     if httpd.server_address[1] in (8765, 8766, 8776, 7860):
         raise SystemExit("refusing a production port")
     base = f"http://127.0.0.1:{httpd.server_address[1]}"

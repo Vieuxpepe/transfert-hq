@@ -2090,6 +2090,16 @@ def build_daily_brief() -> dict:
     )
 
 
+class HQServer(ThreadingHTTPServer):
+    """The HQ HTTP server. The page loads ~50 scripts and styles at once; through Tailscale
+    Serve (HTTP/2 to the browser) they arrive as a burst of upstream connections. The stdlib
+    default listen backlog of 5 makes Windows reset the overflow, which Tailscale turns into
+    502 and the browser into missing modules (Carnet, Forge Studio, Accueil)."""
+
+    request_queue_size = 128
+    daemon_threads = True
+
+
 def bind_hq() -> None:
     global _HQ_BOUND
     hq_events.bind(ROOT)
@@ -8253,7 +8263,7 @@ def main() -> None:
     threading.Thread(target=harvest_screenshots_now, daemon=True).start()
     cc_ext.queue_process()
     try:
-        server = ThreadingHTTPServer((BIND_HOST, PORT), Handler)
+        server = HQServer((BIND_HOST, PORT), Handler)
     except OSError as e:
         raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {e}") from e
     # Mild DoS mitigation for stdlib server
