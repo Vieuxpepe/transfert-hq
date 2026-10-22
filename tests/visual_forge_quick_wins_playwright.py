@@ -343,7 +343,39 @@ def section_share(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
+def section_away(run: Run) -> None:
+    print("F18 vault lock on background")
+    ctx = run.context(VISIBILITY_STUB)
+    page = ctx.new_page()
+    page.clock.install()
+    run.open_forge(page)
+    open_vault(run, page)
+    import_private(run, page)
+    unlocked = lambda: page.request.get(run.base + "/api/forge/vault/status").json().get("unlocked")
+    run.check(not page.locator("#forge-vault-away").is_checked(), "Verrouiller en quittant l'app is off by default")
+    run.shot(page, "vault-away", "#forge-vault-open-tools")
+    page.evaluate("() => window.__setVisibility('hidden')")
+    page.clock.fast_forward(31_000)
+    page.wait_for_timeout(300)
+    run.check(unlocked() is True, "without the option, 30 s in the background does not lock")
+    page.evaluate("() => window.__setVisibility('visible')")
+    page.locator("#forge-vault-away").check()
+    run.check(page.evaluate("() => localStorage.getItem('hqForgeVaultAway')") == "1", "the option is kept in localStorage")
+    page.evaluate("() => window.__setVisibility('hidden')")
+    page.clock.fast_forward(20_000)
+    page.evaluate("() => window.__setVisibility('visible')")
+    page.clock.fast_forward(20_000)
+    page.wait_for_timeout(300)
+    run.check(unlocked() is True, "coming back within 30 s cancels the lock")
+    page.evaluate("() => window.__setVisibility('hidden')")
+    page.clock.fast_forward(31_000)
+    run.check(run.until(page, "() => !document.querySelector('#forge-vault-unlock').hidden", 5), "after 30 s hidden the vault UI is locked")
+    run.check(unlocked() is False, "the server session is locked too")
+    run.check(page.locator("#forge-vault-gallery .forge-card").count() == 0, "the private thumbnail shown before is cleared")
+    ctx.close()
+
+
+SECTIONS = {"away": section_away, "share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
 
 
 def main() -> None:

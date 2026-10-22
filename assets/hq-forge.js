@@ -807,6 +807,31 @@
     promptEl.focus();
   });
   $("forge-vault-lock").addEventListener("click", () => lockVault().catch((error) => { statusEl.textContent = error.message; }));
+
+  /* F18: optional lock when the app stays in the background for 30 s. The
+     server's own unlock TTL (5 min) remains the backstop. Pref: localStorage. */
+  const AWAY_KEY = "hqForgeVaultAway";
+  const AWAY_MS = 30 * 1000;
+  let awayTimer = 0;
+  function awayPref() {
+    try { return localStorage.getItem(AWAY_KEY) === "1"; } catch (_) { return false; }
+  }
+  const awayBox = $("forge-vault-away");
+  if (awayBox) {
+    awayBox.checked = awayPref();
+    awayBox.addEventListener("change", () => {
+      try { localStorage.setItem(AWAY_KEY, awayBox.checked ? "1" : "0"); } catch (_) { /* storage off */ }
+    });
+  }
+  document.addEventListener("visibilitychange", () => {
+    clearTimeout(awayTimer);
+    awayTimer = 0;
+    if (document.visibilityState !== "hidden" || !awayPref() || !vaultState.unlocked) return;
+    awayTimer = setTimeout(() => {
+      awayTimer = 0;
+      if (document.visibilityState === "hidden" && vaultState.unlocked) lockVault().catch(() => {});
+    }, AWAY_MS);
+  });
   $("forge-vault-backup").addEventListener("click", async () => {
     const response = await fetch("/api/forge/vault/backup", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) return;

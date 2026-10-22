@@ -5253,6 +5253,11 @@ def render_app() -> bytes:
           <button type="button" id="forge-vault-recovery-ok">J'ai enregistré la clé</button>
         </div>
         <div id="forge-vault-open-tools" hidden>
+          <div class="forge-help-wrap forge-vault-away">
+            <label class="forge-privacy-ack" for="forge-vault-away"><input type="checkbox" id="forge-vault-away"/> Verrouiller en quittant l'app</label>
+            <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-away">Aide</button>
+            <p id="forge-help-vault-away" class="forge-help-pop" role="tooltip">Si HQ reste en arrière-plan 30 secondes, le coffre se verrouille. Sans ce réglage, il se verrouille quand même après 5 minutes sans activité.</p>
+          </div>
           <div class="forge-actions">
             <button type="button" id="forge-vault-lock" class="secondary">Verrouiller le coffre</button>
             <button type="button" id="forge-vault-backup" class="secondary">Sauvegarde chiffrée</button>
