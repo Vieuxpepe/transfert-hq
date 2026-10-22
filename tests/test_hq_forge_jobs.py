@@ -222,6 +222,82 @@ class Jobs(unittest.TestCase):
         self.assertEqual(payload["forge"], "busy")
         self.assertFalse((self.root / ".hq-forge" / "jobs.json").exists() and "job-" in (self.root / ".hq-forge" / "jobs.json").read_text(encoding="utf-8"))
 
+    # ------------------------------------------------------------------ B: politeness
+    BUSY = {"progress": 0.2, "state": {"job": "scripts_txt2img", "job_count": 1, "sampling_step": 3, "sampling_steps": 20}}
+    IDLE = {"progress": 0.0, "state": {"job": "", "job_count": 0, "sampling_step": 0, "sampling_steps": 20}}
+
+    def _posts(self, transport):
+        return [url for url in transport.calls if url.endswith("/sdapi/v1/txt2img")]
+
+    def _no_forbidden(self, transport):
+        paths = [url.split("?", 1)[0] for url in transport.calls]
+        self.assertFalse([p for p in paths if p.endswith(("/interrupt", "/skip"))])
+        # The only body ever sent is the txt2img submission (no options POST, no model switch).
+        self.assertEqual(len(transport.bodies), len(self._posts(transport)))
+
+    def test_busy_forge_holds_a_normal_job_then_sends_it_when_idle(self):
+        transport = Transport(progress=dict(self.BUSY))
+        code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-key-1", transport=transport)
+        self.assertEqual(code, 202, payload)
+        job = payload["job"]
+        self.assertTrue(job["waiting"])
+        self.assertEqual(job["state"], "queued")
+        self.assertEqual(job["message"], "Forge occup\u00e9, en attente.")
+        time.sleep(0.3)
+        self.assertEqual(self._posts(transport), [], "nothing is sent while Forge works for someone else")
+        other_code, other = J.create_job(self.root, _body(wait_if_busy=True), "polite-key-2", transport=transport)
+        self.assertEqual(other_code, 409, "still one HQ job at a time")
+        transport.progress = dict(self.IDLE)
+        done = self._wait(job["job_id"])
+        self.assertEqual(done["state"], "completed")
+        self.assertFalse(done["waiting"])
+        self.assertEqual(len(self._posts(transport)), 1)
+        self._no_forbidden(transport)
+
+    def test_waiting_job_times_out_without_sending(self):
+        J.set_wait_timeout_for_tests(0.3)
+        transport = Transport(progress=dict(self.BUSY))
+        _code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-key-3", transport=transport)
+        done = self._wait(payload["job"]["job_id"])
+        self.assertEqual(done["state"], "failed")
+        self.assertEqual(done["error"], "busy_timeout")
+        self.assertEqual(done["message"], "Forge est rest\u00e9 occup\u00e9. Rien n'a \u00e9t\u00e9 envoy\u00e9.")
+        self.assertEqual(self._posts(transport), [])
+        self._no_forbidden(transport)
+
+    def test_waiting_job_can_be_cancelled_locally(self):
+        transport = Transport(progress=dict(self.BUSY))
+        _code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-key-4", transport=transport)
+        code, cancel = J.cancel_job(self.root, payload["job"]["job_id"])
+        self.assertEqual(cancel["cancel"], "cancelled")
+        transport.progress = dict(self.IDLE)
+        time.sleep(0.3)
+        self.assertEqual(self._posts(transport), [])
+        self.assertEqual(self._wait(payload["job"]["job_id"])["state"], "cancelled")
+
+    def test_start_now_queues_behind_without_interrupting(self):
+        transport = Transport(progress=dict(self.BUSY))
+        _code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-key-5", transport=transport)
+        job_id = payload["job"]["job_id"]
+        code, forced = J.serve_post(self.root, f"/api/forge/jobs/{job_id}/start-now", {}, "")
+        self.assertEqual(code, 200)
+        self.assertTrue(forced["job"]["forced"])
+        done = self._wait(job_id)
+        self.assertEqual(done["state"], "completed")
+        self.assertEqual(len(self._posts(transport)), 1, "sent once, Forge queues it behind its own work")
+        self._no_forbidden(transport)
+        again_code, again = J.start_now(self.root, job_id)
+        self.assertEqual(again_code, 409)
+        self.assertEqual(again["code"], "not_waiting")
+        self.assertEqual(J.start_now(self.root, "job-nope")[0], 404)
+
+    def test_private_and_opt_out_keep_the_plain_busy_refusal(self):
+        transport = Transport(progress=dict(self.BUSY))
+        code, payload = J.create_job(self.root, _body(), "polite-key-6", transport=transport)
+        self.assertEqual((code, payload["code"]), (409, "forge_busy"))
+        code, payload = J.create_job(self.root, _body(wait_if_busy="yes"), "polite-key-7", transport=transport)
+        self.assertEqual((code, payload["code"]), (409, "forge_busy"))
+
     def test_bad_image_and_validation(self):
         def post(_body):
             return 200, json.dumps({"images": ["aaaa"]}).encode("utf-8")

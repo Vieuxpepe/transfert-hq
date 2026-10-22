@@ -5531,6 +5531,10 @@ def render_app() -> bytes:
           <progress id="forge-progress-bar" max="1" value="0" aria-labelledby="forge-progress-label"></progress>
           <span id="forge-progress-label" aria-live="polite"></span>
         </div>
+        <div id="forge-wait" class="forge-wait" hidden>
+          <button type="button" id="forge-start-now">Lancer quand même</button>
+          <p class="forge-note">Votre image passera après le travail en cours de Forge. Rien n'est interrompu.</p>
+        </div>
       </div>
         <p id="forge-cancel-note" class="forge-note forge-m">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
       <div id="forge-prefs" class="forge-prefs forge-m">

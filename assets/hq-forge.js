@@ -204,13 +204,16 @@
     const hiresPrivate = hiresOn() && privateMode;
     const hiresMissing = hiresOn() && !$("forge-hr-upscaler").value;
     const hiresLarge = hiresOn() && !hiresFits();
-    const ready = !active && !hiresPrivate && !hiresMissing && !hiresLarge && forgeState === "ready" && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
+    // B: a busy Forge (someone else's work) does not block a normal job; HQ waits politely.
+    const forgeOk = forgeState === "ready" || (forgeState === "busy" && !privateMode);
+    const ready = !active && !hiresPrivate && !hiresMissing && !hiresLarge && forgeOk && catalogState === "ready" && checkpointEl.value && samplerEl.value && schedulerEl.value;
     generateBtn.disabled = !ready;
     privateBtn.disabled = !ready || !vaultState.private_generation;
     if (reasonEl) {
       if (active) reasonEl.textContent = "Générer est désactivé : une génération est déjà en cours.";
       else if (forgeState === "offline") reasonEl.textContent = "Générer est désactivé : Forge n'est pas démarré.";
       else if (forgeState === "api_disabled") reasonEl.textContent = "Générer est désactivé : l'API Forge n'est pas activée.";
+      else if (forgeState === "busy" && privateMode) reasonEl.textContent = "G\u00e9n\u00e9rer est d\u00e9sactiv\u00e9 : Forge est occup\u00e9 par un autre travail.";
       else if (forgeUnreachable) reasonEl.textContent = "Générer est désactivé : Forge n'a pas répondu.";
       else if (forgeState !== "ready" || catalogState !== "ready") reasonEl.textContent = "Générer est désactivé : le catalogue n'est pas disponible.";
       else if (!checkpointEl.value) reasonEl.textContent = "Générer est désactivé : aucun modèle n'est choisi.";
@@ -219,6 +222,7 @@
       else if (hiresPrivate) reasonEl.textContent = "Générer est désactivé : Hires. fix n'est pas disponible en génération privée.";
       else if (hiresMissing) reasonEl.textContent = "Générer est désactivé : l'agrandisseur n'est pas disponible.";
       else if (hiresLarge) reasonEl.textContent = "Générer est désactivé : le second passage dépasserait 2048 pixels.";
+      else if (forgeState === "busy") reasonEl.textContent = "Forge est occup\u00e9 : HQ attendra la fin de son travail.";
       else reasonEl.textContent = "";
     }
     $("forge-normal-results").hidden = privateMode;
@@ -399,6 +403,8 @@
     const active = job && ["queued", "starting", "generating", "saving"].includes(job.state);
     setWake("job", active);
     cancelBtn.disabled = !active || job.cancel === "deferred";
+    $("forge-wait").hidden = !(job && job.waiting);
+    $("forge-start-now").disabled = false;
     progressBox.hidden = !active && !(job && job.state === "unknown");
     if (job) {
       progressBar.value = Number(job.progress || 0);
@@ -530,7 +536,7 @@
       const payload = await api("/api/forge/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": key() },
-        body: JSON.stringify(settingsFromForm())
+        body: JSON.stringify(Object.assign(settingsFromForm(), { wait_if_busy: true }))
       });
       if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
       showJob(payload.job);
@@ -586,6 +592,19 @@
     event.preventDefault();
     privateGenerate();
   }, true);
+
+  $("forge-start-now").addEventListener("click", async () => {
+    const jobId = sessionStorage.getItem("hqForgeJob");
+    if (!jobId) return;
+    $("forge-start-now").disabled = true;
+    try {
+      const payload = await api("/api/forge/jobs/" + jobId + "/start-now", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      showJob(payload.job);
+    } catch (error) {
+      progressLabel.textContent = error.message || "Envoi impossible.";
+      $("forge-start-now").disabled = false;
+    }
+  });
 
   cancelBtn.addEventListener("click", async () => {
     const jobId = sessionStorage.getItem("hqForgeJob");

@@ -30,7 +30,7 @@ BODY_KEYS = {
     "prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler",
     "width", "height", "steps", "cfg_scale", "seed", "n_iter", "batch_size",
     "enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength",
-    "destination",
+    "destination", "wait_if_busy",
 }
 
 _LOCK = threading.Lock()
@@ -40,6 +40,9 @@ _before_submit = None
 _job_timeout = forge.JOB_TIMEOUT_SEC
 _poll_interval = 1.0
 _external_busy = None
+# B: how long a normal job politely waits for Forge to finish someone else's work.
+WAIT_TIMEOUT_SEC = 600.0
+_wait_timeout = WAIT_TIMEOUT_SEC
 
 _MESSAGES = {
     "forge_offline": "Forge n'est pas démarré.",
@@ -47,6 +50,9 @@ _MESSAGES = {
     "catalog_empty": "Forge répond, mais le catalogue utilisable est vide.",
     "forge_timeout": "HQ a cessé d'attendre. Forge n'a pas été interrompu.",
     "forge_busy": "Forge est déjà en train de générer.",
+    "waiting": "Forge occup\u00e9, en attente.",
+    "busy_timeout": "Forge est rest\u00e9 occup\u00e9. Rien n'a \u00e9t\u00e9 envoy\u00e9.",
+    "start_now": "Envoy\u00e9 \u00e0 Forge, \u00e0 la suite de son travail en cours.",
     "bad_image": "Forge a renvoyé une image inutilisable.",
     "quota": "Le quota de la galerie est atteint. Rien n'a été effacé.",
     "disk": "Espace disque insuffisant.",
@@ -69,8 +75,9 @@ _MESSAGES = {
 
 
 def reset_for_tests() -> None:
-    global _generation, _recovered, _before_submit, _job_timeout, _poll_interval
+    global _generation, _recovered, _before_submit, _job_timeout, _poll_interval, _wait_timeout
     _generation += 1
+    _wait_timeout = WAIT_TIMEOUT_SEC
     _recovered = False
     _before_submit = None
     _job_timeout = forge.JOB_TIMEOUT_SEC
@@ -107,6 +114,11 @@ def set_before_submit_for_tests(callback) -> None:
 def set_job_timeout_for_tests(seconds: float | None) -> None:
     global _job_timeout
     _job_timeout = forge.JOB_TIMEOUT_SEC if seconds is None else float(seconds)
+
+
+def set_wait_timeout_for_tests(seconds: float | None) -> None:
+    global _wait_timeout
+    _wait_timeout = WAIT_TIMEOUT_SEC if seconds is None else float(seconds)
 
 
 def set_poll_interval_for_tests(seconds: float | None) -> None:
@@ -197,6 +209,8 @@ def _public(job: dict, *, unlocked: bool = False) -> dict:
         "settings": {} if private else (job.get("settings") or {}),
         "seed_used": None if private and not unlocked else job.get("seed_used"),
         "cancel": "unchanged" if job.get("state") in TERMINAL else ("deferred" if job.get("submitted") else "local"),
+        "waiting": bool(job.get("waiting") and job.get("state") == "queued" and not job.get("submitted")),
+        "forced": bool(job.get("force")),
         "locked": bool(private and not unlocked),
         "created": job.get("created"),
         "updated": job.get("updated"),
@@ -579,7 +593,37 @@ def _fail(root: Path, job_id: str, token: int, code: str, *, http_status: int | 
     )
 
 
+def _wait_for_idle(root: Path, job_id: str, token: int, transport) -> bool:
+    """Hold a queued job while Forge works for someone else. Read-only: only GET progress
+    is used; nothing is interrupted. Returns False when the job must not be sent."""
+    deadline = time.monotonic() + _wait_timeout
+    while True:
+        with _LOCK:
+            job = _find(_load(root), job_id)
+            if job is None or job.get("state") != "queued" or token != _generation:
+                return False
+            if not job.get("waiting") or job.get("force"):
+                return True
+        try:
+            upstream = forge.status(transport=transport)
+        except Exception:
+            upstream = {"forge": "error"}
+        if upstream.get("forge") == "ready":
+            _mutate(root, job_id, token, waiting=False, message="En file.")
+            return True
+        if upstream.get("forge") != "busy":
+            code = upstream.get("code") or "forge_error"
+            _fail(root, job_id, token, code if code in _MESSAGES else "forge_error")
+            return False
+        if time.monotonic() >= deadline:
+            _fail(root, job_id, token, "busy_timeout")
+            return False
+        time.sleep(_poll_interval)
+
+
 def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, session_token: str | None = None) -> None:
+    if not _wait_for_idle(root, job_id, token, transport):
+        return
     with _LOCK:
         data = _load(root)
         job = _find(data, job_id)
@@ -765,9 +809,13 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
         if _external_active():
             return 409, {"error": _MESSAGES["active"], "code": "active"}
+        waiting = False
         if upstream.get("forge") == "busy":
-            return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
-        if upstream.get("forge") != "ready":
+            # B: a normal job may wait politely; private jobs keep the plain refusal.
+            if destination != "normal" or data.get("wait_if_busy") is not True:
+                return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
+            waiting = True
+        elif upstream.get("forge") != "ready":
             code = upstream.get("code") or "forge_error"
             return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
         job_id = "job-" + os.urandom(12).hex()
@@ -786,7 +834,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             "step": 0,
             "steps": validated["steps"],
             "progress_stale": False,
-            "message": "En file.",
+            "message": _MESSAGES["waiting"] if waiting else "En file.",
+            "waiting": waiting,
             "error": "",
             "images": [],
             "seed_used": None,
@@ -868,6 +917,28 @@ def cancel_job(root: Path, job_id: str, session_token: str | None = None) -> tup
     return 200, {"cancel": "cancelled", "message": _MESSAGES["cancelled"], "job": snapshot}
 
 
+def start_now(root: Path, job_id: str, session_token: str | None = None) -> tuple[int, dict]:
+    """'Lancer quand m\u00eame': stop waiting and send now. Forge queues it behind its current
+    work (its own FIFO lock); nothing is interrupted, skipped or reconfigured."""
+    recover(root)
+    if not JOB_RE.fullmatch(job_id):
+        return 404, {"error": "Introuvable"}
+    with _LOCK:
+        data = _load(root)
+        job = _find(data, job_id)
+        if job is None:
+            return 404, {"error": "Introuvable"}
+        if job.get("state") != "queued" or job.get("submitted") or not job.get("waiting"):
+            return 409, {"error": "Ce travail n'attend plus Forge.", "code": "not_waiting", "job": _public(job, unlocked=False)}
+        job["force"] = True
+        job["waiting"] = False
+        job["message"] = _MESSAGES["start_now"]
+        job["updated"] = _now()
+        _save(root, data)
+        snapshot = _public(job, unlocked=False)
+    return 200, {"job": snapshot}
+
+
 def serve_get(root: Path, raw: str, query: str, session_token: str | None = None) -> tuple[int, dict] | None:
     if raw == "/api/forge/jobs/durations":
         return usual_duration(root, query)
@@ -890,4 +961,6 @@ def serve_post(root: Path, raw: str, data: dict, idempotency_key: str, session_t
     suffix = "/cancel"
     if raw.startswith(prefix) and raw.endswith(suffix):
         return cancel_job(root, raw[len(prefix):-len(suffix)], session_token)
+    if raw.startswith(prefix) and raw.endswith("/start-now"):
+        return start_now(root, raw[len(prefix):-len("/start-now")], session_token)
     return None

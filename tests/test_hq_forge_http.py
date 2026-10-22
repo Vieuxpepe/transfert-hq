@@ -300,6 +300,13 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(self.admin.req("/api/forge/jobs", "POST", b"{}")[0], 400)
         self.assertEqual(self.admin.req("/api/forge/jobs/job-1/cancel", "POST", b"{}")[0], 404)
 
+    def test_start_now_route_is_admin_only_and_csrf_gated(self):
+        path = "/api/forge/jobs/job-" + "0" * 24 + "/start-now"
+        self.assertEqual(self.anon.req(path, "POST", b"{}")[0], 401)
+        self.assertEqual(self.upload.req(path, "POST", b"{}")[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", b"{}")[0], 404)
+
     def test_readiness_does_not_depend_on_forge(self):
         self.assertNotIn("hq_forge", D.REQUIRED_MODULES)
         status, _headers, body = self.admin.req("/api/diag/ready")
