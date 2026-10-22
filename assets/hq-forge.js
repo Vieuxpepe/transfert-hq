@@ -135,8 +135,15 @@
     syncHiresNote();
   }
 
-  function describeChoices(stale) {
+  // The "no longer offered" note stays until the choice changes; a later refresh
+  // with nothing new to say keeps it instead of wiping it.
+  let staleSignature = "";
+  function describeChoices(stale, fromRefresh) {
     if (!choiceNote) return;
+    const signature = [checkpointEl.value, samplerEl.value, schedulerEl.value].join("\n");
+    if (stale) staleSignature = signature;
+    else if (!fromRefresh || signature !== staleSignature) staleSignature = "";
+    stale = stale || (!!staleSignature && signature === staleSignature);
     const parts = [];
     const model = checkpointEl.selectedOptions[0];
     const sampler = samplerEl.selectedOptions[0];
@@ -233,7 +240,17 @@
 
   let forgeUnreachable = false;
 
-  async function refreshStatus() {
+  // Concurrent callers (e.g. the two chains in hqForgeShow) share one in-flight refresh,
+  // so opening the studio reads status and catalog once and nothing overwrites the result.
+  let statusInFlight = null;
+  function refreshStatus() {
+    if (!statusInFlight) {
+      statusInFlight = readStatus().finally(() => { statusInFlight = null; });
+    }
+    return statusInFlight;
+  }
+
+  async function readStatus() {
     const first = catalogState === "offline" && forgeState === "offline" && !checkpointEl.options.length;
     if (first) {
       statusEl.dataset.state = "busy";
@@ -250,7 +267,7 @@
         const staleSampler = fillSelect(samplerEl, catalog.samplers || [], (item) => item.name ? { value: item.name, label: item.name } : null, "Euler a");
         const stalePlan = fillSelect(schedulerEl, catalog.schedulers || [], (item) => item.name ? { value: item.name, label: item.label || item.name } : null, "automatic");
         fillUpscalers(catalog.upscalers || []);
-        describeChoices(staleModel || staleSampler || stalePlan);
+        describeChoices(staleModel || staleSampler || stalePlan, true);
         syncHiresNote();
       } else if (catalog && catalog.code === "catalog_empty") {
         clearChoices("Forge répond, mais le catalogue utilisable est vide. Ce n'est pas une API absente.");

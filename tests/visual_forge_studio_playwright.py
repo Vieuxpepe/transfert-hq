@@ -200,8 +200,11 @@ def main() -> None:
             check(not [item for item in failed if "/api/forge/" in item or "/assets/hq-forge" in item], "no forge 404s: " + " | ".join(failed))
 
             scripted = {}
+            status_hits = []
 
             def scripted_route(route):
+                if route.request.url.endswith("/api/forge/status"):
+                    status_hits.append(route.request.url)
                 payload = scripted["status"] if route.request.url.endswith("/api/forge/status") else scripted["catalog"]
                 route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
 
@@ -248,8 +251,17 @@ def main() -> None:
             page.locator("#forge-sampler").select_option(label="DPM++ 2M")
             check(page.locator("#forge-generate").is_enabled(), "generate enables when the catalog is valid")
             scripted["catalog"]["samplers"] = [{"name": "Euler a"}]
+            status_hits.clear()
             open_forge()
             page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('plus proposé')")
+            page.wait_for_timeout(1200)
+            check("plus proposé" in page.locator("#forge-choice-note").inner_text(), "the dropped-choice note is still visible 1 s after opening")
+            check(len(status_hits) == 1, f"opening the studio reads Forge status once ({len(status_hits)})")
+            open_forge()
+            page.wait_for_timeout(1200)
+            check("plus proposé" in page.locator("#forge-choice-note").inner_text(), "a later refresh with nothing new keeps the note")
+            page.locator("#forge-sampler").dispatch_event("change")
+            check("plus proposé" not in page.locator("#forge-choice-note").inner_text(), "touching the menu clears the note")
             check("Euler a" == page.locator("#forge-sampler").input_value(), "a removed sampler is not kept")
 
             page.unroute("**/api/forge/status", scripted_route)
