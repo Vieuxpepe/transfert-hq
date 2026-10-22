@@ -209,12 +209,32 @@ def main() -> None:
             page.locator("#forge-last-prompt").click()
             page.wait_for_function("() => document.querySelector('#forge-prompt').value.length > 0")
             check(page.locator("#forge-prompt").input_value() == "forêt brumeuse, lumière douce", "Dernier prompt survives a reload (from the HQ gallery)")
-            storage = page.evaluate("() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])")
-            check("phare" not in storage and "forêt" not in storage and "for\\u00eat" not in storage, "no prompt text in localStorage or sessionStorage")
+            # F3: the only prompt text allowed in web storage is the normal-mode draft in sessionStorage.
+            local = page.evaluate("() => JSON.stringify(Object.entries(localStorage))")
+            check("phare" not in local and "forêt" not in local and "for\\u00eat" not in local, "no prompt text in localStorage")
+            page.wait_for_timeout(600)
+            session = page.evaluate("() => Object.entries(sessionStorage)")
+            leaks = [k for k, v in session if k != "hqForgeDraft" and ("phare" in v or "forêt" in v)]
+            check(not leaks, "outside the normal draft key, no prompt text in sessionStorage")
+            draft = page.evaluate("() => sessionStorage.getItem('hqForgeDraft')")
+            check(draft is None or "forêt" in draft, "the sessionStorage draft holds only the normal prompt on screen")
+            secret = "zq-prive-ux-7731"
+            page.evaluate("() => document.querySelector('input[name=forge-destination][value=private]').click()")
+            check(page.evaluate("() => sessionStorage.getItem('hqForgeDraft')") is None, "switching to private clears the draft")
+            page.evaluate("(t) => { const n = document.querySelector('#forge-prompt'); n.value = t; n.dispatchEvent(new Event('input', { bubbles: true })); }", secret)
+            page.wait_for_timeout(700)
+            everywhere = page.evaluate("() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])")
+            check(secret not in everywhere and "hqForgeDraft" not in everywhere, "no private prompt text in any web storage")
+            page.evaluate("() => document.querySelector('input[name=forge-destination][value=normal]').click()")
+            page.evaluate("() => { const n = document.querySelector('#forge-prompt'); n.value = ''; n.dispatchEvent(new Event('input', { bubbles: true })); }")
+            page.wait_for_timeout(600)
+            check(secret not in page.evaluate("() => JSON.stringify(Object.entries(sessionStorage))"), "the private text never reaches the draft after switching back")
 
             # Dernier prompt follows HQ job records: a failed submission with no image, across a reload
             page.locator("#forge-prompt").fill("envoi échoué mock-fail")
             page.locator("#forge-generate").click()
+            page.wait_for_function("() => sessionStorage.getItem('hqForgeDraft') === null", timeout=10000)
+            check(True, "an accepted generation clears the draft")
             page.wait_for_function("() => !document.querySelector('#forge-generate').disabled && document.querySelector('#forge-progress').hidden !== undefined && !/Envoi/.test(document.querySelector('#forge-progress-label').textContent)", timeout=20000)
             for _ in range(80):
                 first = page.request.get(base + "/api/forge/jobs").json()["jobs"][0]
