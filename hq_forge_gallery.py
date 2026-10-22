@@ -305,7 +305,7 @@ def _origin(value) -> dict | None:
     if not isinstance(value, dict):
         raise GalleryError("bad_image")
     out = {}
-    for key, limit in (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40)):
+    for key, limit in (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40), ("checkpoint_sha256", 64)):
         item = value.get(key)
         if item is None:
             continue

@@ -300,6 +300,7 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-fleet-private{border-left:3px solid var(--forge-accent);padding-left:8px}
 .forge-fleet-batch{display:flex;flex-direction:column;gap:8px}
 .forge-fleet-batch-totals{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.forge-fleet-batch-excluded{margin:.25rem 0 0;font-size:.875rem;opacity:.8;overflow-wrap:anywhere}
 .forge-fleet-batch-workers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .forge-fleet-batch-worker{display:grid;grid-template-columns:minmax(0,10rem) minmax(0,1fr) auto;align-items:center;gap:4px 12px;font-size:var(--text-sm);padding:6px 0;border-bottom:1px solid var(--line)}
 .forge-fleet-batch-worker .forge-device-name{grid-column:1;white-space:nowrap}

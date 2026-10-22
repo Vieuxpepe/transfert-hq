@@ -43,7 +43,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2  # 2: checkpoint sha256 and VAE/modules in the report (fleet parity)
 SCHEME = "hq-forge-worker-v1"
 PREFIX = "/forge-worker/v1"
 HEADER_WORKER = "X-HQ-Worker"
@@ -329,7 +329,8 @@ class ForgeLocal:
         model = options.get("sd_model_checkpoint") if isinstance(options, dict) else None
         state = progress.get("state") if isinstance(progress, dict) else None
         busy = isinstance(state, dict) and (bool(state.get("job")) or (isinstance(state.get("job_count"), int) and state["job_count"] > 0))
-        return {"state": "busy" if busy else "ready", "model": _clip(model, 200) if isinstance(model, str) else None}
+        return {"state": "busy" if busy else "ready", "model": _clip(model, 200) if isinstance(model, str) else None,
+                "vae": vae_names(options)}
 
     def catalog(self, *, force: bool = False) -> dict | None:
         if not force and self._catalog is not None and time.monotonic() - self._catalog_at < CATALOG_TTL_SEC:
@@ -354,6 +355,7 @@ class ForgeLocal:
             return out[:MAX_LIST]
 
         self._catalog = {
+            "hashes": model_hashes(models),
             "models": names(models, "title"),
             "samplers": names(samplers, "name"),
             "schedulers": names(schedulers, "name"),
@@ -387,6 +389,41 @@ class ForgeLocal:
         if not isinstance(parsed, dict):
             raise ValueError("forge_schema")
         return parsed
+
+
+def vae_names(options) -> list[str] | None:
+    """VAE / extra modules in effect, as sorted file names (never full paths). None when unreadable."""
+    if not isinstance(options, dict):
+        return None
+    out = []
+    extra = options.get("forge_additional_modules")
+    values = list(extra) if isinstance(extra, list) else []
+    vae = options.get("sd_vae")
+    if isinstance(vae, str) and vae not in ("", "Automatic", "None"):
+        values.append(vae)
+    for value in values:
+        if not isinstance(value, str) or not value:
+            continue
+        name = value.replace("\\", "/").rsplit("/", 1)[-1][:120]
+        if name and not any(ord(ch) < 32 for ch in name) and name not in out:
+            out.append(name)
+    return sorted(out)[:16]
+
+
+def model_hashes(rows) -> dict:
+    """title -> sha256 (lower-case hex) or None while Forge has not hashed the file yet."""
+    out = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        title, sha = row.get("title"), row.get("sha256")
+        if not isinstance(title, str) or not title or len(title) > 200:
+            continue
+        ok = isinstance(sha, str) and len(sha) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in sha)
+        out[title] = sha.lower() if ok else None
+        if len(out) >= MAX_LIST:
+            break
+    return out
 
 
 def submission_body(settings: dict, task_id: str) -> dict:
@@ -545,6 +582,9 @@ class Worker:
             catalog = self.forge.catalog(force=True) or {}
             if settings["checkpoint"] not in (catalog.get("models") or []):
                 return self._fail(task_id, "model_missing")
+            wanted = task.get("checkpoint_sha256")
+            if isinstance(wanted, str) and (catalog.get("hashes") or {}).get(settings["checkpoint"]) != wanted:
+                return self._fail(task_id, "model_mismatch")
             try:
                 parsed = self.forge.txt2img(submission_body(settings, task_id))
             except TimeoutError:

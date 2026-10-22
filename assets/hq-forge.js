@@ -2322,6 +2322,17 @@
     const setText = (id, value) => { const n = $(id); if (n.textContent !== value) n.textContent = value; };
     setText("forge-fleet-batch-state", { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state);
     setText("forge-fleet-batch-totals", c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : ""));
+    // Parity (A): devices left out of the split are always named, never dropped silently.
+    let excludedEl = $("forge-fleet-batch-excluded");
+    if (!excludedEl) {
+      excludedEl = document.createElement("p");
+      excludedEl.id = "forge-fleet-batch-excluded";
+      excludedEl.className = "forge-fleet-batch-excluded";
+      $("forge-fleet-batch-totals").after(excludedEl);
+    }
+    const excludedText = (batch.excluded || []).map((row) => row.message).join(" ");
+    if (excludedEl.textContent !== excludedText) excludedEl.textContent = excludedText;
+    excludedEl.hidden = !excludedText;
     const list = $("forge-fleet-batch-workers");
     const keep = new Set();
     batch.workers.forEach((row) => {

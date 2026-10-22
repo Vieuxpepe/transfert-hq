@@ -558,6 +558,73 @@ class FleetHttp(unittest.TestCase):
         self.assertIn("Échantillonneur « DPM++ 2M » absent.", payload["problems"][0]["reasons"])
         self.assertEqual(len(a.forge_mock.calls) + len(b.forge_mock.calls), 0)
 
+    # ------------------------------------------------------------------ parity (A)
+    def _excluded_run(self, key, b_kwargs, **overrides):
+        a = self.worker("PC A")
+        b = self.worker("PC B", **b_kwargs)
+        status, payload = self.batch([a.id, b.id], 2, key, **overrides)
+        self.assertEqual(status, 202, payload)
+        excluded = payload["batch"]["excluded"]
+        self.assertEqual([row["worker_id"] for row in excluded], [b.id])
+        self.assertTrue(excluded[0]["message"].startswith("PC B : "))
+        self.assertTrue(excluded[0]["message"].endswith(", exclu."))
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(done["counts"]["done"], 2)
+        self.assertEqual(len(a.forge_mock.calls), 2)
+        self.assertEqual(len(b.forge_mock.calls), 0, "an excluded device never renders")
+        return a, b, excluded[0], done
+
+    def test_same_filename_but_other_hash_is_excluded_with_a_plain_message(self):
+        a, b, row, done = self._excluded_run("parity-hash", {"hashes": {MODEL: "f" * 64}})
+        self.assertIn("autre version du mod\u00e8le", row["message"])
+        self.assertEqual(done["excluded"][0]["worker_id"], b.id)
+        meta = G.get(self.root, self.gallery_ids()[0])
+        self.assertEqual(meta["origin"]["worker_name"], "PC A", "rendering device is recorded")
+        self.assertEqual(meta["origin"]["checkpoint_sha256"], a.forge_mock.hashes[MODEL])
+
+    def test_vae_mismatch_is_excluded(self):
+        _a, _b, row, _ = self._excluded_run("parity-vae", {"vae": ("other-vae.safetensors",)})
+        self.assertIn("VAE diff\u00e9rent", row["message"])
+
+    def test_requested_lora_cannot_be_verified_so_other_devices_are_excluded(self):
+        _a, _b, row, _ = self._excluded_run("parity-lora", {}, prompt="un phare <lora:grain:0.6>")
+        self.assertIn("LoRA \u00ab grain \u00bb non v\u00e9rifiable", row["message"])
+
+    def test_unknown_hash_is_excluded_never_assumed_equal(self):
+        _a, _b, row, _ = self._excluded_run("parity-nohash", {"hashes": {MODEL: None}})
+        self.assertIn("empreinte du mod\u00e8le", row["message"])
+
+    def test_matching_devices_still_split_and_parity_split_is_pure(self):
+        a = self.worker("PC A")
+        b = self.worker("PC B")
+        status, payload = self.batch([a.id, b.id], 4, "parity-same")
+        self.assertEqual(payload["batch"]["excluded"], [])
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(len(a.forge_mock.calls) + len(b.forge_mock.calls), 4)
+        cat = {"hashes": {MODEL: "a" * 64}, "vae": []}
+        kept, excluded, parity = FL.parity_split({"checkpoint": MODEL, "prompt": "x"}, ["w1", "w2"],
+                                                 {"w1": cat, "w2": dict(cat, vae=None)}, {"w2": "PC-2"})
+        self.assertEqual(kept, ["w1"])
+        self.assertEqual(excluded[0]["message"], "PC-2 : VAE inconnu, exclu.")
+        self.assertTrue(FL._parity_ok({"parity": parity, "settings": {"checkpoint": MODEL}}, "w2", cat))
+        self.assertFalse(FL._parity_ok({"parity": parity, "settings": {"checkpoint": MODEL}}, "w2", {"hashes": {MODEL: "b" * 64}, "vae": []}))
+
+    def test_worker_refuses_a_task_whose_model_hash_differs(self):
+        import types
+        sent, posted = [], []
+        forge = types.SimpleNamespace(catalog=lambda force=False: {"models": [MODEL], "hashes": {MODEL: "a" * 64}},
+                                      txt2img=lambda body: posted.append(body))
+        hq = types.SimpleNamespace(call=lambda path, payload, **kw: sent.append((path, payload)))
+        fake = types.SimpleNamespace(_lock=threading.Lock(), current=None, forge=forge, hq=hq, last_error="",
+                                     stop=threading.Event(), _progress_loop=lambda *a: None)
+        fake._fail = lambda task_id, code: W.Worker._fail(fake, task_id, code)
+        task = {"task_id": "tk-parity1", "settings": dict(SETTINGS), "checkpoint_sha256": "e" * 64}
+        self.assertEqual(W.Worker.run_task(fake, task), "model_mismatch")
+        self.assertEqual(posted, [], "nothing is sent to Forge")
+        self.assertEqual(sent, [("/fail", {"task_id": "tk-parity1", "code": "model_mismatch"})])
+        self.assertEqual(W.model_hashes([{"title": MODEL, "sha256": "A" * 64}, {"title": "x"}]), {MODEL: "a" * 64, "x": None})
+        self.assertEqual(W.vae_names({"forge_additional_modules": ["C:/m/vae/b.safetensors", "a.pt"], "sd_vae": "Automatic"}), ["a.pt", "b.safetensors"])
+
     def test_cancel_drops_queued_and_defers_running_without_interrupt(self):
         a = self.worker("PC A", delay=1.0)
         status, payload = self.batch([a.id], 4, "cancel-key-1")

@@ -481,6 +481,15 @@ def read_progress(*, transport=None) -> dict:
     return value
 
 
+def read_options(*, transport=None) -> dict:
+    """GET /sdapi/v1/options (already allowlisted). Read-only; HQ never writes options."""
+    transport = _resolve(transport)
+    value = _call(transport, "/sdapi/v1/options")
+    if not isinstance(value, dict):
+        raise _Probe("forge_error")
+    return value
+
+
 def _elapsed_ms(started: float) -> int:
     return max(0, min(3_600_000, int((time.monotonic() - started) * 1000)))
 

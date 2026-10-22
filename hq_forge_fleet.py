@@ -92,6 +92,7 @@ MESSAGES = {
     "retry_running": "Le lot est encore en cours. Relancez une fois qu'il est terminé.",
     "retry_nothing": "Aucune image manquante à relancer.",
     "retry_none": "Aucun appareil du lot n'est disponible pour relancer.",
+    "model_mismatch": "La version du mod\u00e8le sur l'appareil ne correspond plus au lot.",
     "private_remote": "La génération privée reste sur cet HQ. Les autres appareils ne reçoivent jamais un prompt privé.",
     "private_batch": "La génération privée passe par la génération simple de cet HQ.",
     "destination": "Cette clé correspond déjà à une autre demande.",
@@ -574,10 +575,97 @@ def _names(values, limit: int = wire.MAX_LIST) -> list[str]:
     return out[:limit]
 
 
-def _clean_catalog(raw) -> dict | None:
+def _clean_catalog(raw, vae=None) -> dict | None:
     if not isinstance(raw, dict):
         return None
-    return {key: _names(raw.get(key)) for key in ("models", "samplers", "schedulers", "upscalers")}
+    out = {key: _names(raw.get(key)) for key in ("models", "samplers", "schedulers", "upscalers")}
+    out["hashes"] = _clean_hashes(raw.get("hashes"))
+    out["vae"] = None if vae is None else _names(vae, 16)
+    return out
+
+
+_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _clean_hashes(raw) -> dict:
+    out = {}
+    for title, sha in (raw.items() if isinstance(raw, dict) else ()):
+        if isinstance(title, str) and 0 < len(title) <= 200 and not any(ord(ch) < 32 for ch in title):
+            out[title] = sha if isinstance(sha, str) and _SHA_RE.fullmatch(sha) else None
+        if len(out) >= wire.MAX_LIST:
+            break
+    return out
+
+
+# ------------------------------------------------------------------ parity (A)
+# A batch is split only across devices that render the same thing: same checkpoint
+# file (sha256, not its name), same VAE / extra modules, and verifiable LoRAs.
+_LORA_RE = re.compile(r"<lora:([^:<>]{1,120})(?::[^<>]*)?>", re.IGNORECASE)
+
+
+def requested_loras(prompt) -> list[str]:
+    out = []
+    for name in _LORA_RE.findall(prompt if isinstance(prompt, str) else ""):
+        name = name.strip()
+        if name and name not in out:
+            out.append(name)
+    return out[:16]
+
+
+def parity_split(settings: dict, fit: list, catalogs: dict, names: dict) -> tuple[list, list, dict]:
+    """Keep the reference device (this HQ when chosen, else the first one) and every device
+    that matches it; each excluded device gets a plain reason. Never switches a model."""
+    reference = LOCAL_ID if LOCAL_ID in fit else fit[0]
+    checkpoint = settings.get("checkpoint")
+    ref = catalogs.get(reference) or {}
+    ref_sha = (ref.get("hashes") or {}).get(checkpoint)
+    ref_vae = ref.get("vae")
+    loras = requested_loras(settings.get("prompt"))
+    kept, excluded = [], []
+    for worker_id in fit:
+        if worker_id == reference:
+            kept.append(worker_id)
+            continue
+        cat = catalogs.get(worker_id) or {}
+        sha = (cat.get("hashes") or {}).get(checkpoint)
+        vae = cat.get("vae")
+        reasons = []
+        if not ref_sha or not sha:
+            reasons.append(f"empreinte du mod\u00e8le \u00ab {checkpoint} \u00bb inconnue")
+        elif sha != ref_sha:
+            reasons.append(f"autre version du mod\u00e8le \u00ab {checkpoint} \u00bb")
+        if vae is None or ref_vae is None:
+            reasons.append("VAE inconnu")
+        elif vae != ref_vae:
+            reasons.append("VAE diff\u00e9rent (" + (", ".join(vae) or "aucun") + " au lieu de " + (", ".join(ref_vae) or "aucun") + ")")
+        for lora in loras:
+            # Forge's /sdapi/v1/loras is not on the worker allowlist, so a LoRA cannot be checked.
+            reasons.append(f"LoRA \u00ab {lora} \u00bb non v\u00e9rifiable")
+        if reasons:
+            name = names.get(worker_id) or worker_id
+            excluded.append({"worker_id": worker_id, "name": name, "kind": "parity", "reasons": reasons,
+                             "message": f"{name} : {reasons[0]}, exclu."})
+        else:
+            kept.append(worker_id)
+    return kept, excluded, {"reference": reference, "checkpoint_sha256": ref_sha, "vae": ref_vae}
+
+
+def _parity_for(selection_fit: list, settings: dict, hq_job) -> tuple[list, list, dict]:
+    catalogs, names = {}, {}
+    for worker_id in selection_fit:
+        device = _device_public(worker_id, hq_job)
+        catalogs[worker_id] = device.get("catalog") or {}
+        names[worker_id] = device.get("name") or worker_id
+    return parity_split(settings, selection_fit, catalogs, names)
+
+
+def _parity_ok(batch: dict, worker_id: str, catalog: dict | None) -> bool:
+    parity = batch.get("parity")
+    if not isinstance(parity, dict) or worker_id == parity.get("reference"):
+        return True
+    cat = catalog or {}
+    sha = (cat.get("hashes") or {}).get(batch["settings"].get("checkpoint"))
+    return bool(sha) and sha == parity.get("checkpoint_sha256") and cat.get("vae") == parity.get("vae")
 
 
 def _local_view() -> dict:
@@ -602,6 +690,13 @@ def _local_view() -> dict:
                     "schedulers": [row.get("name") for row in raw.get("schedulers") or [] if isinstance(row, dict) and row.get("name")],
                     "upscalers": [row.get("name") for row in raw.get("upscalers") or [] if isinstance(row, dict) and row.get("name")],
                 }
+        if catalog is not None:
+            catalog["hashes"] = _clean_hashes({row.get("title"): row.get("sha256") for row in raw.get("models") or []
+                                               if isinstance(row, dict) and isinstance(row.get("title"), str)})
+            try:
+                catalog["vae"] = wire.vae_names(forge.read_options())
+            except Exception:
+                catalog["vae"] = None
         cached = (now, {"state": status.get("forge"), "model": status.get("model"), "catalog": catalog})
         _local_status = cached
     return cached[1]
@@ -939,6 +1034,8 @@ def _batch_public(batch: dict) -> dict:
         "count": len(batch["tasks"]), "seed_mode": batch["seed_mode"], "cancelled": bool(batch.get("cancelled")),
         "workers": list(per.values()), "counts": counts, "tasks": tasks, "settings": batch["settings"],
         "retryable": retryable, "retry_uncertain": retry_uncertain, "retry_of": batch.get("retry_of"),
+        "excluded": [{"worker_id": row.get("worker_id"), "name": row.get("name"), "message": row.get("message"),
+                      "reasons": list(row.get("reasons") or [])} for row in batch.get("excluded") or [] if isinstance(row, dict)],
     }
 
 
@@ -979,6 +1076,8 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
             code = "incompatible" if any(item["kind"] == "incompatible" for item in problems) else "unavailable"
             return 409, {"error": MESSAGES[code], "code": code, "problems": problems}
         assert validated is not None
+        kept, excluded, parity = _parity_for(_fit, validated, hq_job)
+        selection = kept
         seed = validated["seed"]
         if seed < 0:
             seeds = [secrets.randbelow(2**32) for _ in range(count)]
@@ -997,6 +1096,8 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
             "workers": selection,
             "seed_mode": mode,
             "cancelled": False,
+            "parity": parity,
+            "excluded": excluded,
             "tasks": [{
                 "id": "tk-" + secrets.token_hex(12), "index": index, "seed": seeds[index], "state": "queued",
                 "worker_id": None, "progress": 0, "step": 0, "steps": settings["steps"], "image_id": None,
@@ -1072,6 +1173,7 @@ def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
         if unknown or not fit or validated is None:
             return 409, {"error": MESSAGES["retry_none"], "code": "retry_none", "problems": problems}
         settings = {k: v for k, v in validated.items() if k not in ("n_iter", "batch_size")}
+        fit, excluded, parity = _parity_for(fit, validated, hq_job)
         now = _now_iso()
         batch = {
             "id": "bt-" + secrets.token_hex(12),
@@ -1079,6 +1181,8 @@ def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
             "created": now,
             "updated": now,
             "settings": settings,
+            "parity": parity,
+            "excluded": excluded,
             "workers": fit,
             "seed_mode": source["seed_mode"],
             "cancelled": False,
@@ -1207,9 +1311,11 @@ def _accept_image(batch: dict, task: dict, raw: bytes, worker_id: str) -> tuple[
                 code = "bad_image"
             else:
                 store_settings = dict(settings, n_iter=1, batch_size=1)
-                image = gallery.store(_root, bytes(raw), store_settings, origin={
-                    "worker_id": worker_id, "worker_name": _worker_name(worker_id)[:40], "batch_id": batch["id"], "task_id": task["id"],
-                })
+                origin = {"worker_id": worker_id, "worker_name": _worker_name(worker_id)[:40], "batch_id": batch["id"], "task_id": task["id"]}
+                sha = (batch.get("parity") or {}).get("checkpoint_sha256")
+                if isinstance(sha, str):
+                    origin["checkpoint_sha256"] = sha
+                image = gallery.store(_root, bytes(raw), store_settings, origin=origin)
         except gallery.GalleryError as exc:
             code = exc.code if exc.code in MESSAGES else "bad_image"
         except Exception:
@@ -1289,7 +1395,7 @@ def handle_worker(method: str, path: str, headers, body: bytes, ip: str) -> tupl
         if route == "/fail":
             if task["state"] not in ("dispatched", "running"):
                 return 200, {"ok": True}
-            code = data.get("code") if data.get("code") in ("model_missing", "forge_timeout", "forge_error", "forge_offline", "bad_image") else "forge_error"
+            code = data.get("code") if data.get("code") in ("model_missing", "model_mismatch", "forge_timeout", "forge_error", "forge_offline", "bad_image") else "forge_error"
             _set_task(task, "failed", code, finished_at=_now_iso())
             live["last_error"] = code
             _save_batches()
@@ -1323,7 +1429,7 @@ def _poll(row: dict, live: dict, data: dict) -> tuple[int, dict]:
     state = forge_raw.get("state") if forge_raw.get("state") in ("ready", "busy", "offline") else "offline"
     model = forge_raw.get("model")
     live["forge"] = {"state": state, "model": model[:200] if isinstance(model, str) else None,
-                     "catalog": _clean_catalog(forge_raw.get("catalog"))}
+                     "catalog": _clean_catalog(forge_raw.get("catalog"), forge_raw.get("vae") if isinstance(forge_raw.get("vae"), list) else None)}
     error = data.get("last_error")
     live["last_error"] = error if isinstance(error, str) and (error in MESSAGES or error == "upload") else ""
     net = data.get("net")
@@ -1350,10 +1456,13 @@ def _poll(row: dict, live: dict, data: dict) -> tuple[int, dict]:
     if picked is None:
         return 200, reply
     batch, task = picked
-    if compat_reasons(batch["settings"], live["forge"]["catalog"]):
+    if compat_reasons(batch["settings"], live["forge"]["catalog"]) or not _parity_ok(batch, worker_id, live["forge"]["catalog"]):
         return 200, reply
     _dispatch(batch, task, worker_id)
     reply["task"] = {"task_id": task["id"], "batch_id": batch["id"], "settings": _task_settings(batch, task), "lease_sec": _lease_sec}
+    sha = (batch.get("parity") or {}).get("checkpoint_sha256")
+    if sha:
+        reply["task"]["checkpoint_sha256"] = sha
     return 200, reply
 
 

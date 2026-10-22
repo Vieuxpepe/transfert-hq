@@ -45,8 +45,13 @@ class MockForge:
     """A minimal Forge API: catalog routes, progress and txt2img."""
 
     def __init__(self, *, models=(MODEL,), samplers=("Euler", "Euler a"), delay: float = 0.0, mode: str = "ok",
-                 colour=(24, 72, 48), fail_first: int = 0) -> None:
+                 colour=(24, 72, 48), fail_first: int = 0, hashes: dict | None = None, vae=()) -> None:
+        import hashlib
         self.models = list(models)
+        # Same file -> same sha256 by default (Forge's own field); tests override for parity cases.
+        self.hashes = {title: hashlib.sha256(title.encode()).hexdigest() for title in self.models}
+        self.hashes.update(hashes or {})
+        self.vae = list(vae)
         self.samplers = list(samplers)
         self.delay = delay
         self.mode = mode
@@ -80,8 +85,8 @@ class MockForge:
                     "/sdapi/v1/samplers": [{"name": name} for name in owner.samplers],
                     "/sdapi/v1/schedulers": [{"name": "automatic", "label": "Automatic"}],
                     "/sdapi/v1/upscalers": [{"name": "R-ESRGAN 4x+"}],
-                    "/sdapi/v1/sd-models": [{"title": title, "model_name": title.split(".")[0]} for title in owner.models],
-                    "/sdapi/v1/options": {"sd_model_checkpoint": owner.models[0] if owner.models else ""},
+                    "/sdapi/v1/sd-models": [{"title": title, "model_name": title.split(".")[0], "sha256": owner.hashes.get(title)} for title in owner.models],
+                    "/sdapi/v1/options": {"sd_model_checkpoint": owner.models[0] if owner.models else "", "forge_additional_modules": list(owner.vae)},
                     "/sdapi/v1/progress": {"progress": 0.5 if owner.active else 0,
                                            "state": {"job": "", "job_count": 1 if owner.mode == "busy" else 0, "sampling_step": 5 if owner.active else 0, "sampling_steps": 10}},
                     "/internal/pending-tasks": {"size": 0, "tasks": []},
@@ -120,7 +125,10 @@ class MockForge:
                     image = base64.b64encode(b"GIF89a-not-a-png").decode("ascii")
                 else:
                     image = base64.b64encode(png_bytes(data.get("width", 256), data.get("height", 256), owner.colour)).decode("ascii")
-                self._send(200, {"images": [image], "info": json.dumps({"seed": data.get("seed"), "all_seeds": [data.get("seed")]})})
+                info = {"seed": data.get("seed"), "all_seeds": [data.get("seed")]}
+                if data.get("subseed_strength"):
+                    info.update(subseed=data.get("subseed"), all_subseeds=[data.get("subseed")], subseed_strength=data.get("subseed_strength"))
+                self._send(200, {"images": [image], "info": json.dumps(info)})
 
         self.server = safe_server(Handler)
         self.port = self.server.server_address[1]
