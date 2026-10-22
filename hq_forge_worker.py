@@ -391,11 +391,21 @@ class ForgeLocal:
         status, raw = self.transport("POST", self.origin + SUBMIT_PATH, FORGE_JOB_TIMEOUT_SEC, raw_body,
                                      {"Accept": "application/json", "Content-Type": "application/json"}, MAX_FORGE_RESULT)
         if status != 200:
-            raise OSError(f"forge_http_{status}")
+            raise OSError("forge_oom" if _oom(raw) else f"forge_http_{status}")
         parsed = json.loads(raw.decode("utf-8"))
         if not isinstance(parsed, dict):
             raise ValueError("forge_schema")
         return parsed
+
+
+def _oom(raw) -> bool:
+    """Forge's API error body names the exception class (modules/api/api.py); only that name is read."""
+    try:
+        data = json.loads(bytes(raw[:65536]).decode("utf-8", "replace"))
+    except (ValueError, TypeError):
+        return False
+    name = data.get("error") if isinstance(data, dict) else None
+    return isinstance(name, str) and "OutOfMemory" in name[:80]
 
 
 def vae_names(options) -> list[str] | None:
@@ -629,7 +639,9 @@ class Worker:
                 parsed = self.forge.txt2img(submission_body(settings, task_id))
             except TimeoutError:
                 return self._fail(task_id, "forge_timeout")
-            except (OSError, ValueError):
+            except OSError as exc:
+                return self._fail(task_id, "forge_oom" if str(exc) == "forge_oom" else "forge_error")
+            except ValueError:
                 return self._fail(task_id, "forge_error")
             images = parsed.get("images")
             if not isinstance(images, list) or not images or not isinstance(images[0], str):

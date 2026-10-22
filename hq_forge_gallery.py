@@ -388,12 +388,52 @@ def get(root: Path, image_id: str) -> dict:
         "height": data.get("height"),
         "settings": data.get("settings") if isinstance(data.get("settings"), dict) else {},
         "origin": data.get("origin") if isinstance(data.get("origin"), dict) else None,
+        "triage": triage_of(data),
         "original": f"/api/forge/gallery/{image_id}/original",
         "thumb": f"/api/forge/gallery/{image_id}/thumb",
     }
 
 
-def page(root: Path, *, limit: int = 24, cursor: str | None = None) -> dict:
+TRIAGE = ("none", "keep", "reject", "favorite")
+
+
+def triage_of(meta: dict) -> str:
+    """Images stored before Phase A have no flag: they read as 'none' (not sorted)."""
+    value = meta.get("triage") if isinstance(meta, dict) else None
+    return value if value in TRIAGE else "none"
+
+
+def set_triage(root: Path, image_id: str, state) -> dict:
+    """Reversible sort flag. 'reject' only hides the image in the bin; nothing is deleted."""
+    if state not in TRIAGE:
+        raise GalleryError("bad_triage")
+    with _LOCK:
+        data = _meta(root, image_id)
+        before = triage_of(data)
+        if state == "none":
+            data.pop("triage", None)
+        else:
+            data["triage"] = state
+        _atomic_bytes(_child(root, image_id) / "meta.json", json.dumps(data, ensure_ascii=False).encode("utf-8"))
+    return {"id": image_id, "triage": state, "previous": before}
+
+
+def triage_map(root: Path) -> dict:
+    """image id -> flag, for statistics (keep rate). Reads meta only, never pixels."""
+    out = {}
+    base = gallery_dir(root)
+    if base.is_dir() and not base.is_symlink():
+        for child in base.iterdir():
+            if child.is_symlink() or not IMG_RE.fullmatch(child.name):
+                continue
+            try:
+                out[child.name] = triage_of(_meta(root, child.name))
+            except GalleryError:
+                continue
+    return out
+
+
+def page(root: Path, *, limit: int = 24, cursor: str | None = None, view: str = "") -> dict:
     limit = 24 if not isinstance(limit, int) else max(1, min(PAGE_MAX, limit))
     rows = []
     base = gallery_dir(root)
@@ -405,6 +445,13 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None) -> dict:
                 rows.append(_meta(root, child.name))
             except GalleryError:
                 continue
+    # The bin holds rejected images; every other view hides them. 'untriaged' feeds quick triage.
+    if view == "trash":
+        rows = [item for item in rows if triage_of(item) == "reject"]
+    elif view == "untriaged":
+        rows = [item for item in rows if triage_of(item) == "none"]
+    else:
+        rows = [item for item in rows if triage_of(item) != "reject"]
     rows.sort(key=lambda item: (str(item.get("created") or ""), item.get("id") or ""), reverse=True)
     if cursor:
         if not IMG_RE.fullmatch(cursor):
@@ -423,6 +470,7 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None) -> dict:
             "created": item.get("created"),
             "width": item.get("width"),
             "height": item.get("height"),
+            "triage": triage_of(item),
             "thumb": f"/api/forge/gallery/{image_id}/thumb",
         })
     next_cursor = public[-1]["id"] if len(rows) > limit and public else None

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import hq_forge as forge
 import hq_forge_gallery as gallery
+import hq_forge_stats as stats
 import hq_forge_vault as vault
 
 TERMINAL = {"completed", "failed", "cancelled", "unknown"}
@@ -57,6 +58,7 @@ _MESSAGES = {
     "quota": "Le quota de la galerie est atteint. Rien n'a été effacé.",
     "disk": "Espace disque insuffisant.",
     "forge_error": "Forge a renvoyé une réponse inutilisable.",
+    "forge_oom": "Forge a manqu\u00e9 de m\u00e9moire GPU pour ces r\u00e9glages.",
     "forge_http": "Forge a répondu par un code d'erreur.",
     "forge_malformed": "Forge a renvoyé un JSON illisible.",
     "forge_schema": "Forge a renvoyé un résultat inattendu.",
@@ -713,6 +715,22 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
 
     threading.Thread(target=poll, name="hq-forge-progress", daemon=True).start()
     started = time.monotonic()
+    started_at = _now()
+
+    def stat(outcome: str, error: str = "", images=None) -> None:
+        """Phase A: settings, duration and outcome of a NORMAL job. Private jobs never reach this."""
+        if destination != "normal" or token != _generation:
+            return
+        elapsed = time.monotonic() - started
+        _mutate(root, job_id, token, started_at=started_at, finished_at=_now(), duration_ms=int(elapsed * 1000))
+        base = {**stats.from_settings(settings), "kind": "job", "job_id": job_id, "device_id": "local",
+                "outcome": outcome, "error": error or None, "attempt": 1, "uncertain": outcome == "uncertain"}
+        if images:
+            for item in images:
+                stats.record(root, {**base, "image_id": item.get("id"), "duration_s": elapsed / max(1, len(images)), "count": len(images)})
+        else:
+            stats.record(root, {**base, "count": settings.get("n_iter")})
+
     try:
         body = submission_body(settings, task_id)
         parsed = forge.post_json(forge.SUBMIT_PATH, body, timeout=_job_timeout, transport=transport)
@@ -721,6 +739,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         code = "stopped" if exc.code == "forge_offline" else exc.code
         if code not in _MESSAGES:
             code = "forge_error"
+        stat("uncertain" if exc.code == "forge_timeout" else "failed", code)
         if exc.code == "forge_timeout":
             _mutate(
                 root, job_id, token,
@@ -738,6 +757,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         return
     except Exception:
         stop.set()
+        stat("failed", "forge_error")
         _fail(root, job_id, token, "forge_error")
         return
     finally:
@@ -745,6 +765,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
     _mutate(root, job_id, token, state="saving")
     images = _result_images(parsed, settings["n_iter"])
     if not images:
+        stat("failed", "bad_image")
         _fail(root, job_id, token, "bad_image")
         return
     seeds = _seeds_used(parsed, settings["seed"], len(images))
@@ -769,14 +790,17 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         _fail(root, job_id, token, code if code in _MESSAGES else "bad_image")
         return
     except gallery.GalleryError as exc:
+        stat("failed", exc.code if exc.code in _MESSAGES else "bad_image")
         _fail(root, job_id, token, exc.code if exc.code in _MESSAGES else "bad_image")
         return
     except Exception:
+        stat("failed", "bad_image")
         _fail(root, job_id, token, "bad_image")
         return
     # Before the terminal state: once a job reads completed, this thread writes nothing more.
     if destination == "normal":
         _record_duration(root, settings, time.monotonic() - started, token)
+        stat("completed", images=stored)
     _mutate(
         root, job_id, token,
         state="completed",

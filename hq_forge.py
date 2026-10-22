@@ -504,6 +504,16 @@ def _elapsed_ms(started: float) -> int:
     return max(0, min(3_600_000, int((time.monotonic() - started) * 1000)))
 
 
+def oom_error(raw) -> bool:
+    """True when Forge's error body says {"error": "OutOfMemoryError", ...} (modules/api/api.py)."""
+    try:
+        data = json.loads(bytes(raw[:65536]).decode("utf-8", "replace"))
+    except (ValueError, TypeError):
+        return False
+    name = data.get("error") if isinstance(data, dict) else None
+    return isinstance(name, str) and "OutOfMemory" in name[:80]
+
+
 def post_json(path: str, payload: dict, *, timeout: float, transport=None) -> dict:
     """POST one allowlisted JSON route. The only route is txt2img."""
     if path != SUBMIT_PATH or not isinstance(payload, dict):
@@ -533,7 +543,8 @@ def post_json(path: str, payload: dict, *, timeout: float, transport=None) -> di
     if len(raw) > MAX_SUBMIT_BYTES:
         raise _Probe("forge_error", http_status=status if isinstance(status, int) else None, elapsed_ms=elapsed)
     if status != 200:
-        raise _Probe("forge_http", http_status=status, elapsed_ms=elapsed)
+        # Forge's API error body names the exception class; only that name is read, nothing is kept.
+        raise _Probe("forge_oom" if oom_error(raw) else "forge_http", http_status=status, elapsed_ms=elapsed)
     try:
         parsed = json.loads(bytes(raw).decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):

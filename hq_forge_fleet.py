@@ -48,6 +48,7 @@ from pathlib import Path
 import hq_forge as forge
 import hq_forge_gallery as gallery
 import hq_forge_jobs as jobs
+import hq_forge_stats as stats
 import hq_forge_worker as wire
 
 LOCAL_ID = "local"
@@ -92,6 +93,7 @@ MESSAGES = {
     "retry_running": "Le lot est encore en cours. Relancez une fois qu'il est terminé.",
     "retry_nothing": "Aucune image manquante à relancer.",
     "retry_none": "Aucun appareil du lot n'est disponible pour relancer.",
+    "forge_oom": "Forge a manqu\u00e9 de m\u00e9moire GPU pour ces r\u00e9glages.",
     "model_mismatch": "La version du mod\u00e8le sur l'appareil ne correspond plus au lot.",
     "private_remote": "La génération privée reste sur cet HQ. Les autres appareils ne reçoivent jamais un prompt privé.",
     "private_batch": "La génération privée passe par la génération simple de cet HQ.",
@@ -1021,6 +1023,32 @@ def _set_task(task: dict, state: str, code: str = "", **fields) -> None:
     task["message"] = MESSAGES.get(key, MESSAGES.get(state, ""))
     task["updated"] = _now_iso()
     task.update(fields)
+    if "finished_at" in fields and state in ("completed", "failed", "uncertain", "cancelled", "lost"):
+        _stat_task(task)
+
+
+def _stat_task(task: dict) -> None:
+    """Phase A: one statistics record per finished task (settings, device, duration, outcome; no prompt).
+    Batches are normal-mode only, so nothing from the vault can reach this."""
+    found = _find_task(task.get("id"))
+    if found is None or _root is None:
+        return
+    batch = found[0]
+    duration = None
+    if task.get("state") == "completed" and isinstance(task.get("dispatched_ts"), (int, float)):
+        duration = max(0.0, _clock() - task["dispatched_ts"])
+    worker_id = task.get("worker_id")
+    try:
+        stats.record(_root, {
+            **stats.from_settings(dict(batch.get("settings") or {}, n_iter=1, seed=task.get("seed"))),
+            "kind": "batch", "batch_id": batch.get("id"), "task_id": task.get("id"), "image_id": task.get("image_id"),
+            "device_id": worker_id, "device_name": _worker_name(worker_id) if worker_id else None,
+            "checkpoint_sha256": (batch.get("parity") or {}).get("checkpoint_sha256"),
+            "outcome": task.get("state"), "error": task.get("error") or None, "duration_s": duration,
+            "attempt": task.get("attempt", 1), "uncertain": task.get("state") == "uncertain", "count": 1,
+        })
+    except OSError:
+        pass
 
 
 def _find_batch(batch_id: str) -> dict | None:
@@ -1268,6 +1296,7 @@ def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
                 "id": "tk-" + secrets.token_hex(12), "index": task["index"], "seed": task["seed"], "state": "queued",
                 "worker_id": None, "progress": 0, "step": 0, "steps": settings["steps"], "image_id": None,
                 "error": "", "message": MESSAGES["queued"], "updated": now, "retry_of_task": task["id"],
+                "attempt": int(task.get("attempt", 1)) + 1,
                 **({"subseed": task["subseed"]} if "subseed" in task else {}),
             } for task in missing],
         }
@@ -1475,7 +1504,7 @@ def handle_worker(method: str, path: str, headers, body: bytes, ip: str) -> tupl
         if route == "/fail":
             if task["state"] not in ("dispatched", "running"):
                 return 200, {"ok": True}
-            code = data.get("code") if data.get("code") in ("model_missing", "model_mismatch", "forge_timeout", "forge_error", "forge_offline", "bad_image") else "forge_error"
+            code = data.get("code") if data.get("code") in ("model_missing", "model_mismatch", "forge_timeout", "forge_error", "forge_offline", "forge_oom", "bad_image") else "forge_error"
             _set_task(task, "failed", code, finished_at=_now_iso())
             live["last_error"] = code
             _save_batches()
@@ -1616,7 +1645,7 @@ def _run_local(batch: dict, task: dict, token: int) -> None:
                 if exc.code == "forge_timeout":
                     _set_task(task, "uncertain", "forge_timeout", finished_at=_now_iso())
                 else:
-                    _set_task(task, "failed", "forge_offline" if exc.code == "forge_offline" else "forge_error", finished_at=_now_iso())
+                    _set_task(task, "failed", exc.code if exc.code in ("forge_offline", "forge_oom") else "forge_error", finished_at=_now_iso())
                 _save_batches()
         return
     except Exception:

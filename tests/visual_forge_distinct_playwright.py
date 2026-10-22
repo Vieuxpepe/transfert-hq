@@ -1,4 +1,4 @@
-﻿"""Forge Studio: fleet parity (A), politeness (B), explore around (C). Mock Forge only.
+"""Forge Studio: fleet parity (A), politeness (B), explore around (C). Mock Forge only.
 
 No GPU, no real Forge, no production port. Same harness as the quick-wins suite.
 

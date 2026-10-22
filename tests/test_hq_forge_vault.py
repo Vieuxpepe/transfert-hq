@@ -243,6 +243,8 @@ class Vault(unittest.TestCase):
         raw_jobs = (self.hq / ".hq-forge" / "jobs.json").read_text(encoding="utf-8")
         self.assertNotIn(prompt, raw_jobs)
         self.assertFalse((self.hq / ".hq-forge" / "gallery").exists())
+        self.assertFalse((self.hq / ".hq-forge" / "stats.json").exists(), "nothing from the vault reaches statistics")
+        self.assertNotIn("started_at", raw_jobs, "no timing record for a private job either")
         image_id = job["images"][0]["id"]
         stored = (self.store / "objects" / (image_id + ".bin")).read_bytes()
         self.assertNotIn(prompt.encode("utf-8"), stored)

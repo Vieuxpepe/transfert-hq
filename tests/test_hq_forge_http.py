@@ -307,6 +307,15 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(self.admin.req(path, "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)
         self.assertEqual(self.admin.req(path, "POST", b"{}")[0], 404)
 
+    def test_triage_route_is_admin_only_csrf_gated_and_404_for_unknown(self):
+        path = "/api/forge/gallery/img-" + "0" * 24 + "/triage"
+        body = b'{"state": "keep"}'
+        self.assertEqual(self.anon.req(path, "POST", body)[0], 401)
+        self.assertEqual(self.upload.req(path, "POST", body)[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", body, {"Origin": "http://evil.example"}, origin=False)[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", body)[0], 404)
+        self.assertEqual(self.admin.req("/api/forge/gallery/../triage", "POST", body)[0] in (400, 404), True)
+
     def test_readiness_does_not_depend_on_forge(self):
         self.assertNotIn("hq_forge", D.REQUIRED_MODULES)
         status, _headers, body = self.admin.req("/api/diag/ready")

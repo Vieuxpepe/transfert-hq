@@ -101,3 +101,23 @@ Cards only report what HQ actually observed or what the worker itself sent:
 - a network/Tailscale problem is shown only when the worker reports it afterwards (`net: {code: "hq_unreachable", since, until}` in its poll, sent once HQ answers again; older workers simply omit it);
 - Forge API down or busy, missing model/sampler/scheduler, refused credentials (bad signature), clock skew, unprotected secret, unknown hardware.
 Each message gives the next step. The Add-device sheet walks through the six setup steps, copies only the non-secret pair/run commands and detects the new device live.
+
+## Measured on the real Forge (read-only GETs, idle, 2026-10-22)
+
+- `GET /sdapi/v1/loras` (sd_forge_lora): list of `{name, alias, metadata}`; no path, size or hash field.
+  The optional content hash is `metadata.sshs_model_hash`. This PC had no LoRA (`[]`).
+- `GET /sdapi/v1/memory` exists (200): `{ram:{free,used,total}, cuda:{system, active, allocated, reserved,
+  inactive, events:{retries, oom}}}`. It is a weak signal and is **not** on the allowlist; HQ does not use it.
+- Errors from `POST /sdapi/v1/txt2img` come from `modules/api/api.py` `handle_exception` as
+  `{"error": <exception class name>, "detail", "body", "errors"}`. HQ and workers read only the class name;
+  `OutOfMemoryError` is classified `forge_oom` ("Forge a manqué de mémoire GPU"). Read from the source;
+  an actual out-of-memory failure was not provoked.
+
+## Statistics (phase A)
+
+`.hq-forge/stats.json` keeps up to 5000 records, one per image or failed attempt, from normal jobs and
+multi-device batches only: checkpoint (+ sha256 for batches), sampler, scheduler, CFG, steps, size, hires,
+seed, variation strength, device, duration, outcome, error code, attempt, uncertain. Never a prompt or a
+negative prompt, never anything from the vault. Gallery images carry an optional `triage` flag
+(`keep | reject | favorite`, absent = not sorted); rejected images are hidden in the bin, never deleted.
+

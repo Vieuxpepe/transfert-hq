@@ -6607,7 +6607,8 @@ class Handler(BaseHTTPRequestHandler):
                 if (qs.get("view") or [""])[0] == "history":
                     self._json(200, hq_forge_gallery.history_page(ROOT, limit=limit, cursor=cursor, query=(qs.get("q") or [""])[0]))
                     return True
-                self._json(200, hq_forge_gallery.page(ROOT, limit=limit, cursor=cursor))
+                view = (qs.get("view") or [""])[0]
+                self._json(200, hq_forge_gallery.page(ROOT, limit=limit, cursor=cursor, view=view if view in ("trash", "untriaged") else ""))
             except hq_forge_gallery.GalleryError:
                 self._json(400, {"error": "Introuvable"})
             return True
@@ -6653,6 +6654,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "JSON invalide"})
             return True
         prefix = "/api/forge/gallery/"
+        if raw.startswith(prefix) and raw.endswith("/triage"):
+            try:
+                self._json(200, hq_forge_gallery.set_triage(ROOT, raw[len(prefix):-len("/triage")], data.get("state")))
+            except hq_forge_gallery.GalleryError as exc:
+                if exc.code == "bad_triage":
+                    self._json(400, {"error": "\u00c9tat de tri inconnu.", "code": "bad_triage"})
+                else:
+                    self._json(404, {"error": "Introuvable"})
+            return True
         if raw.startswith(prefix) and raw.endswith("/delete"):
             image_id = raw[len(prefix):-len("/delete")]
             try:

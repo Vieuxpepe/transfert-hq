@@ -558,6 +558,22 @@ class FleetHttp(unittest.TestCase):
         self.assertIn("Échantillonneur « DPM++ 2M » absent.", payload["problems"][0]["reasons"])
         self.assertEqual(len(a.forge_mock.calls) + len(b.forge_mock.calls), 0)
 
+    # ------------------------------------------------------------------ statistics (phase A)
+    def test_batch_tasks_record_device_duration_outcome_and_attempt(self):
+        import hq_forge_stats as S
+        sim = self.worker("PC A", fail_first=1)
+        status, payload = self.batch([sim.id], 2, "stats-batch-1", prompt="zq-fleet-stat-prompt")
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual((done["counts"]["done"], done["counts"]["failed"]), (1, 1))
+        status, retry = self.post(f"/api/forge/batches/{done['batch_id']}/retry", {}, key="stats-retry-1")
+        self.assertIn(status, (200, 202), retry)
+        self.finished(retry["batch"]["batch_id"])
+        rows = [r for r in S.records(self.root) if r["kind"] == "batch"]
+        self.assertEqual(sorted((r["outcome"], r["attempt"]) for r in rows), [("completed", 1), ("completed", 2), ("failed", 1)])
+        ok = [r for r in rows if r["outcome"] == "completed"]
+        self.assertTrue(all(r["device_name"] == "PC A" and r["device_id"] == sim.id and "duration_s" in r and r["image_id"] for r in ok))
+        self.assertNotIn("zq-fleet-stat-prompt", (self.root / ".hq-forge" / "stats.json").read_text(encoding="utf-8"))
+
     # ------------------------------------------------------------------ parity (A)
     def _excluded_run(self, key, b_kwargs, **overrides):
         a = self.worker("PC A")
