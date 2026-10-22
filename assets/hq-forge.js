@@ -738,6 +738,7 @@
   async function lockVault() {
     await api("/api/forge/vault/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     clearPrivateUi();
+    if (window.hqForgeScrubPrivate) window.hqForgeScrubPrivate();
     await refreshVault();
   }
 
@@ -802,7 +803,11 @@
     }
   });
   $("forge-vault-back").addEventListener("click", () => {
-    document.querySelector('input[name="forge-destination"][value="normal"]').checked = true;
+    const normal = document.querySelector('input[name="forge-destination"][value="normal"]');
+    if (!normal.checked) {
+      normal.checked = true;
+      normal.dispatchEvent(new Event("change", { bubbles: true }));
+    }
     refreshVault().catch(() => {});
     promptEl.focus();
   });
@@ -1071,6 +1076,7 @@
     take(samplerEl, preset.sampler_name, "échantillonneur");
     take(schedulerEl, preset.scheduler, "planificateur");
     if (preset.include_prompt) promptEl.value = preset.prompt || "";
+    if (window.hqForgeTaint) window.hqForgeTaint();
     negativeEl.value = preset.negative_prompt || "";
     $("forge-width").value = String(preset.width);
     $("forge-height").value = String(preset.height);
@@ -1429,6 +1435,7 @@
   function finishRestore(settings, mode, label) {
     let missing = [];
     if (mode !== "params") applyPromptText(settings);
+    if (window.hqForgeTaint) window.hqForgeTaint();
     if (mode !== "prompt") missing = applyParameters(settings);
     const what = mode === "params" ? "Paramètres repris" : mode === "prompt" ? "Prompt repris" : "Prompt et paramètres repris";
     say(what + (label ? " (" + label + ")" : "") + ". Rien n'est lancé : appuyez sur Générer quand vous êtes prêt." + (missing.length ? " Indisponible ici, réglage actuel gardé : " + missing.join(", ") + "." : ""));
@@ -2576,15 +2583,38 @@
      destination is the private vault, and switching destination wipes the key
      before any pending save can run (capture phase, ahead of every other handler). */
   const DRAFT_KEY = "hqForgeDraft";
+  const SCRUB_NOTE = "Champs vidés : le texte privé n'est pas conservé.";
   let draftTimer = 0;
+  // Set while the fields may hold text typed, restored or preset-filled in private mode.
+  let privateText = destination() === "private";
+  let lastDestination = destination();
   function wipeDraft() {
     clearTimeout(draftTimer);
     draftTimer = 0;
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) { /* storage off */ }
   }
+  function draftNote(text) {
+    const note = $("forge-draft-note");
+    if (!note) return;
+    note.textContent = text;
+    note.hidden = !text;
+  }
+  function taint() {
+    if (destination() === "private") privateText = true;
+    if (privateText) wipeDraft();
+  }
+  function scrubPrivate() {
+    if (!privateText && destination() !== "private") return;
+    wipeDraft();
+    const had = !!(promptEl.value || negativeEl.value);
+    promptEl.value = "";
+    negativeEl.value = "";
+    privateText = destination() === "private";
+    if (had) draftNote(SCRUB_NOTE);
+  }
   function saveDraft() {
     draftTimer = 0;
-    if (destination() !== "normal") { wipeDraft(); return; }
+    if (destination() !== "normal" || privateText) { wipeDraft(); return; }
     const prompt = promptEl.value;
     const negative = negativeEl.value;
     try {
@@ -2593,17 +2623,25 @@
     } catch (_) { /* storage full or off */ }
   }
   function queueDraft() {
-    if (destination() !== "normal") { wipeDraft(); return; }
+    if (destination() !== "normal") { privateText = true; wipeDraft(); return; }
     clearTimeout(draftTimer);
+    if (privateText) { wipeDraft(); return; }
     draftTimer = setTimeout(saveDraft, 400);
   }
+  // Capture phase: runs ahead of every other handler, so no pending save survives a switch.
   const onDestination = (event) => {
-    if (event.target && event.target.name === "forge-destination") wipeDraft();
+    if (!event.target || event.target.name !== "forge-destination") return;
+    wipeDraft();
+    const next = destination();
+    if (next === "private") privateText = true;
+    if (event.type !== "change") return;
+    if (lastDestination === "private" && next === "normal") scrubPrivate();
+    lastDestination = next;
   };
   document.addEventListener("input", onDestination, true);
   document.addEventListener("change", onDestination, true);
   document.addEventListener("click", (event) => {
-    if (event.target && event.target.closest && event.target.closest('input[name="forge-destination"][value="private"]')) wipeDraft();
+    if (event.target && event.target.closest && event.target.closest('input[name="forge-destination"]')) wipeDraft();
   }, true);
   promptEl.addEventListener("input", queueDraft);
   negativeEl.addEventListener("input", queueDraft);
@@ -2615,11 +2653,12 @@
     if (promptEl.value.trim() || negativeEl.value.trim()) return;
     promptEl.value = draft.prompt;
     negativeEl.value = typeof draft.negative_prompt === "string" ? draft.negative_prompt : "";
-    const note = $("forge-draft-note");
-    if (note) { note.textContent = "Brouillon repris."; note.hidden = false; }
+    draftNote("Brouillon repris.");
   }
-  promptEl.addEventListener("input", () => { const note = $("forge-draft-note"); if (note && !note.hidden) note.hidden = true; }, { once: true });
+  promptEl.addEventListener("input", () => { const note = $("forge-draft-note"); if (note && !note.hidden) note.hidden = true; });
   window.hqForgeWipeDraft = wipeDraft;
+  window.hqForgeTaint = taint;
+  window.hqForgeScrubPrivate = scrubPrivate;
   restoreDraft();
 
   const usualFields = new Set(["forge-width", "forge-height", "forge-steps", "forge-steps-range", "forge-iter", "forge-hr"]);

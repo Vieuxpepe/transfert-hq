@@ -345,6 +345,110 @@ def main() -> None:
             check(SECRET not in text, "job list never contains the private prompt (vault locked)")
             page.locator('input[name="forge-destination"][value="normal"]').check()
 
+            # Private -> normal never leaves private text in the fields or in any browser storage
+            ENGINE = browser.browser_type.name
+            LEAK_SHOTS = Path(os.environ["FORGE_LEAK_SHOTS"]) if os.environ.get("FORGE_LEAK_SHOTS") else None
+            SCRUB = "Champs vid\u00e9s : le texte priv\u00e9 n'est pas conserv\u00e9."
+            ALL_STORAGE = """async () => {
+  const out = [JSON.stringify(Object.entries(localStorage)), JSON.stringify(Object.entries(sessionStorage))];
+  if (window.indexedDB && indexedDB.databases) {
+    for (const info of await indexedDB.databases()) {
+      out.push(info.name || "");
+      const db = await new Promise((ok, ko) => { const r = indexedDB.open(info.name); r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error); });
+      for (const store of db.objectStoreNames) {
+        const rows = await new Promise((ok) => { const q = db.transaction(store).objectStore(store).getAll(); q.onsuccess = () => ok(q.result); q.onerror = () => ok([]); });
+        out.push(JSON.stringify(rows));
+      }
+      db.close();
+    }
+  }
+  if (window.caches) {
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const req of await cache.keys()) { out.push(req.url); const res = await cache.match(req); out.push(res ? await res.text() : ""); }
+    }
+  }
+  return out.join("|");
+}"""
+            def to_private():
+                page.locator('input[name="forge-destination"][value="private"]').check()
+                page.locator("#forge-vault").wait_for()
+
+            def to_normal():
+                page.locator('input[name="forge-destination"][value="normal"]').check()
+
+            def leak_checks(sentinel, tag, scrubbed=True):
+                page.wait_for_timeout(900)  # well past the 400 ms debounce
+                check(page.evaluate("() => sessionStorage.getItem('hqForgeDraft')") is None, f"{tag}: no hqForgeDraft")
+                dump = page.evaluate(ALL_STORAGE)
+                check(sentinel not in dump, f"{tag}: sentinel absent from localStorage, sessionStorage, IndexedDB and Cache Storage")
+                check(page.locator("#forge-prompt").input_value() == "" and page.locator("#forge-negative").input_value() == "", f"{tag}: prompt and negative fields emptied " + repr(page.evaluate("() => [document.querySelector('#forge-prompt').value, document.querySelector('#forge-negative').value, document.querySelector('input[name=forge-destination]:checked').value, document.querySelector('#forge-draft-note').textContent]")))
+                if scrubbed:
+                    check(page.locator("#forge-draft-note").inner_text() == SCRUB, f"{tag}: quiet note says the fields were emptied")
+
+            def set_negative(text):
+                page.evaluate("(t) => { const n = document.querySelector('#forge-negative'); n.value = t; n.dispatchEvent(new Event('input', { bubbles: true })); }", text)
+
+            # A: private typed, toggle after the debounce delay
+            to_private()
+            page.locator("#forge-prompt").fill("fuite-A-91f3")
+            set_negative("fuite-A-91f3 neg")
+            page.wait_for_timeout(900)
+            to_normal()
+            leak_checks("fuite-A-91f3", "private typed then normal after debounce")
+            if LEAK_SHOTS:
+                LEAK_SHOTS.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(LEAK_SHOTS / f"{ENGINE}-leak-scrubbed-note.png"))
+            page.locator("#forge-prompt").fill("texte normal apres")
+            page.wait_for_timeout(900)
+            d = page.evaluate("() => sessionStorage.getItem('hqForgeDraft')") or ""
+            check("texte normal apres" in d and "fuite-A" not in d, "normal typing after the scrub saves a clean draft")
+
+            # B: toggle inside the debounce window
+            to_private()
+            check(page.evaluate("() => sessionStorage.getItem('hqForgeDraft')") is None, "entering private removes the normal draft")
+            page.evaluate("(t) => { const n = document.querySelector('#forge-prompt'); n.value = t; n.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('input[name=forge-destination][value=normal]').click(); }", "fuite-B-27c8")
+            leak_checks("fuite-B-27c8", "toggle to normal inside the debounce window")
+
+            # C: creative preset applied in private, then toggle
+            page.evaluate("() => { const n = document.querySelector('#forge-prompt'); n.value = 'fuite-C-5d02'; }")  # no input event: never a draft
+            page.evaluate("() => { document.querySelector('#forge-presets').open = true; }")
+            page.locator("#forge-preset-save").click()
+            page.locator("#forge-preset-name").fill("Fuite test")
+            page.locator('input[name="forge-preset-kind"][value="creative"]').check()
+            page.locator("#forge-preset-privacy-ack").check()
+            page.locator("#forge-preset-confirm").click()
+            page.wait_for_function("() => [...document.querySelectorAll('#forge-preset-list option')].some((o) => o.textContent.includes('Fuite test'))")
+            page.evaluate("() => { const n = document.querySelector('#forge-prompt'); n.value = ''; }")
+            check(page.evaluate("() => sessionStorage.getItem('hqForgeDraft')") is None or "fuite-C" not in page.evaluate("() => sessionStorage.getItem('hqForgeDraft')"), "preset setup wrote no draft")
+            page.evaluate("() => sessionStorage.removeItem('hqForgeDraft')")
+            to_private()
+            page.evaluate("() => { const s = document.querySelector('#forge-preset-list'); const o = [...s.options].find((x) => x.textContent.includes('Fuite test')); s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); }")
+            page.locator("#forge-preset-load").click()
+            check(page.locator("#forge-prompt").input_value() == "fuite-C-5d02", "the creative preset filled the private prompt")
+            page.locator("#forge-prompt").press("End")
+            page.keyboard.type(" x")
+            page.wait_for_timeout(900)
+            check(page.evaluate("() => sessionStorage.getItem('hqForgeDraft')") is None, "no draft while a preset prompt is edited in private")
+            to_normal()
+            leak_checks("fuite-C-5d02", "private preset applied then toggle")
+
+            # D: vault lock with private text present
+            to_private()
+            page.locator("#forge-vault-pass").fill("synthetic horse battery")
+            page.locator("#forge-vault-open").click()
+            page.locator("#forge-vault-lock").wait_for()
+            page.locator("#forge-prompt").fill("fuite-D-e410")
+            page.wait_for_timeout(900)
+            page.locator("#forge-vault-lock").click()
+            page.locator("#forge-vault-pass").wait_for()
+            leak_checks("fuite-D-e410", "vault lock with private text")
+            check(page.locator("#forge-vault-gallery img").count() == 0, "vault lock removes decrypted thumbnails")
+            if LEAK_SHOTS:
+                page.screenshot(path=str(LEAK_SHOTS / f"{ENGINE}-leak-after-lock.png"))
+            to_normal()
+            leak_checks("fuite-D-e410", "back to normal after the lock", scrubbed=False)
+
             # Responsive matrix
             for width, height, name in VIEWPORTS:
                 page.set_viewport_size({"width": width, "height": height})
