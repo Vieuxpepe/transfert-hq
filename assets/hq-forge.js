@@ -1786,6 +1786,7 @@
       if (!n || n.contains(wrap) || !n.getClientRects().length) return;
       const k = n.getBoundingClientRect();
       if (k.top >= anchor.bottom - 1 && k.top < bottom + 8) bottom = Math.min(bottom, k.top - 6);
+      else if (k.bottom <= anchor.top + 1 && k.bottom > top - 8) top = Math.max(top, k.bottom + 6);
     });
     pop.style.setProperty("--help-max", Math.max(120, right - left) + "px");
     const r = pop.getBoundingClientRect();
