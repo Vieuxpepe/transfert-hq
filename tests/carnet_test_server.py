@@ -65,6 +65,8 @@ def main() -> None:
         import time
         mock_delay = float(os.environ.get("HQ_FORGE_MOCK_DELAY", "0") or 0)
         running = threading.Event()
+        # B: Forge "busy with someone else's work" for the first N seconds (read-only progress).
+        busy_until = time.monotonic() + float(os.environ.get("HQ_FORGE_MOCK_BUSY_SEC", "0") or 0)
 
         def forge_transport(method, url, timeout, body=None):
             path = url.split("://", 1)[-1]
@@ -79,8 +81,20 @@ def main() -> None:
                         time.sleep(mock_delay)
                     finally:
                         running.clear()
-                payload = {"images": [encoded], "info": "{\"seed\": 4, \"all_seeds\": [4]}"}
+                try:
+                    sent = json.loads(body.decode("utf-8")) if isinstance(body, (bytes, bytearray)) else {}
+                except ValueError:
+                    sent = {}
+                count = max(1, min(6, int(sent.get("n_iter") or 1)))
+                info = {"seed": 4, "all_seeds": [4] * count}
+                if sent.get("subseed_strength"):
+                    info = {"seed": sent["seed"], "all_seeds": [sent["seed"]] * count, "subseed": sent["subseed"],
+                            "all_subseeds": [sent["subseed"] + i for i in range(count)], "subseed_strength": sent["subseed_strength"]}
+                payload = {"images": [encoded] * count, "info": json.dumps(info)}
                 return 200, json.dumps(payload).encode("utf-8")
+            if path == "/sdapi/v1/progress" and time.monotonic() < busy_until:
+                return 200, json.dumps({"progress": 0.3, "eta_relative": 10.0,
+                                        "state": {"job": "scripts_txt2img", "job_count": 1, "sampling_step": 3, "sampling_steps": 10}}).encode("utf-8")
             if path == "/sdapi/v1/progress" and running.is_set():
                 return 200, json.dumps({"progress": 0.5, "eta_relative": 25.0,
                                         "state": {"job": "", "job_count": 1, "sampling_step": 5, "sampling_steps": 10}}).encode("utf-8")
@@ -88,7 +102,9 @@ def main() -> None:
                 "/sdapi/v1/samplers": [{"name": "Euler"}],
                 "/sdapi/v1/schedulers": [{"name": "automatic", "label": "Automatic"}],
                 "/sdapi/v1/upscalers": [{"name": "R-ESRGAN 4x+"}, {"name": "None"}],
-                "/sdapi/v1/sd-models": [{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd", "sha256": None}],
+                "/sdapi/v1/sd-models": [{"title": "example.safetensors [abcd]", "model_name": "example", "hash": "abcd",
+                                          # same file as the simulated PCs (forge_fleet_mocks hashes the title)
+                                          "sha256": __import__("hashlib").sha256(b"example.safetensors [abcd]").hexdigest()}],
                 "/sdapi/v1/options": {"sd_model_checkpoint": "example.safetensors"},
                 "/sdapi/v1/progress": {"progress": 0, "state": {"job": "", "job_count": 0, "sampling_step": 0, "sampling_steps": 0}},
                 "/internal/pending-tasks": {"size": 0, "tasks": []},
@@ -133,6 +149,8 @@ def main() -> None:
             code = hq_forge_fleet.create_code()["code"]
             if name == "PC salon" and os.environ.get("HQ_FORGE_FLEET_FAIL_FIRST"):
                 extra = dict(extra, fail_first=int(os.environ["HQ_FORGE_FLEET_FAIL_FIRST"]))
+            if name == "Portable" and os.environ.get("HQ_FORGE_FLEET_PARITY"):
+                extra = dict(extra, hashes={"example.safetensors [abcd]": "f" * 64})  # same name, other file
             mock = MockForge(delay=delay, **extra)
             sim = SimWorker(base, code, name, mock, hardware=hardware)
             sim.start()

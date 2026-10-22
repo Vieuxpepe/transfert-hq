@@ -30,7 +30,7 @@ BODY_KEYS = {
     "prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler",
     "width", "height", "steps", "cfg_scale", "seed", "n_iter", "batch_size",
     "enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength",
-    "destination", "wait_if_busy",
+    "destination", "wait_if_busy", "subseed", "subseed_strength",
 }
 
 _LOCK = threading.Lock()
@@ -363,6 +363,9 @@ def submission_body(settings: dict, task_id: str) -> dict:
     }
     if settings.get("checkpoint"):
         body["override_settings"] = {"sd_model_checkpoint": settings["checkpoint"]}
+    if settings.get("subseed_strength"):
+        body["subseed"] = settings["subseed"]
+        body["subseed_strength"] = settings["subseed_strength"]
     if settings.get("enable_hr"):
         body["enable_hr"] = True
         body["hr_scale"] = settings["hr_scale"]
@@ -444,8 +447,13 @@ def _validate(data: dict, catalog: dict) -> dict | tuple:
     width = _int(data.get("width", 512), 256, 1536)
     height = _int(data.get("height", 512), 256, 1536)
     steps = _int(data.get("steps", 20), 1, 40)
-    n_iter = _int(data.get("n_iter", 1), 1, 2)
+    variation = _variation(data)
+    if variation is None:
+        return ("validation",)
+    n_iter = _int(data.get("n_iter", 1), 1, VARIATION_MAX if variation else 2)
     seed = _int(data.get("seed", -1), -1, 2**32 - 1)
+    if variation and (seed is None or seed < 0):
+        return ("validation",)  # a variation always keeps the original, fixed seed
     batch = _int(data.get("batch_size", 1), 1, 1)
     cfg = data.get("cfg_scale", 7)
     if isinstance(cfg, bool) or not isinstance(cfg, (int, float)) or not 1 <= float(cfg) <= 15:
@@ -483,7 +491,41 @@ def _validate(data: dict, catalog: dict) -> dict | tuple:
         "n_iter": n_iter,
         "batch_size": 1,
         **hires,
+        **variation,
     }
+
+
+VARIATION_MAX = 6
+
+
+def _variation(data: dict) -> dict | None:
+    """C: 'Explorer autour'. {} when off, None when invalid. A missing variation seed is
+    drawn here so every image's subseed is known and recorded."""
+    strength = data.get("subseed_strength", 0)
+    if isinstance(strength, bool) or not isinstance(strength, (int, float)) or not math.isfinite(float(strength)):
+        return None
+    strength = float(strength)
+    if strength == 0:
+        return {} if data.get("subseed", -1) in (-1, None) else None
+    if not 0 < strength <= 1:
+        return None
+    subseed = _int(data.get("subseed", -1), -1, 2**32 - 1)
+    if subseed is None:
+        return None
+    if subseed < 0:
+        subseed = int.from_bytes(os.urandom(4), "big")
+    return {"subseed": subseed, "subseed_strength": round(strength, 3)}
+
+
+def subseeds_used(parsed: dict, settings: dict, count: int) -> list[int]:
+    """Forge's rule: all_subseeds = subseed + index (processing.py), seed stays fixed."""
+    base = settings.get("subseed")
+    listed = _info(parsed).get("all_subseeds")
+    out = []
+    for index in range(count):
+        value = _seed_int(listed[index]) if isinstance(listed, list) and index < len(listed) else None
+        out.append(value if value is not None else (base + index) % (2**32))
+    return out
 
 
 def _active_job(data: dict) -> dict | None:
@@ -706,6 +748,9 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         _fail(root, job_id, token, "bad_image")
         return
     seeds = _seeds_used(parsed, settings["seed"], len(images))
+    subseeds = subseeds_used(parsed, settings, len(images)) if settings.get("subseed_strength") else None
+    if subseeds is not None:
+        seeds = [settings["seed"]] * len(images)
     stored = []
     try:
         for index, item in enumerate(images):
@@ -713,6 +758,8 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
                 raise gallery.GalleryError("bad_image")
             raw = base64.b64decode(item, validate=True)
             per_image = {**settings, "seed": seeds[index]}
+            if subseeds is not None:
+                per_image["subseed"] = subseeds[index]
             if destination == "private":
                 stored.append(vault.store_image(root, session_token, raw, per_image))
             else:

@@ -615,13 +615,25 @@ def requested_loras(prompt) -> list[str]:
 def parity_split(settings: dict, fit: list, catalogs: dict, names: dict) -> tuple[list, list, dict]:
     """Keep the reference device (this HQ when chosen, else the first one) and every device
     that matches it; each excluded device gets a plain reason. Never switches a model."""
+    excluded = []
+    if settings.get("subseed_strength"):
+        # C: variations need protocol v2 workers (they report VAE); older ones are left out.
+        old = [w for w in fit if w != LOCAL_ID and (catalogs.get(w) or {}).get("vae") is None]
+        for worker_id in old:
+            name = names.get(worker_id) or worker_id
+            reason = "pas encore \u00e0 jour pour les variations"
+            excluded.append({"worker_id": worker_id, "name": name, "kind": "parity", "reasons": [reason],
+                             "message": f"{name} : {reason}, exclu."})
+        fit = [w for w in fit if w not in old]
+    if not fit:
+        return [], excluded, {"reference": None, "checkpoint_sha256": None, "vae": None}
     reference = LOCAL_ID if LOCAL_ID in fit else fit[0]
     checkpoint = settings.get("checkpoint")
     ref = catalogs.get(reference) or {}
     ref_sha = (ref.get("hashes") or {}).get(checkpoint)
     ref_vae = ref.get("vae")
     loras = requested_loras(settings.get("prompt"))
-    kept, excluded = [], []
+    kept = []
     for worker_id in fit:
         if worker_id == reference:
             kept.append(worker_id)
@@ -1016,7 +1028,7 @@ def _batch_public(batch: dict) -> dict:
                 row["step"] = task.get("step") or 0
                 row["steps"] = task.get("steps") or 0
         tasks.append({
-            "id": task["id"], "index": task["index"], "seed": task["seed"], "state": state,
+            "id": task["id"], "index": task["index"], "seed": task["seed"], "subseed": task.get("subseed"), "state": state,
             "worker_id": worker_id, "worker_name": _worker_name(worker_id) if worker_id else "",
             "progress": task.get("progress") or 0, "step": task.get("step") or 0, "steps": task.get("steps") or 0,
             "image_id": task.get("image_id"), "error": task.get("error") or "", "message": task.get("message") or "",
@@ -1077,9 +1089,15 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
             return 409, {"error": MESSAGES[code], "code": code, "problems": problems}
         assert validated is not None
         kept, excluded, parity = _parity_for(_fit, validated, hq_job)
+        if not kept:
+            return 409, {"error": MESSAGES["incompatible"], "code": "incompatible", "problems": excluded}
         selection = kept
         seed = validated["seed"]
-        if seed < 0:
+        if validated.get("subseed_strength"):
+            # C: same seed and settings; each image moves its variation seed by one.
+            seeds = [seed] * count
+            mode = "variation"
+        elif seed < 0:
             seeds = [secrets.randbelow(2**32) for _ in range(count)]
             mode = "random"
         else:
@@ -1102,6 +1120,7 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
                 "id": "tk-" + secrets.token_hex(12), "index": index, "seed": seeds[index], "state": "queued",
                 "worker_id": None, "progress": 0, "step": 0, "steps": settings["steps"], "image_id": None,
                 "error": "", "message": MESSAGES["queued"], "updated": now,
+                **({"subseed": (validated["subseed"] + index) % (2**32)} if validated.get("subseed_strength") else {}),
             } for index in range(count)],
         }
         _batches["batches"].append(batch)
@@ -1191,6 +1210,7 @@ def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
                 "id": "tk-" + secrets.token_hex(12), "index": task["index"], "seed": task["seed"], "state": "queued",
                 "worker_id": None, "progress": 0, "step": 0, "steps": settings["steps"], "image_id": None,
                 "error": "", "message": MESSAGES["queued"], "updated": now, "retry_of_task": task["id"],
+                **({"subseed": task["subseed"]} if "subseed" in task else {}),
             } for task in missing],
         }
         for task in missing:
@@ -1292,6 +1312,8 @@ def _dispatch(batch: dict, task: dict, worker_id: str) -> None:
 def _task_settings(batch: dict, task: dict) -> dict:
     settings = dict(batch["settings"])
     settings["seed"] = task["seed"]
+    if "subseed" in task:
+        settings["subseed"] = task["subseed"]
     return settings
 
 

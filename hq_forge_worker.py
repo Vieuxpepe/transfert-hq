@@ -76,6 +76,7 @@ SUBMIT_PATH = "/sdapi/v1/txt2img"
 SETTING_KEYS = (
     "prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height", "steps",
     "cfg_scale", "seed", "enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength",
+    "subseed", "subseed_strength",
 )
 ACL_SIDS = ("S-1-5-18", "S-1-5-32-544")
 
@@ -449,6 +450,9 @@ def submission_body(settings: dict, task_id: str) -> dict:
         "override_settings": {"sd_model_checkpoint": settings["checkpoint"]},
         "override_settings_restore_afterwards": True,
     }
+    if settings.get("subseed_strength"):
+        body["subseed"] = settings["subseed"]
+        body["subseed_strength"] = settings["subseed_strength"]
     if settings.get("enable_hr"):
         body.update({
             "enable_hr": True,
@@ -475,6 +479,12 @@ def _clean_settings(raw) -> dict | None:
         return None
     if not isinstance(raw["prompt"], str) or len(raw["prompt"]) > 4000:
         return None
+    if "subseed_strength" in raw:
+        strength, subseed = raw.get("subseed_strength"), raw.get("subseed")
+        if isinstance(strength, bool) or not isinstance(strength, (int, float)) or not 0 <= strength <= 1:
+            return None
+        if isinstance(subseed, bool) or not isinstance(subseed, int) or not 0 <= subseed < 2**32:
+            return None
     return dict(raw)
 
 

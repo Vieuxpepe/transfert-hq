@@ -5383,6 +5383,7 @@ def render_app() -> bytes:
                   <div class="forge-label-row"><label for="forge-seed">Valeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-seed">Aide</button><p id="forge-help-seed" class="forge-help-pop" role="tooltip">Aléatoire change l'image à chaque fois. Fixe répète une base proche si les autres réglages ne changent pas. Réutiliser reprend la dernière graine de la galerie normale.</p></span></div>
                   <input id="forge-seed" type="number" min="0" max="4294967295" step="1" value="0" inputmode="numeric" disabled/>
                 </div>
+                <p id="forge-variation-chip" class="forge-note forge-variation-chip" hidden><span id="forge-variation-text"></span> <button type="button" id="forge-variation-clear" class="secondary">Retirer</button></p>
                 <div class="forge-actions">
                   <button type="button" id="forge-seed-reuse">Réutiliser</button>
                 </div>
@@ -5578,6 +5579,12 @@ def render_app() -> bytes:
         </header>
         <img id="forge-vault-viewer-img" alt=""/>
         <p id="forge-vault-viewer-meta"></p>
+        <div class="forge-explore" id="forge-vault-explore-box">
+          <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
+          <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-vault-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
+          <button type="button" id="forge-vault-explore">Générer 6 variations</button>
+          <p class="forge-note" id="forge-vault-explore-note" role="status">Même graine et mêmes réglages : proche garde l'image, loin s'en écarte. Touchez une variation puis Réutiliser pour continuer depuis elle. Reste dans le coffre, sur cet HQ : jamais envoyé aux autres appareils.</p>
+        </div>
         <div class="forge-actions">
           <button type="button" id="forge-vault-download">Télécharger l'original</button>
           <button type="button" id="forge-vault-share" class="secondary" hidden>Enregistrer dans Photos</button>
@@ -5595,6 +5602,12 @@ def render_app() -> bytes:
         </header>
         <img id="forge-viewer-img" alt=""/>
         <p id="forge-viewer-meta"></p>
+        <div class="forge-explore" id="forge-viewer-explore-box">
+          <div class="forge-label-row"><label for="forge-viewer-explore-range">Explorer autour</label></div>
+          <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-viewer-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
+          <button type="button" id="forge-viewer-explore">Générer 6 variations</button>
+          <p class="forge-note" id="forge-viewer-explore-note" role="status">Même graine et mêmes réglages : proche garde l'image, loin s'en écarte. Touchez une variation puis Réutiliser pour continuer depuis elle.</p>
+        </div>
         <div class="forge-actions">
           <a id="forge-download" href="#" download>Télécharger l'original</a>
           <button type="button" id="forge-share" class="secondary" hidden>Enregistrer dans Photos</button>

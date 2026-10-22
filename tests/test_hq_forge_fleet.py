@@ -625,6 +625,32 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual(W.model_hashes([{"title": MODEL, "sha256": "A" * 64}, {"title": "x"}]), {MODEL: "a" * 64, "x": None})
         self.assertEqual(W.vae_names({"forge_additional_modules": ["C:/m/vae/b.safetensors", "a.pt"], "sd_vae": "Automatic"}), ["a.pt", "b.safetensors"])
 
+    # ------------------------------------------------------------------ variations (C)
+    def test_variation_fans_out_with_one_subseed_per_image(self):
+        a = self.worker("PC A")
+        b = self.worker("PC B")
+        status, payload = self.batch([a.id, b.id], 4, "vary-fleet-1", seed=77, subseed=500, subseed_strength=0.4)
+        self.assertEqual(status, 202, payload)
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(done["seed_mode"], "variation")
+        self.assertEqual([t["seed"] for t in done["tasks"]], [77] * 4)
+        self.assertEqual([t["subseed"] for t in done["tasks"]], [500, 501, 502, 503])
+        bodies = [c["body"] for c in a.forge_mock.calls + b.forge_mock.calls]
+        self.assertEqual(sorted(x["subseed"] for x in bodies), [500, 501, 502, 503])
+        self.assertTrue(all(x["seed"] == 77 and x["subseed_strength"] == 0.4 and x["n_iter"] == 1 for x in bodies))
+        subs = sorted(G.get(self.root, i)["settings"]["subseed"] for i in self.gallery_ids())
+        self.assertEqual(subs, [500, 501, 502, 503])
+
+    def test_variation_leaves_out_old_workers_and_stays_off_private(self):
+        cat = {"hashes": {MODEL: "a" * 64}, "vae": []}
+        kept, excluded, _ = FL.parity_split({"checkpoint": MODEL, "subseed_strength": 0.3}, ["w1", "w2"],
+                                            {"w1": {"hashes": {}, "vae": None}, "w2": cat}, {"w1": "PC-1"})
+        self.assertEqual(kept, ["w2"])
+        self.assertEqual(excluded[0]["message"], "PC-1 : pas encore \u00e0 jour pour les variations, exclu.")
+        status, payload = self.post("/api/forge/batches", {"workers": ["w1"], "count": 2, "destination": "private",
+                                                           "settings": dict(SETTINGS, subseed=1, subseed_strength=0.3)}, key="vary-private-1")
+        self.assertEqual(status, 403)
+
     def test_cancel_drops_queued_and_defers_running_without_interrupt(self):
         a = self.worker("PC A", delay=1.0)
         status, payload = self.batch([a.id], 4, "cancel-key-1")

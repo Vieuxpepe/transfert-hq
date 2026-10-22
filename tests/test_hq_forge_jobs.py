@@ -298,6 +298,47 @@ class Jobs(unittest.TestCase):
         code, payload = J.create_job(self.root, _body(wait_if_busy="yes"), "polite-key-7", transport=transport)
         self.assertEqual((code, payload["code"]), (409, "forge_busy"))
 
+    # ------------------------------------------------------------------ C: explore around
+    def test_variation_strip_keeps_the_seed_and_records_each_subseed(self):
+        import hq_forge_gallery as G
+
+        def post(body):
+            data = json.loads(body.decode("utf-8"))
+            n = data["n_iter"]
+            info = {"seed": data["seed"], "all_seeds": [data["seed"]] * n, "subseed": data["subseed"],
+                    "all_subseeds": [data["subseed"] + i for i in range(n)], "subseed_strength": data["subseed_strength"]}
+            return 200, json.dumps({"images": [_png_b64()] * n, "info": json.dumps(info)}).encode("utf-8")
+
+        transport = Transport(post=post)
+        code, payload = J.create_job(self.root, _body(seed=42, subseed=100, subseed_strength=0.25, n_iter=6), "vary-key-1", transport=transport)
+        self.assertEqual(code, 202, payload)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(len(job["images"]), 6)
+        sent = json.loads(transport.bodies[0].decode("utf-8"))
+        self.assertEqual((sent["seed"], sent["subseed"], sent["subseed_strength"], sent["n_iter"]), (42, 100, 0.25, 6))
+        metas = [G.get(self.root, image["id"]) for image in job["images"]]
+        self.assertEqual(sorted(m["settings"]["subseed"] for m in metas), [100, 101, 102, 103, 104, 105])
+        self.assertTrue(all(m["settings"]["seed"] == 42 and m["settings"]["subseed_strength"] == 0.25 for m in metas))
+        text = G.infotext(metas[0]["settings"]) if hasattr(G, "infotext") else ""
+        if text:
+            self.assertIn("Variation seed strength: 0.25", text)
+
+    def test_variation_validation(self):
+        transport = Transport()
+        bad = [dict(seed=-1, subseed=5, subseed_strength=0.3), dict(seed=1, subseed_strength=1.5),
+               dict(seed=1, subseed_strength=0.3, n_iter=7), dict(seed=1, n_iter=3), dict(seed=1, subseed=4),
+               dict(seed=1, subseed_strength=True)]
+        for index, extra in enumerate(bad):
+            code, payload = J.create_job(self.root, _body(**extra), f"vary-bad-{index:02d}", transport=transport)
+            self.assertEqual(code, 400, extra)
+        self.assertEqual(self._posts(transport), [])
+        drawn = J._variation({"subseed_strength": 0.5})
+        self.assertTrue(0 <= drawn["subseed"] < 2**32)
+        self.assertEqual(J._variation({}), {})
+        body = J.submission_body(dict(J._validate(_body(), {"samplers": [{"name": "Euler"}], "schedulers": [{"name": "automatic"}], "models": [{"title": "example.safetensors [abcd]"}]})), "task(hq-" + "ab" * 12 + ")")
+        self.assertNotIn("subseed", body, "plain jobs are unchanged")
+
     def test_bad_image_and_validation(self):
         def post(_body):
             return 200, json.dumps({"images": ["aaaa"]}).encode("utf-8")

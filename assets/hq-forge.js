@@ -215,7 +215,7 @@
       else if (forgeState === "api_disabled") reasonEl.textContent = "Générer est désactivé : l'API Forge n'est pas activée.";
       else if (forgeState === "busy" && privateMode) reasonEl.textContent = "G\u00e9n\u00e9rer est d\u00e9sactiv\u00e9 : Forge est occup\u00e9 par un autre travail.";
       else if (forgeUnreachable) reasonEl.textContent = "Générer est désactivé : Forge n'a pas répondu.";
-      else if (forgeState !== "ready" || catalogState !== "ready") reasonEl.textContent = "Générer est désactivé : le catalogue n'est pas disponible.";
+      else if (!forgeOk || catalogState !== "ready") reasonEl.textContent = "Générer est désactivé : le catalogue n'est pas disponible.";
       else if (!checkpointEl.value) reasonEl.textContent = "Générer est désactivé : aucun modèle n'est choisi.";
       else if (!samplerEl.value) reasonEl.textContent = "Générer est désactivé : aucun échantillonneur n'est choisi.";
       else if (!schedulerEl.value) reasonEl.textContent = "Générer est désactivé : aucun planificateur n'est choisi.";
@@ -457,8 +457,29 @@
     try { await poll(jobId); } catch (_) { /* the job row is gone */ }
   }
 
+  // C: the variation the user chose to continue from (seed stays fixed, subseed + strength kept).
+  let variationPick = null;
+
+  function syncVariationChip() {
+    const chip = $("forge-variation-chip");
+    if (!chip) return;
+    chip.hidden = !variationPick;
+    if (variationPick) {
+      $("forge-variation-text").textContent = "Variation " + String(variationPick.strength).replace(".", ",") + " \u00b7 graine de variation " + variationPick.subseed + ".";
+    }
+  }
+
   function settingsFromForm() {
     const seed = forgeSeed();
+    const out = formSettings(seed);
+    if (variationPick && seed >= 0) {
+      out.subseed = variationPick.subseed;
+      out.subseed_strength = variationPick.strength;
+    }
+    return out;
+  }
+
+  function formSettings(seed) {
     return {
       prompt: promptEl.value,
       negative_prompt: negativeEl.value,
@@ -675,8 +696,10 @@
       settings.negative_prompt ? "Négatif : " + settings.negative_prompt : "",
       settings.checkpoint || "",
       [settings.width, settings.height].filter(Boolean).join("×"),
-      settings.seed == null ? "" : (Number(settings.seed) >= 0 ? "Graine " + settings.seed : "Graine inconnue")
+      settings.seed == null ? "" : (Number(settings.seed) >= 0 ? "Graine " + settings.seed : "Graine inconnue"),
+      Number(settings.subseed_strength) > 0 ? "Variation " + String(settings.subseed_strength).replace(".", ",") + " \u00b7 graine de variation " + settings.subseed : ""
     ].filter(Boolean).join("\n");
+    exploreReady("forge-viewer", settings);
     downloadLink.href = detail.original;
     viewer.showModal();
     closeBtn.focus();
@@ -949,6 +972,9 @@
     if (settings.steps) $("forge-steps").value = settings.steps;
     if (settings.cfg_scale) $("forge-cfg").value = settings.cfg_scale;
     if (settings.seed != null) applySeed(settings.seed);
+    variationPick = Number(settings.subseed_strength) > 0 && Number(settings.seed) >= 0 && Number.isInteger(settings.subseed)
+      ? { subseed: settings.subseed, strength: Number(settings.subseed_strength) } : null;
+    syncVariationChip();
     if (settings.n_iter) $("forge-iter").value = String(settings.n_iter);
     applyHires(settings);
     const upscaler = $("forge-hr-upscaler");
@@ -957,6 +983,92 @@
     }
     syncActions();
   }
+
+  // ---------------------------------------------------------------- C: Explorer autour
+  const EXPLORE_KEYS = ["prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height", "steps", "cfg_scale", "seed"];
+  const HIRES_KEYS = ["enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength"];
+
+  function exploreReady(prefix, settings) {
+    const button = $(prefix + "-explore");
+    if (!button) return;
+    const ok = Number(settings && settings.seed) >= 0;
+    button.disabled = !ok;
+    button.dataset.blocked = ok ? "" : "seed";
+    const note = $(prefix + "-explore-note");
+    if (note.dataset.base == null) note.dataset.base = note.textContent;
+    note.textContent = ok ? note.dataset.base : "Graine inconnue : impossible d'explorer autour de cette image.";
+  }
+
+  function exploreLabel(input) {
+    const value = Number(input.value);
+    input.setAttribute("aria-valuetext", value <= 0.15 ? "proche" : (value >= 0.45 ? "loin" : "interm\u00e9diaire"));
+  }
+
+  function exploreKey() {
+    return "ex" + (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 38);
+  }
+
+  async function explore(prefix, settings, privateMode) {
+    const button = $(prefix + "-explore");
+    const note = $(prefix + "-explore-note");
+    if (!settings || !(Number(settings.seed) >= 0) || button.disabled) return;
+    const strength = Math.round(Number($(prefix + "-explore-range").value) * 100) / 100;
+    const body = {};
+    EXPLORE_KEYS.forEach((name) => { if (settings[name] != null) body[name] = settings[name]; });
+    if (!privateMode && settings.enable_hr === true) HIRES_KEYS.forEach((name) => { if (settings[name] != null) body[name] = settings[name]; });
+    body.batch_size = 1;
+    body.subseed = -1;
+    body.subseed_strength = strength;
+    button.disabled = true;
+    try {
+      if (!privateMode && fleetMode()) {
+        // Normal mode may fan out over the fleet: one image per task, same seed, subseed + index.
+        const workers = devices.filter((device) => selected.has(device.id) && deviceVerdict(device).ok).map((device) => device.id);
+        const payload = await api("/api/forge/batches", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": exploreKey() },
+          body: JSON.stringify({ workers: workers, count: 6, settings: body, destination: "normal" })
+        });
+        closeViewer();
+        results.replaceChildren();
+        shownBatchImages.clear();
+        showBatch(payload.batch);
+      } else {
+        body.n_iter = 6;
+        body.destination = privateMode ? "private" : "normal";
+        if (!privateMode) body.wait_if_busy = true;
+        const payload = await api("/api/forge/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": exploreKey() },
+          body: JSON.stringify(body)
+        });
+        if (privateMode) closePrivate(); else closeViewer();
+        justSubmitted = true;
+        progressBox.hidden = false;
+        showJob(payload.job);
+      }
+    } catch (error) {
+      note.textContent = error.message || "Les variations n'ont pas d\u00e9marr\u00e9.";
+      button.disabled = false;
+      return;
+    }
+    button.disabled = false;
+  }
+
+  ["forge-viewer", "forge-vault"].forEach((prefix) => {
+    const input = $(prefix + "-explore-range");
+    if (!input) return;
+    exploreLabel(input);
+    input.addEventListener("input", () => exploreLabel(input));
+    $(prefix + "-explore").addEventListener("click", () => {
+      if (prefix === "forge-vault") explore(prefix, privateDetail && privateDetail.settings, true);
+      else explore(prefix, currentDetail && currentDetail.settings, false);
+    });
+  });
+  $("forge-variation-clear").addEventListener("click", () => {
+    variationPick = null;
+    syncVariationChip();
+  });
 
   async function openPrivate(id, from) {
     openFrom = from || document.activeElement;
@@ -970,6 +1082,7 @@
     vaultViewerImg.alt = "Image du coffre";
     const settings = privateDetail.settings || {};
     $("forge-vault-viewer-meta").textContent = [settings.prompt || "", settings.negative_prompt || ""].filter(Boolean).join("\n");
+    exploreReady("forge-vault", settings);
     if ($("forge-vault-params")) $("forge-vault-params").checked = false;
     vaultViewer.showModal();
     $("forge-vault-viewer-close").focus();
@@ -1445,6 +1558,9 @@
     clampInto("forge-steps", settings.steps);
     clampInto("forge-cfg", settings.cfg_scale);
     if (settings.seed != null) applySeed(settings.seed);
+    variationPick = Number(settings.subseed_strength) > 0 && Number(settings.seed) >= 0 && Number.isInteger(settings.subseed)
+      ? { subseed: settings.subseed, strength: Number(settings.subseed_strength) } : null;
+    syncVariationChip();
     if (settings.n_iter) pickOption($("forge-iter"), String(settings.n_iter));
     applyHires(settings);
     if (settings.enable_hr && settings.hr_upscaler && !pickOption($("forge-hr-upscaler"), settings.hr_upscaler)) missing.push("agrandisseur « " + settings.hr_upscaler + " »");

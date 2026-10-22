@@ -300,6 +300,12 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-fleet-private{border-left:3px solid var(--forge-accent);padding-left:8px}
 .forge-fleet-batch{display:flex;flex-direction:column;gap:8px}
 .forge-fleet-batch-totals{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.forge-explore{margin:.75rem 0;display:grid;gap:.4rem}
+.forge-explore-row{display:flex;align-items:center;gap:.5rem}
+.forge-explore-row input{flex:1;min-height:44px}
+.forge-explore button{min-height:44px}
+.forge-variation-chip{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem}
+.forge-variation-chip[hidden]{display:none}
 .forge-wait{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin-top:.5rem}
 .forge-wait[hidden]{display:none}
 .forge-wait button{min-height:44px}

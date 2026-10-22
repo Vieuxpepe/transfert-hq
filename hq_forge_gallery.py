@@ -133,6 +133,16 @@ def _settings(value: dict) -> dict:
         out["denoising_strength"] = float(denoise)
     elif enabled is not False:
         raise GalleryError("bad_image")
+    # C: a variation records Forge's variation seed and strength next to the original seed.
+    strength = value.get("subseed_strength")
+    if strength is not None and strength != 0:
+        subseed = value.get("subseed")
+        if isinstance(strength, bool) or not isinstance(strength, (int, float)) or not 0 < float(strength) <= 1:
+            raise GalleryError("bad_image")
+        if isinstance(subseed, bool) or not isinstance(subseed, int) or not 0 <= subseed < 2**32:
+            raise GalleryError("bad_image")
+        out["subseed"] = subseed
+        out["subseed_strength"] = round(float(strength), 3)
     return out
 
 
@@ -209,6 +219,10 @@ def infotext(settings: dict) -> str:
     seed = settings.get("seed")
     add("Seed", seed if isinstance(seed, int) and not isinstance(seed, bool) and seed >= 0 else None)
     width, height = settings.get("width"), settings.get("height")
+    strength = settings.get("subseed_strength")
+    if isinstance(strength, (int, float)) and not isinstance(strength, bool) and strength > 0:
+        add("Variation seed", settings.get("subseed"))
+        add("Variation seed strength", _number(strength))
     add("Size", f"{width}x{height}" if isinstance(width, int) and isinstance(height, int) else None)
     checkpoint = settings.get("checkpoint")
     if isinstance(checkpoint, str) and checkpoint:
@@ -417,7 +431,7 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None) -> dict:
 
 HISTORY_FIELDS = ("prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height",
                   "steps", "cfg_scale", "seed", "n_iter", "enable_hr", "hr_scale", "hr_upscaler",
-                  "hr_second_pass_steps", "denoising_strength")
+                  "hr_second_pass_steps", "denoising_strength", "subseed", "subseed_strength")
 
 
 def history_page(root: Path, *, limit: int = 24, cursor: str | None = None, query: str = "") -> dict:
