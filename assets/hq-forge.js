@@ -462,6 +462,7 @@
         headers: { "Content-Type": "application/json", "Idempotency-Key": key() },
         body: JSON.stringify(settingsFromForm())
       });
+      if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
       showJob(payload.job);
     } catch (error) {
       if (error && error.status === 409 && error.data && error.data.active_job_id) {
@@ -500,6 +501,7 @@
         headers: { "Content-Type": "application/json", "Idempotency-Key": key() },
         body: JSON.stringify(Object.assign(settingsFromForm(), { destination: "private" }))
       });
+      if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
       showJob(payload.job);
     } catch (error) {
       progressLabel.textContent = error.message || "La génération privée n'a pas démarré.";
@@ -2130,6 +2132,7 @@
         headers: { "Content-Type": "application/json", "Idempotency-Key": batchKey(false) },
         body: JSON.stringify({ workers: workers, count: Number(fleetCountEl.value), settings: settings, destination: "normal" })
       });
+      if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
       justSubmitted = true;
       resultIntent = false;
       results.replaceChildren();
@@ -2392,6 +2395,57 @@
       $("forge-device-code-box").hidden = false;
     }
   });
+
+  /* Prompt draft (F3). iOS may discard a background tab; the normal prompt and
+     negative prompt survive in sessionStorage. Nothing is ever written while the
+     destination is the private vault, and switching destination wipes the key
+     before any pending save can run (capture phase, ahead of every other handler). */
+  const DRAFT_KEY = "hqForgeDraft";
+  let draftTimer = 0;
+  function wipeDraft() {
+    clearTimeout(draftTimer);
+    draftTimer = 0;
+    try { sessionStorage.removeItem(DRAFT_KEY); } catch (_) { /* storage off */ }
+  }
+  function saveDraft() {
+    draftTimer = 0;
+    if (destination() !== "normal") { wipeDraft(); return; }
+    const prompt = promptEl.value;
+    const negative = negativeEl.value;
+    try {
+      if (!prompt.trim() && !negative.trim()) sessionStorage.removeItem(DRAFT_KEY);
+      else sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ prompt: prompt.slice(0, 2000), negative_prompt: negative.slice(0, 1000) }));
+    } catch (_) { /* storage full or off */ }
+  }
+  function queueDraft() {
+    if (destination() !== "normal") { wipeDraft(); return; }
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(saveDraft, 400);
+  }
+  const onDestination = (event) => {
+    if (event.target && event.target.name === "forge-destination") wipeDraft();
+  };
+  document.addEventListener("input", onDestination, true);
+  document.addEventListener("change", onDestination, true);
+  document.addEventListener("click", (event) => {
+    if (event.target && event.target.closest && event.target.closest('input[name="forge-destination"][value="private"]')) wipeDraft();
+  }, true);
+  promptEl.addEventListener("input", queueDraft);
+  negativeEl.addEventListener("input", queueDraft);
+  function restoreDraft() {
+    if (destination() !== "normal") { wipeDraft(); return; }
+    let draft = null;
+    try { draft = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null"); } catch (_) { draft = null; }
+    if (!draft || typeof draft.prompt !== "string") return;
+    if (promptEl.value.trim() || negativeEl.value.trim()) return;
+    promptEl.value = draft.prompt;
+    negativeEl.value = typeof draft.negative_prompt === "string" ? draft.negative_prompt : "";
+    const note = $("forge-draft-note");
+    if (note) { note.textContent = "Brouillon repris."; note.hidden = false; }
+  }
+  promptEl.addEventListener("input", () => { const note = $("forge-draft-note"); if (note && !note.hidden) note.hidden = true; }, { once: true });
+  window.hqForgeWipeDraft = wipeDraft;
+  restoreDraft();
 
   fleetBooted = !!deviceList;
 

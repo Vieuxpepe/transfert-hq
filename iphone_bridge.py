@@ -5284,6 +5284,7 @@ def render_app() -> bytes:
         <div class="field">
           <label for="forge-prompt">Prompt</label>
           <textarea id="forge-prompt" name="prompt" required maxlength="2000" rows="4" placeholder="Décris l'image"></textarea>
+          <p id="forge-draft-note" class="forge-note" role="status" hidden></p>
         </div>
         <div class="forge-prompt-tools" role="group" aria-label="Prompts précédents">
           <button type="button" id="forge-last-prompt" class="forge-tool">Dernier prompt</button>
