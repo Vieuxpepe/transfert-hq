@@ -235,7 +235,6 @@ def section_wake(run: Run) -> None:
     run.check(run.until(page, "() => window.__wake.active === 1", 5), "a wake lock is held while the job runs")
     # Background: the browser drops the lock; coming back re-acquires it and polls at once.
     page.evaluate("() => window.__setVisibility('hidden')")
-    page.evaluate("() => { window.__wakeSentinelDrop = true; }")
     seen = []
     page.on("request", lambda r: seen.append(r.url) if "/api/forge/jobs/job-" in r.url else None)
     page.wait_for_timeout(100)
@@ -250,7 +249,101 @@ def section_wake(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"wake": section_wake, "draft": section_draft, "eta": section_eta}
+SHARE_STUB = """(() => {
+  window.__shared = [];
+  Navigator.prototype.canShare = function (data) { return !!(data && data.files && data.files.length && data.files.every((f) => f.type === "image/png")); };
+  Navigator.prototype.share = async function (data) { window.__shared.push(data.files.map((f) => [f.name, f.type, f.size])); };
+})();"""
+
+NO_SHARE = """(() => { Navigator.prototype.canShare = undefined; Navigator.prototype.share = undefined; })();"""
+
+PASSPHRASE = "synthetic horse battery"
+
+
+def _png_bytes() -> bytes:
+    import io
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (256, 256), (90, 30, 120)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def open_vault(run: Run, page) -> None:
+    """Create and unlock a throwaway vault through the UI, then import one synthetic image."""
+    run.dest(page, "private")
+    page.locator("#forge-vault").wait_for()
+    if page.locator("#forge-vault-new").is_visible():
+        page.locator("#forge-vault-new").fill(PASSPHRASE)
+        page.locator("#forge-vault-confirm").fill(PASSPHRASE)
+        page.locator("#forge-vault-create").click()
+        page.locator("#forge-vault-recovery-key").wait_for()
+        page.locator("#forge-vault-recovery-ok").click()
+    page.locator("#forge-vault-pass").wait_for()
+    page.locator("#forge-vault-pass").fill(PASSPHRASE)
+    page.locator("#forge-vault-open").click()
+    page.locator("#forge-vault-lock").wait_for()
+
+
+def import_private(run: Run, page) -> None:
+    image = page.request.post(run.base + "/api/forge/vault/import", data=_png_bytes(),
+                              headers={"origin": run.base, "content-type": "application/octet-stream"})
+    run.check(image.status == 201, "a synthetic private image is imported")
+    page.evaluate("() => { document.querySelector('input[name=\\'forge-destination\\'][value=\\'normal\\']').click(); }")
+    run.dest(page, "private")
+    run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length > 0", 10)
+
+
+def section_share(run: Run) -> None:
+    print("F14 Enregistrer dans Photos")
+    ctx = run.context(NO_SHARE)
+    page = ctx.new_page()
+    run.open_forge(page)
+    generate_once(run, page, "phare pour partage")
+    page.locator("#forge-gallery .forge-card").first.click()
+    page.locator("#forge-viewer").wait_for()
+    page.wait_for_timeout(500)
+    run.check(page.locator("#forge-share").is_hidden(), "the button is hidden when canShare is unavailable")
+    ctx.close()
+
+    ctx = run.context(SHARE_STUB)
+    page = ctx.new_page()
+    run.open_forge(page)
+    page.locator("#forge-gallery .forge-card").first.click()
+    run.check(run.until(page, "() => !document.querySelector('#forge-share').hidden", 5), "Enregistrer dans Photos appears in the viewer")
+    run.shot(page, "share-normal", "#forge-share")
+    page.locator("#forge-share").click()
+    run.check(run.until(page, "() => window.__shared.length === 1", 5), "a tap shares one PNG file")
+    shared = page.evaluate("() => window.__shared[0]")
+    run.check(shared[0][1] == "image/png" and shared[0][0].startswith("forge-img-") and shared[0][2] > 100, "the shared file is the original PNG: " + repr(shared))
+    hits = page.evaluate(STORAGE_PROBE, "img-")
+    run.check(not [h for h in hits if not h.startswith("session:hqForge")], "no image bytes or URLs land in browser storage: " + repr(hits))
+    page.locator("#forge-viewer-close").click()
+
+    open_vault(run, page)
+    import_private(run, page)
+    page.locator("#forge-vault-gallery .forge-card").first.click()
+    run.check(run.until(page, "() => !document.querySelector('#forge-vault-share').hidden", 5), "the vault viewer offers Enregistrer dans Photos")
+    run.shot(page, "share-private", "#forge-vault-share")
+    messages = []
+
+    def dismiss(dialog):
+        messages.append(dialog.message)
+        dialog.dismiss()
+    page.once("dialog", dismiss)
+    page.locator("#forge-vault-share").click()
+    page.wait_for_timeout(400)
+    run.check(messages and "Cette image quittera le coffre." in messages[0], "a private share asks: Cette image quittera le coffre.")
+    run.check(page.evaluate("() => window.__shared.length") == 1, "declining the confirm shares nothing")
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#forge-vault-share").click()
+    run.check(run.until(page, "() => window.__shared.length === 2", 5), "accepting shares the private image once")
+    run.check(page.evaluate("() => window.__shared[1][0][0]") == "coffre.png", "the private file name carries no prompt or id")
+    page.locator("#forge-vault-viewer-close").click()
+    run.check(page.locator("#forge-vault-share").is_hidden(), "closing the vault viewer drops the prepared file")
+    ctx.close()
+
+
+SECTIONS = {"share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
 
 
 def main() -> None:

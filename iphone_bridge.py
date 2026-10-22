@@ -5570,6 +5570,7 @@ def render_app() -> bytes:
         <p id="forge-vault-viewer-meta"></p>
         <div class="forge-actions">
           <button type="button" id="forge-vault-download">Télécharger l'original</button>
+          <button type="button" id="forge-vault-share" class="secondary" hidden>Enregistrer dans Photos</button>
           <label class="forge-privacy-ack" for="forge-vault-params"><input type="checkbox" id="forge-vault-params"/> Inclure les paramètres</label>
           <button type="button" id="forge-vault-reuse">Réutiliser les réglages</button>
           <button type="button" id="forge-vault-delete" class="secondary">Supprimer du coffre</button>
@@ -5586,6 +5587,7 @@ def render_app() -> bytes:
         <p id="forge-viewer-meta"></p>
         <div class="forge-actions">
           <a id="forge-download" href="#" download>Télécharger l'original</a>
+          <button type="button" id="forge-share" class="secondary" hidden>Enregistrer dans Photos</button>
           <button type="button" id="forge-reuse">Réutiliser les réglages</button>
           <button type="button" id="forge-delete" class="secondary">Supprimer la copie HQ</button>
         </div>

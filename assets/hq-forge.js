@@ -603,9 +603,44 @@
   }
 
   function closeViewer() {
+    shareFiles.normal = null;
     if (viewer.open) viewer.close();
     if (openFrom) openFrom.focus();
     openFrom = null;
+  }
+
+  /* F14: "Enregistrer dans Photos" through the Web Share API (iOS share sheet).
+     The image is fetched while the viewer opens so the tap can call share()
+     directly; the bytes stay in memory (a File object) and are dropped on close. */
+  function shareProbe() {
+    try {
+      return !!(navigator.share && navigator.canShare && navigator.canShare({ files: [new File([new Blob([""], { type: "image/png" })], "image.png", { type: "image/png" })] }));
+    } catch (_) { return false; }
+  }
+  const shareFiles = { normal: null, private: null };
+  async function prepareShare(kind, source, name, button) {
+    shareFiles[kind] = null;
+    if (!button) return;
+    button.hidden = true;
+    if (!shareProbe()) return;
+    try {
+      let blob = source;
+      if (typeof source === "string") {
+        const response = await fetch(source, { credentials: "same-origin", cache: "no-store" });
+        if (!response.ok) return;
+        blob = await response.blob();
+      }
+      const file = new File([blob], name, { type: "image/png" });
+      if (!navigator.canShare({ files: [file] })) return;
+      shareFiles[kind] = file;
+      button.hidden = false;
+    } catch (_) { /* no share for this image */ }
+  }
+  async function shareNow(kind) {
+    const file = shareFiles[kind];
+    if (!file) return;
+    if (kind === "private" && !window.confirm("Cette image quittera le coffre. Continuer ?")) return;
+    try { await navigator.share({ files: [file] }); } catch (_) { /* cancelled or refused: nothing to report */ }
   }
 
   async function openViewer(id, from) {
@@ -625,6 +660,7 @@
     downloadLink.href = detail.original;
     viewer.showModal();
     closeBtn.focus();
+    prepareShare("normal", detail.original, "forge-" + id + ".png", $("forge-share"));
   }
 
   viewer.addEventListener("keydown", (event) => {
@@ -858,7 +894,8 @@
     privateDetail = await api("/api/forge/vault/images/" + id);
     const response = await fetch("/api/forge/vault/images/" + id + "/original", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("locked");
-    const url = URL.createObjectURL(await response.blob());
+    const privateBlob = await response.blob();
+    const url = URL.createObjectURL(privateBlob);
     privateUrls.add(url);
     vaultViewerImg.src = url;
     vaultViewerImg.alt = "Image du coffre";
@@ -867,9 +904,12 @@
     if ($("forge-vault-params")) $("forge-vault-params").checked = false;
     vaultViewer.showModal();
     $("forge-vault-viewer-close").focus();
+    prepareShare("private", privateBlob, "coffre.png", $("forge-vault-share"));
   }
 
   function closePrivate() {
+    shareFiles.private = null;
+    if ($("forge-vault-share")) $("forge-vault-share").hidden = true;
     if (vaultViewer.open) vaultViewer.close();
     if (vaultViewerImg.src) URL.revokeObjectURL(vaultViewerImg.src);
     vaultViewerImg.removeAttribute("src");
@@ -877,6 +917,8 @@
   }
 
   $("forge-vault-viewer-close").addEventListener("click", closePrivate);
+  $("forge-vault-share").addEventListener("click", () => { shareNow("private"); });
+  $("forge-share").addEventListener("click", () => { shareNow("normal"); });
   vaultViewer.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
