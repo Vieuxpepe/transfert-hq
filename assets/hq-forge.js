@@ -2336,6 +2336,19 @@
       (batch.seed_mode === "fixed" ? " Graines " + batch.tasks[0].seed + " à " + batch.tasks[batch.tasks.length - 1].seed + "." : ""));
     $("forge-fleet-batch-cancel").hidden = !running;
     $("forge-fleet-batch-cancel").disabled = batch.state === "cancelling";
+    const retryBtn = $("forge-fleet-batch-retry");
+    const retryable = Number(batch.retryable || 0);
+    const retryUncertain = Number(batch.retry_uncertain || 0);
+    retryBtn.hidden = running || retryable < 1;
+    retryBtn.dataset.batch = batch.batch_id;
+    const retryLabel = "Relancer " + (retryable > 1 ? "les " + retryable + " images manquantes" : "l'image manquante");
+    if (retryBtn.textContent !== retryLabel) retryBtn.textContent = retryLabel;
+    if (!running && retryUncertain) {
+      const extra = " " + (retryUncertain > 1 ? retryUncertain + " images incertaines peuvent" : "Une image incertaine peut") +
+        " produire un doublon si l'appareil d'origine la termine quand même.";
+      const note = $("forge-fleet-batch-note");
+      if (!note.textContent.includes("doublon")) note.textContent = (note.textContent + extra).trim();
+    }
     $("forge-fleet-batch-close").hidden = running;
     let added = false;
     batch.tasks.forEach((task) => {
@@ -2414,6 +2427,30 @@
       showBatch(payload.batch);
     } catch (error) {
       $("forge-fleet-batch-note").textContent = error.message || "Annulation impossible.";
+    }
+  });
+  let retryKey = { batch: "", key: "" };
+  $("forge-fleet-batch-retry").addEventListener("click", async () => {
+    const btn = $("forge-fleet-batch-retry");
+    const id = btn.dataset.batch;
+    if (!id || btn.disabled) return;
+    if (retryKey.batch !== id) retryKey = { batch: id, key: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "retry").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) };
+    btn.disabled = true;
+    try {
+      const payload = await api("/api/forge/batches/" + encodeURIComponent(id) + "/retry", {
+        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": retryKey.key }, body: "{}"
+      });
+      retryKey = { batch: "", key: "" };
+      justSubmitted = true;
+      resultIntent = false;
+      showBatch(payload.batch);
+    } catch (error) {
+      const problems = error && error.data && error.data.problems;
+      $("forge-fleet-batch-note").textContent = (error.message || "La relance n'a pas démarré.") +
+        (problems && problems.length ? " " + problems.map((p) => p.name + " : " + p.reasons.join(" ")).join(" ") : "");
+      if (error && error.status !== 409) retryKey = { batch: "", key: "" };
+    } finally {
+      btn.disabled = false;
     }
   });
   $("forge-fleet-batch-close").addEventListener("click", () => {

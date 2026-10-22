@@ -89,6 +89,9 @@ MESSAGES = {
     "unknown_worker": "Un appareil choisi n'existe plus.",
     "unavailable": "Un appareil choisi n'est pas disponible.",
     "incompatible": "Un appareil choisi ne peut pas produire ces réglages.",
+    "retry_running": "Le lot est encore en cours. Relancez une fois qu'il est terminé.",
+    "retry_nothing": "Aucune image manquante à relancer.",
+    "retry_none": "Aucun appareil du lot n'est disponible pour relancer.",
     "private_remote": "La génération privée reste sur cet HQ. Les autres appareils ne reçoivent jamais un prompt privé.",
     "private_batch": "La génération privée passe par la génération simple de cet HQ.",
     "destination": "Cette clé correspond déjà à une autre demande.",
@@ -897,6 +900,7 @@ def _batch_public(batch: dict) -> dict:
                        "running": 0, "progress": 0, "step": 0, "steps": 0}
            for worker_id in batch["workers"]}
     tasks = []
+    retryable = retry_uncertain = 0
     for task in batch["tasks"]:
         state = task["state"]
         bucket = {"completed": "done", "failed": "failed", "queued": "pending", "dispatched": "running", "running": "running",
@@ -923,11 +927,17 @@ def _batch_public(batch: dict) -> dict:
             "image_id": task.get("image_id"), "error": task.get("error") or "", "message": task.get("message") or "",
             "cancel_deferred": bool(task.get("cancel_deferred")),
             "dispatched_at": task.get("dispatched_at"), "finished_at": task.get("finished_at"),
+            "retried": bool(task.get("retried_in")),
         })
+        if state in ("failed", "uncertain") and not task.get("retried_in"):
+            retryable += 1
+            if state == "uncertain":
+                retry_uncertain += 1
     return {
         "batch_id": batch["id"], "state": _batch_state(batch), "created": batch["created"], "updated": batch.get("updated"),
         "count": len(batch["tasks"]), "seed_mode": batch["seed_mode"], "cancelled": bool(batch.get("cancelled")),
         "workers": list(per.values()), "counts": counts, "tasks": tasks, "settings": batch["settings"],
+        "retryable": retryable, "retry_uncertain": retry_uncertain, "retry_of": batch.get("retry_of"),
     }
 
 
@@ -961,21 +971,9 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
         existing = _find_batch(found) if isinstance(found, str) else None
         if existing is not None:
             return 200, {"batch": _batch_public(existing)}
-        problems = []
-        validated = None
-        for worker_id in selection:
-            if worker_id != LOCAL_ID and (not WORKER_RE.fullmatch(worker_id) or _worker(worker_id) is None):
-                return 409, {"error": MESSAGES["unknown_worker"], "code": "unknown_worker"}
-            device = _device_public(worker_id, hq_job)
-            if not _usable(device):
-                problems.append({"worker_id": worker_id, "name": device["name"], "kind": "unavailable", "reasons": [device["state_label"] + "."]})
-                continue
-            checked = jobs._validate(settings_in, _as_jobs_catalog(device["catalog"] or {}))
-            if isinstance(checked, tuple):
-                reasons = compat_reasons(settings_in, device["catalog"]) or [MESSAGES["validation"]]
-                problems.append({"worker_id": worker_id, "name": device["name"], "kind": "incompatible", "reasons": reasons})
-                continue
-            validated = checked
+        unknown, problems, validated, _fit = _check_workers(selection, settings_in, hq_job)
+        if unknown:
+            return 409, {"error": MESSAGES["unknown_worker"], "code": "unknown_worker"}
         if problems:
             code = "incompatible" if any(item["kind"] == "incompatible" for item in problems) else "unavailable"
             return 409, {"error": MESSAGES[code], "code": code, "problems": problems}
@@ -1010,6 +1008,94 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
         _save_batches()
         snapshot = _batch_public(batch)
     return 202, {"batch": snapshot}
+
+
+def _check_workers(selection: list, settings_in: dict, hq_job) -> tuple[bool, list, dict | None, list]:
+    """Availability and compatibility per device, shared by create and retry.
+    Returns (unknown_worker, problems, last validated settings, fitting ids). Caller holds _LOCK."""
+    problems = []
+    validated = None
+    fit = []
+    for worker_id in selection:
+        if worker_id != LOCAL_ID and (not WORKER_RE.fullmatch(worker_id) or _worker(worker_id) is None):
+            return True, [], None, []
+        device = _device_public(worker_id, hq_job)
+        if not _usable(device):
+            problems.append({"worker_id": worker_id, "name": device["name"], "kind": "unavailable", "reasons": [device["state_label"] + "."]})
+            continue
+        checked = jobs._validate(settings_in, _as_jobs_catalog(device["catalog"] or {}))
+        if isinstance(checked, tuple):
+            reasons = compat_reasons(settings_in, device["catalog"]) or [MESSAGES["validation"]]
+            problems.append({"worker_id": worker_id, "name": device["name"], "kind": "incompatible", "reasons": reasons})
+            continue
+        validated = checked
+        fit.append(worker_id)
+    return False, problems, validated, fit
+
+
+def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
+    """A new batch for the failed and uncertain images of a finished batch, with
+    their seeds and settings. Uncertain images may still arrive late from their
+    first device; such an upload is accepted on the original task (an extra image,
+    its origin carries that task_id). Nothing is ever re-queued automatically."""
+    if not KEY_RE.fullmatch(key or ""):
+        return 400, {"error": MESSAGES["validation"], "code": "validation"}
+    if not BATCH_RE.fullmatch(batch_id or ""):
+        return 404, {"error": "Introuvable"}
+    hq_job = _hq_job_active()
+    with _LOCK:
+        source = _find_batch(batch_id)
+        needs_local = source is not None and LOCAL_ID in source["workers"]
+    if needs_local:
+        _local_view()
+    with _LOCK:
+        _sweep()
+        found = _batches["idempotency"].get(key)
+        existing = _find_batch(found) if isinstance(found, str) else None
+        if existing is not None:
+            if existing.get("retry_of") != batch_id:
+                return 409, {"error": MESSAGES["validation"], "code": "validation"}
+            return 200, {"batch": _batch_public(existing), "retry_of": batch_id}
+        source = _find_batch(batch_id)
+        if source is None:
+            return 404, {"error": "Introuvable"}
+        if _batch_state(source) in ("running", "cancelling"):
+            return 409, {"error": MESSAGES["retry_running"], "code": "retry_running"}
+        missing = [task for task in source["tasks"] if task["state"] in ("failed", "uncertain") and not task.get("retried_in")]
+        if not missing:
+            return 409, {"error": MESSAGES["retry_nothing"], "code": "retry_nothing"}
+        settings_in = dict(source["settings"])
+        unknown, problems, validated, fit = _check_workers(
+            [w for w in source["workers"] if w == LOCAL_ID or _worker(w) is not None], settings_in, hq_job)
+        if unknown or not fit or validated is None:
+            return 409, {"error": MESSAGES["retry_none"], "code": "retry_none", "problems": problems}
+        settings = {k: v for k, v in validated.items() if k not in ("n_iter", "batch_size")}
+        now = _now_iso()
+        batch = {
+            "id": "bt-" + secrets.token_hex(12),
+            "key": key,
+            "created": now,
+            "updated": now,
+            "settings": settings,
+            "workers": fit,
+            "seed_mode": source["seed_mode"],
+            "cancelled": False,
+            "retry_of": source["id"],
+            "tasks": [{
+                "id": "tk-" + secrets.token_hex(12), "index": task["index"], "seed": task["seed"], "state": "queued",
+                "worker_id": None, "progress": 0, "step": 0, "steps": settings["steps"], "image_id": None,
+                "error": "", "message": MESSAGES["queued"], "updated": now, "retry_of_task": task["id"],
+            } for task in missing],
+        }
+        for task in missing:
+            task["retried_in"] = batch["id"]
+        source["updated"] = now
+        _batches["batches"].append(batch)
+        _trim()
+        _batches["idempotency"][key] = batch["id"]
+        _save_batches()
+        snapshot = _batch_public(batch)
+    return 202, {"batch": snapshot, "retry_of": batch_id, "skipped": problems}
 
 
 def _trim() -> None:
@@ -1386,6 +1472,8 @@ def serve_post(raw: str, data: dict, key: str) -> tuple[int, dict] | None:
     prefix = "/api/forge/batches/"
     if raw.startswith(prefix) and raw.endswith("/cancel"):
         return cancel_batch(raw[len(prefix):-len("/cancel")])
+    if raw.startswith(prefix) and raw.endswith("/retry"):
+        return retry_batch(raw[len(prefix):-len("/retry")], key)
     prefix = "/api/forge/devices/"
     if raw.startswith(prefix):
         rest = raw[len(prefix):]

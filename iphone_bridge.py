@@ -5550,6 +5550,7 @@ def render_app() -> bytes:
         <p id="forge-fleet-batch-note" class="forge-note" role="status"></p>
         <div class="forge-actions">
           <button type="button" id="forge-fleet-batch-cancel" class="secondary">Annuler le lot</button>
+          <button type="button" id="forge-fleet-batch-retry" hidden>Relancer les images manquantes</button>
           <button type="button" id="forge-fleet-batch-close" class="secondary" hidden>Masquer</button>
         </div>
       </section>

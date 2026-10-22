@@ -45,12 +45,13 @@ class MockForge:
     """A minimal Forge API: catalog routes, progress and txt2img."""
 
     def __init__(self, *, models=(MODEL,), samplers=("Euler", "Euler a"), delay: float = 0.0, mode: str = "ok",
-                 colour=(24, 72, 48)) -> None:
+                 colour=(24, 72, 48), fail_first: int = 0) -> None:
         self.models = list(models)
         self.samplers = list(samplers)
         self.delay = delay
         self.mode = mode
         self.colour = colour
+        self.fail_first = fail_first  # the first N txt2img calls fail (retry tests)
         self.calls: list[dict] = []
         self.bodies: list[bytes] = []
         self.interrupts = 0
@@ -108,7 +109,11 @@ class MockForge:
                 with owner.lock:
                     owner.active -= 1
                     owner.calls.append({"start": started, "end": time.monotonic(), "seed": data.get("seed"), "body": data})
-                if owner.mode == "fail":
+                with owner.lock:
+                    flaky = owner.fail_first > 0
+                    if flaky:
+                        owner.fail_first -= 1
+                if owner.mode == "fail" or flaky:
                     self._send(500, {"error": "mock failure"})
                     return
                 if owner.mode == "badpng":

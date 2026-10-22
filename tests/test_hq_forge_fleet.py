@@ -386,6 +386,84 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual((row_a["uncertain"], row_a["failed"], row_a["done"]), (1, 1, 0), "per-worker rows split out uncertain")
         self.assertIn("pas relancée", lost["message"])
 
+    def test_retry_rebuilds_only_missing_images_and_accepts_a_late_upload(self):
+        a = self.worker("PC A", start=False)
+        b = self.worker("PC B", start=False)
+        a.worker.poll_once()
+        b.worker.poll_once()
+        status, payload = self.batch([a.id, b.id], 2, "retry-src-key-1", seed=500)
+        self.assertEqual(status, 202, payload)
+        source_id = payload["batch"]["batch_id"]
+        lost = a.worker.poll_once()
+        self.assertIsNotNone(lost)
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/retry", {}, key="retry-early-key")[0], 409,
+                         "a running batch cannot be retried")
+        b.start()
+        wait_for(lambda: self.admin.json(f"/api/forge/batches/{source_id}")[1]["batch"]["counts"]["done"] == 1)
+        b.stop()
+        real = time.time
+        FL.set_clock_for_tests(lambda: real() + FL._lease_sec + 5)  # PC A's lease expires
+        try:
+            done = self.finished(source_id)
+        finally:
+            FL.set_clock_for_tests(None)
+        task = next(row for row in done["tasks"] if row["id"] == lost["task_id"])
+        self.assertEqual(task["state"], "uncertain")
+        self.assertEqual((done["retryable"], done["retry_uncertain"]), (1, 1))
+        # A bad signature changes nothing, in memory or on disk.
+        before_mem = json.dumps(FL._batches, sort_keys=True)
+        before_disk = (FL._dir() / "batches.json").read_bytes()
+        body = json.dumps({"task_id": lost["task_id"], "image_b64": base64.b64encode(png_bytes()).decode()}).encode()
+        forged = W.signed_headers(a.id, "0" * 64, "POST", W.PREFIX + "/result", body)
+        sent = W.http_transport("POST", self.base + W.PREFIX + "/result", 5, body, {"Content-Type": "application/json", **forged}, 65536)[0]
+        self.assertEqual(sent, 401)
+        self.assertEqual(json.dumps(FL._batches, sort_keys=True), before_mem)
+        self.assertEqual((FL._dir() / "batches.json").read_bytes(), before_disk)
+        # Retry: one task, same seed and settings, idempotent per key.
+        status, retried = self.post(f"/api/forge/batches/{source_id}/retry", {}, key="retry-key-0001")
+        self.assertEqual(status, 202, retried)
+        new = retried["batch"]
+        self.assertEqual(new["retry_of"], source_id)
+        self.assertEqual([(t["index"], t["seed"]) for t in new["tasks"]], [(task["index"], task["seed"])])
+        self.assertEqual(new["settings"]["prompt"], SETTINGS["prompt"])
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/retry", {}, key="retry-key-0001")[1]["batch"]["batch_id"], new["batch_id"])
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/retry", {}, key="retry-key-0002")[0], 409, "nothing left to retry")
+        self.assertEqual(self.admin.json(f"/api/forge/batches/{source_id}")[1]["batch"]["retryable"], 0)
+        job = b.worker.poll_once()
+        self.assertIsNotNone(job)
+        b.worker.run_task(job)
+        finished = self.finished(new["batch_id"])
+        self.assertEqual(finished["state"], "completed")
+        self.assertEqual(b.forge_mock.calls[-1]["seed"], task["seed"])
+        # The first device finally answers: accepted on the original task as an extra image.
+        a.worker.run_task(lost)
+        late = self.admin.json(f"/api/forge/batches/{source_id}")[1]["batch"]
+        late_task = next(row for row in late["tasks"] if row["id"] == lost["task_id"])
+        self.assertEqual(late_task["state"], "completed")
+        self.assertEqual(len(self.gallery_ids()), 3)
+        origins = [G.get(self.root, image_id).get("origin") or {} for image_id in self.gallery_ids()]
+        self.assertIn(lost["task_id"], [o.get("task_id") for o in origins])
+        self.assertEqual(a.forge_mock.interrupts + b.forge_mock.interrupts, 0)
+
+    def test_retry_routes_need_admin_csrf_and_known_batches(self):
+        self.assertEqual(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, client=self.upload, key="retry-up-key")[0], 403)
+        self.assertIn(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, client=self.anon, key="retry-anon-key")[0], (401, 403))
+        self.assertEqual(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, key="retry-404-key")[0], 404)
+        self.assertEqual(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, key="bad")[0], 400)
+
+    def test_retry_refuses_when_no_device_of_the_batch_is_usable(self):
+        a = self.worker("PC A", start=False, mode="fail")
+        a.worker.poll_once()
+        status, payload = self.batch([a.id], 1, "retry-none-key-1")
+        job = a.worker.poll_once()
+        a.worker.run_task(job)
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(done["state"], "failed")
+        self.assertEqual(self.post(f"/api/forge/devices/{a.id}/disable", {})[0], 200)
+        status, refused = self.post(f"/api/forge/batches/{done['batch_id']}/retry", {}, key="retry-none-key-2")
+        self.assertEqual((status, refused["code"]), (409, "retry_none"))
+        self.assertEqual(self.admin.json(f"/api/forge/batches/{done['batch_id']}")[1]["batch"]["retryable"], 1, "a refused retry marks nothing")
+
     def test_worker_restart_reports_lost_task_as_uncertain(self):
         a = self.worker("PC A", start=False)
         a.worker.poll_once()

@@ -375,7 +375,43 @@ def section_away(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"away": section_away, "share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
+def section_retry(run: Run) -> None:
+    print("F21 retry missing fleet images")
+    ctx = run.context(width=375, height=812)
+    page = ctx.new_page()
+    run.open_forge(page)
+    run.until(page, "() => [...document.querySelectorAll('#forge-device-list .forge-device')].some((n) => n.dataset.state === 'available' && n.textContent.includes('PC salon'))", 15)
+    card = lambda name: page.locator(".forge-device", has=page.locator(".forge-device-name", has_text=name))
+    card("PC salon").locator(".forge-device-gpu").click()
+    card("Cet HQ").locator(".forge-device-name").click()
+    run.check(not card("Cet HQ").locator('input[type="checkbox"]').is_checked() and card("PC salon").locator('input[type="checkbox"]').is_checked(),
+              "only PC salon is selected")
+    page.locator("#forge-fleet-count").fill("3")
+    page.locator("#forge-fleet-count").dispatch_event("input")
+    page.locator("#forge-prompt").fill("lot a relancer")
+    page.locator("#forge-generate").click()
+    run.check(run.until(page, "() => /Terminé en partie/.test(document.querySelector('#forge-fleet-batch-state').textContent)", 30), "the batch ends partial (two mock failures)")
+    btn = page.locator("#forge-fleet-batch-retry")
+    run.check(btn.is_visible() and btn.inner_text().strip() == "Relancer les 2 images manquantes", "Relancer les 2 images manquantes is offered")
+    run.shot(page, "retry", "#forge-fleet-batch")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.wait_for_timeout(200)
+    run.shot(page, "retry", "#forge-fleet-batch")
+    page.set_viewport_size({"width": 375, "height": 812})
+    first = page.evaluate("() => sessionStorage.getItem('hqForgeBatch')")
+    btn.click()
+    run.check(run.until(page, "(old) => sessionStorage.getItem('hqForgeBatch') !== old", 5, first), "the retry starts a new batch")
+    run.check(run.until(page, "() => /^Terminé$/.test(document.querySelector('#forge-fleet-batch-state').textContent.trim())", 30), "the retried images complete")
+    run.check(page.locator("#forge-fleet-batch-retry").is_hidden(), "nothing is left to retry")
+    batches = page.request.get(run.base + "/api/forge/batches").json()["batches"]
+    retried = next(b for b in batches if b["batch_id"] != first)
+    source = next(b for b in batches if b["batch_id"] == first)
+    missing = sorted(t["seed"] for t in source["tasks"] if t["state"] == "failed")
+    run.check(sorted(t["seed"] for t in retried["tasks"]) == missing and retried["retry_of"] == first, "the retry keeps the seeds of the missing images")
+    ctx.close()
+
+
+SECTIONS = {"retry": section_retry, "away": section_away, "share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
 
 
 def main() -> None:
@@ -400,7 +436,8 @@ def main() -> None:
     print(f"PASS {total} checks ({browser_name})")
 
 
-EXTRA_ENV: dict[str, dict] = {"eta": {"HQ_FORGE_MOCK_DELAY": "4"}, "wake": {"HQ_FORGE_MOCK_DELAY": "3"}}
+EXTRA_ENV: dict[str, dict] = {"eta": {"HQ_FORGE_MOCK_DELAY": "4"}, "wake": {"HQ_FORGE_MOCK_DELAY": "3"},
+             "retry": {"HQ_FORGE_FLEET_MOCK": "1", "HQ_FORGE_FLEET_DELAY": "0.3", "HQ_FORGE_FLEET_FAIL_FIRST": "2"}}
 
 if __name__ == "__main__":
     main()

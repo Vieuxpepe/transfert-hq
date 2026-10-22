@@ -131,6 +131,8 @@ def main() -> None:
         ][: max(0, min(3, int(fleet)))]
         for name, hardware, extra in specs:
             code = hq_forge_fleet.create_code()["code"]
+            if name == "PC salon" and os.environ.get("HQ_FORGE_FLEET_FAIL_FIRST"):
+                extra = dict(extra, fail_first=int(os.environ["HQ_FORGE_FLEET_FAIL_FIRST"]))
             mock = MockForge(delay=delay, **extra)
             sim = SimWorker(base, code, name, mock, hardware=hardware)
             sim.start()
