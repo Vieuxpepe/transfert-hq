@@ -108,6 +108,7 @@ def main() -> None:
                 "/sdapi/v1/options": {"sd_model_checkpoint": "example.safetensors"},
                 "/sdapi/v1/progress": {"progress": 0, "state": {"job": "", "job_count": 0, "sampling_step": 0, "sampling_steps": 0}},
                 "/internal/pending-tasks": {"size": 0, "tasks": []},
+                "/sdapi/v1/loras": [],
             }
             if path not in table:
                 return 404, b"{}"

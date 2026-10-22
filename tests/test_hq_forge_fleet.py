@@ -586,9 +586,65 @@ class FleetHttp(unittest.TestCase):
         _a, _b, row, _ = self._excluded_run("parity-vae", {"vae": ("other-vae.safetensors",)})
         self.assertIn("VAE diff\u00e9rent", row["message"])
 
-    def test_requested_lora_cannot_be_verified_so_other_devices_are_excluded(self):
-        _a, _b, row, _ = self._excluded_run("parity-lora", {}, prompt="un phare <lora:grain:0.6>")
-        self.assertIn("LoRA \u00ab grain \u00bb non v\u00e9rifiable", row["message"])
+    def _lora_batch(self, key, a_loras, b_loras):
+        a = self.worker("PC A", loras=a_loras)
+        b = self.worker("PC-2", loras=b_loras)
+        status, payload = self.batch([a.id, b.id], 2, key, prompt="un phare <lora:grain:0.6>")
+        self.assertEqual(status, 202, payload)
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(done["counts"]["done"], 2)
+        return a, b, payload["batch"]["excluded"]
+
+    def test_missing_lora_excludes_the_pc_with_a_plain_message(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {}}
+        a, b, excluded = self._lora_batch("lora-missing", [g], [])
+        self.assertEqual(excluded[0]["message"], "PC-2 n'a pas le LoRA \u00ab grain \u00bb, exclu.")
+        self.assertEqual(len(b.forge_mock.calls), 0)
+
+    def test_same_lora_content_hash_splits_and_metadata_never_leaves_the_worker(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {"sshs_model_hash": "c" * 64, "ss_tag_frequency": {"secret-tag": 3}}}
+        a, b, excluded = self._lora_batch("lora-same", [g], [dict(g, name="grain_v1")])
+        self.assertEqual(excluded, [])
+        self.assertGreaterEqual(len(b.forge_mock.calls), 1)
+        status, payload = self.admin.json("/api/forge/devices")
+        self.assertNotIn("secret-tag", json.dumps(payload))
+
+    def test_other_lora_hash_is_excluded(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {"sshs_model_hash": "c" * 64}}
+        _a, b, excluded = self._lora_batch("lora-hash", [g], [{"name": "grain", "alias": "grain", "metadata": {"sshs_model_hash": "d" * 64}}])
+        self.assertEqual(excluded[0]["message"], "PC-2 : autre version du LoRA \u00ab grain \u00bb, exclu.")
+        self.assertEqual(len(b.forge_mock.calls), 0)
+
+    def test_without_hash_name_and_alias_must_match(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {}}
+        _a, b, excluded = self._lora_batch("lora-name-ok", [g], [g])
+        self.assertEqual(excluded, [])
+
+    def test_without_hash_a_different_file_name_is_excluded(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {}}
+        _a, b, excluded = self._lora_batch("lora-name-bad", [dict(g, name="grain_old")], [dict(g, name="grain_new")])
+        self.assertEqual(excluded[0]["message"], "PC-2 : LoRA \u00ab grain \u00bb diff\u00e9rent, exclu.")
+
+    def test_unreadable_lora_list_excludes(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {}}
+        _a, b, excluded = self._lora_batch("lora-unread", [g], None)
+        self.assertEqual(excluded[0]["message"], "PC-2 : liste des LoRA illisible, exclu.")
+        self.assertEqual(len(b.forge_mock.calls), 0)
+        # A prompt without LoRA ignores the list entirely.
+        cat = {"hashes": {MODEL: "a" * 64}, "vae": [], "loras": None}
+        kept, excl, _ = FL.parity_split({"checkpoint": MODEL, "prompt": "x"}, ["w1", "w2"], {"w1": cat, "w2": cat}, {})
+        self.assertEqual((kept, excl), (["w1", "w2"], []))
+
+    def test_dispatch_rechecks_the_lora(self):
+        ref = {"name": "grain", "alias": "grain", "hash": "c" * 64}
+        parity = {"reference": "w1", "checkpoint_sha256": "a" * 64, "vae": [], "loras": {"grain": ref}}
+        batch = {"parity": parity, "settings": {"checkpoint": MODEL}}
+        good = {"hashes": {MODEL: "a" * 64}, "vae": [], "loras": {"items": [ref], "truncated": False}}
+        self.assertTrue(FL._parity_ok(batch, "w2", good))
+        self.assertFalse(FL._parity_ok(batch, "w2", dict(good, loras={"items": [], "truncated": False})))
+        self.assertFalse(FL._parity_ok(batch, "w2", dict(good, loras=None)))
+        self.assertEqual(W.lora_list([{"name": "a", "alias": "b", "metadata": {"sshs_model_hash": "E" * 64, "x": "y"}}, {"name": ""}]),
+                         {"items": [{"name": "a", "alias": "b", "hash": "e" * 64}], "truncated": True})
 
     def test_unknown_hash_is_excluded_never_assumed_equal(self):
         _a, _b, row, _ = self._excluded_run("parity-nohash", {"hashes": {MODEL: None}})

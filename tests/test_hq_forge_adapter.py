@@ -55,6 +55,15 @@ class Adapter(unittest.TestCase):
             self.assertNotIn(banned, paths)
         self.assertIn(("/sdapi/v1/options", "POST") if False else ("GET", "/sdapi/v1/options"), F.ALLOWED_ROUTES)
         self.assertNotIn(("POST", "/sdapi/v1/options"), F.ALLOWED_ROUTES)
+        self.assertEqual(F.ALLOWED_ROUTES, frozenset({("GET", p) for p in (
+            "/sdapi/v1/samplers", "/sdapi/v1/schedulers", "/sdapi/v1/sd-models", "/sdapi/v1/upscalers",
+            "/sdapi/v1/options", "/sdapi/v1/loras", "/sdapi/v1/progress", "/internal/pending-tasks")}),
+            "exactly one addition to the 4d7bb05 set: GET /sdapi/v1/loras")
+
+    def test_worker_routes_are_the_same_read_only_set(self):
+        import hq_forge_worker as W
+        self.assertEqual(W.FORGE_ROUTES, frozenset(path for _m, path in F.ALLOWED_ROUTES))
+        self.assertEqual(W.SUBMIT_PATH, "/sdapi/v1/txt2img")
 
     def test_connection_refused_is_offline(self):
         transport = Transport({("GET", "/sdapi/v1/samplers"): ConnectionRefusedError()})

@@ -33,6 +33,7 @@ ALLOWED_ROUTES = frozenset({
     ("GET", "/sdapi/v1/sd-models"),
     ("GET", "/sdapi/v1/upscalers"),
     ("GET", "/sdapi/v1/options"),
+    ("GET", "/sdapi/v1/loras"),
     ("GET", "/sdapi/v1/progress"),
     ("GET", "/internal/pending-tasks"),
 })
@@ -477,6 +478,15 @@ def read_progress(*, transport=None) -> dict:
     transport = _resolve(transport)
     value = _call(transport, "/sdapi/v1/progress", "?skip_current_image=true")
     if not isinstance(value, dict):
+        raise _Probe("forge_error")
+    return value
+
+
+def read_loras(*, transport=None) -> list:
+    """GET /sdapi/v1/loras (read-only, sd_forge_lora). Rows are {name, alias, metadata}."""
+    transport = _resolve(transport)
+    value = _call(transport, "/sdapi/v1/loras")
+    if not isinstance(value, list):
         raise _Probe("forge_error")
     return value
 

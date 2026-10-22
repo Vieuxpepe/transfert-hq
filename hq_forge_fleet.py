@@ -581,7 +581,51 @@ def _clean_catalog(raw, vae=None) -> dict | None:
     out = {key: _names(raw.get(key)) for key in ("models", "samplers", "schedulers", "upscalers")}
     out["hashes"] = _clean_hashes(raw.get("hashes"))
     out["vae"] = None if vae is None else _names(vae, 16)
+    out["loras"] = _clean_loras(raw.get("loras"))
     return out
+
+
+def _clean_loras(raw) -> dict | None:
+    if not isinstance(raw, dict) or not isinstance(raw.get("items"), list):
+        return None
+    items = []
+    for row in raw["items"][:wire.MAX_LORAS]:
+        if not isinstance(row, dict):
+            continue
+        name, alias, sha = row.get("name"), row.get("alias"), row.get("hash")
+        if not isinstance(name, str) or not 0 < len(name) <= 120 or any(ord(ch) < 32 for ch in name):
+            continue
+        alias = alias if isinstance(alias, str) and 0 < len(alias) <= 120 and not any(ord(ch) < 32 for ch in alias) else name
+        items.append({"name": name, "alias": alias, "hash": sha if isinstance(sha, str) and _SHA_RE.fullmatch(sha) else None})
+    return {"items": items, "truncated": raw.get("truncated") is True}
+
+
+def _find_lora(loras: dict | None, wanted: str) -> dict | None:
+    """The prompt's <lora:X> matches a LoRA by alias or by name, as Forge does."""
+    for row in (loras or {}).get("items") or []:
+        if row["alias"] == wanted:
+            return row
+    for row in (loras or {}).get("items") or []:
+        if row["name"] == wanted:
+            return row
+    return None
+
+
+def _lora_reason(ref_row: dict | None, loras: dict | None, wanted: str) -> str | None:
+    if loras is None:
+        return "liste des LoRA illisible"
+    row = _find_lora(loras, wanted)
+    if row is None:
+        return ("liste des LoRA incompl\u00e8te (LoRA \u00ab " + wanted + " \u00bb introuvable)") if loras.get("truncated") \
+            else ("n'a pas le LoRA \u00ab " + wanted + " \u00bb")
+    if ref_row is None:
+        return None  # the reference itself lacks it; Forge there decides, nothing to compare
+    if ref_row["hash"] and row["hash"]:
+        return None if ref_row["hash"] == row["hash"] else "autre version du LoRA \u00ab " + wanted + " \u00bb"
+    # No content hash on one side: Forge exposes no file hash or size, so name + alias must match.
+    if (row["name"], row["alias"]) != (ref_row["name"], ref_row["alias"]):
+        return "LoRA \u00ab " + wanted + " \u00bb diff\u00e9rent"
+    return None
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -632,6 +676,7 @@ def parity_split(settings: dict, fit: list, catalogs: dict, names: dict) -> tupl
     ref = catalogs.get(reference) or {}
     ref_sha = (ref.get("hashes") or {}).get(checkpoint)
     ref_vae = ref.get("vae")
+    ref_loras = ref.get("loras")
     loras = requested_loras(settings.get("prompt"))
     kept = []
     for worker_id in fit:
@@ -650,16 +695,22 @@ def parity_split(settings: dict, fit: list, catalogs: dict, names: dict) -> tupl
             reasons.append("VAE inconnu")
         elif vae != ref_vae:
             reasons.append("VAE diff\u00e9rent (" + (", ".join(vae) or "aucun") + " au lieu de " + (", ".join(ref_vae) or "aucun") + ")")
-        for lora in loras:
-            # Forge's /sdapi/v1/loras is not on the worker allowlist, so a LoRA cannot be checked.
-            reasons.append(f"LoRA \u00ab {lora} \u00bb non v\u00e9rifiable")
+        if loras and ref_loras is None:
+            reasons.append("LoRA non comparables : la liste de l'appareil de r\u00e9f\u00e9rence est illisible")
+        for lora in (loras if ref_loras is not None else []):
+            reason = _lora_reason(_find_lora(ref_loras, lora), cat.get("loras"), lora)
+            if reason:
+                reasons.append(reason)
         if reasons:
             name = names.get(worker_id) or worker_id
+            first = reasons[0]
+            message = f"{name} {first}, exclu." if first.startswith("n'a pas") else f"{name} : {first}, exclu."
             excluded.append({"worker_id": worker_id, "name": name, "kind": "parity", "reasons": reasons,
-                             "message": f"{name} : {reasons[0]}, exclu."})
+                             "message": message})
         else:
             kept.append(worker_id)
-    return kept, excluded, {"reference": reference, "checkpoint_sha256": ref_sha, "vae": ref_vae}
+    ref_rows = {lora: _find_lora(ref_loras, lora) for lora in loras}
+    return kept, excluded, {"reference": reference, "checkpoint_sha256": ref_sha, "vae": ref_vae, "loras": ref_rows}
 
 
 def _parity_for(selection_fit: list, settings: dict, hq_job) -> tuple[list, list, dict]:
@@ -677,7 +728,10 @@ def _parity_ok(batch: dict, worker_id: str, catalog: dict | None) -> bool:
         return True
     cat = catalog or {}
     sha = (cat.get("hashes") or {}).get(batch["settings"].get("checkpoint"))
-    return bool(sha) and sha == parity.get("checkpoint_sha256") and cat.get("vae") == parity.get("vae")
+    if not (bool(sha) and sha == parity.get("checkpoint_sha256") and cat.get("vae") == parity.get("vae")):
+        return False
+    refs = parity.get("loras") if isinstance(parity.get("loras"), dict) else {}
+    return all(_lora_reason(ref_row, cat.get("loras"), lora) is None for lora, ref_row in refs.items())
 
 
 def _local_view() -> dict:
@@ -709,6 +763,10 @@ def _local_view() -> dict:
                 catalog["vae"] = wire.vae_names(forge.read_options())
             except Exception:
                 catalog["vae"] = None
+            try:
+                catalog["loras"] = _clean_loras(wire.lora_list(forge.read_loras()))
+            except Exception:
+                catalog["loras"] = None
         cached = (now, {"state": status.get("forge"), "model": status.get("model"), "catalog": catalog})
         _local_status = cached
     return cached[1]

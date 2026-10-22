@@ -45,13 +45,14 @@ class MockForge:
     """A minimal Forge API: catalog routes, progress and txt2img."""
 
     def __init__(self, *, models=(MODEL,), samplers=("Euler", "Euler a"), delay: float = 0.0, mode: str = "ok",
-                 colour=(24, 72, 48), fail_first: int = 0, hashes: dict | None = None, vae=()) -> None:
+                 colour=(24, 72, 48), fail_first: int = 0, hashes: dict | None = None, vae=(), loras=()) -> None:
         import hashlib
         self.models = list(models)
         # Same file -> same sha256 by default (Forge's own field); tests override for parity cases.
         self.hashes = {title: hashlib.sha256(title.encode()).hexdigest() for title in self.models}
         self.hashes.update(hashes or {})
         self.vae = list(vae)
+        self.loras = None if loras is None else list(loras)  # None: the route fails (unreadable list)
         self.samplers = list(samplers)
         self.delay = delay
         self.mode = mode
@@ -91,6 +92,8 @@ class MockForge:
                                            "state": {"job": "", "job_count": 1 if owner.mode == "busy" else 0, "sampling_step": 5 if owner.active else 0, "sampling_steps": 10}},
                     "/internal/pending-tasks": {"size": 0, "tasks": []},
                 }
+                if owner.loras is not None:
+                    table["/sdapi/v1/loras"] = owner.loras
                 if path not in table:
                     self._send(404, {})
                     return

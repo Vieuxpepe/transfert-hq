@@ -70,8 +70,9 @@ UPLOAD_RETRIES = 3
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 FORGE_ROUTES = frozenset({
     "/sdapi/v1/samplers", "/sdapi/v1/schedulers", "/sdapi/v1/sd-models", "/sdapi/v1/upscalers",
-    "/sdapi/v1/options", "/sdapi/v1/progress", "/internal/pending-tasks",
+    "/sdapi/v1/options", "/sdapi/v1/loras", "/sdapi/v1/progress", "/internal/pending-tasks",
 })
+MAX_LORAS = 96
 SUBMIT_PATH = "/sdapi/v1/txt2img"
 SETTING_KEYS = (
     "prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height", "steps",
@@ -355,7 +356,12 @@ class ForgeLocal:
                     out.append(value)
             return out[:MAX_LIST]
 
+        try:
+            loras = lora_list(self._get("/sdapi/v1/loras"))
+        except (OSError, ValueError, TimeoutError):
+            loras = None  # unreadable: HQ excludes this PC from any batch that names a LoRA
         self._catalog = {
+            "loras": loras,
             "hashes": model_hashes(models),
             "models": names(models, "title"),
             "samplers": names(samplers, "name"),
@@ -409,6 +415,30 @@ def vae_names(options) -> list[str] | None:
         if name and not any(ord(ch) < 32 for ch in name) and name not in out:
             out.append(name)
     return sorted(out)[:16]
+
+
+def lora_list(rows) -> dict | None:
+    """LoRAs as {"items": [{name, alias, hash}], "truncated": bool}. Forge's /sdapi/v1/loras has no
+    file hash or size; 'hash' is the content hash kept in the file's own metadata
+    (sshs_model_hash) when present, else None. Metadata itself is never forwarded."""
+    if not isinstance(rows, list):
+        return None
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not isinstance(name, str) or not name or len(name) > 120 or any(ord(ch) < 32 for ch in name):
+            continue
+        alias = row.get("alias")
+        alias = alias if isinstance(alias, str) and 0 < len(alias) <= 120 and not any(ord(ch) < 32 for ch in alias) else name
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        sha = meta.get("sshs_model_hash")
+        ok = isinstance(sha, str) and len(sha) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in sha)
+        items.append({"name": name, "alias": alias, "hash": sha.lower() if ok else None})
+        if len(items) >= MAX_LORAS:
+            break
+    return {"items": items, "truncated": len(items) < len([r for r in rows if isinstance(r, dict)])}
 
 
 def model_hashes(rows) -> dict:
