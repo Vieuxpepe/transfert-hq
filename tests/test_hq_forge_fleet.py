@@ -382,6 +382,8 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual(len(b.forge_mock.calls), 1, "the uncertain task is not re-run elsewhere")
         self.assertEqual(len(a.forge_mock.calls), 0)
         lost = [row for row in done["tasks"] if row["id"] == task["task_id"]][0]
+        row_a = [row for row in done["workers"] if row["worker_id"] == a.id][0]
+        self.assertEqual((row_a["uncertain"], row_a["failed"], row_a["done"]), (1, 1, 0), "per-worker rows split out uncertain")
         self.assertIn("pas relancée", lost["message"])
 
     def test_worker_restart_reports_lost_task_as_uncertain(self):
@@ -558,6 +560,126 @@ class FleetHttp(unittest.TestCase):
         self.assertTrue(sids <= {"SY", "BA", "S-1-5-18", "S-1-5-32-544", user}, sddl)
         self.assertIn(user, sids)
         self.assertIsNone(re.search(r"\(A;[A-Z]*ID[A-Z]*;", dacl), "no inherited ACE: " + sddl)
+
+    # ------------------------------------------------------------------ diagnostics (real telemetry only)
+    def codes(self, worker_id: str) -> list[str]:
+        return [d["code"] for d in self.device(worker_id)["diagnostics"]]
+
+    def test_diagnostics_mapping_is_actionable_and_never_guesses(self):
+        now = 1_000_000.0
+        hw = {"gpus": [{"name": "RTX", "vram_mb": 8192}], "cpu": "CPU", "ram_mb": 16000}
+        base = {"kind": "remote", "secret_ok": True, "disabled": False, "seen": now - 1, "online": True, "forge": "ready",
+                "catalog_known": True, "own_task": False, "last_error": "", "hardware": hw}
+        def run(**over):
+            return FL.diagnose(dict(base, **over), now)
+        self.assertEqual(run(), [])
+        stale = run(seen=now - 600, online=False)
+        self.assertEqual([d["code"] for d in stale], ["worker_stale"])
+        self.assertIn("Le service worker ne r\u00e9pond plus depuis 10 min", stale[0]["title"])
+        self.assertNotIn("Tailscale", stale[0]["title"], "a silent worker is not claimed to be a Tailscale outage")
+        self.assertIn("pas forc\u00e9ment une panne Tailscale", stale[0]["action"])
+        self.assertEqual([d["code"] for d in run(net={"since": int(now) - 120, "until": int(now) - 10})], ["network"])
+        self.assertEqual(run(net={"since": int(now) - 9000, "until": int(now) - 7200}), [], "an old network spell is not shown")
+        self.assertEqual([d["code"] for d in run(forge="offline")], ["forge_down"])
+        self.assertEqual([d["code"] for d in run(forge="busy")], ["forge_busy"])
+        self.assertEqual(run(forge="busy", own_task=True), [], "busy with our own task is not a problem")
+        self.assertEqual([d["code"] for d in run(last_error="model_missing")], ["model_missing"])
+        self.assertEqual([d["code"] for d in run(secret_ok=False)], ["secret_unprotected"])
+        self.assertEqual([d["code"] for d in run(disabled=True)], ["disabled"])
+        self.assertEqual([d["code"] for d in run(seen=0, online=False, hardware={})][:1], ["never_seen"])
+        self.assertEqual([d["code"] for d in run(online=False, seen=now - 600, auth_fail_at=now - 5)], ["auth_refused", "worker_stale"])
+        self.assertEqual([d["code"] for d in run(online=False, seen=now - 600, skew_at=now - 5)], ["clock_skew", "worker_stale"])
+        self.assertEqual(run(auth_fail_at=now - 5), [], "a stray bad signature is ignored while the worker is healthy")
+        unknown = run(hardware={"gpus": [{"name": "Iris", "vram_mb": None}], "cpu": None, "ram_mb": None})
+        self.assertEqual([d["code"] for d in unknown], ["hardware_unknown"])
+        self.assertIn("VRAM inconnue, CPU inconnu, RAM inconnue", unknown[0]["title"])
+        for code in ("secret_unprotected", "auth_refused", "clock_skew", "disabled", "never_seen", "worker_stale", "network",
+                     "forge_down", "forge_busy", "catalog_unknown", "model_missing", "hardware_unknown", "forge_timeout", "quota"):
+            item = FL._diag(code, ago="1 min", span="2 min", fields="GPU inconnu")
+            self.assertTrue(item["title"] and item["action"] and item["level"] in ("error", "warn", "info"), code)
+        local = FL.diagnose({"kind": "local", "online": True, "seen": now, "forge": "offline", "catalog_known": False, "hardware": hw}, now)
+        self.assertEqual([d["code"] for d in local], ["forge_down"])
+
+    def test_live_diagnostics_from_worker_telemetry(self):
+        down = self.worker("Sans Forge", start=False, mode="offline")
+        down.start()
+        self.assertEqual(down.forge_mock.mode, "offline")
+        wait_for(lambda: "forge_down" in self.codes(down.id))
+        busy = self.worker("Occup\u00e9", start=False, mode="busy")
+        busy.worker.poll_once()
+        self.assertEqual(self.codes(busy.id), ["forge_busy"])
+        bare = self.worker("Sans pilote", start=False)
+        bare.worker.hardware = {"gpus": [], "cpu": None, "ram_mb": None}
+        bare.worker.poll_once()
+        self.assertEqual(self.codes(bare.id), ["hardware_unknown"])
+
+    def test_bad_signature_and_clock_skew_are_diagnosed_without_secrets(self):
+        bad = self.worker("Refus\u00e9", start=False)
+        bad.worker.poll_once()
+        real_secret = bad.client.secret
+        bad.client.secret = "0" * 64
+        with self.assertRaises(W.HQError):
+            bad.worker.poll_once()
+        skew = self.worker("D\u00e9cal\u00e9", start=False)
+        skew.worker.poll_once()
+        orig = W.signed_headers
+        with mock.patch.object(W, "signed_headers", lambda *a, **k: orig(*a, now=time.time() - 4000)):
+            with self.assertRaises(W.HQError):
+                skew.worker.poll_once()
+        real = time.time
+        FL.set_clock_for_tests(lambda: real() + FL.ONLINE_SEC + 5)
+        try:
+            self.assertEqual(self.codes(bad.id), ["auth_refused", "worker_stale"])
+            self.assertEqual(self.codes(skew.id)[0], "clock_skew")
+            raw = self.admin.req("/api/forge/devices")[2].decode("utf-8")
+            self.assertNotIn(real_secret, raw)
+        finally:
+            FL.set_clock_for_tests(None)
+        bad.client.secret = real_secret
+        bad.worker.poll_once()
+        self.assertNotIn("auth_refused", self.codes(bad.id), "a good signature clears the diagnosis")
+
+    def test_network_report_is_backward_compatible_and_validated(self):
+        sim = self.worker("R\u00e9seau", start=False)
+        sim.worker.poll_once()  # no "net" field: an older worker
+        self.assertEqual(self.codes(sim.id), [])
+        stamp = int(time.time())
+        for bad in ({"code": "hq_unreachable", "since": "x", "until": stamp}, {"code": "hq_unreachable", "since": stamp, "until": stamp + 9999},
+                    {"code": "other", "since": stamp - 5, "until": stamp}, {"code": "hq_unreachable", "since": stamp, "until": stamp - 50}):
+            sim.worker.net_report = bad
+            sim.worker.poll_once()
+            self.assertEqual(self.codes(sim.id), [], bad)
+        sim.worker.net_report = {"code": "hq_unreachable", "since": stamp - 200, "until": stamp - 20}
+        sim.worker.poll_once()
+        diag = self.device(sim.id)["diagnostics"]
+        self.assertEqual([d["code"] for d in diag], ["network"])
+        self.assertIn("3 min", diag[0]["title"])
+
+    def test_worker_records_an_hq_outage_and_reports_it_once_back(self):
+        sim = self.worker("Coupure", start=False)
+        real = sim.client.transport
+        state = {"fails": 2}
+        def flaky(*args, **kwargs):
+            if state["fails"] > 0:
+                state["fails"] -= 1
+                raise ConnectionRefusedError("hq down")
+            return real(*args, **kwargs)
+        sim.client.transport = flaky
+        sim.start()
+        wait_for(lambda: "network" in self.codes(sim.id), timeout=20)
+        report = sim.worker.net_report
+        self.assertEqual(report["code"], "hq_unreachable")
+        self.assertLessEqual(report["since"], report["until"])
+
+    def test_copy_commands_never_include_the_pairing_code(self):
+        js = (SOURCE / "assets" / "hq-forge.js").read_text(encoding="utf-8")
+        for name in ("snippet", "runSnippet"):
+            body = re.search(r"function " + name + r"\(\) \{(.*?)\n  \}", js, re.S).group(1)
+            self.assertNotIn("forge-device-code", body)
+            self.assertNotIn("code", body.lower().replace("encode", ""))
+        copy = re.search(r"const copyTexts = \{([^}]*)\}", js).group(1)
+        self.assertEqual(sorted(part.split(":")[0].strip() for part in copy.split(",")), ["pair", "run"])
+        self.assertNotIn("localStorage.setItem(\"hqForgeCode", js)
 
     # ------------------------------------------------------------------ secret protection fails closed
     def _disk(self) -> str:

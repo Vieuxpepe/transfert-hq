@@ -93,3 +93,11 @@ file after a removal.
 - Images are checked (PNG signature, size, dimensions) and stored in the normal
   HQ gallery with worker and batch provenance. The gallery quota applies; a
   full gallery fails the remaining images without deleting anything.
+
+## Diagnostics on the device cards
+
+Cards only report what HQ actually observed or what the worker itself sent:
+- no heartbeat for 30 s: "Le service worker ne r?pond plus depuis ?" (HQ cannot tell why; it is not reported as a Tailscale outage);
+- a network/Tailscale problem is shown only when the worker reports it afterwards (`net: {code: "hq_unreachable", since, until}` in its poll, sent once HQ answers again; older workers simply omit it);
+- Forge API down or busy, missing model/sampler/scheduler, refused credentials (bad signature), clock skew, unprotected secret, unknown hardware.
+Each message gives the next step. The Add-device sheet walks through the six setup steps, copies only the non-secret pair/run commands and detects the new device live.

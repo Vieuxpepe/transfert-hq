@@ -121,6 +121,46 @@ def main() -> None:
             sim = SimWorker(base, code, name, mock, hardware=hardware)
             sim.start()
             sims.append(sim)
+    if os.environ.get("HQ_FORGE_FLEET_DIAG"):
+        # Diagnostic states, each from real telemetry of a simulated worker (no faked fields on HQ's side).
+        sys.path.insert(0, str(SOURCE / "tests"))
+        import time as _time
+        import hq_forge_fleet
+        import hq_forge_worker
+        from forge_fleet_mocks import MockForge, SimWorker
+
+        hq_forge_worker.POLL_SEC, hq_forge_worker.IDLE_MAX_SEC, hq_forge_worker.PROGRESS_SEC = 0.3, 0.6, 0.4
+        hq_forge_fleet.ONLINE_SEC = float(os.environ.get("HQ_FORGE_FLEET_ONLINE_SEC", "4"))
+        hq_forge_fleet.bind(root)
+        full = {"gpus": [{"name": "NVIDIA GeForce RTX 4070 Ti SUPER Founders Edition 16 Go", "vram_mb": 16376, "source": "nvidia-smi"}],
+                "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor with Radeon Graphics", "ram_mb": 65243, "os": "Windows 11"}
+
+        def add(name, hardware=None, **forge):
+            code = hq_forge_fleet.create_code()["code"]
+            mock = MockForge(**forge)
+            sim = SimWorker(base, code, name, mock, hardware=hardware if hardware is not None else full)
+            sims.append(sim)
+            return sim
+
+        add("Studio graphique du fond, poste n°1").start()
+        add("Sans Forge", mode="offline").start()
+        add("Forge occup\u00e9", mode="busy").start()
+        add("Sans pilote", hardware={"gpus": [], "cpu": None, "ram_mb": None, "os": "Windows 10"}).start()
+        add("Autre mod\u00e8le", models=("autre-modele.safetensors [ffff]",), samplers=("DPM++ 2M",)).start()
+        sleepy = add("En veille")
+        sleepy.worker.poll_once()  # one heartbeat, then silence
+        net = add("R\u00e9seau instable")
+        stamp = int(_time.time())
+        net.worker.net_report = {"code": "hq_unreachable", "since": stamp - 300, "until": stamp - 20}
+        net.start()
+        revoked = add("Identifiants refus\u00e9s")
+        revoked.client.secret = "0" * 64
+        revoked.start()
+        legacy = add("Ancien secret")
+        with hq_forge_fleet._LOCK:
+            row = hq_forge_fleet._worker(legacy.id)
+            row["secret"] = {"kind": "plain", "value": "legacy-not-a-real-secret"}
+        legacy.start()
     print(json.dumps({"base": base, "admin_pin": "424242", "upload_pin": "111111", "workers": [sim.id for sim in sims]}), flush=True)
     try:
         sys.stdin.read()  # exits when the parent closes stdin

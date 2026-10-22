@@ -494,6 +494,9 @@ class Worker:
         self.log = log or (lambda message: None)
         self.current: dict | None = None
         self.last_error = ""
+        # Latest HQ-unreachable spell seen by this PC (network/Tailscale), reported once HQ answers again.
+        self.net_report: dict | None = None
+        self._hq_down_since: float | None = None
         self._lock = threading.Lock()
         self.stop = threading.Event()
 
@@ -508,6 +511,7 @@ class Worker:
             "forge": {**forge, "catalog": catalog},
             "current_task": current["task_id"] if current else None,
             "last_error": self.last_error[:120],
+            **({"net": dict(self.net_report)} if self.net_report else {}),
         }
 
     def poll_once(self) -> dict | None:
@@ -592,12 +596,20 @@ class Worker:
             try:
                 task = self.poll_once()
                 errors = 0
+                if self._hq_down_since is not None:
+                    self.net_report = {"code": "hq_unreachable", "since": int(self._hq_down_since), "until": int(time.time())}
+                    self._hq_down_since = None
             except HQError as exc:
                 if exc.status in (401, 403):
                     self.log("HQ refuse cet appareil (révoqué ou désactivé).")
                 errors += 1
                 task = None
-            except (OSError, ValueError, TimeoutError):
+            except (OSError, TimeoutError):
+                errors += 1
+                task = None
+                if self._hq_down_since is None:
+                    self._hq_down_since = time.time()
+            except ValueError:
                 errors += 1
                 task = None
             if task is not None:

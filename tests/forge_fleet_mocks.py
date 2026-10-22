@@ -82,7 +82,7 @@ class MockForge:
                     "/sdapi/v1/sd-models": [{"title": title, "model_name": title.split(".")[0]} for title in owner.models],
                     "/sdapi/v1/options": {"sd_model_checkpoint": owner.models[0] if owner.models else ""},
                     "/sdapi/v1/progress": {"progress": 0.5 if owner.active else 0,
-                                           "state": {"job": "", "job_count": 0, "sampling_step": 5 if owner.active else 0, "sampling_steps": 10}},
+                                           "state": {"job": "", "job_count": 1 if owner.mode == "busy" else 0, "sampling_step": 5 if owner.active else 0, "sampling_steps": 10}},
                     "/internal/pending-tasks": {"size": 0, "tasks": []},
                 }
                 if path not in table:

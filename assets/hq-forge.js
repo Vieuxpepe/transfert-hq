@@ -1764,14 +1764,15 @@
   }
 
   function compatReasons(device) {
+    // Each reason carries a next step. Titles keep "absent" so the card says what is missing.
     const catalog = device.catalog;
-    if (!catalog) return ["Catalogue Forge inconnu."];
+    if (!catalog) return [{ title: "Catalogue Forge inconnu.", action: "Attendez que l'appareil envoie son catalogue, ou red\u00e9marrez Forge sur ce PC." }];
     const out = [];
     const has = (list, value) => (list || []).includes(value);
-    if (checkpointEl.value && !has(catalog.models, checkpointEl.value)) out.push("Modèle « " + checkpointEl.value + " » absent.");
-    if (samplerEl.value && !has(catalog.samplers, samplerEl.value)) out.push("Échantillonneur « " + samplerEl.value + " » absent.");
-    if (schedulerEl.value && !has(catalog.schedulers, schedulerEl.value)) out.push("Planificateur « " + schedulerEl.value + " » absent.");
-    if (hiresOn() && $("forge-hr-upscaler").value && !has(catalog.upscalers, $("forge-hr-upscaler").value)) out.push("Agrandisseur Hires. fix absent.");
+    if (checkpointEl.value && !has(catalog.models, checkpointEl.value)) out.push({ title: "Mod\u00e8le \u00ab " + checkpointEl.value + " \u00bb absent.", action: "Copiez-le dans models\\Stable-diffusion de Forge sur ce PC, ou choisissez un mod\u00e8le pr\u00e9sent." });
+    if (samplerEl.value && !has(catalog.samplers, samplerEl.value)) out.push({ title: "\u00c9chantillonneur \u00ab " + samplerEl.value + " \u00bb absent.", action: "Choisissez un autre \u00e9chantillonneur, ou mettez Forge \u00e0 jour sur ce PC." });
+    if (schedulerEl.value && !has(catalog.schedulers, schedulerEl.value)) out.push({ title: "Planificateur \u00ab " + schedulerEl.value + " \u00bb absent.", action: "Choisissez un autre planificateur, ou mettez Forge \u00e0 jour sur ce PC." });
+    if (hiresOn() && $("forge-hr-upscaler").value && !has(catalog.upscalers, $("forge-hr-upscaler").value)) out.push({ title: "Agrandisseur Hires. fix absent.", action: "Choisissez un agrandisseur pr\u00e9sent sur tous les appareils, ou d\u00e9sactivez Hires. fix." });
     return out;
   }
 
@@ -1788,11 +1789,14 @@
         error: device.last_error_label || "Erreur.",
         forge_down: device.online ? "En ligne, mais Forge ne répond pas sur cet appareil." : "Forge ne répond pas."
       }[device.state] || "";
-      return { ok: false, label: device.state_label, why: why };
+      const first = (device.diagnostics || [])[0];
+      return { ok: false, label: device.state_label, why: first ? first.title : why, next: first ? first.action : "", level: first ? first.level : "error" };
     }
     const reasons = compatReasons(device);
-    if (reasons.length) return { ok: false, label: "Modèle incompatible", why: reasons.join(" ") };
-    return { ok: true, label: device.state_label, why: device.state === "error" ? (device.last_error_label || "Dernière tâche en erreur.") : "" };
+    if (reasons.length) return { ok: false, label: "Modèle incompatible", why: reasons.map((r) => r.title).join(" "), next: reasons[0].action, level: "warn" };
+    const first = (device.diagnostics || [])[0];
+    if (first) return { ok: true, label: device.state_label, why: first.title, next: first.action, level: first.level };
+    return { ok: true, label: device.state_label, why: device.state === "error" ? (device.last_error_label || "Dernière tâche en erreur.") : "", next: "", level: "warn" };
   }
 
   function specLine(label, value) {
@@ -1855,30 +1859,49 @@
     loadDevices().catch(() => {});
   }
 
+  function textWithTitle(tag, className, text) {
+    const node = document.createElement(tag);
+    node.className = className;
+    node.textContent = text;
+    node.title = text; // full text when the card ellipsizes it
+    return node;
+  }
+
+  function jobText(current) {
+    return current.steps ? "Pas " + current.step + " / " + current.steps : "T\u00e2che en cours";
+  }
+
   function deviceCard(device) {
     const verdict = deviceVerdict(device);
     const li = document.createElement("li");
     li.className = "forge-device";
     li.dataset.id = device.id;
-    li.dataset.state = verdict.ok ? device.state : (verdict.label === "Modèle incompatible" ? "incompatible" : device.state);
+    li.dataset.state = verdict.ok ? device.state : (verdict.label === "Mod\u00e8le incompatible" ? "incompatible" : device.state);
     const isOn = selected.has(device.id) && verdict.ok;
     li.classList.toggle("is-selected", isOn);
     const head = document.createElement("label");
     head.className = "forge-device-pick";
     const box = document.createElement("input");
     box.type = "checkbox";
+    box.className = "forge-device-input";
     box.checked = isOn;
     box.disabled = !verdict.ok;
+    box.setAttribute("aria-describedby", "forge-dev-why-" + device.id);
     box.addEventListener("change", () => {
       if (box.checked) selected.add(device.id); else selected.delete(device.id);
       saveSelection();
-      renderDevices();
+      renderDevices(true);
       syncActions();
     });
-    const name = document.createElement("span");
-    name.className = "forge-device-name";
-    name.textContent = device.name;
-    head.append(box, name);
+    const check = document.createElement("span");
+    check.className = "forge-device-check";
+    check.setAttribute("aria-hidden", "true");
+    check.textContent = isOn ? "\u2713" : "";
+    const name = textWithTitle("span", "forge-device-name", device.name);
+    const chosen = document.createElement("span");
+    chosen.className = "forge-device-chosen";
+    chosen.textContent = isOn ? "Choisi" : (verdict.ok ? "" : "Indisponible");
+    head.append(box, check, name, chosen);
     const pills = document.createElement("div");
     pills.className = "forge-device-pills";
     const link = document.createElement("span");
@@ -1890,17 +1913,26 @@
     state.dataset.kind = verdict.ok ? (device.state === "busy" ? "busy" : (device.state === "error" ? "warn" : "ok")) : "bad";
     state.textContent = verdict.label;
     pills.append(link, state);
-    const gpu = document.createElement("p");
-    gpu.className = "forge-device-gpu";
     const first = (device.hardware && device.hardware.gpus || [])[0];
-    gpu.textContent = first ? first.name + " · VRAM " + mb(first.vram_mb) : "GPU inconnu";
+    const gpu = textWithTitle("p", "forge-device-gpu", first ? first.name + " \u00b7 VRAM " + mb(first.vram_mb) : "GPU inconnu");
     li.append(head, pills, gpu);
+    const why = document.createElement("div");
+    why.className = "forge-device-why";
+    why.id = "forge-dev-why-" + device.id;
+    why.dataset.level = verdict.level || "";
     if (verdict.why) {
-      const why = document.createElement("p");
-      why.className = "forge-device-why";
-      why.textContent = verdict.why;
-      li.append(why);
+      const title = document.createElement("p");
+      title.className = "forge-device-diag";
+      title.textContent = verdict.why;
+      why.append(title);
+      if (verdict.next) {
+        const next = document.createElement("p");
+        next.className = "forge-device-next";
+        next.textContent = "\u00c0 faire : " + verdict.next;
+        why.append(next);
+      }
     }
+    li.append(why);
     if (device.current) {
       const job = document.createElement("div");
       job.className = "forge-device-job";
@@ -1909,7 +1941,8 @@
       bar.value = Number(device.current.progress || 0);
       bar.setAttribute("aria-label", "Progression sur " + device.name);
       const text = document.createElement("span");
-      text.textContent = device.current.steps ? "Pas " + device.current.step + " / " + device.current.steps : "Tâche en cours";
+      text.className = "forge-device-job-text";
+      text.textContent = jobText(device.current);
       job.append(bar, text);
       li.append(job);
     }
@@ -1917,17 +1950,31 @@
     more.className = "forge-device-more";
     if (window.matchMedia && window.matchMedia("(min-width: 760px)").matches) more.open = true;
     const summary = document.createElement("summary");
-    summary.textContent = "Caractéristiques";
+    summary.textContent = "Caract\u00e9ristiques";
     const dl = document.createElement("dl");
+    dl.className = "forge-device-specs";
     const gpus = (device.hardware && device.hardware.gpus) || [];
     dl.append(specLine("GPU", gpus.length ? gpus.map((g) => g.name).join(", ") : "inconnu"));
     dl.append(specLine("VRAM", first ? mb(first.vram_mb) : "inconnue"));
     dl.append(specLine("CPU", (device.hardware && device.hardware.cpu) || "inconnu"));
     dl.append(specLine("RAM", mb(device.hardware && device.hardware.ram_mb)));
-    dl.append(specLine("Modèle chargé", device.model || "inconnu"));
+    dl.append(specLine("Mod\u00e8le charg\u00e9", device.model || "inconnu"));
     if (device.kind === "remote") dl.append(specLine("Vu", device.last_seen ? when(device.last_seen) : "jamais"));
-    if (device.last_error_label) dl.append(specLine("Dernière erreur", device.last_error_label));
+    if (device.last_error_label) dl.append(specLine("Derni\u00e8re erreur", device.last_error_label));
     more.append(summary, dl);
+    const diags = device.diagnostics || [];
+    if (diags.length > 1) {
+      const list = document.createElement("ul");
+      list.className = "forge-device-diags";
+      diags.forEach((d) => {
+        const item = document.createElement("li");
+        item.dataset.level = d.level;
+        item.dataset.code = d.code;
+        item.textContent = d.title + " \u00c0 faire : " + d.action;
+        list.append(item);
+      });
+      more.append(list);
+    }
     if (device.kind === "remote") more.append(adminActions(device));
     li.append(more);
     li.addEventListener("click", (event) => {
@@ -1937,21 +1984,51 @@
     return li;
   }
 
-  function renderDevices() {
-    const openIds = new Set([...deviceList.querySelectorAll(".forge-device-more[open]")].map((node) => node.closest(".forge-device").dataset.id));
-    const focusId = document.activeElement && document.activeElement.closest && document.activeElement.closest(".forge-device") ? document.activeElement.closest(".forge-device").dataset.id : null;
+  let deviceSig = "";
+  function cardSig() {
+    // Everything a card shows except live progress, which is patched in place.
+    return JSON.stringify([devices.map((d) => Object.assign({}, d, { current: d.current ? d.current.task_id : null, last_seen: d.online ? null : d.last_seen })),
+      [...selected], destination(), checkpointEl.value, samplerEl.value, schedulerEl.value, hiresOn(), $("forge-hr-upscaler").value]);
+  }
+
+  function patchProgress() {
+    devices.forEach((device) => {
+      if (!device.current) return;
+      const node = deviceList.querySelector('.forge-device[data-id="' + CSS.escape(device.id) + '"]');
+      if (!node) return;
+      const bar = node.querySelector(".forge-device-job progress");
+      const text = node.querySelector(".forge-device-job-text");
+      const value = Number(device.current.progress || 0);
+      if (bar && bar.value !== value) bar.value = value;
+      if (text && text.textContent !== jobText(device.current)) text.textContent = jobText(device.current);
+    });
+  }
+
+  function renderDevices(force) {
     const typing = document.activeElement && document.activeElement.matches && document.activeElement.matches(".forge-device-rename input");
     if (typing) return; // never rebuild under a rename in progress
-    deviceList.replaceChildren(...devices.map(deviceCard));
-    deviceList.querySelectorAll(".forge-device").forEach((node) => {
-      if (openIds.has(node.dataset.id)) node.querySelector(".forge-device-more").open = true;
-    });
-    if (focusId) {
-      const back = deviceList.querySelector('.forge-device[data-id="' + CSS.escape(focusId) + '"] input[type="checkbox"]');
-      if (back) back.focus({ preventScroll: true });
+    const sig = cardSig();
+    if (!force && sig === deviceSig && deviceList.children.length === devices.length) {
+      patchProgress(); // in place: no rebuild, focus and scroll untouched
+    } else {
+      deviceSig = sig;
+      const openIds = new Set([...deviceList.querySelectorAll(".forge-device-more[open]")].map((node) => node.closest(".forge-device").dataset.id));
+      const closedIds = new Set([...deviceList.querySelectorAll(".forge-device-more:not([open])")].map((node) => node.closest(".forge-device").dataset.id));
+      const focusId = document.activeElement && document.activeElement.closest && document.activeElement.closest(".forge-device") ? document.activeElement.closest(".forge-device").dataset.id : null;
+      deviceList.replaceChildren(...devices.map(deviceCard));
+      deviceList.querySelectorAll(".forge-device").forEach((node) => {
+        const more = node.querySelector(".forge-device-more");
+        if (openIds.has(node.dataset.id)) more.open = true;
+        else if (closedIds.has(node.dataset.id)) more.open = false;
+      });
+      if (focusId) {
+        const back = deviceList.querySelector('.forge-device[data-id="' + CSS.escape(focusId) + '"] input[type="checkbox"]');
+        if (back) back.focus({ preventScroll: true });
+      }
     }
     const chosen = devices.filter((device) => selected.has(device.id) && deviceVerdict(device).ok);
-    devicesCount.textContent = chosen.length === 0 ? "Aucun appareil choisi" : chosen.length === 1 ? "1 appareil choisi" : chosen.length + " appareils choisis";
+    const count = chosen.length === 0 ? "Aucun appareil choisi" : chosen.length === 1 ? "1 appareil choisi" : chosen.length + " appareils choisis";
+    if (devicesCount.textContent !== count) devicesCount.textContent = count;
     const remote = devices.some((device) => device.kind === "remote");
     $("forge-devices-all").hidden = !remote;
     fleetCountField.hidden = !fleetMode();
@@ -2070,31 +2147,50 @@
     batchBox.hidden = false;
     const c = batch.counts;
     const running = batch.state === "running" || batch.state === "cancelling";
-    $("forge-fleet-batch-state").textContent = { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state;
-    $("forge-fleet-batch-totals").textContent = c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : "");
-    const rows = batch.workers.map((row) => {
-      const li = document.createElement("li");
-      li.className = "forge-fleet-batch-worker";
-      li.dataset.worker = row.worker_id;
-      const name = document.createElement("span");
-      name.className = "forge-device-name";
-      name.textContent = row.name;
-      const bar = document.createElement("progress");
-      bar.max = 1;
-      bar.value = row.running ? Number(row.progress || 0) : (row.done ? 1 : 0);
+    const setText = (id, value) => { const n = $(id); if (n.textContent !== value) n.textContent = value; };
+    setText("forge-fleet-batch-state", { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state);
+    setText("forge-fleet-batch-totals", c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : ""));
+    const list = $("forge-fleet-batch-workers");
+    const keep = new Set();
+    batch.workers.forEach((row) => {
+      keep.add(row.worker_id);
+      let li = list.querySelector('.forge-fleet-batch-worker[data-worker="' + CSS.escape(row.worker_id) + '"]');
+      if (!li) {
+        li = document.createElement("li");
+        li.className = "forge-fleet-batch-worker";
+        li.dataset.worker = row.worker_id;
+        const name = document.createElement("span");
+        name.className = "forge-device-name";
+        const status = document.createElement("span");
+        status.className = "forge-fleet-batch-worker-state";
+        const bar = document.createElement("progress");
+        bar.max = 1;
+        const text = document.createElement("span");
+        text.className = "forge-fleet-batch-worker-text";
+        li.append(name, status, bar, text);
+        list.append(li);
+      }
+      const set = (sel, value) => { const n = li.querySelector(sel); if (n.textContent !== value) n.textContent = value; };
+      set(".forge-device-name", row.name);
+      li.querySelector(".forge-device-name").title = row.name;
+      const uncertain = Number(row.uncertain || 0);
+      const failed = Math.max(0, Number(row.failed || 0) - uncertain);
+      const status = row.running ? (row.steps ? "En cours \u00b7 pas " + row.step + " / " + row.steps : "En cours") : (running ? "En attente" : "Termin\u00e9");
+      li.dataset.state = row.running ? "running" : (running ? "waiting" : "done");
+      set(".forge-fleet-batch-worker-state", status);
+      const bar = li.querySelector("progress");
+      const value = row.running ? Number(row.progress || 0) : (row.done ? 1 : 0);
+      if (bar.value !== value) bar.value = value;
       bar.setAttribute("aria-label", "Progression de " + row.name);
-      const text = document.createElement("span");
-      text.className = "forge-fleet-batch-worker-text";
-      text.textContent = row.done + " terminée" + (row.done > 1 ? "s" : "") + (row.failed ? ", " + row.failed + " en échec" : "") + (row.running ? ", 1 en cours" : "");
-      li.append(name, bar, text);
-      return li;
+      set(".forge-fleet-batch-worker-text", row.done + " termin\u00e9e" + (row.done > 1 ? "s" : "") + (failed ? ", " + failed + " en \u00e9chec" : "") +
+        (uncertain ? ", " + uncertain + " incertaine" + (uncertain > 1 ? "s" : "") : "") + (row.running ? ", 1 en cours" : ""));
     });
-    $("forge-fleet-batch-workers").replaceChildren(...rows);
+    [...list.children].forEach((li) => { if (!keep.has(li.dataset.worker)) li.remove(); });
     const issues = batch.tasks.filter((task) => ["failed", "uncertain"].includes(task.state));
     const deferred = batch.tasks.some((task) => task.cancel_deferred && ["dispatched", "running"].includes(task.state));
-    $("forge-fleet-batch-note").textContent = (deferred ? "Images déjà envoyées : chaque appareil termine la sienne. Forge n'est jamais interrompu. " : "") +
+    setText("forge-fleet-batch-note", (deferred ? "Images déjà envoyées : chaque appareil termine la sienne. Forge n'est jamais interrompu. " : "") +
       (issues.length ? issues.slice(0, 3).map((task) => "Image " + (task.index + 1) + (task.worker_name ? " (" + task.worker_name + ")" : "") + " : " + task.message).join(" ") : "") +
-      (batch.seed_mode === "fixed" ? " Graines " + batch.tasks[0].seed + " à " + batch.tasks[batch.tasks.length - 1].seed + "." : "");
+      (batch.seed_mode === "fixed" ? " Graines " + batch.tasks[0].seed + " à " + batch.tasks[batch.tasks.length - 1].seed + "." : ""));
     $("forge-fleet-batch-cancel").hidden = !running;
     $("forge-fleet-batch-cancel").disabled = batch.state === "cancelling";
     $("forge-fleet-batch-close").hidden = running;
@@ -2111,8 +2207,10 @@
       if (resultsEmpty) resultsEmpty.hidden = true;
     }
     progressBox.hidden = !running;
-    progressBar.value = c.total ? (c.done + c.failed + c.uncertain + c.cancelled) / c.total : 0;
-    progressLabel.textContent = running ? "Lot : " + c.done + " / " + c.total : "";
+    const overall = c.total ? (c.done + c.failed + c.uncertain + c.cancelled) / c.total : 0;
+    if (progressBar.value !== overall) progressBar.value = overall;
+    const label = running ? "Lot : " + c.done + " / " + c.total : "";
+    if (progressLabel.textContent !== label) progressLabel.textContent = label;
     clearTimeout(batchTimer);
     batchTimer = 0;
     if (running) {
@@ -2162,8 +2260,8 @@
     syncActions();
   });
   fleetCountEl.addEventListener("input", () => syncActions());
-  [checkpointEl, samplerEl, schedulerEl, $("forge-hr"), $("forge-hr-upscaler")].forEach((node) => node.addEventListener("change", () => { renderDevices(); syncActions(); }));
-  document.querySelectorAll('input[name="forge-destination"]').forEach((node) => node.addEventListener("change", () => { renderDevices(); syncActions(); }));
+  [checkpointEl, samplerEl, schedulerEl, $("forge-hr"), $("forge-hr-upscaler")].forEach((node) => node.addEventListener("change", () => { renderDevices(true); syncActions(); }));
+  document.querySelectorAll('input[name="forge-destination"]').forEach((node) => node.addEventListener("change", () => { renderDevices(true); syncActions(); }));
 
   $("forge-fleet-batch-cancel").addEventListener("click", async () => {
     const id = sessionStorage.getItem("hqForgeBatch");
@@ -2180,15 +2278,84 @@
     sessionStorage.removeItem("hqForgeBatch");
   });
 
+  // Copyable commands are built from the page origin only. The pairing code is never part of them.
   function snippet() {
     return "py -3 .\\hq_forge_worker.py pair --hq " + location.origin + ' --name "PC salon"';
+  }
+  function runSnippet() {
+    return "py -3 .\\hq_forge_worker.py run";
+  }
+  const copyTexts = { pair: snippet, run: runSnippet };
+
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+    } catch (_) { /* fall back below */ }
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    deviceDialog.append(area);
+    area.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+    area.remove();
+    return ok;
+  }
+
+  deviceDialog.querySelectorAll("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const make = copyTexts[button.dataset.copy];
+      if (!make) return;
+      const ok = await copyText(make());
+      const label = button.dataset.label || button.textContent;
+      button.dataset.label = label;
+      button.textContent = ok ? "Copi\u00e9 \u2713" : "Copie impossible : s\u00e9lectionnez le texte";
+      setTimeout(() => { button.textContent = label; }, 2000);
+    });
+  });
+
+  let detectTimer = 0;
+  let knownIds = null;
+  function setDetect(text, found) {
+    const node = $("forge-device-detect");
+    if (node.textContent !== text) node.textContent = text;
+    node.dataset.found = found ? "1" : "";
+  }
+  async function detectDevices() {
+    clearTimeout(detectTimer);
+    if (!deviceDialog.open) return;
+    try {
+      const payload = await api("/api/forge/devices");
+      const list = payload.devices || [];
+      if (knownIds === null) knownIds = new Set(list.map((d) => d.id));
+      const fresh = list.find((d) => d.kind === "remote" && !knownIds.has(d.id));
+      if (fresh) {
+        forgetCode(); // the code is spent: stop showing it
+        setDetect("Appareil d\u00e9tect\u00e9 \u2713 \u00ab " + fresh.name + " \u00bb" + (fresh.online ? " est en ligne." : " est associ\u00e9 : lancez maintenant la commande \u00ab run \u00bb."), true);
+        devices = list;
+        renderDevices(true);
+        if (fresh.online) return;
+      } else if (!$("forge-device-detect").dataset.found) {
+        setDetect("En attente d'un nouvel appareil\u2026 Cette liste se met \u00e0 jour toute seule.", false);
+      }
+    } catch (_) {
+      setDetect("La liste des appareils n'est pas lisible pour le moment.", false);
+    }
+    if (deviceDialog.open) detectTimer = setTimeout(() => detectDevices().catch(() => {}), 2000);
   }
 
   $("forge-device-add").addEventListener("click", () => {
     $("forge-device-snippet").textContent = snippet();
+    $("forge-device-run").textContent = runSnippet();
     $("forge-device-code-box").hidden = true;
     $("forge-device-code").textContent = "";
+    knownIds = new Set(devices.map((d) => d.id));
+    $("forge-device-detect").dataset.found = "";
+    setDetect("En attente d'un nouvel appareil\u2026 Cette liste se met \u00e0 jour toute seule.", false);
     deviceDialog.showModal();
+    detectDevices().catch(() => {});
   });
   function forgetCode() {
     clearInterval(codeTimer);
@@ -2198,6 +2365,8 @@
   $("forge-device-dialog-close").addEventListener("click", () => { forgetCode(); deviceDialog.close(); });
   deviceDialog.addEventListener("close", () => {
     forgetCode();
+    clearTimeout(detectTimer);
+    knownIds = null;
     $("forge-device-add").focus({ preventScroll: true });
     loadDevices().catch(() => {});
   });
@@ -2209,14 +2378,14 @@
       const end = Date.now() + payload.ttl_sec * 1000;
       const tick = () => {
         const left = Math.max(0, Math.round((end - Date.now()) / 1000));
-        $("forge-device-code-ttl").textContent = left ? "Expire dans " + Math.floor(left / 60) + " min " + String(left % 60).padStart(2, "0") + " s." : "Code expiré. Créez-en un autre.";
+        $("forge-device-code-ttl").textContent = left ? "Expire dans " + Math.floor(left / 60) + " min " + String(left % 60).padStart(2, "0") + " s." : "Code expir\u00e9. Cr\u00e9ez-en un autre.";
         if (!left) { clearInterval(codeTimer); $("forge-device-code").textContent = ""; }
       };
       clearInterval(codeTimer);
       tick();
       codeTimer = setInterval(tick, 1000);
     } catch (error) {
-      $("forge-device-code-ttl").textContent = error.message || "Le code n'a pas pu être créé.";
+      $("forge-device-code-ttl").textContent = error.message || "Le code n'a pas pu \u00eatre cr\u00e9\u00e9.";
       $("forge-device-code-box").hidden = false;
     }
   });

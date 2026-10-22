@@ -5577,17 +5577,25 @@ def render_app() -> bytes:
           <h2 id="forge-device-dialog-title">Ajouter un appareil</h2>
           <button type="button" id="forge-device-dialog-close" class="secondary">Fermer</button>
         </header>
-        <p class="forge-note">Sur le PC à ajouter : Forge démarré avec <code>--api</code> sur 127.0.0.1, Python 3 et le fichier <code>hq_forge_worker.py</code>. L'appareil appelle HQ par Tailscale ; HQ ne se connecte jamais à lui.</p>
-        <button type="button" id="forge-device-code-new">Créer un code à usage unique</button>
-        <div id="forge-device-code-box" class="forge-device-code-box" hidden>
-          <p class="forge-note">Code valable 10 minutes, une seule fois. Il ne sera plus affiché.</p>
-          <output id="forge-device-code" class="forge-device-code" aria-live="polite"></output>
-          <p id="forge-device-code-ttl" class="forge-note" role="status"></p>
-        </div>
-        <ol class="forge-device-steps">
-          <li>Dans PowerShell, dans le dossier du fichier :<pre id="forge-device-snippet" class="forge-snippet"></pre></li>
-          <li>Collez le code quand il est demandé. Il n'est jamais passé en argument.</li>
-          <li>Lancez ensuite l'appareil :<pre class="forge-snippet">py -3 .&#92;hq_forge_worker.py run</pre></li>
+        <p class="forge-note">Six étapes sur le PC à ajouter. Rien n'est installé automatiquement. Ce PC appelle HQ par Tailscale ; HQ ne se connecte jamais à lui.</p>
+        <ol class="forge-device-steps forge-guide">
+          <li><h3>Logiciels requis</h3><p>Windows 10 ou 11, <strong>Python 3.10+</strong> (python.org, avec le lanceur <code>py</code>), <strong>Tailscale</strong> et <strong>Forge</strong> (Stable Diffusion WebUI Forge) avec au moins un modèle.</p></li>
+          <li><h3>Tailscale</h3><p>Connectez Tailscale sur ce PC au <strong>même tailnet</strong> que HQ, puis ouvrez cette page depuis ce PC pour vérifier qu'il joint bien HQ.</p></li>
+          <li><h3>Forge</h3><p>Démarrez Forge avec <code>--api</code> et <strong>sans</strong> <code>--listen</code> : son API reste sur 127.0.0.1, seul le worker local l'utilise.</p></li>
+          <li><h3>Worker</h3><p>Copiez le fichier <code>hq_forge_worker.py</code> du dossier HQ (à côté de <code>iphone_bridge.py</code>) dans un dossier de ce PC, puis ouvrez PowerShell dans ce dossier et lancez l'appairage :</p>
+            <pre id="forge-device-snippet" class="forge-snippet"></pre>
+            <button type="button" class="forge-tool" data-copy="pair">Copier la commande d'appairage</button></li>
+          <li><h3>Code d'appairage</h3><p>Créez un code et tapez-le à l'invite masquée de PowerShell. Il n'est jamais dans une commande copiée, une URL ou un fichier.</p>
+            <button type="button" id="forge-device-code-new">Créer un code à usage unique</button>
+            <div id="forge-device-code-box" class="forge-device-code-box" hidden>
+              <p class="forge-note">Code valable 10 minutes, une seule fois. Il ne sera plus affiché.</p>
+              <output id="forge-device-code" class="forge-device-code" aria-live="polite"></output>
+              <p id="forge-device-code-ttl" class="forge-note" role="status"></p>
+            </div>
+            <p>Puis démarrez le worker :</p>
+            <pre id="forge-device-run" class="forge-snippet"></pre>
+            <button type="button" class="forge-tool" data-copy="run">Copier la commande de lancement</button></li>
+          <li><h3>Vérification</h3><p id="forge-device-detect" class="forge-device-detect" role="status" aria-live="polite"></p></li>
         </ol>
         <p class="forge-note">Démarrage automatique : voir <code>docs/forge-workers.md</code> (tâche planifiée à l'ouverture de session).</p>
       </div>

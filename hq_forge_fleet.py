@@ -544,10 +544,18 @@ def authenticate(method: str, path: str, headers, body: bytes) -> dict | None:
         secret = _unwrap_secret(row) if row else ""
         expected = wire.sign(secret or _dummy, method, path, stamp or 0, nonce, body or b"")
         ok = _same(presented, expected) and len(presented) == 64
+        if row and (not secret or not ok):
+            _live.setdefault(worker_id, {})["auth_fail_at"] = now
         if not row or not secret or not ok or stamp is None:
             return None
-        if abs(now - stamp) > SKEW_SEC or not NONCE_RE.fullmatch(nonce):
+        if abs(now - stamp) > SKEW_SEC:
+            _live.setdefault(worker_id, {})["skew_at"] = now
             return None
+        if not NONCE_RE.fullmatch(nonce):
+            return None
+        live = _live.setdefault(worker_id, {})
+        live.pop("auth_fail_at", None)
+        live.pop("skew_at", None)
         if not _remember_nonce(worker_id, nonce, now):
             return None
         return row
@@ -614,6 +622,107 @@ def _hq_job_active() -> bool:
         return False
 
 
+AUTH_RECENT_SEC = 180
+NET_RECENT_SEC = 3600
+TASK_ERROR_ACTION = "Regardez la console Forge sur ce PC, puis relancez le lot."
+DIAG = {
+    "secret_unprotected": ("error", "Secret non prot\u00e9g\u00e9 \u2014 r\u00e9associer l'appareil.",
+                           "Retirez l'appareil, puis ajoutez-le avec un nouveau code."),
+    "auth_refused": ("error", "HQ refuse les identifiants de ce PC (r\u00e9voqu\u00e9s ou alt\u00e9r\u00e9s).",
+                     "Sur ce PC, relancez \u00ab pair \u00bb avec un nouveau code, puis \u00ab run \u00bb."),
+    "clock_skew": ("error", "Horloge de ce PC d\u00e9cal\u00e9e : HQ refuse ses signatures.",
+                   "Synchronisez l'heure de Windows (Param\u00e8tres > Heure et langue > Synchroniser)."),
+    "disabled": ("warn", "D\u00e9sactiv\u00e9 par l'admin.", "R\u00e9activez-le dans \u00ab Caract\u00e9ristiques \u00bb pour le r\u00e9utiliser."),
+    "never_seen": ("warn", "Associ\u00e9, mais le service worker n'a encore jamais contact\u00e9 HQ.",
+                   "Sur ce PC, lancez \u00ab py -3 .\\hq_forge_worker.py run \u00bb."),
+    "worker_stale": ("error", "Le service worker ne r\u00e9pond plus depuis {ago}.",
+                     "Sur ce PC, v\u00e9rifiez que le worker tourne (fen\u00eatre ou t\u00e2che planifi\u00e9e) et que le PC n'est pas en veille. "
+                     "HQ ne voit que l'absence de signal : ce n'est pas forc\u00e9ment une panne Tailscale."),
+    "network": ("warn", "Ce PC a signal\u00e9 ne pas pouvoir joindre HQ pendant {span} (r\u00e9seau ou Tailscale).",
+                "Si cela se r\u00e9p\u00e8te, v\u00e9rifiez que Tailscale est connect\u00e9 au m\u00eame tailnet sur ce PC."),
+    "forge_down": ("error", "API Forge indisponible sur ce PC.", "D\u00e9marrez Forge avec --api (sans --listen) sur ce PC."),
+    "forge_busy": ("info", "Forge est occup\u00e9 par un autre travail sur ce PC.", "Attendez la fin : HQ lui enverra la suite ensuite."),
+    "catalog_unknown": ("warn", "Catalogue Forge illisible sur ce PC.", "Red\u00e9marrez Forge sur ce PC, puis attendez quelques secondes."),
+    "model_missing": ("warn", "Le mod\u00e8le manquait sur ce PC lors de la derni\u00e8re t\u00e2che.",
+                      "Copiez-le dans models\\Stable-diffusion de Forge sur ce PC, ou choisissez un mod\u00e8le pr\u00e9sent."),
+    "hardware_unknown": ("info", "Mat\u00e9riel incomplet : {fields}.",
+                         "Installez le pilote NVIDIA (nvidia-smi) sur ce PC pour la VRAM. La g\u00e9n\u00e9ration reste possible."),
+}
+TASK_ERRORS = ("forge_timeout", "forge_error", "forge_offline", "bad_image", "quota", "disk", "upload")
+
+
+def _span(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 90:
+        return f"{seconds} s"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} min"
+    if seconds < 172800:
+        return f"{round(seconds / 3600)} h"
+    return f"{round(seconds / 86400)} j"
+
+
+def _diag(code: str, **fmt) -> dict:
+    if code in DIAG:
+        level, title, action = DIAG[code]
+    else:
+        level, title, action = "warn", MESSAGES.get(code, code), TASK_ERROR_ACTION
+    return {"code": code, "level": level, "title": title.format(**fmt) if fmt else title, "action": action}
+
+
+def diagnose(t: dict, now: float) -> list[dict]:
+    """Map real telemetry to actionable French diagnostics, most important first.
+
+    ``t`` keys: kind, secret_ok, disabled, seen, online, forge, catalog_known, last_error,
+    auth_fail_at, skew_at, net (dict since/until), hardware. Nothing is guessed: a stale
+    heartbeat is reported as a silent worker, never as a Tailscale outage; a network
+    problem is shown only when the worker itself reported it.
+    """
+    out = []
+    remote = t.get("kind") == "remote"
+    if remote and not t.get("secret_ok", True):
+        out.append(_diag("secret_unprotected"))
+    if remote and t.get("auth_fail_at") and now - t["auth_fail_at"] <= AUTH_RECENT_SEC and not t.get("online"):
+        out.append(_diag("auth_refused"))
+    if remote and t.get("skew_at") and now - t["skew_at"] <= AUTH_RECENT_SEC and not t.get("online"):
+        out.append(_diag("clock_skew"))
+    if t.get("disabled"):
+        out.append(_diag("disabled"))
+    if remote and not t.get("seen"):
+        out.append(_diag("never_seen"))
+    elif remote and not t.get("online"):
+        out.append(_diag("worker_stale", ago=_span(now - t["seen"])))
+    net = t.get("net")
+    if remote and isinstance(net, dict) and now - net.get("until", 0) <= NET_RECENT_SEC:
+        out.append(_diag("network", span=_span(net["until"] - net["since"])))
+    if t.get("online"):
+        forge = t.get("forge")
+        if forge in ("offline", "api_disabled", "error", "unknown", None):
+            out.append(_diag("forge_down"))
+        else:
+            if forge == "busy" and not t.get("own_task"):
+                out.append(_diag("forge_busy"))
+            if not t.get("catalog_known"):
+                out.append(_diag("catalog_unknown"))
+    error = t.get("last_error") or ""
+    if error == "model_missing" or error in TASK_ERRORS:
+        out.append(_diag(error))
+    hw = t.get("hardware") or {}
+    gpus = hw.get("gpus") or []
+    missing = []
+    if not gpus:
+        missing.append("GPU inconnu")
+    elif any(g.get("vram_mb") is None for g in gpus):
+        missing.append("VRAM inconnue")
+    if not hw.get("cpu"):
+        missing.append("CPU inconnu")
+    if not hw.get("ram_mb"):
+        missing.append("RAM inconnue")
+    if missing and (t.get("seen") or not remote):
+        out.append(_diag("hardware_unknown", fields=", ".join(missing)))
+    return out
+
+
 def _device_public(worker_id: str, hq_job: bool = False) -> dict:
     now = _clock()
     if worker_id == LOCAL_ID:
@@ -646,6 +755,15 @@ def _device_public(worker_id: str, hq_job: bool = False) -> dict:
         if not _secret_usable(row):
             last_error = "secret_unprotected"
     active = _active_task_for(worker_id)
+    if worker_id == LOCAL_ID:
+        telemetry = {"kind": "local", "online": True, "seen": now, "forge": forge_state, "catalog_known": catalog is not None,
+                     "own_task": bool(active), "hardware": hardware, "disabled": disabled}
+    else:
+        telemetry = {"kind": "remote", "secret_ok": _secret_usable(row), "disabled": disabled, "seen": seen, "online": online,
+                     "forge": forge_state, "catalog_known": catalog is not None, "own_task": bool(active),
+                     "last_error": last_error, "auth_fail_at": live.get("auth_fail_at"), "skew_at": live.get("skew_at"),
+                     "net": live.get("net"), "hardware": hardware}
+    diagnostics = diagnose(telemetry, now)
     if disabled:
         state = "disabled"
     elif last_error == "secret_unprotected":
@@ -681,6 +799,7 @@ def _device_public(worker_id: str, hq_job: bool = False) -> dict:
         "last_seen": last_seen,
         "last_error": last_error,
         "last_error_label": MESSAGES.get(last_error, last_error) if last_error else "",
+        "diagnostics": diagnostics,
     }
 
 
@@ -774,7 +893,8 @@ def _worker_name(worker_id: str | None) -> str:
 
 def _batch_public(batch: dict) -> dict:
     counts = {"total": len(batch["tasks"]), "done": 0, "failed": 0, "pending": 0, "running": 0, "uncertain": 0, "cancelled": 0}
-    per = {worker_id: {"worker_id": worker_id, "name": _worker_name(worker_id), "done": 0, "failed": 0, "running": 0, "progress": 0}
+    per = {worker_id: {"worker_id": worker_id, "name": _worker_name(worker_id), "done": 0, "failed": 0, "uncertain": 0,
+                       "running": 0, "progress": 0, "step": 0, "steps": 0}
            for worker_id in batch["workers"]}
     tasks = []
     for task in batch["tasks"]:
@@ -788,10 +908,14 @@ def _batch_public(batch: dict) -> dict:
             if state == "completed":
                 row["done"] += 1
             elif state in ("failed", "uncertain"):
-                row["failed"] += 1
+                row["failed"] += 1  # failed includes uncertain (kept for older clients)
+                if state == "uncertain":
+                    row["uncertain"] += 1
             elif state in ("dispatched", "running", "saving"):
                 row["running"] += 1
                 row["progress"] = task.get("progress") or 0
+                row["step"] = task.get("step") or 0
+                row["steps"] = task.get("steps") or 0
         tasks.append({
             "id": task["id"], "index": task["index"], "seed": task["seed"], "state": state,
             "worker_id": worker_id, "worker_name": _worker_name(worker_id) if worker_id else "",
@@ -1113,7 +1237,14 @@ def _poll(row: dict, live: dict, data: dict) -> tuple[int, dict]:
     live["forge"] = {"state": state, "model": model[:200] if isinstance(model, str) else None,
                      "catalog": _clean_catalog(forge_raw.get("catalog"))}
     error = data.get("last_error")
-    live["last_error"] = error if isinstance(error, str) and error in MESSAGES else ""
+    live["last_error"] = error if isinstance(error, str) and (error in MESSAGES or error == "upload") else ""
+    net = data.get("net")
+    if isinstance(net, dict) and net.get("code") == "hq_unreachable":
+        since, until = net.get("since"), net.get("until")
+        now = _clock()
+        if all(isinstance(v, int) and not isinstance(v, bool) for v in (since, until)) and 0 < since <= until <= now + SKEW_SEC \
+                and until - since <= 30 * 86400:
+            live["net"] = {"since": since, "until": min(until, int(now))}
     current = data.get("current_task")
     changed = False
     for batch in _batches["batches"]:
