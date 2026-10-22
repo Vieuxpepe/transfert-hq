@@ -683,6 +683,9 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
     except Exception:
         _fail(root, job_id, token, "bad_image")
         return
+    # Before the terminal state: once a job reads completed, this thread writes nothing more.
+    if destination == "normal":
+        _record_duration(root, settings, time.monotonic() - started, token)
     _mutate(
         root, job_id, token,
         state="completed",
@@ -694,8 +697,6 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         progress_stale=False,
         eta=None,
     )
-    if destination == "normal":
-        _record_duration(root, settings, time.monotonic() - started, token)
 
 
 def _destination(data: dict) -> str | None:

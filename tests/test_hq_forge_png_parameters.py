@@ -101,6 +101,8 @@ class GalleryRoundTrip(unittest.TestCase):
 
 class VaultStaysClean(unittest.TestCase):
     def setUp(self) -> None:
+        # iphone_bridge (imported by other suites) binds its session checker globally.
+        V.bind_session_checker(None)
         F.reset_for_tests()
         J.reset_for_tests()
         self.tmp = tempfile.TemporaryDirectory()
@@ -115,6 +117,7 @@ class VaultStaysClean(unittest.TestCase):
         V.unlock(self.hq, self.admin, PASS)
 
     def tearDown(self) -> None:
+        V.bind_session_checker(None)
         V.reset_for_tests()
         F.reset_for_tests()
         self.tmp.cleanup()

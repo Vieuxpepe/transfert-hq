@@ -54,6 +54,8 @@ def _rebuild_zip(payload: bytes, replacements: dict[str, bytes | None]) -> bytes
 
 class Vault(unittest.TestCase):
     def setUp(self) -> None:
+        # iphone_bridge (imported by other suites) binds its session checker globally.
+        V.bind_session_checker(None)
         F.reset_for_tests()
         J.reset_for_tests()
         self.tmp = tempfile.TemporaryDirectory()
