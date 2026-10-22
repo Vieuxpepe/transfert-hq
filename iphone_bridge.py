@@ -5561,6 +5561,7 @@ def render_app() -> bytes:
         <p id="forge-vault-viewer-meta"></p>
         <div class="forge-actions">
           <button type="button" id="forge-vault-download">Télécharger l'original</button>
+          <label class="forge-check"><input type="checkbox" id="forge-vault-params"/> Inclure les paramètres</label>
           <button type="button" id="forge-vault-reuse">Réutiliser les réglages</button>
           <button type="button" id="forge-vault-delete" class="secondary">Supprimer du coffre</button>
         </div>
@@ -6514,7 +6515,8 @@ class Handler(BaseHTTPRequestHandler):
             image_id = rest
         if kind:
             try:
-                payload, ctype, disposition = hq_forge_vault.file_bytes(ROOT, token, image_id, kind)
+                wanted = kind == "original" and (parse_qs(parsed.query).get("parameters") or [""])[0] == "1"
+                payload, ctype, disposition = hq_forge_vault.file_bytes(ROOT, token, image_id, kind, include_parameters=wanted)
             except hq_forge_vault.VaultError as exc:
                 self._vault_error(exc)
                 return True

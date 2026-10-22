@@ -14,9 +14,15 @@ from pathlib import Path
 
 try:
     from PIL import Image, UnidentifiedImageError
+    from PIL.PngImagePlugin import PngInfo
 except ImportError:  # pragma: no cover - production dependency is proposed, not assumed
     Image = None
+    PngInfo = None
     UnidentifiedImageError = OSError
+
+# Forge/A1111 read generation settings from this PNG text key (modules/images.py,
+# pnginfo_section_name='parameters').
+PARAMETERS_KEY = "parameters"
 
 IMG_RE = re.compile(r"^img-[0-9a-f]{24}$")
 QUOTA_BYTES = 2 * 1024 * 1024 * 1024
@@ -167,7 +173,79 @@ def cleanup_partials(root: Path) -> None:
                 child.unlink(missing_ok=True)
 
 
-def _decode(raw: bytes) -> tuple[bytes, bytes, int, int]:
+def _infotext_value(value) -> str:
+    text = str(value)
+    if any(ch in text for ch in ",:\n\""):
+        return json.dumps(text, ensure_ascii=False)
+    return text
+
+
+def _number(value) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def infotext(settings: dict) -> str:
+    """A1111/Forge 'parameters' text from stored settings. Only fields HQ itself
+    recorded; nothing from Forge's response is copied."""
+    if not isinstance(settings, dict):
+        return ""
+    lines = [str(settings.get("prompt") or "")]
+    negative = str(settings.get("negative_prompt") or "")
+    if negative:
+        lines.append("Negative prompt: " + negative)
+    fields = []
+    def add(label, value):
+        if value is None or value == "":
+            return
+        fields.append(label + ": " + _infotext_value(value))
+    add("Steps", settings.get("steps"))
+    add("Sampler", settings.get("sampler_name"))
+    scheduler = settings.get("scheduler")
+    add("Schedule type", scheduler.capitalize() if isinstance(scheduler, str) and scheduler == "automatic" else scheduler)
+    cfg = settings.get("cfg_scale")
+    add("CFG scale", _number(cfg) if isinstance(cfg, (int, float)) and not isinstance(cfg, bool) else None)
+    seed = settings.get("seed")
+    add("Seed", seed if isinstance(seed, int) and not isinstance(seed, bool) and seed >= 0 else None)
+    width, height = settings.get("width"), settings.get("height")
+    add("Size", f"{width}x{height}" if isinstance(width, int) and isinstance(height, int) else None)
+    checkpoint = settings.get("checkpoint")
+    if isinstance(checkpoint, str) and checkpoint:
+        name, _sep, rest = checkpoint.partition(" [")
+        model_hash = rest[:-1] if rest.endswith("]") else ""
+        add("Model hash", model_hash or None)
+        stem = name.rsplit("/", 1)[-1]
+        for ext in (".safetensors", ".ckpt", ".gguf", ".pt"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+        add("Model", stem)
+    if settings.get("enable_hr") is True:
+        add("Denoising strength", _number(settings.get("denoising_strength")))
+        add("Hires upscale", _number(settings.get("hr_scale")))
+        add("Hires steps", settings.get("hr_second_pass_steps"))
+        add("Hires upscaler", settings.get("hr_upscaler"))
+    lines.append(", ".join(fields))
+    return "\n".join(lines)
+
+
+def with_parameters(png: bytes, settings: dict) -> bytes:
+    """Re-save an HQ PNG with a 'parameters' text chunk. Used for explicit exports."""
+    if Image is None or PngInfo is None:
+        raise GalleryError("no_pillow")
+    try:
+        image = Image.open(io.BytesIO(png))
+        image.load()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        raise GalleryError("bad_image") from None
+    info = PngInfo()
+    info.add_text(PARAMETERS_KEY, infotext(settings))
+    out = io.BytesIO()
+    image.save(out, format="PNG", pnginfo=info)
+    return out.getvalue()
+
+
+def _decode(raw: bytes, parameters: str | None = None) -> tuple[bytes, bytes, int, int]:
     if Image is None:
         raise GalleryError("no_pillow")
     if not isinstance(raw, (bytes, bytearray)) or not raw or len(raw) > MAX_BYTES:
@@ -186,7 +264,12 @@ def _decode(raw: bytes) -> tuple[bytes, bytes, int, int]:
         raise GalleryError("bad_image")
     rgb = image.convert("RGB")
     original = io.BytesIO()
-    rgb.save(original, format="PNG")
+    if parameters and PngInfo is not None:
+        info = PngInfo()
+        info.add_text(PARAMETERS_KEY, parameters)
+        rgb.save(original, format="PNG", pnginfo=info)
+    else:
+        rgb.save(original, format="PNG")
     thumb = rgb.copy()
     thumb.thumbnail((THUMB_EDGE, THUMB_EDGE))
     thumb_buf = io.BytesIO()
@@ -210,7 +293,8 @@ def _atomic_bytes(path: Path, payload: bytes) -> None:
 
 
 def prepare_image(raw: bytes) -> tuple[bytes, bytes, int, int]:
-    """Re-encode a PNG, JPEG, or WEBP. Callers store the result; nothing is written here."""
+    """Re-encode a PNG, JPEG, or WEBP without any metadata. Callers store the
+    result; nothing is written here. The vault relies on this staying clean."""
     return _decode(raw)
 
 
@@ -232,8 +316,8 @@ def _origin(value) -> dict | None:
 
 
 def store(root: Path, raw: bytes, settings: dict, *, origin: dict | None = None) -> dict:
-    png, thumb, width, height = _decode(raw)
     safe = _settings(settings)
+    png, thumb, width, height = _decode(raw, infotext(safe))
     provenance = _origin(origin)
     with _LOCK:
         images, used = _usage(root)

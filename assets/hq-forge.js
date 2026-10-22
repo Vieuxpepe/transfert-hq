@@ -793,6 +793,7 @@
     vaultViewerImg.alt = "Image du coffre";
     const settings = privateDetail.settings || {};
     $("forge-vault-viewer-meta").textContent = [settings.prompt || "", settings.negative_prompt || ""].filter(Boolean).join("\n");
+    if ($("forge-vault-params")) $("forge-vault-params").checked = false;
     vaultViewer.showModal();
     $("forge-vault-viewer-close").focus();
   }
@@ -813,7 +814,9 @@
   });
   $("forge-vault-download").addEventListener("click", async () => {
     if (!privateDetail) return;
-    const response = await fetch("/api/forge/vault/images/" + privateDetail.id + "/original", { credentials: "same-origin", cache: "no-store" });
+    // Private exports carry no prompt text unless the owner ticks the box for this one export.
+    const withParams = $("forge-vault-params") && $("forge-vault-params").checked;
+    const response = await fetch("/api/forge/vault/images/" + privateDetail.id + "/original" + (withParams ? "?parameters=1" : ""), { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) return;
     const url = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");

@@ -1319,10 +1319,18 @@ def detail(hq_root: Path, token: str | None, image_id: str) -> dict:
     }
 
 
-def file_bytes(hq_root: Path, token: str | None, image_id: str, kind: str) -> tuple[bytes, str, str]:
+def file_bytes(hq_root: Path, token: str | None, image_id: str, kind: str, *, include_parameters: bool = False) -> tuple[bytes, str, str]:
+    """Vault originals carry no generation text unless the owner explicitly asks
+    for it on one export (include_parameters). Stored objects never do."""
     root, master, _header = _master(hq_root, token)
-    _meta, png, thumb = _read_object(root, master, image_id)
+    meta, png, thumb = _read_object(root, master, image_id)
     if kind == "original":
+        if include_parameters is True:
+            settings = meta.get("settings") if isinstance(meta.get("settings"), dict) else {}
+            try:
+                png = gallery.with_parameters(png, settings)
+            except gallery.GalleryError:
+                raise VaultError("bad_image") from None
         return png, "image/png", 'attachment; filename="coffre.png"'
     if kind == "thumb":
         return thumb, "image/jpeg", 'inline; filename="coffre.jpg"'
