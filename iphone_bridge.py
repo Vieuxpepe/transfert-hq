@@ -5280,6 +5280,7 @@ def render_app() -> bytes:
           </details>
           <section aria-labelledby="forge-vault-gallery-title">
             <h2 id="forge-vault-gallery-title">Coffre</h2>
+            <div class="forge-triage-bar"><button type="button" id="forge-vault-triage-open" class="secondary">Trier</button><button type="button" id="forge-vault-trash-open" class="secondary">Corbeille du coffre</button></div>
             <div id="forge-vault-gallery" class="forge-grid"></div>
             <p id="forge-vault-empty" class="forge-note">Le coffre ne contient pas encore d'image.</p>
           </section>
@@ -5566,6 +5567,7 @@ def render_app() -> bytes:
       </section>
       <section class="forge-block forge-m" id="forge-normal-gallery" aria-labelledby="forge-gallery-title">
         <h2 id="forge-gallery-title">Galerie</h2>
+        <div class="forge-triage-bar"><button type="button" id="forge-triage-open" class="secondary">Trier</button><button type="button" id="forge-trash-open" class="secondary">Corbeille</button></div>
         <p id="forge-gallery-empty" class="forge-note">La galerie HQ est vide. Les images de Forge ne sont pas copiées ici toutes seules.</p>
         <div id="forge-gallery" class="forge-grid"></div>
         <button type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
@@ -5579,6 +5581,7 @@ def render_app() -> bytes:
         </header>
         <img id="forge-vault-viewer-img" alt=""/>
         <p id="forge-vault-viewer-meta"></p>
+        <div class="forge-triage-row" id="forge-vault-viewer-triage" role="group" aria-label="Tri de l’image"></div>
         <div class="forge-explore" id="forge-vault-explore-box">
           <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-vault-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
@@ -5594,6 +5597,35 @@ def render_app() -> bytes:
         </div>
       </form>
     </dialog>
+    <dialog id="forge-triage" class="forge-triage" aria-labelledby="forge-triage-title">
+      <div class="forge-triage-inner">
+        <header class="forge-viewer-bar">
+          <h2 id="forge-triage-title">Tri rapide</h2>
+          <span id="forge-triage-count" class="forge-summary-hint" aria-live="polite"></span>
+          <button type="button" id="forge-triage-close" class="secondary">Fermer</button>
+        </header>
+        <div id="forge-triage-stage" class="forge-triage-stage"><img id="forge-triage-img" alt=""/></div>
+        <p id="forge-triage-empty" class="forge-note" hidden>Rien à trier : toutes les images ont déjà un choix.</p>
+        <div class="forge-triage-actions">
+          <button type="button" id="forge-triage-reject" class="secondary">Rejeter</button>
+          <button type="button" id="forge-triage-favorite" class="secondary">Favori</button>
+          <button type="button" id="forge-triage-keep">Garder</button>
+        </div>
+        <button type="button" id="forge-triage-undo" class="secondary" disabled>Annuler le dernier choix</button>
+        <p id="forge-triage-note" class="forge-note" role="status">Glisser à droite : garder · à gauche : rejeter · vers le haut : favori. Une image rejetée va à la corbeille ; rien n’est effacé.</p>
+      </div>
+    </dialog>
+    <dialog id="forge-trash" class="forge-sheet" aria-labelledby="forge-trash-title">
+      <div class="forge-sheet-inner">
+        <header class="forge-viewer-bar">
+          <h2 id="forge-trash-title">Corbeille</h2>
+          <button type="button" id="forge-trash-close" class="secondary">Fermer</button>
+        </header>
+        <p class="forge-note">Les images rejetées restent ici. Remettre les fait revenir dans la galerie ; rien n’est effacé sans Supprimer.</p>
+        <p id="forge-trash-empty" class="forge-note" hidden>La corbeille est vide.</p>
+        <div id="forge-trash-grid" class="forge-grid"></div>
+      </div>
+    </dialog>
     <dialog id="forge-viewer" aria-labelledby="forge-viewer-title">
       <form method="dialog">
         <header class="forge-viewer-bar">
@@ -5602,6 +5634,7 @@ def render_app() -> bytes:
         </header>
         <img id="forge-viewer-img" alt=""/>
         <p id="forge-viewer-meta"></p>
+        <div class="forge-triage-row" id="forge-viewer-triage" role="group" aria-label="Tri de l’image"></div>
         <div class="forge-explore" id="forge-viewer-explore-box">
           <div class="forge-label-row"><label for="forge-viewer-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-viewer-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
@@ -5864,6 +5897,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
 <script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
 <script src="/assets/hq-forge.js"></script>
+<script src="/assets/hq-forge-next.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -6500,6 +6534,9 @@ class Handler(BaseHTTPRequestHandler):
             elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/delete"):
                 image_id = raw[len("/api/forge/vault/images/"):-len("/delete")]
                 self._json(200, hq_forge_vault.delete(ROOT, token, image_id))
+            elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/triage"):
+                image_id = raw[len("/api/forge/vault/images/"):-len("/triage")]
+                self._json(200, hq_forge_vault.set_triage(ROOT, token, image_id, data.get("state")))
             else:
                 self._json(404, {"error": "Inconnu"})
         except hq_forge_vault.VaultError as exc:
@@ -6531,7 +6568,8 @@ class Handler(BaseHTTPRequestHandler):
                 limit = 24
             cursor = (qs.get("cursor") or [None])[0] or None
             try:
-                self._json(200, hq_forge_vault.page(ROOT, token, limit=limit, cursor=cursor))
+                view = (qs.get("view") or [""])[0]
+                self._json(200, hq_forge_vault.page(ROOT, token, limit=limit, cursor=cursor, view=view if view in ("trash", "untriaged") else ""))
             except hq_forge_vault.VaultError as exc:
                 self._vault_error(exc)
             return True

@@ -303,6 +303,13 @@
     const img = document.createElement("img");
     img.alt = mode === "private" ? "Image du coffre" : "Image générée";
     button.appendChild(img);
+    if (image.triage && image.triage !== "none") {
+      button.dataset.triage = image.triage;
+      const badge = document.createElement("span");
+      badge.className = "forge-card-badge";
+      badge.textContent = { keep: "Gard\u00e9e", favorite: "Favori", reject: "Rejet\u00e9e" }[image.triage] || "";
+      button.appendChild(badge);
+    }
     if (mode === "private") {
       privateThumb(image.id).then((url) => { img.src = url; }).catch(() => { img.alt = "Image indisponible"; });
       button.addEventListener("click", () => openPrivate(image.id, button));
@@ -333,6 +340,7 @@
     const meta = $("forge-vault-viewer-meta");
     if (meta) meta.textContent = "";
     if (window.hqForgeDropPrivateShare) window.hqForgeDropPrivateShare();
+    if (window.hqForgeNextLock) window.hqForgeNextLock();
   }
 
   async function loadGallery(reset) {
@@ -718,6 +726,7 @@
     ].filter(Boolean).join("\n");
     exploreReady("forge-viewer", settings);
     downloadLink.href = detail.original;
+    if (window.hqForgeOnViewer) window.hqForgeOnViewer("normal", id, detail.triage || (from && from.dataset ? from.dataset.triage : ""));
     viewer.showModal();
     closeBtn.focus();
     prepareShare("normal", detail.original, "forge-" + id + ".png", $("forge-share"));
@@ -1001,6 +1010,17 @@
     syncActions();
   }
 
+  // Hooks for hq-forge-next.js (triage, lab, planner, journal). Same-origin calls only.
+  window.hqForgeHooks = {
+    api,
+    applySettings,
+    loadGallery: () => loadGallery(true),
+    loadVault: () => loadVaultGallery(),
+    vaultUnlocked: () => !!vaultState.unlocked,
+    trackPrivateUrl: (url) => privateUrls.add(url),
+    closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
+  };
+
   // ---------------------------------------------------------------- C: Explorer autour
   const EXPLORE_KEYS = ["prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height", "steps", "cfg_scale", "seed"];
   const HIRES_KEYS = ["enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength"];
@@ -1101,6 +1121,7 @@
     $("forge-vault-viewer-meta").textContent = [settings.prompt || "", settings.negative_prompt || ""].filter(Boolean).join("\n");
     exploreReady("forge-vault", settings);
     if ($("forge-vault-params")) $("forge-vault-params").checked = false;
+    if (window.hqForgeOnViewer) window.hqForgeOnViewer("private", id, from && from.dataset ? from.dataset.triage || "none" : "none");
     vaultViewer.showModal();
     $("forge-vault-viewer-close").focus();
     prepareShare("private", privateBlob, "coffre.png", $("forge-vault-share"));

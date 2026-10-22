@@ -1285,10 +1285,22 @@ def store_image(hq_root: Path, token: str | None, raw: bytes, settings: dict) ->
     return {"id": image_id, "width": width, "height": height}
 
 
-def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | None = None) -> dict:
+def _triage(item: dict) -> str:
+    value = item.get("triage") if isinstance(item, dict) else None
+    return value if value in gallery.TRIAGE else "none"
+
+
+def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | None = None, view: str = "") -> dict:
     root, master, _header = _master(hq_root, token)
     limit = 24 if not isinstance(limit, int) else max(1, min(PAGE_MAX, limit))
     items = _read_index(root, master)
+    # Same views as the normal gallery. The flag lives in the encrypted index only.
+    if view == "trash":
+        items = [item for item in items if _triage(item) == "reject"]
+    elif view == "untriaged":
+        items = [item for item in items if _triage(item) == "none"]
+    else:
+        items = [item for item in items if _triage(item) != "reject"]
     items.sort(key=lambda item: (str(item.get("created") or ""), item.get("id") or ""), reverse=True)
     if cursor:
         if not ID_RE.fullmatch(cursor):
@@ -1302,6 +1314,7 @@ def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | Non
         "created": item.get("created"),
         "width": item.get("width"),
         "height": item.get("height"),
+        "triage": _triage(item),
     } for item in chosen]
     next_cursor = public[-1]["id"] if len(items) > limit and public else None
     return {"images": public, "next_cursor": next_cursor}
@@ -1346,6 +1359,26 @@ def delete(hq_root: Path, token: str | None, image_id: str) -> dict:
     items = [item for item in _read_index(root, master) if item.get("id") != image_id]
     _write_index(root, master, items)
     return {"deleted": True}
+
+
+def set_triage(hq_root: Path, token: str | None, image_id: str, state) -> dict:
+    """Reversible sort flag for a vault image, stored inside the encrypted index.
+    'reject' only moves it to the vault bin; nothing is deleted."""
+    if state not in gallery.TRIAGE:
+        raise VaultError("bad_triage")
+    root, master, _header = _master(hq_root, token)
+    with _LOCK:
+        items = _read_index(root, master)
+        for item in items:
+            if item.get("id") == image_id:
+                before = _triage(item)
+                if state == "none":
+                    item.pop("triage", None)
+                else:
+                    item["triage"] = state
+                _write_index(root, master, items)
+                return {"id": image_id, "triage": state, "previous": before}
+    raise VaultError("bad_id")
 
 
 def backup_bytes(hq_root: Path, token: str | None) -> bytes:
@@ -1521,6 +1554,7 @@ def http_status(code: str) -> int:
         "no_pillow": 503,
         "bad_root": 503,
         "cleanup": 409,
+        "bad_triage": 400,
     }.get(code, 400)
 
 
@@ -1540,5 +1574,6 @@ def public_error(code: str) -> str:
         "no_pillow": "Le traitement d'image n'est pas disponible.",
         "bad_root": "Le dossier du coffre n'est pas utilisable.",
         "cleanup": "La sauvegarde est en place, mais l'ancienne copie n'a pas pu être retirée.",
+        "bad_triage": "\u00c9tat de tri inconnu.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
     }.get(code, "Le coffre a refusé l'opération.")

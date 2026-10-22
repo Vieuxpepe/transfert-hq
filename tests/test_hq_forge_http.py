@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sys
@@ -13,6 +14,8 @@ import urllib.request
 from http.cookiejar import CookieJar
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+
+from PIL import Image
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
@@ -315,6 +318,40 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(self.admin.req(path, "POST", body, {"Origin": "http://evil.example"}, origin=False)[0], 403)
         self.assertEqual(self.admin.req(path, "POST", body)[0], 404)
         self.assertEqual(self.admin.req("/api/forge/gallery/../triage", "POST", body)[0] in (400, 404), True)
+
+    def test_vault_triage_route_is_admin_only_csrf_gated_locked_and_404_for_unknown(self):
+        import hq_forge_vault as vault
+        vault.set_root_for_tests(Path(self.tmp) / "vault-triage")
+        vault.set_acl_for_tests(False)
+        path = "/api/forge/vault/images/pvt-" + "0" * 24 + "/triage"
+        body = b'{"state": "reject"}'
+        admin = Client(self.base, ADMIN_PIN)
+        self.assertEqual(self.anon.req(path, "POST", body)[0], 401)
+        self.assertEqual(Client(self.base, UPLOAD_PIN).req(path, "POST", body)[0], 403)
+        self.assertEqual(admin.req(path, "POST", body, {"Origin": "http://evil.example"}, origin=False)[0], 403)
+        self.assertEqual(admin.req(path, "POST", body, origin=False)[0], 403)
+        self.assertEqual(admin.req("/api/forge/vault/setup", "POST", json.dumps({"passphrase": "correct horse battery", "confirm": "correct horse battery"}).encode(), {"Content-Type": "application/json"})[0] in (201, 409), True)
+        self.assertEqual(admin.req(path, "POST", body)[0], 401)  # locked
+        opened, _ = admin.json("/api/forge/vault/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
+        self.assertEqual(opened, 200)
+        try:
+            self.assertEqual(admin.req(path, "POST", body)[0], 404)
+            image = Image.new("RGB", (64, 64), (1, 2, 3))
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            status, _h, raw = admin.req("/api/forge/vault/import", "POST", buffer.getvalue(), {"Content-Type": "application/octet-stream"})
+            self.assertEqual(status, 201)
+            image_id = json.loads(raw.decode("utf-8"))["id"]
+            real = "/api/forge/vault/images/" + image_id + "/triage"
+            self.assertEqual(admin.req(real, "POST", b'{"state": "nope"}')[0], 400)
+            status, done = admin.json(real, "POST", data=body)
+            self.assertEqual((status, done["triage"], done["previous"]), (200, "reject", "none"))
+            self.assertEqual(admin.json("/api/forge/vault/gallery")[1]["images"], [])
+            self.assertEqual([row["id"] for row in admin.json("/api/forge/vault/gallery?view=trash")[1]["images"]], [image_id])
+            other = Client(self.base, ADMIN_PIN)
+            self.assertEqual(other.req(real, "POST", b'{"state": "none"}')[0], 401)
+        finally:
+            admin.json("/api/forge/vault/lock", "POST", data=b"{}")
 
     def test_readiness_does_not_depend_on_forge(self):
         self.assertNotIn("hq_forge", D.REQUIRED_MODULES)

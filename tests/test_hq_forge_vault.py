@@ -79,6 +79,39 @@ class Vault(unittest.TestCase):
         self.assertNotIn(PASS, json.dumps({k: v for k, v in created.items() if k != "recovery_key"}))
         return created["recovery_key"]
 
+    def test_vault_triage_is_reversible_and_stays_inside_the_encrypted_index(self):
+        self._setup()
+        V.unlock(self.hq, self.admin, PASS)
+        first = V.store_image(self.hq, self.admin, _png(), None)["id"]
+        second = V.store_image(self.hq, self.admin, _png(), None)["id"]
+        self.assertEqual({row["triage"] for row in V.page(self.hq, self.admin)["images"]}, {"none"})
+        self.assertEqual(V.set_triage(self.hq, self.admin, first, "reject"), {"id": first, "triage": "reject", "previous": "none"})
+        V.set_triage(self.hq, self.admin, second, "favorite")
+        self.assertEqual([row["id"] for row in V.page(self.hq, self.admin)["images"]], [second])
+        self.assertEqual([row["id"] for row in V.page(self.hq, self.admin, view="trash")["images"]], [first])
+        self.assertEqual(V.page(self.hq, self.admin, view="untriaged")["images"], [])
+        # Rejected is a bin, not a deletion; restoring brings it back.
+        self.assertTrue((self.store / "objects" / (first + ".bin")).is_file())
+        self.assertEqual(V.set_triage(self.hq, self.admin, first, "none")["previous"], "reject")
+        self.assertEqual(len(V.page(self.hq, self.admin)["images"]), 2)
+        for bad, code in (("deleted", "bad_triage"), (None, "bad_triage")):
+            with self.assertRaises(V.VaultError) as caught:
+                V.set_triage(self.hq, self.admin, first, bad)
+            self.assertEqual(caught.exception.code, code)
+        with self.assertRaises(V.VaultError) as caught:
+            V.set_triage(self.hq, self.admin, "pvt-" + "0" * 24, "keep")
+        self.assertEqual(caught.exception.code, "bad_id")
+        with self.assertRaises(V.VaultError) as caught:
+            V.set_triage(self.hq, self.other, second, "keep")
+        self.assertEqual(caught.exception.code, "locked")
+        # Nothing readable outside the encrypted vault: no flag in clear text, nothing in HQ data or stats.
+        for path in list(self.store.rglob("*")) + list(self.hq.rglob("*")):
+            if path.is_file():
+                blob = path.read_bytes()
+                self.assertNotIn(b"favorite", blob, path)
+                self.assertNotIn(second.encode(), blob if path.parent.name != "objects" else b"", path)
+        self.assertFalse((self.hq / ".hq-forge" / "stats.json").exists())
+
     def test_weak_and_numeric_passphrases_are_refused(self):
         for phrase in ("123456", "123456789012", "short-one", "pin"):
             with self.assertRaises(V.VaultError) as caught:
