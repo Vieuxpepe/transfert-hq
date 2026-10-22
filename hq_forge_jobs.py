@@ -428,22 +428,57 @@ def _trim_keys(data: dict) -> None:
         data["idempotency"].pop(key, None)
 
 
-def _seed_used(parsed: dict, requested: int) -> int | None:
+def _info(parsed: dict) -> dict:
     info = parsed.get("info")
     if isinstance(info, str):
         try:
             info = json.loads(info)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             info = None
-    if isinstance(info, dict):
-        seeds = info.get("all_seeds")
-        if isinstance(seeds, list) and seeds and isinstance(seeds[0], int) and not isinstance(seeds[0], bool) and seeds[0] >= 0:
-            return seeds[0]
-        if isinstance(info.get("seed"), int) and not isinstance(info.get("seed"), bool) and info["seed"] >= 0:
-            return info["seed"]
-    if requested >= 0:
-        return requested
+    return info if isinstance(info, dict) else {}
+
+
+def _seed_int(value) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2**32:
+        return value
     return None
+
+
+def _result_images(parsed: dict, count: int) -> list:
+    """The generated images, without a leading grid.
+
+    Forge puts a grid first and sets ``info.index_of_first_image`` to 1 when it
+    returns one; HQ sends ``save_images: false``, which also sets
+    ``do_not_save_grid``, so the index is normally 0. Extra images (if any)
+    follow the generated ones and are ignored."""
+    images = parsed.get("images")
+    if not isinstance(images, list):
+        return []
+    first = _info(parsed).get("index_of_first_image", 0)
+    if isinstance(first, bool) or not isinstance(first, int) or first < 0 or first >= len(images):
+        first = 0
+    return images[first:first + count]
+
+
+def _seeds_used(parsed: dict, requested: int, count: int) -> list[int]:
+    """One seed per stored image; -1 when Forge did not say and none was fixed.
+
+    ``info.all_seeds`` lists one seed per generated image (never the grid). If
+    only ``info.seed`` is present, Forge's own rule (seed + index) applies."""
+    info = _info(parsed)
+    seeds = info.get("all_seeds")
+    out: list[int] = []
+    for index in range(count):
+        value = None
+        if isinstance(seeds, list) and index < len(seeds):
+            value = _seed_int(seeds[index])
+        if value is None:
+            base = _seed_int(info.get("seed"))
+            if base is None:
+                base = _seed_int(requested)
+            value = (base + index) % (2**32) if base is not None else -1
+        out.append(value)
+    return out
 
 
 def _diagnostic(value) -> dict | None:
@@ -554,20 +589,22 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
     finally:
         stop.set()
     _mutate(root, job_id, token, state="saving")
-    images = parsed.get("images")
-    if not isinstance(images, list) or not images:
+    images = _result_images(parsed, settings["n_iter"])
+    if not images:
         _fail(root, job_id, token, "bad_image")
         return
+    seeds = _seeds_used(parsed, settings["seed"], len(images))
     stored = []
     try:
-        for item in images[: settings["n_iter"]]:
+        for index, item in enumerate(images):
             if not isinstance(item, str):
                 raise gallery.GalleryError("bad_image")
             raw = base64.b64decode(item, validate=True)
+            per_image = {**settings, "seed": seeds[index]}
             if destination == "private":
-                stored.append(vault.store_image(root, session_token, raw, settings))
+                stored.append(vault.store_image(root, session_token, raw, per_image))
             else:
-                stored.append(gallery.store(root, raw, settings))
+                stored.append(gallery.store(root, raw, per_image))
     except vault.VaultError as exc:
         code = "vault_locked" if exc.code == "locked" else exc.code
         _fail(root, job_id, token, code if code in _MESSAGES else "bad_image")
@@ -584,7 +621,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         error="",
         message="Terminé.",
         images=stored,
-        seed_used=_seed_used(parsed, settings["seed"]),
+        seed_used=seeds[0] if seeds and seeds[0] >= 0 else None,
         progress=1,
         progress_stale=False,
     )

@@ -549,7 +549,7 @@
       settings.negative_prompt ? "Négatif : " + settings.negative_prompt : "",
       settings.checkpoint || "",
       [settings.width, settings.height].filter(Boolean).join("×"),
-      settings.seed != null ? "Graine " + settings.seed : ""
+      settings.seed == null ? "" : (Number(settings.seed) >= 0 ? "Graine " + settings.seed : "Graine inconnue")
     ].filter(Boolean).join("\n");
     downloadLink.href = detail.original;
     viewer.showModal();

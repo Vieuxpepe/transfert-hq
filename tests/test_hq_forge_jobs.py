@@ -470,5 +470,90 @@ class Jobs(unittest.TestCase):
         self.assertEqual((self.root / ".hq-forge" / "jobs.json").read_bytes(), before)
 
 
+def _png_b64_sized(edge: int, color=(30, 40, 50)) -> str:
+    image = Image.new("RGB", (edge, edge), color)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+class RealSeedPerImage(unittest.TestCase):
+    """V1/F1: each stored image carries the seed Forge really used."""
+
+    def setUp(self) -> None:
+        F.reset_for_tests()
+        J.reset_for_tests()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        J.set_poll_interval_for_tests(0.05)
+
+    def tearDown(self) -> None:
+        J.reset_for_tests()
+        F.reset_for_tests()
+        self.tmp.cleanup()
+
+    def _run(self, payload: dict, **body) -> tuple[dict, list[dict]]:
+        import hq_forge_gallery as G
+        transport = Transport(post=lambda _body: (200, json.dumps(payload).encode("utf-8")))
+        code, created = J.create_job(self.root, _body(**body), "seed-key-" + str(len(body)) + "x", transport=transport)
+        self.assertEqual(code, 202, created)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            _c, got = J.get_job(self.root, created["job"]["job_id"])
+            if got["job"]["state"] in J.TERMINAL:
+                break
+            time.sleep(0.05)
+        job = got["job"]
+        metas = [G.get(self.root, image["id"]) for image in job["images"]]
+        return job, metas
+
+    def test_all_seeds_present_gives_one_seed_per_image(self):
+        payload = {"images": [_png_b64(), _png_b64()], "info": json.dumps({"seed": 101, "all_seeds": [101, 102]})}
+        job, metas = self._run(payload, n_iter=2)
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual([m["settings"]["seed"] for m in metas], [101, 102])
+        self.assertEqual(job["seed_used"], 101)
+
+    def test_all_seeds_absent_keeps_unknown_for_random(self):
+        payload = {"images": [_png_b64()], "info": json.dumps({})}
+        job, metas = self._run(payload)
+        self.assertEqual(metas[0]["settings"]["seed"], -1)
+        self.assertIsNone(job["seed_used"])
+
+    def test_all_seeds_absent_uses_info_seed_then_forge_increment(self):
+        payload = {"images": [_png_b64(), _png_b64()], "info": {"seed": 40}}
+        _job, metas = self._run(payload, n_iter=2)
+        self.assertEqual([m["settings"]["seed"] for m in metas], [40, 41])
+
+    def test_all_seeds_absent_with_a_fixed_seed_keeps_it(self):
+        payload = {"images": [_png_b64()], "info": "not json"}
+        job, metas = self._run(payload, seed=777)
+        self.assertEqual(metas[0]["settings"]["seed"], 777)
+        self.assertEqual(job["seed_used"], 777)
+
+    def test_leading_grid_is_skipped_and_seeds_align(self):
+        grid = _png_b64_sized(512, (200, 0, 0))
+        payload = {"images": [grid, _png_b64(), _png_b64()],
+                   "info": json.dumps({"all_seeds": [5, 6], "index_of_first_image": 1})}
+        job, metas = self._run(payload, n_iter=2)
+        self.assertEqual(len(job["images"]), 2)
+        self.assertTrue(all(m["width"] == 256 for m in metas), "the grid must not be stored")
+        self.assertEqual([m["settings"]["seed"] for m in metas], [5, 6])
+
+    def test_without_a_grid_index_zero_is_the_first_image(self):
+        payload = {"images": [_png_b64(), _png_b64(), _png_b64_sized(512)],
+                   "info": json.dumps({"all_seeds": [8, 9], "index_of_first_image": 0})}
+        job, metas = self._run(payload, n_iter=2)
+        self.assertEqual(len(job["images"]), 2)
+        self.assertTrue(all(m["width"] == 256 for m in metas), "trailing extra images are ignored")
+        self.assertEqual([m["settings"]["seed"] for m in metas], [8, 9])
+
+    def test_bad_index_and_bad_seeds_fall_back_safely(self):
+        payload = {"images": [_png_b64()], "info": json.dumps({"all_seeds": [True, -3], "index_of_first_image": 9})}
+        job, metas = self._run(payload)
+        self.assertEqual(job["state"], "completed")
+        self.assertEqual(metas[0]["settings"]["seed"], -1)
+
+
 if __name__ == "__main__":
     unittest.main()
