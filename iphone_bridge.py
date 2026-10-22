@@ -5528,6 +5528,13 @@ def render_app() -> bytes:
         </div>
       </div>
         <p id="forge-cancel-note" class="forge-note forge-m">L'annulation n'est possible que tant que le travail est encore dans HQ. Une génération déjà envoyée à Forge n'est pas interrompue : l'arrêt global pourrait couper un autre travail.</p>
+      <div id="forge-prefs" class="forge-prefs forge-m">
+        <div id="forge-wake-wrap" class="forge-help-wrap" hidden>
+          <label class="forge-privacy-ack" for="forge-wake"><input type="checkbox" id="forge-wake"/> Garder l'écran allumé</label>
+          <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-wake">Aide</button>
+          <p id="forge-help-wake" class="forge-help-pop" role="tooltip">Pendant une génération ou un lot, l'écran de cet appareil ne se met pas en veille. Réglage gardé sur cet appareil ; rien n'est envoyé à Forge.</p>
+        </div>
+      </div>
       <section id="forge-fleet-batch" class="forge-block forge-m forge-fleet-batch" aria-labelledby="forge-fleet-batch-title" hidden>
         <div class="forge-devices-head">
           <h2 id="forge-fleet-batch-title">Lot multi-appareils</h2>
@@ -5563,7 +5570,7 @@ def render_app() -> bytes:
         <p id="forge-vault-viewer-meta"></p>
         <div class="forge-actions">
           <button type="button" id="forge-vault-download">Télécharger l'original</button>
-          <label class="forge-check"><input type="checkbox" id="forge-vault-params"/> Inclure les paramètres</label>
+          <label class="forge-privacy-ack" for="forge-vault-params"><input type="checkbox" id="forge-vault-params"/> Inclure les paramètres</label>
           <button type="button" id="forge-vault-reuse">Réutiliser les réglages</button>
           <button type="button" id="forge-vault-delete" class="secondary">Supprimer du coffre</button>
         </div>

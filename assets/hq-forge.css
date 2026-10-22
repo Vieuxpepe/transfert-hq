@@ -96,6 +96,8 @@ body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{co
 .forge-privacy{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
 .forge-privacy[hidden],.forge-privacy [hidden]{display:none}
 .forge-privacy p{margin:0}
+.forge-prefs{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center}
+.forge-prefs:not(:has(> :not([hidden]))){display:none}
 .forge-privacy-ack{display:flex;align-items:flex-start;gap:8px;min-height:var(--tap-min)}
 
 /* ---- Responsive workspace (t85u) ----

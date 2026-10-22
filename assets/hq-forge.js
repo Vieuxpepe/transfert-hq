@@ -364,8 +364,39 @@
   }
   window.hqForgeQueueUsual = queueUsual;
 
+  /* F5: opt-in screen wake lock while a job or a batch runs. A presentation
+     preference, so it may live in localStorage. Unsupported browsers hide it. */
+  const WAKE_KEY = "hqForgeWakeLock";
+  const wakeSupported = !!(navigator.wakeLock && typeof navigator.wakeLock.request === "function");
+  let wakeSentinel = null;
+  let wakeJob = false;
+  let wakeBatch = false;
+  function wakePref() {
+    try { return localStorage.getItem(WAKE_KEY) === "1"; } catch (_) { return false; }
+  }
+  async function syncWake() {
+    const want = wakeSupported && wakePref() && (wakeJob || wakeBatch) && document.visibilityState === "visible";
+    if (want && !wakeSentinel) {
+      try {
+        const sentinel = await navigator.wakeLock.request("screen");
+        wakeSentinel = sentinel;
+        sentinel.addEventListener("release", () => { if (wakeSentinel === sentinel) wakeSentinel = null; });
+        if (!(wakeSupported && wakePref() && (wakeJob || wakeBatch))) syncWake();
+      } catch (_) { wakeSentinel = null; /* refused or unsupported: stay quiet */ }
+    } else if (!want && wakeSentinel) {
+      const sentinel = wakeSentinel;
+      wakeSentinel = null;
+      try { await sentinel.release(); } catch (_) { /* already gone */ }
+    }
+  }
+  function setWake(kind, on) {
+    if (kind === "job") wakeJob = !!on; else wakeBatch = !!on;
+    syncWake();
+  }
+
   function showJob(job) {
     const active = job && ["queued", "starting", "generating", "saving"].includes(job.state);
+    setWake("job", active);
     cancelBtn.disabled = !active || job.cancel === "deferred";
     progressBox.hidden = !active && !(job && job.state === "unknown");
     if (job) {
@@ -2191,6 +2222,7 @@
     batchBox.hidden = false;
     const c = batch.counts;
     const running = batch.state === "running" || batch.state === "cancelling";
+    setWake("batch", running);
     const setText = (id, value) => { const n = $(id); if (n.textContent !== value) n.textContent = value; };
     setText("forge-fleet-batch-state", { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state);
     setText("forge-fleet-batch-totals", c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : ""));
@@ -2490,6 +2522,24 @@
   studio.addEventListener("input", (event) => { if (event.target && usualFields.has(event.target.id)) queueUsual(); });
   document.querySelectorAll(".forge-ratio").forEach((button) => button.addEventListener("click", queueUsual));
 
+  const wakeBox = $("forge-wake");
+  if (wakeBox && wakeSupported) {
+    $("forge-wake-wrap").hidden = false;
+    wakeBox.checked = wakePref();
+    wakeBox.addEventListener("change", () => {
+      try { localStorage.setItem(WAKE_KEY, wakeBox.checked ? "1" : "0"); } catch (_) { /* storage off */ }
+      syncWake();
+    });
+  }
+  /* Coming back to the app: refresh at once instead of waiting for the next tick. */
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (!studio.offsetParent && studio.getClientRects().length === 0) return; // Forge view not shown
+    try { resume().catch(() => {}); } catch (_) { /* nothing to resume */ }
+    try { if (fleetBooted) resumeBatch().catch(() => {}); } catch (_) { /* nothing to resume */ }
+    syncWake();
+  });
+
   fleetBooted = !!deviceList;
 
   syncCount();
@@ -2513,6 +2563,9 @@
     clearTimeout(devicesTimer);
     clearTimeout(batchTimer);
     batchTimer = 0;
+    wakeJob = false;
+    wakeBatch = false;
+    syncWake();
     if (deviceDialog && deviceDialog.open) deviceDialog.close();
     if (viewer.open) viewer.close();
     clearPrivateUi();
