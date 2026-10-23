@@ -175,3 +175,12 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - Stored in `.hq-forge/night.json` (normal-mode settings only).
 - Routes (admin session + CSRF; 401 anonymous, 403 non-admin or cross-site, 404 unknown entry/route): `GET /api/forge/night`, `POST /api/forge/night`, `POST /api/forge/night/finish-kept`, `POST /api/forge/night/<id>/cancel`, `POST /api/forge/night/cancel-all`, `POST /api/forge/night/ack`.
 - Verified with a mock Forge only.
+
+## Searchable vault (phase H)
+
+- Tags (12 at most, 32 characters each) and one collection per vault image are stored in the vault's encrypted index (`index.bin`, AES-GCM with the vault key), like the sort flag. They are never written in clear, and backups carry them encrypted.
+- Prompt search: on the first search after an unlock, HQ decrypts the vault objects in memory and keeps a folded (case- and accent-insensitive) copy of the prompts on that unlock session only. Locking, the 5-minute auto-lock, logout, a passphrase change, a restore or any vault write drops it. It is never written to disk, logs, history, statistics or workers.
+- Searches are POST bodies, so the words never appear in a URL or an access log; the page keeps results in memory only and wipes the search field, chips and results when the vault locks. Nothing goes to browser storage.
+- The bin (rejected images) is not searched. A damaged object is skipped; a damaged index refuses with the usual "coffre illisible" error.
+- Routes (admin session + CSRF + unlocked vault; 401 anonymous or locked, 403 non-admin or cross-site, 404 unknown image): `POST /api/forge/vault/search` `{q, tag, collection}`, `POST /api/forge/vault/images/<id>/labels` `{tags, collection}`.
+- Verified with a temporary vault and synthetic images only.

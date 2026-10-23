@@ -5283,6 +5283,12 @@ def render_app() -> bytes:
           <section aria-labelledby="forge-vault-gallery-title">
             <h2 id="forge-vault-gallery-title">Coffre</h2>
             <div class="forge-triage-bar"><button type="button" id="forge-vault-triage-open" class="secondary">Trier</button><button type="button" id="forge-vault-trash-open" class="secondary">Corbeille du coffre</button></div>
+            <form id="forge-vault-search" class="forge-vault-search" role="search">
+              <input id="forge-vault-q" type="search" autocomplete="off" spellcheck="false" maxlength="120" aria-label="Rechercher dans le coffre" placeholder="Prompt, étiquette ou collection"/>
+              <button type="submit" class="secondary">Chercher</button>
+            </form>
+            <div id="forge-vault-filters" class="forge-vault-filters" role="group" aria-label="Étiquettes et collections du coffre"></div>
+            <p id="forge-vault-search-note" class="forge-note" role="status"></p>
             <div id="forge-vault-gallery" class="forge-grid"></div>
             <p id="forge-vault-empty" class="forge-note">Le coffre ne contient pas encore d'image.</p>
           </section>
@@ -5637,6 +5643,12 @@ def render_app() -> bytes:
         </header>
         <img id="forge-vault-viewer-img" alt=""/>
         <p id="forge-vault-viewer-meta"></p>
+        <div class="forge-vault-labels" id="forge-vault-labels">
+          <div class="field"><label for="forge-vault-tags">Étiquettes (séparées par une virgule)</label><input id="forge-vault-tags" type="text" autocomplete="off" spellcheck="false" maxlength="420"/></div>
+          <div class="field"><label for="forge-vault-collection">Collection</label><input id="forge-vault-collection" type="text" autocomplete="off" spellcheck="false" maxlength="48"/></div>
+          <button type="button" id="forge-vault-labels-save" class="secondary">Enregistrer</button>
+          <p id="forge-vault-labels-note" class="forge-note" role="status">Chiffrées dans le coffre, comme l'image.</p>
+        </div>
         <div class="forge-triage-row" id="forge-vault-viewer-triage" role="group" aria-label="Tri de l’image"></div>
         <div class="forge-explore" id="forge-vault-explore-box">
           <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
@@ -5987,6 +5999,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge-next.js"></script>
 <script src="/assets/hq-forge-explore.js"></script>
 <script src="/assets/hq-forge-night.js"></script>
+<script src="/assets/hq-forge-vault-search.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -6671,6 +6684,13 @@ class Handler(BaseHTTPRequestHandler):
             elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/triage"):
                 image_id = raw[len("/api/forge/vault/images/"):-len("/triage")]
                 self._json(200, hq_forge_vault.set_triage(ROOT, token, image_id, data.get("state")))
+            elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/labels"):
+                image_id = raw[len("/api/forge/vault/images/"):-len("/labels")]
+                if not hq_forge_vault.ID_RE.fullmatch(image_id):
+                    raise hq_forge_vault.VaultError("bad_id")
+                self._json(200, hq_forge_vault.set_labels(ROOT, token, image_id, data.get("tags"), data.get("collection")))
+            elif raw == "/api/forge/vault/search":
+                self._json(200, hq_forge_vault.search(ROOT, token, data))
             else:
                 self._json(404, {"error": "Inconnu"})
         except hq_forge_vault.VaultError as exc:

@@ -1282,6 +1282,8 @@ def store_image(hq_root: Path, token: str | None, raw: bytes, settings: dict) ->
             path = root / "objects" / (image_id + ".bin")
             path.unlink(missing_ok=True)
             raise
+        for entry in _sessions.values():
+            entry.pop("search", None)  # H: rebuilt on the next search
     return {"id": image_id, "width": width, "height": height}
 
 
@@ -1315,6 +1317,8 @@ def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | Non
         "width": item.get("width"),
         "height": item.get("height"),
         "triage": _triage(item),
+        "tags": item.get("tags") or [],
+        "collection": item.get("collection") or "",
     } for item in chosen]
     next_cursor = public[-1]["id"] if len(items) > limit and public else None
     return {"images": public, "next_cursor": next_cursor}
@@ -1323,12 +1327,15 @@ def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | Non
 def detail(hq_root: Path, token: str | None, image_id: str) -> dict:
     root, master, _header = _master(hq_root, token)
     meta, _png, _thumb = _read_object(root, master, image_id)
+    row = next((item for item in _read_index(root, master) if item.get("id") == image_id), {})
     return {
         "id": image_id,
         "created": meta.get("created"),
         "width": meta.get("width"),
         "height": meta.get("height"),
         "settings": meta.get("settings") if isinstance(meta.get("settings"), dict) else {},
+        "tags": row.get("tags") or [],
+        "collection": row.get("collection") or "",
     }
 
 
@@ -1358,6 +1365,7 @@ def delete(hq_root: Path, token: str | None, image_id: str) -> dict:
     path.unlink()
     items = [item for item in _read_index(root, master) if item.get("id") != image_id]
     _write_index(root, master, items)
+    _forget_all_searches()
     return {"deleted": True}
 
 
@@ -1379,6 +1387,150 @@ def set_triage(hq_root: Path, token: str | None, image_id: str, state) -> dict:
                 _write_index(root, master, items)
                 return {"id": image_id, "triage": state, "previous": before}
     raise VaultError("bad_id")
+
+
+# ---------------------------------------------------------------- H: searchable vault
+# Tags and the collection live in the encrypted index (index.bin, sealed with the vault key).
+# The prompt search index is built in memory from the encrypted objects on first search and
+# is kept on the unlock session itself: locking, logout, the idle auto-lock, a passphrase
+# change (epoch) or any vault write drops it. It is never written anywhere.
+TAGS_MAX = 12
+TAG_LEN = 32
+COLLECTION_LEN = 48
+QUERY_LEN = 120
+
+
+def _fold(text) -> str:
+    import unicodedata
+    value = unicodedata.normalize("NFKD", str(text or "")).casefold()
+    return "".join(ch for ch in value if not unicodedata.combining(ch))
+
+
+def _label(value, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = " ".join(value.split())
+    if not value or len(value) > limit or any(ord(ch) < 32 for ch in value):
+        return None
+    return value
+
+
+def _clean_tags(raw) -> list | None:
+    if not isinstance(raw, list) or len(raw) > TAGS_MAX:
+        return None
+    out = []
+    for value in raw:
+        label = _label(value, TAG_LEN)
+        if label is None:
+            return None
+        if _fold(label) not in {_fold(t) for t in out}:
+            out.append(label)
+    return out
+
+
+def _forget_search(token: str | None) -> None:
+    with _LOCK:
+        entry = _sessions.get(token) if isinstance(token, str) else None
+        if entry is not None:
+            entry.pop("search", None)
+
+
+def _forget_all_searches() -> None:
+    with _LOCK:
+        for entry in _sessions.values():
+            entry.pop("search", None)
+
+
+def search_cache_size_for_tests() -> int:
+    with _LOCK:
+        return sum(len(entry.get("search") or {}) for entry in _sessions.values())
+
+
+def set_labels(hq_root: Path, token: str | None, image_id: str, tags, collection) -> dict:
+    clean = _clean_tags(tags if tags is not None else [])
+    coll = "" if collection in (None, "") else _label(collection, COLLECTION_LEN)
+    if clean is None or coll is None:
+        raise VaultError("validation")
+    root, master, _header = _master(hq_root, token)
+    with _LOCK:
+        items = _read_index(root, master)
+        for item in items:
+            if item.get("id") == image_id:
+                if clean:
+                    item["tags"] = clean
+                else:
+                    item.pop("tags", None)
+                if coll:
+                    item["collection"] = coll
+                else:
+                    item.pop("collection", None)
+                _write_index(root, master, items)
+                break
+        else:
+            raise VaultError("bad_id")
+    _forget_all_searches()
+    return {"id": image_id, "tags": clean, "collection": coll}
+
+
+def _search_rows(root: Path, master: bytes, token: str, items: list) -> dict:
+    with _LOCK:
+        entry = _sessions.get(token)
+        cached = entry.get("search") if entry is not None else None
+    if cached is not None:
+        return cached
+    rows = {}
+    for item in items:
+        try:
+            meta, _png, _thumb = _read_object(root, master, item["id"])
+        except VaultError:
+            continue
+        settings = meta.get("settings") if isinstance(meta.get("settings"), dict) else {}
+        rows[item["id"]] = _fold(settings.get("prompt") or "")
+    with _LOCK:
+        entry = _sessions.get(token)
+        if entry is not None:
+            entry["search"] = rows
+    return rows
+
+
+def search(hq_root: Path, token: str | None, data: dict) -> dict:
+    """POST-only (the words never travel in a URL). Prompt words, a tag and/or a collection."""
+    query = data.get("q", "") if isinstance(data, dict) else None
+    tag = data.get("tag") or "" if isinstance(data, dict) else None
+    collection = data.get("collection") or "" if isinstance(data, dict) else None
+    if not isinstance(query, str) or len(query) > QUERY_LEN or not isinstance(tag, str) or not isinstance(collection, str) \
+            or len(tag) > TAG_LEN or len(collection) > COLLECTION_LEN:
+        raise VaultError("validation")
+    root, master, _header = _master(hq_root, token)
+    key = _token(token)
+    items = [item for item in _read_index(root, master) if _triage(item) != "reject"]
+    words = [w for w in _fold(query).split() if w]
+    rows = _search_rows(root, master, key, items) if words else {}
+    found = []
+    for item in items:
+        if tag and _fold(tag) not in {_fold(t) for t in item.get("tags") or []}:
+            continue
+        if collection and _fold(collection) != _fold(item.get("collection") or ""):
+            continue
+        if words:
+            hay = rows.get(item["id"], "") + " " + " ".join(_fold(t) for t in item.get("tags") or []) + " " + _fold(item.get("collection") or "")
+            if not all(w in hay for w in words):
+                continue
+        found.append(item)
+    found.sort(key=lambda item: (str(item.get("created") or ""), item.get("id") or ""), reverse=True)
+    tags, collections = {}, {}
+    for item in items:
+        for t in item.get("tags") or []:
+            tags[t] = tags.get(t, 0) + 1
+        if item.get("collection"):
+            collections[item["collection"]] = collections.get(item["collection"], 0) + 1
+    return {
+        "images": [{"id": i["id"], "created": i.get("created"), "width": i.get("width"), "height": i.get("height"),
+                    "triage": _triage(i), "tags": i.get("tags") or [], "collection": i.get("collection") or ""} for i in found[:PAGE_MAX]],
+        "total": len(found),
+        "tags": sorted(tags.items(), key=lambda kv: (-kv[1], _fold(kv[0])))[:64],
+        "collections": sorted(collections.items(), key=lambda kv: _fold(kv[0]))[:64],
+    }
 
 
 def backup_bytes(hq_root: Path, token: str | None) -> bytes:

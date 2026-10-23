@@ -439,3 +439,12 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-night-thumbs{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
 .forge-night-thumb{flex:0 0 64px;width:64px;height:64px;min-height:64px;padding:0;border-radius:8px;overflow:hidden}
 .forge-night-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.forge-vault-search{display:flex;gap:6px;margin:8px 0}
+.forge-vault-search input{flex:1 1 auto;min-width:0;min-height:var(--tap-min);font-family:inherit}
+.forge-vault-search button{min-height:var(--tap-min)}
+.forge-vault-filters{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px}
+.forge-vault-chip{min-height:var(--tap-min);padding:6px 10px;font-size:var(--text-sm);border-radius:999px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.forge-vault-chip[aria-pressed=true]{outline:2px solid currentColor;outline-offset:1px}
+.forge-vault-labels{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.forge-vault-labels input{min-height:var(--tap-min)}
+.forge-vault-labels button{min-height:var(--tap-min);align-self:flex-start}

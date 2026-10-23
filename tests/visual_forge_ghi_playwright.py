@@ -12,7 +12,7 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-from visual_forge_quick_wins_playwright import Run, generate_once, start_server, STORAGE_PROBE
+from visual_forge_quick_wins_playwright import Run, generate_once, start_server, STORAGE_PROBE, open_vault, import_private
 
 
 def section_night(run: Run) -> None:
@@ -69,7 +69,51 @@ def section_night(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"night": section_night}
+def section_vault_search(run: Run) -> None:
+    print("H searchable vault")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    open_vault(run, page)
+    import_private(run, page)
+    import_private(run, page)
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length === 2", 10), "two vault images are listed")
+    page.locator("#forge-vault-gallery .forge-card").first.click()
+    page.locator("#forge-vault-viewer").wait_for()
+    run.until(page, "() => document.querySelector('#forge-vault-viewer').open", 5)
+    page.locator("#forge-vault-tags").fill("lucioles, nuit d'\u00e9t\u00e9")
+    page.locator("#forge-vault-collection").fill("Jardin secret")
+    page.locator("#forge-vault-labels-save").click()
+    run.check(run.until(page, "() => /Enregistr/.test(document.querySelector('#forge-vault-labels-note').textContent)", 5), "tags and a collection are saved from the viewer")
+    run.shot(page, "vault-labels", "#forge-vault-labels")
+    page.locator("#forge-vault-viewer-close").click()
+    run.check(run.until(page, "() => [...document.querySelectorAll('.forge-vault-chip')].some((b) => /lucioles/.test(b.textContent))", 5), "the tag shows as a filter chip")
+    page.locator("#forge-vault-q").fill("LUCIOLE")
+    page.locator("#forge-vault-search button").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length === 1 && /1 image trouv/.test(document.querySelector('#forge-vault-search-note').textContent)", 5), "a search finds the tagged image only")
+    page.locator("#forge-vault-q").fill("")
+    page.locator(".forge-vault-chip", has_text="Jardin secret").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length === 1", 5), "the collection chip filters")
+    geo = page.evaluate("() => ({ sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth, h: document.querySelector('#forge-vault-q').getBoundingClientRect().height, c: document.querySelector('.forge-vault-chip').getBoundingClientRect().height })")
+    run.check(geo["sw"] <= geo["vw"] and geo["h"] >= 44 and geo["c"] >= 44, "at 375 px search and chips fit as 44 px targets: " + repr(geo))
+    run.shot(page, "vault-search", "#forge-vault")
+    urls = []
+    page.on("request", lambda r: urls.append(r.url))
+    page.locator("#forge-vault-q").fill("lucioles")
+    page.locator("#forge-vault-search button").click()
+    page.wait_for_timeout(400)
+    run.check(urls and not any("lucioles" in u for u in urls), "search words never travel in a URL")
+    hits = [h for w in ("lucioles", "Jardin secret") for h in page.evaluate(STORAGE_PROBE, w)]
+    run.check(hits == [], "no tag, collection or search word in browser storage: " + repr(hits))
+    page.locator("#forge-vault-lock").click()
+    run.check(run.until(page, "() => document.querySelector('#forge-vault-q').value === '' && !document.querySelectorAll('.forge-vault-chip').length && !document.querySelectorAll('#forge-vault-gallery .forge-card').length", 5),
+              "locking wipes the search, chips and results from the page")
+    status = page.evaluate("async () => (await fetch('/api/forge/vault/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: 'lucioles' }) })).status")
+    run.check(status == 401, "a locked vault refuses the search: " + repr(status))
+    ctx.close()
+
+
+SECTIONS = {"night": section_night, "vault_search": section_vault_search}
 EXTRA_ENV: dict = {"night": {"HQ_FORGE_NIGHT_TICK": "0.3", "HQ_FORGE_NIGHT_HOUR": "14"}}
 
 

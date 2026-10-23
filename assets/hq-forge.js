@@ -1057,6 +1057,9 @@
       showBatch(batch);
     },
     card: (image) => card(image),
+    /* H (hq-forge-vault-search.js): a vault card from a search result, same viewer as the vault grid. */
+    privateCard: (image) => card(image, "private"),
+    reloadVault: () => loadVaultGallery(),
     currentDetail: () => currentDetail,
     openImage: (id) => openViewer(id),
     closeViewer: () => { if (viewer.open) closeViewer(); },
