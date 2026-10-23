@@ -34,9 +34,10 @@ ID_RE = re.compile(r"^pvt-[0-9a-f]{24}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 QUOTA_IMAGES = 400
-# Every vault together. Max vaults: hq_forge_vault_registry.MAX_VAULTS (12).
-GLOBAL_QUOTA_BYTES = 8 * 1024 * 1024 * 1024
-GLOBAL_QUOTA_IMAGES = 1600
+# Global limits for all vaults together. Proposé, à confirmer par Emie (docs/forge-multi-vault-V1-V3.md).
+GLOBAL_QUOTA_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB across every vault
+GLOBAL_QUOTA_IMAGES = 1600  # images across every vault
+GLOBAL_MAX_VAULTS = registry.MAX_VAULTS  # 12 vaults; the registry enforces it
 UNLOCK_TTL_SEC = 300.0
 # Browser status may reuse one DACL reading for this long. An external permission
 # change can remain unseen by that poll during the interval. A private job does

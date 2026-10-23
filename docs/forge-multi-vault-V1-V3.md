@@ -8,17 +8,22 @@ Implements V1 to V3 of `docs/forge-multi-vault-plan.md`. Nothing visible yet: th
 - `forge-vault/vaults/<vid>/` holds exactly the old structure (`vault.json`, `index.bin`, `objects/`). `vid = "vlt-" + 16 random hex`. A vault created here writes its vid in `vault.json`; a folder whose header names another vid is refused, so swapping folders cannot mix two vaults. Only the migrated vault may have no vid in its header.
 - The registry has no cryptographic weight: each vault keeps its own keys, and a session holds one vault key at most.
 - Discret: the name is absent from the registry and sealed in `vaults/<vid>/label.bin` (AES-GCM, the vault's master key, AAD `hq-forge-vault-v1-label`). While locked, the list shows glyph, colour and number only.
-- Quotas: 2 GiB and 400 images per vault, plus 8 GiB and 1600 images for all vaults together.
+- Quotas: 2 GiB and 400 images per vault (`QUOTA_BYTES`, `QUOTA_IMAGES`).
+- Limites globales, **proposé, à confirmer par Emie** (constantes nommées, valeurs inchangées) :
+  - `GLOBAL_QUOTA_BYTES` = 8 GiB pour tous les coffres ensemble ;
+  - `GLOBAL_QUOTA_IMAGES` = 1600 images pour tous les coffres ensemble ;
+  - `GLOBAL_MAX_VAULTS` = `hq_forge_vault_registry.MAX_VAULTS` = 12 coffres.
 
 ## Migration of the existing single vault
 
-- Only `POST /api/forge/vaults/migrate` with `{"backup_offered": true}` migrates. The panel (V4) calls it at its first explicit opening, after offering the ZIP backup. Start-up, status, jobs and cleanup never migrate.
+- Only `POST /api/forge/vaults/migrate` migrates, and only when the server itself has recorded the backup offer for this HQ session (fix 1): either the single vault's ZIP was downloaded (`GET /api/forge/vault/backup`), or the panel called `POST /api/forge/vaults/backup-offer` (admin + CSRF) after showing the offer. The record lives in memory, lasts 15 minutes, is used up by one attempt and is forgotten at logout. A client `backup_offered` flag is ignored; without the record the answer is `backup_first` (409, "Proposez d'abord la sauvegarde du coffre."). Start-up, status, jobs and cleanup never migrate.
+- Each vault's backup ZIP includes `label.bin`, still sealed; restore puts it back and refuses a label that the restored key cannot open (fix 2).
 - Two renames, no copy, no re-encryption: `forge-vault` becomes `forge-vault.migrating`, a new `forge-vault/vaults/` is made, and `forge-vault.migrating` becomes `forge-vault/vaults/<vid>`. A journal `forge-vault.migration.json` (vid only) is written before the first rename. The registry (label « Coffre », default glyph and colour) is written after the second rename. Then the owner-only ACL and the link checks are re-applied at the new place.
 - At the next start, `cleanup_partials` finishes a cut-off migration. If two copies exist it refuses and leaves both. `cancel_migration` puts the single vault back while it is the only vault.
 
 ## Sessions and tries
 
-- One unlock entry per HQ session, bound to the vault it opened. Opening another vault wipes the first key. Lock, logout, `lock_all`, `retain_only` and the TTL drop the key and the cached search rows.
+- One unlock entry per HQ session, bound to the vault it opened. Opening another vault wipes the first key. Lock, logout, `lock_all`, `retain_only` and the TTL drop the key and the cached search rows. A passphrase change or recovery rotation closes only the sessions that have that vault open (fix 3); restore and migration still close every session.
 - Failure counts are kept per (session, vault), plus one global count over every vault (5 failures, then 60 s). A success clears only its own slot, so knowing one vault's phrase does not reset the global count. The global count resets after a quiet minute. Logout does not reset counts.
 - Private jobs take `"vault": <vid>` (kept in memory only, never in `jobs.json`), and that vault must be open in this session. Once vaults exist, a private job without a vault is refused (`use_vaults`). A private retouch reads and writes only its source's vault (`source.vault`). Laboratoire and the night workshop are unchanged and still exclude every vault.
 

@@ -156,6 +156,16 @@ class ResolveTests(MultiBase):
         self.assertIn(caught.exception.code, ("bad_root", "registry"))
 
 
+class GlobalLimitTests(unittest.TestCase):
+    """Fix 4: the proposed global limits are named constants with unchanged values."""
+
+    def test_values(self):
+        self.assertEqual(V.GLOBAL_QUOTA_BYTES, 8 * 1024 ** 3)
+        self.assertEqual(V.GLOBAL_QUOTA_IMAGES, 1600)
+        self.assertEqual(V.GLOBAL_MAX_VAULTS, 12)
+        self.assertEqual(V.GLOBAL_MAX_VAULTS, R.MAX_VAULTS)
+
+
 class DiscretLabelTests(MultiBase):
     """V1.3: a Discret name is stored only sealed in its own vault."""
 
