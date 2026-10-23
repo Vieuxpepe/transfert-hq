@@ -240,5 +240,68 @@ class ListCreateSettings(MultiHttp):
         self.assertEqual([(v["id"], v["label"]) for v in listing["vaults"]], [(done["vid"], "Coffre")])
         self.assertEqual(self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})[1]["migrated"], False)
 
+class Authorisation(MultiHttp):
+    """V3.3: every multi-vault route is admin + CSRF; 401 anonymous, 403 other roles or bad origin, 404 unknown."""
+
+    def routes(self, vid):
+        v = "/api/forge/vaults/" + vid
+        gets = ["/api/forge/vaults", v + "/status", v + "/gallery", v + "/images/pvt-" + "0" * 24, v + "/images/pvt-" + "0" * 24 + "/thumb"]
+        posts = ["/api/forge/vaults/new", "/api/forge/vaults/migrate", v + "/settings", v + "/unlock", v + "/recover", v + "/lock",
+                 v + "/passphrase", v + "/recovery", v + "/search", v + "/images/pvt-" + "0" * 24 + "/triage",
+                 v + "/images/pvt-" + "0" * 24 + "/labels", v + "/images/pvt-" + "0" * 24 + "/delete", v + "/import"]
+        return gets, posts
+
+    def test_matrix(self):
+        vid = self.made("Matrice")
+        gets, posts = self.routes(vid)
+        body = json.dumps({"passphrase": PASS, "confirm": PASS, "label": "X"}).encode()
+        for path in gets:
+            with self.subTest(get=path):
+                self.assertEqual(self.anon.req(path)[0], 401)
+                self.assertEqual(self.upload.req(path)[0], 403)
+        for path in posts:
+            with self.subTest(post=path):
+                self.assertEqual(self.anon.req(path, "POST", body, JSON)[0], 401)
+                self.assertEqual(self.upload.req(path, "POST", body, JSON)[0], 403)
+                self.assertEqual(self.admin.req(path, "POST", body, JSON, origin=False)[0], 403)
+                self.assertEqual(self.admin.req(path, "POST", body, {**JSON, "Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(len(V.list_vaults(B.ROOT, self.token(self.admin))["vaults"]), 1)  # nothing was created by refused calls
+
+    def test_unknown_paths(self):
+        vid = self.made("A")
+        for path in ("/api/forge/vaults/", "/api/forge/vaults/list", "/api/forge/vaults/" + vid + "/delete",
+                     "/api/forge/vaults/" + vid + "/registry", "/api/forge/vaults/vlt-ffffffffffffffff/gallery"):
+            with self.subTest(path=path):
+                self.assertEqual(self.admin.req(path)[0], 404)
+        for path in ("/api/forge/vaults/" + vid + "/delete", "/api/forge/vaults/" + vid + "/remove", "/api/forge/vaults/remove",
+                     "/api/forge/vaults/vlt-ffffffffffffffff/unlock"):
+            with self.subTest(post=path):
+                self.assertEqual(self.post(self.admin, path, {"passphrase": PASS})[0], 404)
+
+    def test_names_never_reach_logs_or_error_records(self):
+        names = ("Hirondelle", "Album Secret")
+        _s, made = self.post(self.admin, "/api/forge/vaults/new", {"passphrase": PASS, "confirm": PASS, "label": names[0], "discret": True})
+        vid = made["vault"]["id"]
+        self.post(self.admin, "/api/forge/vaults/new", {"passphrase": PASS_B, "confirm": PASS_B, "label": names[1]})
+        self.post(self.admin, "/api/forge/vaults/" + vid + "/unlock", {"passphrase": "wrong but long enough"})
+        self.post(self.admin, "/api/forge/vaults/" + vid + "/unlock", {"passphrase": PASS})
+        self.post(self.admin, "/api/forge/vaults/" + vid + "/settings", {"label": names[0] + " 2"})
+        self.admin.json("/api/forge/vaults")
+        logged = "\n".join(type(self).logged)
+        self.assertIn("/api/forge/vaults/" + vid, logged)  # paths are logged: ids only
+        records = json.dumps(D.ERRORS.recent(), default=str)
+        stored = "".join(p.read_text(encoding="utf-8", errors="ignore") for p in B.ROOT.rglob("*") if p.is_file() and p.suffix in (".json", ".log", ".txt", ".jsonl"))
+        for name in names:
+            for where, text in (("log", logged), ("errors", records), ("hq files", stored)):
+                self.assertNotIn(name, text, where)
+
+    def test_forge_allowlists_unchanged(self):
+        import subprocess
+        out = subprocess.run(["git", "diff", "--name-only", "0c0edfa", "--", "hq_forge.py", "hq_forge_worker.py", "hq_forge_fleet.py"],
+                             cwd=SOURCE, capture_output=True, text=True)
+        if out.returncode != 0:
+            self.skipTest("not a git checkout")
+        self.assertEqual(out.stdout.strip(), "")
+
 if __name__ == "__main__":
     unittest.main()
