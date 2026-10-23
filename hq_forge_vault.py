@@ -33,6 +33,9 @@ ID_RE = re.compile(r"^pvt-[0-9a-f]{24}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 QUOTA_IMAGES = 400
+# Every vault together. Max vaults: hq_forge_vault_registry.MAX_VAULTS (12).
+GLOBAL_QUOTA_BYTES = 8 * 1024 * 1024 * 1024
+GLOBAL_QUOTA_IMAGES = 1600
 UNLOCK_TTL_SEC = 300.0
 # Browser status may reuse one DACL reading for this long. An external permission
 # change can remain unseen by that poll during the interval. A private job does
@@ -57,6 +60,7 @@ _REPARSE = 0x400
 
 _LOCK = threading.Lock()
 _FAIL_LOCK = threading.Lock()
+_REGISTRY_LOCK = threading.Lock()  # registry writes; never held while _LOCK is wanted by another path
 _sessions: dict[str, dict] = {}
 _failures: dict[str, tuple[int, float]] = {}
 _global_fails = 0
@@ -70,6 +74,8 @@ _disk = True
 _ttl = UNLOCK_TTL_SEC
 _quota_bytes = QUOTA_BYTES
 _quota_images = QUOTA_IMAGES
+_global_bytes = GLOBAL_QUOTA_BYTES
+_global_images = GLOBAL_QUOTA_IMAGES
 _apply_acl = True
 _private_generation = True
 
@@ -87,7 +93,7 @@ class VaultError(Exception):
 
 
 def reset_for_tests() -> None:
-    global _test_dir, _ttl, _quota_bytes, _quota_images, _apply_acl, _private_generation, _disk
+    global _test_dir, _ttl, _quota_bytes, _quota_images, _apply_acl, _private_generation, _disk, _global_bytes, _global_images
     global _global_fails, _global_until, _inflight, _write_fault, _restore_fault, _user_sid_bytes
     _disk = False
     _global_fails = 0
@@ -105,6 +111,8 @@ def reset_for_tests() -> None:
     _ttl = UNLOCK_TTL_SEC
     _quota_bytes = QUOTA_BYTES
     _quota_images = QUOTA_IMAGES
+    _global_bytes = GLOBAL_QUOTA_BYTES
+    _global_images = GLOBAL_QUOTA_IMAGES
     _apply_acl = True
     _private_generation = True
     _user_sid_bytes = None
@@ -123,10 +131,13 @@ def set_ttl_for_tests(seconds: float | None) -> None:
     _ttl = UNLOCK_TTL_SEC if seconds is None else float(seconds)
 
 
-def set_quota_for_tests(byte_cap: int | None = None, image_cap: int | None = None) -> None:
-    global _quota_bytes, _quota_images
+def set_quota_for_tests(byte_cap: int | None = None, image_cap: int | None = None, *,
+                        global_bytes: int | None = None, global_images: int | None = None) -> None:
+    global _quota_bytes, _quota_images, _global_bytes, _global_images
     _quota_bytes = QUOTA_BYTES if byte_cap is None else int(byte_cap)
     _quota_images = QUOTA_IMAGES if image_cap is None else int(image_cap)
+    _global_bytes = GLOBAL_QUOTA_BYTES if global_bytes is None else int(global_bytes)
+    _global_images = GLOBAL_QUOTA_IMAGES if global_images is None else int(global_images)
 
 
 def set_acl_for_tests(enabled: bool) -> None:
@@ -546,10 +557,28 @@ def _remove_tree_nofollow(path: Path) -> None:
 
 
 def cleanup_partials(hq_root: Path) -> None:
+    """Leftover partial writes, in the top folder and in every listed vault."""
     try:
-        root = _root(hq_root)
+        base = _base(hq_root)
     except VaultError:
         return
+    if not base.is_dir() or _is_reparse(base):
+        return
+    _cleanup_folder(base)
+    try:
+        if _layout(base) != "multi":
+            return
+        _delete_partials(base)
+        for entry in _load_registry(base)["vaults"]:
+            try:
+                _cleanup_folder(_vault_dir(base, entry["id"]))
+            except VaultError:
+                continue
+    except VaultError:
+        return
+
+
+def _cleanup_folder(root: Path) -> None:
     if not root.is_dir() or _is_reparse(root):
         return
     try:
@@ -631,14 +660,14 @@ def _status_private_generation(root: Path, header) -> bool:
     return _acl_restricted(root, fresh=False)
 
 
-def confirm_private_generation(hq_root: Path) -> bool:
+def confirm_private_generation(hq_root: Path, *, vid: str | None = None) -> bool:
     """Read the live DACL before a private job is accepted. Status polls do not call this."""
     if not _private_generation:
         return False
     if os.name != "nt" or not _apply_acl:
         return True
     try:
-        root = _root(hq_root)
+        root = _root(hq_root, vid=vid)
         header = _read_header(root) if root.is_dir() else None
     except VaultError:
         return False
@@ -931,9 +960,9 @@ def _require_live(token: str | None) -> str:
     return key
 
 
-def _master(hq_root: Path, token: str | None) -> tuple[Path, bytes, dict]:
+def _master(hq_root: Path, token: str | None, vid: str | None = None) -> tuple[Path, bytes, dict]:
     key_token = _require_live(token)
-    root = _root(hq_root)
+    root = _root(hq_root, vid=vid)
     header = _read_header(root)
     if header is None:
         raise VaultError("missing")
@@ -977,6 +1006,12 @@ def setup(hq_root: Path, passphrase: str, confirm: str) -> dict:
     root = _root(hq_root, create=True)
     if _read_header(root) is not None:
         raise VaultError("exists")
+    return _initialise(root, passphrase)
+
+
+def _initialise(root: Path, passphrase: str, *, vid: str | None = None, discret_label: str | None = None) -> dict:
+    """Fresh keys in an empty vault folder. Unchanged from the single-vault setup, plus the
+    header naming its own vid and, for a Discret vault, its sealed name."""
     master = os.urandom(32)
     recovery = os.urandom(32)
     pass_salt = os.urandom(16)
@@ -994,16 +1029,75 @@ def setup(hq_root: Path, passphrase: str, confirm: str) -> dict:
         },
         "acl": "unverified",
     }
+    if vid is not None:
+        header["vid"] = vid
     (root / "objects").mkdir(exist_ok=True)
     root_acl = _restrict(root)
     object_acl = _restrict(root / "objects")
     header["acl"] = "restricted" if root_acl == "restricted" and object_acl == "restricted" else "unverified"
     _write_header(root, header)
     _write_index(root, master, [])
+    if discret_label is not None:
+        _write_label(root, master, discret_label)
     shown = _recovery_text(recovery)
     _wipe(bytearray(master))
     _wipe(bytearray(recovery))
     return {"configured": True, "recovery_key": shown, "acl": header["acl"]}
+
+
+def create_vault(hq_root: Path, token: str | None, passphrase: str, confirm: str, *, label=None,
+                 glyph=registry.DEFAULT_GLYPH, colour=registry.DEFAULT_COLOUR, discret=False, order=None) -> dict:
+    """A new vault with its own keys in vaults/<random vid>/. It is not opened.
+
+    The registry is written last: a crash before that leaves an unlisted folder that opens nothing."""
+    _require_live(token)
+    if passphrase != confirm or not passphrase_acceptable(passphrase):
+        raise VaultError("validation")
+    name = registry.clean_label(label)
+    if name is None:
+        raise VaultError("validation")
+    base = _base(hq_root, create=True)
+    if _layout(base) == "legacy":
+        raise VaultError("migration")
+    with _REGISTRY_LOCK:
+        data = _load_registry(base)
+        if len(data["vaults"]) >= registry.MAX_VAULTS:
+            raise VaultError("too_many")
+        if order is None:
+            order = 1 + max((entry["order"] for entry in data["vaults"]), default=-1)
+        vid = registry.new_vid()
+        while registry.find(data, vid) is not None or (base / VAULTS_DIR / vid).exists():
+            vid = registry.new_vid()
+        try:
+            entry = registry.make_entry(vid, label=name, glyph=glyph, colour=colour, discret=discret, order=order)
+        except ValueError:
+            raise VaultError("validation") from None
+        folder = _vault_dir(base, vid, create=True)
+        try:
+            result = _initialise(folder, passphrase, vid=vid, discret_label=name if discret else None)
+            data["vaults"].append(entry)
+            _save_registry(base, data)
+        except Exception:
+            _remove_tree_nofollow(folder)
+            raise
+        for path in (base, base / VAULTS_DIR):
+            _restrict(path)
+    return {"vault": _public_entry(entry, len(data["vaults"])), "recovery_key": result["recovery_key"], "acl": result["acl"]}
+
+
+def _public_entry(entry: dict, number: int, label: str | None = None) -> dict:
+    """What the list may show. A Discret vault shows its number, and its name only while this session has it open."""
+    return {
+        "id": entry["id"],
+        "label": entry["label"] if not entry["discret"] else label,
+        "number": number,
+        "glyph": entry["glyph"],
+        "colour": entry["colour"],
+        "discret": entry["discret"],
+        "order": entry["order"],
+        "created": entry["created"],
+        "last_used_day": entry["last_used_day"],
+    }
 
 
 def _open_with_budget(token: str | None, opener):
@@ -1024,9 +1118,9 @@ def _open_with_budget(token: str | None, opener):
         _finish_attempt(key_token, ok, count_failure=count_failure)
 
 
-def unlock(hq_root: Path, token: str | None, passphrase: str) -> dict:
+def unlock(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None = None) -> dict:
     def opener():
-        header = _read_header(_root(hq_root))
+        header = _read_header(_root(hq_root, vid=vid))
         if header is None:
             raise VaultError("missing")
         secret = _passphrase_bytes(passphrase) if isinstance(passphrase, str) and len(passphrase) <= 128 else b""
@@ -1039,9 +1133,9 @@ def unlock(hq_root: Path, token: str | None, passphrase: str) -> dict:
     return {"unlocked": True}
 
 
-def unlock_with_recovery(hq_root: Path, token: str | None, recovery_key: str) -> dict:
+def unlock_with_recovery(hq_root: Path, token: str | None, recovery_key: str, *, vid: str | None = None) -> dict:
     def opener():
-        header = _read_header(_root(hq_root))
+        header = _read_header(_root(hq_root, vid=vid))
         if header is None:
             raise VaultError("missing")
         raw = _recovery_bytes(recovery_key)
@@ -1061,8 +1155,8 @@ def lock(token: str | None) -> dict:
     return {"unlocked": False}
 
 
-def change_passphrase(hq_root: Path, token: str | None, current: str, new_value: str, confirm: str, *, recovery_key: str | None = None) -> dict:
-    root, master, header = _master(hq_root, token)
+def change_passphrase(hq_root: Path, token: str | None, current: str, new_value: str, confirm: str, *, vid: str | None = None, recovery_key: str | None = None) -> dict:
+    root, master, header = _master(hq_root, token, vid)
     if new_value != confirm or not passphrase_acceptable(new_value):
         raise VaultError("validation")
     if recovery_key:
@@ -1095,12 +1189,12 @@ def change_passphrase(hq_root: Path, token: str | None, current: str, new_value:
     return {"changed": True, "unlocked": False, "recovery_key_unchanged": True}
 
 
-def rotate_recovery(hq_root: Path, token: str | None, passphrase: str) -> dict:
+def rotate_recovery(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None = None) -> dict:
     """Replace the recovery wrap. The previous recovery key stops working.
 
     Changing the passphrase does not call this and does not revoke the recovery key.
     """
-    root, master, header = _master(hq_root, token)
+    root, master, header = _master(hq_root, token, vid)
     try:
         check = _unwrap(header, _passphrase_bytes(passphrase or ""), "passphrase")
     except VaultError:
@@ -1125,19 +1219,19 @@ def rotate_recovery(hq_root: Path, token: str | None, passphrase: str) -> dict:
     return {"rotated": True, "unlocked": False, "recovery_key": shown, "previous_recovery_key": "revoked"}
 
 
-def status(hq_root: Path, token: str | None) -> dict:
+def status(hq_root: Path, token: str | None, *, vid: str | None = None) -> dict:
     if not _disk and _test_dir is None:
         return {"configured": False, "unlocked": False, "private_generation": private_generation_ready(None), "acl": "skipped"}
     cleanup_partials(hq_root)
     try:
-        root = _root(hq_root)
+        root = _root(hq_root, vid=vid)
         header = _read_header(root) if root.is_dir() else None
     except VaultError as exc:
         return {"configured": False, "unlocked": False, "private_generation": False, "acl": "unverified", "code": exc.code}
     unlocked = False
     if header is not None and isinstance(token, str) and TOKEN_RE.fullmatch(token):
         try:
-            _master(hq_root, token)
+            _master(hq_root, token, vid)
             unlocked = True
         except VaultError:
             unlocked = False
@@ -1297,6 +1391,23 @@ def _drop_label(root: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def _usage_all(hq_root: Path) -> tuple[int, int]:
+    """Every vault on this PC counted together, for the global cap. File sizes only, no key needed."""
+    base = _base(hq_root)
+    if not base.is_dir() or _layout(base) != "multi":
+        return _usage(base) if base.is_dir() else (0, 0)
+    count = total = 0
+    for entry in _load_registry(base)["vaults"]:
+        try:
+            folder = _vault_dir(base, entry["id"])
+        except VaultError:
+            continue
+        c, t = _usage(folder)
+        count += c
+        total += t
+    return count, total
+
+
 def _usage(root: Path) -> tuple[int, int]:
     folder = root / "objects"
     if not folder.is_dir() or folder.is_symlink():
@@ -1373,7 +1484,7 @@ def _read_object(root: Path, master: bytes, image_id: str) -> tuple[dict, bytes,
     return _unpack(plain)
 
 
-def store_image(hq_root: Path, token: str | None, raw: bytes, settings: dict) -> dict:
+def store_image(hq_root: Path, token: str | None, raw: bytes, settings: dict, *, vid: str | None = None) -> dict:
     if not isinstance(raw, (bytes, bytearray)) or len(raw) > IMPORT_MAX:
         raise VaultError("bad_image")
     try:
@@ -1401,11 +1512,14 @@ def store_image(hq_root: Path, token: str | None, raw: bytes, settings: dict) ->
             "cfg_scale": 0.0,
             "source": "import",
         }
-    root, master, _header = _master(hq_root, token)
+    root, master, _header = _master(hq_root, token, vid)
     with _LOCK:
         count, used = _usage(root)
         incoming = len(png) + len(thumb) + 1024
         if count >= _quota_images or used + incoming > _quota_bytes:
+            raise VaultError("quota")
+        all_count, all_used = _usage_all(hq_root)
+        if all_count >= _global_images or all_used + incoming > _global_bytes:
             raise VaultError("quota")
         image_id = "pvt-" + os.urandom(12).hex()
         meta = {
@@ -1435,8 +1549,8 @@ def _triage(item: dict) -> str:
     return value if value in gallery.TRIAGE else "none"
 
 
-def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | None = None, view: str = "") -> dict:
-    root, master, _header = _master(hq_root, token)
+def page(hq_root: Path, token: str | None, *, vid: str | None = None, limit: int = 24, cursor: str | None = None, view: str = "") -> dict:
+    root, master, _header = _master(hq_root, token, vid)
     limit = 24 if not isinstance(limit, int) else max(1, min(PAGE_MAX, limit))
     items = _read_index(root, master)
     # Same views as the normal gallery. The flag lives in the encrypted index only.
@@ -1467,8 +1581,8 @@ def page(hq_root: Path, token: str | None, *, limit: int = 24, cursor: str | Non
     return {"images": public, "next_cursor": next_cursor}
 
 
-def detail(hq_root: Path, token: str | None, image_id: str) -> dict:
-    root, master, _header = _master(hq_root, token)
+def detail(hq_root: Path, token: str | None, image_id: str, *, vid: str | None = None) -> dict:
+    root, master, _header = _master(hq_root, token, vid)
     meta, _png, _thumb = _read_object(root, master, image_id)
     row = next((item for item in _read_index(root, master) if item.get("id") == image_id), {})
     return {
@@ -1482,10 +1596,10 @@ def detail(hq_root: Path, token: str | None, image_id: str) -> dict:
     }
 
 
-def file_bytes(hq_root: Path, token: str | None, image_id: str, kind: str, *, include_parameters: bool = False) -> tuple[bytes, str, str]:
+def file_bytes(hq_root: Path, token: str | None, image_id: str, kind: str, *, vid: str | None = None, include_parameters: bool = False) -> tuple[bytes, str, str]:
     """Vault originals carry no generation text unless the owner explicitly asks
     for it on one export (include_parameters). Stored objects never do."""
-    root, master, _header = _master(hq_root, token)
+    root, master, _header = _master(hq_root, token, vid)
     meta, png, thumb = _read_object(root, master, image_id)
     if kind == "original":
         if include_parameters is True:
@@ -1500,8 +1614,8 @@ def file_bytes(hq_root: Path, token: str | None, image_id: str, kind: str, *, in
     raise VaultError("bad_id")
 
 
-def delete(hq_root: Path, token: str | None, image_id: str) -> dict:
-    root, master, _header = _master(hq_root, token)
+def delete(hq_root: Path, token: str | None, image_id: str, *, vid: str | None = None) -> dict:
+    root, master, _header = _master(hq_root, token, vid)
     path = _object_path(root, image_id)
     if not path.is_file():
         raise VaultError("bad_id")
@@ -1512,12 +1626,12 @@ def delete(hq_root: Path, token: str | None, image_id: str) -> dict:
     return {"deleted": True}
 
 
-def set_triage(hq_root: Path, token: str | None, image_id: str, state) -> dict:
+def set_triage(hq_root: Path, token: str | None, image_id: str, state, *, vid: str | None = None) -> dict:
     """Reversible sort flag for a vault image, stored inside the encrypted index.
     'reject' only moves it to the vault bin; nothing is deleted."""
     if state not in gallery.TRIAGE:
         raise VaultError("bad_triage")
-    root, master, _header = _master(hq_root, token)
+    root, master, _header = _master(hq_root, token, vid)
     with _LOCK:
         items = _read_index(root, master)
         for item in items:
@@ -1589,12 +1703,12 @@ def search_cache_size_for_tests() -> int:
         return sum(len(entry.get("search") or {}) for entry in _sessions.values())
 
 
-def set_labels(hq_root: Path, token: str | None, image_id: str, tags, collection) -> dict:
+def set_labels(hq_root: Path, token: str | None, image_id: str, tags, collection, *, vid: str | None = None) -> dict:
     clean = _clean_tags(tags if tags is not None else [])
     coll = "" if collection in (None, "") else _label(collection, COLLECTION_LEN)
     if clean is None or coll is None:
         raise VaultError("validation")
-    root, master, _header = _master(hq_root, token)
+    root, master, _header = _master(hq_root, token, vid)
     with _LOCK:
         items = _read_index(root, master)
         for item in items:
@@ -1636,7 +1750,7 @@ def _search_rows(root: Path, master: bytes, token: str, items: list) -> dict:
     return rows
 
 
-def search(hq_root: Path, token: str | None, data: dict) -> dict:
+def search(hq_root: Path, token: str | None, data: dict, *, vid: str | None = None) -> dict:
     """POST-only (the words never travel in a URL). Prompt words, a tag and/or a collection."""
     query = data.get("q", "") if isinstance(data, dict) else None
     tag = data.get("tag") or "" if isinstance(data, dict) else None
@@ -1644,7 +1758,7 @@ def search(hq_root: Path, token: str | None, data: dict) -> dict:
     if not isinstance(query, str) or len(query) > QUERY_LEN or not isinstance(tag, str) or not isinstance(collection, str) \
             or len(tag) > TAG_LEN or len(collection) > COLLECTION_LEN:
         raise VaultError("validation")
-    root, master, _header = _master(hq_root, token)
+    root, master, _header = _master(hq_root, token, vid)
     key = _token(token)
     items = [item for item in _read_index(root, master) if _triage(item) != "reject"]
     words = [w for w in _fold(query).split() if w]
@@ -1676,8 +1790,8 @@ def search(hq_root: Path, token: str | None, data: dict) -> dict:
     }
 
 
-def backup_bytes(hq_root: Path, token: str | None) -> bytes:
-    root, _master_key, _header = _master(hq_root, token)
+def backup_bytes(hq_root: Path, token: str | None, *, vid: str | None = None) -> bytes:
+    root, _master_key, _header = _master(hq_root, token, vid)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in ("vault.json", "index.bin"):
@@ -1776,13 +1890,13 @@ def _rollback_restore(root: Path, staging: Path, previous: Path) -> None:
     os.replace(previous, root)
 
 
-def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase: str) -> dict:
+def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase: str, *, vid: str | None = None) -> dict:
     _require_live(token)
     if not isinstance(payload, (bytes, bytearray)) or not payload or len(payload) > BACKUP_MAX:
         raise VaultError("validation")
     if not passphrase_acceptable(passphrase):
         raise VaultError("passphrase")
-    root = _root(hq_root, create=True)
+    root = _root(hq_root, create=True, vid=vid)
     staging = root.with_name(root.name + ".restore")
     previous = root.with_name(root.name + ".previous")
     for sibling in (staging, previous):

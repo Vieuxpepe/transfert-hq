@@ -188,5 +188,117 @@ class DiscretLabelTests(MultiBase):
         V._drop_label(folder)
         self.assertIsNone(V._read_label(folder, key))
 
+class PerVaultTests(MultiBase):
+    """V1.4: every function takes a vid; own keys, own folder, own quota; global cap; at most 12."""
+
+    def create(self, label="Voyages", passphrase=PASS, **kw):
+        return V.create_vault(self.hq, self.admin, passphrase, passphrase, label=label, **kw)
+
+    def test_create_lists_and_isolates(self):
+        a = self.create("Voyages")
+        b = self.create("Famille", PASS_B, glyph="coeur", colour="rose")
+        va, vb = a["vault"]["id"], b["vault"]["id"]
+        self.assertNotEqual(va, vb)
+        self.assertNotEqual(a["recovery_key"], b["recovery_key"])
+        reg = json.loads((self.store / "registry.json").read_text(encoding="utf-8"))
+        self.assertEqual([e["id"] for e in reg["vaults"]], [va, vb])
+        self.assertIsNone(reg["legacy"])
+        for vid in (va, vb):
+            header = json.loads((self.store / "vaults" / vid / "vault.json").read_text(encoding="utf-8"))
+            self.assertEqual(header["vid"], vid)
+        V.unlock(self.hq, self.admin, PASS, vid=va)
+        stored = V.store_image(self.hq, self.admin, _png(), None, vid=va)
+        self.assertEqual(len(V.page(self.hq, self.admin, vid=va)["images"]), 1)
+        # B's passphrase never opens A, A's never opens B.
+        with self.assertRaises(V.VaultError) as caught:
+            V.unlock(self.hq, self.other, PASS_B, vid=va)
+        self.assertEqual(caught.exception.code, "passphrase")
+        V.unlock(self.hq, self.other, PASS_B, vid=vb)
+        self.assertEqual(V.page(self.hq, self.other, vid=vb)["images"], [])
+        with self.assertRaises(V.VaultError) as caught:
+            V.detail(self.hq, self.other, stored["id"], vid=vb)
+        self.assertEqual(caught.exception.code, "bad_id")
+
+    def test_create_needs_a_session_and_valid_fields(self):
+        with self.assertRaises(V.VaultError) as caught:
+            V.create_vault(self.hq, None, PASS, PASS, label="X")
+        self.assertEqual(caught.exception.code, "locked")
+        for kw in ({"label": ""}, {"label": "x" * 41}, {"glyph": "crane"}, {"colour": "#000"}, {"discret": "oui"}):
+            with self.subTest(kw=kw), self.assertRaises(V.VaultError) as caught:
+                V.create_vault(self.hq, self.admin, PASS, PASS, **{"label": "Ok", **kw})
+            self.assertEqual(caught.exception.code, "validation")
+        with self.assertRaises(V.VaultError):
+            V.create_vault(self.hq, self.admin, PASS, PASS + "x", label="Ok")
+        self.assertFalse((self.store / "vaults").exists() and any((self.store / "vaults").iterdir()))
+
+    def test_legacy_vault_must_migrate_before_another_is_created(self):
+        V.setup(self.hq, PASS, PASS)
+        with self.assertRaises(V.VaultError) as caught:
+            self.create()
+        self.assertEqual(caught.exception.code, "migration")
+
+    def test_at_most_twelve(self):
+        V.set_acl_for_tests(False)
+        import hq_forge_vault as mod
+        saved = mod._initialise
+        mod._initialise = lambda root, passphrase, *, vid=None, discret_label=None: (
+            (root / "vault.json").write_text(json.dumps({"version": 1, "epoch": 1, "vid": vid}), encoding="utf-8"),
+            {"recovery_key": "x", "acl": "skipped"})[1]
+        try:
+            for index in range(R.MAX_VAULTS):
+                self.create("V%d" % index)
+            with self.assertRaises(V.VaultError) as caught:
+                self.create("Treize")
+            self.assertEqual(caught.exception.code, "too_many")
+        finally:
+            mod._initialise = saved
+        self.assertEqual(len(list((self.store / "vaults").iterdir())), R.MAX_VAULTS)
+
+    def test_quota_per_vault_and_global(self):
+        a = self.create("A")["vault"]["id"]
+        b = self.create("B", PASS_B)["vault"]["id"]
+        V.set_quota_for_tests(image_cap=1, global_images=3)
+        V.unlock(self.hq, self.admin, PASS, vid=a)
+        V.store_image(self.hq, self.admin, _png(), None, vid=a)
+        with self.assertRaises(V.VaultError) as caught:
+            V.store_image(self.hq, self.admin, _png(), None, vid=a)
+        self.assertEqual(caught.exception.code, "quota")
+        V.set_quota_for_tests(image_cap=5, global_images=2)
+        V.unlock(self.hq, self.other, PASS_B, vid=b)
+        V.store_image(self.hq, self.other, _png(), None, vid=b)
+        with self.assertRaises(V.VaultError) as caught:
+            V.store_image(self.hq, self.other, _png(), None, vid=b)
+        self.assertEqual(caught.exception.code, "quota")
+        V.set_quota_for_tests(global_bytes=1)
+        with self.assertRaises(V.VaultError) as caught:
+            V.store_image(self.hq, self.other, _png(), None, vid=b)
+        self.assertEqual(caught.exception.code, "quota")
+
+    def test_discret_name_never_in_clear_on_disk(self):
+        made = self.create("Hirondelle secrete", discret=True)
+        self.assertIsNone(made["vault"]["label"])
+        reg = (self.store / "registry.json").read_bytes()
+        self.assertNotIn(b"Hirondelle", reg)
+        allowed = set(R.ENTRY_KEYS)
+        for entry in json.loads(reg)["vaults"]:
+            self.assertEqual(set(entry), allowed)
+        V.unlock(self.hq, self.admin, PASS, vid=made["vault"]["id"])
+        V.store_image(self.hq, self.admin, _png(), {"prompt": "phare rouge sous la pluie", "negative_prompt": "", "checkpoint": "m",
+                      "sampler_name": "Euler", "scheduler": "", "width": 256, "height": 256, "steps": 4, "n_iter": 1,
+                      "batch_size": 1, "seed": 1, "cfg_scale": 5.0}, vid=made["vault"]["id"])
+        for path in self.store.rglob("*"):
+            if path.is_file():
+                raw = path.read_bytes()
+                for needle in ("Hirondelle", "phare rouge"):
+                    self.assertNotIn(needle.encode("utf-8"), raw, path)
+                    self.assertNotIn(needle.encode("utf-16-le"), raw, path)
+
+    def test_cleanup_reaches_every_vault(self):
+        a = self.create("A")["vault"]["id"]
+        stray = self.store / "vaults" / a / "index.bin.partial"
+        stray.write_bytes(b"x")
+        V.cleanup_partials(self.hq)
+        self.assertFalse(stray.exists())
+
 if __name__ == "__main__":
     unittest.main()
