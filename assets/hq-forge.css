@@ -521,3 +521,32 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-style-list dt{font-weight:700}
 .forge-style-list dd{margin:0;overflow-wrap:anywhere}
 .forge-style .forge-actions button{min-height:var(--tap-min)}
+
+/* J4: couch mode. Large touch targets, only prompt, destination, generate, results and gallery.
+   Hidden settings still apply; nothing about sessions or locking changes. */
+.forge-couch-toggle{min-height:var(--tap-min);min-width:var(--tap-min)}
+#forge-studio.is-couch .forge-couch-note{display:block}
+#forge-studio.is-couch .forge-kicker,
+#forge-studio.is-couch .forge-layout-pick,
+#forge-studio.is-couch #forge-devices,
+#forge-studio.is-couch #forge-plan,
+#forge-studio.is-couch #forge-sweep,
+#forge-studio.is-couch #forge-night,
+#forge-studio.is-couch #forge-lab,
+#forge-studio.is-couch #forge-presets,
+#forge-studio.is-couch #forge-style,
+#forge-studio.is-couch #forge-prefs,
+#forge-studio.is-couch #forge-negative-fold,
+#forge-studio.is-couch #forge-sampling,
+#forge-studio.is-couch #forge-cfg-fold,
+#forge-studio.is-couch #forge-seed-fold,
+#forge-studio.is-couch #forge-advanced,
+#forge-studio.is-couch #forge-batch-fold,
+#forge-studio.is-couch #forge-hr-fold,
+#forge-studio.is-couch .forge-prompt-tools .forge-count{display:none !important}
+#forge-studio.is-couch #forge-form #forge-prompt{font-size:20px;line-height:1.4;min-height:7.5em}
+#forge-studio.is-couch .forge-actionbar button{min-height:64px;font-size:1.15rem}
+#forge-studio.is-couch .forge-dest label{min-height:56px;font-size:1.05rem}
+#forge-studio.is-couch .forge-tool,#forge-studio.is-couch .forge-brick button,#forge-studio.is-couch .forge-couch-toggle{min-height:56px}
+#forge-studio.is-couch .forge-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,160px),1fr));gap:12px}
+#forge-studio.is-couch .forge-couch-toggle{border-color:var(--forge-accent)}

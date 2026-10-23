@@ -212,3 +212,8 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - Indicatif: the most common sampler, scheduler, size, steps and CFG among normal gallery images sorted keep or favorite (a favourite counts twice), with « n sur m » shares; at least 5 kept images. The most kept model is shown but never applied; a negative prompt is offered only when it is the habit (at least 40 %).
 - Applying fills the form's technical fields through the existing `applyTechnical` hook (no checkpoint); « Reprendre son prompt négatif » fills the negative field. Nothing starts a job.
 - Only gallery `meta.json` is read. The vault is never read, so private settings and prompts never shape the style.
+
+### J4 Mode canapé
+- No route. A page-side display choice (`#forge-studio.is-couch`, toggle « Mode canapé » / « Quitter le mode canapé », `aria-pressed`): prompt, destination, Générer, results and gallery only, with larger type and 56-64 px targets. Hidden settings still apply to jobs (tested), and a note says so.
+- Only the on/off choice is kept on the device (`localStorage.hqForgeCouch = "1"`); no prompt is stored.
+- Auth and sessions are untouched: the script sends no request, sets no timer, never reads or writes cookies, and the studio's idle lock and session code never read the flag (static and browser tests). Without a session the API still answers 401.

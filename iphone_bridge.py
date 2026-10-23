@@ -5199,6 +5199,7 @@ def render_app() -> bytes:
     <header class="forge-head">
       <p class="forge-kicker">Espace indépendant</p>
       <h1>Forge Studio</h1>
+      <p id="forge-couch-note" class="forge-note forge-couch-note" hidden>Mode canapé : réglages masqués, ils restent appliqués. La session et le verrouillage ne changent pas.</p>
       <p id="forge-status" class="forge-status" role="status" aria-live="polite">Lecture de Forge…</p>
       <div class="forge-head-tools">
         <div class="forge-layout-pick">
@@ -5209,6 +5210,7 @@ def render_app() -> bytes:
             <option value="expanded">Étendue</option>
           </select>
         </div>
+        <button type="button" id="forge-couch" class="secondary forge-couch-toggle" aria-pressed="false">Mode canapé</button>
         <button type="button" id="forge-capture" class="forge-capture" aria-haspopup="dialog" aria-expanded="false" aria-controls="hq-capture" title="Capture rapide dans le carnet" hidden>Capturer</button>
       </div>
     </header>
@@ -6074,6 +6076,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge-bricks.js"></script>
 <script src="/assets/hq-forge-lineage.js"></script>
 <script src="/assets/hq-forge-style.js"></script>
+<script src="/assets/hq-forge-couch.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">

@@ -162,7 +162,52 @@ def section_style(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"bricks": section_bricks, "lineage": section_lineage, "style": section_style}
+def section_couch(run: Run) -> None:
+    print("J4 couch mode")
+    ctx = run.context()
+    page = ctx.new_page()
+    reqs = []
+    page.on("request", lambda r: reqs.append((r.method, r.url, r.post_data)))
+    run.open_forge(page)
+    page.evaluate("() => { document.querySelector('#forge-sampling').open = true; }")
+    page.locator("#forge-steps").fill("13")
+    page.wait_for_timeout(2500)  # let the debounced plan reads settle
+    cookies = sorted((c["name"], c["value"], c.get("expires")) for c in ctx.cookies())
+    count = len(reqs)
+    page.locator("#forge-couch").click()
+    page.wait_for_timeout(500)
+    run.check(page.evaluate("() => document.querySelector('#forge-studio').classList.contains('is-couch') && document.querySelector('#forge-couch').getAttribute('aria-pressed') === 'true'"), "Mode canape turns on and says so")
+    seen = {u.split("?")[0] for _m, u, _b in reqs[:count]}
+    extra = [(m, u) for m, u, _b in reqs[count:] if m != "GET" or u.split("?")[0] not in seen]
+    run.check(extra == [], "turning it on sends no request of its own (only the page's usual polls): " + repr(extra))
+    run.check(sorted((c["name"], c["value"], c.get("expires")) for c in ctx.cookies()) == cookies, "the session cookie is untouched (not extended)")
+    hidden = page.evaluate("() => ['forge-sampling', 'forge-advanced', 'forge-presets', 'forge-lab', 'forge-night', 'forge-sweep', 'forge-devices', 'forge-style'].filter((id) => { const e = document.getElementById(id); return e && e.offsetParent !== null; })")
+    run.check(hidden == [], "settings panels are hidden: " + repr(hidden))
+    geo = page.evaluate("() => { const g = document.querySelector('#forge-generate').getBoundingClientRect(); const p = document.querySelector('#forge-prompt'); return { sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth, gh: g.height, fs: parseFloat(getComputedStyle(p).fontSize), shown: !!p.offsetParent && !!document.querySelector('#forge-couch').offsetParent, note: !document.querySelector('#forge-couch-note').hidden }; }")
+    run.check(geo["sw"] <= geo["vw"] and geo["gh"] >= 56 and geo["fs"] >= 18 and geo["shown"] and geo["note"], "at 375 px: large prompt and Generer, exit button and note shown, no overflow: " + repr(geo))
+    store = page.evaluate("() => Object.keys(localStorage).filter((k) => /couch/i.test(k)).map((k) => [k, localStorage.getItem(k)])")
+    run.check(store == [["hqForgeCouch", "1"]], "only the on/off choice is remembered on this device: " + repr(store))
+    run.shot(page, "couch")
+    generate_once(run, page, "phare depuis le canape")
+    sent = [json.loads(b) for m, u, b in reqs if m == "POST" and u.endswith("/api/forge/jobs") and b]
+    run.check(sent and sent[-1].get("steps") == 13, "hidden settings still apply to the job: steps " + repr(sent[-1].get("steps") if sent else None))
+    page.reload()
+    run.open_forge(page)
+    run.check(page.evaluate("() => document.querySelector('#forge-studio').classList.contains('is-couch')"), "the choice survives a reload on this device")
+    page.locator("#forge-couch").click()
+    run.check(page.evaluate("() => !document.querySelector('#forge-studio').classList.contains('is-couch') && localStorage.getItem('hqForgeCouch') === null && document.querySelector('#forge-sampling').offsetParent !== null"),
+              "Quitter le mode canape restores the full studio")
+    anon = run.browser.new_context(viewport={"width": 375, "height": 812})
+    apage = anon.new_page()
+    apage.add_init_script("localStorage.setItem('hqForgeCouch', '1')")
+    apage.goto(run.base + "/")
+    status = apage.request.get(run.base + "/api/forge/status").status
+    run.check(status == 401, "couch mode never opens Forge without a session: " + repr(status))
+    anon.close()
+    ctx.close()
+
+
+SECTIONS = {"bricks": section_bricks, "lineage": section_lineage, "style": section_style, "couch": section_couch}
 EXTRA_ENV = {"bricks": {"HQ_FORGE_MOCK_LORAS": json.dumps(LORAS)}}
 
 
