@@ -512,3 +512,12 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-lineage-node img{width:48px;height:48px;object-fit:cover;border-radius:6px;flex:none;background:var(--bg)}
 .forge-lineage-node[aria-current="true"]{border-color:var(--forge-accent);box-shadow:inset 0 0 0 1px var(--forge-accent)}
 .forge-lineage-node .forge-note{margin:0}
+
+/* J3: house style (Indicatif). */
+.forge-style{margin:6px 0}
+.forge-style > summary{min-height:var(--tap-min);display:flex;align-items:center;font-weight:700}
+.forge-style .forge-label-row{gap:12px}
+.forge-style-list{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:8px 0;font-size:var(--text-sm)}
+.forge-style-list dt{font-weight:700}
+.forge-style-list dd{margin:0;overflow-wrap:anywhere}
+.forge-style .forge-actions button{min-height:var(--tap-min)}

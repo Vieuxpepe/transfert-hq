@@ -51,6 +51,7 @@ import hq_forge_inpaint
 import hq_forge_presets
 import hq_forge_bricks
 import hq_forge_lineage
+import hq_forge_style
 import hq_forge_vault
 
 PORT = 8765
@@ -5330,6 +5331,17 @@ def render_app() -> bytes:
             </div>
           </div>
         </details>
+        <details id="forge-style" class="forge-style">
+          <summary>Style maison</summary>
+          <div class="forge-label-row"><span class="forge-note">Indicatif : les réglages les plus fréquents parmi vos images gardées.</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-style">Aide</button><p id="forge-help-style" class="forge-help-pop" role="tooltip">Calculé sur les images gardées ou favorites de la galerie (une favorite compte double), jamais sur le coffre. Appliquer remplit seulement les réglages ; rien n'est lancé et le modèle n'est jamais changé.</p></span></div>
+          <p id="forge-style-note" class="forge-note" role="status"></p>
+          <dl id="forge-style-list" class="forge-style-list"></dl>
+          <div class="forge-actions">
+            <button type="button" id="forge-style-apply" hidden>Appliquer le style maison</button>
+            <button type="button" id="forge-style-negative" class="secondary" hidden>Reprendre son prompt négatif</button>
+          </div>
+          <p id="forge-style-done" class="forge-note" role="status"></p>
+        </details>
         <div id="forge-restore-confirm" class="forge-privacy forge-confirm" role="group" aria-labelledby="forge-restore-text" hidden>
           <p id="forge-restore-text">Le prompt actuel n'a pas été utilisé. Le remplacer ?</p>
           <div class="forge-actions">
@@ -6061,6 +6073,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge-inpaint.js"></script>
 <script src="/assets/hq-forge-bricks.js"></script>
 <script src="/assets/hq-forge-lineage.js"></script>
+<script src="/assets/hq-forge-style.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -6849,6 +6862,10 @@ class Handler(BaseHTTPRequestHandler):
         if presets is not None:
             self._json(presets[0], presets[1])
             return True
+        style = hq_forge_style.serve_get(ROOT, raw)
+        if style is not None:
+            self._json(style[0], style[1])
+            return True
         bricks = hq_forge_bricks.serve_get(ROOT, raw)
         if bricks is not None:
             self._json(bricks[0], bricks[1])
@@ -6949,6 +6966,10 @@ class Handler(BaseHTTPRequestHandler):
         presets = hq_forge_presets.serve_post(ROOT, raw, data)
         if presets is not None:
             self._json(presets[0], presets[1])
+            return True
+        style = hq_forge_style.serve_post(ROOT, raw, data)
+        if style is not None:
+            self._json(style[0], style[1])
             return True
         bricks = hq_forge_bricks.serve_post(ROOT, raw, data)
         if bricks is not None:

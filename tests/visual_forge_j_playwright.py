@@ -118,7 +118,51 @@ def section_lineage(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"bricks": section_bricks, "lineage": section_lineage}
+KEEP_ALL = """async () => { const g = await (await fetch('/api/forge/gallery?limit=48')).json();
+  for (const im of g.images) await fetch('/api/forge/gallery/' + im.id + '/triage', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: 'keep' }) });
+  return g.images.length; }"""
+
+
+def section_style(run: Run) -> None:
+    print("J3 house style")
+    ctx = run.context()
+    page = ctx.new_page()
+    posts = track(page)
+    run.open_forge(page)
+    page.locator("#forge-style > summary").click()
+    run.check(run.until(page, "() => /Indicatif. Il faut au moins 5 images/.test(document.querySelector('#forge-style-note').textContent)", 5),
+              "with too few kept images it says so, labelled Indicatif")
+    page.locator("#forge-style > summary").click()
+    page.evaluate("() => { document.querySelector('#forge-negative-fold').open = true; }")
+    page.locator("#forge-negative").fill("flou, texte")
+    for i in range(5):
+        generate_once(run, page, f"phare maison {i}")
+    kept = page.evaluate(KEEP_ALL)
+    run.check(kept == 5, "five images kept: " + repr(kept))
+    page.locator("#forge-negative").fill("")
+    page.locator("#forge-steps").fill("7")
+    model = page.evaluate("() => document.querySelector('#forge-checkpoint').value")
+    page.locator("#forge-style > summary").click()
+    run.check(run.until(page, "() => /Indicatif, tir/.test(document.querySelector('#forge-style-note').textContent) && !document.querySelector('#forge-style-apply').hidden", 5),
+              "the house style is computed from the kept images")
+    text = page.evaluate("() => document.querySelector('#forge-style-list').textContent")
+    run.check("jamais appliqu" in text and "(5 sur 5)" in text and "flou, texte" in text, "it shows shares, the model as shown-only and the usual negative prompt: " + repr(text[:200]))
+    before = [p for p in posts if "jobs" in p or "night" in p]
+    page.locator("#forge-style-apply").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-steps').value") == "20", "Appliquer fills the steps back from the style")
+    run.check(page.evaluate("() => document.querySelector('#forge-checkpoint').value") == model, "the model is never changed")
+    run.check("Rien n'est lanc" in page.evaluate("() => document.querySelector('#forge-style-done').textContent"), "it says nothing was started")
+    page.locator("#forge-style-negative").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-negative').value") == "flou, texte", "the usual negative prompt can be taken back")
+    page.wait_for_timeout(400)
+    run.check([p for p in posts if "jobs" in p or "night" in p] == before, "applying the style starts nothing")
+    geo = page.evaluate(GEO, "#forge-style button, #forge-style > summary")
+    run.check(geo["sw"] <= geo["vw"] and geo["h"] >= 44, "at 375 px the style panel fits with 44 px targets: " + repr(geo))
+    run.shot(page, "house-style", "#forge-style")
+    ctx.close()
+
+
+SECTIONS = {"bricks": section_bricks, "lineage": section_lineage, "style": section_style}
 EXTRA_ENV = {"bricks": {"HQ_FORGE_MOCK_LORAS": json.dumps(LORAS)}}
 
 

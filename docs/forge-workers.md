@@ -206,3 +206,9 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - Route (admin, read-only; 401/403/404 tested): `GET /api/forge/gallery/<img-id>/lineage`. Unknown ids and vault ids (`pvt-...`) are 404; POST is 404.
 - Built from links the gallery already stores in `meta.json`: `origin.finish_of` (finition, E) and `origin.inpaint_of` (retouche, I). Nothing new is written. Variations (C) record no parent and are not linked. The tree starts at the oldest ancestor still in the gallery (a deleted start image is reported), is cycle-safe and capped at 200 nodes; it carries ids, relation, date, sort flag and thumb URL only (no prompt or settings).
 - Private: the vault is never traversed. A private retouch records no gallery origin, so private lineage is excluded rather than shown.
+
+### J3 Style maison
+- Route (admin, read-only; 401/403/404 tested): `GET /api/forge/house-style`. POST and sub-paths are 404.
+- Indicatif: the most common sampler, scheduler, size, steps and CFG among normal gallery images sorted keep or favorite (a favourite counts twice), with « n sur m » shares; at least 5 kept images. The most kept model is shown but never applied; a negative prompt is offered only when it is the habit (at least 40 %).
+- Applying fills the form's technical fields through the existing `applyTechnical` hook (no checkpoint); « Reprendre son prompt négatif » fills the negative field. Nothing starts a job.
+- Only gallery `meta.json` is read. The vault is never read, so private settings and prompts never shape the style.
