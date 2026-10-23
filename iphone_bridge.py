@@ -6008,6 +6008,10 @@ _LOG_QUERY = re.compile(r"\?\S*")
 _LOG_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
 
+REFUSAL_DRAIN_MAX = 64 * 1024  # bytes a pre-body 401/403 may read and discard
+REFUSAL_DRAIN_TIMEOUT = 1.5  # seconds, total, for that discard
+
+
 def _log_safe_arg(a):
     """Access-log argument with any query string / fragment removed. A request line that does not parse as
     ``METHOD target VERSION`` is replaced outright (a malformed line may hold query text across spaces)."""
@@ -6212,6 +6216,8 @@ class Handler(BaseHTTPRequestHandler):
         content_type: str = "text/html; charset=utf-8",
         headers: list[tuple[str, str]] | None = None,
     ) -> None:
+        if code in (401, 403) and getattr(self, "_prebody_refusal", False):
+            headers = list(headers or []) + self._drain_refused_body()
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -6222,6 +6228,45 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _drain_refused_body(self) -> list[tuple[str, str]]:
+        """Pre-body POST refusal (status already decided): read and discard a small declared body so the client
+        sees the 401/403 instead of a connection abort. Never parsed, stored, logged or passed on. Too large,
+        missing or invalid Content-Length, a slow sender or a short body -> no (further) read + Connection: close."""
+        self._prebody_refusal = False
+        close = [("Connection", "close")]
+        raw = (self.headers.get("Content-Length") or "").strip()
+        if not raw.isdigit() or int(raw) > REFUSAL_DRAIN_MAX:
+            self.close_connection = True
+            return close
+        left = int(raw)
+        if not left:
+            return []
+        sock = self.connection
+        old = sock.gettimeout()
+        deadline = time.monotonic() + REFUSAL_DRAIN_TIMEOUT
+        try:
+            while left > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
+                chunk = self.rfile.read1(min(8192, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                chunk = b""
+        except OSError:
+            pass
+        finally:
+            try:
+                sock.settimeout(old)
+            except OSError:
+                pass
+        if left > 0:
+            self.close_connection = True
+            return close
+        return []
 
     def _json(self, code: int, obj: dict, headers: list[tuple[str, str]] | None = None) -> None:
         try:
@@ -7630,9 +7675,14 @@ class Handler(BaseHTTPRequestHandler):
             self._forge_worker(raw)
             return
 
-        # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
-        if not self._check_csrf():
-            return
+        # Pre-body refusals below (CSRF 403, anonymous 401, upload-role 403) drain a small body (_drain_refused_body).
+        self._prebody_refusal = True
+        try:
+            # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
+            if not self._check_csrf():
+                return
+        finally:
+            self._prebody_refusal = False
 
         if raw.startswith("/agent/v1/"):
             self._agent_v1()
@@ -7670,14 +7720,18 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        if not self._auth():
-            self._json(401, {"error": "PIN requis"})
-            return
+        self._prebody_refusal = True
+        try:
+            if not self._auth():
+                self._json(401, {"error": "PIN requis"})
+                return
 
-        # upload role: explicit allowlist only
-        if self._role() != "admin" and not self._upload_allowed("POST", raw):
-            self._json(403, {"error": "Réservé admin"})
-            return
+            # upload role: explicit allowlist only
+            if self._role() != "admin" and not self._upload_allowed("POST", raw):
+                self._json(403, {"error": "Réservé admin"})
+                return
+        finally:
+            self._prebody_refusal = False
 
         if self._diag_post(raw):
             return
