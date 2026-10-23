@@ -155,5 +155,38 @@ class ResolveTests(MultiBase):
         self.assertIn(caught.exception.code, ("bad_root", "registry"))
 
 
+class DiscretLabelTests(MultiBase):
+    """V1.3: a Discret name is stored only sealed in its own vault."""
+
+    def test_label_is_sealed_and_bound_to_its_key(self):
+        folder = self.store / "vaults" / VA
+        folder.mkdir(parents=True)
+        key, other = os.urandom(32), os.urandom(32)
+        V._write_label(folder, key, "Projet Hirondelle")
+        raw = (folder / "label.bin").read_bytes()
+        self.assertNotIn(b"Hirondelle", raw)
+        self.assertNotIn("Hirondelle".encode("utf-16-le"), raw)
+        self.assertEqual(V._read_label(folder, key), "Projet Hirondelle")
+        with self.assertRaises(V.VaultError) as caught:
+            V._read_label(folder, other)
+        self.assertEqual(caught.exception.code, "corrupt")
+
+    def test_index_key_cannot_open_a_label_and_back(self):
+        folder = self.store / "vaults" / VA
+        folder.mkdir(parents=True)
+        key = os.urandom(32)
+        V._write_index(folder, key, [])
+        os.replace(folder / "index.bin", folder / "label.bin")
+        with self.assertRaises(V.VaultError):
+            V._read_label(folder, key)
+
+    def test_drop_label(self):
+        folder = self.store / "vaults" / VA
+        folder.mkdir(parents=True)
+        key = os.urandom(32)
+        V._write_label(folder, key, "X")
+        V._drop_label(folder)
+        self.assertIsNone(V._read_label(folder, key))
+
 if __name__ == "__main__":
     unittest.main()

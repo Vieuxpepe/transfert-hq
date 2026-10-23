@@ -76,6 +76,8 @@ _private_generation = True
 _AAD_PASS = b"hq-forge-vault-v1-passphrase"
 _AAD_RECOVERY = b"hq-forge-vault-v1-recovery"
 _AAD_INDEX = b"hq-forge-vault-v1-index"
+_AAD_LABEL = b"hq-forge-vault-v1-label"
+LABEL_FILE = "label.bin"
 
 
 class VaultError(Exception):
@@ -1266,6 +1268,33 @@ def _authenticate_restored_objects(root: Path, master: bytes) -> None:
 def _write_index(root: Path, master: bytes, items: list) -> None:
     payload = json.dumps({"items": items}, separators=(",", ":")).encode("utf-8")
     _atomic(root / "index.bin", _seal(bytes(master), payload, _AAD_INDEX))
+
+
+def _write_label(root: Path, master: bytes, label: str) -> None:
+    """Discret: the name lives only here, sealed with this vault's master key."""
+    payload = json.dumps({"label": label}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    _atomic(root / LABEL_FILE, _seal(bytes(master), payload, _AAD_LABEL))
+
+
+def _read_label(root: Path, master: bytes) -> str | None:
+    path = root / LABEL_FILE
+    if not path.is_file():
+        return None
+    if _is_reparse(path):
+        raise VaultError("corrupt")
+    try:
+        data = json.loads(_open(bytes(master), path.read_bytes(), _AAD_LABEL).decode("utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, VaultError):
+        raise VaultError("corrupt") from None
+    label = data.get("label") if isinstance(data, dict) else None
+    return registry.clean_label(label)
+
+
+def _drop_label(root: Path) -> None:
+    path = root / LABEL_FILE
+    if path.exists() and _is_reparse(path):
+        raise VaultError("bad_root")
+    path.unlink(missing_ok=True)
 
 
 def _usage(root: Path) -> tuple[int, int]:
