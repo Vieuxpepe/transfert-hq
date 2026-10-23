@@ -485,3 +485,19 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-vault-away{gap:12px;flex-wrap:wrap}
 .forge-vault-away .forge-help{min-height:var(--tap-min);min-width:var(--tap-min)}
 .forge-vault-away .forge-privacy-ack{min-height:var(--tap-min);display:inline-flex;align-items:center;gap:8px}
+
+/* J1: prompt bricks (touch, no hover-only control). */
+.forge-bricks{margin:6px 0}
+.forge-bricks > summary{min-height:var(--tap-min);display:flex;align-items:center;font-weight:700}
+.forge-bricks .forge-label-row{gap:12px}
+.forge-bricks-list{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+.forge-brick{display:inline-flex;gap:4px;align-items:stretch;max-width:100%}
+.forge-brick button{min-height:var(--tap-min);min-width:var(--tap-min)}
+.forge-brick-add{max-width:min(60vw,260px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:999px;padding:6px 14px}
+.forge-brick-edit{font-size:var(--text-sm);padding:6px 10px}
+#forge-brick-new{min-height:var(--tap-min)}
+.forge-brick-editor{display:flex;flex-direction:column;gap:8px;margin-top:8px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}
+.forge-brick-editor input,.forge-brick-editor select,.forge-brick-editor textarea{min-height:var(--tap-min);width:100%;box-sizing:border-box;font-size:16px}
+.forge-brick-editor .forge-actions button{min-height:var(--tap-min)}
+.forge-brick-suggest{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.forge-brick-chip{min-height:var(--tap-min);border-radius:999px;padding:6px 12px}

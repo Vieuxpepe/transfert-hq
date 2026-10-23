@@ -108,7 +108,7 @@ def main() -> None:
                 "/sdapi/v1/options": {"sd_model_checkpoint": "example.safetensors"},
                 "/sdapi/v1/progress": {"progress": 0, "state": {"job": "", "job_count": 0, "sampling_step": 0, "sampling_steps": 0}},
                 "/internal/pending-tasks": {"size": 0, "tasks": []},
-                "/sdapi/v1/loras": [],
+                "/sdapi/v1/loras": json.loads(os.environ.get("HQ_FORGE_MOCK_LORAS") or "[]"),  # J1: optional synthetic LoRA list
             }
             if path not in table:
                 return 404, b"{}"

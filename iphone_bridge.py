@@ -49,6 +49,7 @@ import hq_forge_lab
 import hq_forge_night
 import hq_forge_inpaint
 import hq_forge_presets
+import hq_forge_bricks
 import hq_forge_vault
 
 PORT = 8765
@@ -5307,6 +5308,27 @@ def render_app() -> bytes:
           <span id="forge-prompt-count" class="forge-count" aria-hidden="true">0 / 2000</span>
         </div>
         <p id="forge-history-note" class="forge-note" role="status" aria-live="polite"></p>
+        <details id="forge-bricks" class="forge-bricks">
+          <summary>Briques</summary>
+          <div class="forge-label-row"><span class="forge-note">Touchez une brique pour l'ajouter au prompt. Rien n'est lancé.</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-bricks">Aide</button><p id="forge-help-bricks" class="forge-help-pop" role="tooltip">Une brique est un morceau de prompt réutilisable : un texte, et si besoin un LoRA avec son poids et ses mots-clés. Les briques sont gardées sur cet HQ, hors du coffre ; en mode privé, on peut les ajouter mais pas en enregistrer.</p></span></div>
+          <div id="forge-bricks-list" class="forge-bricks-list" role="group" aria-label="Briques enregistrées"></div>
+          <p id="forge-bricks-empty" class="forge-note">Aucune brique pour l'instant.</p>
+          <button type="button" id="forge-brick-new" class="secondary">Nouvelle brique</button>
+          <div id="forge-brick-editor" class="forge-brick-editor" hidden>
+            <div class="field"><label for="forge-brick-name">Nom</label><input id="forge-brick-name" maxlength="60" autocomplete="off"/></div>
+            <div class="field"><label for="forge-brick-text">Texte</label><textarea id="forge-brick-text" rows="2" maxlength="400" autocomplete="off" spellcheck="false"></textarea></div>
+            <div class="field"><label for="forge-brick-lora">LoRA (facultatif)</label><select id="forge-brick-lora"><option value="">Aucun</option></select></div>
+            <div class="field" id="forge-brick-weight-field" hidden><label for="forge-brick-weight">Poids du LoRA</label><input id="forge-brick-weight" type="number" min="-2" max="2" step="0.05" value="0.8" inputmode="decimal"/></div>
+            <div class="field"><label for="forge-brick-words">Mots-clés (séparés par des virgules)</label><input id="forge-brick-words" maxlength="500" autocomplete="off" spellcheck="false"/></div>
+            <div id="forge-brick-suggest" class="forge-brick-suggest" role="group" aria-label="Mots-clés suggérés" hidden></div>
+            <p id="forge-brick-note" class="forge-note" role="status"></p>
+            <div class="forge-actions">
+              <button type="button" id="forge-brick-save">Enregistrer la brique</button>
+              <button type="button" id="forge-brick-delete" class="secondary" hidden>Supprimer</button>
+              <button type="button" id="forge-brick-cancel" class="secondary">Annuler</button>
+            </div>
+          </div>
+        </details>
         <div id="forge-restore-confirm" class="forge-privacy forge-confirm" role="group" aria-labelledby="forge-restore-text" hidden>
           <p id="forge-restore-text">Le prompt actuel n'a pas été utilisé. Le remplacer ?</p>
           <div class="forge-actions">
@@ -6030,6 +6052,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge-night.js"></script>
 <script src="/assets/hq-forge-vault-search.js"></script>
 <script src="/assets/hq-forge-inpaint.js"></script>
+<script src="/assets/hq-forge-bricks.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -6818,6 +6841,10 @@ class Handler(BaseHTTPRequestHandler):
         if presets is not None:
             self._json(presets[0], presets[1])
             return True
+        bricks = hq_forge_bricks.serve_get(ROOT, raw)
+        if bricks is not None:
+            self._json(bricks[0], bricks[1])
+            return True
         served = hq_forge_gallery.serve_file(ROOT, raw)
         if served is not None:
             code, body, ctype, headers = served
@@ -6910,6 +6937,10 @@ class Handler(BaseHTTPRequestHandler):
         presets = hq_forge_presets.serve_post(ROOT, raw, data)
         if presets is not None:
             self._json(presets[0], presets[1])
+            return True
+        bricks = hq_forge_bricks.serve_post(ROOT, raw, data)
+        if bricks is not None:
+            self._json(bricks[0], bricks[1])
             return True
         inpaint = hq_forge_inpaint.serve_post(ROOT, raw, data, token)
         if inpaint is not None:

@@ -192,3 +192,12 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - GPU sharing: a retouch is refused (409) while an HQ job, a fleet task on this GPU, the night workshop or Forge's owner is working. While a retouch runs, those wait.
 - Mask: drawn with a finger on a canvas at the image's natural size (brush, Annuler, Effacer, Inverser), sent once as a PNG in the POST body, thresholded to black/white on the server.
 - Normal source: the result goes to the gallery with `origin.inpaint_of`. Private source: decrypted in memory, mask and request built in memory, no temp file, result encrypted straight into the vault. No job record, history, gallery entry, stats, logs or browser storage; the retouch state lives only in memory and the dialog is wiped when the vault locks.
+
+## Phase J: briques, généalogie, style maison, mode canapé
+
+### J1 Briques de prompt
+- Routes (admin + CSRF, 401/403/404 tested): `GET /api/forge/bricks`, `POST /api/forge/bricks` (`action`: create, update, delete), `GET /api/forge/bricks/loras`. Anything else under `/api/forge/bricks/` is 404.
+- Storage: `.hq-forge/bricks.json` (version 1, at most 60 bricks), written atomically; a malformed file is kept and blocks writes. A brick is a name, a text, optionally a LoRA (`name`, weight -2..2) and up to 8 trigger words. No prompt, image or job reference is stored.
+- Touching a brick only appends `<lora:name:weight>, words, text` to the prompt field; no job is started.
+- Trigger word suggestions: the 6 most frequent training tags in the LoRA file's own metadata (`ss_tag_frequency`), read through the already allowlisted read-only `GET /sdapi/v1/loras` on this PC's Forge. No worker is asked, no new Forge route. Suggestions only; the owner picks. Unverified on a real LoRA file (mock metadata only).
+- Private mode: bricks can be added to a private prompt (in the page only) but cannot be saved; the editor is never prefilled from the prompt.

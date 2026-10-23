@@ -1,0 +1,109 @@
+"""Forge Studio phase J: prompt bricks, lineage tree, house style, couch mode. Mock Forge only.
+
+No GPU, no real Forge, no production port, throwaway data and vault. Same harness as quick wins.
+
+FORGE_BROWSER=chromium|webkit FORGE_QW_SHOTS=dir python tests/visual_forge_j_playwright.py [section ...]
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+from playwright.sync_api import sync_playwright
+
+from visual_forge_quick_wins_playwright import Run, generate_once, start_server, STORAGE_PROBE, open_vault
+
+LORAS = [{"name": "lanterne_v2", "alias": "Lanterne", "metadata": {"ss_tag_frequency": {"10_l": {"lanternlight": 30, "glow": 9}}}},
+         {"name": "grain", "alias": "grain", "metadata": {}}]
+GEO = """(sel) => { const els = [...document.querySelectorAll(sel)].filter((e) => e.offsetParent);
+  return { sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth, n: els.length,
+    h: els.length ? Math.min(...els.map((e) => e.getBoundingClientRect().height)) : 0,
+    w: els.length ? Math.min(...els.map((e) => e.getBoundingClientRect().width)) : 0 }; }"""
+
+
+def track(page):
+    posts = []
+    page.on("request", lambda r: posts.append(r.url.split("/", 3)[-1]) if r.method == "POST" else None)
+    return posts
+
+
+def section_bricks(run: Run) -> None:
+    print("J1 prompt bricks")
+    ctx = run.context()
+    page = ctx.new_page()
+    posts = track(page)
+    run.open_forge(page)
+    page.locator("#forge-bricks > summary").click()
+    run.check(run.until(page, "() => !document.querySelector('#forge-bricks-empty').hidden", 5), "an empty brick list says so")
+    page.locator("#forge-brick-new").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-brick-text').value") == "", "a new brick is never prefilled from the prompt")
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-brick-lora option').length === 3", 5), "this PC's LoRAs are offered")
+    page.locator("#forge-brick-name").fill("Lanterne")
+    page.locator("#forge-brick-text").fill("lumiere chaude")
+    page.locator("#forge-brick-lora").select_option("lanterne_v2")
+    run.check(run.until(page, "() => !document.querySelector('#forge-brick-suggest').hidden && /lanternlight/.test(document.querySelector('#forge-brick-suggest').textContent)", 5),
+              "trigger words are suggested from the LoRA's metadata")
+    page.locator("#forge-brick-suggest button", has_text="lanternlight").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-brick-words').value") == "lanternlight", "a tapped suggestion becomes a trigger word")
+    page.locator("#forge-brick-weight").fill("0.7")
+    geo = page.evaluate(GEO, "#forge-brick-editor button, #forge-brick-editor input, #forge-brick-editor select")
+    run.check(geo["sw"] <= geo["vw"] and geo["h"] >= 44, "at 375 px the brick editor fits with 44 px targets: " + repr(geo))
+    run.shot(page, "bricks-editor", "#forge-brick-editor")
+    page.locator("#forge-brick-save").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-bricks-list .forge-brick').length === 1 && document.querySelector('#forge-brick-editor').hidden", 5), "the brick is saved")
+    page.locator("#forge-prompt").fill("phare")
+    before = [p for p in posts if "jobs" in p or "night" in p or "inpaint" in p]
+    page.locator("#forge-bricks-list .forge-brick-add").first.click()
+    value = page.evaluate("() => document.querySelector('#forge-prompt').value")
+    run.check(value == "phare, <lora:lanterne_v2:0.7>, lanternlight, lumiere chaude", "touching a brick adds LoRA, trigger word and text to the prompt: " + repr(value))
+    page.wait_for_timeout(400)
+    run.check([p for p in posts if "jobs" in p or "night" in p or "inpaint" in p] == before, "adding a brick starts nothing")
+    geo = page.evaluate(GEO, "#forge-bricks-list button")
+    run.check(geo["sw"] <= geo["vw"] and geo["h"] >= 44 and geo["w"] >= 44, "at 375 px brick buttons are 44 px targets: " + repr(geo))
+    run.shot(page, "bricks", "#forge-bricks")
+    # Private mode: bricks can be added to the prompt but never saved.
+    open_vault(run, page)
+    run.dest(page, "private")
+    page.locator("#forge-prompt").fill("lanterne secrete du coffre")
+    page.locator("#forge-bricks-list .forge-brick-add").first.click()
+    run.check("lanterne secrete du coffre, <lora:lanterne_v2" in page.evaluate("() => document.querySelector('#forge-prompt').value"), "in private mode a brick still fills the prompt")
+    page.locator("#forge-brick-new").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-brick-save').disabled && /Mode priv/.test(document.querySelector('#forge-brick-note').textContent)"), "in private mode a brick cannot be saved, and it says why")
+    stored = page.request.get(run.base + "/api/forge/bricks").json()
+    run.check(len(stored["bricks"]) == 1 and "secrete" not in json.dumps(stored), "the private prompt never reaches the brick store")
+    hits = page.evaluate(STORAGE_PROBE, "secrete")
+    run.check(hits == [], "no private prompt in browser storage: " + repr(hits))
+    ctx.close()
+
+
+SECTIONS = {"bricks": section_bricks}
+EXTRA_ENV = {"bricks": {"HQ_FORGE_MOCK_LORAS": json.dumps(LORAS)}}
+
+
+def main() -> None:
+    wanted = sys.argv[1:] or list(SECTIONS)
+    browser_name = os.environ.get("FORGE_BROWSER", "chromium")
+    total = 0
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, browser_name).launch()
+        print("BROWSER", browser_name, browser.version)
+        for name in wanted:
+            proc, info = start_server(EXTRA_ENV.get(name))
+            try:
+                run = Run(browser, info)
+                run.proc = proc
+                SECTIONS[name](run)
+                if run.errors:
+                    raise SystemExit("FAIL: page errors " + repr(run.errors[:3]))
+                total += run.passed
+            finally:
+                proc.stdin.close()
+                proc.wait(timeout=10)
+        browser.close()
+    print(f"PASS {total} checks ({browser_name})")
+
+
+if __name__ == "__main__":
+    main()
