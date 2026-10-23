@@ -124,6 +124,29 @@ INPAINT_GEO = """() => { const d = document.querySelector('#forge-inpaint'); con
     ta: getComputedStyle(document.querySelector('#forge-inpaint-canvas')).touchAction, cw: document.querySelector('#forge-inpaint-canvas').width }; }"""
 
 
+TOPMOST = """() => { const d = document.querySelector('#forge-inpaint'); const r = d.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+  const hit = (el) => { const b = el.getBoundingClientRect(); const e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && el.contains(e); };
+  const seen = (el) => { const b = el.getBoundingClientRect(); return b.top >= 0 && b.left >= 0 && b.bottom <= vh + 0.5 && b.right <= vw + 0.5 && b.height >= 44; };
+  const corners = [[r.left + 2, r.top + 2], [r.right - 3, r.top + 2], [r.left + 2, r.bottom - 3], [r.right - 3, r.bottom - 3]]
+    .map(([x, y]) => { const e = document.elementFromPoint(x, y); return !!e && d.contains(e); });
+  return { inside: r.left >= 0 && r.top >= 0 && r.right <= vw + 0.5 && r.bottom <= vh + 0.5, corners: corners.every(Boolean),
+    close: hit(document.getElementById('forge-inpaint-close')) && seen(document.getElementById('forge-inpaint-close')),
+    send: hit(document.getElementById('forge-inpaint-send')) && seen(document.getElementById('forge-inpaint-send')),
+    stage: hit(document.getElementById('forge-inpaint-canvas')), modal: d.matches(':modal'), r: [r.left, r.top, r.width, r.height], vw, vh }; }"""
+AWAY_GEO = """() => { const w = document.querySelector('.forge-vault-away'); const l = w.querySelector('label').getBoundingClientRect(); const b = w.querySelector('.forge-help').getBoundingClientRect();
+  const sameRow = b.top < l.bottom && l.top < b.bottom;
+  return { gap: sameRow ? b.left - l.right : b.top - l.bottom, h: b.height, w: b.width, sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth }; }"""
+
+
+def check_topmost(run: Run, page, where: str) -> None:
+    geo = page.evaluate(TOPMOST)
+    run.check(geo["inside"] and geo["corners"] and geo["modal"],
+              f"at {where} the retouch dialog is the topmost layer and fully inside the viewport: " + repr(geo))
+    run.check(geo["close"] and geo["send"] and geo["stage"],
+              f"at {where} Fermer, Retoucher and the canvas are visible, 44 px and not covered: " + repr(geo))
+
+
 def section_inpaint(run: Run) -> None:
     print("I finger inpainting")
     ctx = run.context()
@@ -143,6 +166,14 @@ def section_inpaint(run: Run) -> None:
     geo = page.evaluate(INPAINT_GEO)
     run.check(geo["sw"] <= geo["vw"] and geo["dw"] <= geo["vw"] and geo["h"] >= 44 and geo["ta"] == "none" and geo["cw"] == 256,
               "at 375 px the canvas fits, buttons are 44 px, touch-action none, mask at natural size: " + repr(geo))
+    check_topmost(run, page, "375 px")
+    run.shot(page, "inpaint-modal")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.wait_for_timeout(150)
+    check_topmost(run, page, "1440 px")
+    run.shot(page, "inpaint-modal")
+    page.set_viewport_size({"width": 375, "height": 812})
+    page.wait_for_timeout(150)
     page.evaluate(STROKE, [0.3, 0.3, 0.6, 0.6])
     run.check(not page.evaluate("() => document.querySelector('#forge-inpaint-send').disabled"), "a finger stroke enables Retoucher")
     page.locator("#forge-inpaint-undo").click()
@@ -173,6 +204,10 @@ def section_inpaint(run: Run) -> None:
     # Private: memory only, result straight into the vault.
     open_vault(run, page)
     import_private(run, page)
+    away = page.evaluate(AWAY_GEO)
+    run.check(away["gap"] >= 8 and away["h"] >= 44 and away["w"] >= 44 and away["sw"] <= away["vw"],
+              "at 375 px the vault Aide keeps its gap and 44 px target: " + repr(away))
+    run.shot(page, "vault-panel", "#forge-vault-open-tools")
     run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length === 1", 10)
     gallery_before = page.request.get(run.base + "/api/forge/gallery").text()
     jobs_before = page.request.get(run.base + "/api/forge/jobs").text()
@@ -183,6 +218,7 @@ def section_inpaint(run: Run) -> None:
     page.locator("#forge-inpaint-prompt").fill("braise secrete du coffre")
     page.evaluate(STROKE, [0.2, 0.2, 0.7, 0.7])
     run.shot(page, "inpaint-private", "#forge-inpaint")
+    check_topmost(run, page, "375 px over the vault viewer")
     page.locator("#forge-inpaint-send").click()
     run.check(run.until(page, "() => document.querySelector('#forge-vault-viewer').open && !document.querySelector('#forge-inpaint').open && document.querySelectorAll('#forge-vault-gallery .forge-card').length === 2", 15),
               "the private result lands in the vault and opens there")
