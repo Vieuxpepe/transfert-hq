@@ -518,5 +518,71 @@ class OneOpenTests(MultiBase):
             V.unlock(self.hq, self.admin, "wrong but long enough", vid=b)
         self.assertTrue(V.status(self.hq, self.admin, vid=a)["unlocked"])
 
+class AttemptTests(MultiBase):
+    """V2.3: tries limited per (session, vault) and globally; N vaults never multiply the rate."""
+
+    WRONG = "definitely the wrong phrase"
+
+    def vaults(self, n=3):
+        return [V.create_vault(self.hq, self.admin, PASS, PASS, label="V%d" % i)["vault"]["id"] for i in range(n)]
+
+    def wrong(self, token, vid):
+        with self.assertRaises(V.VaultError) as caught:
+            V.unlock(self.hq, token, self.WRONG, vid=vid)
+        return caught.exception.code
+
+    def test_spreading_over_vaults_and_sessions_hits_the_same_global_cap(self):
+        ids = self.vaults(3)
+        tokens = [self.admin, self.other, _token("third")]
+        codes = [self.wrong(tokens[i % 3], ids[i % 3]) for i in range(V.FAILS_BEFORE_THROTTLE)]
+        self.assertEqual(codes, ["passphrase"] * V.FAILS_BEFORE_THROTTLE)
+        for token in tokens:
+            for vid in ids:
+                self.assertEqual(self.wrong(token, vid), "throttled")
+        with self.assertRaises(V.VaultError) as caught:
+            V.unlock(self.hq, self.admin, PASS, vid=ids[0])  # even the right phrase waits
+        self.assertEqual(caught.exception.code, "throttled")
+
+    def test_counts_are_per_session_and_vault(self):
+        a, b = self.vaults(2)
+        for _ in range(3):
+            self.wrong(self.admin, a)
+        with V._FAIL_LOCK:
+            slots = dict(V._failures)
+        self.assertEqual(set(slots), {self.admin + "|" + a})
+        self.assertEqual(slots[self.admin + "|" + a][0], 3)
+        self.assertNotIn(a, json.dumps(V.status(self.hq, self.admin, vid=b)))
+
+    def test_knowing_one_phrase_does_not_reset_the_global_count(self):
+        a, b = self.vaults(2)
+        # Both vaults share PASS here: the guesser knows B's phrase and keeps guessing A.
+        for _ in range(V.FAILS_BEFORE_THROTTLE - 1):
+            self.wrong(self.other, a)
+        V.unlock(self.hq, self.other, PASS, vid=b)  # success elsewhere
+        self.wrong(self.other, a)
+        self.assertEqual(self.wrong(self.admin, a), "throttled")
+
+    def test_global_count_decays_after_a_quiet_window(self):
+        a, = self.vaults(1)
+        saved = V.THROTTLE_SEC
+        V.THROTTLE_SEC = 0.05
+        try:
+            for _ in range(V.FAILS_BEFORE_THROTTLE - 1):
+                self.wrong(self.admin, a)
+            import time
+            time.sleep(0.1)
+            self.assertEqual(self.wrong(self.other, a), "passphrase")
+            self.assertEqual(self.wrong(self.other, a), "passphrase")
+        finally:
+            V.THROTTLE_SEC = saved
+
+    def test_logout_does_not_reset_guessing(self):
+        a, = self.vaults(1)
+        for _ in range(V.FAILS_BEFORE_THROTTLE):
+            self.wrong(self.admin, a)
+        V.drop_session(self.admin)
+        V.lock_all()
+        self.assertEqual(self.wrong(self.admin, a), "throttled")
+
 if __name__ == "__main__":
     unittest.main()

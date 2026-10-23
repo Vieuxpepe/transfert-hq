@@ -66,6 +66,7 @@ _sessions: dict[str, dict] = {}
 _failures: dict[str, tuple[int, float]] = {}
 _global_fails = 0
 _global_until = 0.0
+_global_last = 0.0
 _inflight = 0
 _session_alive = None
 _write_fault = None
@@ -95,11 +96,12 @@ class VaultError(Exception):
 
 def reset_for_tests() -> None:
     global _test_dir, _ttl, _quota_bytes, _quota_images, _apply_acl, _private_generation, _disk, _global_bytes, _global_images
-    global _global_fails, _global_until, _inflight, _write_fault, _restore_fault, _user_sid_bytes, _migration_fault
+    global _global_fails, _global_until, _global_last, _inflight, _write_fault, _restore_fault, _user_sid_bytes, _migration_fault
     _migration_fault = None
     _disk = False
     _global_fails = 0
     _global_until = 0.0
+    _global_last = 0.0
     _inflight = 0
     _write_fault = None
     _restore_fault = None
@@ -876,12 +878,13 @@ def _sweep_failures_locked(now: float) -> None:
 
 
 def _record_failure_locked(token: str) -> None:
-    global _global_fails, _global_until
+    global _global_fails, _global_until, _global_last
     count, _until = _failures.get(token, (0, 0.0))
     count += 1
     until = time.monotonic() + THROTTLE_SEC if count >= FAILS_BEFORE_THROTTLE else 0.0
     _failures[token] = (count, until)
     _global_fails += 1
+    _global_last = time.monotonic()
     if _global_fails >= FAILS_BEFORE_THROTTLE:
         _global_until = time.monotonic() + THROTTLE_SEC
     _sweep_failures_locked(time.monotonic())
@@ -892,6 +895,8 @@ def _expire_global_locked(now: float) -> None:
     if _global_until and now >= _global_until:
         _global_fails = 0
         _global_until = 0.0
+    elif not _global_until and _global_fails and now - _global_last >= THROTTLE_SEC:
+        _global_fails = 0  # a quiet minute forgets earlier typos
 
 
 def _begin_attempt(token: str) -> None:
@@ -915,9 +920,9 @@ def _finish_attempt(token: str, ok: bool, *, count_failure: bool = True) -> None
     with _FAIL_LOCK:
         _inflight = max(0, _inflight - 1)
         if ok:
+            # Only this (session, vault) slot is cleared. Knowing one vault's phrase must not
+            # reset the global count that slows guessing on the others; it decays on its own.
             _failures.pop(token, None)
-            _global_fails = 0
-            _global_until = 0.0
             return
         if count_failure:
             _record_failure_locked(token)
@@ -1112,9 +1117,15 @@ def _public_entry(entry: dict, number: int, label: str | None = None) -> dict:
     }
 
 
-def _open_with_budget(token: str | None, opener):
+def _slot(token: str, vault: str) -> str:
+    """Failure counts are kept per (session, vault); the global count covers every vault."""
+    return token + "|" + vault
+
+
+def _open_with_budget(token: str | None, opener, vault: str = "legacy"):
     key_token = _require_live(token)
-    _begin_attempt(key_token)
+    slot = _slot(key_token, vault)
+    _begin_attempt(slot)
     ok = False
     count_failure = True
     try:
@@ -1127,7 +1138,7 @@ def _open_with_budget(token: str | None, opener):
             raise VaultError("passphrase") from None
         raise
     finally:
-        _finish_attempt(key_token, ok, count_failure=count_failure)
+        _finish_attempt(slot, ok, count_failure=count_failure)
 
 
 def unlock(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None = None) -> dict:
@@ -1139,8 +1150,8 @@ def unlock(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None
         master = _unwrap(header, secret, "passphrase")
         return master, int(header.get("epoch") or 0), None
 
-    _key, master, epoch, _extra = _open_with_budget(token, opener)
     identity = _resolve(hq_root, vid)[1]
+    _key, master, epoch, _extra = _open_with_budget(token, opener, identity)
     _install(_key, master, epoch, identity)
     _wipe(bytearray(master))
     _touch(hq_root, identity)
@@ -1158,8 +1169,8 @@ def unlock_with_recovery(hq_root: Path, token: str | None, recovery_key: str, *,
         master = _unwrap(header, raw, "recovery")
         return master, int(header.get("epoch") or 0), None
 
-    _key, master, epoch, _extra = _open_with_budget(token, opener)
     identity = _resolve(hq_root, vid)[1]
+    _key, master, epoch, _extra = _open_with_budget(token, opener, identity)
     _install(_key, master, epoch, identity)
     _wipe(bytearray(master))
     _touch(hq_root, identity)
@@ -1206,11 +1217,11 @@ def change_passphrase(hq_root: Path, token: str | None, current: str, new_value:
         try:
             check = _unwrap(header, _passphrase_bytes(current or ""), "passphrase")
         except VaultError:
-            _fail(_token(token))
+            _fail(_slot(_token(token), _resolve(hq_root, vid)[1]))
             raise VaultError("passphrase") from None
         if not hmac.compare_digest(check, bytes(master)):
             _wipe(bytearray(check))
-            _fail(_token(token))
+            _fail(_slot(_token(token), _resolve(hq_root, vid)[1]))
             raise VaultError("passphrase")
         _wipe(bytearray(check))
     salt = os.urandom(16)
@@ -1232,11 +1243,11 @@ def rotate_recovery(hq_root: Path, token: str | None, passphrase: str, *, vid: s
     try:
         check = _unwrap(header, _passphrase_bytes(passphrase or ""), "passphrase")
     except VaultError:
-        _fail(_token(token))
+        _fail(_slot(_token(token), _resolve(hq_root, vid)[1]))
         raise VaultError("passphrase") from None
     if not hmac.compare_digest(check, bytes(master)):
         _wipe(bytearray(check))
-        _fail(_token(token))
+        _fail(_slot(_token(token), _resolve(hq_root, vid)[1]))
         raise VaultError("passphrase")
     _wipe(bytearray(check))
     recovery = os.urandom(32)
