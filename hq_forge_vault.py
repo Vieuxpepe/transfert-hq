@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
 
 import hq_forge_gallery as gallery
+import hq_forge_vault_registry as registry
 
 MAGIC = b"HQFV1"
 ID_RE = re.compile(r"^pvt-[0-9a-f]{24}$")
@@ -336,7 +337,8 @@ def ctypes_attributes(path: str):
     return value
 
 
-def _root(hq_root: Path, *, create: bool = False) -> Path:
+def _base(hq_root: Path, *, create: bool = False) -> Path:
+    """The forge-vault folder: a legacy single vault, or the multi-vault container."""
     path = _default_dir()
     anchor = path if path.exists() else path.parent
     _refuse_reparse_chain(anchor)
@@ -353,6 +355,118 @@ def _root(hq_root: Path, *, create: bool = False) -> Path:
         if _is_reparse(path):
             raise VaultError("bad_root")
     return path
+
+
+REGISTRY_NAME = "registry.json"
+VAULTS_DIR = "vaults"
+
+
+def _registry_path(base: Path) -> Path:
+    return base / REGISTRY_NAME
+
+
+def _layout(base: Path) -> str:
+    """'multi' (registry present), 'legacy' (one vault.json at the top) or 'empty'.
+
+    Both at once is never valid: nothing is opened until it is resolved."""
+    reg = _registry_path(base)
+    if reg.exists() or reg.is_symlink():
+        if _header_path(base).exists():
+            raise VaultError("registry")
+        return "multi"
+    if _header_path(base).is_file():
+        return "legacy"
+    return "empty"
+
+
+def _load_registry(base: Path) -> dict:
+    path = _registry_path(base)
+    if not path.exists() and not path.is_symlink():
+        return registry.empty()
+    if _is_reparse(path) or not path.is_file():
+        raise VaultError("registry")
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise VaultError("registry") from None
+    try:
+        return registry.parse(raw)
+    except registry.RegistryError:
+        raise VaultError("registry") from None
+
+
+def _save_registry(base: Path, data: dict) -> None:
+    try:
+        payload = registry.dump(data)
+    except registry.RegistryError:
+        raise VaultError("registry") from None
+    _atomic(_registry_path(base), payload)
+
+
+def _vault_dir(base: Path, vid: str, *, create: bool = False) -> Path:
+    """vaults/<vid>/ under the container. The id is checked twice: by pattern and by name."""
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    folder = base / VAULTS_DIR
+    if folder.exists() and _is_reparse(folder):
+        raise VaultError("bad_root")
+    path = folder / vid
+    if path.name != vid or path.parent != folder:
+        raise VaultError("bad_vault")
+    if path.exists() and _is_reparse(path):
+        raise VaultError("bad_root")
+    if create:
+        folder.mkdir(exist_ok=True)
+        if _is_reparse(folder):
+            raise VaultError("bad_root")
+        path.mkdir()
+        if _is_reparse(path):
+            raise VaultError("bad_root")
+    elif not path.is_dir():
+        raise VaultError("missing")
+    return path
+
+
+def _resolve(hq_root: Path, vid: str | None, *, create: bool = False) -> tuple[Path, str]:
+    """(folder, identity). identity is the vid, or 'legacy' for the single pre-migration vault.
+
+    vid None is the old /api/forge/vault/* alias: the migrated vault, never 'the last used'."""
+    if vid is not None and (not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid)):
+        raise VaultError("bad_vault")
+    base = _base(hq_root, create=create and vid is None)
+    if not base.is_dir():
+        if vid is not None:
+            raise VaultError("bad_vault")
+        return base, "legacy"
+    layout = _layout(base)
+    if vid is None:
+        if layout != "multi":
+            return base, "legacy"
+        alias = _load_registry(base)["legacy"]
+        if alias is None:
+            raise VaultError("use_vaults")
+        return _checked_vault(base, alias, legacy_alias=alias), alias
+    if layout != "multi":
+        raise VaultError("bad_vault")
+    data = _load_registry(base)
+    if registry.find(data, vid) is None:
+        raise VaultError("bad_vault")
+    return _checked_vault(base, vid, legacy_alias=data["legacy"]), vid
+
+
+def _checked_vault(base: Path, vid: str, *, legacy_alias: str | None) -> Path:
+    path = _vault_dir(base, vid)
+    header = _read_header(path)
+    if isinstance(header, dict):
+        bound = header.get("vid")
+        # A vault created here names its own id in its header; only the migrated one may lack it.
+        if bound != vid and not (bound is None and vid == legacy_alias):
+            raise VaultError("registry")
+    return path
+
+
+def _root(hq_root: Path, *, create: bool = False, vid: str | None = None) -> Path:
+    return _resolve(hq_root, vid, create=create)[0]
 
 
 def _header_path(root: Path) -> Path:
@@ -1707,6 +1821,11 @@ def http_status(code: str) -> int:
         "bad_root": 503,
         "cleanup": 409,
         "bad_triage": 400,
+        "registry": 409,
+        "bad_vault": 404,
+        "use_vaults": 409,
+        "migration": 409,
+        "too_many": 409,
     }.get(code, 400)
 
 
@@ -1727,5 +1846,10 @@ def public_error(code: str) -> str:
         "bad_root": "Le dossier du coffre n'est pas utilisable.",
         "cleanup": "La sauvegarde est en place, mais l'ancienne copie n'a pas pu être retirée.",
         "bad_triage": "\u00c9tat de tri inconnu.",
+        "registry": "La liste des coffres est illisible. Aucun coffre n'est ouvert.",
+        "bad_vault": "Coffre introuvable.",
+        "use_vaults": "Choisissez un coffre dans la liste.",
+        "migration": "Le coffre doit d'abord passer au nouveau rangement.",
+        "too_many": "Nombre maximal de coffres atteint.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
     }.get(code, "Le coffre a refusé l'opération.")
