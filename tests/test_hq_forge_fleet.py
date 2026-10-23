@@ -706,6 +706,60 @@ class FleetHttp(unittest.TestCase):
         kept, excl, _ = FL.parity_split({"checkpoint": MODEL, "prompt": "x"}, ["w1", "w2"], {"w1": cat, "w2": cat}, {})
         self.assertEqual((kept, excl), (["w1", "w2"], []))
 
+    def test_lora_exclusions_say_which_of_the_four_cases(self):
+        """F2: absent / unreadable / too large (> 1 Mo) / past the 96 limit each read differently."""
+        ref = {"items": [{"name": "grain", "alias": "grain", "hash": "c" * 64}], "truncated": False}
+        base = {"hashes": {MODEL: "a" * 64}, "vae": []}
+        cases = {
+            "absent": ({"items": [], "truncated": False}, "PC-2 n'a pas le LoRA \u00ab grain \u00bb, exclu."),
+            "unreadable": (None, "PC-2 : liste des LoRA illisible, exclu."),
+            "too_large": ({"items": [], "truncated": False, "error": "too_large"}, "PC-2 : liste des LoRA trop grande (> 1 Mo), non lue, exclu."),
+            "past_96": ({"items": [{"name": "autre", "alias": "autre", "hash": None}], "truncated": True},
+                        "PC-2 : LoRA \u00ab grain \u00bb non v\u00e9rifiable : au-del\u00e0 de la limite de 96 LoRA lus, exclu."),
+        }
+        seen = set()
+        for label, (loras, message) in cases.items():
+            with self.subTest(label):
+                kept, excl, _ = FL.parity_split({"checkpoint": MODEL, "prompt": "x <lora:grain:0.8>"}, ["w1", "w2"],
+                                                {"w1": dict(base, loras=ref), "w2": dict(base, loras=loras)}, {"w2": "PC-2"})
+                self.assertEqual(kept, ["w1"])
+                self.assertEqual(excl[0]["message"], message)
+                seen.add(excl[0]["message"])
+                self.assertFalse(FL._parity_ok({"parity": {"reference": "w1", "checkpoint_sha256": "a" * 64, "vae": [], "loras": {"grain": ref["items"][0]}},
+                                                "settings": {"checkpoint": MODEL}}, "w2", dict(base, loras=loras)))
+        self.assertEqual(len(seen), 4)
+        # The reference side names its own case too.
+        _k, excl, _ = FL.parity_split({"checkpoint": MODEL, "prompt": "<lora:grain:1>"}, ["w1", "w2"],
+                                      {"w1": dict(base, loras={"items": [], "truncated": False, "error": "too_large"}), "w2": dict(base, loras=ref)}, {"w2": "PC-2"})
+        self.assertIn("sur l'appareil de r\u00e9f\u00e9rence, liste des LoRA trop grande (> 1 Mo)", excl[0]["message"])
+        _k, excl, _ = FL.parity_split({"checkpoint": MODEL, "prompt": "<lora:grain:1>"}, ["w1", "w2"],
+                                      {"w1": dict(base, loras=None), "w2": dict(base, loras=ref)}, {"w2": "PC-2"})
+        self.assertIn("sur l'appareil de r\u00e9f\u00e9rence, liste des LoRA illisible", excl[0]["message"])
+
+    def test_lora_too_large_is_reported_by_worker_and_local_hq(self):
+        self.assertTrue(issubclass(W.ResponseTooLarge, OSError))  # old OSError handlers still catch it
+
+        def transport(method, url, timeout, body, headers, max_bytes):
+            if url.endswith("/sdapi/v1/loras"):
+                raise W.ResponseTooLarge("response too large")
+            return 200, (b"{}" if "/options" in url else b"[]")
+
+        cat = W.ForgeLocal(7999, transport=transport).catalog(force=True)
+        self.assertEqual(cat["loras"], {"items": [], "truncated": False, "error": "too_large"})
+        self.assertEqual(FL._clean_loras(cat["loras"])["error"], "too_large")
+        self.assertIsNone(FL._clean_loras({"error": "other"}))
+        # A 97-row list is cut at 96 and flagged, so the reason is "past the limit", not "absent".
+        rows = [{"name": f"l{i:03d}", "alias": f"l{i:03d}"} for i in range(97)]
+        cut = FL._clean_loras(W.lora_list(rows))
+        self.assertEqual((len(cut["items"]), cut["truncated"]), (96, True))
+        self.assertIn("limite de 96", FL._lora_reason(None, cut, "l096"))
+        self.assertIn("n'a pas", FL._lora_reason(None, dict(cut, truncated=False), "l096"))
+        # Local HQ: a reply over MAX_RESPONSE_BYTES is flagged too_large on the probe error.
+        import hq_forge as F
+        with self.assertRaises(Exception) as ctx:
+            F._call(lambda m, u, t: (200, b"[" + b" " * (F.MAX_RESPONSE_BYTES + 8)), "/sdapi/v1/loras")
+        self.assertTrue(getattr(ctx.exception, "too_large", False))
+
     def test_dispatch_rechecks_the_lora(self):
         ref = {"name": "grain", "alias": "grain", "hash": "c" * 64}
         parity = {"reference": "w1", "checkpoint_sha256": "a" * 64, "vae": [], "loras": {"grain": ref}}

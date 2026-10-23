@@ -688,6 +688,9 @@ def _clean_catalog(raw, vae=None) -> dict | None:
 
 
 def _clean_loras(raw) -> dict | None:
+    """None = unreadable list; {"error": "too_large"} = over 1 MiB, never read; else the (maybe truncated) items."""
+    if isinstance(raw, dict) and raw.get("error") == "too_large":
+        return {"items": [], "truncated": False, "error": "too_large"}
     if not isinstance(raw, dict) or not isinstance(raw.get("items"), list):
         return None
     items = []
@@ -713,13 +716,23 @@ def _find_lora(loras: dict | None, wanted: str) -> dict | None:
     return None
 
 
-def _lora_reason(ref_row: dict | None, loras: dict | None, wanted: str) -> str | None:
+def _loras_unusable(loras: dict | None) -> str | None:
+    """Why a LoRA list cannot be compared at all: the two cases are told apart for the user."""
     if loras is None:
         return "liste des LoRA illisible"
+    if loras.get("error") == "too_large":
+        return "liste des LoRA trop grande (> 1 Mo), non lue"
+    return None
+
+
+def _lora_reason(ref_row: dict | None, loras: dict | None, wanted: str) -> str | None:
+    unusable = _loras_unusable(loras)
+    if unusable:
+        return unusable
     row = _find_lora(loras, wanted)
     if row is None:
-        return ("liste des LoRA incompl\u00e8te (LoRA \u00ab " + wanted + " \u00bb introuvable)") if loras.get("truncated") \
-            else ("n'a pas le LoRA \u00ab " + wanted + " \u00bb")
+        return ("LoRA \u00ab " + wanted + " \u00bb non v\u00e9rifiable : au-del\u00e0 de la limite de " + str(wire.MAX_LORAS) + " LoRA lus") \
+            if loras.get("truncated") else ("n'a pas le LoRA \u00ab " + wanted + " \u00bb")
     if ref_row is None:
         return None  # the reference itself lacks it; Forge there decides, nothing to compare
     if ref_row["hash"] and row["hash"]:
@@ -845,9 +858,10 @@ def parity_split(settings: dict, fit: list, catalogs: dict, names: dict) -> tupl
             reasons.append("VAE inconnu")
         elif vae != ref_vae:
             reasons.append("VAE diff\u00e9rent (" + (", ".join(vae) or "aucun") + " au lieu de " + (", ".join(ref_vae) or "aucun") + ")")
-        if loras and ref_loras is None:
-            reasons.append("LoRA non comparables : la liste de l'appareil de r\u00e9f\u00e9rence est illisible")
-        for lora in (loras if ref_loras is not None else []):
+        ref_bad = _loras_unusable(ref_loras)
+        if loras and ref_bad:
+            reasons.append("LoRA non comparables : sur l'appareil de r\u00e9f\u00e9rence, " + ref_bad)
+        for lora in (loras if not ref_bad else []):
             reason = _lora_reason(_find_lora(ref_loras, lora), cat.get("loras"), lora)
             if reason:
                 reasons.append(reason)
@@ -915,8 +929,8 @@ def _local_view() -> dict:
                 catalog["vae"] = None
             try:
                 catalog["loras"] = _clean_loras(wire.lora_list(forge.read_loras()))
-            except Exception:
-                catalog["loras"] = None
+            except Exception as exc:
+                catalog["loras"] = {"items": [], "truncated": False, "error": "too_large"} if getattr(exc, "too_large", False) else None
         cached = (now, {"state": status.get("forge"), "model": status.get("model"), "catalog": catalog})
         _local_status = cached
     return cached[1]

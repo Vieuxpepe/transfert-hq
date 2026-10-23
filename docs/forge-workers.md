@@ -153,3 +153,14 @@ A POST refused before its body is read (CSRF 403, anonymous 401, upload-role 403
   - `POST /api/forge/devices/<id>/wake`; 409 when no MAC is set or the device is already online, 429 within 10 s of the previous packet, 503 when the packet cannot be sent.
 - A 200 only means the packet left the HQ; the device shows "En ligne" once its worker starts and checks in.
 - Verified with a mocked sender only; a real LAN wake has not been tested.
+
+## LoRA exclusion messages (phase F2)
+
+When a prompt names a LoRA, a PC is left out of the batch with one of four distinct reasons:
+
+- **absent**: "<PC> n'a pas le LoRA ? x ?, exclu." (the full list was read and x is not in it);
+- **unreadable**: "liste des LoRA illisible" (Forge did not answer /sdapi/v1/loras, or answered something that is not a list);
+- **too large**: "liste des LoRA trop grande (> 1 Mo), non lue" (the reply went over the 1 MiB probe cap; the worker never parses it and sends `{"error": "too_large"}`; the local HQ flags the same case);
+- **past the limit**: "LoRA ? x ? non v?rifiable : au-del? de la limite de 96 LoRA lus" (only the first 96 entries are kept; x may exist further down).
+
+When the reference device itself is in the unreadable or too-large case, the others say "LoRA non comparables : sur l'appareil de r?f?rence, ...". Verified with mocks only.

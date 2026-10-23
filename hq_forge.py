@@ -69,6 +69,7 @@ _LOOPBACK_ORIGIN = re.compile(r"^http://127\.0\.0\.1:([0-9]{1,5})$")
 class _Probe(Exception):
     def __init__(self, code: str, *, http_status: int | None = None, elapsed_ms: int | None = None) -> None:
         self.code = code
+        self.too_large = False  # set when the reply went over MAX_RESPONSE_BYTES
         self.http_status = http_status if isinstance(http_status, int) and 100 <= http_status <= 599 else None
         self.elapsed_ms = elapsed_ms if isinstance(elapsed_ms, int) and 0 <= elapsed_ms <= 3_600_000 else None
 
@@ -265,7 +266,9 @@ def _call(transport, path: str, query: str = ""):
     if not isinstance(status, int) or not isinstance(body, (bytes, bytearray)):
         raise _Probe("forge_error")
     if len(body) > MAX_RESPONSE_BYTES:
-        raise _Probe("forge_error")
+        probe = _Probe("forge_error")
+        probe.too_large = True
+        raise probe
     if status == 404:
         raise _Probe("api_disabled")
     if status == 401:

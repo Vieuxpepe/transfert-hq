@@ -289,6 +289,10 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
 
 
+class ResponseTooLarge(OSError):
+    """A Forge reply over its byte cap (1 MiB for probes): told apart so HQ can say "too large", not "unreadable"."""
+
+
 def http_transport(method: str, url: str, timeout: float, body: bytes | None, headers: dict, max_bytes: int) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
@@ -299,7 +303,7 @@ def http_transport(method: str, url: str, timeout: float, body: bytes | None, he
         raw = exc.read(max_bytes + 1)
         status = exc.code
     if len(raw) > max_bytes:
-        raise OSError("response too large")
+        raise ResponseTooLarge("response too large")
     return status, raw
 
 
@@ -358,6 +362,8 @@ class ForgeLocal:
 
         try:
             loras = lora_list(self._get("/sdapi/v1/loras"))
+        except ResponseTooLarge:
+            loras = {"items": [], "truncated": False, "error": "too_large"}  # over 1 MiB: never parsed
         except (OSError, ValueError, TimeoutError):
             loras = None  # unreadable: HQ excludes this PC from any batch that names a LoRA
         self._catalog = {
