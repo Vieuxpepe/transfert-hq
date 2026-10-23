@@ -33,6 +33,9 @@ BODY_KEYS = {
     "enable_hr", "hr_scale", "hr_upscaler", "hr_second_pass_steps", "denoising_strength",
     "destination", "wait_if_busy", "subseed", "subseed_strength",
 }
+# Multi-vault V2.4: a private job names its destination vault, already open in this session.
+# Kept in memory only (never in jobs.json); without it the job goes to the migrated vault alias.
+_job_vaults: dict[str, str] = {}
 
 _LOCK = threading.Lock()
 _generation = 0
@@ -79,6 +82,7 @@ _MESSAGES = {
 def reset_for_tests() -> None:
     global _generation, _recovered, _before_submit, _job_timeout, _poll_interval, _wait_timeout
     _generation += 1
+    _job_vaults.clear()
     _wait_timeout = WAIT_TIMEOUT_SEC
     _recovered = False
     _before_submit = None
@@ -306,11 +310,12 @@ def usual_duration(root: Path, query: str) -> tuple[int, dict]:
     return 200, {"samples": len(rows), "seconds": round(median * count)}
 
 
-def _session_open(root: Path, token: str | None) -> bool:
+def _session_open(root: Path, token: str | None, job: dict | None = None) -> bool:
     if not token:
         return False
+    vid = _job_vaults.get(str(job.get("id"))) if isinstance(job, dict) else None
     try:
-        return bool(vault.status(root, token).get("unlocked"))
+        return bool(vault.status(root, token, vid=vid).get("unlocked"))
     except Exception:
         return False
 
@@ -805,7 +810,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
             if subseeds is not None:
                 per_image["subseed"] = subseeds[index]
             if destination == "private":
-                stored.append(vault.store_image(root, session_token, raw, per_image))
+                stored.append(vault.store_image(root, session_token, raw, per_image, vid=_job_vaults.get(job_id)))
             else:
                 stored.append(gallery.store(root, raw, per_image, origin={"finish_of": finish_of} if finish_of else None))
     except vault.VaultError as exc:
@@ -866,6 +871,12 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
         except Exception:
             return 404, {"error": "Image d'origine introuvable.", "code": "not_found"}
         data = {key: value for key, value in data.items() if key != "finish_of"}
+    vault_id = None
+    if "vault" in data:
+        vault_id = data.get("vault")
+        if destination != "private" or not isinstance(vault_id, str) or not vault.registry.VID_RE.fullmatch(vault_id):
+            return 400, {"error": _MESSAGES["validation"], "code": "validation"}
+        data = {key: value for key, value in data.items() if key != "vault"}
     with _LOCK:
         stored = _load(root)
         found = stored["idempotency"].get(idempotency_key)
@@ -873,11 +884,14 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
     if existing is not None:
         if (existing.get("destination") or "normal") != destination:
             return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
-        return 200, {"job": _public(existing, unlocked=_session_open(root, session_token))}
+        return 200, {"job": _public(existing, unlocked=_session_open(root, session_token, existing))}
     if destination == "private":
-        if not vault.confirm_private_generation(root):
+        if not vault.confirm_private_generation(root, vid=vault_id):
             return 403, {"error": _MESSAGES["disabled"], "code": "disabled"}
-        info = vault.status(root, session_token)
+        info = vault.status(root, session_token, vid=vault_id)
+        if info.get("code") in ("use_vaults", "bad_vault", "registry"):
+            # Never "the last used": the destination is named, listed and open, or nothing runs.
+            return vault.http_status(info["code"]), {"error": vault.public_error(info["code"]), "code": info["code"]}
         if not info.get("private_generation"):
             return 403, {"error": _MESSAGES["disabled"], "code": "disabled"}
         if info.get("code") == "bad_root":
@@ -953,6 +967,10 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
         _save(root, stored)
         token = _generation
     inline = validated if destination == "private" else None
+    if vault_id is not None:
+        _job_vaults[job_id] = vault_id
+        if len(_job_vaults) > 200:
+            _job_vaults.pop(next(iter(_job_vaults)))
     threading.Thread(
         target=_run,
         args=(root, job_id, token, transport, inline, session_token),
@@ -970,7 +988,7 @@ def get_job(root: Path, job_id: str, session_token: str | None = None) -> tuple[
         job = _find(_load(root), job_id)
     if job is None:
         return 404, {"error": "Introuvable"}
-    unlocked = _session_open(root, session_token) if job.get("destination") == "private" else False
+    unlocked = _session_open(root, session_token, job) if job.get("destination") == "private" else False
     return 200, {"job": _public(job, unlocked=unlocked)}
 
 
@@ -984,7 +1002,7 @@ def find_idempotency(root: Path, key: str, session_token: str | None = None) -> 
         job = _find(data, job_id) if isinstance(job_id, str) else None
     if job is None:
         return 404, {"error": "Introuvable"}
-    unlocked = _session_open(root, session_token) if job.get("destination") == "private" else False
+    unlocked = _session_open(root, session_token, job) if job.get("destination") == "private" else False
     return 200, {"job": _public(job, unlocked=unlocked)}
 
 
@@ -994,7 +1012,8 @@ def list_jobs(root: Path, session_token: str | None = None) -> tuple[int, dict]:
         jobs = [job for job in _load(root)["jobs"] if isinstance(job, dict)]
     jobs.sort(key=lambda job: job.get("created") or "", reverse=True)
     opened = _session_open(root, session_token)
-    return 200, {"jobs": [_public(job, unlocked=opened) for job in jobs[:30]]}
+    return 200, {"jobs": [_public(job, unlocked=_session_open(root, session_token, job) if job.get("id") in _job_vaults else opened)
+                          for job in jobs[:30]]}
 
 
 def cancel_job(root: Path, job_id: str, session_token: str | None = None) -> tuple[int, dict]:

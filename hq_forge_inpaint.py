@@ -141,7 +141,7 @@ def _decode_mask(text, size):
     return out.getvalue(), None
 
 
-def _source(root: Path, kind: str, image_id: str, token: str | None):
+def _source(root: Path, kind: str, image_id: str, token: str | None, vid: str | None = None):
     """Source pixels and settings, in memory. A private source is decrypted here and never written."""
     if kind == "normal":
         if not isinstance(image_id, str) or not gallery.IMG_RE.fullmatch(image_id):
@@ -154,15 +154,17 @@ def _source(root: Path, kind: str, image_id: str, token: str | None):
         return png, meta.get("settings") or {}
     if not isinstance(image_id, str) or not vault.ID_RE.fullmatch(image_id):
         return None
-    meta = vault.detail(root, token, image_id)  # VaultError("locked"/"bad_id") propagates
-    png, _ctype, _disp = vault.file_bytes(root, token, image_id, "original")
+    meta = vault.detail(root, token, image_id, vid=vid)  # VaultError("locked"/"bad_id") propagates
+    png, _ctype, _disp = vault.file_bytes(root, token, image_id, "original", vid=vid)
     return png, meta.get("settings") or {}
 
 
-def _private_gate(root: Path, token: str | None):
-    if not vault.confirm_private_generation(root):
+def _private_gate(root: Path, token: str | None, vid: str | None = None):
+    if not vault.confirm_private_generation(root, vid=vid):
         return 403, {"error": jobs._MESSAGES["disabled"], "code": "disabled"}
-    info = vault.status(root, token)
+    info = vault.status(root, token, vid=vid)
+    if info.get("code") in ("use_vaults", "bad_vault", "registry"):
+        return vault.http_status(info["code"]), {"error": vault.public_error(info["code"]), "code": info["code"]}
     if not info.get("private_generation"):
         return 403, {"error": jobs._MESSAGES["disabled"], "code": "disabled"}
     if not info.get("configured"):
@@ -188,15 +190,19 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
     padding = _number(data.get("inpaint_full_res_padding", 32), 0, 256, integer=True)
     if denoise is None or blur is None or padding is None or fill not in FILLS or isinstance(fill, bool) or not isinstance(full_res, bool):
         return 400, {"error": MESSAGES["validation"], "code": "validation"}
+    vid = source.get("vault")
+    if vid is not None and (kind != "private" or not isinstance(vid, str) or not vault.registry.VID_RE.fullmatch(vid)):
+        return 400, {"error": MESSAGES["validation"], "code": "validation"}
     if kind == "private":
-        refused = _private_gate(root, session_token)
+        # Multi-vault V2.4: the retouch is written to the source image's vault, nowhere else.
+        refused = _private_gate(root, session_token, vid)
         if refused:
             return refused
     with _LOCK:
         if _current is not None and _current["state"] in ("sending", "generating", "saving"):
             return 409, {"error": MESSAGES["active"], "code": "active"}
     try:
-        got = _source(root, kind, source.get("id"), session_token)
+        got = _source(root, kind, source.get("id"), session_token, vid)
     except vault.VaultError as exc:
         return vault.http_status(exc.code), {"error": vault.public_error(exc.code), "code": exc.code}
     if got is None:
@@ -254,7 +260,7 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
                       padding=padding, denoise=denoise)
     del png, mask_png
     origin = {"inpaint_of": source.get("id")} if kind == "normal" else None
-    threading.Thread(target=_run, args=(root, entry, body, validated, kind, origin, session_token, transport),
+    threading.Thread(target=_run, args=(root, entry, body, validated, kind, origin, session_token, transport, vid),
                      name="hq-forge-inpaint", daemon=True).start()
     return 202, {"inpaint": _public(entry)}
 
@@ -293,7 +299,7 @@ def _set(entry: dict, **fields) -> None:
         entry.update(fields)
 
 
-def _run(root, entry, body, settings, kind, origin, session_token, transport) -> None:
+def _run(root, entry, body, settings, kind, origin, session_token, transport, vid=None) -> None:
     stop = threading.Event()
 
     def poll() -> None:
@@ -331,7 +337,7 @@ def _run(root, entry, body, settings, kind, origin, session_token, transport) ->
         seeds = jobs._seeds_used(parsed, settings["seed"], 1)
         per_image = {**settings, "seed": seeds[0]}
         if kind == "private":
-            stored = vault.store_image(root, session_token, raw, per_image)  # encrypted straight into the vault
+            stored = vault.store_image(root, session_token, raw, per_image, vid=vid)  # encrypted straight into the source's vault
         else:
             stored = gallery.store(root, raw, per_image, origin=origin)
     except vault.VaultError as exc:
