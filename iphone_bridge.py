@@ -50,6 +50,7 @@ import hq_forge_night
 import hq_forge_inpaint
 import hq_forge_presets
 import hq_forge_bricks
+import hq_forge_lineage
 import hq_forge_vault
 
 PORT = 8765
@@ -5754,6 +5755,12 @@ def render_app() -> bytes:
         <p id="forge-viewer-meta"></p>
         <div class="forge-triage-row" id="forge-viewer-triage" role="group" aria-label="Tri de l’image"></div>
         <button type="button" id="forge-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
+        <details id="forge-lineage" class="forge-lineage">
+          <summary>Généalogie</summary>
+          <div class="forge-label-row"><span class="forge-note">D'où vient cette image et ce qui en est né.</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-lineage">Aide</button><p id="forge-help-lineage" class="forge-help-pop" role="tooltip">Les liens viennent des finitions et des retouches de la galerie. Les variations ne sont pas reliées. Le coffre privé n'apparaît jamais ici.</p></span></div>
+          <p id="forge-lineage-note" class="forge-note" role="status"></p>
+          <ol id="forge-lineage-tree" class="forge-lineage-tree" aria-label="Arbre de l'image"></ol>
+        </details>
         <div class="forge-explore" id="forge-viewer-explore-box">
           <div class="forge-label-row"><label for="forge-viewer-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-viewer-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
@@ -6053,6 +6060,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge-vault-search.js"></script>
 <script src="/assets/hq-forge-inpaint.js"></script>
 <script src="/assets/hq-forge-bricks.js"></script>
+<script src="/assets/hq-forge-lineage.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -6844,6 +6852,10 @@ class Handler(BaseHTTPRequestHandler):
         bricks = hq_forge_bricks.serve_get(ROOT, raw)
         if bricks is not None:
             self._json(bricks[0], bricks[1])
+            return True
+        lineage = hq_forge_lineage.serve_get(ROOT, raw)
+        if lineage is not None:
+            self._json(lineage[0], lineage[1])
             return True
         served = hq_forge_gallery.serve_file(ROOT, raw)
         if served is not None:

@@ -78,7 +78,47 @@ def section_bricks(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"bricks": section_bricks}
+def section_lineage(run: Run) -> None:
+    print("J2 lineage tree")
+    from visual_forge_ghi_playwright import STROKE
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    generate_once(run, page, "phare de depart")
+    page.locator("#forge-gallery .forge-card").first.click()
+    run.until(page, "() => document.querySelector('#forge-viewer').open && document.querySelector('#forge-viewer-img').naturalWidth > 0", 10)
+    source = page.evaluate("() => window.hqForgeHooks.currentDetail().id")
+    page.locator("#forge-lineage > summary").click()
+    run.check(run.until(page, "() => /ni image d'origine/.test(document.querySelector('#forge-lineage-note').textContent) && document.querySelectorAll('#forge-lineage-tree li').length === 1", 5),
+              "an image with no links says so")
+    page.locator("#forge-viewer-inpaint").click()
+    run.until(page, "() => document.querySelector('#forge-inpaint').open", 5)
+    page.evaluate(STROKE, [0.3, 0.3, 0.6, 0.6])
+    page.locator("#forge-inpaint-send").click()
+    run.check(run.until(page, "(src) => document.querySelector('#forge-viewer').open && window.hqForgeHooks.currentDetail() && window.hqForgeHooks.currentDetail().id !== src", 15, source),
+              "a retouch of the image opens in the viewer")
+    result = page.evaluate("() => window.hqForgeHooks.currentDetail().id")
+    run.check(not page.evaluate("() => document.querySelector('#forge-lineage').open"), "the tree closes when another image opens")
+    page.locator("#forge-lineage > summary").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-lineage-tree li').length === 2", 5), "the tree shows the start image and its retouch")
+    labels = page.evaluate("() => [...document.querySelectorAll('#forge-lineage-tree .forge-lineage-node')].map((b) => [b.dataset.id, b.getAttribute('aria-current'), b.textContent])")
+    run.check(labels[0][0] == source and labels[0][2].startswith("Image de d") and labels[1][0] == result and labels[1][1] == "true" and labels[1][2].startswith("Retouche"),
+              "start image first, the retouch below it is marked as shown: " + repr(labels))
+    page.locator("#forge-lineage .forge-help").click()
+    run.check(page.evaluate("() => getComputedStyle(document.querySelector('#forge-help-lineage')).display !== 'none'"), "Aide opens on tap (no hover needed)")
+    page.locator("#forge-lineage .forge-help").click()
+    geo = page.evaluate(GEO, "#forge-lineage-tree button, #forge-lineage > summary")
+    run.check(geo["sw"] <= geo["vw"] and geo["h"] >= 44, "at 375 px the tree fits with 44 px targets: " + repr(geo))
+    run.shot(page, "lineage", "#forge-lineage")
+    page.locator("#forge-lineage-tree .forge-lineage-node").first.click()
+    run.check(run.until(page, "(src) => document.querySelector('#forge-viewer').open && window.hqForgeHooks.currentDetail() && window.hqForgeHooks.currentDetail().id === src", 10, source),
+              "tapping a node opens that image")
+    status = page.request.get(run.base + "/api/forge/gallery/pvt-" + "0" * 24 + "/lineage").status
+    run.check(status == 404, "a vault id has no lineage: " + repr(status))
+    ctx.close()
+
+
+SECTIONS = {"bricks": section_bricks, "lineage": section_lineage}
 EXTRA_ENV = {"bricks": {"HQ_FORGE_MOCK_LORAS": json.dumps(LORAS)}}
 
 

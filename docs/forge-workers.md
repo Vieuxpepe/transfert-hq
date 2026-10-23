@@ -201,3 +201,8 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - Touching a brick only appends `<lora:name:weight>, words, text` to the prompt field; no job is started.
 - Trigger word suggestions: the 6 most frequent training tags in the LoRA file's own metadata (`ss_tag_frequency`), read through the already allowlisted read-only `GET /sdapi/v1/loras` on this PC's Forge. No worker is asked, no new Forge route. Suggestions only; the owner picks. Unverified on a real LoRA file (mock metadata only).
 - Private mode: bricks can be added to a private prompt (in the page only) but cannot be saved; the editor is never prefilled from the prompt.
+
+### J2 Généalogie d'une image
+- Route (admin, read-only; 401/403/404 tested): `GET /api/forge/gallery/<img-id>/lineage`. Unknown ids and vault ids (`pvt-...`) are 404; POST is 404.
+- Built from links the gallery already stores in `meta.json`: `origin.finish_of` (finition, E) and `origin.inpaint_of` (retouche, I). Nothing new is written. Variations (C) record no parent and are not linked. The tree starts at the oldest ancestor still in the gallery (a deleted start image is reported), is cycle-safe and capped at 200 nodes; it carries ids, relation, date, sort flag and thumb URL only (no prompt or settings).
+- Private: the vault is never traversed. A private retouch records no gallery origin, so private lineage is excluded rather than shown.
