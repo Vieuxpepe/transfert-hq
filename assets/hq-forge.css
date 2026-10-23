@@ -382,3 +382,10 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-journal-item .forge-note{display:block}
 .forge-journal-choice button{min-height:var(--tap-min)}
 .forge-job-choice{margin:6px 0}
+
+/* D3: 375px review fixes */
+#forge-wake-wrap{gap:12px}
+#forge-wake-wrap .forge-help{min-height:var(--tap-min);min-width:var(--tap-min)}
+.forge-journal-choice{display:grid;grid-template-columns:1fr;gap:6px;margin:6px 0 0}
+.forge-journal-choice button{width:100%}
+@media (min-width:520px){.forge-journal-choice{grid-template-columns:repeat(3,minmax(0,1fr))}}

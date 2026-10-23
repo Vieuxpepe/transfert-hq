@@ -222,6 +222,8 @@ def section_journal(run: Run) -> None:
     page.locator("#forge-job-journal summary").click()
     text = page.locator("#forge-job-journal-list").inner_text()
     run.check("Cet HQ" in text and "Envoy\u00e9 \u00e0 Forge" in text and "incertain" in text, "a readable timeline: which PC, what, when: " + text.replace("\n", " | "))
+    check_choices(run, page, "local job")
+    check_reach(run, page, "#forge-job-choice", "the job choice")
     run.shot(page, "journal-job-uncertain", "#forge-normal-results")
     page.wait_for_timeout(1500)
     run.check(len(page.request.get(run.base + "/api/forge/jobs").json()["jobs"]) == 1, "no automatic relaunch while waiting for the choice")
@@ -300,6 +302,9 @@ def section_uncertain(run: Run) -> None:
         index = next(t["index"] for t in src()["tasks"] if t["id"] == ids[name])
         return page.locator("#forge-fleet-journal-list li", has_text="Image " + str(index + 1) + " ")
     run.check(page.locator("#forge-fleet-journal-list .forge-journal-choice").count() == 3, "each uncertain image offers Relancer / Marquer perdue / Garder tel quel")
+    check_choices(run, page, "batch")
+    page.evaluate("() => { const rows = document.querySelectorAll('#forge-fleet-journal-list .forge-journal-choice'); rows[rows.length - 1].dataset.reach = '1'; }")
+    check_reach(run, page, "#forge-fleet-journal-list [data-reach]", "the last uncertain choice row")
     run.shot(page, "uncertain-choices", "#forge-fleet-batch")
     # Marquer perdue (A)
     row_of("A").locator("button", has_text="Marquer perdue").click()
@@ -337,9 +342,66 @@ def section_uncertain(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"triage": section_triage, "lab": section_lab, "plan": section_plan, "journal": section_journal, "uncertain": section_uncertain}
+REACH_PROBE = """(sel) => {
+  const el = document.querySelector(sel);
+  if (!el || !el.getClientRects().length) return {ok: false, why: 'missing ' + sel};
+  const nav = document.querySelector('.bottom-nav');
+  const navTop = nav && nav.getClientRects().length ? nav.getBoundingClientRect().top : innerHeight;
+  const covered = () => { const r = el.getBoundingClientRect(); const x = Math.min(Math.max(r.left + r.width / 2, 1), innerWidth - 1);
+    const hit = document.elementFromPoint(x, r.bottom - 2); return { r, hit, ok: r.bottom <= navTop + 0.5 && !!hit && (hit === el || el.contains(hit)) }; };
+  el.scrollIntoView({block: 'center', behavior: 'instant'});
+  let c = covered();
+  if (!c.ok) { window.scrollTo({top: document.documentElement.scrollHeight, behavior: 'instant'}); c = covered(); }
+  const pad = parseFloat(getComputedStyle(document.querySelector('#forge-studio')).paddingBottom) || 0;
+  return {ok: c.ok, bottom: Math.round(c.r.bottom), navTop: Math.round(navTop), hit: c.hit ? (c.hit.id || c.hit.className || c.hit.tagName) : 'none',
+    pad: Math.round(pad), navH: nav ? Math.round(nav.getBoundingClientRect().height) : 0};
+}"""
+
+CHOICE_PROBE = """(sel) => {
+  const rows = [...document.querySelectorAll(sel)];
+  return rows.map((row) => { const b = [...row.querySelectorAll('button')].map((x) => x.getBoundingClientRect());
+    const tops = new Set(b.map((r) => Math.round(r.top)));
+    return {n: b.length, lines: tops.size, minH: Math.min(...b.map((r) => r.height)), right: Math.max(...b.map((r) => r.right)), vw: document.documentElement.clientWidth}; });
+}"""
+
+
+def check_reach(run: Run, page, selector: str, label: str) -> None:
+    r = page.evaluate(REACH_PROBE, selector)
+    run.check(r["ok"] and r["pad"] >= r["navH"], label + " can be scrolled fully above the bottom nav " + repr(r))
+
+
+def check_choices(run: Run, page, label: str) -> None:
+    rows = page.evaluate(CHOICE_PROBE, "#forge-fleet-journal-list .forge-journal-choice, #forge-job-choice .forge-journal-choice")
+    run.check(rows and all(r["lines"] in (1, r["n"]) and r["minH"] >= 44 and r["right"] <= r["vw"] for r in rows),
+              label + ": choice buttons sit on one row or stack one per line, never 2+1, \u2265 44 px " + repr(rows))
+
+
+def section_layout(run: Run) -> None:
+    print("D3 375px layout: wake toggle, planner, bin vs bottom nav")
+    ctx = run.context(init_script=QW.WAKE_STUB)
+    page = ctx.new_page()
+    run.open_forge(page)
+    run.check(run.until(page, "() => !document.querySelector('#forge-wake-wrap').hidden", 5), "the wake toggle is shown")
+    gap = page.evaluate("""() => { const l = document.querySelector('#forge-wake-wrap label').getBoundingClientRect();
+      const b = document.querySelector('#forge-wake-wrap .forge-help').getBoundingClientRect();
+      return {gap: Math.round((b.left - l.right) * 10) / 10, bh: Math.round(b.height), bw: Math.round(b.width), lh: Math.round(l.height), overlap: !(l.right <= b.left || b.right <= l.left || l.bottom <= b.top || b.bottom <= l.top)}; }""")
+    run.check(gap["gap"] >= 8 and not gap["overlap"], "Garder l'\u00e9cran allum\u00e9 and Aide have \u2265 8 px between them " + repr(gap))
+    run.check(gap["bh"] >= 44 and gap["bw"] >= 44 and gap["lh"] >= 44, "both are \u2265 44 px touch targets " + repr(gap))
+    page.locator("#forge-wake-wrap").scroll_into_view_if_needed()
+    run.shot(page, "layout-wake", "#forge-wake-wrap")
+    set_size(page, 768, 512, 20)
+    run.until(page, "() => !document.querySelector('#forge-plan').hidden", 10)
+    check_reach(run, page, "#forge-plan", "the planner")
+    run.shot(page, "layout-plan", "#forge-plan")
+    check_reach(run, page, "#forge-trash-open", "Corbeille")
+    check_reach(run, page, "#forge-lab summary", "Laboratoire")
+    run.shot(page, "layout-bottom")
+    ctx.close()
+
+
+SECTIONS = {"layout": section_layout, "triage": section_triage, "lab": section_lab, "plan": section_plan, "journal": section_journal, "uncertain": section_uncertain}
 EXTRA_ENV: dict = {"uncertain": {"HQ_FORGE_FLEET_MOCK": "1", "HQ_FORGE_FLEET_DELAY": "0.2", "HQ_FORGE_FLEET_STALL": "3"}, "journal": {"_JOBS": UNCERTAIN_JOBS, "HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
-SEEDED = {"lab": seeded_records, "plan": seeded_records, "journal": list}
+SEEDED = {"layout": seeded_records, "lab": seeded_records, "plan": seeded_records, "journal": list}
 
 
 def main() -> None:
