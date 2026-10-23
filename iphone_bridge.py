@@ -6708,7 +6708,22 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, result)
         return True
 
-    def _forge_vault_binary(self, raw: str, token: str | None) -> bool:
+    # Multi-vault V3: /api/forge/vaults/<vid>/... per vault; /api/forge/vault/... stays the alias of the
+    # migrated vault until V4. Only ids travel in paths, never a name. Per-vault setup, backup and
+    # restore are not offered here (create is its own route; backup and restore per vault are V6).
+    _ALIAS_ONLY = ("/setup", "/backup", "/restore")
+
+    def _vault_route(self, raw: str) -> tuple[str | None, str | None]:
+        """(vid, sub-path). (None, sub) for the alias; sub None when the path is not a vault path."""
+        if raw.startswith("/api/forge/vault/"):
+            return None, raw[len("/api/forge/vault"):]
+        if raw.startswith("/api/forge/vaults/"):
+            vid, sep, tail = raw[len("/api/forge/vaults/"):].partition("/")
+            if sep and tail and hq_forge_vault.registry.VID_RE.fullmatch(vid):
+                return vid, "/" + tail
+        return None, None
+
+    def _forge_vault_binary(self, raw: str, token: str | None, vid: str | None = None) -> bool:
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
         except ValueError:
@@ -6721,7 +6736,7 @@ class Handler(BaseHTTPRequestHandler):
         blob = self.rfile.read(length)
         try:
             if raw.endswith("/import"):
-                self._json(201, hq_forge_vault.store_image(ROOT, token, blob, None))
+                self._json(201, hq_forge_vault.store_image(ROOT, token, blob, None, vid=vid))
                 return True
             if length < 5:
                 raise hq_forge_vault.VaultError("validation")
@@ -6739,35 +6754,39 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _forge_vault_post(self, raw: str, data: dict, token: str | None) -> None:
+        vid, sub = self._vault_route(raw)
+        if sub is None or (vid is not None and sub in self._ALIAS_ONLY):
+            self._json(404, {"error": "Inconnu"})
+            return
         try:
-            if raw == "/api/forge/vault/setup":
+            if sub == "/setup":
                 self._json(201, hq_forge_vault.setup(ROOT, str(data.get("passphrase") or ""), str(data.get("confirm") or "")))
-            elif raw == "/api/forge/vault/unlock":
-                self._json(200, hq_forge_vault.unlock(ROOT, token, str(data.get("passphrase") or "")))
-            elif raw == "/api/forge/vault/recover":
-                self._json(200, hq_forge_vault.unlock_with_recovery(ROOT, token, str(data.get("recovery_key") or "")))
-            elif raw == "/api/forge/vault/lock":
+            elif sub == "/unlock":
+                self._json(200, hq_forge_vault.unlock(ROOT, token, str(data.get("passphrase") or ""), vid=vid))
+            elif sub == "/recover":
+                self._json(200, hq_forge_vault.unlock_with_recovery(ROOT, token, str(data.get("recovery_key") or ""), vid=vid))
+            elif sub == "/lock":
                 self._json(200, hq_forge_vault.lock(token))
-            elif raw == "/api/forge/vault/passphrase":
+            elif sub == "/passphrase":
                 self._json(200, hq_forge_vault.change_passphrase(
                     ROOT, token, str(data.get("current") or ""), str(data.get("passphrase") or ""),
-                    str(data.get("confirm") or ""), recovery_key=data.get("recovery_key") if isinstance(data.get("recovery_key"), str) else None,
+                    str(data.get("confirm") or ""), recovery_key=data.get("recovery_key") if isinstance(data.get("recovery_key"), str) else None, vid=vid,
                 ))
-            elif raw == "/api/forge/vault/recovery":
-                self._json(200, hq_forge_vault.rotate_recovery(ROOT, token, str(data.get("passphrase") or "")))
-            elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/delete"):
-                image_id = raw[len("/api/forge/vault/images/"):-len("/delete")]
-                self._json(200, hq_forge_vault.delete(ROOT, token, image_id))
-            elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/triage"):
-                image_id = raw[len("/api/forge/vault/images/"):-len("/triage")]
-                self._json(200, hq_forge_vault.set_triage(ROOT, token, image_id, data.get("state")))
-            elif raw.startswith("/api/forge/vault/images/") and raw.endswith("/labels"):
-                image_id = raw[len("/api/forge/vault/images/"):-len("/labels")]
+            elif sub == "/recovery":
+                self._json(200, hq_forge_vault.rotate_recovery(ROOT, token, str(data.get("passphrase") or ""), vid=vid))
+            elif sub.startswith("/images/") and sub.endswith("/delete"):
+                image_id = sub[len("/images/"):-len("/delete")]
+                self._json(200, hq_forge_vault.delete(ROOT, token, image_id, vid=vid))
+            elif sub.startswith("/images/") and sub.endswith("/triage"):
+                image_id = sub[len("/images/"):-len("/triage")]
+                self._json(200, hq_forge_vault.set_triage(ROOT, token, image_id, data.get("state"), vid=vid))
+            elif sub.startswith("/images/") and sub.endswith("/labels"):
+                image_id = sub[len("/images/"):-len("/labels")]
                 if not hq_forge_vault.ID_RE.fullmatch(image_id):
                     raise hq_forge_vault.VaultError("bad_id")
-                self._json(200, hq_forge_vault.set_labels(ROOT, token, image_id, data.get("tags"), data.get("collection")))
-            elif raw == "/api/forge/vault/search":
-                self._json(200, hq_forge_vault.search(ROOT, token, data))
+                self._json(200, hq_forge_vault.set_labels(ROOT, token, image_id, data.get("tags"), data.get("collection"), vid=vid))
+            elif sub == "/search":
+                self._json(200, hq_forge_vault.search(ROOT, token, data, vid=vid))
             else:
                 self._json(404, {"error": "Inconnu"})
         except hq_forge_vault.VaultError as exc:
@@ -6780,18 +6799,26 @@ class Handler(BaseHTTPRequestHandler):
         if not raw.startswith("/api/forge/vault"):
             return False
         token = self._token()
-        if raw == "/api/forge/vault/status":
-            self._json(200, hq_forge_vault.status(ROOT, token))
+        vid, sub = self._vault_route(raw)
+        if sub is None or (vid is not None and sub in self._ALIAS_ONLY):
+            self._json(404, {"error": "Inconnu"})
             return True
-        if raw == "/api/forge/vault/backup":
+        if sub == "/status":
+            info = hq_forge_vault.status(ROOT, token, vid=vid)
+            if vid is not None and info.get("code") in ("bad_vault", "registry"):
+                self._vault_error(hq_forge_vault.VaultError(info["code"]))  # unknown id: 404, never an empty 200
+                return True
+            self._json(200, info)
+            return True
+        if sub == "/backup":
             try:
-                payload = hq_forge_vault.backup_bytes(ROOT, token)
+                payload = hq_forge_vault.backup_bytes(ROOT, token, vid=vid)
             except hq_forge_vault.VaultError as exc:
                 self._vault_error(exc)
                 return True
             self._send(200, payload, "application/zip", [("Content-Disposition", 'attachment; filename="coffre-chiffre.zip"')])
             return True
-        if raw == "/api/forge/vault/gallery":
+        if sub == "/gallery":
             qs = parse_qs(parsed.query)
             try:
                 limit = int((qs.get("limit") or ["24"])[0])
@@ -6800,15 +6827,15 @@ class Handler(BaseHTTPRequestHandler):
             cursor = (qs.get("cursor") or [None])[0] or None
             try:
                 view = (qs.get("view") or [""])[0]
-                self._json(200, hq_forge_vault.page(ROOT, token, limit=limit, cursor=cursor, view=view if view in ("trash", "untriaged") else ""))
+                self._json(200, hq_forge_vault.page(ROOT, token, limit=limit, cursor=cursor, view=view if view in ("trash", "untriaged") else "", vid=vid))
             except hq_forge_vault.VaultError as exc:
                 self._vault_error(exc)
             return True
-        prefix = "/api/forge/vault/images/"
-        if not raw.startswith(prefix):
+        prefix = "/images/"
+        if not sub.startswith(prefix):
             self._json(404, {"error": "Inconnu"})
             return True
-        rest = raw[len(prefix):]
+        rest = sub[len(prefix):]
         kind = ""
         if rest.endswith("/original"):
             image_id, kind = rest[: -len("/original")], "original"
@@ -6819,7 +6846,7 @@ class Handler(BaseHTTPRequestHandler):
         if kind:
             try:
                 wanted = kind == "original" and (parse_qs(parsed.query).get("parameters") or [""])[0] == "1"
-                payload, ctype, disposition = hq_forge_vault.file_bytes(ROOT, token, image_id, kind, include_parameters=wanted)
+                payload, ctype, disposition = hq_forge_vault.file_bytes(ROOT, token, image_id, kind, include_parameters=wanted, vid=vid)
             except hq_forge_vault.VaultError as exc:
                 self._vault_error(exc)
                 return True
@@ -6829,7 +6856,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Inconnu"})
             return True
         try:
-            self._json(200, hq_forge_vault.detail(ROOT, token, image_id))
+            self._json(200, hq_forge_vault.detail(ROOT, token, image_id, vid=vid))
         except hq_forge_vault.VaultError as exc:
             self._vault_error(exc)
         return True
@@ -6927,6 +6954,9 @@ class Handler(BaseHTTPRequestHandler):
         token = self._token()
         if raw in ("/api/forge/vault/import", "/api/forge/vault/restore"):
             return self._forge_vault_binary(raw, token)
+        vault_vid, vault_sub = self._vault_route(raw)
+        if vault_vid is not None and vault_sub == "/import":
+            return self._forge_vault_binary(raw, token, vault_vid)
         hq_forge_jobs.recover(ROOT)
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -6963,7 +6993,7 @@ class Handler(BaseHTTPRequestHandler):
             except hq_forge_gallery.GalleryError:
                 self._json(404, {"error": "Introuvable"})
             return True
-        if raw.startswith("/api/forge/vault/"):
+        if raw.startswith("/api/forge/vault/") or raw.startswith("/api/forge/vaults/"):
             self._forge_vault_post(raw, data, token)
             return True
         presets = hq_forge_presets.serve_post(ROOT, raw, data)
