@@ -300,5 +300,112 @@ class PerVaultTests(MultiBase):
         V.cleanup_partials(self.hq)
         self.assertFalse(stray.exists())
 
+class MigrationTests(MultiBase):
+    """V1.5: the single vault moves by rename into vaults/<vid>/, safely resumable and reversible."""
+
+    def legacy_with_images(self):
+        V.setup(self.hq, PASS, PASS)
+        V.unlock(self.hq, self.admin, PASS)
+        first = V.store_image(self.hq, self.admin, _png(), None)
+        V.store_image(self.hq, self.admin, _png((200, 30, 30)), None)
+        V.set_labels(self.hq, self.admin, first["id"], ["mer"], "ete")
+        V.lock(self.admin)
+        return self.snapshot(self.store)
+
+    @staticmethod
+    def snapshot(folder: Path) -> dict:
+        return {p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+    def check_migrated(self, before: dict, vid: str) -> None:
+        folder = self.store / "vaults" / vid
+        self.assertEqual(self.snapshot(folder), before)  # same bytes: no copy, no re-encryption
+        reg = json.loads((self.store / "registry.json").read_text(encoding="utf-8"))
+        self.assertEqual(reg["legacy"], vid)
+        self.assertEqual([(e["id"], e["label"], e["glyph"], e["discret"]) for e in reg["vaults"]], [(vid, "Coffre", "coffre", False)])
+        self.assertFalse((self.store.parent / "forge-vault.migration.json").exists())
+        self.assertFalse((self.store.parent / "forge-vault.migrating").exists())
+        V.unlock(self.hq, self.admin, PASS)  # old alias
+        self.assertEqual(len(V.page(self.hq, self.admin)["images"]), 2)
+        V.unlock(self.hq, self.admin, PASS, vid=vid)
+        rows = V.page(self.hq, self.admin, vid=vid)["images"]
+        self.assertEqual(sorted(r["tags"] for r in rows), [[], ["mer"]])
+
+    def test_migrate_and_replay(self):
+        before = self.legacy_with_images()
+        V.unlock(self.hq, self.admin, PASS)
+        result = V._migrate(self.hq)
+        self.assertTrue(result["migrated"])
+        self.assertEqual(V.status(self.hq, self.admin)["unlocked"], False)  # every session was closed
+        self.check_migrated(before, result["vid"])
+        again = V._migrate(self.hq)
+        self.assertEqual(again, {"migrated": False, "vid": result["vid"]})
+        self.check_migrated(before, result["vid"])
+
+    def test_cut_at_every_step_then_restart(self):
+        for step in ("after_journal", "after_move", "after_container", "after_place", "after_registry"):
+            with self.subTest(step=step):
+                self.tearDown()
+                self.setUp()
+                before = self.legacy_with_images()
+                V.set_migration_fault_for_tests(step)
+                with self.assertRaises(OSError):
+                    V._migrate(self.hq)
+                V.set_migration_fault_for_tests(None)
+                V.cleanup_partials(self.hq)  # what the next HQ start does
+                if step == "after_journal":
+                    self.assertEqual(self.snapshot(self.store), before)  # nothing had moved
+                    self.assertFalse((self.store.parent / "forge-vault.migration.json").exists())
+                    vid = V._migrate(self.hq)["vid"]
+                else:
+                    vid = json.loads((self.store / "registry.json").read_text(encoding="utf-8"))["legacy"]
+                self.check_migrated(before, vid)
+
+    def test_cancel_after_success_and_midway(self):
+        before = self.legacy_with_images()
+        V._migrate(self.hq)
+        self.assertEqual(V.cancel_migration(self.hq), {"cancelled": True})
+        self.assertEqual(self.snapshot(self.store), before)
+        V.unlock(self.hq, self.admin, PASS)
+        self.assertEqual(len(V.page(self.hq, self.admin)["images"]), 2)
+        V.set_migration_fault_for_tests("after_container")
+        with self.assertRaises(OSError):
+            V._migrate(self.hq)
+        V.set_migration_fault_for_tests(None)
+        V.cancel_migration(self.hq)
+        self.assertEqual(self.snapshot(self.store), before)
+        self.assertFalse((self.store.parent / "forge-vault.migrating").exists())
+
+    def test_cancel_refused_once_another_vault_exists(self):
+        before = self.legacy_with_images()
+        V._migrate(self.hq)
+        V.create_vault(self.hq, self.admin, PASS_B, PASS_B, label="Deux")
+        with self.assertRaises(V.VaultError):
+            V.cancel_migration(self.hq)
+        vid = json.loads((self.store / "registry.json").read_text(encoding="utf-8"))["legacy"]
+        self.assertEqual(self.snapshot(self.store / "vaults" / vid), before)
+
+    def test_two_copies_are_never_guessed(self):
+        before = self.legacy_with_images()
+        V.set_migration_fault_for_tests("after_move")
+        with self.assertRaises(OSError):
+            V._migrate(self.hq)
+        V.set_migration_fault_for_tests(None)
+        # Someone recreates a vault at the top meanwhile: resume refuses, both stay.
+        self.store.mkdir()
+        (self.store / "vault.json").write_text("{}", encoding="utf-8")
+        with self.assertRaises(V.VaultError):
+            V.resume_migration(self.hq)
+        self.assertEqual(self.snapshot(self.store.parent / "forge-vault.migrating"), before)
+
+    def test_empty_or_tampered_journal(self):
+        with self.assertRaises(V.VaultError):
+            V._migrate(self.hq)  # nothing to migrate
+        self.legacy_with_images()
+        (self.store.parent / "forge-vault.migration.json").write_text('{"version":1,"vid":"../x"}', encoding="utf-8")
+        with self.assertRaises(V.VaultError) as caught:
+            V.resume_migration(self.hq)
+        self.assertEqual(caught.exception.code, "registry")
+        self.assertTrue((self.store / "vault.json").is_file())
+
 if __name__ == "__main__":
     unittest.main()

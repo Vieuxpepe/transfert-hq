@@ -94,7 +94,8 @@ class VaultError(Exception):
 
 def reset_for_tests() -> None:
     global _test_dir, _ttl, _quota_bytes, _quota_images, _apply_acl, _private_generation, _disk, _global_bytes, _global_images
-    global _global_fails, _global_until, _inflight, _write_fault, _restore_fault, _user_sid_bytes
+    global _global_fails, _global_until, _inflight, _write_fault, _restore_fault, _user_sid_bytes, _migration_fault
+    _migration_fault = None
     _disk = False
     _global_fails = 0
     _global_until = 0.0
@@ -557,11 +558,16 @@ def _remove_tree_nofollow(path: Path) -> None:
 
 
 def cleanup_partials(hq_root: Path) -> None:
-    """Leftover partial writes, in the top folder and in every listed vault."""
+    """Leftover partial writes, in the top folder and in every listed vault. Also finishes a
+    migration that was cut off (it never starts one)."""
     try:
         base = _base(hq_root)
     except VaultError:
         return
+    try:
+        resume_migration(hq_root)
+    except (VaultError, OSError):
+        pass  # left as it is; status reports it and nothing is opened
     if not base.is_dir() or _is_reparse(base):
         return
     _cleanup_folder(base)
@@ -1945,6 +1951,168 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
         raise VaultError("corrupt") from None
     lock_all()
     return {"restored": True, "unlocked": False}
+
+
+# ---- V1.5: migration of the single vault into vaults/<vid>/ (rename only) ----------------------
+# Two renames, never a copy and never a re-encryption:
+#   forge-vault/            -> forge-vault.migrating/       (the vault itself, untouched)
+#   (new) forge-vault/vaults/
+#   forge-vault.migrating/  -> forge-vault/vaults/<vid>/
+# A journal beside the folder names the vid before the first rename. The registry is written
+# only after the second rename. resume_migration() finishes a cut-off run; cancel_migration()
+# puts the single vault back where it was.
+
+_migration_fault = None
+
+
+def set_migration_fault_for_tests(kind: str | None) -> None:
+    """'after_journal', 'after_move', 'after_container', 'after_place' or 'after_registry'."""
+    global _migration_fault
+    _migration_fault = kind
+
+
+def _migration_step(name: str) -> None:
+    if _migration_fault == name:
+        raise OSError("injected")
+
+
+def _journal_path(base: Path) -> Path:
+    return base.with_name(base.name + ".migration.json")
+
+
+def _staging_path(base: Path) -> Path:
+    return base.with_name(base.name + ".migrating")
+
+
+def _read_journal(base: Path) -> str | None:
+    path = _journal_path(base)
+    if not path.exists() and not path.is_symlink():
+        return None
+    if _is_reparse(path) or not path.is_file():
+        raise VaultError("bad_root")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raise VaultError("registry") from None
+    vid = data.get("vid") if isinstance(data, dict) and data.get("version") == 1 else None
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("registry")
+    return vid
+
+
+def _seal_container(base: Path, folder: Path) -> str:
+    """Re-check links and re-apply the owner-only ACL at the new place."""
+    _refuse_reparse_chain(folder)
+    for path in (base, base / VAULTS_DIR):
+        if _is_reparse(path):
+            raise VaultError("bad_root")
+        _restrict(path)
+    return _seal_acl(folder)
+
+
+def _finish_migration(base: Path, vid: str) -> dict:
+    folder = _vault_dir(base, vid)
+    if _read_header(folder) is None:
+        raise VaultError("missing")
+    data = _load_registry(base)
+    if registry.find(data, vid) is None:
+        if data["vaults"]:
+            raise VaultError("registry")  # migration only ever starts from no registry
+        entry = registry.make_entry(vid, label=registry.MIGRATED_LABEL, glyph=registry.DEFAULT_GLYPH,
+                                    colour=registry.DEFAULT_COLOUR, discret=False, order=0)
+        _save_registry(base, {"version": registry.VERSION, "legacy": vid, "vaults": [entry]})
+    _migration_step("after_registry")
+    acl = _seal_container(base, folder)
+    _journal_path(base).unlink(missing_ok=True)
+    return {"migrated": True, "vid": vid, "acl": acl}
+
+
+def _migrate(hq_root: Path) -> dict:
+    base = _base(hq_root)
+    if not base.is_dir():
+        raise VaultError("missing")
+    if _read_journal(base) is not None:
+        return resume_migration(hq_root)
+    layout = _layout(base)
+    if layout == "multi":
+        return {"migrated": False, "vid": _load_registry(base)["legacy"]}  # replay: nothing to do
+    if layout != "legacy" or _read_header(base) is None:
+        raise VaultError("missing")
+    staging = _staging_path(base)
+    if staging.exists() or staging.is_symlink():
+        raise VaultError("bad_root")
+    _refuse_reparse_chain(base)
+    lock_all()
+    vid = registry.new_vid()
+    _atomic(_journal_path(base), json.dumps({"version": 1, "vid": vid}).encode("utf-8"))
+    _migration_step("after_journal")
+    os.replace(base, staging)
+    _migration_step("after_move")
+    base.mkdir()
+    (base / VAULTS_DIR).mkdir()
+    _migration_step("after_container")
+    os.replace(staging, base / VAULTS_DIR / vid)
+    _migration_step("after_place")
+    return _finish_migration(base, vid)
+
+
+def resume_migration(hq_root: Path) -> dict:
+    """Finish a cut-off migration. Nothing is deleted; an unclear state is left as it is."""
+    base = _base(hq_root)
+    vid = _read_journal(base)
+    if vid is None:
+        return {"migrated": False}
+    staging = _staging_path(base)
+    target = base / VAULTS_DIR / vid
+    if staging.is_dir() and not _is_reparse(staging):
+        if _header_path(base).exists() or target.exists():
+            raise VaultError("registry")  # two copies: never guess which one is right
+        if not base.exists():
+            base.mkdir()
+        (base / VAULTS_DIR).mkdir(exist_ok=True)
+        os.replace(staging, target)
+        return _finish_migration(base, vid)
+    if target.is_dir() and _read_header(target) is not None:
+        return _finish_migration(base, vid)
+    if _header_path(base).is_file():
+        _journal_path(base).unlink(missing_ok=True)  # cut before the first rename: nothing moved
+        return {"migrated": False}
+    raise VaultError("registry")
+
+
+def cancel_migration(hq_root: Path) -> dict:
+    """Put the single vault back at the top. Refused once any other vault exists."""
+    base = _base(hq_root)
+    vid = _read_journal(base)
+    staging = _staging_path(base)
+    lock_all()
+    if vid is None:
+        if _layout(base) != "multi":
+            return {"cancelled": False}
+        data = _load_registry(base)
+        vid = data["legacy"]
+        if vid is None or len(data["vaults"]) != 1:
+            raise VaultError("registry")
+        _atomic(_journal_path(base), json.dumps({"version": 1, "vid": vid}).encode("utf-8"))
+    target = base / VAULTS_DIR / vid
+    if not staging.exists():
+        if not target.is_dir() or _is_reparse(target):
+            raise VaultError("registry")
+        others = [child for child in (base / VAULTS_DIR).iterdir() if child.name != vid]
+        if others:
+            raise VaultError("registry")
+        os.replace(target, staging)
+    elif _is_reparse(staging):
+        raise VaultError("bad_root")
+    if base.exists():
+        _registry_path(base).unlink(missing_ok=True)
+        vaults = base / VAULTS_DIR
+        if vaults.exists():
+            vaults.rmdir()  # empty by now; refuses otherwise
+        base.rmdir()
+    os.replace(staging, base)
+    _journal_path(base).unlink(missing_ok=True)
+    return {"cancelled": True}
 
 
 def http_status(code: str) -> int:
