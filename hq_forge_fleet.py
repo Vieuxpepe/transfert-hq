@@ -1121,9 +1121,11 @@ def _batch_public(batch: dict) -> dict:
             "cancel_deferred": bool(task.get("cancel_deferred")),
             "dispatched_at": task.get("dispatched_at"), "finished_at": task.get("finished_at"),
             "retried": bool(task.get("retried_in")),
+            "attempt": int(task.get("attempt", 1)), "retry_of_task": task.get("retry_of_task"),
+            "resolution": task.get("resolution"),
         })
-        # One retry per image: a task that is itself a retry is never offered again.
-        if state in ("failed", "uncertain") and not task.get("retried_in") and not task.get("retry_of_task"):
+        # One retry per image: a task that is itself a retry is never offered again; a resolved one neither.
+        if state in ("failed", "uncertain") and not task.get("retried_in") and not task.get("retry_of_task") and not task.get("resolution"):
             retryable += 1
             if state == "uncertain":
                 retry_uncertain += 1
@@ -1240,7 +1242,29 @@ def _check_workers(selection: list, settings_in: dict, hq_job) -> tuple[bool, li
     return False, problems, validated, fit
 
 
-def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
+def resolve_task(batch_id: str, task_id: str, action) -> tuple[int, dict]:
+    """Owner's explicit choice for one uncertain image: 'lost' or 'keep' (as is). No relaunch;
+    a late upload from the first device is still accepted on the task."""
+    if not BATCH_RE.fullmatch(batch_id or "") or not isinstance(task_id, str) or not task_id.startswith("tk-") or len(task_id) > 40:
+        return 404, {"error": "Introuvable"}
+    if action not in ("lost", "keep"):
+        return 400, {"error": MESSAGES["validation"], "code": "bad_action"}
+    with _LOCK:
+        batch = _find_batch(batch_id)
+        task = next((t for t in (batch or {}).get("tasks", []) if t.get("id") == task_id), None)
+        if task is None:
+            return 404, {"error": "Introuvable"}
+        if task.get("state") != "uncertain" or task.get("retried_in"):
+            return 409, {"error": "Cette image n'attend pas de choix.", "code": "not_uncertain"}
+        task["resolution"] = "lost" if action == "lost" else "kept"
+        task["updated"] = _now_iso()
+        batch["updated"] = task["updated"]
+        _save_batches()
+        snapshot = _batch_public(batch)
+    return 200, {"batch": snapshot}
+
+
+def retry_batch(batch_id: str, key: str, only=None) -> tuple[int, dict]:
     """A new batch for the failed and uncertain images of a finished batch, with
     their seeds and settings. Uncertain images may still arrive late from their
     first device; such an upload is accepted on the original task (an extra image,
@@ -1269,7 +1293,9 @@ def retry_batch(batch_id: str, key: str) -> tuple[int, dict]:
         if _batch_state(source) in ("running", "cancelling"):
             return 409, {"error": MESSAGES["retry_running"], "code": "retry_running"}
         missing = [task for task in source["tasks"] if task["state"] in ("failed", "uncertain")
-                   and not task.get("retried_in") and not task.get("retry_of_task")]
+                   and not task.get("retried_in") and not task.get("retry_of_task") and not task.get("resolution")]
+        if isinstance(only, list) and only:
+            missing = [task for task in missing if task["id"] in only]
         if not missing:
             return 409, {"error": MESSAGES["retry_nothing"], "code": "retry_nothing"}
         settings_in = dict(source["settings"])
@@ -1693,7 +1719,11 @@ def serve_post(raw: str, data: dict, key: str) -> tuple[int, dict] | None:
     if raw.startswith(prefix) and raw.endswith("/cancel"):
         return cancel_batch(raw[len(prefix):-len("/cancel")])
     if raw.startswith(prefix) and raw.endswith("/retry"):
-        return retry_batch(raw[len(prefix):-len("/retry")], key)
+        only = data.get("tasks") if isinstance(data, dict) and isinstance(data.get("tasks"), list) else None
+        return retry_batch(raw[len(prefix):-len("/retry")], key, [t for t in only if isinstance(t, str)][:64] if only else None)
+    if raw.startswith(prefix) and raw.endswith("/resolve") and "/tasks/" in raw:
+        batch_id, _, rest = raw[len(prefix):-len("/resolve")].partition("/tasks/")
+        return resolve_task(batch_id, rest, data.get("action") if isinstance(data, dict) else None)
     prefix = "/api/forge/devices/"
     if raw.startswith(prefix):
         rest = raw[len(prefix):]

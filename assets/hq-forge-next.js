@@ -402,6 +402,93 @@
   }));
   document.addEventListener("click", (event) => { if (event.target && event.target.closest && event.target.closest(".forge-ratio, .forge-lab-apply")) queuePlan(); });
   queuePlan();
+  // ------------------------------------------------------------------ D: journal and explicit choices
+  const clock = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleTimeString("fr-FR") : ""; };
+  const span = (a, b) => { const x = new Date(a), y = new Date(b); return isNaN(x) || isNaN(y) || y < x ? "" : secs((y - x) / 1000); };
+  const TASK_STATE = { queued: "en attente", dispatched: "envoy\u00e9e", running: "en cours", saving: "enregistrement", completed: "termin\u00e9e",
+    failed: "en \u00e9chec", uncertain: "incertaine", cancelled: "annul\u00e9e", lost: "perdue" };
+  function choiceButtons(onPick, canRetry) {
+    const row = el("div", "forge-actions forge-journal-choice");
+    [["retry", "Relancer"], ["lost", "Marquer perdue"], ["keep", "Garder tel quel"]].forEach(([action, label]) => {
+      if (action === "retry" && !canRetry) return;
+      const b = el("button", action === "retry" ? "" : "secondary", label);
+      b.type = "button";
+      b.dataset.action = action;
+      b.addEventListener("click", () => { row.querySelectorAll("button").forEach((x) => { x.disabled = true; }); onPick(action).catch((error) => {
+        row.querySelectorAll("button").forEach((x) => { x.disabled = false; });
+        row.append(el("p", "forge-note", error.message || "Le choix n\u2019a pas \u00e9t\u00e9 enregistr\u00e9."));
+      }); });
+      row.append(b);
+    });
+    return row;
+  }
+  function batchJournal(batch) {
+    const list = $("forge-fleet-journal-list");
+    if (!list) return;
+    const sig = JSON.stringify(batch.tasks.map((t) => [t.id, t.state, t.worker_id, t.dispatched_at, t.finished_at, t.resolution, t.retried]));
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    list.replaceChildren();
+    const tasks = batch.tasks.slice().sort((a, b) => String(a.dispatched_at || "~").localeCompare(String(b.dispatched_at || "~")) || a.index - b.index);
+    tasks.forEach((t) => {
+      const li = el("li", "forge-journal-item");
+      li.dataset.state = t.state;
+      const bits = ["Image " + (t.index + 1)];
+      if (t.attempt > 1) bits.push("essai " + t.attempt);
+      bits.push(t.worker_name || "aucun appareil");
+      if (t.dispatched_at) bits.push("envoy\u00e9e " + clock(t.dispatched_at));
+      if (t.finished_at) bits.push(TASK_STATE[t.state] + " " + clock(t.finished_at) + (t.state === "completed" && t.dispatched_at ? " (" + span(t.dispatched_at, t.finished_at) + ")" : ""));
+      else bits.push(TASK_STATE[t.state] || t.state);
+      if (t.resolution) bits.push(t.resolution === "lost" ? "marqu\u00e9e perdue" : "gard\u00e9e telle quelle");
+      if (t.retried) bits.push("relanc\u00e9e");
+      li.append(el("span", "", bits.join(" \u00b7 ")));
+      if (t.message && ["failed", "uncertain"].includes(t.state)) li.append(el("span", "forge-note", t.message));
+      if (t.state === "uncertain" && !t.resolution && !t.retried && batch.state !== "running" && batch.state !== "cancelling") {
+        li.append(choiceButtons(async (action) => {
+          const path = "/api/forge/batches/" + encodeURIComponent(batch.batch_id);
+          let payload;
+          if (action === "retry") {
+            const key = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+            payload = await H.api(path + "/retry", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ tasks: [t.id] }) });
+          } else {
+            payload = await post(path + "/tasks/" + encodeURIComponent(t.id) + "/resolve", { action });
+          }
+          if (payload && payload.batch) H.showBatch(payload.batch);
+        }, !t.retry_of_task));
+      }
+      list.append(li);
+    });
+  }
+  window.hqForgeOnBatch = batchJournal;
+
+  function jobJournal(job) {
+    const box = $("forge-job-journal");
+    const choice = $("forge-job-choice");
+    if (!box || !job || !job.job_id) return;
+    const list = $("forge-job-journal-list");
+    list.replaceChildren();
+    const add = (text) => list.append(el("li", "forge-journal-item", text));
+    add("Cr\u00e9\u00e9 " + clock(job.created) + " \u00b7 Cet HQ" + (job.destination === "private" ? " \u00b7 coffre" : ""));
+    if (job.started_at) add("Envoy\u00e9 \u00e0 Forge " + clock(job.started_at));
+    if (job.finished_at) add((job.state === "completed" ? "Termin\u00e9 " : "Fin " ) + clock(job.finished_at) + (job.duration_ms ? " (" + secs(job.duration_ms / 1000) + ")" : ""));
+    add("\u00c9tat : " + (job.state === "unknown" ? "incertain" : job.message || job.state) + (job.resolution ? (job.resolution === "lost" ? " \u00b7 marqu\u00e9 perdu" : " \u00b7 gard\u00e9 tel quel") : ""));
+    box.hidden = false;
+    choice.replaceChildren();
+    choice.hidden = !(job.state === "unknown" && !job.resolution);
+    if (choice.hidden) return;
+    choice.append(el("p", "forge-note", "Forge n\u2019a pas confirm\u00e9 ce travail. Rien n\u2019est relanc\u00e9 sans vous."));
+    const settings = job.settings && Object.keys(job.settings).length ? job.settings : null;
+    choice.append(choiceButtons(async (action) => {
+      if (action === "retry") {
+        H.applySettings(settings);
+        choice.replaceChildren(el("p", "forge-note", "R\u00e9glages remis dans le formulaire. Touchez G\u00e9n\u00e9rer pour relancer."));
+        return;
+      }
+      const payload = await post("/api/forge/jobs/" + encodeURIComponent(job.job_id) + "/resolve", { action });
+      jobJournal(payload.job);
+    }, !!settings));
+  }
+  window.hqForgeOnJob = jobJournal;
   // The vault lock drops every decrypted view this module opened.
   window.hqForgeNextLock = () => {
     if (mode === "private" && dialog.open) close();

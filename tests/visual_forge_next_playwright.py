@@ -43,7 +43,7 @@ def start_seeded(extra_env: dict | None = None, records: list | None = None):
     env = os.environ.copy()
     env["HQ_FORGE_MOCK"] = "ready"
     env["HQ_FORGE_VAULT_DIR"] = str(vault)
-    env.update(extra_env or {})
+    env.update({k: v for k, v in (extra_env or {}).items() if not k.startswith("_")})
     proc = subprocess.Popen([sys.executable, str(QW.HERE / "carnet_test_server.py"), str(root)],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     info = json.loads(proc.stdout.readline().decode("utf-8"))
@@ -51,6 +51,8 @@ def start_seeded(extra_env: dict | None = None, records: list | None = None):
     # The server refuses a non-empty root, so the synthetic statistics land right after it starts.
     (root / ".hq-forge").mkdir(parents=True, exist_ok=True)
     (root / ".hq-forge" / "stats.json").write_text(json.dumps({"version": 1, "records": records or []}), encoding="utf-8")
+    if name_jobs := (extra_env or {}).get("_JOBS"):
+        (root / ".hq-forge" / "jobs.json").write_text(name_jobs, encoding="utf-8")
     return proc, info
 
 
@@ -201,9 +203,61 @@ def section_plan(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"triage": section_triage, "lab": section_lab, "plan": section_plan}
-EXTRA_ENV: dict = {}
-SEEDED = {"lab": seeded_records, "plan": seeded_records}
+JOB_ID = "job-" + "c" * 24
+UNCERTAIN_JOBS = json.dumps({"jobs": [{"id": JOB_ID, "state": "generating", "destination": "normal", "submitted": True,
+                                       "settings": {"prompt": "phare incertain", "negative_prompt": "", "width": 640, "height": 512, "steps": 12},
+                                       "created": "2026-10-22T18:00:00Z", "started_at": "2026-10-22T18:00:01Z"}], "idempotency": {}})
+
+
+def section_journal(run: Run) -> None:
+    print("D journal and explicit choices")
+    ctx = run.context(init_script="sessionStorage.setItem('hqForgeJob', '" + JOB_ID + "');")
+    page = ctx.new_page()
+    run.open_forge(page)
+    run.check(run.until(page, "() => !document.querySelector('#forge-job-choice').hidden", 10), "an uncertain job offers an explicit choice")
+    labels = page.locator("#forge-job-choice button").all_inner_texts()
+    run.check(labels == ["Relancer", "Marquer perdue", "Garder tel quel"], "the three choices: " + repr(labels))
+    run.check("Rien n\u2019est relanc\u00e9 sans vous" in page.locator("#forge-job-choice").inner_text(), "it says nothing restarts on its own")
+    run.check(not page.locator("#forge-job-journal").get_attribute("open") and page.locator("#forge-job-journal").is_visible(), "the journal is there, collapsed by default")
+    page.locator("#forge-job-journal summary").click()
+    text = page.locator("#forge-job-journal-list").inner_text()
+    run.check("Cet HQ" in text and "Envoy\u00e9 \u00e0 Forge" in text and "incertain" in text, "a readable timeline: which PC, what, when: " + text.replace("\n", " | "))
+    run.shot(page, "journal-job-uncertain", "#forge-normal-results")
+    page.wait_for_timeout(1500)
+    run.check(len(page.request.get(run.base + "/api/forge/jobs").json()["jobs"]) == 1, "no automatic relaunch while waiting for the choice")
+    page.locator("#forge-job-choice button", has_text="Relancer").click()
+    run.check(page.locator("#forge-width").input_value() == "640" and "Touchez G\u00e9n\u00e9rer" in page.locator("#forge-job-choice").inner_text(),
+              "Relancer only puts the settings back in the form")
+    run.check(len(page.request.get(run.base + "/api/forge/jobs").json()["jobs"]) == 1, "Relancer itself starts nothing")
+    resolved = page.request.post(run.base + "/api/forge/jobs/" + JOB_ID + "/resolve", data=json.dumps({"action": "keep"}),
+                                 headers={"origin": run.base, "content-type": "application/json"})
+    run.check(resolved.status == 200 and resolved.json()["job"]["resolution"] == "kept", "Garder tel quel is recorded")
+    ctx.close()
+    # A multi-device batch: one line per image in a collapsed journal.
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    run.until(page, "() => document.querySelectorAll('.forge-device').length >= 3", 20)
+    for name in ("PC salon", "Portable"):
+        box = page.locator(".forge-device", has_text=name).locator('input[type="checkbox"]')
+        if not box.is_checked():
+            box.check()
+    page.locator("#forge-fleet-count").fill("3")
+    page.locator("#forge-fleet-count").dispatch_event("input")
+    page.locator("#forge-prompt").fill("phare en lot journal")
+    page.locator("#forge-generate").click()
+    run.check(run.until(page, "() => /Termin/.test(document.querySelector('#forge-fleet-batch-state').textContent)", 40), "the batch finishes")
+    run.check(not page.locator("#forge-fleet-batch-journal").get_attribute("open"), "the batch journal is collapsed by default")
+    page.locator("#forge-fleet-batch-journal summary").click()
+    items = page.locator("#forge-fleet-journal-list li").all_inner_texts()
+    run.check(len(items) == 3 and all("envoy\u00e9e" in t and "termin\u00e9e" in t for t in items), "one timeline line per image with PC and times: " + repr(items[:2]))
+    run.shot(page, "journal-batch", "#forge-fleet-batch")
+    ctx.close()
+
+
+SECTIONS = {"triage": section_triage, "lab": section_lab, "plan": section_plan, "journal": section_journal}
+EXTRA_ENV: dict = {"journal": {"_JOBS": UNCERTAIN_JOBS, "HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
+SEEDED = {"lab": seeded_records, "plan": seeded_records, "journal": list}
 
 
 def main() -> None:

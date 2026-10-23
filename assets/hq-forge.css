@@ -375,3 +375,10 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-plan{margin:4px 0}
 .forge-plan-list{margin:2px 0 4px;padding-left:18px;color:var(--muted);font-size:var(--text-sm)}
 .forge-plan-warn{font-weight:700}
+
+/* D: journal */
+.forge-journal{margin:6px 0;padding-left:20px;font-size:var(--text-sm)}
+.forge-journal-item{margin:4px 0;overflow-wrap:anywhere}
+.forge-journal-item .forge-note{display:block}
+.forge-journal-choice button{min-height:var(--tap-min)}
+.forge-job-choice{margin:6px 0}

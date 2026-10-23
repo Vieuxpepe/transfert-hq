@@ -455,6 +455,61 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual(self.post(f"/api/forge/batches/{new['batch_id']}/retry", {}, key="retry-key-0003")[0], 409)
         self.assertEqual(a.forge_mock.interrupts + b.forge_mock.interrupts, 0)
 
+    def test_uncertain_tasks_get_an_explicit_choice_never_an_automatic_relaunch(self):
+        a = self.worker("PC A", start=False)
+        b = self.worker("PC B", start=False)
+        c = self.worker("PC C", start=False)
+        for sim in (a, b, c):
+            sim.worker.poll_once()
+        status, payload = self.batch([a.id, b.id, c.id], 3, "resolve-src-key-1")
+        self.assertEqual(status, 202, payload)
+        source_id = payload["batch"]["batch_id"]
+        lost_a = a.worker.poll_once()
+        lost_c = c.worker.poll_once()
+        self.assertIsNotNone(lost_a)
+        self.assertIsNotNone(lost_c)
+        b.start()
+        wait_for(lambda: self.admin.json(f"/api/forge/batches/{source_id}")[1]["batch"]["counts"]["done"] == 1)
+        b.stop()
+        real = time.time
+        FL.set_clock_for_tests(lambda: real() + FL._lease_sec + 5)
+        try:
+            done = self.finished(source_id)
+        finally:
+            FL.set_clock_for_tests(None)
+        self.assertEqual(done["retryable"], 2)
+        self.assertTrue(all("attempt" in t and "resolution" in t for t in done["tasks"]), "journal fields are public")
+        calls = len(b.forge_mock.calls)
+        path = f"/api/forge/batches/{source_id}/tasks/" + lost_a["task_id"] + "/resolve"
+        self.assertEqual(self.post(path, {"action": "relaunch"})[0], 400)
+        status, kept = self.post(path, {"action": "lost"})
+        self.assertEqual(status, 200, kept)
+        row = next(t for t in kept["batch"]["tasks"] if t["id"] == lost_a["task_id"])
+        self.assertEqual((row["state"], row["resolution"]), ("uncertain", "lost"))
+        self.assertEqual(kept["batch"]["retryable"], 1)
+        self.assertEqual(self.post(path, {"action": "keep"})[0], 200, "the choice can be changed while still uncertain")
+        done_task = next(t for t in done["tasks"] if t["state"] == "completed")
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/tasks/{done_task['id']}/resolve", {"action": "lost"})[0], 409)
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/tasks/tk-" + "0" * 24 + "/resolve", {"action": "lost"})[0], 404)
+        time.sleep(0.3)
+        self.assertEqual(len(b.forge_mock.calls), calls, "resolving never relaunches anything")
+        # Relancer one image: only that task goes into the retry batch.
+        status, retried = self.post(f"/api/forge/batches/{source_id}/retry", {"tasks": [lost_c["task_id"]]}, key="resolve-retry-key-1")
+        self.assertEqual(status, 202, retried)
+        self.assertEqual([t["retry_of_task"] for t in retried["batch"]["tasks"]], [lost_c["task_id"]])
+        self.assertEqual(retried["batch"]["tasks"][0]["attempt"], 2)
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/retry", {}, key="resolve-retry-key-2")[0], 409, "the kept task is not offered again")
+        self.assertEqual(self.post(f"/api/forge/batches/{source_id}/tasks/" + lost_c["task_id"] + "/resolve", {"action": "lost"})[0], 409)
+
+    def test_resolve_route_needs_admin_csrf_and_known_ids(self):
+        path = "/api/forge/batches/bt-" + "0" * 24 + "/tasks/tk-" + "0" * 24 + "/resolve"
+        self.assertEqual(self.post(path, {"action": "lost"}, client=self.upload)[0], 403)
+        self.assertIn(self.post(path, {"action": "lost"}, client=self.anon)[0], (401, 403))
+        self.assertEqual(self.post(path, {"action": "lost"})[0], 404)
+        self.assertEqual(self.post("/api/forge/batches/nope/tasks/x/resolve", {"action": "lost"})[0], 404)
+        forged = self.admin.json(path, "POST", data=b'{"action": "lost"}', headers={"Content-Type": "application/json", "Origin": "http://evil.example"})
+        self.assertEqual(forged[0], 403)
+
     def test_retry_routes_need_admin_csrf_and_known_batches(self):
         self.assertEqual(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, client=self.upload, key="retry-up-key")[0], 403)
         self.assertIn(self.post("/api/forge/batches/bt-" + "0" * 24 + "/retry", {}, client=self.anon, key="retry-anon-key")[0], (401, 403))

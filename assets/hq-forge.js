@@ -445,6 +445,7 @@
       }
     }
     syncActions(active);
+    if (window.hqForgeOnJob) window.hqForgeOnJob(job);
     if (!active) submitGuard = false;
     if (active) {
       sessionStorage.setItem("hqForgeJob", job.job_id);
@@ -1039,6 +1040,7 @@
       return { done, missing };
     },
     fleetMode: () => fleetMode(),
+    showBatch: (batch) => showBatch(batch),
     closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
   };
 
@@ -2584,6 +2586,7 @@
       if (!note.textContent.includes("doublon")) note.textContent = (note.textContent + extra).trim();
     }
     $("forge-fleet-batch-close").hidden = running;
+    if (window.hqForgeOnBatch) window.hqForgeOnBatch(batch);
     let added = false;
     batch.tasks.forEach((task) => {
       if (task.image_id && !shownBatchImages.has(task.image_id)) {

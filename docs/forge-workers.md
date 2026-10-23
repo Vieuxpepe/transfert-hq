@@ -132,3 +132,8 @@ negative prompt, never anything from the vault. Gallery images carry an optional
 - `GET /api/forge/lab?plan=1&width=&height=&steps=&hires=&count=&checkpoint=` (same read-only admin route, no new route) returns, per device, a duration range (20th-80th percentile per image x count) from completed measurements with the same size, steps and hires. Under 5 measurements a device reads "Pas assez de donnees". With two or more measured devices it suggests a split proportional to measured speed; it is shown as indicative and never changes how HQ splits a batch.
 - Measurements are narrowed to the selected checkpoint when it has any; otherwise all checkpoints of that size are used (known limitation).
 - Memory warnings come only from recorded `forge_oom` failures for the same size and hires (local jobs: same or smaller image count; batch tasks: any). `/sdapi/v1/memory` is not used: it is not allowlisted.
+
+## Journal and uncertain work (phase D)
+
+- Batches and local jobs show a collapsed Journal: one line per image (device, sent, finished, duration, attempt, resolution). Local jobs expose `started_at`, `finished_at`, `duration_ms` and `resolution` (times only, never a prompt).
+- Uncertain work gets an explicit choice, never an automatic relaunch: Relancer (batch: `POST /api/forge/batches/<id>/retry` with `{tasks:[id]}` for that image only; local job: settings are put back in the form and nothing starts), Marquer perdue / Garder tel quel (`POST /api/forge/batches/<id>/tasks/<task>/resolve` and `POST /api/forge/jobs/<id>/resolve`, `{action: lost|keep}`, admin + CSRF). A resolved image is no longer offered for retry; a late upload from the first device is still accepted.

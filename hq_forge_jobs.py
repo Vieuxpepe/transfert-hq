@@ -217,6 +217,11 @@ def _public(job: dict, *, unlocked: bool = False) -> dict:
         "created": job.get("created"),
         "updated": job.get("updated"),
         "diagnostic": _diagnostic(job.get("diagnostic")),
+        # Phase D journal: times only (no prompt), and the owner's choice for an uncertain job.
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "duration_ms": job.get("duration_ms"),
+        "resolution": job.get("resolution") if job.get("resolution") in ("lost", "kept") else None,
     }
 
 
@@ -1010,6 +1015,28 @@ def start_now(root: Path, job_id: str, session_token: str | None = None) -> tupl
     return 200, {"job": snapshot}
 
 
+def resolve(root: Path, job_id: str, action, session_token: str | None = None) -> tuple[int, dict]:
+    """The owner's explicit choice for a job whose outcome is unknown: 'lost' (marquer perdue)
+    or 'keep' (garder tel quel). Nothing is ever relaunched from here."""
+    recover(root)
+    if not JOB_RE.fullmatch(job_id):
+        return 404, {"error": "Introuvable"}
+    if action not in ("lost", "keep"):
+        return 400, {"error": "Choix inconnu.", "code": "bad_action"}
+    with _LOCK:
+        data = _load(root)
+        job = _find(data, job_id)
+        if job is None:
+            return 404, {"error": "Introuvable"}
+        if job.get("state") != "unknown":
+            return 409, {"error": "Ce travail n'est pas incertain.", "code": "not_uncertain"}
+        job["resolution"] = "lost" if action == "lost" else "kept"
+        job["updated"] = _now()
+        _save(root, data)
+        snapshot = _public(job, unlocked=False)
+    return 200, {"job": snapshot}
+
+
 def serve_get(root: Path, raw: str, query: str, session_token: str | None = None) -> tuple[int, dict] | None:
     if raw == "/api/forge/jobs/durations":
         return usual_duration(root, query)
@@ -1034,4 +1061,6 @@ def serve_post(root: Path, raw: str, data: dict, idempotency_key: str, session_t
         return cancel_job(root, raw[len(prefix):-len(suffix)], session_token)
     if raw.startswith(prefix) and raw.endswith("/start-now"):
         return start_now(root, raw[len(prefix):-len("/start-now")], session_token)
+    if raw.startswith(prefix) and raw.endswith("/resolve"):
+        return resolve(root, raw[len(prefix):-len("/resolve")], data.get("action"), session_token)
     return None

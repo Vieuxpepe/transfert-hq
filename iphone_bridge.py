@@ -5556,6 +5556,10 @@ def render_app() -> bytes:
         <p id="forge-fleet-batch-totals" class="forge-fleet-batch-totals" aria-live="polite"></p>
         <ul id="forge-fleet-batch-workers" class="forge-fleet-batch-workers"></ul>
         <p id="forge-fleet-batch-note" class="forge-note" role="status"></p>
+        <details class="forge-fold" id="forge-fleet-batch-journal">
+          <summary>Journal</summary>
+          <ol id="forge-fleet-journal-list" class="forge-journal"></ol>
+        </details>
         <div class="forge-actions">
           <button type="button" id="forge-fleet-batch-cancel" class="secondary">Annuler le lot</button>
           <button type="button" id="forge-fleet-batch-retry" hidden>Relancer les images manquantes</button>
@@ -5564,6 +5568,11 @@ def render_app() -> bytes:
       </section>
       <section class="forge-block forge-m" id="forge-normal-results" aria-labelledby="forge-results-title">
         <h2 id="forge-results-title">Résultat</h2>
+        <div id="forge-job-choice" class="forge-job-choice" hidden></div>
+        <details class="forge-fold" id="forge-job-journal" hidden>
+          <summary>Journal</summary>
+          <ol id="forge-job-journal-list" class="forge-journal"></ol>
+        </details>
         <p id="forge-results-empty" class="forge-note">Le résultat de la génération apparaîtra ici.</p>
         <div id="forge-results" class="forge-grid"></div>
       </section>

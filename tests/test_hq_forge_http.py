@@ -375,6 +375,27 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(admin.req("/api/forge/lab", "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)
         self.assertEqual(admin.req("/api/forge/lab", "POST", b"{}")[0], 404)
 
+    def test_job_resolve_route_is_admin_only_csrf_gated_and_never_relaunches(self):
+        job_id = "job-" + "b" * 24
+        store = self.root / ".hq-forge" / "jobs.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps({"jobs": [{"id": job_id, "state": "generating", "destination": "normal", "settings": {"prompt": "zq-resolve"},
+                                               "created": "2026-10-22T10:00:00Z", "submitted": True}], "idempotency": {}}), encoding="utf-8")
+        J.reset_for_tests()
+        path = "/api/forge/jobs/" + job_id + "/resolve"
+        self.assertEqual(self.anon.req(path, "POST", b'{"action": "lost"}')[0], 401)
+        self.assertEqual(Client(self.base, UPLOAD_PIN).req(path, "POST", b'{"action": "lost"}')[0], 403)
+        admin = Client(self.base, ADMIN_PIN)
+        self.assertEqual(admin.req(path, "POST", b'{"action": "lost"}', {"Origin": "http://evil.example"}, origin=False)[0], 403)
+        self.assertEqual(admin.req("/api/forge/jobs/job-" + "0" * 24 + "/resolve", "POST", b'{"action": "lost"}')[0], 404)
+        self.assertEqual(admin.req(path, "POST", b'{"action": "retry"}')[0], 400)
+        status, payload = admin.json(path, "POST", data=b'{"action": "keep"}')
+        self.assertEqual(status, 200, payload)
+        self.assertEqual((payload["job"]["state"], payload["job"]["resolution"]), ("unknown", "kept"))
+        jobs = json.loads(store.read_text(encoding="utf-8"))["jobs"]
+        self.assertEqual(len(jobs), 1, "no new job was created")
+        store.write_text(json.dumps({"jobs": [], "idempotency": {}}), encoding="utf-8")
+
     def test_readiness_does_not_depend_on_forge(self):
         self.assertNotIn("hq_forge", D.REQUIRED_MODULES)
         status, _headers, body = self.admin.req("/api/diag/ready")
