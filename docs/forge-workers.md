@@ -20,8 +20,8 @@ never talks to a worker.
 
 1. Copy `hq_forge_worker.py` from the HQ repository to a folder on the
    worker, for example `C:\TransfertWorker\`.
-2. In Forge Studio, open **Appareils de gÃ©nÃ©ration â†’ Ajouter un appareil**
-   and press **CrÃ©er un code Ã  usage unique**. The code is valid for
+2. In Forge Studio, open **Appareils de génération → Ajouter un appareil**
+   and press **Créer un code à usage unique**. The code is valid for
    10 minutes, once, and is shown only there.
 3. In PowerShell on the worker:
 
@@ -61,7 +61,7 @@ Register-ScheduledTask -TaskName "TransfertForgeWorker" -Action $action -Trigger
 
 ## Manage and revoke
 
-In the device card (**CaractÃ©ristiques**): rename, **DÃ©sactiver** (stops new
+In the device card (**Caractéristiques**): rename, **Désactiver** (stops new
 tasks; the device still reports health), **Retirer** (revokes the secret; a
 new pairing code is needed to add it back). Delete the worker's credential
 file after a removal.
@@ -69,7 +69,7 @@ file after a removal.
 ## Behaviour worth knowing
 
 - Every worker request is signed: HMAC-SHA256 over
-  `hq-forge-worker-v1|METHOD|path|timestamp|nonce|sha256(body)`, Â±90 s skew,
+  `hq-forge-worker-v1|METHOD|path|timestamp|nonce|sha256(body)`, ±90 s skew,
   nonces remembered for 180 s (in memory: after an HQ restart a captured
   request could be replayed inside that window; TLS from Tailscale Serve
   protects ordinary traffic).
@@ -79,9 +79,9 @@ file after a removal.
   (HTTP 503) with no worker record and nothing written; the pairing code is NOT
   consumed, so it can be retried until it expires. There is no plaintext fallback.
 - A record whose secret is not DPAPI-wrapped (e.g. a legacy plaintext one) is never
-  used or converted: the worker is refused and its card says "Secret non protÃ©gÃ© â€”
-  rÃ©associer l'appareil". Remove the device and pair it again.
-- One task is one image. Fixed seed `s` gives `s, s+1, â€¦` (mod 2^32); a random
+  used or converted: the worker is refused and its card says "Secret non protégé —
+  réassocier l'appareil". Remove the device and pair it again.
+- One task is one image. Fixed seed `s` gives `s, s+1, …` (mod 2^32); a random
   seed draws one per image, recorded in the batch and the gallery metadata.
 - If a worker stops answering after it received a task, the task becomes
   *incertaine* and is not re-run, so no image is generated twice. Tasks that
@@ -110,7 +110,7 @@ Each message gives the next step. The Add-device sheet walks through the six set
   inactive, events:{retries, oom}}}`. It is a weak signal and is **not** on the allowlist; HQ does not use it.
 - Errors from `POST /sdapi/v1/txt2img` come from `modules/api/api.py` `handle_exception` as
   `{"error": <exception class name>, "detail", "body", "errors"}`. HQ and workers read only the class name;
-  `OutOfMemoryError` is classified `forge_oom` ("Forge a manquÃ© de mÃ©moire GPU"). Read from the source;
+  `OutOfMemoryError` is classified `forge_oom` ("Forge a manqué de mémoire GPU"). Read from the source;
   an actual out-of-memory failure was not provoked.
 
 ## Statistics (phase A)
