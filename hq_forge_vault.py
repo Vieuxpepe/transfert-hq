@@ -1122,6 +1122,100 @@ def _slot(token: str, vault: str) -> str:
     return token + "|" + vault
 
 
+def list_vaults(hq_root: Path, token: str | None) -> dict:
+    """Read-only list, only what the registry allows: glyph, colour, number, order, days, and the
+    name unless Discret. A Discret name shows only while this session has that vault open."""
+    _require_live(token)
+    state = layout(hq_root)
+    if state == "unreadable":
+        raise VaultError("registry")
+    if state != "multi":
+        # 'legacy': the panel offers the migration (after a ZIP backup); 'migrating': it resumes at the next start.
+        return {"layout": state, "vaults": [], "max": registry.MAX_VAULTS, "open": None}
+    base = _base(hq_root)
+    data = _load_registry(base)  # VaultError("registry") on any oddity: no partial list
+    entries = sorted(data["vaults"], key=lambda e: (e["order"], e["created"], e["id"]))
+    opened = None
+    with _LOCK:
+        entry = _sessions.get(token)
+        if entry is not None and time.monotonic() < float(entry["expires"]):
+            opened = entry.get("vault")
+    rows = []
+    for number, item in enumerate(entries, start=1):
+        label = None
+        if item["discret"] and opened == item["id"]:
+            try:
+                root, master, _header = _master(hq_root, token, item["id"])
+                label = _read_label(root, master)
+            except VaultError:
+                label = None
+        rows.append(_public_entry(item, number, label))
+    return {"layout": "multi", "vaults": rows, "max": registry.MAX_VAULTS,
+            "open": opened if opened in {e["id"] for e in entries} else None}
+
+
+UPDATE_KEYS = ("label", "glyph", "colour", "discret", "order")
+
+
+def update_vault(hq_root: Path, token: str | None, vid, data) -> dict:
+    """Name, glyph, colour, Discret and order. A Discret name (setting, changing or revealing it)
+    needs this vault open in this session, since it is sealed with the vault's key."""
+    _require_live(token)
+    if not isinstance(data, dict) or not data or set(data) - set(UPDATE_KEYS):
+        raise VaultError("validation")
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    base = _base(hq_root)
+    if _layout(base) != "multi":
+        raise VaultError("bad_vault")
+    with _REGISTRY_LOCK:
+        reg = _load_registry(base)
+        entry = registry.find(reg, vid)
+        if entry is None:
+            raise VaultError("bad_vault")
+        discret = data.get("discret", entry["discret"])
+        if not isinstance(discret, bool):
+            raise VaultError("validation")
+        label = None
+        if "label" in data:
+            label = registry.clean_label(data["label"])
+            if label is None:
+                raise VaultError("validation")
+        glyph = data.get("glyph", entry["glyph"])
+        colour = data.get("colour", entry["colour"])
+        order = data.get("order", entry["order"])
+        if glyph not in registry.GLYPHS or colour not in registry.COLOURS or not registry._order(order):
+            raise VaultError("validation")
+        root = master = None
+        if discret or entry["discret"]:
+            root, master, _header = _master(hq_root, token, vid)  # locked unless open here
+        if discret:
+            name = label if label is not None else (entry["label"] if not entry["discret"] else None)
+            if name is not None:
+                _write_label(root, master, name)  # sealed first, then the clear name leaves the registry
+            elif _read_label(root, master) is None:
+                raise VaultError("validation")
+            shown = None
+        else:
+            shown = label if label is not None else entry["label"]
+            if entry["discret"] and shown is None:
+                shown = _read_label(root, master)
+            if shown is None:
+                raise VaultError("validation")
+        updated = dict(entry, label=shown, glyph=glyph, colour=colour, discret=discret, order=order)
+        try:
+            registry.validate_entry(updated)
+        except registry.RegistryError:
+            raise VaultError("validation") from None
+        reg["vaults"] = [updated if item["id"] == vid else item for item in reg["vaults"]]
+        _save_registry(base, reg)
+        if entry["discret"] and not discret:
+            _drop_label(root)
+        number = 1 + sorted(reg["vaults"], key=lambda e: (e["order"], e["created"], e["id"])).index(updated)
+        visible = _read_label(root, master) if discret and master is not None else None
+    return _public_entry(updated, number, visible)
+
+
 def _open_with_budget(token: str | None, opener, vault: str = "legacy"):
     key_token = _require_live(token)
     slot = _slot(key_token, vault)

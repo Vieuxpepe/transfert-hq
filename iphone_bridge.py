@@ -6754,6 +6754,18 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _forge_vault_post(self, raw: str, data: dict, token: str | None) -> None:
+        if raw in ("/api/forge/vaults/new", "/api/forge/vaults/migrate"):
+            try:
+                if raw.endswith("/new"):
+                    self._json(201, hq_forge_vault.create_vault(
+                        ROOT, token, str(data.get("passphrase") or ""), str(data.get("confirm") or ""),
+                        label=data.get("label"), glyph=data.get("glyph", "coffre"), colour=data.get("colour", "ardoise"),
+                        discret=data.get("discret", False)))
+                else:
+                    self._json(200, hq_forge_vault.migrate_legacy(ROOT, token, backup_offered=data.get("backup_offered")))
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
+            return
         vid, sub = self._vault_route(raw)
         if sub is None or (vid is not None and sub in self._ALIAS_ONLY):
             self._json(404, {"error": "Inconnu"})
@@ -6787,6 +6799,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_vault.set_labels(ROOT, token, image_id, data.get("tags"), data.get("collection"), vid=vid))
             elif sub == "/search":
                 self._json(200, hq_forge_vault.search(ROOT, token, data, vid=vid))
+            elif sub == "/settings" and vid is not None:
+                self._json(200, hq_forge_vault.update_vault(ROOT, token, vid, data))
             else:
                 self._json(404, {"error": "Inconnu"})
         except hq_forge_vault.VaultError as exc:
@@ -6799,6 +6813,12 @@ class Handler(BaseHTTPRequestHandler):
         if not raw.startswith("/api/forge/vault"):
             return False
         token = self._token()
+        if raw == "/api/forge/vaults":
+            try:
+                self._json(200, hq_forge_vault.list_vaults(ROOT, token))
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
+            return True
         vid, sub = self._vault_route(raw)
         if sub is None or (vid is not None and sub in self._ALIAS_ONLY):
             self._json(404, {"error": "Inconnu"})

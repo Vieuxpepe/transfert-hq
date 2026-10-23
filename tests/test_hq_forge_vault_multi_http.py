@@ -155,5 +155,90 @@ class PerVaultPaths(MultiHttp):
             self.assertEqual(self.post(self.admin, "/api/forge/vaults/" + a + path, {"passphrase": PASS, "confirm": PASS})[0], 404, path)
 
 
+class ListCreateSettings(MultiHttp):
+    """V3.2: list (read-only, registry fields only), create, settings, and the explicit migration."""
+
+    ALLOWED = {"id", "label", "number", "glyph", "colour", "discret", "order", "created", "last_used_day"}
+
+    def create(self, label, passphrase=PASS, **extra):
+        return self.post(self.admin, "/api/forge/vaults/new", {"passphrase": passphrase, "confirm": passphrase, "label": label, **extra})
+
+    def test_create_and_list(self):
+        status, made = self.create("Voyages", glyph="lune", colour="bleu")
+        self.assertEqual(status, 201, made)
+        self.assertIn("recovery_key", made)
+        _s, headers, _b = self.admin.req("/api/forge/vaults")
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        status, listing = self.admin.json("/api/forge/vaults")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["layout"], "multi")
+        self.assertEqual(listing["max"], 12)
+        self.assertEqual([set(v) for v in listing["vaults"]], [self.ALLOWED])
+        self.assertEqual((listing["vaults"][0]["label"], listing["vaults"][0]["glyph"], listing["vaults"][0]["number"]), ("Voyages", "lune", 1))
+        self.assertNotIn("recovery_key", json.dumps(listing))
+
+    def test_discret_name_only_while_open_here(self):
+        _s, made = self.create("Projet Hirondelle", discret=True)
+        vid = made["vault"]["id"]
+        self.assertIsNone(made["vault"]["label"])
+        listing = self.admin.json("/api/forge/vaults")[1]["vaults"][0]
+        self.assertEqual((listing["label"], listing["number"], listing["discret"]), (None, 1, True))
+        self.post(self.admin, "/api/forge/vaults/" + vid + "/unlock", {"passphrase": PASS})
+        self.assertEqual(self.admin.json("/api/forge/vaults")[1]["vaults"][0]["label"], "Projet Hirondelle")
+        other = Client(self.base, ADMIN_PIN)
+        self.assertIsNone(other.json("/api/forge/vaults")[1]["vaults"][0]["label"])
+        self.post(self.admin, "/api/forge/vaults/" + vid + "/lock", {})
+        self.assertIsNone(self.admin.json("/api/forge/vaults")[1]["vaults"][0]["label"])
+        self.assertNotIn(b"Hirondelle", (self.store / "registry.json").read_bytes())
+
+    def test_settings(self):
+        _s, made = self.create("A")
+        vid = made["vault"]["id"]
+        path = "/api/forge/vaults/" + vid + "/settings"
+        status, row = self.post(self.admin, path, {"label": "Album", "glyph": "vague", "colour": "vert", "order": 5})
+        self.assertEqual(status, 200, row)
+        self.assertEqual((row["label"], row["glyph"], row["colour"], row["order"]), ("Album", "vague", "vert", 5))
+        for bad in ({"label": ""}, {"glyph": "crane"}, {"colour": "#fff"}, {"order": -1}, {"id": "vlt-0000000000000000"},
+                    {"created": "2020-01-01"}, {"last_used_day": "2020-01-01"}, {}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.post(self.admin, path, bad)[0], 400)
+        # Discret needs the vault open in this session; then the name leaves the registry.
+        self.assertEqual(self.post(self.admin, path, {"discret": True})[0], 401)
+        self.post(self.admin, "/api/forge/vaults/" + vid + "/unlock", {"passphrase": PASS})
+        status, row = self.post(self.admin, path, {"discret": True})
+        self.assertEqual((status, row["label"], row["discret"]), (200, "Album", True))
+        reg = json.loads((self.store / "registry.json").read_text(encoding="utf-8"))
+        self.assertIsNone(reg["vaults"][0]["label"])
+        self.assertNotIn(b"Album", (self.store / "registry.json").read_bytes())
+        status, row = self.post(self.admin, path, {"discret": False})
+        self.assertEqual((status, row["label"]), (200, "Album"))
+        self.assertFalse((self.store / "vaults" / vid / "label.bin").exists())
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/vlt-ffffffffffffffff/settings", {"order": 1})[0], 404)
+
+    def test_corrupt_registry_lists_nothing_and_says_so(self):
+        self.create("A")
+        self.create("B", PASS_B)
+        raw = (self.store / "registry.json").read_text(encoding="utf-8")
+        (self.store / "registry.json").write_text(raw.replace('"glyph":"coffre"', '"glyph":"crane"', 1), encoding="utf-8")
+        status, body = self.admin.json("/api/forge/vaults")
+        self.assertEqual(status, 409)
+        self.assertEqual(body["code"], "registry")
+        self.assertNotIn("vaults", body)
+        self.assertNotIn('"B"', json.dumps(body))
+
+    def test_migration_route_needs_the_backup_offer(self):
+        V.setup(B.ROOT, PASS, PASS)
+        status, listing = self.admin.json("/api/forge/vaults")
+        self.assertEqual((status, listing["layout"], listing["vaults"]), (200, "legacy", []))
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/migrate", {})[0], 400)
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": "yes"})[0], 400)
+        self.assertEqual(self.create("Trop tot")[0], 409)
+        status, done = self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})
+        self.assertEqual(status, 200, done)
+        self.assertTrue(done["migrated"])
+        listing = self.admin.json("/api/forge/vaults")[1]
+        self.assertEqual([(v["id"], v["label"]) for v in listing["vaults"]], [(done["vid"], "Coffre")])
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})[1]["migrated"], False)
+
 if __name__ == "__main__":
     unittest.main()
