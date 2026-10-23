@@ -2056,6 +2056,38 @@ def _migrate(hq_root: Path) -> dict:
     return _finish_migration(base, vid)
 
 
+def migrate_legacy(hq_root: Path, token: str | None, *, backup_offered) -> dict:
+    """V1.6: only on the owner's explicit first opening of the vault panel, after the panel has
+    offered a ZIP backup of the single vault (backup_offered must be exactly True). Never called
+    at start-up, by status, by jobs or by cleanup."""
+    _require_live(token)
+    if backup_offered is not True:
+        raise VaultError("validation")
+    try:
+        return _migrate(hq_root)
+    except OSError:
+        try:
+            resume_migration(hq_root)
+        except (VaultError, OSError):
+            pass
+        raise VaultError("migration_failed") from None
+
+
+def layout(hq_root: Path) -> str:
+    """'legacy' means a migration will be offered at the panel's next explicit opening."""
+    if not _disk and _test_dir is None:
+        return "empty"
+    try:
+        base = _base(hq_root)
+        if not base.is_dir():
+            return "empty"
+        if _journal_path(base).exists():
+            return "migrating"
+        return _layout(base)
+    except VaultError:
+        return "unreadable"
+
+
 def resume_migration(hq_root: Path) -> dict:
     """Finish a cut-off migration. Nothing is deleted; an unclear state is left as it is."""
     base = _base(hq_root)
@@ -2137,6 +2169,7 @@ def http_status(code: str) -> int:
         "use_vaults": 409,
         "migration": 409,
         "too_many": 409,
+        "migration_failed": 409,
     }.get(code, 400)
 
 
@@ -2162,5 +2195,6 @@ def public_error(code: str) -> str:
         "use_vaults": "Choisissez un coffre dans la liste.",
         "migration": "Le coffre doit d'abord passer au nouveau rangement.",
         "too_many": "Nombre maximal de coffres atteint.",
+        "migration_failed": "Le nouveau rangement n'a pas abouti. Rien n'est perdu.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
     }.get(code, "Le coffre a refusé l'opération.")

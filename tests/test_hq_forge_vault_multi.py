@@ -407,5 +407,42 @@ class MigrationTests(MultiBase):
         self.assertEqual(caught.exception.code, "registry")
         self.assertTrue((self.store / "vault.json").is_file())
 
+class MigrationGateTests(MultiBase):
+    """V1.6: migration only when explicitly asked after the backup offer; never silently."""
+
+    def test_nothing_migrates_by_itself(self):
+        V.setup(self.hq, PASS, PASS)
+        V.unlock(self.hq, self.admin, PASS)
+        V.status(self.hq, self.admin)
+        V.cleanup_partials(self.hq)
+        J.recover(self.hq)
+        V.page(self.hq, self.admin)
+        self.assertTrue((self.store / "vault.json").is_file())
+        self.assertFalse((self.store / "registry.json").exists())
+        self.assertEqual(V.layout(self.hq), "legacy")
+
+    def test_migration_needs_a_session_and_the_backup_offer(self):
+        V.setup(self.hq, PASS, PASS)
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, None, backup_offered=True)
+        self.assertEqual(caught.exception.code, "locked")
+        for offered in (False, None, "true", 1):
+            with self.subTest(offered=offered), self.assertRaises(V.VaultError) as caught:
+                V.migrate_legacy(self.hq, self.admin, backup_offered=offered)
+            self.assertEqual(caught.exception.code, "validation")
+        self.assertEqual(V.layout(self.hq), "legacy")
+        result = V.migrate_legacy(self.hq, self.admin, backup_offered=True)
+        self.assertTrue(result["migrated"])
+        self.assertEqual(V.layout(self.hq), "multi")
+
+    def test_failed_rename_reports_and_loses_nothing(self):
+        V.setup(self.hq, PASS, PASS)
+        V.set_migration_fault_for_tests("after_journal")
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, self.admin, backup_offered=True)
+        self.assertEqual(caught.exception.code, "migration_failed")
+        self.assertEqual(V.layout(self.hq), "legacy")
+        V.unlock(self.hq, self.admin, PASS)
+
 if __name__ == "__main__":
     unittest.main()
