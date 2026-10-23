@@ -5521,6 +5521,7 @@ def render_app() -> bytes:
         </div>
         <p id="forge-fleet-private" class="forge-note forge-fleet-private" hidden>La génération privée reste sur cet HQ. Les autres appareils ne reçoivent jamais un prompt privé.</p>
       </section>
+      <div id="forge-plan" class="forge-plan forge-m" aria-live="polite" hidden></div>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
         <p id="forge-usual-duration" class="forge-note forge-usual" hidden></p>
@@ -6676,7 +6677,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if raw == "/api/forge/lab":
             # Read-only Laboratoire summary: settings, durations, outcomes and sort flags. No prompt, no vault.
-            self._json(200, hq_forge_lab.summary(ROOT))
+            self._json(200, hq_forge_lab.summary(ROOT, parse_qs(parsed.query)))
             return True
         got = hq_forge_jobs.serve_get(ROOT, raw, parsed.query, self._token())
         if got is None:

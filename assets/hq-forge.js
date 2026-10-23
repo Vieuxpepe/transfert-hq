@@ -1038,6 +1038,7 @@
       queueUsual();
       return { done, missing };
     },
+    fleetMode: () => fleetMode(),
     closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
   };
 

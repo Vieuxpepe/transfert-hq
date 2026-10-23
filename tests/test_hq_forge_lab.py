@@ -67,6 +67,26 @@ class Lab(unittest.TestCase):
         self.assertIn({"kind": "device", "value": "Portable", "with_kind": "checkpoint", "with": "ckpt-b"}, found)
         self.assertFalse(any(f["kind"] == "device" and f["value"] == "PC salon" and f["with_kind"] == "checkpoint" for f in found))
 
+    def test_plan_gives_ranges_split_and_memory_warnings_from_measurements(self):
+        rows = [row(i, duration_s=10.0) for i in range(8)] + [row(i, device_name="Bureau", duration_s=20.0) for i in range(6)]
+        rows += [row(i, device_name="Portable", duration_s=5.0) for i in range(L.PLAN_MIN - 1)]
+        rows += [row(90, device_name="Bureau", outcome="failed", error="forge_oom", duration_s=None),
+                 row(91, kind="job", device_id="local", device_name=None, outcome="failed", error="forge_oom", n_iter=4, count=4, duration_s=None)]
+        q = {"width": ["512"], "height": ["512"], "steps": ["20"], "hires": ["0"], "count": ["6"]}
+        plan = L.plan(rows, q)
+        by = {d["device"]: d for d in plan["devices"]}
+        self.assertEqual((by["PC salon"]["low_s"], by["PC salon"]["high_s"]), (60.0, 60.0))
+        self.assertFalse(by["Portable"]["enough"])
+        self.assertNotIn("low_s", by["Portable"])
+        self.assertEqual(plan["split"]["shares"], [{"device": "Bureau", "count": 2}, {"device": "PC salon", "count": 4}])
+        self.assertEqual(plan["split"]["high_s"], 40.0)
+        self.assertEqual({(m["device"], m["batch"]) for m in plan["memory"]}, {("Bureau", 1), ("Cet HQ", 4)})
+        self.assertEqual({(m["device"], m["batch"]) for m in L.plan(rows, dict(q, count=["2"]))["memory"]}, {("Bureau", 1)})
+        other = L.plan(rows, dict(q, width=["1024"]))
+        self.assertEqual((other["devices"], other["split"], other["memory"]), ([], None, []))
+        self.assertIsNone(L.plan(rows, {"width": ["abc"]}))
+        self.assertIsNone(L.plan(rows, dict(q, count=["999"])))
+
     def test_summary_reads_only_stats_without_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

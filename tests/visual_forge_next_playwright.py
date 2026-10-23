@@ -176,9 +176,34 @@ def section_lab(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"triage": section_triage, "lab": section_lab}
+def set_size(page, width: int, height: int, steps: int) -> None:
+    page.evaluate("([w, h, s]) => { for (const [id, v] of [['forge-width', w], ['forge-height', h], ['forge-steps', s]]) { const n = document.getElementById(id); n.value = String(v); n.dispatchEvent(new Event('input', {bubbles: true})); n.dispatchEvent(new Event('change', {bubbles: true})); } }", [width, height, steps])
+
+
+def section_plan(run: Run) -> None:
+    print("C honest planner")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    set_size(page, 768, 512, 20)
+    page.evaluate("() => { const n = document.getElementById('forge-iter'); n.value = '2'; n.dispatchEvent(new Event('input', {bubbles: true})); }")
+    run.check(run.until(page, "() => !document.querySelector('#forge-plan').hidden && /2 images/.test(document.querySelector('#forge-plan').textContent)", 10), "the planner shows measured durations for 2 images " + repr(page.evaluate("() => [document.querySelector('#forge-plan').textContent, document.getElementById('forge-width').value, document.getElementById('forge-iter').value]")))
+    text = page.locator("#forge-plan").inner_text()
+    run.check("PC salon : " in text and "Bureau : " in text and "mesures" in text, "a duration range per PC from real measurements: " + text.replace("\n", " | "))
+    run.check("Partage sugg\u00e9r\u00e9 : " in text and "Indicatif" in text, "a suggested split, marked as indicative")
+    run.check("manqu\u00e9 de m\u00e9moire GPU sur Bureau (3 fois)" in text, "a warning for the size that already ran out of GPU memory")
+    run.shot(page, "plan-measured", "#forge-plan")
+    set_size(page, 1024, 1024, 20)
+    run.check(run.until(page, "() => /pas assez de donn\u00e9es pour 1024\u00d71024/.test(document.querySelector('#forge-plan').textContent)", 10), "an unmeasured size says pas assez de donn\u00e9es " + repr(page.evaluate("() => [document.querySelector('#forge-plan').textContent, document.getElementById('forge-width').value, document.getElementById('forge-height').value]")))
+    run.check("m\u00e9moire" not in page.locator("#forge-plan").inner_text(), "no memory warning where nothing failed")
+    run.shot(page, "plan-not-enough", "#forge-plan")
+    run.check(page.request.get(run.base + "/api/forge/jobs").json()["jobs"] == [], "the planner never starts anything")
+    ctx.close()
+
+
+SECTIONS = {"triage": section_triage, "lab": section_lab, "plan": section_plan}
 EXTRA_ENV: dict = {}
-SEEDED = {"lab": seeded_records}
+SEEDED = {"lab": seeded_records, "plan": seeded_records}
 
 
 def main() -> None:

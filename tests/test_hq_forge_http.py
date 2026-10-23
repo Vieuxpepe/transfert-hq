@@ -366,6 +366,11 @@ class ForgeHttp(unittest.TestCase):
         self.assertGreaterEqual(payload["records"], 1)
         self.assertNotIn(b"zq-http-lab", body)
         self.assertEqual(admin.req("/api/forge/lab/extra")[0], 404)
+        status, planned = admin.json("/api/forge/lab?plan=1&width=512&height=512&steps=20&count=4&checkpoint=x")
+        self.assertEqual(status, 200)
+        self.assertEqual(planned["plan"]["devices"][0]["samples"], 1)
+        self.assertNotIn("zq-http-lab", json.dumps(planned))
+        self.assertIsNone(admin.json("/api/forge/lab?plan=1&width=bad")[1]["plan"])
         # Read-only: there is no POST counterpart, and a cross-site POST is refused first.
         self.assertEqual(admin.req("/api/forge/lab", "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)
         self.assertEqual(admin.req("/api/forge/lab", "POST", b"{}")[0], 404)

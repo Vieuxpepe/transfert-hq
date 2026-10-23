@@ -344,8 +344,67 @@
   });
   window.hqForgeLabData = () => labData;
 
+  // ------------------------------------------------------------------ C: honest planner
+  let planTimer = 0;
+  let planAsked = "";
+  function planQuery() {
+    const fleet = H.fleetMode();
+    const count = Number((fleet ? $("forge-fleet-count") : $("forge-iter")).value || 1);
+    return "plan=1&width=" + Number($("forge-width").value) + "&height=" + Number($("forge-height").value) + "&steps=" + Number($("forge-steps").value) +
+      "&hires=" + ($("forge-hr").checked ? "1" : "0") + "&count=" + count + "&checkpoint=" + encodeURIComponent($("forge-checkpoint").value || "");
+  }
+  function renderPlan(plan) {
+    const box = $("forge-plan");
+    box.replaceChildren();
+    if (!plan) { box.hidden = true; return; }
+    const ready = plan.devices.filter((d) => d.enough);
+    const n = plan.count + " image" + (plan.count > 1 ? "s" : "");
+    if (!ready.length) {
+      box.append(el("p", "forge-note", "Dur\u00e9e par appareil : pas assez de donn\u00e9es pour " + plan.width + "\u00d7" + plan.height + ", " + plan.steps + " pas" +
+        (plan.devices.length ? " (" + plan.devices.map((d) => d.device + " " + d.samples + " / " + plan.min_samples).join(", ") + ")" : "") + "."));
+    } else {
+      box.append(el("p", "forge-note forge-plan-title", "Dur\u00e9e mesur\u00e9e pour " + n + " :"));
+      const list = el("ul", "forge-plan-list");
+      plan.devices.forEach((d) => {
+        list.append(el("li", "", d.enough
+          ? d.device + " : " + secs(d.low_s) + " \u2013 " + secs(d.high_s) + " (" + d.samples + " mesures)"
+          : d.device + " : pas assez de donn\u00e9es (" + d.samples + " / " + plan.min_samples + ")"));
+      });
+      box.append(list);
+      if (plan.split) {
+        box.append(el("p", "forge-note", "Partage sugg\u00e9r\u00e9 : " + plan.split.shares.map((s) => s.device + " " + s.count).join(", ") +
+          " \u00b7 \u2248 " + secs(plan.split.low_s) + " \u2013 " + secs(plan.split.high_s) + ". Indicatif : HQ r\u00e9partit le lot lui-m\u00eame."));
+      }
+    }
+    plan.memory.forEach((m) => {
+      box.append(el("p", "forge-note forge-plan-warn", "Attention : " + plan.width + "\u00d7" + plan.height + (plan.hires ? " en haute r\u00e9solution" : "") +
+        " a d\u00e9j\u00e0 manqu\u00e9 de m\u00e9moire GPU sur " + m.device + " (" + m.times + " fois" + (m.batch > 1 ? ", par " + m.batch + " images" : "") + ")."));
+    });
+    box.hidden = false;
+  }
+  async function refreshPlan() {
+    const query = planQuery();
+    planAsked = query;
+    try {
+      const data = await H.api("/api/forge/lab?" + query);
+      if (planAsked === query) renderPlan(data.plan);
+    } catch (_) { $("forge-plan").hidden = true; }
+  }
+  function queuePlan() {
+    clearTimeout(planTimer);
+    planTimer = setTimeout(() => { refreshPlan(); }, 500);
+  }
+  // Size, steps, hires and counts live in several panels; listen at the studio level.
+  const PLAN_IDS = new Set(["forge-width", "forge-height", "forge-steps", "forge-steps-range", "forge-hr", "forge-iter", "forge-fleet-count", "forge-checkpoint"]);
+  ["input", "change"].forEach((type) => document.addEventListener(type, (event) => {
+    const t = event.target;
+    if (t && (PLAN_IDS.has(t.id) || (t.closest && t.closest(".forge-device")))) queuePlan();
+  }));
+  document.addEventListener("click", (event) => { if (event.target && event.target.closest && event.target.closest(".forge-ratio, .forge-lab-apply")) queuePlan(); });
+  queuePlan();
   // The vault lock drops every decrypted view this module opened.
-  window.hqForgeNextLock = () => {    if (mode === "private" && dialog.open) close();
+  window.hqForgeNextLock = () => {
+    if (mode === "private" && dialog.open) close();
     if (trashMode === "private" && trash.open) closeTrash();
     const row = $("forge-vault-viewer-triage");
     if (row) row.replaceChildren();
