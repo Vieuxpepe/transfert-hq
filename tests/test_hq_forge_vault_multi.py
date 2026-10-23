@@ -444,5 +444,57 @@ class MigrationGateTests(MultiBase):
         self.assertEqual(V.layout(self.hq), "legacy")
         V.unlock(self.hq, self.admin, PASS)
 
+class SessionTests(MultiBase):
+    """V2.1: sessions keyed by (token, vault), with TTL; lock_all, logout and leaving close everything."""
+
+    def two(self):
+        a = V.create_vault(self.hq, self.admin, PASS, PASS, label="A")["vault"]["id"]
+        b = V.create_vault(self.hq, self.admin, PASS_B, PASS_B, label="B")["vault"]["id"]
+        return a, b
+
+    def test_open_key_serves_only_its_vault(self):
+        a, b = self.two()
+        V.unlock(self.hq, self.admin, PASS, vid=a)
+        for call in (lambda: V.page(self.hq, self.admin, vid=b), lambda: V.store_image(self.hq, self.admin, _png(), None, vid=b),
+                     lambda: V.backup_bytes(self.hq, self.admin, vid=b), lambda: V.search(self.hq, self.admin, {"q": ""}, vid=b)):
+            with self.assertRaises(V.VaultError) as caught:
+                call()
+            self.assertEqual(caught.exception.code, "locked")
+        self.assertTrue(V.status(self.hq, self.admin, vid=a)["unlocked"])
+        self.assertFalse(V.status(self.hq, self.admin, vid=b)["unlocked"])
+        self.assertEqual(list((self.store / "vaults" / b / "objects").iterdir()), [])
+
+    def test_last_used_day_recorded_on_unlock(self):
+        a, b = self.two()
+        V.unlock(self.hq, self.admin, PASS, vid=a)
+        reg = {e["id"]: e for e in json.loads((self.store / "registry.json").read_text(encoding="utf-8"))["vaults"]}
+        self.assertEqual(reg[a]["last_used_day"], R.today())
+        self.assertIsNone(reg[b]["last_used_day"])
+        self.assertRegex(reg[a]["last_used_day"], r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_ttl_per_vault(self):
+        a, _b = self.two()
+        V.set_ttl_for_tests(0.05)
+        V.unlock(self.hq, self.admin, PASS, vid=a)
+        import time
+        time.sleep(0.1)
+        self.assertFalse(V.status(self.hq, self.admin, vid=a)["unlocked"])
+        self.assertEqual(V._sessions, {})
+
+    def test_lock_all_logout_and_leaving_close_everything(self):
+        a, b = self.two()
+        for close in (lambda: V.lock_all(), lambda: (V.drop_session(self.admin), V.drop_session(self.other)),
+                      lambda: (V.lock(self.admin), V.lock(self.other)), lambda: V.retain_only(set())):
+            V.unlock(self.hq, self.admin, PASS, vid=a)
+            V.unlock(self.hq, self.other, PASS_B, vid=b)
+            V.store_image(self.hq, self.admin, _png(), None, vid=a)
+            V.search(self.hq, self.admin, {"q": "phare"}, vid=a)
+            self.assertGreater(V.search_cache_size_for_tests(), 0)
+            close()
+            self.assertEqual(V._sessions, {})  # keys and cached index rows gone from memory
+            self.assertEqual(V.search_cache_size_for_tests(), 0)
+            for token, vid in ((self.admin, a), (self.other, b)):
+                self.assertFalse(V.status(self.hq, token, vid=vid)["unlocked"])
+
 if __name__ == "__main__":
     unittest.main()

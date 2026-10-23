@@ -927,7 +927,9 @@ def _fail(token: str) -> None:
         _record_failure_locked(token)
 
 
-def _install(token: str, master: bytes, epoch: int) -> None:
+def _install(token: str, master: bytes, epoch: int, vault: str = "legacy") -> None:
+    """One unlock entry per HQ session, bound to the vault it opened ('legacy' or a vid).
+    Installing replaces (and wipes) whatever this session had open: one vault at a time."""
     with _LOCK:
         previous = _sessions.pop(token, None)
         if previous:
@@ -936,6 +938,7 @@ def _install(token: str, master: bytes, epoch: int) -> None:
             "key": bytearray(master),
             "epoch": epoch,
             "expires": time.monotonic() + _ttl,
+            "vault": vault,
         }
 
 
@@ -968,7 +971,7 @@ def _require_live(token: str | None) -> str:
 
 def _master(hq_root: Path, token: str | None, vid: str | None = None) -> tuple[Path, bytes, dict]:
     key_token = _require_live(token)
-    root = _root(hq_root, vid=vid)
+    root, identity = _resolve(hq_root, vid)
     header = _read_header(root)
     if header is None:
         raise VaultError("missing")
@@ -979,6 +982,8 @@ def _master(hq_root: Path, token: str | None, vid: str | None = None) -> tuple[P
                 _wipe(entry.get("key"))
                 _sessions.pop(key_token, None)
             raise VaultError("locked")
+        if entry.get("vault") != identity:
+            raise VaultError("locked")  # another vault is open in this session; its key never serves this one
         if int(entry["epoch"]) != int(header.get("epoch") or 0):
             _wipe(entry.get("key"))
             _sessions.pop(key_token, None)
@@ -1134,8 +1139,10 @@ def unlock(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None
         return master, int(header.get("epoch") or 0), None
 
     _key, master, epoch, _extra = _open_with_budget(token, opener)
-    _install(_key, master, epoch)
+    identity = _resolve(hq_root, vid)[1]
+    _install(_key, master, epoch, identity)
     _wipe(bytearray(master))
+    _touch(hq_root, identity)
     return {"unlocked": True}
 
 
@@ -1151,9 +1158,29 @@ def unlock_with_recovery(hq_root: Path, token: str | None, recovery_key: str, *,
         return master, int(header.get("epoch") or 0), None
 
     _key, master, epoch, _extra = _open_with_budget(token, opener)
-    _install(_key, master, epoch)
+    identity = _resolve(hq_root, vid)[1]
+    _install(_key, master, epoch, identity)
     _wipe(bytearray(master))
+    _touch(hq_root, identity)
     return {"unlocked": True, "recovery": True}
+
+
+def _touch(hq_root: Path, identity: str) -> None:
+    """last_used_day (a day, never a time) for a listed vault. Visible while locked, by design."""
+    if identity == "legacy":
+        return
+    try:
+        base = _base(hq_root)
+        with _REGISTRY_LOCK:
+            data = _load_registry(base)
+            entry = registry.find(data, identity)
+            day = registry.today()
+            if entry is None or entry["last_used_day"] == day:
+                return
+            entry["last_used_day"] = day
+            _save_registry(base, data)
+    except VaultError:
+        return  # the unlock stands; only the day is not recorded
 
 
 def lock(token: str | None) -> dict:
