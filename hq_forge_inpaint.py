@@ -9,8 +9,9 @@
   private one is encrypted straight into the vault. For a private source the source pixels,
   the mask and the request exist only in memory: no job record, no gallery, history, stats,
   log line, temp file or browser storage.
-- Model handling is submission_body's (override_settings sd_model_checkpoint restored
-  afterwards); HQ never touches options, interrupt or skip.
+- The inpaint runs on whatever model Forge has loaded: no override_settings, so it never
+  switches models; the stored settings record that loaded model. HQ never touches options,
+  interrupt or skip.
 """
 
 from __future__ import annotations
@@ -34,15 +35,13 @@ SOURCE_MAX_BYTES = 12 * 1024 * 1024
 MAX_SIDE = 1536
 INPAINT_RE = re.compile(r"^inp-[0-9a-f]{24}$")
 FILLS = (0, 1, 2, 3)  # Forge: fill, original, latent noise, latent nothing
-SETTING_KEYS = ("prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "steps", "cfg_scale", "seed")
+SETTING_KEYS = ("prompt", "negative_prompt", "sampler_name", "scheduler", "steps", "cfg_scale", "seed")
 # The img2img request is built from this fixed set only (never a passthrough of client fields).
-# override_settings is present only when a checkpoint is known; nothing else is optional.
+# No override_settings (the loaded model is used, never switched) and no script fields.
 BODY_KEYS = frozenset({
     "prompt", "negative_prompt", "seed", "sampler_name", "scheduler", "steps", "cfg_scale",
     "width", "height", "batch_size", "n_iter",
-    "save_images", "send_images", "do_not_save_samples", "do_not_save_grid",
-    "script_name", "script_args", "alwayson_scripts", "force_task_id",
-    "override_settings", "override_settings_restore_afterwards",
+    "save_images", "send_images", "do_not_save_samples", "do_not_save_grid", "force_task_id",
     "init_images", "mask", "mask_blur", "inpainting_fill", "inpaint_full_res", "inpaint_full_res_padding",
     "inpainting_mask_invert", "denoising_strength", "resize_mode", "include_init_images",
 })
@@ -55,7 +54,21 @@ MESSAGES = {
     "not_found": "Image introuvable.",
     "busy": "Forge ou le GPU est occup\u00e9. Rien n'a \u00e9t\u00e9 envoy\u00e9 : r\u00e9essayez quand il sera libre.",
     "active": "Une retouche est d\u00e9j\u00e0 en cours.",
+    "no_model": "Forge n'indique aucun mod\u00e8le charg\u00e9 connu. Rien n'a \u00e9t\u00e9 envoy\u00e9.",
 }
+
+
+def _loaded_title(model, catalog: dict) -> str | None:
+    """Catalog title of the model Forge reports as loaded (options sd_model_checkpoint)."""
+    if not isinstance(model, str) or not model:
+        return None
+    for item in catalog.get("models") or []:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title") or ""
+        if model in (title, item.get("model_name")) or title.split(" [")[0] == model.split(" [")[0]:
+            return title
+    return None
 
 _LOCK = threading.Lock()
 _current: dict | None = None
@@ -212,9 +225,6 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
     if catalog.get("forge") != "ready":
         code = catalog.get("code") or "forge_error"
         return 409, {"error": jobs._MESSAGES.get(code, jobs._MESSAGES["forge_error"]), "code": code}
-    validated = jobs._validate(merged, catalog)
-    if isinstance(validated, tuple):
-        return 400, {"error": MESSAGES["validation"], "code": "validation"}
     # GPU sharing: an HQ job, a fleet task on this GPU or Forge working for its owner -> refuse, never wait or interrupt.
     if jobs.local_active(root) or jobs._external_active():
         return 409, {"error": MESSAGES["busy"], "code": "busy"}
@@ -224,6 +234,14 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
         upstream = {"forge": "error"}
     if upstream.get("forge") != "ready":
         return 409, {"error": MESSAGES["busy"], "code": "busy"}
+    # The model is whatever Forge has loaded (read from the status probe), never the client's or the source's.
+    loaded = _loaded_title(upstream.get("model"), catalog)
+    if loaded is None:
+        return 409, {"error": MESSAGES["no_model"], "code": "no_model"}
+    merged["checkpoint"] = loaded
+    validated = jobs._validate(merged, catalog)
+    if isinstance(validated, tuple):
+        return 400, {"error": MESSAGES["validation"], "code": "validation"}
     entry = {"id": "inp-" + os.urandom(12).hex(), "state": "sending", "destination": kind, "progress": 0.0, "step": 0,
              "steps": validated["steps"], "message": "Envoy\u00e9 \u00e0 Forge (ce PC).", "image_id": None,
              "source_id": source.get("id")}
@@ -243,11 +261,11 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
 
 def build_body(settings: dict, task_id: str, png: bytes, mask_png: bytes, *, blur: int, fill: int,
                full_res: bool, padding: int, denoise: float) -> dict:
-    """The img2img request: exactly BODY_KEYS (override_settings only with a checkpoint).
+    """The img2img request: exactly BODY_KEYS.
 
     Forge never writes the result or a grid to its outputs folder (do_not_save_samples and
-    do_not_save_grid, for every inpaint and so always for a private one). No hires fix, no
-    subseed, no script, no interrupt/skip/options.
+    do_not_save_grid, for every inpaint and so always for a private one). No override_settings
+    (the loaded model is used as is), no hires fix, no subseed, no script, no interrupt/skip/options.
     """
     base = jobs.submission_body(settings, task_id)
     body = {key: base[key] for key in BODY_KEYS if key in base}

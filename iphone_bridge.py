@@ -5718,6 +5718,7 @@ def render_app() -> bytes:
         <label class="forge-check"><input type="checkbox" id="forge-inpaint-fullres" checked/> Détailler la zone seule</label>
       </details>
       <p class="forge-note" id="forge-inpaint-where"></p>
+      <p class="forge-note" id="forge-inpaint-model" role="status"></p>
       <button type="button" id="forge-inpaint-send">Retoucher</button>
       <p class="forge-note" id="forge-inpaint-note" role="status">Peignez la zone à refaire, puis touchez Retoucher. Forge (ce PC) doit être libre.</p>
     </dialog>

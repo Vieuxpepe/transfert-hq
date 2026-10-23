@@ -32,6 +32,7 @@ import test_hq_forge_fleet as TF  # noqa: E402
 IDLE = {"progress": 0, "state": {"job": "", "job_count": 0}}
 BUSY = {"progress": 0.5, "state": {"job": "owner", "job_count": 1, "sampling_step": 3, "sampling_steps": 20}}
 SECRET = "lanterne rouge du coffre secret"
+REMOVED = ("override_settings", "override_settings_restore_afterwards", "script_name", "script_args", "alwayson_scripts")
 MODEL = "example.safetensors [abcd]"
 
 
@@ -115,8 +116,8 @@ class Inpaint(Base):
             self.assertIn(key, sent)
         self.assertEqual((sent["mask_blur"], sent["inpainting_fill"], sent["inpaint_full_res"], sent["inpaint_full_res_padding"]), (6, 1, True, 32))
         self.assertEqual((sent["save_images"], sent["include_init_images"], sent["width"], sent["height"]), (False, False, 512, 512))
-        self.assertEqual(sent["override_settings"], {"sd_model_checkpoint": MODEL}, "model handling is submission_body's")
-        self.assertTrue(sent["override_settings_restore_afterwards"])
+        for key in REMOVED:
+            self.assertNotIn(key, sent, "the loaded model is used and no script runs")
         self.assertNotIn("enable_hr", sent)
         mask_img = Image.open(io.BytesIO(base64.b64decode(sent["mask"])))
         self.assertEqual((mask_img.size, mask_img.mode, sorted(set(mask_img.tobytes()))), ((512, 512), "L", [0, 255]))
@@ -149,9 +150,9 @@ class Inpaint(Base):
         for key in ("enable_hr", "hr_scale", "outpath_samples", "sampler_index", "subseed", "subseed_strength",
                     "interrupt", "skip", "options", "styles", "unknown_field"):
             self.assertNotIn(key, sent)
-        self.assertEqual((sent["script_name"], sent["alwayson_scripts"], sent["script_args"]), ("", {}, []))
+        for key in REMOVED:
+            self.assertNotIn(key, sent)
         self.assertEqual((sent["save_images"], sent["do_not_save_samples"], sent["do_not_save_grid"]), (False, True, True))
-        self.assertEqual(sent["override_settings"], {"sd_model_checkpoint": MODEL})
 
     def test_private_inpaint_body_never_saves_and_never_interrupts(self):
         V.set_private_generation_for_tests(True)
@@ -173,6 +174,27 @@ class Inpaint(Base):
         for key in ("interrupt", "skip", "options"):
             self.assertNotIn(key, sent)
         self.assertNotIn(SECRET, json.dumps(payload))
+
+    def test_removed_keys_are_not_in_the_whitelist(self):
+        self.assertFalse(set(REMOVED) & I.BODY_KEYS)
+
+    def test_inpaint_uses_the_loaded_model_and_never_switches(self):
+        other = G.store(self.root, png(), {**settings(), "checkpoint": "other.safetensors [ffff]"})["id"]
+        transport = Transport(progress=IDLE)
+        status, payload = I.create(self.root, self.body({"kind": "normal", "id": other}, checkpoint="client.safetensors [eeee]"), None, transport=transport)
+        self.assertEqual(status, 202, payload)
+        done = self.wait(payload["inpaint"]["id"])
+        sent = json.loads(transport.bodies[0])
+        self.assertNotIn("override_settings", sent)
+        self.assertEqual(G.get(self.root, done["image_id"])["settings"]["checkpoint"], MODEL, "the record names the loaded model")
+
+    def test_unknown_loaded_model_is_refused_before_sending(self):
+        source = self.normal_source()
+        transport = Transport(progress=IDLE)
+        with mock.patch.object(F, "status", return_value={"forge": "ready", "model": "absent.safetensors", "code": "ready"}):
+            status, payload = I.create(self.root, self.body({"kind": "normal", "id": source}), None, transport=transport)
+        self.assertEqual((status, payload.get("code")), (409, "no_model"), payload)
+        self.assertEqual(transport.bodies, [])
 
     def test_validation_and_404(self):
         source = self.normal_source()

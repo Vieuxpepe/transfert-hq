@@ -166,6 +166,8 @@ def section_inpaint(run: Run) -> None:
     geo = page.evaluate(INPAINT_GEO)
     run.check(geo["sw"] <= geo["vw"] and geo["dw"] <= geo["vw"] and geo["h"] >= 44 and geo["ta"] == "none" and geo["cw"] == 256,
               "at 375 px the canvas fits, buttons are 44 px, touch-action none, mask at natural size: " + repr(geo))
+    run.check(run.until(page, "() => /^Utilise le mod\\u00e8le charg\\u00e9 dans Forge : \\S/.test(document.querySelector('#forge-inpaint-model').textContent)", 5),
+              "the dialog names the model loaded in Forge: " + repr(page.evaluate("() => document.querySelector('#forge-inpaint-model').textContent")))
     check_topmost(run, page, "375 px")
     run.shot(page, "inpaint-modal")
     page.set_viewport_size({"width": 1440, "height": 900})

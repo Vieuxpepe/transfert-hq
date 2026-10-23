@@ -22,6 +22,7 @@
   const send = $("forge-inpaint-send");
   const note = $("forge-inpaint-note");
   const where = $("forge-inpaint-where");
+  const modelNote = $("forge-inpaint-model");
   const HINT = note.textContent;
   let source = null; /* {kind, id} */
   let stored = {}; /* the source image's settings, in memory only */
@@ -138,6 +139,16 @@
   dialog.addEventListener("close", wipe);
   $("forge-inpaint-close").addEventListener("click", close);
 
+  /* The retouch uses the model Forge has loaded (it never switches); say which, from the status read. */
+  function showModel() {
+    if (!modelNote) return;
+    modelNote.textContent = "";
+    H.api("/api/forge/status", { cache: "no-store" }).then((s) => {
+      if (!dialog.open) return;
+      modelNote.textContent = s && s.model ? "Utilise le mod\u00e8le charg\u00e9 dans Forge : " + s.model : "Mod\u00e8le charg\u00e9 dans Forge : inconnu.";
+    }).catch(() => { if (dialog.open) modelNote.textContent = "Mod\u00e8le charg\u00e9 dans Forge : inconnu."; });
+  }
+
   function open(kind, viewerImg, settings) {
     if (!viewerImg || !viewerImg.src || !viewerImg.naturalWidth) return;
     source = { kind, id: kind === "private" ? currentPrivate : currentNormal };
@@ -151,6 +162,7 @@
     prompt.value = stored.prompt || "";
     where.textContent = kind === "private" ? "R\u00e9sultat rang\u00e9 dans le coffre, rien dans l'historique." : "R\u00e9sultat ajout\u00e9 \u00e0 la galerie.";
     note.textContent = HINT;
+    showModel();
     redraw();
     dialog.showModal();
     $("forge-inpaint-close").focus();
@@ -227,7 +239,7 @@
     };
     /* An imported image may carry no settings: fill only what it lacks from the current form. */
     const form = H.sweepContext ? H.sweepContext().settings : {};
-    for (const key of ["checkpoint", "sampler_name", "scheduler", "steps", "cfg_scale"]) {
+    for (const key of ["sampler_name", "scheduler", "steps", "cfg_scale"]) {
       if (!stored[key] && form[key] != null && form[key] !== "") body[key] = form[key];
     }
     try {
