@@ -35,6 +35,17 @@ MAX_SIDE = 1536
 INPAINT_RE = re.compile(r"^inp-[0-9a-f]{24}$")
 FILLS = (0, 1, 2, 3)  # Forge: fill, original, latent noise, latent nothing
 SETTING_KEYS = ("prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "steps", "cfg_scale", "seed")
+# The img2img request is built from this fixed set only (never a passthrough of client fields).
+# override_settings is present only when a checkpoint is known; nothing else is optional.
+BODY_KEYS = frozenset({
+    "prompt", "negative_prompt", "seed", "sampler_name", "scheduler", "steps", "cfg_scale",
+    "width", "height", "batch_size", "n_iter",
+    "save_images", "send_images", "do_not_save_samples", "do_not_save_grid",
+    "script_name", "script_args", "alwayson_scripts", "force_task_id",
+    "override_settings", "override_settings_restore_afterwards",
+    "init_images", "mask", "mask_blur", "inpainting_fill", "inpaint_full_res", "inpaint_full_res_padding",
+    "inpainting_mask_invert", "denoising_strength", "resize_mode", "include_init_images",
+})
 
 MESSAGES = {
     "validation": "Les r\u00e9glages de retouche ne sont pas accept\u00e9s.",
@@ -221,8 +232,29 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
             return 409, {"error": MESSAGES["active"], "code": "active"}
         _current = entry
     task_id = "task(hq-" + os.urandom(12).hex() + ")"
-    body = jobs.submission_body(validated, task_id)
+    body = build_body(validated, task_id, png, mask_png, blur=blur, fill=fill, full_res=full_res,
+                      padding=padding, denoise=denoise)
+    del png, mask_png
+    origin = {"inpaint_of": source.get("id")} if kind == "normal" else None
+    threading.Thread(target=_run, args=(root, entry, body, validated, kind, origin, session_token, transport),
+                     name="hq-forge-inpaint", daemon=True).start()
+    return 202, {"inpaint": _public(entry)}
+
+
+def build_body(settings: dict, task_id: str, png: bytes, mask_png: bytes, *, blur: int, fill: int,
+               full_res: bool, padding: int, denoise: float) -> dict:
+    """The img2img request: exactly BODY_KEYS (override_settings only with a checkpoint).
+
+    Forge never writes the result or a grid to its outputs folder (do_not_save_samples and
+    do_not_save_grid, for every inpaint and so always for a private one). No hires fix, no
+    subseed, no script, no interrupt/skip/options.
+    """
+    base = jobs.submission_body(settings, task_id)
+    body = {key: base[key] for key in BODY_KEYS if key in base}
     body.update({
+        "save_images": False,
+        "do_not_save_samples": True,
+        "do_not_save_grid": True,
         "init_images": [base64.b64encode(png).decode("ascii")],
         "mask": base64.b64encode(mask_png).decode("ascii"),
         "mask_blur": blur,
@@ -234,11 +266,8 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
         "resize_mode": 0,
         "include_init_images": False,
     })
-    del png, mask_png
-    origin = {"inpaint_of": source.get("id")} if kind == "normal" else None
-    threading.Thread(target=_run, args=(root, entry, body, validated, kind, origin, session_token, transport),
-                     name="hq-forge-inpaint", daemon=True).start()
-    return 202, {"inpaint": _public(entry)}
+    assert set(body) <= BODY_KEYS
+    return body
 
 
 def _set(entry: dict, **fields) -> None:

@@ -124,6 +124,56 @@ class Inpaint(Base):
         self.assertEqual(result["origin"]["inpaint_of"], source)
         self.assertEqual(result["settings"]["prompt"], "une lanterne")
 
+    def test_img2img_body_is_exactly_the_whitelist(self):
+        source = self.normal_source()
+        transport = Transport(progress=IDLE)
+        status, payload = I.create(self.root, self.body({"kind": "normal", "id": source}), None, transport=transport)
+        self.assertEqual(status, 202, payload)
+        self.wait(payload["inpaint"]["id"])
+        sent = json.loads(transport.bodies[0])
+        self.assertEqual(set(sent), set(I.BODY_KEYS))
+        self.assertEqual((sent["do_not_save_samples"], sent["do_not_save_grid"], sent["save_images"]), (True, True, False))
+
+    def test_unknown_client_fields_are_dropped(self):
+        source = self.normal_source()
+        transport = Transport(progress=IDLE)
+        extra = {"script_name": "evil", "alwayson_scripts": {"x": {}}, "enable_hr": True, "hr_scale": 2,
+                 "do_not_save_samples": False, "save_images": True, "outpath_samples": "C:/x", "sampler_index": "x",
+                 "override_settings": {"samples_save": True}, "subseed": 3, "subseed_strength": 0.5,
+                 "interrupt": True, "skip": True, "options": {"a": 1}, "styles": ["s"], "unknown_field": 1}
+        status, payload = I.create(self.root, self.body({"kind": "normal", "id": source}, **extra), None, transport=transport)
+        self.assertEqual(status, 202, payload)
+        self.wait(payload["inpaint"]["id"])
+        sent = json.loads(transport.bodies[0])
+        self.assertLessEqual(set(sent), set(I.BODY_KEYS))
+        for key in ("enable_hr", "hr_scale", "outpath_samples", "sampler_index", "subseed", "subseed_strength",
+                    "interrupt", "skip", "options", "styles", "unknown_field"):
+            self.assertNotIn(key, sent)
+        self.assertEqual((sent["script_name"], sent["alwayson_scripts"], sent["script_args"]), ("", {}, []))
+        self.assertEqual((sent["save_images"], sent["do_not_save_samples"], sent["do_not_save_grid"]), (False, True, True))
+        self.assertEqual(sent["override_settings"], {"sd_model_checkpoint": MODEL})
+
+    def test_private_inpaint_body_never_saves_and_never_interrupts(self):
+        V.set_private_generation_for_tests(True)
+        token = _token("admin")
+        V.setup(self.root, PASS, PASS)
+        V.unlock(self.root, token, PASS)
+        source = V.store_image(self.root, token, png(), settings(SECRET))["id"]
+        transport = Transport(progress=IDLE)
+        status, payload = I.create(self.root, self.body({"kind": "private", "id": source}, do_not_save_grid=False), token, transport=transport)
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(self.wait(payload["inpaint"]["id"])["state"], "completed")
+        sent = json.loads(transport.bodies[0])
+        self.assertEqual(set(sent), set(I.BODY_KEYS))
+        self.assertIs(sent["do_not_save_samples"], True)
+        self.assertIs(sent["do_not_save_grid"], True)
+        self.assertIs(sent["save_images"], False)
+        self.assertEqual(len(transport.bodies), 1, "the only POST is img2img (options is only ever read)")
+        self.assertFalse([u for u in transport.calls if u.endswith("/interrupt") or u.endswith("/skip")], transport.calls)
+        for key in ("interrupt", "skip", "options"):
+            self.assertNotIn(key, sent)
+        self.assertNotIn(SECRET, json.dumps(payload))
+
     def test_validation_and_404(self):
         source = self.normal_source()
         cases = [
