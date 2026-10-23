@@ -141,3 +141,15 @@ negative prompt, never anything from the vault. Gallery images carry an optional
 ## Bridge: refused POSTs (phase D4)
 
 A POST refused before its body is read (CSRF 403, anonymous 401, upload-role 403) now reads and discards a declared body of up to 64 KB, for at most 1.5 s, before it answers. Larger, missing or invalid lengths are not read and the reply carries `Connection: close`. So each refused unauthenticated POST can cost the bridge up to 1.5 s and 64 KB of reading. That is acceptable for a single-owner bridge reachable only over Tailscale. If the bridge is ever exposed more widely, a per-IP limit on these refusals is required first.
+
+## Wake-on-LAN (phase F1)
+
+- Wake only. There is no power-off, sleep or restart action, by design.
+- The magic packet (UDP broadcast to 255.255.255.255:9) is sent **by the coordinator HQ, on its own local network**. It does not cross Tailscale or any routed VPN: the worker PC must sit on the same LAN/broadcast domain as the HQ.
+- The worker PC must support it: "Wake on LAN" / "Power on by PCI-E" enabled in the BIOS/UEFI, and "Wake on Magic Packet" enabled on the network card (Windows: Device Manager > adapter > Power Management / Advanced). Fast Startup and Wi-Fi adapters often prevent it; a wired NIC is the reliable case.
+- The MAC address is stored as device config in the fleet registry. It never travels in a URL, is never written to logs and is never echoed back: the UI only shows its last five characters. An empty value forgets it.
+- Routes (admin session + CSRF, same as rename/disable/remove; 401 anonymous, 403 non-admin or cross-site, 404 unknown device or the local HQ):
+  - `POST /api/forge/devices/<id>/wake-config` with `{"mac": "AA-BB-CC-DD-EE-FF"}` (or `""` to clear); 400 on an invalid MAC.
+  - `POST /api/forge/devices/<id>/wake`; 409 when no MAC is set or the device is already online, 429 within 10 s of the previous packet, 503 when the packet cannot be sent.
+- A 200 only means the packet left the HQ; the device shows "En ligne" once its worker starts and checks in.
+- Verified with a mocked sender only; a real LAN wake has not been tested.

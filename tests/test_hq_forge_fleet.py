@@ -875,6 +875,83 @@ class FleetHttp(unittest.TestCase):
         self.assertEqual(again["sweep"], done["sweep"])
         self.assertEqual(a.forge_mock.calls[-1]["body"]["cfg_scale"], failed["cell"]["value"])
 
+    # ------------------------------------------------------------------ wake-on-LAN (F)
+    MAC = "3C-7A-1B-2C-4D-5E"
+
+    def test_wake_routes_are_admin_csrf_and_404_for_unknown(self):
+        sim = self.worker("PC A")
+        for action, body in (("wake", {}), ("wake-config", {"mac": self.MAC})):
+            path = f"/api/forge/devices/{sim.id}/{action}"
+            with self.subTest(action=action):
+                self.assertEqual(self.post(path, body, client=self.anon)[0], 401)
+                self.assertEqual(self.post(path, body, client=self.upload)[0], 403)
+                status, _h, _b = self.admin.req(path, "POST", json.dumps(body).encode(), {"Origin": "http://evil.example", "Content-Type": "application/json"}, origin=False)
+                self.assertEqual(status, 403)
+                self.assertEqual(self.post(f"/api/forge/devices/wk_{'0' * 16}/{action}", body)[0], 404)
+                self.assertEqual(self.post(f"/api/forge/devices/not-a-worker/{action}", body)[0], 404)
+                self.assertEqual(self.post(f"/api/forge/devices/local/{action}", body)[0], 404, "this HQ is never woken")
+        self.assertNotIn("wake_mac", json.dumps(FL._worker(sim.id)), "no refused call stored anything")
+
+    def test_mac_is_config_never_echoed_and_only_its_tail_is_shown(self):
+        sim = self.worker("PC A")
+        path = f"/api/forge/devices/{sim.id}/wake-config"
+        for bad in ("3C-7A-1B-2C-4D", "zz:7a:1b:2c:4d:5e", "01:00:5e:00:00:01", "ff:ff:ff:ff:ff:ff", "3c:7a-1b:2c:4d:5e", 42):
+            with self.subTest(bad=bad):
+                status, payload = self.post(path, {"mac": bad})
+                self.assertEqual((status, payload["code"]), (400, "wake_mac"))
+                self.assertNotIn(str(bad), payload["error"])
+        status, payload = self.post(path, {"mac": self.MAC})
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(payload["device"]["wake"]["configured"], True)
+        self.assertEqual(payload["device"]["wake"]["hint"], "4d:5e")
+        listing = json.dumps(self.admin.json("/api/forge/devices")[1])
+        for form in ("3c:7a:1b:2c:4d:5e", "3C-7A-1B-2C-4D-5E", "3c7a1b2c4d5e"):
+            self.assertNotIn(form, listing.lower())
+        self.assertEqual(FL._worker(sim.id)["wake_mac"], "3c:7a:1b:2c:4d:5e", "kept in the protected registry")
+        status, payload = self.post(path, {"mac": ""})
+        self.assertEqual(payload["device"]["wake"]["configured"], False)
+
+    def test_wake_sends_one_magic_packet_only_when_offline(self):
+        sent = []
+        FL.set_wake_sender_for_tests(sent.append)
+        try:
+            sim = self.worker("PC A")
+            path = f"/api/forge/devices/{sim.id}/wake"
+            self.assertEqual(self.post(path, {})[1]["code"], "wake_none")
+            self.post(f"/api/forge/devices/{sim.id}/wake-config", {"mac": self.MAC})
+            status, payload = self.post(path, {})
+            self.assertEqual((status, payload["code"]), (409, "wake_online"))
+            sim.stop()
+            now = [time.time() + 120]
+            FL.set_clock_for_tests(lambda: now[0])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                status, payload = self.post(path, {})
+                self.assertEqual(status, 200, payload)
+                self.assertEqual(self.post(path, {})[1]["code"], "wake_rate", "one packet per 10 s")
+                now[0] += 11
+                self.assertEqual(self.post(path, {})[0], 200)
+            self.assertEqual(len(sent), 2)
+            self.assertEqual(sent[0], b"\xff" * 6 + bytes.fromhex("3c7a1b2c4d5e") * 16)
+            self.assertIn("r\u00e9seau local", payload["message"])
+            self.assertTrue(payload["device"]["wake"]["last"])
+            blob = err.getvalue() + json.dumps(D.ERRORS.__dict__, default=str) + json.dumps(payload)
+            self.assertNotIn("3c:7a:1b:2c:4d:5e", blob.lower())
+            def broken(packet):
+                raise OSError("network down")
+            FL.set_wake_sender_for_tests(broken)
+            now[0] += 11
+            self.assertEqual(self.post(path, {})[1]["code"], "wake_failed")
+        finally:
+            FL.set_wake_sender_for_tests(None)
+
+    def test_wake_has_no_way_to_power_off(self):
+        sim = self.worker("PC A")
+        for action in ("sleep", "shutdown", "poweroff", "restart", "suspend"):
+            self.assertEqual(self.post(f"/api/forge/devices/{sim.id}/{action}", {})[0], 404)
+        source = (SOURCE / "hq_forge_fleet.py").read_text(encoding="utf-8")
+        self.assertNotRegex(source, r"shutdown\s*/|rundll32|SetSuspendState|os\.system")
+
     def test_cancel_drops_queued_and_defers_running_without_interrupt(self):
         a = self.worker("PC A", delay=1.0)
         status, payload = self.batch([a.id], 4, "cancel-key-1")

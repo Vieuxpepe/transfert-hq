@@ -141,6 +141,8 @@ def main() -> None:
         hq_forge_worker.POLL_SEC, hq_forge_worker.IDLE_MAX_SEC, hq_forge_worker.PROGRESS_SEC = 0.3, 0.6, 0.4
         hq_forge_fleet.bind(root)
         delay = float(os.environ.get("HQ_FORGE_FLEET_DELAY", "1.2"))
+        wake_log = []
+        hq_forge_fleet.set_wake_sender_for_tests(wake_log.append)  # never a real UDP broadcast from a test
         specs = [
             ("PC salon", {"gpus": [{"name": "NVIDIA GeForce RTX 4070", "vram_mb": 12282, "source": "nvidia-smi"}], "cpu": "AMD Ryzen 7 7700X", "ram_mb": 32695, "os": "Windows 11"}, {}),
             ("Portable", {"gpus": [{"name": "Intel(R) Iris(R) Xe Graphics", "vram_mb": None, "source": "cim"}], "cpu": "Intel(R) Core(TM) i7-1165G7", "ram_mb": 16110, "os": "Windows 11"}, {}),
@@ -161,6 +163,11 @@ def main() -> None:
             else:
                 sim.start()
             sims.append(sim)
+        if os.environ.get("HQ_FORGE_FLEET_WAKE"):
+            # A PC that checked in once and went quiet: offline, the one a wake button is for.
+            hq_forge_fleet.ONLINE_SEC = float(os.environ.get("HQ_FORGE_FLEET_ONLINE_SEC", "2"))
+            sleepy = SimWorker(base, hq_forge_fleet.create_code()["code"], "PC endormi", MockForge(delay=0.1))
+            sleepy.worker.poll_once()
         stalls = {}
         for name in stall_names:
             # Silent PCs: they claim a task when told, then say nothing (their lease runs out -> uncertain).

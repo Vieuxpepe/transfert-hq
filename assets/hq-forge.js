@@ -2234,8 +2234,59 @@
     const row = document.createElement("div");
     row.className = "forge-actions";
     row.append(toggle, remove);
-    box.append(rename, row);
+    box.append(rename, row, wakeBlock(device));
     return box;
+  }
+
+  // Wake-on-LAN: wake only, sent by this HQ on its own local network. The MAC stays server side (only its tail is shown).
+  function wakeBlock(device) {
+    const info = device.wake || { configured: false, hint: "" };
+    const box = document.createElement("div");
+    box.className = "forge-device-wake";
+    if (info.configured && !device.online) {
+      const wakeBtn = document.createElement("button");
+      wakeBtn.type = "button";
+      wakeBtn.className = "forge-device-wake-btn";
+      wakeBtn.textContent = "R\u00e9veiller";
+      wakeBtn.addEventListener("click", () => wakeDevice(device.id, wakeBtn));
+      box.append(wakeBtn);
+    }
+    const form = document.createElement("form");
+    form.className = "forge-device-wake-form";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 17;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = info.configured ? "MAC enregistr\u00e9e (\u2026" + info.hint + ")" : "Adresse MAC (r\u00e9veil)";
+    input.setAttribute("aria-label", "Adresse MAC de " + device.name + " pour le r\u00e9veil");
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "secondary";
+    save.textContent = "Enregistrer";
+    form.append(input, save);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const mac = input.value.trim();
+      input.value = "";
+      deviceAction(device.id, "wake-config", { mac });
+    });
+    const note = document.createElement("p");
+    note.className = "forge-device-wake-note";
+    note.textContent = "R\u00e9veil uniquement, depuis cet HQ sur le m\u00eame r\u00e9seau local (pas \u00e0 travers Tailscale). Le PC doit avoir \u00ab Wake on LAN \u00bb activ\u00e9 dans le BIOS et la carte r\u00e9seau. Champ vide + Enregistrer : oublie l'adresse.";
+    box.append(form, note);
+    return box;
+  }
+
+  async function wakeDevice(id, button) {
+    button.disabled = true;
+    try {
+      const out = await api("/api/forge/devices/" + encodeURIComponent(id) + "/wake", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      devicesNote.textContent = (out && out.message) || "Paquet de r\u00e9veil envoy\u00e9.";
+    } catch (error) {
+      devicesNote.textContent = error.message || "R\u00e9veil impossible.";
+    }
+    setTimeout(() => { button.disabled = false; }, 1500);
   }
 
   async function deviceAction(id, action, body) {
@@ -2244,7 +2295,7 @@
       if (document.activeElement && document.activeElement.closest && document.activeElement.closest(".forge-device-rename")) document.activeElement.blur();
       if (action === "remove") selected.delete(id);
       saveSelection();
-      devicesNote.textContent = { rename: "Nom enregistré.", disable: "Appareil désactivé.", enable: "Appareil réactivé.", remove: "Appareil retiré. Son accès est révoqué." }[action];
+      devicesNote.textContent = { rename: "Nom enregistré.", disable: "Appareil désactivé.", enable: "Appareil réactivé.", "wake-config": "R\u00e9glage de r\u00e9veil enregistr\u00e9.", remove: "Appareil retiré. Son accès est révoqué." }[action];
     } catch (error) {
       devicesNote.textContent = error.message || "Action impossible.";
     }
@@ -2397,7 +2448,7 @@
   }
 
   function renderDevices(force) {
-    const typing = document.activeElement && document.activeElement.matches && document.activeElement.matches(".forge-device-rename input");
+    const typing = document.activeElement && document.activeElement.matches && document.activeElement.matches(".forge-device-rename input, .forge-device-wake-form input");
     if (typing) return; // never rebuild under a rename in progress
     const sig = cardSig();
     if (!force && sig === deviceSig && deviceList.children.length === devices.length) {

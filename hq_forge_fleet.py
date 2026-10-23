@@ -40,6 +40,7 @@ import math
 import os
 import re
 import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -121,6 +122,11 @@ MESSAGES = {
     "rate": "Trop d'essais. Réessayez plus tard.",
     "full": "Nombre maximal d'appareils atteint.",
     "name": "Nom invalide.",
+    "wake_mac": "Adresse MAC invalide. Format attendu : 6 octets, par exemple A0-B1-C2-D3-E4-F5.",
+    "wake_none": "Aucune adresse MAC enregistr\u00e9e pour cet appareil.",
+    "wake_online": "Cet appareil est d\u00e9j\u00e0 en ligne.",
+    "wake_rate": "R\u00e9veil d\u00e9j\u00e0 envoy\u00e9 il y a un instant. Attendez quelques secondes.",
+    "wake_failed": "Le paquet de r\u00e9veil n'a pas pu partir (r\u00e9seau local indisponible).",
     "secret_protect": "Protection du secret impossible (DPAPI). Appairage refusé, rien n'a été enregistré.",
     "secret_unprotected": "Secret non protégé — réassocier l'appareil.",
 }
@@ -186,6 +192,7 @@ def reset_for_tests(*, clock=None, acl: bool = False, wrap: bool = False, local_
         _lease_sec = LEASE_SEC if lease_sec is None else float(lease_sec)
         _tick = tick
         _local_thread = None
+        _wake_sent.clear()
     jobs.set_external_busy(None)
 
 
@@ -483,6 +490,98 @@ def rename(worker_id: str, name) -> tuple[int, dict]:
         row["name"] = clean
         _save_registry()
     return 200, {"device": _device_public(worker_id)}
+
+
+# ------------------------------------------------------------------ F: wake-on-LAN (wake only)
+# A magic packet goes from this HQ as a UDP broadcast on its own LAN. It does not cross Tailscale or a
+# router, and the PC must allow it (BIOS/UEFI and network card "wake on magic packet"). Nothing here
+# can shut down, sleep or restart a device. The MAC address is configuration: kept in the protected
+# registry, never in a URL, a log or an error; the UI only gets its last two bytes.
+WAKE_PORT = 9
+WAKE_GAP_SEC = 10.0
+_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}([:-]?)[0-9A-Fa-f]{2}(\1[0-9A-Fa-f]{2}){4}$")
+_wake_sender = None
+_wake_sent: dict = {}
+
+
+def clean_mac(value) -> str | None:
+    if not isinstance(value, str) or not _MAC_RE.fullmatch(value.strip()):
+        return None
+    raw = re.sub(r"[:-]", "", value.strip()).lower()
+    if raw in ("000000000000", "ffffffffffff") or int(raw[:2], 16) & 1:
+        return None  # not a single network card (null, broadcast or multicast)
+    return ":".join(raw[i:i + 2] for i in range(0, 12, 2))
+
+
+def magic_packet(mac: str) -> bytes:
+    return b"\xff" * 6 + bytes.fromhex(mac.replace(":", "")) * 16
+
+
+def _default_wake_send(packet: bytes) -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(2.0)
+        sock.sendto(packet, ("255.255.255.255", WAKE_PORT))
+    finally:
+        sock.close()
+
+
+def set_wake_sender_for_tests(sender) -> None:
+    global _wake_sender
+    _wake_sender = sender
+    _wake_sent.clear()
+
+
+def _wake_public(row: dict) -> dict:
+    mac = row.get("wake_mac") if isinstance(row.get("wake_mac"), str) else ""
+    return {"configured": bool(mac), "hint": mac[-5:] if mac else "", "last": row.get("wake_last")}
+
+
+def set_wake_mac(worker_id: str, value) -> tuple[int, dict]:
+    with _LOCK:
+        row = _worker(worker_id)
+        if row is None:
+            return 404, {"error": "Introuvable"}
+        if value in ("", None):
+            row.pop("wake_mac", None)
+        else:
+            mac = clean_mac(value)
+            if mac is None:
+                return 400, {"error": MESSAGES["wake_mac"], "code": "wake_mac"}
+            row["wake_mac"] = mac
+        _save_registry()
+    return 200, {"device": _device_public(worker_id)}
+
+
+def wake(worker_id: str) -> tuple[int, dict]:
+    with _LOCK:
+        row = _worker(worker_id)
+        if row is None:
+            return 404, {"error": "Introuvable"}
+        mac = row.get("wake_mac")
+        if not isinstance(mac, str) or clean_mac(mac) is None:
+            return 409, {"error": MESSAGES["wake_none"], "code": "wake_none"}
+        live = _live.get(worker_id) or {}
+        seen = float(live.get("last_seen") or 0)
+        if seen and _clock() - seen <= ONLINE_SEC:
+            return 409, {"error": MESSAGES["wake_online"], "code": "wake_online"}
+        now = _clock()
+        if now - _wake_sent.get(worker_id, -1e9) < WAKE_GAP_SEC:
+            return 429, {"error": MESSAGES["wake_rate"], "code": "wake_rate"}
+        _wake_sent[worker_id] = now
+        packet = magic_packet(mac)
+    try:
+        (_wake_sender or _default_wake_send)(packet)
+    except OSError:
+        return 503, {"error": MESSAGES["wake_failed"], "code": "wake_failed"}
+    with _LOCK:
+        row = _worker(worker_id)
+        if row is not None:
+            row["wake_last"] = _now_iso(now)
+            _save_registry()
+    return 200, {"ok": True, "message": "Paquet de r\u00e9veil envoy\u00e9 sur le r\u00e9seau local. Le PC appara\u00eetra en ligne quand son worker aura d\u00e9marr\u00e9.",
+                 "device": _device_public(worker_id)}
 
 
 def set_disabled(worker_id: str, disabled: bool) -> tuple[int, dict]:
@@ -1019,6 +1118,7 @@ def _device_public(worker_id: str, hq_job: bool = False) -> dict:
         "last_error": last_error,
         "last_error_label": MESSAGES.get(last_error, last_error) if last_error else "",
         "diagnostics": diagnostics,
+        **({} if worker_id == LOCAL_ID else {"wake": _wake_public(_worker(worker_id) or {})}),
     }
 
 
@@ -1818,5 +1918,9 @@ def serve_post(raw: str, data: dict, key: str) -> tuple[int, dict] | None:
             return set_disabled(worker_id, False)
         if action == "remove":
             return remove(worker_id)
+        if action == "wake-config":
+            return set_wake_mac(worker_id, data.get("mac") if isinstance(data, dict) else None)
+        if action == "wake":
+            return wake(worker_id)
         return 404, {"error": "Inconnu"}
     return None

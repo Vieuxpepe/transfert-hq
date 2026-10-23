@@ -175,8 +175,56 @@ def section_compare(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"sweep": section_sweep, "finish": section_finish, "compare": section_compare}
-EXTRA_ENV: dict = {"sweep": {"HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
+def section_wake(run: Run) -> None:
+    print("F1 wake-on-LAN")
+    ctx = run.context(width=820, height=1000)
+    page = ctx.new_page()
+    run.open_forge(page)
+    card = lambda n: page.locator(".forge-device", has_text=n)
+    run.check(run.until(page, "() => [...document.querySelectorAll('.forge-device')].some((c) => /PC endormi/.test(c.textContent) && /Hors ligne/.test(c.textContent))", 20), "the quiet PC is listed offline")
+    run.check(card("PC endormi").locator(".forge-device-wake-btn").count() == 0, "no wake button before a MAC is saved")
+    note = card("PC endormi").locator(".forge-device-wake-note").inner_text()
+    run.check("Tailscale" in note and "BIOS" in note and "m\u00eame r\u00e9seau local" in note, "the card says same LAN, not Tailscale, BIOS/NIC: " + note)
+    card("PC endormi").locator(".forge-device-wake-form input").fill("zz:zz")
+    card("PC endormi").locator(".forge-device-wake-form button").click()
+    run.check(run.until(page, "() => /Adresse MAC invalide/.test(document.querySelector('#forge-devices-note').textContent)", 5), "an invalid MAC is refused in plain French")
+    card("PC endormi").locator(".forge-device-wake-form input").fill("3C:7A:1B:2C:4D:5E")
+    card("PC endormi").locator(".forge-device-wake-form button").click()
+    run.check(run.until(page, "() => /R\u00e9glage de r\u00e9veil enregistr\u00e9/.test(document.querySelector('#forge-devices-note').textContent)", 5), "the MAC is saved")
+    run.check(run.until(page, "() => [...document.querySelectorAll('.forge-device')].some((c) => /PC endormi/.test(c.textContent) && c.querySelector('.forge-device-wake-btn'))", 10), "the offline PC now offers R\u00e9veiller")
+    ph = card("PC endormi").locator(".forge-device-wake-form input").get_attribute("placeholder")
+    run.check("4d:5e" in ph.lower() and "1b" not in ph.lower() and card("PC endormi").locator(".forge-device-wake-form input").input_value() == "", "only the MAC tail is shown, the field is emptied: " + repr(ph))
+    run.shot(page, "wake-card", ".forge-device:has-text('PC endormi')")
+    card("PC endormi").locator(".forge-device-wake-btn").click()
+    run.check(run.until(page, "() => /Paquet de r\u00e9veil envoy\u00e9/.test(document.querySelector('#forge-devices-note').textContent)", 5), "R\u00e9veiller says the packet left (mocked sender)")
+    page.wait_for_timeout(1700)
+    card("PC endormi").locator(".forge-device-wake-btn").click()
+    run.check(run.until(page, "() => /d\u00e9j\u00e0 envoy\u00e9/.test(document.querySelector('#forge-devices-note').textContent)", 5), "a second press within 10 s is held back")
+    run.shot(page, "wake-sent", ".forge-device:has-text('PC endormi')")
+    card("PC salon").locator(".forge-device-wake-form input").fill("3C-7A-1B-2C-4D-60")
+    card("PC salon").locator(".forge-device-wake-form button").click()
+    run.until(page, "() => /R\u00e9glage de r\u00e9veil enregistr\u00e9/.test(document.querySelector('#forge-devices-note').textContent)", 5)
+    page.wait_for_timeout(800)
+    run.check(card("PC salon").locator(".forge-device-wake-btn").count() == 0, "an online PC never shows R\u00e9veiller")
+    run.check(page.locator(".forge-device[data-id='local']").count() == 1 and page.locator(".forge-device[data-id='local'] .forge-device-wake").count() == 0, "this HQ has no wake block")
+    html = page.content()
+    api = page.request.get(run.base + "/api/forge/devices").text()
+    run.check(not any(s in html.lower() or s in api.lower() for s in ("1b:2c", "1b-2c", "3c7a1b")), "the MAC is in neither the page nor the devices API")
+    hits = [h for s in ("1B-2C", "1B:2C", "1b:2c", "1b-2c") for h in page.evaluate(STORAGE_PROBE, s)]
+    run.check(hits == [], "the MAC is in no browser storage: " + repr(hits))
+    page.set_viewport_size({"width": 375, "height": 812})
+    page.wait_for_timeout(200)
+    geo = page.evaluate("""() => { const c = [...document.querySelectorAll('.forge-device')].find((n) => /PC endormi/.test(n.textContent)); const d = c.querySelector('.forge-device-more'); d.open = true;
+        const i = c.querySelector('.forge-device-wake-form input').getBoundingClientRect(); const b = c.querySelector('.forge-device-wake-btn').getBoundingClientRect();
+        return { sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth, ih: i.height, bh: b.height, right: Math.max(i.right, b.right) }; }""")
+    run.check(geo["sw"] <= geo["vw"] and geo["right"] <= geo["vw"] and geo["ih"] >= 44 and geo["bh"] >= 44, "at 375 px the wake controls fit and are 44 px touch targets: " + repr(geo))
+    card("PC endormi").locator(".forge-device-wake").scroll_into_view_if_needed()
+    run.shot(page, "wake-375", ".forge-device:has-text('PC endormi')")
+    ctx.close()
+
+
+SECTIONS = {"sweep": section_sweep, "finish": section_finish, "compare": section_compare, "wake": section_wake}
+EXTRA_ENV: dict = {"sweep": {"HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}, "wake": {"HQ_FORGE_FLEET_MOCK": "1", "HQ_FORGE_FLEET_DELAY": "0.3", "HQ_FORGE_FLEET_WAKE": "1"}}
 
 
 def main() -> None:
