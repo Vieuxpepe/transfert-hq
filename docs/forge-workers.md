@@ -184,3 +184,11 @@ When the reference device itself is in the unreadable or too-large case, the oth
 - The bin (rejected images) is not searched. A damaged object is skipped; a damaged index refuses with the usual "coffre illisible" error.
 - Routes (admin session + CSRF + unlocked vault; 401 anonymous or locked, 403 non-admin or cross-site, 404 unknown image): `POST /api/forge/vault/search` `{q, tag, collection}`, `POST /api/forge/vault/images/<id>/labels` `{tags, collection}`.
 - Verified with a temporary vault and synthetic images only.
+
+## Phase I: retoucher une zone (finger inpainting)
+
+- Route set change, approved by Emie: HQ `ALLOWED_ROUTES` (hq_forge.py) is exactly the previous set plus `POST /sdapi/v1/img2img`, for this PC's Forge only. Worker `FORGE_ROUTES` is unchanged: inpainting never goes to a worker. Body cap 24 MiB for img2img (txt2img stays 256 KiB); the HQ route `POST /api/forge/inpaint` accepts at most 3 MiB.
+- New HQ routes (admin + CSRF): `POST /api/forge/inpaint`, `GET /api/forge/inpaint`, `GET /api/forge/inpaint/<id>`. No cancel: Forge is never interrupted or skipped, options and models are never switched (the model goes only through `submission_body`'s per-request override, restored afterwards).
+- GPU sharing: a retouch is refused (409) while an HQ job, a fleet task on this GPU, the night workshop or Forge's owner is working. While a retouch runs, those wait.
+- Mask: drawn with a finger on a canvas at the image's natural size (brush, Annuler, Effacer, Inverser), sent once as a PNG in the POST body, thresholded to black/white on the server.
+- Normal source: the result goes to the gallery with `origin.inpaint_of`. Private source: decrypted in memory, mask and request built in memory, no temp file, result encrypted straight into the vault. No job record, history, gallery entry, stats, logs or browser storage; the retouch state lives only in memory and the dialog is wiped when the vault locks.

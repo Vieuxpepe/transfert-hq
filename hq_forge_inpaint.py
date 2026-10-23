@@ -191,7 +191,8 @@ def create(root: Path, data: dict, session_token: str | None, *, transport=None)
     if problem:
         return 400, {"error": MESSAGES[problem], "code": problem}
     wanted = {key: data[key] for key in SETTING_KEYS if key in data}
-    base = {key: stored_settings.get(key) for key in SETTING_KEYS if stored_settings.get(key) not in (None, "")}
+    # An imported image stores empty values (steps 0, cfg 0): those are "unknown", not settings.
+    base = {key: stored_settings.get(key) for key in SETTING_KEYS if stored_settings.get(key) not in (None, "", 0)}
     merged = {**base, **wanted, "width": size[0], "height": size[1], "n_iter": 1, "batch_size": 1}
     try:
         catalog = forge.catalog(transport=transport)

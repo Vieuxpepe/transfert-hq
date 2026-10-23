@@ -5651,6 +5651,7 @@ def render_app() -> bytes:
           <p id="forge-vault-labels-note" class="forge-note" role="status">Chiffrées dans le coffre, comme l'image.</p>
         </div>
         <div class="forge-triage-row" id="forge-vault-viewer-triage" role="group" aria-label="Tri de l’image"></div>
+        <button type="button" id="forge-vault-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
         <div class="forge-explore" id="forge-vault-explore-box">
           <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-vault-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
@@ -5695,6 +5696,31 @@ def render_app() -> bytes:
         <div id="forge-trash-grid" class="forge-grid"></div>
       </div>
     </dialog>
+    <dialog id="forge-inpaint" class="forge-inpaint" aria-labelledby="forge-inpaint-title">
+      <header class="forge-viewer-bar">
+        <h2 id="forge-inpaint-title">Retoucher une zone</h2>
+        <button type="button" id="forge-inpaint-close" class="secondary">Fermer</button>
+      </header>
+      <div class="forge-inpaint-stage"><img id="forge-inpaint-img" alt=""/><canvas id="forge-inpaint-canvas" width="1" height="1" aria-label="Peignez au doigt la zone à refaire"></canvas></div>
+      <div class="forge-inpaint-tools" role="group" aria-label="Pinceau">
+        <label class="forge-inpaint-brush">Pinceau <input type="range" id="forge-inpaint-brush" min="8" max="80" step="2" value="28"/></label>
+        <button type="button" id="forge-inpaint-undo" class="secondary">Annuler</button>
+        <button type="button" id="forge-inpaint-clear" class="secondary">Effacer</button>
+      </div>
+      <label class="forge-check"><input type="checkbox" id="forge-inpaint-invert"/> Inverser : refaire tout sauf la zone</label>
+      <label for="forge-inpaint-prompt">Ce qu’il faut dans la zone</label>
+      <textarea id="forge-inpaint-prompt" rows="3" autocomplete="off" spellcheck="false"></textarea>
+      <details class="forge-inpaint-more"><summary>Réglages de retouche</summary>
+        <label>Force <input type="range" id="forge-inpaint-denoise" min="0.05" max="1" step="0.05" value="0.6"/></label>
+        <label>Fondu du bord <input type="range" id="forge-inpaint-blur" min="0" max="32" step="1" value="4"/></label>
+        <label for="forge-inpaint-fill">Point de départ</label>
+        <select id="forge-inpaint-fill"><option value="1" selected>Image d’origine</option><option value="0">Remplissage</option><option value="2">Bruit latent</option><option value="3">Latent vide</option></select>
+        <label class="forge-check"><input type="checkbox" id="forge-inpaint-fullres" checked/> Détailler la zone seule</label>
+      </details>
+      <p class="forge-note" id="forge-inpaint-where"></p>
+      <button type="button" id="forge-inpaint-send">Retoucher</button>
+      <p class="forge-note" id="forge-inpaint-note" role="status">Peignez la zone à refaire, puis touchez Retoucher. Forge (ce PC) doit être libre.</p>
+    </dialog>
     <dialog id="forge-viewer" aria-labelledby="forge-viewer-title">
       <form method="dialog">
         <header class="forge-viewer-bar">
@@ -5704,6 +5730,7 @@ def render_app() -> bytes:
         <img id="forge-viewer-img" alt=""/>
         <p id="forge-viewer-meta"></p>
         <div class="forge-triage-row" id="forge-viewer-triage" role="group" aria-label="Tri de l’image"></div>
+        <button type="button" id="forge-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
         <div class="forge-explore" id="forge-viewer-explore-box">
           <div class="forge-label-row"><label for="forge-viewer-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-viewer-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
@@ -6001,6 +6028,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge-explore.js"></script>
 <script src="/assets/hq-forge-night.js"></script>
 <script src="/assets/hq-forge-vault-search.js"></script>
+<script src="/assets/hq-forge-inpaint.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">

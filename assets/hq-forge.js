@@ -1062,6 +1062,10 @@
     reloadVault: () => loadVaultGallery(),
     currentDetail: () => currentDetail,
     openImage: (id) => openViewer(id),
+    /* I (hq-forge-inpaint.js): the private viewer's settings in memory, and reopening a vault image. */
+    privateDetail: () => privateDetail,
+    openPrivate: (id) => openPrivate(id),
+    closePrivateViewer: () => { if (vaultViewer.open) vaultViewer.close(); },
     closeViewer: () => { if (viewer.open) closeViewer(); },
     upscalers: () => [...$("forge-hr-upscaler").options].map((o) => o.value).filter((v) => v && v !== "None"),
     preferredUpscaler: () => $("forge-hr-upscaler").value,

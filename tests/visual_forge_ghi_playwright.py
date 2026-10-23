@@ -1,4 +1,4 @@
-"""Forge Studio phases G and H: night workshop, searchable vault. Mock Forge only.
+"""Forge Studio phases G, H and I: night workshop, searchable vault, finger inpainting. Mock Forge only.
 
 No GPU, no real Forge, no production port, throwaway data and vault. Same harness as quick wins.
 
@@ -113,7 +113,94 @@ def section_vault_search(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"night": section_night, "vault_search": section_vault_search}
+STROKE = """(args) => { const c = document.querySelector('#forge-inpaint-canvas'); const b = c.getBoundingClientRect();
+  const at = (fx, fy) => ({ clientX: b.left + b.width * fx, clientY: b.top + b.height * fy, pointerId: 7, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true });
+  c.dispatchEvent(new PointerEvent('pointerdown', at(args[0], args[1])));
+  for (let i = 1; i <= 8; i++) c.dispatchEvent(new PointerEvent('pointermove', at(args[0] + (args[2] - args[0]) * i / 8, args[1] + (args[3] - args[1]) * i / 8)));
+  c.dispatchEvent(new PointerEvent('pointerup', at(args[2], args[3]))); }"""
+INPAINT_GEO = """() => { const d = document.querySelector('#forge-inpaint'); const ids = ['forge-inpaint-undo', 'forge-inpaint-clear', 'forge-inpaint-send', 'forge-inpaint-close'];
+  return { sw: document.documentElement.scrollWidth, vw: document.documentElement.clientWidth, dw: d.getBoundingClientRect().width,
+    h: Math.min(...ids.map((id) => document.getElementById(id).getBoundingClientRect().height)),
+    ta: getComputedStyle(document.querySelector('#forge-inpaint-canvas')).touchAction, cw: document.querySelector('#forge-inpaint-canvas').width }; }"""
+
+
+def section_inpaint(run: Run) -> None:
+    print("I finger inpainting")
+    ctx = run.context()
+    page = ctx.new_page()
+    bodies = []
+    urls = []
+    page.on("request", lambda r: (urls.append(r.url), bodies.append(r.post_data) if r.url.endswith("/api/forge/inpaint") and r.method == "POST" else None))
+    run.open_forge(page)
+    generate_once(run, page, "phare a retoucher")
+    page.locator("#forge-gallery .forge-card").first.click()
+    run.until(page, "() => document.querySelector('#forge-viewer').open && document.querySelector('#forge-viewer-img').naturalWidth > 0", 10)
+    source = page.evaluate("() => window.hqForgeHooks.currentDetail().id")
+    page.locator("#forge-viewer-inpaint").click()
+    run.check(run.until(page, "() => document.querySelector('#forge-inpaint').open", 5), "Retoucher une zone opens the canvas")
+    run.check(page.evaluate("() => document.querySelector('#forge-inpaint-prompt').value") == "phare a retoucher", "the prompt is prefilled from the image")
+    run.check(page.evaluate("() => document.querySelector('#forge-inpaint-send').disabled"), "nothing to send before a stroke")
+    geo = page.evaluate(INPAINT_GEO)
+    run.check(geo["sw"] <= geo["vw"] and geo["dw"] <= geo["vw"] and geo["h"] >= 44 and geo["ta"] == "none" and geo["cw"] == 256,
+              "at 375 px the canvas fits, buttons are 44 px, touch-action none, mask at natural size: " + repr(geo))
+    page.evaluate(STROKE, [0.3, 0.3, 0.6, 0.6])
+    run.check(not page.evaluate("() => document.querySelector('#forge-inpaint-send').disabled"), "a finger stroke enables Retoucher")
+    page.locator("#forge-inpaint-undo").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-inpaint-send').disabled"), "Annuler removes the stroke")
+    page.evaluate(STROKE, [0.2, 0.5, 0.8, 0.5])
+    page.evaluate(STROKE, [0.5, 0.2, 0.5, 0.8])
+    page.locator("#forge-inpaint-clear").click()
+    run.check(page.evaluate("() => document.querySelector('#forge-inpaint-send').disabled"), "Effacer clears every stroke")
+    box = page.locator("#forge-inpaint-canvas").bounding_box()
+    page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.4)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.7, box["y"] + box["height"] * 0.6, steps=6)
+    page.mouse.up()
+    page.locator("#forge-inpaint-invert").check()
+    run.check(page.evaluate("() => document.querySelector('#forge-inpaint-canvas').classList.contains('is-inverted')"), "Inverser is shown on the canvas")
+    page.locator("#forge-inpaint-invert").uncheck()
+    run.shot(page, "inpaint-canvas", "#forge-inpaint")
+    page.locator("#forge-inpaint-send").click()
+    ok = run.until(page, "(src) => document.querySelector('#forge-viewer').open && !document.querySelector('#forge-inpaint').open && window.hqForgeHooks.currentDetail() && window.hqForgeHooks.currentDetail().id !== src", 15, source)
+    run.check(ok, "the result opens in the viewer")
+    detail = page.evaluate("() => window.hqForgeHooks.currentDetail()")
+    run.check((detail.get("origin") or {}).get("inpaint_of") == source, "the retouch is a gallery image linked to its source: " + repr(detail.get("origin")))
+    sent = __import__("json").loads(bodies[0]) if bodies else {}
+    mask_ok = str(sent.get("mask", "")).startswith("data:image/png;base64,") and sent.get("source") == {"kind": "normal", "id": source}
+    run.check(mask_ok and sent.get("inpainting_fill") == 1 and sent.get("inpaint_full_res") is True, "one POST carries the PNG mask and options")
+    run.shot(page, "inpaint-result", "#forge-viewer")
+    page.locator("#forge-viewer-close").click()
+    # Private: memory only, result straight into the vault.
+    open_vault(run, page)
+    import_private(run, page)
+    run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length === 1", 10)
+    gallery_before = page.request.get(run.base + "/api/forge/gallery").text()
+    jobs_before = page.request.get(run.base + "/api/forge/jobs").text()
+    page.locator("#forge-vault-gallery .forge-card").first.click()
+    run.until(page, "() => document.querySelector('#forge-vault-viewer').open && document.querySelector('#forge-vault-viewer-img').naturalWidth > 0", 10)
+    page.locator("#forge-vault-viewer-inpaint").click()
+    run.check(run.until(page, "() => document.querySelector('#forge-inpaint').open && /coffre/.test(document.querySelector('#forge-inpaint-where').textContent)", 5), "a private retouch says it goes to the vault")
+    page.locator("#forge-inpaint-prompt").fill("braise secrete du coffre")
+    page.evaluate(STROKE, [0.2, 0.2, 0.7, 0.7])
+    run.shot(page, "inpaint-private", "#forge-inpaint")
+    page.locator("#forge-inpaint-send").click()
+    run.check(run.until(page, "() => document.querySelector('#forge-vault-viewer').open && !document.querySelector('#forge-inpaint').open && document.querySelectorAll('#forge-vault-gallery .forge-card').length === 2", 15),
+              "the private result lands in the vault and opens there")
+    run.check(page.request.get(run.base + "/api/forge/gallery").text() == gallery_before, "nothing was added to the normal gallery")
+    jobs_after = page.request.get(run.base + "/api/forge/jobs").text()
+    run.check(jobs_after == jobs_before and "braise" not in jobs_after, "no job or history record for the private retouch")
+    run.check(not any("braise" in u for u in urls), "the private prompt never travels in a URL")
+    hits = page.evaluate(STORAGE_PROBE, "braise secrete") + page.evaluate(STORAGE_PROBE, "phare a retoucher")
+    run.check([h for h in hits if h != "session:hqForgeDraft"] == [], "no retouch prompt or mask in browser storage: " + repr(hits))
+    page.locator("#forge-vault-viewer-inpaint").click()
+    page.locator("#forge-inpaint-prompt").fill("braise secrete du coffre")
+    page.evaluate("() => window.hqForgeScrubPrivate()")
+    run.check(run.until(page, "() => !document.querySelector('#forge-inpaint').open && document.querySelector('#forge-inpaint-prompt').value === '' && !document.querySelector('#forge-inpaint-img').getAttribute('src')", 5),
+              "locking the vault closes and wipes an open private retouch")
+    ctx.close()
+
+
+SECTIONS = {"night": section_night, "vault_search": section_vault_search, "inpaint": section_inpaint}
 EXTRA_ENV: dict = {"night": {"HQ_FORGE_NIGHT_TICK": "0.3", "HQ_FORGE_NIGHT_HOUR": "14"}}
 
 
