@@ -180,6 +180,48 @@ class DiscretLabelTests(MultiBase):
         with self.assertRaises(V.VaultError):
             V._read_label(folder, key)
 
+    def test_discret_name_survives_backup_and_restore_sealed(self):
+        import zipfile
+        vid = V.create_vault(self.hq, self.admin, PASS, PASS, label="Projet Hirondelle", discret=True)["vault"]["id"]
+        V.unlock(self.hq, self.admin, PASS, vid=vid)
+        V.store_image(self.hq, self.admin, _png(), None, vid=vid)
+        payload = V.backup_bytes(self.hq, self.admin, vid=vid)
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            self.assertIn("label.bin", archive.namelist())
+            sealed = archive.read("label.bin")
+            for name in archive.namelist():
+                self.assertNotIn(b"Hirondelle", archive.read(name))
+        self.assertNotIn(b"Hirondelle", sealed)
+        self.assertNotIn(b"Hirondelle", payload)
+        (self.store / "vaults" / vid / "label.bin").unlink()  # the live copy is lost
+        V.restore_backup(self.hq, self.admin, payload, PASS, vid=vid)
+        restored = (self.store / "vaults" / vid / "label.bin").read_bytes()
+        self.assertEqual(restored, sealed)  # back on disk, still sealed
+        self.assertNotIn(b"Hirondelle", restored)
+        row = V.list_vaults(self.hq, self.admin)["vaults"][0]
+        self.assertIsNone(row["label"])  # hidden while closed
+        V.unlock(self.hq, self.admin, PASS, vid=vid)
+        self.assertEqual(V.list_vaults(self.hq, self.admin)["vaults"][0]["label"], "Projet Hirondelle")
+        self.assertNotIn("Hirondelle", (self.store / "registry.json").read_text(encoding="utf-8"))
+
+    def test_restore_refuses_a_label_sealed_with_another_key(self):
+        import zipfile
+        vid = V.create_vault(self.hq, self.admin, PASS, PASS, label="Hirondelle", discret=True)["vault"]["id"]
+        V.unlock(self.hq, self.admin, PASS, vid=vid)
+        payload = V.backup_bytes(self.hq, self.admin, vid=vid)
+        swapped = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(payload)) as src, zipfile.ZipFile(swapped, "w") as dst:
+            for name in src.namelist():
+                data = src.read(name)
+                if name == "label.bin":
+                    data = V._seal(os.urandom(32), json.dumps({"label": "Intrus"}).encode(), V._AAD_LABEL)
+                dst.writestr(name, data)
+        before = (self.store / "vaults" / vid / "label.bin").read_bytes()
+        with self.assertRaises(V.VaultError) as caught:
+            V.restore_backup(self.hq, self.admin, swapped.getvalue(), PASS, vid=vid)
+        self.assertEqual(caught.exception.code, "corrupt")
+        self.assertEqual((self.store / "vaults" / vid / "label.bin").read_bytes(), before)  # live vault untouched
+
     def test_drop_label(self):
         folder = self.store / "vaults" / VA
         folder.mkdir(parents=True)

@@ -1970,7 +1970,7 @@ def backup_bytes(hq_root: Path, token: str | None, *, vid: str | None = None) ->
     offered_single = vid is None and layout(hq_root) == "legacy"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name in ("vault.json", "index.bin"):
+        for name in ("vault.json", "index.bin", LABEL_FILE):  # label.bin: the Discret name, still sealed
             path = root / name
             if path.is_file() and not _is_reparse(path):
                 archive.write(path, name)
@@ -1993,7 +1993,7 @@ def _zip_member_ok(name: str) -> bool:
     parts = clean.split("/")
     if any(part in ("", ".", "..") for part in parts):
         return False
-    if clean in ("vault.json", "index.bin"):
+    if clean in ("vault.json", "index.bin", LABEL_FILE):
         return True
     return (
         len(parts) == 2
@@ -2093,6 +2093,8 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
         master = _unwrap(header, _passphrase_bytes(passphrase), "passphrase")
         try:
             _authenticate_restored_objects(staging, master)
+            if (staging / LABEL_FILE).exists():
+                _read_label(staging, master)  # a sealed name that this key cannot open is refused
         finally:
             _wipe(bytearray(master))
         if _restore_fault == "before_retire":
