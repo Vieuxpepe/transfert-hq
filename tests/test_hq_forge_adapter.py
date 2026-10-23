@@ -49,20 +49,29 @@ class Adapter(unittest.TestCase):
     def test_upstream_is_fixed_loopback(self):
         self.assertEqual(F.UPSTREAM_ORIGIN, "http://127.0.0.1:7860")
         methods = {method for method, _path in F.ALLOWED_ROUTES}
-        self.assertEqual(methods, {"GET"})
+        self.assertEqual(methods, {"GET", "POST"})
+        self.assertEqual({r for r in F.ALLOWED_ROUTES if r[0] == "POST"}, {("POST", "/sdapi/v1/img2img")})
         paths = {path for _method, path in F.ALLOWED_ROUTES}
         for banned in ("/sdapi/v1/txt2img", "/sdapi/v1/interrupt", "/sdapi/v1/cmd-flags", "/sdapi/v1/scripts"):
             self.assertNotIn(banned, paths)
         self.assertIn(("/sdapi/v1/options", "POST") if False else ("GET", "/sdapi/v1/options"), F.ALLOWED_ROUTES)
         self.assertNotIn(("POST", "/sdapi/v1/options"), F.ALLOWED_ROUTES)
-        self.assertEqual(F.ALLOWED_ROUTES, frozenset({("GET", p) for p in (
+        old = frozenset({("GET", p) for p in (
             "/sdapi/v1/samplers", "/sdapi/v1/schedulers", "/sdapi/v1/sd-models", "/sdapi/v1/upscalers",
-            "/sdapi/v1/options", "/sdapi/v1/loras", "/sdapi/v1/progress", "/internal/pending-tasks")}),
-            "exactly one addition to the 4d7bb05 set: GET /sdapi/v1/loras")
+            "/sdapi/v1/options", "/sdapi/v1/loras", "/sdapi/v1/progress", "/internal/pending-tasks")})
+        self.assertEqual(F.ALLOWED_ROUTES, old | {("POST", "/sdapi/v1/img2img")},
+                         "phase I: exactly the a3d9d10 set plus POST /sdapi/v1/img2img (approved)")
+        for banned in (("POST", "/sdapi/v1/interrupt"), ("POST", "/sdapi/v1/skip"), ("POST", "/sdapi/v1/options"), ("POST", "/sdapi/v1/reload-checkpoint")):
+            self.assertFalse(F._allowed(*banned), banned)
+        self.assertTrue(F._allowed("POST", "/sdapi/v1/img2img") and F._allowed("POST", "/sdapi/v1/txt2img"))
 
     def test_worker_routes_are_the_same_read_only_set(self):
         import hq_forge_worker as W
-        self.assertEqual(W.FORGE_ROUTES, frozenset(path for _m, path in F.ALLOWED_ROUTES))
+        self.assertEqual(W.FORGE_ROUTES, frozenset(path for m, path in F.ALLOWED_ROUTES if m == "GET"))
+        self.assertEqual(W.FORGE_ROUTES, frozenset({
+            "/sdapi/v1/samplers", "/sdapi/v1/schedulers", "/sdapi/v1/sd-models", "/sdapi/v1/upscalers",
+            "/sdapi/v1/options", "/sdapi/v1/loras", "/sdapi/v1/progress", "/internal/pending-tasks"}), "worker set unchanged")
+        self.assertNotIn("/sdapi/v1/img2img", W.FORGE_ROUTES)
         self.assertEqual(W.SUBMIT_PATH, "/sdapi/v1/txt2img")
 
     def test_connection_refused_is_offline(self):

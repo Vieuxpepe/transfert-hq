@@ -36,7 +36,12 @@ ALLOWED_ROUTES = frozenset({
     ("GET", "/sdapi/v1/loras"),
     ("GET", "/sdapi/v1/progress"),
     ("GET", "/internal/pending-tasks"),
+    # Phase I (approved by Emie, 2026-10-23): masked img2img on THIS PC's Forge only.
+    # Never in the worker set: inpainting is never sent to another device.
+    ("POST", "/sdapi/v1/img2img"),
 })
+INPAINT_PATH = "/sdapi/v1/img2img"
+MAX_INPAINT_BODY = 24 * 1024 * 1024
 
 _SAFE_TITLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-()\[\]+]{0,180}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -162,7 +167,7 @@ def _resolve(transport):
 def _allowed(method: str, path: str) -> bool:
     if method == "GET":
         return ("GET", path) in ALLOWED_ROUTES
-    return method == "POST" and path == SUBMIT_PATH
+    return method == "POST" and (path == SUBMIT_PATH or ("POST", path) in ALLOWED_ROUTES)
 
 
 def _check_url(method: str, url: str) -> str:
@@ -518,11 +523,11 @@ def oom_error(raw) -> bool:
 
 
 def post_json(path: str, payload: dict, *, timeout: float, transport=None) -> dict:
-    """POST one allowlisted JSON route. The only route is txt2img."""
-    if path != SUBMIT_PATH or not isinstance(payload, dict):
+    """POST one allowlisted JSON route: txt2img, or (phase I) masked img2img to this PC's Forge."""
+    if path not in (SUBMIT_PATH, INPAINT_PATH) or not isinstance(payload, dict):
         raise _Probe("forge_error")
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    if len(body) > 256 * 1024:
+    if len(body) > (MAX_INPAINT_BODY if path == INPAINT_PATH else 256 * 1024):
         raise _Probe("forge_error")
     transport = _resolve(transport)
     url = _upstream + path
