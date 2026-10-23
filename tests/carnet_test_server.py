@@ -129,6 +129,16 @@ def main() -> None:
         raise SystemExit("refusing a production port")
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    if os.environ.get("HQ_FORGE_NIGHT_TICK"):
+        import hq_forge_night
+        hq_forge_night.TICK_SEC = float(os.environ["HQ_FORGE_NIGHT_TICK"])  # night workshop test pace
+        if os.environ.get("HQ_FORGE_NIGHT_HOUR"):
+            # Pin the workshop clock to a given local hour today (the wall clock would make "tonight" flaky).
+            import time as _t
+            from datetime import datetime as _dt
+            _base = _dt.now().replace(hour=int(os.environ["HQ_FORGE_NIGHT_HOUR"]), minute=0, second=0, microsecond=0).timestamp()
+            _start = _t.time()
+            hq_forge_night.set_clock_for_tests(lambda: _base + (_t.time() - _start))
     fleet = os.environ.get("HQ_FORGE_FLEET_MOCK")
     sims = []
     if fleet:

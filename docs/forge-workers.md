@@ -164,3 +164,14 @@ When a prompt names a LoRA, a PC is left out of the batch with one of four disti
 - **past the limit**: "LoRA ? x ? non v?rifiable : au-del? de la limite de 96 LoRA lus" (only the first 96 entries are kept; x may exist further down).
 
 When the reference device itself is in the unreadable or too-large case, the others say "LoRA non comparables : sur l'appareil de r?f?rence, ...". Verified with mocks only.
+
+## Night workshop (phase G)
+
+- Queue normal-mode generations on this HQ's Forge: "Lancer ce soir" (22:00-07:00, local time) or "Quand Forge est libre". "Finir les gard?es cette nuit" queues one finish (hires ?2, denoise 0.4) per kept or favourite gallery image, one at a time.
+- Private generations are never queued: the panel is disabled in private mode and says why, and the server refuses any entry marked private (403) without storing it.
+- Each entry becomes an ordinary HQ job via the single-job path, so the existing idle detection decides: Forge busy for its owner, an HQ job, or a fleet task on the local GPU -> the entry waits. Nothing is interrupted or skipped; cancelling affects only entries not yet sent.
+- Guard rails: 24 entries at most; a 6 h budget per night from the first start (the rest expire); "tonight" entries not reached by 07:00 expire.
+- One quiet morning summary card (counts and thumbnails) shown until "Vu"; no notification, no sound.
+- Stored in `.hq-forge/night.json` (normal-mode settings only).
+- Routes (admin session + CSRF; 401 anonymous, 403 non-admin or cross-site, 404 unknown entry/route): `GET /api/forge/night`, `POST /api/forge/night`, `POST /api/forge/night/finish-kept`, `POST /api/forge/night/<id>/cancel`, `POST /api/forge/night/cancel-all`, `POST /api/forge/night/ack`.
+- Verified with a mock Forge only.

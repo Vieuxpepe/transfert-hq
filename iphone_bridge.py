@@ -46,6 +46,7 @@ import hq_forge_fleet
 import hq_forge_gallery
 import hq_forge_jobs
 import hq_forge_lab
+import hq_forge_night
 import hq_forge_presets
 import hq_forge_vault
 
@@ -5532,6 +5533,18 @@ def render_app() -> bytes:
         <p id="forge-sweep-note" class="forge-note" role="status"></p>
         <button type="button" id="forge-sweep-run">Lancer le balayage</button>
       </details>
+      <details class="forge-fold forge-block forge-m forge-night" id="forge-night">
+        <summary>Atelier de nuit</summary>
+        <p class="forge-note">Met ces réglages en file sur ce PC : « ce soir » (22 h – 7 h) ou « quand Forge est libre ». Rien n'est interrompu : une entrée attend tant que Forge ou le GPU travaille. 6 h au plus par nuit, 24 entrées au plus.</p>
+        <div class="forge-actions">
+          <button type="button" id="forge-night-tonight">Lancer ce soir</button>
+          <button type="button" id="forge-night-idle" class="secondary">Quand Forge est libre</button>
+        </div>
+        <button type="button" id="forge-night-finish" class="secondary">Finir les gardées cette nuit</button>
+        <p id="forge-night-note" class="forge-note" role="status"></p>
+        <ul id="forge-night-list" class="forge-night-list" aria-label="File de nuit"></ul>
+        <button type="button" id="forge-night-cancel-all" class="secondary" hidden>Annuler les entrées en attente</button>
+      </details>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
         <p id="forge-usual-duration" class="forge-note forge-usual" hidden></p>
@@ -5584,6 +5597,11 @@ def render_app() -> bytes:
           <ol id="forge-job-journal-list" class="forge-journal"></ol>
         </details>
         <p id="forge-results-empty" class="forge-note">Le résultat de la génération apparaîtra ici.</p>
+        <section id="forge-night-summary" class="forge-night-summary" aria-label="Résumé de la nuit" hidden>
+          <p id="forge-night-summary-text"></p>
+          <div id="forge-night-summary-images" class="forge-night-thumbs"></div>
+          <button type="button" id="forge-night-summary-ok" class="secondary">Vu</button>
+        </section>
         <div id="forge-sweep-strip" class="forge-sweep-strip" role="list" aria-label="Balayage, une image par valeur" hidden></div>
         <div id="forge-results" class="forge-grid"></div>
       </section>
@@ -5968,6 +5986,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-forge.js"></script>
 <script src="/assets/hq-forge-next.js"></script>
 <script src="/assets/hq-forge-explore.js"></script>
+<script src="/assets/hq-forge-night.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -6731,6 +6750,10 @@ class Handler(BaseHTTPRequestHandler):
         if fleet is not None:
             self._json(fleet[0], fleet[1])
             return True
+        night = hq_forge_night.serve_get(ROOT, raw)
+        if night is not None:
+            self._json(night[0], night[1])
+            return True
         if raw == "/api/forge/status":
             self._json(200, hq_forge.status())
             return True
@@ -6833,6 +6856,10 @@ class Handler(BaseHTTPRequestHandler):
         presets = hq_forge_presets.serve_post(ROOT, raw, data)
         if presets is not None:
             self._json(presets[0], presets[1])
+            return True
+        night = hq_forge_night.serve_post(ROOT, raw, data)
+        if night is not None:
+            self._json(night[0], night[1])
             return True
         hq_forge_fleet.bind(ROOT)
         fleet = hq_forge_fleet.serve_post(raw, data, (self.headers.get("Idempotency-Key") or "").strip())

@@ -425,3 +425,17 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-device-wake-form input{flex:1 1 10em;min-width:0;min-height:var(--tap-min);font-family:inherit}
 .forge-device-wake button{min-height:var(--tap-min);padding:6px 12px;font-size:var(--text-sm)}
 .forge-device-wake-note{margin:0;font-size:var(--text-sm);color:var(--muted, inherit);opacity:.85}
+.forge-night .forge-actions{margin:8px 0}
+.forge-night > button{min-height:var(--tap-min);margin:4px 0}
+.forge-night-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.forge-night-entry{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center;padding:8px;border:1px solid var(--line, rgba(127,127,127,.3));border-radius:10px}
+.forge-night-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.forge-night-meta{grid-column:1;color:var(--muted);font-size:var(--text-sm)}
+.forge-night-cancel{grid-column:2;grid-row:1 / span 2;min-height:var(--tap-min);padding:6px 12px;font-size:var(--text-sm)}
+.forge-night-summary{border:1px solid var(--line, rgba(127,127,127,.3));border-radius:12px;padding:10px 12px;margin:0 0 10px}
+.forge-night-summary[hidden]{display:none}
+.forge-night-summary p{margin:0 0 8px}
+.forge-night-summary > button{min-height:var(--tap-min)}
+.forge-night-thumbs{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
+.forge-night-thumb{flex:0 0 64px;width:64px;height:64px;min-height:64px;padding:0;border-radius:8px;overflow:hidden}
+.forge-night-thumb img{width:100%;height:100%;object-fit:cover;display:block}
