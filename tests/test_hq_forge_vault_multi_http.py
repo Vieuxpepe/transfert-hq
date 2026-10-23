@@ -303,5 +303,34 @@ class Authorisation(MultiHttp):
             self.skipTest("not a git checkout")
         self.assertEqual(out.stdout.strip(), "")
 
+class Alias(MultiHttp):
+    """V3.4: /api/forge/vault/* keeps working, as the migrated vault, until V4."""
+
+    def test_old_routes_follow_the_migrated_vault(self):
+        self.assertEqual(self.post(self.admin, "/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 201)
+        self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})
+        status, _h, raw = self.admin.req("/api/forge/vault/import", "POST", _png(), {"Content-Type": "application/octet-stream"})
+        self.assertEqual(status, 201)
+        image_id = json.loads(raw)["id"]
+        _s, migrated = self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})
+        vid = migrated["vid"]
+        self.assertEqual(self.admin.json("/api/forge/vault/gallery")[0], 401)  # migration closed every session
+        self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})
+        self.assertEqual([i["id"] for i in self.admin.json("/api/forge/vault/gallery")[1]["images"]], [image_id])
+        self.assertEqual([i["id"] for i in self.admin.json("/api/forge/vaults/" + vid + "/gallery")[1]["images"]], [image_id])
+        self.assertEqual(self.admin.req("/api/forge/vault/backup")[0], 200)
+        self.assertEqual(self.post(self.admin, "/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 409)
+        # Another vault open in this session: the alias is locked, never silently that one.
+        _s, other = self.post(self.admin, "/api/forge/vaults/new", {"passphrase": PASS_B, "confirm": PASS_B, "label": "B"})
+        self.post(self.admin, "/api/forge/vaults/" + other["vault"]["id"] + "/unlock", {"passphrase": PASS_B})
+        self.assertEqual(self.admin.json("/api/forge/vault/gallery")[0], 401)
+        self.assertFalse(self.admin.json("/api/forge/vault/status")[1]["unlocked"])
+
+    def test_alias_without_a_migrated_vault_asks_to_choose(self):
+        self.post(self.admin, "/api/forge/vaults/new", {"passphrase": PASS, "confirm": PASS, "label": "Neuf"})
+        status, body = self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})
+        self.assertEqual((status, body["code"]), (409, "use_vaults"))
+        self.assertEqual(self.post(self.admin, "/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 409)
+
 if __name__ == "__main__":
     unittest.main()

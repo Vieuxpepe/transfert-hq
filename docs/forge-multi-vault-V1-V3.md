@@ -1,0 +1,33 @@
+# Forge Studio: several vaults, V1 to V3 (storage, sessions, routes)
+
+Implements V1 to V3 of `docs/forge-multi-vault-plan.md`. Nothing visible yet: the interface is V4; icon and sort are V5; per-vault backup, restore and delete are V6.
+
+## Disk
+
+- `forge-vault/registry.json`, plain, version 1: `{"version": 1, "legacy": <vid or null>, "vaults": [{id, label|null, glyph, colour, discret, order, created, last_used_day}]}`. `legacy` names the migrated vault that the old routes alias. Checked field by field (`hq_forge_vault_registry.py`): fixed glyph and colour sets, label 1 to 40 printable characters without `<>`, days only, at most 12 entries, no other keys. Any oddity rejects the whole file (`registry`, 409, "La liste des coffres est illisible. Aucun coffre n'est ouvert.").
+- `forge-vault/vaults/<vid>/` holds exactly the old structure (`vault.json`, `index.bin`, `objects/`). `vid = "vlt-" + 16 random hex`. A vault created here writes its vid in `vault.json`; a folder whose header names another vid is refused, so swapping folders cannot mix two vaults. Only the migrated vault may have no vid in its header.
+- The registry has no cryptographic weight: each vault keeps its own keys, and a session holds one vault key at most.
+- Discret: the name is absent from the registry and sealed in `vaults/<vid>/label.bin` (AES-GCM, the vault's master key, AAD `hq-forge-vault-v1-label`). While locked, the list shows glyph, colour and number only.
+- Quotas: 2 GiB and 400 images per vault, plus 8 GiB and 1600 images for all vaults together.
+
+## Migration of the existing single vault
+
+- Only `POST /api/forge/vaults/migrate` with `{"backup_offered": true}` migrates. The panel (V4) calls it at its first explicit opening, after offering the ZIP backup. Start-up, status, jobs and cleanup never migrate.
+- Two renames, no copy, no re-encryption: `forge-vault` becomes `forge-vault.migrating`, a new `forge-vault/vaults/` is made, and `forge-vault.migrating` becomes `forge-vault/vaults/<vid>`. A journal `forge-vault.migration.json` (vid only) is written before the first rename. The registry (label « Coffre », default glyph and colour) is written after the second rename. Then the owner-only ACL and the link checks are re-applied at the new place.
+- At the next start, `cleanup_partials` finishes a cut-off migration. If two copies exist it refuses and leaves both. `cancel_migration` puts the single vault back while it is the only vault.
+
+## Sessions and tries
+
+- One unlock entry per HQ session, bound to the vault it opened. Opening another vault wipes the first key. Lock, logout, `lock_all`, `retain_only` and the TTL drop the key and the cached search rows.
+- Failure counts are kept per (session, vault), plus one global count over every vault (5 failures, then 60 s). A success clears only its own slot, so knowing one vault's phrase does not reset the global count. The global count resets after a quiet minute. Logout does not reset counts.
+- Private jobs take `"vault": <vid>` (kept in memory only, never in `jobs.json`), and that vault must be open in this session. Once vaults exist, a private job without a vault is refused (`use_vaults`). A private retouch reads and writes only its source's vault (`source.vault`). Laboratoire and the night workshop are unchanged and still exclude every vault.
+
+## Routes (all admin + CSRF; none unauthenticated)
+
+- `GET /api/forge/vaults`: read-only list of the registry fields, a number, and the open vault id.
+- `POST /api/forge/vaults/new`: `{passphrase, confirm, label, glyph, colour, discret}`, returns 201 with the recovery key once. The vault is not opened.
+- `POST /api/forge/vaults/<vid>/settings`: name, glyph, colour, Discret, order. Discret changes need the vault open in this session.
+- `POST /api/forge/vaults/migrate`.
+- `/api/forge/vaults/<vid>/` plus `status`, `unlock`, `recover`, `lock`, `passphrase`, `recovery`, `gallery`, `images/...`, `search`, `import`. Setup, backup and restore are not routed per vault (V6). No delete route.
+- `/api/forge/vault/*` stays the alias of the migrated vault until V4. Before migration it is the single vault, as before. Once vaults exist without a migrated one it answers `use_vaults`.
+- Ids only in paths; names travel only in POST bodies and are never logged.
