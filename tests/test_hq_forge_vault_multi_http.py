@@ -230,10 +230,14 @@ class ListCreateSettings(MultiHttp):
         V.setup(B.ROOT, PASS, PASS)
         status, listing = self.admin.json("/api/forge/vaults")
         self.assertEqual((status, listing["layout"], listing["vaults"]), (200, "legacy", []))
-        self.assertEqual(self.post(self.admin, "/api/forge/vaults/migrate", {})[0], 400)
-        self.assertEqual(self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": "yes"})[0], 400)
+        for forged in ({}, {"backup_offered": "yes"}, {"backup_offered": True}, {"backup_offered": True, "offered": True}):
+            with self.subTest(forged=forged):
+                status, body = self.post(self.admin, "/api/forge/vaults/migrate", forged)
+                self.assertEqual((status, body.get("code")), (409, "backup_first"))  # the client flag alone never migrates
+        self.assertEqual(V.layout(B.ROOT), "legacy")
         self.assertEqual(self.create("Trop tot")[0], 409)
-        status, done = self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/backup-offer", {})[0], 200)
+        status, done = self.post(self.admin, "/api/forge/vaults/migrate", {})
         self.assertEqual(status, 200, done)
         self.assertTrue(done["migrated"])
         listing = self.admin.json("/api/forge/vaults")[1]
@@ -246,7 +250,7 @@ class Authorisation(MultiHttp):
     def routes(self, vid):
         v = "/api/forge/vaults/" + vid
         gets = ["/api/forge/vaults", v + "/status", v + "/gallery", v + "/images/pvt-" + "0" * 24, v + "/images/pvt-" + "0" * 24 + "/thumb"]
-        posts = ["/api/forge/vaults/new", "/api/forge/vaults/migrate", v + "/settings", v + "/unlock", v + "/recover", v + "/lock",
+        posts = ["/api/forge/vaults/new", "/api/forge/vaults/migrate", "/api/forge/vaults/backup-offer", v + "/settings", v + "/unlock", v + "/recover", v + "/lock",
                  v + "/passphrase", v + "/recovery", v + "/search", v + "/images/pvt-" + "0" * 24 + "/triage",
                  v + "/images/pvt-" + "0" * 24 + "/labels", v + "/images/pvt-" + "0" * 24 + "/delete", v + "/import"]
         return gets, posts
@@ -312,6 +316,7 @@ class Alias(MultiHttp):
         status, _h, raw = self.admin.req("/api/forge/vault/import", "POST", _png(), {"Content-Type": "application/octet-stream"})
         self.assertEqual(status, 201)
         image_id = json.loads(raw)["id"]
+        self.assertEqual(self.admin.req("/api/forge/vault/backup")[0], 200)  # downloading the ZIP is the offer
         _s, migrated = self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})
         vid = migrated["vid"]
         self.assertEqual(self.admin.json("/api/forge/vault/gallery")[0], 401)  # migration closed every session

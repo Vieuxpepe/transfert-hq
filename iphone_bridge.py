@@ -6754,15 +6754,17 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _forge_vault_post(self, raw: str, data: dict, token: str | None) -> None:
-        if raw in ("/api/forge/vaults/new", "/api/forge/vaults/migrate"):
+        if raw in ("/api/forge/vaults/new", "/api/forge/vaults/migrate", "/api/forge/vaults/backup-offer"):
             try:
-                if raw.endswith("/new"):
+                if raw.endswith("/backup-offer"):
+                    self._json(200, hq_forge_vault.acknowledge_backup_offer(ROOT, token))
+                elif raw.endswith("/new"):
                     self._json(201, hq_forge_vault.create_vault(
                         ROOT, token, str(data.get("passphrase") or ""), str(data.get("confirm") or ""),
                         label=data.get("label"), glyph=data.get("glyph", "coffre"), colour=data.get("colour", "ardoise"),
                         discret=data.get("discret", False)))
                 else:
-                    self._json(200, hq_forge_vault.migrate_legacy(ROOT, token, backup_offered=data.get("backup_offered")))
+                    self._json(200, hq_forge_vault.migrate_legacy(ROOT, token))
             except hq_forge_vault.VaultError as exc:
                 self._vault_error(exc)
             return

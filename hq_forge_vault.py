@@ -68,6 +68,10 @@ _global_fails = 0
 _global_until = 0.0
 _global_last = 0.0
 _inflight = 0
+# Fix 1: HQ session token -> monotonic time the server itself offered the single vault's backup
+# (ZIP downloaded, or the offer explicitly acknowledged). Memory only; a client flag never counts.
+_backup_offers: dict[str, float] = {}
+BACKUP_OFFER_TTL_SEC = 900.0
 _session_alive = None
 _write_fault = None
 _restore_fault = None
@@ -111,6 +115,7 @@ def reset_for_tests() -> None:
         _sessions.clear()
     with _FAIL_LOCK:
         _failures.clear()
+    _backup_offers.clear()
     _test_dir = None
     _ttl = UNLOCK_TTL_SEC
     _quota_bytes = QUOTA_BYTES
@@ -954,8 +959,39 @@ def drop_session(token: str | None) -> None:
         return
     with _LOCK:
         previous = _sessions.pop(token, None)
+        _backup_offers.pop(token, None)
     if previous:
         _wipe(previous.get("key"))
+
+
+def _close_vault(identity: str) -> None:
+    """Fix 3: close every session that has this one vault open; other vaults stay open."""
+    with _LOCK:
+        tokens = [t for t, e in _sessions.items() if e.get("vault") == identity]
+        entries = [_sessions.pop(t) for t in tokens]
+    for entry in entries:
+        _wipe(entry.get("key"))
+
+
+def _record_backup_offer(token: str) -> None:
+    with _LOCK:
+        _backup_offers[token] = time.monotonic()
+
+
+def _take_backup_offer(token: str) -> bool:
+    with _LOCK:
+        when = _backup_offers.pop(token, None)
+    return when is not None and time.monotonic() - when <= BACKUP_OFFER_TTL_SEC
+
+
+def acknowledge_backup_offer(hq_root: Path, token: str | None) -> dict:
+    """Fix 1: the panel showed the backup offer and the owner explicitly declined or deferred it.
+    Recorded server-side for this HQ session only; only meaningful while the layout is 'legacy'."""
+    key = _require_live(token)
+    if layout(hq_root) != "legacy":
+        raise VaultError("validation")
+    _record_backup_offer(key)
+    return {"offered": True}
 
 
 def lock_all() -> None:
@@ -1931,6 +1967,7 @@ def search(hq_root: Path, token: str | None, data: dict, *, vid: str | None = No
 
 def backup_bytes(hq_root: Path, token: str | None, *, vid: str | None = None) -> bytes:
     root, _master_key, _header = _master(hq_root, token, vid)
+    offered_single = vid is None and layout(hq_root) == "legacy"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name in ("vault.json", "index.bin"):
@@ -1942,6 +1979,8 @@ def backup_bytes(hq_root: Path, token: str | None, *, vid: str | None = None) ->
             for child in sorted(folder.iterdir()):
                 if child.is_file() and not _is_reparse(child) and ID_RE.fullmatch(child.stem):
                     archive.write(child, "objects/" + child.name)
+    if offered_single:
+        _record_backup_offer(_token(token))  # the single vault's ZIP was really handed out
     return buffer.getvalue()
 
 
@@ -2189,13 +2228,17 @@ def _migrate(hq_root: Path) -> dict:
     return _finish_migration(base, vid)
 
 
-def migrate_legacy(hq_root: Path, token: str | None, *, backup_offered) -> dict:
-    """V1.6: only on the owner's explicit first opening of the vault panel, after the panel has
-    offered a ZIP backup of the single vault (backup_offered must be exactly True). Never called
-    at start-up, by status, by jobs or by cleanup."""
-    _require_live(token)
-    if backup_offered is not True:
-        raise VaultError("validation")
+def migrate_legacy(hq_root: Path, token: str | None, *, backup_offered=None) -> dict:
+    """V1.6: only on the owner's explicit first opening of the vault panel, after the backup offer.
+    Fix 1: the server decides. This HQ session must have downloaded the single vault's ZIP or
+    acknowledged the offer (acknowledge_backup_offer) within BACKUP_OFFER_TTL_SEC; the record is
+    used up. backup_offered from the client is ignored. Never called at start-up, by status, by
+    jobs or by cleanup."""
+    key = _require_live(token)
+    if layout(hq_root) == "multi":
+        return _migrate(hq_root)  # replay: nothing to do, no offer needed
+    if not _take_backup_offer(key):
+        raise VaultError("backup_first")
     try:
         return _migrate(hq_root)
     except OSError:
@@ -2303,6 +2346,7 @@ def http_status(code: str) -> int:
         "migration": 409,
         "too_many": 409,
         "migration_failed": 409,
+        "backup_first": 409,
     }.get(code, 400)
 
 
@@ -2329,5 +2373,6 @@ def public_error(code: str) -> str:
         "migration": "Le coffre doit d'abord passer au nouveau rangement.",
         "too_many": "Nombre maximal de coffres atteint.",
         "migration_failed": "Le nouveau rangement n'a pas abouti. Rien n'est perdu.",
+        "backup_first": "Proposez d'abord la sauvegarde du coffre.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
     }.get(code, "Le coffre a refusé l'opération.")

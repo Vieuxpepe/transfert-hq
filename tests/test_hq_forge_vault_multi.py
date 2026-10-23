@@ -426,20 +426,62 @@ class MigrationGateTests(MultiBase):
         with self.assertRaises(V.VaultError) as caught:
             V.migrate_legacy(self.hq, None, backup_offered=True)
         self.assertEqual(caught.exception.code, "locked")
-        for offered in (False, None, "true", 1):
+        for offered in (True, False, None, "true", 1):
             with self.subTest(offered=offered), self.assertRaises(V.VaultError) as caught:
                 V.migrate_legacy(self.hq, self.admin, backup_offered=offered)
-            self.assertEqual(caught.exception.code, "validation")
+            self.assertEqual(caught.exception.code, "backup_first")  # a client flag alone never migrates
         self.assertEqual(V.layout(self.hq), "legacy")
-        result = V.migrate_legacy(self.hq, self.admin, backup_offered=True)
+        V.acknowledge_backup_offer(self.hq, self.admin)
+        result = V.migrate_legacy(self.hq, self.admin)
         self.assertTrue(result["migrated"])
         self.assertEqual(V.layout(self.hq), "multi")
+
+    def test_downloading_the_backup_counts_as_the_offer(self):
+        V.setup(self.hq, PASS, PASS)
+        V.unlock(self.hq, self.admin, PASS)
+        self.assertTrue(V.backup_bytes(self.hq, self.admin))
+        self.assertTrue(V.migrate_legacy(self.hq, self.admin)["migrated"])
+
+    def test_the_offer_belongs_to_one_session_and_is_used_once(self):
+        other = "other-session-token-0123456789"
+        V.setup(self.hq, PASS, PASS)
+        V.acknowledge_backup_offer(self.hq, other)
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, self.admin, backup_offered=True)
+        self.assertEqual(caught.exception.code, "backup_first")
+        V.acknowledge_backup_offer(self.hq, self.admin)
+        V.set_migration_fault_for_tests("after_journal")
+        with self.assertRaises(V.VaultError):
+            V.migrate_legacy(self.hq, self.admin)
+        V.set_migration_fault_for_tests(None)
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, self.admin)  # the record was used up by the failed attempt
+        self.assertEqual(caught.exception.code, "backup_first")
+        V.drop_session(other)  # logout forgets the offer
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, other)
+        self.assertEqual(caught.exception.code, "backup_first")
+        self.assertEqual(V.layout(self.hq), "legacy")
+
+    def test_the_offer_expires(self):
+        V.setup(self.hq, PASS, PASS)
+        V.acknowledge_backup_offer(self.hq, self.admin)
+        V._backup_offers[self.admin] -= V.BACKUP_OFFER_TTL_SEC + 1
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, self.admin)
+        self.assertEqual(caught.exception.code, "backup_first")
+
+    def test_no_offer_outside_the_single_layout(self):
+        with self.assertRaises(V.VaultError) as caught:
+            V.acknowledge_backup_offer(self.hq, self.admin)  # nothing to back up yet
+        self.assertEqual(caught.exception.code, "validation")
 
     def test_failed_rename_reports_and_loses_nothing(self):
         V.setup(self.hq, PASS, PASS)
         V.set_migration_fault_for_tests("after_journal")
+        V.acknowledge_backup_offer(self.hq, self.admin)
         with self.assertRaises(V.VaultError) as caught:
-            V.migrate_legacy(self.hq, self.admin, backup_offered=True)
+            V.migrate_legacy(self.hq, self.admin)
         self.assertEqual(caught.exception.code, "migration_failed")
         self.assertEqual(V.layout(self.hq), "legacy")
         V.unlock(self.hq, self.admin, PASS)
