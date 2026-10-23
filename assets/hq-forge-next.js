@@ -228,6 +228,122 @@
   }
   window.hqForgeOnViewer = viewerRow;
 
+  // ------------------------------------------------------------------ B: Laboratoire
+  const lab = $("forge-lab");
+  const ERRORS = { forge_oom: "m\u00e9moire GPU", forge_timeout: "d\u00e9lai d\u00e9pass\u00e9", stopped: "Forge arr\u00eat\u00e9", forge_error: "erreur Forge",
+    forge_http: "erreur Forge", uncertain_lease: "appareil muet", uncertain_lost: "appareil perdu", hq_restart: "HQ red\u00e9marr\u00e9",
+    worker_removed: "appareil retir\u00e9", model_mismatch: "autre version du mod\u00e8le", bad_image: "image illisible" };
+  let labData = null;
+  let labView = "speed";
+  const fmt = (n) => String(Math.round(n * 10) / 10).replace(".", ",");
+  const secs = (n) => (n < 90 ? fmt(n) + " s" : fmt(n / 60) + " min");
+  const pct = (a, b) => (b ? Math.round((100 * a) / b) : 0) + " %";
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+  function groupTitle(group) {
+    return [group.checkpoint, group.width + "\u00d7" + group.height, group.hires ? "haute r\u00e9solution" : ""].filter(Boolean).join(" \u00b7 ");
+  }
+  function rowLabel(item) {
+    return item.device + " \u00b7 " + item.sampler + " \u00b7 " + item.steps + " pas";
+  }
+  function applyButton(item) {
+    const button = el("button", "secondary forge-lab-apply", "Appliquer ces r\u00e9glages");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      const result = H.applyTechnical(item.settings || {});
+      const note = $("forge-lab-applied");
+      note.textContent = "Formulaire mis \u00e0 jour : " + (result.done.join(", ") || "rien") + "." +
+        (result.missing.length ? " Absent de cet HQ, laiss\u00e9 tel quel : " + result.missing.join(", ") + "." : "") +
+        " Le prompt n\u2019a pas chang\u00e9 et rien n\u2019est lanc\u00e9.";
+      note.focus();
+    });
+    return button;
+  }
+  function renderLab() {
+    const panel = $("forge-lab-panel");
+    panel.replaceChildren();
+    document.querySelectorAll(".forge-lab-tabs [role=tab]").forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.view === labView)));
+    if (!labData) return;
+    const min = labData.min_samples;
+    const groups = labData[labView] || [];
+    if (labView === "keep") panel.append(el("p", "forge-note", "Ce que tu gardes : part des images tri\u00e9es marqu\u00e9es Garder ou Favori. Les images non tri\u00e9es ne comptent pas."));
+    if (!groups.length) {
+      panel.append(el("p", "forge-note forge-lab-empty", labView === "keep" ? "Pas encore d\u2019image tri\u00e9e. Utilisez Trier dans la galerie." : "Pas encore de mesure. Les prochaines g\u00e9n\u00e9rations de la galerie s\u2019afficheront ici."));
+      return;
+    }
+    groups.forEach((group) => {
+      const box = el("section", "forge-lab-group");
+      box.append(el("h3", "forge-lab-group-title", groupTitle(group)));
+      const comparable = group.rows.filter((item) => item.enough);
+      const top = labView === "speed" ? Math.max(...comparable.map((item) => item.high_s || item.median_s || 0), 1) : 1;
+      group.rows.forEach((item) => {
+        const line = el("div", "forge-lab-row");
+        line.dataset.enough = String(item.enough);
+        line.append(el("span", "forge-lab-label", rowLabel(item)));
+        if (!item.enough) {
+          line.append(el("span", "forge-lab-value forge-lab-few", "Pas assez de donn\u00e9es (" + item.samples + " / " + min + ")"));
+          box.append(line);
+          return;
+        }
+        const meter = document.createElement("meter");
+        meter.min = 0;
+        let text = "";
+        if (labView === "speed") {
+          meter.max = top;
+          meter.value = item.median_s;
+          meter.setAttribute("aria-label", "Dur\u00e9e par image, " + rowLabel(item));
+          text = "\u2248 " + secs(item.median_s) + " par image (" + secs(item.low_s) + " \u2013 " + secs(item.high_s) + ", " + item.samples + " mesures)";
+        } else if (labView === "reliability") {
+          meter.max = item.samples;
+          meter.value = item.completed;
+          meter.setAttribute("aria-label", "Images r\u00e9ussies, " + rowLabel(item));
+          const bits = [pct(item.completed, item.samples) + " r\u00e9ussies sur " + item.samples];
+          if (item.failed) bits.push(item.failed + " en \u00e9chec");
+          if (item.uncertain) bits.push(item.uncertain + " incertaine" + (item.uncertain > 1 ? "s" : ""));
+          if (item.errors.length) bits.push(item.errors.map((e) => (ERRORS[e.code] || e.code) + " \u00d7" + e.count).join(", "));
+          text = bits.join(" \u00b7 ");
+        } else {
+          meter.max = item.samples;
+          meter.value = item.kept;
+          meter.setAttribute("aria-label", "Images gard\u00e9es, " + rowLabel(item));
+          text = item.kept + " gard\u00e9es sur " + item.samples + " tri\u00e9es (" + pct(item.kept, item.samples) + ")" + (item.favorite ? ", dont " + item.favorite + " favori" + (item.favorite > 1 ? "s" : "") : "");
+        }
+        line.append(meter, el("span", "forge-lab-value", text), applyButton(item));
+        box.append(line);
+      });
+      if (comparable.length < 2 && group.rows.length > 1) box.append(el("p", "forge-note", "Une comparaison demande au moins deux r\u00e9glages avec " + min + " images chacun."));
+      panel.append(box);
+    });
+    const mixed = $("forge-lab-mixed");
+    mixed.replaceChildren();
+    const KIND = { device: "L\u2019appareil", sampler: "L\u2019\u00e9chantillonneur", checkpoint: "le mod\u00e8le", size: "la taille" };
+    (labData.confounded || []).forEach((m) => {
+      mixed.append(el("p", "forge-note", (KIND[m.kind] || m.kind) + " \u00ab " + m.value + " \u00bb n\u2019a \u00e9t\u00e9 mesur\u00e9 qu\u2019avec " + (KIND[m.with_kind] || m.with_kind).replace(/^L/, "l") + " \u00ab " + m.with + " \u00bb : leurs effets ne se s\u00e9parent pas."));
+    });
+    if (mixed.children.length) mixed.prepend(el("h3", "forge-lab-group-title", "R\u00e9glages m\u00eal\u00e9s"));
+    mixed.hidden = !mixed.children.length;
+  }
+  async function loadLab() {
+    try {
+      labData = await H.api("/api/forge/lab");
+    } catch (error) {
+      labData = null;
+      $("forge-lab-panel").replaceChildren(el("p", "forge-note", error.message || "Le laboratoire n\u2019a pas pu \u00eatre lu."));
+      return;
+    }
+    renderLab();
+  }
+  lab.addEventListener("toggle", () => { if (lab.open) loadLab(); });
+  $("forge-lab-refresh").addEventListener("click", loadLab);
+  document.querySelectorAll(".forge-lab-tabs [role=tab]").forEach((tab) => {
+    tab.addEventListener("click", () => { labView = tab.dataset.view; renderLab(); });
+  });
+  window.hqForgeLabData = () => labData;
+
   // The vault lock drops every decrypted view this module opened.
   window.hqForgeNextLock = () => {    if (mode === "private" && dialog.open) close();
     if (trashMode === "private" && trash.open) closeTrash();

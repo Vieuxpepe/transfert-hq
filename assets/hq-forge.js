@@ -1018,6 +1018,26 @@
     loadVault: () => loadVaultGallery(),
     vaultUnlocked: () => !!vaultState.unlocked,
     trackPrivateUrl: (url) => privateUrls.add(url),
+    /* Laboratoire "Appliquer ces r\u00e9glages": technical fields only (never the prompt or the
+       negative prompt). Returns what changed and what this HQ cannot apply, so nothing is silent. */
+    applyTechnical: (s) => {
+      const done = [];
+      const missing = [];
+      const pick = (select, value, label) => {
+        if (!value) return;
+        if ([...select.options].some((item) => item.value === value)) { select.value = value; done.push(label); } else missing.push(label + " \u00ab " + value + " \u00bb");
+      };
+      pick(checkpointEl, s.checkpoint, "mod\u00e8le");
+      pick(samplerEl, s.sampler_name, "\u00e9chantillonneur");
+      pick(schedulerEl, s.scheduler, "planificateur");
+      if (s.width && s.height) { $("forge-width").value = s.width; $("forge-height").value = s.height; done.push("taille " + s.width + "\u00d7" + s.height); }
+      if (s.steps) { $("forge-steps").value = s.steps; done.push(s.steps + " pas"); }
+      if (s.cfg_scale) { $("forge-cfg").value = s.cfg_scale; done.push("CFG " + String(s.cfg_scale).replace(".", ",")); }
+      syncRanges();
+      syncActions();
+      queueUsual();
+      return { done, missing };
+    },
     closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
   };
 

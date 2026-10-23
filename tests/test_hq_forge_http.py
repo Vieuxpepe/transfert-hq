@@ -353,6 +353,23 @@ class ForgeHttp(unittest.TestCase):
         finally:
             admin.json("/api/forge/vault/lock", "POST", data=b"{}")
 
+    def test_lab_route_is_admin_only_read_only_and_has_no_prompt(self):
+        import hq_forge_stats as stats
+        stats.record(self.root, {"kind": "job", "outcome": "completed", "width": 512, "height": 512, "steps": 20,
+                                 "duration_s": 3.0, "device_id": "local", "prompt": "zq-http-lab"})
+        self.assertEqual(self.anon.req("/api/forge/lab")[0], 401)
+        self.assertEqual(Client(self.base, UPLOAD_PIN).req("/api/forge/lab")[0], 403)
+        admin = Client(self.base, ADMIN_PIN)
+        status, _headers, body = admin.req("/api/forge/lab")
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        self.assertGreaterEqual(payload["records"], 1)
+        self.assertNotIn(b"zq-http-lab", body)
+        self.assertEqual(admin.req("/api/forge/lab/extra")[0], 404)
+        # Read-only: there is no POST counterpart, and a cross-site POST is refused first.
+        self.assertEqual(admin.req("/api/forge/lab", "POST", b"{}", {"Origin": "http://evil.example"}, origin=False)[0], 403)
+        self.assertEqual(admin.req("/api/forge/lab", "POST", b"{}")[0], 404)
+
     def test_readiness_does_not_depend_on_forge(self):
         self.assertNotIn("hq_forge", D.REQUIRED_MODULES)
         status, _headers, body = self.admin.req("/api/diag/ready")

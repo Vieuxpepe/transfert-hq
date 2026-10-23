@@ -45,6 +45,7 @@ import hq_forge
 import hq_forge_fleet
 import hq_forge_gallery
 import hq_forge_jobs
+import hq_forge_lab
 import hq_forge_presets
 import hq_forge_vault
 
@@ -5572,6 +5573,22 @@ def render_app() -> bytes:
         <div id="forge-gallery" class="forge-grid"></div>
         <button type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
       </section>
+      <details class="forge-fold forge-block forge-m forge-lab" id="forge-lab">
+        <summary>Laboratoire</summary>
+        <div class="forge-lab-help">
+          <p id="forge-lab-intro" class="forge-note">Trois vues séparées, sans note globale. Coffre exclu.</p>
+          <p id="forge-help-lab" class="forge-note forge-lab-rules">Seules les images de la galerie comptent ; le coffre privé n’est jamais mesuré. Un réglage n’est comparé qu’à partir de 20 images, et seulement avec le même modèle, la même taille et la même haute résolution. Les chiffres disent ce qui s’est passé, pas pourquoi.</p>
+        </div>
+        <div class="forge-lab-tabs" role="tablist" aria-label="Vues du laboratoire">
+          <button type="button" role="tab" id="forge-lab-tab-speed" data-view="speed" aria-selected="true" aria-controls="forge-lab-panel">Vitesse</button>
+          <button type="button" role="tab" id="forge-lab-tab-reliability" data-view="reliability" aria-selected="false" aria-controls="forge-lab-panel">Fiabilité</button>
+          <button type="button" role="tab" id="forge-lab-tab-keep" data-view="keep" aria-selected="false" aria-controls="forge-lab-panel">Taux de garde</button>
+        </div>
+        <div id="forge-lab-panel" role="tabpanel" aria-live="polite"></div>
+        <div id="forge-lab-mixed" class="forge-lab-mixed" hidden></div>
+        <p id="forge-lab-applied" class="forge-note" role="status" tabindex="-1"></p>
+        <button type="button" id="forge-lab-refresh" class="secondary">Actualiser</button>
+      </details>
     </div>
     <dialog id="forge-vault-viewer" aria-labelledby="forge-vault-viewer-title">
       <form method="dialog">
@@ -6656,6 +6673,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_gallery.get(ROOT, raw[len(prefix):]))
             except hq_forge_gallery.GalleryError:
                 self._json(404, {"error": "Introuvable"})
+            return True
+        if raw == "/api/forge/lab":
+            # Read-only Laboratoire summary: settings, durations, outcomes and sort flags. No prompt, no vault.
+            self._json(200, hq_forge_lab.summary(ROOT))
             return True
         got = hq_forge_jobs.serve_get(ROOT, raw, parsed.query, self._token())
         if got is None:

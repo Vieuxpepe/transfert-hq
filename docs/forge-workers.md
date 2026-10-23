@@ -121,3 +121,9 @@ seed, variation strength, device, duration, outcome, error code, attempt, uncert
 negative prompt, never anything from the vault. Gallery images carry an optional `triage` flag
 (`keep | reject | favorite`, absent = not sorted); rejected images are hidden in the bin, never deleted.
 
+
+## Triage and Laboratoire (phase B)
+
+- Gallery images carry a reversible flag (garder, rejeter, favori, non trie) in their meta.json; vault images carry it inside the encrypted index only (`POST /api/forge/vault/images/<id>/triage`, admin + CSRF + vault session). Rejected means "in the bin": nothing is deleted.
+- `GET /api/forge/lab` (admin, read-only) summarises `.hq-forge/stats.json` in three separate views: speed, reliability, keep rate. No single score. A setting needs 20 measurements before it is compared; only runs with the same checkpoint, size and hires are compared; settings only ever measured together are listed as confounded. Vault data never reaches the stats file, so it is excluded by construction.
+- "Appliquer ces reglages" only fills technical form fields (checkpoint, sampler, scheduler, size, steps, CFG), says what changed and what this HQ lacks, and never starts a job or touches the prompt.

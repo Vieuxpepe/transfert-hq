@@ -7,12 +7,51 @@ FORGE_BROWSER=chromium|webkit FORGE_QW_SHOTS=dir python tests/visual_forge_next_
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+import visual_forge_quick_wins_playwright as QW
 from visual_forge_quick_wins_playwright import Run, open_vault, import_private, generate_once, start_server, STORAGE_PROBE
+
+
+def seeded_records() -> list:
+    rows = []
+    def add(n, **over):
+        for i in range(n):
+            row = {"ts": "2026-10-01T10:00:00Z", "kind": "batch", "outcome": "completed", "device_id": "w1", "device_name": "PC salon",
+                   "checkpoint": "absent-model", "sampler_name": "Euler a", "steps": 20, "width": 768, "height": 512, "hires": False,
+                   "cfg_scale": 6.5, "duration_s": 8.0 + (i % 4), "attempt": 1, "count": 1}
+            row.update(over)
+            rows.append(row)
+    add(24)
+    add(21, device_id="w2", device_name="Bureau", duration_s=14.0)
+    add(3, device_id="w2", device_name="Bureau", outcome="failed", error="forge_oom", duration_s=None)
+    add(5, device_id="w3", device_name="Portable", checkpoint="autre-modele", duration_s=20.0)
+    return rows
+
+
+def start_seeded(extra_env: dict | None = None, records: list | None = None):
+    """Same isolated server as the quick-wins harness, plus synthetic statistics."""
+    root = Path(tempfile.mkdtemp(prefix="hq-forge-next-"))
+    vault = Path(tempfile.mkdtemp(prefix="hq-forge-next-vault-"))
+    env = os.environ.copy()
+    env["HQ_FORGE_MOCK"] = "ready"
+    env["HQ_FORGE_VAULT_DIR"] = str(vault)
+    env.update(extra_env or {})
+    proc = subprocess.Popen([sys.executable, str(QW.HERE / "carnet_test_server.py"), str(root)],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    info = json.loads(proc.stdout.readline().decode("utf-8"))
+    assert info["base"].startswith("http://127.0.0.1:") and not info["base"].endswith(QW.PROD_PORTS)
+    # The server refuses a non-empty root, so the synthetic statistics land right after it starts.
+    (root / ".hq-forge").mkdir(parents=True, exist_ok=True)
+    (root / ".hq-forge" / "stats.json").write_text(json.dumps({"version": 1, "records": records or []}), encoding="utf-8")
+    return proc, info
 
 
 def swipe(page, selector: str, dx: int, dy: int) -> None:
@@ -90,11 +129,56 @@ def section_triage(run: Run) -> None:
     run.check(all(not row["id"].startswith("pvt-") for row in stats), "vault images never appear in the normal bin")
     page.locator("#forge-vault-lock").click()
     run.check(run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length === 0", 5), "locking the vault drops the private views")
+    lab = page.request.get(run.base + "/api/forge/lab").json()
+    run.check(lab["records"] == 4 and lab["vault_excluded"], "the lab counts the 4 gallery images only, never the vault")
+    run.dest(page, "normal")
+    page.locator("#forge-lab summary").click()
+    page.locator("#forge-lab-tab-keep").click()
+    run.check(run.until(page, "() => /Pas assez de donn\u00e9es \\(2 \\/ 20\\)/.test(document.querySelector('#forge-lab-panel').textContent)", 10),
+              "keep rate counts the 2 sorted images and says it is not enough yet")
     ctx.close()
 
 
-SECTIONS = {"triage": section_triage}
+def section_lab(run: Run) -> None:
+    print("B laboratoire")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    page.locator("#forge-prompt").fill("mon prompt reste")
+    page.locator("#forge-lab summary").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-lab-panel .forge-lab-group').length === 2", 10), "speed view: one block per comparable checkpoint/size")
+    run.check(page.locator("#forge-lab-tab-speed").get_attribute("aria-selected") == "true", "Vitesse is the first view")
+    rows = page.locator("#forge-lab-panel .forge-lab-group").first.locator(".forge-lab-row")
+    run.check(rows.count() == 2 and "PC salon" in rows.nth(0).inner_text() and "Bureau" in rows.nth(1).inner_text(), "the faster PC comes first inside the comparable block")
+    run.check("par image" in rows.nth(0).inner_text() and page.locator("#forge-lab-panel meter").count() >= 2, "simple bars with seconds per image")
+    run.check("Pas assez de donn\u00e9es (5 / 20)" in page.locator("#forge-lab-panel").inner_text(), "a setting with 5 images says Pas assez de donn\u00e9es")
+    run.check("Portable" in page.locator("#forge-lab-mixed").inner_text() and "autre-modele" in page.locator("#forge-lab-mixed").inner_text(), "confounded settings are named (Portable only with autre-modele)")
+    run.check("score" not in page.locator("#forge-lab").inner_text().lower(), "no single score anywhere")
+    run.shot(page, "lab-speed", "#forge-lab")
+    page.locator("#forge-lab-tab-reliability").click()
+    text = page.locator("#forge-lab-panel").inner_text()
+    run.check("88 % r\u00e9ussies sur 24" in text and "m\u00e9moire GPU \u00d73" in text, "reliability: Bureau 21/24 with the memory errors named, no cause invented")
+    run.shot(page, "lab-reliability", "#forge-lab")
+    page.locator("#forge-lab-tab-keep").click()
+    run.check("Ce que tu gardes" in page.locator("#forge-lab-panel").inner_text(), "keep rate is labelled Ce que tu gardes")
+    run.check(page.locator("#forge-lab-panel .forge-lab-empty").count() == 1, "no sorted image yet: an honest empty state")
+    run.shot(page, "lab-keep", "#forge-lab")
+    page.locator("#forge-lab-tab-speed").click()
+    page.locator("#forge-lab-panel .forge-lab-apply").first.click()
+    note = page.locator("#forge-lab-applied").inner_text()
+    run.check("taille 768\u00d7512" in note and "20 pas" in note and "absent-model" in note and "rien n\u2019est lanc\u00e9" in note,
+              "Appliquer says what changed, what this HQ lacks, and that nothing starts: " + note)
+    run.check(page.locator("#forge-width").input_value() == "768" and page.locator("#forge-height").input_value() == "512", "the form now has 768\u00d7512")
+    run.check(page.locator("#forge-prompt").input_value() == "mon prompt reste", "the prompt is untouched")
+    jobs = page.request.get(run.base + "/api/forge/jobs").json()["jobs"]
+    run.check(jobs == [], "nothing was generated by applying")
+    run.shot(page, "lab-applied", "#forge-lab-applied")
+    ctx.close()
+
+
+SECTIONS = {"triage": section_triage, "lab": section_lab}
 EXTRA_ENV: dict = {}
+SEEDED = {"lab": seeded_records}
 
 
 def main() -> None:
@@ -105,7 +189,10 @@ def main() -> None:
         browser = getattr(playwright, browser_name).launch()
         print("BROWSER", browser_name, browser.version)
         for name in wanted:
-            proc, info = start_server(EXTRA_ENV.get(name))
+            if name in SEEDED:
+                proc, info = start_seeded(EXTRA_ENV.get(name), SEEDED[name]())
+            else:
+                proc, info = start_server(EXTRA_ENV.get(name))
             try:
                 run = Run(browser, info)
                 SECTIONS[name](run)

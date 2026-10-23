@@ -650,7 +650,7 @@ def main() -> None:
   return { shown: getComputedStyle(pop).display !== 'none' && r.width > 0, l: r.left, r: r.right, t: r.top, b: r.bottom,
     vw: de.clientWidth, vh: innerHeight, sw: de.scrollWidth };
 }"""
-            FOLD_IDS = ["forge-negative-fold", "forge-sampling", "forge-cfg-fold", "forge-seed-fold", "forge-advanced", "forge-batch-fold", "forge-hr-fold", "forge-presets"]
+            FOLD_IDS = ["forge-negative-fold", "forge-sampling", "forge-cfg-fold", "forge-seed-fold", "forge-advanced", "forge-batch-fold", "forge-hr-fold", "forge-presets", "forge-lab"]
 
             def help_ids(p):
                 p.evaluate("(ids) => ids.forEach((id) => { const d = document.getElementById(id); if (d) d.open = true; })", FOLD_IDS)

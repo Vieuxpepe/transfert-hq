@@ -101,7 +101,7 @@ body.theme-oled #forge-studio select,body.theme-midnight #forge-studio select{co
 .forge-privacy-ack{display:flex;align-items:flex-start;gap:8px;min-height:var(--tap-min)}
 
 /* ---- Responsive workspace (t85u) ----
-   Mobile first: one column, ordered prompt → réglages → action bar → résultat.
+   Mobile first: one column, ordered prompt Ã¢â€ â€™ rÃƒÂ©glages Ã¢â€ â€™ action bar Ã¢â€ â€™ rÃƒÂ©sultat.
    The studio is a size container, so the layout follows the space HQ gives it
    (the desktop side nav eats 164px), not the device type. */
 #forge-studio{container-type:inline-size;container-name:forge;gap:14px}
@@ -153,7 +153,7 @@ html:has(body[data-view="forge"]){scroll-padding-bottom:calc(var(--nav-h) + 150p
 /* Presets: one primary row, the rest as compact chips. */
 .forge-presets > summary{display:flex;align-items:center;gap:10px;min-height:var(--tap-min);cursor:pointer;list-style:none}
 .forge-presets > summary::-webkit-details-marker{display:none}
-.forge-presets > summary::before{content:"▸";color:var(--muted);transition:transform .15s}
+.forge-presets > summary::before{content:"Ã¢â€“Â¸";color:var(--muted);transition:transform .15s}
 .forge-presets[open] > summary::before{transform:rotate(90deg)}
 .forge-summary-hint{margin-left:auto;color:var(--muted);font-size:var(--text-sm);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .forge-presets-body{display:flex;flex-direction:column;gap:10px;margin-top:6px}
@@ -206,7 +206,7 @@ html:has(body[data-view="forge"]){scroll-padding-bottom:calc(var(--nav-h) + 150p
   .forge-grid-fields{grid-template-columns:1fr 1fr}
 }
 /* Two columns: main work on the left, settings on the right. The DOM keeps
-   the phone order (prompt, réglages, Générer, résultat), so keyboard order
+   the phone order (prompt, rÃƒÂ©glages, GÃƒÂ©nÃƒÂ©rer, rÃƒÂ©sultat), so keyboard order
    matches what is seen in both layouts. */
 @container forge (min-width:760px){
   #forge-studio:not([data-layout="compact"]) .forge-shell{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,1fr);grid-template-rows:repeat(9,auto) 1fr;gap:14px 18px;align-items:start}
@@ -246,10 +246,10 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 @media (max-height:500px) and (max-width:899px){
   body[data-view="forge"] .forge-actionbar{bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px))}
 }
-/* "Voir le résultat": shown in the sticky bar when a finished image was not scrolled to because the user was busy. */
+/* "Voir le rÃƒÂ©sultat": shown in the sticky bar when a finished image was not scrolled to because the user was busy. */
 .forge-see-result{align-self:center;min-height:44px;padding:6px 16px;border:1px solid var(--forge-accent,var(--accent));border-radius:999px;background:var(--panel);color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:700;cursor:pointer}
 .forge-see-result:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
-/* Appareils de génération: cards, pills, batch monitor, pairing sheet. */
+/* Appareils de gÃƒÂ©nÃƒÂ©ration: cards, pills, batch monitor, pairing sheet. */
 .forge-devices{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel)}
 .forge-devices-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .forge-devices-head h2{margin:0;font-size:1.05rem}
@@ -358,3 +358,16 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-trash-item{display:flex;flex-direction:column;gap:6px}
 .forge-trash-item img{display:block;width:100%;aspect-ratio:1;object-fit:cover;border-radius:12px;background:var(--panel-2)}
 .forge-trash-item button{min-height:var(--tap-min)}
+/* B: Laboratoire (simple bars, no charts) */
+.forge-lab-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.forge-lab-tabs [role=tab]{min-height:var(--tap-min);padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--panel);color:var(--text);font:inherit;font-weight:700}
+.forge-lab-tabs [role=tab][aria-selected="true"]{background:var(--forge-accent,var(--accent));color:var(--bg)}
+.forge-lab-group{margin:10px 0;padding:8px 0;border-top:1px solid var(--line)}
+.forge-lab-group-title{font-size:var(--text-sm);margin:0 0 6px}
+.forge-lab-row{display:grid;grid-template-columns:1fr;gap:4px;padding:6px 0}
+.forge-lab-row meter{width:100%;height:14px}
+.forge-lab-label{font-weight:700;overflow-wrap:anywhere}
+.forge-lab-value{color:var(--muted);font-size:var(--text-sm)}
+.forge-lab-apply{justify-self:start;min-height:var(--tap-min)}
+.forge-lab-help{display:grid;gap:4px}
+#forge-lab-refresh{min-height:var(--tap-min)}
