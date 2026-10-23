@@ -734,7 +734,9 @@ def main() -> None:
             PLACE_TRIGGER = """([sel, where]) => {
   const b = document.querySelector(sel);
   b.scrollIntoView({block: 'center', behavior: 'instant'});
-  const limits = ['#forge-actionbar', '.bottom-nav'].map((s) => document.querySelector(s)).filter((n) => n && n.getClientRects().length && !n.contains(b)).map((n) => n.getBoundingClientRect().top).filter((t) => t > 0 && t <= innerHeight);
+  const r0 = b.getBoundingClientRect();
+  // only bars sharing the trigger's column can cap it (desktop: the compose bar sits beside the side column)
+  const limits = ['#forge-actionbar', '.bottom-nav'].map((s) => document.querySelector(s)).filter((n) => n && n.getClientRects().length && !n.contains(b)).map((n) => n.getBoundingClientRect()).filter((nr) => nr.left < r0.right && nr.right > r0.left).map((nr) => nr.top).filter((t) => t > 0 && t <= innerHeight);
   const floor = limits.length ? Math.min(...limits) : innerHeight;
   const r = b.getBoundingClientRect();
   const side = b.closest('.forge-side');
