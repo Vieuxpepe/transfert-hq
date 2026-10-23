@@ -76,7 +76,46 @@ def section_sweep(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"sweep": section_sweep}
+def section_finish(run: Run) -> None:
+    print("E2 drafts then finish")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    generate_once(run, page, "phare brouillon")
+    page.locator("#forge-gallery .forge-card").first.click()
+    page.locator("#forge-viewer").wait_for()
+    run.check(run.until(page, "() => !document.querySelector('#forge-viewer-finish').hidden && !document.querySelector('#forge-finish').disabled", 5), "a draft offers a finish on this PC")
+    note = page.locator("#forge-finish-note").inner_text()
+    run.check("pas une copie identique" in note and "composition" in note, "the finish is labelled as a finish, never as identical")
+    run.shot(page, "finish-offer", "#forge-viewer-finish")
+    before = page.locator("#forge-gallery .forge-card").count()
+    draft = page.evaluate("() => document.querySelector('#forge-gallery .forge-card').dataset.id")
+    page.locator("#forge-finish-scale").select_option("1.5")
+    page.locator("#forge-finish").click()
+    run.check(run.until(page, "() => !document.querySelector('#forge-viewer').open", 5), "starting the finish closes the viewer")
+    run.check(run.until(page, "(n) => document.querySelectorAll('#forge-gallery .forge-card').length > n", 20, before), "the finished image lands in the gallery")
+    jobs = page.request.get(run.base + "/api/forge/jobs").json()["jobs"]
+    job = jobs[-1] if jobs[-1].get("finish_of") else jobs[0]
+    run.check(job.get("finish_of") == draft and job["settings"]["enable_hr"] is True and job["settings"]["hr_scale"] == 1.5, "the job renders the draft in high resolution x1.5")
+    newest = next(i for i in page.evaluate("() => [...document.querySelectorAll('#forge-gallery .forge-card')].map((c) => c.dataset.id)") if i != draft)
+    meta = page.request.get(run.base + "/api/forge/gallery/" + newest).json()
+    run.check(meta["origin"] == {"finish_of": draft}, "the gallery records which draft it finishes")
+    page.locator('#forge-gallery .forge-card[data-id="' + newest + '"]').click()
+    page.locator("#forge-viewer").wait_for()
+    run.check(run.until(page, "() => !document.querySelector('#forge-finish-of').hidden", 5), "the finished image says it is a finish")
+    run.check(run.until(page, "() => document.querySelector('#forge-finish').disabled && /d\u00e9j\u00e0 en haute r\u00e9solution/.test(document.querySelector('#forge-finish-note').textContent)", 5),
+              "a finished image is not finished again")
+    run.shot(page, "finish-done", "#forge-finish-of")
+    page.locator("#forge-finish-source").click()
+    run.check(run.until(page, "(d) => document.querySelector('#forge-viewer').open && document.querySelector('#forge-download').getAttribute('href').includes(d)", 5, draft),
+              "Voir l'image d'origine opens the draft")
+    box = page.locator("#forge-finish").bounding_box()
+    run.check(box["height"] >= 44, "the finish button is a 44 px touch target")
+    page.locator("#forge-viewer-close").click()
+    ctx.close()
+
+
+SECTIONS = {"sweep": section_sweep, "finish": section_finish}
 EXTRA_ENV: dict = {"sweep": {"HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
 
 

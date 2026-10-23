@@ -222,6 +222,7 @@ def _public(job: dict, *, unlocked: bool = False) -> dict:
         "finished_at": job.get("finished_at"),
         "duration_ms": job.get("duration_ms"),
         "resolution": job.get("resolution") if job.get("resolution") in ("lost", "kept") else None,
+        "finish_of": None if private else job.get("finish_of"),
     }
 
 
@@ -683,6 +684,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
         _save(root, data)
         settings = dict(inline_settings) if inline_settings is not None else dict(job["settings"])
         destination = job.get("destination") or "normal"
+        finish_of = job.get("finish_of") if destination == "normal" else None
         task_id = job["task_id"]
     if _before_submit is not None:
         _before_submit(job_id)
@@ -789,7 +791,7 @@ def _run(root: Path, job_id: str, token: int, transport, inline_settings=None, s
             if destination == "private":
                 stored.append(vault.store_image(root, session_token, raw, per_image))
             else:
-                stored.append(gallery.store(root, raw, per_image))
+                stored.append(gallery.store(root, raw, per_image, origin={"finish_of": finish_of} if finish_of else None))
     except vault.VaultError as exc:
         code = "vault_locked" if exc.code == "locked" else exc.code
         _fail(root, job_id, token, code if code in _MESSAGES else "bad_image")
@@ -837,6 +839,17 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
         return 400, {"error": _MESSAGES["validation"], "code": "validation"}
     if destination == "private" and data.get("enable_hr") is True:
         return 403, {"error": _MESSAGES["private_restricted"], "code": "private_restricted"}
+    finish_of = data.get("finish_of")
+    if finish_of is not None:
+        # E: 'finition' of a kept gallery image on this PC's Forge: high resolution only, normal mode only.
+        if destination != "normal" or not isinstance(finish_of, str) or not gallery.IMG_RE.fullmatch(finish_of) \
+                or data.get("enable_hr") is not True:
+            return 400, {"error": _MESSAGES["validation"], "code": "validation"}
+        try:
+            gallery.get(root, finish_of)
+        except Exception:
+            return 404, {"error": "Image d'origine introuvable.", "code": "not_found"}
+        data = {key: value for key, value in data.items() if key != "finish_of"}
     with _LOCK:
         stored = _load(root)
         found = stored["idempotency"].get(idempotency_key)
@@ -915,6 +928,7 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             "error": "",
             "images": [],
             "seed_used": None,
+            **({"finish_of": finish_of} if finish_of else {}),
         }
         stored["jobs"].append(job)
         stored["jobs"] = stored["jobs"][-200:]

@@ -5679,6 +5679,13 @@ def render_app() -> bytes:
           <button type="button" id="forge-viewer-explore">Générer 6 variations</button>
           <p class="forge-note" id="forge-viewer-explore-note" role="status">Même graine et mêmes réglages : proche garde l'image, loin s'en écarte. Touchez une variation puis Réutiliser pour continuer depuis elle.</p>
         </div>
+        <div class="forge-finish" id="forge-viewer-finish">
+          <div class="forge-label-row"><label for="forge-finish-scale">Finition sur ce PC</label></div>
+          <select id="forge-finish-scale"><option value="1.5">Haute résolution ×1,5</option><option value="2">Haute résolution ×2</option></select>
+          <button type="button" id="forge-finish">Lancer la finition</button>
+          <p class="forge-note" id="forge-finish-note" role="status">Finition, pas une copie identique : la haute résolution peut changer des détails et la composition. Rendu par le Forge de ce PC.</p>
+        </div>
+        <p class="forge-note" id="forge-finish-of" hidden><span>Finition d'une image de la galerie. La composition peut différer.</span> <button type="button" id="forge-finish-source" class="forge-tool">Voir l'image d'origine</button></p>
         <div class="forge-actions">
           <a id="forge-download" href="#" download>Télécharger l'original</a>
           <button type="button" id="forge-share" class="secondary" hidden>Enregistrer dans Photos</button>

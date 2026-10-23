@@ -478,6 +478,49 @@ class Jobs(unittest.TestCase):
         release.set()
         self.assertEqual(self._wait(payload["job"]["job_id"])["state"], "completed")
 
+    # ------------------------------------------------------------------ E: finish a kept draft
+    HR = {"enable_hr": True, "hr_scale": 1.5, "hr_upscaler": "R-ESRGAN 4x+", "hr_second_pass_steps": 0, "denoising_strength": 0.4}
+
+    def _draft(self) -> str:
+        import hq_forge_gallery as G
+        raw = base64.b64decode(_png_b64())
+        return G.store(self.root, raw, dict(_body(seed=321), n_iter=1, batch_size=1))["id"]
+
+    def test_finish_renders_hires_locally_and_links_the_draft(self):
+        import hq_forge_gallery as G
+        draft = self._draft()
+        transport = Transport()
+        code, payload = J.create_job(self.root, _body(seed=321, finish_of=draft, **self.HR), "idem-finish-1", transport=transport)
+        self.assertEqual(code, 202, payload)
+        self.assertEqual(payload["job"]["finish_of"], draft)
+        job = self._wait(payload["job"]["job_id"])
+        self.assertEqual(job["state"], "completed")
+        sent = json.loads(transport.bodies[0].decode("utf-8"))
+        self.assertTrue(sent["enable_hr"])
+        self.assertEqual((sent["hr_scale"], sent["seed"], sent["denoising_strength"]), (1.5, 321, 0.4))
+        self.assertNotIn("finish_of", sent, "the link never reaches Forge")
+        meta = G.get(self.root, job["images"][0]["id"])
+        self.assertEqual(meta["origin"], {"finish_of": draft})
+        self.assertTrue(meta["settings"]["enable_hr"])
+        self.assertFalse(any("interrupt" in url for url in transport.calls))
+
+    def test_finish_is_refused_before_forge_when_invalid(self):
+        draft = self._draft()
+        cases = [
+            (_body(finish_of=draft), 400),                                   # a finish is always high resolution
+            (_body(finish_of="img-nope", **self.HR), 400),
+            (_body(finish_of=["x"], **self.HR), 400),
+            (_body(finish_of="img-" + "0" * 24, **self.HR), 404),            # unknown image
+            (_body(finish_of=draft, destination="private"), 400),            # never in the vault
+            (_body(finish_of=draft, destination="private", **self.HR), 403),  # private hires stays refused
+        ]
+        for index, (body, status) in enumerate(cases):
+            transport = Transport()
+            with self.subTest(index=index):
+                code, payload = J.create_job(self.root, body, f"idem-finish-bad-{index}", transport=transport)
+                self.assertEqual(code, status, payload)
+                self.assertFalse(transport.bodies, "nothing was sent to Forge")
+
     def test_hires_batch_and_seed_bounds(self):
         plain = J.submission_body(_body(), "task(hq-" + "ab" * 12 + ")")
         self.assertNotIn("enable_hr", plain)

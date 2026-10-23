@@ -1,4 +1,4 @@
-/* Forge Studio, phase E: parameter sweep (this file), finish and A/B comparator (added later).
+/* Forge Studio, phase E: parameter sweep, drafts then finish, A/B comparator.
    Same-origin HQ routes only, through hq-forge.js hooks. Normal mode only: nothing here ever
    reads or sends a private prompt or a vault image, and nothing is kept in browser storage. */
 (function () {
@@ -143,6 +143,75 @@
     strip.hidden = false;
     if (results) results.hidden = true;
   }
+  // ------------------------------------------------------------------ E2: drafts, then finish on this PC
+  /* A kept draft is re-rendered by this PC's Forge in high resolution, with the same seed and settings.
+     It is labelled "finition", never "identique": a second pass changes details and can change the layout. */
+  const finishBox = $("forge-viewer-finish");
+  const finishBtn = $("forge-finish");
+  const finishScale = $("forge-finish-scale");
+  const finishNote = $("forge-finish-note");
+  const finishOf = $("forge-finish-of");
+  const FINISH_KEYS = ["prompt", "negative_prompt", "checkpoint", "sampler_name", "scheduler", "width", "height", "steps", "cfg_scale", "seed"];
+  let finishId = "";
+  function syncFinish(kind, id) {
+    if (kind !== "normal") return;
+    const d = H.currentDetail();
+    const s = (d && d.settings) || {};
+    const origin = (d && d.origin) || {};
+    finishId = d ? id : "";
+    finishOf.hidden = !origin.finish_of;
+    finishOf.dataset.source = origin.finish_of || "";
+    if (finishNote.dataset.base == null) finishNote.dataset.base = finishNote.textContent;
+    [...finishScale.options].forEach((o) => { o.disabled = Math.round(Number(s.width) * Number(o.value)) > 2048 || Math.round(Number(s.height) * Number(o.value)) > 2048; });
+    const chosen = finishScale.selectedOptions[0];
+    if (chosen && chosen.disabled) { const ok = [...finishScale.options].find((o) => !o.disabled); if (ok) finishScale.value = ok.value; }
+    let reason = "";
+    if (!(Number(s.seed) >= 0)) reason = "Graine inconnue : la finition ne peut pas repartir de cette image.";
+    else if (s.enable_hr === true) reason = "Cette image est d\u00e9j\u00e0 en haute r\u00e9solution.";
+    else if (!H.upscalers().length) reason = "Aucun agrandisseur n'est disponible sur le Forge de ce PC.";
+    else if ([...finishScale.options].every((o) => o.disabled)) reason = "Image trop grande pour une finition (2048 px au plus).";
+    finishBox.hidden = !d;
+    finishBtn.disabled = !!reason;
+    finishBtn.dataset.blocked = reason ? "1" : "";
+    finishNote.textContent = reason || finishNote.dataset.base;
+  }
+  finishBtn.addEventListener("click", async () => {
+    const d = H.currentDetail();
+    if (!d || !finishId || finishBtn.disabled) return;
+    const s = d.settings || {};
+    const body = {};
+    FINISH_KEYS.forEach((name) => { if (s[name] != null) body[name] = s[name]; });
+    if (Number(s.subseed_strength) > 0) { body.subseed = s.subseed; body.subseed_strength = s.subseed_strength; }
+    const ups = H.upscalers();
+    const preferred = H.preferredUpscaler();
+    Object.assign(body, {
+      enable_hr: true, hr_scale: Number(finishScale.value), hr_upscaler: ups.includes(preferred) ? preferred : ups[0],
+      hr_second_pass_steps: 0, denoising_strength: 0.4, n_iter: 1, batch_size: 1,
+      destination: "normal", wait_if_busy: true, finish_of: finishId,
+    });
+    finishBtn.disabled = true;
+    try {
+      const payload = await H.api("/api/forge/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key("fi") },
+        body: JSON.stringify(body)
+      });
+      H.closeViewer();
+      H.startJob(payload.job);
+    } catch (error) {
+      finishNote.textContent = error.message || "La finition n'a pas d\u00e9marr\u00e9.";
+      finishBtn.disabled = false;
+    }
+  });
+  $("forge-finish-source").addEventListener("click", () => {
+    const source = finishOf.dataset.source;
+    if (!source) return;
+    H.closeViewer();
+    H.openImage(source).catch(() => {});
+  });
+  const prevViewer = window.hqForgeOnViewer;
+  window.hqForgeOnViewer = (kind, id, current) => { if (prevViewer) prevViewer(kind, id, current); syncFinish(kind, id); };
+
   const prevBatch = window.hqForgeOnBatch;
   window.hqForgeOnBatch = (batch) => { if (prevBatch) prevBatch(batch); renderStrip(batch); };
   const prevJob = window.hqForgeOnJob;

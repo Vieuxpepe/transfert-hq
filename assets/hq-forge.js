@@ -1057,6 +1057,16 @@
       showBatch(batch);
     },
     card: (image) => card(image),
+    currentDetail: () => currentDetail,
+    openImage: (id) => openViewer(id),
+    closeViewer: () => { if (viewer.open) closeViewer(); },
+    upscalers: () => [...$("forge-hr-upscaler").options].map((o) => o.value).filter((v) => v && v !== "None"),
+    preferredUpscaler: () => $("forge-hr-upscaler").value,
+    startJob: (job) => {
+      justSubmitted = true;
+      progressBox.hidden = false;
+      showJob(job);
+    },
     closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
   };
 

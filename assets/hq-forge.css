@@ -398,3 +398,8 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-sweep-cell figcaption{text-align:center;color:var(--muted);padding-top:4px;font-variant-numeric:tabular-nums}
 .forge-sweep-wait{display:flex;align-items:center;justify-content:center;aspect-ratio:1/1;border:1px dashed var(--muted);border-radius:10px;color:var(--muted)}
 @media (min-width:760px){.forge-sweep-cell{flex-basis:32%}}
+/* E: finish a kept draft on this PC */
+.forge-finish{margin:12px 0;display:grid;gap:8px}
+.forge-finish[hidden]{display:none}
+.forge-finish select,.forge-finish button{min-height:var(--tap-min)}
+#forge-finish-of .forge-tool{min-height:var(--tap-min)}
