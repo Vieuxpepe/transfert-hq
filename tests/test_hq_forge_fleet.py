@@ -778,6 +778,103 @@ class FleetHttp(unittest.TestCase):
                                                            "settings": dict(SETTINGS, subseed=1, subseed_strength=0.3)}, key="vary-private-1")
         self.assertEqual(status, 403)
 
+    # ------------------------------------------------------------------ sweeps (E)
+    def sweep(self, workers, sweep, key, **overrides):
+        settings = dict(SETTINGS, **overrides)
+        return self.post("/api/forge/batches", {"workers": workers, "count": len(sweep.get("values") or []), "settings": settings,
+                                                "destination": "normal", "sweep": sweep}, key=key)
+
+    def test_cfg_sweep_fans_out_with_one_shared_seed(self):
+        a = self.worker("PC A")
+        b = self.worker("PC B")
+        status, payload = self.sweep([a.id, b.id], {"axis": "cfg_scale", "values": [4, 6, 8.5, 10]}, "sweep-cfg-1")
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(payload["batch"]["sweep"], {"axis": "cfg_scale", "values": [4.0, 6.0, 8.5, 10.0]})
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(done["seed_mode"], "sweep")
+        self.assertEqual(done["counts"]["done"], 4)
+        self.assertEqual([t["seed"] for t in done["tasks"]], [1000] * 4)
+        self.assertEqual([t["cell"] for t in done["tasks"]], [{"axis": "cfg_scale", "value": v} for v in (4.0, 6.0, 8.5, 10.0)])
+        bodies = [c["body"] for c in a.forge_mock.calls + b.forge_mock.calls]
+        self.assertEqual(sorted(x["cfg_scale"] for x in bodies), [4.0, 6.0, 8.5, 10.0])
+        self.assertTrue(all(x["seed"] == 1000 and x["steps"] == 10 and x["prompt"] == SETTINGS["prompt"] for x in bodies))
+        self.assertGreaterEqual(min(len(a.forge_mock.calls), len(b.forge_mock.calls)), 1, "spread over the fleet")
+        self.assertEqual(sorted(G.get(self.root, i)["settings"]["cfg_scale"] for i in self.gallery_ids()), [4.0, 6.0, 8.5, 10.0])
+        self.assertNotIn("override", json.dumps(done))
+
+    def test_sweep_with_random_seed_draws_one_seed_for_every_cell(self):
+        a = self.worker("PC A")
+        status, payload = self.sweep([a.id], {"axis": "steps", "values": [6, 12]}, "sweep-steps-1", seed=-1)
+        self.assertEqual(status, 202, payload)
+        done = self.finished(payload["batch"]["batch_id"])
+        seeds = {t["seed"] for t in done["tasks"]}
+        self.assertEqual(len(seeds), 1)
+        self.assertTrue(0 <= seeds.pop() < 2**32)
+        self.assertEqual(sorted(c["body"]["steps"] for c in a.forge_mock.calls), [6, 12])
+
+    def test_sampler_sweep_names_a_missing_sampler_and_never_substitutes(self):
+        a = self.worker("PC A")
+        b = self.worker("PC B", samplers=("Euler",))
+        status, payload = self.sweep([a.id, b.id], {"axis": "sampler_name", "values": ["Euler", "Euler a"]}, "sweep-sampler-1")
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["code"], "incompatible")
+        self.assertEqual(payload["problems"][0]["worker_id"], b.id)
+        self.assertIn("\u00c9chantillonneur \u00ab Euler a \u00bb absent.", payload["problems"][0]["reasons"])
+        self.assertEqual(len(a.forge_mock.calls) + len(b.forge_mock.calls), 0)
+        status, payload = self.sweep([a.id], {"axis": "sampler_name", "values": ["Euler", "Euler a"]}, "sweep-sampler-2")
+        self.assertEqual(status, 202, payload)
+        self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(sorted(c["body"]["sampler_name"] for c in a.forge_mock.calls), ["Euler", "Euler a"])
+
+    def test_lora_weight_sweep_rewrites_only_that_weight(self):
+        g = {"name": "grain", "alias": "grain", "metadata": {}}
+        a = self.worker("PC A", loras=[g])
+        prompt = "un phare <lora:grain:0.6> <lora:autre:0.3>"
+        status, payload = self.sweep([a.id], {"axis": "lora_weight", "lora": "grain", "values": [0.2, 1]}, "sweep-lora-1", prompt=prompt)
+        self.assertEqual(status, 202, payload)
+        self.finished(payload["batch"]["batch_id"])
+        self.assertEqual(sorted(c["body"]["prompt"] for c in a.forge_mock.calls),
+                         ["un phare <lora:grain:0.2> <lora:autre:0.3>", "un phare <lora:grain:1> <lora:autre:0.3>"])
+
+    def test_sweep_is_capped_and_validated(self):
+        a = self.worker("PC A")
+        bad = [
+            {"axis": "cfg_scale", "values": list(range(1, 10))},          # 9 cells: over the cap
+            {"axis": "cfg_scale", "values": [7]},                         # one cell is not a sweep
+            {"axis": "cfg_scale", "values": [7, 7.0]},                    # duplicate
+            {"axis": "cfg_scale", "values": [7, 16]},                     # out of range
+            {"axis": "steps", "values": [10, 41]},
+            {"axis": "steps", "values": [10, 12.5]},
+            {"axis": "seed", "values": [1, 2]},                           # not a sweep axis
+            {"axis": "lora_weight", "lora": "absent", "values": [0.2, 0.4]},
+            {"axis": "cfg_scale", "values": [4, 6], "extra": 1},
+        ]
+        for index, sweep in enumerate(bad):
+            with self.subTest(sweep=sweep):
+                self.assertEqual(self.sweep([a.id], sweep, f"sweep-bad-{index:02d}")[0], 400)
+        status, _ = self.post("/api/forge/batches", {"workers": [a.id], "count": 3, "settings": SETTINGS, "destination": "normal",
+                                                     "sweep": {"axis": "cfg_scale", "values": [4, 6]}}, key="sweep-bad-count")
+        self.assertEqual(status, 400)
+        self.assertEqual(self.sweep([a.id], {"axis": "cfg_scale", "values": [4, 6]}, "sweep-bad-vary", subseed=5, subseed_strength=0.3)[0], 400)
+        status, _ = self.post("/api/forge/batches", {"workers": ["local"], "count": 2, "settings": SETTINGS, "destination": "private",
+                                                     "sweep": {"axis": "cfg_scale", "values": [4, 6]}}, key="sweep-private-1")
+        self.assertEqual(status, 400, "private never fans out, sweep or not")
+        self.assertEqual(len(a.forge_mock.calls), 0)
+        self.assertEqual(FL.SWEEP_MAX, 8)
+
+    def test_sweep_retry_keeps_each_cell(self):
+        a = self.worker("PC A", fail_first=1)
+        status, payload = self.sweep([a.id], {"axis": "cfg_scale", "values": [3, 9]}, "sweep-retry-1")
+        done = self.finished(payload["batch"]["batch_id"])
+        self.assertEqual((done["counts"]["done"], done["counts"]["failed"]), (1, 1))
+        failed = next(t for t in done["tasks"] if t["state"] == "failed")
+        status, retry = self.post(f"/api/forge/batches/{done['batch_id']}/retry", {}, key="sweep-retry-2")
+        self.assertIn(status, (200, 202), retry)
+        again = self.finished(retry["batch"]["batch_id"])
+        self.assertEqual(again["tasks"][0]["cell"], failed["cell"])
+        self.assertEqual(again["sweep"], done["sweep"])
+        self.assertEqual(a.forge_mock.calls[-1]["body"]["cfg_scale"], failed["cell"]["value"])
+
     def test_cancel_drops_queued_and_defers_running_without_interrupt(self):
         a = self.worker("PC A", delay=1.0)
         status, payload = self.batch([a.id], 4, "cancel-key-1")

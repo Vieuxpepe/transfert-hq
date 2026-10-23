@@ -5522,6 +5522,16 @@ def render_app() -> bytes:
         <p id="forge-fleet-private" class="forge-note forge-fleet-private" hidden>La génération privée reste sur cet HQ. Les autres appareils ne reçoivent jamais un prompt privé.</p>
       </section>
       <div id="forge-plan" class="forge-plan forge-m" aria-live="polite" hidden></div>
+      <details class="forge-fold forge-block forge-m forge-sweep" id="forge-sweep">
+        <summary>Balayage d'un paramètre</summary>
+        <p class="forge-note">Même prompt et même graine ; un seul réglage change d'une image à l'autre. 8 images au plus, réparties sur les appareils choisis.</p>
+        <div class="field"><label for="forge-sweep-axis">Réglage</label>
+          <select id="forge-sweep-axis"><option value="cfg_scale">CFG</option><option value="steps">Pas</option><option value="sampler_name">Échantillonneur</option><option value="lora_weight">Poids d'un LoRA</option></select></div>
+        <div class="field" id="forge-sweep-lora-field" hidden><label for="forge-sweep-lora">LoRA du prompt</label><select id="forge-sweep-lora"></select></div>
+        <div class="field"><label for="forge-sweep-values">Valeurs (séparées par ;)</label><input id="forge-sweep-values" type="text" autocomplete="off" spellcheck="false" value="4 ; 6 ; 8 ; 10"/></div>
+        <p id="forge-sweep-note" class="forge-note" role="status"></p>
+        <button type="button" id="forge-sweep-run">Lancer le balayage</button>
+      </details>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
         <p id="forge-usual-duration" class="forge-note forge-usual" hidden></p>
@@ -5574,6 +5584,7 @@ def render_app() -> bytes:
           <ol id="forge-job-journal-list" class="forge-journal"></ol>
         </details>
         <p id="forge-results-empty" class="forge-note">Le résultat de la génération apparaîtra ici.</p>
+        <div id="forge-sweep-strip" class="forge-sweep-strip" role="list" aria-label="Balayage, une image par valeur" hidden></div>
         <div id="forge-results" class="forge-grid"></div>
       </section>
       <section class="forge-block forge-m" id="forge-normal-gallery" aria-labelledby="forge-gallery-title">
@@ -5925,6 +5936,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
 <script src="/assets/hq-forge.js"></script>
 <script src="/assets/hq-forge-next.js"></script>
+<script src="/assets/hq-forge-explore.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">

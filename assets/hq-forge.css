@@ -389,3 +389,12 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-journal-choice{display:grid;grid-template-columns:1fr;gap:6px;margin:6px 0 0}
 .forge-journal-choice button{width:100%}
 @media (min-width:520px){.forge-journal-choice{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* E: parameter sweep strip (swipe sideways, one cell per value) */
+.forge-sweep .field{margin:8px 0}
+.forge-sweep-strip{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 2px 8px;overscroll-behavior-x:contain}
+.forge-sweep-strip[hidden]{display:none}
+.forge-sweep-cell{flex:0 0 72%;max-width:340px;margin:0;scroll-snap-align:center}
+.forge-sweep-cell .forge-card{width:100%}
+.forge-sweep-cell figcaption{text-align:center;color:var(--muted);padding-top:4px;font-variant-numeric:tabular-nums}
+.forge-sweep-wait{display:flex;align-items:center;justify-content:center;aspect-ratio:1/1;border:1px dashed var(--muted);border-radius:10px;color:var(--muted)}
+@media (min-width:760px){.forge-sweep-cell{flex-basis:32%}}

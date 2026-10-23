@@ -1041,6 +1041,22 @@
     },
     fleetMode: () => fleetMode(),
     showBatch: (batch) => showBatch(batch),
+    /* E (hq-forge-explore.js): the form's settings and the devices a batch would use; never in private mode. */
+    sweepContext: () => {
+      const settings = settingsFromForm();
+      delete settings.n_iter;
+      delete settings.batch_size;
+      const workers = fleetMode() ? devices.filter((device) => selected.has(device.id) && deviceVerdict(device).ok).map((device) => device.id) : ["local"];
+      return { settings, workers, privateMode: destination() === "private", samplers: [...samplerEl.options].map((o) => o.value).filter(Boolean) };
+    },
+    startBatch: (batch) => {
+      justSubmitted = true;
+      resultIntent = false;
+      results.replaceChildren();
+      shownBatchImages.clear();
+      showBatch(batch);
+    },
+    card: (image) => card(image),
     closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
   };
 

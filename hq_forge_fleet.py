@@ -36,6 +36,7 @@ import ctypes
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -658,6 +659,54 @@ def requested_loras(prompt) -> list[str]:
     return out[:16]
 
 
+SWEEP_MAX = 8
+SWEEP_AXES = ("cfg_scale", "steps", "sampler_name", "lora_weight")
+
+
+def set_lora_weight(prompt: str, lora: str, weight: float) -> str:
+    """E: rewrite only the weight of <lora:NAME[:w]> for this one LoRA; everything else stays as typed."""
+    text = f"{weight:g}"
+    return _LORA_RE.sub(lambda m: f"<lora:{m.group(1)}:{text}>" if m.group(1) == lora else m.group(0), prompt)
+
+
+def sweep_cells(sweep, settings: dict) -> list[dict] | None:
+    """E: 'Balayage d'un param\u00e8tre'. One axis, 2 to SWEEP_MAX distinct values, every other setting and
+    the seed shared. Returns [{"cell": {...}, "override": {...}}] or None when invalid."""
+    if not isinstance(sweep, dict) or set(sweep) - {"axis", "values", "lora"}:
+        return None
+    axis, values = sweep.get("axis"), sweep.get("values")
+    if axis not in SWEEP_AXES or not isinstance(values, list) or not 2 <= len(values) <= SWEEP_MAX:
+        return None
+    cells = []
+    for value in values:
+        if axis == "sampler_name":
+            if not isinstance(value, str) or not 0 < len(value) <= 80:
+                return None
+            override = {"sampler_name": value}
+        elif axis == "steps":
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 40:
+                return None
+            override = {"steps": value}
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                return None
+            value = round(float(value), 2)
+            if axis == "cfg_scale":
+                if not 1 <= value <= 15:
+                    return None
+                override = {"cfg_scale": value}
+            else:
+                lora = sweep.get("lora")
+                prompt = settings.get("prompt")
+                if not -2 <= value <= 2 or not isinstance(lora, str) or not isinstance(prompt, str) or lora not in requested_loras(prompt):
+                    return None
+                override = {"prompt": set_lora_weight(prompt, lora, value)}
+        cells.append({"cell": {"axis": axis, "value": value}, "override": override})
+    if len({repr(c["cell"]["value"]) for c in cells}) != len(cells):
+        return None
+    return cells
+
+
 def parity_split(settings: dict, fit: list, catalogs: dict, names: dict) -> tuple[list, list, dict]:
     """Keep the reference device (this HQ when chosen, else the first one) and every device
     that matches it; each excluded device gets a plain reason. Never switches a model."""
@@ -1040,7 +1089,7 @@ def _stat_task(task: dict) -> None:
     worker_id = task.get("worker_id")
     try:
         stats.record(_root, {
-            **stats.from_settings(dict(batch.get("settings") or {}, n_iter=1, seed=task.get("seed"))),
+            **stats.from_settings(dict(_task_settings(batch, task), n_iter=1)),  # E: a sweep cell records its own setting
             "kind": "batch", "batch_id": batch.get("id"), "task_id": task.get("id"), "image_id": task.get("image_id"),
             "device_id": worker_id, "device_name": _worker_name(worker_id) if worker_id else None,
             "checkpoint_sha256": (batch.get("parity") or {}).get("checkpoint_sha256"),
@@ -1123,6 +1172,7 @@ def _batch_public(batch: dict) -> dict:
             "retried": bool(task.get("retried_in")),
             "attempt": int(task.get("attempt", 1)), "retry_of_task": task.get("retry_of_task"),
             "resolution": task.get("resolution") if state == "uncertain" else None,
+            "cell": task.get("cell"),
         })
         # One retry per image: a task that is itself a retry is never offered again; a resolved one neither.
         if state in ("failed", "uncertain") and not task.get("retried_in") and not task.get("retry_of_task") and not task.get("resolution"):
@@ -1134,6 +1184,7 @@ def _batch_public(batch: dict) -> dict:
         "count": len(batch["tasks"]), "seed_mode": batch["seed_mode"], "cancelled": bool(batch.get("cancelled")),
         "workers": list(per.values()), "counts": counts, "tasks": tasks, "settings": batch["settings"],
         "retryable": retryable, "retry_uncertain": retry_uncertain, "retry_of": batch.get("retry_of"),
+        "sweep": batch.get("sweep"),
         "excluded": [{"worker_id": row.get("worker_id"), "name": row.get("name"), "message": row.get("message"),
                       "reasons": list(row.get("reasons") or [])} for row in batch.get("excluded") or [] if isinstance(row, dict)],
     }
@@ -1160,6 +1211,15 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
     if not isinstance(settings_in, dict) or "destination" in settings_in:
         return 400, {"error": MESSAGES["validation"], "code": "validation"}
     settings_in = {k: v for k, v in settings_in.items() if k != "n_iter"}
+    cells = None
+    if "sweep" in data:
+        # E: a sweep keeps one seed for every cell (a random one is drawn once) and no variation.
+        cells = sweep_cells(data.get("sweep"), settings_in)
+        if cells is None or count != len(cells) or settings_in.get("subseed_strength"):
+            return 400, {"error": MESSAGES["validation"], "code": "validation"}
+        seed_in = settings_in.get("seed", -1)
+        if isinstance(seed_in, int) and not isinstance(seed_in, bool) and seed_in < 0:
+            settings_in["seed"] = secrets.randbelow(2**32)
     hq_job = _hq_job_active()
     if LOCAL_ID in selection:
         _local_view()
@@ -1170,6 +1230,13 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
         if existing is not None:
             return 200, {"batch": _batch_public(existing)}
         unknown, problems, validated, _fit = _check_workers(selection, settings_in, hq_job)
+        for cell in cells or []:
+            # Every device must accept every cell (an absent sampler is named, never substituted).
+            more_unknown, more, _v, cell_fit = _check_workers(selection, dict(settings_in, **cell["override"]), hq_job)
+            unknown = unknown or more_unknown
+            seen = {(p["worker_id"], tuple(p["reasons"])) for p in problems}
+            problems += [p for p in more if (p["worker_id"], tuple(p["reasons"])) not in seen]
+            _fit = [w for w in _fit if w in cell_fit]
         if unknown:
             return 409, {"error": MESSAGES["unknown_worker"], "code": "unknown_worker"}
         if problems:
@@ -1181,7 +1248,10 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
             return 409, {"error": MESSAGES["incompatible"], "code": "incompatible", "problems": excluded}
         selection = kept
         seed = validated["seed"]
-        if validated.get("subseed_strength"):
+        if cells:
+            seeds = [seed] * count
+            mode = "sweep"
+        elif validated.get("subseed_strength"):
             # C: same seed and settings; each image moves its variation seed by one.
             seeds = [seed] * count
             mode = "variation"
@@ -1206,11 +1276,17 @@ def create_batch(data: dict, key: str) -> tuple[int, dict]:
             "excluded": excluded,
             "tasks": [{
                 "id": "tk-" + secrets.token_hex(12), "index": index, "seed": seeds[index], "state": "queued",
-                "worker_id": None, "progress": 0, "step": 0, "steps": settings["steps"], "image_id": None,
+                "worker_id": None, "progress": 0, "step": 0, "image_id": None,
+                "steps": cells[index]["override"].get("steps", settings["steps"]) if cells else settings["steps"],
                 "error": "", "message": MESSAGES["queued"], "updated": now,
                 **({"subseed": (validated["subseed"] + index) % (2**32)} if validated.get("subseed_strength") else {}),
+                **({"cell": cells[index]["cell"], "override": cells[index]["override"]} if cells else {}),
             } for index in range(count)],
         }
+        if cells:
+            sweep = data["sweep"]
+            batch["sweep"] = {"axis": sweep["axis"], "values": [c["cell"]["value"] for c in cells],
+                              **({"lora": sweep["lora"]} if sweep["axis"] == "lora_weight" else {})}
         _batches["batches"].append(batch)
         _trim()
         _batches["idempotency"][key] = batch["id"]
@@ -1316,6 +1392,7 @@ def retry_batch(batch_id: str, key: str, only=None) -> tuple[int, dict]:
             "excluded": excluded,
             "workers": fit,
             "seed_mode": source["seed_mode"],
+            **({"sweep": source["sweep"]} if "sweep" in source else {}),
             "cancelled": False,
             "retry_of": source["id"],
             "tasks": [{
@@ -1324,6 +1401,7 @@ def retry_batch(batch_id: str, key: str, only=None) -> tuple[int, dict]:
                 "error": "", "message": MESSAGES["queued"], "updated": now, "retry_of_task": task["id"],
                 "attempt": int(task.get("attempt", 1)) + 1,
                 **({"subseed": task["subseed"]} if "subseed" in task else {}),
+                **({"cell": task["cell"], "override": task["override"]} if "override" in task else {}),
             } for task in missing],
         }
         for task in missing:
@@ -1427,6 +1505,8 @@ def _task_settings(batch: dict, task: dict) -> dict:
     settings["seed"] = task["seed"]
     if "subseed" in task:
         settings["subseed"] = task["subseed"]
+    if isinstance(task.get("override"), dict):
+        settings.update(task["override"])  # E: this sweep cell's one changed setting
     return settings
 
 
@@ -1591,7 +1671,7 @@ def _poll(row: dict, live: dict, data: dict) -> tuple[int, dict]:
     if picked is None:
         return 200, reply
     batch, task = picked
-    if compat_reasons(batch["settings"], live["forge"]["catalog"]) or not _parity_ok(batch, worker_id, live["forge"]["catalog"]):
+    if compat_reasons(_task_settings(batch, task), live["forge"]["catalog"]) or not _parity_ok(batch, worker_id, live["forge"]["catalog"]):
         return 200, reply
     _dispatch(batch, task, worker_id)
     reply["task"] = {"task_id": task["id"], "batch_id": batch["id"], "settings": _task_settings(batch, task), "lease_sec": _lease_sec}
