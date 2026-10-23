@@ -212,6 +212,166 @@
   const prevViewer = window.hqForgeOnViewer;
   window.hqForgeOnViewer = (kind, id, current) => { if (prevViewer) prevViewer(kind, id, current); syncFinish(kind, id); };
 
+  // ------------------------------------------------------------------ E3: A/B comparator (client side only)
+  /* Two gallery images stacked in one frame: a reveal slider, one pinch zoom applied to both, and the
+     settings that differ. Nothing is uploaded or stored; the decoded originals are dropped on close
+     (iOS Safari keeps decoded images in memory while an <img> holds them). Vault images stay out. */
+  const cmp = $("forge-compare");
+  const stage = $("forge-compare-stage");
+  const imgA = $("forge-compare-a");
+  const imgB = $("forge-compare-b");
+  const reveal = $("forge-compare-reveal");
+  const diffEl = $("forge-compare-diff");
+  const pickBar = $("forge-compare-pick");
+  let pair = null;
+  let picking = null;
+  let view = { zoom: 1, tx: 0, ty: 0 };
+  const pointers = new Map();
+  let gesture = null;
+  let lastTap = 0;
+
+  function applyView() {
+    stage.style.setProperty("--zoom", String(view.zoom));
+    stage.style.setProperty("--tx", Math.round(view.tx) + "px");
+    stage.style.setProperty("--ty", Math.round(view.ty) + "px");
+  }
+  function clampView() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    view.zoom = Math.min(6, Math.max(1, view.zoom));
+    view.tx = Math.min(0, Math.max(w - w * view.zoom, view.tx));
+    view.ty = Math.min(0, Math.max(h - h * view.zoom, view.ty));
+  }
+  function resetView() { view = { zoom: 1, tx: 0, ty: 0 }; applyView(); }
+  function setReveal() {
+    stage.style.setProperty("--reveal", reveal.value + "%");
+    reveal.setAttribute("aria-valuetext", "B visible sur " + reveal.value + " %");
+  }
+  const local = (event) => { const r = stage.getBoundingClientRect(); return { x: event.clientX - r.left, y: event.clientY - r.top }; };
+  stage.addEventListener("pointerdown", (event) => {
+    try { stage.setPointerCapture(event.pointerId); } catch (_) { /* pointer already gone */ }
+    pointers.set(event.pointerId, local(event));
+    const pts = [...pointers.values()];
+    if (pts.length === 2) {
+      const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      gesture = { kind: "pinch", dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1, mid, zoom: view.zoom, tx: view.tx, ty: view.ty };
+    } else if (pts.length === 1) {
+      gesture = { kind: "pan", start: pts[0], tx: view.tx, ty: view.ty };
+    }
+  });
+  stage.addEventListener("pointermove", (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.set(event.pointerId, local(event));
+    const pts = [...pointers.values()];
+    if (gesture && gesture.kind === "pinch" && pts.length >= 2) {
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+      const zoom = Math.min(6, Math.max(1, gesture.zoom * dist / gesture.dist));
+      // Keep the point under the fingers where it was: the same transform moves A and B together.
+      const cx = (gesture.mid.x - gesture.tx) / gesture.zoom, cy = (gesture.mid.y - gesture.ty) / gesture.zoom;
+      const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      view = { zoom, tx: mid.x - cx * zoom, ty: mid.y - cy * zoom };
+    } else if (gesture && gesture.kind === "pan" && view.zoom > 1) {
+      view.tx = gesture.tx + pts[0].x - gesture.start.x;
+      view.ty = gesture.ty + pts[0].y - gesture.start.y;
+    } else {
+      return;
+    }
+    clampView();
+    applyView();
+  });
+  const lift = (event) => {
+    if (!pointers.delete(event.pointerId)) return;
+    if (event.type === "pointerup" && !pointers.size && gesture && gesture.kind === "pan") {
+      const now = Date.now();
+      if (now - lastTap < 320) resetView();
+      lastTap = now;
+    }
+    const rest = [...pointers.values()];
+    gesture = rest.length === 1 ? { kind: "pan", start: rest[0], tx: view.tx, ty: view.ty } : null;
+  };
+  stage.addEventListener("pointerup", lift);
+  stage.addEventListener("pointercancel", lift);
+
+  const ROWS = [
+    ["Prompt", (s) => s.prompt || ""],
+    ["N\u00e9gatif", (s) => s.negative_prompt || ""],
+    ["Mod\u00e8le", (s) => s.checkpoint || ""],
+    ["\u00c9chantillonneur", (s) => s.sampler_name || ""],
+    ["Planificateur", (s) => s.scheduler || ""],
+    ["Taille", (s) => (s.width && s.height ? s.width + "\u00d7" + s.height : "")],
+    ["Pas", (s) => (s.steps == null ? "" : String(s.steps))],
+    ["CFG", (s) => (s.cfg_scale == null ? "" : fr(s.cfg_scale))],
+    ["Graine", (s) => (s.seed == null ? "" : (Number(s.seed) >= 0 ? String(s.seed) : "inconnue"))],
+    ["Variation", (s) => (Number(s.subseed_strength) > 0 ? fr(s.subseed_strength) + " \u00b7 " + s.subseed : "aucune")],
+    ["Haute r\u00e9solution", (s) => (s.enable_hr ? "\u00d7" + fr(s.hr_scale) + " \u00b7 " + (s.hr_upscaler || "") : "non")],
+  ];
+  function renderDiff(a, b) {
+    diffEl.replaceChildren();
+    let n = 0;
+    const row = (label, x, y) => {
+      diffEl.append(el("dt", "", label));
+      const dd = el("dd");
+      dd.append(el("span", "forge-compare-va", "A : " + (x || "\u2014")), el("span", "forge-compare-vb", "B : " + (y || "\u2014")));
+      diffEl.append(dd);
+      n += 1;
+    };
+    ROWS.forEach(([label, get]) => { const x = get(a.settings || {}), y = get(b.settings || {}); if (x !== y) row(label, x, y); });
+    const da = (a.origin && a.origin.worker_name) || "Cet HQ", db = (b.origin && b.origin.worker_name) || "Cet HQ";
+    if (da !== db) row("Appareil", da, db);
+    if (!n) diffEl.append(el("dd", "forge-note", "M\u00eames r\u00e9glages."));
+  }
+  function load(a, b) {
+    pair = { a, b };
+    imgA.alt = "Image A";
+    imgB.alt = "Image B";
+    imgA.src = a.original;
+    imgB.src = b.original;
+    if (a.width && a.height) stage.style.setProperty("--cmp-ratio", a.width + " / " + a.height);
+    renderDiff(a, b);
+    resetView();
+    setReveal();
+  }
+  function drop() {
+    imgA.removeAttribute("src");
+    imgB.removeAttribute("src");
+    pointers.clear();
+    gesture = null;
+    pair = null;
+  }
+  function closeCompare() { if (cmp.open) cmp.close(); drop(); }
+  function endPick() { picking = null; pickBar.hidden = true; }
+
+  $("forge-compare-start").addEventListener("click", () => {
+    const d = H.currentDetail();
+    if (!d || !d.original) return;
+    picking = d;
+    H.closeViewer();
+    pickBar.hidden = false;
+  });
+  $("forge-compare-pick-cancel").addEventListener("click", endPick);
+  document.addEventListener("click", async (event) => {
+    if (!picking) return;
+    const card = event.target && event.target.closest ? event.target.closest(".forge-card") : null;
+    if (!card || !card.closest("#forge-gallery, #forge-results, #forge-sweep-strip") || !/^img-/.test(card.dataset.id || "")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (card.dataset.id === picking.id) { pickBar.firstElementChild.textContent = "Choisissez une autre image que A."; return; }
+    const first = picking;
+    endPick();
+    try {
+      const second = await H.api("/api/forge/gallery/" + encodeURIComponent(card.dataset.id));
+      load(first, second);
+      cmp.showModal();
+      $("forge-compare-close").focus();
+    } catch (_) { /* image gone: nothing to compare */ }
+  }, true);
+  reveal.addEventListener("input", setReveal);
+  $("forge-compare-swap").addEventListener("click", () => { if (pair) load(pair.b, pair.a); });
+  $("forge-compare-reset").addEventListener("click", resetView);
+  $("forge-compare-close").addEventListener("click", closeCompare);
+  cmp.addEventListener("close", drop);
+  cmp.addEventListener("cancel", (event) => { event.preventDefault(); closeCompare(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && picking) endPick(); });
+
   const prevBatch = window.hqForgeOnBatch;
   window.hqForgeOnBatch = (batch) => { if (prevBatch) prevBatch(batch); renderStrip(batch); };
   const prevJob = window.hqForgeOnJob;

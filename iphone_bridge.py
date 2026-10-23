@@ -5690,9 +5690,33 @@ def render_app() -> bytes:
           <a id="forge-download" href="#" download>Télécharger l'original</a>
           <button type="button" id="forge-share" class="secondary" hidden>Enregistrer dans Photos</button>
           <button type="button" id="forge-reuse">Réutiliser les réglages</button>
+          <button type="button" id="forge-compare-start" class="secondary">Comparer avec…</button>
           <button type="button" id="forge-delete" class="secondary">Supprimer la copie HQ</button>
         </div>
       </form>
+    </dialog>
+    <p id="forge-compare-pick" class="forge-compare-pick" role="status" hidden><span>Touchez la seconde image à comparer.</span> <button type="button" id="forge-compare-pick-cancel" class="secondary">Annuler</button></p>
+    <dialog id="forge-compare" class="forge-sheet forge-compare" aria-labelledby="forge-compare-title">
+      <div class="forge-sheet-inner">
+        <header class="forge-viewer-bar">
+          <h2 id="forge-compare-title">Comparer A / B</h2>
+          <button type="button" id="forge-compare-close" class="secondary">Fermer</button>
+        </header>
+        <div id="forge-compare-stage" class="forge-compare-stage" role="img" aria-label="Image A et image B superposées. Pincez pour zoomer sur les deux à la fois.">
+          <div class="forge-compare-layer"><img id="forge-compare-a" alt=""/></div>
+          <div class="forge-compare-clip"><div class="forge-compare-layer"><img id="forge-compare-b" alt=""/></div></div>
+          <span class="forge-compare-tag forge-compare-tag-b" aria-hidden="true">B</span><span class="forge-compare-tag forge-compare-tag-a" aria-hidden="true">A</span>
+        </div>
+        <div class="forge-label-row"><label for="forge-compare-reveal">Révéler B</label></div>
+        <input type="range" id="forge-compare-reveal" min="0" max="100" step="1" value="50"/>
+        <div class="forge-actions">
+          <button type="button" id="forge-compare-swap" class="secondary">Inverser A et B</button>
+          <button type="button" id="forge-compare-reset" class="secondary">Zoom initial</button>
+        </div>
+        <h3 class="forge-compare-h">Différences de réglages</h3>
+        <dl id="forge-compare-diff" class="forge-compare-diff"></dl>
+        <p class="forge-note">Comparaison faite sur cet appareil ; rien n'est envoyé ni copié, les deux images restent dans la galerie. Le coffre privé n'est pas comparable ici.</p>
+      </div>
     </dialog>
     <dialog id="forge-device-dialog" class="forge-sheet" aria-labelledby="forge-device-dialog-title">
       <div class="forge-sheet-inner">

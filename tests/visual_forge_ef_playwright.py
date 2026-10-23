@@ -115,7 +115,67 @@ def section_finish(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"sweep": section_sweep, "finish": section_finish}
+PINCH = """(spread) => {
+  const s = document.querySelector('#forge-compare-stage'); const r = s.getBoundingClientRect();
+  const y = r.top + r.height / 2, x = r.left + r.width / 2;
+  const fire = (type, id, px) => s.dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: px, clientY: y, bubbles: true, isPrimary: id === 1, pointerType: 'touch' }));
+  fire('pointerdown', 1, x - 25); fire('pointerdown', 2, x + 25);
+  for (let i = 1; i <= 5; i++) { fire('pointermove', 1, x - 25 - spread * i / 5); fire('pointermove', 2, x + 25 + spread * i / 5); }
+  fire('pointerup', 1, x - 25 - spread); fire('pointerup', 2, x + 25 + spread);
+  const layers = [...s.querySelectorAll('.forge-compare-layer')].map((n) => getComputedStyle(n).transform);
+  return { zoom: Number(getComputedStyle(s).getPropertyValue('--zoom')), layers };
+}"""
+
+
+def section_compare(run: Run) -> None:
+    print("E3 A/B comparator")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    generate_once(run, page, "phare comparatif A")
+    generate_once(run, page, "phare comparatif B")
+    ids = page.evaluate("() => [...document.querySelectorAll('#forge-gallery .forge-card')].map((c) => c.dataset.id)")
+    page.locator('#forge-gallery .forge-card[data-id="' + ids[0] + '"]').click()
+    page.locator("#forge-viewer").wait_for()
+    page.locator("#forge-compare-start").click()
+    run.check(run.until(page, "() => !document.querySelector('#forge-viewer').open && !document.querySelector('#forge-compare-pick').hidden", 5), "Comparer closes the viewer and asks for the second image")
+    run.shot(page, "compare-pick")
+    page.locator('#forge-gallery .forge-card[data-id="' + ids[0] + '"]').click()
+    run.check(run.until(page, "() => /autre image/.test(document.querySelector('#forge-compare-pick').textContent) && !document.querySelector('#forge-viewer').open", 5), "picking A again is refused, the viewer stays closed")
+    page.locator('#forge-gallery .forge-card[data-id="' + ids[1] + '"]').click()
+    run.check(run.until(page, "() => document.querySelector('#forge-compare').open", 5), "the second pick opens the comparator")
+    run.check(run.until(page, "() => ['a', 'b'].every((k) => { const i = document.querySelector('#forge-compare-' + k); return i.complete && i.naturalWidth > 0; })", 10), "both originals are shown")
+    first = page.request.get(run.base + "/api/forge/gallery/" + ids[0]).json()["settings"]["prompt"]
+    second = page.request.get(run.base + "/api/forge/gallery/" + ids[1]).json()["settings"]["prompt"]
+    diff = page.locator("#forge-compare-diff").inner_text()
+    run.check(first != second and "Prompt" in diff and "A : " + first in diff and "B : " + second in diff, "the settings that differ are listed side by side")
+    page.evaluate("() => { const r = document.querySelector('#forge-compare-reveal'); r.value = '20'; r.dispatchEvent(new Event('input', { bubbles: true })); }")
+    run.check(page.evaluate("() => getComputedStyle(document.querySelector('#forge-compare-stage')).getPropertyValue('--reveal').trim()") == "20%", "the reveal slider moves the split")
+    clip = page.evaluate("() => getComputedStyle(document.querySelector('.forge-compare-clip')).clipPath")
+    run.check("inset" in clip, "B is clipped by the split, not redrawn: " + clip)
+    pinch = page.evaluate(PINCH, 100)
+    run.check(2.5 < pinch["zoom"] <= 6, "a pinch zooms: " + repr(pinch["zoom"]))
+    run.check(pinch["layers"][0] == pinch["layers"][1] and pinch["layers"][0] != "none", "the same zoom moves A and B together")
+    geo = page.evaluate("() => ({ doc: document.documentElement.scrollWidth, stage: document.querySelector('#forge-compare-stage').getBoundingClientRect().width })")
+    run.check(geo["doc"] <= 375 and geo["stage"] <= 375, "the comparator fits 375 px: " + repr(geo))
+    run.shot(page, "compare-zoom")
+    page.locator("#forge-compare-reset").click()
+    run.check(page.evaluate("() => getComputedStyle(document.querySelector('#forge-compare-stage')).getPropertyValue('--zoom').trim()") == "1", "Zoom initial resets both")
+    page.locator("#forge-compare-swap").click()
+    run.check("A : " + second in page.locator("#forge-compare-diff").inner_text(), "Inverser swaps A and B")
+    run.shot(page, "compare-diff", "#forge-compare-diff")
+    page.locator("#forge-compare-close").click()
+    run.check(run.until(page, "() => !document.querySelector('#forge-compare').open && !document.querySelector('#forge-compare-a').hasAttribute('src') && !document.querySelector('#forge-compare-b').hasAttribute('src')", 5),
+              "closing drops both decoded images")
+    page.locator('#forge-gallery .forge-card[data-id="' + ids[1] + '"]').click()
+    run.check(run.until(page, "() => document.querySelector('#forge-viewer').open", 5), "after the comparison a card opens the viewer again")
+    page.locator("#forge-viewer-close").click()
+    hits = page.evaluate(STORAGE_PROBE, "comparatif")
+    run.check([h for h in hits if h != "session:hqForgeDraft"] == [], "nothing of the comparison in browser storage: " + repr(hits))
+    ctx.close()
+
+
+SECTIONS = {"sweep": section_sweep, "finish": section_finish, "compare": section_compare}
 EXTRA_ENV: dict = {"sweep": {"HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
 
 
