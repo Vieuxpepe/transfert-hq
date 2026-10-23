@@ -143,6 +143,7 @@ class BricksHttp(TF.FleetHttp):
         self.assertEqual((status, out["bricks"][0]["name"]), (200, "Brume"))
         self.assertEqual(self.admin.json("/api/forge/bricks")[1]["bricks"][0]["text"], "brume legere")
         F.set_transport_for_tests(Lora())
+        self.addCleanup(F.set_transport_for_tests, None)
         status, out = self.admin.json("/api/forge/bricks/loras")
         self.assertEqual((status, out["forge"], len(out["loras"])), (200, "ready", 3))
 
