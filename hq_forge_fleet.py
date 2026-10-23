@@ -1122,7 +1122,7 @@ def _batch_public(batch: dict) -> dict:
             "dispatched_at": task.get("dispatched_at"), "finished_at": task.get("finished_at"),
             "retried": bool(task.get("retried_in")),
             "attempt": int(task.get("attempt", 1)), "retry_of_task": task.get("retry_of_task"),
-            "resolution": task.get("resolution"),
+            "resolution": task.get("resolution") if state == "uncertain" else None,
         })
         # One retry per image: a task that is itself a retry is never offered again; a resolved one neither.
         if state in ("failed", "uncertain") and not task.get("retried_in") and not task.get("retry_of_task") and not task.get("resolution"):

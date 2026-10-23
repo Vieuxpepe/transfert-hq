@@ -146,6 +146,8 @@ def main() -> None:
             ("Portable", {"gpus": [{"name": "Intel(R) Iris(R) Xe Graphics", "vram_mb": None, "source": "cim"}], "cpu": "Intel(R) Core(TM) i7-1165G7", "ram_mb": 16110, "os": "Windows 11"}, {}),
             ("Atelier", {"gpus": [{"name": "NVIDIA GeForce RTX 3060", "vram_mb": 12288, "source": "nvidia-smi"}], "cpu": None, "ram_mb": None, "os": "Windows 10"}, {"models": ("autre-modele.safetensors [ffff]",)}),
         ][: max(0, min(3, int(fleet)))]
+        stall_names = [n for n in ("PC muet A", "PC muet B", "PC muet C")[: int(os.environ.get("HQ_FORGE_FLEET_STALL", "0") or 0)]]
+        hold_start = bool(stall_names)  # with silent PCs the test decides when the healthy PCs start
         for name, hardware, extra in specs:
             code = hq_forge_fleet.create_code()["code"]
             if name == "PC salon" and os.environ.get("HQ_FORGE_FLEET_FAIL_FIRST"):
@@ -154,8 +156,18 @@ def main() -> None:
                 extra = dict(extra, hashes={"example.safetensors [abcd]": "f" * 64})  # same name, other file
             mock = MockForge(delay=delay, **extra)
             sim = SimWorker(base, code, name, mock, hardware=hardware)
-            sim.start()
+            if hold_start:
+                sim.worker.poll_once()
+            else:
+                sim.start()
             sims.append(sim)
+        stalls = {}
+        for name in stall_names:
+            # Silent PCs: they claim a task when told, then say nothing (their lease runs out -> uncertain).
+            code = hq_forge_fleet.create_code()["code"]
+            sim = SimWorker(base, code, name, MockForge(delay=0.1))
+            sim.worker.poll_once()
+            stalls[name[-1]] = {"sim": sim, "task": None}
     if os.environ.get("HQ_FORGE_FLEET_DIAG"):
         # Diagnostic states, each from real telemetry of a simulated worker (no faked fields on HQ's side).
         sys.path.insert(0, str(SOURCE / "tests"))
@@ -198,7 +210,37 @@ def main() -> None:
         legacy.start()
     print(json.dumps({"base": base, "admin_pin": "424242", "upload_pin": "111111", "workers": [sim.id for sim in sims]}), flush=True)
     try:
-        sys.stdin.read()  # exits when the parent closes stdin
+        if os.environ.get("HQ_FORGE_FLEET_STALL"):
+            # Line commands from the test (mock-only): beat, claim X, start, expire, unexpire, late X.
+            import time as _t
+            import hq_forge_fleet as _fl
+            for line in sys.stdin:
+                cmd, _, arg = line.strip().partition(" ")
+                reply = "ok"
+                if cmd == "beat":
+                    for sim in sims:
+                        sim.worker.poll_once()
+                    for row in stalls.values():
+                        row["sim"].worker.poll_once()
+                elif cmd == "claim":
+                    row = stalls[arg]
+                    row["task"] = row["sim"].worker.poll_once()
+                    reply = "ok " + (row["task"] or {}).get("task_id", "none")
+                elif cmd == "start":
+                    for sim in sims:
+                        sim.start()
+                elif cmd == "expire":
+                    _fl.set_clock_for_tests(lambda: _t.time() + _fl._lease_sec + 5)
+                elif cmd == "unexpire":
+                    _fl.set_clock_for_tests(None)
+                elif cmd == "late":
+                    row = stalls[arg]
+                    row["sim"].worker.run_task(row["task"])
+                else:
+                    reply = "unknown"
+                print(reply, flush=True)
+        else:
+            sys.stdin.read()  # exits when the parent closes stdin
     finally:
         httpd.shutdown()
 

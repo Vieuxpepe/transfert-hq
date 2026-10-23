@@ -255,8 +255,90 @@ def section_journal(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"triage": section_triage, "lab": section_lab, "plan": section_plan, "journal": section_journal}
-EXTRA_ENV: dict = {"journal": {"_JOBS": UNCERTAIN_JOBS, "HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
+def tell(run: Run, command: str) -> str:
+    run.proc.stdin.write((command + "\n").encode())
+    run.proc.stdin.flush()
+    return run.proc.stdout.readline().decode().strip()
+
+
+def section_uncertain(run: Run) -> None:
+    print("D batch: explicit choices for uncertain images")
+    ctx = run.context()
+    page = ctx.new_page()
+    run.open_forge(page)
+    run.check(run.until(page, "() => document.querySelectorAll('.forge-device').length >= 4", 20), "PC salon and three silent PCs are listed")
+    for card in page.locator(".forge-device").all():
+        box = card.locator('input[type="checkbox"]')
+        want = any(n in card.inner_text() for n in ("PC salon", "PC muet"))
+        if box.count() and box.is_checked() != want:
+            box.click()
+    page.locator("#forge-fleet-count").fill("4")
+    page.locator("#forge-fleet-count").dispatch_event("input")
+    page.locator("#forge-prompt").fill("phare lot incertain")
+    tell(run, "beat")
+    page.locator("#forge-generate").click()
+    run.until(page, "() => !document.querySelector('#forge-fleet-batch').hidden", 10)
+    ids = {}
+    for name in "ABC":
+        reply = tell(run, "claim " + name)
+        run.check(reply.startswith("ok tk-"), "PC muet " + name + " takes one image and goes silent")
+        ids[name] = reply[3:]
+    tell(run, "start")
+    run.check(run.until(page, "() => /1 \\/ 4 termin/.test(document.querySelector('#forge-fleet-batch-totals').textContent)", 30), "PC salon finishes the fourth image")
+    tell(run, "expire")
+    run.check(run.until(page, "() => /3 incertaines/.test(document.querySelector('#forge-fleet-batch-totals').textContent) && !document.querySelector('#forge-fleet-batch-cancel').checkVisibility()", 20),
+              "the silent PCs' images become uncertain and the batch ends")
+    tell(run, "unexpire")
+    batch_id = page.request.get(run.base + "/api/forge/batches").json()["batches"][-1]["batch_id"]
+    src = lambda: page.request.get(run.base + "/api/forge/batches/" + batch_id).json()["batch"]
+    run.check(src()["retryable"] == 3, "three images can be retried")
+    calls_before = len(page.request.get(run.base + "/api/forge/batches").json()["batches"])
+    page.wait_for_timeout(1500)
+    run.check(len(page.request.get(run.base + "/api/forge/batches").json()["batches"]) == calls_before and src()["retryable"] == 3, "no automatic retry")
+    page.locator("#forge-fleet-batch-journal summary").click()
+    def row_of(name):
+        index = next(t["index"] for t in src()["tasks"] if t["id"] == ids[name])
+        return page.locator("#forge-fleet-journal-list li", has_text="Image " + str(index + 1) + " ")
+    run.check(page.locator("#forge-fleet-journal-list .forge-journal-choice").count() == 3, "each uncertain image offers Relancer / Marquer perdue / Garder tel quel")
+    run.shot(page, "uncertain-choices", "#forge-fleet-batch")
+    # Marquer perdue (A)
+    row_of("A").locator("button", has_text="Marquer perdue").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-fleet-journal-list .forge-journal-choice').length === 2", 10), "A: its choices disappear")
+    run.check("marqu\u00e9e perdue" in row_of("A").inner_text(), "A: the journal says marqu\u00e9e perdue")
+    run.check(src()["retryable"] == 2 and "2 images manquantes" in page.locator("#forge-fleet-batch-retry").inner_text(), "A is no longer offered for retry (2 left)")
+    # Garder tel quel (C)
+    row_of("C").locator("button", has_text="Garder tel quel").click()
+    run.check(run.until(page, "() => document.querySelectorAll('#forge-fleet-journal-list .forge-journal-choice').length === 1", 10), "C: its choices disappear")
+    run.check("gard\u00e9e telle quelle" in row_of("C").inner_text(), "C: the journal says gard\u00e9e telle quelle")
+    run.check(src()["retryable"] == 1 and "l'image manquante" in page.locator("#forge-fleet-batch-retry").inner_text(), "C is no longer offered for retry (1 left)")
+    # Relancer (B): a retry batch with only that image, run once
+    row_of("B").locator("button", has_text="Relancer").click()
+    run.check(run.until(page, "() => /Termin/.test(document.querySelector('#forge-fleet-batch-state').textContent) && /1 \\/ 1 termin/.test(document.querySelector('#forge-fleet-batch-totals').textContent)", 30),
+              "B: a retry batch of exactly one image runs and finishes")
+    batches = page.request.get(run.base + "/api/forge/batches").json()["batches"]
+    retry = [b for b in batches if b.get("retry_of") == batch_id]
+    run.check(len(retry) == 1 and [t["retry_of_task"] for t in retry[0]["tasks"]] == [ids["B"]] and retry[0]["tasks"][0]["attempt"] == 2,
+              "the retry holds only B's task, attempt 2")
+    s = src()
+    b_row = next(t for t in s["tasks"] if t["id"] == ids["B"])
+    run.check(s["retryable"] == 0 and b_row["retried"], "nothing is left to retry in the source batch")
+    again = page.request.post(run.base + "/api/forge/batches/" + batch_id + "/retry", data=json.dumps({"tasks": [ids["B"]]}),
+                              headers={"origin": run.base, "content-type": "application/json", "Idempotency-Key": "uncertain-again-0001"})
+    run.check(again.status == 409, "B cannot be retried a second time")
+    run.check(s["counts"] == {"total": 4, "done": 1, "failed": 0, "pending": 0, "running": 0, "uncertain": 3, "cancelled": 0}, "source counts stay coherent: " + repr(s["counts"]))
+    run.shot(page, "uncertain-after-retry", "#forge-fleet-batch")
+    # The silent PC A finally answers: still accepted on its original task.
+    tell(run, "late A")
+    s = src()
+    a_row = next(t for t in s["tasks"] if t["id"] == ids["A"])
+    run.check(a_row["state"] == "completed" and a_row["image_id"] and a_row["resolution"] is None, "a late upload from PC muet A is accepted on its task (the lost mark no longer applies)")
+    run.check(s["counts"]["done"] == 2 and s["counts"]["uncertain"] == 2 and sum(v for k, v in s["counts"].items() if k != "total") == 4, "counts after the late image: " + repr(s["counts"]))
+    run.check(s["retryable"] == 0, "still nothing offered for retry")
+    ctx.close()
+
+
+SECTIONS = {"triage": section_triage, "lab": section_lab, "plan": section_plan, "journal": section_journal, "uncertain": section_uncertain}
+EXTRA_ENV: dict = {"uncertain": {"HQ_FORGE_FLEET_MOCK": "1", "HQ_FORGE_FLEET_DELAY": "0.2", "HQ_FORGE_FLEET_STALL": "3"}, "journal": {"_JOBS": UNCERTAIN_JOBS, "HQ_FORGE_FLEET_MOCK": "2", "HQ_FORGE_FLEET_DELAY": "0.3"}}
 SEEDED = {"lab": seeded_records, "plan": seeded_records, "journal": list}
 
 
@@ -274,6 +356,7 @@ def main() -> None:
                 proc, info = start_server(EXTRA_ENV.get(name))
             try:
                 run = Run(browser, info)
+                run.proc = proc
                 SECTIONS[name](run)
                 if run.errors:
                     raise SystemExit("FAIL: page errors " + repr(run.errors[:3]))
