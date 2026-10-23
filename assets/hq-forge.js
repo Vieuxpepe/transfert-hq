@@ -2069,11 +2069,14 @@
     const button = wrap.querySelector(".forge-help");
     if (button) button.addEventListener("click", () => placeHelp(wrap));
   });
-  window.addEventListener("resize", () => {
+  function replaceOpenHelp() {
     helpWraps.forEach((wrap) => {
       if (wrap.classList.contains("is-open") || wrap.matches(":hover") || wrap.matches(":focus-within")) placeHelp(wrap);
     });
-  });
+  }
+  window.addEventListener("resize", replaceOpenHelp);
+  /* Some engines scroll a focused control into view after focusin: re-place what is open. */
+  window.addEventListener("scroll", replaceOpenHelp, { passive: true });
 
   /* Finished image: auto-scroll to it only when the user stayed idle. Cheap trusted
      signals while a submitted job runs; programmatic scrolls fire none of them. */
