@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -564,6 +565,33 @@ class SessionTests(MultiBase):
         time.sleep(0.1)
         self.assertFalse(V.status(self.hq, self.admin, vid=a)["unlocked"])
         self.assertEqual(V._sessions, {})
+
+    def test_passphrase_change_and_rotation_close_only_that_vault(self):
+        third = _token("third")
+        for name, change in (
+            ("passphrase", lambda a: V.change_passphrase(self.hq, self.admin, PASS, PASS + " deux", PASS + " deux", vid=a)),
+            ("recovery", lambda a: V.rotate_recovery(self.hq, self.admin, PASS, vid=a)),
+        ):
+            with self.subTest(change=name):
+                V.reset_for_tests()
+                V.set_root_for_tests(self.store)
+                V.set_acl_for_tests(False)
+                for child in self.store.iterdir():
+                    shutil.rmtree(child) if child.is_dir() else child.unlink()
+                a, b = self.two()
+                V.unlock(self.hq, self.admin, PASS, vid=a)
+                V.unlock(self.hq, third, PASS, vid=a)
+                V.unlock(self.hq, self.other, PASS_B, vid=b)
+                V.store_image(self.hq, self.other, _png(), None, vid=b)
+                V.search(self.hq, self.other, {"q": "phare"}, vid=b)
+                self.assertGreater(V.search_cache_size_for_tests(), 0)
+                change(a)
+                self.assertFalse(V.status(self.hq, self.admin, vid=a)["unlocked"])
+                self.assertFalse(V.status(self.hq, third, vid=a)["unlocked"])  # every session on that vault
+                self.assertTrue(V.status(self.hq, self.other, vid=b)["unlocked"])  # the other vault stays open
+                self.assertEqual(set(V._sessions), {self.other})
+                self.assertGreater(V.search_cache_size_for_tests(), 0)
+                V.page(self.hq, self.other, vid=b)
 
     def test_lock_all_logout_and_leaving_close_everything(self):
         a, b = self.two()

@@ -1360,7 +1360,7 @@ def change_passphrase(hq_root: Path, token: str | None, current: str, new_value:
     header["passphrase_wrap"] = _b64(_seal(_derive(params, _passphrase_bytes(new_value)), bytes(master), _AAD_PASS))
     header["epoch"] = int(header.get("epoch") or 1) + 1
     _write_header(root, header)
-    lock_all()
+    _close_vault(_resolve(hq_root, vid)[1])  # fix 3: only this vault's sessions; other vaults stay open
     return {"changed": True, "unlocked": False, "recovery_key_unchanged": True}
 
 
@@ -1390,7 +1390,7 @@ def rotate_recovery(hq_root: Path, token: str | None, passphrase: str, *, vid: s
     _write_header(root, header)
     shown = _recovery_text(recovery)
     _wipe(bytearray(recovery))
-    lock_all()
+    _close_vault(_resolve(hq_root, vid)[1])  # fix 3: only this vault's sessions; other vaults stay open
     return {"rotated": True, "unlocked": False, "recovery_key": shown, "previous_recovery_key": "revoked"}
 
 
