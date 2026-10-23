@@ -496,5 +496,27 @@ class SessionTests(MultiBase):
             for token, vid in ((self.admin, a), (self.other, b)):
                 self.assertFalse(V.status(self.hq, token, vid=vid)["unlocked"])
 
+class OneOpenTests(MultiBase):
+    """V2.2: one vault open per session; opening one locks the other."""
+
+    def test_opening_b_locks_a_and_wipes_its_key(self):
+        a = V.create_vault(self.hq, self.admin, PASS, PASS, label="A")["vault"]["id"]
+        b = V.create_vault(self.hq, self.admin, PASS_B, PASS_B, label="B")["vault"]["id"]
+        V.unlock(self.hq, self.admin, PASS, vid=a)
+        key_a = V._sessions[self.admin]["key"]
+        V.unlock(self.hq, self.admin, PASS_B, vid=b)
+        self.assertEqual(bytes(key_a), b"\x00" * len(key_a))  # the old key buffer was wiped
+        self.assertFalse(V.status(self.hq, self.admin, vid=a)["unlocked"])
+        self.assertTrue(V.status(self.hq, self.admin, vid=b)["unlocked"])
+        self.assertEqual(len(V._sessions), 1)
+
+    def test_failed_try_on_b_keeps_a(self):
+        a = V.create_vault(self.hq, self.admin, PASS, PASS, label="A")["vault"]["id"]
+        b = V.create_vault(self.hq, self.admin, PASS_B, PASS_B, label="B")["vault"]["id"]
+        V.unlock(self.hq, self.admin, PASS, vid=a)
+        with self.assertRaises(V.VaultError):
+            V.unlock(self.hq, self.admin, "wrong but long enough", vid=b)
+        self.assertTrue(V.status(self.hq, self.admin, vid=a)["unlocked"])
+
 if __name__ == "__main__":
     unittest.main()

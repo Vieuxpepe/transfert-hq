@@ -2,7 +2,8 @@
 
 The HQ PIN is not the vault secret. A separate passphrase wraps a random
 master key with Argon2id and AES-256-GCM. Each image uses its own data key.
-Unlock state is kept in process memory, one entry per HQ session token.
+Unlock state is kept in process memory, one entry per HQ session token, bound to the one
+vault it opened: opening another vault in the same session locks the first (multi-vault V2).
 """
 
 from __future__ import annotations
