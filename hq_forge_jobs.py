@@ -97,13 +97,29 @@ def set_external_busy(callback) -> None:
 
 def _external_active() -> bool:
     try:
+        if _inpaint_busy is not None and _inpaint_busy():
+            return True  # I: a retouch holds this PC's Forge
         return bool(_external_busy()) if _external_busy is not None else False
     except Exception:
         return True
 
 
+_inpaint_busy = None
+
+
+def set_inpaint_busy(callback) -> None:
+    """Phase I: while a retouch runs on this PC's Forge, HQ jobs and local fleet tasks wait."""
+    global _inpaint_busy
+    _inpaint_busy = callback
+
+
 def local_active(root: Path) -> bool:
     """True while an HQ single job is queued or running on the local Forge."""
+    try:
+        if _inpaint_busy is not None and _inpaint_busy():
+            return True
+    except Exception:
+        return True
     with _LOCK:
         return _active_job(_load(root)) is not None
 

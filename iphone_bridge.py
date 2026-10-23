@@ -47,6 +47,7 @@ import hq_forge_gallery
 import hq_forge_jobs
 import hq_forge_lab
 import hq_forge_night
+import hq_forge_inpaint
 import hq_forge_presets
 import hq_forge_vault
 
@@ -6774,6 +6775,10 @@ class Handler(BaseHTTPRequestHandler):
         if night is not None:
             self._json(night[0], night[1])
             return True
+        inpaint = hq_forge_inpaint.serve_get(raw)
+        if inpaint is not None:
+            self._json(inpaint[0], inpaint[1])
+            return True
         if raw == "/api/forge/status":
             self._json(200, hq_forge.status())
             return True
@@ -6840,7 +6845,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": "JSON invalide"})
             return True
-        max_length = 262144 if raw == "/api/forge/presets" else 65536
+        max_length = 262144 if raw == "/api/forge/presets" else (3 * 1024 * 1024 if raw == "/api/forge/inpaint" else 65536)
         if length < 0 or length > max_length:
             self._json(413, {"error": "Requête trop grande."})
             return True
@@ -6876,6 +6881,10 @@ class Handler(BaseHTTPRequestHandler):
         presets = hq_forge_presets.serve_post(ROOT, raw, data)
         if presets is not None:
             self._json(presets[0], presets[1])
+            return True
+        inpaint = hq_forge_inpaint.serve_post(ROOT, raw, data, token)
+        if inpaint is not None:
+            self._json(inpaint[0], inpaint[1])
             return True
         night = hq_forge_night.serve_post(ROOT, raw, data)
         if night is not None:

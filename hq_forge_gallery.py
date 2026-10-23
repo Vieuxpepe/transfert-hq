@@ -319,13 +319,13 @@ def _origin(value) -> dict | None:
     if not isinstance(value, dict):
         raise GalleryError("bad_image")
     out = {}
-    for key, limit in (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40), ("checkpoint_sha256", 64), ("finish_of", 40)):
+    for key, limit in (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40), ("checkpoint_sha256", 64), ("finish_of", 40), ("inpaint_of", 40)):
         item = value.get(key)
         if item is None:
             continue
         if not isinstance(item, str) or len(item) > limit or any(ord(ch) < 32 for ch in item):
             raise GalleryError("bad_image")
-        if key == "finish_of" and not IMG_RE.fullmatch(item):
+        if key in ("finish_of", "inpaint_of") and not IMG_RE.fullmatch(item):
             raise GalleryError("bad_image")  # E: the gallery image this 'finition' started from
         out[key] = item
     return out or None
