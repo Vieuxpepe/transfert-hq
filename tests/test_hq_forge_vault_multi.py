@@ -523,6 +523,10 @@ class MigrationGateTests(MultiBase):
         with self.assertRaises(V.VaultError) as caught:
             V.migrate_legacy(self.hq, None, backup_offered=True)
         self.assertEqual(caught.exception.code, "locked")
+        with self.assertRaises(V.VaultError) as caught:
+            V.migrate_legacy(self.hq, self.admin, backup_offered=True)
+        self.assertEqual(caught.exception.code, "locked")  # V4: the single vault must be open in this session
+        V.unlock(self.hq, self.admin, PASS)
         for offered in (True, False, None, "true", 1):
             with self.subTest(offered=offered), self.assertRaises(V.VaultError) as caught:
                 V.migrate_legacy(self.hq, self.admin, backup_offered=offered)
@@ -542,6 +546,8 @@ class MigrationGateTests(MultiBase):
     def test_the_offer_belongs_to_one_session_and_is_used_once(self):
         other = "other-session-token-0123456789"
         V.setup(self.hq, PASS, PASS)
+        V.unlock(self.hq, other, PASS)
+        V.unlock(self.hq, self.admin, PASS)
         V.acknowledge_backup_offer(self.hq, other)
         with self.assertRaises(V.VaultError) as caught:
             V.migrate_legacy(self.hq, self.admin, backup_offered=True)
@@ -551,10 +557,12 @@ class MigrationGateTests(MultiBase):
         with self.assertRaises(V.VaultError):
             V.migrate_legacy(self.hq, self.admin)
         V.set_migration_fault_for_tests(None)
+        V.unlock(self.hq, self.admin, PASS)
         with self.assertRaises(V.VaultError) as caught:
             V.migrate_legacy(self.hq, self.admin)  # the record was used up by the failed attempt
         self.assertEqual(caught.exception.code, "backup_first")
         V.drop_session(other)  # logout forgets the offer
+        V.unlock(self.hq, other, PASS)
         with self.assertRaises(V.VaultError) as caught:
             V.migrate_legacy(self.hq, other)
         self.assertEqual(caught.exception.code, "backup_first")
@@ -562,6 +570,7 @@ class MigrationGateTests(MultiBase):
 
     def test_the_offer_expires(self):
         V.setup(self.hq, PASS, PASS)
+        V.unlock(self.hq, self.admin, PASS)
         V.acknowledge_backup_offer(self.hq, self.admin)
         V._backup_offers[self.admin] -= V.BACKUP_OFFER_TTL_SEC + 1
         with self.assertRaises(V.VaultError) as caught:
@@ -576,6 +585,7 @@ class MigrationGateTests(MultiBase):
     def test_failed_rename_reports_and_loses_nothing(self):
         V.setup(self.hq, PASS, PASS)
         V.set_migration_fault_for_tests("after_journal")
+        V.unlock(self.hq, self.admin, PASS)
         V.acknowledge_backup_offer(self.hq, self.admin)
         with self.assertRaises(V.VaultError) as caught:
             V.migrate_legacy(self.hq, self.admin)

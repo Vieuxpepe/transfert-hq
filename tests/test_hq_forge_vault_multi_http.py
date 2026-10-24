@@ -230,6 +230,8 @@ class ListCreateSettings(MultiHttp):
         V.setup(B.ROOT, PASS, PASS)
         status, listing = self.admin.json("/api/forge/vaults")
         self.assertEqual((status, listing["layout"], listing["vaults"]), (200, "legacy", []))
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/backup-offer", {})[0], 401)  # V4: vault open first
+        self.assertEqual(self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})[0], 200)
         for forged in ({}, {"backup_offered": "yes"}, {"backup_offered": True}, {"backup_offered": True, "offered": True}):
             with self.subTest(forged=forged):
                 status, body = self.post(self.admin, "/api/forge/vaults/migrate", forged)

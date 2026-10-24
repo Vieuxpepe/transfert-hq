@@ -6754,6 +6754,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _forge_vault_post(self, raw: str, data: dict, token: str | None) -> None:
+        if raw in self._MIGRATION_POSTS:
+            self._forge_migration_post(raw, data, token)
+            return
         if raw in ("/api/forge/vaults/new", "/api/forge/vaults/migrate", "/api/forge/vaults/backup-offer"):
             try:
                 if raw.endswith("/backup-offer"):
@@ -6808,6 +6811,45 @@ class Handler(BaseHTTPRequestHandler):
         except hq_forge_vault.VaultError as exc:
             self._vault_error(exc)
 
+    # Multi-vault V4: the single pre-migration vault has its own small set of routes, used only by the
+    # migration screen (open it, download its ZIP, then migrate). They answer 404 once the layout is
+    # not 'legacy'. /api/forge/vaults/lock closes whatever vault this session has open.
+    _MIGRATION_POSTS = ("/api/forge/vaults/lock", "/api/forge/vaults/migration/unlock", "/api/forge/vaults/migration/recover")
+
+    def _forge_migration_post(self, raw: str, data: dict, token: str | None) -> None:
+        if raw == "/api/forge/vaults/lock":
+            self._json(200, hq_forge_vault.lock(token))
+            return
+        if hq_forge_vault.layout(ROOT) != "legacy":
+            self._json(404, {"error": "Inconnu"})
+            return
+        try:
+            if raw.endswith("/unlock"):
+                self._json(200, hq_forge_vault.unlock(ROOT, token, str(data.get("passphrase") or "")))
+            else:
+                self._json(200, hq_forge_vault.unlock_with_recovery(ROOT, token, str(data.get("recovery_key") or "")))
+        except hq_forge_vault.VaultError as exc:
+            self._vault_error(exc)
+
+    def _forge_migration_get(self, raw: str, token: str | None) -> None:
+        state = hq_forge_vault.layout(ROOT)
+        if raw == "/api/forge/vaults/migration":
+            info = {"layout": state, "configured": False, "unlocked": False}
+            if state == "legacy":
+                found = hq_forge_vault.status(ROOT, token)
+                info.update(configured=bool(found.get("configured")), unlocked=bool(found.get("unlocked")))
+            self._json(200, info)
+            return
+        if state != "legacy":
+            self._json(404, {"error": "Inconnu"})
+            return
+        try:
+            payload = hq_forge_vault.backup_bytes(ROOT, token)  # records the offer, bound to this unlock
+        except hq_forge_vault.VaultError as exc:
+            self._vault_error(exc)
+            return
+        self._send(200, payload, "application/zip", [("Content-Disposition", 'attachment; filename="coffre-chiffre.zip"')])
+
     def _vault_error(self, exc: hq_forge_vault.VaultError) -> None:
         self._json(hq_forge_vault.http_status(exc.code), {"error": hq_forge_vault.public_error(exc.code), "code": exc.code})
 
@@ -6815,6 +6857,9 @@ class Handler(BaseHTTPRequestHandler):
         if not raw.startswith("/api/forge/vault"):
             return False
         token = self._token()
+        if raw in ("/api/forge/vaults/migration", "/api/forge/vaults/migration/backup"):
+            self._forge_migration_get(raw, token)
+            return True
         if raw == "/api/forge/vaults":
             try:
                 self._json(200, hq_forge_vault.list_vaults(ROOT, token))

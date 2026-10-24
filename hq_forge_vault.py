@@ -72,6 +72,8 @@ _inflight = 0
 # Fix 1: HQ session token -> monotonic time the server itself offered the single vault's backup
 # (ZIP downloaded, or the offer explicitly acknowledged). Memory only; a client flag never counts.
 _backup_offers: dict[str, float] = {}
+# V4: the offer is bound to the unlock entry of the single vault that was open when it was made.
+_backup_offer_entry: dict[str, str] = {}
 BACKUP_OFFER_TTL_SEC = 900.0
 _session_alive = None
 _write_fault = None
@@ -117,6 +119,7 @@ def reset_for_tests() -> None:
     with _FAIL_LOCK:
         _failures.clear()
     _backup_offers.clear()
+    _backup_offer_entry.clear()
     _test_dir = None
     _ttl = UNLOCK_TTL_SEC
     _quota_bytes = QUOTA_BYTES
@@ -951,6 +954,7 @@ def _install(token: str, master: bytes, epoch: int, vault: str = "legacy") -> No
             "epoch": epoch,
             "expires": time.monotonic() + _ttl,
             "vault": vault,
+            "entry": os.urandom(8).hex(),  # V4: a backup offer is valid only for this very unlock
         }
 
 
@@ -961,6 +965,7 @@ def drop_session(token: str | None) -> None:
     with _LOCK:
         previous = _sessions.pop(token, None)
         _backup_offers.pop(token, None)
+        _backup_offer_entry.pop(token, None)
     if previous:
         _wipe(previous.get("key"))
 
@@ -974,15 +979,37 @@ def _close_vault(identity: str) -> None:
         _wipe(entry.get("key"))
 
 
+def _legacy_entry(token: str) -> dict | None:
+    """The live unlock entry of this session when it holds the single pre-migration vault. Call under _LOCK."""
+    entry = _sessions.get(token)
+    if entry is None or entry.get("vault") != "legacy" or time.monotonic() >= float(entry["expires"]):
+        return None
+    return entry
+
+
 def _record_backup_offer(token: str) -> None:
+    """V4: recorded only while the single vault is open in this session, and bound to that unlock.
+    Locking, the idle TTL, switching vault or logging out makes the offer unusable."""
     with _LOCK:
+        entry = _legacy_entry(token)
+        if entry is None:
+            raise VaultError("locked")
         _backup_offers[token] = time.monotonic()
+        _backup_offer_entry[token] = str(entry.get("entry") or "")
 
 
 def _take_backup_offer(token: str) -> bool:
     with _LOCK:
         when = _backup_offers.pop(token, None)
-    return when is not None and time.monotonic() - when <= BACKUP_OFFER_TTL_SEC
+        bound = _backup_offer_entry.pop(token, None)
+        entry = _legacy_entry(token)
+    return (when is not None and time.monotonic() - when <= BACKUP_OFFER_TTL_SEC
+            and entry is not None and bool(bound) and entry.get("entry") == bound)
+
+
+def _legacy_open(token: str) -> bool:
+    with _LOCK:
+        return _legacy_entry(token) is not None
 
 
 def acknowledge_backup_offer(hq_root: Path, token: str | None) -> dict:
@@ -991,6 +1018,7 @@ def acknowledge_backup_offer(hq_root: Path, token: str | None) -> dict:
     key = _require_live(token)
     if layout(hq_root) != "legacy":
         raise VaultError("validation")
+    _master(hq_root, key, None)  # V4: the single vault must be open in this session ("locked" otherwise)
     _record_backup_offer(key)
     return {"offered": True}
 
@@ -2235,11 +2263,17 @@ def migrate_legacy(hq_root: Path, token: str | None, *, backup_offered=None) -> 
     """V1.6: only on the owner's explicit first opening of the vault panel, after the backup offer.
     Fix 1: the server decides. This HQ session must have downloaded the single vault's ZIP or
     acknowledged the offer (acknowledge_backup_offer) within BACKUP_OFFER_TTL_SEC; the record is
-    used up. backup_offered from the client is ignored. Never called at start-up, by status, by
+    used up. V4: both the offer and this call need the single vault open in this session, with the
+    same unlock (a lock, the idle TTL or another vault in between cancels the offer). backup_offered from the client is ignored. Never called at start-up, by status, by
     jobs or by cleanup."""
     key = _require_live(token)
     if layout(hq_root) == "multi":
         return _migrate(hq_root)  # replay: nothing to do, no offer needed
+    if not _legacy_open(key):
+        with _LOCK:
+            _backup_offers.pop(key, None)
+            _backup_offer_entry.pop(key, None)
+        raise VaultError("locked")
     if not _take_backup_offer(key):
         raise VaultError("backup_first")
     try:
