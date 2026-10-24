@@ -5232,7 +5232,7 @@ def render_app() -> bytes:
           <span class="forge-lock" aria-hidden="true">&#128274;</span>
           <div>
             <h2 id="forge-vault-title">Coffre privé</h2>
-            <p id="forge-vault-lead">Un chiffrement séparé protège ces images. Le PIN HQ ne les déverrouille pas.</p>
+            <div class="forge-help-wrap forge-vault-lead-wrap"><p id="forge-vault-lead">Chiffré à part, avec sa propre phrase.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-lead">Aide</button><p id="forge-help-vault-lead" class="forge-help-pop" role="tooltip">Un chiffrement séparé protège ces images. Le PIN HQ ne les déverrouille pas : seule la phrase du coffre (ou sa clé de récupération) l'ouvre.</p></div>
           </div>
         </div>
         <div id="forge-vaults" class="forge-vaults" hidden>
@@ -5240,11 +5240,18 @@ def render_app() -> bytes:
             <h3 id="forge-vaults-title" class="forge-vault-sub">Mes coffres</h3>
             <button type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
           </div>
-          <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par récent</option></select></div>
-          <p id="forge-vaults-sort-note" class="forge-note" hidden>« Récent » utilise le jour de la dernière ouverture. Ce jour reste visible quand les coffres sont verrouillés.</p>
           <p id="forge-vaults-note" class="forge-note" role="status" aria-live="polite"></p>
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
           <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
+          <div id="forge-vault-current-actions" class="forge-actions forge-vault-main" hidden>
+            <button type="button" id="forge-vault-lock">Verrouiller</button>
+            <button type="button" id="forge-vault-current-open" hidden>Ouvrir</button>
+          </div>
+          <button type="button" id="forge-vaults-all" class="secondary forge-vaults-all" aria-expanded="false" aria-controls="forge-vaults-more" hidden>Tous mes coffres</button>
+          <div id="forge-vaults-more" class="forge-vaults-more" hidden>
+            <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par récent</option></select></div>
+            <p id="forge-vaults-sort-note" class="forge-note" hidden>« Récent » utilise le jour de la dernière ouverture. Ce jour reste visible quand les coffres sont verrouillés.</p>
+          </div>
         </div>
         <section id="forge-migrate" class="forge-migrate" aria-labelledby="forge-migrate-title" hidden>
           <h3 id="forge-migrate-title" class="forge-vault-sub">Déplacer ton coffre</h3>
@@ -5269,11 +5276,6 @@ def render_app() -> bytes:
           <div class="forge-actions"><button type="button" class="secondary" id="forge-migrate-lock" hidden>Verrouiller</button></div>
           <p id="forge-migrate-status" class="forge-note" role="status" aria-live="polite"></p>
         </section>
-        <div id="forge-private-target-row" class="field forge-private-target" hidden>
-          <label for="forge-private-target">Coffre de destination</label>
-          <select id="forge-private-target"></select>
-          <p id="forge-private-target-note" class="forge-note" role="status" aria-live="polite"></p>
-        </div>
         <p id="forge-private-note" class="forge-note">La génération privée reste désactivée tant que cette installation de Forge n'a pas prouvé qu'elle n'écrit pas de copie en clair.</p>
         <form id="forge-vault-setup" class="forge-vault-create" hidden>
           <div class="forge-vault-create-head"><span id="forge-vault-create-tile" class="forge-vault-tile" data-colour="ardoise" aria-hidden="true"></span><h3 class="forge-vault-sub">Nouveau coffre</h3></div>
@@ -5281,8 +5283,8 @@ def render_app() -> bytes:
           <p id="forge-vault-label-warn" class="forge-note forge-vault-warn" role="note"></p>
           <label class="forge-privacy-ack" for="forge-vault-discret"><input type="checkbox" id="forge-vault-discret"/> Discret : verrouillé, seul un numéro s'affiche</label>
           <div class="forge-vault-picks">
-            <div class="field"><label for="forge-vault-glyph">Symbole</label><select id="forge-vault-glyph"></select></div>
-            <div class="field"><label for="forge-vault-colour">Couleur</label><select id="forge-vault-colour"></select></div>
+            <fieldset class="forge-pick"><legend>Symbole</legend><select id="forge-vault-glyph" class="forge-pick-native" tabindex="-1" aria-hidden="true"></select><div class="forge-pick-grid" data-for="forge-vault-glyph" role="radiogroup" aria-label="Symbole"></div></fieldset>
+            <fieldset class="forge-pick"><legend>Couleur</legend><select id="forge-vault-colour" class="forge-pick-native" tabindex="-1" aria-hidden="true"></select><div class="forge-pick-grid" data-for="forge-vault-colour" role="radiogroup" aria-label="Couleur"></div></fieldset>
           </div>
           <div class="field"><label for="forge-vault-new">Phrase du coffre</label><input id="forge-vault-new" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
           <div class="field"><label for="forge-vault-confirm">Confirmation</label><input id="forge-vault-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
@@ -5315,17 +5317,8 @@ def render_app() -> bytes:
           <button type="button" id="forge-vault-recovery-ok">J'ai enregistré la clé</button>
         </div>
         <div id="forge-vault-open-tools" hidden>
-          <div class="forge-help-wrap forge-vault-away">
-            <label class="forge-privacy-ack" for="forge-vault-away"><input type="checkbox" id="forge-vault-away"/> Verrouiller en quittant l'app</label>
-            <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-away">Aide</button>
-            <p id="forge-help-vault-away" class="forge-help-pop" role="tooltip">Si HQ reste en arrière-plan 30 secondes, le coffre se verrouille. Sans ce réglage, il se verrouille quand même après 5 minutes sans activité.</p>
-          </div>
-          <div class="forge-actions">
-            <button type="button" id="forge-vault-lock" class="secondary">Verrouiller le coffre</button>
-            <label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label>
-          </div>
-          <details id="forge-vault-edit-fold">
-            <summary>Réglages de ce coffre</summary>
+          <details id="forge-vault-edit-fold" class="forge-fold">
+            <summary>Apparence</summary>
             <div id="forge-vault-rename-row" class="forge-vault-rename">
               <p class="forge-note">Nom : <strong id="forge-vault-rename-current"></strong></p>
               <button type="button" id="forge-vault-rename-open" class="secondary" aria-expanded="false" aria-controls="forge-vault-rename">Renommer</button>
@@ -5341,8 +5334,8 @@ def render_app() -> bytes:
             </div>
             <form id="forge-vault-edit">
               <div class="forge-vault-pick">
-                <div class="field"><label for="forge-vault-edit-glyph">Icône</label><select id="forge-vault-edit-glyph"></select></div>
-                <div class="field"><label for="forge-vault-edit-colour">Couleur</label><select id="forge-vault-edit-colour"></select></div>
+                <fieldset class="forge-pick"><legend>Icône</legend><select id="forge-vault-edit-glyph" class="forge-pick-native" tabindex="-1" aria-hidden="true"></select><div class="forge-pick-grid" data-for="forge-vault-edit-glyph" role="radiogroup" aria-label="Icône"></div></fieldset>
+                <fieldset class="forge-pick"><legend>Couleur</legend><select id="forge-vault-edit-colour" class="forge-pick-native" tabindex="-1" aria-hidden="true"></select><div class="forge-pick-grid" data-for="forge-vault-edit-colour" role="radiogroup" aria-label="Couleur"></div></fieldset>
               </div>
               <label class="forge-privacy-ack" for="forge-vault-edit-discret"><input type="checkbox" id="forge-vault-edit-discret"/> Discret : le nom n'apparaît que coffre ouvert</label>
               <p id="forge-vault-edit-honest" class="forge-note"></p>
@@ -5354,24 +5347,34 @@ def render_app() -> bytes:
               <button type="button" id="forge-vault-icon-clear" class="secondary">Retirer l'icône photo</button>
             </div>
           </details>
-          <details>
-            <summary>Changer la phrase</summary>
+          <details id="forge-vault-security-fold" class="forge-fold">
+            <summary>Sécurité</summary>
+            <div class="forge-help-wrap forge-vault-away">
+              <label class="forge-privacy-ack" for="forge-vault-away"><input type="checkbox" id="forge-vault-away"/> Verrouiller en quittant l'app</label>
+            <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-away">Aide</button>
+            <p id="forge-help-vault-away" class="forge-help-pop" role="tooltip">Si HQ reste en arrière-plan 30 secondes, le coffre se verrouille. Sans ce réglage, il se verrouille quand même après 5 minutes sans activité.</p>
+          </div>
             <form id="forge-vault-rotate">
-              <p class="forge-note">Changer la phrase ne retire pas la clé de récupération actuelle.</p>
+              <div class="forge-help-wrap"><p class="forge-vault-sub">Changer la phrase</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-rotate">Aide</button><p id="forge-help-vault-rotate" class="forge-help-pop" role="tooltip">Changer la phrase ne retire pas la clé de récupération actuelle.</p></div>
               <div class="field"><label for="forge-vault-current">Phrase actuelle</label><input id="forge-vault-current" type="password" autocomplete="current-password"/></div>
               <div class="field"><label for="forge-vault-next">Nouvelle phrase</label><input id="forge-vault-next" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
               <div class="field"><label for="forge-vault-next-confirm">Confirmation</label><input id="forge-vault-next-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
               <button type="submit">Enregistrer la phrase</button>
             </form>
             <form id="forge-vault-rekey">
-              <p class="forge-note">Remplacer la clé de récupération invalide l'ancienne. La phrase du coffre ne change pas.</p>
+              <div class="forge-help-wrap"><p class="forge-vault-sub">Clé de récupération</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-rekey">Aide</button><p id="forge-help-vault-rekey" class="forge-help-pop" role="tooltip">Remplacer la clé de récupération invalide l'ancienne. La phrase du coffre ne change pas.</p></div>
               <div class="field"><label for="forge-vault-rekey-pass">Phrase actuelle</label><input id="forge-vault-rekey-pass" type="password" autocomplete="current-password" required/></div>
               <button type="submit" class="secondary">Remplacer la clé de récupération</button>
             </form>
           </details>
+          <details id="forge-vault-backup-fold" class="forge-fold">
+            <summary>Sauvegarde</summary>
+            <div class="forge-help-wrap"><p class="forge-note">Pas encore de sauvegarde de ce coffre seul ici.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-backup">Aide</button>
+            <p id="forge-help-vault-backup" class="forge-help-pop" role="tooltip">Télécharger une sauvegarde chiffrée d'un seul coffre arrivera dans une prochaine version. Garde hors de HQ le ZIP chiffré téléchargé avant le déplacement : il contient le coffre tel qu'il était.</p></div>
+          </details>
           <section aria-labelledby="forge-vault-gallery-title">
             <h2 id="forge-vault-gallery-title">Coffre</h2>
-            <div class="forge-triage-bar"><button type="button" id="forge-vault-triage-open" class="secondary">Trier</button><button type="button" id="forge-vault-trash-open" class="secondary">Corbeille du coffre</button></div>
+            <div class="forge-triage-bar"><button type="button" id="forge-vault-triage-open" class="secondary">Trier</button><button type="button" id="forge-vault-trash-open" class="secondary">Corbeille du coffre</button><label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label></div>
             <form id="forge-vault-search" class="forge-vault-search" role="search">
               <input id="forge-vault-q" type="search" autocomplete="off" spellcheck="false" maxlength="120" aria-label="Rechercher dans le coffre" placeholder="Prompt, étiquette ou collection"/>
               <button type="submit" class="secondary">Chercher</button>
@@ -5384,6 +5387,14 @@ def render_app() -> bytes:
         </div>
       </section>
       <form id="forge-form" class="forge-compose forge-m">
+        <div id="forge-dest-chip-row" class="forge-dest-chip-row" hidden>
+          <button type="button" id="forge-dest-chip" class="forge-dest-chip" aria-expanded="false" aria-controls="forge-private-target-row"><span class="forge-dest-chip-lock" aria-hidden="true">&#128274;</span> <span id="forge-dest-chip-text">Coffre : à choisir</span></button>
+        </div>
+        <div id="forge-private-target-row" class="field forge-private-target forge-dest-sheet" hidden>
+          <label for="forge-private-target">Coffre de destination</label>
+          <select id="forge-private-target"></select>
+          <p id="forge-private-target-note" class="forge-note" role="status" aria-live="polite"></p>
+        </div>
         <div class="field">
           <label for="forge-prompt">Prompt</label>
           <textarea id="forge-prompt" name="prompt" required maxlength="2000" rows="4" placeholder="Décris l'image"></textarea>

@@ -651,6 +651,8 @@
         $("forge-vault-error").textContent = "Ouvre ce coffre avant une génération privée.";
       } else {
         $("forge-private-target-note").textContent = "Choisis d'abord le coffre de destination.";
+        destSheetOpen = true;
+        syncDest();
         $("forge-private-target").focus();
       }
       return;
@@ -928,6 +930,10 @@
   }
 
   let vaultSort = "manuel";  // display only, kept in memory
+  let vaultsAll = false;  // "Tous mes coffres" unfolded
+  let currentVid = null;  // the card shown on top
+  let destSheetOpen = false;  // the destination chooser under the generator chip
+  let destOk = false;
   function sortedVaults(rows) {
     const list = rows.slice();
     if (vaultSort === "nom") list.sort((a, b) => vaultSafeName(a).localeCompare(vaultSafeName(b), "fr", { sensitivity: "base" }));
@@ -955,7 +961,26 @@
     const rows = vaultListing.vaults || [];
     if (iconCache.vid && iconCache.vid !== openVid) dropIcon();
     const manual = vaultSort === "manuel" && rows.length > 1;
-    sortedVaults(rows).forEach((v, index, all) => list.appendChild(vaultCard(v, manual ? { first: index === 0, last: index === all.length - 1 } : null)));
+    const ordered = sortedVaults(rows);
+    // Panel redesign: one card on top (the open vault, else the destination, else the first); the rest behind a fold.
+    const current = vaultById(openVid) || vaultById(privateTarget) || ordered[0] || null;
+    if (rows.length < 2) vaultsAll = false;
+    ordered.forEach((v, index, all) => {
+      const item = vaultCard(v, manual ? { first: index === 0, last: index === all.length - 1 } : null);
+      if (current && v.id === current.id) item.classList.add("is-current");
+      list.appendChild(item);
+    });
+    list.classList.toggle("is-all", vaultsAll);
+    const allBtn = $("forge-vaults-all");
+    allBtn.hidden = rows.length < 2;
+    allBtn.textContent = vaultsAll ? "Masquer les autres coffres" : "Tous mes coffres (" + rows.length + ")";
+    allBtn.setAttribute("aria-expanded", vaultsAll ? "true" : "false");
+    $("forge-vaults-more").hidden = !vaultsAll;
+    currentVid = current ? current.id : null;
+    $("forge-vault-current-actions").hidden = !current;
+    $("forge-vault-lock").hidden = !current || current.id !== openVid;
+    $("forge-vault-current-open").hidden = !current || current.id === openVid;
+    if (current) $("forge-vault-current-open").setAttribute("aria-label", "Ouvrir " + quoted(vaultName(current)));
     $("forge-vaults-sort-note").hidden = vaultSort !== "recent";
     syncVaultEdit();
     $("forge-vaults-new").hidden = rows.length >= (vaultListing.max || 12) || vaultListing.layout === "legacy";
@@ -977,6 +1002,19 @@
     $("forge-private-target-note").textContent = chosen
       ? "Les images iront dans " + quoted(vaultName(chosen)) + "."
       : "Choisis le coffre qui recevra les images. Un coffre verrouillé s'ouvre d'abord avec sa phrase.";
+    $("forge-dest-chip-text").textContent = chosen ? "Coffre : " + quoted(vaultName(chosen)) : "Coffre : \u00e0 choisir";
+    syncDest();
+  }
+  let destShownFor = null;
+  function syncDest() {
+    // The chooser stays open while nothing is chosen; once a destination is newly chosen it folds into the chip.
+    const chosenId = vaultById(privateTarget) ? privateTarget : null;
+    if (chosenId && chosenId !== destShownFor) destSheetOpen = false;
+    destShownFor = chosenId;
+    const open = destOk && (destSheetOpen || !chosenId);
+    $("forge-dest-chip-row").hidden = !destOk;
+    $("forge-private-target-row").hidden = !open;
+    $("forge-dest-chip").setAttribute("aria-expanded", open ? "true" : "false");
   }
 
   function openSheet(vid) {
@@ -1105,7 +1143,8 @@
     else if (layout === "migrating") vaultsNote("Un déplacement du coffre a été interrompu. Il reprendra au prochain démarrage de HQ. Rien n'est perdu.");
     await refreshMigration(privateMode);
     if (stale()) return;
-    $("forge-private-target-row").hidden = !privateMode || !listed || !(vaultListing.vaults || []).length;
+    destOk = !!(privateMode && listed && (vaultListing.vaults || []).length);
+    syncDest();
     $("forge-vault-setup").hidden = !privateMode || !listed || !createOpen;
     $("forge-vault-unlock").hidden = !privateMode || !sheetVid;
     $("forge-vault-open-tools").hidden = !privateMode || !vaultState.unlocked || !openVid;
@@ -1158,10 +1197,62 @@
   studio.addEventListener("pointerdown", bumpIdle);
   studio.addEventListener("keydown", bumpIdle);
 
+  function pickGrid(select, kind) {
+    const grid = document.querySelector('.forge-pick-grid[data-for="' + select.id + '"]');
+    if (!grid) return () => {};
+    const cells = [...select.options].map((o) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "forge-pick-cell";
+      b.dataset.value = o.value;
+      b.setAttribute("role", "radio");
+      if (kind === "colour") {
+        const swatch = document.createElement("span");
+        swatch.className = "forge-vault-tile";
+        swatch.dataset.colour = o.value;
+        swatch.setAttribute("aria-hidden", "true");
+        b.appendChild(swatch);
+        b.setAttribute("aria-label", COLOURS[o.value] || o.value);
+      } else {
+        b.textContent = (GLYPHS[o.value] || GLYPHS.coffre)[0];
+        b.setAttribute("aria-label", (GLYPHS[o.value] || GLYPHS.coffre)[1]);
+      }
+      b.addEventListener("click", () => {
+        select.value = o.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      grid.appendChild(b);
+      return b;
+    });
+    function sync() {
+      cells.forEach((b) => {
+        const on = b.dataset.value === select.value;
+        b.setAttribute("aria-checked", on ? "true" : "false");
+        b.tabIndex = on ? 0 : -1;
+      });
+      if (!cells.some((b) => b.tabIndex === 0) && cells[0]) cells[0].tabIndex = 0;
+    }
+    grid.addEventListener("keydown", (event) => {
+      const at = cells.indexOf(document.activeElement);
+      if (at < 0) return;
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const next = cells[(at + step + cells.length) % cells.length];
+      next.click();
+      next.focus();
+    });
+    select.addEventListener("change", sync);
+    sync();
+    return sync;
+  }
+
   const glyphPick = $("forge-vault-glyph");
   const colourPick = $("forge-vault-colour");
   Object.keys(GLYPHS).forEach((id) => option(glyphPick, id, GLYPHS[id][0] + " " + GLYPHS[id][1]));
   Object.keys(COLOURS).forEach((id) => option(colourPick, id, COLOURS[id]));
+  const syncGlyphGrid = pickGrid(glyphPick, "glyph");
+  const syncColourGrid = pickGrid(colourPick, "colour");
   function syncCreatePreview() {
     const tile = $("forge-vault-create-tile");
     tile.dataset.colour = colourPick.value || "ardoise";
@@ -1180,6 +1271,8 @@
     $("forge-vault-create-error").textContent = "";
     glyphPick.value = "coffre";
     colourPick.value = "ardoise";
+    syncGlyphGrid();
+    syncColourGrid();
     syncDiscret();
     syncCreatePreview();
   }
@@ -1277,6 +1370,8 @@
   const editColour = $("forge-vault-edit-colour");
   Object.keys(GLYPHS).forEach((id) => option(editGlyph, id, GLYPHS[id][0] + " " + GLYPHS[id][1]));
   Object.keys(COLOURS).forEach((id) => option(editColour, id, COLOURS[id]));
+  const syncEditGlyph = pickGrid(editGlyph, "glyph");
+  const syncEditColour = pickGrid(editColour, "colour");
   let editFor = null;
   function honestCopy() {
     const v = vaultById(openVid);
@@ -1297,6 +1392,8 @@
     editFor = v.id + "|" + v.glyph + "|" + v.colour + "|" + v.discret + "|" + (v.label || "");
     editGlyph.value = GLYPHS[v.glyph] ? v.glyph : "coffre";
     editColour.value = COLOURS[v.colour] ? v.colour : "ardoise";
+    syncEditGlyph();
+    syncEditColour();
     $("forge-vault-edit-discret").checked = !!v.discret;
     honestCopy();
   }
@@ -1478,6 +1575,17 @@
     promptEl.focus();
   });
   $("forge-vault-lock").addEventListener("click", () => lockVault().catch((error) => { statusEl.textContent = error.message; }));
+  $("forge-vault-current-open").addEventListener("click", () => { if (currentVid) openSheet(currentVid); });
+  $("forge-vaults-all").addEventListener("click", () => {
+    vaultsAll = !vaultsAll;
+    renderVaults();
+    $("forge-vaults-all").focus();
+  });
+  $("forge-dest-chip").addEventListener("click", () => {
+    destSheetOpen = $("forge-private-target-row").hidden;
+    syncDest();
+    if (destSheetOpen) $("forge-private-target").focus();
+  });
 
   /* F18: optional lock when the app stays in the background for 30 s. The
      server's own unlock TTL (5 min) remains the backstop. Pref: localStorage. */

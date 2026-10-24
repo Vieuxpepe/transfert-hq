@@ -29,6 +29,15 @@ GEO = """() => { const cards = [...document.querySelectorAll('.forge-vault-card'
 DOM_HAS = "(needle) => document.documentElement.outerHTML.includes(needle)"
 
 
+def show_all(page) -> None:
+    """Panel redesign: only the current vault card shows; 'Tous mes coffres' unfolds the others."""
+    page.evaluate("() => { const b = document.getElementById('forge-vaults-all'); if (b && !b.hidden && b.getAttribute('aria-expanded') !== 'true') b.click(); }")
+
+
+def open_fold(page, fold_id: str) -> None:
+    page.evaluate("(id) => { const d = document.getElementById(id); if (d) d.open = true; }", fold_id)
+
+
 def to_private(run: Run, page) -> None:
     run.dest(page, "private")
     page.locator("#forge-vault").wait_for()
@@ -53,6 +62,8 @@ def create(run: Run, page, label: str, passphrase: str, glyph: str = "coffre", c
 
 
 def unlock_card(run: Run, page, index: int, passphrase: str) -> None:
+    if not page.locator(".forge-vault-card").nth(index).is_visible():
+        show_all(page)
     page.locator(".forge-vault-card").nth(index).click()
     page.locator("#forge-vault-pass").fill(passphrase)
     page.locator("#forge-vault-open").click()
@@ -96,6 +107,7 @@ def section_cards(run: Run) -> None:
     run.check(not page.evaluate(DOM_HAS, SECRET_NAME), "a locked Discret vault's name is nowhere in the page")
     tiles = page.evaluate("() => [...document.querySelectorAll('.forge-vault-card .forge-vault-tile')].map((t) => [t.dataset.colour, t.textContent, getComputedStyle(t).backgroundColor])")
     run.check(tiles[0][0] == "bleu" and tiles[0][1] == "\u2605" and tiles[1][0] == "violet", "each tile shows its glyph on its colour: " + repr(tiles))
+    show_all(page)
     geo = page.evaluate(GEO)
     run.check(geo["sw"] <= geo["vw"] and geo["sameRow"] and geo["minCard"] >= 44 and geo["targets"] >= 44, "at 375 px two columns, no overflow, 44 px targets: " + repr(geo))
     run.shot(page, "mv-cards", "#forge-vaults")
@@ -151,7 +163,8 @@ def section_destination(run: Run) -> None:
     page.locator("#forge-vault-pass").fill(PASS_B)
     page.locator("#forge-vault-open").click()
     run.check(run.until(page, "(v) => document.querySelector('#forge-private-target').value === v && /Archives/.test(document.querySelector('#forge-private-target-note').textContent)", 10, vids[1]), "the opened vault is the destination and it says so")
-    run.shot(page, "mv-destination", "#forge-private-target-row")
+    run.check(page.locator("#forge-private-target-row").is_hidden() and "Archives" in page.locator("#forge-dest-chip").inner_text(), "once chosen, the destination folds into the generator chip")
+    run.shot(page, "mv-destination", "#forge-dest-chip-row")
     bodies = []
     page.on("request", lambda r: bodies.append(r.post_data or "") if r.url.endswith("/api/forge/jobs") and r.method == "POST" else None)
     page.locator("#forge-generate-private").click()
@@ -167,6 +180,7 @@ def section_destination(run: Run) -> None:
     gallery = page.request.get(run.base + "/api/forge/vaults/" + vids[1] + "/gallery").json()
     run.check(len(gallery.get("images", [])) == 1, "the image landed in Archives")
     run.check("phare prive" not in page.request.get(run.base + "/api/forge/jobs").text() and "phare prive" not in page.request.get(run.base + "/api/forge/gallery?view=history&limit=50").text(), "the private prompt is in neither jobs nor history")
+    show_all(page)
     page.locator(".forge-vault-card").nth(0).click()
     page.locator("#forge-vault-pass").fill(PASS)
     page.locator("#forge-vault-open").click()
@@ -190,6 +204,7 @@ def section_away(run: Run) -> None:
     run.dest(page, "normal")
     to_private(run, page)
     run.check(run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card img[src^=blob]').length === 1", 10), "its thumbnail shows while open")
+    open_fold(page, "forge-vault-security-fold")
     run.until(page, "() => !document.querySelector('#forge-vault-open-tools').hidden && document.querySelector('#forge-vault-away').getBoundingClientRect().width > 0", 10)
     page.locator("#forge-vault-away").check()
     page.evaluate("() => window.__setVisibility('hidden')")

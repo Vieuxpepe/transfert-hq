@@ -62,7 +62,7 @@ class Encoding(unittest.TestCase):
 
     def test_known_vault_strings_are_real_utf8(self):
         html = (ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
-        for text in ("R\u00e9glages de ce coffre", "Par r\u00e9cent", ">Ic\u00f4ne</label>", "n'appara\u00eet que coffre ouvert", "Enregistrer les r\u00e9glages"):
+        for text in ("<summary>S\u00e9curit\u00e9</summary>", "Par r\u00e9cent", "<legend>Ic\u00f4ne</legend>", "n'appara\u00eet que coffre ouvert", "Enregistrer les r\u00e9glages", "Chiffr\u00e9 \u00e0 part"):
             self.assertIn(text, html)
 
 

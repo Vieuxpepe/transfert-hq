@@ -14,7 +14,7 @@ import sys
 from playwright.sync_api import sync_playwright
 
 from visual_forge_quick_wins_playwright import PROD_PORTS, STORAGE_PROBE, Run, _png_bytes, start_server
-from visual_forge_multivault_playwright import create, listing, to_private, unlock_card
+from visual_forge_multivault_playwright import create, listing, open_fold, show_all, to_private, unlock_card
 
 PASS = "synthetic horse battery"
 PASS_B = "another synthetic phrase"
@@ -106,8 +106,11 @@ def section_discret(run: Run) -> None:
     page.locator("#forge-vault-edit-discret").check()
     honest = page.locator("#forge-vault-edit-honest").inner_text()
     run.check("espace libre du disque" in honest and "anciennes sauvegardes" in honest and "ne peut pas garantir" in honest, "turning Discret on says an old name may remain, no false promise")
-    page.locator("#forge-vault-edit-glyph").select_option("ancre")
-    page.locator("#forge-vault-edit-colour").select_option("violet")
+    page.locator('.forge-pick-grid[data-for="forge-vault-edit-glyph"] [data-value="ancre"]').click()
+    page.locator('.forge-pick-grid[data-for="forge-vault-edit-colour"] [data-value="violet"]').click()
+    picked = page.evaluate("() => [...document.querySelectorAll('#forge-vault-edit .forge-pick-cell[aria-checked=true]')].map((b) => b.dataset.value)")
+    cells = page.evaluate("() => [...document.querySelectorAll('#forge-vault-edit .forge-pick-cell')].map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); })")
+    run.check(picked == ["ancre", "violet"] and min(cells) >= 44, f"icon and colour as square grids, 44 px cells, one checked each {picked} {min(cells)}")
     run.shot(page, "v5-settings", "#forge-vault-edit")
     page.locator("#forge-vault-edit button[type=submit]").click()
     run.check(run.until(page, "() => /enregistr/.test(document.querySelector('#forge-vault-edit-status').textContent)", 10), "settings saved")
@@ -144,6 +147,7 @@ def section_order(run: Run) -> None:
     create(run, page, "Charlie", PASS_C, "ancre", "vert")
     names = lambda: page.evaluate("() => [...document.querySelectorAll('.forge-vault-card-name')].map((n) => n.textContent)")
     run.until(page, "() => document.querySelectorAll('.forge-vault-card-name').length === 3", 10)
+    show_all(page)
     run.check(names() == ["Bravo", "Alpha", "Charlie"], f"creation order first {names()}")
     geo = page.evaluate("() => [...document.querySelectorAll('.forge-vault-move button')].map((b) => { const r = b.getBoundingClientRect(); return [r.width, r.height, b.disabled]; })")
     run.check(len(geo) == 6 and all(w >= 44 and h >= 44 for w, h, _d in geo), f"each move button is at least 44 px {geo}")
@@ -174,8 +178,8 @@ def section_rename(run: Run) -> None:
     create(run, page, "Jardin", PASS)
     unlock_card(run, page, 0, PASS)
     page.evaluate("() => { document.querySelector('#forge-vault-edit-fold').open = true; }")
-    shown = page.evaluate("() => [document.querySelector('#forge-vault-edit-fold summary').textContent, document.querySelector('label[for=forge-vault-edit-glyph]').textContent, document.querySelector('#forge-vaults-sort option[value=recent]').textContent, document.querySelector('#forge-vault-edit button[type=submit]').textContent]")
-    run.check(shown == ["R\u00e9glages de ce coffre", "Ic\u00f4ne", "Par r\u00e9cent", "Enregistrer les r\u00e9glages"] and not page.evaluate("() => /[A-Za-z]\\?[A-Za-z\\u00c0-\\u00ff]/.test(document.querySelector('#forge-vault-edit-fold').textContent)"), "accents render, no '?' inside words: " + repr(shown))
+    shown = page.evaluate("() => [document.querySelector('#forge-vault-edit-fold summary').textContent, document.querySelector('#forge-vault-edit legend').textContent, document.querySelector('#forge-vaults-sort option[value=recent]').textContent, document.querySelector('#forge-vault-edit button[type=submit]').textContent, document.querySelector('#forge-vault-security-fold summary').textContent]")
+    run.check(shown == ["Apparence", "Ic\u00f4ne", "Par r\u00e9cent", "Enregistrer les r\u00e9glages", "S\u00e9curit\u00e9"] and not page.evaluate("() => /[A-Za-z]\\?[A-Za-z\\u00c0-\\u00ff]/.test(document.querySelector('#forge-vault').textContent)"), "accents render, no '?' inside words: " + repr(shown))
     opener = page.locator("#forge-vault-rename-open")
     run.check(opener.is_visible() and page.locator("#forge-vault-rename").is_hidden(), "a quiet Renommer button, the form stays folded")
     opener.click()

@@ -414,6 +414,7 @@ def section_away(run: Run) -> None:
     open_vault(run, page)
     import_private(run, page)
     unlocked = lambda: page.request.get(run.base + "/api/forge/vaults").json().get("open") is not None
+    page.evaluate("() => { document.getElementById('forge-vault-security-fold').open = true; }")  # panel redesign: in S\u00e9curit\u00e9
     run.check(not page.locator("#forge-vault-away").is_checked(), "Verrouiller en quittant l'app is off by default")
     run.shot(page, "vault-away", "#forge-vault-open-tools")
     page.evaluate("() => window.__setVisibility('hidden')")

@@ -621,3 +621,45 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-vault-rename { display: grid; gap: 8px; margin: 8px 0 12px; }
 .forge-vault-rename button, .forge-vault-rename input { min-height: 44px; }
 .forge-vault-rename .forge-note strong { overflow-wrap: anywhere; }
+
+/* Vault panel readability redesign: one card on top, folded sections, square pickers, a destination chip. */
+.forge-vault{gap:16px}
+.forge-vault-lead-wrap{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+.forge-vault-lead-wrap #forge-vault-lead{margin:0}
+.forge-vaults{display:flex;flex-direction:column;gap:12px}
+.forge-vaults-list:not(.is-all){grid-template-columns:minmax(0,1fr)}
+.forge-vaults-list:not(.is-all)>li:not(.is-current){display:none}
+.forge-vaults-list:not(.is-all) .forge-vault-move{display:none}
+.forge-vaults-list:not(.is-all) .forge-vault-card{flex-direction:row;align-items:center;gap:12px;min-height:64px}
+.forge-vaults-list:not(.is-all) .forge-vault-card .forge-vault-card-name{flex:1 1 auto;font-weight:700;font-size:1.05rem;overflow-wrap:anywhere}
+.forge-vault-main{margin:0}
+.forge-vault-main button{flex:1 1 auto;min-height:44px}
+.forge-vaults-all{align-self:flex-start;min-height:44px}
+.forge-vaults-more{display:flex;flex-direction:column;gap:8px}
+#forge-vault-open-tools{display:flex;flex-direction:column;gap:12px}
+#forge-vault-open-tools[hidden]{display:none}
+.forge-fold{border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.forge-fold>summary{min-height:44px;display:flex;align-items:center;padding:0 14px;font-weight:700;cursor:pointer;list-style-position:inside}
+.forge-fold>summary:focus-visible{outline:3px solid var(--forge-accent);outline-offset:2px;border-radius:12px}
+.forge-fold[open]>summary{border-bottom:1px solid var(--line)}
+.forge-fold>:not(summary){margin:12px 14px}
+.forge-fold form{display:flex;flex-direction:column;gap:10px}
+.forge-pick{border:0;margin:0;padding:0;min-width:0}
+.forge-pick>legend{padding:0;margin-bottom:6px;font-weight:600}
+#forge-vault-edit .forge-vault-pick,#forge-vault-setup .forge-vault-picks{display:flex;flex-direction:column;gap:16px}
+.forge-pick-native{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);opacity:0}
+.forge-pick-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr));gap:8px}
+.forge-pick-cell{position:relative;min-width:44px;min-height:44px;aspect-ratio:1/1;display:grid;place-items:center;padding:3px;border:2px solid var(--line);border-radius:12px;background:var(--bg);color:var(--text);font-size:1.3rem;line-height:1}
+.forge-pick-cell .forge-vault-tile{position:absolute;inset:4px;width:auto;height:auto;border-radius:8px}
+.forge-pick-cell[aria-checked="true"]{border-color:var(--forge-accent);box-shadow:0 0 0 2px var(--forge-accent)}
+.forge-pick-cell:focus-visible{outline:3px solid var(--forge-accent);outline-offset:2px}
+.forge-triage-bar{display:flex;flex-wrap:wrap;gap:8px}
+.forge-triage-bar>*{min-height:44px}
+.forge-dest-chip-row{display:flex;margin-bottom:8px}
+.forge-dest-chip{display:inline-flex;align-items:center;gap:6px;min-height:44px;max-width:100%;padding:0 16px;border:1px solid var(--forge-accent);border-radius:999px;background:color-mix(in srgb,var(--forge-accent) 12%,var(--panel));color:var(--text);font:inherit;font-weight:600;overflow-wrap:anywhere;text-align:left}
+.forge-dest-chip:focus-visible{outline:3px solid var(--forge-accent);outline-offset:2px}
+.forge-dest-sheet{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+.forge-fold .forge-help-wrap{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.forge-fold .forge-help-wrap>.forge-vault-sub,.forge-fold .forge-help-wrap>.forge-privacy-ack,.forge-fold .forge-help-wrap>.forge-note{flex:1 1 auto;margin:0}
+.forge-fold .forge-help-wrap>.forge-help-pop{flex-basis:100%}
+@media (prefers-reduced-motion: reduce){.forge-fold>summary,.forge-pick-cell,.forge-dest-chip{transition:none;animation:none}}

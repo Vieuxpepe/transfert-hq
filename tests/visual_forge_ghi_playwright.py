@@ -207,6 +207,7 @@ def section_inpaint(run: Run) -> None:
     # Private: memory only, result straight into the vault.
     open_vault(run, page)
     import_private(run, page)
+    page.evaluate("() => { document.getElementById('forge-vault-security-fold').open = true; }")  # panel redesign: in S\u00e9curit\u00e9
     away = page.evaluate(AWAY_GEO)
     run.check(away["gap"] >= 8 and away["h"] >= 44 and away["w"] >= 44 and away["sw"] <= away["vw"],
               "at 375 px the vault Aide keeps its gap and 44 px target: " + repr(away))
