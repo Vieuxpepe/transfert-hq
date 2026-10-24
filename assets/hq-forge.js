@@ -49,6 +49,14 @@
   let createOpen = false;
   /* V4.4: the destination of a private generation, chosen by the owner; never guessed. */
   let privateTarget = null;
+  /* V4.5: migration of the single pre-migration vault. The server records the backup offer and binds
+     it to this unlock; the page only mirrors it to explain the steps. Nothing migrates by itself. */
+  const OFFER_MS = 15 * 60 * 1000;
+  let legacyOpen = false;
+  let migrateOffer = 0;
+  let migrateTimer = 0;
+  let migrating = false;
+  const anyVaultOpen = () => !!vaultState.unlocked || legacyOpen;
   const vaultBase = () => "/api/forge/vaults/" + encodeURIComponent(openVid || "none");
   const choiceNote = $("forge-choice-note");
   const reasonEl = $("forge-generate-reason");
@@ -617,7 +625,10 @@
     if (!vaultState.unlocked || !openVid || privateTarget !== openVid) {
       // Never a silent choice: the owner names the destination, and a locked one is opened first.
       const wanted = $("forge-private-target").value;
-      if (wanted && wanted !== openVid) {
+      if (vaultListing.layout === "legacy") {
+        migrateStatus("Déplace d'abord ton coffre : ensuite tu choisiras le coffre qui reçoit les images.");
+        $("forge-migrate").scrollIntoView({ block: "nearest" });
+      } else if (wanted && wanted !== openVid) {
         openSheet(wanted);
         $("forge-vault-error").textContent = "Ouvre ce coffre avant une génération privée.";
       } else {
@@ -792,7 +803,7 @@
 
   function bumpIdle() {
     clearTimeout(idleTimer);
-    if (!vaultState.unlocked) return;
+    if (!anyVaultOpen()) return;
     idleTimer = setTimeout(() => { lockVault().catch(() => {}); }, 5 * 60 * 1000);
   }
 
@@ -910,6 +921,46 @@
     renderVaults();
   }
 
+  function migrateStatus(text) { $("forge-migrate-status").textContent = text || ""; }
+  function dropOffer(message) {
+    if (migrateOffer && message) migrateStatus(message);
+    migrateOffer = 0;
+    clearTimeout(migrateTimer);
+    migrateTimer = 0;
+    $("forge-migrate-ack").checked = false;
+  }
+  function syncMigration() {
+    $("forge-migrate-unlock").hidden = legacyOpen || migrating;
+    $("forge-migrate-offer").hidden = !legacyOpen || migrating;
+    $("forge-migrate-confirm").hidden = !legacyOpen || !migrateOffer || migrating;
+    $("forge-migrate-lock").hidden = !legacyOpen || migrating;
+    $("forge-migrate-go").disabled = migrating || !migrateOffer || !$("forge-migrate-ack").checked;
+  }
+  async function refreshMigration(privateMode) {
+    if (vaultListing.layout !== "legacy") {
+      $("forge-migrate").hidden = true;
+      legacyOpen = false;
+      dropOffer();
+      return;
+    }
+    $("forge-migrate").hidden = !privateMode;
+    let info = { unlocked: false };
+    try { info = await api("/api/forge/vaults/migration"); } catch (_error) { info = { unlocked: false }; }
+    legacyOpen = !!info.unlocked;
+    if (!legacyOpen) dropOffer("Le coffre s'est verrouillé : l'offre de sauvegarde est annulée. Rouvre-le et télécharge à nouveau la sauvegarde.");
+    syncMigration();
+  }
+  function offerSeen(message) {
+    migrateOffer = Date.now();
+    clearTimeout(migrateTimer);
+    migrateTimer = setTimeout(() => {
+      dropOffer("Plus de 15 minutes ont passé : l'offre de sauvegarde a expiré. Télécharge à nouveau la sauvegarde.");
+      syncMigration();
+    }, OFFER_MS);
+    migrateStatus(message);
+    syncMigration();
+  }
+
   async function refreshVault() {
     const privateMode = destination() === "private";
     vaultBox.hidden = !privateMode;
@@ -939,6 +990,7 @@
     renderVaults();
     if (layout === "unreadable") vaultsNote(vaultListing.error || "La liste des coffres est illisible. Aucun coffre n'est ouvert.");
     else if (layout === "migrating") vaultsNote("Un déplacement du coffre a été interrompu. Il reprendra au prochain démarrage de HQ. Rien n'est perdu.");
+    await refreshMigration(privateMode);
     $("forge-private-target-row").hidden = !privateMode || !listed || !(vaultListing.vaults || []).length;
     $("forge-vault-setup").hidden = !privateMode || !listed || !createOpen;
     $("forge-vault-unlock").hidden = !privateMode || !sheetVid;
@@ -974,6 +1026,8 @@
       scrubVaultViews();
       forgetOpenVault();
       closeSheet();
+      legacyOpen = false;
+      dropOffer("Coffre verrouillé : l'offre de sauvegarde est annulée. Rouvre-le et télécharge à nouveau la sauvegarde.");
     }
     await refreshVault();
     vaultsNote(was ? quoted(vaultSafeName(was)) + " est verrouillé." : "Tous les coffres sont verrouillés.");
@@ -1103,6 +1157,83 @@
     }
   });
   $("forge-vault-unlock-cancel").addEventListener("click", closeSheet);
+  $("forge-migrate-unlock").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api("/api/forge/vaults/migration/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passphrase: $("forge-migrate-pass").value })
+      });
+      $("forge-migrate-pass").value = "";
+      migrateStatus("Coffre ouvert. Télécharge d'abord la sauvegarde.");
+      await refreshVault();
+    } catch (error) {
+      $("forge-migrate-pass").value = "";
+      migrateStatus(error.message || "Phrase refusée.");
+    }
+  });
+  $("forge-migrate-zip").addEventListener("click", async () => {
+    try {
+      const response = await fetch("/api/forge/vaults/migration/backup", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error((data && data.error) || "La sauvegarde n'a pas pu être préparée.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "coffre-chiffre.zip";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      offerSeen("Sauvegarde téléchargée (coffre-chiffre.zip). Tu peux maintenant confirmer.");
+    } catch (error) {
+      migrateStatus(error.message);
+      await refreshVault().catch(() => {});
+    }
+  });
+  $("forge-migrate-skip").addEventListener("click", async () => {
+    if (!window.confirm("Continuer sans sauvegarde ? Le déplacement ne rechiffre rien, mais sans ZIP une panne serait plus difficile à réparer.")) return;
+    try {
+      await api("/api/forge/vaults/backup-offer", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      offerSeen("Sauvegarde proposée et laissée de côté. Tu peux maintenant confirmer.");
+    } catch (error) {
+      migrateStatus(error.message);
+      await refreshVault().catch(() => {});
+    }
+  });
+  $("forge-migrate-ack").addEventListener("change", syncMigration);
+  $("forge-migrate-lock").addEventListener("click", () => lockVault().catch((error) => { migrateStatus(error.message); }));
+  $("forge-migrate-go").addEventListener("click", async () => {
+    if (!migrateOffer || !$("forge-migrate-ack").checked || migrating) return;
+    if (Date.now() - migrateOffer > OFFER_MS) {
+      dropOffer("Plus de 15 minutes ont passé : l'offre de sauvegarde a expiré. Télécharge à nouveau la sauvegarde.");
+      syncMigration();
+      return;
+    }
+    migrating = true;
+    migrateStatus("Déplacement en cours… Garde l'app ouverte.");
+    syncMigration();
+    try {
+      await api("/api/forge/vaults/migrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      migrating = false;
+      dropOffer();
+      legacyOpen = false;
+      scrubVaultViews();
+      await refreshVault();
+      vaultsNote("Ton coffre a été déplacé. Il est dans Mes coffres : ouvre-le avec ta phrase habituelle.");
+    } catch (error) {
+      migrating = false;
+      dropOffer();
+      const code = error.data && error.data.code;
+      migrateStatus(code === "backup_first"
+        ? "L'offre de sauvegarde n'est plus valable (délai passé ou coffre verrouillé entre-temps). Télécharge à nouveau la sauvegarde."
+        : code === "locked"
+          ? "Le coffre s'est verrouillé : l'offre est annulée. Rouvre-le pour recommencer."
+          : (error.message || "Le déplacement n'a pas abouti. Rien n'est perdu."));
+      await refreshVault().catch(() => {});
+    }
+  });
   $("forge-private-target").addEventListener("change", () => {
     const wanted = $("forge-private-target").value;
     privateTarget = wanted && wanted === openVid ? wanted : null;
@@ -1143,14 +1274,14 @@
       // iOS freezes timers in the background: judge by wall-clock time on return.
       const away = hiddenAt ? Date.now() - hiddenAt : 0;
       hiddenAt = 0;
-      if (away >= AWAY_MS && awayPref() && vaultState.unlocked) lockVault().catch(() => {});
+      if (away >= AWAY_MS && awayPref() && anyVaultOpen()) lockVault().catch(() => {});
       return;
     }
     hiddenAt = Date.now();
-    if (!awayPref() || !vaultState.unlocked) return;
+    if (!awayPref() || !anyVaultOpen()) return;
     awayTimer = setTimeout(() => {
       awayTimer = 0;
-      if (document.visibilityState === "hidden" && vaultState.unlocked) lockVault().catch(() => {});
+      if (document.visibilityState === "hidden" && anyVaultOpen()) lockVault().catch(() => {});
     }, AWAY_MS);
   });
   $("forge-vault-import").addEventListener("change", async () => {

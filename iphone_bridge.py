@@ -5244,6 +5244,29 @@ def render_app() -> bytes:
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
           <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
         </div>
+        <section id="forge-migrate" class="forge-migrate" aria-labelledby="forge-migrate-title" hidden>
+          <h3 id="forge-migrate-title" class="forge-vault-sub">Déplacer ton coffre</h3>
+          <p class="forge-note">Ton coffre va être déplacé, sans être rechiffré. Ta phrase, ta clé de récupération et tes images restent les mêmes. Ensuite, il apparaît dans Mes coffres et tu peux en créer d'autres.</p>
+          <p class="forge-note">Rien ne se fait tout seul : le déplacement commence seulement quand tu le confirmes.</p>
+          <form id="forge-migrate-unlock" class="forge-vault-sheet">
+            <div class="field"><label for="forge-migrate-pass">Phrase du coffre</label><input id="forge-migrate-pass" type="password" maxlength="128" autocomplete="current-password" required/></div>
+            <button type="submit" id="forge-migrate-open">Ouvrir le coffre</button>
+          </form>
+          <div id="forge-migrate-offer" class="forge-migrate-step" hidden>
+            <p class="forge-note">1. Télécharge d'abord une sauvegarde chiffrée (ZIP) et garde-la hors de HQ.</p>
+            <div class="forge-actions">
+              <button type="button" id="forge-migrate-zip">Télécharger la sauvegarde</button>
+              <button type="button" class="secondary" id="forge-migrate-skip">Continuer sans sauvegarde</button>
+            </div>
+          </div>
+          <div id="forge-migrate-confirm" class="forge-migrate-step" hidden>
+            <p id="forge-migrate-offer-note" class="forge-note">2. Confirme dans les 15 minutes, sans verrouiller. Verrouiller, l'auto-verrouillage ou 5 minutes sans rien faire annulent l'offre : il faudra télécharger à nouveau la sauvegarde.</p>
+            <label class="forge-privacy-ack" for="forge-migrate-ack"><input type="checkbox" id="forge-migrate-ack"/> J'ai compris : mon coffre va être déplacé</label>
+            <button type="button" id="forge-migrate-go" disabled>Déplacer mon coffre</button>
+          </div>
+          <div class="forge-actions"><button type="button" class="secondary" id="forge-migrate-lock" hidden>Verrouiller</button></div>
+          <p id="forge-migrate-status" class="forge-note" role="status" aria-live="polite"></p>
+        </section>
         <div id="forge-private-target-row" class="field forge-private-target" hidden>
           <label for="forge-private-target">Coffre de destination</label>
           <select id="forge-private-target"></select>
