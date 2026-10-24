@@ -53,7 +53,7 @@
       return;
     }
     try {
-      const out = await post("/api/forge/vault/search", { q: words, tag: filter.tag, collection: filter.collection });
+      const out = await post(H.vaultBase() + "/search", { q: words, tag: filter.tag, collection: filter.collection });
       active = true;
       grid.replaceChildren(...out.images.map((image) => H.privateCard(image)));
       $("forge-vault-empty").hidden = true;
@@ -73,7 +73,7 @@
 
   async function refreshChips() {
     if (!H.vaultUnlocked()) return;
-    try { renderChips(await post("/api/forge/vault/search", { q: "" })); } catch (_e) { filters.replaceChildren(); }
+    try { renderChips(await post(H.vaultBase() + "/search", { q: "" })); } catch (_e) { filters.replaceChildren(); }
   }
 
   form.addEventListener("submit", (event) => { event.preventDefault(); run(); });
@@ -88,7 +88,7 @@
     tagsEl.value = "";
     collEl.value = "";
     labelNote.textContent = LABEL_HINT;
-    H.api("/api/forge/vault/images/" + encodeURIComponent(id)).then((d) => {
+    H.api(H.vaultBase() + "/images/" + encodeURIComponent(id)).then((d) => {
       if (viewing !== id) return;
       tagsEl.value = (d.tags || []).join(", ");
       collEl.value = d.collection || "";
@@ -98,7 +98,7 @@
     if (!viewing) return;
     const tags = tagsEl.value.split(",").map((t) => t.trim()).filter(Boolean);
     try {
-      const out = await post("/api/forge/vault/images/" + encodeURIComponent(viewing) + "/labels", { tags, collection: collEl.value.trim() });
+      const out = await post(H.vaultBase() + "/images/" + encodeURIComponent(viewing) + "/labels", { tags, collection: collEl.value.trim() });
       tagsEl.value = out.tags.join(", ");
       labelNote.textContent = "Enregistr\u00e9 dans le coffre.";
       if (active) run(); else refreshChips();

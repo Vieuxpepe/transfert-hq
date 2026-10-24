@@ -41,6 +41,13 @@
   let forgeState = "offline";
   let catalogState = "offline";
   let vaultState = { configured: false, unlocked: false, private_generation: false };
+  /* Multi-vault V4: the vault this HQ session has open (one at a time), from GET /api/forge/vaults.
+     Names and ids live only in this page's memory; nothing about a vault goes to browser storage. */
+  let openVid = null;
+  let vaultListing = { layout: "empty", vaults: [], open: null, max: 12 };
+  let sheetVid = null;
+  let createOpen = false;
+  const vaultBase = () => "/api/forge/vaults/" + encodeURIComponent(openVid || "none");
   const choiceNote = $("forge-choice-note");
   const reasonEl = $("forge-generate-reason");
   const privateUrls = new Set();
@@ -321,7 +328,7 @@
   }
 
   async function privateThumb(id) {
-    const response = await fetch("/api/forge/vault/images/" + id + "/thumb", { credentials: "same-origin", cache: "no-store" });
+    const response = await fetch(vaultBase() + "/images/" + id + "/thumb", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("locked");
     const url = URL.createObjectURL(await response.blob());
     privateUrls.add(url);
@@ -782,13 +789,137 @@
     idleTimer = setTimeout(() => { lockVault().catch(() => {}); }, 5 * 60 * 1000);
   }
 
+  const GLYPHS = {
+    coffre: ["▣", "Coffre"], etoile: ["★", "Étoile"], lune: ["☾", "Lune"], soleil: ["☀", "Soleil"],
+    feuille: ["❦", "Feuille"], fleur: ["✿", "Fleur"], vague: ["≈", "Vague"], montagne: ["▲", "Montagne"],
+    nuage: ["☁", "Nuage"], flamme: ["♨", "Flamme"], coeur: ["♥", "Cœur"], cle: ["⚿", "Clé"]
+  };
+  const COLOURS = { ardoise: "Ardoise", bleu: "Bleu", sarcelle: "Sarcelle", vert: "Vert", olive: "Olive", ambre: "Ambre", orange: "Orange", rouge: "Rouge", rose: "Rose", violet: "Violet" };
+  const quoted = (text) => "« " + text + " »";
+  function vaultById(vid) { return (vaultListing.vaults || []).find((v) => v.id === vid) || null; }
+  /* The name a vault may show now: a Discret vault has a name only while it is open here. */
+  function vaultName(v) { return v ? (v.label || "Coffre n° " + v.number) : ""; }
+  /* For messages that outlive the open state (switching, locking): never a Discret name. */
+  function vaultSafeName(v) { return v ? (v.discret ? "Coffre n° " + v.number : vaultName(v)) : ""; }
+  function vaultsNote(text) { $("forge-vaults-note").textContent = text || ""; }
+
+  function vaultCard(v) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    const open = v.id === openVid;
+    button.type = "button";
+    button.className = "forge-vault-card";
+    button.dataset.vid = v.id;
+    button.dataset.open = open ? "true" : "false";
+    const tile = document.createElement("span");
+    tile.className = "forge-vault-tile";
+    tile.dataset.colour = COLOURS[v.colour] ? v.colour : "ardoise";
+    tile.setAttribute("aria-hidden", "true");
+    tile.textContent = (GLYPHS[v.glyph] || GLYPHS.coffre)[0];
+    const name = document.createElement("span");
+    name.className = "forge-vault-card-name";
+    name.textContent = vaultName(v);
+    const state = document.createElement("span");
+    state.className = "forge-vault-card-state";
+    state.textContent = open ? "Ouvert" : "Verrouillé";
+    button.append(tile, name, state);
+    button.setAttribute("aria-label", vaultName(v) + ", " + state.textContent.toLowerCase());
+    button.addEventListener("click", () => {
+      if (v.id === openVid) {
+        vaultsNote(quoted(vaultName(v)) + " est déjà ouvert.");
+        return;
+      }
+      openSheet(v.id);
+    });
+    item.appendChild(button);
+    return item;
+  }
+
+  function renderVaults() {
+    const list = $("forge-vaults-list");
+    list.replaceChildren();
+    const rows = vaultListing.vaults || [];
+    rows.forEach((v) => list.appendChild(vaultCard(v)));
+    $("forge-vaults-new").hidden = rows.length >= (vaultListing.max || 12) || vaultListing.layout === "legacy";
+    $("forge-vaults-empty").hidden = rows.length > 0;
+    const opened = vaultById(openVid);
+    $("forge-vault-gallery-title").textContent = opened ? vaultName(opened) : "Coffre";
+    if (window.hqForgeOnVaults) window.hqForgeOnVaults();
+  }
+
+  function openSheet(vid) {
+    const v = vaultById(vid);
+    if (!v) return;
+    sheetVid = vid;
+    createOpen = false;
+    $("forge-vault-setup").hidden = true;
+    $("forge-vault-unlock-for").textContent = "Ouvrir " + quoted(vaultName(v));
+    const other = openVid && openVid !== vid ? vaultById(openVid) : null;
+    const switchNote = $("forge-vault-switch-note");
+    switchNote.hidden = !other;
+    switchNote.textContent = other ? "Ouvrir ce coffre verrouillera " + quoted(vaultSafeName(other)) + ". Un seul coffre est ouvert à la fois." : "";
+    $("forge-vault-error").textContent = "";
+    $("forge-vault-unlock").hidden = false;
+    $("forge-vault-pass").focus();
+  }
+
+  function closeSheet() {
+    sheetVid = null;
+    $("forge-vault-pass").value = "";
+    $("forge-vault-error").textContent = "";
+    $("forge-vault-unlock-for").textContent = "";
+    $("forge-vault-switch-note").textContent = "";
+    $("forge-vault-unlock").hidden = true;
+  }
+
+  function scrubVaultViews() {
+    clearPrivateUi();
+    if (window.hqForgeScrubPrivate) window.hqForgeScrubPrivate();
+  }
+
+  /* After a lock: forget every open-only detail at once, before any request returns. */
+  function forgetOpenVault() {
+    openVid = null;
+    vaultState = Object.assign({}, vaultState, { unlocked: false });
+    vaultListing = Object.assign({}, vaultListing, {
+      open: null,
+      vaults: (vaultListing.vaults || []).map((v) => Object.assign({}, v, { label: v.discret ? null : v.label }))
+    });
+    renderVaults();
+  }
+
   async function refreshVault() {
-    vaultState = await api("/api/forge/vault/status");
     const privateMode = destination() === "private";
     vaultBox.hidden = !privateMode;
-    $("forge-vault-setup").hidden = !privateMode || vaultState.configured;
-    $("forge-vault-unlock").hidden = !privateMode || !vaultState.configured || vaultState.unlocked;
-    $("forge-vault-open-tools").hidden = !privateMode || !vaultState.unlocked;
+    try {
+      vaultListing = await api("/api/forge/vaults");
+    } catch (error) {
+      vaultListing = { layout: "unreadable", vaults: [], open: null, max: 12, error: error.message };
+    }
+    const before = openVid;
+    openVid = vaultListing.open || null;
+    if (before && before !== openVid) {
+      scrubVaultViews();
+      vaultsNote("Le coffre s'est verrouillé.");
+    }
+    if (sheetVid && (!vaultById(sheetVid) || sheetVid === openVid)) closeSheet();
+    if (openVid) {
+      vaultState = await api(vaultBase() + "/status");
+    } else {
+      const first = (vaultListing.vaults || [])[0];
+      const probe = first ? await api("/api/forge/vaults/" + encodeURIComponent(first.id) + "/status").catch(() => null) : null;
+      // No vault yet: nothing is restricted to this Windows account, so private generation waits.
+      vaultState = { configured: !!first, unlocked: false, private_generation: !!(probe && probe.private_generation), acl: probe ? probe.acl : "unverified" };
+    }
+    const layout = vaultListing.layout;
+    const listed = layout === "multi" || layout === "empty";
+    $("forge-vaults").hidden = !privateMode || !listed;
+    renderVaults();
+    if (layout === "unreadable") vaultsNote(vaultListing.error || "La liste des coffres est illisible. Aucun coffre n'est ouvert.");
+    else if (layout === "migrating") vaultsNote("Un déplacement du coffre a été interrompu. Il reprendra au prochain démarrage de HQ. Rien n'est perdu.");
+    $("forge-vault-setup").hidden = !privateMode || !listed || !createOpen;
+    $("forge-vault-unlock").hidden = !privateMode || !sheetVid;
+    $("forge-vault-open-tools").hidden = !privateMode || !vaultState.unlocked || !openVid;
     const note = $("forge-private-note");
     note.hidden = !privateMode || vaultState.private_generation;
     if (!vaultState.private_generation) {
@@ -803,8 +934,8 @@
   }
 
   async function loadVaultGallery() {
-    if (!vaultState.unlocked) return;
-    const page = await api("/api/forge/vault/gallery?limit=24");
+    if (!vaultState.unlocked || !openVid) return;
+    const page = await api(vaultBase() + "/gallery?limit=24");
     clearPrivateUi();
     vaultState.unlocked = true;
     (page.images || []).forEach((image) => vaultGallery.appendChild(card(image, "private")));
@@ -812,14 +943,17 @@
   }
 
   async function lockVault() {
+    const was = vaultById(openVid);
     try {
-      await api("/api/forge/vault/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      await api("/api/forge/vaults/lock", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     } finally {
-      // Drop decrypted pixels and private text even if the lock request failed.
-      clearPrivateUi();
-      if (window.hqForgeScrubPrivate) window.hqForgeScrubPrivate();
+      // Drop decrypted pixels, private text and open-only names even if the lock request failed.
+      scrubVaultViews();
+      forgetOpenVault();
+      closeSheet();
     }
     await refreshVault();
+    vaultsNote(was ? quoted(vaultSafeName(was)) + " est verrouillé." : "Tous les coffres sont verrouillés.");
   }
 
   document.querySelectorAll('input[name="forge-destination"]').forEach((input) => {
@@ -833,23 +967,74 @@
   studio.addEventListener("pointerdown", bumpIdle);
   studio.addEventListener("keydown", bumpIdle);
 
+  const glyphPick = $("forge-vault-glyph");
+  const colourPick = $("forge-vault-colour");
+  Object.keys(GLYPHS).forEach((id) => option(glyphPick, id, GLYPHS[id][0] + " " + GLYPHS[id][1]));
+  Object.keys(COLOURS).forEach((id) => option(colourPick, id, COLOURS[id]));
+  function syncCreatePreview() {
+    const tile = $("forge-vault-create-tile");
+    tile.dataset.colour = colourPick.value || "ardoise";
+    tile.textContent = (GLYPHS[glyphPick.value] || GLYPHS.coffre)[0];
+  }
+  function syncDiscret() {
+    $("forge-vault-label-warn").textContent = $("forge-vault-discret").checked
+      ? "Mode Discret : le nom est chiffré dans le coffre. Verrouillé, la liste ne montre qu'un numéro."
+      : "Ne mets rien de sensible dans le nom : il reste lisible quand le coffre est verrouillé.";
+  }
+  function clearCreate() {
+    $("forge-vault-label").value = "";
+    $("forge-vault-discret").checked = false;
+    $("forge-vault-new").value = "";
+    $("forge-vault-confirm").value = "";
+    $("forge-vault-create-error").textContent = "";
+    glyphPick.value = "coffre";
+    colourPick.value = "ardoise";
+    syncDiscret();
+    syncCreatePreview();
+  }
+  clearCreate();
+  glyphPick.addEventListener("change", syncCreatePreview);
+  colourPick.addEventListener("change", syncCreatePreview);
+  $("forge-vault-discret").addEventListener("change", syncDiscret);
+  $("forge-vaults-new").addEventListener("click", () => {
+    closeSheet();
+    clearCreate();
+    createOpen = true;
+    $("forge-vault-setup").hidden = false;
+    $("forge-vault-label").focus();
+  });
+  $("forge-vault-create-cancel").addEventListener("click", () => {
+    clearCreate();
+    createOpen = false;
+    $("forge-vault-setup").hidden = true;
+  });
   $("forge-vault-setup").addEventListener("submit", async (event) => {
     event.preventDefault();
+    $("forge-vault-create-error").textContent = "";
     try {
-      const payload = await api("/api/forge/vault/setup", {
+      const payload = await api("/api/forge/vaults/new", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passphrase: $("forge-vault-new").value, confirm: $("forge-vault-confirm").value })
+        body: JSON.stringify({
+          label: $("forge-vault-label").value,
+          glyph: glyphPick.value,
+          colour: colourPick.value,
+          discret: $("forge-vault-discret").checked,
+          passphrase: $("forge-vault-new").value,
+          confirm: $("forge-vault-confirm").value
+        })
       });
-      $("forge-vault-new").value = "";
-      $("forge-vault-confirm").value = "";
+      clearCreate();
+      createOpen = false;
       $("forge-vault-recovery-key").value = payload.recovery_key || "";
       $("forge-vault-recovery-extra").hidden = true;
       $("forge-vault-recovery").hidden = false;
       $("forge-vault-setup").hidden = true;
+      vaultsNote("Coffre créé. Il reste verrouillé : touche sa carte pour l'ouvrir.");
     } catch (error) {
-      $("forge-private-note").hidden = false;
-      $("forge-private-note").textContent = error.message || "Le coffre n'a pas été créé.";
+      $("forge-vault-new").value = "";
+      $("forge-vault-confirm").value = "";
+      $("forge-vault-create-error").textContent = error.message || "Le coffre n'a pas été créé.";
     }
   });
   $("forge-vault-recovery-ok").addEventListener("click", () => {
@@ -868,20 +1053,31 @@
   });
   $("forge-vault-unlock").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const target = sheetVid;
+    if (!target) return;
+    const other = openVid && openVid !== target ? vaultById(openVid) : null;
     try {
-      await api("/api/forge/vault/unlock", {
+      await api("/api/forge/vaults/" + encodeURIComponent(target) + "/unlock", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ passphrase: $("forge-vault-pass").value })
       });
       $("forge-vault-pass").value = "";
-      $("forge-vault-error").textContent = "";
+      if (other) {
+        scrubVaultViews();
+        forgetOpenVault();
+      }
+      closeSheet();
       await refreshVault();
+      const opened = quoted(vaultName(vaultById(target)));
+      vaultsNote(other ? quoted(vaultSafeName(other)) + " est verrouillé. " + opened + " est ouvert." : opened + " est ouvert.");
+      if (window.hqForgeOnVaultOpened) window.hqForgeOnVaultOpened(target);
     } catch (error) {
       $("forge-vault-pass").value = "";
       $("forge-vault-error").textContent = error.message || "Phrase refusée.";
     }
   });
+  $("forge-vault-unlock-cancel").addEventListener("click", closeSheet);
   $("forge-vault-back").addEventListener("click", () => {
     const normal = document.querySelector('input[name="forge-destination"][value="normal"]');
     if (!normal.checked) {
@@ -926,22 +1122,12 @@
       if (document.visibilityState === "hidden" && vaultState.unlocked) lockVault().catch(() => {});
     }, AWAY_MS);
   });
-  $("forge-vault-backup").addEventListener("click", async () => {
-    const response = await fetch("/api/forge/vault/backup", { credentials: "same-origin", cache: "no-store" });
-    if (!response.ok) return;
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "coffre-chiffre.zip";
-    link.click();
-    URL.revokeObjectURL(url);
-  });
   $("forge-vault-import").addEventListener("change", async () => {
     const file = $("forge-vault-import").files && $("forge-vault-import").files[0];
     $("forge-vault-import").value = "";
     if (!file) return;
     try {
-      await api("/api/forge/vault/import", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+      await api(vaultBase() + "/import", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
       await loadVaultGallery();
     } catch (error) {
       statusEl.textContent = error.message || "Import impossible.";
@@ -950,7 +1136,7 @@
   $("forge-vault-rotate").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      await api("/api/forge/vault/passphrase", {
+      await api(vaultBase() + "/passphrase", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -970,7 +1156,7 @@
   $("forge-vault-rekey").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      const payload = await api("/api/forge/vault/recovery", {
+      const payload = await api(vaultBase() + "/recovery", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ passphrase: $("forge-vault-rekey-pass").value })
@@ -1017,7 +1203,9 @@
     applySettings,
     loadGallery: () => loadGallery(true),
     loadVault: () => loadVaultGallery(),
-    vaultUnlocked: () => !!vaultState.unlocked,
+    vaultUnlocked: () => !!vaultState.unlocked && !!openVid,
+    vaultBase: () => vaultBase(),
+    openVault: () => openVid,
     trackPrivateUrl: (url) => privateUrls.add(url),
     /* Laboratoire "Appliquer ces r\u00e9glages": technical fields only (never the prompt or the
        negative prompt). Returns what changed and what this HQ cannot apply, so nothing is silent. */
@@ -1165,8 +1353,8 @@
 
   async function openPrivate(id, from) {
     openFrom = from || document.activeElement;
-    privateDetail = await api("/api/forge/vault/images/" + id);
-    const response = await fetch("/api/forge/vault/images/" + id + "/original", { credentials: "same-origin", cache: "no-store" });
+    privateDetail = await api(vaultBase() + "/images/" + id);
+    const response = await fetch(vaultBase() + "/images/" + id + "/original", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("locked");
     const privateBlob = await response.blob();
     const url = URL.createObjectURL(privateBlob);
@@ -1205,7 +1393,7 @@
     if (!privateDetail) return;
     // Private exports carry no prompt text unless the owner ticks the box for this one export.
     const withParams = $("forge-vault-params") && $("forge-vault-params").checked;
-    const response = await fetch("/api/forge/vault/images/" + privateDetail.id + "/original" + (withParams ? "?parameters=1" : ""), { credentials: "same-origin", cache: "no-store" });
+    const response = await fetch(vaultBase() + "/images/" + privateDetail.id + "/original" + (withParams ? "?parameters=1" : ""), { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) return;
     const url = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");
@@ -1222,7 +1410,7 @@
   });
   $("forge-vault-delete").addEventListener("click", async () => {
     if (!privateDetail || !window.confirm("Supprimer cette image du coffre ?")) return;
-    await api("/api/forge/vault/images/" + privateDetail.id + "/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    await api(vaultBase() + "/images/" + privateDetail.id + "/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     privateDetail = null;
     closePrivate();
     loadVaultGallery().catch(() => {});
@@ -3029,5 +3217,6 @@
     if (deviceDialog && deviceDialog.open) deviceDialog.close();
     if (viewer.open) viewer.close();
     clearPrivateUi();
+    closeSheet();
   };
 })();

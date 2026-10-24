@@ -151,7 +151,8 @@
 
   function open(kind, viewerImg, settings) {
     if (!viewerImg || !viewerImg.src || !viewerImg.naturalWidth) return;
-    source = { kind, id: kind === "private" ? currentPrivate : currentNormal };
+    /* Multi-vault V4: a private retouch names the vault that is open now; switching vault closes this dialog. */
+    source = { kind, id: kind === "private" ? currentPrivate : currentNormal, vault: kind === "private" && H.openVault ? H.openVault() : null };
     if (!source.id) return;
     img.src = viewerImg.src;
     canvas.width = viewerImg.naturalWidth;
@@ -228,7 +229,7 @@
     note.textContent = "Envoi \u00e0 Forge (ce PC)\u2026";
     const kind = source.kind;
     let body = {
-      source: { kind, id: source.id },
+      source: kind === "private" ? { kind, id: source.id, vault: source.vault } : { kind, id: source.id },
       mask: maskDataUrl(),
       prompt: prompt.value,
       denoising_strength: Number(denoise.value),

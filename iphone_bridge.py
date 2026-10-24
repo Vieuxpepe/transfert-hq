@@ -5235,14 +5235,37 @@ def render_app() -> bytes:
             <p id="forge-vault-lead">Un chiffrement séparé protège ces images. Le PIN HQ ne les déverrouille pas.</p>
           </div>
         </div>
+        <div id="forge-vaults" class="forge-vaults" hidden>
+          <div class="forge-vaults-head">
+            <h3 id="forge-vaults-title" class="forge-vault-sub">Mes coffres</h3>
+            <button type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
+          </div>
+          <p id="forge-vaults-note" class="forge-note" role="status" aria-live="polite"></p>
+          <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
+          <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
+        </div>
         <p id="forge-private-note" class="forge-note">La génération privée reste désactivée tant que cette installation de Forge n'a pas prouvé qu'elle n'écrit pas de copie en clair.</p>
-        <form id="forge-vault-setup" hidden>
+        <form id="forge-vault-setup" class="forge-vault-create" hidden>
+          <div class="forge-vault-create-head"><span id="forge-vault-create-tile" class="forge-vault-tile" data-colour="ardoise" aria-hidden="true"></span><h3 class="forge-vault-sub">Nouveau coffre</h3></div>
+          <div class="field"><label for="forge-vault-label">Nom du coffre</label><input id="forge-vault-label" type="text" maxlength="40" autocomplete="off" autocapitalize="sentences" spellcheck="false" required/></div>
+          <p id="forge-vault-label-warn" class="forge-note forge-vault-warn" role="note"></p>
+          <label class="forge-privacy-ack" for="forge-vault-discret"><input type="checkbox" id="forge-vault-discret"/> Discret : verrouillé, seul un numéro s'affiche</label>
+          <div class="forge-vault-picks">
+            <div class="field"><label for="forge-vault-glyph">Symbole</label><select id="forge-vault-glyph"></select></div>
+            <div class="field"><label for="forge-vault-colour">Couleur</label><select id="forge-vault-colour"></select></div>
+          </div>
           <div class="field"><label for="forge-vault-new">Phrase du coffre</label><input id="forge-vault-new" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
           <div class="field"><label for="forge-vault-confirm">Confirmation</label><input id="forge-vault-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
-          <p class="forge-note">Au moins 12 caractères, et pas seulement des chiffres.</p>
-          <button type="submit" id="forge-vault-create">Créer le coffre</button>
+          <p class="forge-note">Au moins 12 caractères, et pas seulement des chiffres. Une clé de récupération s'affichera une seule fois.</p>
+          <div class="forge-actions">
+            <button type="submit" id="forge-vault-create">Créer le coffre</button>
+            <button type="button" class="secondary" id="forge-vault-create-cancel">Annuler</button>
+          </div>
+          <p id="forge-vault-create-error" class="forge-note" role="alert"></p>
         </form>
-        <form id="forge-vault-unlock" hidden>
+        <form id="forge-vault-unlock" class="forge-vault-sheet" hidden>
+          <p id="forge-vault-unlock-for" class="forge-vault-sub"></p>
+          <p id="forge-vault-switch-note" class="forge-note" role="status" hidden></p>
           <div class="field">
             <label for="forge-vault-pass">Phrase du coffre</label>
             <input id="forge-vault-pass" type="password" maxlength="128" autocomplete="current-password" required/>
@@ -5250,6 +5273,7 @@ def render_app() -> bytes:
           <div class="forge-actions">
             <button type="button" id="forge-vault-reveal" aria-pressed="false">Afficher</button>
             <button type="submit" id="forge-vault-open">Déverrouiller</button>
+            <button type="button" class="secondary" id="forge-vault-unlock-cancel">Annuler</button>
           </div>
           <p id="forge-vault-error" class="forge-note" role="alert"></p>
           <button type="button" class="secondary" id="forge-vault-back">Retour à la galerie</button>
@@ -5268,7 +5292,6 @@ def render_app() -> bytes:
           </div>
           <div class="forge-actions">
             <button type="button" id="forge-vault-lock" class="secondary">Verrouiller le coffre</button>
-            <button type="button" id="forge-vault-backup" class="secondary">Sauvegarde chiffrée</button>
             <label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label>
           </div>
           <details>

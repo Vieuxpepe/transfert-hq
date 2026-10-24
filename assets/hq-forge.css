@@ -550,3 +550,34 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 #forge-studio.is-couch .forge-tool,#forge-studio.is-couch .forge-brick button,#forge-studio.is-couch .forge-couch-toggle{min-height:56px}
 #forge-studio.is-couch .forge-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,160px),1fr));gap:12px}
 #forge-studio.is-couch .forge-couch-toggle{border-color:var(--forge-accent)}
+
+/* Multi-vault V4: "Mes coffres". Two columns from 375 px, 44 px targets, nothing hover-only.
+   Tile colours are dark enough for white text (V5 adds the checked palette). */
+.forge-vaults{display:flex;flex-direction:column;gap:8px}
+.forge-vaults-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.forge-vaults-head button{min-height:var(--tap-min)}
+.forge-vault-sub{margin:0;font-size:1.05rem;font-weight:800}
+.forge-vaults-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.forge-vault-card{width:100%;min-height:calc(var(--tap-min) * 2);display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:10px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.forge-vault-card[data-open=true]{border-color:var(--forge-accent);box-shadow:inset 0 0 0 1px var(--forge-accent)}
+.forge-vault-card-name{font-weight:700;overflow-wrap:anywhere;min-width:0;max-width:100%}
+.forge-vault-card-state{font-size:var(--text-sm)}
+.forge-vault-tile{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:44px;height:44px;border-radius:10px;color:#fff;font-size:1.35rem;line-height:1;background:#3d4a5c}
+.forge-vault-tile[data-colour=ardoise]{background:#3d4a5c}
+.forge-vault-tile[data-colour=bleu]{background:#1f5fae}
+.forge-vault-tile[data-colour=sarcelle]{background:#0d6666}
+.forge-vault-tile[data-colour=vert]{background:#2b6e2f}
+.forge-vault-tile[data-colour=olive]{background:#55601b}
+.forge-vault-tile[data-colour=ambre]{background:#7d5200}
+.forge-vault-tile[data-colour=orange]{background:#a64200}
+.forge-vault-tile[data-colour=rouge]{background:#b3261e}
+.forge-vault-tile[data-colour=rose]{background:#a32d65}
+.forge-vault-tile[data-colour=violet]{background:#6a3fa0}
+.forge-vault-create,.forge-vault-sheet{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
+.forge-vault-create-head{display:flex;align-items:center;gap:10px}
+.forge-vault-picks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.forge-vault-create select,.forge-vault-create input[type=text],.forge-vault-sheet input{min-height:var(--tap-min);font-size:16px;width:100%;box-sizing:border-box}
+.forge-vault-create .forge-privacy-ack{min-height:var(--tap-min);display:flex;align-items:center;gap:8px}
+.forge-vault-create .forge-privacy-ack input{width:22px;height:22px;flex:0 0 auto}
+.forge-vault-warn{font-weight:600}
+#forge-vault-create-cancel,#forge-vault-unlock-cancel,#forge-vault-reveal{min-height:var(--tap-min)}

@@ -22,10 +22,10 @@
   let blobUrl = "";
 
   function base(kind) {
-    return kind === "private" ? "/api/forge/vault/images/" : "/api/forge/gallery/";
+    return kind === "private" ? H.vaultBase() + "/images/" : "/api/forge/gallery/";
   }
   function listPath(kind, view) {
-    return (kind === "private" ? "/api/forge/vault/gallery" : "/api/forge/gallery") + "?limit=96&view=" + view;
+    return (kind === "private" ? H.vaultBase() + "/gallery" : "/api/forge/gallery") + "?limit=96&view=" + view;
   }
   function dropBlob() {
     if (blobUrl) URL.revokeObjectURL(blobUrl);
