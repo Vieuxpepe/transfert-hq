@@ -56,7 +56,7 @@
   apply.addEventListener("click", () => {
     if (!style || !style.enough) return;
     const s = style.style;
-    const out = H.applyTechnical({
+    const values = {
       sampler_name: s.sampler_name && s.sampler_name.value,
       scheduler: s.scheduler && s.scheduler.value,
       width: s.size && s.size.value.width,
@@ -64,7 +64,9 @@
       steps: s.steps && s.steps.value,
       cfg_scale: s.cfg_scale && s.cfg_scale.value
       /* no checkpoint: the model is never changed */
-    });
+    };
+    const out = H.applyTechnical(values);
+    if (H.noteHouseStyle) H.noteHouseStyle(values);  // the finished image gets the soft ripple while these settings stay
     done.textContent = (out.done.length ? "Rempli : " + out.done.join(", ") + ". " : "") +
       (out.missing.length ? "Absent de ce Forge : " + out.missing.join(", ") + ". " : "") + "Rien n'est lanc\u00e9.";
   });

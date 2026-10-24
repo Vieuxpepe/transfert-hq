@@ -1,5 +1,5 @@
 """Forge Studio result reveal: a finished image is centered on screen (once per submit, never while the
-user is busy), plays a short reveal, and reduced motion gets no animation and an instant scroll.
+user is busy), plays a scan-line reveal (plus a soft ripple when the house style was used), and reduced motion gets no animation and an instant scroll.
 Normal, private (throwaway vault) and fleet batch. Mock Forge only.
 
 No GPU, no real Forge, no production port, throwaway data and vault folders (never the real vault).
@@ -16,6 +16,7 @@ from playwright.sync_api import sync_playwright
 
 from visual_forge_quick_wins_playwright import PROD_PORTS, STORAGE_PROBE, Run, start_server
 from visual_forge_multivault_playwright import create, to_private
+from visual_forge_j_playwright import KEEP_ALL
 
 PASS = "synthetic reveal phrase"
 
@@ -34,7 +35,9 @@ CARD_GEO = """(sel) => { const n = document.querySelector(sel); if (!n) return n
   const tops = [nav, bar].filter((x) => x && x.offsetParent !== null).map((x) => x.getBoundingClientRect().top).filter((t) => t > innerHeight / 2);
   const floor = tops.length ? Math.min(...tops) : innerHeight;
   return { top: r.top, bottom: r.bottom, mid: (r.top + r.bottom) / 2, vh: innerHeight, floor, y: scrollY,
-    cls: n.className, anim: getComputedStyle(n).animationName, ring: getComputedStyle(n, '::after').animationName,
+    cls: n.className, anim: getComputedStyle(n.querySelector('img')).animationName, line: getComputedStyle(n, '::before').animationName,
+    ring: getComputedStyle(n, '::after').animationName, card: getComputedStyle(n).animationName,
+    clip: getComputedStyle(n.querySelector('img')).clipPath,
     see: !document.querySelector('#forge-see-result').hidden }; }"""
 
 
@@ -66,9 +69,12 @@ def section_normal(run: Run) -> None:
     run.open_forge(page)
     page.locator("#forge-prompt").fill("phare au crepuscule")
     g = generate(run, page, "#forge-results .forge-card")
-    run.check("forge-reveal" in g["cls"] and g["anim"] == "forge-reveal", f"the new card carries the reveal class and animation ({g['anim']})")
-    run.check(g["ring"] == "forge-reveal-ring", "a one-shot accent ring marks completion")
-    run.shot(page, "reveal-375-during")
+    run.check("forge-reveal" in g["cls"] and g["anim"] == "forge-scan" and g["line"] == "forge-scan-line", f"the new card plays the scan-line reveal ({g['anim']}, {g['line']})")
+    run.check(g["ring"] == "forge-reveal-ring" and "forge-reveal-celebrate" not in g["cls"] and g["card"] in ("none", ""), "without the house style: completion ring, no ripple")
+    page.wait_for_timeout(250)
+    mid = page.evaluate("() => { const i = document.querySelector('#forge-results .forge-card img'); return [getComputedStyle(i).clipPath, parseFloat(getComputedStyle(i.parentElement, '::before').top), i.parentElement.getBoundingClientRect().height]; }")
+    run.check(mid[0].startswith("inset(") and mid[0] != "inset(0px)" and 0 < mid[1] < mid[2], f"mid-scan: the image is partly uncovered and the line is inside the card {mid}")
+    run.shot(page, "reveal-375-mid-scan")
     page.wait_for_timeout(1200)
     g = page.evaluate(CARD_GEO, "#forge-results .forge-card")
     s = page.evaluate("() => window.__scrolls")
@@ -106,7 +112,8 @@ def section_reduced(run: Run) -> None:
     run.open_forge(page)
     page.locator("#forge-prompt").fill("phare calme")
     g = generate(run, page, "#forge-results .forge-card")
-    run.check(g["anim"] in ("none", "") and g["ring"] in ("none", ""), f"reduced motion: no reveal animation ({g['anim']}, {g['ring']})")
+    run.check(all(g[k] in ("none", "") for k in ("anim", "line", "ring", "card")), f"reduced motion: no scan, line, ring or ripple ({g['anim']}, {g['line']}, {g['ring']}, {g['card']})")
+    run.check(g["clip"] in ("none", ""), "reduced motion: the image is never clipped")
     s = page.evaluate("() => window.__scrolls")
     run.check(len(s) == 1 and s[0]["opts"]["behavior"] == "auto" and s[0]["opts"]["block"] == "center", f"reduced motion: the scroll is instant {s}")
     g = page.evaluate(CARD_GEO, "#forge-results .forge-card")
@@ -133,7 +140,7 @@ def section_private(run: Run) -> None:
     page.locator("#forge-prompt").fill("phare secret")
     run.until(page, "() => !document.querySelector('#forge-generate-private').disabled", 15)
     g = generate(run, page, "#forge-vault-gallery .forge-card", "#forge-generate-private")
-    run.check("forge-reveal" in g["cls"] and g["anim"] == "forge-reveal", "the new vault card plays the reveal")
+    run.check("forge-reveal" in g["cls"] and g["anim"] == "forge-scan" and "forge-reveal-celebrate" not in g["cls"], "the new vault card plays the scan-line reveal, no ripple without the house style")
     page.wait_for_timeout(1200)
     g = page.evaluate(CARD_GEO, "#forge-vault-gallery .forge-card")
     s = page.evaluate("() => window.__scrolls")
@@ -181,7 +188,68 @@ def section_batch(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"normal": section_normal, "reduced": section_reduced, "private": section_private, "batch": section_batch}
+
+def apply_house_style(run: Run, page) -> None:
+    page.locator("#forge-style > summary").click()
+    run.until(page, "() => !document.querySelector('#forge-style-apply').hidden", 10)
+    page.locator("#forge-style-apply").click()
+    run.until(page, "() => /Rien n'est lanc/.test(document.querySelector('#forge-style-done').textContent)", 5)
+    page.locator("#forge-style > summary").click()
+
+
+def section_ripple(run: Run) -> None:
+    print("R5 soft ripple: only when the house style was applied, normal and private")
+    ctx = run.context(SCROLL_SPY, 375, 667)
+    page = ctx.new_page()
+    run.open_forge(page)
+    for i in range(5):
+        page.locator("#forge-prompt").fill(f"phare garde {i}")
+        generate(run, page, "#forge-results .forge-card")
+        run.until(page, "() => !document.querySelector('#forge-generate').disabled", 15)
+    run.check(page.evaluate(KEEP_ALL) >= 5, "five kept images give a house style")
+    page.locator("#forge-steps").fill("9")
+    page.locator("#forge-steps").dispatch_event("change")
+    apply_house_style(run, page)
+    page.locator("#forge-prompt").fill("phare maison")
+    g = generate(run, page, "#forge-results .forge-card")
+    run.check("forge-reveal-celebrate" in g["cls"] and g["anim"] == "forge-scan", "house style applied: scan line, then the ripple class")
+    page.wait_for_timeout(1000)
+    g = page.evaluate(CARD_GEO, "#forge-results .forge-card")
+    run.check(g["card"] == "forge-ripple-out" and g["ring"] == "forge-ripple-in", f"the ripple plays after the scan ({g['card']}, {g['ring']})")
+    run.shot(page, "reveal-375-ripple")
+    page.wait_for_timeout(2500)
+    run.check(page.evaluate("() => getComputedStyle(document.querySelector('#forge-results .forge-card')).outlineStyle") in ("none", "solid") and page.evaluate("() => getComputedStyle(document.querySelector('#forge-results .forge-card')).outlineColor") in ("rgba(0, 0, 0, 0)", "transparent") or page.evaluate("() => getComputedStyle(document.querySelector('#forge-results .forge-card')).outlineStyle") == "none", "after the ripple no outline lingers")
+    page.locator("#forge-steps").fill("13")
+    page.locator("#forge-steps").dispatch_event("change")
+    page.locator("#forge-prompt").fill("phare change")
+    g = generate(run, page, "#forge-results .forge-card")
+    run.check("forge-reveal-celebrate" not in g["cls"], "settings changed after applying: no ripple")
+    run.until(page, "() => !document.querySelector('#forge-generate').disabled", 15)
+
+    to_private(run, page)
+    create(run, page, "Atelier", PASS)
+    vid = page.request.get(run.base + "/api/forge/vaults").json()["vaults"][0]["id"]
+    page.locator("#forge-private-target").select_option(vid)
+    if run.until(page, "() => !document.querySelector('#forge-vault-unlock').hidden", 3):
+        page.locator("#forge-vault-pass").fill(PASS)
+        page.locator("#forge-vault-open").click()
+    run.until(page, "() => !document.querySelector('#forge-vault-open-tools').hidden", 10)
+    apply_house_style(run, page)
+    page.locator("#forge-prompt").fill("phare maison secret")
+    run.until(page, "() => !document.querySelector('#forge-generate-private').disabled", 15)
+    g = generate(run, page, "#forge-vault-gallery .forge-card", "#forge-generate-private")
+    run.check("forge-reveal-celebrate" in g["cls"] and g["anim"] == "forge-scan", "private + house style: scan line and ripple on the vault card")
+    image_id = page.evaluate("() => document.querySelector('#forge-vault-gallery .forge-card').dataset.id")
+    hits = [h for h in page.evaluate(STORAGE_PROBE, image_id) if not h.endswith(":hqForgeDraft")]
+    run.check(hits == [] and page.evaluate("() => Object.keys(localStorage).concat(Object.keys(sessionStorage)).filter((k) => /house|style|celebr/i.test(k))") == [], f"nothing about the private image or the ripple is stored {hits}")
+    page.emulate_media(reduced_motion="reduce")
+    page.wait_for_timeout(100)
+    g = page.evaluate(CARD_GEO, "#forge-vault-gallery .forge-card")
+    run.check(g["card"] in ("none", "") and g["ring"] in ("none", ""), "reduced motion: no ripple")
+    ctx.close()
+
+
+SECTIONS = {"normal": section_normal, "reduced": section_reduced, "private": section_private, "batch": section_batch, "ripple": section_ripple}
 
 
 def main() -> None:

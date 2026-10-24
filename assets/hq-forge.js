@@ -35,6 +35,19 @@
   let submitGuard = false;
   let justSubmitted = false;
   let revealCentered = false; // this submit already centered a finished result: later batch results only animate
+  // Soft ripple trigger: the house style (phase J3) was applied and the submitted settings still match it.
+  // A new image cannot be a favourite yet (triage is set later), so the house style is the honest signal.
+  let houseApplied = null; // in memory only, never stored
+  let celebrateSubmit = false;
+  function houseInUse() {
+    const s = houseApplied;
+    if (!s) return false;
+    const same = (a, b) => a === undefined || a === null || a === "" || String(a) === String(b) || Number(a) === Number(b);
+    const used = ["sampler_name", "scheduler", "width", "height", "steps", "cfg_scale"].filter((k) => s[k] !== undefined && s[k] !== null && s[k] !== "");
+    if (!used.length) return false;
+    return same(s.sampler_name, samplerEl.value) && same(s.scheduler, schedulerEl.value) && same(s.width, $("forge-width").value) &&
+      same(s.height, $("forge-height").value) && same(s.steps, $("forge-steps").value) && same(s.cfg_scale, $("forge-cfg").value);
+  }
   let resultIntent = false; // the user typed, changed a setting, focused a field or scrolled since the last submit
   let cursor = null;
   let openFrom = null;
@@ -649,7 +662,7 @@
     progressBox.hidden = false;
     progressLabel.textContent = "Envoi privé…";
     // The finished vault image is centered and revealed like a normal one (nothing is stored for it).
-    justSubmitted = true; revealCentered = false;
+    justSubmitted = true; revealCentered = false; celebrateSubmit = houseInUse();
     resultIntent = false;
     hideSeeResult();
     try {
@@ -1380,6 +1393,7 @@
     trackPrivateUrl: (url) => privateUrls.add(url),
     /* Laboratoire "Appliquer ces r\u00e9glages": technical fields only (never the prompt or the
        negative prompt). Returns what changed and what this HQ cannot apply, so nothing is silent. */
+    noteHouseStyle: (s) => { houseApplied = s ? Object.assign({}, s) : null; },
     applyTechnical: (s) => {
       const done = [];
       const missing = [];
@@ -1409,7 +1423,7 @@
       return { settings, workers, privateMode: destination() === "private", samplers: [...samplerEl.options].map((o) => o.value).filter(Boolean) };
     },
     startBatch: (batch) => {
-      justSubmitted = true; revealCentered = false;
+      justSubmitted = true; revealCentered = false; celebrateSubmit = false;
       resultIntent = false;
       results.replaceChildren();
       shownBatchImages.clear();
@@ -1429,7 +1443,7 @@
     upscalers: () => [...$("forge-hr-upscaler").options].map((o) => o.value).filter((v) => v && v !== "None"),
     preferredUpscaler: () => $("forge-hr-upscaler").value,
     startJob: (job) => {
-      justSubmitted = true; revealCentered = false;
+      justSubmitted = true; revealCentered = false; celebrateSubmit = false;
       progressBox.hidden = false;
       showJob(job);
     },
@@ -1496,7 +1510,7 @@
           body: JSON.stringify(body)
         });
         if (privateMode) closePrivate(); else closeViewer();
-        justSubmitted = true; revealCentered = false;
+        justSubmitted = true; revealCentered = false; celebrateSubmit = false;
         progressBox.hidden = false;
         showJob(payload.job);
       }
@@ -2289,7 +2303,7 @@
     const snapshot = settingsFromForm();
     lastSubmitted = snapshot;
     lastApplied = { prompt: snapshot.prompt, negative: snapshot.negative_prompt };
-    justSubmitted = true; revealCentered = false;
+    justSubmitted = true; revealCentered = false; celebrateSubmit = houseInUse();
     resultIntent = false;
     hideSeeResult();
   }, true);
@@ -2467,9 +2481,10 @@
   // first result of the current submit and only if the user stayed idle, otherwise offer "Voir le r?sultat".
   function landResult(node, submitted = justSubmitted) {
     if (!node) return;
-    node.classList.remove("forge-reveal");
+    node.classList.remove("forge-reveal", "forge-reveal-celebrate");
     void node.offsetWidth;
     node.classList.add("forge-reveal");
+    if ((submitted && celebrateSubmit) || node.dataset.triage === "favorite") node.classList.add("forge-reveal-celebrate");
     if (!submitted) return;
     if (revealSeen && revealTarget) revealSeen.unobserve(revealTarget);
     revealTarget = node;
@@ -2972,7 +2987,7 @@
         body: JSON.stringify({ workers: workers, count: Number(fleetCountEl.value), settings: settings, destination: "normal" })
       });
       if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
-      justSubmitted = true; revealCentered = false;
+      justSubmitted = true; revealCentered = false; celebrateSubmit = houseInUse();
       resultIntent = false;
       results.replaceChildren();
       shownBatchImages.clear();
@@ -3157,7 +3172,7 @@
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": retryKey.key }, body: "{}"
       });
       retryKey = { batch: "", key: "" };
-      justSubmitted = true; revealCentered = false;
+      justSubmitted = true; revealCentered = false; celebrateSubmit = false;
       resultIntent = false;
       showBatch(payload.batch);
     } catch (error) {
