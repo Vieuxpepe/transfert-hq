@@ -12,6 +12,13 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+# Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 HERE = Path(__file__).resolve().parent
 SHOTS = Path(os.environ["FORGE_PRESET_SHOTS"]) if os.environ.get("FORGE_PRESET_SHOTS") else None
 if SHOTS:

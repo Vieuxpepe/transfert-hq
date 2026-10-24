@@ -15,6 +15,13 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+# Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 HERE = Path(__file__).resolve().parent
 SHOTS = Path(os.environ["FORGE_SHOTS"]) if os.environ.get("FORGE_SHOTS") else None
 if SHOTS:
@@ -225,7 +232,9 @@ def main() -> None:
             page.wait_for_function("() => (document.querySelector('#forge-status').textContent || '').includes(\"n'est pas démarré\")")
             check("lanceur API" in page.locator("#forge-status").inner_text(), "offline explains the owner launcher")
             check(page.locator("#forge-generate").is_disabled(), "generate stays disabled while Forge is stopped")
-            check("Indisponible" in page.locator("#forge-checkpoint").inner_text(), "stopped Forge does not leave a blank model menu")
+            # The status and the catalog answer separately: wait for the model menu itself, not the status line.
+            page.wait_for_function("() => (document.querySelector('#forge-checkpoint').textContent || '').includes('Indisponible')", timeout=10000)
+            check("Indisponible" in (page.locator("#forge-checkpoint").text_content() or ""), "stopped Forge does not leave a blank model menu")
 
             scripted["status"] = {"forge": "api_disabled", "code": "api_disabled", "message": "Forge est ouvert, mais son API n'est pas activée.", "model": None}
             scripted["catalog"] = {"forge": "api_disabled", "code": "api_disabled", "message": "Forge est ouvert, mais son API n'est pas activée.", "models": [], "samplers": [], "schedulers": []}
@@ -278,7 +287,8 @@ def main() -> None:
             open_forge()
             page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('échoué')")
             check(page.locator("#forge-generate").is_disabled(), "a lost connection disables generate")
-            check("Indisponible" in page.locator("#forge-checkpoint").inner_text(), "a lost connection clears the model menu")
+            page.wait_for_function("() => (document.querySelector('#forge-checkpoint').textContent || '').includes('Indisponible')", timeout=10000)
+            check("Indisponible" in (page.locator("#forge-checkpoint").text_content() or ""), "a lost connection clears the model menu")
 
             page.unroute("**/api/forge/**", abort_forge)
             open_forge()

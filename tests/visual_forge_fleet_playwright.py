@@ -21,6 +21,13 @@ from playwright.sync_api import sync_playwright
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import hq_forge_worker as W  # noqa: E402  (pairs a "new PC" from the test process for the detection step)
+
+# Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
 SHOTS = Path(os.environ["FORGE_SHOTS"]) if os.environ.get("FORGE_SHOTS") else None
 if SHOTS:
     SHOTS.mkdir(parents=True, exist_ok=True)

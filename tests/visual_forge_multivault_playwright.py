@@ -100,6 +100,7 @@ def section_cards(run: Run) -> None:
     run.check(geo["sw"] <= geo["vw"] and geo["sameRow"] and geo["minCard"] >= 44 and geo["targets"] >= 44, "at 375 px two columns, no overflow, 44 px targets: " + repr(geo))
     run.shot(page, "mv-cards", "#forge-vaults")
     unlock_card(run, page, 0, PASS)
+    run.until(page, "() => document.querySelector('#forge-vaults-note').textContent.includes('Jardin')", 10)
     run.check("\u00ab\u00a0Jardin\u00a0\u00bb est ouvert." in page.locator("#forge-vaults-note").inner_text(), "the note says which vault is open")
     run.check(page.locator("#forge-private-target").input_value() == listing(run, page)["open"], "the vault just opened becomes the destination")
     page.locator(".forge-vault-card").nth(1).click()
@@ -113,6 +114,8 @@ def section_cards(run: Run) -> None:
     page.locator("#forge-vault-pass").fill(PASS_B)
     page.locator("#forge-vault-open").click()
     run.check(run.until(page, "() => document.querySelectorAll('.forge-vault-card')[1].dataset.open === 'true'", 10), "the Discret vault opens")
+    # The card flips during the refresh; the note is written right after it. Wait for the note, not a sleep.
+    run.until(page, "() => /est verrouill/.test(document.querySelector('#forge-vaults-note').textContent)", 10)
     note = page.locator("#forge-vaults-note").inner_text()
     run.check("\u00ab\u00a0Jardin\u00a0\u00bb est verrouill\u00e9." in note and SECRET_NAME in note, "switching says the first vault was locked: " + note)
     run.check(page.evaluate("() => document.querySelectorAll('.forge-vault-card')[0].dataset.open") == "false", "only one card is open")

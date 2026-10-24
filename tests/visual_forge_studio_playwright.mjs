@@ -1,20 +1,44 @@
 // Forge Studio browser checks. Mock Forge only. No GPU and no port 7860.
 //   FORGE_SHOTS=dir node tests/visual_forge_studio_playwright.mjs
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-let chromium;
-try {
-  chromium = createRequire(import.meta.url)("playwright").chromium;
-} catch (_) {
-  console.log("SKIP: Playwright not available");
-  process.exit(0);
+// Find Playwright for Node: a local or global "playwright", PLAYWRIGHT_NODE_PATH, or the playwright-core
+// bundled with the Python package (same browsers). Nothing found: fail loudly, never a silent SKIP.
+function findPlaywright() {
+  const req = createRequire(import.meta.url);
+  const tried = [];
+  const attempt = (label, load) => {
+    try { const mod = load(); if (mod && mod.chromium) return mod; tried.push(label + ": no chromium export"); } catch (e) { tried.push(label + ": " + String(e && e.code || e)); }
+    return null;
+  };
+  let mod = attempt("playwright", () => req("playwright"));
+  if (!mod && process.env.PLAYWRIGHT_NODE_PATH) mod = attempt("PLAYWRIGHT_NODE_PATH", () => req(process.env.PLAYWRIGHT_NODE_PATH));
+  if (!mod) {
+    const npm = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["root", "-g"], { encoding: "utf8", shell: process.platform === "win32" });
+    const root = (npm.stdout || "").trim();
+    if (root) mod = attempt("npm -g", () => req(path.join(root, "playwright")));
+  }
+  if (!mod) {
+    for (const py of [process.env.PYTHON || "", "python", "python3", "py"].filter(Boolean)) {
+      const out = spawnSync(py, ["-c", "import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), 'driver', 'package'))"], { encoding: "utf8" });
+      const dir = (out.stdout || "").trim();
+      if (out.status === 0 && dir) { mod = attempt("python playwright-core", () => req(dir)); if (mod) break; }
+    }
+  }
+  if (!mod) {
+    console.error("FAIL: Playwright for Node not found (" + tried.join("; ") + "). Install it, set PLAYWRIGHT_NODE_PATH, or install the Python playwright package.");
+    process.exit(2);
+  }
+  return mod;
 }
+const browserName = process.env.FORGE_BROWSER === "webkit" ? "webkit" : "chromium";
+const chromium = findPlaywright()[browserName];  // FORGE_BROWSER=webkit runs the same checks in WebKit
 let passed = 0;
 function check(cond, msg) {
   if (!cond) throw new Error("FAIL: " + msg);
@@ -75,7 +99,7 @@ try {
   await page.locator('.bottom-nav [data-nav="forge"]').click();
   await page.locator("#forge-status").waitFor();
   await page.waitForFunction(() => /en ligne/i.test(document.querySelector("#forge-status").textContent || ""));
-  check((await page.locator("#forge-studio h1").innerText()).includes("Générer"), "forge heading");
+  check((await page.locator("#forge-studio h1").innerText()).includes("Forge Studio"), "forge heading");
   check(await page.locator("#forge-cancel-note").innerText().then((t) => t.includes("autre travail")), "cancel limitation is visible");
   const ratio = await page.evaluate(() => {
     const node = document.querySelector("#forge-status");
@@ -87,10 +111,15 @@ try {
 
   await page.locator("#forge-prompt").fill("un cercle rouge");
   await page.locator("#forge-prompt").press("Tab");
-  const landed = await page.evaluate(() => document.activeElement.getAttribute("aria-controls") || document.activeElement.id);
-  check(landed === "forge-help-checkpoint" || landed === "forge-checkpoint", "tab leaves the prompt");
-  if (landed !== "forge-checkpoint") await page.keyboard.press("Tab");
-  check(await page.evaluate(() => document.activeElement.id === "forge-checkpoint"), "tab reaches the model");
+  // The form grew since F5 (prompt tools, presets): Tab must leave the prompt for a control in the studio,
+  // and the model picker must stay reachable by keyboard.
+  check(await page.evaluate(() => document.activeElement.id !== "forge-prompt" && !!document.activeElement.closest("#forge-studio")), "tab leaves the prompt");
+  let reached = false;
+  for (let i = 0; i < 60 && !reached; i += 1) {
+    reached = await page.evaluate(() => document.activeElement.id === "forge-checkpoint");
+    if (!reached) await page.keyboard.press("Tab");
+  }
+  check(reached, "tab reaches the model");
   await page.locator("#forge-generate").click();
   await page.locator("#forge-results img").waitFor({ timeout: 10000 });
   check(await page.locator("#forge-results img").count() >= 1, "result preview");
@@ -133,7 +162,7 @@ try {
   check(requests.every((url) => url.startsWith(base) || url.startsWith("data:")), "browser stays on HQ");
   check(!requests.some((url) => url.includes(":7860")), "browser does not call Forge");
   check(consoleErrors.length === 0, "no console errors: " + consoleErrors.join(" | "));
-  console.log("PASSED", passed);
+  console.log("PASSED", passed, "(" + browserName + ")");
 } finally {
   await browser.close();
   proc.stdin.end();
