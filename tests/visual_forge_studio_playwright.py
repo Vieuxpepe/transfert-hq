@@ -110,6 +110,8 @@ def main() -> None:
             page.locator("#forge-vault").wait_for()
             check("compte Windows" in page.locator("#forge-private-note").inner_text(), "private generation waits for a restricted vault")
             check(page.locator("#forge-generate-private").is_disabled(), "private generate is disabled before the vault exists")
+            page.locator("#forge-vaults-new").click()
+            page.locator("#forge-vault-label").fill("Coffre test")
             page.locator("#forge-vault-new").fill("synthetic horse battery")
             page.locator("#forge-vault-confirm").fill("synthetic horse battery")
             page.locator("#forge-vault-create").click()
@@ -118,6 +120,7 @@ def main() -> None:
             if SHOTS:
                 page.screenshot(path=str(SHOTS / "forge-vault-recovery.png"), full_page=True)
             page.locator("#forge-vault-recovery-ok").click()
+            page.locator(".forge-vault-card").first.click()
             page.locator("#forge-vault-pass").wait_for()
             check("0 image" not in page.locator("#forge-vault").inner_text(), "locked vault hides inventory")
             page.locator("#forge-vault-pass").fill("synthetic horse battery")
@@ -125,17 +128,18 @@ def main() -> None:
             page.locator("#forge-vault-lock").wait_for()
             check(page.locator("#forge-generate-private").is_enabled(), "private generate enables once the vault is restricted")
             image = page.request.post(
-                base + "/api/forge/vault/import",
+                base + "/api/forge/vaults/" + page.evaluate("() => window.hqForgeHooks.openVault()") + "/import",
                 data=_png_bytes(),
                 headers={"origin": base, "content-type": "application/octet-stream"},
             )
             check(image.status == 201, "private import is accepted while unlocked")
             image_id = image.json()["id"]
-            opened = page.request.get(base + "/api/forge/vault/images/" + image_id + "/thumb")
+            vid = page.evaluate("() => window.hqForgeHooks.openVault()")
+            opened = page.request.get(base + "/api/forge/vaults/" + vid + "/images/" + image_id + "/thumb")
             check(opened.status == 200 and "no-store" in opened.headers.get("cache-control", ""), "private thumb is not cached")
             page.locator("#forge-vault-lock").click()
-            page.locator("#forge-vault-pass").wait_for()
-            closed = page.request.get(base + "/api/forge/vault/images/" + image_id + "/thumb")
+            page.locator("#forge-vault-open-tools").wait_for(state="hidden")
+            closed = page.request.get(base + "/api/forge/vaults/" + vid + "/images/" + image_id + "/thumb")
             check(closed.status == 401, "private thumb is refused after lock")
             page.locator('input[name="forge-destination"][value="normal"]').check()
             check("autre travail" in page.locator("#forge-cancel-note").inner_text(), "cancel limitation is visible")
@@ -280,6 +284,7 @@ def main() -> None:
             open_forge()
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             page.locator('input[name="forge-destination"][value="private"]').check()
+            page.locator(".forge-vault-card").first.click()
             page.locator("#forge-vault-pass").fill("synthetic horse battery")
             page.locator("#forge-vault-open").click()
             page.locator("#forge-vault-lock").wait_for()
@@ -292,7 +297,7 @@ def main() -> None:
                 if (target.includes('/api/forge/status') || target.includes('/api/forge/catalog')) {
                   return Promise.reject(new TypeError('Failed to fetch'));
                 }
-                if (target.includes('/api/forge/vault/status')) return new Promise(() => {});
+                if (target.includes('/api/forge/vaults')) return new Promise(() => {});
                 return original(url, options);
               };
               window.hqForgeShow();

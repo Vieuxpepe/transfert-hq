@@ -296,10 +296,13 @@ def main() -> None:
             SECRET = "secret-coffre-qq7"
             page.locator('input[name="forge-destination"][value="private"]').check()
             page.locator("#forge-vault").wait_for()
+            page.locator("#forge-vaults-new").click()
+            page.locator("#forge-vault-label").fill("Coffre test")
             page.locator("#forge-vault-new").fill("synthetic horse battery")
             page.locator("#forge-vault-confirm").fill("synthetic horse battery")
             page.locator("#forge-vault-create").click()
             page.locator("#forge-vault-recovery-ok").click()
+            page.locator(".forge-vault-card").first.click()
             page.locator("#forge-vault-pass").fill("synthetic horse battery")
             page.locator("#forge-vault-open").click()
             page.locator("#forge-vault-lock").wait_for()
@@ -340,7 +343,7 @@ def main() -> None:
             check(SECRET not in storage, "the private prompt is not in web storage")
             page.locator('input[name="forge-destination"][value="private"]').check()
             page.locator("#forge-vault-lock").click()
-            page.locator("#forge-vault-pass").wait_for()
+            page.locator("#forge-vault-open-tools").wait_for(state="hidden")
             text = page.request.get(base + "/api/forge/jobs").text()
             check(SECRET not in text, "job list never contains the private prompt (vault locked)")
             page.locator('input[name="forge-destination"][value="normal"]').check()
@@ -435,13 +438,14 @@ def main() -> None:
 
             # D: vault lock with private text present
             to_private()
+            page.locator(".forge-vault-card").first.click()
             page.locator("#forge-vault-pass").fill("synthetic horse battery")
             page.locator("#forge-vault-open").click()
             page.locator("#forge-vault-lock").wait_for()
             page.locator("#forge-prompt").fill("fuite-D-e410")
             page.wait_for_timeout(900)
             page.locator("#forge-vault-lock").click()
-            page.locator("#forge-vault-pass").wait_for()
+            page.locator("#forge-vault-open-tools").wait_for(state="hidden")
             leak_checks("fuite-D-e410", "vault lock with private text")
             check(page.locator("#forge-vault-gallery img").count() == 0, "vault lock removes decrypted thumbnails")
             if LEAK_SHOTS:

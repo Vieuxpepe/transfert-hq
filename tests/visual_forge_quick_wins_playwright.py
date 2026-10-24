@@ -276,23 +276,32 @@ def _png_bytes() -> bytes:
 
 
 def open_vault(run: Run, page) -> None:
-    """Create and unlock a throwaway vault through the UI, then import one synthetic image."""
+    """Create (the first time) and unlock a throwaway vault through Mes coffres (V4); it becomes the destination."""
     run.dest(page, "private")
     page.locator("#forge-vault").wait_for()
-    if page.locator("#forge-vault-new").is_visible():
+    run.until(page, "() => !document.querySelector('#forge-vaults').hidden", 10)
+    if page.locator(".forge-vault-card").count() == 0:
+        page.locator("#forge-vaults-new").click()
+        page.locator("#forge-vault-label").fill("Coffre test")
         page.locator("#forge-vault-new").fill(PASSPHRASE)
         page.locator("#forge-vault-confirm").fill(PASSPHRASE)
         page.locator("#forge-vault-create").click()
         page.locator("#forge-vault-recovery-key").wait_for()
         page.locator("#forge-vault-recovery-ok").click()
+        run.until(page, "() => document.querySelectorAll('.forge-vault-card').length > 0", 10)
+    page.locator(".forge-vault-card").first.click()
     page.locator("#forge-vault-pass").wait_for()
     page.locator("#forge-vault-pass").fill(PASSPHRASE)
     page.locator("#forge-vault-open").click()
     page.locator("#forge-vault-lock").wait_for()
 
 
+def open_vid(page) -> str:
+    return page.evaluate("() => window.hqForgeHooks.openVault()")
+
+
 def import_private(run: Run, page) -> None:
-    image = page.request.post(run.base + "/api/forge/vault/import", data=_png_bytes(),
+    image = page.request.post(run.base + "/api/forge/vaults/" + open_vid(page) + "/import", data=_png_bytes(),
                               headers={"origin": run.base, "content-type": "application/octet-stream"})
     run.check(image.status == 201, "a synthetic private image is imported")
     page.evaluate("() => { document.querySelector('input[name=\\'forge-destination\\'][value=\\'normal\\']').click(); }")
@@ -394,7 +403,7 @@ def section_away(run: Run) -> None:
     run.open_forge(page)
     open_vault(run, page)
     import_private(run, page)
-    unlocked = lambda: page.request.get(run.base + "/api/forge/vault/status").json().get("unlocked")
+    unlocked = lambda: page.request.get(run.base + "/api/forge/vaults").json().get("open") is not None
     run.check(not page.locator("#forge-vault-away").is_checked(), "Verrouiller en quittant l'app is off by default")
     run.shot(page, "vault-away", "#forge-vault-open-tools")
     page.evaluate("() => window.__setVisibility('hidden')")
@@ -412,7 +421,7 @@ def section_away(run: Run) -> None:
     run.check(unlocked() is True, "coming back within 30 s cancels the lock")
     page.evaluate("() => window.__setVisibility('hidden')")
     page.clock.fast_forward(31_000)
-    run.check(run.until(page, "() => !document.querySelector('#forge-vault-unlock').hidden", 5), "after 30 s hidden the vault UI is locked")
+    run.check(run.until(page, "() => document.querySelector('#forge-vault-open-tools').hidden && !document.querySelector('.forge-vault-card[data-open=true]')", 5), "after 30 s hidden the vault UI is locked")
     run.check(unlocked() is False, "the server session is locked too")
     run.check(page.locator("#forge-vault-gallery .forge-card").count() == 0, "the private thumbnail shown before is cleared")
     run.check(page.evaluate("() => [...document.querySelectorAll('img')].filter((i) => (i.getAttribute('src') || '').startsWith('blob:')).length") == 0, "no decrypted blob image stays in the DOM")
@@ -424,7 +433,7 @@ def section_away(run: Run) -> None:
     now = page.evaluate("() => Date.now()")
     page.clock.set_system_time(now + 45_000)  # wall clock moves, no timer fires
     page.evaluate("() => window.__setVisibility('visible')")
-    run.check(run.until(page, "() => !document.querySelector('#forge-vault-unlock').hidden", 5), "returning after 45 s with frozen timers still locks")
+    run.check(run.until(page, "() => document.querySelector('#forge-vault-open-tools').hidden && !document.querySelector('.forge-vault-card[data-open=true]')", 5), "returning after 45 s with frozen timers still locks")
     run.check(unlocked() is False, "the server session is locked on return too")
     ctx.close()
 

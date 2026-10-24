@@ -105,10 +105,11 @@ def section_vault_search(run: Run) -> None:
     run.check(urls and not any("lucioles" in u for u in urls), "search words never travel in a URL")
     hits = [h for w in ("lucioles", "Jardin secret") for h in page.evaluate(STORAGE_PROBE, w)]
     run.check(hits == [], "no tag, collection or search word in browser storage: " + repr(hits))
+    vid = page.evaluate("() => window.hqForgeHooks.openVault()")
     page.locator("#forge-vault-lock").click()
     run.check(run.until(page, "() => document.querySelector('#forge-vault-q').value === '' && !document.querySelectorAll('.forge-vault-chip').length && !document.querySelectorAll('#forge-vault-gallery .forge-card').length", 5),
               "locking wipes the search, chips and results from the page")
-    status = page.evaluate("async () => (await fetch('/api/forge/vault/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: 'lucioles' }) })).status")
+    status = page.evaluate("async (vid) => (await fetch('/api/forge/vaults/' + vid + '/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: 'lucioles' }) })).status", vid)
     run.check(status == 401, "a locked vault refuses the search: " + repr(status))
     ctx.close()
 
