@@ -34,6 +34,7 @@
   let idleTimer = 0;
   let submitGuard = false;
   let justSubmitted = false;
+  let revealCentered = false; // this submit already centered a finished result: later batch results only animate
   let resultIntent = false; // the user typed, changed a setting, focused a field or scrolled since the last submit
   let cursor = null;
   let openFrom = null;
@@ -453,7 +454,15 @@
       const eta = active ? etaCopy(job.eta) : "";
       progressLabel.textContent = (job.message || job.state || "") + (eta ? " \u00b7 " + eta : "");
       if (job.destination === "private") {
-        if (job.state === "completed" && vaultState.unlocked) refreshVault().catch(() => {});
+        if (job.state === "completed" && vaultState.unlocked) {
+          const submitted = justSubmitted;
+          const ids = (job.images || []).map((image) => String(image && image.id || "")).filter(Boolean);
+          refreshVault().then(() => {
+            if (destination() !== "private") return;
+            const node = [...vaultGallery.children].find((n) => ids.includes(n.dataset.id)) || vaultGallery.firstElementChild;
+            landResult(node, submitted);
+          }).catch(() => {});
+        }
       } else if (job.images && job.images.length) {
         results.replaceChildren();
         job.images.forEach((image) => results.appendChild(card({ id: image.id, thumb: "/api/forge/gallery/" + image.id + "/thumb" })));
@@ -482,11 +491,7 @@
       if (payload.job.state === "completed" && payload.job.destination !== "private") {
         loadGallery(true).catch(() => {});
         queueUsual();
-        if (justSubmitted && window.matchMedia && window.matchMedia("(max-width: 899px)").matches) {
-          // The user moved on while it rendered: do not yank the page, offer the jump instead.
-          if (resultIntent) showSeeResult();
-          else scrollToResult();
-        }
+        landResult(results.firstElementChild);
       }
       if (payload.job.state !== "queued" && !["starting", "generating", "saving"].includes(payload.job.state)) justSubmitted = false;
     } catch (error) {
@@ -643,6 +648,10 @@
     privateBtn.disabled = true;
     progressBox.hidden = false;
     progressLabel.textContent = "Envoi privé…";
+    // The finished vault image is centered and revealed like a normal one (nothing is stored for it).
+    justSubmitted = true; revealCentered = false;
+    resultIntent = false;
+    hideSeeResult();
     try {
       const payload = await api("/api/forge/jobs", {
         method: "POST",
@@ -1400,7 +1409,7 @@
       return { settings, workers, privateMode: destination() === "private", samplers: [...samplerEl.options].map((o) => o.value).filter(Boolean) };
     },
     startBatch: (batch) => {
-      justSubmitted = true;
+      justSubmitted = true; revealCentered = false;
       resultIntent = false;
       results.replaceChildren();
       shownBatchImages.clear();
@@ -1420,7 +1429,7 @@
     upscalers: () => [...$("forge-hr-upscaler").options].map((o) => o.value).filter((v) => v && v !== "None"),
     preferredUpscaler: () => $("forge-hr-upscaler").value,
     startJob: (job) => {
-      justSubmitted = true;
+      justSubmitted = true; revealCentered = false;
       progressBox.hidden = false;
       showJob(job);
     },
@@ -1487,7 +1496,7 @@
           body: JSON.stringify(body)
         });
         if (privateMode) closePrivate(); else closeViewer();
-        justSubmitted = true;
+        justSubmitted = true; revealCentered = false;
         progressBox.hidden = false;
         showJob(payload.job);
       }
@@ -2280,7 +2289,7 @@
     const snapshot = settingsFromForm();
     lastSubmitted = snapshot;
     lastApplied = { prompt: snapshot.prompt, negative: snapshot.negative_prompt };
-    justSubmitted = true;
+    justSubmitted = true; revealCentered = false;
     resultIntent = false;
     hideSeeResult();
   }, true);
@@ -2436,9 +2445,40 @@
   function reduceMotion() {
     return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }
+  // Result reveal: the target is the newest finished card (normal grid, batch grid or private vault grid).
+  let revealTarget = null;
+  const revealSeen = window.IntersectionObserver ? new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting && entry.target === revealTarget)) hideSeeResult();
+  }, { threshold: 0.6 }) : null;
+  function revealNode() {
+    return revealTarget && revealTarget.isConnected ? revealTarget : resultsBox;
+  }
+  function centerOn(node) {
+    const box = node.getBoundingClientRect();
+    // Already fully on screen: no scroll at all, the reveal animation is the cue.
+    if (box.top >= 0 && box.bottom <= window.innerHeight) return;
+    node.scrollIntoView({ block: "center", inline: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+  }
   function scrollToResult() {
     hideSeeResult();
-    resultsBox.scrollIntoView({ block: "start", behavior: reduceMotion() ? "auto" : "smooth" });
+    centerOn(revealNode());
+  }
+  // A finished result: always play the reveal (CSS drops it under reduced motion); center it only for the
+  // first result of the current submit and only if the user stayed idle, otherwise offer "Voir le r?sultat".
+  function landResult(node, submitted = justSubmitted) {
+    if (!node) return;
+    node.classList.remove("forge-reveal");
+    void node.offsetWidth;
+    node.classList.add("forge-reveal");
+    if (!submitted) return;
+    if (revealSeen && revealTarget) revealSeen.unobserve(revealTarget);
+    revealTarget = node;
+    if (revealSeen) revealSeen.observe(node);
+    if (revealCentered) return;
+    if (resultIntent) { showSeeResult(); return; }
+    revealCentered = true;
+    hideSeeResult();
+    centerOn(node);
   }
   function hideSeeResult() {
     if (seeResult) seeResult.hidden = true;
@@ -2446,7 +2486,7 @@
   function showSeeResult() {
     if (!seeResult) return;
     // Already on screen (top in view, or at least 35% visible, matching the observer below): no chip.
-    const box = resultsBox.getBoundingClientRect();
+    const box = revealNode().getBoundingClientRect();
     const seen = Math.max(0, Math.min(box.bottom, window.innerHeight) - Math.max(box.top, 0));
     if ((box.top >= 0 && box.top < window.innerHeight * 0.6) || (box.height > 0 && seen / box.height >= 0.35)) return;
     seeResult.hidden = false;
@@ -2932,7 +2972,7 @@
         body: JSON.stringify({ workers: workers, count: Number(fleetCountEl.value), settings: settings, destination: "normal" })
       });
       if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
-      justSubmitted = true;
+      justSubmitted = true; revealCentered = false;
       resultIntent = false;
       results.replaceChildren();
       shownBatchImages.clear();
@@ -3029,7 +3069,9 @@
     batch.tasks.forEach((task) => {
       if (task.image_id && !shownBatchImages.has(task.image_id)) {
         shownBatchImages.add(task.image_id);
-        results.appendChild(card({ id: task.image_id, thumb: "/api/forge/gallery/" + task.image_id + "/thumb" }));
+        const node = card({ id: task.image_id, thumb: "/api/forge/gallery/" + task.image_id + "/thumb" });
+        results.appendChild(node);
+        landResult(node);
         added = true;
       }
     });
@@ -3049,9 +3091,8 @@
     } else {
       batchKey(true);
       loadGallery(true).catch(() => {});
-      if (justSubmitted && window.matchMedia && window.matchMedia("(max-width: 899px)").matches) {
-        if (resultIntent) showSeeResult(); else scrollToResult();
-      }
+      // The first finished image was already centered; a user who moved away since gets the chip, not a jump.
+      if (justSubmitted && resultIntent && revealTarget) showSeeResult();
       justSubmitted = false;
     }
   }
@@ -3116,7 +3157,7 @@
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": retryKey.key }, body: "{}"
       });
       retryKey = { batch: "", key: "" };
-      justSubmitted = true;
+      justSubmitted = true; revealCentered = false;
       resultIntent = false;
       showBatch(payload.batch);
     } catch (error) {
