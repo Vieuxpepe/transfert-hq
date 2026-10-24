@@ -9,7 +9,7 @@ Implements V1 to V3 of `docs/forge-multi-vault-plan.md`. Nothing visible yet: th
 - The registry has no cryptographic weight: each vault keeps its own keys, and a session holds one vault key at most.
 - Discret: the name is absent from the registry and sealed in `vaults/<vid>/label.bin` (AES-GCM, the vault's master key, AAD `hq-forge-vault-v1-label`). While locked, the list shows glyph, colour and number only.
 - Quotas: 2 GiB and 400 images per vault (`QUOTA_BYTES`, `QUOTA_IMAGES`).
-- Limites globales, **proposé, à confirmer par Emie** (constantes nommées, valeurs inchangées) :
+- Limites globales, **confirmées par Emie** (constantes nommées) :
   - `GLOBAL_QUOTA_BYTES` = 8 GiB pour tous les coffres ensemble ;
   - `GLOBAL_QUOTA_IMAGES` = 1600 images pour tous les coffres ensemble ;
   - `GLOBAL_MAX_VAULTS` = `hq_forge_vault_registry.MAX_VAULTS` = 12 coffres.

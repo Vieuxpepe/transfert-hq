@@ -17,7 +17,7 @@ import re
 import unicodedata
 
 VERSION = 1
-MAX_VAULTS = 12  # proposé, à confirmer par Emie; also hq_forge_vault.GLOBAL_MAX_VAULTS
+MAX_VAULTS = 12  # confirmed by Emie; also hq_forge_vault.GLOBAL_MAX_VAULTS
 MAX_BYTES = 64 * 1024
 LABEL_MAX = 40
 ORDER_MAX = 999
