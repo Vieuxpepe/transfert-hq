@@ -486,6 +486,24 @@ class MigrationCutTests(MultiBase):
         self.assertEqual(len(V.page(self.hq, self.admin)["images"]), 1)
 
 
+    def test_layout_reads_migrating_at_every_cut(self):
+        for step in ("after_journal", "after_move", "after_container", "after_place", "after_registry"):
+            with self.subTest(step=step):
+                V.set_root_for_tests(None)
+                store = Path(self.tmp.name) / ("cut-" + step) / "forge-vault"
+                store.mkdir(parents=True)
+                V.set_root_for_tests(store)
+                V.setup(self.hq, PASS, PASS)
+                V.set_migration_fault_for_tests(step)
+                with self.assertRaises(OSError):
+                    V._migrate(self.hq)
+                V.set_migration_fault_for_tests(None)
+                self.assertEqual(V.layout(self.hq), "migrating")
+                self.assertEqual(V.list_vaults(self.hq, self.admin)["layout"], "migrating")
+                V.resume_migration(self.hq)
+                self.assertEqual(V.layout(self.hq), "legacy" if step == "after_journal" else "multi")
+
+
 class MigrationGateTests(MultiBase):
     """V1.6: migration only when explicitly asked after the backup offer; never silently."""
 

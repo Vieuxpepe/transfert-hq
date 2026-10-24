@@ -2258,10 +2258,11 @@ def layout(hq_root: Path) -> str:
         return "empty"
     try:
         base = _base(hq_root)
+        journal = _journal_path(base)
+        if journal.exists() or journal.is_symlink():
+            return "migrating"  # whenever a journal exists, even while the folder itself is moved away
         if not base.is_dir():
             return "empty"
-        if _journal_path(base).exists():
-            return "migrating"
         return _layout(base)
     except VaultError:
         return "unreadable"
