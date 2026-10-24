@@ -1480,6 +1480,7 @@
         body.n_iter = 6;
         body.destination = privateMode ? "private" : "normal";
         if (!privateMode) body.wait_if_busy = true;
+        else body.vault = openVid;  // V4: variations of a vault image go back to that same, open vault
         const payload = await api("/api/forge/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json", "Idempotency-Key": exploreKey() },
