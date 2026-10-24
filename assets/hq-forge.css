@@ -573,6 +573,17 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-vault-tile[data-colour=rouge]{background:#b3261e}
 .forge-vault-tile[data-colour=rose]{background:#a32d65}
 .forge-vault-tile[data-colour=violet]{background:#6a3fa0}
+/* V5: photo icon (open vault only), manual order buttons, sort. White on every tile is >= 4.5:1 (tested). */
+.forge-vault-tile-photo{overflow:hidden;padding:0}
+.forge-vault-tile-photo img{display:block;width:100%;height:100%;object-fit:cover}
+.forge-vault-move{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px}
+.forge-vault-move button{min-height:var(--tap-min);min-width:0;padding:6px 4px;font:inherit;font-size:var(--text-sm)}
+.forge-vault-move button:disabled{opacity:.45}
+.forge-vaults-sort{display:flex;align-items:center;gap:8px;margin:6px 0}
+.forge-vaults-sort select{min-height:var(--tap-min)}
+#forge-vault-edit .forge-vault-pick{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#forge-vault-edit select,#forge-vault-edit input[type=text]{min-height:var(--tap-min)}
+#forge-vault-edit button,#forge-vault-icon-row button,#forge-vault-icon-use{min-height:var(--tap-min)}
 .forge-vault-create,.forge-vault-sheet{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg)}
 .forge-vault-create-head{display:flex;align-items:center;gap:10px}
 .forge-vault-picks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
