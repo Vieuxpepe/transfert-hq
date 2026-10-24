@@ -47,6 +47,8 @@
   let vaultListing = { layout: "empty", vaults: [], open: null, max: 12 };
   let sheetVid = null;
   let createOpen = false;
+  /* V4.4: the destination of a private generation, chosen by the owner; never guessed. */
+  let privateTarget = null;
   const vaultBase = () => "/api/forge/vaults/" + encodeURIComponent(openVid || "none");
   const choiceNote = $("forge-choice-note");
   const reasonEl = $("forge-generate-reason");
@@ -612,11 +614,16 @@
   });
 
   async function privateGenerate() {
-    if (!vaultState.unlocked) {
-      const pass = $("forge-vault-pass");
-      const error = $("forge-vault-error");
-      if (error) error.textContent = "Déverrouillez le coffre avant une génération privée.";
-      if (pass) pass.focus();
+    if (!vaultState.unlocked || !openVid || privateTarget !== openVid) {
+      // Never a silent choice: the owner names the destination, and a locked one is opened first.
+      const wanted = $("forge-private-target").value;
+      if (wanted && wanted !== openVid) {
+        openSheet(wanted);
+        $("forge-vault-error").textContent = "Ouvre ce coffre avant une génération privée.";
+      } else {
+        $("forge-private-target-note").textContent = "Choisis d'abord le coffre de destination.";
+        $("forge-private-target").focus();
+      }
       return;
     }
     if (!vaultState.private_generation || privateBtn.disabled) return;
@@ -629,7 +636,7 @@
       const payload = await api("/api/forge/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": key() },
-        body: JSON.stringify(Object.assign(settingsFromForm(), { destination: "private" }))
+        body: JSON.stringify(Object.assign(settingsFromForm(), { destination: "private", vault: privateTarget }))
       });
       if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
       showJob(payload.job);
@@ -844,7 +851,21 @@
     $("forge-vaults-empty").hidden = rows.length > 0;
     const opened = vaultById(openVid);
     $("forge-vault-gallery-title").textContent = opened ? vaultName(opened) : "Coffre";
+    renderTarget();
     if (window.hqForgeOnVaults) window.hqForgeOnVaults();
+  }
+
+  function renderTarget() {
+    const select = $("forge-private-target");
+    if (privateTarget && privateTarget !== openVid) privateTarget = null;
+    select.replaceChildren();
+    option(select, "", "Choisir un coffre");
+    (vaultListing.vaults || []).forEach((v) => option(select, v.id, vaultName(v) + (v.id === openVid ? " (ouvert)" : " (verrouillé)")));
+    select.value = privateTarget || "";
+    const chosen = vaultById(privateTarget);
+    $("forge-private-target-note").textContent = chosen
+      ? "Les images iront dans " + quoted(vaultName(chosen)) + "."
+      : "Choisis le coffre qui recevra les images. Un coffre verrouillé s'ouvre d'abord avec sa phrase.";
   }
 
   function openSheet(vid) {
@@ -880,6 +901,7 @@
   /* After a lock: forget every open-only detail at once, before any request returns. */
   function forgetOpenVault() {
     openVid = null;
+    privateTarget = null;
     vaultState = Object.assign({}, vaultState, { unlocked: false });
     vaultListing = Object.assign({}, vaultListing, {
       open: null,
@@ -917,6 +939,7 @@
     renderVaults();
     if (layout === "unreadable") vaultsNote(vaultListing.error || "La liste des coffres est illisible. Aucun coffre n'est ouvert.");
     else if (layout === "migrating") vaultsNote("Un déplacement du coffre a été interrompu. Il reprendra au prochain démarrage de HQ. Rien n'est perdu.");
+    $("forge-private-target-row").hidden = !privateMode || !listed || !(vaultListing.vaults || []).length;
     $("forge-vault-setup").hidden = !privateMode || !listed || !createOpen;
     $("forge-vault-unlock").hidden = !privateMode || !sheetVid;
     $("forge-vault-open-tools").hidden = !privateMode || !vaultState.unlocked || !openVid;
@@ -1071,6 +1094,8 @@
       await refreshVault();
       const opened = quoted(vaultName(vaultById(target)));
       vaultsNote(other ? quoted(vaultSafeName(other)) + " est verrouillé. " + opened + " est ouvert." : opened + " est ouvert.");
+      privateTarget = target;  // the owner just opened this vault on purpose: it becomes the destination
+      renderTarget();
       if (window.hqForgeOnVaultOpened) window.hqForgeOnVaultOpened(target);
     } catch (error) {
       $("forge-vault-pass").value = "";
@@ -1078,6 +1103,12 @@
     }
   });
   $("forge-vault-unlock-cancel").addEventListener("click", closeSheet);
+  $("forge-private-target").addEventListener("change", () => {
+    const wanted = $("forge-private-target").value;
+    privateTarget = wanted && wanted === openVid ? wanted : null;
+    renderTarget();
+    if (wanted && wanted !== openVid) openSheet(wanted);  // a locked vault opens with its phrase first
+  });
   $("forge-vault-back").addEventListener("click", () => {
     const normal = document.querySelector('input[name="forge-destination"][value="normal"]');
     if (!normal.checked) {

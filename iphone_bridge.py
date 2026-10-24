@@ -5244,6 +5244,11 @@ def render_app() -> bytes:
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
           <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
         </div>
+        <div id="forge-private-target-row" class="field forge-private-target" hidden>
+          <label for="forge-private-target">Coffre de destination</label>
+          <select id="forge-private-target"></select>
+          <p id="forge-private-target-note" class="forge-note" role="status" aria-live="polite"></p>
+        </div>
         <p id="forge-private-note" class="forge-note">La génération privée reste désactivée tant que cette installation de Forge n'a pas prouvé qu'elle n'écrit pas de copie en clair.</p>
         <form id="forge-vault-setup" class="forge-vault-create" hidden>
           <div class="forge-vault-create-head"><span id="forge-vault-create-tile" class="forge-vault-tile" data-colour="ardoise" aria-hidden="true"></span><h3 class="forge-vault-sub">Nouveau coffre</h3></div>
