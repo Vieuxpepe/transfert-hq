@@ -174,6 +174,8 @@ def section_rename(run: Run) -> None:
     create(run, page, "Jardin", PASS)
     unlock_card(run, page, 0, PASS)
     page.evaluate("() => { document.querySelector('#forge-vault-edit-fold').open = true; }")
+    shown = page.evaluate("() => [document.querySelector('#forge-vault-edit-fold summary').textContent, document.querySelector('label[for=forge-vault-edit-glyph]').textContent, document.querySelector('#forge-vaults-sort option[value=recent]').textContent, document.querySelector('#forge-vault-edit button[type=submit]').textContent]")
+    run.check(shown == ["R\u00e9glages de ce coffre", "Ic\u00f4ne", "Par r\u00e9cent", "Enregistrer les r\u00e9glages"] and not page.evaluate("() => /[A-Za-z]\\?[A-Za-z\\u00c0-\\u00ff]/.test(document.querySelector('#forge-vault-edit-fold').textContent)"), "accents render, no '?' inside words: " + repr(shown))
     opener = page.locator("#forge-vault-rename-open")
     run.check(opener.is_visible() and page.locator("#forge-vault-rename").is_hidden(), "a quiet Renommer button, the form stays folded")
     opener.click()

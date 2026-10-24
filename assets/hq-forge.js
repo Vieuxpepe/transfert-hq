@@ -2687,7 +2687,7 @@
     centerOn(revealNode());
   }
   // A finished result: always play the reveal (CSS drops it under reduced motion); center it only for the
-  // first result of the current submit and only if the user stayed idle, otherwise offer "Voir le r?sultat".
+  // first result of the current submit and only if the user stayed idle, otherwise offer "Voir le résultat".
   function landResult(node, submitted = justSubmitted) {
     if (!node) return;
     node.classList.remove("forge-reveal", "forge-reveal-celebrate");

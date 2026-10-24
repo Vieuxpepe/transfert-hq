@@ -5240,8 +5240,8 @@ def render_app() -> bytes:
             <h3 id="forge-vaults-title" class="forge-vault-sub">Mes coffres</h3>
             <button type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
           </div>
-          <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par r?cent</option></select></div>
-          <p id="forge-vaults-sort-note" class="forge-note" hidden>? R?cent ? utilise le jour de la derni?re ouverture. Ce jour reste visible quand les coffres sont verrouill?s.</p>
+          <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par récent</option></select></div>
+          <p id="forge-vaults-sort-note" class="forge-note" hidden>« Récent » utilise le jour de la dernière ouverture. Ce jour reste visible quand les coffres sont verrouillés.</p>
           <p id="forge-vaults-note" class="forge-note" role="status" aria-live="polite"></p>
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
           <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
@@ -5325,7 +5325,7 @@ def render_app() -> bytes:
             <label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label>
           </div>
           <details id="forge-vault-edit-fold">
-            <summary>R?glages de ce coffre</summary>
+            <summary>Réglages de ce coffre</summary>
             <div id="forge-vault-rename-row" class="forge-vault-rename">
               <p class="forge-note">Nom : <strong id="forge-vault-rename-current"></strong></p>
               <button type="button" id="forge-vault-rename-open" class="secondary" aria-expanded="false" aria-controls="forge-vault-rename">Renommer</button>
@@ -5341,17 +5341,17 @@ def render_app() -> bytes:
             </div>
             <form id="forge-vault-edit">
               <div class="forge-vault-pick">
-                <div class="field"><label for="forge-vault-edit-glyph">Ic?ne</label><select id="forge-vault-edit-glyph"></select></div>
+                <div class="field"><label for="forge-vault-edit-glyph">Icône</label><select id="forge-vault-edit-glyph"></select></div>
                 <div class="field"><label for="forge-vault-edit-colour">Couleur</label><select id="forge-vault-edit-colour"></select></div>
               </div>
-              <label class="forge-privacy-ack" for="forge-vault-edit-discret"><input type="checkbox" id="forge-vault-edit-discret"/> Discret : le nom n'appara?t que coffre ouvert</label>
+              <label class="forge-privacy-ack" for="forge-vault-edit-discret"><input type="checkbox" id="forge-vault-edit-discret"/> Discret : le nom n'apparaît que coffre ouvert</label>
               <p id="forge-vault-edit-honest" class="forge-note"></p>
-              <button type="submit" class="secondary">Enregistrer les r?glages</button>
+              <button type="submit" class="secondary">Enregistrer les réglages</button>
               <p id="forge-vault-edit-status" class="forge-note" role="status" aria-live="polite"></p>
             </form>
             <div id="forge-vault-icon-row" class="forge-actions" hidden>
-              <p class="forge-note">Une photo du coffre sert d'ic?ne. Elle est chiffr?e dans ce coffre et n'appara?t que coffre ouvert.</p>
-              <button type="button" id="forge-vault-icon-clear" class="secondary">Retirer l'ic?ne photo</button>
+              <p class="forge-note">Une photo du coffre sert d'icône. Elle est chiffrée dans ce coffre et n'apparaît que coffre ouvert.</p>
+              <button type="button" id="forge-vault-icon-clear" class="secondary">Retirer l'icône photo</button>
             </div>
           </details>
           <details>
@@ -5772,7 +5772,7 @@ def render_app() -> bytes:
         </div>
         <div class="forge-triage-row" id="forge-vault-viewer-triage" role="group" aria-label="Tri de l’image"></div>
         <button type="button" id="forge-vault-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
-        <button type="button" id="forge-vault-icon-use" class="secondary">Utiliser comme ic?ne</button>
+        <button type="button" id="forge-vault-icon-use" class="secondary">Utiliser comme icône</button>
         <p id="forge-vault-icon-note" class="forge-note" role="status" aria-live="polite"></p>
         <div class="forge-explore" id="forge-vault-explore-box">
           <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
