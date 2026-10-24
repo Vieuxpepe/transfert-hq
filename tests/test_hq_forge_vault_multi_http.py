@@ -158,7 +158,8 @@ class PerVaultPaths(MultiHttp):
 class ListCreateSettings(MultiHttp):
     """V3.2: list (read-only, registry fields only), create, settings, and the explicit migration."""
 
-    ALLOWED = {"id", "label", "number", "glyph", "colour", "discret", "order", "created", "last_used_day"}
+    # V5 adds "icon": a boolean, true only for the vault open in this session (never while locked).
+    ALLOWED = {"id", "label", "number", "glyph", "colour", "discret", "order", "created", "last_used_day", "icon"}
 
     def create(self, label, passphrase=PASS, **extra):
         return self.post(self.admin, "/api/forge/vaults/new", {"passphrase": passphrase, "confirm": passphrase, "label": label, **extra})

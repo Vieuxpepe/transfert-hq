@@ -5240,6 +5240,8 @@ def render_app() -> bytes:
             <h3 id="forge-vaults-title" class="forge-vault-sub">Mes coffres</h3>
             <button type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
           </div>
+          <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par r?cent</option></select></div>
+          <p id="forge-vaults-sort-note" class="forge-note" hidden>? R?cent ? utilise le jour de la derni?re ouverture. Ce jour reste visible quand les coffres sont verrouill?s.</p>
           <p id="forge-vaults-note" class="forge-note" role="status" aria-live="polite"></p>
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
           <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
@@ -5322,6 +5324,24 @@ def render_app() -> bytes:
             <button type="button" id="forge-vault-lock" class="secondary">Verrouiller le coffre</button>
             <label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label>
           </div>
+          <details id="forge-vault-edit-fold">
+            <summary>R?glages de ce coffre</summary>
+            <form id="forge-vault-edit">
+              <div class="field"><label for="forge-vault-edit-label">Nom</label><input id="forge-vault-edit-label" type="text" maxlength="40" autocomplete="off" spellcheck="false"/></div>
+              <div class="forge-vault-pick">
+                <div class="field"><label for="forge-vault-edit-glyph">Ic?ne</label><select id="forge-vault-edit-glyph"></select></div>
+                <div class="field"><label for="forge-vault-edit-colour">Couleur</label><select id="forge-vault-edit-colour"></select></div>
+              </div>
+              <label class="forge-privacy-ack" for="forge-vault-edit-discret"><input type="checkbox" id="forge-vault-edit-discret"/> Discret : le nom n'appara?t que coffre ouvert</label>
+              <p id="forge-vault-edit-honest" class="forge-note"></p>
+              <button type="submit" class="secondary">Enregistrer les r?glages</button>
+              <p id="forge-vault-edit-status" class="forge-note" role="status" aria-live="polite"></p>
+            </form>
+            <div id="forge-vault-icon-row" class="forge-actions" hidden>
+              <p class="forge-note">Une photo du coffre sert d'ic?ne. Elle est chiffr?e dans ce coffre et n'appara?t que coffre ouvert.</p>
+              <button type="button" id="forge-vault-icon-clear" class="secondary">Retirer l'ic?ne photo</button>
+            </div>
+          </details>
           <details>
             <summary>Changer la phrase</summary>
             <form id="forge-vault-rotate">
@@ -5740,6 +5760,8 @@ def render_app() -> bytes:
         </div>
         <div class="forge-triage-row" id="forge-vault-viewer-triage" role="group" aria-label="Tri de l’image"></div>
         <button type="button" id="forge-vault-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
+        <button type="button" id="forge-vault-icon-use" class="secondary">Utiliser comme ic?ne</button>
+        <p id="forge-vault-icon-note" class="forge-note" role="status" aria-live="polite"></p>
         <div class="forge-explore" id="forge-vault-explore-box">
           <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-vault-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
@@ -6806,9 +6828,11 @@ class Handler(BaseHTTPRequestHandler):
         if raw in self._MIGRATION_POSTS:
             self._forge_migration_post(raw, data, token)
             return
-        if raw in ("/api/forge/vaults/new", "/api/forge/vaults/migrate", "/api/forge/vaults/backup-offer"):
+        if raw in ("/api/forge/vaults/new", "/api/forge/vaults/migrate", "/api/forge/vaults/backup-offer", "/api/forge/vaults/order"):
             try:
-                if raw.endswith("/backup-offer"):
+                if raw.endswith("/order"):
+                    self._json(200, hq_forge_vault.reorder_vaults(ROOT, token, data.get("ids")))  # V5: up/down buttons
+                elif raw.endswith("/backup-offer"):
                     self._json(200, hq_forge_vault.acknowledge_backup_offer(ROOT, token))
                 elif raw.endswith("/new"):
                     self._json(201, hq_forge_vault.create_vault(
@@ -6853,6 +6877,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_vault.search(ROOT, token, data, vid=vid))
             elif sub == "/settings":
                 self._json(200, hq_forge_vault.update_vault(ROOT, token, vid, data))
+            elif sub == "/icon":
+                self._json(200, hq_forge_vault.set_icon(ROOT, token, vid, data.get("image_id")))  # V5: sealed in this vault
+            elif sub == "/icon/clear":
+                self._json(200, hq_forge_vault.clear_icon(ROOT, token, vid))
             else:
                 self._json(404, {"error": "Inconnu"})
         except hq_forge_vault.VaultError as exc:
@@ -6923,6 +6951,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._vault_error(hq_forge_vault.VaultError(info["code"]))  # unknown id: 404, never an empty 200
                 return True
             self._json(200, info)
+            return True
+        if sub == "/icon":
+            try:
+                payload, ctype = hq_forge_vault.icon_bytes(ROOT, token, vid)  # V5: only while this vault is open here
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
+                return True
+            self._send(200, payload, ctype, [("Content-Disposition", 'inline; filename="icone"')])
             return True
         if sub == "/backup":
             try:

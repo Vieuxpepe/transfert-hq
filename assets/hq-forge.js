@@ -832,7 +832,10 @@
   const GLYPHS = {
     coffre: ["▣", "Coffre"], etoile: ["★", "Étoile"], lune: ["☾", "Lune"], soleil: ["☀", "Soleil"],
     feuille: ["❦", "Feuille"], fleur: ["✿", "Fleur"], vague: ["≈", "Vague"], montagne: ["▲", "Montagne"],
-    nuage: ["☁", "Nuage"], flamme: ["♨", "Flamme"], coeur: ["♥", "Cœur"], cle: ["⚿", "Clé"]
+    nuage: ["☁", "Nuage"], flamme: ["♨", "Flamme"], coeur: ["♥", "Cœur"], cle: ["⚿", "Clé"],
+    /* V5: eight more, drawn as text symbols (no emoji font needed) */
+    maison: ["\u2302", "Maison"], ancre: ["\u2693", "Ancre"], diamant: ["\u25c6", "Diamant"], note: ["\u266a", "Note"],
+    plume: ["\u2712", "Plume"], cercle: ["\u25cf", "Cercle"], fleche: ["\u27a4", "Fl\u00e8che"], trefle: ["\u2663", "Tr\u00e8fle"]
   };
   const COLOURS = { ardoise: "Ardoise", bleu: "Bleu", sarcelle: "Sarcelle", vert: "Vert", olive: "Olive", ambre: "Ambre", orange: "Orange", rouge: "Rouge", rose: "Rose", violet: "Violet" };
   const quoted = (text) => "« " + text + " »";
@@ -843,7 +846,7 @@
   function vaultSafeName(v) { return v ? (v.discret ? "Coffre n° " + v.number : vaultName(v)) : ""; }
   function vaultsNote(text) { $("forge-vaults-note").textContent = text || ""; }
 
-  function vaultCard(v) {
+  function vaultCard(v, move) {
     const item = document.createElement("li");
     const button = document.createElement("button");
     const open = v.id === openVid;
@@ -856,6 +859,18 @@
     tile.dataset.colour = COLOURS[v.colour] ? v.colour : "ardoise";
     tile.setAttribute("aria-hidden", "true");
     tile.textContent = (GLYPHS[v.glyph] || GLYPHS.coffre)[0];
+    if (open && v.icon) {
+      // V5: the photo icon, only while this vault is open here; locked, the glyph and colour stay.
+      if (iconCache.vid === v.id && iconCache.url) {
+        const img = document.createElement("img");
+        img.alt = "";
+        img.src = iconCache.url;
+        tile.replaceChildren(img);
+        tile.classList.add("forge-vault-tile-photo");
+      } else {
+        loadIcon(v.id);
+      }
+    }
     const name = document.createElement("span");
     name.className = "forge-vault-card-name";
     name.textContent = vaultName(v);
@@ -872,14 +887,77 @@
       openSheet(v.id);
     });
     item.appendChild(button);
+    if (move) {
+      // V5: manual order with buttons (no drag and drop), 44 px each.
+      const row = document.createElement("div");
+      row.className = "forge-vault-move";
+      [["up", "Monter", -1], ["down", "Descendre", 1]].forEach(([dir, text, delta]) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "secondary";
+        b.dataset.move = dir;
+        b.textContent = text;
+        b.setAttribute("aria-label", text + " " + vaultSafeName(v));
+        b.disabled = (delta < 0 && move.first) || (delta > 0 && move.last);
+        b.addEventListener("click", () => { moveVault(v.id, delta).catch((error) => vaultsNote(error.message || "L'ordre n'a pas pu \u00eatre enregistr\u00e9.")); });
+        row.appendChild(b);
+      });
+      item.appendChild(row);
+    }
     return item;
+  }
+
+  // V5 photo icon: one blob URL for the open vault, dropped as soon as it is locked or switched.
+  let iconCache = { vid: null, url: null, loading: null };
+  function dropIcon() {
+    if (iconCache.url) URL.revokeObjectURL(iconCache.url);
+    iconCache = { vid: null, url: null, loading: null };
+  }
+  function loadIcon(vid) {
+    if (iconCache.loading === vid) return;
+    dropIcon();
+    iconCache.loading = vid;
+    fetch("/api/forge/vaults/" + encodeURIComponent(vid) + "/icon", { credentials: "same-origin", cache: "no-store" })
+      .then((response) => (response.ok ? response.blob() : null))
+      .then((blob) => {
+        if (!blob || iconCache.loading !== vid || openVid !== vid) return;
+        iconCache = { vid, url: URL.createObjectURL(blob), loading: null };
+        renderVaults();
+      })
+      .catch(() => { if (iconCache.loading === vid) iconCache.loading = null; });
+  }
+
+  let vaultSort = "manuel";  // display only, kept in memory
+  function sortedVaults(rows) {
+    const list = rows.slice();
+    if (vaultSort === "nom") list.sort((a, b) => vaultSafeName(a).localeCompare(vaultSafeName(b), "fr", { sensitivity: "base" }));
+    else if (vaultSort === "recent") list.sort((a, b) => String(b.last_used_day || "").localeCompare(String(a.last_used_day || "")) || a.number - b.number);
+    return list;
+  }
+  async function moveVault(vid, delta) {
+    const ids = (vaultListing.vaults || []).map((v) => v.id);
+    const at = ids.indexOf(vid);
+    const to = at + delta;
+    if (at < 0 || to < 0 || to >= ids.length) return;
+    [ids[at], ids[to]] = [ids[to], ids[at]];
+    await api("/api/forge/vaults/order", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    await refreshVault();
+    const v = vaultById(vid);
+    vaultsNote(v ? quoted(vaultSafeName(v)) + (delta < 0 ? " est mont\u00e9." : " est descendu.") : "");
+    const again = document.querySelector('.forge-vault-card[data-vid="' + vid + '"]');
+    const btn = again && again.parentElement.querySelector('[data-move="' + (delta < 0 ? "up" : "down") + '"]');
+    if (btn && !btn.disabled) btn.focus(); else if (again) again.focus();
   }
 
   function renderVaults() {
     const list = $("forge-vaults-list");
     list.replaceChildren();
     const rows = vaultListing.vaults || [];
-    rows.forEach((v) => list.appendChild(vaultCard(v)));
+    if (iconCache.vid && iconCache.vid !== openVid) dropIcon();
+    const manual = vaultSort === "manuel" && rows.length > 1;
+    sortedVaults(rows).forEach((v, index, all) => list.appendChild(vaultCard(v, manual ? { first: index === 0, last: index === all.length - 1 } : null)));
+    $("forge-vaults-sort-note").hidden = vaultSort !== "recent";
+    syncVaultEdit();
     $("forge-vaults-new").hidden = rows.length >= (vaultListing.max || 12) || vaultListing.layout === "legacy";
     $("forge-vaults-empty").hidden = rows.length > 0;
     const opened = vaultById(openVid);
@@ -928,11 +1006,13 @@
 
   function scrubVaultViews() {
     clearPrivateUi();
+    dropIcon();
     if (window.hqForgeScrubPrivate) window.hqForgeScrubPrivate();
   }
 
   /* After a lock: forget every open-only detail at once, before any request returns. */
   function forgetOpenVault() {
+    dropIcon();
     openVid = null;
     privateTarget = null;
     vaultState = Object.assign({}, vaultState, { unlocked: false });
@@ -1191,6 +1271,82 @@
     }
   });
   $("forge-vault-unlock-cancel").addEventListener("click", closeSheet);
+
+  /* V5: settings of the open vault (name, icon, colour, Discret), the photo icon and the sort. */
+  const editGlyph = $("forge-vault-edit-glyph");
+  const editColour = $("forge-vault-edit-colour");
+  Object.keys(GLYPHS).forEach((id) => option(editGlyph, id, GLYPHS[id][0] + " " + GLYPHS[id][1]));
+  Object.keys(COLOURS).forEach((id) => option(editColour, id, COLOURS[id]));
+  let editFor = null;
+  function honestCopy() {
+    const v = vaultById(openVid);
+    const want = $("forge-vault-edit-discret").checked;
+    const el = $("forge-vault-edit-honest");
+    if (!v) { el.textContent = ""; return; }
+    if (want && !v.discret) el.textContent = "Le nom quittera la liste en clair et sera chiffr\u00e9 dans ce coffre. Un ancien nom peut subsister dans d'anciennes sauvegardes ou dans l'espace libre du disque : HQ ne peut pas garantir qu'il est effac\u00e9.";
+    else if (!want && v.discret) el.textContent = "Le nom redeviendra lisible dans la liste, m\u00eame coffre verrouill\u00e9. Ne mets rien de sensible dans le nom.";
+    else if (want) el.textContent = "Ce coffre est Discret : verrouill\u00e9, il s'affiche par son num\u00e9ro.";
+    else el.textContent = "Ne mets rien de sensible dans le nom : il reste lisible quand le coffre est verrouill\u00e9.";
+  }
+  function syncVaultEdit() {
+    const v = vaultById(openVid);
+    $("forge-vault-icon-row").hidden = !(v && v.icon);
+    if (!v) { editFor = null; $("forge-vault-edit-label").value = ""; $("forge-vault-edit-status").textContent = ""; return; }
+    if (editFor === v.id + "|" + v.glyph + "|" + v.colour + "|" + v.discret + "|" + (v.label || "")) return;
+    editFor = v.id + "|" + v.glyph + "|" + v.colour + "|" + v.discret + "|" + (v.label || "");
+    $("forge-vault-edit-label").value = v.label || "";
+    editGlyph.value = GLYPHS[v.glyph] ? v.glyph : "coffre";
+    editColour.value = COLOURS[v.colour] ? v.colour : "ardoise";
+    $("forge-vault-edit-discret").checked = !!v.discret;
+    honestCopy();
+  }
+  $("forge-vault-edit-discret").addEventListener("change", honestCopy);
+  $("forge-vault-edit").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const v = vaultById(openVid);
+    const status = $("forge-vault-edit-status");
+    if (!v) return;
+    const body = { glyph: editGlyph.value, colour: editColour.value, discret: $("forge-vault-edit-discret").checked };
+    const label = $("forge-vault-edit-label").value.trim();
+    if (label) body.label = label;
+    try {
+      await api("/api/forge/vaults/" + encodeURIComponent(v.id) + "/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      editFor = null;
+      await refreshVault();
+      status.textContent = "R\u00e9glages enregistr\u00e9s.";
+    } catch (error) {
+      status.textContent = error.message || "Les r\u00e9glages n'ont pas \u00e9t\u00e9 enregistr\u00e9s.";
+    }
+  });
+  $("forge-vault-icon-use").addEventListener("click", async () => {
+    const note = $("forge-vault-icon-note");
+    if (!openVid || !privateOpenId) return;
+    try {
+      await api("/api/forge/vaults/" + encodeURIComponent(openVid) + "/icon", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_id: privateOpenId }) });
+      dropIcon();
+      note.textContent = "Ic\u00f4ne enregistr\u00e9e, chiffr\u00e9e dans ce coffre.";
+      // Only the list: a full refresh would redraw the vault gallery and close this viewer.
+      vaultListing = await api("/api/forge/vaults");
+      renderVaults();
+    } catch (error) {
+      note.textContent = error.message || "L'ic\u00f4ne n'a pas \u00e9t\u00e9 enregistr\u00e9e.";
+    }
+  });
+  $("forge-vault-icon-clear").addEventListener("click", async () => {
+    if (!openVid) return;
+    try {
+      await api("/api/forge/vaults/" + encodeURIComponent(openVid) + "/icon/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      dropIcon();
+      await refreshVault();
+      vaultsNote("Ic\u00f4ne photo retir\u00e9e. Le glyphe et la couleur reviennent.");
+    } catch (error) {
+      vaultsNote(error.message || "L'ic\u00f4ne n'a pas \u00e9t\u00e9 retir\u00e9e.");
+    }
+  });
+  $("forge-vaults-sort").addEventListener("change", (event) => {
+    vaultSort = ["manuel", "nom", "recent"].includes(event.target.value) ? event.target.value : "manuel";
+    renderVaults();
+  });
   $("forge-migrate-unlock").addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
@@ -1549,8 +1705,11 @@
     syncVariationChip();
   });
 
+  let privateOpenId = null;
   async function openPrivate(id, from) {
     openFrom = from || document.activeElement;
+    privateOpenId = id;
+    if ($("forge-vault-icon-note")) $("forge-vault-icon-note").textContent = "";
     privateDetail = await api(vaultBase() + "/images/" + id);
     const response = await fetch(vaultBase() + "/images/" + id + "/original", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("locked");

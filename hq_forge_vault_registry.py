@@ -24,7 +24,9 @@ ORDER_MAX = 999
 VID_RE = re.compile(r"^vlt-[0-9a-f]{16}$")
 DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Fixed sets. The UI (V4/V5) maps these ids to drawings and contrast-checked colours.
-GLYPHS = ("coffre", "etoile", "lune", "soleil", "feuille", "fleur", "vague", "montagne", "nuage", "flamme", "coeur", "cle")
+GLYPHS = ("coffre", "etoile", "lune", "soleil", "feuille", "fleur", "vague", "montagne", "nuage", "flamme", "coeur", "cle",
+          # V5: eight more (only added, never renamed: a registry written by V4 stays valid)
+          "maison", "ancre", "diamant", "note", "plume", "cercle", "fleche", "trefle")
 COLOURS = ("ardoise", "bleu", "sarcelle", "vert", "olive", "ambre", "orange", "rouge", "rose", "violet")
 DEFAULT_GLYPH = "coffre"
 DEFAULT_COLOUR = "ardoise"

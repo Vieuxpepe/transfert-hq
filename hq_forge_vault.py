@@ -93,6 +93,9 @@ _AAD_RECOVERY = b"hq-forge-vault-v1-recovery"
 _AAD_INDEX = b"hq-forge-vault-v1-index"
 _AAD_LABEL = b"hq-forge-vault-v1-label"
 LABEL_FILE = "label.bin"
+_AAD_ICON = b"hq-forge-vault-v1-icon"
+ICON_FILE = "icon.bin"  # V5: photo icon, sealed with this vault's master key, never in the registry
+ICON_MAX = 512 * 1024
 
 
 class VaultError(Exception):
@@ -1208,13 +1211,18 @@ def list_vaults(hq_root: Path, token: str | None) -> dict:
     rows = []
     for number, item in enumerate(entries, start=1):
         label = None
-        if item["discret"] and opened == item["id"]:
+        icon = False
+        if opened == item["id"]:
             try:
                 root, master, _header = _master(hq_root, token, item["id"])
-                label = _read_label(root, master)
+                if item["discret"]:
+                    label = _read_label(root, master)
+                icon = (root / ICON_FILE).is_file()  # V5: said only for the vault open in this session
             except VaultError:
                 label = None
-        rows.append(_public_entry(item, number, label))
+        row = _public_entry(item, number, label)
+        row["icon"] = icon
+        rows.append(row)
     return {"layout": "multi", "vaults": rows, "max": registry.MAX_VAULTS,
             "open": opened if opened in {e["id"] for e in entries} else None}
 
@@ -1279,6 +1287,93 @@ def update_vault(hq_root: Path, token: str | None, vid, data) -> dict:
         number = 1 + sorted(reg["vaults"], key=lambda e: (e["order"], e["created"], e["id"])).index(updated)
         visible = _read_label(root, master) if discret and master is not None else None
     return _public_entry(updated, number, visible)
+
+
+def reorder_vaults(hq_root: Path, token: str | None, ids) -> dict:
+    """V5: manual order (up/down buttons). ids must be every listed vault exactly once; order = position.
+    The order is visible while locked, like the rest of the registry."""
+    _require_live(token)
+    base = _base(hq_root)
+    if _layout(base) != "multi":
+        raise VaultError("bad_vault")
+    if not isinstance(ids, list) or not ids or len(ids) > registry.MAX_VAULTS or len(set(map(str, ids))) != len(ids):
+        raise VaultError("validation")
+    if any(not isinstance(v, str) or not registry.VID_RE.fullmatch(v) for v in ids):
+        raise VaultError("validation")
+    with _REGISTRY_LOCK:
+        reg = _load_registry(base)
+        if {e["id"] for e in reg["vaults"]} != set(ids):
+            raise VaultError("validation")
+        place = {vid: index for index, vid in enumerate(ids)}
+        reg["vaults"] = [dict(e, order=place[e["id"]]) for e in reg["vaults"]]
+        try:
+            for entry in reg["vaults"]:
+                registry.validate_entry(entry)
+        except registry.RegistryError:
+            raise VaultError("validation") from None
+        _save_registry(base, reg)
+    return list_vaults(hq_root, token)
+
+
+def _sniff_image(raw: bytes) -> str | None:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _read_icon(root: Path, master: bytes) -> bytes | None:
+    path = root / ICON_FILE
+    if not path.is_file():
+        return None
+    if _is_reparse(path):
+        raise VaultError("corrupt")
+    try:
+        raw = _open(bytes(master), path.read_bytes(), _AAD_ICON)
+    except (OSError, VaultError):
+        raise VaultError("corrupt") from None
+    if len(raw) > ICON_MAX or _sniff_image(raw) is None:
+        raise VaultError("corrupt")
+    return raw
+
+
+def set_icon(hq_root: Path, token: str | None, vid, image_id) -> dict:
+    """V5 'Utiliser comme ic\u00f4ne': a copy of that image's thumbnail, sealed in this same vault.
+    Never in the registry, never in clear. Shown only while this vault is open in this session."""
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    if not isinstance(image_id, str) or not ID_RE.fullmatch(image_id):
+        raise VaultError("bad_id")
+    root, master, _header = _master(hq_root, token, vid)
+    _meta, _png, thumb = _read_object(root, master, image_id)
+    if not thumb or len(thumb) > ICON_MAX or _sniff_image(thumb) is None:
+        raise VaultError("bad_image")
+    _atomic(root / ICON_FILE, _seal(bytes(master), bytes(thumb), _AAD_ICON))
+    return {"icon": True}
+
+
+def clear_icon(hq_root: Path, token: str | None, vid) -> dict:
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    root, _master_key, _header = _master(hq_root, token, vid)
+    path = root / ICON_FILE
+    if path.exists() and _is_reparse(path):
+        raise VaultError("bad_root")
+    path.unlink(missing_ok=True)
+    return {"icon": False}
+
+
+def icon_bytes(hq_root: Path, token: str | None, vid) -> tuple[bytes, str]:
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    root, master, _header = _master(hq_root, token, vid)
+    raw = _read_icon(root, master)
+    if raw is None:
+        raise VaultError("bad_id")
+    return raw, _sniff_image(raw) or "application/octet-stream"
 
 
 def _open_with_budget(token: str | None, opener, vault: str = "legacy"):
@@ -1999,7 +2094,7 @@ def backup_bytes(hq_root: Path, token: str | None, *, vid: str | None = None) ->
     offered_single = vid is None and layout(hq_root) == "legacy"
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name in ("vault.json", "index.bin", LABEL_FILE):  # label.bin: the Discret name, still sealed
+        for name in ("vault.json", "index.bin", LABEL_FILE, ICON_FILE):  # label.bin / icon.bin: still sealed
             path = root / name
             if path.is_file() and not _is_reparse(path):
                 archive.write(path, name)
@@ -2022,7 +2117,7 @@ def _zip_member_ok(name: str) -> bool:
     parts = clean.split("/")
     if any(part in ("", ".", "..") for part in parts):
         return False
-    if clean in ("vault.json", "index.bin", LABEL_FILE):
+    if clean in ("vault.json", "index.bin", LABEL_FILE, ICON_FILE):
         return True
     return (
         len(parts) == 2
@@ -2124,6 +2219,8 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
             _authenticate_restored_objects(staging, master)
             if (staging / LABEL_FILE).exists():
                 _read_label(staging, master)  # a sealed name that this key cannot open is refused
+            if (staging / ICON_FILE).exists():
+                _read_icon(staging, master)  # same for a sealed icon
         finally:
             _wipe(bytearray(master))
         if _restore_fault == "before_retire":
