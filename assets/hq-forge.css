@@ -616,3 +616,8 @@ body[data-view="forge"] .hq-capture-fab{display:none}
   @keyframes forge-ripple-out{0%{outline:2px solid var(--forge-accent,var(--accent));outline-offset:0}100%{outline:2px solid transparent;outline-offset:12px}}
 }
 @media (prefers-reduced-motion: reduce){.forge-card.forge-reveal,.forge-card.forge-reveal img,.forge-card.forge-reveal::before,.forge-card.forge-reveal::after{animation:none}}
+
+/* Rename (open vault only) */
+.forge-vault-rename { display: grid; gap: 8px; margin: 8px 0 12px; }
+.forge-vault-rename button, .forge-vault-rename input { min-height: 44px; }
+.forge-vault-rename .forge-note strong { overflow-wrap: anywhere; }

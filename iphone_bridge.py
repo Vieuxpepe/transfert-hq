@@ -5326,8 +5326,20 @@ def render_app() -> bytes:
           </div>
           <details id="forge-vault-edit-fold">
             <summary>R?glages de ce coffre</summary>
+            <div id="forge-vault-rename-row" class="forge-vault-rename">
+              <p class="forge-note">Nom : <strong id="forge-vault-rename-current"></strong></p>
+              <button type="button" id="forge-vault-rename-open" class="secondary" aria-expanded="false" aria-controls="forge-vault-rename">Renommer</button>
+              <form id="forge-vault-rename" hidden>
+                <div class="field"><label for="forge-vault-rename-label">Nouveau nom</label><input id="forge-vault-rename-label" type="text" maxlength="40" autocomplete="off" spellcheck="false" required/></div>
+                <p id="forge-vault-rename-honest" class="forge-note"></p>
+                <div class="forge-actions">
+                  <button type="submit" class="secondary">Enregistrer le nom</button>
+                  <button type="button" id="forge-vault-rename-cancel" class="secondary">Annuler</button>
+                </div>
+              </form>
+              <p id="forge-vault-rename-status" class="forge-note" role="status" aria-live="polite"></p>
+            </div>
             <form id="forge-vault-edit">
-              <div class="field"><label for="forge-vault-edit-label">Nom</label><input id="forge-vault-edit-label" type="text" maxlength="40" autocomplete="off" spellcheck="false"/></div>
               <div class="forge-vault-pick">
                 <div class="field"><label for="forge-vault-edit-glyph">Ic?ne</label><select id="forge-vault-edit-glyph"></select></div>
                 <div class="field"><label for="forge-vault-edit-colour">Couleur</label><select id="forge-vault-edit-colour"></select></div>
@@ -6881,6 +6893,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_vault.set_icon(ROOT, token, vid, data.get("image_id")))  # V5: sealed in this vault
             elif sub == "/icon/clear":
                 self._json(200, hq_forge_vault.clear_icon(ROOT, token, vid))
+            elif sub == "/rename":
+                self._json(200, hq_forge_vault.rename_vault(ROOT, token, vid, data.get("label")))  # open vault only
             else:
                 self._json(404, {"error": "Inconnu"})
         except hq_forge_vault.VaultError as exc:

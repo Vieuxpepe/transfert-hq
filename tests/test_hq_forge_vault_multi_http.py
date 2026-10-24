@@ -196,9 +196,11 @@ class ListCreateSettings(MultiHttp):
         _s, made = self.create("A")
         vid = made["vault"]["id"]
         path = "/api/forge/vaults/" + vid + "/settings"
-        status, row = self.post(self.admin, path, {"label": "Album", "glyph": "vague", "colour": "vert", "order": 5})
+        status, row = self.post(self.admin, path, {"glyph": "vague", "colour": "vert", "order": 5})
         self.assertEqual(status, 200, row)
-        self.assertEqual((row["label"], row["glyph"], row["colour"], row["order"]), ("Album", "vague", "vert", 5))
+        self.assertEqual((row["label"], row["glyph"], row["colour"], row["order"]), ("A", "vague", "vert", 5))
+        # Rename feature: changing the name needs the vault open in this session.
+        self.assertEqual(self.post(self.admin, path, {"label": "Album"})[0], 401)
         for bad in ({"label": ""}, {"glyph": "crane"}, {"colour": "#fff"}, {"order": -1}, {"id": "vlt-0000000000000000"},
                     {"created": "2020-01-01"}, {"last_used_day": "2020-01-01"}, {}):
             with self.subTest(bad=bad):
@@ -206,6 +208,7 @@ class ListCreateSettings(MultiHttp):
         # Discret needs the vault open in this session; then the name leaves the registry.
         self.assertEqual(self.post(self.admin, path, {"discret": True})[0], 401)
         self.post(self.admin, "/api/forge/vaults/" + vid + "/unlock", {"passphrase": PASS})
+        self.assertEqual(self.post(self.admin, path, {"label": "Album"})[1]["label"], "Album")
         status, row = self.post(self.admin, path, {"discret": True})
         self.assertEqual((status, row["label"], row["discret"]), (200, "Album", True))
         reg = json.loads((self.store / "registry.json").read_text(encoding="utf-8"))

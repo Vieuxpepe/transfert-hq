@@ -1260,7 +1260,8 @@ def update_vault(hq_root: Path, token: str | None, vid, data) -> dict:
         if glyph not in registry.GLYPHS or colour not in registry.COLOURS or not registry._order(order):
             raise VaultError("validation")
         root = master = None
-        if discret or entry["discret"]:
+        if discret or entry["discret"] or label is not None:
+            # Renaming (any vault) and anything about a Discret name need this vault open in this session.
             root, master, _header = _master(hq_root, token, vid)  # locked unless open here
         if discret:
             name = label if label is not None else (entry["label"] if not entry["discret"] else None)
@@ -1287,6 +1288,41 @@ def update_vault(hq_root: Path, token: str | None, vid, data) -> dict:
         number = 1 + sorted(reg["vaults"], key=lambda e: (e["order"], e["created"], e["id"])).index(updated)
         visible = _read_label(root, master) if discret and master is not None else None
     return _public_entry(updated, number, visible)
+
+
+def rename_vault(hq_root: Path, token: str | None, vid, label) -> dict:
+    """Rename a vault that is open in this session. Same name rules as creation (clean_label).
+
+    Clear vault: the readable name in the registry changes (one atomic registry write).
+    Discret vault: only the sealed label.bin changes (one atomic write); the registry keeps no name."""
+    _require_live(token)
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    name = registry.clean_label(label)
+    if name is None:
+        raise VaultError("validation")
+    base = _base(hq_root)
+    if _layout(base) != "multi":
+        raise VaultError("bad_vault")
+    with _REGISTRY_LOCK:
+        reg = _load_registry(base)
+        entry = registry.find(reg, vid)
+        if entry is None:
+            raise VaultError("bad_vault")
+        root, master, _header = _master(hq_root, token, vid)  # locked unless open here
+        if entry["discret"]:
+            _write_label(root, master, name)
+            updated = entry
+        else:
+            updated = dict(entry, label=name)
+            try:
+                registry.validate_entry(updated)
+            except registry.RegistryError:
+                raise VaultError("validation") from None
+            reg["vaults"] = [updated if item["id"] == vid else item for item in reg["vaults"]]
+            _save_registry(base, reg)
+        number = 1 + sorted(reg["vaults"], key=lambda e: (e["order"], e["created"], e["id"])).index(updated)
+    return _public_entry(updated, number, name if entry["discret"] else None)
 
 
 def reorder_vaults(hq_root: Path, token: str | None, ids) -> dict:

@@ -1291,24 +1291,62 @@
   function syncVaultEdit() {
     const v = vaultById(openVid);
     $("forge-vault-icon-row").hidden = !(v && v.icon);
-    if (!v) { editFor = null; $("forge-vault-edit-label").value = ""; $("forge-vault-edit-status").textContent = ""; return; }
+    if (!v) { editFor = null; closeRename(); $("forge-vault-rename-current").textContent = ""; $("forge-vault-rename-status").textContent = ""; $("forge-vault-edit-status").textContent = ""; return; }
+    $("forge-vault-rename-current").textContent = v.label || "";
     if (editFor === v.id + "|" + v.glyph + "|" + v.colour + "|" + v.discret + "|" + (v.label || "")) return;
     editFor = v.id + "|" + v.glyph + "|" + v.colour + "|" + v.discret + "|" + (v.label || "");
-    $("forge-vault-edit-label").value = v.label || "";
     editGlyph.value = GLYPHS[v.glyph] ? v.glyph : "coffre";
     editColour.value = COLOURS[v.colour] ? v.colour : "ardoise";
     $("forge-vault-edit-discret").checked = !!v.discret;
     honestCopy();
   }
   $("forge-vault-edit-discret").addEventListener("change", honestCopy);
+  /* Rename: only for the vault open in this session (the server checks it too). */
+  function closeRename() {
+    $("forge-vault-rename").hidden = true;
+    $("forge-vault-rename-open").hidden = false;
+    $("forge-vault-rename-open").setAttribute("aria-expanded", "false");
+    $("forge-vault-rename-label").value = "";
+  }
+  $("forge-vault-rename-open").addEventListener("click", () => {
+    const v = vaultById(openVid);
+    if (!v) return;
+    $("forge-vault-rename-label").value = v.label || "";
+    $("forge-vault-rename-honest").textContent = v.discret
+      ? "Ce coffre est Discret : le nouveau nom est chiffr\u00e9 dans ce coffre et n'appara\u00eet que coffre ouvert. L'ancien nom peut rester dans d'anciennes sauvegardes."
+      : "Le nouveau nom reste lisible dans la liste, m\u00eame coffre verrouill\u00e9. Ne mets rien de sensible.";
+    $("forge-vault-rename-status").textContent = "";
+    $("forge-vault-rename").hidden = false;
+    $("forge-vault-rename-open").hidden = true;
+    $("forge-vault-rename-open").setAttribute("aria-expanded", "true");
+    $("forge-vault-rename-label").focus();
+  });
+  $("forge-vault-rename-cancel").addEventListener("click", () => { closeRename(); $("forge-vault-rename-open").focus(); });
+  $("forge-vault-rename").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const v = vaultById(openVid);
+    const status = $("forge-vault-rename-status");
+    const label = $("forge-vault-rename-label").value.trim();
+    if (!v) return;
+    if (!label) { status.textContent = "Le nom ne peut pas \u00eatre vide."; return; }
+    try {
+      await api("/api/forge/vaults/" + encodeURIComponent(v.id) + "/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: label }) });
+      closeRename();
+      editFor = null;
+      vaultListing = await api("/api/forge/vaults");
+      renderVaults();
+      status.textContent = "Coffre renomm\u00e9.";
+      $("forge-vault-rename-open").focus();
+    } catch (error) {
+      status.textContent = error.message || "Le nom n'a pas \u00e9t\u00e9 chang\u00e9.";
+    }
+  });
   $("forge-vault-edit").addEventListener("submit", async (event) => {
     event.preventDefault();
     const v = vaultById(openVid);
     const status = $("forge-vault-edit-status");
     if (!v) return;
     const body = { glyph: editGlyph.value, colour: editColour.value, discret: $("forge-vault-edit-discret").checked };
-    const label = $("forge-vault-edit-label").value.trim();
-    if (label) body.label = label;
     try {
       await api("/api/forge/vaults/" + encodeURIComponent(v.id) + "/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       editFor = null;
