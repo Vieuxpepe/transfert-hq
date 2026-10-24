@@ -460,6 +460,32 @@ class MigrationTests(MultiBase):
         self.assertEqual(caught.exception.code, "registry")
         self.assertTrue((self.store / "vault.json").is_file())
 
+class MigrationCutTests(MultiBase):
+    """Dry-run findings: cancel before anything moved, and 'migrating' whenever a journal exists."""
+
+    def files(self, root):
+        return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+    def test_cancel_right_after_the_journal_only_removes_it(self):
+        V.setup(self.hq, PASS, PASS)
+        V.unlock(self.hq, self.admin, PASS)
+        V.store_image(self.hq, self.admin, _png(), None)
+        before = self.files(self.store)
+        V.set_migration_fault_for_tests("after_journal")
+        with self.assertRaises(OSError):
+            V._migrate(self.hq)
+        V.set_migration_fault_for_tests(None)
+        journal = self.store.parent / "forge-vault.migration.json"
+        self.assertTrue(journal.is_file())
+        self.assertEqual(V.cancel_migration(self.hq), {"cancelled": True})
+        self.assertFalse(journal.exists())
+        self.assertFalse((self.store.parent / "forge-vault.migrating").exists())
+        self.assertEqual(self.files(self.store), before)
+        self.assertEqual(V.layout(self.hq), "legacy")
+        V.unlock(self.hq, self.admin, PASS)
+        self.assertEqual(len(V.page(self.hq, self.admin)["images"]), 1)
+
+
 class MigrationGateTests(MultiBase):
     """V1.6: migration only when explicitly asked after the backup offer; never silently."""
 

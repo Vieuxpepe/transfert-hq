@@ -2306,6 +2306,10 @@ def cancel_migration(hq_root: Path) -> dict:
             raise VaultError("registry")
         _atomic(_journal_path(base), json.dumps({"version": 1, "vid": vid}).encode("utf-8"))
     target = base / VAULTS_DIR / vid
+    if not staging.exists() and not staging.is_symlink() and not target.exists() and _header_path(base).is_file():
+        # Cut right after the journal was written: nothing moved, so only the journal goes.
+        _journal_path(base).unlink(missing_ok=True)
+        return {"cancelled": True}
     if not staging.exists():
         if not target.is_dir() or _is_reparse(target):
             raise VaultError("registry")
