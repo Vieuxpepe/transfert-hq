@@ -137,23 +137,25 @@ class VaultSearchHttp(TF.FleetHttp):
         V.set_root_for_tests(tmp)
         V.set_acl_for_tests(False)
         try:
-            self.assertEqual(self.post("/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 201)
-            label = "/api/forge/vault/images/pvt-" + "0" * 24 + "/labels"
-            for path, body in (("/api/forge/vault/search", {"q": "renard"}), (label, {"tags": ["a"]})):
+            status, made = self.post("/api/forge/vaults/new", {"passphrase": PASS, "confirm": PASS, "label": "Recherche"})
+            self.assertEqual(status, 201)
+            base = "/api/forge/vaults/" + made["vault"]["id"]  # V4: per-vault routes only
+            label = base + "/images/pvt-" + "0" * 24 + "/labels"
+            for path, body in ((base + "/search", {"q": "renard"}), (label, {"tags": ["a"]})):
                 with self.subTest(path=path):
                     self.assertEqual(self.post(path, body, client=self.anon)[0], 401)
                     self.assertEqual(self.post(path, body, client=self.upload)[0], 403)
                     status, _h, _b = self.admin.req(path, "POST", json.dumps(body).encode(), {"Origin": "http://evil.example", "Content-Type": "application/json"}, origin=False)
                     self.assertEqual(status, 403)
                     self.assertEqual(self.post(path, body)[0], 401, "locked vault")
-            self.assertEqual(self.post("/api/forge/vault/unlock", {"passphrase": PASS})[0], 200)
+            self.assertEqual(self.post(base + "/unlock", {"passphrase": PASS})[0], 200)
             self.assertEqual(self.post(label, {"tags": ["a"]})[0], 404)
-            self.assertEqual(self.post("/api/forge/vault/images/not-an-id/labels", {"tags": ["a"]})[0], 404)
-            self.assertEqual(self.post("/api/forge/vault/other", {})[0], 404)
-            status, payload = self.post("/api/forge/vault/search", {"q": "renard"})
+            self.assertEqual(self.post(base + "/images/not-an-id/labels", {"tags": ["a"]})[0], 404)
+            self.assertEqual(self.post(base + "/other", {})[0], 404)
+            status, payload = self.post(base + "/search", {"q": "renard"})
             self.assertEqual((status, payload["images"]), (200, []))
-            self.assertEqual(self.admin.json("/api/forge/vault/search")[0], 404, "no GET: the words never go in a URL")
-            self.assertEqual(self.post("/api/forge/vault/lock", {})[0], 200)
+            self.assertEqual(self.admin.json(base + "/search")[0], 404, "no GET: the words never go in a URL")
+            self.assertEqual(self.post("/api/forge/vaults/lock", {})[0], 200)
             self.assertEqual(V.search_cache_size_for_tests(), 0)
         finally:
             V.reset_for_tests()

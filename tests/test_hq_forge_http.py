@@ -323,35 +323,37 @@ class ForgeHttp(unittest.TestCase):
         import hq_forge_vault as vault
         vault.set_root_for_tests(Path(self.tmp) / "vault-triage")
         vault.set_acl_for_tests(False)
-        path = "/api/forge/vault/images/pvt-" + "0" * 24 + "/triage"
-        body = b'{"state": "reject"}'
         admin = Client(self.base, ADMIN_PIN)
+        made = admin.json("/api/forge/vaults/new", "POST", data=json.dumps({"passphrase": "correct horse battery", "confirm": "correct horse battery", "label": "Tri"}).encode())
+        self.assertEqual(made[0], 201)
+        base = "/api/forge/vaults/" + made[1]["vault"]["id"]  # V4: per-vault routes only
+        path = base + "/images/pvt-" + "0" * 24 + "/triage"
+        body = b'{"state": "reject"}'
         self.assertEqual(self.anon.req(path, "POST", body)[0], 401)
         self.assertEqual(Client(self.base, UPLOAD_PIN).req(path, "POST", body)[0], 403)
         self.assertEqual(admin.req(path, "POST", body, {"Origin": "http://evil.example"}, origin=False)[0], 403)
         self.assertEqual(admin.req(path, "POST", body, origin=False)[0], 403)
-        self.assertEqual(admin.req("/api/forge/vault/setup", "POST", json.dumps({"passphrase": "correct horse battery", "confirm": "correct horse battery"}).encode(), {"Content-Type": "application/json"})[0] in (201, 409), True)
         self.assertEqual(admin.req(path, "POST", body)[0], 401)  # locked
-        opened, _ = admin.json("/api/forge/vault/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
+        opened, _ = admin.json(base + "/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
         self.assertEqual(opened, 200)
         try:
             self.assertEqual(admin.req(path, "POST", body)[0], 404)
             image = Image.new("RGB", (64, 64), (1, 2, 3))
             buffer = io.BytesIO()
             image.save(buffer, format="PNG")
-            status, _h, raw = admin.req("/api/forge/vault/import", "POST", buffer.getvalue(), {"Content-Type": "application/octet-stream"})
+            status, _h, raw = admin.req(base + "/import", "POST", buffer.getvalue(), {"Content-Type": "application/octet-stream"})
             self.assertEqual(status, 201)
             image_id = json.loads(raw.decode("utf-8"))["id"]
-            real = "/api/forge/vault/images/" + image_id + "/triage"
+            real = base + "/images/" + image_id + "/triage"
             self.assertEqual(admin.req(real, "POST", b'{"state": "nope"}')[0], 400)
             status, done = admin.json(real, "POST", data=body)
             self.assertEqual((status, done["triage"], done["previous"]), (200, "reject", "none"))
-            self.assertEqual(admin.json("/api/forge/vault/gallery")[1]["images"], [])
-            self.assertEqual([row["id"] for row in admin.json("/api/forge/vault/gallery?view=trash")[1]["images"]], [image_id])
+            self.assertEqual(admin.json(base + "/gallery")[1]["images"], [])
+            self.assertEqual([row["id"] for row in admin.json(base + "/gallery?view=trash")[1]["images"]], [image_id])
             other = Client(self.base, ADMIN_PIN)
             self.assertEqual(other.req(real, "POST", b'{"state": "none"}')[0], 401)
         finally:
-            admin.json("/api/forge/vault/lock", "POST", data=b"{}")
+            admin.json("/api/forge/vaults/lock", "POST", data=b"{}")
 
     def test_lab_route_is_admin_only_read_only_and_has_no_prompt(self):
         import hq_forge_stats as stats
@@ -429,34 +431,37 @@ class ForgeHttp(unittest.TestCase):
         import hq_forge_vault as vault
         vault.set_root_for_tests(Path(self.tmp) / "vault")
         vault.set_acl_for_tests(False)
-        self.assertEqual(self.anon.req("/api/forge/vault/status")[0], 401)
-        self.assertEqual(self.upload.req("/api/forge/vault/status")[0], 403)
-        self.assertEqual(self.admin.req("/api/forge/vault/setup", "POST", b"{}", origin=False)[0], 403)
-        status, payload = self.admin.json("/api/forge/vault/status")
+        self.assertEqual(self.anon.req("/api/forge/vaults")[0], 401)
+        self.assertEqual(self.upload.req("/api/forge/vaults")[0], 403)
+        self.assertEqual(self.admin.req("/api/forge/vaults/new", "POST", b"{}", origin=False)[0], 403)
+        status, payload = self.admin.json("/api/forge/vaults")
         self.assertEqual(status, 200)
-        self.assertFalse(payload["configured"])
+        self.assertEqual(payload["vaults"], [])
         self.assertNotIn("images", payload)
-        self.assertTrue(payload["private_generation"])
-        refused, body = self.admin.json("/api/forge/vault/setup", "POST", data=json.dumps({"passphrase": "123456", "confirm": "123456"}).encode())
+        refused, body = self.admin.json("/api/forge/vaults/new", "POST", data=json.dumps({"passphrase": "123456", "confirm": "123456", "label": "A"}).encode())
         self.assertEqual(refused, 400)
         self.assertNotIn("recovery_key", body)
         created_status, created, headers = self._vault_setup()
         self.assertEqual(created_status, 201)
         self.assertIn("recovery_key", created)
         self.assertEqual(headers.get("Cache-Control"), "no-store")
-        locked, _locked_body = self.admin.json("/api/forge/vault/gallery")
+        base = "/api/forge/vaults/" + created["vault"]["id"]
+        state = self.admin.json(base + "/status")[1]
+        self.assertTrue(state["configured"] and state["private_generation"] and not state["unlocked"])
+        self.assertNotIn("images", state)
+        locked, _locked_body = self.admin.json(base + "/gallery")
         self.assertEqual(locked, 401)
         other = Client(self.base, ADMIN_PIN)
-        opened, _opened = self.admin.json("/api/forge/vault/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
+        opened, _opened = self.admin.json(base + "/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
         self.assertEqual(opened, 200)
-        denied, _denied = other.json("/api/forge/vault/gallery")
+        denied, _denied = other.json(base + "/gallery")
         self.assertEqual(denied, 401)
-        self.admin.json("/api/forge/vault/lock", "POST", data=b"{}")
-        again, _again = self.admin.json("/api/forge/vault/gallery")
+        self.admin.json("/api/forge/vaults/lock", "POST", data=b"{}")
+        again, _again = self.admin.json(base + "/gallery")
         self.assertEqual(again, 401)
-        self.admin.json("/api/forge/vault/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
+        self.admin.json(base + "/unlock", "POST", data=json.dumps({"passphrase": "correct horse battery"}).encode())
         changed, changed_body = self.admin.json(
-            "/api/forge/vault/passphrase", "POST",
+            base + "/passphrase", "POST",
             data=json.dumps({
                 "current": "correct horse battery",
                 "passphrase": "replacement horse",
@@ -471,14 +476,14 @@ class ForgeHttp(unittest.TestCase):
         try:
             B.CONFIG["auth_generation"] = int(saved or 0) + 1
             self.assertIsNone(B.session_info(token))
-            self.assertEqual(self.admin.req("/api/forge/vault/gallery")[0], 401)
+            self.assertEqual(self.admin.req(base + "/gallery")[0], 401)
         finally:
             B.CONFIG["auth_generation"] = saved
 
     def _vault_setup(self):
         status, headers, body = self.admin.req(
-            "/api/forge/vault/setup", "POST",
-            json.dumps({"passphrase": "correct horse battery", "confirm": "correct horse battery"}).encode(),
+            "/api/forge/vaults/new", "POST",
+            json.dumps({"passphrase": "correct horse battery", "confirm": "correct horse battery", "label": "Coffre"}).encode(),
             {"Content-Type": "application/json"},
         )
         return status, json.loads(body.decode("utf-8")), {key: value for key, value in headers.items()}

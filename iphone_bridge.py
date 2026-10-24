@@ -6759,15 +6759,13 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, result)
         return True
 
-    # Multi-vault V3: /api/forge/vaults/<vid>/... per vault; /api/forge/vault/... stays the alias of the
-    # migrated vault until V4. Only ids travel in paths, never a name. Per-vault setup, backup and
-    # restore are not offered here (create is its own route; backup and restore per vault are V6).
-    _ALIAS_ONLY = ("/setup", "/backup", "/restore")
+    # Multi-vault: /api/forge/vaults/<vid>/... per vault. V4 removed the old /api/forge/vault/* alias
+    # (404 now). Only ids travel in paths, never a name. Per-vault setup, backup and restore are not
+    # offered here (create is its own route; backup and restore per vault are V6).
+    _NOT_PER_VAULT = ("/setup", "/backup", "/restore")
 
     def _vault_route(self, raw: str) -> tuple[str | None, str | None]:
-        """(vid, sub-path). (None, sub) for the alias; sub None when the path is not a vault path."""
-        if raw.startswith("/api/forge/vault/"):
-            return None, raw[len("/api/forge/vault"):]
+        """(vid, sub-path); sub None when the path is not a per-vault path."""
         if raw.startswith("/api/forge/vaults/"):
             vid, sep, tail = raw[len("/api/forge/vaults/"):].partition("/")
             if sep and tail and hq_forge_vault.registry.VID_RE.fullmatch(vid):
@@ -6823,13 +6821,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._vault_error(exc)
             return
         vid, sub = self._vault_route(raw)
-        if sub is None or (vid is not None and sub in self._ALIAS_ONLY):
+        if sub is None or vid is None or sub in self._NOT_PER_VAULT:
             self._json(404, {"error": "Inconnu"})
             return
         try:
-            if sub == "/setup":
-                self._json(201, hq_forge_vault.setup(ROOT, str(data.get("passphrase") or ""), str(data.get("confirm") or "")))
-            elif sub == "/unlock":
+            if sub == "/unlock":
                 self._json(200, hq_forge_vault.unlock(ROOT, token, str(data.get("passphrase") or ""), vid=vid))
             elif sub == "/recover":
                 self._json(200, hq_forge_vault.unlock_with_recovery(ROOT, token, str(data.get("recovery_key") or ""), vid=vid))
@@ -6855,7 +6851,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_vault.set_labels(ROOT, token, image_id, data.get("tags"), data.get("collection"), vid=vid))
             elif sub == "/search":
                 self._json(200, hq_forge_vault.search(ROOT, token, data, vid=vid))
-            elif sub == "/settings" and vid is not None:
+            elif sub == "/settings":
                 self._json(200, hq_forge_vault.update_vault(ROOT, token, vid, data))
             else:
                 self._json(404, {"error": "Inconnu"})
@@ -6918,7 +6914,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._vault_error(exc)
             return True
         vid, sub = self._vault_route(raw)
-        if sub is None or (vid is not None and sub in self._ALIAS_ONLY):
+        if sub is None or vid is None or sub in self._NOT_PER_VAULT:
             self._json(404, {"error": "Inconnu"})
             return True
         if sub == "/status":
@@ -7070,8 +7066,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_admin():
             return True
         token = self._token()
-        if raw in ("/api/forge/vault/import", "/api/forge/vault/restore"):
-            return self._forge_vault_binary(raw, token)
+        if raw.startswith("/api/forge/vault/"):
+            self._json(404, {"error": "Inconnu"})  # V4: the old single-vault alias is gone
+            return True
         vault_vid, vault_sub = self._vault_route(raw)
         if vault_vid is not None and vault_sub == "/import":
             return self._forge_vault_binary(raw, token, vault_vid)
@@ -7111,7 +7108,7 @@ class Handler(BaseHTTPRequestHandler):
             except hq_forge_gallery.GalleryError:
                 self._json(404, {"error": "Introuvable"})
             return True
-        if raw.startswith("/api/forge/vault/") or raw.startswith("/api/forge/vaults/"):
+        if raw.startswith("/api/forge/vaults/"):
             self._forge_vault_post(raw, data, token)
             return True
         presets = hq_forge_presets.serve_post(ROOT, raw, data)

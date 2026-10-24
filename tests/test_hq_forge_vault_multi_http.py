@@ -1,5 +1,5 @@
 """Multi-vault V3 HTTP boundary: /api/forge/vaults/<vid>/..., list, create, settings, migrate, and the
-old /api/forge/vault/* alias. Disposable root and vault folder, fake PINs, no Forge."""
+removal of the old /api/forge/vault/* alias (V4). Disposable root and vault folder, fake PINs, no Forge."""
 
 from __future__ import annotations
 
@@ -231,7 +231,7 @@ class ListCreateSettings(MultiHttp):
         status, listing = self.admin.json("/api/forge/vaults")
         self.assertEqual((status, listing["layout"], listing["vaults"]), (200, "legacy", []))
         self.assertEqual(self.post(self.admin, "/api/forge/vaults/backup-offer", {})[0], 401)  # V4: vault open first
-        self.assertEqual(self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})[0], 200)
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/migration/unlock", {"passphrase": PASS})[0], 200)
         for forged in ({}, {"backup_offered": "yes"}, {"backup_offered": True}, {"backup_offered": True, "offered": True}):
             with self.subTest(forged=forged):
                 status, body = self.post(self.admin, "/api/forge/vaults/migrate", forged)
@@ -309,35 +309,50 @@ class Authorisation(MultiHttp):
             self.skipTest("not a git checkout")
         self.assertEqual(out.stdout.strip(), "")
 
-class Alias(MultiHttp):
-    """V3.4: /api/forge/vault/* keeps working, as the migrated vault, until V4."""
+class OldRoutesGone(MultiHttp):
+    """V4.6: the old /api/forge/vault/* alias is removed; every old route answers 404, before and after migration."""
 
-    def test_old_routes_follow_the_migrated_vault(self):
-        self.assertEqual(self.post(self.admin, "/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 201)
-        self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})
-        status, _h, raw = self.admin.req("/api/forge/vault/import", "POST", _png(), {"Content-Type": "application/octet-stream"})
-        self.assertEqual(status, 201)
-        image_id = json.loads(raw)["id"]
-        self.assertEqual(self.admin.req("/api/forge/vault/backup")[0], 200)  # downloading the ZIP is the offer
-        _s, migrated = self.post(self.admin, "/api/forge/vaults/migrate", {"backup_offered": True})
-        vid = migrated["vid"]
-        self.assertEqual(self.admin.json("/api/forge/vault/gallery")[0], 401)  # migration closed every session
-        self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})
-        self.assertEqual([i["id"] for i in self.admin.json("/api/forge/vault/gallery")[1]["images"]], [image_id])
-        self.assertEqual([i["id"] for i in self.admin.json("/api/forge/vaults/" + vid + "/gallery")[1]["images"]], [image_id])
-        self.assertEqual(self.admin.req("/api/forge/vault/backup")[0], 200)
-        self.assertEqual(self.post(self.admin, "/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 409)
-        # Another vault open in this session: the alias is locked, never silently that one.
-        _s, other = self.post(self.admin, "/api/forge/vaults/new", {"passphrase": PASS_B, "confirm": PASS_B, "label": "B"})
-        self.post(self.admin, "/api/forge/vaults/" + other["vault"]["id"] + "/unlock", {"passphrase": PASS_B})
-        self.assertEqual(self.admin.json("/api/forge/vault/gallery")[0], 401)
-        self.assertFalse(self.admin.json("/api/forge/vault/status")[1]["unlocked"])
+    OLD_GETS = ("/status", "/gallery", "/backup", "/images/pvt-" + "0" * 24, "/images/pvt-" + "0" * 24 + "/thumb",
+                "/images/pvt-" + "0" * 24 + "/original")
+    OLD_POSTS = ("/setup", "/unlock", "/recover", "/lock", "/passphrase", "/recovery", "/search", "/import", "/restore",
+                 "/images/pvt-" + "0" * 24 + "/delete", "/images/pvt-" + "0" * 24 + "/triage", "/images/pvt-" + "0" * 24 + "/labels")
 
-    def test_alias_without_a_migrated_vault_asks_to_choose(self):
-        self.post(self.admin, "/api/forge/vaults/new", {"passphrase": PASS, "confirm": PASS, "label": "Neuf"})
-        status, body = self.post(self.admin, "/api/forge/vault/unlock", {"passphrase": PASS})
-        self.assertEqual((status, body["code"]), (409, "use_vaults"))
-        self.assertEqual(self.post(self.admin, "/api/forge/vault/setup", {"passphrase": PASS, "confirm": PASS})[0], 409)
+    def assert_gone(self) -> None:
+        for sub in self.OLD_GETS:
+            with self.subTest(get=sub):
+                self.assertEqual(self.admin.req("/api/forge/vault" + sub)[0], 404)
+        for sub in self.OLD_POSTS:
+            with self.subTest(post=sub):
+                status, _h, _b = self.admin.req("/api/forge/vault" + sub, "POST", json.dumps({"passphrase": PASS, "confirm": PASS}).encode(), JSON)
+                self.assertEqual(status, 404)
+        status, _h, _b = self.admin.req("/api/forge/vault/import", "POST", _png(), {"Content-Type": "application/octet-stream"})
+        self.assertEqual(status, 404)
+
+    def test_empty_install(self):
+        self.assert_gone()
+        self.assertEqual(V.layout(B.ROOT), "empty")  # the old setup route created nothing
+
+    def test_single_vault_before_migration(self):
+        V.setup(B.ROOT, PASS, PASS)
+        self.assert_gone()
+        self.assertFalse(self.admin.json("/api/forge/vaults/migration")[1]["unlocked"])  # the old unlock opened nothing
+
+    def test_after_migration(self):
+        V.setup(B.ROOT, PASS, PASS)
+        self.post(self.admin, "/api/forge/vaults/migration/unlock", {"passphrase": PASS})
+        self.assertEqual(self.admin.req("/api/forge/vaults/migration/backup")[0], 200)
+        vid = self.post(self.admin, "/api/forge/vaults/migrate", {})[1]["vid"]
+        self.assert_gone()
+        self.assertEqual(self.post(self.admin, "/api/forge/vaults/" + vid + "/unlock", {"passphrase": PASS})[0], 200)
+        self.assert_gone()  # an open vault is never reachable through the old paths either
+        self.assertEqual(self.admin.json("/api/forge/vaults/" + vid + "/gallery")[0], 200)
+
+    def test_still_admin_first(self):
+        self.assertEqual(self.anon.req("/api/forge/vault/status")[0], 401)
+        self.assertEqual(self.upload.req("/api/forge/vault/status")[0], 403)
+        self.assertEqual(self.anon.req("/api/forge/vault/unlock", "POST", b"{}", JSON)[0], 401)
+        self.assertEqual(self.admin.req("/api/forge/vault/unlock", "POST", b"{}", JSON, origin=False)[0], 403)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,7 @@ Implements V1 to V3 of `docs/forge-multi-vault-plan.md`. Nothing visible yet: th
 
 ## Migration of the existing single vault
 
-- Only `POST /api/forge/vaults/migrate` migrates, and only when the server itself has recorded the backup offer for this HQ session (fix 1): either the single vault's ZIP was downloaded (`GET /api/forge/vault/backup`), or the panel called `POST /api/forge/vaults/backup-offer` (admin + CSRF) after showing the offer. The record lives in memory, lasts 15 minutes, is used up by one attempt and is forgotten at logout. A client `backup_offered` flag is ignored; without the record the answer is `backup_first` (409, "Proposez d'abord la sauvegarde du coffre."). Start-up, status, jobs and cleanup never migrate.
+- Only `POST /api/forge/vaults/migrate` migrates, and only when the server itself has recorded the backup offer for this HQ session (fix 1): either the single vault's ZIP was downloaded (`GET /api/forge/vault/backup` until V4, `GET /api/forge/vaults/migration/backup` since), or the panel called `POST /api/forge/vaults/backup-offer` (admin + CSRF) after showing the offer. The record lives in memory, lasts 15 minutes, is used up by one attempt and is forgotten at logout. A client `backup_offered` flag is ignored; without the record the answer is `backup_first` (409, "Proposez d'abord la sauvegarde du coffre."). Start-up, status, jobs and cleanup never migrate.
 - Each vault's backup ZIP includes `label.bin`, still sealed; restore puts it back and refuses a label that the restored key cannot open (fix 2).
 - Two renames, no copy, no re-encryption: `forge-vault` becomes `forge-vault.migrating`, a new `forge-vault/vaults/` is made, and `forge-vault.migrating` becomes `forge-vault/vaults/<vid>`. A journal `forge-vault.migration.json` (vid only) is written before the first rename. The registry (label « Coffre », default glyph and colour) is written after the second rename. Then the owner-only ACL and the link checks are re-applied at the new place.
 - At the next start, `cleanup_partials` finishes a cut-off migration. If two copies exist it refuses and leaves both. `cancel_migration` puts the single vault back while it is the only vault.
@@ -34,5 +34,5 @@ Implements V1 to V3 of `docs/forge-multi-vault-plan.md`. Nothing visible yet: th
 - `POST /api/forge/vaults/<vid>/settings`: name, glyph, colour, Discret, order. Discret changes need the vault open in this session.
 - `POST /api/forge/vaults/migrate`.
 - `/api/forge/vaults/<vid>/` plus `status`, `unlock`, `recover`, `lock`, `passphrase`, `recovery`, `gallery`, `images/...`, `search`, `import`. Setup, backup and restore are not routed per vault (V6). No delete route.
-- `/api/forge/vault/*` stays the alias of the migrated vault until V4. Before migration it is the single vault, as before. Once vaults exist without a migrated one it answers `use_vaults`.
+- `/api/forge/vault/*` was the alias of the migrated vault until V4. V4 removed it: every old route answers 404 (`docs/forge-multi-vault-V4.md`).
 - Ids only in paths; names travel only in POST bodies and are never logged.
