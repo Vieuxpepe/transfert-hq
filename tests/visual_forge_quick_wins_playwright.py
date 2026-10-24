@@ -18,6 +18,13 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+# Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
+
 HERE = Path(__file__).resolve().parent
 SHOTS = Path(os.environ["FORGE_QW_SHOTS"]) if os.environ.get("FORGE_QW_SHOTS") else None
 if SHOTS:
@@ -301,12 +308,15 @@ def open_vid(page) -> str:
 
 
 def import_private(run: Run, page) -> None:
+    before = page.evaluate("() => document.querySelectorAll('#forge-vault-gallery .forge-card').length")
     image = page.request.post(run.base + "/api/forge/vaults/" + open_vid(page) + "/import", data=_png_bytes(),
                               headers={"origin": run.base, "content-type": "application/octet-stream"})
     run.check(image.status == 201, "a synthetic private image is imported")
     page.evaluate("() => { document.querySelector('input[name=\\'forge-destination\\'][value=\\'normal\\']').click(); }")
     run.dest(page, "private")
-    run.until(page, "() => document.querySelectorAll('#forge-vault-gallery .forge-card').length > 0", 10)
+    # Wait for the refresh that shows the new image (count grows), so no late refresh redraws the vault
+    # under the next step (a vault card or the triage view).
+    run.until(page, "(n) => document.querySelectorAll('#forge-vault-gallery .forge-card').length > n && !document.querySelector('#forge-vault-open-tools').hidden", 10, before)
 
 
 def section_share(run: Run) -> None:

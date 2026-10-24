@@ -983,14 +983,22 @@
     syncMigration();
   }
 
+  // Fix: refreshes overlap when the destination is toggled quickly. Only the newest one may write the
+  // page, otherwise a late "normal" refresh hides the vault tools while "private" is selected.
+  let vaultRefreshGen = 0;
   async function refreshVault() {
+    const gen = ++vaultRefreshGen;
+    const stale = () => gen !== vaultRefreshGen;
     const privateMode = destination() === "private";
     vaultBox.hidden = !privateMode;
+    let listing;
     try {
-      vaultListing = await api("/api/forge/vaults");
+      listing = await api("/api/forge/vaults");
     } catch (error) {
-      vaultListing = { layout: "unreadable", vaults: [], open: null, max: 12, error: error.message };
+      listing = { layout: "unreadable", vaults: [], open: null, max: 12, error: error.message };
     }
+    if (stale()) return;
+    vaultListing = listing;
     const before = openVid;
     openVid = vaultListing.open || null;
     if (before && before !== openVid) {
@@ -998,14 +1006,17 @@
       vaultsNote("Le coffre s'est verrouillé.");
     }
     if (sheetVid && (!vaultById(sheetVid) || sheetVid === openVid)) closeSheet();
+    let nextState;
     if (openVid) {
-      vaultState = await api(vaultBase() + "/status");
+      nextState = await api(vaultBase() + "/status");
     } else {
       const first = (vaultListing.vaults || [])[0];
       const probe = first ? await api("/api/forge/vaults/" + encodeURIComponent(first.id) + "/status").catch(() => null) : null;
       // No vault yet: nothing is restricted to this Windows account, so private generation waits.
-      vaultState = { configured: !!first, unlocked: false, private_generation: !!(probe && probe.private_generation), acl: probe ? probe.acl : "unverified" };
+      nextState = { configured: !!first, unlocked: false, private_generation: !!(probe && probe.private_generation), acl: probe ? probe.acl : "unverified" };
     }
+    if (stale()) return;
+    vaultState = nextState;
     const layout = vaultListing.layout;
     const listed = layout === "multi" || layout === "empty";
     $("forge-vaults").hidden = !privateMode || !listed;
@@ -1013,6 +1024,7 @@
     if (layout === "unreadable") vaultsNote(vaultListing.error || "La liste des coffres est illisible. Aucun coffre n'est ouvert.");
     else if (layout === "migrating") vaultsNote("Un déplacement du coffre a été interrompu. Il reprendra au prochain démarrage de HQ. Rien n'est perdu.");
     await refreshMigration(privateMode);
+    if (stale()) return;
     $("forge-private-target-row").hidden = !privateMode || !listed || !(vaultListing.vaults || []).length;
     $("forge-vault-setup").hidden = !privateMode || !listed || !createOpen;
     $("forge-vault-unlock").hidden = !privateMode || !sheetVid;

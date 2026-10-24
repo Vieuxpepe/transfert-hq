@@ -178,7 +178,8 @@ def section_couch(run: Run) -> None:
     page.wait_for_timeout(500)
     run.check(page.evaluate("() => document.querySelector('#forge-studio').classList.contains('is-couch') && document.querySelector('#forge-couch').getAttribute('aria-pressed') === 'true'"), "Mode canape turns on and says so")
     seen = {u.split("?")[0] for _m, u, _b in reqs[:count]}
-    extra = [(m, u) for m, u, _b in reqs[count:] if m != "GET" or u.split("?")[0] not in seen]
+    # Slow app-wide polls (/api/kanban, /api/printers, /api/inbox) may tick in this window; only a write or a new Forge read counts.
+    extra = [(m, u) for m, u, _b in reqs[count:] if m != "GET" or ("/api/forge" in u and u.split("?")[0] not in seen)]
     run.check(extra == [], "turning it on sends no request of its own (only the page's usual polls): " + repr(extra))
     run.check(sorted((c["name"], c["value"], c.get("expires")) for c in ctx.cookies()) == cookies, "the session cookie is untouched (not extended)")
     hidden = page.evaluate("() => ['forge-sampling', 'forge-advanced', 'forge-presets', 'forge-lab', 'forge-night', 'forge-sweep', 'forge-devices', 'forge-style'].filter((id) => { const e = document.getElementById(id); return e && e.offsetParent !== null; })")
