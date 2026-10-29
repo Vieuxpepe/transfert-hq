@@ -3258,8 +3258,17 @@
     return new Intl.DateTimeFormat("fr-CA", { weekday: "short", day: "numeric", month: "short" }).format(date);
   }
 
+  /* The owner's own next event first; an HQ schedule only when there is none. */
+  function nextOf(cal) {
+    const mine = cal && cal.next_mine;
+    const start = mine && (mine.all_day ? parseLocalDateKey(mine.start) : parseLocalDateTime(mine.start));
+    const now = cal && parseLocalDateTime(cal.server_now);
+    if (mine && start && (!now || start >= now)) return mine;
+    return (cal && cal.next) || null;
+  }
+
   function nextParts(cal) {
-    const next = cal && cal.next;
+    const next = nextOf(cal);
     if (!next) return { when: "", title: "Rien à venir." };
     const title = next.title || "Sans titre";
     if (next.all_day) {
@@ -3278,7 +3287,7 @@
     if (!nextLine) return;
     nextLine.textContent = "";
     const parts = nextParts(cal);
-    const next = cal && cal.next;
+    const next = nextOf(cal);
     if (next) nextLine.appendChild(h("span", { class: "hq-next-label", text: "Prochain" }));
     if (parts.when) {
       if (next) nextLine.appendChild(h("span", { class: "hq-next-sep", "aria-hidden": "true", text: "·" }));

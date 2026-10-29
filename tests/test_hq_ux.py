@@ -147,3 +147,9 @@ class UxMarkupTests(unittest.TestCase):
         self.assertIn('"1 autre"', self.hq_js)
         self.assertIn('href="/assets/hq-home.css"', html)
         self.assertIn('src="/assets/hq-home.js"', html)
+        # Skeletons until the first data arrives (screen readers still hear « Chargement… »).
+        self.assertIn('class="home-skel"', accueil.split('id="hq-cal-next"', 1)[1].split("</span></span>", 1)[0])
+        self.assertIn('class="device-tile device-skel"', accueil)
+        self.assertIn('<li class="visually-hidden">Chargement…</li>', accueil)
+        self.assertIn('id="home-edit"', accueil)
+        self.assertIn("function nextOf", self.cal_js)

@@ -78,6 +78,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual((nxt["title"], nxt["start"]), ("Cours", "2026-09-28T14:00"))
         body = hq_calendar.query(datetime(2026, 9, 28), datetime(2026, 9, 29))
         self.assertEqual(body["next"]["title"], "Cours")
+        self.assertEqual(hq_calendar.summary()["next_mine"]["title"], "Cours")
         self.assertEqual(len(body["recent"]), 2)
 
     def test_streak_counts_fully_done_days(self):

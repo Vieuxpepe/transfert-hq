@@ -41,6 +41,7 @@ import hq_companion
 import hq_planner
 import hq_devices
 import hq_events
+import hq_home
 import hq_forge
 import hq_forge_fleet
 import hq_forge_gallery
@@ -234,6 +235,7 @@ ADMIN_PREFIXES = (
     "/api/telemetry",
     "/api/brief",
     "/api/today",
+    "/api/home-layout",
     "/api/push",
     "/api/schedules",
     "/api/calendar",
@@ -3021,7 +3023,7 @@ async function editFile(rel) {
 }
 
 function fmtBytes(n) {
-  if (n < 1024) return n + ' o';
+  if (n < 1024) return Math.round(n) + ' o'; // speeds are fractions: never « 96.55172413793105 o »
   if (n < 1048576) return (n/1024).toFixed(1) + ' Ko';
   if (n < 1073741824) return (n/1048576).toFixed(1) + ' Mo';
   return (n/1073741824).toFixed(2) + ' Go';
@@ -3374,12 +3376,17 @@ function deviceTile(d) {
   const name = String(d.name || '?').replace(/\.[a-z0-9-]+\.ts\.net$/i, '');
   let used = null;
   let freeLabel = '';
-  const disks = (d.disks && d.disks.length) ? d.disks : ((d.free != null && d.total) ? [{ free: d.free, total: d.total, free_h: d.free_h }] : []);
+  let totalLabel = '';
+  const round = (h) => String(h || '').replace(/\d+(?:\.\d+)?/, (m) => (+m >= 10 ? String(Math.round(+m)) : String(+(+m).toFixed(1))));
+  const disks = (d.disks && d.disks.length) ? d.disks : ((d.free != null && d.total) ? [{ free: d.free, total: d.total, free_h: d.free_h, total_h: d.total_h }] : []);
+  const many = disks.filter(x => x.total).length > 1;
   for (const x of disks) {
     if (!x.total) continue;
     const u = 1 - (x.free / x.total);
-    if (used == null || u > used) { used = u; freeLabel = (x.free_h || '') + ' libres'; }
+    // The fullest disk speaks for the device: « C: 106.88 Go libres sur 952.49 Go ».
+    if (used == null || u > used) { used = u; freeLabel = (many && x.name ? x.name + ' ' : '') + round(x.free_h) + ' libres'; totalLabel = x.total_h ? 'sur ' + round(x.total_h) : ''; }
   }
+  const detail = disks.filter(x => x.total).map(x => (x.name ? x.name + ' ' : '') + (x.free_h || '?') + ' libres sur ' + (x.total_h || '?')).join(' · ');
   const tone = used == null ? '' : (used > 0.85 ? 'is-low' : (used > 0.7 ? 'is-mid' : 'is-ok'));
   const mobile = /ios|android|iphone/i.test((d.os || '') + ' ' + name);
   const glyph = mobile
@@ -3387,9 +3394,9 @@ function deviceTile(d) {
     : '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 5.5h16v10H4zM9 19.5h6M12 15.5v4"/>';
   const meta = on ? (freeLabel || (d.source === 'browser' ? 'navigateur' : 'en ligne')) : 'hors ligne';
   const ring = used == null ? '' : ` style="--used:${Math.max(0.02, Math.min(1, used)).toFixed(3)}"`;
-  return `<li class="device-card device-tile ${on ? '' : 'is-off'} ${tone}" tabindex="0" role="button" aria-label="${escapeAttr(name + ' — ' + meta + ' — ouvrir la fiche')}" data-device-id="${escapeAttr(d.id || '')}">
+  return `<li class="device-card device-tile ${on ? '' : 'is-off'} ${tone}" tabindex="0" role="button" aria-label="${escapeAttr(name + ' — ' + (detail || meta) + ' — ouvrir la fiche')}"${detail ? ` data-help="${escapeAttr(detail)}"` : ''} data-device-id="${escapeAttr(d.id || '')}">
       <span class="device-ring${used == null ? ' is-none' : ''}"${ring}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${glyph}</svg></span>
-      <span class="device-tile-text"><strong>${escapeHtml(name)}</strong><span class="device-tile-meta">${escapeHtml(meta)}</span></span>
+      <span class="device-tile-text"><strong>${escapeHtml(name)}</strong><span class="device-tile-meta">${escapeHtml(meta)}</span>${on && totalLabel ? `<span class="device-tile-meta device-tile-total">${escapeHtml(totalLabel)}</span>` : ''}</span>
       <span class="dot ${on ? 'on' : 'off'}" aria-hidden="true"></span>
     </li>`;
 }
@@ -4957,7 +4964,7 @@ def render_app() -> bytes:
         <button type="button" class="hq-disclosure home-status" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
           <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
           <strong id="hq-state-label">HQ</strong>
-          <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
+          <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite"><span class="home-skel" aria-hidden="true"></span><span class="visually-hidden">Lecture de l'état…</span></span>
           <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
         </button>
       </div>
@@ -4983,12 +4990,12 @@ def render_app() -> bytes:
       <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="true" aria-controls="hq-today-panel" data-help="Ce qui est prévu aujourd'hui.">
         <span class="hq-disclosure-copy">
           <strong id="cal-home-title">Aujourd'hui</strong>
-          <span class="hq-disclosure-meta" id="hq-cal-next">Chargement…</span>
+          <span class="hq-disclosure-meta" id="hq-cal-next"><span class="home-skel" aria-hidden="true"></span><span class="visually-hidden">Chargement…</span></span>
         </span>
         <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
       </button>
       <div id="hq-today-panel" class="hq-disclosure-panel">
-        <div id="hq-cal-today"></div>
+        <div id="hq-cal-today"><div class="home-skel-lines" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></div></div>
         <button type="button" class="ghost home-link" id="hq-cal-open">Ouvrir le calendrier ›</button>
       </div>
     </section>
@@ -5007,7 +5014,7 @@ def render_app() -> bytes:
         <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
         <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Opérations</button>
       </div>
-      <ul class="hq-list home-feed-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
+      <ul class="hq-list home-feed-list" id="hq-recents"><li class="home-skel-row" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></li><li class="home-skel-row" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></li><li class="home-skel-row" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></li></ul>
       <button type="button" class="ghost home-link" id="home-feed-more" aria-controls="hq-recents" aria-expanded="false" hidden>Tout voir</button>
       <ul class="hq-list" id="hq-transfers" hidden></ul>
       <ul class="hq-list" id="hq-activity" hidden></ul>
@@ -5020,7 +5027,7 @@ def render_app() -> bytes:
         <h2 id="devices-title">Appareils <span class="badge" id="hq-dev-count">0</span></h2>
         <button type="button" class="ghost home-link" id="btn-agent-center" data-help="Jetons d'enrôlement, approbations et historique des companions. Les iPhone restent des navigateurs.">Centre agents ›</button>
       </div>
-      <ul class="hq-list home-device-row" id="hq-devices"><li class="hint skeleton">Chargement…</li></ul>
+      <ul class="hq-list home-device-row" id="hq-devices"><li class="device-tile device-skel" aria-hidden="true"><span class="device-ring is-none"></span><span class="device-tile-text"><span class="home-skel"></span><span class="home-skel is-short"></span></span></li><li class="device-tile device-skel" aria-hidden="true"><span class="device-ring is-none"></span><span class="device-tile-text"><span class="home-skel"></span><span class="home-skel is-short"></span></span></li><li class="visually-hidden">Chargement…</li></ul>
     </section>
 
     <section class="hq home-pc" aria-labelledby="actions-title">
@@ -5064,6 +5071,10 @@ def render_app() -> bytes:
         </form>
       </details>
     </section>
+    </div>
+
+    <div class="home-edit-row" id="home-edit-row" hidden>
+      <button type="button" class="ghost home-link" id="home-edit" aria-pressed="false">Modifier l'accueil</button>
     </div>
 
     <div id="drop-zone" class="home-drop" role="button" tabindex="-1" aria-label="Zone d'envoi de fichiers">
@@ -7497,6 +7508,9 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/today":
             self._json(200, build_today())
             return True
+        if raw == "/api/home-layout":
+            self._json(200, {"layout": hq_home.load(ROOT / "hq_home_layout.json")})
+            return True
         if raw == "/api/push/status":
             self._json(200, hq_automation.push_status())
             return True
@@ -7773,6 +7787,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _hq_post(self, raw: str) -> bool:
         if self._forge_post(raw):
+            return True
+        if raw == "/api/home-layout":
+            data = self._read_json()
+            layout = hq_home.default() if data.get("reset") is True else data.get("layout")
+            self._json(200, {"ok": True, "layout": hq_home.save(ROOT / "hq_home_layout.json", layout)})
             return True
         if self._drawings_post(raw):
             return True

@@ -100,6 +100,7 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 .device-tile-text{display:flex;flex-direction:column;min-width:0;flex:1 1 auto;line-height:1.25}
 .device-tile-text strong{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .device-tile-meta{font-size:var(--text-xs,.75rem);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.device-tile-total{display:block;font-weight:500;color:var(--muted)}
 .device-tile.is-low .device-tile-meta{color:var(--danger,#e85d4c);font-weight:700}
 .device-tile .dot{display:none} /* online is the default here; offline tiles say « hors ligne » */
 .home-v2 .hq-list li.device-tile.is-off{opacity:.62}
@@ -168,4 +169,61 @@ body[data-view="accueil"] .hq-capture-fab{display:none}
 @media (hover:hover) and (pointer:fine){
   .home-v2 button.home-act:hover,.home-v2 button.carnet-home-resume:hover,.home-v2 button.home-next:hover{filter:none;border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
     box-shadow:0 2px 4px rgba(0,0,0,.06),0 10px 24px rgba(0,0,0,.07)}
+}
+
+/* ---- skeletons while the first data arrives ---- */
+.home-skel{display:inline-block;width:9em;max-width:100%;height:.8em;border-radius:6px;vertical-align:middle;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--text) 8%,transparent) 0%,color-mix(in srgb,var(--text) 15%,transparent) 50%,color-mix(in srgb,var(--text) 8%,transparent) 100%);
+  background-size:200% 100%}
+.home-skel.is-short{width:5.5em}
+.home-skel-lines,.home-v2 .home-skel-row{display:flex;flex-direction:column;gap:8px;padding:6px 0}
+.home-skel-lines .home-skel,.home-skel-row .home-skel{width:70%;height:.85em}
+.home-skel-lines .home-skel.is-short,.home-skel-row .home-skel.is-short{width:40%}
+.home-v2 .hq-list li.device-skel{pointer-events:none}
+.device-skel .device-tile-text{gap:6px}
+.device-skel .home-skel{width:80%}
+@media (prefers-reduced-motion:no-preference){
+  .home-skel{animation:home-shimmer 1.3s ease-in-out infinite}
+  @keyframes home-shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
+}
+
+/* ---- the cards arrive one after another ---- */
+@media (prefers-reduced-motion:no-preference){
+  .home-v2.is-entering .home-hero,.home-v2.is-entering .home-actions,.home-v2.is-entering .home-col > section,.home-v2.is-entering .home-edit-row{
+    animation:home-in .5s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 55ms)}
+  @keyframes home-in{from{opacity:0;transform:translateY(12px) scale(.985)}}
+}
+
+/* ---- pull to refresh ---- */
+.home-ptr{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 10px);z-index:140;display:grid;place-items:center;width:40px;height:40px;
+  border-radius:50%;background:var(--panel);color:var(--muted);border:1px solid var(--line);box-shadow:0 6px 20px rgba(0,0,0,.18);
+  transform:translate(-50%,-60px);opacity:0;pointer-events:none}
+.home-ptr svg{width:22px;height:22px}
+.home-ptr.is-armed,.home-ptr.is-spinning,.home-ptr.is-done{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.home-ptr.is-spinning,.home-ptr.is-done{opacity:1}
+@media (prefers-reduced-motion:no-preference){
+  .home-ptr.is-spinning svg{animation:home-spin .8s linear infinite}
+  @keyframes home-spin{to{transform:rotate(360deg)}}
+  .home-ptr.is-done{transition:opacity .3s ease .15s;opacity:0}
+}
+
+/* ---- arrange Accueil ---- */
+.home-v2 .is-user-hidden{display:none}
+.home-v2 .home-edit-row{order:20;display:flex;flex-direction:column;align-items:center;gap:6px}
+.home-v2 .home-edit-row[hidden]{display:none}
+.home-edit-tools{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:4px 10px;font-size:var(--text-sm,.85rem);color:var(--muted);text-align:center}
+.home-v2.is-editing .home-col > section.is-user-hidden{display:block;opacity:.5;border-style:dashed}
+.home-v2.is-editing .home-col > section{outline:2px dashed color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
+.home-v2.is-editing .home-col > section > :not(.home-edit-bar){pointer-events:none;user-select:none}
+.home-edit-bar{display:flex;align-items:center;gap:6px;margin:-4px -4px 12px;padding:6px;border-radius:14px;background:color-mix(in srgb,var(--accent) 12%,var(--panel))}
+.home-edit-name{flex:1 1 auto;min-width:0;font-weight:800;font-size:.92rem;padding-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.home-v2 button.home-edit-btn{min-height:38px;min-width:40px;padding:6px 10px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);
+  font-size:var(--text-sm,.85rem);font-weight:800;box-shadow:none}
+.home-v2 button.home-edit-hide[aria-pressed="true"]{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+.home-edit-side{display:none}
+@media (min-width:900px){
+  .home-v2 .home-edit-row{grid-column:1/-1;order:20}
+  .home-v2 .home-edit-side{display:inline-flex}
+  .home-v2 .home-col:empty{min-height:80px;border:2px dashed transparent}
+  .home-v2.is-editing .home-col:empty{border-color:color-mix(in srgb,var(--line) 80%,transparent);border-radius:20px}
 }

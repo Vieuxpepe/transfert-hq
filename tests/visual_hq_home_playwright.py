@@ -113,6 +113,10 @@ def main() -> None:
                     check(page.evaluate("() => [...document.querySelectorAll('#hq-devices .device-tile.is-off')].every((t) => getComputedStyle(t).display !== 'none')"),
                           "« n hors ligne » unfolds them")
                 check(page.locator("#hq-actions .icon-btn svg").count() == 4, "this PC: four line icons")
+                metas = page.locator("#hq-devices .device-tile:not(.is-off) .device-tile-total").all_inner_texts()
+                check(any(m.startswith("sur ") and "Go" in m for m in metas), f"a device with storage gives its total ({metas})")
+                check(page.evaluate("() => [...document.querySelectorAll('#hq-devices .device-tile-meta')].every((m) => m.scrollWidth <= m.clientWidth + 1)"),
+                      "free and total fit without being cut")
 
                 # Activity: five lines, then « Tout voir ».
                 check(until(page, "() => document.querySelectorAll('#hq-recents > li:not(.hint)').length > 5"), "more than five recent lines")
@@ -143,6 +147,27 @@ def main() -> None:
                 check(page.evaluate("() => { const f = document.getElementById('hq-capture-fab'); return !f || getComputedStyle(f).display === 'none'; }"),
                       "no floating capture button over Accueil")
                 shot(page, label, browser_name)
+
+                # The cards arrive one after another when Accueil opens.
+                page.evaluate("() => setView('carnet')")
+                page.evaluate("() => setView('accueil')")
+                check(page.evaluate("() => document.querySelector('.home-v2').classList.contains('is-entering') && getComputedStyle(document.querySelector('.home-actions')).animationName === 'home-in'"),
+                      "opening Accueil brings the cards in one after another")
+                page.wait_for_timeout(1200)
+
+                # Pull down to refresh (touch; Chromium builds the events).
+                if page.evaluate("() => { try { return !!new Touch({ identifier: 1, target: document.body }); } catch (_) { return false; } }"):
+                    page.evaluate("() => window.scrollTo(0, 0)")
+                    page.evaluate("""() => { window.__ptr = []; const el = document.querySelector('.home-hero'), x = 150, y = 200;
+                        const t = (yy) => new Touch({ identifier: 9, target: el, clientX: x, clientY: yy });
+                        el.dispatchEvent(new TouchEvent('touchstart', { bubbles: true, cancelable: true, touches: [t(y)], targetTouches: [t(y)], changedTouches: [t(y)] }));
+                        for (const d of [12, 50, 100, 160, 200]) el.dispatchEvent(new TouchEvent('touchmove', { bubbles: true, cancelable: true, touches: [t(y + d)], targetTouches: [t(y + d)], changedTouches: [t(y + d)] }));
+                        window.__ptr.push(document.querySelector('.home-ptr').classList.contains('is-armed'));
+                        el.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [t(y + 200)] }));
+                        window.__ptr.push(document.querySelector('.home-ptr').classList.contains('is-spinning')); }""")
+                    check(page.evaluate("() => window.__ptr[0] && window.__ptr[1]"), "pulling down at the top arms, then refreshes")
+                    check(until(page, "() => !document.querySelector('.home-ptr').classList.contains('is-spinning')"), "and settles when everything is fresh")
+                    check(page.locator("#hq-devices .device-tile").count() > 0, "with the cards still there")
 
                 # Drop a file anywhere (desktop): the page becomes the drop zone, the file arrives.
                 if label == "desktop":
@@ -184,6 +209,49 @@ def main() -> None:
                 until(page, "() => !document.getElementById('home-next').hidden")
                 page.click("#home-next")
                 check(until(page, "() => document.body.dataset.view === 'calendrier' && !!document.querySelector('.hq-cal-day')"), "the next-event card opens its day in the calendar")
+
+                # « Modifier l'accueil » (desktop): hide, reorder, switch column; saved on HQ, back after a reload.
+                if label == "desktop":
+                    page.evaluate("() => setView('accueil')")
+                    check(until(page, "() => !document.getElementById('home-edit-row').hidden"), "« Modifier l'accueil » is offered to the owner")
+                    page.click("#home-edit")
+                    check(page.locator(".home-edit-bar").count() == 6, "each card gets its controls")
+                    page.evaluate("() => window.hqCarnetHome()")  # the Carnet summary redraws itself
+                    check(until(page, "() => !!document.querySelector('#hq-carnet-home > .home-edit-bar')"), "the Carnet card keeps its controls when it redraws")
+                    page.wait_for_timeout(1300)  # let the cards finish arriving
+                    shot(page, "edit", browser_name)
+                    page.locator('.home-send .home-edit-bar [data-edit="hide"]').click()
+                    page.locator('#hq-cal-home .home-edit-bar [data-edit="up"]').click()
+                    page.locator('.home-devices .home-edit-bar [data-edit="side"]').click()
+                    def server_layout():
+                        return page.request.get(base + "/api/home-layout").json()["layout"]
+                    lay = None
+                    for _ in range(30):
+                        lay = server_layout()
+                        if "send" in lay["hidden"] and lay["order"].index("today") < lay["order"].index("carnet") and "devices" not in lay["side"]:
+                            break
+                        page.wait_for_timeout(150)
+                    check("send" in lay["hidden"], f"hiding a card is saved on HQ ({lay})")
+                    check(lay["order"].index("today") < lay["order"].index("carnet"), "moving a card up is saved")
+                    check("devices" not in lay["side"], "moving a card to the other column is saved")
+                    check(page.evaluate("() => !!document.querySelector('.home-col-main .home-devices')"), "and it moves there at once")
+                    page.click("#home-edit")
+                    check(page.evaluate("() => getComputedStyle(document.querySelector('.home-send')).display === 'none'"), "the hidden card is gone once done")
+                    page.reload()
+                    page.wait_for_load_state("networkidle")
+                    check(until(page, "() => getComputedStyle(document.querySelector('.home-send')).display === 'none' && !!document.querySelector('.home-col-main .home-devices')"),
+                          "after a reload (any device) the arrangement is the same")
+                    tops = page.evaluate("() => ['#hq-cal-home', '#hq-carnet-home'].map((q) => document.querySelector(q).getBoundingClientRect().top)")
+                    check(tops[0] < tops[1], "Today now comes before Carnet")
+                    page.click("#home-edit")
+                    page.locator('[data-edit="reset"]').click()
+                    for _ in range(30):
+                        if server_layout()["hidden"] == []:
+                            break
+                        page.wait_for_timeout(150)
+                    check(server_layout()["order"][0] == "carnet" and server_layout()["hidden"] == [], "« Par défaut » puts everything back")
+                    page.keyboard.press("Escape")
+                    check(not page.evaluate("() => document.querySelector('.home-v2').classList.contains('is-editing')"), "Échap closes the editing")
                 check(not errors, f"no page errors {errors[:3]}")
                 ctx.close()
             browser.close()

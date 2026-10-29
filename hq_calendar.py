@@ -888,6 +888,7 @@ def summary() -> dict:
     return {
         "today": [_compact(item) for item in today_rows[:5]],
         "next": _compact(nxt) if nxt else None,
+        "next_mine": next_manual(),  # the owner's own events only (HQ schedules left out)
         "server_now": info["server_now"],
         "server_date": info["server_date"],
         "malformed": bool(body.get("malformed")),
