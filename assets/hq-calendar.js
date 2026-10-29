@@ -43,7 +43,13 @@
     synced: false,
     data: null,
     editing: null,
+    /* One-shot motion for the next render, set only by the owner's own moves ("next", "prev", "view").
+       Background refreshes leave it empty, so nothing moves on its own. */
+    anim: "",
+    prevView: "",
   };
+  const VIEW_ORDER = ["day", "week", "month", "agenda"];
+  const HINT_KEY = "hq_cal_hint_done";
 
   function pad(n) {
     return String(n).padStart(2, "0");
@@ -165,8 +171,8 @@
       return { from: dateKey(anchor), to: dateKey(addLocalDays(anchor, 1)) };
     }
     if (state.view === "week") {
-      const start = startOfLocalWeek(anchor);
-      return { from: dateKey(start), to: dateKey(addLocalDays(start, 7)) };
+      const start = weekStart(anchor);
+      return { from: dateKey(start), to: dateKey(addLocalDays(start, weekSpan())) };
     }
     if (state.view === "month") {
       const first = makeLocalDate(anchor.getFullYear(), anchor.getMonth() + 1, 1);
@@ -180,11 +186,25 @@
     const anchor = state.anchor || todayLocal();
     if (state.view === "day") return fmtDay(anchor);
     if (state.view === "week") {
-      const start = startOfLocalWeek(anchor);
-      return fmtShort(start) + " – " + fmtShort(addLocalDays(start, 6));
+      const start = weekStart(anchor);
+      return fmtShort(start) + " – " + fmtShort(addLocalDays(start, weekSpan() - 1));
     }
     if (state.view === "month") return fmtMonth(anchor);
     return "Dès le " + fmtShort(anchor);
+  }
+
+  /* Phone: the week view shows three days from the chosen one (no sideways scrolling); wider screens
+     keep the Monday-to-Sunday week. */
+  function threeDay() {
+    return window.matchMedia("(max-width: 600px)").matches;
+  }
+
+  function weekSpan() {
+    return threeDay() ? 3 : 7;
+  }
+
+  function weekStart(anchor) {
+    return threeDay() ? makeLocalDate(anchor.getFullYear(), anchor.getMonth() + 1, anchor.getDate()) : startOfLocalWeek(anchor);
   }
 
   function fmtShort(date) {
@@ -196,7 +216,10 @@
     const today = serverToday();
     const anchor = state.anchor || todayLocal();
     if (state.view === "day") return sameDay(anchor, today);
-    if (state.view === "week") return sameDay(startOfLocalWeek(anchor), startOfLocalWeek(today));
+    if (state.view === "week") {
+      const start = weekStart(anchor);
+      return today >= start && today < addLocalDays(start, weekSpan());
+    }
     if (state.view === "month") return anchor.getFullYear() === today.getFullYear() && anchor.getMonth() === today.getMonth();
     return sameDay(anchor, today);
   }
@@ -285,11 +308,62 @@
     if (state.data && state.data.malformed) {
       root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
     }
-    if (state.view === "day") root.appendChild(dayView());
-    else if (state.view === "week") root.appendChild(weekView());
-    else if (state.view === "month") root.appendChild(monthView());
-    else root.appendChild(agendaView());
+    const stage = h("div", { class: "hq-cal-stage" + (state.anim ? " is-" + state.anim : "") });
+    if (state.view === "day") stage.appendChild(dayView());
+    else if (state.view === "week") {
+      const first = weekStart(state.anchor);
+      const hint = threeDay() ? dayHint([0, 1, 2].map((n) => addLocalDays(first, n))) : null;
+      if (hint) stage.appendChild(hint);
+      stage.appendChild(weekView());
+    }
+    else if (state.view === "month") stage.appendChild(monthView());
+    else stage.appendChild(agendaView());
+    root.appendChild(stage);
     root.appendChild(conditionalBlock());
+    state.anim = "";
+    state.prevView = state.view;
+  }
+
+  /* Previous / next period, from the arrows, a swipe or the arrow keys. */
+  function go(dir) {
+    state.userMoved = true;
+    state.anim = dir > 0 ? "next" : "prev";
+    if (state.view === "day") state.anchor = addLocalDays(state.anchor, dir);
+    else if (state.view === "week") state.anchor = addLocalDays(state.anchor, dir * weekSpan());
+    else if (state.view === "month") state.anchor = addMonths(state.anchor, dir);
+    else state.anchor = addLocalDays(state.anchor, dir * 30);
+    refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
+  }
+
+  function goToday() {
+    const today = serverToday();
+    state.userMoved = true;
+    state.anim = state.anchor && today < state.anchor ? "prev" : "next";
+    state.anchor = today;
+    refresh("snap");
+  }
+
+  function hintDone() {
+    try { localStorage.setItem(HINT_KEY, "1"); } catch (_) {}
+  }
+
+  function hintSeen() {
+    try { return localStorage.getItem(HINT_KEY) === "1"; } catch (_) { return true; }
+  }
+
+  /* Under the day strip: an empty day says so (and how to add); otherwise, until the owner has once
+     swiped or tapped an hour, one quiet line says those two gestures exist. */
+  function dayHint(days) {
+    const empty = days.every((day) => !items().some((item) => overlapsDay(item, day)));
+    if (empty) {
+      return h("p", { class: "hq-cal-hint is-empty", text: coarsePointer()
+        ? "Rien de prévu. Touche une heure pour ajouter quelque chose."
+        : "Rien de prévu. Clique sur une heure pour ajouter quelque chose." });
+    }
+    if (hintSeen()) return null;
+    return h("p", { class: "hq-cal-hint", text: coarsePointer()
+      ? "Touche une heure pour ajouter · glisse pour changer de jour"
+      : "Clique sur une heure pour ajouter · ← → pour changer de période" });
   }
 
   function paintTz() {
@@ -306,7 +380,15 @@
      display toggles (Activité, Légende) on the left and Aujourd'hui / + Événement on the right. */
   function toolbar() {
     const bar = h("div", { class: "hq-cal-bar" });
-    const views = h("div", { class: "hq-cal-views", role: "group", "aria-label": "Affichage" });
+    const index = Math.max(0, VIEW_ORDER.indexOf(state.view));
+    const from = VIEW_ORDER.indexOf(state.prevView);
+    const moving = state.anim === "view" && from >= 0 && from !== index;
+    const views = h("div", {
+      class: "hq-cal-views" + (moving ? " is-moving" : ""),
+      role: "group",
+      "aria-label": "Affichage",
+      style: "--i:" + index + ";--from:" + (moving ? from : index),
+    });
     VIEWS.forEach(([id, label, help]) => {
       views.appendChild(
         h("button", {
@@ -316,13 +398,15 @@
           "data-view": id,
           "data-help": help,
           "aria-pressed": state.view === id ? "true" : "false",
-          text: label,
+          text: id === "week" && threeDay() ? "3 jours" : label,
         })
       );
     });
     const navCopy = {
       day: ["Jour précédent", "Jour suivant", "Recule d'un jour.", "Avance d'un jour."],
-      week: ["Semaine précédente", "Semaine suivante", "Recule d'une semaine.", "Avance d'une semaine."],
+      week: threeDay()
+        ? ["Trois jours plus tôt", "Trois jours plus tard", "Recule de trois jours.", "Avance de trois jours."]
+        : ["Semaine précédente", "Semaine suivante", "Recule d'une semaine.", "Avance d'une semaine."],
       month: ["Mois précédent", "Mois suivant", "Recule d'un mois.", "Avance d'un mois."],
       agenda: ["Agenda précédent", "Agenda suivant", "Recule de trente jours.", "Avance de trente jours."],
     }[state.view] || ["Période précédente", "Période suivante", "Recule.", "Avance."];
@@ -402,6 +486,8 @@
   function dayView() {
     const wrap = h("div", {});
     wrap.appendChild(weekStrip());
+    const hint = dayHint([state.anchor]);
+    if (hint) wrap.appendChild(hint);
     wrap.appendChild(allDayLane(state.anchor));
     wrap.appendChild(dayTimeline(state.anchor));
     return wrap;
@@ -553,16 +639,18 @@
     const coarse = coarsePointer();
     if (coarse) assignHitSlop(placed);
     const colPx = columnPx();
-    placed.forEach((entry) => {
+    const now = serverNow();
+    placed.forEach((entry, order) => {
       const width = 100 / entry.cols;
       const spanMin = Math.max(1, entry.endMin - entry.startMin);
       const top = (entry.startMin / 1440) * 100;
       const height = (spanMin / 1440) * 100;
       let hitTop = top;
       let hitHeight = coarse ? height : Math.max(height, 1.6);
+      const past = !!(now && itemEnd(entry.item) && itemEnd(entry.item) <= now);
       const button = h("button", {
         type: "button",
-        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)),
+        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)) + (past ? " is-past" : ""),
         "data-cal": "open",
         "data-id": entry.item.id,
         "data-help": previewHelp(entry.item),
@@ -583,6 +671,7 @@
       button.style.height = hitHeight + "%";
       button.style.left = entry.col * width + "%";
       button.style.width = width + "%";
+      button.style.setProperty("--n", String(Math.min(order, 12)));
       col.appendChild(button);
     });
     return columns;
@@ -663,7 +752,8 @@
 
   function weekView() {
     const scroll = h("div", { class: "hq-cal-scroll" });
-    const board = h("div", { class: "hq-cal-week" });
+    const span = weekSpan();
+    const board = h("div", { class: "hq-cal-week" + (span === 3 ? " is-three" : "") });
     const head = h("div", { class: "hq-cal-weekhead" });
     const all = h("div", { class: "hq-cal-allweek" });
     const grid = h("div", { class: "hq-cal-weekgrid" });
@@ -674,16 +764,16 @@
       labels.appendChild(h("div", { class: "hq-cal-hourlabel", text: pad(hour) + ":00" }));
     }
     grid.appendChild(labels);
-    const start = startOfLocalWeek(state.anchor);
+    const start = weekStart(state.anchor);
     const today = serverToday();
-    for (let i = 0; i < 7; i += 1) {
+    for (let i = 0; i < span; i += 1) {
       const day = addLocalDays(start, i);
       const headBtn = h("button", {
         type: "button",
         "data-cal": "pick-day",
         "data-day": dateKey(day),
-        text: DOW[i] + " " + day.getDate(),
-      });
+        "aria-label": fmtDay(day),
+      }, [h("span", { class: "hq-cal-strip-dow", text: DOW[(day.getDay() + 6) % 7] }), h("span", { class: "hq-cal-strip-num", text: String(day.getDate()) })]);
       if (sameDay(day, today)) headBtn.classList.add("is-today");
       head.appendChild(headBtn);
       const cell = h("div", { class: "hq-cal-allcell" });
@@ -769,6 +859,7 @@
   function agendaView() {
     const wrap = h("div", { class: "hq-cal-agenda" });
     let any = false;
+    let order = 0; // first rows arrive one after another (motion only after the owner moved)
     for (let i = 0; i < 30; i += 1) {
       const day = addLocalDays(state.anchor, i);
       const rows = items().filter((item) => overlapsDay(item, day));
@@ -786,6 +877,7 @@
           "data-id": item.id,
           "data-help": previewHelp(item),
         });
+        button.style.setProperty("--n", String(Math.min(order++, 12)));
         button.appendChild(h("time", { text: when }));
         const body = h("span", {});
         body.appendChild(h("strong", { text: item.title || "Sans titre" }));
@@ -836,25 +928,19 @@
     if (!button || !button.closest("#hq-cal-app")) return;
     const kind = button.dataset.cal;
     if (kind === "view") {
+      if ((button.dataset.view || "week") === state.view) return;
+      state.anim = "view";
       state.view = button.dataset.view || "week";
       try { localStorage.setItem("hq_cal_view", state.view); } catch (_) {}
       refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
       return;
     }
     if (kind === "prev" || kind === "next") {
-      state.userMoved = true;
-      const dir = kind === "next" ? 1 : -1;
-      if (state.view === "day") state.anchor = addLocalDays(state.anchor, dir);
-      else if (state.view === "week") state.anchor = addLocalDays(state.anchor, dir * 7);
-      else if (state.view === "month") state.anchor = addMonths(state.anchor, dir);
-      else state.anchor = addLocalDays(state.anchor, dir * 30);
-      refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
+      go(kind === "next" ? 1 : -1);
       return;
     }
     if (kind === "today") {
-      state.userMoved = true;
-      state.anchor = serverToday();
-      refresh("snap");
+      goToday();
       return;
     }
     if (kind === "activity") {
@@ -878,6 +964,7 @@
       const day = parseLocalDateKey(button.dataset.day);
       if (!day) return;
       state.userMoved = true;
+      state.anim = state.view === "day" ? (day < state.anchor ? "prev" : "next") : "view";
       state.anchor = day;
       state.view = "day";
       try { localStorage.setItem("hq_cal_view", "day"); } catch (_) {}
@@ -888,6 +975,7 @@
       const day = parseLocalDateKey(button.dataset.day);
       const hour = Number(button.dataset.hour);
       if (!day || Number.isNaN(hour)) return;
+      hintDone();
       openEditor(blankDraft(day, hour));
       return;
     }
@@ -942,6 +1030,52 @@
     node.hidden = false;
     node.textContent = "";
     return node;
+  }
+
+  /* Left / right arrows change period and T comes back to today, on the calendar view only, never
+     while typing or while a sheet, dialog or the search palette is open. */
+  function navKey(ev) {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || !document.body || document.body.dataset.view !== "calendrier") return;
+    const target = ev.target;
+    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+    if (document.querySelector("dialog[open]") || [...document.querySelectorAll(".hq-sheet")].some((s) => !s.hidden)) return;
+    const palette = document.getElementById("hq-palette");
+    if (palette && !palette.hidden) return;
+    if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
+      ev.preventDefault();
+      go(ev.key === "ArrowRight" ? 1 : -1);
+    } else if (ev.key === "t" || ev.key === "T") {
+      ev.preventDefault();
+      goToday();
+    }
+  }
+
+  /* Swipe left / right on the calendar (touch only) to change period. Vertical moves stay scrolls. */
+  function bindSwipe(root) {
+    let start = null;
+    root.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType !== "touch" || ev.target.closest(".hq-cal-bar, .hq-sheet")) { start = null; return; }
+      start = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+    }, { passive: true });
+    root.addEventListener("pointercancel", () => { start = null; }, { passive: true });
+    root.addEventListener("pointerup", (ev) => {
+      if (!start || ev.pointerType !== "touch") return;
+      const dx = ev.clientX - start.x;
+      const dy = ev.clientY - start.y;
+      const quick = Date.now() - start.t < 700;
+      start = null;
+      if (!quick || Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+      hintDone();
+      suppressClick();
+      go(dx < 0 ? 1 : -1);
+    }, { passive: true });
+  }
+
+  /* The pointerup of a swipe must not also count as a tap on the slot or event under the finger. */
+  function suppressClick() {
+    const stop = (e) => { e.stopPropagation(); e.preventDefault(); };
+    document.addEventListener("click", stop, { capture: true, once: true });
+    setTimeout(() => document.removeEventListener("click", stop, { capture: true }), 400);
   }
 
   function closeSheets() {
@@ -1228,7 +1362,10 @@
   }
 
   function onKey(ev) {
-    if (ev.key !== "Escape") return;
+    if (ev.key !== "Escape") {
+      navKey(ev);
+      return;
+    }
     const open = ["hq-cal-editor", "hq-cal-detail"].some((id) => {
       const node = document.getElementById(id);
       return node && !node.hidden;
@@ -1331,6 +1468,11 @@
     }
     state.anchor = todayLocal();
     root.addEventListener("click", onClick);
+    bindSwipe(root);
+    const narrow = window.matchMedia("(max-width: 600px)");
+    const onWidth = () => { if (state.data && state.view === "week") refresh(); };
+    if (narrow.addEventListener) narrow.addEventListener("change", onWidth);
+    else if (narrow.addListener) narrow.addListener(onWidth);
     document.addEventListener("keydown", onKey);
     const openHome = document.getElementById("hq-cal-open");
     if (openHome) {
