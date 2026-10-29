@@ -3367,12 +3367,47 @@ function spaceBar(label, free, total, freeH, totalH) {
   </div>`;
 }
 
+/* Accueil: one row of small device tiles (storage ring, name, status); offline ones fold away.
+   The wallboard keeps the detailed cards. */
+function deviceTile(d) {
+  const on = d.online !== false;
+  const name = String(d.name || '?').replace(/\.[a-z0-9-]+\.ts\.net$/i, '');
+  let used = null;
+  let freeLabel = '';
+  const disks = (d.disks && d.disks.length) ? d.disks : ((d.free != null && d.total) ? [{ free: d.free, total: d.total, free_h: d.free_h }] : []);
+  for (const x of disks) {
+    if (!x.total) continue;
+    const u = 1 - (x.free / x.total);
+    if (used == null || u > used) { used = u; freeLabel = (x.free_h || '') + ' libres'; }
+  }
+  const tone = used == null ? '' : (used > 0.85 ? 'is-low' : (used > 0.7 ? 'is-mid' : 'is-ok'));
+  const mobile = /ios|android|iphone/i.test((d.os || '') + ' ' + name);
+  const glyph = mobile
+    ? '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M8 3.5h8a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1zM11 17.5h2"/>'
+    : '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 5.5h16v10H4zM9 19.5h6M12 15.5v4"/>';
+  const meta = on ? (freeLabel || (d.source === 'browser' ? 'navigateur' : 'en ligne')) : 'hors ligne';
+  const ring = used == null ? '' : ` style="--used:${Math.max(0.02, Math.min(1, used)).toFixed(3)}"`;
+  return `<li class="device-card device-tile ${on ? '' : 'is-off'} ${tone}" tabindex="0" role="button" aria-label="${escapeAttr(name + ' — ' + meta + ' — ouvrir la fiche')}" data-device-id="${escapeAttr(d.id || '')}">
+      <span class="device-ring${used == null ? ' is-none' : ''}"${ring}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${glyph}</svg></span>
+      <span class="device-tile-text"><strong>${escapeHtml(name)}</strong><span class="device-tile-meta">${escapeHtml(meta)}</span></span>
+      <span class="dot ${on ? 'on' : 'off'}" aria-hidden="true"></span>
+    </li>`;
+}
+
 function renderDevices(devices) {
   const el = $('#hq-devices');
   if (!el) return;
   $('#hq-dev-count').textContent = String((devices || []).length);
   if (!devices || !devices.length) {
     el.innerHTML = '<li class="empty-teach"><em>Aucun appareil détecté</em><p class="hint">Ouvre HQ sur ton téléphone (même Tailscale) pour le voir ici</p></li>';
+    return;
+  }
+  if (!document.body.classList.contains('wall')) {
+    const online = devices.filter(d => d.online !== false);
+    const offline = devices.filter(d => d.online === false);
+    el.innerHTML = online.map(deviceTile).join('') + (offline.length
+      ? `<li class="device-off-toggle"><button type="button" class="ghost home-link" id="home-devices-off" aria-expanded="false">${offline.length} hors ligne</button></li>` + offline.map(deviceTile).join('')
+      : '');
     return;
   }
   el.innerHTML = devices.map(d => {
@@ -4880,6 +4915,7 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
 <link rel="stylesheet" href="/assets/hq-carnet.css"/>
 <link rel="stylesheet" href="/assets/hq-forge.css"/>
+<link rel="stylesheet" href="/assets/hq-home.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
@@ -4911,125 +4947,130 @@ def render_app() -> bytes:
     </div>
   </div>
 
-  <div data-panel="accueil" class="accueil-grid">
-    <div class="accueil-summaries">
-    <section id="hq-banner" class="hq hq-banner state-ok">
-      <div class="hq-banner-row">
-        <button type="button" class="hq-disclosure" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
+  <div data-panel="accueil" class="accueil-grid home-v2">
+    <section id="hq-banner" class="hq home-hero hq-banner state-ok" aria-labelledby="home-greet">
+      <div class="home-hero-head">
+        <div class="home-hello">
+          <p class="home-date" id="home-date"></p>
+          <h2 class="home-greet" id="home-greet">Bonjour</h2>
+        </div>
+        <button type="button" class="hq-disclosure home-status" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
           <span class="hq-state-dot" id="hq-state-dot" aria-hidden="true"></span>
           <strong id="hq-state-label">HQ</strong>
           <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
           <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
         </button>
-        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil, une action, ou un mot dans le Carnet, les prompts Forge, le calendrier et les noms de fichiers. Ctrl+K ou Cmd+K."><span>Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
       </div>
       <div id="hq-attention-panel" class="hq-disclosure-panel" hidden>
         <ul class="hq-list" id="hq-attention"></ul>
         <div class="row hq-actions" id="hq-quick-scenes"></div>
       </div>
+      <button type="button" class="home-next" id="home-next" hidden></button>
     </section>
+
+    <nav class="home-actions" aria-label="Actions rapides">
+      <button type="button" class="home-act" id="btn-camera" data-help="Prend une photo et l'envoie dans le dossier choisi."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.5-2h5.6l1.5 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="home-act-label">Photo</span></button>
+      <button type="button" class="home-act" id="home-act-note" hidden data-help="Écrit une note rapide dans le Carnet."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h8l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1zM14 3.5v4h4M8.5 12h7M8.5 15.5h5"/></svg></span><span class="home-act-label">Note</span></button>
+      <button type="button" class="home-act" id="home-act-event" data-help="Ajoute un événement en une phrase : « Dentiste demain 14h »."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16M12 13v4.5M9.75 15.25h4.5"/></svg></span><span class="home-act-label">Agenda</span></button>
+      <button type="button" class="home-act" id="home-act-file" data-help="Envoie un fichier dans le dossier choisi (Envoyer, plus bas). Sur ordinateur, glisse-le n'importe où sur Accueil."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 15V4.5M7.5 9 12 4.5 16.5 9M5 14.5v4A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/></svg></span><span class="home-act-label">Fichier</span></button>
+      <button type="button" class="home-act" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil, une action, ou un mot dans le Carnet, les prompts Forge, le calendrier et les noms de fichiers. Ctrl+K ou Cmd+K."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="m15 15 5 5"/></svg></span><span class="home-act-label">Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
+    </nav>
+
+    <div class="home-col home-col-main">
     <section class="hq carnet-home" id="hq-carnet-home" aria-label="Carnet" hidden></section>
-    <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
-      <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="false" aria-controls="hq-today-panel" data-help="Affiche ce qui est prévu aujourd'hui et ce qui s'est passé depuis hier.">
+
+    <section class="hq home-today" id="hq-cal-home" aria-labelledby="cal-home-title">
+      <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="true" aria-controls="hq-today-panel" data-help="Ce qui est prévu aujourd'hui.">
         <span class="hq-disclosure-copy">
           <strong id="cal-home-title">Aujourd'hui</strong>
           <span class="hq-disclosure-meta" id="hq-cal-next">Chargement…</span>
         </span>
         <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
       </button>
-      <div id="hq-today-panel" class="hq-disclosure-panel" hidden>
-        <p class="sec-hint">Ce qui se passe et ce qui vient</p>
+      <div id="hq-today-panel" class="hq-disclosure-panel">
         <div id="hq-cal-today"></div>
-        <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
-        <div id="hq-since" class="hq-since" hidden>
-          <h3 id="hq-since-title" class="hq-since-title">Depuis hier</h3>
-          <ul class="hq-list hq-since-list" id="hq-since-list" aria-labelledby="hq-since-title"></ul>
-          <p class="hint" id="hq-since-empty" hidden>Rien de nouveau depuis hier.</p>
-        </div>
+        <button type="button" class="ghost home-link" id="hq-cal-open">Ouvrir le calendrier ›</button>
       </div>
     </section>
-    </div>
-    <div class="accueil-main">
-      <section class="hq hq-primary" aria-labelledby="envoyer-title">
-        <div class="sec-head">
-          <h2 id="envoyer-title">Envoyer</h2>
-          <p class="sec-hint">Déposer un fichier vers Inbox, Photos ou Print</p>
-        </div>
-        <div class="field">
-          <label for="upload-folder">Dossier de destination</label>
-          <select id="upload-folder">{opts}</select>
-        </div>
-        <div id="drop-zone" class="drop" role="button" tabindex="0" aria-label="Zone d'envoi de fichiers">
-          <strong>Glisse ici, ou utilise Caméra</strong>
-          <span class="hint">Photos → Inbox/Photos · captures → Captures · PDF → Uni · max {html.escape(human_size(max_upload_bytes()))}</span>
-          <div class="row" style="margin-top:12px">
-            <button type="button" class="secondary" id="btn-camera">Caméra</button>
-            <button type="button" class="secondary" id="btn-paste">Coller une image</button>
-            <button type="button" class="secondary" id="btn-voice">Note vocale</button>
-          </div>
-        </div>
-        <input id="file-input" type="file" multiple hidden/>
-        <input id="camera-input" type="file" accept="image/*" capture="environment" hidden/>
-        <div id="progress" class="progress" hidden><div id="progress-fill"></div></div>
-        <div id="progress-label" class="hint" style="margin-top:6px"></div>
-        <div id="offline-queue" class="hint" style="margin-top:6px"></div>
-        <details class="note-acc mode-complet-only">
-          <summary>Écrire une note (.txt)</summary>
-          <form id="note-form">
-            <div class="field"><label for="note-folder">Dossier</label><select id="note-folder">{opts}</select></div>
-            <div class="field"><label for="note-title">Titre</label>
-              <input id="note-title" type="text" maxlength="80" placeholder="Optionnel"/></div>
-            <div class="field"><label for="note-body">Texte</label>
-              <textarea id="note-body" required placeholder="Écris ici…" style="min-height:72px"></textarea></div>
-            <button class="block" type="submit">Enregistrer la note</button>
-          </form>
-        </details>
-      </section>
-    </div>
-    <div class="accueil-side">
-      <section class="hq" aria-labelledby="devices-title">
-        <div class="sec-head">
-          <h2 id="devices-title">Appareils <span class="badge" id="hq-dev-count">0</span></h2>
-          <p class="sec-hint">En ligne et espace disque disponible</p>
-          <button type="button" class="secondary" id="btn-agent-center" data-help="Jetons d'enrôlement, approbations et historique des companions. Les iPhone restent des navigateurs.">Centre agents</button>
-        </div>
-        <ul class="hq-list" id="hq-devices"><li class="hint skeleton">Chargement…</li></ul>
-      </section>
 
-      <section class="hq" aria-labelledby="actions-title">
-        <div class="sec-head">
-          <h2 id="actions-title">Ce PC</h2>
-          <p class="sec-hint">Verrouiller, veille, capture d'écran, explorateur</p>
-        </div>
-        <div class="icon-actions" id="hq-actions">
-          <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC" data-help="Verrouille la session Windows de ce PC."><span class="ico" aria-hidden="true">🔒</span><span class="lbl">Verrouiller</span></button>
-          <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille" data-help="Met ce PC en veille."><span class="ico" aria-hidden="true">💤</span><span class="lbl">Veille</span></button>
-          <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture" data-help="Enregistre une capture d'écran dans Captures."><span class="ico" aria-hidden="true">📸</span><span class="lbl">Capture</span></button>
-          <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true">📁</span><span class="lbl">Dossier</span></button>
-        </div>
-        <div class="row hq-actions" style="margin-top:10px">
-          <button type="button" class="secondary" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
-        </div>
-        <div class="row hq-actions mode-complet-only" id="hq-custom-actions" style="margin-top:8px" aria-label="Actions personnalisées"></div>
-        <div class="row hq-actions mode-complet-only" id="hq-scenes" style="margin-top:8px" aria-label="Scènes"></div>
-        <p class="sec-hint mode-complet-only" style="margin-top:8px">Scènes = plusieurs actions d'un coup</p>
-      </section>
-
-      <section class="hq" aria-labelledby="recents-title">
-        <div class="sec-head">
-          <h2 id="recents-title">Activité récente</h2>
-          <p class="sec-hint">Derniers envois et actions, sans le journal technique</p>
-        </div>
-        <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
-          <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
-          <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
-          <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Opérations</button>
-        </div>
-        <ul class="hq-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
-        <ul class="hq-list" id="hq-transfers" hidden></ul>
-        <ul class="hq-list" id="hq-activity" hidden></ul>
-      </section>
+    <section class="hq home-feed" aria-labelledby="recents-title">
+      <div class="home-head">
+        <h2 id="recents-title">Activité récente</h2>
+      </div>
+      <div id="hq-since" class="hq-since" hidden>
+        <h3 id="hq-since-title" class="hq-since-title">Depuis hier</h3>
+        <ul class="hq-list hq-since-list" id="hq-since-list" aria-labelledby="hq-since-title"></ul>
+        <p class="hint" id="hq-since-empty" hidden>Rien de nouveau depuis hier.</p>
+      </div>
+      <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
+        <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
+        <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
+        <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Opérations</button>
+      </div>
+      <ul class="hq-list home-feed-list" id="hq-recents"><li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li></ul>
+      <button type="button" class="ghost home-link" id="home-feed-more" aria-controls="hq-recents" aria-expanded="false" hidden>Tout voir</button>
+      <ul class="hq-list" id="hq-transfers" hidden></ul>
+      <ul class="hq-list" id="hq-activity" hidden></ul>
+    </section>
     </div>
+
+    <div class="home-col home-col-side">
+    <section class="hq home-devices" aria-labelledby="devices-title">
+      <div class="home-head">
+        <h2 id="devices-title">Appareils <span class="badge" id="hq-dev-count">0</span></h2>
+        <button type="button" class="ghost home-link" id="btn-agent-center" data-help="Jetons d'enrôlement, approbations et historique des companions. Les iPhone restent des navigateurs.">Centre agents ›</button>
+      </div>
+      <ul class="hq-list home-device-row" id="hq-devices"><li class="hint skeleton">Chargement…</li></ul>
+    </section>
+
+    <section class="hq home-pc" aria-labelledby="actions-title">
+      <div class="home-head">
+        <h2 id="actions-title">Ce PC</h2>
+        <button type="button" class="secondary home-chip" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
+      </div>
+      <div class="icon-actions home-pc-row" id="hq-actions">
+        <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC" data-help="Verrouille la session Windows de ce PC."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="5" y="10.5" width="14" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg></span><span class="lbl">Verrouiller</span></button>
+        <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille" data-help="Met ce PC en veille."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/></svg></span><span class="lbl">Veille</span></button>
+        <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture" data-help="Enregistre une capture d'écran dans Captures."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="lbl">Capture</span></button>
+        <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="lbl">Dossier</span></button>
+      </div>
+      <div class="row hq-actions mode-complet-only" id="hq-custom-actions" aria-label="Actions personnalisées"></div>
+      <div class="row hq-actions mode-complet-only" id="hq-scenes" aria-label="Scènes"></div>
+      <p class="sec-hint mode-complet-only">Scènes = plusieurs actions d'un coup</p>
+    </section>
+
+    <section class="hq home-send" aria-labelledby="envoyer-title">
+      <div class="home-head">
+        <h2 id="envoyer-title">Envoyer</h2>
+        <label class="home-send-to" for="upload-folder"><span>vers</span><select id="upload-folder">{opts}</select></label>
+      </div>
+      <div class="row home-send-more">
+        <button type="button" class="secondary home-chip" id="btn-paste">Coller une image</button>
+        <button type="button" class="secondary home-chip" id="btn-voice">Note vocale</button>
+      </div>
+      <p class="hint home-send-hint">Photos → Inbox/Photos · captures → Captures · PDF → Uni · max {html.escape(human_size(max_upload_bytes()))}</p>
+      <div id="progress" class="progress" hidden><div id="progress-fill"></div></div>
+      <div id="progress-label" class="hint"></div>
+      <div id="offline-queue" class="hint"></div>
+      <details class="note-acc mode-complet-only">
+        <summary>Écrire une note (.txt)</summary>
+        <form id="note-form">
+          <div class="field"><label for="note-folder">Dossier</label><select id="note-folder">{opts}</select></div>
+          <div class="field"><label for="note-title">Titre</label>
+            <input id="note-title" type="text" maxlength="80" placeholder="Optionnel"/></div>
+          <div class="field"><label for="note-body">Texte</label>
+            <textarea id="note-body" required placeholder="Écris ici…" style="min-height:72px"></textarea></div>
+          <button class="block" type="submit">Enregistrer la note</button>
+        </form>
+      </details>
+    </section>
+    </div>
+
+    <div id="drop-zone" class="home-drop" role="button" tabindex="-1" aria-label="Zone d'envoi de fichiers">
+      <div class="home-drop-card"><strong>Lâche pour envoyer</strong><span class="hint">vers <b id="home-drop-folder">Inbox</b></span></div>
+    </div>
+    <input id="file-input" type="file" multiple hidden/>
+    <input id="camera-input" type="file" accept="image/*" capture="environment" hidden/>
   </div>
 
   <div data-panel="carnet">
@@ -6251,6 +6292,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-calendar-quick.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-today.js"></script>
+<script src="/assets/hq-home.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-struct.js"></script>

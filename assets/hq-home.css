@@ -1,0 +1,171 @@
+/* Accueil (home): a welcome header with the status and the next event, a row of big actions, then
+   cards in priority order. Phone: one column. Desktop: the header and actions across, then two
+   columns (Carnet, Today, activity | devices, this PC, send) that never leave holes. */
+
+body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:column;gap:12px}
+.home-v2 .home-col{display:contents} /* phone: the cards flow in one list, ordered below */
+.home-v2 .home-hero{order:1}
+.home-v2 .home-actions{order:2}
+.home-v2 .carnet-home{order:3}
+.home-v2 .home-today{order:4}
+.home-v2 .home-devices{order:5}
+.home-v2 .home-pc{order:6}
+.home-v2 .home-send{order:7}
+.home-v2 .home-feed{order:8}
+
+/* ---- one card style ---- */
+.home-v2 section.hq{margin:0;border-radius:20px;border:1px solid color-mix(in srgb,var(--line) 70%,transparent);padding:16px;
+  background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.05)}
+.home-v2 section.hq[hidden]{display:none}
+.home-v2 .home-head{display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-wrap:wrap;margin:0 0 12px}
+.home-v2 .home-head h2{margin:0;font-size:1.02rem;font-weight:800;letter-spacing:-.015em}
+.home-v2 .row{justify-content:flex-start}
+.home-v2 button.home-link{min-height:36px;padding:6px 4px;border:0;background:transparent;color:var(--accent);font-size:var(--text-sm,.85rem);font-weight:700;box-shadow:none}
+.home-v2 button.home-chip{min-height:36px;padding:6px 14px;border-radius:999px;font-size:var(--text-sm,.85rem);font-weight:700}
+
+/* ---- welcome header ---- */
+.home-v2 section.home-hero{position:relative;overflow:hidden;padding:18px 18px 16px;border-radius:24px;border-left:1px solid color-mix(in srgb,var(--line) 70%,transparent);
+  background:radial-gradient(120% 130% at 0% 0%,color-mix(in srgb,var(--home-amb,#8cc8ff) 32%,transparent),transparent 62%),
+    radial-gradient(90% 120% at 100% 100%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 60%),var(--panel)}
+.home-hero-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px 12px;flex-wrap:wrap}
+.home-hello{min-width:0}
+.home-date{margin:0;font-size:var(--text-sm,.85rem);font-weight:700;color:var(--muted)}
+.home-greet{margin:2px 0 0;font-size:1.75rem;line-height:1.1;font-weight:850;letter-spacing:-.035em;color:var(--text)}
+.home-v2 button.hq-disclosure.home-status{flex:0 1 auto;width:auto;min-height:40px;padding:6px 10px 6px 12px;gap:6px;border-radius:999px;
+  border:1px solid color-mix(in srgb,var(--line) 80%,transparent);background:color-mix(in srgb,var(--panel) 72%,transparent);
+  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.home-v2 #hq-attention-toggle strong{font-size:.88rem}
+.home-v2 #hq-attention-toggle .hq-state-dot{order:0;width:10px;height:10px}
+.home-v2 #hq-attention-toggle strong{order:1}
+.home-v2 #hq-attention-toggle .hq-chevron{order:3}
+.home-v2 #hq-attention-toggle .hq-disclosure-meta{order:2;flex:0 1 auto;margin-left:0;font-size:var(--text-sm,.85rem);font-weight:600;color:var(--muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.state-warning #hq-attention-toggle,.state-critical #hq-attention-toggle{border-color:color-mix(in srgb,var(--warn,#e6b450) 55%,var(--line))}
+.state-critical #hq-attention-toggle{border-color:color-mix(in srgb,var(--danger,#e85d4c) 60%,var(--line))}
+.home-v2 .home-hero .hq-disclosure-panel{margin-top:12px}
+
+.home-v2 button.home-next{display:flex;align-items:center;justify-content:flex-start;gap:12px;width:100%;margin-top:14px;padding:10px 14px;min-height:60px;
+  border-radius:16px;border:1px solid color-mix(in srgb,var(--cat,var(--accent)) 38%,var(--line));background:color-mix(in srgb,var(--panel) 80%,transparent);
+  color:var(--text);font-weight:400;text-align:left;box-shadow:none}
+.home-v2 button.home-next[hidden]{display:none}
+.home-next .hq-cal-ring{width:38px;height:38px}
+.home-next-text{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}
+.home-next-label{font-size:var(--text-xs,.72rem);font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.home-next-title{font-weight:800;font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.home-next-when{flex:0 0 auto;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* ---- the action row ---- */
+.home-actions{display:flex;gap:8px}
+.home-v2 button.home-act{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:78px;
+  padding:10px 4px;border-radius:18px;border:1px solid color-mix(in srgb,var(--line) 70%,transparent);background:var(--panel);color:var(--text);
+  font-size:.78rem;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.05),0 6px 16px rgba(0,0,0,.04)}
+.home-v2 button.home-act[hidden]{display:none}
+.home-act-ico{display:grid;place-items:center;width:40px;height:40px;border-radius:13px;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.home-act-ico svg{width:22px;height:22px}
+.home-act-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;font-size:.68rem;letter-spacing:-.01em}
+.home-act .kbd-hint{display:none} /* Ctrl K is in its tooltip */
+
+/* ---- Carnet « Reprendre » ---- */
+.home-v2 .carnet-home .sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 12px}
+.home-v2 .carnet-home .sec-head h2{margin:0;font-size:1.02rem}
+.home-v2 button.carnet-home-resume{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:12px 14px;border-radius:16px;text-align:left;
+  border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));background:color-mix(in srgb,var(--accent) 8%,var(--panel));color:var(--text);font-weight:400;box-shadow:none}
+.carnet-home-kicker{font-size:var(--text-xs,.72rem);font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.carnet-home-resume .carnet-home-title{font-size:1.05rem;font-weight:800;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.carnet-home-when{font-size:var(--text-sm,.82rem);color:var(--muted)}
+.home-v2 .carnet-home-list{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0;padding:0}
+.home-v2 .carnet-home-list li{list-style:none}
+.home-v2 button.carnet-home-chip{min-height:34px;padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--text);
+  font-size:var(--text-sm,.85rem);font-weight:700;gap:6px;max-width:100%}
+.carnet-home-chip .carnet-home-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:14em}
+.carnet-home-chip .carnet-home-pin{font-size:var(--text-xs,.72rem);color:var(--muted);font-weight:700}
+.home-v2 .carnet-home-actions{margin-top:12px;justify-content:flex-start}
+
+/* ---- today ---- */
+.home-v2 .home-today #hq-today-panel{margin-top:10px}
+.home-v2 .home-today #hq-cal-today .hq-list{margin:0}
+
+/* ---- devices: one row of small tiles ---- */
+.home-v2 .home-device-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px;margin:0;padding:0}
+.home-v2 .hq-list li.device-tile{display:flex;align-items:center;gap:10px;min-height:58px;padding:9px 10px;border-radius:15px;
+  border:1px solid color-mix(in srgb,var(--line) 75%,transparent);background:color-mix(in srgb,var(--bg) 35%,var(--panel))}
+.device-ring{position:relative;flex:0 0 auto;display:grid;place-items:center;width:38px;height:38px;border-radius:50%;
+  background:conic-gradient(var(--ring,var(--ok,#3dbe7a)) calc(var(--used,0) * 1turn),color-mix(in srgb,var(--text) 12%,transparent) 0)}
+.device-ring::before{content:"";position:absolute;inset:3.5px;border-radius:50%;background:var(--panel)}
+.device-ring.is-none{background:color-mix(in srgb,var(--text) 9%,transparent)}
+.device-ring svg{position:relative;width:18px;height:18px;color:var(--muted)}
+.device-tile.is-ok{--ring:var(--ok,#3dbe7a)}
+.device-tile.is-mid{--ring:var(--warn,#e6b450)}
+.device-tile.is-low{--ring:var(--danger,#e85d4c)}
+.device-tile-text{display:flex;flex-direction:column;min-width:0;flex:1 1 auto;line-height:1.25}
+.device-tile-text strong{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.device-tile-meta{font-size:var(--text-xs,.75rem);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.device-tile.is-low .device-tile-meta{color:var(--danger,#e85d4c);font-weight:700}
+.device-tile .dot{display:none} /* online is the default here; offline tiles say « hors ligne » */
+.home-v2 .hq-list li.device-tile.is-off{opacity:.62}
+.home-device-row:not(.show-off) .device-tile.is-off{display:none}
+.home-v2 .device-off-toggle{grid-column:1/-1;list-style:none;padding:0}
+
+/* ---- this PC ---- */
+.home-v2 .home-pc-row{grid-template-columns:repeat(4,minmax(0,1fr))}
+.home-v2 .home-pc .icon-btn{min-height:70px;border-radius:16px;gap:6px;background:color-mix(in srgb,var(--bg) 35%,var(--panel));border-color:color-mix(in srgb,var(--line) 75%,transparent)}
+.home-v2 .home-pc .icon-btn .ico{color:var(--accent)}
+.home-v2 .home-pc .icon-btn .ico svg{display:block;width:24px;height:24px}
+.home-v2 .home-pc .icon-btn .lbl{font-size:.78rem}
+.home-v2 .home-pc #hq-custom-actions,.home-v2 .home-pc #hq-scenes{margin-top:10px}
+.home-v2 .home-pc #hq-custom-actions:empty,.home-v2 .home-pc #hq-scenes:empty{display:none}
+
+/* ---- send ---- */
+.home-send-to{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--text-sm,.85rem);font-weight:700;color:var(--muted)}
+.home-v2 .home-send-to select{width:auto;min-height:36px;margin:0;padding:4px 30px 4px 12px;border-radius:999px;font-weight:700}
+.home-v2 .home-send-more{gap:8px}
+.home-send-hint{margin:10px 0 0;font-size:var(--text-xs,.75rem)}
+.home-v2 .home-send #progress{margin-top:10px}
+.home-v2 .home-send #progress-label:empty,.home-v2 .home-send #offline-queue:empty{display:none}
+.home-v2 .home-send .note-acc{margin-top:10px}
+
+/* ---- activity: since yesterday, then the latest five ---- */
+.home-v2 .home-feed .hq-since{margin:0 0 12px;border-top:0;padding-top:0;padding:0 0 12px;border-bottom:1px solid color-mix(in srgb,var(--line) 70%,transparent)}
+.home-v2 .home-feed .hq-since-title{margin-top:0}
+.home-v2 .home-feed .chips{margin-bottom:8px}
+.home-feed-list:not(.is-all) > li:nth-child(n+6){display:none}
+.home-v2 .home-feed-list > li{padding:8px 0;border-top:1px solid color-mix(in srgb,var(--line) 45%,transparent)}
+.home-v2 .home-feed-list > li:first-child{border-top:0}
+.home-v2 .meta{font-family:inherit}
+.home-v2 #home-feed-more{margin-top:4px}
+
+/* ---- drop anywhere (desktop) ---- */
+.home-drop{display:none}
+.home-drop.is-active{position:fixed;inset:0;z-index:150;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--accent) 16%,rgba(0,0,0,.4));-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.home-drop-card{display:flex;flex-direction:column;align-items:center;gap:6px;padding:30px 40px;border-radius:24px;border:2px dashed var(--accent);
+  background:var(--panel);color:var(--text);font-size:1.15rem;pointer-events:none;box-shadow:0 24px 60px rgba(0,0,0,.3)}
+.home-drop.drag .home-drop-card{transform:scale(1.03)}
+
+/* The action row has Note: the floating capture button is not needed on Accueil. */
+body[data-view="accueil"] .hq-capture-fab{display:none}
+/* Plain text in the status chip (monospace stays for paths and IPs). */
+.status-chip{font-family:inherit}
+
+/* ---- desktop ---- */
+@media (min-width:900px){
+  body[data-view="accueil"] .accueil-grid.home-v2{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;align-items:start}
+  .home-v2 .home-hero,.home-v2 .home-actions{grid-column:1/-1}
+  .home-v2 .home-col{order:3}
+  .home-v2 .home-col{display:flex;flex-direction:column;gap:16px;min-width:0}
+  .home-v2 section.home-hero{padding:24px 24px 20px}
+  .home-greet{font-size:2.2rem}
+  .home-v2 button.home-act{flex-direction:row;justify-content:flex-start;gap:10px;min-height:64px;padding:10px 14px}
+  .home-act-label{font-size:.92rem}
+  .home-v2 button.home-next{max-width:520px}
+}
+
+@media (prefers-reduced-motion:no-preference){
+  .home-v2 button.home-act,.home-v2 .home-pc .icon-btn,.home-v2 .hq-list li.device-tile,.home-v2 button.carnet-home-resume,.home-v2 button.home-next{
+    transition:transform .14s ease,box-shadow .2s ease,border-color .2s ease}
+  .home-v2 button.home-act:active,.home-v2 .home-pc .icon-btn:active,.home-v2 .hq-list li.device-tile:active,.home-v2 button.carnet-home-resume:active,.home-v2 button.home-next:active{transform:scale(.97)}
+}
+@media (hover:hover) and (pointer:fine){
+  .home-v2 button.home-act:hover,.home-v2 button.carnet-home-resume:hover,.home-v2 button.home-next:hover{filter:none;border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+    box-shadow:0 2px 4px rgba(0,0,0,.06),0 10px 24px rgba(0,0,0,.07)}
+}

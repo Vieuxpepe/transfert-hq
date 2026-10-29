@@ -1,6 +1,6 @@
-/* Accueil 'Aujourd'hui' > 'Depuis hier': one calm list of what happened in the last 24 h.
-   Counts only (no file names or note text). Loaded when the section is open; refreshed every
-   5 minutes while it stays open and the page is visible. A tap opens the matching view. */
+/* Accueil > Activité récente > 'Depuis hier': one calm list of what happened in the last 24 h.
+   Counts only (no file names or note text). Loaded while Accueil is on screen; refreshed every
+   5 minutes while it stays there and the page is visible. A tap opens the matching view. */
 (function () {
   "use strict";
   const REFRESH_MS = 5 * 60 * 1000;
@@ -76,8 +76,7 @@
   }
 
   function isOpen() {
-    const panel = $("hq-today-panel");
-    return !!panel && !panel.hidden && document.body.dataset.view === "accueil";
+    return !!$("hq-since") && document.body.dataset.view === "accueil";
   }
 
   function schedule() {
@@ -91,10 +90,8 @@
   }
 
   function boot() {
-    const panel = $("hq-today-panel");
-    if (!panel) return;
-    // The panel opens and closes through hq.js (hidden attribute); the view changes on body[data-view].
-    new MutationObserver(schedule).observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+    if (!$("hq-since")) return;
+    // Shown with Accueil (body[data-view]).
     new MutationObserver(schedule).observe(document.body, { attributes: true, attributeFilter: ["data-view"] });
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && isOpen()) load();

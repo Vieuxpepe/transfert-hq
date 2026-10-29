@@ -7311,7 +7311,8 @@
     const active = items.filter((it) => !it.deleted);
     const pins = active.filter((it) => it.pinned).sort(byRecency);
     const rest = active.filter((it) => !it.pinned).sort(byRecency);
-    return { pages: active.length, pinned: pins.length, top: pins.concat(rest).slice(0, 3) };
+    const latest = active.slice().sort(byRecency)[0] || null;
+    return { pages: active.length, pinned: pins.length, top: pins.concat(rest).slice(0, 3), latest };
   }
 
   function homeFromMeta(meta) {
@@ -7323,6 +7324,16 @@
     return homeFromItems(items);
   }
 
+  function agoText(tsSec) {
+    const mins = Math.max(0, Math.round((Date.now() - Number(tsSec) * 1000) / 60000));
+    if (mins < 1) return "à l'instant";
+    if (mins < 60) return "il y a " + mins + " min";
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return "il y a " + hrs + " h";
+    const days = Math.round(hrs / 24);
+    return days === 1 ? "hier" : "il y a " + days + " jours";
+  }
+
   function renderHome(data) {
     const host = homeHost();
     if (!host || ui.role !== "admin") return;
@@ -7332,14 +7343,23 @@
       el("h2", { id: "carnet-home-title", text: "Carnet" }),
       el("p", { class: "sec-hint", id: "carnet-home-counts", text: counts }),
     ]));
+    // « Reprendre »: the page edited last, big; then the pinned pages as chips.
+    if (data.latest) {
+      const resume = el("button", { type: "button", class: "carnet-home-item carnet-home-resume", "data-carnet-page-id": data.latest.id });
+      resume.appendChild(el("span", { class: "carnet-home-kicker", text: "Reprendre" }));
+      resume.appendChild(el("span", { class: "carnet-home-title", text: data.latest.title }));
+      if (data.latest.updated) resume.appendChild(el("span", { class: "carnet-home-when", text: agoText(data.latest.updated) }));
+      host.appendChild(resume);
+    }
+    const chips = data.top.filter((it) => !data.latest || it.id !== data.latest.id);
     const list = el("ul", { class: "hq-list carnet-home-list" });
-    for (const it of data.top) {
-      const b = el("button", { type: "button", class: "carnet-home-item", "data-carnet-page-id": it.id });
+    for (const it of chips) {
+      const b = el("button", { type: "button", class: "carnet-home-item carnet-home-chip", "data-carnet-page-id": it.id });
       b.appendChild(el("span", { class: "carnet-home-title", text: it.title }));
       if (it.pinned) b.appendChild(el("span", { class: "carnet-home-pin", text: "Épinglée" }));
       list.appendChild(el("li", null, [b]));
     }
-    if (data.top.length) host.appendChild(list);
+    if (chips.length) host.appendChild(list);
     host.appendChild(el("div", { class: "row carnet-home-actions" }, [
       el("button", { type: "button", id: "btn-home-carnet-open", text: "Ouvrir le carnet" }),
       el("button", { type: "button", id: "btn-home-carnet-new", class: "secondary", text: "Nouvelle note" }),

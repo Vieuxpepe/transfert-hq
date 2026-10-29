@@ -99,56 +99,51 @@ class UxMarkupTests(unittest.TestCase):
         self.assertIn("pointer: coarse", self.cal_js)
         self.assertNotIn("min-height:28px", self.cal_css)
 
-    def test_home_summaries_collapse(self):
+    def test_home_layout(self):
         html = self.html
         accueil = html.split('<div data-panel="accueil"', 1)[1].split('<div data-panel="calendrier"', 1)[0]
-        banner, today = accueil.split('id="hq-cal-home"', 1)
-        attention_head, attention_panel = banner.split('id="hq-attention-panel"', 1)
-        today_head, today_panel = today.split('id="hq-today-panel"', 1)
-        self.assertIn('id="hq-attention-toggle"', attention_head)
-        self.assertIn('aria-expanded="false"', attention_head)
-        self.assertIn('aria-controls="hq-attention-panel"', attention_head)
-        self.assertIn('id="btn-palette"', attention_head)
-        self.assertNotIn('id="btn-palette"', attention_panel)
-        self.assertIn('class="secondary" id="btn-sync-captures"', accueil)
-        self.assertNotIn("<button", attention_head.split("<button", 1)[1].split("</button>", 1)[0])
+        hero = accueil.split('id="hq-banner"', 1)[1].split("</section>", 1)[0]
+        # Welcome header: date, greeting, the status (still a disclosure), the countdown card.
+        for needle in ('id="home-date"', 'id="home-greet"', 'id="hq-attention-toggle"', 'aria-controls="hq-attention-panel"',
+                       'aria-expanded="false"', 'id="hq-attention-panel"', 'id="home-next"'):
+            self.assertIn(needle, hero)
+        self.assertNotIn("<button", hero.split('id="hq-attention-toggle"', 1)[1].split("</button>", 1)[0])
+        # One row of big actions: photo, note, event, file, search.
+        actions = accueil.split('class="home-actions"', 1)[1].split("</nav>", 1)[0]
+        for needle in ('id="btn-camera"', 'id="home-act-note"', 'id="home-act-event"', 'id="home-act-file"', 'id="btn-palette"'):
+            self.assertIn(needle, actions)
+        # Priority order in the page: header, actions, Carnet, Today, activity | devices, this PC, send.
+        order = [accueil.index(x) for x in ('id="hq-banner"', 'class="home-actions"', 'id="hq-carnet-home"', 'id="hq-cal-home"',
+                                            'class="hq home-feed"', 'class="hq home-devices"', 'class="hq home-pc"', 'class="hq home-send"')]
+        self.assertEqual(order, sorted(order))
+        today_head, today_panel = accueil.split('id="hq-cal-home"', 1)[1].split('id="hq-today-panel"', 1)
         self.assertIn('id="hq-today-toggle"', today_head)
         self.assertIn('aria-controls="hq-today-panel"', today_head)
         self.assertIn('id="hq-cal-next"', today_head)
         self.assertNotIn('id="hq-cal-next"', today_panel)
         self.assertIn('id="hq-cal-open"', today_panel)
+        self.assertIn('id="hq-since"', accueil.split('class="hq home-feed"', 1)[1])
+        self.assertIn('class="secondary home-chip" id="btn-sync-captures"', accueil)
+        self.assertNotIn("🔒", accueil)  # line icons, not emoji
+        # Behaviour kept from before.
         self.assertIn("hq_home_attention_open", self.hq_js)
         self.assertIn("hq_home_today_open", self.hq_js)
-        self.assertIn("function setDisclosure", self.hq_js)
+        self.assertIn("todayPref === null ? true : todayPref", self.hq_js)
         self.assertIn("function setupHomeDisclosures", self.hq_js)
-        self.assertIn("function noteHqState", self.hq_js)
         self.assertIn('state === "critical" && hqStateSeen !== "critical"', self.hq_js)
         paint_home = self.cal_js.split("function paintHome", 1)[1].split("function fmtNextDay", 1)[0]
         self.assertNotIn("Prochain", paint_home)
-        self.assertIn("function nextParts", self.cal_js)
-        self.assertIn("function paintNext", self.cal_js)
-        self.assertIn("hq-next-when", self.cal_js)
-        self.assertIn("hq-next-title", self.cal_js)
         self.assertIn('text: "Prochain"', self.cal_js)
         parts = self.cal_js.split("function nextParts", 1)[1].split("function paintNext", 1)[0]
         self.assertNotIn("notes", parts)
-        self.assertIn("weekday: \"short\"", self.cal_js)
-        self.assertIn("hq-cal-next", self.cal_js)
-        self.assertIn('class="accueil-summaries"', accueil)
-        self.assertLess(accueil.index("accueil-summaries"), accueil.index('id="hq-banner"'))
-        self.assertLess(accueil.index('id="hq-cal-home"'), accueil.index("accueil-main"))
-        hq_css = (ROOT / "assets" / "hq.css").read_text(encoding="utf-8")
-        self.assertIn("minmax(0,1fr) minmax(0,1fr)", hq_css)
-        self.assertIn("align-items:start", hq_css)
-        self.assertIn("@media (min-width:1160px)", hq_css)
-        self.assertNotIn("@media (min-width:1100px)", hq_css)
-        self.assertIn(".accueil-summaries{grid-column:1/-1}", hq_css.replace(" ", ""))
-        before_pair = hq_css.split("@media (min-width:1160px)", 1)[0]
-        self.assertNotIn("minmax(0,1fr) minmax(0,1fr)", before_pair)
-        narrow = hq_css.split("@media (max-width:430px)", 1)[1].replace("\n", "")
-        self.assertIn("#hq-attention-toggle .hq-disclosure-meta{order:4;flex:1 0 100%;margin-left:20px}", narrow)
-        self.assertIn(".hq-next-when{color:var(--text)}", hq_css.replace(" ", ""))
-        self.assertIn(".hq-next-title{", hq_css.replace(" ", ""))
-        self.assertIn("text-overflow:ellipsis", hq_css)
-        self.assertNotIn("grid-column:1 / -1", self.cal_css)
-        self.assertNotIn("#hq-banner{grid-column", hq_css.replace(" ", ""))
+        self.assertIn("window.hqPaintHomeNext", self.cal_js)
+        home_css = (ROOT / "assets" / "hq-home.css").read_text(encoding="utf-8")
+        self.assertIn("@media (min-width:900px)", home_css)
+        self.assertIn("grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)", home_css)
+        self.assertIn("prefers-reduced-motion:no-preference", home_css)
+        self.assertIn("(hover:hover) and (pointer:fine)", self.css)
+        self.assertIn("prefers-reduced-motion:reduce", self.css)
+        self.assertIn(":focus-visible", self.css)
+        self.assertIn('"1 autre"', self.hq_js)
+        self.assertIn('href="/assets/hq-home.css"', html)
+        self.assertIn('src="/assets/hq-home.js"', html)

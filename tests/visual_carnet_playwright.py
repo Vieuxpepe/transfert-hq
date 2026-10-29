@@ -1503,7 +1503,8 @@ def t_home(h, profile):
     txt = page.inner_text("#hq-carnet-home")
     check("2 pages · 1 épinglée" in txt, f"counts ({txt!r})")
     titles = page.eval_on_selector_all("#hq-carnet-home [data-carnet-page-id]", "els => els.map(e => e.dataset.carnetPageId)")
-    check(titles[:2] == ["page-shaft", "page-idea"] and len(titles) <= 3, "pinned first, at most 3")
+    resume = page.get_attribute("#hq-carnet-home .carnet-home-resume", "data-carnet-page-id")
+    check(resume == titles[0] and "page-shaft" in titles and len(titles) <= 4, f"« Reprendre » the last page, then the pinned ones ({titles})")
     check(XSS in txt and page.evaluate("() => !document.querySelector('#hq-carnet-home img') && !window.__xss"), "safe titles")
     top = page.evaluate("""() => { const h = document.getElementById('hq-carnet-home').getBoundingClientRect().top;
         const c = document.getElementById('hq-cal-home').getBoundingClientRect().top; return h < c; }""")

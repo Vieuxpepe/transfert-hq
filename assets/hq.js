@@ -96,7 +96,7 @@
     const attentionPref = readOpenPref(ATTENTION_KEY);
     const todayPref = readOpenPref(TODAY_KEY);
     setDisclosure(attention, attentionPref === null ? false : attentionPref);
-    setDisclosure(today, todayPref === null ? false : todayPref);
+    setDisclosure(today, todayPref === null ? true : todayPref); // Today is open unless the owner closed it
     if (attention) {
       attention.addEventListener("click", () => {
         const open = attention.getAttribute("aria-expanded") !== "true";

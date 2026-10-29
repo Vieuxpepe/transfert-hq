@@ -3304,6 +3304,7 @@
   window.hqPaintCalendarSummary = function (cal) {
     paintHome(cal);
     paintWall(cal);
+    if (window.hqPaintHomeNext) window.hqPaintHomeNext(cal); // Accueil's countdown card (hq-home.js)
   };
 
   function boot() {
