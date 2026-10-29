@@ -294,6 +294,8 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 #forge-studio .forge-device-rename input{flex:1 1 auto;min-width:0;font:inherit;font-size:16px;min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}
 .forge-device-admin button{min-height:var(--tap-min);padding:6px 12px;font-size:var(--text-sm)}
 .forge-danger{border-color:color-mix(in srgb,var(--danger) 60%,var(--line))}
+#forge-vault-destroy-go{background:transparent;color:var(--danger);border:2px solid var(--danger);font-weight:700}
+#forge-vault-destroy-go:disabled{opacity:.55}
 .forge-devices-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .forge-fleet-count{display:flex;align-items:center;gap:8px;margin-left:auto;font-weight:700}
 #forge-studio .forge-fleet-count input{width:5.5rem;font:inherit;font-size:16px;min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}

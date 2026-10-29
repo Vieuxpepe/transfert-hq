@@ -61,6 +61,8 @@
   let vaultListing = { layout: "empty", vaults: [], open: null, max: 12 };
   let sheetVid = null;
   let createOpen = false;
+  /* V6: the restore form (a ZIP always comes back as a new vault). */
+  let restoreOpen = false;
   /* V4.4: the destination of a private generation, chosen by the owner; never guessed. */
   let privateTarget = null;
   /* V4.5: migration of the single pre-migration vault. The server records the backup offer and binds
@@ -372,6 +374,7 @@
     if (meta) meta.textContent = "";
     if (window.hqForgeDropPrivateShare) window.hqForgeDropPrivateShare();
     if (window.hqForgeNextLock) window.hqForgeNextLock();
+    clearDeleteForm();
   }
 
   async function loadGallery(reset) {
@@ -984,6 +987,7 @@
     $("forge-vaults-sort-note").hidden = vaultSort !== "recent";
     syncVaultEdit();
     $("forge-vaults-new").hidden = rows.length >= (vaultListing.max || 12) || vaultListing.layout === "legacy";
+    $("forge-vaults-restore").hidden = $("forge-vaults-new").hidden;
     $("forge-vaults-empty").hidden = rows.length > 0;
     const opened = vaultById(openVid);
     $("forge-vault-gallery-title").textContent = opened ? vaultName(opened) : "Coffre";
@@ -1023,6 +1027,7 @@
     sheetVid = vid;
     createOpen = false;
     $("forge-vault-setup").hidden = true;
+    closeRestore();
     $("forge-vault-unlock-for").textContent = "Ouvrir " + quoted(vaultName(v));
     const other = openVid && openVid !== vid ? vaultById(openVid) : null;
     const switchNote = $("forge-vault-switch-note");
@@ -1146,6 +1151,7 @@
     destOk = !!(privateMode && listed && (vaultListing.vaults || []).length);
     syncDest();
     $("forge-vault-setup").hidden = !privateMode || !listed || !createOpen;
+    $("forge-vault-restore").hidden = !privateMode || !listed || !restoreOpen;
     $("forge-vault-unlock").hidden = !privateMode || !sheetVid;
     $("forge-vault-open-tools").hidden = !privateMode || !vaultState.unlocked || !openVid;
     const note = $("forge-private-note");
@@ -1282,6 +1288,7 @@
   $("forge-vault-discret").addEventListener("change", syncDiscret);
   $("forge-vaults-new").addEventListener("click", () => {
     closeSheet();
+    closeRestore();
     clearCreate();
     createOpen = true;
     $("forge-vault-setup").hidden = false;
@@ -1647,6 +1654,7 @@
       $("forge-vault-next").value = "";
       $("forge-vault-next-confirm").value = "";
       await refreshVault();
+      vaultsNote("Phrase changée. Le coffre s'est verrouillé : rouvre-le avec la nouvelle phrase. La clé de récupération reste la même.");
     } catch (error) {
       $("forge-vault-error").textContent = error.message || "La phrase n'a pas changé.";
     }
@@ -1668,6 +1676,132 @@
     } catch (error) {
       $("forge-vault-rekey-pass").value = "";
       $("forge-vault-error").textContent = error.message || "La clé n'a pas été remplacée.";
+    }
+  });
+
+  /* V6: per-vault backup ZIP, restore as a new vault, delete a vault. */
+  $("forge-vault-backup-zip").addEventListener("click", async () => {
+    const status = $("forge-vault-backup-status");
+    status.textContent = "";
+    try {
+      const response = await fetch(vaultBase() + "/backup", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error((data && data.error) || "La sauvegarde n'a pas pu être préparée.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "coffre-chiffre.zip";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      status.textContent = "Sauvegarde téléchargée (coffre-chiffre.zip). Garde-la hors de HQ.";
+    } catch (error) {
+      status.textContent = error.message;
+      await refreshVault().catch(() => {});
+    }
+  });
+
+  function clearRestore() {
+    $("forge-vault-restore-file").value = "";
+    $("forge-vault-restore-picked").textContent = "";
+    $("forge-vault-restore-label").value = "";
+    $("forge-vault-restore-pass").value = "";
+    $("forge-vault-restore-error").textContent = "";
+  }
+  function closeRestore() {
+    clearRestore();
+    restoreOpen = false;
+    $("forge-vault-restore").hidden = true;
+  }
+  $("forge-vaults-restore").addEventListener("click", () => {
+    closeSheet();
+    clearCreate();
+    createOpen = false;
+    $("forge-vault-setup").hidden = true;
+    clearRestore();
+    restoreOpen = true;
+    $("forge-vault-restore").hidden = false;
+    $("forge-vault-restore-file").focus();
+  });
+  $("forge-vault-restore-cancel").addEventListener("click", closeRestore);
+  $("forge-vault-restore-file").addEventListener("change", () => {
+    const file = $("forge-vault-restore-file").files && $("forge-vault-restore-file").files[0];
+    $("forge-vault-restore-picked").textContent = file
+      ? "ZIP choisi (" + Math.max(1, Math.round(file.size / 1048576)) + " Mo)." : "";
+  });
+  $("forge-vault-restore").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = $("forge-vault-restore-error");
+    error.textContent = "";
+    const file = $("forge-vault-restore-file").files && $("forge-vault-restore-file").files[0];
+    if (!file) {
+      error.textContent = "Choisis d'abord le ZIP de sauvegarde.";
+      return;
+    }
+    const meta = new TextEncoder().encode(JSON.stringify({
+      passphrase: $("forge-vault-restore-pass").value,
+      label: $("forge-vault-restore-label").value.trim()
+    }));
+    const head = new Uint8Array(4);
+    new DataView(head.buffer).setUint32(0, meta.length);
+    $("forge-vault-restore-go").disabled = true;
+    try {
+      const payload = await api("/api/forge/vaults/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: new Blob([head, meta, file])
+      });
+      closeRestore();
+      const v = payload.vault || {};
+      const name = v.discret ? "Le coffre Discret" : "Le coffre " + quoted(v.label || "");
+      await refreshVault();
+      vaultsNote(name + " est restauré. Il reste verrouillé : touche sa carte pour l'ouvrir avec sa phrase."
+        + (payload.renamed ? " Ce nom était déjà pris : un numéro a été ajouté." : ""));
+    } catch (err) {
+      $("forge-vault-restore-pass").value = "";
+      error.textContent = err.message || "La sauvegarde n'a pas été restaurée.";
+    } finally {
+      $("forge-vault-restore-go").disabled = false;
+    }
+  });
+
+  function clearDeleteForm() {
+    const pass = $("forge-vault-destroy-pass");
+    if (!pass) return;
+    pass.value = "";
+    $("forge-vault-destroy-word").value = "";
+    $("forge-vault-destroy-go").disabled = true;
+    $("forge-vault-destroy-error").textContent = "";
+    $("forge-vault-backup-status").textContent = "";
+    $("forge-vault-destroy-fold").open = false;
+  }
+  const deleteWordOk = () => $("forge-vault-destroy-word").value.trim().toUpperCase() === "SUPPRIMER";
+  $("forge-vault-destroy-word").addEventListener("input", () => {
+    $("forge-vault-destroy-go").disabled = !deleteWordOk();
+  });
+  $("forge-vault-destroy").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const target = openVid;
+    const was = vaultById(target);
+    if (!target || !deleteWordOk()) return;
+    $("forge-vault-destroy-go").disabled = true;
+    try {
+      const result = await api("/api/forge/vaults/" + encodeURIComponent(target) + "/destroy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passphrase: $("forge-vault-destroy-pass").value, confirm: $("forge-vault-destroy-word").value })
+      });
+      clearDeleteForm();
+      scrubVaultViews();
+      forgetOpenVault();
+      await refreshVault();
+      vaultsNote((was ? quoted(vaultSafeName(was)) : "Le coffre") + " est supprimé."
+        + (result && result.wiped === false ? " Certains fichiers seront écrasés au prochain démarrage de HQ." : ""));
+    } catch (err) {
+      $("forge-vault-destroy-pass").value = "";
+      $("forge-vault-destroy-go").disabled = !deleteWordOk();
+      $("forge-vault-destroy-error").textContent = err.message || "Le coffre n'a pas été supprimé.";
     }
   });
 

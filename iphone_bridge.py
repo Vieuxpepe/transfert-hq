@@ -5239,6 +5239,7 @@ def render_app() -> bytes:
           <div class="forge-vaults-head">
             <h3 id="forge-vaults-title" class="forge-vault-sub">Mes coffres</h3>
             <button type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
+            <button type="button" id="forge-vaults-restore" class="secondary">Restaurer un ZIP</button>
           </div>
           <p id="forge-vaults-note" class="forge-note" role="status" aria-live="polite"></p>
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
@@ -5294,6 +5295,20 @@ def render_app() -> bytes:
             <button type="button" class="secondary" id="forge-vault-create-cancel">Annuler</button>
           </div>
           <p id="forge-vault-create-error" class="forge-note" role="alert"></p>
+        </form>
+        <form id="forge-vault-restore" class="forge-vault-create" hidden>
+          <h3 class="forge-vault-sub">Restaurer une sauvegarde</h3>
+          <p class="forge-note">Le ZIP revient comme un nouveau coffre, verrouillé. Aucun coffre existant n'est remplacé.</p>
+          <label class="secondary forge-file" for="forge-vault-restore-file">Choisir le ZIP<input id="forge-vault-restore-file" type="file" accept=".zip,application/zip"/></label>
+          <p id="forge-vault-restore-picked" class="forge-note" role="status"></p>
+          <div class="field"><label for="forge-vault-restore-label">Nom du coffre (facultatif)</label><input id="forge-vault-restore-label" type="text" maxlength="40" autocomplete="off" autocapitalize="sentences" spellcheck="false" placeholder="Coffre restauré"/></div>
+          <p class="forge-note forge-vault-warn">Ne mets rien de sensible dans le nom : il reste lisible quand le coffre est verrouillé. Un coffre Discret revient Discret, avec son nom scellé.</p>
+          <div class="field"><label for="forge-vault-restore-pass">Phrase du coffre au moment de la sauvegarde</label><input id="forge-vault-restore-pass" type="password" maxlength="128" autocomplete="off" required/></div>
+          <div class="forge-actions">
+            <button type="submit" id="forge-vault-restore-go">Restaurer</button>
+            <button type="button" class="secondary" id="forge-vault-restore-cancel">Annuler</button>
+          </div>
+          <p id="forge-vault-restore-error" class="forge-note" role="alert"></p>
         </form>
         <form id="forge-vault-unlock" class="forge-vault-sheet" hidden>
           <p id="forge-vault-unlock-for" class="forge-vault-sub"></p>
@@ -5369,8 +5384,21 @@ def render_app() -> bytes:
           </details>
           <details id="forge-vault-backup-fold" class="forge-fold">
             <summary>Sauvegarde</summary>
-            <div class="forge-help-wrap"><p class="forge-note">Pas encore de sauvegarde de ce coffre seul ici.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-backup">Aide</button>
-            <p id="forge-help-vault-backup" class="forge-help-pop" role="tooltip">Télécharger une sauvegarde chiffrée d'un seul coffre arrivera dans une prochaine version. Garde hors de HQ le ZIP chiffré téléchargé avant le déplacement : il contient le coffre tel qu'il était.</p></div>
+            <div class="forge-help-wrap"><p class="forge-note">Un ZIP chiffré de ce coffre seul. Images, nom Discret et icône restent scellés.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-backup">Aide</button>
+            <p id="forge-help-vault-backup" class="forge-help-pop" role="tooltip">Garde le ZIP hors de HQ. Pour le reprendre : Mes coffres, « Restaurer un ZIP ». Il revient comme un nouveau coffre, avec la phrase qu'il avait le jour de la sauvegarde.</p></div>
+            <button type="button" id="forge-vault-backup-zip" class="secondary">Télécharger la sauvegarde</button>
+            <p id="forge-vault-backup-status" class="forge-note" role="status" aria-live="polite"></p>
+          </details>
+          <details id="forge-vault-destroy-fold" class="forge-fold">
+            <summary>Supprimer ce coffre</summary>
+            <form id="forge-vault-destroy">
+              <p class="forge-note forge-vault-warn">Irréversible : ce coffre, ses images et ses clés disparaissent. Télécharge d'abord une sauvegarde si tu veux pouvoir revenir en arrière.</p>
+              <p class="forge-note">Les fichiers sont écrasés avant d'être retirés. Sur un SSD, cela ne garantit pas leur effacement physique.</p>
+              <div class="field"><label for="forge-vault-destroy-pass">Phrase du coffre</label><input id="forge-vault-destroy-pass" type="password" maxlength="128" autocomplete="current-password" required/></div>
+              <div class="field"><label for="forge-vault-destroy-word">Tape SUPPRIMER</label><input id="forge-vault-destroy-word" type="text" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" required/></div>
+              <button type="submit" id="forge-vault-destroy-go" class="forge-danger" disabled>Supprimer définitivement</button>
+              <p id="forge-vault-destroy-error" class="forge-note" role="alert"></p>
+            </form>
           </details>
           <section aria-labelledby="forge-vault-gallery-title">
             <h2 id="forge-vault-gallery-title">Coffre</h2>
