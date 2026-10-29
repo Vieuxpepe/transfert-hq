@@ -1047,6 +1047,7 @@
     setupHelp();
     setupSystemNav();
     $("#btn-palette")?.addEventListener("click", () => openPalette());
+    $("#btn-search-bar")?.addEventListener("click", () => openPalette()); // every view, phone included
     $("#hq-palette")?.addEventListener("click", (ev) => {
       if (ev.target && ev.target.id === "hq-palette") closePalette();
     });

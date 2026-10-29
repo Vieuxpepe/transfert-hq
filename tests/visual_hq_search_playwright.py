@@ -85,9 +85,10 @@ def main() -> None:
 
             def search(q: str):
                 if page.locator("#hq-palette").is_hidden():
-                    if page.evaluate("document.body.dataset.view") != "accueil":
-                        page.click('.bottom-nav [data-nav="accueil"]')  # the Recherche button lives on Accueil
-                    page.click("#btn-palette")
+                    view = page.evaluate("document.body.dataset.view")
+                    size = page.evaluate("() => { const r = document.getElementById('btn-search-bar').getBoundingClientRect(); return Math.min(r.width, r.height); }")
+                    check(page.locator("#btn-search-bar").is_visible() and size >= 44, f"the header search button is there on {view} ({size} px)")
+                    page.click("#btn-search-bar")
                 page.fill("#hq-palette-input", q)
                 until(page, "(q) => { const e = document.querySelector('#hq-palette-list'); return !!e && (!!e.querySelector('li') || e.textContent.includes(q)); }", q)
                 page.wait_for_timeout(400)  # the 120 ms debounce, then the answer

@@ -4467,6 +4467,11 @@ details.hq > summary{cursor:pointer;list-style:none}
 details.hq > summary::-webkit-details-marker{display:none}
 details.hq > summary .sec-head{margin:0}
 details.hq[open] > summary .sec-head{margin-bottom:12px}
+.view-tools{display:flex;align-items:center;gap:8px}
+.view-search{display:inline-flex;align-items:center;justify-content:center;width:var(--tap-min);height:var(--tap-min);padding:0;border:1px solid var(--line);
+  border-radius:999px;background:var(--panel-2);color:var(--text);cursor:pointer}
+.view-search svg{width:20px;height:20px}
+.view-search:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .mode-toggle{border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:800;
   padding:8px 12px;border-radius:999px;cursor:pointer;min-height:var(--tap-min);letter-spacing:.01em}
 .mode-toggle[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);
@@ -4900,7 +4905,10 @@ def render_app() -> bytes:
   </header>
   <div class="view-bar">
     <p class="view-label" id="view-label">Accueil</p>
+    <div class="view-tools">
+    <button type="button" class="view-search" id="btn-search-bar" aria-label="Recherche" data-help="Recherche partout : dossiers, scènes, appareils, Carnet, prompts Forge, calendrier et noms de fichiers. Ctrl+K ou Cmd+K."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.9"/><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="m15 15 5 5"/></svg></button>
     <button type="button" class="mode-toggle" id="mode-toggle" aria-pressed="true" data-help="Mode simple : le terminal et les outils avancés sont masqués.">Mode simple</button>
+    </div>
   </div>
 
   <div data-panel="accueil" class="accueil-grid">
