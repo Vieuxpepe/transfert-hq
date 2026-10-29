@@ -357,7 +357,7 @@
     if (!st.tab3d || !st.doc) return;
     if (st.meshLoadedVersion === st.meshVersion) {
       if (solidView) solidView.draw();
-      $(".sk-3d-status", root).textContent = st.mesh.length ? `${st.mesh.length} triangles · glisse pour tourner · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
+      $(".sk-3d-status", root).textContent = st.mesh.length ? `${st.mesh.length} triangles · glisse pour tourner · deux doigts ou clic droit pour déplacer · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
       return;
     }
     st.meshTimer = setTimeout(loadMesh, 180);
@@ -374,7 +374,7 @@
       st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
       if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
       renderSolid();
-      status.textContent = `${res.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
+      status.textContent = `${res.count} triangles · glisse pour tourner · deux doigts ou clic droit pour déplacer · pince ou molette pour zoomer`;
     } catch (e) { if (version === st.meshVersion) { st.mesh = []; st.edges = []; st.meshLoadedVersion = -1; if (solidView) { solidView.setTriangles([]); solidView.setEdges([]); } status.textContent = e.message; } }
   }
 
@@ -392,7 +392,7 @@
       commit(result.doc); st.mesh = check.triangles; st.edges = check.edges || []; st.meshLoadedVersion = st.meshVersion;
       clearTimeout(st.meshTimer);
       if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
-      $(".sk-3d-status", root).textContent = `${check.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
+      $(".sk-3d-status", root).textContent = `${check.count} triangles · glisse pour tourner · deux doigts ou clic droit pour déplacer · pince ou molette pour zoomer`;
       setView3d(true); say(kind === "extrude" ? "Pièce extrudée" : "Matière enlevée");
     } catch (e) { say("Profil 3D refusé : " + e.message, "err"); flashHud(e.message); }
     finally { st.solidBusy = false; renderSolid(); }
@@ -411,7 +411,7 @@
       clearTimeout(st.meshTimer);
       st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
       if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
-      $(".sk-3d-status", root).textContent = `${check.count} triangles · glisse pour tourner · pince ou molette pour zoomer`;
+      $(".sk-3d-status", root).textContent = `${check.count} triangles · glisse pour tourner · deux doigts ou clic droit pour déplacer · pince ou molette pour zoomer`;
       setView3d(true); say(kind === "extrude" ? "Matière ajoutée sur la face" : "Matière enlevée sur la face");
     } finally { st.solidBusy = false; renderSolid(); }
   }
@@ -454,7 +454,7 @@
       clearTimeout(st.meshTimer);
       st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
       if (solidView) { solidView.setTriangles(triangles); solidView.setEdges(edges); }
-      $(".sk-3d-status", root).textContent = triangles.length ? `${triangles.length} triangles · glisse pour tourner · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
+      $(".sk-3d-status", root).textContent = triangles.length ? `${triangles.length} triangles · glisse pour tourner · deux doigts ou clic droit pour déplacer · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
       say("Fonction retirée");
     } catch (e) { say("Retrait refusé : " + e.message, "err"); }
     finally { st.solidBusy = false; renderSolid(); }
