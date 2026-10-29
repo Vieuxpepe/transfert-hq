@@ -17,6 +17,12 @@
     ["scene", "Scènes"],
     ["action", "Actions"],
     ["terminal", "Commandes"],
+    // Global search (content). These kinds are never kept in Récents: note titles, prompts and
+    // file names stay out of browser storage (KIND_HINT below lists only the rememberable kinds).
+    ["page", "Carnet"],
+    ["prompt", "Forge"],
+    ["event", "Calendrier"],
+    ["file", "Fichiers"],
   ];
   const KIND_HINT = {
     folder: "Dossier",

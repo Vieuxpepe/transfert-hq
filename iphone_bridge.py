@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 import zlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import formatdate
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +54,7 @@ import hq_forge_lineage
 import hq_forge_style
 import hq_forge_vault
 import hq_today
+import hq_search
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
@@ -2047,6 +2048,50 @@ def palette_catalog() -> list[dict]:
             }
         )
     return items
+
+
+def search_content(q: str) -> list[dict]:
+    """Palette content hits: Carnet pages, Forge prompts (normal gallery only, never the vault),
+    calendar event titles and Inbox file names. A source that fails is skipped."""
+    if len(" ".join(hq_search.words(q))) < hq_search.MIN_QUERY:
+        return []
+
+    def pages():
+        if not hq_carnet.ready():
+            return []
+        out = []
+        for page in hq_carnet.get_notebook().get("pages") or []:
+            text = hq_carnet._text(page)
+            out.append({"id": page.get("id"), "title": hq_carnet.derive_title(text), "text": text,
+                        "updated_at": page.get("updated_at"), "deleted_at": page.get("deleted_at")})
+        return out
+
+    def images():
+        base = hq_forge_gallery.gallery_dir(ROOT)
+        out = []
+        if base.is_dir() and not base.is_symlink():
+            for child in base.iterdir():
+                if child.is_symlink() or not hq_forge_gallery.IMG_RE.fullmatch(child.name):
+                    continue
+                try:
+                    meta = hq_forge_gallery.get(ROOT, child.name)
+                except hq_forge_gallery.GalleryError:
+                    continue
+                out.append({"id": child.name, "prompt": (meta.get("settings") or {}).get("prompt") or "", "created": meta.get("created")})
+        return out
+
+    def events():
+        now = datetime.now()
+        found, _bad = hq_calendar.manual_between(now - timedelta(days=366), now + timedelta(days=731))
+        return found
+
+    sources = {}
+    for name, read in (("pages", pages), ("images", images), ("events", events), ("files", lambda: hq_search.inbox_files(ROOT))):
+        try:
+            sources[name] = read()
+        except Exception:
+            sources[name] = []
+    return hq_search.search(q, **sources)
 
 
 def hq_safe_move(src: str, dest: str) -> dict:
@@ -4868,7 +4913,7 @@ def render_app() -> bytes:
           <span class="hq-disclosure-meta" id="hq-state-sub" aria-live="polite">Lecture de l'état…</span>
           <svg class="hq-chevron" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
         </button>
-        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil ou une action. Ctrl+K ou Cmd+K."><span>Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
+        <button type="button" class="secondary" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil, une action, ou un mot dans le Carnet, les prompts Forge, le calendrier et les noms de fichiers. Ctrl+K ou Cmd+K."><span>Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
       </div>
       <div id="hq-attention-panel" class="hq-disclosure-panel" hidden>
         <ul class="hq-list" id="hq-attention"></ul>
@@ -7368,7 +7413,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)})
                 return True
             hits = hq_devices.search_catalog(q, palette_catalog(), limit=limit)
-            self._json(200, {"q": q, "hits": hits})
+            self._json(200, {"q": q, "hits": hits + search_content(q)})  # content groups follow the catalog
             return True
         if raw == "/api/runs":
             qs = parse_qs(parsed.query)

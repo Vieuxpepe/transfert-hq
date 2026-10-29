@@ -329,6 +329,7 @@
   let paletteGroups = [];
   let paletteQuery = "";
   let paletteIndex = 0;
+  let paletteSeq = 0; // content search is slower than the catalog: only the newest answer is drawn
   let paletteOpener = null;
   let paletteRelease = null;
 
@@ -383,6 +384,10 @@
       scene: '<path fill="currentColor" d="M8 6.2v11.6L17.2 12z"/>',
       action: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M13 3.5 6.2 13H11l-.8 7.5L17.8 11H13z"/>',
       terminal: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/>',
+      page: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20zM14 3.5V8h4M9.5 12h5M9.5 15.5h5"/>',
+      prompt: '<rect x="4" y="5" width="16" height="14" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="m4.5 16 4.5-4.5 3.5 3.5 2.5-2.5 4.5 4.5"/>',
+      event: '<rect x="4" y="5.5" width="16" height="14" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>',
+      file: '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20zM14 3.5V8h4"/>',
     };
     return `<svg class="palette-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[kind] || paths.folder}</svg>`;
   }
@@ -400,7 +405,7 @@
       list.removeAttribute("role");
       list.innerHTML = paletteQuery
         ? `<p class="palette-empty">Aucun résultat pour « ${esc(paletteQuery)} »</p>`
-        : `<p class="palette-empty">Tape un dossier, une scène ou une action.</p>`;
+        : `<p class="palette-empty">Tape un dossier, une scène, une action, ou un mot d'une note, d'un prompt, d'un événement ou d'un fichier.</p>`;
       if (input) input.removeAttribute("aria-activedescendant");
       return;
     }
@@ -458,7 +463,9 @@
       return;
     }
     if (typeof api !== "function") return;
+    const seq = ++paletteSeq;
     const data = await api("/api/palette?q=" + encodeURIComponent(query) + "&limit=20");
+    if (seq !== paletteSeq) return;
     const hits = data.hits || [];
     paletteHits = hits;
     paletteGroups = typeof hqGroupPaletteHits === "function"
@@ -470,6 +477,28 @@
   }
 
   async function dispatchPalette(hit) {
+    if (hit.kind === "page") {
+      if (typeof window.hqCarnetOpen !== "function") return "fail";
+      await window.hqCarnetOpen(hit.id);
+      return "ok";
+    }
+    if (hit.kind === "prompt") {
+      if (typeof setView === "function") setView("forge");
+      const hooks = window.hqForgeHooks;
+      if (!hooks || typeof hooks.openImage !== "function") return "fail";
+      await hooks.openImage(hit.id);
+      return "ok";
+    }
+    if (hit.kind === "event") {
+      if (typeof setView === "function") setView("calendrier");
+      if (typeof window.hqCalendarOpenDay === "function") window.hqCalendarOpenDay(hit.at || "");
+      return "ok";
+    }
+    if (hit.kind === "file") {
+      if (typeof navigate === "function") await navigate(hit.dir || "Inbox");
+      else if (typeof setView === "function") setView("fichiers");
+      return "ok";
+    }
     if (hit.kind === "folder" || hit.kind === "favorite") {
       if (typeof navigate === "function") await navigate(hit.id);
       else if (typeof setView === "function") setView("fichiers");

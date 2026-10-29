@@ -1298,6 +1298,15 @@
     window.hqCalendarShow = function () {
       refresh("snap");
     };
+    // Global search: open the day of an event found in the palette (same as picking that day).
+    window.hqCalendarOpenDay = function (key) {
+      const day = parseLocalDateKey(key);
+      if (!day) return;
+      state.userMoved = true;
+      state.anchor = day;
+      state.view = "day";
+      refresh(sameDay(day, serverToday()) ? "snap" : undefined);
+    };
     if (document.body && document.body.dataset.view === "calendrier") refresh("snap");
     setInterval(() => {
       if (document.hidden) return;
