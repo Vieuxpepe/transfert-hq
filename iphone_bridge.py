@@ -5044,7 +5044,7 @@ def render_app() -> bytes:
   <div data-panel="calendrier">
     <section class="hq hq-cal" aria-labelledby="cal-title">
       <div class="sec-head">
-        <h2 id="cal-title">Calendrier</h2>
+        <h2 id="cal-title" class="visually-hidden">Calendrier</h2>
         <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
       </div>
       <div id="hq-cal-app"><p class="hint">Chargement…</p></div>

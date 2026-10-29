@@ -181,10 +181,24 @@
     if (state.view === "day") return fmtDay(anchor);
     if (state.view === "week") {
       const start = startOfLocalWeek(anchor);
-      return fmtDay(start) + " – " + fmtDay(addLocalDays(start, 6));
+      return fmtShort(start) + " – " + fmtShort(addLocalDays(start, 6));
     }
     if (state.view === "month") return fmtMonth(anchor);
-    return "Agenda · " + fmtDay(anchor);
+    return "Dès le " + fmtShort(anchor);
+  }
+
+  function fmtShort(date) {
+    return new Intl.DateTimeFormat("fr-CA", { day: "numeric", month: "short" }).format(date);
+  }
+
+  /* Is today inside the period on screen? Then "Aujourd'hui" has nothing to do and stays hidden. */
+  function showsToday() {
+    const today = serverToday();
+    const anchor = state.anchor || todayLocal();
+    if (state.view === "day") return sameDay(anchor, today);
+    if (state.view === "week") return sameDay(startOfLocalWeek(anchor), startOfLocalWeek(today));
+    if (state.view === "month") return anchor.getFullYear() === today.getFullYear() && anchor.getMonth() === today.getMonth();
+    return sameDay(anchor, today);
   }
 
   let refreshGen = 0;
@@ -282,21 +296,22 @@
     const node = document.getElementById("hq-cal-tz");
     if (!node || !state.data) return;
     const browser = -new Date().getTimezoneOffset();
-    if (browser !== Number(state.data.server_utc_offset_min)) {
-      node.textContent = "Heure HQ · " + (state.data.server_now || "");
-    } else {
-      node.textContent = "Ce qui se passe, ce qui est prévu, ce qui vient";
-    }
+    // Only worth a line when HQ's clock and this device disagree; otherwise the header stays quiet.
+    const differs = browser !== Number(state.data.server_utc_offset_min);
+    node.textContent = differs ? "Heure HQ · " + (state.data.server_now || "") : "";
+    node.hidden = !differs;
   }
 
+  /* Header: ‹ period › on one line, the four views as one segmented row, then a row with the two
+     display toggles (Activité, Légende) on the left and Aujourd'hui / + Événement on the right. */
   function toolbar() {
     const bar = h("div", { class: "hq-cal-bar" });
-    const views = h("div", { class: "hq-cal-views", role: "tablist" });
+    const views = h("div", { class: "hq-cal-views", role: "group", "aria-label": "Affichage" });
     VIEWS.forEach(([id, label, help]) => {
       views.appendChild(
         h("button", {
           type: "button",
-          class: "secondary",
+          class: "hq-cal-view",
           "data-cal": "view",
           "data-view": id,
           "data-help": help,
@@ -305,46 +320,54 @@
         })
       );
     });
-    bar.appendChild(views);
     const navCopy = {
       day: ["Jour précédent", "Jour suivant", "Recule d'un jour.", "Avance d'un jour."],
       week: ["Semaine précédente", "Semaine suivante", "Recule d'une semaine.", "Avance d'une semaine."],
       month: ["Mois précédent", "Mois suivant", "Recule d'un mois.", "Avance d'un mois."],
       agenda: ["Agenda précédent", "Agenda suivant", "Recule de trente jours.", "Avance de trente jours."],
     }[state.view] || ["Période précédente", "Période suivante", "Recule.", "Avance."];
-    const nav = h("div", { class: "hq-cal-nav hq-cal-views" });
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "prev", "aria-label": navCopy[0], "data-help": navCopy[2], text: "‹" }));
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "today", "data-help": "Revient à la journée du pont.", text: "Aujourd'hui" }));
-    nav.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "next", "aria-label": navCopy[1], "data-help": navCopy[3], text: "›" }));
-    bar.appendChild(nav);
-    bar.appendChild(h("h3", { class: "hq-cal-title", text: titleText() }));
+    const head = h("div", { class: "hq-cal-head" });
+    head.appendChild(h("button", { type: "button", class: "hq-cal-step", "data-cal": "prev", "aria-label": navCopy[0], "data-help": navCopy[2], text: "‹" }));
+    head.appendChild(h("h3", { class: "hq-cal-title", "aria-live": "polite", text: titleText() }));
+    head.appendChild(h("button", { type: "button", class: "hq-cal-step", "data-cal": "next", "aria-label": navCopy[1], "data-help": navCopy[3], text: "›" }));
+    const tools = h("div", { class: "hq-cal-tools" });
+    const actions = h("div", { class: "hq-cal-actions" });
+    if (!showsToday()) {
+      actions.appendChild(h("button", { type: "button", class: "secondary hq-cal-today", "data-cal": "today", "data-help": "Revient à aujourd'hui.", text: "Aujourd'hui" }));
+    }
+    actions.appendChild(h("button", {
+      type: "button",
+      class: "hq-cal-create",
+      "data-cal": "create",
+      "aria-label": "Nouvel événement",
+      "data-help": "Crée un événement manuel dans le calendrier.",
+      text: "+ Événement",
+    }));
+    bar.appendChild(head);
+    bar.appendChild(views);
     if (state.view !== "month") {
-      bar.appendChild(
+      tools.appendChild(
         h("button", {
           type: "button",
-          class: "secondary",
+          class: "hq-cal-toggle",
           "data-cal": "activity",
           "data-help": "Affiche l'activité récente sur la grille. Lecture seule.",
           "aria-pressed": state.activity ? "true" : "false",
-          text: state.activity ? "Activité affichée" : "Activité",
+          text: "Activité",
         })
       );
     }
-    bar.appendChild(h("button", {
+    tools.appendChild(h("button", {
       type: "button",
-      class: "secondary",
+      class: "hq-cal-toggle",
       "data-cal": "legend",
       "aria-expanded": state.legend ? "true" : "false",
       "aria-controls": "hq-cal-legend",
       "data-help": "Formes et couleurs des catégories, du planning et de l'activité.",
       text: "Légende",
     }));
-    bar.appendChild(h("button", {
-      type: "button",
-      "data-cal": "create",
-      "data-help": "Crée un événement manuel dans le calendrier.",
-      text: "Nouvel événement",
-    }));
+    tools.appendChild(actions);
+    bar.appendChild(tools);
     return bar;
   }
 
@@ -395,8 +418,8 @@
         "data-cal": "pick-day",
         "data-day": dateKey(day),
         "aria-pressed": sameDay(day, state.anchor) ? "true" : "false",
-        text: DOW[i] + " " + day.getDate(),
-      });
+        "aria-label": fmtDay(day),
+      }, [h("span", { class: "hq-cal-strip-dow", text: DOW[i] }), h("span", { class: "hq-cal-strip-num", text: String(day.getDate()) })]);
       if (sameDay(day, today)) button.classList.add("is-today");
       strip.appendChild(button);
     }
@@ -414,10 +437,7 @@
   function allDayLane(day) {
     const lane = h("div", { class: "hq-cal-allday" });
     const rows = items().filter((item) => item.all_day && overlapsDay(item, day));
-    if (!rows.length) {
-      lane.appendChild(h("span", { class: "hint", text: "Rien sur toute la journée." }));
-      return lane;
-    }
+    if (!rows.length) return lane; // empty: hidden by CSS, no filler line
     rows.forEach((item) => lane.appendChild(chip(item)));
     return lane;
   }
@@ -437,6 +457,10 @@
 
   function monthChipLimit() {
     return window.matchMedia("(max-width: 700px)").matches ? 1 : 2;
+  }
+
+  function narrowMonth() {
+    return window.matchMedia("(max-width: 520px)").matches;
   }
 
   function dayTimeline(day) {
@@ -548,15 +572,12 @@
         const belowPct = ((entry.hitBelowPx || 0) / colPx) * 100;
         hitTop = top - abovePct;
         hitHeight = height + abovePct + belowPct;
-        const face = h("span", {
-          class: "hq-cal-face " + catClass(entry.item),
-          text: entry.item.title || "Sans titre",
-        });
+        const face = h("span", { class: "hq-cal-face " + catClass(entry.item) }, eventLabel(entry));
         face.style.top = (abovePct / hitHeight) * 100 + "%";
         face.style.height = (height / hitHeight) * 100 + "%";
         button.appendChild(face);
       } else {
-        button.textContent = entry.item.title || "Sans titre";
+        eventLabel(entry).forEach((node) => button.appendChild(node));
       }
       button.style.top = hitTop + "%";
       button.style.height = hitHeight + "%";
@@ -565,6 +586,14 @@
       col.appendChild(button);
     });
     return columns;
+  }
+
+  /* What an event block says: its start time (when it starts on this day), then its title. */
+  function eventLabel(entry) {
+    const title = h("span", { class: "hq-cal-ev-title", text: entry.item.title || "Sans titre" });
+    if (entry.startMin <= 0) return [title];
+    const time = h("span", { class: "hq-cal-ev-time", text: pad(Math.floor(entry.startMin / 60)) + ":" + pad(entry.startMin % 60) });
+    return [time, title];
   }
 
   function layoutOverlaps(entries) {
@@ -702,6 +731,20 @@
         h("button", { type: "button", class: "hq-cal-mday", "data-cal": "pick-day", "data-day": dateKey(day), text: String(day.getDate()) })
       );
       const rows = items().filter((item) => overlapsDay(item, day));
+      if (narrowMonth()) {
+        // Phone: a cell is too narrow for titles. Coloured marks (category shapes, as in the legend)
+        // say "something here"; tapping the day opens it.
+        if (rows.length) {
+          const dots = h("span", { class: "hq-cal-dots", "aria-hidden": "true" });
+          const shown = rows.length > 3 ? 2 : rows.length; // 3 marks fit one line; past that, 2 marks and "+n"
+          rows.slice(0, shown).forEach((item) => dots.appendChild(h("span", { class: "hq-cal-dot " + catClass(item) })));
+          if (rows.length > shown) dots.appendChild(h("span", { class: "hq-cal-dot-more", text: "+" + (rows.length - shown) }));
+          cell.appendChild(dots);
+          cell.querySelector(".hq-cal-mday").setAttribute("aria-label", fmtDay(day) + " · " + (rows.length === 1 ? "1 élément" : rows.length + " éléments"));
+        }
+        wrap.appendChild(cell);
+        continue;
+      }
       const limit = monthChipLimit();
       rows.slice(0, limit).forEach((item) => cell.appendChild(chip(item)));
       if (rows.length > limit) {
@@ -769,8 +812,8 @@
 
   function conditionalBlock() {
     const rows = (state.data && state.data.conditional) || [];
+    if (!rows.length) return document.createTextNode(""); // nothing conditional: no empty box under the grid
     const block = h("section", { class: "hq-cal-cond" });
-    if (!rows.length) return block;
     block.appendChild(h("h3", { text: "Conditionnel" }));
     block.appendChild(h("p", { class: "sec-hint", text: "Ces tâches ne sont pas sur la grille horaire." }));
     rows.forEach((item) => {
