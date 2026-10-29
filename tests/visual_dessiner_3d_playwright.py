@@ -50,14 +50,68 @@ def check_orbit_follows(page, touch_cdp=None):
         assert moved[axis] * (dx or dy) > 0, f"3D orbit must follow the drag {(dx, dy)}; front point moved {moved}"
 
 
+TWO = """() => {const m=window.hqSketchState().mesh.flat(); return [m[0], m[Math.floor(m.length/2)]];}"""
+
+
+def check_pan_follows(page, touch_cdp=None):
+    """Translation pan: the model follows the pointer exactly (right, middle or Shift + left drag on a
+    mouse; two fingers on touch). Recentrer clears it; picking still hits the face under the pointer."""
+    page.click('[data-act="reset3d"]')
+    page.locator(".sk-3d-canvas").scroll_into_view_if_needed()
+    box = page.locator(".sk-3d-canvas").bounding_box()
+    cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    points = page.evaluate(TWO)
+    home = [page.evaluate(CLIENT, p) for p in points]
+    if touch_cdp is None:
+        gestures = [("right", None, (45, -20)), ("middle", None, (-30, 35)), ("left", "Shift", (25, 15))]
+    else:
+        gestures = [("two-finger", None, (40, -25)), ("two-finger", None, (-35, 30))]
+    for button, modifier, (dx, dy) in gestures:
+        before = [page.evaluate(CLIENT, p) for p in points]
+        if touch_cdp is None:
+            if modifier:
+                page.keyboard.down(modifier)
+            page.mouse.move(cx, cy); page.mouse.down(button=button)
+            page.mouse.move(cx + dx, cy + dy, steps=8); page.mouse.up(button=button)
+            if modifier:
+                page.keyboard.up(modifier)
+        else:
+            send = lambda kind, pts: touch_cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": pts})
+            pair = lambda ox, oy: [{"x": cx - 40 + ox, "y": cy + oy, "id": 1}, {"x": cx + 40 + ox, "y": cy + oy, "id": 2}]
+            send("touchStart", pair(0, 0))
+            for i in range(1, 9):
+                send("touchMove", pair(dx * i / 8, dy * i / 8))
+            send("touchEnd", [])
+        after = [page.evaluate(CLIENT, p) for p in points]
+        for b, a in zip(before, after):
+            moved = (a[0] - b[0], a[1] - b[1])
+            assert abs(moved[0] - dx) < 1.5 and abs(moved[1] - dy) < 1.5, f"{button} pan {(dx, dy)} must move the model with the pointer; moved {moved}"
+    page.click('[data-act="reset3d"]')
+    back = [page.evaluate(CLIENT, p) for p in points]
+    for h, b in zip(home, back):
+        assert abs(h[0] - b[0]) < 0.5 and abs(h[1] - b[1]) < 0.5, f"Recentrer must clear the pan {h} {b}"
+    if touch_cdp is None:
+        # Picking after a pan: the face under the centre before is the face under centre + delta after.
+        page.mouse.click(cx, cy)
+        page.wait_for_function("() => window.hqSketchState().faceSelection")
+        first = page.evaluate("() => window.hqSketchState().faceSelection.index")
+        page.mouse.move(cx, cy); page.mouse.down(button="right"); page.mouse.move(cx + 50, cy + 30, steps=6); page.mouse.up(button="right")
+        assert page.evaluate("() => window.hqSketchState().faceSelection.index") == first, "a pan never changes the selection"
+        page.mouse.click(cx + 50, cy + 30)
+        page.wait_for_timeout(100)
+        assert page.evaluate("() => window.hqSketchState().faceSelection && window.hqSketchState().faceSelection.index") == first, "after a pan, a tap picks the face that moved under it"
+        page.click('[data-act="reset3d"]')
+
+
 def run():
     errors = []
     with sync_playwright() as p:
         browser = p.chromium.launch(channel=os.environ.get("HQ_BROWSER_CHANNEL") or None)
-        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        page = browser.new_page(viewport={"width": 1440, "height": 900}, bypass_csp=True)  # wait_for_function evaluates strings; HQ CSP forbids eval
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(BASE + "/")
         page.fill('input[name="pin"]', PIN); page.click('button[type="submit"]')
+        page.wait_for_load_state("networkidle")  # the nav handlers bind after load; an early click is lost
         page.click('.bottom-nav [data-nav="dessiner"]')
         page.wait_for_selector(".sk-canvas")
         page.click('.sk-seg [data-mode="construction"]')
@@ -80,6 +134,7 @@ def run():
         page.wait_for_function("() => window.hqSketchState().doc.features.length === 1 && window.hqSketchState().mesh.length > 0")
         assert page.locator('.sk-3d-canvas').is_visible()
         check_orbit_follows(page)
+        check_pan_follows(page)
         page.screenshot(path=str(OUT / "3d-base-desktop.png"))
         page.click('[data-act="view2d"]')
         doc = page.evaluate("window.hqSketchState().doc")
@@ -117,11 +172,12 @@ def run():
         page.click('[data-act="view3d"]')
         page.wait_for_function("() => window.hqSketchState().meshLoadedVersion === window.hqSketchState().meshVersion")
         assert not errors, errors
-        phone = browser.new_context(**p.devices["iPhone 13"])
+        phone = browser.new_context(**p.devices["iPhone 13"], bypass_csp=True)
         touch = phone.new_page()
         touch.on("pageerror", lambda e: errors.append("mobile: " + str(e)))
         touch.goto(BASE + "/")
         touch.fill('input[name="pin"]', PIN); touch.click('button[type="submit"]')
+        touch.wait_for_load_state("networkidle")
         touch.click('.bottom-nav [data-nav="dessiner"]')
         touch.wait_for_selector(".sk-canvas")
         touch.click('[data-act="open"]'); touch.wait_for_selector('.sk-item')
@@ -132,10 +188,12 @@ def run():
         assert touch.locator('.sk-3d-canvas').is_visible()
         assert touch.locator('.sk-3d-stage').bounding_box()['height'] >= 380
         touch.screenshot(path=str(OUT / "3d-iphone-emulation.png"), full_page=True)
-        check_orbit_follows(touch, phone.new_cdp_session(touch))
+        cdp = phone.new_cdp_session(touch)
+        check_orbit_follows(touch, cdp)
+        check_pan_follows(touch, cdp)
         assert not errors, errors
         phone.close()
-        print("Dessiner 3D visual flow passed: extrusion, through and blind cuts, preview, orbit follows mouse and touch drags, STL save, reopen")
+        print("Dessiner 3D visual flow passed: extrusion, through and blind cuts, preview, orbit follows mouse and touch drags, pan follows right/middle/Shift drags and two fingers, STL save, reopen")
         browser.close()
 
 

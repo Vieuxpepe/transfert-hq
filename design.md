@@ -2,7 +2,7 @@
 
 ## Planned: 3D view translation pan
 
-**Status:** not implemented (requested by Emie; kept here so it is not lost).
+**Status:** implemented (`feat/dessiner-3d-pan`). Right, middle or Shift + left drag pans with a mouse; two fingers pan and pinch on touch (solved from the gesture start, so it does not drift); wheel and pinch zoom stay anchored under the cursor or the fingers; Recentrer clears the pan; a pan never selects. Tests: `tests/check_hq_3d_nav.mjs` and `tests/visual_dessiner_3d_playwright.py`.
 
 **Current behavior** (`assets/hq-solid-view.js`):
 - One-finger / mouse drag orbits the model. The yaw direction was fixed so the model follows the drag horizontally; pitch already followed it vertically (clamped to ±1.48 rad).

@@ -31,7 +31,7 @@
     edgeCanvas.setAttribute("aria-hidden", "true");
     canvas.parentNode.appendChild(edgeCanvas);
     const edgeCtx = edgeCanvas.getContext("2d");
-    let pointers = new Map(), lastDistance = 0;
+    let pointers = new Map();
     function bounds() {
       const b = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
       for (const tri of state.triangles) for (const p of tri) for (let i = 0; i < 3; i++) { b[0][i] = Math.min(b[0][i], p[i]); b[1][i] = Math.max(b[1][i], p[i]); }
@@ -152,21 +152,62 @@
     function setEdges(edges) { state.edges = edges || []; state.selectedEdge = -1; draw(); }
     function setEdgeMode(on) { state.edgeMode = !!on; state.selectedIndex = -1; state.selectedEdge = -1; draw(); }
     function reset() { state.yaw = -0.72; state.pitch = 0.62; state.zoom = 1; state.panX = 0; state.panY = 0; draw(); }
-    canvas.addEventListener("pointerdown", e => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, e.clientX, e.clientY]); });
+    // Pan is in screen space: a drag of (dx, dy) CSS px moves the projected model by exactly (dx, dy),
+    // whatever the orbit or zoom. projectPoint divides x (pan included) by max(1, aspect) and maps clip
+    // space to CSS px with the canvas rect, so the deltas are converted back the same way.
+    function panBy(dx, dy) {
+      const rect = canvas.getBoundingClientRect(), aspect = Math.max(1, canvas.width / Math.max(1, canvas.height));
+      state.panX += aspect * 2 * dx / Math.max(1, rect.width);
+      state.panY -= 2 * dy / Math.max(1, rect.height);
+    }
+    // A screen point in the units of panX / panY (x before the aspect divide). Missing coordinates: the centre.
+    function clip(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect(), aspect = Math.max(1, canvas.width / Math.max(1, canvas.height));
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) { clientX = rect.left + rect.width / 2; clientY = rect.top + rect.height / 2; }
+      return [aspect * (2 * (clientX - rect.left) / Math.max(1, rect.width) - 1), 1 - 2 * (clientY - rect.top) / Math.max(1, rect.height)];
+    }
+    const clampZoom = z => Math.max(0.15, Math.min(10, z));
+    // Zoom around a screen point (the cursor): the model point under it stays under it.
+    function zoomAt(clientX, clientY, factor) {
+      const next = clampZoom(state.zoom * factor), k = next / state.zoom, [ax, ay] = clip(clientX, clientY);
+      state.panX = ax - k * (ax - state.panX); state.panY = ay - k * (ay - state.panY); state.zoom = next;
+    }
+    // A pointer record: [x, y, startX, startY, mode]. mode "orbit", "pan" (right or middle button,
+    // Shift + left drag) or "multi" (was part of a two-finger gesture: it never orbits or selects after).
+    // Two fingers are solved from where the gesture started, not step by step: finger moves arrive one
+    // at a time, and chaining small zooms around moving centres would drift.
+    let pinch = null;
+    const centre = () => { const p = [...pointers.values()]; return [(p[0][0] + p[1][0]) / 2, (p[0][1] + p[1][1]) / 2]; };
+    const spread = () => { const p = [...pointers.values()]; return Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]); };
+    canvas.addEventListener("contextmenu", e => e.preventDefault());
+    canvas.addEventListener("pointerdown", e => {
+      canvas.setPointerCapture(e.pointerId);
+      const pan = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey));
+      if (e.button === 1) e.preventDefault(); // no autoscroll on middle click
+      pointers.set(e.pointerId, [e.clientX, e.clientY, e.clientX, e.clientY, pan ? "pan" : "orbit"]);
+      if (pointers.size === 2) {
+        for (const rec of pointers.values()) rec[4] = "multi";
+        pinch = { zoom: state.zoom, panX: state.panX, panY: state.panY, at: clip(...centre()), spread: Math.max(1, spread()) };
+      }
+    });
     canvas.addEventListener("pointermove", e => {
       if (!pointers.has(e.pointerId)) return;
-      const old = pointers.get(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, old[2], old[3]]);
-      if (pointers.size === 1) { state.yaw -= (e.clientX - old[0]) * 0.012; state.pitch = Math.max(-1.48, Math.min(1.48, state.pitch + (e.clientY - old[1]) * 0.012)); draw(); }
-      else if (pointers.size === 2) {
-        const p = [...pointers.values()], distance = Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]);
-        if (lastDistance) state.zoom = Math.max(0.15, Math.min(10, state.zoom * distance / lastDistance));
-        lastDistance = distance; draw();
+      const old = pointers.get(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, old[2], old[3], old[4]]);
+      if (pointers.size === 1) {
+        if (old[4] === "pan") { panBy(e.clientX - old[0], e.clientY - old[1]); draw(); }
+        else if (old[4] === "orbit") { state.yaw -= (e.clientX - old[0]) * 0.012; state.pitch = Math.max(-1.48, Math.min(1.48, state.pitch + (e.clientY - old[1]) * 0.012)); draw(); }
+      } else if (pointers.size === 2 && pinch) {
+        // The model point under the starting centre follows the current centre; the spread sets the zoom.
+        const zoom = clampZoom(pinch.zoom * spread() / pinch.spread), k = zoom / pinch.zoom, [ax, ay] = clip(...centre());
+        state.zoom = zoom;
+        state.panX = ax - k * (pinch.at[0] - pinch.panX); state.panY = ay - k * (pinch.at[1] - pinch.panY);
+        draw();
       }
     });
     for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) canvas.addEventListener(name, e => {
       const start = pointers.get(e.pointerId), single = pointers.size === 1;
-      pointers.delete(e.pointerId); if (pointers.size < 2) lastDistance = 0;
-      if (name === "pointerup" && single && start && Math.hypot(e.clientX - start[2], e.clientY - start[3]) < 6) {
+      pointers.delete(e.pointerId); if (pointers.size < 2) pinch = null;
+      if (name === "pointerup" && single && start && start[4] === "orbit" && Math.hypot(e.clientX - start[2], e.clientY - start[3]) < 6) {
         if (state.edgeMode) {
           const hit = edgeAt(e.clientX, e.clientY, e.pointerType);
           state.selectedEdge = hit ? hit.index : -1; draw();
@@ -178,7 +219,7 @@
         }
       }
     });
-    canvas.addEventListener("wheel", e => { e.preventDefault(); state.zoom = Math.max(0.15, Math.min(10, state.zoom * (e.deltaY > 0 ? 0.9 : 1.1))); draw(); }, { passive: false });
+    canvas.addEventListener("wheel", e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 0.9 : 1.1); draw(); }, { passive: false });
     if (root.ResizeObserver) new ResizeObserver(draw).observe(canvas);
     canvas.hqSolidProject = p => projectPoint(p); // read-only test hook: [x, y, depth] in clip space, smaller depth is nearer
     return { setTriangles, setEdges, setEdgeMode, reset, draw, state, faceAt, edgeAt,
