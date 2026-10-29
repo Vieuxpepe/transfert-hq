@@ -1016,6 +1016,16 @@ def list_jobs(root: Path, session_token: str | None = None) -> tuple[int, dict]:
                           for job in jobs[:30]]}
 
 
+def summary_rows(root: Path) -> list[dict]:
+    """Accueil 'Aujourd'hui': state, times and image count of normal jobs only. Private jobs are
+    left out here, before anything leaves this module; no prompt, setting or image id is returned."""
+    with _LOCK:
+        jobs = [job for job in _load(root)["jobs"] if isinstance(job, dict)]
+    return [{"state": job.get("state"), "created": job.get("created"), "updated": job.get("updated"),
+             "images": [{} for item in job.get("images") or [] if isinstance(item, dict)]}
+            for job in jobs if job.get("destination") != "private"]
+
+
 def cancel_job(root: Path, job_id: str, session_token: str | None = None) -> tuple[int, dict]:
     recover(root)
     if not JOB_RE.fullmatch(job_id):

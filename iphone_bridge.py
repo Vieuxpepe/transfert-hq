@@ -53,6 +53,7 @@ import hq_forge_bricks
 import hq_forge_lineage
 import hq_forge_style
 import hq_forge_vault
+import hq_today
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
@@ -231,6 +232,7 @@ ADMIN_PREFIXES = (
     "/api/backups",
     "/api/telemetry",
     "/api/brief",
+    "/api/today",
     "/api/push",
     "/api/schedules",
     "/api/calendar",
@@ -2074,6 +2076,30 @@ def hq_safe_move(src: str, dest: str) -> dict:
 
 def _file_exists_rel(rel: str) -> bool:
     return safe_rel_path(rel) is not None
+
+
+def build_today() -> dict:
+    """Accueil 'Aujourd'hui' > 'Depuis hier'. Each source is optional: one that fails is left out."""
+    now = time.time()
+    since = now - hq_today.WINDOW_SEC
+    sources: dict = {}
+    readers = {
+        "events": lambda: hq_events.list_events(limit=500).get("events") or [],
+        "jobs": lambda: hq_forge_jobs.summary_rows(ROOT),
+        "pages": lambda: hq_carnet.get_notebook(meta=True).get("pages") or [] if hq_carnet.ready() else [],
+        "devices": lambda: hq_companion.list_devices(),
+        "inbox": lambda: hq_today.inbox_times(ROOT / "Inbox", since),
+    }
+    missing = []
+    for name, read in readers.items():
+        try:
+            sources[name] = read()
+        except Exception:
+            sources[name] = []
+            missing.append(name)
+    out = hq_today.build(now=now, **sources)
+    out["missing"] = missing
+    return out
 
 
 def build_daily_brief() -> dict:
@@ -4851,7 +4877,7 @@ def render_app() -> bytes:
     </section>
     <section class="hq carnet-home" id="hq-carnet-home" aria-label="Carnet" hidden></section>
     <section class="hq" id="hq-cal-home" aria-labelledby="cal-home-title">
-      <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="false" aria-controls="hq-today-panel" data-help="Affiche les événements et actions prévus aujourd'hui.">
+      <button type="button" class="hq-disclosure" id="hq-today-toggle" aria-expanded="false" aria-controls="hq-today-panel" data-help="Affiche ce qui est prévu aujourd'hui et ce qui s'est passé depuis hier.">
         <span class="hq-disclosure-copy">
           <strong id="cal-home-title">Aujourd'hui</strong>
           <span class="hq-disclosure-meta" id="hq-cal-next">Chargement…</span>
@@ -4862,6 +4888,11 @@ def render_app() -> bytes:
         <p class="sec-hint">Ce qui se passe et ce qui vient</p>
         <div id="hq-cal-today"></div>
         <button type="button" class="secondary" id="hq-cal-open">Ouvrir le calendrier</button>
+        <div id="hq-since" class="hq-since" hidden>
+          <h3 id="hq-since-title" class="hq-since-title">Depuis hier</h3>
+          <ul class="hq-list hq-since-list" id="hq-since-list" aria-labelledby="hq-since-title"></ul>
+          <p class="hint" id="hq-since-empty" hidden>Rien de nouveau depuis hier.</p>
+        </div>
       </div>
     </section>
     </div>
@@ -6165,6 +6196,7 @@ def render_app() -> bytes:
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-struct.js"></script>
@@ -7365,6 +7397,9 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if raw == "/api/brief":
             self._json(200, build_daily_brief())
+            return True
+        if raw == "/api/today":
+            self._json(200, build_today())
             return True
         if raw == "/api/push/status":
             self._json(200, hq_automation.push_status())
