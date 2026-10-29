@@ -47,7 +47,14 @@
        Background refreshes leave it empty, so nothing moves on its own. */
     anim: "",
     prevView: "",
+    prevAnchor: null,
+    landed: "",      // id of the event that was just created or moved: it lands with a small bounce
+    zoomFrom: null,  // month cell centre the day view zooms out of
   };
+  const SNAP_MIN = 15;
+  let drag = null;           // the grid drag in progress (create, move or resize)
+  let renderPending = false; // a refresh arrived during a drag: draw once the drag ends
+  let lastPoint = null;      // where the owner last pressed: sheets grow out of that point
   const VIEW_ORDER = ["day", "week", "month", "agenda"];
   const HINT_KEY = "hq_cal_hint_done";
 
@@ -298,6 +305,10 @@
   function render() {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
+    if (drag) {
+      renderPending = true; // never rebuild the grid under a press or a drag
+      return;
+    }
     if (window.hqHideHelp) window.hqHideHelp();
     root.textContent = "";
     paintTz();
@@ -309,6 +320,7 @@
       root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
     }
     const stage = h("div", { class: "hq-cal-stage" + (state.anim ? " is-" + state.anim : "") });
+    if (state.anim === "zoom" && state.zoomFrom) stage.style.transformOrigin = state.zoomFrom.x + "px " + state.zoomFrom.y + "px";
     if (state.view === "day") stage.appendChild(dayView());
     else if (state.view === "week") {
       const first = weekStart(state.anchor);
@@ -322,6 +334,46 @@
     root.appendChild(conditionalBlock());
     state.anim = "";
     state.prevView = state.view;
+    state.prevAnchor = state.anchor;
+    state.zoomFrom = null;
+    state.landed = "";
+  }
+
+  function landedClass(item) {
+    return state.landed && item && item.id === state.landed ? " is-landed" : "";
+  }
+
+  /* A short tap of the phone where the browser allows it (Android); iOS Safari ignores it. */
+  function buzz(ms) {
+    try {
+      if (navigator.vibrate && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) navigator.vibrate(ms || 8);
+    } catch (_) {}
+  }
+
+  /* Is this day on screen in the current view? */
+  function dayVisible(day) {
+    const anchor = state.anchor || todayLocal();
+    if (state.view === "day") return sameDay(day, anchor);
+    if (state.view === "week") {
+      const start = weekStart(anchor);
+      return day >= start && day < addLocalDays(start, weekSpan());
+    }
+    if (state.view === "month") return day.getFullYear() === anchor.getFullYear() && day.getMonth() === anchor.getMonth();
+    return day >= anchor && day < addLocalDays(anchor, 30);
+  }
+
+  /* After a save: show the event's day if it is off screen, and let the event land there. */
+  function landOn(event) {
+    if (!event || !event.id) return refresh("keep");
+    const day = parseLocalDateKey(String(event.start || "").slice(0, 10));
+    state.landed = event.id;
+    if (day && !dayVisible(day)) {
+      state.userMoved = true;
+      state.anim = day < state.anchor ? "prev" : "next";
+      state.anchor = day;
+      return refresh();
+    }
+    return refresh("keep");
   }
 
   /* Previous / next period, from the arrows, a swipe or the arrow keys. */
@@ -494,8 +546,14 @@
   }
 
   function weekStrip() {
-    const strip = h("div", { class: "hq-cal-weekstrip" });
     const start = startOfLocalWeek(state.anchor);
+    const index = Math.round((startOfDayMs(state.anchor) - startOfDayMs(start)) / 86400000);
+    const prev = state.prevAnchor ? Math.round((startOfDayMs(state.prevAnchor) - startOfDayMs(start)) / 86400000) : index;
+    const slide = (state.anim === "next" || state.anim === "prev") && prev >= 0 && prev < 7 && prev !== index;
+    const strip = h("div", {
+      class: "hq-cal-weekstrip" + (slide ? " is-moving" : ""),
+      style: "--i:" + index + ";--from:" + (slide ? prev : index),
+    });
     const today = serverToday();
     for (let i = 0; i < 7; i += 1) {
       const day = addLocalDays(start, i);
@@ -510,6 +568,10 @@
       strip.appendChild(button);
     }
     return strip;
+  }
+
+  function startOfDayMs(date) {
+    return makeLocalDate(date.getFullYear(), date.getMonth() + 1, date.getDate()).getTime();
   }
 
   function serverToday() {
@@ -532,7 +594,7 @@
     const title = item.title || "Sans titre";
     const node = h("button", {
       type: "button",
-      class: "hq-cal-chip " + catClass(item),
+      class: "hq-cal-chip " + catClass(item) + landedClass(item),
       "data-cal": "open",
       "data-id": item.id,
       "data-help": previewHelp(item),
@@ -553,7 +615,7 @@
     const scroll = h("div", { class: "hq-cal-scroll" });
     const grid = h("div", { class: "hq-cal-day" });
     const labels = h("div", { class: "hq-cal-hours" });
-    const col = h("div", { class: "hq-cal-col" });
+    const col = h("div", { class: "hq-cal-col", "data-col-day": dateKey(day) });
     for (let hour = 0; hour < 24; hour += 1) {
       labels.appendChild(h("div", { class: "hq-cal-hourlabel", text: pad(hour) + ":00" }));
       col.appendChild(
@@ -650,7 +712,8 @@
       const past = !!(now && itemEnd(entry.item) && itemEnd(entry.item) <= now);
       const button = h("button", {
         type: "button",
-        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)) + (past ? " is-past" : ""),
+        class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)) + (past ? " is-past" : "") + landedClass(entry.item)
+          + (movable(entry.item) ? " is-movable" : ""),
         "data-cal": "open",
         "data-id": entry.item.id,
         "data-help": previewHelp(entry.item),
@@ -672,6 +735,12 @@
       button.style.left = entry.col * width + "%";
       button.style.width = width + "%";
       button.style.setProperty("--n", String(Math.min(order, 12)));
+      if (movable(entry.item)) {
+        // Bottom edge: drag to change the end. On touch it sits at the bottom of the visible face.
+        const grip = h("span", { class: "hq-cal-resize", "data-grip": "end", "aria-hidden": "true" });
+        if (coarse) grip.style.top = "calc(" + (((top - hitTop) + height) / hitHeight) * 100 + "% - 14px)";
+        button.appendChild(grip);
+      }
       col.appendChild(button);
     });
     return columns;
@@ -782,7 +851,7 @@
         .slice(0, 3)
         .forEach((item) => cell.appendChild(chip(item)));
       all.appendChild(cell);
-      const col = h("div", { class: "hq-cal-weekcol" });
+      const col = h("div", { class: "hq-cal-weekcol", "data-col-day": dateKey(day) });
       for (let hour = 0; hour < 24; hour += 1) {
         col.appendChild(
           h("button", {
@@ -827,7 +896,7 @@
         if (rows.length) {
           const dots = h("span", { class: "hq-cal-dots", "aria-hidden": "true" });
           const shown = rows.length > 3 ? 2 : rows.length; // 3 marks fit one line; past that, 2 marks and "+n"
-          rows.slice(0, shown).forEach((item) => dots.appendChild(h("span", { class: "hq-cal-dot " + catClass(item) })));
+          rows.slice(0, shown).forEach((item) => dots.appendChild(h("span", { class: "hq-cal-dot " + catClass(item) + landedClass(item) })));
           if (rows.length > shown) dots.appendChild(h("span", { class: "hq-cal-dot-more", text: "+" + (rows.length - shown) }));
           cell.appendChild(dots);
           cell.querySelector(".hq-cal-mday").setAttribute("aria-label", fmtDay(day) + " · " + (rows.length === 1 ? "1 élément" : rows.length + " éléments"));
@@ -872,7 +941,7 @@
         const when = item.all_day ? "Journée" : spanLabel(item);
         const button = h("button", {
           type: "button",
-          class: "hq-cal-row " + catClass(item),
+          class: "hq-cal-row " + catClass(item) + landedClass(item),
           "data-cal": "open",
           "data-id": item.id,
           "data-help": previewHelp(item),
@@ -965,6 +1034,12 @@
       if (!day) return;
       state.userMoved = true;
       state.anim = state.view === "day" ? (day < state.anchor ? "prev" : "next") : "view";
+      if (state.view === "month") {
+        const app = document.getElementById("hq-cal-app").getBoundingClientRect();
+        const cell = (button.closest(".hq-cal-mcell") || button).getBoundingClientRect();
+        state.anim = "zoom";
+        state.zoomFrom = { x: Math.round(cell.left + cell.width / 2 - app.left), y: Math.round(cell.top + cell.height / 2 - app.top) };
+      }
       state.anchor = day;
       state.view = "day";
       try { localStorage.setItem("hq_cal_view", "day"); } catch (_) {}
@@ -1027,9 +1102,22 @@
       });
       document.body.appendChild(node);
     }
+    clearTimeout(node.closeTimer);
+    node.classList.remove("is-closing");
     node.hidden = false;
     node.textContent = "";
     return node;
+  }
+
+  /* The card grows out of where the owner pressed (a slot, an event, a button), with a soft spring. */
+  function present(card) {
+    const rect = card.getBoundingClientRect();
+    const recent = lastPoint && Date.now() - lastPoint.t < 1500;
+    const ox = recent ? lastPoint.x : rect.left + rect.width / 2;
+    const oy = recent ? lastPoint.y : rect.top + rect.height;
+    card.style.setProperty("--dx", Math.round(ox - (rect.left + rect.width / 2)) + "px");
+    card.style.setProperty("--dy", Math.round(oy - (rect.top + rect.height / 2)) + "px");
+    card.classList.add("is-morph");
   }
 
   /* Left / right arrows change period and T comes back to today, on the calendar view only, never
@@ -1050,16 +1138,339 @@
     }
   }
 
+  /* ---- quick add: one sentence, Entrée, done ---- */
+  function fmtQuickDay(date) {
+    return new Intl.DateTimeFormat("fr-CA", { weekday: "short", day: "numeric", month: "short" }).format(date);
+  }
+
+  function quickDraft(text) {
+    const parser = window.HQCalendarQuick;
+    if (!parser) return null;
+    return parser.parse(text, serverNow() || new Date(), state.anchor || todayLocal());
+  }
+
+  function paintQuick() {
+    const input = document.getElementById("hq-cal-quick-input");
+    const preview = document.getElementById("hq-cal-quick-preview");
+    const more = document.getElementById("hq-cal-quick-more");
+    if (!input || !preview) return;
+    const text = input.value.trim();
+    const draft = text ? quickDraft(text) : null;
+    preview.textContent = "";
+    preview.hidden = !text;
+    if (more) more.hidden = !text;
+    if (!text) return;
+    if (!draft) {
+      preview.appendChild(h("span", { class: "hint", text: "Ajoute un titre." }));
+      return;
+    }
+    const day = parseLocalDateKey(draft.start.slice(0, 10));
+    const cat = CATS.find((row) => row[0] === draft.category);
+    const when = draft.all_day ? "Journée" : draft.start.slice(11, 16) + "–" + draft.end.slice(11, 16);
+    preview.appendChild(h("span", { class: "hq-cal-quick-chip cat-" + draft.category }, [
+      h("strong", { text: draft.title }),
+      h("span", { text: " · " + (day ? fmtQuickDay(day) : "") + " · " + when + (cat && draft.category !== "other" ? " · " + cat[1] : "") }),
+    ]));
+  }
+
+  function eventPayload(source, over) {
+    const item = Object.assign({}, source, over || {});
+    const payload = {
+      title: item.title || "",
+      all_day: !!item.all_day,
+      start: item.start,
+      end: item.end,
+      category: item.category || "other",
+      notes: item.notes || "",
+      location: item.location || "",
+      scene_id: item.scene_id || "",
+      action_id: item.action_id || "",
+      device_id: item.device_id || "",
+      reminders_min: Array.isArray(item.reminders_min) ? item.reminders_min : [],
+    };
+    if (item.id) payload.id = item.id;
+    return payload;
+  }
+
+  async function quickSave(form) {
+    const input = document.getElementById("hq-cal-quick-input");
+    const draft = quickDraft(input.value.trim());
+    if (!draft) {
+      shake(form);
+      input.focus();
+      return;
+    }
+    form.classList.add("is-saving");
+    try {
+      const saved = await api("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save", expected_rev: 0, event: eventPayload(draft) }),
+      });
+      input.value = "";
+      paintQuick();
+      form.classList.remove("is-done");
+      void form.offsetWidth; // restart the check animation
+      form.classList.add("is-done");
+      setTimeout(() => form.classList.remove("is-done"), 900);
+      buzz(10);
+      landOn(saved && saved.event);
+    } catch (err) {
+      shake(form);
+      if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
+    } finally {
+      form.classList.remove("is-saving");
+    }
+  }
+
+  function shake(node) {
+    if (!node) return;
+    node.classList.remove("is-shake");
+    void node.offsetWidth;
+    node.classList.add("is-shake");
+    setTimeout(() => node.classList.remove("is-shake"), 420);
+  }
+
+  /* Built once, outside the re-rendered grid, so typing survives every refresh. */
+  function mountQuick(root) {
+    if (document.getElementById("hq-cal-quick")) return;
+    const form = h("form", { class: "hq-cal-quick", id: "hq-cal-quick", autocomplete: "off" });
+    const row = h("div", { class: "hq-cal-quick-row" });
+    row.appendChild(h("span", { class: "hq-cal-quick-plus", "aria-hidden": "true" }));
+    row.appendChild(h("input", { id: "hq-cal-quick-input", type: "text", maxlength: "160", enterkeyhint: "done", autocapitalize: "sentences",
+      spellcheck: "false", "aria-label": "Ajouter un événement",
+      placeholder: "Ajouter… « Dentiste demain 14h »", "aria-describedby": "hq-cal-quick-preview" }));
+    const more = h("button", { type: "button", id: "hq-cal-quick-more", class: "hq-cal-quick-more", text: "Détails" });
+    more.hidden = true;
+    row.appendChild(more);
+    form.appendChild(row);
+    const preview = h("div", { class: "hq-cal-quick-preview", id: "hq-cal-quick-preview", "aria-live": "polite" });
+    preview.hidden = true;
+    form.appendChild(preview);
+    root.parentNode.insertBefore(form, root);
+    const input = form.querySelector("input");
+    input.addEventListener("input", paintQuick);
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && input.value) {
+        ev.stopPropagation();
+        input.value = "";
+        paintQuick();
+      }
+    });
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      quickSave(form);
+    });
+    more.addEventListener("click", () => {
+      const draft = quickDraft(input.value.trim()) || blankDraft(state.anchor, 9);
+      openEditor(Object.assign(blankDraft(state.anchor, 9), draft));
+      input.value = "";
+      paintQuick();
+    });
+  }
+
+  /* ---- drag on the grid: create (empty hours), move (event), resize (bottom edge) ---- */
+  function movable(item) {
+    if (!item || item.read_only || item.all_day) return false;
+    const a = itemStart(item);
+    const b = itemEnd(item);
+    return !!(a && b && sameDay(a, new Date(b.getTime() - 1))); // one day only
+  }
+
+  function minuteIn(col, clientY) {
+    const rect = col.getBoundingClientRect();
+    const raw = ((clientY - rect.top) / Math.max(1, rect.height)) * 1440;
+    return Math.max(0, Math.min(1440, Math.round(raw / SNAP_MIN) * SNAP_MIN));
+  }
+
+  function colAt(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return el ? el.closest("#hq-cal-app [data-col-day]") : null;
+  }
+
+  function hhmm(mins) {
+    const m = Math.max(0, Math.min(1440, mins));
+    return pad(Math.floor(m / 60) % 24 === 0 && m === 1440 ? 24 : Math.floor(m / 60)) + ":" + pad(m % 60);
+  }
+
+  function ghostAt(col, a, b, title, cat) {
+    if (!drag.ghost) {
+      drag.ghost = h("div", { class: "hq-cal-ghost " + (cat ? "cat-" + cat : "cat-hq"), "aria-hidden": "true" }, [
+        h("span", { class: "hq-cal-ghost-time" }), h("span", { class: "hq-cal-ghost-title", text: title || "" }),
+      ]);
+    }
+    if (drag.ghost.parentNode !== col) col.appendChild(drag.ghost);
+    drag.ghost.style.top = (a / 1440) * 100 + "%";
+    drag.ghost.style.height = (Math.max(SNAP_MIN, b - a) / 1440) * 100 + "%";
+    drag.ghost.firstChild.textContent = hhmm(a) + "–" + hhmm(b);
+  }
+
+  function dragUpdate(x, y) {
+    if (drag.mode === "create") {
+      const now = minuteIn(drag.col, y);
+      let a = Math.min(drag.anchorMin, now);
+      let b = Math.max(drag.anchorMin + SNAP_MIN, now);
+      if (now < drag.anchorMin) b = drag.anchorMin + SNAP_MIN;
+      if (b - a < 30) b = Math.min(1440, a + 30);
+      drag.range = [a, b];
+      drag.target = drag.col;
+      ghostAt(drag.col, a, b, "", "hq");
+    } else if (drag.mode === "move") {
+      const col = colAt(x, y) || drag.target || drag.col;
+      const dur = drag.endMin - drag.startMin;
+      let a = Math.round((minuteIn(col, y) - drag.grabOffset) / SNAP_MIN) * SNAP_MIN;
+      a = Math.max(0, Math.min(1440 - dur, a));
+      drag.range = [a, a + dur];
+      drag.target = col;
+      ghostAt(col, a, a + dur, drag.item.title, drag.item.category);
+    } else {
+      const b = Math.max(drag.startMin + SNAP_MIN, minuteIn(drag.col, y));
+      drag.range = [drag.startMin, b];
+      drag.target = drag.col;
+      ghostAt(drag.col, drag.startMin, b, drag.item.title, drag.item.category);
+    }
+  }
+
+  function dragActivate(x, y) {
+    drag.active = true;
+    document.getElementById("hq-cal-app").classList.add("is-dragging");
+    if (drag.source) drag.source.classList.add("is-lifted");
+    buzz(12);
+    dragUpdate(x, y);
+  }
+
+  function dragEnd(commit) {
+    const finished = drag;
+    drag = null;
+    clearTimeout(finished.timer);
+    const root = document.getElementById("hq-cal-app");
+    if (root) root.classList.remove("is-dragging");
+    if (finished.source) finished.source.classList.remove("is-lifted");
+    const pending = renderPending;
+    renderPending = false;
+    if (!finished.active) {
+      if (pending) setTimeout(render, 0); // after the click this press may still turn into
+      return;
+    }
+    suppressClick();
+    if (finished.ghost) finished.ghost.remove();
+    if (!commit || !finished.range || !finished.target) {
+      if (pending) render();
+      return;
+    }
+    const day = parseLocalDateKey(finished.target.dataset.colDay);
+    const [a, b] = finished.range;
+    const at = (mins) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, mins);
+    if (finished.mode === "create") {
+      const draft = blankDraft(day, 0);
+      draft.start = minuteKey(at(a));
+      draft.end = minuteKey(at(b));
+      if (pending) render();
+      openEditor(draft);
+      return;
+    }
+    const startKey = minuteKey(at(a));
+    const endKey = minuteKey(at(b));
+    if (startKey === finished.item.start && endKey === finished.item.end) {
+      if (pending) render();
+      return;
+    }
+    commitMove(finished.item, startKey, endKey);
+  }
+
+  async function commitMove(item, startKey, endKey) {
+    const before = { start: item.start, end: item.end };
+    const payload = eventPayload(item, { start: startKey, end: endKey });
+    item.start = startKey; // show it in place at once; the server answer confirms it
+    item.end = endKey;
+    state.landed = item.id;
+    render();
+    try {
+      await api("/api/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save", expected_rev: item.rev, event: payload }),
+      });
+      buzz(10);
+      refresh("keep");
+    } catch (err) {
+      item.start = before.start;
+      item.end = before.end;
+      render();
+      if (typeof toast === "function") toast((err && err.message) || "Déplacement impossible", "err");
+      refresh("keep");
+    }
+  }
+
+  function bindDrag(root) {
+    const LONG_PRESS = 380;
+    root.addEventListener("pointerdown", (ev) => {
+      lastPoint = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+      if (drag || (ev.pointerType === "mouse" && ev.button !== 0) || ev.target.closest(".hq-sheet")) return;
+      const slot = ev.target.closest(".hq-cal-slot");
+      const eventBtn = ev.target.closest(".hq-cal-event.is-movable");
+      let next = null;
+      if (eventBtn) {
+        const item = findItem(eventBtn.dataset.id);
+        const col = eventBtn.closest("[data-col-day]");
+        if (!item || !col || !movable(item)) return;
+        const startDate = itemStart(item);
+        const endDate = itemEnd(item);
+        const startMin = startDate.getHours() * 60 + startDate.getMinutes();
+        const endMin = sameDay(startDate, endDate) ? endDate.getHours() * 60 + endDate.getMinutes() : 1440;
+        const resize = !!ev.target.closest("[data-grip='end']");
+        next = { mode: resize ? "resize" : "move", item, col, source: eventBtn, startMin, endMin,
+          grabOffset: minuteIn(col, ev.clientY) - startMin };
+      } else if (slot) {
+        const col = slot.closest("[data-col-day]");
+        if (!col) return;
+        next = { mode: "create", col, anchorMin: Math.floor(minuteIn(col, ev.clientY - 1) / SNAP_MIN) * SNAP_MIN };
+      }
+      if (!next) return;
+      drag = Object.assign(next, { id: ev.pointerId, type: ev.pointerType, x0: ev.clientX, y0: ev.clientY, active: false, ghost: null });
+      if (ev.pointerType !== "mouse") {
+        // Touch: a press held still turns into a drag; moving first stays a scroll or a swipe.
+        drag.timer = setTimeout(() => { if (drag && !drag.active) dragActivate(drag.x0, drag.y0); }, LONG_PRESS);
+      }
+    });
+    window.addEventListener("pointermove", (ev) => {
+      if (!drag || ev.pointerId !== drag.id) return;
+      const moved = Math.hypot(ev.clientX - drag.x0, ev.clientY - drag.y0);
+      if (!drag.active) {
+        if (drag.type === "mouse" && moved > 5) dragActivate(ev.clientX, ev.clientY);
+        else if (drag.type !== "mouse" && moved > 8) dragEnd(false); // it was a scroll
+        return;
+      }
+      dragUpdate(ev.clientX, ev.clientY);
+    });
+    window.addEventListener("pointerup", (ev) => {
+      if (drag && ev.pointerId === drag.id) dragEnd(true);
+    });
+    window.addEventListener("pointercancel", (ev) => {
+      if (drag && ev.pointerId === drag.id) dragEnd(false);
+    });
+    // Once a touch drag is live, the page must not scroll under it.
+    document.addEventListener("touchmove", (ev) => {
+      if (drag && drag.active) ev.preventDefault();
+    }, { passive: false });
+    document.addEventListener("keydown", (ev) => {
+      if (drag && drag.active && ev.key === "Escape") {
+        ev.stopPropagation();
+        dragEnd(false);
+      }
+    }, true);
+  }
+
   /* Swipe left / right on the calendar (touch only) to change period. Vertical moves stay scrolls. */
   function bindSwipe(root) {
     let start = null;
     root.addEventListener("pointerdown", (ev) => {
-      if (ev.pointerType !== "touch" || ev.target.closest(".hq-cal-bar, .hq-sheet")) { start = null; return; }
+      if (ev.pointerType !== "touch" || ev.target.closest(".hq-cal-bar, .hq-sheet, .hq-cal-event.is-movable")) { start = null; return; }
       start = { x: ev.clientX, y: ev.clientY, t: Date.now() };
     }, { passive: true });
     root.addEventListener("pointercancel", () => { start = null; }, { passive: true });
     root.addEventListener("pointerup", (ev) => {
-      if (!start || ev.pointerType !== "touch") return;
+      if (!start || ev.pointerType !== "touch" || (drag && drag.active)) { start = null; return; }
       const dx = ev.clientX - start.x;
       const dy = ev.clientY - start.y;
       const quick = Date.now() - start.t < 700;
@@ -1079,12 +1490,18 @@
   }
 
   function closeSheets() {
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     ["hq-cal-detail", "hq-cal-editor"].forEach((id) => {
       const node = document.getElementById(id);
-      if (node) {
+      if (!node || node.hidden) return;
+      const finish = () => {
         node.hidden = true;
         node.textContent = "";
-      }
+        node.classList.remove("is-closing");
+      };
+      if (calm) return finish();
+      node.classList.add("is-closing"); // shrink away, then hide (reopening cancels this)
+      node.closeTimer = setTimeout(finish, 170);
     });
     releaseSheet();
     const opener = sheetOpener;
@@ -1115,6 +1532,7 @@
     card.addEventListener("click", (ev) => onSheetClick(ev, item));
     card.tabIndex = -1;
     root.appendChild(card);
+    present(card);
     releaseSheet();
     sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
     card.focus();
@@ -1203,25 +1621,36 @@
     }
   }
 
+  /* The editor shows what most events need (title, when, category, place); notes, scene, action,
+     device and reminders wait under "Plus d'options". Duration chips set the end in one tap. */
   function openEditor(item) {
     const root = sheet("hq-cal-editor");
-    const card = h("form", { class: "hq-sheet-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
+    const card = h("form", { class: "hq-sheet-card hq-cal-editor", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
     card.appendChild(h("h3", { id: "hq-cal-editor-title", text: item.id ? "Modifier" : "Nouvel événement" }));
-    card.appendChild(field("Titre", h("input", { id: "hq-cal-title", name: "title", maxlength: "120", required: "required", value: item.title || "" })));
+    card.appendChild(h("input", { id: "hq-cal-title", class: "hq-cal-title-input", name: "title", maxlength: "120", required: "required",
+      placeholder: "Titre", "aria-label": "Titre", autocomplete: "off", value: item.title || "" }));
     const allDay = h("input", { id: "cal-all-day", type: "checkbox" });
     allDay.checked = !!item.all_day;
-    const allWrap = h("label", { text: "" });
-    allWrap.appendChild(allDay);
-    allWrap.appendChild(document.createTextNode(" Toute la journée"));
-    card.appendChild(h("div", { class: "field" }, [allWrap]));
-    const start = h("input", { id: "cal-start", required: "required" });
-    const end = h("input", { id: "cal-end", required: "required" });
+    const start = h("input", { id: "cal-start", required: "required", "aria-label": "Début" });
+    const end = h("input", { id: "cal-end", required: "required", "aria-label": "Fin" });
+    const durations = h("div", { class: "hq-cal-durations", role: "group", "aria-label": "Durée" });
+    [[30, "30 min"], [60, "1 h"], [90, "1 h 30"], [120, "2 h"]].forEach(([mins, label]) => {
+      durations.appendChild(h("button", { type: "button", class: "hq-cal-chipbtn", "data-mins": String(mins), text: label }));
+    });
+    function markDuration() {
+      const a = parseLocalDateTime(start.value);
+      const b = parseLocalDateTime(end.value);
+      const mins = a && b ? Math.round((b - a) / 60000) : -1;
+      durations.querySelectorAll("button").forEach((btn) => btn.setAttribute("aria-pressed", Number(btn.dataset.mins) === mins ? "true" : "false"));
+      durations.hidden = allDay.checked;
+    }
     function syncTypes() {
       const day = allDay.checked;
       start.type = day ? "date" : "datetime-local";
       end.type = day ? "date" : "datetime-local";
       start.value = day ? String(item.start || "").slice(0, 10) : toLocalInput(item.start, false);
       end.value = day ? String(item.end || "").slice(0, 10) : toLocalInput(item.end, false);
+      markDuration();
     }
     allDay.addEventListener("change", () => {
       item.all_day = allDay.checked;
@@ -1236,24 +1665,62 @@
       }
       syncTypes();
     });
-    syncTypes();
-    card.appendChild(field("Début", start));
-    card.appendChild(field("Fin", end));
-    card.appendChild(h("p", { class: "hint", text: "Journée entière : la date de fin est exclue (le lendemain pour un seul jour)." }));
-    const category = h("select", { id: "cal-category" });
-    CATS.forEach(([id, label]) => {
-      const option = h("option", { value: id, text: label });
-      if ((item.category || "other") === id) option.selected = true;
-      category.appendChild(option);
+    start.addEventListener("change", () => {
+      // Moving the start keeps the duration, like every calendar does.
+      const a = parseLocalDateTime(toLocalInput(item.start, false));
+      const b = parseLocalDateTime(toLocalInput(item.end, false));
+      const next = parseLocalDateTime(start.value);
+      if (!allDay.checked && a && b && next) {
+        end.value = toLocalInput(minuteKey(new Date(next.getTime() + (b - a))), false);
+        item.start = minuteKey(next);
+        item.end = minuteKey(new Date(next.getTime() + (b - a)));
+      }
+      markDuration();
     });
-    card.appendChild(field("Catégorie", category));
+    end.addEventListener("change", markDuration);
+    durations.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-mins]");
+      const a = parseLocalDateTime(start.value);
+      if (!btn || !a) return;
+      end.value = toLocalInput(minuteKey(new Date(a.getTime() + Number(btn.dataset.mins) * 60000)), false);
+      markDuration();
+    });
+    syncTypes();
+    const when = h("div", { class: "hq-cal-when" });
+    when.appendChild(field("Début", start));
+    when.appendChild(field("Fin", end));
+    card.appendChild(when);
+    card.appendChild(durations);
+    const allWrap = h("label", { class: "hq-cal-switch" });
+    allWrap.appendChild(allDay);
+    allWrap.appendChild(h("span", { text: "Toute la journée" }));
+    card.appendChild(allWrap);
+    const category = h("input", { id: "cal-category", type: "hidden", value: item.category || "other" });
+    const cats = h("div", { class: "hq-cal-cats", role: "radiogroup", "aria-label": "Catégorie" });
+    CATS.forEach(([id, label]) => {
+      cats.appendChild(h("button", { type: "button", role: "radio", class: "hq-cal-catbtn cat-" + id, "data-cat": id,
+        "aria-checked": (item.category || "other") === id ? "true" : "false", text: label }));
+    });
+    cats.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-cat]");
+      if (!btn) return;
+      category.value = btn.dataset.cat;
+      cats.querySelectorAll("[data-cat]").forEach((b) => b.setAttribute("aria-checked", b === btn ? "true" : "false"));
+    });
+    card.appendChild(cats);
+    card.appendChild(category);
     card.appendChild(field("Lieu", h("input", { id: "cal-location", maxlength: "200", value: item.location || "" })));
-    card.appendChild(field("Notes", h("textarea", { id: "cal-notes", maxlength: "4000", text: item.notes || "" })));
-    card.appendChild(selectField("Scène", "cal-scene", ((state.data || {}).catalog || {}).scenes, item.scene_id));
-    card.appendChild(selectField("Action", "cal-action", ((state.data || {}).catalog || {}).actions, item.action_id));
-    card.appendChild(selectField("Appareil (navigation)", "cal-device", ((state.data || {}).catalog || {}).devices, item.device_id));
-    card.appendChild(reminderField(item.reminders_min || []));
-    const row = h("div", { class: "hq-cal-views" });
+    const more = h("details", { class: "hq-cal-moreopts" });
+    if (item.notes || item.scene_id || item.action_id || item.device_id || (item.reminders_min || []).length) more.open = true;
+    more.appendChild(h("summary", { text: "Plus d'options" }));
+    more.appendChild(field("Notes", h("textarea", { id: "cal-notes", maxlength: "4000", text: item.notes || "" })));
+    more.appendChild(reminderField(item.reminders_min || []));
+    more.appendChild(selectField("Scène", "cal-scene", ((state.data || {}).catalog || {}).scenes, item.scene_id));
+    more.appendChild(selectField("Action", "cal-action", ((state.data || {}).catalog || {}).actions, item.action_id));
+    more.appendChild(selectField("Appareil (navigation)", "cal-device", ((state.data || {}).catalog || {}).devices, item.device_id));
+    more.appendChild(h("p", { class: "hint", text: "Journée entière : la date de fin est exclue (le lendemain pour un seul jour)." }));
+    card.appendChild(more);
+    const row = h("div", { class: "hq-cal-sheet-actions" });
     row.appendChild(h("button", { type: "submit", text: "Enregistrer" }));
     row.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
     card.appendChild(row);
@@ -1265,6 +1732,7 @@
       saveEditor(item, { allDay, start, end, category });
     });
     root.appendChild(card);
+    present(card);
     releaseSheet();
     sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
     const title = card.querySelector("#hq-cal-title");
@@ -1348,14 +1816,15 @@
       return;
     }
     try {
-      await busy("Enregistrement…", () => api("/api/calendar", {
+      const saved = await busy("Enregistrement…", () => api("/api/calendar", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "save", expected_rev: item.id ? item.rev : 0, event: payload }),
       }));
       closeSheets();
+      buzz(10);
       if (typeof toast === "function") toast("Événement enregistré");
-      refresh();
+      landOn(saved && saved.event);
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
     }
@@ -1468,6 +1937,8 @@
     }
     state.anchor = todayLocal();
     root.addEventListener("click", onClick);
+    mountQuick(root);
+    bindDrag(root);
     bindSwipe(root);
     const narrow = window.matchMedia("(max-width: 600px)");
     const onWidth = () => { if (state.data && state.view === "week") refresh(); };

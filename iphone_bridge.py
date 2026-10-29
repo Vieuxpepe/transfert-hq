@@ -6248,6 +6248,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-features.js"></script>
 <script src="/assets/hq.js"></script>
 <script src="/assets/hq-agent.js"></script>
+<script src="/assets/hq-calendar-quick.js"></script>
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>

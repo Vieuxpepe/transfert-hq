@@ -54,6 +54,137 @@ def shot(page, name, browser_name):
         page.screenshot(path=str(SHOTS / f"{browser_name}-cal-{name}.png"))
 
 
+def api_events(page, base, day):
+    data = page.request.get(f"{base}/api/calendar?from={day.isoformat()}&to={(day + timedelta(days=1)).isoformat()}").json()
+    return {item["title"]: item for item in data.get("items") or []}
+
+
+def no_sheet(page):
+    return until(page, "() => ![...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden)")
+
+
+def open_sheet(page):
+    return until(page, "() => [...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden)")
+
+
+def flow_checks(page, base, label, today):
+    """Quick add, the lighter editor, drag to create / move / resize, and the satisfying bits."""
+    tomorrow = today + timedelta(days=1)
+    page.locator('#hq-cal-app [data-view="day"]').click()
+    until(page, "() => !!document.querySelector('.hq-cal-day')")
+    # Quick add
+    quick = page.locator("#hq-cal-quick-input")
+    check(quick.is_visible(), "the quick add field is at the top")
+    title = "Rdv test " + label
+    quick.fill(title + " demain 14h")
+    preview = page.locator("#hq-cal-quick-preview").inner_text()
+    check(title.capitalize() in preview and "14:00–15:00" in preview and "Rendez-vous" in preview, f"the preview reads the sentence: {preview}")
+    page.locator("#hq-cal-quick-input").press("Enter")
+    check(until(page, "() => document.getElementById('hq-cal-quick-input').value === ''"), "Entrée saves and clears the field")
+    saved = api_events(page, base, tomorrow).get(title.capitalize())
+    check(bool(saved) and saved["start"].endswith("T14:00") and saved["category"] == "appointment", f"the event is on the server: {saved and saved['start']}")
+    check(until(page, "(t) => [...document.querySelectorAll('.hq-cal-event')].some((e) => e.innerText.includes(t))", title.capitalize()), "the calendar moves to its day and shows it")
+    page.evaluate("() => window.hqCalendarShow()")
+    quick.fill("demain 9h")
+    check("Ajoute un titre" in page.locator("#hq-cal-quick-preview").inner_text(), "without a title, the preview asks for one")
+    quick.press("Enter")
+    check(until(page, "() => document.getElementById('hq-cal-quick').classList.contains('is-shake') || !document.getElementById('hq-cal-quick').classList.contains('is-saving')"), "nothing is saved without a title")
+    quick.fill("")
+    page.locator(".hq-cal-today").click() if page.locator(".hq-cal-today").count() else None
+    no_sheet(page)
+    # Détails opens the lighter editor, prefilled
+    quick.fill("Cours de piano vendredi 17h")
+    page.locator("#hq-cal-quick-more").click()
+    check(open_sheet(page), "Détails opens the editor")
+    check(page.locator("#hq-cal-title").input_value() == "Cours de piano", "with the title filled in")
+    check(page.locator(".hq-cal-catbtn[aria-checked=true]").inner_text() == "Étude", "and the guessed category chosen")
+    check(page.locator(".hq-cal-moreopts").evaluate("(d) => !d.open"), "notes, scene, action, device and reminders wait under Plus d'options")
+    page.locator('.hq-cal-durations [data-mins="90"]').click()
+    check(page.locator("#cal-end").input_value().endswith("18:30"), "a duration chip sets the end")
+    page.locator('.hq-cal-catbtn[data-cat="personal"]').click()
+    check(page.locator("#cal-category").input_value() == "personal", "a category chip sets the category")
+    page.keyboard.press("Escape")
+    no_sheet(page)
+    page.locator(".hq-cal-today").click() if page.locator(".hq-cal-today").count() else None
+    until(page, "() => !document.querySelector('.hq-cal-today')")
+    # Strip pill slides between days; month day zooms in
+    page.locator("#hq-cal-app [data-cal=next]").click()
+    check(until(page, "() => document.querySelector('.hq-cal-weekstrip.is-moving') !== null || document.querySelector('.hq-cal-stage.is-next') !== null"), "the selected day slides along the strip")
+    page.locator("#hq-cal-app [data-cal=prev]").click()
+    page.locator('#hq-cal-app [data-view="month"]').click()
+    until(page, "() => !!document.querySelector('.hq-cal-month')")
+    page.locator(".hq-cal-mcell.is-today .hq-cal-mday").click()
+    check(until(page, "() => !!document.querySelector('.hq-cal-stage.is-zoom')"), "a month day zooms into the day")
+    until(page, "() => !!document.querySelector('.hq-cal-day')")
+    page.wait_for_timeout(500)  # let the zoom and the scroll to now settle before measuring
+    if label != "desktop":
+        # Touch: hold still on an empty hour, then drag down.
+        page.evaluate("() => document.querySelector('.hq-cal-scroll').scrollTop = 6 * 48")
+        y = page.evaluate("""() => { const s = document.querySelector('.hq-cal-day .hq-cal-slot[data-hour="7"]'); const r = s.getBoundingClientRect(); return [r.left + 40, r.top + 2]; }""")
+        page.evaluate("""([x, y]) => { const el = document.elementFromPoint(x, y);
+            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch', pointerId: 7, clientX: x, clientY: y, isPrimary: true })); }""", y)
+        page.wait_for_timeout(480)
+        page.evaluate("""([x, y]) => { for (const dy of [30, 60, 90]) window.dispatchEvent(new PointerEvent('pointermove', { pointerType: 'touch', pointerId: 7, clientX: x, clientY: y + dy, isPrimary: true }));
+            window.dispatchEvent(new PointerEvent('pointerup', { pointerType: 'touch', pointerId: 7, clientX: x, clientY: y + 90, isPrimary: true })); }""", y)
+        check(open_sheet(page), "touch: a long press then a drag on empty hours opens a new event")
+        check(page.locator("#cal-start").input_value().endswith("07:00") and page.locator("#cal-end").input_value().endswith("09:00"),
+              f"with the dragged span ({page.locator('#cal-start').input_value()} – {page.locator('#cal-end').input_value()})")
+        page.keyboard.press("Escape")
+        no_sheet(page)
+        return
+    # Desktop mouse: drag on empty hours creates; drag an event moves it; drag its edge resizes it.
+    page.evaluate("() => { const s = document.querySelector('.hq-cal-scroll'); if (s) s.scrollTop = 0; window.scrollTo(0, 0); }")
+    slot = page.locator('.hq-cal-day .hq-cal-slot[data-hour="6"]')
+    slot.scroll_into_view_if_needed()
+    box = slot.bounding_box()
+    x = box["x"] + 60
+    page.mouse.move(x, box["y"] + 2)
+    page.mouse.down()
+    page.mouse.move(x, box["y"] + 40, steps=4)
+    check(page.locator(".hq-cal-ghost").count() == 1, "dragging on empty hours shows a ghost with its times")
+    page.mouse.move(x, box["y"] + box["height"] * 1.5, steps=6)
+    ghost = page.locator(".hq-cal-ghost-time").inner_text()
+    page.mouse.up()
+    check(open_sheet(page) and page.locator("#cal-start").input_value().endswith("06:00") and page.locator("#cal-end").input_value().endswith("07:30"),
+          f"releasing opens a new event for that span ({ghost})")
+    page.locator("#hq-cal-title").fill("Glissé")
+    page.locator(".hq-cal-sheet-actions button[type=submit]").click()
+    no_sheet(page)
+    check(until(page, "() => !!document.querySelector('.hq-cal-event.is-landed') || [...document.querySelectorAll('.hq-cal-event')].some((e) => e.innerText.includes('Glissé'))"),
+          "the new event lands in place")
+    moved = page.locator(".hq-cal-event", has_text="Glissé")
+    moved.scroll_into_view_if_needed()
+    b = moved.bounding_box()
+    hour = page.locator('.hq-cal-day .hq-cal-slot[data-hour="6"]').bounding_box()["height"]
+    page.mouse.move(b["x"] + 30, b["y"] + 8)
+    page.mouse.down()
+    page.mouse.move(b["x"] + 30, b["y"] + 8 + hour * 2, steps=8)
+    check(page.locator("#hq-cal-app").evaluate("(r) => r.classList.contains('is-dragging')"), "an event lifts while it is dragged")
+    page.mouse.up()
+    check(until(page, "() => true") and not open_sheet_now(page), "a drag does not also open the event")
+    check(until(page, "(d) => { return fetch('/api/calendar?from=' + d + '&to=' + d.replace(/..$/, (x) => String(Number(x) + 1).padStart(2, '0')), { credentials: 'same-origin' })"
+                     ".then((r) => r.json()).then((j) => { window.__moved = (j.items || []).find((i) => i.title === 'Glissé'); }), true; }", today.isoformat()) and
+          until(page, "() => !!window.__moved && window.__moved.start.endsWith('T08:00')", None, 6), "moving it two hours down saves 08:00 on the server")
+    grip = page.locator(".hq-cal-event", has_text="Glissé").locator(".hq-cal-resize")
+    g = grip.bounding_box()
+    page.mouse.move(g["x"] + g["width"] / 2, g["y"] + g["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(g["x"] + g["width"] / 2, g["y"] + g["height"] / 2 + hour, steps=6)
+    page.mouse.up()
+    item = None
+    for _ in range(30):
+        item = api_events(page, base, today).get("Glissé")
+        if item and item["end"].endswith("T10:30"):
+            break
+        page.wait_for_timeout(150)
+    check(item and item["end"].endswith("T10:30"), f"dragging its bottom edge an hour down saves the new end ({item and item['end']})")
+    page.keyboard.press("Escape")
+
+
+def open_sheet_now(page):
+    return page.evaluate("() => [...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden)")
+
+
 def main() -> None:
     root = Path(tempfile.mkdtemp(prefix="hq-calview-"))
     proc = subprocess.Popen([sys.executable, str(HERE / "carnet_test_server.py"), str(root)],
@@ -134,6 +265,7 @@ def main() -> None:
                 page.locator(".hq-cal-agenda .hq-cal-row", has_text="Dentiste").click()
                 check(until(page, "() => [...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden && s.innerText.includes('Dentiste'))"), "an agenda row opens its event")
                 page.keyboard.press("Escape")
+                until(page, "() => ![...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden)")
                 shot(page, f"agenda-{label}", browser_name)
                 page.locator('#hq-cal-app [data-view="week"]').click()
                 if label == "phone":
@@ -165,7 +297,7 @@ def main() -> None:
 
                 # Selected day in the strip stays readable when it is today.
                 colours = page.evaluate("""() => { const b = document.querySelector('.hq-cal-weekstrip button[aria-pressed=true]'), n = b.querySelector('.hq-cal-strip-num');
-                    return [getComputedStyle(n).color, getComputedStyle(b).backgroundColor, n.textContent]; }""")
+                    return [getComputedStyle(n).color, getComputedStyle(document.querySelector('.hq-cal-weekstrip'), '::before').backgroundColor, n.textContent]; }""")
                 check(colours[0] != colours[1] and colours[2].isdigit(), f"the selected day's number is visible {colours}")
 
                 # Categories are tinted differently; yesterday's event is dimmed.
@@ -200,9 +332,11 @@ def main() -> None:
                 page.wait_for_timeout(300)
                 check(page.evaluate("(d) => document.querySelector('.hq-cal-weekstrip button[aria-pressed=true]').dataset.day === d", day0), "arrows do nothing while a sheet is open")
                 if page.evaluate("() => matchMedia('(prefers-reduced-motion: no-preference)').matches"):
-                    check(page.evaluate("() => getComputedStyle([...document.querySelectorAll('.hq-sheet')].find((s) => !s.hidden).querySelector('.hq-sheet-card')).animationName") == "hq-cal-rise",
-                          "the sheet rises into place")
+                    check(page.evaluate("() => getComputedStyle([...document.querySelectorAll('.hq-sheet')].find((s) => !s.hidden).querySelector('.hq-sheet-card')).animationName") == "hq-cal-morph",
+                          "the sheet grows out of the press point")
                 page.keyboard.press("Escape")
+                until(page, "() => ![...document.querySelectorAll('.hq-sheet')].some((s) => !s.hidden)")
+                flow_checks(page, base, label, today)
                 check(not errors, f"no page errors {errors[:3]}")
                 ctx.close()
             # Reduced motion: nothing slides or pulses.

@@ -43,7 +43,10 @@
 .hq-cal-strip-dow{font-size:var(--text-xs,.72rem);font-weight:700;color:var(--muted)}
 .hq-cal-strip-num{font-size:1rem;font-weight:800}
 #hq-cal-app .hq-cal-weekstrip button.is-today .hq-cal-strip-num{color:var(--accent)}
-#hq-cal-app .hq-cal-weekstrip button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent)}
+.hq-cal-weekstrip{position:relative;isolation:isolate}
+.hq-cal-weekstrip::before{content:"";position:absolute;z-index:-1;top:0;bottom:0;left:0;width:calc((100% - 24px) / 7);border-radius:12px;background:var(--accent);
+  box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 35%,transparent);transform:translateX(calc(var(--i,0) * (100% + 4px)))}
+#hq-cal-app .hq-cal-weekstrip button[aria-pressed="true"]{background:transparent;border-color:transparent}
 #hq-cal-app .hq-cal-weekstrip button[aria-pressed="true"] .hq-cal-strip-num,
 #hq-cal-app .hq-cal-weekstrip button[aria-pressed="true"] .hq-cal-strip-dow{color:var(--accent-text)} /* also when that day is today */
 .hq-cal-allday{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
@@ -238,12 +241,118 @@
   @keyframes hq-cal-pop{from{opacity:0;transform:translateY(6px)}}
   .hq-cal-now::before{animation:hq-cal-pulse 2.4s ease-in-out infinite}
   @keyframes hq-cal-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--danger,#e85d4c) 45%,transparent)}50%{box-shadow:0 0 0 6px transparent}}
-  .hq-sheet:not([hidden]){animation:hq-cal-fade .18s ease-out}
-  .hq-sheet:not([hidden]) .hq-sheet-card{animation:hq-cal-rise .26s cubic-bezier(.2,.8,.2,1)}
+  .hq-sheet:not([hidden]){animation:hq-cal-fade .2s ease-out}
+  .hq-sheet .hq-sheet-card.is-morph{animation:hq-cal-morph .46s var(--hq-spring)}
+  .hq-sheet.is-closing{animation:hq-cal-fade-out .17s ease-in forwards}
+  .hq-sheet.is-closing .hq-sheet-card{animation:hq-cal-shrink .17s ease-in forwards}
   @keyframes hq-cal-fade{from{background:rgba(0,0,0,0)}}
-  @keyframes hq-cal-rise{from{opacity:0;transform:translateY(24px)}}
+  @keyframes hq-cal-fade-out{to{background:rgba(0,0,0,0)}}
+  @keyframes hq-cal-morph{from{opacity:0;transform:translate(var(--dx,0),var(--dy,40px)) scale(.18)}55%{opacity:1}}
+  @keyframes hq-cal-shrink{to{opacity:0;transform:translateY(16px) scale(.94)}}
   .hq-cal-today{animation:hq-cal-fade-in .2s ease-out}
   @keyframes hq-cal-fade-in{from{opacity:0;transform:scale(.92)}}
   #hq-cal-app .hq-cal-weekstrip button,#hq-cal-app .hq-cal-step,#hq-cal-app .hq-cal-toggle,#hq-cal-app .hq-cal-create{transition:background-color .18s ease,color .18s ease,transform .12s ease}
   #hq-cal-app .hq-cal-step:active,#hq-cal-app .hq-cal-create:active,#hq-cal-app .hq-cal-weekstrip button:active,#hq-cal-app .hq-cal-row:active{transform:scale(.96)}
+}
+
+/* ---- springs ---- */
+:root{--hq-spring:cubic-bezier(.2,1.35,.35,1);--hq-out:cubic-bezier(.2,.8,.2,1)}
+
+/* ---- quick add ---- */
+.hq-cal-quick{margin:0 0 12px;border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:4px 6px 4px 4px;
+  box-shadow:0 1px 0 color-mix(in srgb,var(--text) 4%,transparent);transition:border-color .2s ease,box-shadow .25s ease}
+.hq-cal-quick:focus-within{border-color:color-mix(in srgb,var(--accent) 60%,var(--line));box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 16%,transparent)}
+.hq-cal-quick-row{display:flex;align-items:center;gap:6px}
+.hq-cal-quick-plus{position:relative;flex:0 0 auto;width:36px;height:36px;border-radius:12px;background:var(--accent)}
+.hq-cal-quick-plus::before,.hq-cal-quick-plus::after{content:"";position:absolute;left:50%;top:50%;width:14px;height:2.5px;border-radius:2px;background:var(--accent-text);
+  transform:translate(-50%,-50%)}
+.hq-cal-quick-plus::after{transform:translate(-50%,-50%) rotate(90deg)}
+.hq-cal-quick input{flex:1 1 auto;min-width:0;min-height:44px;border:0;background:transparent;color:var(--text);font:inherit;font-size:1rem;padding:0 4px;outline:none}
+.hq-cal-quick input::placeholder{color:var(--muted)}
+.hq-cal-quick .hq-cal-quick-more{flex:0 0 auto;min-height:36px;padding:6px 12px;border-radius:999px;background:color-mix(in srgb,var(--text) 8%,transparent);
+  color:var(--text);font-size:var(--text-sm,.82rem)}
+.hq-cal-quick-more[hidden]{display:none}
+.hq-cal-quick-preview{padding:4px 6px 6px 46px;font-size:var(--text-sm,.85rem)}
+.hq-cal-quick-preview[hidden]{display:none}
+.hq-cal-quick-chip{display:inline-block;line-height:1.45;padding:4px 10px;border-radius:12px;border-left:3px solid var(--cat,var(--accent));
+  background:color-mix(in srgb,var(--cat,var(--accent)) 16%,var(--panel))}
+.hq-cal-quick-chip span{color:var(--muted)}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-quick-chip{animation:hq-cal-chip-in .22s var(--hq-out)}
+  @keyframes hq-cal-chip-in{from{opacity:0;transform:translateY(-4px) scale(.98)}}
+  .hq-cal-quick.is-done .hq-cal-quick-plus{animation:hq-cal-done .7s var(--hq-spring)}
+  .hq-cal-quick.is-done .hq-cal-quick-plus::before{width:7px;transform:translate(-90%,-10%) rotate(45deg);transition:all .25s var(--hq-out)}
+  .hq-cal-quick.is-done .hq-cal-quick-plus::after{width:13px;transform:translate(-35%,-50%) rotate(-50deg);transition:all .25s var(--hq-out)}
+  @keyframes hq-cal-done{0%{transform:scale(1)}35%{transform:scale(1.22) rotate(-8deg)}100%{transform:scale(1)}}
+  .is-shake{animation:hq-cal-shake .42s cubic-bezier(.36,.07,.19,.97)}
+  @keyframes hq-cal-shake{20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+  .hq-cal-quick.is-saving .hq-cal-quick-plus{animation:hq-cal-breathe .9s ease-in-out infinite}
+  @keyframes hq-cal-breathe{50%{transform:scale(.88);opacity:.7}}
+}
+@media (prefers-reduced-motion:reduce){
+  .hq-cal-quick.is-done .hq-cal-quick-plus::before{width:7px;transform:translate(-90%,-10%) rotate(45deg)}
+  .hq-cal-quick.is-done .hq-cal-quick-plus::after{width:13px;transform:translate(-35%,-50%) rotate(-50deg)}
+}
+
+/* ---- editor ---- */
+.hq-cal-editor{display:flex;flex-direction:column;gap:10px}
+.hq-cal-editor h3{margin:0}
+.hq-cal-editor .hq-cal-title-input{font-size:1.15rem;font-weight:800;padding:10px 12px;border-radius:12px}
+.hq-cal-when{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.hq-cal-when .field{margin:0}
+.hq-cal-durations,.hq-cal-cats{display:flex;flex-wrap:wrap;gap:6px}
+.hq-cal-durations[hidden]{display:none}
+.hq-cal-editor .hq-cal-chipbtn,.hq-cal-editor .hq-cal-catbtn{min-height:40px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);
+  background:transparent;color:var(--text);font-weight:700;font-size:var(--text-sm,.85rem)}
+.hq-cal-editor .hq-cal-chipbtn[aria-pressed="true"]{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+.hq-cal-editor .hq-cal-catbtn{border-left:4px solid var(--cat,var(--muted))}
+.hq-cal-editor .hq-cal-catbtn[aria-checked="true"]{background:color-mix(in srgb,var(--cat,var(--accent)) 22%,var(--panel));border-color:var(--cat,var(--accent))}
+.hq-cal-editor .hq-cal-switch{display:flex;align-items:center;gap:8px;font-weight:700;min-height:40px}
+.hq-cal-editor .hq-cal-switch input{width:auto;transform:scale(1.25)}
+.hq-cal-moreopts{border-top:1px solid var(--line);padding-top:6px}
+.hq-cal-moreopts summary{cursor:pointer;font-weight:700;color:var(--muted);min-height:40px;display:flex;align-items:center}
+.hq-cal-sheet-actions{display:grid;grid-template-columns:1fr auto;gap:8px;position:sticky;bottom:-14px;padding:10px 0 2px;background:var(--panel)}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-chipbtn,.hq-cal-catbtn{transition:background-color .18s ease,border-color .18s ease,transform .12s ease}
+  .hq-cal-chipbtn:active,.hq-cal-catbtn:active{transform:scale(.94)}
+  .hq-cal-moreopts[open] summary ~ *{animation:hq-cal-pop .24s var(--hq-out) both}
+}
+
+/* ---- drag on the grid ---- */
+.hq-cal-col,.hq-cal-weekcol{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#hq-cal-app .hq-cal-event.is-movable{cursor:grab}
+#hq-cal-app.is-dragging,#hq-cal-app.is-dragging .hq-cal-event,#hq-cal-app.is-dragging .hq-cal-slot{cursor:grabbing}
+#hq-cal-app .hq-cal-event.is-lifted{opacity:.3;filter:saturate(.6)}
+.hq-cal-resize{position:absolute;left:20%;right:20%;bottom:0;height:12px;cursor:ns-resize;z-index:3}
+.hq-cal-resize::after{content:"";position:absolute;left:50%;bottom:3px;width:22px;height:3px;border-radius:2px;background:color-mix(in srgb,var(--text) 35%,transparent);
+  transform:translateX(-50%);opacity:0;transition:opacity .15s ease}
+#hq-cal-app .hq-cal-event:hover .hq-cal-resize::after,#hq-cal-app .hq-cal-event:focus-visible .hq-cal-resize::after{opacity:1}
+@media (pointer:coarse){ .hq-cal-resize{height:28px;bottom:auto} .hq-cal-resize::after{opacity:.6;bottom:9px} }
+.hq-cal-ghost{position:absolute;left:2px;right:3px;z-index:6;border-radius:10px;border-left:3px solid var(--cat,var(--accent));pointer-events:none;
+  background:color-mix(in srgb,var(--cat,var(--accent)) 30%,var(--panel));box-shadow:0 10px 28px rgba(0,0,0,.28),0 0 0 2px color-mix(in srgb,var(--cat,var(--accent)) 55%,transparent);
+  padding:3px 7px;display:flex;flex-direction:column;overflow:hidden;font-size:.8rem;line-height:1.2}
+.hq-cal-ghost-time{font-weight:800;font-variant-numeric:tabular-nums}
+.hq-cal-ghost-title{font-weight:700;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-ghost{animation:hq-cal-lift .24s var(--hq-spring);transition:top .07s linear,height .07s linear}
+  @keyframes hq-cal-lift{from{transform:scale(.92);opacity:.4}}
+}
+
+/* ---- an event that was just created or moved lands ---- */
+@media (prefers-reduced-motion:no-preference){
+  #hq-cal-app .is-landed{animation:hq-cal-land .62s var(--hq-spring) both}
+  #hq-cal-app .hq-cal-event.is-landed .hq-cal-face{animation:hq-cal-glow 1.1s ease-out .1s both}
+  #hq-cal-app .hq-cal-event.is-landed:not(:has(.hq-cal-face)),#hq-cal-app .hq-cal-chip.is-landed,#hq-cal-app .hq-cal-row.is-landed{animation:hq-cal-land .62s var(--hq-spring) both,hq-cal-glow 1.1s ease-out .1s both}
+  @keyframes hq-cal-land{0%{opacity:0;transform:translateY(-14px) scale(.7)}60%{opacity:1;transform:translateY(0) scale(1.06)}100%{transform:none}}
+  @keyframes hq-cal-glow{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--cat,var(--accent)) 70%,transparent)}100%{box-shadow:0 0 0 14px transparent}}
+  .hq-cal-dot.is-landed{animation:hq-cal-land .62s var(--hq-spring) both}
+}
+
+/* ---- slides: the strip pill and the month-to-day zoom ---- */
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-weekstrip.is-moving::before{animation:hq-cal-strip .34s var(--hq-spring)}
+  @keyframes hq-cal-strip{from{transform:translateX(calc(var(--from,0) * (100% + 4px)))}}
+  .hq-cal-stage.is-zoom{animation:hq-cal-zoom .38s var(--hq-out)}
+  @keyframes hq-cal-zoom{from{opacity:0;transform:scale(.25)}}
+  .hq-cal-stage.is-next,.hq-cal-stage.is-prev{animation-duration:.34s;animation-timing-function:var(--hq-out)}
 }
