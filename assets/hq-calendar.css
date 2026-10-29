@@ -514,3 +514,150 @@
   #hq-cal-app .hq-cal-toggle{padding:6px 9px}
   #hq-cal-app .hq-cal-create{padding:8px 10px;font-size:.9rem}
 }
+
+/* ---- rolling words: a changed number or word rolls in, the old one rolls out ---- */
+.hq-roll{position:relative;display:inline-block;overflow:hidden;vertical-align:bottom}
+.hq-roll-new{display:inline-block}
+.hq-roll::before{content:attr(data-old);position:absolute;left:0;top:0;white-space:nowrap;opacity:0}
+@media (prefers-reduced-motion:no-preference){
+  .hq-roll.is-up .hq-roll-new{animation:hq-roll-in-up .44s var(--hq-spring)}
+  .hq-roll.is-up::before{animation:hq-roll-out-up .3s ease-in}
+  .hq-roll.is-down .hq-roll-new{animation:hq-roll-in-down .44s var(--hq-spring)}
+  .hq-roll.is-down::before{animation:hq-roll-out-down .3s ease-in}
+  @keyframes hq-roll-in-up{from{transform:translateY(100%);opacity:0}}
+  @keyframes hq-roll-out-up{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-100%)}}
+  @keyframes hq-roll-in-down{from{transform:translateY(-100%);opacity:0}}
+  @keyframes hq-roll-out-down{from{opacity:1;transform:none}to{opacity:0;transform:translateY(100%)}}
+}
+
+/* ---- an event grows into its sheet (and shrinks back) ---- */
+::view-transition-group(hq-cal-pick){animation-duration:.44s;animation-timing-function:cubic-bezier(.2,1.1,.32,1)}
+::view-transition-old(hq-cal-pick),::view-transition-new(hq-cal-pick){animation-duration:.28s;height:100%;object-fit:cover}
+::view-transition-old(root),::view-transition-new(root){animation-duration:.24s}
+.hq-sheet.is-morphing{animation:none}
+@media (prefers-reduced-motion:reduce){
+  ::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none}
+}
+
+/* ---- drag weight: lean, footprint, clash ---- */
+.hq-cal-ghost{transform:rotate(var(--tilt,0deg))}
+.hq-cal-footprint{position:absolute;left:2px;right:3px;z-index:5;border-radius:10px;pointer-events:none;
+  background:color-mix(in srgb,var(--cat,var(--accent)) 16%,transparent);border:2px dashed color-mix(in srgb,var(--cat,var(--accent)) 55%,transparent)}
+.hq-cal-ghost.is-clash{box-shadow:0 10px 28px rgba(0,0,0,.28),0 0 0 2px #e6b450}
+#hq-cal-app .hq-cal-event.is-clash:not(:has(.hq-cal-face)),#hq-cal-app .hq-cal-event.is-clash .hq-cal-face{box-shadow:0 0 0 2px #e6b450,0 0 16px rgba(230,180,80,.65)}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-ghost{transition:top .07s linear,height .07s linear,transform .16s ease-out}
+  .hq-cal-footprint{transition:top .16s var(--hq-spring),height .16s var(--hq-spring)}
+  #hq-cal-app .hq-cal-event.is-clash:not(:has(.hq-cal-face)),#hq-cal-app .hq-cal-event.is-clash .hq-cal-face{animation:hq-cal-clash 1s ease-in-out infinite}
+  @keyframes hq-cal-clash{50%{box-shadow:0 0 0 2px #e6b450,0 0 4px rgba(230,180,80,.3)}}
+  #hq-cal-app .hq-cal-event.is-dropped.is-landed{animation:hq-cal-drop .62s var(--hq-spring) both}
+  #hq-cal-app .hq-cal-event.is-dropped.is-landed:not(:has(.hq-cal-face)){animation:hq-cal-drop .62s var(--hq-spring) both,hq-cal-glow 1.1s ease-out .1s both}
+  @keyframes hq-cal-drop{0%{transform:scale(1.06) rotate(2deg)}30%{transform:scale(.97) rotate(-1.4deg)}60%{transform:scale(1.015) rotate(.5deg)}100%{transform:none}}
+}
+
+/* ---- an event in progress fills with its colour ---- */
+@property --fill{syntax:"<number>";inherits:true;initial-value:0}
+#hq-cal-app .hq-cal-event.is-live:not(:has(.hq-cal-face)),#hq-cal-app .hq-cal-event.is-live .hq-cal-face{
+  background-image:linear-gradient(to bottom,color-mix(in srgb,var(--cat,var(--accent)) 40%,var(--panel)) calc(var(--fill,0) * 100%),
+    color-mix(in srgb,var(--cat,var(--accent)) 85%,var(--panel)) calc(var(--fill,0) * 100%),transparent calc(var(--fill,0) * 100% + 2px))}
+@media (prefers-reduced-motion:no-preference){
+  #hq-cal-app .hq-cal-event.is-live{transition:--fill 20s linear}
+}
+
+/* ---- end of day ---- */
+.hq-cal-recap{display:flex;align-items:center;gap:12px;margin:0 0 12px;padding:10px 14px;border-radius:16px;border:1px solid var(--line);background:var(--panel)}
+.hq-cal-recap-mark{flex:0 0 auto;display:grid;place-items:center;width:40px;height:40px;border-radius:50%;font-weight:900;font-size:1.1rem;
+  background:color-mix(in srgb,var(--text) 10%,transparent)}
+.hq-cal-recap.is-complete{border-color:color-mix(in srgb,var(--ok,#3dbe7a) 50%,var(--line));
+  background:linear-gradient(115deg,color-mix(in srgb,var(--ok,#3dbe7a) 20%,var(--panel)),var(--panel) 75%)}
+.hq-cal-recap.is-complete .hq-cal-recap-mark{background:var(--ok,#3dbe7a);color:#fff;box-shadow:0 0 14px color-mix(in srgb,var(--ok,#3dbe7a) 60%,transparent)}
+.hq-cal-recap-text{display:flex;flex-direction:column;min-width:0}
+.hq-cal-recap-text span{color:var(--muted);font-size:var(--text-sm,.85rem)}
+.hq-cal-confetti{position:fixed;inset:0;width:100%;height:100%;z-index:140;pointer-events:none}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-recap{animation:hq-cal-pop .4s var(--hq-out)}
+  .hq-cal-recap.is-cheer .hq-cal-recap-mark{animation:hq-cal-cheer .8s var(--hq-spring)}
+  @keyframes hq-cal-cheer{0%{transform:scale(.4) rotate(-30deg)}55%{transform:scale(1.3) rotate(8deg)}100%{transform:none}}
+}
+
+/* ---- streak flame on today ---- */
+.hq-cal-streak{position:absolute;left:50%;bottom:-8px;transform:translateX(-50%);padding:0 5px;border-radius:999px;background:var(--panel);
+  border:1px solid color-mix(in srgb,#ff8a3d 50%,var(--line));color:var(--text);font-size:.62rem;font-weight:800;line-height:1.45;white-space:nowrap;z-index:1}
+#hq-cal-app .hq-cal-weekstrip button.is-today{position:relative}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-streak{animation:hq-cal-flicker 2.6s ease-in-out infinite}
+  @keyframes hq-cal-flicker{0%,100%{transform:translateX(-50%) scale(1)}45%{transform:translateX(-50%) scale(1.08) rotate(-2deg)}60%{transform:translateX(-50%) scale(.97) rotate(1deg)}}
+}
+
+/* ---- a free day: a small sky at the hour it is ---- */
+.hq-cal-hint.is-empty{padding:0 0 10px;overflow:hidden}
+.hq-cal-free{position:relative;height:96px;margin:0 0 8px;overflow:hidden;background:linear-gradient(var(--sky1),var(--sky2))}
+.hq-cal-free.is-dawn{--sky1:#ffcfa8;--sky2:#fff0e0;--orb:#ffad42}
+.hq-cal-free.is-day{--sky1:#86c3ff;--sky2:#e2f2ff;--orb:#ffd23f}
+.hq-cal-free.is-dusk{--sky1:#ff8f6b;--sky2:#ffd3a6;--orb:#ff6a33}
+.hq-cal-free.is-night{--sky1:#161a45;--sky2:#353b80;--orb:#f4f1d6}
+.hq-cal-free-orb{position:absolute;left:var(--sx,50%);top:var(--sy,40%);width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;background:var(--orb);
+  box-shadow:0 0 26px var(--orb)}
+.hq-cal-free.is-night .hq-cal-free-orb{background:transparent;box-shadow:inset 8px -4px 0 0 var(--orb),0 0 18px rgba(244,241,214,.35)}
+.hq-cal-free-star{position:absolute;width:3px;height:3px;border-radius:50%;background:#fff}
+.hq-cal-free-cloud{position:absolute;height:14px;border-radius:999px;background:rgba(255,255,255,.88)}
+.hq-cal-free-cloud::before{content:"";position:absolute;left:22%;bottom:5px;width:45%;height:18px;border-radius:50%;background:inherit}
+.hq-cal-free-cloud.is-a{width:64px;top:26px;left:14%}
+.hq-cal-free-cloud.is-b{width:46px;top:50px;left:64%;opacity:.8}
+.hq-cal-free-hill{position:absolute;left:-10%;right:-10%;bottom:-46px;height:74px;border-radius:50%;background:color-mix(in srgb,var(--panel) 70%,#3dbe7a)}
+.hq-cal-free.is-night .hq-cal-free-hill{background:color-mix(in srgb,#10132f 70%,#3dbe7a)}
+.hq-cal-free-title{margin:0;font-weight:800;color:var(--text)}
+.hq-cal-free-hint{margin:2px 0 0;padding:0 12px}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-free-orb{animation:hq-cal-float 6s ease-in-out infinite}
+  @keyframes hq-cal-float{50%{transform:translateY(-3px)}}
+  .hq-cal-free-cloud.is-a{animation:hq-cal-drift 18s ease-in-out infinite alternate}
+  .hq-cal-free-cloud.is-b{animation:hq-cal-drift 24s ease-in-out -6s infinite alternate-reverse}
+  @keyframes hq-cal-drift{to{transform:translateX(26px)}}
+  .hq-cal-free-star{animation:hq-cal-twinkle 2.4s ease-in-out var(--d,0s) infinite}
+  @keyframes hq-cal-twinkle{50%{opacity:.25;transform:scale(.6)}}
+}
+
+/* ---- scrub, peek: the strip and month days are held, not text-selected ---- */
+.hq-cal-weekstrip{touch-action:pan-y}
+#hq-cal-app .hq-cal-weekstrip button,#hq-cal-app .hq-cal-weekhead button,#hq-cal-app .hq-cal-mday{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+
+/* ---- pull down to today ---- */
+.hq-cal-pull{position:absolute;left:50%;z-index:6;display:flex;align-items:center;gap:6px;margin-top:8px;padding:6px 14px;border-radius:999px;transform:translateX(-50%);
+  background:var(--panel);color:var(--text);border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.18);font-weight:800;font-size:var(--text-sm,.85rem);
+  opacity:0;pointer-events:none;white-space:nowrap}
+.hq-cal-pull.is-armed{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+.hq-cal-pull-arrow{display:inline-block}
+.hq-cal-pull.is-armed .hq-cal-pull-arrow{transform:rotate(180deg)}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-pull{transition:opacity .2s ease,background-color .15s ease,color .15s ease}
+  .hq-cal-pull-arrow{transition:transform .3s var(--hq-spring)}
+}
+
+/* ---- peek at a day ---- */
+.hq-cal-peekday{position:fixed;inset:0;z-index:125;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.28);
+  -webkit-backdrop-filter:blur(8px) saturate(1.15);backdrop-filter:blur(8px) saturate(1.15)}
+.hq-cal-peekday-card{width:min(360px,100%);max-height:70vh;overflow:hidden;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:18px;
+  padding:14px 16px;box-shadow:0 24px 60px rgba(0,0,0,.35)}
+.hq-cal-peekday-card h3{margin:0 0 10px;font-size:1.05rem}
+.hq-cal-peekday-card h3::first-letter{text-transform:uppercase}
+.hq-cal-peekday-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.hq-cal-peekday-list li{display:grid;grid-template-columns:6.4rem minmax(0,1fr);gap:8px;align-items:center;padding:6px 10px;border-radius:10px;
+  border-left:3px solid var(--cat,var(--muted));background:color-mix(in srgb,var(--cat,var(--muted)) 12%,var(--panel))}
+.hq-cal-peekday-list li::before{content:none}
+.hq-cal-peekday-list time{font-size:var(--text-sm,.82rem);color:var(--muted);font-variant-numeric:tabular-nums}
+.hq-cal-peekday-list strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hq-cal-peekday-list .is-done strong{text-decoration:line-through}
+.hq-cal-peekday-list .hq-cal-peekday-more{display:block;background:none;border:0;color:var(--muted);font-weight:700}
+.hq-cal-peekday-hint{margin:10px 0 0;font-size:var(--text-sm,.82rem);color:var(--muted);text-align:center}
+.hq-cal-peekday.is-go .hq-cal-peekday-card{border-color:var(--accent)}
+.hq-cal-peekday.is-go .hq-cal-peekday-hint{color:var(--accent);font-weight:800}
+@media (prefers-reduced-motion:no-preference){
+  .hq-cal-peekday{animation:hq-cal-peek-bg .2s ease-out}
+  .hq-cal-peekday-card{animation:hq-cal-peek-in .36s var(--hq-spring);transition:transform .25s var(--hq-spring),border-color .15s ease}
+  .hq-cal-peekday.is-go .hq-cal-peekday-card{transform:translateY(-10px) scale(1.02)}
+  .hq-cal-peekday.is-closing{animation:hq-cal-peek-out .18s ease-in forwards}
+  @keyframes hq-cal-peek-bg{from{background:rgba(0,0,0,0);-webkit-backdrop-filter:blur(0);backdrop-filter:blur(0)}}
+  @keyframes hq-cal-peek-in{from{opacity:0;transform:scale(.25)}}
+  @keyframes hq-cal-peek-out{to{opacity:0}}
+}

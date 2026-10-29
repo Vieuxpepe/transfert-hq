@@ -80,6 +80,24 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(body["next"]["title"], "Cours")
         self.assertEqual(len(body["recent"]), 2)
 
+    def test_streak_counts_fully_done_days(self):
+        def ev(day, done, hour=8):
+            saved = hq_calendar.save_event(self._payload(start=f"2026-09-{day}T{hour:02d}:00", end=f"2026-09-{day}T{hour:02d}:30"))
+            if done:
+                hq_calendar.save_event(self._payload(id=saved["id"], start=saved["start"], end=saved["end"], done=True), expected_rev=1)
+        self.assertEqual(hq_calendar.streak(), {"days": 0, "today": False})
+        ev(25, True)
+        ev(26, True)
+        ev(26, True, hour=9)
+        # the 27th is empty: it neither counts nor breaks
+        ev(28, False)  # today (10:00): unfinished, does not break
+        self.assertEqual(hq_calendar.streak(), {"days": 2, "today": False})
+        ev(28, False, hour=14)  # still to come today: ignored
+        ev(24, False)  # a day missed before: stops the count there
+        self.assertEqual(hq_calendar.streak()["days"], 2)
+        ev(22, True)
+        self.assertEqual(hq_calendar.streak()["days"], 2)
+
     def test_roundtrip_and_server_id(self):
         saved = hq_calendar.save_event(self._payload())
         self.assertTrue(saved["id"].startswith("cal-"))

@@ -175,7 +175,9 @@ def flow_checks(page, base, label, today):
     page.mouse.up()
     item = server_until(page, base, today, "Glissé", lambda e: e["end"].endswith("T10:30"))
     check(item and item["end"].endswith("T10:30"), f"dragging its bottom edge an hour down saves the new end ({item and item['end']})")
-    # Annuler takes the resize back.
+    # Annuler takes the resize back (once its own bar is up: the move's bar left when the resize began).
+    check(until(page, "() => !document.getElementById('hq-cal-undo').hidden && document.querySelector('.hq-cal-undo-text').textContent.startsWith('Durée')"),
+          "the resize offers its own Annuler")
     page.locator("#hq-cal-undo .hq-cal-undo-btn").click()
     item = server_until(page, base, today, "Glissé", lambda e: e["end"].endswith("T09:30"))
     check(item and item["end"].endswith("T09:30"), f"Annuler puts the old end back ({item and item['end']})")
@@ -184,6 +186,10 @@ def flow_checks(page, base, label, today):
 
 def steady(page, locator):
     """The box once it stops moving (a landing event or a refresh can still shift the layout)."""
+    for _ in range(30):  # a landing or drop wobble first plays out
+        if locator.evaluate("(e) => { const c = e.closest('.hq-cal-event') || e; return c.getAnimations({ subtree: true }).every((a) => a.playState !== 'running' || a.effect.getTiming().iterations === Infinity); }"):
+            break
+        page.wait_for_timeout(100)
     last = None
     for _ in range(20):
         box = locator.bounding_box()

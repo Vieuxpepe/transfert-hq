@@ -737,6 +737,7 @@ def query(start: datetime, end: datetime, *, include_activity: bool = False, wit
     body.update(clock())
     body["recent"] = recent_titles()
     body["next"] = next_manual()
+    body["streak"] = streak()
     if include_activity:
         body["activity"] = _activity(start, end)
     return body
@@ -797,6 +798,39 @@ def next_manual(days: int = 7) -> dict | None:
     out = _compact(dict(event, source="manual", read_only=False))
     out["rev"] = event.get("rev")
     return out
+
+
+def streak(days: int = 120) -> dict:
+    """Days in a row (back from today) where every finished timed event was ticked done.
+    Days with nothing finished neither count nor break it; today in progress does not break it."""
+    state, bad = _read_state()
+    if bad or state is None:
+        return {"days": 0, "today": False}
+    wall = _local_now().replace(second=0, microsecond=0)
+    per_day: dict[Any, list[bool]] = {}
+    for event in state.get("events") or []:
+        if not isinstance(event, dict) or event.get("all_day"):
+            continue
+        try:
+            start, end = _event_bounds(event)
+        except CalendarError:
+            continue
+        if end > wall:
+            continue
+        per_day.setdefault(start.date(), []).append(bool(event.get("done")))
+    count = 0
+    today_ok = False
+    day = wall.date()
+    for _ in range(days):
+        rows = per_day.get(day)
+        if rows:
+            if all(rows):
+                count += 1
+                today_ok = today_ok or day == wall.date()
+            elif day != wall.date():
+                break
+        day -= timedelta(days=1)
+    return {"days": count, "today": today_ok}
 
 
 def _compact(item: dict) -> dict:
