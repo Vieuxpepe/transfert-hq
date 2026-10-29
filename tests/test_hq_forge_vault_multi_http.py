@@ -147,11 +147,11 @@ class PerVaultPaths(MultiHttp):
         for path in ("/api/forge/vaults/vlt-ffffffffffffffff/status", "/api/forge/vaults/" + a.upper() + "/status",
                      "/api/forge/vaults/../vault/status", "/api/forge/vaults/" + a + "/../" + a + "/status",
                      "/api/forge/vaults/%2e%2e/status", "/api/forge/vaults/" + a, "/api/forge/vaults/" + a + "/",
-                     "/api/forge/vaults/" + a + "/backup", "/api/forge/vaults/" + a + "/nothing"):
+                     "/api/forge/vaults/" + a + "/nothing"):
             with self.subTest(path=path):
                 status, _h, _b = self.admin.req(path)
                 self.assertIn(status, (400, 404), path)
-        for path in ("/setup", "/restore", "/backup"):
+        for path in ("/setup", "/restore", "/backup"):  # V6: /backup is a GET; restore-in-place is never routed
             self.assertEqual(self.post(self.admin, "/api/forge/vaults/" + a + path, {"passphrase": PASS, "confirm": PASS})[0], 404, path)
 
 
@@ -255,10 +255,12 @@ class Authorisation(MultiHttp):
 
     def routes(self, vid):
         v = "/api/forge/vaults/" + vid
-        gets = ["/api/forge/vaults", v + "/status", v + "/gallery", v + "/images/pvt-" + "0" * 24, v + "/images/pvt-" + "0" * 24 + "/thumb"]
+        gets = ["/api/forge/vaults", v + "/status", v + "/gallery", v + "/images/pvt-" + "0" * 24, v + "/images/pvt-" + "0" * 24 + "/thumb",
+                v + "/backup"]
         posts = ["/api/forge/vaults/new", "/api/forge/vaults/migrate", "/api/forge/vaults/backup-offer", v + "/settings", v + "/unlock", v + "/recover", v + "/lock",
                  v + "/passphrase", v + "/recovery", v + "/search", v + "/images/pvt-" + "0" * 24 + "/triage",
-                 v + "/images/pvt-" + "0" * 24 + "/labels", v + "/images/pvt-" + "0" * 24 + "/delete", v + "/import"]
+                 v + "/images/pvt-" + "0" * 24 + "/labels", v + "/images/pvt-" + "0" * 24 + "/delete", v + "/import",
+                 v + "/destroy", "/api/forge/vaults/restore"]
         return gets, posts
 
     def test_matrix(self):

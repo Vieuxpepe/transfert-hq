@@ -590,6 +590,7 @@ def cleanup_partials(hq_root: Path) -> None:
         if _layout(base) != "multi":
             return
         _delete_partials(base)
+        _finish_deletes(base)
         for entry in _load_registry(base)["vaults"]:
             try:
                 _cleanup_folder(_vault_dir(base, entry["id"]))
@@ -2289,6 +2290,219 @@ def restore_backup(hq_root: Path, token: str | None, payload: bytes, passphrase:
     return {"restored": True, "unlocked": False}
 
 
+# ---- V6: restore as a new vault, delete a vault ------------------------------------------------
+# A restore never replaces a live vault: the ZIP becomes a new vault with a new id, listed last.
+# A delete renames the folder to vaults/<vid>.deleted first, then drops the registry entry, then
+# overwrites and removes the files. cleanup_partials() finishes a cut-off delete, or puts the
+# folder back when the registry still lists the vault (the delete never committed).
+
+DELETE_WORD = "SUPPRIMER"
+RESTORED_LABEL = "Coffre restauré"
+_DELETED_SUFFIX = ".deleted"
+_delete_fault = None
+
+
+def set_delete_fault_for_tests(kind: str | None) -> None:
+    """'after_rename' (before the registry write) or 'after_registry' (before the overwrite)."""
+    global _delete_fault
+    _delete_fault = kind
+
+
+def _free_label(wanted: str, taken: set[str]) -> str:
+    """wanted, or 'wanted (2)', 'wanted (3)'... when a clear name is already used (case-insensitive)."""
+    if wanted.casefold() not in taken:
+        return wanted
+    for n in range(2, registry.MAX_VAULTS + 2):
+        suffix = " (%d)" % n
+        candidate = wanted[:registry.LABEL_MAX - len(suffix)].rstrip() + suffix
+        if candidate.casefold() not in taken:
+            return candidate
+    raise VaultError("validation")
+
+
+def restore_as_new(hq_root: Path, token: str | None, payload: bytes, passphrase: str, *, label=None,
+                   glyph=registry.DEFAULT_GLYPH, colour=registry.DEFAULT_COLOUR) -> dict:
+    """A backup ZIP becomes a new vault (new vid), never opened and never replacing one.
+
+    Every object is decrypted with the backup's passphrase before the vault is listed. A sealed
+    Discret name in the ZIP keeps the vault Discret; otherwise it takes label (or 'Coffre restauré'),
+    with ' (2)'... added when that clear name is already used."""
+    _require_live(token)
+    if not isinstance(payload, (bytes, bytearray)) or not payload or len(payload) > BACKUP_MAX:
+        raise VaultError("validation")
+    if not passphrase_acceptable(passphrase):
+        raise VaultError("passphrase")
+    wanted = RESTORED_LABEL if label in (None, "") else registry.clean_label(label)
+    if wanted is None or glyph not in registry.GLYPHS or colour not in registry.COLOURS:
+        raise VaultError("validation")
+    base = _base(hq_root, create=True)
+    if _layout(base) == "legacy":
+        raise VaultError("migration")
+    with _REGISTRY_LOCK:
+        data = _load_registry(base)
+        if len(data["vaults"]) >= registry.MAX_VAULTS:
+            raise VaultError("too_many")
+        vid = registry.new_vid()
+        while registry.find(data, vid) is not None or (base / VAULTS_DIR / vid).exists():
+            vid = registry.new_vid()
+        folder = _vault_dir(base, vid, create=True)
+        try:
+            _extract_backup(bytes(payload), folder)
+            header = _read_header(folder)
+            if header is None:
+                raise VaultError("corrupt")
+            try:
+                master = _unwrap(header, _passphrase_bytes(passphrase), "passphrase")
+            except VaultError:
+                raise VaultError("passphrase") from None  # as unlock: a wrong phrase and a bad wrap look the same
+            try:
+                _authenticate_restored_objects(folder, master)
+                sealed_name = _read_label(folder, master) if (folder / LABEL_FILE).exists() else None
+                if (folder / LABEL_FILE).exists() and sealed_name is None:
+                    raise VaultError("corrupt")
+                if (folder / ICON_FILE).exists():
+                    _read_icon(folder, master)
+            finally:
+                _wipe(bytearray(master))
+            count, used = _usage(folder)
+            all_count, all_used = _usage_all(hq_root)
+            if all_count + count > _global_images or all_used + used > _global_bytes:
+                raise VaultError("quota")
+            header["vid"] = vid  # the restored folder now names its new id (the old one is never reused)
+            _write_header(folder, header)
+            discret = sealed_name is not None
+            shown = None
+            if not discret:
+                taken = {e["label"].casefold() for e in data["vaults"] if not e["discret"]}
+                shown = _free_label(wanted, taken)
+            order = 1 + max((entry["order"] for entry in data["vaults"]), default=-1)
+            try:
+                entry = registry.make_entry(vid, label=shown if not discret else sealed_name, glyph=glyph,
+                                            colour=colour, discret=discret, order=min(order, registry.ORDER_MAX))
+            except ValueError:
+                raise VaultError("validation") from None
+            data["vaults"].append(entry)
+            _save_registry(base, data)
+        except VaultError:
+            _remove_tree_nofollow(folder)
+            raise
+        except (OSError, zipfile.BadZipFile, ValueError):
+            _remove_tree_nofollow(folder)
+            raise VaultError("corrupt") from None
+        _seal_acl(folder)
+        for path in (base, base / VAULTS_DIR):
+            _restrict(path)
+    return {"vault": _public_entry(entry, len(data["vaults"])), "restored": True, "unlocked": False,
+            "renamed": shown is not None and shown != wanted}
+
+
+def _overwrite_file(path: Path) -> None:
+    """Best effort: random bytes over the old content, flushed, then the file is removed.
+    On an SSD or a copy-on-write disk this does not guarantee the old blocks are gone."""
+    if _is_reparse(path) or not path.is_file():
+        raise VaultError("bad_root")
+    size = path.stat().st_size
+    with path.open("r+b") as handle:
+        remaining = size
+        while remaining > 0:
+            chunk = min(remaining, 1024 * 1024)
+            handle.write(os.urandom(chunk))
+            remaining -= chunk
+        handle.flush()
+        os.fsync(handle.fileno())
+    path.unlink()
+
+
+def _shred_tree(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if _is_reparse(path):
+        raise VaultError("bad_root")
+    for child in list(path.iterdir()):
+        if _is_reparse(child):
+            raise VaultError("bad_root")
+        if child.is_dir():
+            _shred_tree(child)
+        else:
+            _overwrite_file(child)
+    path.rmdir()
+
+
+def delete_vault(hq_root: Path, token: str | None, vid, passphrase: str, typed: str) -> dict:
+    """Delete one vault for good: its passphrase and the typed word SUPPRIMER are required.
+
+    Every session that has it open is closed first. Files are overwritten with random bytes before
+    removal, which an SSD does not guarantee to erase physically; the UI says so."""
+    _require_live(token)
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    if not isinstance(typed, str) or typed.strip().upper() != DELETE_WORD:
+        raise VaultError("confirm")
+    base = _base(hq_root)
+    if not base.is_dir() or _layout(base) != "multi":
+        raise VaultError("bad_vault")
+
+    def opener():
+        header = _read_header(_root(hq_root, vid=vid))
+        if header is None:
+            raise VaultError("missing")
+        secret = _passphrase_bytes(passphrase) if isinstance(passphrase, str) and len(passphrase) <= 128 else b""
+        return _unwrap(header, secret, "passphrase"), int(header.get("epoch") or 0), None
+
+    _resolve(hq_root, vid)  # bad_vault before any try is counted
+    _key, master, _epoch, _extra = _open_with_budget(token, opener, vid)
+    _wipe(bytearray(master))
+    _close_vault(vid)
+    _forget_all_searches()
+    with _REGISTRY_LOCK:
+        data = _load_registry(base)
+        if registry.find(data, vid) is None:
+            raise VaultError("bad_vault")
+        folder = _vault_dir(base, vid)
+        tomb = folder.with_name(vid + _DELETED_SUFFIX)
+        if tomb.exists() or tomb.is_symlink():
+            _shred_tree(tomb)
+        os.replace(folder, tomb)
+        try:
+            if _delete_fault == "after_rename":
+                raise OSError("injected")
+            data["vaults"] = [e for e in data["vaults"] if e["id"] != vid]
+            if data["legacy"] == vid:
+                data["legacy"] = None
+            _save_registry(base, data)
+        except (OSError, VaultError):
+            os.replace(tomb, folder)  # nothing committed: the vault stays where it was
+            raise VaultError("disk") from None
+    if _delete_fault == "after_registry":
+        return {"deleted": True, "wiped": False}
+    try:
+        _shred_tree(tomb)
+    except (OSError, VaultError):
+        return {"deleted": True, "wiped": False}  # unlisted now; cleanup_partials() retries the overwrite
+    return {"deleted": True, "wiped": True}
+
+
+def _finish_deletes(base: Path) -> None:
+    """vaults/<vid>.deleted: put back if the registry still lists the vault and its folder is gone
+    (the delete stopped before the registry write); otherwise overwrite and remove it."""
+    folder = base / VAULTS_DIR
+    if not folder.is_dir() or _is_reparse(folder):
+        return
+    listed = {e["id"] for e in _load_registry(base)["vaults"]}
+    for child in list(folder.iterdir()):
+        name = child.name
+        if not name.endswith(_DELETED_SUFFIX) or not registry.VID_RE.fullmatch(name[:-len(_DELETED_SUFFIX)]):
+            continue
+        vid = name[:-len(_DELETED_SUFFIX)]
+        try:
+            if vid in listed and not (folder / vid).exists():
+                os.replace(child, folder / vid)
+            else:
+                _shred_tree(child)
+        except (OSError, VaultError):
+            continue
+
+
 # ---- V1.5: migration of the single vault into vaults/<vid>/ (rename only) ----------------------
 # Two renames, never a copy and never a re-encryption:
 #   forge-vault/            -> forge-vault.migrating/       (the vault itself, untouched)
@@ -2522,6 +2736,7 @@ def http_status(code: str) -> int:
         "too_many": 409,
         "migration_failed": 409,
         "backup_first": 409,
+        "confirm": 400,
     }.get(code, 400)
 
 
@@ -2549,5 +2764,6 @@ def public_error(code: str) -> str:
         "too_many": "Nombre maximal de coffres atteint.",
         "migration_failed": "Le nouveau rangement n'a pas abouti. Rien n'est perdu.",
         "backup_first": "Proposez d'abord la sauvegarde du coffre.",
+        "confirm": "Tapez SUPPRIMER pour confirmer.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
     }.get(code, "Le coffre a refusé l'opération.")

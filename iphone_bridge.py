@@ -6805,9 +6805,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     # Multi-vault: /api/forge/vaults/<vid>/... per vault. V4 removed the old /api/forge/vault/* alias
-    # (404 now). Only ids travel in paths, never a name. Per-vault setup, backup and restore are not
-    # offered here (create is its own route; backup and restore per vault are V6).
-    _NOT_PER_VAULT = ("/setup", "/backup", "/restore")
+    # (404 now). Only ids travel in paths, never a name. Per-vault setup and restore-in-place are not
+    # offered (create is its own route; V6 restores a ZIP as a new vault via /api/forge/vaults/restore).
+    _NOT_PER_VAULT = ("/setup", "/restore")
 
     def _vault_route(self, raw: str) -> tuple[str | None, str | None]:
         """(vid, sub-path); sub None when the path is not a per-vault path."""
@@ -6840,7 +6840,9 @@ class Handler(BaseHTTPRequestHandler):
             meta = json.loads(blob[4:4 + meta_len].decode("utf-8"))
             if not isinstance(meta, dict):
                 raise hq_forge_vault.VaultError("validation")
-            self._json(200, hq_forge_vault.restore_backup(ROOT, token, blob[4 + meta_len:], str(meta.get("passphrase") or "")))
+            self._json(201, hq_forge_vault.restore_as_new(
+                ROOT, token, blob[4 + meta_len:], str(meta.get("passphrase") or ""), label=meta.get("label"),
+                glyph=meta.get("glyph", "coffre"), colour=meta.get("colour", "ardoise")))  # V6: always a new vault
         except hq_forge_vault.VaultError as exc:
             self._vault_error(exc)
         except (UnicodeError, json.JSONDecodeError, struct.error):
@@ -6904,6 +6906,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_vault.set_icon(ROOT, token, vid, data.get("image_id")))  # V5: sealed in this vault
             elif sub == "/icon/clear":
                 self._json(200, hq_forge_vault.clear_icon(ROOT, token, vid))
+            elif sub == "/destroy":
+                self._json(200, hq_forge_vault.delete_vault(
+                    ROOT, token, vid, str(data.get("passphrase") or ""), str(data.get("confirm") or "")))  # V6
             elif sub == "/rename":
                 self._json(200, hq_forge_vault.rename_vault(ROOT, token, vid, data.get("label")))  # open vault only
             else:
@@ -7133,6 +7138,8 @@ class Handler(BaseHTTPRequestHandler):
         vault_vid, vault_sub = self._vault_route(raw)
         if vault_vid is not None and vault_sub == "/import":
             return self._forge_vault_binary(raw, token, vault_vid)
+        if raw == "/api/forge/vaults/restore":
+            return self._forge_vault_binary(raw, token)
         hq_forge_jobs.recover(ROOT)
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
