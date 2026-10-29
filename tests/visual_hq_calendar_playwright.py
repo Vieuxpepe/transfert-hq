@@ -153,8 +153,8 @@ def flow_checks(page, base, label, today):
     check(until(page, "() => !!document.querySelector('.hq-cal-event.is-landed') || [...document.querySelectorAll('.hq-cal-event')].some((e) => e.innerText.includes('Glissé'))"),
           "the new event lands in place")
     moved = page.locator(".hq-cal-event", has_text="Glissé")
-    moved.scroll_into_view_if_needed()
-    b = moved.bounding_box()
+    moved.evaluate("(e) => e.scrollIntoView({ block: 'center' })")
+    b = steady(page, moved)
     hour = page.locator('.hq-cal-day .hq-cal-slot[data-hour="6"]').bounding_box()["height"]
     page.mouse.move(b["x"] + 30, b["y"] + 8)
     page.mouse.down()
@@ -162,23 +162,46 @@ def flow_checks(page, base, label, today):
     check(page.locator("#hq-cal-app").evaluate("(r) => r.classList.contains('is-dragging')"), "an event lifts while it is dragged")
     page.mouse.up()
     check(until(page, "() => true") and not open_sheet_now(page), "a drag does not also open the event")
-    check(until(page, "(d) => { return fetch('/api/calendar?from=' + d + '&to=' + d.replace(/..$/, (x) => String(Number(x) + 1).padStart(2, '0')), { credentials: 'same-origin' })"
-                     ".then((r) => r.json()).then((j) => { window.__moved = (j.items || []).find((i) => i.title === 'Glissé'); }), true; }", today.isoformat()) and
-          until(page, "() => !!window.__moved && window.__moved.start.endsWith('T08:00')", None, 6), "moving it two hours down saves 08:00 on the server")
+    item = server_until(page, base, today, "Glissé", lambda e: e["start"].endswith("T08:00"))
+    check(item and item["start"].endswith("T08:00"), f"moving it two hours down saves 08:00 on the server ({item and item['start']})")
+    check(until(page, "() => !document.getElementById('hq-cal-undo').hidden && document.querySelector('.hq-cal-undo-text').textContent.startsWith('Déplacé')"),
+          "Annuler is offered after the move")
     grip = page.locator(".hq-cal-event", has_text="Glissé").locator(".hq-cal-resize")
-    g = grip.bounding_box()
+    grip.evaluate("(e) => e.scrollIntoView({ block: 'center' })")
+    g = steady(page, grip)
     page.mouse.move(g["x"] + g["width"] / 2, g["y"] + g["height"] / 2)
     page.mouse.down()
     page.mouse.move(g["x"] + g["width"] / 2, g["y"] + g["height"] / 2 + hour, steps=6)
     page.mouse.up()
-    item = None
-    for _ in range(30):
-        item = api_events(page, base, today).get("Glissé")
-        if item and item["end"].endswith("T10:30"):
-            break
-        page.wait_for_timeout(150)
+    item = server_until(page, base, today, "Glissé", lambda e: e["end"].endswith("T10:30"))
     check(item and item["end"].endswith("T10:30"), f"dragging its bottom edge an hour down saves the new end ({item and item['end']})")
+    # Annuler takes the resize back.
+    page.locator("#hq-cal-undo .hq-cal-undo-btn").click()
+    item = server_until(page, base, today, "Glissé", lambda e: e["end"].endswith("T09:30"))
+    check(item and item["end"].endswith("T09:30"), f"Annuler puts the old end back ({item and item['end']})")
     page.keyboard.press("Escape")
+
+
+def steady(page, locator):
+    """The box once it stops moving (a landing event or a refresh can still shift the layout)."""
+    last = None
+    for _ in range(20):
+        box = locator.bounding_box()
+        if box and last and abs(box["x"] - last["x"]) < 0.5 and abs(box["y"] - last["y"]) < 0.5 and abs(box["height"] - last["height"]) < 0.5:
+            return box
+        last = box
+        page.wait_for_timeout(150)
+    return last
+
+
+def server_until(page, base, day, title, ok, tries=40):
+    item = None
+    for _ in range(tries):
+        item = api_events(page, base, day).get(title)
+        if item and ok(item):
+            return item
+        page.wait_for_timeout(150)
+    return item
 
 
 def open_sheet_now(page):
@@ -220,12 +243,14 @@ def main() -> None:
                 check(until(page, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')"), "the calendar renders")
                 page.locator('#hq-cal-app [data-view="day"]').click()
                 until(page, "() => !!document.querySelector('.hq-cal-day')")
+                page.mouse.move(0, 0)  # a hovered slot is tinted on purpose
+                page.wait_for_timeout(450)  # measure once the view has settled
                 slots = page.evaluate("""() => [...document.querySelectorAll('.hq-cal-day .hq-cal-slot')].map((s) => { const r = s.getBoundingClientRect(), c = getComputedStyle(s);
                     return { w: r.width, h: r.height, bg: c.backgroundColor, radius: c.borderTopLeftRadius }; })""")
                 col = page.evaluate("() => document.querySelector('.hq-cal-day .hq-cal-col').getBoundingClientRect().width")
                 check(len(slots) == 24 and all(abs(s["w"] - col) < 1.5 and 47 <= s["h"] <= 49 for s in slots),
                       f"24 hour slots, each a full-width 48 px row ({slots[0]['w']:.0f}/{col:.0f} px)")
-                check(all(s["bg"] in ("rgba(0, 0, 0, 0)", "transparent") and s["radius"] == "0px" for s in slots), "slots are flat and transparent (no pill buttons)")
+                check(all(s["bg"] in ("rgba(0, 0, 0, 0)", "transparent") and s["radius"] == "0px" for s in slots), f"slots are flat and transparent (no pill buttons) {[ (s['bg'], s['radius']) for s in slots if s['bg'] not in ('rgba(0, 0, 0, 0)', 'transparent') or s['radius'] != '0px'][:3]}")
                 rows = page.evaluate("() => [...document.querySelector('.hq-cal-bar').children].map((c) => c.classList[0])")
                 check(rows == ["hq-cal-head", "hq-cal-views", "hq-cal-tools"], f"the header is three rows {rows}")
                 check(page.locator(".hq-cal-today").count() == 0, "Aujourd'hui is hidden while today is on screen")

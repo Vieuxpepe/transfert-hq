@@ -50,11 +50,24 @@
     prevAnchor: null,
     landed: "",      // id of the event that was just created or moved: it lands with a small bounce
     zoomFrom: null,  // month cell centre the day view zooms out of
+    burst: "",       // id of the event just marked done: its check bursts once
+    zoom: 1,         // hour height factor (pinch on touch, Ctrl + wheel or trackpad pinch on desktop)
+    sound: false,    // soft sounds, off unless the owner turns them on
+    fetchedAt: 0,    // when server_now was read: the live clock runs from there
   };
   const SNAP_MIN = 15;
   let drag = null;           // the grid drag in progress (create, move or resize)
   let renderPending = false; // a refresh arrived during a drag: draw once the drag ends
   let lastPoint = null;      // where the owner last pressed: sheets grow out of that point
+  let swipe = null;          // the sideways swipe in progress (the period follows the finger)
+  let undoTimer = null;
+  let audio = null;
+  let hapticLabel = null;
+  let lastBuzz = 0;
+  let nextUpShown = "";
+  const preview = { ghost: null, spot: "" }; // quick add: the see-through event drawn while typing
+  const ZOOM_MIN = 0.6;
+  const ZOOM_MAX = 2.4;
   const VIEW_ORDER = ["day", "week", "month", "agenda"];
   const HINT_KEY = "hq_cal_hint_done";
 
@@ -175,7 +188,8 @@
   function rangeFor() {
     const anchor = state.anchor || todayLocal();
     if (state.view === "day") {
-      return { from: dateKey(anchor), to: dateKey(addLocalDays(anchor, 1)) };
+      const start = startOfLocalWeek(anchor); // the whole strip: its day rings need the week
+      return { from: dateKey(start), to: dateKey(addLocalDays(start, 7)) };
     }
     if (state.view === "week") {
       const start = weekStart(anchor);
@@ -267,6 +281,7 @@
       const data = await api("/api/calendar?" + params.toString());
       if (gen !== refreshGen) return;
       state.data = data;
+      state.fetchedAt = Date.now();
       if (!state.synced && data.server_date && !state.userMoved) {
         state.synced = true;
         const serverDay = parseLocalDateKey(data.server_date);
@@ -288,6 +303,135 @@
     }
   }
 
+  /* ---- the next thing: a card with a countdown ring ---- */
+  function nextUpItem() {
+    const now = liveNow();
+    if (!now) return null;
+    const list = items().filter((item) => !item.read_only && !item.all_day && itemStart(item) && itemEnd(item) && itemEnd(item) > now);
+    const far = state.data && state.data.next;
+    if (far && !list.some((item) => item.id === far.id) && parseLocalDateTime(far.start) && parseLocalDateTime(far.end) > now) list.push(far);
+    list.sort((a, b) => itemStart(a) - itemStart(b));
+    const first = list[0];
+    return first && itemStart(first) - now < 24 * 3600000 ? first : null;
+  }
+
+  function fmtLeft(ms) {
+    const mins = Math.max(0, Math.round(ms / 60000));
+    if (mins < 60) return mins + " min";
+    const rest = mins % 60;
+    return Math.floor(mins / 60) + " h" + (rest ? " " + pad(rest) : "");
+  }
+
+  function nextUp() {
+    const item = nextUpItem();
+    if (!item) {
+      nextUpShown = "";
+      return document.createTextNode("");
+    }
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 40 40");
+    svg.setAttribute("class", "hq-cal-ring");
+    svg.setAttribute("aria-hidden", "true");
+    ["track", "fill"].forEach((cls) => {
+      const c = document.createElementNS(NS, "circle");
+      c.setAttribute("cx", "20");
+      c.setAttribute("cy", "20");
+      c.setAttribute("r", "16");
+      c.setAttribute("class", cls);
+      svg.appendChild(c);
+    });
+    const card = h("button", {
+      type: "button",
+      id: "hq-cal-nextup",
+      class: "hq-cal-nextup " + catClass(item),
+      "data-cal": "nextup",
+      "data-id": item.id,
+      "data-day": String(item.start).slice(0, 10),
+    }, [
+      svg,
+      h("span", { class: "hq-cal-nextup-text" }, [
+        h("span", { class: "hq-cal-nextup-label" }),
+        h("span", { class: "hq-cal-nextup-title", text: item.title || "Sans titre" }),
+      ]),
+      h("span", { class: "hq-cal-nextup-when" }),
+    ]);
+    const fresh = nextUpShown !== item.id;
+    nextUpShown = item.id;
+    paintNextUp(card, item, fresh);
+    return card;
+  }
+
+  function paintNextUp(card, item, fresh) {
+    const now = liveNow();
+    const a = itemStart(item);
+    const b = itemEnd(item);
+    if (!now || !a || !b) return;
+    const live = a <= now;
+    const left = a - now;
+    const p = live ? (now - a) / Math.max(1, b - a) : 1 - Math.min(1, left / (120 * 60000)); // fills over the last two hours
+    const label = live ? "En cours" : "Prochain";
+    const when = live ? "encore " + fmtLeft(b - now) : left < 60000 ? "maintenant" : "dans " + fmtLeft(left);
+    card.classList.toggle("is-now", live);
+    card.classList.toggle("is-soon", !live && left <= 15 * 60000);
+    card.querySelector(".hq-cal-nextup-label").textContent = label;
+    card.querySelector(".hq-cal-nextup-when").textContent = when;
+    card.setAttribute("aria-label", label + " : " + (item.title || "Sans titre") + ", " + when);
+    const fill = card.querySelector(".hq-cal-ring .fill");
+    const C = 2 * Math.PI * 16;
+    fill.style.strokeDasharray = C.toFixed(2);
+    const offset = (C * (1 - Math.max(0.02, Math.min(1, p)))).toFixed(2);
+    if (fresh && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      fill.style.strokeDashoffset = C.toFixed(2); // draws itself in once
+      requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.strokeDashoffset = offset; }));
+    } else {
+      fill.style.strokeDashoffset = offset;
+    }
+  }
+
+  /* Every 20 s: the now line moves, the countdown counts, the light shifts. No rebuild unless the
+     next thing changed. */
+  function paintLive() {
+    const root = document.getElementById("hq-cal-app");
+    const now = liveNow();
+    if (!root || !now) return;
+    const mins = now.getHours() * 60 + now.getMinutes();
+    root.querySelectorAll(".hq-cal-now").forEach((line) => {
+      line.style.top = (mins / 1440) * 100 + "%";
+      const t = line.querySelector(".hq-cal-now-time");
+      if (t) t.textContent = fmtTime(now);
+    });
+    const card = document.getElementById("hq-cal-nextup");
+    const item = nextUpItem();
+    if ((card ? card.dataset.id : "") !== (item ? item.id : "")) {
+      if (!drag && !swipe && !document.querySelector(".hq-cal-row.is-leaving")) renderKeep();
+      return;
+    }
+    if (card && item) paintNextUp(card, item, false);
+    paintAmbient(now);
+  }
+
+  /* The calendar's light follows the hour: cool morning, bright day, warm evening, deep blue night. */
+  const AMBIENT = [
+    [0, [52, 60, 140]], [5, [70, 76, 160]], [7, [120, 176, 255]], [11, [140, 205, 255]], [14, [255, 222, 150]],
+    [18, [255, 150, 96]], [20, [206, 104, 170]], [22, [80, 78, 170]], [24, [52, 60, 140]],
+  ];
+
+  function paintAmbient(now) {
+    const root = document.getElementById("hq-cal-app");
+    const section = root && root.closest(".hq-cal");
+    if (!section || !now) return;
+    const t = now.getHours() + now.getMinutes() / 60;
+    let i = 0;
+    while (i < AMBIENT.length - 2 && AMBIENT[i + 1][0] <= t) i += 1;
+    const [t0, c0] = AMBIENT[i];
+    const [t1, c1] = AMBIENT[i + 1];
+    const k = (t - t0) / (t1 - t0);
+    const rgb = c0.map((v, j) => Math.round(v + (c1[j] - v) * k));
+    section.classList.add("hq-cal-ambient");
+    section.style.setProperty("--hq-amb", "rgb(" + rgb.join(",") + ")");
+  }
+
   function previewHelp(item) {
     const parts = [item.title || "Sans titre"];
     if (item.all_day) parts.push("Journée");
@@ -305,8 +449,8 @@
   function render() {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
-    if (drag) {
-      renderPending = true; // never rebuild the grid under a press or a drag
+    if (drag || (swipe && swipe.locked)) {
+      renderPending = true; // never rebuild the grid under a press, a drag or a swipe
       return;
     }
     if (window.hqHideHelp) window.hqHideHelp();
@@ -316,6 +460,7 @@
     const legend = legendPanel();
     legend.hidden = !state.legend;
     root.appendChild(legend);
+    root.appendChild(nextUp());
     if (state.data && state.data.malformed) {
       root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
     }
@@ -337,16 +482,86 @@
     state.prevAnchor = state.anchor;
     state.zoomFrom = null;
     state.landed = "";
+    state.burst = "";
+    paintPreview();
+    paintRecent();
+    paintLive();
+  }
+
+  /* Redraw without losing the grid's scroll position. */
+  function renderKeep() {
+    const before = dayScroll();
+    const top = before ? before.scrollTop : null;
+    render();
+    const after = dayScroll();
+    if (after && top != null) after.scrollTop = top;
+  }
+
+  /* HQ's clock, ticking on from the moment it was read. */
+  function liveNow() {
+    const base = serverNow();
+    if (!base) return null;
+    return new Date(base.getTime() + Math.max(0, Date.now() - (state.fetchedAt || Date.now())));
   }
 
   function landedClass(item) {
     return state.landed && item && item.id === state.landed ? " is-landed" : "";
   }
 
-  /* A short tap of the phone where the browser allows it (Android); iOS Safari ignores it. */
+  /* A short tap of the phone. Android: vibrate. iPhone ignores vibrate, but Safari 18+ taps when a
+     switch toggle changes, so a hidden one is toggled instead (a no-op elsewhere). */
   function buzz(ms) {
     try {
-      if (navigator.vibrate && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) navigator.vibrate(ms || 8);
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const t = Date.now();
+      if (t - lastBuzz < 45) return; // snaps in a fast drag: one tap per step at most
+      lastBuzz = t;
+      if (navigator.vibrate) {
+        navigator.vibrate(ms || 8);
+        return;
+      }
+      if (!hapticLabel) {
+        const input = h("input", { type: "checkbox", switch: "", tabindex: "-1" });
+        hapticLabel = h("label", { class: "hq-cal-haptic", "aria-hidden": "true" }, [input]);
+        document.body.appendChild(hapticLabel);
+      }
+      hapticLabel.click();
+    } catch (_) {}
+  }
+
+  /* Soft sounds, made on the spot (no files). Off unless the owner turns them on. */
+  const TONES = {
+    snap: [[1900, 0, 0.02, 0.018]],
+    lift: [[520, 0, 0.07, 0.03]],
+    drop: [[210, 0, 0.13, 0.08], [630, 0, 0.07, 0.03]],
+    save: [[880, 0, 0.16, 0.05], [1318.5, 0.08, 0.24, 0.05]],
+    done: [[1046.5, 0, 0.12, 0.045], [1568, 0.06, 0.18, 0.045], [2093, 0.12, 0.26, 0.035]],
+    delete: [[440, 0, 0.1, 0.05], [294, 0.06, 0.2, 0.05]],
+    undo: [[660, 0, 0.1, 0.045], [880, 0.06, 0.16, 0.045]],
+    swipe: [[700, 0, 0.06, 0.02]],
+  };
+
+  function chime(kind) {
+    if (!state.sound) return;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      audio = audio || new Ctx();
+      if (audio.state === "suspended") audio.resume();
+      const t = audio.currentTime + 0.005;
+      (TONES[kind] || []).forEach(([freq, at, dur, gain]) => {
+        const osc = audio.createOscillator();
+        const amp = audio.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        amp.gain.setValueAtTime(0.0001, t + at);
+        amp.gain.exponentialRampToValueAtTime(gain, t + at + 0.01);
+        amp.gain.exponentialRampToValueAtTime(0.0001, t + at + dur);
+        osc.connect(amp);
+        amp.connect(audio.destination);
+        osc.start(t + at);
+        osc.stop(t + at + dur + 0.03);
+      });
     } catch (_) {}
   }
 
@@ -371,15 +586,16 @@
       state.userMoved = true;
       state.anim = day < state.anchor ? "prev" : "next";
       state.anchor = day;
+      if (state.view === "day" && sameDay(day, serverToday())) return refresh("snap");
       return refresh();
     }
     return refresh("keep");
   }
 
   /* Previous / next period, from the arrows, a swipe or the arrow keys. */
-  function go(dir) {
+  function go(dir, how) {
     state.userMoved = true;
-    state.anim = dir > 0 ? "next" : "prev";
+    state.anim = (how === "swipe" ? "swipe-" : "") + (dir > 0 ? "next" : "prev");
     if (state.view === "day") state.anchor = addLocalDays(state.anchor, dir);
     else if (state.view === "week") state.anchor = addLocalDays(state.anchor, dir * weekSpan());
     else if (state.view === "month") state.anchor = addMonths(state.anchor, dir);
@@ -502,6 +718,14 @@
       "data-help": "Formes et couleurs des catégories, du planning et de l'activité.",
       text: "Légende",
     }));
+    tools.appendChild(h("button", {
+      type: "button",
+      class: "hq-cal-toggle",
+      "data-cal": "sound",
+      "aria-pressed": state.sound ? "true" : "false",
+      "data-help": "Petits sons doux : glisser, déposer, enregistrer, cocher.",
+      text: "Sons",
+    }));
     tools.appendChild(actions);
     bar.appendChild(tools);
     return bar;
@@ -549,7 +773,7 @@
     const start = startOfLocalWeek(state.anchor);
     const index = Math.round((startOfDayMs(state.anchor) - startOfDayMs(start)) / 86400000);
     const prev = state.prevAnchor ? Math.round((startOfDayMs(state.prevAnchor) - startOfDayMs(start)) / 86400000) : index;
-    const slide = (state.anim === "next" || state.anim === "prev") && prev >= 0 && prev < 7 && prev !== index;
+    const slide = /^(swipe-)?(next|prev)$/.test(state.anim) && prev >= 0 && prev < 7 && prev !== index;
     const strip = h("div", {
       class: "hq-cal-weekstrip" + (slide ? " is-moving" : ""),
       style: "--i:" + index + ";--from:" + (slide ? prev : index),
@@ -565,9 +789,29 @@
         "aria-label": fmtDay(day),
       }, [h("span", { class: "hq-cal-strip-dow", text: DOW[i] }), h("span", { class: "hq-cal-strip-num", text: String(day.getDate()) })]);
       if (sameDay(day, today)) button.classList.add("is-today");
+      markRing(button, day);
       strip.appendChild(button);
     }
     return strip;
+  }
+
+  /* How much of a day the owner got through: finished events marked done, out of finished events. */
+  function dayRing(day) {
+    const now = liveNow();
+    if (!now) return null;
+    const ended = items().filter((item) => !item.read_only && !item.all_day && overlapsDay(item, day) && itemEnd(item) && itemEnd(item) <= now);
+    if (!ended.length) return null;
+    const done = ended.filter((item) => item.done).length;
+    return { done, total: ended.length, p: done / ended.length };
+  }
+
+  function markRing(button, day) {
+    const ring = dayRing(day);
+    if (!ring) return;
+    button.classList.add("has-ring");
+    if (ring.p >= 1) button.classList.add("is-complete");
+    button.style.setProperty("--p", ring.p.toFixed(3));
+    button.setAttribute("aria-label", fmtDay(day) + " · " + ring.done + " sur " + ring.total + " fait" + (ring.done > 1 ? "s" : ""));
   }
 
   function startOfDayMs(date) {
@@ -583,7 +827,7 @@
   }
 
   function allDayLane(day) {
-    const lane = h("div", { class: "hq-cal-allday" });
+    const lane = h("div", { class: "hq-cal-allday", "data-allday": dateKey(day) });
     const rows = items().filter((item) => item.all_day && overlapsDay(item, day));
     if (!rows.length) return lane; // empty: hidden by CSS, no filler line
     rows.forEach((item) => lane.appendChild(chip(item)));
@@ -647,7 +891,7 @@
   }
 
   function columnPx() {
-    return (state.view === "week" ? 44 : 48) * 24;
+    return (state.view === "week" ? 44 : 48) * 24 * state.zoom;
   }
 
   function assignHitSlop(placed) {
@@ -701,7 +945,7 @@
     const coarse = coarsePointer();
     if (coarse) assignHitSlop(placed);
     const colPx = columnPx();
-    const now = serverNow();
+    const now = liveNow();
     placed.forEach((entry, order) => {
       const width = 100 / entry.cols;
       const spanMin = Math.max(1, entry.endMin - entry.startMin);
@@ -710,10 +954,12 @@
       let hitTop = top;
       let hitHeight = coarse ? height : Math.max(height, 1.6);
       const past = !!(now && itemEnd(entry.item) && itemEnd(entry.item) <= now);
+      const checkable = canCheck(entry.item, now);
       const button = h("button", {
         type: "button",
         class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)) + (past ? " is-past" : "") + landedClass(entry.item)
-          + (movable(entry.item) ? " is-movable" : ""),
+          + (movable(entry.item) ? " is-movable" : "") + (entry.item.done ? " is-done" : "") + (checkable ? " has-check" : "")
+          + (state.burst === entry.item.id ? " is-burst" : ""),
         "data-cal": "open",
         "data-id": entry.item.id,
         "data-help": previewHelp(entry.item),
@@ -741,9 +987,32 @@
         if (coarse) grip.style.top = "calc(" + (((top - hitTop) + height) / hitHeight) * 100 + "% - 14px)";
         button.appendChild(grip);
       }
+      if (checkable) {
+        const check = checkMark(entry.item);
+        if (coarse) check.style.top = ((top - hitTop) / hitHeight) * 100 + "%";
+        button.appendChild(check);
+      }
       col.appendChild(button);
     });
     return columns;
+  }
+
+  /* A started event the owner wrote can be ticked off. */
+  function canCheck(item, now) {
+    const start = itemStart(item);
+    return !!(item && !item.read_only && start && now && start <= now);
+  }
+
+  function checkMark(item) {
+    const check = h("span", {
+      class: "hq-cal-check",
+      "data-cal": "done",
+      "data-id": item.id,
+      "aria-hidden": "true",
+      title: item.done ? "Fait — toucher pour annuler" : "Marquer comme fait",
+    });
+    if (state.burst === item.id) check.appendChild(h("span", { class: "hq-cal-burst" }));
+    return check;
   }
 
   /* What an event block says: its start time (when it starts on this day), then its title. */
@@ -785,11 +1054,14 @@
   }
 
   function placeNow(col, day) {
-    const now = serverNow();
+    const now = liveNow();
     if (!now || !sameDay(now, day)) return;
     const mins = now.getHours() * 60 + now.getMinutes();
     col.appendChild(
-      h("div", { class: "hq-cal-now", style: "top:" + (mins / 1440) * 100 + "%" }, [h("span", { text: "Maintenant" })])
+      h("div", { class: "hq-cal-now", style: "top:" + (mins / 1440) * 100 + "%" }, [
+        h("span", { text: "Maintenant" }),
+        h("span", { class: "hq-cal-now-time", "aria-hidden": "true", text: fmtTime(now) }),
+      ])
     );
   }
 
@@ -844,8 +1116,9 @@
         "aria-label": fmtDay(day),
       }, [h("span", { class: "hq-cal-strip-dow", text: DOW[(day.getDay() + 6) % 7] }), h("span", { class: "hq-cal-strip-num", text: String(day.getDate()) })]);
       if (sameDay(day, today)) headBtn.classList.add("is-today");
+      markRing(headBtn, day);
       head.appendChild(headBtn);
-      const cell = h("div", { class: "hq-cal-allcell" });
+      const cell = h("div", { class: "hq-cal-allcell", "data-allday": dateKey(day) });
       items()
         .filter((item) => item.all_day && overlapsDay(item, day))
         .slice(0, 3)
@@ -937,11 +1210,12 @@
       wrap.appendChild(h("h3", { text: fmtDay(day) }));
       const allDay = rows.filter((item) => item.all_day);
       const timed = rows.filter((item) => !item.all_day).sort((a, b) => String(a.start).localeCompare(String(b.start)));
+      const now = liveNow();
       allDay.concat(timed).forEach((item) => {
         const when = item.all_day ? "Journée" : spanLabel(item);
         const button = h("button", {
           type: "button",
-          class: "hq-cal-row " + catClass(item) + landedClass(item),
+          class: "hq-cal-row " + catClass(item) + landedClass(item) + (item.done ? " is-done" : "") + (state.burst === item.id ? " is-burst" : ""),
           "data-cal": "open",
           "data-id": item.id,
           "data-help": previewHelp(item),
@@ -957,6 +1231,7 @@
           if (cat) body.appendChild(h("div", { class: "hint", text: cat[1] }));
         }
         button.appendChild(body);
+        if (canCheck(item, now)) button.appendChild(checkMark(item));
         wrap.appendChild(button);
       });
     }
@@ -1016,6 +1291,32 @@
       state.activity = !state.activity;
       try { localStorage.setItem("hq_cal_activity", state.activity ? "1" : "0"); } catch (_) {}
       refresh();
+      return;
+    }
+    if (kind === "sound") {
+      state.sound = !state.sound;
+      try { localStorage.setItem("hq_cal_sound", state.sound ? "1" : "0"); } catch (_) {}
+      button.setAttribute("aria-pressed", state.sound ? "true" : "false");
+      chime("save");
+      return;
+    }
+    if (kind === "done") {
+      toggleDone(findItem(button.dataset.id));
+      return;
+    }
+    if (kind === "nextup") {
+      const item = items().find((row) => row.id === button.dataset.id);
+      if (item) openDetail(item);
+      else {
+        const day = parseLocalDateKey(button.dataset.day);
+        if (!day) return;
+        state.userMoved = true;
+        state.anim = "view";
+        state.view = "day";
+        state.anchor = day;
+        state.landed = button.dataset.id;
+        refresh();
+      }
       return;
     }
     if (kind === "legend") {
@@ -1149,7 +1450,7 @@
     return parser.parse(text, serverNow() || new Date(), state.anchor || todayLocal());
   }
 
-  function paintQuick() {
+  function paintQuick(keepGhost) {
     const input = document.getElementById("hq-cal-quick-input");
     const preview = document.getElementById("hq-cal-quick-preview");
     const more = document.getElementById("hq-cal-quick-more");
@@ -1159,6 +1460,8 @@
     preview.textContent = "";
     preview.hidden = !text;
     if (more) more.hidden = !text;
+    paintRecent();
+    if (!keepGhost) paintPreview();
     if (!text) return;
     if (!draft) {
       preview.appendChild(h("span", { class: "hint", text: "Ajoute un titre." }));
@@ -1171,6 +1474,169 @@
       h("strong", { text: draft.title }),
       h("span", { text: " · " + (day ? fmtQuickDay(day) : "") + " · " + when + (cat && draft.category !== "other" ? " · " + cat[1] : "") }),
     ]));
+  }
+
+  /* While typing, the event appears see-through in its slot (when its day is on screen) and moves as
+     the words change; Entrée makes it solid and the saved event lands there. */
+  function paintPreview() {
+    const root = document.getElementById("hq-cal-app");
+    const input = document.getElementById("hq-cal-quick-input");
+    if (!root) return;
+    root.querySelectorAll(".hq-cal-chip.is-preview").forEach((node) => node.remove());
+    const text = input ? input.value.trim() : "";
+    const draft = text ? quickDraft(text) : null;
+    const clear = () => {
+      if (preview.ghost) preview.ghost.remove();
+      preview.spot = "";
+    };
+    if (!draft) return clear();
+    const key = draft.start.slice(0, 10);
+    if (draft.all_day) {
+      clear();
+      const lane = root.querySelector('[data-allday="' + key + '"]');
+      if (lane) lane.appendChild(h("span", { class: "hq-cal-chip is-preview cat-" + draft.category, "aria-hidden": "true", text: draft.title }));
+      return;
+    }
+    const col = root.querySelector('[data-col-day="' + key + '"]');
+    if (!col) return clear();
+    const a = Number(draft.start.slice(11, 13)) * 60 + Number(draft.start.slice(14, 16));
+    let b = draft.end.slice(0, 10) === key ? Number(draft.end.slice(11, 13)) * 60 + Number(draft.end.slice(14, 16)) : 1440;
+    if (b <= a) b = 1440;
+    if (!preview.ghost) {
+      preview.ghost = h("div", { "aria-hidden": "true" }, [h("span", { class: "hq-cal-ghost-time" }), h("span", { class: "hq-cal-ghost-title" })]);
+    }
+    const ghost = preview.ghost;
+    ghost.className = "hq-cal-ghost is-preview cat-" + draft.category;
+    if (ghost.parentNode !== col) col.appendChild(ghost);
+    ghost.style.top = (a / 1440) * 100 + "%";
+    ghost.style.height = (Math.max(SNAP_MIN, b - a) / 1440) * 100 + "%";
+    ghost.firstChild.textContent = hhmm(a) + "–" + hhmm(b);
+    ghost.lastChild.textContent = draft.title;
+    const spot = key + "/" + a;
+    if (spot === preview.spot) return;
+    preview.spot = spot;
+    // Bring it into view inside the grid (never the page: the keyboard may be up).
+    const scroll = col.closest(".hq-cal-scroll");
+    if (!scroll || scroll.scrollHeight <= scroll.clientHeight + 1) return;
+    const sr = scroll.getBoundingClientRect();
+    const gr = col.getBoundingClientRect();
+    const y = gr.top - sr.top + scroll.scrollTop + (a / 1440) * gr.height;
+    if (y < scroll.scrollTop + 30 || y > scroll.scrollTop + scroll.clientHeight - 60) {
+      const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      scroll.scrollTo({ top: Math.max(0, y - scroll.clientHeight * 0.35), behavior: calm ? "auto" : "smooth" });
+    }
+  }
+
+  /* Under the empty field: the owner's latest titles. One tap writes « Sport 18h » (their usual time). */
+  function fmtDur(mins) {
+    if (mins % 60 === 0) return mins / 60 + "h";
+    if (mins > 60) return Math.floor(mins / 60) + "h" + pad(mins % 60);
+    return mins + "min";
+  }
+
+  function quickText(row) {
+    let text = row.title;
+    if (row.time) {
+      const [hh, mm] = row.time.split(":");
+      text += " " + Number(hh) + "h" + (mm !== "00" ? mm : "");
+      if (row.minutes && row.minutes !== 60) text += " pendant " + fmtDur(row.minutes);
+    }
+    return text + " ";
+  }
+
+  function paintRecent() {
+    const box = document.getElementById("hq-cal-quick-recent");
+    const input = document.getElementById("hq-cal-quick-input");
+    if (!box || !input) return;
+    const rows = ((state.data && state.data.recent) || []).slice(0, 6);
+    box.hidden = !!input.value.trim() || !rows.length;
+    const sig = JSON.stringify(rows);
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+    box.textContent = "";
+    rows.forEach((row) => {
+      box.appendChild(h("button", {
+        type: "button",
+        class: "hq-cal-recent-chip cat-" + (row.category || "other"),
+        "data-quick": quickText(row),
+        "aria-label": "Écrire « " + quickText(row).trim() + " »",
+      }, [document.createTextNode(row.title), row.time ? h("span", { text: row.time }) : null]));
+    });
+  }
+
+  function saveCall(event, rev) {
+    return api("/api/calendar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "save", expected_rev: rev, event: event }),
+    });
+  }
+
+  function deleteCall(id, rev) {
+    return api("/api/calendar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete", id: id, expected_rev: rev }),
+    });
+  }
+
+  /* Every change can be taken back for five seconds: no confirmations, no fear. */
+  function offerUndo(label, undo) {
+    let bar = document.getElementById("hq-cal-undo");
+    if (!bar) {
+      bar = h("div", { id: "hq-cal-undo", class: "hq-cal-undo", role: "status", "aria-live": "polite" });
+      bar.hidden = true;
+      document.body.appendChild(bar);
+    }
+    clearTimeout(undoTimer);
+    bar.textContent = "";
+    const button = h("button", { type: "button", class: "hq-cal-undo-btn", text: "Annuler" });
+    bar.appendChild(h("span", { class: "hq-cal-undo-text", text: label }));
+    bar.appendChild(button);
+    bar.appendChild(h("span", { class: "hq-cal-undo-time", "aria-hidden": "true" }));
+    bar.hidden = false;
+    bar.classList.remove("is-in", "is-out");
+    void bar.offsetWidth;
+    bar.classList.add("is-in");
+    const hide = () => {
+      clearTimeout(undoTimer);
+      bar.classList.add("is-out");
+      undoTimer = setTimeout(() => { bar.hidden = true; bar.classList.remove("is-in", "is-out"); }, 200);
+    };
+    button.addEventListener("click", async () => {
+      hide();
+      try {
+        await undo();
+        chime("undo");
+        buzz(8);
+      } catch (err) {
+        if (typeof toast === "function") toast((err && err.message) || "Annulation impossible", "err");
+        refresh("keep");
+      }
+    }, { once: true });
+    undoTimer = setTimeout(hide, 5000);
+  }
+
+  /* Tick an event off (or back): the check bursts, the day's ring fills. */
+  async function toggleDone(item) {
+    if (!item || item.read_only) return;
+    const before = !!item.done;
+    item.done = !before;
+    state.burst = item.done ? item.id : "";
+    renderKeep();
+    if (item.done) {
+      chime("done");
+      buzz(14);
+    }
+    try {
+      await saveCall(eventPayload(item), item.rev);
+      refresh("keep");
+    } catch (err) {
+      item.done = before;
+      renderKeep();
+      if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
+      refresh("keep");
+    }
   }
 
   function eventPayload(source, over) {
@@ -1187,6 +1653,7 @@
       action_id: item.action_id || "",
       device_id: item.device_id || "",
       reminders_min: Array.isArray(item.reminders_min) ? item.reminders_min : [],
+      done: !!item.done,
     };
     if (item.id) payload.id = item.id;
     return payload;
@@ -1201,22 +1668,23 @@
       return;
     }
     form.classList.add("is-saving");
+    if (preview.ghost) preview.ghost.classList.add("is-solid");
     try {
-      const saved = await api("/api/calendar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save", expected_rev: 0, event: eventPayload(draft) }),
-      });
+      const saved = await saveCall(eventPayload(draft), 0);
       input.value = "";
-      paintQuick();
+      paintQuick(true); // the solid ghost stays until the saved event lands in its place
       form.classList.remove("is-done");
       void form.offsetWidth; // restart the check animation
       form.classList.add("is-done");
       setTimeout(() => form.classList.remove("is-done"), 900);
       buzz(10);
-      landOn(saved && saved.event);
+      chime("save");
+      const ev = saved && saved.event;
+      if (ev) offerUndo("Ajouté · " + ev.title, async () => { await deleteCall(ev.id, ev.rev); refresh("keep"); });
+      landOn(ev);
     } catch (err) {
       shake(form);
+      if (preview.ghost) preview.ghost.classList.remove("is-solid");
       if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
     } finally {
       form.classList.remove("is-saving");
@@ -1244,12 +1712,24 @@
     more.hidden = true;
     row.appendChild(more);
     form.appendChild(row);
-    const preview = h("div", { class: "hq-cal-quick-preview", id: "hq-cal-quick-preview", "aria-live": "polite" });
-    preview.hidden = true;
-    form.appendChild(preview);
+    const line = h("div", { class: "hq-cal-quick-preview", id: "hq-cal-quick-preview", "aria-live": "polite" });
+    line.hidden = true;
+    form.appendChild(line);
+    const recent = h("div", { class: "hq-cal-quick-recent", id: "hq-cal-quick-recent", role: "group", "aria-label": "Titres récents" });
+    recent.hidden = true;
+    form.appendChild(recent);
     root.parentNode.insertBefore(form, root);
+    recent.addEventListener("click", (ev) => {
+      const chip = ev.target.closest("[data-quick]");
+      if (!chip) return;
+      input.value = chip.dataset.quick;
+      input.focus();
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch (_) {}
+      buzz(6);
+      paintQuick();
+    });
     const input = form.querySelector("input");
-    input.addEventListener("input", paintQuick);
+    input.addEventListener("input", () => paintQuick());
     input.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && input.value) {
         ev.stopPropagation();
@@ -1306,6 +1786,18 @@
   }
 
   function dragUpdate(x, y) {
+    dragStep(x, y);
+    const key = drag.range ? drag.range.join("-") + (drag.target ? drag.target.dataset.colDay : "") : "";
+    if (key && key !== drag.lastKey) {
+      if (drag.lastKey) {
+        chime("snap");
+        buzz(4);
+      }
+      drag.lastKey = key;
+    }
+  }
+
+  function dragStep(x, y) {
     if (drag.mode === "create") {
       const now = minuteIn(drag.col, y);
       let a = Math.min(drag.anchorMin, now);
@@ -1336,6 +1828,7 @@
     document.getElementById("hq-cal-app").classList.add("is-dragging");
     if (drag.source) drag.source.classList.add("is-lifted");
     buzz(12);
+    chime("lift");
     dragUpdate(x, y);
   }
 
@@ -1375,28 +1868,34 @@
       if (pending) render();
       return;
     }
-    commitMove(finished.item, startKey, endKey);
+    commitMove(finished.item, startKey, endKey, finished.mode === "resize" ? "Durée changée" : "Déplacé");
   }
 
-  async function commitMove(item, startKey, endKey) {
+  async function commitMove(item, startKey, endKey, label) {
     const before = { start: item.start, end: item.end };
+    const snapshot = Object.assign({}, item);
     const payload = eventPayload(item, { start: startKey, end: endKey });
     item.start = startKey; // show it in place at once; the server answer confirms it
     item.end = endKey;
     state.landed = item.id;
-    render();
+    renderKeep();
+    chime("drop");
     try {
-      await api("/api/calendar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save", expected_rev: item.rev, event: payload }),
-      });
+      const saved = await saveCall(payload, item.rev);
       buzz(10);
+      const ev = saved && saved.event;
+      if (ev) {
+        offerUndo((label || "Déplacé") + " · " + (ev.title || ""), async () => {
+          const back = await saveCall(eventPayload(snapshot, before), ev.rev);
+          state.landed = back && back.event ? back.event.id : "";
+          refresh("keep");
+        });
+      }
       refresh("keep");
     } catch (err) {
       item.start = before.start;
       item.end = before.end;
-      render();
+      renderKeep();
       if (typeof toast === "function") toast((err && err.message) || "Déplacement impossible", "err");
       refresh("keep");
     }
@@ -1406,7 +1905,7 @@
     const LONG_PRESS = 380;
     root.addEventListener("pointerdown", (ev) => {
       lastPoint = { x: ev.clientX, y: ev.clientY, t: Date.now() };
-      if (drag || (ev.pointerType === "mouse" && ev.button !== 0) || ev.target.closest(".hq-sheet")) return;
+      if (drag || (ev.pointerType === "mouse" && ev.button !== 0) || ev.target.closest(".hq-sheet, .hq-cal-check")) return;
       const slot = ev.target.closest(".hq-cal-slot");
       const eventBtn = ev.target.closest(".hq-cal-event.is-movable");
       let next = null;
@@ -1461,32 +1960,285 @@
     }, true);
   }
 
-  /* Swipe left / right on the calendar (touch only) to change period. Vertical moves stay scrolls. */
+  /* What the next / previous period is called (shown at the edge while swiping). */
+  function periodLabel(dir) {
+    const anchor = state.anchor || todayLocal();
+    if (state.view === "day") return fmtQuickDay(addLocalDays(anchor, dir));
+    if (state.view === "week") {
+      const first = addLocalDays(weekStart(anchor), dir * weekSpan());
+      return fmtShort(first) + " – " + fmtShort(addLocalDays(first, weekSpan() - 1));
+    }
+    if (state.view === "month") return fmtMonth(addMonths(anchor, dir));
+    return "Dès le " + fmtShort(addLocalDays(anchor, dir * 30));
+  }
+
+  /* Swipe left / right (touch): the period follows the finger, the next one is named at the edge,
+     and letting go springs to it (far enough, or a flick) or back. Vertical moves stay scrolls. */
   function bindSwipe(root) {
-    let start = null;
+    const SKIP = ".hq-cal-bar, .hq-sheet, .hq-cal-row[data-id]:not(.is-schedule), .hq-cal-nextup";
+    const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    function peek(dir) {
+      const node = h("div", { class: "hq-cal-peek " + (dir > 0 ? "is-next" : "is-prev"), "aria-hidden": "true" }, [
+        h("span", { class: "hq-cal-peek-arrow", text: dir > 0 ? "›" : "‹" }), h("span", { text: periodLabel(dir) }),
+      ]);
+      node.style.top = swipe.stage.offsetTop + Math.min(140, swipe.stage.offsetHeight / 3) + "px";
+      root.appendChild(node);
+      return node;
+    }
+    function clearPeeks() {
+      root.querySelectorAll(".hq-cal-peek").forEach((node) => node.remove());
+    }
+    function follow(dx) {
+      if (!swipe.stage.isConnected) swipe.stage = root.querySelector(".hq-cal-stage") || swipe.stage; // a refresh landed before the lock
+      const w = swipe.w;
+      const edge = w * 0.5;
+      const x = Math.abs(dx) <= edge ? dx : Math.sign(dx) * (edge + (Math.abs(dx) - edge) * 0.3); // rubber band
+      swipe.stage.style.transform = "translate3d(" + x.toFixed(1) + "px,0,0)";
+      swipe.stage.style.opacity = String(1 - Math.min(0.35, (Math.abs(x) / w) * 0.5));
+      const dir = dx < 0 ? 1 : -1;
+      const show = dir > 0 ? swipe.next : swipe.prev;
+      const hide = dir > 0 ? swipe.prev : swipe.next;
+      show.style.opacity = String(Math.min(1, Math.abs(dx) / 90));
+      hide.style.opacity = "0";
+      const ready = Math.abs(dx) > w * 0.28;
+      if (ready !== show.classList.contains("is-ready")) {
+        show.classList.toggle("is-ready", ready);
+        if (ready) buzz(5);
+      }
+    }
+    function settle(commitDir) {
+      const g = swipe;
+      swipe = null;
+      if (!g) return;
+      if (g.locked) suppressClick();
+      const stage = g.stage.isConnected ? g.stage : root.querySelector(".hq-cal-stage") || g.stage;
+      if (commitDir) {
+        hintDone();
+        chime("swipe");
+        if (calm() || !g.locked) {
+          clearPeeks();
+          renderPending = false;
+          go(commitDir, "swipe");
+          return;
+        }
+        stage.style.transition = "transform .16s cubic-bezier(.4,0,1,1), opacity .16s ease-in";
+        stage.style.transform = "translate3d(" + (commitDir > 0 ? -g.w : g.w) + "px,0,0)";
+        stage.style.opacity = "0";
+        setTimeout(() => {
+          clearPeeks();
+          renderPending = false;
+          go(commitDir, "swipe");
+        }, 140);
+        return;
+      }
+      stage.style.transition = calm() ? "" : "transform .5s var(--hq-spring), opacity .3s ease";
+      stage.style.transform = "";
+      stage.style.opacity = "";
+      root.querySelectorAll(".hq-cal-peek").forEach((node) => { node.style.opacity = "0"; });
+      setTimeout(() => {
+        clearPeeks();
+        stage.style.transition = "";
+        stage.classList.remove("is-tracking");
+        if (renderPending) {
+          renderPending = false;
+          renderKeep();
+        }
+      }, calm() ? 0 : 500);
+    }
     root.addEventListener("pointerdown", (ev) => {
-      if (ev.pointerType !== "touch" || ev.target.closest(".hq-cal-bar, .hq-sheet, .hq-cal-event.is-movable")) { start = null; return; }
-      start = { x: ev.clientX, y: ev.clientY, t: Date.now() };
+      if (ev.pointerType !== "touch") return;
+      if (swipe) { settle(0); return; } // a second finger: a pinch, not a swipe
+      if (ev.target.closest(SKIP)) return;
+      const stage = root.querySelector(".hq-cal-stage");
+      if (!stage) return;
+      swipe = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: Date.now(), stage, locked: false, v: 0, lastX: ev.clientX, lastT: Date.now(), w: Math.max(1, stage.offsetWidth) };
     }, { passive: true });
-    root.addEventListener("pointercancel", () => { start = null; }, { passive: true });
-    root.addEventListener("pointerup", (ev) => {
-      if (!start || ev.pointerType !== "touch" || (drag && drag.active)) { start = null; return; }
-      const dx = ev.clientX - start.x;
-      const dy = ev.clientY - start.y;
-      const quick = Date.now() - start.t < 700;
-      start = null;
-      if (!quick || Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
-      hintDone();
+    window.addEventListener("pointermove", (ev) => {
+      if (!swipe || ev.pointerId !== swipe.id) return;
+      if (drag && drag.active) { swipe = null; return; }
+      const dx = ev.clientX - swipe.x;
+      const dy = ev.clientY - swipe.y;
+      if (!swipe.locked) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; } // a scroll
+        if (Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+        swipe.locked = true;
+        swipe.x = ev.clientX - Math.sign(dx) * 10; // no jump at the lock
+        swipe.stage.classList.add("is-tracking");
+        swipe.prev = peek(-1);
+        swipe.next = peek(1);
+      }
+      const t = Date.now();
+      const v = (ev.clientX - swipe.lastX) / Math.max(1, t - swipe.lastT);
+      swipe.v = v * 0.7 + swipe.v * 0.3;
+      swipe.lastX = ev.clientX;
+      swipe.lastT = t;
+      follow(ev.clientX - swipe.x);
+    }, { passive: true });
+    window.addEventListener("pointerup", (ev) => {
+      if (!swipe || ev.pointerId !== swipe.id) return;
+      if (drag && drag.active) { swipe = null; return; }
+      const dx = ev.clientX - swipe.x;
+      const dy = ev.clientY - swipe.y;
+      const v = Date.now() - swipe.lastT > 90 ? 0 : swipe.v; // the finger stopped before lifting: no throw
+      const flick = Math.abs(v) > 0.45 && Math.abs(dx) > 30 && Math.sign(v) === Math.sign(dx);
+      const far = Math.abs(dx) > swipe.w * 0.28;
+      // A quick throw with no moves in between (some browsers, synthetic events) still counts.
+      const thrown = !swipe.locked && Date.now() - swipe.t < 700 && Math.abs(dx) >= 60 && Math.abs(dy) <= Math.abs(dx) * 0.6;
+      settle((swipe.locked && (far || flick)) || thrown ? (dx < 0 ? 1 : -1) : 0);
+    });
+    window.addEventListener("pointercancel", (ev) => {
+      if (swipe && ev.pointerId === swipe.id) settle(0);
+    });
+  }
+
+  /* Hour height: pinch on touch, Ctrl + wheel (or a trackpad pinch) on desktop. The minute under the
+     fingers stays under the fingers. */
+  function setZoom(z) {
+    state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    const root = document.getElementById("hq-cal-app");
+    if (!root) return;
+    root.style.setProperty("--hq-zoom", state.zoom.toFixed(3));
+    root.classList.toggle("is-zoomed", state.zoom >= 1.5);
+  }
+
+  function saveZoom() {
+    try { localStorage.setItem("hq_cal_zoom", state.zoom.toFixed(2)); } catch (_) {}
+  }
+
+  function zoomAround(scroll, z, clientY) {
+    const grid = scroll.querySelector(".hq-cal-day, .hq-cal-weekgrid");
+    if (!grid) return setZoom(z);
+    const ratioFrom = state.zoom;
+    const inner = scroll.scrollHeight > scroll.clientHeight + 1;
+    const gr = grid.getBoundingClientRect();
+    const y = clientY - gr.top; // hours-space position of the focus, in px
+    setZoom(z);
+    const shift = y * (state.zoom / ratioFrom) - y;
+    if (inner) scroll.scrollTop += shift;
+    else window.scrollBy(0, shift);
+  }
+
+  function bindPinch(root) {
+    const touches = new Map();
+    let pinch = null;
+    const spread = () => {
+      const [a, b] = [...touches.values()];
+      return { d: Math.max(24, Math.hypot(a.x - b.x, a.y - b.y)), y: (a.y + b.y) / 2 };
+    };
+    root.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType !== "touch") return;
+      touches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (touches.size !== 2 || (state.view !== "day" && state.view !== "week")) return;
+      const scroll = root.querySelector(".hq-cal-stage .hq-cal-scroll");
+      if (!scroll) return;
+      if (drag && !drag.active) dragEnd(false);
+      const s0 = spread();
+      pinch = { scroll, d: s0.d };
+    }, { passive: true });
+    window.addEventListener("pointermove", (ev) => {
+      if (!touches.has(ev.pointerId)) return;
+      touches.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (!pinch || touches.size !== 2) return;
+      const now = spread();
+      zoomAround(pinch.scroll, state.zoom * (now.d / pinch.d), now.y);
+      pinch.d = now.d;
+    }, { passive: true });
+    const lift = (ev) => {
+      if (!touches.delete(ev.pointerId) || !pinch || touches.size >= 2) return;
+      pinch = null; // no click guard: a two-finger pinch never ends in a click, and a guard would eat the next real tap
+      saveZoom();
+      buzz(6);
+      if (coarsePointer()) renderKeep(); // touch hit areas are sized from the hour height
+    };
+    window.addEventListener("pointerup", lift);
+    window.addEventListener("pointercancel", lift);
+    // iOS: keep its page zoom out of a pinch on the hours.
+    root.addEventListener("gesturestart", (ev) => {
+      if (ev.target.closest && ev.target.closest(".hq-cal-scroll")) ev.preventDefault();
+    });
+    let saveSoon = null;
+    root.addEventListener("wheel", (ev) => {
+      if (!ev.ctrlKey || (state.view !== "day" && state.view !== "week")) return;
+      const scroll = ev.target.closest(".hq-cal-scroll");
+      if (!scroll) return;
+      ev.preventDefault();
+      zoomAround(scroll, state.zoom * Math.exp(-ev.deltaY * 0.01), ev.clientY);
+      clearTimeout(saveSoon);
+      saveSoon = setTimeout(saveZoom, 300);
+    }, { passive: false });
+  }
+
+  /* Agenda (touch): swipe a row left to delete it. It slides away, the list closes up, Annuler is there. */
+  function bindRowSwipe(root) {
+    let r = null;
+    root.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType !== "touch") return;
+      const row = ev.target.closest(".hq-cal-row[data-id]:not(.is-schedule)");
+      r = row ? { row, id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: Date.now(), locked: false, dx: 0 } : null;
+    }, { passive: true });
+    window.addEventListener("pointermove", (ev) => {
+      if (!r || ev.pointerId !== r.id) return;
+      const dx = ev.clientX - r.x;
+      const dy = ev.clientY - r.y;
+      if (!r.locked) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { r = null; return; }
+        if (dx > -10 || Math.abs(dx) < Math.abs(dy) * 1.3) return;
+        r.locked = true;
+        r.row.classList.add("is-swiping");
+      }
+      r.dx = Math.min(0, dx);
+      const w = r.row.offsetWidth;
+      r.row.style.transform = "translateX(" + r.dx + "px)";
+      r.row.style.setProperty("--reveal", Math.min(1, -r.dx / (w * 0.35)).toFixed(2));
+      const armed = -r.dx > w * 0.35;
+      if (armed !== r.row.classList.contains("is-armed")) {
+        r.row.classList.toggle("is-armed", armed);
+        if (armed) buzz(6);
+      }
+    }, { passive: true });
+    const end = (ev, ok) => {
+      if (!r || ev.pointerId !== r.id) return;
+      const g = r;
+      r = null;
+      if (!g.locked) return;
       suppressClick();
-      go(dx < 0 ? 1 : -1);
-    }, { passive: true });
+      const row = g.row;
+      row.classList.remove("is-swiping");
+      const item = findItem(row.dataset.id);
+      const fast = -g.dx > 60 && Date.now() - g.t < 260;
+      if (!(ok && item && (-g.dx > row.offsetWidth * 0.35 || fast))) {
+        row.style.transform = "";
+        row.style.removeProperty("--reveal");
+        row.classList.remove("is-armed");
+        return;
+      }
+      chime("delete");
+      buzz(12);
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return removeEvent(item, true);
+      row.classList.add("is-leaving");
+      row.style.transform = "translateX(-115%)";
+      setTimeout(() => {
+        row.style.height = row.offsetHeight + "px";
+        void row.offsetHeight;
+        row.classList.add("is-collapsing");
+        row.style.height = "0px";
+      }, 170);
+      setTimeout(() => removeEvent(item, true), 360);
+    };
+    window.addEventListener("pointerup", (ev) => end(ev, true));
+    window.addEventListener("pointercancel", (ev) => end(ev, false));
   }
 
   /* The pointerup of a swipe must not also count as a tap on the slot or event under the finger. */
   function suppressClick() {
-    const stop = (e) => { e.stopPropagation(); e.preventDefault(); };
-    document.addEventListener("click", stop, { capture: true, once: true });
-    setTimeout(() => document.removeEventListener("click", stop, { capture: true }), 400);
+    const stop = (e) => {
+      if (e.target && e.target.closest && e.target.closest(".hq-cal-haptic")) return; // the iPhone tap, not a tap
+      e.stopPropagation();
+      e.preventDefault();
+      document.removeEventListener("click", stop, true);
+    };
+    document.addEventListener("click", stop, true);
+    setTimeout(() => document.removeEventListener("click", stop, true), 400);
   }
 
   function closeSheets() {
@@ -1522,6 +2274,10 @@
     } else {
       const cat = CATS.find((row) => row[0] === item.category);
       if (cat) card.appendChild(h("p", { class: "hint", text: cat[1] }));
+      if (canCheck(item, liveNow())) {
+        card.appendChild(h("button", { type: "button", class: "secondary hq-cal-donebtn", "data-sheet": "done", "data-id": item.id,
+          "aria-pressed": item.done ? "true" : "false", text: item.done ? "Fait ✓ — annuler" : "Marquer comme fait" }));
+      }
       card.appendChild(h("button", { type: "button", "data-sheet": "edit", "data-id": item.id, text: "Modifier" }));
       if (item.scene_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "scene", text: "Lancer la scène" }));
       if (item.action_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "action", text: "Lancer l'action" }));
@@ -1554,6 +2310,10 @@
     if (kind === "close") closeSheets();
     else if (kind === "edit") openEditor(item);
     else if (kind === "delete") removeEvent(item);
+    else if (kind === "done") {
+      closeSheets();
+      toggleDone(item);
+    }
     else if (kind === "run") runTarget(item, button.dataset.target);
     else if (kind === "device") openDevice(item);
     else if (kind === "schedules") openSchedules();
@@ -1605,25 +2365,32 @@
     if (form) form.scrollIntoView({ block: "start" });
   }
 
-  async function removeEvent(item) {
-    if (!window.confirm("Supprimer « " + (item.title || "cet événement") + " » ?")) return;
+  /* No "are you sure?": it goes at once, and Annuler brings it back for five seconds. */
+  async function removeEvent(item, quiet) {
+    const restore = eventPayload(item);
+    delete restore.id;
     try {
-      await busy("Suppression…", () => api("/api/calendar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "delete", id: item.id, expected_rev: item.rev }),
-      }));
+      await deleteCall(item.id, item.rev);
       closeSheets();
-      if (typeof toast === "function") toast("Événement supprimé");
-      refresh();
+      if (!quiet) {
+        chime("delete");
+        buzz(10);
+      }
+      offerUndo("Supprimé · " + (item.title || "Sans titre"), async () => {
+        const back = await saveCall(restore, 0);
+        landOn(back && back.event);
+      });
+      refresh("keep");
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Suppression impossible", "err");
+      refresh("keep");
     }
   }
 
   /* The editor shows what most events need (title, when, category, place); notes, scene, action,
      device and reminders wait under "Plus d'options". Duration chips set the end in one tap. */
   function openEditor(item) {
+    const original = Object.assign({}, item); // what Annuler goes back to
     const root = sheet("hq-cal-editor");
     const card = h("form", { class: "hq-sheet-card hq-cal-editor", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
     card.appendChild(h("h3", { id: "hq-cal-editor-title", text: item.id ? "Modifier" : "Nouvel événement" }));
@@ -1729,7 +2496,7 @@
     });
     card.addEventListener("submit", (ev) => {
       ev.preventDefault();
-      saveEditor(item, { allDay, start, end, category });
+      saveEditor(item, { allDay, start, end, category, original });
     });
     root.appendChild(card);
     present(card);
@@ -1809,6 +2576,7 @@
       action_id: action ? action.value : "",
       device_id: device ? device.value : "",
       reminders_min: reminders,
+      done: !!item.done,
     };
     if (item.id) payload.id = item.id;
     if (!payload.title.trim()) {
@@ -1823,8 +2591,21 @@
       }));
       closeSheets();
       buzz(10);
-      if (typeof toast === "function") toast("Événement enregistré");
-      landOn(saved && saved.event);
+      chime("save");
+      const ev = saved && saved.event;
+      const original = refs.original || {};
+      if (ev) {
+        offerUndo((original.id ? "Modifié · " : "Ajouté · ") + ev.title, async () => {
+          if (original.id) {
+            const back = await saveCall(eventPayload(original), ev.rev);
+            state.landed = back && back.event ? back.event.id : "";
+          } else {
+            await deleteCall(ev.id, ev.rev);
+          }
+          refresh("keep");
+        });
+      }
+      landOn(ev);
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
     }
@@ -1935,11 +2716,22 @@
     } catch (_) {
       state.view = "week";
     }
+    try {
+      state.zoom = Number(localStorage.getItem("hq_cal_zoom")) || 1;
+      state.sound = localStorage.getItem("hq_cal_sound") === "1";
+    } catch (_) {}
+    setZoom(state.zoom);
     state.anchor = todayLocal();
     root.addEventListener("click", onClick);
     mountQuick(root);
     bindDrag(root);
     bindSwipe(root);
+    bindPinch(root);
+    bindRowSwipe(root);
+    setInterval(() => {
+      if (document.hidden || !document.body || document.body.dataset.view !== "calendrier") return;
+      paintLive();
+    }, 20000);
     const narrow = window.matchMedia("(max-width: 600px)");
     const onWidth = () => { if (state.data && state.view === "week") refresh(); };
     if (narrow.addEventListener) narrow.addEventListener("change", onWidth);

@@ -62,6 +62,24 @@ class ModelTests(unittest.TestCase):
         base.update(over)
         return base
 
+    def test_done_flag_recent_titles_and_next(self):
+        first = hq_calendar.save_event(self._payload(title="Sport", start="2026-09-28T08:00", end="2026-09-28T09:00"))
+        self.assertNotIn("done", first)
+        done = hq_calendar.save_event(self._payload(id=first["id"], title="Sport", start="2026-09-28T08:00", end="2026-09-28T09:00", done=True), expected_rev=1)
+        self.assertTrue(done["done"])
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.save_event(self._payload(done="oui"))
+        hq_calendar.save_event(self._payload(title="Cours", start="2026-09-28T14:00", end="2026-09-28T15:30"))
+        hq_calendar.save_event(self._payload(title="cours", start="2026-09-29T14:00", end="2026-09-29T15:00"))
+        recent = hq_calendar.recent_titles()
+        self.assertEqual([row["title"].casefold() for row in recent], ["cours", "sport"])
+        self.assertEqual(hq_calendar.recent_titles()[1]["time"], "08:00")
+        nxt = hq_calendar.next_manual()
+        self.assertEqual((nxt["title"], nxt["start"]), ("Cours", "2026-09-28T14:00"))
+        body = hq_calendar.query(datetime(2026, 9, 28), datetime(2026, 9, 29))
+        self.assertEqual(body["next"]["title"], "Cours")
+        self.assertEqual(len(body["recent"]), 2)
+
     def test_roundtrip_and_server_id(self):
         saved = hq_calendar.save_event(self._payload())
         self.assertTrue(saved["id"].startswith("cal-"))

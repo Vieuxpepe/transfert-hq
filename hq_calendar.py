@@ -302,6 +302,9 @@ def validate_event(payload: dict, *, existing: dict | None = None) -> dict:
         if start is None or end is None or end <= start:
             raise CalendarError("La fin doit être après le début")
         start_s, end_s = _fmt_minute(start), _fmt_minute(end)
+    done = payload.get("done", False)
+    if not isinstance(done, bool):
+        raise CalendarError("Fait invalide")
     notes = _clean_text(payload.get("notes") or "", NOTES_MAX, label="Notes")
     location = _clean_text(payload.get("location") or "", LOCATION_MAX, label="Lieu")
     wall = _local_now()
@@ -341,6 +344,8 @@ def validate_event(payload: dict, *, existing: dict | None = None) -> dict:
         stored["action_id"] = action_id
     if device_id:
         stored["device_id"] = device_id
+    if done:
+        stored["done"] = True
     return stored
 
 
@@ -730,9 +735,68 @@ def query(start: datetime, end: datetime, *, include_activity: bool = False, wit
         "catalog": _catalog() if with_catalog else {"scenes": [], "actions": [], "devices": []},
     }
     body.update(clock())
+    body["recent"] = recent_titles()
+    body["next"] = next_manual()
     if include_activity:
         body["activity"] = _activity(start, end)
     return body
+
+
+def recent_titles(limit: int = 6) -> list[dict]:
+    """The owner's latest distinct titles, with the usual time and length (quick add chips)."""
+    state, bad = _read_state()
+    if bad or state is None:
+        return []
+    events = [e for e in reversed(state.get("events") or []) if isinstance(e, dict) and e.get("title")]  # ties: newest first
+    events.sort(key=lambda e: str(e.get("updated_at") or e.get("created_at") or ""), reverse=True)
+    seen: set[str] = set()
+    out: list[dict] = []
+    for event in events:
+        title = str(event.get("title") or "")[:TITLE_MAX]
+        key = title.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        row: dict[str, Any] = {"title": title, "category": str(event.get("category") or "other")}
+        if not event.get("all_day"):
+            try:
+                start, end = _event_bounds(event)
+            except CalendarError:
+                start = end = None
+            if start and end:
+                row["time"] = start.strftime("%H:%M")
+                row["minutes"] = int((end - start).total_seconds() // 60)
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def next_manual(days: int = 7) -> dict | None:
+    """The manual event in progress or coming next (timed, within `days`), for the countdown card."""
+    state, bad = _read_state()
+    if bad or state is None:
+        return None
+    wall = _local_now().replace(second=0, microsecond=0)
+    horizon = wall + timedelta(days=days)
+    best: tuple[datetime, dict] | None = None
+    for event in state.get("events") or []:
+        if not isinstance(event, dict) or event.get("all_day"):
+            continue
+        try:
+            start, end = _event_bounds(event)
+        except CalendarError:
+            continue
+        if end <= wall or start >= horizon:
+            continue
+        if best is None or start < best[0]:
+            best = (start, event)
+    if best is None:
+        return None
+    event = best[1]
+    out = _compact(dict(event, source="manual", read_only=False))
+    out["rev"] = event.get("rev")
+    return out
 
 
 def _compact(item: dict) -> dict:
