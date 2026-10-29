@@ -375,6 +375,7 @@
     if (window.hqForgeDropPrivateShare) window.hqForgeDropPrivateShare();
     if (window.hqForgeNextLock) window.hqForgeNextLock();
     clearDeleteForm();
+    clearDeepCheck();
   }
 
   async function loadGallery(reset) {
@@ -1802,6 +1803,118 @@
       $("forge-vault-destroy-pass").value = "";
       $("forge-vault-destroy-go").disabled = !deleteWordOk();
       $("forge-vault-destroy-error").textContent = err.message || "Le coffre n'a pas été supprimé.";
+    }
+  });
+
+  /* Health check: read-only. The summary works locked (disk facts only); the deep check decrypts
+     every image of the open vault. Counts and codes only; vaults are named as in the list. */
+  const HEALTH_COPY = {
+    missing: "Le dossier du coffre est introuvable.",
+    binding: "Le dossier ne correspond pas à ce coffre.",
+    header: "L'en-tête du coffre est illisible.",
+    index: "L'index chiffré manque.",
+    objects: "Le dossier des images manque.",
+    partials: "Une écriture interrompue a laissé un fichier partiel. HQ le retire au prochain démarrage.",
+    stray: "Un fichier inattendu se trouve dans le dossier des images.",
+    leftover: "Une restauration ou une suppression interrompue a laissé un dossier. HQ le termine au prochain démarrage.",
+    acl: "Le dossier n'est pas limité à ce compte Windows.",
+    never_backed_up: "Pas encore sauvegardé depuis HQ.",
+    backup_old: "Dernière sauvegarde il y a plus de 30 jours."
+  };
+  const HEALTH_STATE = { ok: "Bon état", warn: "À regarder", error: "Problème" };
+  const megabytes = (n) => n >= 1073741824
+    ? (n / 1073741824).toLocaleString("fr-FR", { maximumFractionDigits: 1 }) + " Go"
+    : (n > 0 && n < 104858 ? "moins de 0,1" : (n / 1048576).toLocaleString("fr-FR", { maximumFractionDigits: 1 })) + " Mo";
+  const images = (n) => n + (n > 1 ? " images" : " image");
+  function backupLine(row) {
+    if (row.backup_age_days == null) return "Jamais sauvegardé depuis HQ";
+    if (row.backup_age_days === 0) return "Sauvegardé aujourd'hui";
+    return "Sauvegardé il y a " + row.backup_age_days + (row.backup_age_days === 1 ? " jour" : " jours");
+  }
+  function li(text) {
+    const node = document.createElement("li");
+    node.textContent = text;
+    return node;
+  }
+  async function loadHealth() {
+    const list = $("forge-vaults-health-list");
+    const total = $("forge-vaults-health-total");
+    total.textContent = "Vérification…";
+    let body;
+    try {
+      body = await api("/api/forge/vaults/health");
+    } catch (error) {
+      list.replaceChildren();
+      total.textContent = error.message || "L'état des coffres n'a pas pu être lu.";
+      return;
+    }
+    list.replaceChildren();
+    (body.vaults || []).forEach((row) => {
+      const item = document.createElement("li");
+      item.className = "forge-health-row";
+      item.dataset.state = row.state;
+      const head = document.createElement("div");
+      head.className = "forge-health-head";
+      const name = document.createElement("span");
+      const v = vaultById(row.id);
+      name.textContent = v ? vaultSafeName(v) : "Coffre n° " + row.number;
+      const state = document.createElement("span");
+      state.textContent = HEALTH_STATE[row.state] || row.state;
+      head.append(name, state);
+      const facts = document.createElement("ul");
+      facts.appendChild(li(images(row.images) + " sur " + row.quota_images
+        + ", " + megabytes(row.bytes) + " · " + backupLine(row)));
+      (row.problems || []).filter((p) => p !== "never_backed_up").forEach((p) => facts.appendChild(li(HEALTH_COPY[p] || p)));
+      item.append(head, facts);
+      list.appendChild(item);
+    });
+    const t = body.totals;
+    if (!t) {
+      total.textContent = "Aucun coffre à vérifier.";
+      return;
+    }
+    total.textContent = "Ensemble : " + images(t.images) + " sur " + t.global_images + ", " + megabytes(t.bytes)
+      + " sur " + megabytes(t.global_bytes) + ", " + t.vaults + " coffre" + (t.vaults > 1 ? "s" : "") + " sur " + t.max_vaults + "."
+      + (t.unlisted_folders ? " " + t.unlisted_folders + " dossier(s) hors de la liste : ils n'ouvrent rien et ne sont pas touchés." : "");
+  }
+  $("forge-vaults-health-fold").addEventListener("toggle", () => {
+    if ($("forge-vaults-health-fold").open) loadHealth();
+  });
+  $("forge-vaults-health-run").addEventListener("click", loadHealth);
+
+  function clearDeepCheck() {
+    const result = $("forge-vault-check-result");
+    if (!result) return;
+    result.replaceChildren();
+    $("forge-vault-check-status").textContent = "";
+    $("forge-vault-check-run").disabled = false;
+  }
+  $("forge-vault-check-run").addEventListener("click", async () => {
+    const target = openVid;
+    if (!target) return;
+    clearDeepCheck();
+    $("forge-vault-check-run").disabled = true;
+    $("forge-vault-check-status").textContent = "Vérification en cours… Cela peut prendre un moment pour un grand coffre.";
+    try {
+      const r = await api("/api/forge/vaults/" + encodeURIComponent(target) + "/check", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+      });
+      if (openVid !== target) return;  // locked or switched meanwhile: show nothing about it
+      const out = $("forge-vault-check-result");
+      out.appendChild(li(r.ok + " image" + (r.ok > 1 ? "s" : "") + " intacte" + (r.ok > 1 ? "s" : "") + " sur " + r.checked + "."));
+      if (r.index !== "ok") out.appendChild(li("L'index chiffré est illisible."));
+      if (r.unreadable) out.appendChild(li(r.unreadable + " image(s) illisible(s) : le fichier est abîmé."));
+      if (r.missing) out.appendChild(li(r.missing + " image(s) listée(s) sans fichier."));
+      if (r.orphans) out.appendChild(li(r.orphans + " fichier(s) chiffré(s) hors de l'index. Ils sont laissés en place."));
+      if (r.label === "unreadable") out.appendChild(li("Le nom Discret scellé est illisible."));
+      if (r.icon === "unreadable") out.appendChild(li("L'icône photo est illisible."));
+      if (r.trash) out.appendChild(li(r.trash + " image(s) dans la corbeille du coffre."));
+      $("forge-vault-check-status").textContent = (r.healthy ? "Tout est intact." : "Des éléments demandent attention.")
+        + " (" + r.seconds.toLocaleString("fr-FR") + " s)";
+    } catch (error) {
+      $("forge-vault-check-status").textContent = error.message || "La vérification n'a pas abouti.";
+    } finally {
+      $("forge-vault-check-run").disabled = false;
     }
   });
 

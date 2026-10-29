@@ -296,6 +296,13 @@ body[data-view="forge"] .hq-capture-fab{display:none}
 .forge-danger{border-color:color-mix(in srgb,var(--danger) 60%,var(--line))}
 #forge-vault-destroy-go{background:transparent;color:var(--danger);border:2px solid var(--danger);font-weight:700}
 #forge-vault-destroy-go:disabled{opacity:.55}
+.forge-health-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:8px}
+.forge-health-row{border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:10px;padding:8px 10px}
+.forge-health-row[data-state="warn"]{border-left-color:var(--warn)}
+.forge-health-row[data-state="error"]{border-left-color:var(--danger)}
+.forge-health-head{display:flex;justify-content:space-between;gap:8px;font-weight:600}
+.forge-health-row ul,.forge-health-detail{margin:4px 0 0;padding-left:18px}
+.forge-health-row li,.forge-health-detail li{font-size:var(--text-sm)}
 .forge-devices-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .forge-fleet-count{display:flex;align-items:center;gap:8px;margin-left:auto;font-weight:700}
 #forge-studio .forge-fleet-count input{width:5.5rem;font:inherit;font-size:16px;min-height:var(--tap-min);padding:6px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text)}

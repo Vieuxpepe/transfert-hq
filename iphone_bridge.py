@@ -5253,6 +5253,14 @@ def render_app() -> bytes:
             <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par récent</option></select></div>
             <p id="forge-vaults-sort-note" class="forge-note" hidden>« Récent » utilise le jour de la dernière ouverture. Ce jour reste visible quand les coffres sont verrouillés.</p>
           </div>
+          <details id="forge-vaults-health-fold" class="forge-fold">
+            <summary>État des coffres</summary>
+            <div class="forge-help-wrap"><p class="forge-note">Lecture seule : rien n'est réparé ni effacé.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vaults-health">Aide</button>
+            <p id="forge-help-vaults-health" class="forge-help-pop" role="tooltip">Sans phrase, HQ ne vérifie que ce que le disque montre : dossiers, en-têtes, fichiers en trop, taille et dernière sauvegarde. Pour déchiffrer chaque image, ouvre le coffre puis « Vérifier toutes les images ».</p></div>
+            <button type="button" id="forge-vaults-health-run" class="secondary">Actualiser</button>
+            <ul id="forge-vaults-health-list" class="forge-health-list" aria-label="État de chaque coffre"></ul>
+            <p id="forge-vaults-health-total" class="forge-note" role="status" aria-live="polite"></p>
+          </details>
         </div>
         <section id="forge-migrate" class="forge-migrate" aria-labelledby="forge-migrate-title" hidden>
           <h3 id="forge-migrate-title" class="forge-vault-sub">Déplacer ton coffre</h3>
@@ -5388,6 +5396,13 @@ def render_app() -> bytes:
             <p id="forge-help-vault-backup" class="forge-help-pop" role="tooltip">Garde le ZIP hors de HQ. Pour le reprendre : Mes coffres, « Restaurer un ZIP ». Il revient comme un nouveau coffre, avec la phrase qu'il avait le jour de la sauvegarde.</p></div>
             <button type="button" id="forge-vault-backup-zip" class="secondary">Télécharger la sauvegarde</button>
             <p id="forge-vault-backup-status" class="forge-note" role="status" aria-live="polite"></p>
+          </details>
+          <details id="forge-vault-check-fold" class="forge-fold">
+            <summary>Vérification</summary>
+            <p class="forge-note">Déchiffre chaque image de ce coffre pour vérifier qu'elle est intacte. Rien n'est modifié.</p>
+            <button type="button" id="forge-vault-check-run" class="secondary">Vérifier toutes les images</button>
+            <ul id="forge-vault-check-result" class="forge-health-detail" aria-live="polite"></ul>
+            <p id="forge-vault-check-status" class="forge-note" role="status" aria-live="polite"></p>
           </details>
           <details id="forge-vault-destroy-fold" class="forge-fold">
             <summary>Supprimer ce coffre</summary>
@@ -6934,6 +6949,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, hq_forge_vault.set_icon(ROOT, token, vid, data.get("image_id")))  # V5: sealed in this vault
             elif sub == "/icon/clear":
                 self._json(200, hq_forge_vault.clear_icon(ROOT, token, vid))
+            elif sub == "/check":
+                self._json(200, hq_forge_vault.deep_check(ROOT, token, vid))  # open vault only; changes nothing
             elif sub == "/destroy":
                 self._json(200, hq_forge_vault.delete_vault(
                     ROOT, token, vid, str(data.get("passphrase") or ""), str(data.get("confirm") or "")))  # V6
@@ -6992,6 +7009,12 @@ class Handler(BaseHTTPRequestHandler):
         token = self._token()
         if raw in ("/api/forge/vaults/migration", "/api/forge/vaults/migration/backup"):
             self._forge_migration_get(raw, token)
+            return True
+        if raw == "/api/forge/vaults/health":
+            try:
+                self._json(200, hq_forge_vault.health(ROOT, token))  # read-only, counts and codes only
+            except hq_forge_vault.VaultError as exc:
+                self._vault_error(exc)
             return True
         if raw == "/api/forge/vaults":
             try:

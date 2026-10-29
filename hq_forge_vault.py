@@ -9,6 +9,7 @@ vault it opened: opening another vault in the same session locks the first (mult
 from __future__ import annotations
 
 import base64
+import datetime
 import hmac
 import io
 import json
@@ -2142,6 +2143,10 @@ def backup_bytes(hq_root: Path, token: str | None, *, vid: str | None = None) ->
                     archive.write(child, "objects/" + child.name)
     if offered_single:
         _record_backup_offer(_token(token))  # the single vault's ZIP was really handed out
+    header = _read_header(root)
+    if header is not None and header.get("backup_day") != registry.today():
+        header["backup_day"] = registry.today()  # day only, for the health check; the ZIP above is unchanged
+        _write_header(root, header)
     return buffer.getvalue()
 
 
@@ -2480,6 +2485,175 @@ def delete_vault(hq_root: Path, token: str | None, vid, passphrase: str, typed: 
     except (OSError, VaultError):
         return {"deleted": True, "wiped": False}  # unlisted now; cleanup_partials() retries the overwrite
     return {"deleted": True, "wiped": True}
+
+
+# ---- Vault health check (read-only) ------------------------------------------------------------
+# health(): every listed vault, no key needed: what the disk alone can tell. deep_check(): the vault
+# open in this session, every object decrypted. Both only count; nothing is repaired, moved or
+# deleted, and no name, prompt or image id leaves this module.
+
+BACKUP_STALE_DAYS = 30
+_HEADER_KEYS = ("kdf", "passphrase_wrap", "recovery")
+
+
+def _day_age(value) -> int | None:
+    if not isinstance(value, str) or not registry._day(value, allow_none=False):
+        return None
+    return (datetime.date.today() - datetime.date.fromisoformat(value)).days
+
+
+def _surface_problems(base: Path, entry: dict, legacy: str | None) -> tuple[list[str], dict]:
+    """Problem codes and file facts for one vault, from the disk only."""
+    vid = entry["id"]
+    facts = {"images": 0, "bytes": 0, "backup_day": None}
+    try:
+        folder = _checked_vault(base, vid, legacy_alias=legacy)
+    except VaultError as exc:
+        return ["missing" if exc.code == "missing" else "binding"], facts
+    try:
+        header = _read_header(folder)
+    except VaultError:
+        return ["header"], facts
+    if header is None:
+        return ["header"], facts
+    problems: list[str] = []
+    if any(key not in header for key in _HEADER_KEYS) or not isinstance(header.get("recovery"), dict):
+        problems.append("header")
+    index = folder / "index.bin"
+    if not index.is_file() or _is_reparse(index):
+        problems.append("index")
+    objects = folder / "objects"
+    if not objects.is_dir() or _is_reparse(objects):
+        problems.append("objects")
+    else:
+        for child in objects.iterdir():
+            if child.name.endswith(".partial"):
+                problems.append("partials")
+                break
+        for child in objects.iterdir():
+            if child.name.endswith(".partial"):
+                continue
+            if _is_reparse(child) or not child.is_file() or child.suffix != ".bin" or not ID_RE.fullmatch(child.stem):
+                problems.append("stray")
+                break
+    if "partials" not in problems and any(c.name.endswith(".partial") for c in folder.iterdir() if c.is_file()):
+        problems.append("partials")
+    for suffix in (".restore", ".previous", _DELETED_SUFFIX):
+        sibling = folder.with_name(vid + suffix)
+        if sibling.exists() or sibling.is_symlink():
+            problems.append("leftover")
+            break
+    if os.name == "nt" and _apply_acl and header.get("acl") != "restricted":
+        problems.append("acl")
+    facts["images"], facts["bytes"] = _usage(folder)
+    day = header.get("backup_day")
+    facts["backup_day"] = day if _day_age(day) is not None else None
+    return problems, facts
+
+
+# Problems that mean the vault cannot be trusted to open, as opposed to warnings worth a look.
+HEALTH_ERRORS = ("missing", "binding", "header", "index", "objects")
+
+
+def health(hq_root: Path, token: str | None) -> dict:
+    """Read-only summary of every vault: no key, no decryption, counts and codes only."""
+    _require_live(token)
+    state = layout(hq_root)
+    if state == "unreadable":
+        raise VaultError("registry")
+    if state != "multi":
+        return {"layout": state, "vaults": [], "totals": None}
+    base = _base(hq_root)
+    data = _load_registry(base)
+    entries = sorted(data["vaults"], key=lambda e: (e["order"], e["created"], e["id"]))
+    rows = []
+    total_images = total_bytes = 0
+    for number, entry in enumerate(entries, start=1):
+        problems, facts = _surface_problems(base, entry, data["legacy"])
+        age = _day_age(facts["backup_day"])
+        if any(p in HEALTH_ERRORS for p in problems):
+            pass  # a broken vault is reported as such; a backup reminder would only add noise
+        elif age is None:
+            problems.append("never_backed_up")
+        elif age > BACKUP_STALE_DAYS:
+            problems.append("backup_old")
+        total_images += facts["images"]
+        total_bytes += facts["bytes"]
+        rows.append({
+            "id": entry["id"],
+            "number": number,
+            "state": "error" if any(p in HEALTH_ERRORS for p in problems) else ("warn" if problems else "ok"),
+            "problems": problems,
+            "images": facts["images"],
+            "bytes": facts["bytes"],
+            "quota_images": _quota_images,
+            "quota_bytes": _quota_bytes,
+            "backup_day": facts["backup_day"],
+            "backup_age_days": age,
+        })
+    leftovers = 0
+    folder = base / VAULTS_DIR
+    if folder.is_dir() and not _is_reparse(folder):
+        listed = {e["id"] for e in entries}
+        for child in folder.iterdir():
+            stem = child.name.split(".", 1)[0]
+            if child.is_dir() and registry.VID_RE.fullmatch(stem) and stem not in listed:
+                leftovers += 1  # an unlisted folder (cut-off creation or delete); it opens nothing
+    return {
+        "layout": "multi",
+        "vaults": rows,
+        "totals": {"images": total_images, "bytes": total_bytes, "global_images": _global_images,
+                   "global_bytes": _global_bytes, "vaults": len(rows), "max_vaults": registry.MAX_VAULTS,
+                   "unlisted_folders": leftovers},
+    }
+
+
+def deep_check(hq_root: Path, token: str | None, vid) -> dict:
+    """Decrypt every object of the vault open in this session. Counts only; nothing changes."""
+    if not isinstance(vid, str) or not registry.VID_RE.fullmatch(vid):
+        raise VaultError("bad_vault")
+    started = time.monotonic()
+    root, master, _header = _master(hq_root, token, vid)
+    result = {"index": "ok", "checked": 0, "ok": 0, "unreadable": 0, "missing": 0, "orphans": 0,
+              "trash": 0, "label": "none", "icon": "none"}
+    try:
+        items = _read_index(root, master)
+    except VaultError:
+        result["index"] = "unreadable"
+        items = []
+    known = {str(item["id"]) for item in items}
+    result["trash"] = sum(1 for item in items if _triage(item) == "reject")  # the vault's Corbeille
+    files: set[str] = set()
+    folder = root / "objects"
+    if folder.is_dir() and not _is_reparse(folder):
+        files = {c.stem for c in folder.iterdir()
+                 if c.is_file() and not _is_reparse(c) and c.suffix == ".bin" and ID_RE.fullmatch(c.stem)}
+    result["missing"] = len(known - files)
+    result["orphans"] = len(files - known)
+    for image_id in sorted(known & files):
+        result["checked"] += 1
+        try:
+            meta, png, thumb = _read_object(root, master, image_id)
+            good = meta.get("id") == image_id and len(png) > 0
+            del png, thumb, meta
+        except (VaultError, OSError, ValueError):
+            good = False
+        result["ok" if good else "unreadable"] += 1
+    if (root / LABEL_FILE).exists():
+        try:
+            result["label"] = "ok" if _read_label(root, master) is not None else "unreadable"
+        except VaultError:
+            result["label"] = "unreadable"
+    if (root / ICON_FILE).exists():
+        try:
+            _read_icon(root, master)
+            result["icon"] = "ok"
+        except VaultError:
+            result["icon"] = "unreadable"
+    result["healthy"] = (result["index"] == "ok" and not result["unreadable"] and not result["missing"]
+                         and result["label"] != "unreadable" and result["icon"] != "unreadable")
+    result["seconds"] = round(time.monotonic() - started, 1)
+    return result
 
 
 def _finish_deletes(base: Path) -> None:
