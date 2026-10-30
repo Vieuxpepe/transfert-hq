@@ -37,6 +37,7 @@ import hq_carnet
 import hq_diagnostics
 import hq_diagnostics_ui
 import hq_drawings
+import hq_inventory
 import hq_companion
 import hq_planner
 import hq_devices
@@ -2221,6 +2222,7 @@ def bind_hq() -> None:
         actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
         devices=cached_roster_devices,
     )
+    hq_inventory.bind(root=ROOT, asset_exists=lambda a: hq_carnet.media.asset_exists(a))  # Inventaire: photos live in the Carnet image store
     hq_carnet.bind(
         root=ROOT,
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
@@ -2538,7 +2540,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', inventaire: 'Inventaire', ops: 'Terminal', plus: 'Plus' };
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -2717,6 +2719,9 @@ function setView(name) {
     try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
   }
   if (view === 'dessiner') hqSketchStart();
+  if (view === 'inventaire' && window.hqInventoryShow) {
+    try { window.hqInventoryShow(); } catch (e) { console.error(e); }  // an Inventaire failure never aborts HQ
+  }
   if (view === 'forge' && window.hqForgeShow) {
     try { window.hqForgeShow(); } catch (e) { console.error(e); }
   } else if (window.hqForgeHide) {
@@ -4475,6 +4480,7 @@ body[data-view="carnet"] [data-panel="carnet"],
 body[data-view="calendrier"] [data-panel="calendrier"],
 body[data-view="dessiner"] [data-panel="dessiner"],
 body[data-view="fichiers"] [data-panel="fichiers"],
+body[data-view="inventaire"] [data-panel="inventaire"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="lecteur"] [data-panel="lecteur"],
 body[data-view="forge"] [data-panel="forge"],
@@ -4865,7 +4871,7 @@ def render_login(flash: str = "", error: bool = False) -> bytes:
 <link rel="manifest" href="/manifest.webmanifest"/>
 <link rel="apple-touch-icon" href="/icon-192.png"/>
 <title>Transfert · PIN</title><style>{BASE_CSS}</style>
-<script>try{{sessionStorage.removeItem('tf_auth_redirect');sessionStorage.removeItem('tf_auth_at');}}catch(e){{}}</script>
+<script>try{{sessionStorage.removeItem('tf_auth_redirect');sessionStorage.removeItem('tf_auth_at');if(/^#inventaire\/plc-[0-9a-f]{{16}}$/.test(location.hash))sessionStorage.setItem('tf_return_hash',location.hash);}}catch(e){{}}</script>
 </head><body>
 <div class="wrap"><section class="pin-card">
 <div class="brand">Transfert Bridge</div>
@@ -4888,6 +4894,7 @@ def render_app() -> bytes:
     _qr = {e["label"]: e["url"] for e in public_bridge_urls() if e["label"] in ("LAN", "Tailscale", "Serve")}
     lan_url = _qr.get("LAN") or ""
     ts_url = _qr.get("Tailscale") or ""
+    serve_url = _qr.get("Serve") or ""
     chips = ""  # file manager breadcrumbs replace chips
     opts = "".join(
         f'<option value="{html.escape(f)}"{" selected" if f == default_folder else ""}>{html.escape(f)}</option>'
@@ -4921,6 +4928,7 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
 <link rel="stylesheet" href="/assets/hq-carnet.css"/>
+<link rel="stylesheet" href="/assets/hq-inventory.css"/>
 <link rel="stylesheet" href="/assets/hq-forge.css"/>
 <link rel="stylesheet" href="/assets/hq-home.css"/>
 <script src="/assets/qrcode.min.js"></script>
@@ -4934,6 +4942,7 @@ def render_app() -> bytes:
   <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
   <button type="button" data-nav="forge"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 16l4.2-3.2 2.6 2.2L15 11l5 4"/></svg></span><span class="nav-label">Forge</span></button>
   <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
+  <button type="button" data-nav="inventaire"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5l8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9"/></svg></span><span class="nav-label">Inventaire</span></button>
   <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
@@ -5110,6 +5119,16 @@ def render_app() -> bytes:
         <p class="sec-hint">Croquis rapide ou construction cotée · tactile, stylet, souris · enregistré dans Inbox/Drawings (JSON + PNG + DXF)</p>
       </div>
       <div id="hq-sk-app"><p class="hint">Chargement…</p></div>
+    </section>
+  </div>
+
+  <div data-panel="inventaire">
+    <section class="hq hq-inv" aria-labelledby="inv-title">
+      <div class="sec-head">
+        <h2 id="inv-title" class="visually-hidden">Inventaire</h2>
+        <p class="sec-hint">Ce que tu as et où c'est rangé · étiquettes QR à scanner avec l'iPhone</p>
+      </div>
+      <div id="hq-inv-app" data-qr-lan="{html.escape(lan_url)}" data-qr-ts="{html.escape(ts_url)}" data-qr-serve="{html.escape(serve_url)}"><p class="hint">Chargement…</p></div>
     </section>
   </div>
 
@@ -6302,6 +6321,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar-quick.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-inventory.js"></script>
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-home.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
@@ -7547,6 +7567,10 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_carnet.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw == "/api/inventory":  # Inventaire (admin: not in the upload allowlist)
+            code, payload = hq_inventory.http_get(parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         if raw == "/api/carnet/stickies":  # Phase 16D: sticky notes on a page (admin: not in the upload allowlist)
             code, payload = hq_carnet.stickies.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
@@ -7925,6 +7949,15 @@ class Handler(BaseHTTPRequestHandler):
         _vm = re.fullmatch(r"/api/carnet/voice/(voice-[0-9a-f]{24})/transcribe", raw)
         if _vm:
             self._carnet_voice_post(_vm.group(1))
+            return True
+        if raw == "/api/inventory":  # Inventaire (CSRF is checked for every POST before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_inventory.http_post(data)
+            self._json(code, payload)
             return True
         if raw == "/api/carnet/stickies":  # Phase 16D (CSRF is checked for every POST before routing)
             try:

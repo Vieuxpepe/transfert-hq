@@ -1108,3 +1108,26 @@ Carnet — finitions de mouvement (phase 16I, assets/hq-carnet-feel.js)
   Images     Une image insérée s'ouvre depuis un anneau.
   Tout est présentation seulement et coupé en mouvement réduit. Tests : tests/check_hq_carnet_feel.mjs,
   tests/visual_carnet_16c_playwright.py (section 16I).
+
+Inventaire (hq_inventory.py, assets/hq-inventory.js)
+----------------------------------------------------
+  Quoi       Ce que tu as et où c'est rangé. Emplacements imbriqués (pièce › meuble › étagère › tiroir › boîte…, 8 niveaux
+             max) ; objets avec quantité, unité, seuil « stock bas », étiquettes (#visserie), note et jusqu'à 6 photos.
+  Photos     Prises ou choisies sur le téléphone, réduites à 1600 px dans le navigateur, rangées dans le magasin d'images
+             du Carnet (/api/carnet/asset : vérifiées, jamais effacées ; même quota).
+  Quantités  − / + directement sur la fiche ; plusieurs touches de suite = une seule écriture (variation, sans conflit
+             entre deux téléphones). Le filtre « Stock bas » liste tout ce qui est à son seuil ou dessous.
+  Recherche  Nom, étiquettes, note, chemin et code d'étiquette ; accents et majuscules ignorés ; « / » pour y aller.
+  QR         Chaque emplacement a un code de 4 caractères (sans 0/O/1/I/L) qui ne change jamais. « Étiquette » imprime
+             des étiquettes (3, 4,5 ou 6 cm, avec ou sans tout le contenu) ; le QR ouvre /#inventaire/<emplacement>
+             à l'adresse choisie (Tailscale HTTPS, Tailscale ou réseau local). L'appareil photo de l'iPhone suffit ; si le
+             PIN est demandé, le lien est gardé et la boîte s'ouvre juste après.
+  Supprimer  Un objet ou un emplacement vide : « Annuler » le rétablit tel quel. Un emplacement plein demande d'abord ;
+             son contenu remonte d'un niveau (rien n'est perdu).
+  Allure     Une armoire à tiroirs en acier : chaque emplacement est un tiroir avec son étiquette papier, sa poignée, un
+             couvercle de couleur selon le type (pièce, meuble, étagère, tiroir, boîte, sac) et son code sur ruban noir ; les
+             photos de ce qu'il contient dépassent de la fenêtre. Ouvrir un tiroir le fait glisser jusqu'en haut ; les
+             quantités roulent, une jauge montre le niveau par rapport au seuil, la recherche surligne ce qui correspond.
+  Stockage   .hq-inventory/inventory.json (admin seulement ; rôle upload refusé ; révision par fiche, 409 si modifiée
+             ailleurs ; fichier illisible ou redirigé jamais réécrit). Tests : tests/test_hq_inventory.py,
+             tests/check_hq_inventory.mjs, tests/visual_inventory_playwright.py.
