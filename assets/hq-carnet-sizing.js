@@ -36,6 +36,22 @@
   const SIDE_DEFAULT = 280;
   const FONT_STEPS = [0.82, 0.9, 1, 1.1, 1.2, 1.32, 1.46];
   const FONT_DEFAULT = 2;
+  // 16H: the paper's look (this device): pattern and tint
+  const PAPERS = [
+    { id: "lines", label: "Lignes" },
+    { id: "grid", label: "Quadrillé" },
+    { id: "dots", label: "Points" },
+    { id: "blank", label: "Uni" },
+    { id: "blueprint", label: "Plan" },
+  ];
+  const TINTS = [
+    { id: "auto", label: "Auto", swatch: "" },
+    { id: "cream", label: "Crème", swatch: "#fbf8f0" },
+    { id: "white", label: "Blanc", swatch: "#ffffff" },
+    { id: "sepia", label: "Sépia", swatch: "#f1e4c8" },
+    { id: "slate", label: "Ardoise", swatch: "#1d2127" },
+    { id: "black", label: "Noir", swatch: "#000000" },
+  ];
 
   // ------------------------------------------------------------------ pure helpers
 
@@ -66,23 +82,25 @@
 
   /** Stored settings, defensively read. */
   function parse(raw) {
-    const out = { page: null, font: FONT_DEFAULT, side: null };
+    const out = { page: null, font: FONT_DEFAULT, side: null, paper: "lines", tint: "auto" };
     try {
       const d = JSON.parse(raw || "{}");
       if (d && Number.isInteger(d.page) && (d.page === 0 || (d.page >= PAGE_MIN && d.page <= 4000))) out.page = d.page;
       if (d && Number.isInteger(d.font) && d.font >= 0 && d.font < FONT_STEPS.length) out.font = d.font;
       if (d && Number.isInteger(d.side) && d.side >= SIDE_MIN && d.side <= SIDE_MAX) out.side = d.side;
+      if (d && PAPERS.some((x) => x.id === d.paper)) out.paper = d.paper;
+      if (d && TINTS.some((x) => x.id === d.tint)) out.tint = d.tint;
     } catch (_) {
       /* defaults */
     }
     return out;
   }
 
-  const pure = { snapPage, presetLabel, clampSide, fontFor, parse, PRESETS, FONT_STEPS, FONT_DEFAULT, PAGE_MIN, SIDE_MIN, SIDE_MAX };
+  const pure = { snapPage, presetLabel, clampSide, fontFor, parse, PRESETS, FONT_STEPS, FONT_DEFAULT, PAGE_MIN, SIDE_MIN, SIDE_MAX, PAPERS, TINTS };
 
   // ------------------------------------------------------------------ browser layer
 
-  const S = { started: false, win: null, doc: null, prefs: { page: null, font: FONT_DEFAULT, side: null }, root: null, pageGrip: null, sideGrip: null, tip: null, fontBox: null, ro: null };
+  const S = { started: false, win: null, doc: null, prefs: { page: null, font: FONT_DEFAULT, side: null, paper: "lines", tint: "auto" }, root: null, pageGrip: null, sideGrip: null, tip: null, fontBox: null, ro: null };
 
   function el(tag, attrs, kids) {
     const n = S.doc.createElement(tag);
@@ -182,6 +200,34 @@
       S.fontBox.plus.disabled = S.prefs.font >= FONT_STEPS.length - 1;
       S.fontBox.reset.disabled = S.prefs.font === FONT_DEFAULT;
     }
+  }
+
+  function applyLook() {
+    const host = S.doc.querySelector(".hq-carnet");
+    if (!host) return;
+    if (S.prefs.paper === "lines") host.removeAttribute("data-paper");
+    else host.setAttribute("data-paper", S.prefs.paper);
+    if (S.prefs.tint === "auto") host.removeAttribute("data-tint");
+    else host.setAttribute("data-tint", S.prefs.tint);
+    if (S.fontBox) {
+      for (const b of S.fontBox.papers.querySelectorAll("button")) b.setAttribute("aria-pressed", b.getAttribute("data-carnet-paper") === S.prefs.paper ? "true" : "false");
+      for (const b of S.fontBox.tints.querySelectorAll("button")) b.setAttribute("aria-pressed", b.getAttribute("data-carnet-tint") === S.prefs.tint ? "true" : "false");
+      S.fontBox.tints.toggleAttribute("data-locked", S.prefs.paper === "blueprint"); // the blueprint paper has its own colour
+    }
+  }
+
+  function setLook(key, value) {
+    if (S.prefs[key] === value) return;
+    S.prefs[key] = value;
+    store();
+    const paper = S.doc.querySelector(".hq-carnet .carnet-paper");
+    const M = S.win.HqCarnetMotion;
+    if (paper && typeof paper.animate === "function" && !mq("(prefers-reduced-motion: reduce)")) {
+      // a soft cross-fade: the paper dims for an instant while its look changes
+      paper.animate([{ opacity: 0.55, filter: "saturate(.8)" }, { opacity: 1, filter: "none" }], { duration: 320, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }
+    applyLook();
+    if (M && typeof M.buzz === "function") M.buzz(5);
   }
 
   function setFont(step, announce) {
@@ -456,16 +502,37 @@
       });
       widths.appendChild(b);
     }
+    const papers = el("div", { class: "carnet-look-row", role: "group", "aria-label": "Papier" }, [el("span", { class: "carnet-look-label", "aria-hidden": "true", text: "Papier" })]);
+    for (const x of PAPERS) {
+      const b = mk("carnet-look-btn", "Papier : " + x.label, "");
+      b.setAttribute("data-carnet-paper", x.id);
+      b.appendChild(el("span", { class: "carnet-look-swatch carnet-paper-swatch", "data-paper": x.id, "aria-hidden": "true" }));
+      b.appendChild(el("span", { text: x.label }));
+      b.addEventListener("click", () => setLook("paper", x.id));
+      papers.appendChild(b);
+    }
+    const tints = el("div", { class: "carnet-look-row", role: "group", "aria-label": "Teinte du papier" }, [el("span", { class: "carnet-look-label", "aria-hidden": "true", text: "Teinte" })]);
+    for (const x of TINTS) {
+      const b = mk("carnet-look-btn", "Teinte du papier : " + x.label, "");
+      b.setAttribute("data-carnet-tint", x.id);
+      const sw = el("span", { class: "carnet-look-swatch", "data-tint": x.id, "aria-hidden": "true" });
+      if (x.swatch) sw.style.background = x.swatch;
+      b.appendChild(sw);
+      b.appendChild(el("span", { text: x.label }));
+      b.addEventListener("click", () => setLook("tint", x.id));
+      tints.appendChild(b);
+    }
     const group = el("div", { class: "carnet-tool-group carnet-size-group", role: "group", "aria-label": "Affichage" }, [
       el("span", { class: "carnet-tool-group-label", "aria-hidden": "true", text: "Affichage" }),
-      minus, value, plus, reset, widths,
+      minus, value, plus, reset, widths, papers, tints,
     ]);
     minus.addEventListener("click", () => setFont(S.prefs.font - 1, false));
     plus.addEventListener("click", () => setFont(S.prefs.font + 1, false));
     reset.addEventListener("click", () => setFont(FONT_DEFAULT, false));
     tools.appendChild(group);
-    S.fontBox = { group, minus, value, plus, reset, widths };
+    S.fontBox = { group, minus, value, plus, reset, widths, papers, tints };
     applyFont();
+    applyLook();
     markWidths();
   }
 
@@ -504,6 +571,7 @@
     const boot = () => {
       applyPage();
       applySide();
+      applyLook();
       watch();
       applyFont();
       win.setInterval(watch, 800);

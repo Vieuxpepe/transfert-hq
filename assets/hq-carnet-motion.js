@@ -311,6 +311,7 @@
       ed.removeEventListener("focusin", onEditorActivity);
       ed.removeEventListener("keydown", onEditorActivity);
       ed.removeEventListener("focusout", onEditorBlur);
+      wakeChrome();
       ed.removeEventListener("pointerdown", onEditorPointerDown);
       ed.removeEventListener("load", onMediaLoad, true);
       ed.removeEventListener("error", onMediaLoad, true);
@@ -661,12 +662,34 @@
     if (S.doc.body) S.doc.body.classList.remove("hq-fab-tucked");
   }
 
-  function onEditorActivity() {
+  function onEditorActivity(ev) {
     tuck();
     scheduleCaret();
+    if (ev && ev.type === "keydown") quietChrome(ev);
+  }
+
+  // 16H: on PC the page's chrome (bars, library) fades while you type and comes back as soon as the mouse moves a little,
+  // you scroll up, or the editor loses focus. Hovering or tabbing into a bar always shows it at once (CSS).
+  let quietTravel = 0;
+  function quietChrome(ev) {
+    if (!S.root || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const k = ev.key || "";
+    if (!(k.length === 1 || k === "Enter" || k === "Backspace" || k === "Delete")) return;
+    let fine = false;
+    try {
+      fine = S.win.matchMedia("(hover:hover) and (pointer:fine)").matches;
+    } catch (_) {}
+    if (!fine) return;
+    quietTravel = 0;
+    S.root.classList.add("c16-quiet");
+  }
+
+  function wakeChrome() {
+    if (S.root && S.root.classList.contains("c16-quiet")) S.root.classList.remove("c16-quiet");
   }
 
   function onEditorBlur() {
+    wakeChrome();
     if (S.fabTimer) S.win.clearTimeout(S.fabTimer);
     S.fabTimer = S.win.setTimeout(untuck, 350);
   }
@@ -1042,6 +1065,17 @@
       }
     }, true);
     doc.addEventListener("pointermove", pressCancel, true);
+    doc.addEventListener("mousemove", (ev) => {
+      if (!S.root || !S.root.classList.contains("c16-quiet")) return;
+      quietTravel += Math.abs(ev.movementX || 0) + Math.abs(ev.movementY || 0);
+      if (quietTravel > 40) wakeChrome();
+    }, { passive: true });
+    let lastY = 0;
+    win.addEventListener("scroll", () => {
+      const y = win.scrollY || 0;
+      if (y < lastY - 30) wakeChrome();
+      lastY = y;
+    }, { passive: true });
     doc.addEventListener("pointerup", () => {
       if (S.editor && S.editor.classList.contains("c16-lifting")) {
         snapshotVisual(); // before the drop is committed: the settle animation starts where the block was let go

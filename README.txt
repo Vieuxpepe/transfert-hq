@@ -1075,3 +1075,13 @@ Carnet — taille de la page, du texte et de la bibliothèque (phase 16G)
   Mémoire    Réglages de CET appareil (localStorage « hq_carnet_sizing_v1 », au mieux : refusé = valable jusqu'au
              rechargement). Rien n'est envoyé à HQ, aucune note n'est modifiée.
   Tests      node tests/check_hq_carnet_sizing.mjs ; python tests/visual_carnet_16c_playwright.py.
+
+Carnet — papier et barre du haut (phase 16H)
+---------------------------------------------
+  Papier     « ⋯ » → Affichage → Papier : Lignes (défaut), Quadrillé, Points, Uni, Plan (bleu, grille fine + grille
+             majeure toutes les 5 lignes). Teinte : Auto (suit le thème), Crème, Blanc, Sépia, Ardoise, Noir (OLED).
+             L'accent sur le papier suit sa clarté (puces et liens lisibles). Réglage de CET appareil (même mémoire que
+             les tailles).
+  Barre      « + Insérer » est dans la barre du haut (une ligne sur PC, deux sur téléphone). Sur PC, barres et
+             bibliothèque s'estompent pendant la frappe et reviennent dès que la souris bouge, qu'on remonte ou qu'on
+             quitte l'éditeur ; survol ou Tab les affichent aussitôt ; un avertissement d'enregistrement reste visible.

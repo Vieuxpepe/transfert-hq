@@ -34,10 +34,14 @@ for (let i = 0; i < P.FONT_STEPS.length; i += 1) {
 assert.deepEqual(P.fontFor(-5, 18, 30), P.fontFor(0, 18, 30));
 assert.deepEqual(P.fontFor(99, 18, 30), P.fontFor(P.FONT_STEPS.length - 1, 18, 30));
 // stored settings: anything odd falls back to defaults
-assert.deepEqual(P.parse(""), { page: null, font: P.FONT_DEFAULT, side: null });
-assert.deepEqual(P.parse("{broken"), { page: null, font: P.FONT_DEFAULT, side: null });
-assert.deepEqual(P.parse(JSON.stringify({ page: 0, font: 4, side: 300 })), { page: 0, font: 4, side: 300 });
-assert.deepEqual(P.parse(JSON.stringify({ page: 12, font: 99, side: "x" })), { page: null, font: P.FONT_DEFAULT, side: null });
+const D = { page: null, font: P.FONT_DEFAULT, side: null, paper: "lines", tint: "auto" };
+assert.deepEqual(P.parse(""), D);
+assert.deepEqual(P.parse("{broken"), D);
+assert.deepEqual(P.parse(JSON.stringify({ page: 0, font: 4, side: 300, paper: "grid", tint: "sepia" })), { page: 0, font: 4, side: 300, paper: "grid", tint: "sepia" });
+assert.deepEqual(P.parse(JSON.stringify({ page: 12, font: 99, side: "x", paper: "lava", tint: "#f00" })), D);
+// 16H: paper looks and tints are closed lists
+assert.deepEqual(P.PAPERS.map((x) => x.id), ["lines", "grid", "dots", "blank", "blueprint"]);
+assert.deepEqual(P.TINTS.map((x) => x.id), ["auto", "cream", "white", "sepia", "slate", "black"]);
 // hygiene: view preferences only
 const code = readFileSync(new URL("../assets/hq-carnet-sizing.js", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
 for (const bad of ["innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "sessionStorage", "indexedDB"]) assert.ok(!code.includes(bad), "no " + bad);

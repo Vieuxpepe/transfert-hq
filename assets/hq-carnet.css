@@ -1618,3 +1618,73 @@ body.carnet-resizing,body.carnet-resizing *{cursor:ew-resize!important;-webkit-u
 .carnet-size-width[aria-pressed="true"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--line));box-shadow:var(--carnet-press,none)}
 @media print{.carnet-page-grip,.carnet-side-grip,.carnet-size-tip{display:none!important}}
 .carnet-size-width,.carnet-size-reset{font-size:var(--text-sm);font-weight:700}
+
+/* ================================================================ Phase 16H: paper styles and tints (« ⋯ » → Affichage, per device)
+   data-paper / data-tint on .hq-carnet (hq-carnet-sizing.js). A tint overrides the theme's paper; the accent used ON the
+   paper follows the paper's brightness so bullets and links keep their contrast. */
+.hq-carnet[data-tint="cream"]{--carnet-paper:#fbf8f0;--carnet-ink:#1d232b;--carnet-rule:color-mix(in srgb,#5b8fc9 24%,transparent);
+  --carnet-margin:color-mix(in srgb,#e0574f 42%,transparent);--carnet-grain:color-mix(in srgb,#8a6d3b 4%,transparent)}
+.hq-carnet[data-tint="white"]{--carnet-paper:#ffffff;--carnet-ink:#1b2128;--carnet-rule:color-mix(in srgb,#5b8fc9 20%,transparent);
+  --carnet-margin:color-mix(in srgb,#e0574f 36%,transparent);--carnet-grain:transparent}
+.hq-carnet[data-tint="sepia"]{--carnet-paper:#f1e4c8;--carnet-ink:#3a2e1f;--carnet-rule:color-mix(in srgb,#8a6d3b 24%,transparent);
+  --carnet-margin:color-mix(in srgb,#b5523b 40%,transparent);--carnet-grain:color-mix(in srgb,#6b4f2a 7%,transparent)}
+.hq-carnet[data-tint="slate"]{--carnet-paper:#1d2127;--carnet-ink:#eef1f4;--carnet-rule:color-mix(in srgb,#8fb4d9 16%,transparent);
+  --carnet-margin:color-mix(in srgb,#ff7a7a 34%,transparent);--carnet-grain:color-mix(in srgb,#fff 2.5%,transparent)}
+.hq-carnet[data-tint="black"]{--carnet-paper:#000000;--carnet-ink:#e6e6e6;--carnet-rule:color-mix(in srgb,#8fb4d9 11%,transparent);
+  --carnet-margin:color-mix(in srgb,#ff7a7a 24%,transparent);--carnet-grain:transparent}
+.hq-carnet:is([data-tint="cream"],[data-tint="white"],[data-tint="sepia"]) .carnet-paper{--accent:#4a4fb5;--carnet-on-accent:#fff}
+.hq-carnet:is([data-tint="slate"],[data-tint="black"]) .carnet-paper{--accent:#9da1f5;--carnet-on-accent:#11133a}
+
+/* patterns (lines = the default drawing on .carnet-editor) */
+.hq-carnet[data-paper="grid"] .carnet-editor{
+  background-image:linear-gradient(to bottom,transparent calc(var(--carnet-lh) - 1px),var(--carnet-rule) calc(var(--carnet-lh) - 1px)),
+    linear-gradient(to right,transparent calc(var(--carnet-lh) - 1px),var(--carnet-rule) calc(var(--carnet-lh) - 1px));
+  background-size:100% var(--carnet-lh),var(--carnet-lh) 100%;background-position:0 0,var(--carnet-margin-x) 0}
+.hq-carnet[data-paper="dots"] .carnet-editor{
+  background-image:radial-gradient(circle,color-mix(in srgb,var(--carnet-ink) 46%,transparent) 0 1.6px,transparent 2.1px);
+  background-size:var(--carnet-lh) var(--carnet-lh);background-position:calc(var(--carnet-margin-x) - var(--carnet-lh) / 2) calc(var(--carnet-lh) / 2)}
+.hq-carnet[data-paper="blank"] .carnet-editor{background-image:none}
+.hq-carnet[data-paper="blueprint"]{--carnet-paper:#0f3a6b;--carnet-ink:#eaf3ff;--carnet-rule:color-mix(in srgb,#cfe4ff 14%,transparent);
+  --carnet-margin:transparent;--carnet-grain:color-mix(in srgb,#fff 3%,transparent)}
+.hq-carnet[data-paper="blueprint"] .carnet-paper{--accent:#9fd0ff;--carnet-on-accent:#06223f}
+.hq-carnet[data-paper="blueprint"] .carnet-editor{
+  background-image:linear-gradient(to bottom,transparent calc(var(--carnet-lh) * 5 - 1px),color-mix(in srgb,#cfe4ff 26%,transparent) calc(var(--carnet-lh) * 5 - 1px)),
+    linear-gradient(to right,transparent calc(var(--carnet-lh) * 5 - 1px),color-mix(in srgb,#cfe4ff 26%,transparent) calc(var(--carnet-lh) * 5 - 1px)),
+    linear-gradient(to bottom,transparent calc(var(--carnet-lh) - 1px),var(--carnet-rule) calc(var(--carnet-lh) - 1px)),
+    linear-gradient(to right,transparent calc(var(--carnet-lh) - 1px),var(--carnet-rule) calc(var(--carnet-lh) - 1px));
+  background-size:100% calc(var(--carnet-lh) * 5),calc(var(--carnet-lh) * 5) 100%,100% var(--carnet-lh),var(--carnet-lh) 100%;
+  background-position:0 0,var(--carnet-margin-x) 0,0 0,var(--carnet-margin-x) 0}
+@media (prefers-reduced-motion:no-preference){
+  .hq-carnet .carnet-paper{transition:background-color .35s ease}
+  .hq-carnet .carnet-editor{transition:color .35s ease}
+}
+
+/* the controls: swatches that show what you get */
+.carnet-look-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;flex:1 1 100%;margin-top:2px}
+.carnet-look-label{min-width:4.6em;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.carnet-look-btn{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-sm);font-weight:700}
+.carnet-look-btn[aria-pressed="true"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--line));box-shadow:var(--carnet-press,none)}
+.carnet-look-swatch{width:18px;height:14px;border-radius:4px;flex:0 0 auto;border:1px solid color-mix(in srgb,var(--text) 22%,transparent);
+  background:linear-gradient(135deg,#fbf8f0 50%,#1d2127 50%)}
+.carnet-paper-swatch{background-color:var(--carnet-paper);background-size:6px 6px}
+.carnet-paper-swatch[data-paper="lines"]{background-image:linear-gradient(to bottom,transparent 5px,color-mix(in srgb,var(--carnet-ink) 35%,transparent) 5px);background-size:100% 6px}
+.carnet-paper-swatch[data-paper="grid"]{background-image:linear-gradient(to bottom,transparent 5px,color-mix(in srgb,var(--carnet-ink) 30%,transparent) 5px),linear-gradient(to right,transparent 5px,color-mix(in srgb,var(--carnet-ink) 30%,transparent) 5px)}
+.carnet-paper-swatch[data-paper="dots"]{background-image:radial-gradient(circle,color-mix(in srgb,var(--carnet-ink) 45%,transparent) 0 1px,transparent 1.3px)}
+.carnet-paper-swatch[data-paper="blueprint"]{background-color:#0f3a6b;background-image:linear-gradient(to bottom,transparent 5px,#cfe4ff55 5px),linear-gradient(to right,transparent 5px,#cfe4ff55 5px)}
+.carnet-look-row[data-locked] .carnet-look-btn{opacity:.45}
+
+/* ---- 16H: a calmer top bar — « + Insérer » sits in it, and on PC the chrome fades while you type */
+.carnet-bar-top{flex-wrap:wrap;row-gap:8px}
+.carnet-bar-top>.carnet-insert-row{flex:0 0 auto}
+.carnet-bar-top .carnet-insert-btn{min-height:var(--carnet-tap);padding:0 14px}
+@media (max-width:599px){.carnet-bar-top>.carnet-insert-row{order:1}.carnet-bar-top>.carnet-actions{order:2}}
+@media (min-width:900px){.carnet-bar-top{flex-wrap:nowrap}.carnet-bar-top>.carnet-status-wrap{order:2}.carnet-bar-top>.carnet-actions{order:3}}
+@media (hover:hover) and (pointer:fine){
+  .carnet :is(.carnet-bar-top,.carnet-bar-bottom,.carnet-library,.carnet-page-grip,.carnet-side-grip){transition:opacity .25s ease}
+  .carnet.c16-quiet :is(.carnet-bar-top,.carnet-bar-bottom){opacity:.08;transition:opacity .9s ease .25s}
+  .carnet.c16-quiet .carnet-library{opacity:.38;transition:opacity .9s ease .25s}
+  .carnet.c16-quiet :is(.carnet-page-grip,.carnet-side-grip){opacity:0;transition:opacity .9s ease .25s}
+  .carnet.c16-quiet :is(.carnet-bar-top,.carnet-bar-bottom,.carnet-library):is(:hover,:focus-within){opacity:1;transition:opacity .15s ease}
+  /* a problem is never hidden: the bar stays visible while the save pill warns */
+  .carnet.c16-quiet .carnet-bar-top:has(.carnet-savepill:is([data-kind="warn"],[data-kind="err"])){opacity:1}
+}

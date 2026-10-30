@@ -2116,7 +2116,9 @@
     const focusExit = iconButton("btn-carnet-focus-exit", "Quitter le mode concentration (Échap)", ICON.unfocus, { class: "carnet-btn carnet-focus-exit" });
 
     const insertRow = buildInsertRow();
-    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, insertRow, formatBar, linkPanel, findPanel, exportPanel, imagePanel, imageTools, stage, bottom, focusExit]);
+    // 16H: « + Insérer » lives in the top bar (one calm row on PC, two on a phone) instead of on a row of its own.
+    top.insertBefore(insertRow, top.children[1] || null);
+    const main = el("div", { class: "carnet-main" }, [top, ctxBackdrop, ctxPanel, conflict, trashed, confirm, undo, tools, formatBar, linkPanel, findPanel, exportPanel, imagePanel, imageTools, stage, bottom, focusExit]);
     const lib = buildLibrary();
     const libBackdrop = el("div", { class: "carnet-lib-backdrop", "aria-hidden": "true", hidden: true });
     root.append(lib, libBackdrop, main);
