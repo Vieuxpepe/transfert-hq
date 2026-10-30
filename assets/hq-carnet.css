@@ -1688,3 +1688,73 @@ body.carnet-resizing,body.carnet-resizing *{cursor:ew-resize!important;-webkit-u
   /* a problem is never hidden: the bar stays visible while the save pill warns */
   .carnet.c16-quiet .carnet-bar-top:has(.carnet-savepill:is([data-kind="warn"],[data-kind="err"])){opacity:1}
 }
+
+/* ================================================================ Phase 16I: how things leave, glide and settle (hq-carnet-feel.js) */
+/* one motion vocabulary for HQ: the Calendar, the Accueil and the Carnet use the same curves and durations */
+:root{--hq-spring:cubic-bezier(.2,1.35,.35,1);--hq-out:cubic-bezier(.2,.8,.2,1);--hq-in:cubic-bezier(.4,0,1,1);
+  --hq-dur-fast:.14s;--hq-dur:.24s;--hq-dur-slow:.38s}
+.hq-carnet,body>[class^="carnet-"],body>[class*=" carnet-"]{--c16-spring:var(--hq-spring);--c16-out:var(--hq-out);--c16-in:var(--hq-in)}
+/* exit copies: look exactly like what left, never catch a click */
+.c16-ghost{pointer-events:none!important;z-index:auto}
+.c16-ghost *{pointer-events:none!important}
+/* phone sheets: rise from the bottom, a handle says they can be pulled down */
+@media (prefers-reduced-motion:no-preference){
+  .carnet-library[data-mode="sheet"]:not([hidden]):not(.c16-ghost){animation:c16-sheet-up var(--hq-dur-slow) var(--hq-out) backwards}
+  .carnet-library[data-mode="drawer"]:not([hidden]):not(.c16-ghost){animation:c16-drawer-in var(--hq-dur-slow) var(--hq-out) backwards}
+  .carnet-lib-backdrop:not([hidden]):not(.c16-ghost){animation:c16-fade-in var(--hq-dur) linear backwards}
+}
+@media (max-width:599.98px) and (prefers-reduced-motion:no-preference){
+  .carnet-outline:not([hidden]):not(.c16-ghost){animation:c16-sheet-up var(--hq-dur-slow) var(--hq-out) backwards}
+}
+@keyframes c16-sheet-up{from{transform:translate3d(0,100%,0)}to{transform:none}}
+@keyframes c16-drawer-in{from{transform:translate3d(-100%,0,0)}to{transform:none}}
+@keyframes c16-fade-in{from{opacity:0}to{opacity:1}}
+.carnet-library[data-mode="sheet"] .carnet-lib-head::before{content:"";position:absolute;left:50%;top:5px;width:38px;height:5px;margin-left:-19px;border-radius:3px;background:var(--line);opacity:.9}
+.carnet-library[data-mode="sheet"] .carnet-lib-head{padding-top:18px;touch-action:none}
+@media (max-width:599.98px){
+  .carnet-outline-head{position:relative;padding-top:16px;touch-action:none}
+  .carnet-outline-head::before{content:"";position:absolute;left:50%;top:5px;width:38px;height:5px;margin-left:-19px;border-radius:3px;background:var(--line);opacity:.9}
+}
+/* smooth caret (PC): glides between positions, blinks only when you pause */
+.c16-caret{position:absolute;left:0;top:0;z-index:3;width:2px;border-radius:1px;background:var(--carnet-caret,var(--accent));pointer-events:none;opacity:0;
+  transition:transform .1s var(--hq-out),height .1s var(--hq-out),opacity .12s linear;will-change:transform}
+.c16-caret.no-glide{transition:opacity .12s linear}
+.c16-caret.is-on{opacity:1;animation:c16-blink 1.06s steps(1,end) .5s infinite}
+.c16-caret.is-on.is-typing{animation:none;opacity:1}
+@keyframes c16-blink{0%,55%{opacity:1}56%,100%{opacity:0}}
+.hq-carnet .carnet-editor.c16-caret-on{caret-color:transparent}
+@media (prefers-reduced-motion:reduce){.c16-caret{display:none}.hq-carnet .carnet-editor.c16-caret-on{caret-color:auto}}
+/* marker sweep: the highlight is drawn left to right */
+.carnet-editor [data-m~="highlight"].c16-sweep{background-color:transparent;background-image:linear-gradient(var(--c16-hl),var(--c16-hl));background-repeat:no-repeat;
+  background-size:100% 100%;animation:c16-sweep .5s var(--hq-out)}
+@keyframes c16-sweep{from{background-size:0% 100%}to{background-size:100% 100%}}
+/* a stroke drawn across a ticked item */
+.c16-strike{position:fixed;z-index:60;height:2px;margin-top:-1px;border-radius:1px;background:var(--accent);pointer-events:none;transform-origin:0 50%}
+/* a new image opens from a ring */
+.c16-ring{position:fixed;z-index:60;box-sizing:border-box;border:2px solid var(--accent);border-radius:50%;pointer-events:none}
+/* count-up overlay over a measurement or a result */
+.c16-count{position:fixed;z-index:60;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+/* the page sent to the Corbeille */
+.c16-trash-ghost{position:fixed;z-index:300;box-sizing:border-box;overflow:hidden;padding:28px 32px;border-radius:6px;white-space:pre-wrap;font-size:13px;line-height:1.5;
+  pointer-events:none;box-shadow:0 18px 44px rgba(0,0,0,.4);transform-origin:50% 40%}
+/* outline: a marker glides to the section you are reading */
+.carnet-outline-list{position:relative}
+.c16-outline-mark{position:absolute;left:0;top:0;width:3px;border-radius:2px;background:var(--accent);pointer-events:none;
+  transition:transform .34s var(--hq-spring),height .24s var(--hq-out)}
+.carnet-outline-item.c16-current{font-weight:650;color:var(--text);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+@media (prefers-reduced-motion:reduce){.c16-outline-mark{transition:none}}
+/* sticky notes: alignment guides while dragging */
+.carnet-sticky-guide{position:absolute;left:0;top:0;z-index:0;pointer-events:none;opacity:0;transition:opacity .12s linear}
+.carnet-sticky-guide[data-axis="x"]{bottom:0;width:0;border-left:1px dashed var(--accent)}
+.carnet-sticky-guide[data-axis="y"]{right:0;height:0;border-top:1px dashed var(--accent)}
+.carnet-sticky-guide.is-on{opacity:.85}
+/* paper light (PC): the shadow and a faint sheen follow the mouse */
+@media (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+  .hq-carnet .carnet-paper{box-shadow:0 1px 0 color-mix(in srgb,#000 12%,transparent),
+      var(--c16-lx,0px) calc(10px + var(--c16-ly,0px)) 30px color-mix(in srgb,#000 18%,transparent);
+    transition:box-shadow .5s var(--hq-out)}
+  .hq-carnet .carnet-paper::before{content:"";position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;opacity:0;transition:opacity .6s ease;
+    background:radial-gradient(520px circle at var(--c16-mx,50%) var(--c16-my,0px),color-mix(in srgb,#fff 5%,transparent),transparent 70%)}
+  .hq-carnet .carnet-paper:hover::before{opacity:1}
+}
+@media print{.c16-caret,.c16-ghost,.carnet-sticky-guide,.c16-outline-mark{display:none!important}}

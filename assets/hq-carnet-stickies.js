@@ -380,7 +380,14 @@
     if (!v) return;
     S.views.delete(id);
     if (animated && !calm() && typeof v.el.animate === "function") {
-      const a = v.el.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.86) rotate(-2deg)" }], { duration: 180, easing: "cubic-bezier(.4,0,1,1)", fill: "forwards" });
+      // 16I: the note crumples into a ball and drops away
+      v.el.style.transformOrigin = "50% 50%";
+      const a = v.el.animate([
+        { opacity: 1, transform: "none", borderRadius: "10px", filter: "none" },
+        { opacity: 1, transform: "scale(.82,.7) rotate(-6deg) skewX(4deg)", borderRadius: "28px", filter: "brightness(.94)", offset: 0.35 },
+        { opacity: 1, transform: "scale(.34) rotate(14deg)", borderRadius: "50%", filter: "brightness(.9)", offset: 0.62 },
+        { opacity: 0, transform: "translate3d(0,48px,0) scale(.18) rotate(32deg)", borderRadius: "50%", filter: "brightness(.9)" },
+      ], { duration: 420, easing: "cubic-bezier(.4,0,.7,1)", fill: "forwards" });
       a.finished.then(() => v.el.remove(), () => v.el.remove());
     } else v.el.remove();
   }
@@ -557,6 +564,7 @@
     const pw = pageW();
     const ph = S.paper.scrollHeight || S.paper.clientHeight;
     const start = { x: e.clientX, y: e.clientY, left: v.el.offsetLeft, top: v.el.offsetTop, moved: false, id: e.pointerId };
+    const guides = snapTargets(v, pw);
     v.dragging = true;
     v.el.classList.add("is-dragging");
     buzz(6);
@@ -571,8 +579,14 @@
       if (!start.moved && Math.hypot(dx, dy) < 4) return;
       start.moved = true;
       const w = v.el.offsetWidth;
-      const left = Math.max(0, Math.min(pw - w, start.left + dx));
-      const top = clampY(start.top + dy, ph, v.el.offsetHeight);
+      let left = Math.max(0, Math.min(pw - w, start.left + dx));
+      let top = clampY(start.top + dy, ph, v.el.offsetHeight);
+      // 16I: align with the page and the other notes (8 px), and show the guide that caught it
+      const sx = bestSnap([left, left + w / 2, left + w], guides.xs);
+      const sy = bestSnap([top, top + v.el.offsetHeight / 2, top + v.el.offsetHeight], guides.ys);
+      if (sx) left = Math.max(0, Math.min(pw - w, left + sx.d));
+      if (sy) top = clampY(top + sy.d, ph, v.el.offsetHeight);
+      showGuides(sx ? sx.at : null, sy ? sy.at : null);
       v.el.style.left = left + "px";
       v.el.style.top = top + "px";
     };
@@ -583,6 +597,7 @@
       v.bar.removeEventListener("pointercancel", end);
       v.dragging = false;
       v.el.classList.remove("is-dragging");
+      showGuides(null, null);
       if (!start.moved) return;
       buzz(10);
       anim(v.el, [{ transform: "rotate(-1.2deg) scale(1.02)" }, { transform: "rotate(.9deg) scale(.995)", offset: 0.45 }, { transform: "rotate(-.3deg)", offset: 0.75 }, { transform: "none" }], { duration: 460, easing: "ease-out" });
@@ -597,6 +612,52 @@
     v.bar.addEventListener("pointermove", move);
     v.bar.addEventListener("pointerup", end);
     v.bar.addEventListener("pointercancel", end);
+  }
+
+  /** Edges and centres a dragged note can align with: the page's and every other note's (layer coordinates). */
+  function snapTargets(v, pw) {
+    const xs = [0, pw / 2, pw];
+    const ys = [];
+    for (const o of S.views.values()) {
+      if (o === v || !o.el.isConnected) continue;
+      const l = o.el.offsetLeft;
+      const t = o.el.offsetTop;
+      const w = o.el.offsetWidth;
+      const h = o.el.offsetHeight;
+      xs.push(l, l + w / 2, l + w);
+      ys.push(t, t + h / 2, t + h);
+    }
+    return { xs, ys };
+  }
+
+  /** The smallest correction (≤ 8 px) that puts one of `edges` on one of `targets`: {d, at} or null. */
+  function bestSnap(edges, targets) {
+    let best = null;
+    for (const e of edges) for (const t of targets) {
+      const d = t - e;
+      if (Math.abs(d) <= 8 && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, at: t };
+    }
+    return best;
+  }
+
+  function showGuides(x, y) {
+    if (!S.layer) return;
+    for (const [axis, val] of [["x", x], ["y", y]]) {
+      let g = S.layer.querySelector(".carnet-sticky-guide[data-axis=\"" + axis + "\"]");
+      if (val === null || val === undefined) {
+        if (g) g.classList.remove("is-on");
+        continue;
+      }
+      if (!g) {
+        g = el("span", { class: "carnet-sticky-guide", "data-axis": axis, "aria-hidden": "true" });
+        S.layer.appendChild(g);
+      }
+      const was = g.classList.contains("is-on") && g.__at === val;
+      g.style.transform = axis === "x" ? "translate3d(" + val + "px,0,0)" : "translate3d(0," + val + "px,0)";
+      g.__at = val;
+      if (!g.classList.contains("is-on")) g.classList.add("is-on");
+      if (!was) buzz(4);
+    }
   }
 
   function keyMove(v, e) {

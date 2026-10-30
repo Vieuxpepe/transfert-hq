@@ -6344,6 +6344,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-motion.js"></script>
 <script src="/assets/hq-carnet-stickies.js"></script>
 <script src="/assets/hq-carnet-sizing.js"></script>
+<script src="/assets/hq-carnet-feel.js"></script>
 <script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>

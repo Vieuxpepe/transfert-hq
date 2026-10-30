@@ -53,6 +53,15 @@ def seed():
             "pages": [page("page-a", 2, lines), page("page-b", 1, [blk(90, "Deuxième page")])]}
 
 
+def seed16i():
+    base = seed()
+    lines = [blk(1, "Avant-propos"), blk(2, "Section A", "heading")] + [blk(10 + i, "Texte A %d" % i) for i in range(18)]
+    lines += [blk(3, "Section B", "heading")] + [blk(40 + i, "Texte B %d" % i) for i in range(18)]
+    lines += [blk(4, "Tâche à faire", "check", checked=False), blk(5, "Phrase à surligner ici")]
+    base["pages"][0]["content"]["blocks"] = lines
+    return base
+
+
 def wait(fn, msg, timeout=6.0, page=None):
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -519,6 +528,154 @@ def main():
             check(over <= 0, f"no sideways scroll with bigger text ({over}px)")
             b.close()
 
+            # ---------------------------------------------------------------- 16I feel
+            srv.seed(seed16i())
+            b, ctx = ctx_for(pw, srv, False)
+            p = open_page(ctx, srv, errors)
+            p.wait_for_function("() => !!window.HqCarnetFeel")
+            print("-- 16I feel [desktop]")
+            # smooth caret
+            p.locator('[data-carnet-block-id="block-c1601"]').click()
+            p.wait_for_timeout(250)
+            cr = p.evaluate("""() => { const c = document.querySelector('.c16-caret.is-on'); if (!c) return null;
+              const s = getSelection().getRangeAt(0).getClientRects(); const pr = document.querySelector('.carnet-paper').getBoundingClientRect();
+              return [c.getBoundingClientRect().left, s.length ? s[0].left : null,
+              document.querySelector('#hq-carnet-editor').classList.contains('c16-caret-on'), getComputedStyle(document.querySelector('#hq-carnet-editor')).caretColor]; }""")
+            check(cr is not None and cr[2], f"a smooth caret replaces the native one ({cr})")
+            check(cr is not None and (cr[1] is None or abs(cr[0] - cr[1]) < 3), "it sits exactly where the native caret would")
+            x0 = cr[0] if cr else 0
+            p.keyboard.press("Home")
+            p.wait_for_timeout(250)
+            x1 = p.evaluate("() => document.querySelector('.c16-caret').getBoundingClientRect().left")
+            check(x1 < x0 - 30, f"it glides to the start of the line ({x0:.0f} -> {x1:.0f})")
+            check(p.evaluate("() => getComputedStyle(document.querySelector('.c16-caret')).transitionProperty.includes('transform')"), "the caret move is a transition, not a jump")
+            # marker sweep
+            p.evaluate("""() => { const ln = document.querySelector('[data-carnet-block-id="block-c1605"]'); const t = ln.querySelector('.carnet-line-text') || ln;
+              const w = document.createTreeWalker(t, NodeFilter.SHOW_TEXT); const n = w.nextNode(); const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 6);
+              const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')); }""")
+            p.wait_for_timeout(300)
+            hb = p.locator('.carnet-sel-toolbar:not([hidden]) [data-carnet-sel="highlight"]')
+            if hb.count():
+                hb.click()
+                swept = wait(lambda: p.evaluate("() => !!document.querySelector('[data-carnet-block-id=\"block-c1605\"] .c16-sweep')"), "the highlight sweeps in", timeout=2, page=p)
+                if swept:
+                    check(p.evaluate("() => getComputedStyle(document.querySelector('.c16-sweep')).animationName") == "c16-sweep", "with the marker animation")
+                p.wait_for_timeout(800)
+                check(p.locator(".c16-sweep").count() == 0, "the sweep leaves nothing behind")
+            else:
+                check(False, "the selection toolbar offers « Surligné »")
+            # strike-through drawn across a ticked item
+            p.locator('[data-carnet-block-id="block-c1604"] .carnet-check').click()
+            check(wait(lambda: p.locator(".c16-strike").count() >= 1, "a stroke is drawn", timeout=2, page=p), "ticking draws a stroke across the item")
+            p.wait_for_timeout(900)
+            check(p.locator(".c16-strike").count() == 0, "the stroke overlay cleans up")
+            # exits
+            p.evaluate("() => window.hqCarnetBlockMenu(document.querySelector('[data-carnet-block-id=\"block-c1601\"]'))")
+            p.wait_for_selector(".carnet-block-menu:not([hidden])")
+            p.keyboard.press("Escape")
+            gh = p.evaluate("() => { const g = document.querySelector('.carnet-block-menu.c16-ghost'); return g ? [g.hasAttribute('inert'), g.getAttribute('aria-hidden'), g.querySelectorAll('[id],[data-carnet-cmd]').length, getComputedStyle(g).pointerEvents] : null; }")
+            check(gh is not None, "the block menu plays an exit")
+            check(gh is not None and gh[0] and gh[1] == "true" and gh[2] == 0 and gh[3] == "none", f"the exit copy is inert and unfindable ({gh})")
+            check(p.locator(".carnet-block-menu:not([hidden])").count() == 0, "the real menu is already closed")
+            p.wait_for_timeout(500)
+            check(p.locator(".c16-ghost").count() == 0, "exit copies are removed")
+            p.locator("#btn-carnet-more").click()
+            p.wait_for_timeout(300)
+            p.locator("#btn-carnet-more").click()
+            check(p.locator(".carnet-tools.c16-ghost").count() == 1, "the « ⋯ » tools fold away instead of vanishing")
+            p.wait_for_timeout(500)
+            # outline scrollspy
+            p.locator("#btn-carnet-outline").click()
+            p.wait_for_selector(".carnet-outline:not([hidden]):not(.c16-ghost)")
+            p.wait_for_timeout(200)
+            cur = lambda: p.evaluate("() => { const c = document.querySelector('.carnet-outline:not(.c16-ghost) .c16-current'); return c ? c.textContent.trim() : ''; }")  # noqa: E731
+            check(p.locator(".c16-outline-mark").count() == 1, "the outline has a reading marker")
+            c0 = cur()
+            p.evaluate("() => document.querySelector('[data-carnet-block-id=\"block-c1603\"]').scrollIntoView({block:'start'})")
+            p.wait_for_timeout(500)
+            c1 = cur()
+            check("Section B" not in c0 and "Section B" in c1, f"the marker follows the section being read ({c0!r} -> {c1!r})")
+            p.keyboard.press("Escape")
+            p.evaluate("() => scrollTo(0, 0)")
+            p.wait_for_timeout(400)
+            # paper light
+            pb = p.locator(".carnet-paper").bounding_box()
+            p.mouse.move(pb["x"] + 40, pb["y"] + 60)
+            p.mouse.move(pb["x"] + 60, pb["y"] + 80, steps=3)
+            p.wait_for_timeout(150)
+            lx = p.evaluate("() => document.querySelector('.carnet-paper').style.getPropertyValue('--c16-lx')")
+            check(lx.endswith("px") and float(lx[:-2]) > 0, f"the paper's light follows the mouse ({lx})")
+            # sticky notes: alignment guides, snapping, crumple
+            n0 = p.locator(".carnet-sticky").count()  # notes left by the earlier sections stay on page-a
+            p.evaluate("() => window.HqCarnetStickies.add()")
+            p.wait_for_timeout(500)
+            p.evaluate("() => window.HqCarnetStickies.add()")
+            wait(lambda: p.locator(".carnet-sticky").count() == n0 + 2, "two notes", page=p)
+            p.wait_for_timeout(600)
+            st = p.evaluate("() => [...document.querySelectorAll('.carnet-sticky')].map(n => [n.offsetLeft, n.offsetTop])")
+            st = st[n0:]
+            bb = p.locator(".carnet-sticky").nth(n0 + 1).locator(".carnet-sticky-bar").bounding_box()
+            gx, gy = bb["x"] + 110, bb["y"] + bb["height"] / 2  # the title part of the bar (not a button)
+            p.mouse.move(gx, gy)
+            p.mouse.down()
+            w0 = p.evaluate("(i) => document.querySelectorAll('.carnet-sticky')[i].offsetWidth", n0)
+            target_dx = st[0][0] - w0 - 5 - st[1][0]  # its right edge 5 px left of the other note's left edge
+            p.mouse.move(gx + target_dx / 2, gy + 120, steps=4)
+            p.mouse.move(gx + target_dx, gy + 140, steps=4)
+            p.wait_for_timeout(80)
+            guide = p.locator(".carnet-sticky-guide.is-on").count()
+            p.mouse.up()
+            p.wait_for_timeout(500)
+            st2 = p.evaluate("() => [...document.querySelectorAll('.carnet-sticky')].map(n => [n.offsetLeft, n.offsetTop])")[n0:]
+            check(guide >= 1, "a guide shows while the note lines up")
+            check(st2[1][0] + w0 == st2[0][0], f"the note snaps onto the other one's edge ({st2}, w {w0})")
+            check(p.locator(".carnet-sticky-guide.is-on").count() == 0, "guides go away on release")
+            p.locator(".carnet-sticky").nth(n0 + 1).locator(".carnet-sticky-close").click()
+            n_anim = p.evaluate("(i) => { const n = document.querySelectorAll('.carnet-sticky'); return n.length > i ? n[i].getAnimations().length : -1; }", n0 + 1)
+            check(n_anim >= 1, "closing a note crumples it")
+            wait(lambda: p.locator(".carnet-sticky").count() == n0 + 1, "the crumpled note is removed", page=p)
+            p.locator(".carnet-sticky").nth(n0).locator(".carnet-sticky-close").click()
+            p.wait_for_timeout(600)
+            # new page drops in
+            p.locator("#btn-carnet-new").click()
+            check(wait(lambda: p.evaluate("() => document.querySelector('.carnet-paper').getAnimations().some(a => a.playState === 'running')"), "the new page lands", timeout=3, page=p), "a new page lands from the stack")
+            p.wait_for_timeout(700)
+            if shots:
+                p.screenshot(path=str(shots / "desktop-16i.jpg"), type="jpeg", quality=55, scale="css")
+            # the page goes to the Corbeille
+            p.locator("#btn-carnet-more").click()
+            p.locator("[data-carnet-trash]").click()
+            check(wait(lambda: p.locator(".c16-trash-ghost").count() == 1, "crumple", timeout=2, page=p), "a trashed page crumples toward the Corbeille")
+            p.wait_for_timeout(900)
+            check(p.locator(".c16-trash-ghost").count() == 0, "and is gone after the flight")
+            b.close()
+            b, ctx = ctx_for(pw, srv, True)
+            p = open_page(ctx, srv, errors)
+            print("-- 16I sheets [phone]")
+            p.locator("#btn-carnet-library").click()
+            p.wait_for_selector('.carnet-library[data-mode="sheet"]:not([hidden]):not(.c16-ghost)')
+            p.wait_for_timeout(500)
+            hb = p.locator(".carnet-library:not(.c16-ghost) .carnet-lib-head").bounding_box()
+            touch_drag(p, ".carnet-library:not(.c16-ghost) .carnet-lib-head", hb["x"] + 60, hb["y"] + 20, hb["x"] + 60, hb["y"] + 70, steps=5, ms=70)
+            p.wait_for_timeout(450)
+            check(p.locator('.carnet-library[data-mode="sheet"]:not([hidden]):not(.c16-ghost)').count() == 1, "a short pull springs the sheet back")
+            check(p.evaluate("() => !document.querySelector('.carnet-library:not(.c16-ghost)').style.transform"), "it settles back in place")
+            touch_drag(p, ".carnet-library:not(.c16-ghost) .carnet-lib-head", hb["x"] + 60, hb["y"] + 20, hb["x"] + 60, hb["y"] + 420, steps=10)
+            p.wait_for_timeout(60)
+            check(p.locator('.carnet-library[data-mode="sheet"]:not([hidden]):not(.c16-ghost)').count() == 0, "a long pull closes the library sheet")
+            check(p.locator(".carnet-library.c16-ghost").count() == 1, "it slides away from under the finger")
+            p.wait_for_timeout(600)
+            p.locator("#btn-carnet-outline").click()
+            p.wait_for_selector(".carnet-outline:not([hidden]):not(.c16-ghost)")
+            p.wait_for_timeout(500)
+            ob = p.locator(".carnet-outline:not(.c16-ghost) .carnet-outline-head").bounding_box()
+            touch_drag(p, ".carnet-outline:not(.c16-ghost) .carnet-outline-head", ob["x"] + 60, ob["y"] + 15, ob["x"] + 60, ob["y"] + 330, steps=8)
+            p.wait_for_timeout(100)
+            check(p.locator(".carnet-outline:not([hidden]):not(.c16-ghost)").count() == 0, "the outline sheet closes the same way")
+            p.wait_for_timeout(500)
+            check(p.evaluate("() => !document.querySelector('.c16-caret.is-on')"), "no custom caret on a touch screen")
+            b.close()
+
             # ---------------------------------------------------------------- reduced motion
             srv.seed(seed())
             b, ctx = ctx_for(pw, srv, True, reduced=True)
@@ -539,6 +696,10 @@ def main():
             touch_drag(p, ".carnet-stage", box[0] + box[2] - 40, box[1] + 200, box[0] + 30, box[1] + 200)
             wait(lambda: p.eval_on_selector("#hq-carnet-editor", "e => e.dataset.pageId") == "page-b", "a swipe still turns the page", timeout=4, page=p)
             check(p.eval_on_selector(".carnet-paper", "e => !e.style.transform && e.getAnimations().length === 0"), "no page movement at all")
+            p.evaluate("() => window.hqCarnetBlockMenu(document.querySelector('[data-carnet-block-id=\"block-c1690\"]'))")
+            p.wait_for_selector(".carnet-block-menu:not([hidden])")
+            p.keyboard.press("Escape")
+            check(p.locator(".c16-ghost").count() == 0, "no exit copies with reduced motion")
             b.close()
     finally:
         srv.close()

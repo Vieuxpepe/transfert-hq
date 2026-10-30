@@ -180,6 +180,8 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(src.count('raw == "/api/carnet/stickies"'), 2)
         self.assertIn('<script src="/assets/hq-carnet-stickies.js"></script>', src)
         self.assertIn('<script src="/assets/hq-carnet-sizing.js"></script>', src)
+        self.assertIn('<script src="/assets/hq-carnet-feel.js"></script>', src)
+        self.assertLess(src.index("hq-carnet-sizing.js"), src.index("hq-carnet-feel.js"))
 
 
 if __name__ == "__main__":

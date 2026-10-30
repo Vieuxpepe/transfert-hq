@@ -1085,3 +1085,26 @@ Carnet — papier et barre du haut (phase 16H)
   Barre      « + Insérer » est dans la barre du haut (une ligne sur PC, deux sur téléphone). Sur PC, barres et
              bibliothèque s'estompent pendant la frappe et reviennent dès que la souris bouge, qu'on remonte ou qu'on
              quitte l'éditeur ; survol ou Tab les affichent aussitôt ; un avertissement d'enregistrement reste visible.
+
+Carnet — finitions de mouvement (phase 16I, assets/hq-carnet-feel.js)
+---------------------------------------------------------------------
+  Sorties    Menus, plan, outils « ⋯ », barre de format, inspecteur et feuilles repartent comme ils sont venus (une
+             copie inerte joue la sortie ; l'élément réel est déjà fermé, rien n'attend l'animation).
+  Feuilles   Téléphone : bibliothèque et plan montent du bas, suivent le doigt vers le bas et se ferment au-delà
+             d'un quart de hauteur ou d'un geste rapide ; sinon elles reviennent en place (poignée en haut).
+  Courbes    Une seule famille de courbes et durées pour HQ (--hq-spring, --hq-out, --hq-in, --hq-dur*), partagée
+             par le Calendrier, l'Accueil et le Carnet.
+  Curseur    PC : le curseur de saisie glisse entre les positions et ne clignote qu'à l'arrêt (natif en IME,
+             au tactile et en mouvement réduit).
+  Encre      « Surligné » se pose comme un marqueur (de gauche à droite) ; cocher une tâche trace un trait dessus.
+  Pages      Une nouvelle page tombe de la pile ; une page mise à la corbeille se froisse et file vers la Corbeille.
+  Biblio.    Les fiches glissent vers leur nouvelle place quand la liste change ; l'épingle tombe avec un rebond.
+  Plan       Un repère suit la section en cours de lecture.
+  Notes      Glisser une note l'aligne (8 px) sur les bords et centres de la page et des autres notes, avec un
+             guide pointillé ; fermer la froisse.
+  Mesures    Les valeurs et résultats comptent jusqu'à leur valeur (sur un calque, le texte n'est jamais modifié) ;
+             le verdict de tolérance apparaît d'un « pop ».
+  Lumière    PC : l'ombre et un léger reflet du papier suivent la souris.
+  Images     Une image insérée s'ouvre depuis un anneau.
+  Tout est présentation seulement et coupé en mouvement réduit. Tests : tests/check_hq_carnet_feel.mjs,
+  tests/visual_carnet_16c_playwright.py (section 16I).
