@@ -1325,7 +1325,7 @@ class StaticMediaTests(unittest.TestCase):
     ROOT = Path(__file__).resolve().parent.parent
 
     def test_browser_modules_have_no_dangerous_sinks(self):
-        for name in ("hq-carnet-modal.js", "hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js", "hq-carnet-reviews.js", "hq-carnet-intel.js", "hq-carnet-intel-ui.js", "hq-carnet-ask.js", "hq-carnet-ask-ui.js", "hq-carnet-reviews-ui.js", "hq-carnet-portals.js", "hq-carnet-portals-ui.js", "hq-carnet-image-ui.js", "hq-carnet-struct.js", "hq-carnet-structured-ui.js", "hq-carnet-nav.js", "hq-carnet-polish-ui.js", "hq-carnet-dessiner.js", "hq-carnet-commands.js", "hq-carnet-editor-ui.js", "hq-carnet-templates.js", "hq-carnet-capture.js"):
+        for name in ("hq-carnet-modal.js", "hq-carnet-media.js", "hq-carnet-rich.js", "hq-carnet.js", "hq-carnet-eng.js", "hq-carnet-eng-ui.js", "hq-carnet-history-ui.js", "hq-carnet-reviews.js", "hq-carnet-intel.js", "hq-carnet-intel-ui.js", "hq-carnet-ask.js", "hq-carnet-ask-ui.js", "hq-carnet-reviews-ui.js", "hq-carnet-portals.js", "hq-carnet-portals-ui.js", "hq-carnet-image-ui.js", "hq-carnet-struct.js", "hq-carnet-structured-ui.js", "hq-carnet-nav.js", "hq-carnet-polish-ui.js", "hq-carnet-dessiner.js", "hq-carnet-commands.js", "hq-carnet-editor-ui.js", "hq-carnet-templates.js", "hq-carnet-capture.js", "hq-carnet-motion.js", "hq-carnet-stickies.js"):
             text = (self.ROOT / "assets" / name).read_text(encoding="utf-8")
             for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "importScripts", "XMLHttpRequest", "sendBeacon", "WebSocket"):
                 self.assertNotIn(bad, text, f"{name}: {bad}")

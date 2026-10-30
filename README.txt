@@ -1005,3 +1005,60 @@ Carnet — passe d'édition (phase 2 de la passe UX, post-acceptation, hors éta
   Tests      node tests/check_hq_carnet_commands.mjs ; node tests/check_hq_carnet_editor_ui.mjs ;
              node tests/visual_carnet_editor_playwright.mjs (Chromium, schémas de couleur émulés, IME via CDP ; WebKit,
              Firefox et appareils physiques NON VÉRIFIÉS ici).
+
+Carnet — ergonomie + animations (phase 16C)
+--------------------------------------------
+  Module     assets/hq-carnet-motion.js (présentation seulement : n'écrit aucune note, aucun stockage navigateur, aucun réseau).
+  Téléphone  (≤ 720 px) Précédent / Suivant vont dans la barre Capture terrain, Copier · n/N · Nouvelle page dans une pastille
+             juste au-dessus (mêmes boutons déplacés : ids et raccourcis inchangés) ; la barre de page cachée sous la barre
+             Capture disparaît (DF-1). En mode concentration, tout revient dans la barre de page.
+  Capture    Le bouton Capture se range pendant la frappe ou le défilement dans le Carnet et revient après ~1,4 s d'inaction
+             (DF-3) ; le focus clavier le fait toujours réapparaître.
+  Accent     Indigo dans le Carnet seulement (l'en-tête, la navigation et le bouton Capture gardent l'accent de l'app) ;
+             focus = anneau neutre 3 px, sélection = teinte, enfoncé = teinte + ombre intérieure, réussite = --ok (vert).
+  Clavier    La ligne en cours reste au-dessus du clavier et de la barre ; menus et barre de sélection limités à la zone visible.
+  Gestes     La page suit le doigt (élastique s'il n'y a pas de page dans ce sens ; tourne à 30 % de la largeur ou d'une
+             pichenette) ; tirer vers le bas en haut de page : Plan de la page, plus loin : Bibliothèque ; appui long dans
+             la marge ou sur une image / carte / croquis : menu du bloc (dans le texte, l'appui long reste celui du système).
+  Annuler    Après Supprimer / Déplacer / Dupliquer un bloc : bandeau « Annuler » (6,5 s, pause au survol/focus, glisser pour
+             fermer). L'annulation ne s'applique que si la page est exactement celle produite par l'opération ; sinon rien
+             n'est modifié et un message le dit.
+  Animations Menus qui naissent du point touché, blocs qui glissent (insertion / suppression / déplacement), bloc soulevé
+             pendant le glisser, case cochée qui rebondit + « Liste terminée », pastille d'enregistrement en coche, carte de
+             bibliothèque qui s'agrandit en page, croquis qui grandit vers l'inspecteur, images en chargement, squelette au
+             démarrage. Réduction des animations : fondus seulement, aucun déplacement.
+  PC         Pavé tactile : glisser à deux doigts vers la gauche / droite tourne la page (suit le geste ; molette verticale
+             et Maj+molette ne tournent jamais). Boutons et Alt+flèches : la page arrive en glissant. Clic droit dans la marge
+             ou sur une image / carte / croquis : menu du bloc (dans le texte, le menu du navigateur reste). Remonter la
+             molette déjà en haut de page : Plan de la page, plus loin : Bibliothèque.
+  Tests      node tests/check_hq_carnet_motion.mjs ; python tests/visual_carnet_16c_playwright.py [--shots <dossier>]
+             (Chromium téléphone + bureau ; WebKit et appareils physiques NON VÉRIFIÉS ici).
+
+Carnet — notes autocollantes (phase 16D)
+-----------------------------------------
+  Usage      Bouton « note » dans la barre du haut ou Alt+Maj+N : une note s'ajoute en haut à droite de la partie visible
+             de la page. Glisser la barre colorée (ou la poignée ⠿, flèches au clavier, Maj = plus vite) pour la déplacer ;
+             ● change la couleur (jaune, rose, bleu, vert, violet) ; – replie (seule la première ligne reste) ; copier met
+             le texte dans le presse-papiers ; × ferme (bandeau « Annuler » pour la rétablir).
+  Stockage   <ROOT>/.hq-carnet/stickies.json (propre fichier, propre verrou, propre révision) via GET/POST
+             /api/carnet/stickies (admin + CSRF). Jamais dans notebook.json, l'historique, les instantanés, la recherche ou
+             les rapports : ce n'est pas du contenu de page. Copié dans la sauvegarde du Carnet (Carnet/stickies.json).
+  Position   x = fraction de la largeur de page (la note garde sa place du téléphone au PC, toujours entièrement visible),
+             y = pixels depuis le haut de la page. 40 notes par page, 1000 au total, 4000 caractères par note.
+  Appareils  Toutes les notes sont partagées (actualisées toutes les 15 s quand le Carnet est visible). Une modification
+             basée sur une version périmée est refusée (409) : la version la plus récente s'affiche, rien n'est écrasé.
+  Tests      python -m unittest tests.test_hq_carnet_stickies ; node tests/check_hq_carnet_stickies.mjs ;
+             python tests/visual_carnet_16c_playwright.py (bureau + téléphone, Chromium).
+
+Carnet — finitions (phase 16E)
+------------------------------
+  Toucher    Onde qui part du point touché dans chaque bouton du Carnet ; petit retour haptique (iPhone : bascule cachée,
+             Android : vibration) en cochant, en déposant un bloc ou une note, en ajoutant / copiant une note, en ouvrant un
+             menu au doigt.
+  Animations Ombre de pli sur le bord qui se soulève pendant qu'on tourne la page ; numéro de page qui roule ; éléments
+             des menus en cascade ; cartes de la bibliothèque qui arrivent l'une après l'autre ; bloc ajouté qui s'illumine ;
+             bloc déposé qui se pose depuis l'endroit où on l'a lâché ; confettis quand une liste est terminée ; images qui
+             apparaissent en fondu ; page qui « respire » en entrant / sortant du mode concentration.
+  Notes      La note se pose avec un petit rebond, penche quand on la prend, oscille en se posant ; couleur en fondu ;
+             le texte s'enroule en repliant ; bulle « Copié ». Au survol (souris) : cartes, boutons et notes se soulèvent.
+  Réduction  Avec « réduire les animations » : aucune onde, aucun mouvement, aucun confetti ; seuls des fondus restent.

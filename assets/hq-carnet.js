@@ -2211,22 +2211,58 @@
       const t = e.touches[0];
       // Phase 3.5: a gesture that starts over a table, image, group, drawing or an open sheet belongs to that element (scroll / pan /
       // slider), never to the page flip.
-      const over = e.target && e.target.closest ? e.target.closest("table,[data-carnet-struct=table],[data-carnet-image],.carnet-group,.carnet-drawing,.carnet-insp-viewport,.carnet-outline,.carnet-inspector") : null;
+      const over = e.target && e.target.closest ? e.target.closest(FLIP_EXCLUDE) : null;
       if (over) {
         ui.swipe = null;
         return;
       }
-      ui.swipe = { x: t.clientX, y: t.clientY, t: Date.now(), multi: false };
+      ui.swipe = { x: t.clientX, y: t.clientY, t: Date.now(), multi: false, lock: 0, dx: 0, dy: 0, v: 0, lx: t.clientX, lt: Date.now() };
     }, { passive: true });
+    // 16C: not passive, so that once the gesture is a horizontal page drag the page does not also scroll vertically. A gesture that
+    // is not (yet) a page drag is never prevented, so scrolling, text selection and the iOS magnifier are untouched.
     stage.addEventListener("touchmove", (e) => {
-      if (ui.swipe && e.touches && e.touches.length > 1) ui.swipe.multi = true;
-    }, { passive: true });
+      const s = ui.swipe;
+      if (!s) return;
+      if (e.touches && e.touches.length > 1) {
+        s.multi = true;
+        if (s.lock === 1) flipRelease(Object.assign(s, { dx: 0, v: 0 }));
+        s.lock = -1;
+        return;
+      }
+      const t = e.touches && e.touches[0];
+      if (!t) return;
+      const dx = t.clientX - s.x;
+      const dy = t.clientY - s.y;
+      if (!s.lock) {
+        if (Math.abs(dx) < FLIP_LOCK_PX && Math.abs(dy) < FLIP_LOCK_PX) return;
+        const selecting = editor.selectionStart !== editor.selectionEnd;
+        s.lock = Math.abs(dx) > SWIPE_RATIO * Math.abs(dy) && !selecting && Date.now() - s.t < FLIP_HOLD_MS ? 1 : -1;
+        if (s.lock === 1) flipStop(ui.paper);
+      }
+      if (s.lock !== 1) return;
+      if (e.cancelable) e.preventDefault();
+      const now = Date.now();
+      const step = Math.max(1, now - s.lt);
+      s.v = s.v * 0.4 + ((t.clientX - s.lx) / step) * 0.6;
+      s.lx = t.clientX;
+      s.lt = now;
+      s.dx = dx;
+      s.dy = dy;
+      flipFollow(s);
+    }, { passive: false });
     stage.addEventListener("touchcancel", () => {
+      const s = ui.swipe;
       ui.swipe = null;
+      if (s && s.lock === 1) flipRelease(Object.assign(s, { dx: 0, v: 0 }));
     }, { passive: true });
     stage.addEventListener("touchend", (e) => {
       const s = ui.swipe;
       ui.swipe = null;
+      if (s && s.lock === 1) {
+        flipRelease(s);
+        return;
+      }
+      if (s && s.lock === -1) return; // decided early: a scroll, a selection or a multi-finger gesture, never a page turn
       if (!s || s.multi || !e.changedTouches || !e.changedTouches.length) return;
       if (Date.now() - s.t > SWIPE_MAX_MS) return; // long press = selection / caret placement
       if (editor.selectionStart !== editor.selectionEnd) return; // selecting text
@@ -2237,6 +2273,7 @@
       navigate(dx < 0 ? 1 : -1);
     }, { passive: true });
 
+    bindTrackpadFlip(stage);
     bindMedia();
     ui.lib.open = false;
   }
@@ -2438,6 +2475,7 @@
         return N ? N.suggestFor(prev) : [];
       },
       annotate: (index) => dessinerAnnotateAt(index),
+      offerUndo: (label, before) => offerBlockUndo(label, before),
     };
     const api = M.mount(host);
     if (I && typeof I.mount === "function") {
@@ -2446,6 +2484,8 @@
       host.dragging = dm.active;
       api.drag = dm;
     }
+    // 16C: long-press on a block (touch) opens that block's menu (hq-carnet-motion.js calls this; nothing else does).
+    global.hqCarnetBlockMenu = (line) => !!(api && typeof api.openBlockMenuForLine === "function" && api.openBlockMenuForLine(line));
     return api;
   }
 
@@ -3594,15 +3634,189 @@
     setTimeout(cleanup, FLIP_MS + 200);
   }
 
-  function navigate(delta) {
+  function navigate(delta, opts) {
     const c = ui.core;
-    if (!c) return;
+    if (!c) return false;
     const old = ui.editor ? ui.editor.value : "";
     const hadFocus = doc.activeElement === ui.editor;
     if (c.go(delta)) {
-      flipGhost(delta, old);
+      if (!(opts && opts.dragged)) {
+        flipGhost(delta, old); // a finger-driven flip already moved the page itself
+        flipSlideIn(delta); // 16C (PC): buttons and Alt+arrows get the same arrival as a swipe
+      }
       if (hadFocus) focusEditor(false);
+      return true;
     }
+    return false;
+  }
+
+  // ---------------------------------------------------------------- 16C: page flip that follows the finger
+  // The paper moves with a horizontal drag (rubber band when there is no page that way); released past a third of its width,
+  // or flicked, it slides out, the neighbouring page is shown and slides in. Only CSS transforms on .carnet-paper: nothing is
+  // saved by the gesture itself (navigation is the same c.go() as the buttons). Reduced motion: no movement, a swipe still turns.
+  const FLIP_LOCK_PX = 10;
+  // a gesture that starts over one of these belongs to it (scroll / pan / slider / sticky note), never to the page flip
+  const FLIP_EXCLUDE = "table,[data-carnet-struct=table],.carnet-table-scroll,[data-carnet-image],.carnet-group,.carnet-drawing,.carnet-insp-viewport,.carnet-outline,.carnet-inspector,.carnet-sticky";
+
+  function flipSlideIn(dir) {
+    const paper = ui.paper;
+    if (!paper || reducedMotion() || !paper.animate) return;
+    flipAnimate(paper, [{ transform: "translate3d(" + dir * 28 + "px,0,0)", opacity: 0.55 }, { transform: "none", opacity: 1 }], 300, "cubic-bezier(.2,1.1,.32,1)").then((a) => a && a.cancel && a.cancel());
+  }
+
+  /** 16C (PC): a two-finger horizontal trackpad swipe drives the same finger-following flip. Mouse wheels (vertical) and
+   *  Shift+wheel (horizontal scrolling) are left alone; a horizontally scrollable element under the pointer keeps the gesture. */
+  function bindTrackpadFlip(stage) {
+    let w = null;
+    let lastEvt = 0;
+    let lastEnd = 0;
+    const finish = () => {
+      const s = w;
+      w = null;
+      lastEnd = Date.now();
+      if (s && s.started) flipRelease(s);
+    };
+    stage.addEventListener("wheel", (e) => {
+      if (e.ctrlKey || e.shiftKey || e.metaKey || e.deltaMode !== 0) return;
+      const ax = Math.abs(e.deltaX);
+      const ay = Math.abs(e.deltaY);
+      const t = Date.now();
+      const tail = !w && lastEnd && t - lastEvt < 220; // the trackpad's momentum after a turn: never a second turn
+      lastEvt = t;
+      if (tail) {
+        if (e.cancelable && ax > ay) e.preventDefault();
+        return;
+      }
+      if (!w) {
+        if (ax < 4 || ax < 1.4 * ay) return;
+        if (e.target && e.target.closest && e.target.closest(FLIP_EXCLUDE)) return;
+        if (ui.editor && ui.editor.selectionStart !== ui.editor.selectionEnd) return;
+        w = { dx: 0, dy: 0, v: 0, lt: Date.now(), started: false, timer: 0 };
+        flipStop(ui.paper);
+      }
+      if (e.cancelable) e.preventDefault(); // no browser back/forward swipe while the page is being turned
+      const now = Date.now();
+      const step = -e.deltaX;
+      w.v = w.v * 0.5 + (step / Math.max(1, now - w.lt)) * 0.5;
+      w.lt = now;
+      w.dx += step;
+      w.dy += -e.deltaY;
+      w.started = true;
+      flipFollow(w);
+      if (w.timer) clearTimeout(w.timer);
+      w.timer = setTimeout(finish, 120);
+    }, { passive: false });
+  }
+  const FLIP_HOLD_MS = 450; // held before moving = selecting text, never a page turn
+  const FLIP_FLICK = 0.45; // px/ms
+
+  function flipCanGo(dir) {
+    const b = doc.getElementById(dir > 0 ? "btn-carnet-next" : "btn-carnet-prev");
+    return !!b && !b.disabled;
+  }
+
+  function flipBuzz(ms) {
+    const M = global.HqCarnetMotion;
+    if (M && typeof M.buzz === "function") M.buzz(ms);
+  }
+
+  function flipStop(paper) {
+    if (paper && paper.getAnimations) for (const a of paper.getAnimations()) if (a.id === "c16-flip") a.cancel();
+  }
+
+  function flipFollow(s) {
+    const paper = ui.paper;
+    if (!paper || reducedMotion()) return;
+    const w = Math.max(1, paper.clientWidth);
+    const dir = s.dx < 0 ? 1 : -1;
+    let x = s.dx;
+    if (!flipCanGo(dir)) x = Math.sign(x) * Math.min(64, Math.abs(x) * 0.25); // rubber band: nothing that way
+    s.px = x;
+    paper.classList.add("c16-dragging");
+    paper.style.transform = "translate3d(" + x.toFixed(1) + "px,0,0) rotate(" + ((x / w) * 1.6).toFixed(3) + "deg)";
+    paper.style.opacity = String(Math.max(0.55, 1 - (Math.abs(x) / w) * 0.45).toFixed(3));
+    paper.style.setProperty("--c16-curl", Math.min(1, Math.abs(x) / (w * 0.5)).toFixed(3)); // the lifting edge darkens as it turns
+    paper.setAttribute("data-c16-dir", x < 0 ? "next" : "prev");
+    const armed = flipCanGo(dir) && Math.abs(x) >= Math.max(SWIPE_MIN, w * 0.3);
+    if (armed !== !!s.armed) {
+      s.armed = armed;
+      if (armed) flipBuzz(8);
+    }
+  }
+
+  function flipAnimate(paper, frames, ms, easing) {
+    flipStop(paper);
+    if (!paper.animate) return Promise.resolve();
+    const a = paper.animate(frames, { duration: ms, easing, fill: "forwards" });
+    a.id = "c16-flip";
+    return a.finished.then(() => a, () => a);
+  }
+
+  function flipRelease(s) {
+    const paper = ui.paper;
+    if (!paper) return;
+    const dx = s.dx || 0;
+    const dir = dx < 0 ? 1 : -1;
+    const w = Math.max(1, paper.clientWidth);
+    const flick = Math.abs(s.v || 0) >= FLIP_FLICK && Math.abs(dx) > 30 && Math.sign(s.v) === Math.sign(dx);
+    const go = flipCanGo(dir) && (Math.abs(dx) >= Math.max(SWIPE_MIN, w * 0.3) || flick);
+    if (reducedMotion()) {
+      if (go || isSwipe(dx, s.dy || 0)) navigate(dir);
+      return;
+    }
+    const from = paper.style.transform || "none";
+    const fromOp = paper.style.opacity || "1";
+    paper.classList.remove("c16-dragging");
+    paper.style.transform = "";
+    paper.style.opacity = "";
+    paper.style.removeProperty("--c16-curl");
+    paper.removeAttribute("data-c16-dir");
+    if (!go) {
+      flipAnimate(paper, [{ transform: from, opacity: fromOp }, { transform: "none", opacity: 1 }], 340, "cubic-bezier(.2,1.35,.35,1)").then((a) => a && a.cancel && a.cancel());
+      return;
+    }
+    const out = -dir * w * 1.04;
+    flipAnimate(paper, [{ transform: from, opacity: fromOp }, { transform: "translate3d(" + out + "px,0,0) rotate(" + (-dir * 1.6) + "deg)", opacity: 0 }], 150, "cubic-bezier(.4,0,1,1)").then(() => {
+      const moved = navigate(dir, { dragged: true });
+      const inFrom = moved ? dir * w * 0.32 : 0;
+      return flipAnimate(paper, [{ transform: "translate3d(" + inFrom + "px,0,0)", opacity: moved ? 0 : 1 }, { transform: "none", opacity: 1 }], 360, "cubic-bezier(.2,1.1,.32,1)");
+    }).then((a) => a && a.cancel && a.cancel());
+  }
+
+  // ---------------------------------------------------------------- 16C: block Undo (move / delete / duplicate)
+  function linesSig(lines) {
+    try {
+      return JSON.stringify([Rich.flat(lines), Rich.fmtOf(lines), Rich.idsOf(lines)]);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /** Offer "Annuler" for a block operation that was just committed. Undo applies ONLY when the same page is still exactly what the
+   *  operation produced (same text, formats and ids); otherwise nothing is touched and a message says so (fails closed). */
+  function offerBlockUndo(label, before) {
+    const M = global.HqCarnetMotion;
+    const e = curEntry();
+    if (!M || typeof M.toast !== "function" || !e || !ui.editor || !Array.isArray(before)) return;
+    const pageId = e.id;
+    const snapshot = Rich.cloneLines(before);
+    const sig = linesSig(Rich.parseEditor(ui.editor));
+    M.toast({
+      text: label,
+      action: "Annuler",
+      onAction: () => {
+        const cur = curEntry();
+        if (!cur || cur.id !== pageId || linesSig(Rich.parseEditor(ui.editor)) !== sig) {
+          flashMsg("La page a changé depuis : rien n'a été annulé", true);
+          return false;
+        }
+        if (commitLines(Rich.cloneLines(snapshot), null)) {
+          flashMsg("Annulé");
+          return true;
+        }
+        return false;
+      },
+    });
   }
 
   function focusEditor(atEnd) {

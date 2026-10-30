@@ -127,7 +127,19 @@
     }
     const say = (t, err) => host.status && host.status(t, !!err);
     const editor = () => host.editor();
-    const view = () => ({ w: win.innerWidth || doc.documentElement.clientWidth, h: win.innerHeight || doc.documentElement.clientHeight });
+    // 16C: the visible height, not the layout height: on phones the software keyboard covers the bottom of the layout viewport, so a
+    // menu or toolbar clamped to innerHeight could sit under the keyboard.
+    const view = () => {
+      const w = win.innerWidth || doc.documentElement.clientWidth;
+      let h = win.innerHeight || doc.documentElement.clientHeight;
+      const vv = win.visualViewport;
+      if (vv && vv.height > 0) h = Math.min(h, Math.round(vv.offsetTop + vv.height));
+      return { w, h };
+    };
+    // 16C: an "Annuler" offer after a block move / delete / duplicate (the host checks, when it is used, that nothing changed since).
+    const offerUndo = (label, before) => {
+      if (typeof host.offerUndo === "function") host.offerUndo(label, before);
+    };
     const stamp = () => {
       const s = host.state();
       return s ? { pageId: s.pageId, rev: s.rev, gen: s.gen } : null;
@@ -580,11 +592,13 @@
         case "down": {
           const ok = commitBlocks(C.move(Rich, lines, i, id === "up" ? -1 : 1), opts && opts.caret ? { off: opts.off, focus: true } : { noSel: true });
           if (ok) say(id === "up" ? "Bloc déplacé vers le haut" : "Bloc déplacé vers le bas");
+          if (ok) offerUndo(id === "up" ? "Bloc déplacé vers le haut" : "Bloc déplacé vers le bas", lines);
           return ok;
         }
         case "dup": {
           const ok = commitBlocks(C.duplicate(Rich, lines, i), { noSel: true });
           if (ok) say("Bloc dupliqué");
+          if (ok) offerUndo("Bloc dupliqué", lines);
           return ok;
         }
         case "above":
@@ -592,6 +606,7 @@
         case "delete": {
           const ok = commitBlocks(C.remove(Rich, lines, i), { noSel: true });
           if (ok) say("Bloc supprimé");
+          if (ok) offerUndo("Bloc supprimé", lines);
           return ok;
         }
         case "convert": {
@@ -915,8 +930,10 @@
             say(MSG.stale, true);
             return false;
           }
-          const ok = commitBlocks(C.moveTo(Rich, host.lines(), t.index, to), { noSel: true });
+          const before = host.lines();
+          const ok = commitBlocks(C.moveTo(Rich, before, t.index, to), { noSel: true });
           if (ok) say("Bloc déplacé : position " + (to + 1));
+          if (ok) offerUndo("Bloc déplacé : position " + (to + 1), before);
           return ok;
         },
         nudge() {},
@@ -1028,6 +1045,15 @@
       slashKey, onKeydown, invalidate, dragHost, onSelectionChange, onViewport, onResize, onPointerDown, closeMenus: () => invalidate(),
       toolbar: () => S.tb, menu: () => (S.menuState ? S.menuState.box : null), rail: () => (S.rail ? S.rail.rail : null),
       openBlockMenuForCaret: () => openBlockMenu(null, caretCtx()),
+      // 16C: long-press on a block (touch): the same block menu, for that block.
+      openBlockMenuForLine: (line) => {
+        const ed = editor();
+        if (!line || !ed || line.parentNode !== ed) return false;
+        const idx = Array.prototype.indexOf.call(ed.children, line);
+        if (idx < 0 || !stamp()) return false;
+        openBlockMenu(null, blockCtx(line, idx));
+        return true;
+      },
       refresh: scheduleToolbar,
     };
   }

@@ -167,9 +167,10 @@
         g.moved = g.moved || g.value !== g.start;
       } else {
         const kids = Array.prototype.filter.call(host.editor().children, (k) => k !== g.indicator);
+        // 16C: the lift preview translates blocks; the slot is always computed on the UNtranslated layout.
         const mids = kids.map((k) => {
           const r = k.getBoundingClientRect();
-          return r.top + r.height / 2;
+          return r.top + r.height / 2 - (g.shift && g.shift.has(k) ? g.shift.get(k) : 0);
         });
         g.slot = slotFromY(e2.clientY, mids);
         g.moved = g.moved || Math.abs(e2.clientY - g.y0) > 4;
@@ -187,7 +188,10 @@
         if (!g.last || S.gesture !== g) return;
         compute(g, g.last);
         if (g.kind === "size") g.fig.style.width = g.value + "%"; // local preview only
-        else showIndicator(g, g.kids);
+        else {
+          showIndicator(g, g.kids);
+          liftPreview(g);
+        }
       };
       if (typeof host.raf === "function") g.raf = host.raf(run);
       else run();
@@ -203,7 +207,50 @@
       g.indicator.style.top = Math.max(0, y) + "px";
     }
 
+    function calm() {
+      try {
+        return !!(doc.defaultView && doc.defaultView.matchMedia && doc.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (_) {
+        return true;
+      }
+    }
+
+    /** 16C: the moved block follows the pointer and the others part to show where it will land. Local CSS transforms only, thrown
+     *  away by cleanup(); the drop is still decided by compute() on the untranslated layout. Reduced motion: indicator line only. */
+    function liftPreview(g) {
+      if (!g.kids || !g.last || calm() || !g.lineEl.style || !g.lineEl.style.setProperty) return;
+      const ed = host.editor();
+      if (!g.shift) {
+        g.shift = new Map();
+        if (ed && ed.classList) ed.classList.add("c16-lifting");
+      }
+      const dy = g.last.clientY - g.y0;
+      g.lineEl.style.setProperty("--c16-dy", dy.toFixed(1) + "px");
+      g.shift.set(g.lineEl, dy);
+      const h = g.lineEl.offsetHeight || 0;
+      const to = targetIndex(g.from, g.slot);
+      g.kids.forEach((k, i) => {
+        if (k === g.lineEl || !k.style || !k.style.setProperty) return;
+        let want = 0;
+        if (g.from < to && i > g.from && i <= to) want = -h;
+        else if (g.from > to && i >= to && i < g.from) want = h;
+        if ((g.shift.get(k) || 0) === want) return;
+        if (k.classList) k.classList.add("c16-parting");
+        k.style.setProperty("--c16-dy", want + "px");
+        g.shift.set(k, want);
+      });
+    }
+
     function cleanup(g) {
+      if (g.shift) {
+        for (const k of g.shift.keys()) {
+          if (k.style && k.style.removeProperty) k.style.removeProperty("--c16-dy");
+          if (k.classList) k.classList.remove("c16-parting");
+        }
+        g.shift = null;
+        const ed = host.editor();
+        if (ed && ed.classList) ed.classList.remove("c16-lifting");
+      }
       for (const f of g.off) f();
       if (g.raf && typeof host.cancelRaf === "function") host.cancelRaf(g.raf);
       if (g.indicator && g.indicator.parentNode) g.indicator.parentNode.removeChild(g.indicator);

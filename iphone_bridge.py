@@ -6341,6 +6341,8 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-editor-ui.js"></script>
 <script src="/assets/hq-carnet.js"></script>
 <script src="/assets/hq-carnet-capture.js"></script>
+<script src="/assets/hq-carnet-motion.js"></script>
+<script src="/assets/hq-carnet-stickies.js"></script>
 <script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
 <script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
 <script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
@@ -7543,6 +7545,10 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_carnet.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw == "/api/carnet/stickies":  # Phase 16D: sticky notes on a page (admin: not in the upload allowlist)
+            code, payload = hq_carnet.stickies.http_get(parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         if raw == "/api/carnet/asset":
             code, payload = hq_carnet.http_asset_usage()
             self._json(code, payload)
@@ -7917,6 +7923,15 @@ class Handler(BaseHTTPRequestHandler):
         _vm = re.fullmatch(r"/api/carnet/voice/(voice-[0-9a-f]{24})/transcribe", raw)
         if _vm:
             self._carnet_voice_post(_vm.group(1))
+            return True
+        if raw == "/api/carnet/stickies":  # Phase 16D (CSRF is checked for every POST before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_carnet.stickies.http_post(data)
+            self._json(code, payload)
             return True
         if raw == "/api/carnet":
             try:

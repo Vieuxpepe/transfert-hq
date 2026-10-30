@@ -64,6 +64,7 @@ import hq_carnet_reasoning as reasoning
 import hq_carnet_verifications as verifications
 import hq_carnet_rich as rich
 import hq_carnet_snapshots as snapshots
+import hq_carnet_stickies as stickies
 import hq_carnet_sources as sources
 import hq_carnet_voice as voice
 import hq_state
@@ -186,6 +187,7 @@ def bind(**kwargs: Any) -> None:
         history.bind(**kwargs)  # Stage 08: the history file shares the root and clock
         snapshots.bind(**kwargs)  # Phase 5: the write-once snapshot store shares the root and clock
         reviews.bind(**kwargs)  # Phase 7: the review-pack store shares the root and clock
+        stickies.bind(**kwargs)  # Phase 16D: the sticky-note store shares the root and clock
         annotations.bind(**kwargs)  # Phase 10: the live-annotation store (review comments reuse its root and clock)
         # Phase 11: the verification store reuses the annotation module's root / clock binding (no separate bind)
         _ready = _cb.get("root") is not None
@@ -1741,6 +1743,12 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         hist_payload, hist_valid = history.snapshot_bytes(root)  # Stage 08: its own file, its own lock
     except history.HistoryStorageError as e:
         raise CarnetStorageError(str(e)) from e
+    try:
+        stk_payload, stk_valid = stickies.snapshot_bytes(root)  # Phase 16D: sticky notes, their own file and lock
+    except stickies.StickyError as e:
+        raise CarnetStorageError(str(e)) from e
+    if not stk_valid:
+        valid = False
     if hist_payload is not None and hist_valid:  # Stage 08: the media closure of every retained restore point travels with it
         try:
             hist_data = json.loads(hist_payload.decode("utf-8"))
@@ -1773,7 +1781,7 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         drawings_report = {"referenced": len(stems), "missing": found["missing"], "invalid": found["invalid"], "underlays": len(found["ids"])}
         if found["invalid"]:
             valid = False
-    if payload is None and src_payload is None and hist_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"] \
+    if payload is None and src_payload is None and hist_payload is None and stk_payload is None and not snap_closure["files"] and not rev_closure["files"] and rev_closure["valid"] \
             and not ann_closure["files"] and ann_closure["valid"] and not rcm_closure["files"] and rcm_closure["valid"] and not ver_closure["files"] and ver_closure["valid"] \
             and not rsn_closure["files"] and rsn_closure["valid"]:
         return {"ok": True, "included": False, "status": "absent"}
@@ -1794,6 +1802,8 @@ def _snapshot_locked(root: Path | str, dest_dir: Path) -> dict:
         _write_exclusive(dest_dir / sources.FILE_NAME, src_payload)
     if hist_payload is not None:
         _write_exclusive(dest_dir / history.FILE_NAME, hist_payload)
+    if stk_payload is not None:
+        _write_exclusive(dest_dir / stickies.FILE_NAME, stk_payload)
     snap_report: dict | None = None
     if snap_closure["files"] or not snap_closure["valid"]:
         if snap_closure["files"]:

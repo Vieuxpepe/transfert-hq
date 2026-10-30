@@ -387,7 +387,7 @@ body.carnet-focus .topbar,body.carnet-focus .view-bar,body.carnet-focus .bottom-
 
 /* ---- Stage 05: citations + sources overlay (same tokens as the rest of the Carnet; no fixed colours) ---- */
 .carnet-editor .carnet-citation{color:var(--accent);border-bottom:1px dotted currentColor;cursor:pointer;border-radius:3px}
-.carnet-editor .carnet-citation:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.carnet-editor .carnet-citation:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .carnet-editor .carnet-citation[data-cite-ok="true"]::after{content:" \2713";font-weight:700}
 .carnet-editor .carnet-citation[data-cite-todo="true"]{color:var(--warn);border-bottom-style:dashed}
 .carnet-src-layer{position:absolute;inset:0;z-index:var(--carnet-z-sources,130);display:flex;flex-direction:column;gap:8px;padding:12px;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;
@@ -449,13 +449,13 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 /* Stage 07 — engineering tools. Collapsed by default: nothing below is visible on the plain paper. */
 .carnet-eng-line{display:block;margin:.35em 0;line-height:1.35;cursor:pointer;-webkit-user-select:none;user-select:none}
 .carnet-eng-card{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:6px 10px;background:color-mix(in srgb,var(--panel) 70%,transparent);font-size:.92em}
-.carnet-eng-line:focus-visible .carnet-eng-card{outline:2px solid var(--accent);outline-offset:2px}
+.carnet-eng-line:focus-visible .carnet-eng-card{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-eng-head{font-size:var(--text-sm);color:var(--muted)}
 .carnet-eng-body{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .carnet-eng-body strong{font-size:1.05em}
 .carnet-eng-meta{font-size:var(--text-sm);color:var(--muted);font-variant-numeric:tabular-nums}
 .carnet-eng-status{display:inline-block;margin-top:2px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);font-size:var(--text-sm);font-weight:700}
-.carnet-eng-status[data-status="in"]{border-color:var(--accent);color:var(--accent)}
+.carnet-eng-status[data-status="in"]{border-color:var(--ok);color:var(--ok)}
 .carnet-eng-status[data-status="out"]{border-color:var(--danger);color:var(--danger)}
 .carnet-eng-status[data-status="incompatible"]{border-color:var(--warn);color:var(--warn)}
 .carnet-eng-note{font-size:var(--text-sm);color:var(--muted);margin:2px 0 0}
@@ -505,7 +505,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-hx-warn{color:var(--danger);font-weight:600}
 .carnet-hx-outcome[data-hx-outcome="partial"],.carnet-hx-outcome[data-hx-outcome="none"]{color:var(--danger);font-weight:700}
 .carnet-hx-md{margin:0;padding:8px;max-height:45vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:10px;background:var(--panel-2)}
-.carnet-hx :focus-visible,.carnet-hx button:focus-visible,.carnet-hx select:focus-visible,.carnet-hx input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-hx :focus-visible,.carnet-hx button:focus-visible,.carnet-hx select:focus-visible,.carnet-hx input:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 @media (prefers-reduced-motion:reduce){.carnet-hx,.carnet-hx *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 @media print{.carnet-hx{display:none!important}
   body.carnet-printing #hq-carnet-print h1{font-size:1.6em;margin:0 0 .6em}
@@ -523,7 +523,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-insert-item:focus-visible,.carnet-insert-item:hover{background:color-mix(in srgb,var(--accent) 16%,var(--panel-2));outline:none;box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 60%,transparent)}
 .carnet-insert-label{font-weight:800}
 .carnet-insert-hint{font-size:var(--text-sm);color:var(--muted)}
-.carnet-btn:focus-visible,.carnet-small:focus-visible,.carnet-sym:focus-visible,.carnet-chip:focus-visible,.carnet-handle:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-btn:focus-visible,.carnet-small:focus-visible,.carnet-sym:focus-visible,.carnet-chip:focus-visible,.carnet-handle:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-paper[data-drop="true"]{outline:3px dashed var(--accent);outline-offset:-3px;background-image:linear-gradient(color-mix(in srgb,var(--accent) 10%,transparent),color-mix(in srgb,var(--accent) 10%,transparent))}
 .carnet-paper[data-drop="true"]::after{content:"Déposer l'image ici";position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:4;padding:6px 14px;border-radius:999px;
   background:var(--accent);color:var(--carnet-on-accent);font-weight:800;font-size:var(--text-sm);pointer-events:none}
@@ -568,7 +568,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-sel-btn{flex:0 0 auto;min-width:36px;min-height:36px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--text);font:inherit;font-size:var(--text-sm);font-weight:700;cursor:pointer;touch-action:manipulation}
 .carnet-sel-btn:hover{background:color-mix(in srgb,var(--accent) 14%,var(--panel-2))}
 .carnet-sel-btn[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 26%,var(--panel-2));color:var(--accent)}
-.carnet-sel-btn:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.carnet-sel-btn:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .carnet-sel-italic{font-style:italic}.carnet-sel-underline{text-decoration:underline}.carnet-sel-code{font-family:ui-monospace,Menlo,Consolas,monospace}
 .carnet-sel-toolbar[data-side="below"] .carnet-sel-btn{min-width:var(--carnet-tap);min-height:var(--carnet-tap)}
 
@@ -577,7 +577,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
   border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:0 14px 36px rgba(0,0,0,.45)}
 .carnet-cmd-menu[hidden]{display:none}
 .carnet-cmd-input{width:100%;box-sizing:border-box;min-height:40px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);color:var(--text);font:inherit}
-.carnet-cmd-input:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.carnet-cmd-input:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .carnet-cmd-list{display:flex;flex-direction:column;gap:2px;max-height:min(46vh,340px);overflow:auto;overscroll-behavior:contain}
 .carnet-cmd-item{display:flex;flex-direction:column;gap:1px;min-height:var(--carnet-tap);box-sizing:border-box;padding:6px 12px;border-radius:10px;cursor:pointer;color:var(--text)}
 .carnet-cmd-item[aria-selected="true"]{background:color-mix(in srgb,var(--accent) 22%,var(--panel-2));box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 60%,transparent)}
@@ -595,12 +595,12 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-rail-btn[hidden]{display:none}
 .carnet-rail-drag{cursor:grab}
 .carnet-rail-btn:hover,.carnet-rail-btn[aria-expanded="true"]{background:color-mix(in srgb,var(--accent) 18%,var(--panel-2));color:var(--text)}
-.carnet-rail-btn:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.carnet-rail-btn:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .carnet-block-rail.is-touch{flex-direction:row}
 .carnet-block-rail.is-touch .carnet-rail-btn{width:var(--carnet-tap);height:var(--carnet-tap)}
 .carnet-gap-plus{position:fixed;z-index:40;width:24px;height:24px;padding:0;border:1px solid var(--accent);border-radius:999px;background:var(--panel);color:var(--accent);font:inherit;font-weight:800;line-height:1;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
 .carnet-gap-plus[hidden]{display:none}
-.carnet-gap-plus:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-gap-plus:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-block-menu{position:fixed;z-index:70;width:min(260px,calc(100vw - 16px));box-sizing:border-box;display:flex;flex-direction:column;gap:2px;padding:6px;border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:0 14px 36px rgba(0,0,0,.45);max-height:70vh;overflow:auto}
 .carnet-block-menu[hidden]{display:none}
 .carnet-block-item{min-height:var(--carnet-tap);box-sizing:border-box;padding:6px 12px;border:0;border-radius:10px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer}
@@ -627,10 +627,10 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
 .carnet-fold-h{margin:0;font-size:inherit}
 .carnet-fold{display:inline-flex;align-items:center;gap:6px;min-height:var(--carnet-tap);padding:0 6px;border:0;border-radius:8px;background:transparent;color:var(--text);font:inherit;font-weight:800;cursor:pointer}
 .carnet-fold:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
-.carnet-fold:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.carnet-fold:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .carnet-fold-chev{width:1em;color:var(--muted)}
 .carnet-chip .carnet-count,.carnet-fold .carnet-count{margin-left:6px;padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--muted) 20%,transparent);color:var(--muted);font-size:var(--text-sm);font-variant-numeric:tabular-nums;font-weight:700}
-.carnet-chip[aria-pressed="true"] .carnet-count{background:color-mix(in srgb,var(--accent) 30%,transparent);color:var(--text)}
+.carnet-chip[aria-pressed="true"] .carnet-count{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--text)}
 .carnet-card.is-current{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--panel-2));box-shadow:inset 4px 0 0 var(--accent)}
 .carnet-card.is-current .carnet-card-title{color:var(--text);font-weight:800}
 .carnet-lib-list{gap:8px}
@@ -685,7 +685,7 @@ a.carnet-small{display:inline-flex;align-items:center;text-decoration:none}
   min-width:56px;min-height:56px;box-sizing:border-box;padding:0;border:0;border-radius:999px;background:var(--accent);color:var(--cap-on-accent);font:inherit;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.4);cursor:pointer}
 .hq-capture-fab svg{width:26px;height:26px}
 .hq-capture-fab .hq-capture-fab-text{display:none}
-.hq-capture-fab:focus-visible,.hq-capture-mode:focus-visible,.hq-capture-big:focus-visible,.hq-capture-save:focus-visible,.hq-capture-close:focus-visible,.hq-capture-toast-open:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.hq-capture-fab:focus-visible,.hq-capture-mode:focus-visible,.hq-capture-big:focus-visible,.hq-capture-save:focus-visible,.hq-capture-close:focus-visible,.hq-capture-toast-open:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 @media (min-width:600px){.hq-capture-fab{padding:0 20px 0 16px}.hq-capture-fab .hq-capture-fab-text{display:inline}}
 @media (min-width:900px){.hq-capture-fab{bottom:max(24px,env(safe-area-inset-bottom,0px));right:max(24px,env(safe-area-inset-right,0px))}}
 body[data-view="carnet"] .hq-capture-fab{bottom:calc(var(--nav-h,64px) + 76px + env(safe-area-inset-bottom,0px))}
@@ -711,7 +711,7 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .hq-capture-hint{font-size:var(--text-sm);color:var(--muted)}
 .hq-capture-input,input.hq-capture-input,select.hq-capture-input,textarea.hq-capture-input{width:100%;min-height:44px;box-sizing:border-box;padding:8px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2);color:var(--text);font:inherit;font-size:16px}
 .hq-capture-textarea{min-height:112px;resize:vertical;line-height:1.4}
-.hq-capture-input:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+.hq-capture-input:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .hq-capture-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .hq-capture-where{display:flex;flex-direction:column;gap:4px}
 .hq-capture-bigrow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -838,12 +838,12 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .carnet-status-wrap{position:relative}
 .carnet-savepill{flex:0 0 auto;min-height:var(--carnet-tap);padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font-size:var(--text-sm);font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .carnet-savepill::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 auto}
-.carnet-savepill[data-kind="ok"]{color:var(--accent)}
+.carnet-savepill[data-kind="ok"]{color:var(--ok)}
 .carnet-savepill[data-kind="busy"]{color:var(--muted)}
 .carnet-savepill[data-kind="busy"]::before{animation:carnet-pulse-dot 1.1s ease-in-out infinite}
 .carnet-savepill[data-kind="warn"]{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
 .carnet-savepill[data-kind="err"]{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 60%,var(--line))}
-.carnet-savepill:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.carnet-savepill:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-savepop{position:absolute;z-index:20;top:calc(100% + 6px);right:0;width:min(320px,92vw);box-sizing:border-box;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:var(--text-sm);line-height:1.4;box-shadow:0 10px 30px rgba(0,0,0,.28)}
 @keyframes carnet-pulse-dot{0%,100%{opacity:.35}50%{opacity:1}}
 
@@ -862,7 +862,7 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .carnet-outline-item[data-kind="heading"]{font-weight:700}
 .carnet-outline-item[data-kind="title"]{font-weight:800}
 .carnet-outline-item:hover{background:var(--panel-2)}
-.carnet-outline-item:focus-visible,.carnet-outline-close:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.carnet-outline-item:focus-visible,.carnet-outline-close:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 .carnet-outline-empty{margin:12px 8px;color:var(--muted);font-size:var(--text-sm)}
 
 /* block pulse (anchor / outline navigation): brief, never permanent */
@@ -887,7 +887,7 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .carnet-insp-tools button:disabled{opacity:.45;cursor:default}
 .carnet-insp-use{background:var(--accent)!important;color:var(--carnet-on-accent,#04110c)!important;border-color:transparent!important;font-weight:800}
 .carnet-insp-viewport{position:relative;flex:1 1 auto;min-height:220px;overflow:hidden;border-radius:12px;border:1px solid var(--line);background:repeating-conic-gradient(color-mix(in srgb,var(--panel-2) 80%,#808080) 0 25%,var(--panel-2) 0 50%) 0 0/20px 20px;touch-action:none;cursor:default;outline-offset:2px}
-.carnet-insp-viewport:focus-visible{outline:2px solid var(--accent)}
+.carnet-insp-viewport:focus-visible{outline:3px solid var(--carnet-focus,var(--accent))}
 .carnet-insp-stage{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform}
 .carnet-insp-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none;background:#fff}
 .carnet-inspector[data-kind="image"] .carnet-insp-img,.carnet-inspector[data-kind="imagegroup"] .carnet-insp-img{background:transparent}
@@ -905,7 +905,7 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .carnet-insp-meta dt{color:var(--muted)}
 .carnet-insp-meta dd{margin:0;word-break:break-all}
 .carnet-insp-actions{display:flex;gap:8px;flex-wrap:wrap}
-.carnet-insp-close:focus-visible,.carnet-insp-tools button:focus-visible,.carnet-insp-actions button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.carnet-insp-close:focus-visible,.carnet-insp-tools button:focus-visible,.carnet-insp-actions button:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:1px}
 
 /* group inspect bar + drawing inspect button */
 .carnet-group-inspectbar{margin-top:6px}
@@ -948,7 +948,7 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .carnet-field-hud-btn{flex:1 1 0;min-width:44px;min-height:48px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:4px 2px;
   border-radius:10px;border:1px solid var(--line);background:var(--panel-2);color:var(--text);font-size:.7rem;font-weight:700;line-height:1.1;text-transform:none;letter-spacing:0}
 .carnet-field-hud-btn[aria-disabled="true"]{opacity:.55}
-.carnet-field-hud-btn:focus-visible,.carnet-field-btn:focus-visible,.carnet-field-handle:focus-visible,.carnet-field-close:focus-visible,.carnet-field-chip:focus-visible,.carnet-field-radio:focus-visible+.carnet-field-chip{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-field-hud-btn:focus-visible,.carnet-field-btn:focus-visible,.carnet-field-handle:focus-visible,.carnet-field-close:focus-visible,.carnet-field-chip:focus-visible,.carnet-field-radio:focus-visible+.carnet-field-chip{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-field-live{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 .carnet-field-sheet{position:fixed;left:0;right:0;top:var(--field-top,0px);height:var(--field-vh,100dvh);z-index:200;display:flex;align-items:flex-end;justify-content:center}
@@ -1020,7 +1020,7 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-derived-badge{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 4px;font-size:.78rem;font-weight:700;color:var(--muted);user-select:none;-webkit-user-select:none}
 .carnet-derived-thumb{width:28px;height:28px;object-fit:cover;border-radius:4px;border:1px solid var(--line);background:#fff}
 .carnet-derived-open{min-height:44px;display:inline-flex;align-items:center;padding:0 12px;border:1px solid var(--line);border-radius:999px;color:var(--accent);cursor:pointer;background:var(--panel-2)}
-.carnet-derived-open:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-derived-open:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 @media print{.carnet-derived-open,.carnet-field-hud{display:none}}
 
 /* ---- Phase 5: cockpit, decision trail, measurement trends, changes, snapshots (lazy dialog #hq-carnet-intel; reuses the .carnet-hx shell) */
@@ -1047,7 +1047,7 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ix-tick{fill:var(--muted);font-size:10px}
 .carnet-ix-line{stroke:var(--muted);stroke-width:1.5}
 .carnet-ix-ptg{cursor:pointer}
-.carnet-ix-ptg:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-ix-ptg:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-ix-pt{stroke:var(--text);stroke-width:1.5}
 .carnet-ix-pt-in{fill:var(--accent)}
 .carnet-ix-pt-out{fill:var(--danger)}
@@ -1081,7 +1081,7 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 .carnet-ix-sheet{position:relative;max-height:80vh;overflow:auto;box-sizing:border-box;padding:12px 16px calc(14px + env(safe-area-inset-bottom));background:var(--bg);color:var(--text);border-top:1px solid var(--line);border-radius:16px 16px 0 0;display:flex;flex-direction:column;gap:10px;animation:carnet-ix-rise .18s ease-out 1}
 @keyframes carnet-ix-rise{from{transform:translateY(24px);opacity:.6}to{transform:none;opacity:1}}
 @media (prefers-reduced-motion: reduce){.carnet-ix-sheet{animation:none}}
-.carnet-ix :focus-visible,.carnet-ix button:focus-visible,.carnet-ix select:focus-visible,.carnet-ix input:focus-visible,.carnet-ix textarea:focus-visible,.carnet-ix summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.carnet-ix :focus-visible,.carnet-ix button:focus-visible,.carnet-ix select:focus-visible,.carnet-ix input:focus-visible,.carnet-ix textarea:focus-visible,.carnet-ix summary:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 @media (max-width:700px){.carnet-ix-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.carnet-ix-filters{grid-template-columns:1fr}}
 @media print{.carnet-ix,#hq-carnet-diffbar{display:none}[data-carnet-diff]{box-shadow:none}[data-carnet-diff]::after,[data-carnet-diff]::before{content:none}}
 
@@ -1268,9 +1268,9 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 /* B: a <button> defaults to align-items:flex-start, so the title row sized to its full text and overflowed the card; stretch it so the existing nowrap+ellipsis title is bounded by the row. */
 .carnet-card-main{align-items:stretch}
 /* C: .carnet-card clips its children (overflow:hidden), which swallowed the keyboard focus ring drawn on the button. Draw the ring on the row itself (outside the clip); browsers without :has() keep an inset ring on the button. */
-.carnet-card-main:focus-visible{outline:3px solid var(--accent);outline-offset:-3px;border-radius:inherit}
+.carnet-card-main:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:-3px;border-radius:inherit}
 @supports selector(:has(*)){
-  .carnet-card:has(.carnet-card-main:focus-visible){outline:3px solid var(--accent);outline-offset:2px}
+  .carnet-card:has(.carnet-card-main:focus-visible){outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
   .carnet-card-main:focus-visible{outline:none}
 }
 /* keyboard / scrollIntoView reveals leave room for that ring inside the scrolling library */
@@ -1278,3 +1278,233 @@ body.theme-midnight .carnet-field-sheet,body.theme-midnight .carnet-field-hud,bo
 /* E: the desktop Capture FAB stays viewport-fixed (right-anchored on purpose), but its 84px offset assumed no bottom bar: the Carnet bottom bar is pinned var(--nav-h) above the viewport floor on desktop too, so the FAB sat on top of its
    "Copier / Nouvelle page" buttons. Lift it clear of the bar at both resting positions: pinned (bar top = nav-h + ~56px) and end-of-page (bar rests a little higher, buttons up to ~nav-h + 90px). */
 @media (min-width:900px){body[data-view="carnet"] .hq-capture-fab{bottom:calc(var(--nav-h,64px) + 104px + env(safe-area-inset-bottom,0px))}}
+
+/* ================================================================ Phase 16C: ergonomics + motion (hq-carnet-motion.js)
+   One accent inside the Carnet (the shell keeps its own), distinct state looks, the phone dock (DF-1), the Capture button that
+   tucks away (DF-3), and one motion vocabulary shared with the Calendar / Accueil. Every movement has a reduced-motion fallback. */
+
+/* -- accent authority: indigo inside the Carnet; focus = neutral ring, selected = tint, pressed = tint + inset, success = --ok */
+.hq-carnet,body>[class^="carnet-"],body>[class*=" carnet-"]{
+  --accent:#9da1f5;--accent2:#9da1f5;--accent-text:#11133a;--carnet-on-accent:#11133a;
+  --carnet-focus:#f3f6fa;--carnet-press:inset 0 2px 4px rgba(0,0,0,.38);
+  --c16-spring:cubic-bezier(.2,1.35,.35,1);--c16-out:cubic-bezier(.2,.8,.2,1);--c16-in:cubic-bezier(.4,0,1,1)}
+@media (prefers-color-scheme: light){
+  .hq-carnet,body>[class^="carnet-"],body>[class*=" carnet-"]{
+    --accent:#4a4fb5;--accent2:#4a4fb5;--accent-text:#fff;--carnet-on-accent:#fff;
+    --carnet-focus:#121a22;--carnet-press:inset 0 2px 4px rgba(20,24,70,.24)}
+}
+body.theme-midnight .hq-carnet,body.theme-midnight>[class^="carnet-"],body.theme-midnight>[class*=" carnet-"]{
+  --accent:#8da2ff;--accent2:#8da2ff;--accent-text:#0b1230;--carnet-on-accent:#0b1230;--carnet-focus:#e6ecff;--carnet-press:inset 0 2px 4px rgba(0,0,0,.45)}
+body.theme-oled .hq-carnet,body.theme-oled>[class^="carnet-"],body.theme-oled>[class*=" carnet-"]{
+  --accent:#a5a9ff;--accent2:#a5a9ff;--accent-text:#0d0f33;--carnet-on-accent:#0d0f33;--carnet-focus:#ffffff;--carnet-press:inset 0 2px 4px rgba(0,0,0,.6)}
+.hq-carnet [aria-pressed="true"]:not(.carnet-check){box-shadow:var(--carnet-press)}
+.hq-carnet .carnet-line[data-checked="true"] .carnet-check::before{background-repeat:no-repeat}
+
+/* -- tap feedback (springy press) */
+@media (prefers-reduced-motion:no-preference){
+  .hq-carnet :is(.carnet-btn,.carnet-small,.carnet-chip,.carnet-sym,.carnet-field-hud-btn,.carnet-rail-btn,.carnet-sel-btn,.carnet-fmt,.carnet-block-item,.carnet-cmd-item,.carnet-savepill,.carnet-card-main,.carnet-gap-plus){
+    transition:transform .22s var(--c16-spring),background-color .15s ease,border-color .15s ease,color .15s ease,box-shadow .15s ease}
+  .hq-carnet :is(.carnet-btn,.carnet-small,.carnet-chip,.carnet-sym,.carnet-field-hud-btn,.carnet-rail-btn,.carnet-sel-btn,.carnet-fmt,.carnet-block-item,.carnet-cmd-item,.carnet-savepill,.carnet-gap-plus):active:not(:disabled):not([aria-disabled="true"]){transform:scale(.94);transition-duration:.06s}
+  .hq-carnet .carnet-card-main:active{transform:scale(.985);transition-duration:.06s}
+}
+
+/* -- DF-1: on phones the page bar lives in the field dock (same buttons, moved by hq-carnet-motion.js) */
+@media (max-width:720px){
+  .carnet.carnet-docked .carnet-bar-bottom{display:none}
+  .carnet.carnet-docked .carnet-stage{padding-bottom:calc(60px + 64px)}
+  .carnet-field-hud .carnet-dock-edge{flex:0 0 40px;min-width:40px;width:40px;min-height:48px;padding:0;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--text)}
+  .carnet-field-hud .carnet-dock-edge:disabled{opacity:.35}
+  .carnet-dock-chip{position:absolute;left:max(8px,env(safe-area-inset-left,0px));bottom:calc(100% + 8px);display:flex;align-items:center;gap:2px;padding:2px;
+    border-radius:999px;border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 94%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    box-shadow:0 6px 18px rgba(0,0,0,.22)}
+  .carnet-dock-chip .carnet-btn{min-width:44px;min-height:40px;border:0;background:transparent;border-radius:999px}
+  .carnet-dock-chip .carnet-indicator{min-width:3.4em;padding:0 2px}
+}
+
+/* -- DF-3: the Capture button tucks away while typing / scrolling in the Carnet and comes back when idle */
+@media (prefers-reduced-motion:no-preference){
+  body[data-view="carnet"] .hq-capture-fab{transition:transform .36s cubic-bezier(.2,1.35,.35,1),opacity .2s ease}
+}
+body.hq-fab-tucked[data-view="carnet"] .hq-capture-fab:not(:focus-visible){transform:translate3d(calc(100% + 28px),0,0);opacity:0;pointer-events:none}
+@media (prefers-reduced-motion:reduce){body.hq-fab-tucked[data-view="carnet"] .hq-capture-fab:not(:focus-visible){transform:none}}
+
+/* -- keyboard open: room under the last line so it can scroll above the keyboard and the dock */
+.carnet[data-c16-kb="open"] .carnet-stage{padding-bottom:calc(60px + 64px + 24px)}
+
+/* -- page flip that follows the finger (transforms set by hq-carnet.js) */
+.carnet-paper.c16-dragging{will-change:transform,opacity;box-shadow:0 18px 40px rgba(0,0,0,.28);transition:none}
+
+/* -- menus grow out of what was tapped (origin set by hq-carnet-motion.js) */
+@media (prefers-reduced-motion:no-preference){
+  :is(.carnet-cmd-menu,.carnet-block-menu,.carnet-sel-toolbar,.carnet-insert-menu,.carnet-savepop,.carnet-context,.carnet-link-panel):not([hidden]){
+    animation:c16-pop .26s var(--c16-spring) backwards;transform-origin:var(--c16-origin,50% 0)}
+  .carnet-block-menu.is-sheet:not([hidden]){animation:c16-rise .3s var(--c16-out) backwards}
+  .carnet-outline:not([hidden]){animation:c16-pop .26s var(--c16-spring) backwards;transform-origin:var(--c16-origin,100% 0)}
+  .carnet-inspector:not([hidden]) .carnet-insp-backdrop{animation:c16-fade .22s ease backwards}
+}
+@media (prefers-reduced-motion:no-preference) and (max-width:720px){
+  .carnet-outline:not([hidden]){animation:c16-rise .3s var(--c16-out) backwards}
+}
+@media (prefers-reduced-motion:reduce){
+  :is(.carnet-cmd-menu,.carnet-block-menu,.carnet-sel-toolbar,.carnet-insert-menu,.carnet-savepop,.carnet-context,.carnet-link-panel,.carnet-outline):not([hidden]){animation:c16-fade .12s linear backwards}
+}
+@keyframes c16-pop{from{opacity:0;transform:scale(.9)}to{opacity:1;transform:none}}
+@keyframes c16-rise{from{opacity:.4;transform:translate3d(0,32px,0)}to{opacity:1;transform:none}}
+@keyframes c16-fade{from{opacity:0}to{opacity:1}}
+
+/* -- block drag: the block lifts and follows, the others part (custom property set by hq-carnet-image-ui.js) */
+.c16-lifting>[data-gesture="move"]{position:relative;z-index:6;transform:translate3d(0,var(--c16-dy,0px),0) scale(1.012);
+  box-shadow:0 14px 30px rgba(0,0,0,.32);background:var(--carnet-paper);border-radius:8px;transition:box-shadow .2s ease,transform 0s}
+.c16-lifting>.c16-parting{transform:translate3d(0,var(--c16-dy,0px),0);transition:transform .22s var(--c16-out)}
+.c16-lifting .carnet-drop-indicator{opacity:0}
+
+/* -- checkbox tick: squish + stroke draw; finished checklist chip */
+@media (prefers-reduced-motion:no-preference){
+  .carnet-line.c16-ticked .carnet-check::before{animation:c16-tick .44s var(--c16-spring)}
+  .carnet-line.c16-ticked .carnet-check::after{content:"";position:absolute;width:20px;height:20px;border-radius:6px;pointer-events:none;
+    animation:c16-ring .5s var(--c16-out) forwards}
+}
+@keyframes c16-tick{0%{transform:scale(.62);background-size:0 100%,0 100%}55%{transform:scale(1.16)}100%{transform:scale(1);background-size:100% 100%,100% 100%}}
+@keyframes c16-ring{from{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent)}to{box-shadow:0 0 0 10px transparent}}
+.c16-done{position:absolute;right:var(--carnet-pad-x,16px);z-index:5;display:inline-flex;align-items:center;gap:6px;padding:4px 12px 4px 8px;border-radius:999px;
+  background:color-mix(in srgb,var(--ok) 16%,var(--panel));border:1px solid color-mix(in srgb,var(--ok) 55%,var(--line));color:var(--text);font-size:var(--text-sm);font-weight:700;
+  box-shadow:0 8px 20px rgba(0,0,0,.2);pointer-events:none;transition:opacity .3s ease,transform .3s var(--c16-out)}
+.c16-done-mark{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--ok);color:var(--accent-text,#000)}
+.c16-done-num{font-variant-numeric:tabular-nums;color:var(--muted)}
+.c16-done.is-out{opacity:0;transform:translate3d(0,-6px,0)}
+@media (prefers-reduced-motion:no-preference){.c16-done{animation:c16-pop .34s var(--c16-spring) backwards;transform-origin:100% 50%}}
+
+/* -- save pill: the dot becomes a check once saved */
+.carnet-savepill.c16-saved::before{width:9px;height:5px;border-radius:0;background:transparent;border:solid currentColor;border-width:0 0 2px 2px;transform:translateY(-1px) rotate(-45deg)}
+@media (prefers-reduced-motion:no-preference){.carnet-savepill.c16-saved::before{animation:c16-check .42s var(--c16-spring)}}
+@keyframes c16-check{from{transform:translateY(-1px) rotate(-45deg) scale(.2);opacity:.2}}
+
+/* -- library card grows into its page (a temporary ghost, hq-carnet-motion.js) */
+.c16-grow{position:fixed;z-index:59;pointer-events:none;box-sizing:border-box;border-radius:14px;background:var(--carnet-paper,#1d2127);
+  border:1px solid var(--line);box-shadow:0 20px 50px rgba(0,0,0,.3);transform-origin:0 0}
+
+/* -- images shimmer until loaded; no iOS callout on a long-press */
+.carnet-editor img{-webkit-touch-callout:none}
+.carnet-editor img.c16-loading{background:linear-gradient(100deg,var(--panel-2) 30%,color-mix(in srgb,var(--panel-2) 70%,var(--text)) 50%,var(--panel-2) 70%) 0 0/300% 100%;min-height:80px}
+@media (prefers-reduced-motion:no-preference){.carnet-editor img.c16-loading{animation:c16-shimmer 1.3s linear infinite}}
+@keyframes c16-shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
+
+/* -- first load: a page-shaped skeleton instead of a bare "Chargement…" */
+.hq-carnet #hq-carnet-app>.hint:only-child{position:relative;box-sizing:border-box;min-height:min(70vh,560px);margin:0;padding:18px 22px;border-radius:14px;
+  border:1px solid var(--line);background:var(--carnet-paper);color:var(--muted);overflow:hidden;
+  background-image:linear-gradient(var(--panel-2),var(--panel-2)),repeating-linear-gradient(180deg,transparent 0 22px,var(--panel-2) 22px 34px,transparent 34px 46px);
+  background-size:42% 18px,calc(100% - 44px) 100%;background-position:22px 52px,22px 92px;background-repeat:no-repeat}
+.hq-carnet #hq-carnet-app>.hint:only-child::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(100deg,transparent 30%,color-mix(in srgb,var(--text) 7%,transparent) 50%,transparent 70%) 0 0/300% 100%}
+@media (prefers-reduced-motion:no-preference){.hq-carnet #hq-carnet-app>.hint:only-child::after{animation:c16-shimmer 1.4s linear infinite}}
+
+/* -- "Annuler" toast: countdown, swipe to dismiss */
+.c16-toast{position:fixed;z-index:66;left:50%;bottom:calc(var(--nav-h,64px) + env(safe-area-inset-bottom,0px) + 16px);
+  transform:translate3d(calc(-50% + var(--c16-swipe,0px)),0,0);display:flex;align-items:center;gap:6px;box-sizing:border-box;min-height:52px;
+  max-width:calc(100vw - 24px);padding:6px 6px 8px 16px;border-radius:14px;background:var(--panel);color:var(--text);border:1px solid var(--line);
+  box-shadow:0 14px 34px rgba(0,0,0,.35);overflow:hidden;touch-action:pan-y;-webkit-user-select:none;user-select:none;font-size:var(--text-sm)}
+@media (max-width:720px){body[data-view="carnet"] .c16-toast{bottom:calc(var(--nav-h,64px) + env(safe-area-inset-bottom,0px) + 63px + 60px)}}
+@media (min-width:900px){.c16-toast{bottom:28px}}
+.c16-toast-text{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.c16-toast-act{flex:0 0 auto;min-height:40px;padding:0 14px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-text,#fff);font:inherit;font-weight:800;cursor:pointer}
+.c16-toast-close{flex:0 0 auto;min-width:40px;min-height:40px;border:0;border-radius:10px;background:transparent;color:var(--muted);font-size:1.25rem;cursor:pointer}
+.c16-toast-act:focus-visible,.c16-toast-close:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
+.c16-toast-bar{position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--accent);transform-origin:0 50%;animation:c16-countdown var(--c16-ttl,6500ms) linear forwards}
+.c16-toast.is-paused .c16-toast-bar{animation-play-state:paused}
+@keyframes c16-countdown{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+@media (prefers-reduced-motion:no-preference){.c16-toast{animation:c16-toast-in .34s var(--c16-spring) backwards}}
+@keyframes c16-toast-in{from{opacity:0;transform:translate3d(-50%,18px,0) scale(.96)}to{opacity:1;transform:translate3d(-50%,0,0)}}
+.c16-toast{--accent:#9da1f5;--accent-text:#11133a;--carnet-focus:#f3f6fa}
+@media (prefers-color-scheme: light){.c16-toast{--accent:#4a4fb5;--accent-text:#fff;--carnet-focus:#121a22}}
+
+/* -- pull down at the top of a page: outline, further: library */
+.c16-pull{position:fixed;z-index:58;left:50%;top:calc(env(safe-area-inset-top,0px) + 6px);display:inline-flex;align-items:center;gap:8px;padding:8px 14px;
+  border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--muted);font-size:var(--text-sm);font-weight:700;pointer-events:none;
+  opacity:0;transform:translate3d(-50%,calc(var(--c16-pull,0px) - 54px),0);box-shadow:0 10px 24px rgba(0,0,0,.25);--accent:#9da1f5}
+@media (prefers-color-scheme: light){.c16-pull{--accent:#4a4fb5}}
+.c16-pull.is-on{opacity:1}
+.c16-pull.is-armed{color:var(--accent);border-color:var(--accent)}
+.c16-pull-arrow{display:inline-block;transition:transform .2s var(--c16-spring,cubic-bezier(.2,1.35,.35,1))}
+.c16-pull.is-armed .c16-pull-arrow{transform:rotate(180deg)}
+.c16-pull.is-far .c16-pull-arrow{transform:rotate(180deg) scale(1.2)}
+.c16-haptic{position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none}
+@media print{.c16-toast,.c16-pull,.c16-done,.c16-grow,.carnet-dock-chip{display:none!important}}
+@media (prefers-reduced-motion:reduce){.c16-toast-bar{animation:none;opacity:.45}}
+
+/* ================================================================ Phase 16D: sticky notes on a page (hq-carnet-stickies.js) */
+.carnet-stickies{position:absolute;inset:0;pointer-events:none;z-index:4}
+.carnet-sticky{--st-bg:#fff3a6;--st-bar:#f5e27a;--st-ink:#2b2610;--st-muted:#6b5f22;
+  position:absolute;box-sizing:border-box;min-width:160px;max-width:calc(100% - 8px);pointer-events:auto;display:flex;flex-direction:column;
+  margin:0;padding:0;border:0;overflow:hidden;
+  border-radius:10px;background:var(--st-bg);color:var(--st-ink);box-shadow:0 1px 0 rgba(0,0,0,.08),0 10px 24px rgba(0,0,0,.26);
+  font-family:var(--font);transform-origin:50% 0;transition:box-shadow .18s ease,transform .18s cubic-bezier(.2,1.35,.35,1)}
+.carnet-sticky[data-color="pink"]{--st-bg:#ffd3e2;--st-bar:#f9b6cd;--st-ink:#3a1020;--st-muted:#7d3a55}
+.carnet-sticky[data-color="blue"]{--st-bg:#cfe6ff;--st-bar:#acd2fb;--st-ink:#0d2238;--st-muted:#2f5679}
+.carnet-sticky[data-color="green"]{--st-bg:#d3f5d6;--st-bar:#b1e8b6;--st-ink:#0f2c14;--st-muted:#336b3c}
+.carnet-sticky[data-color="purple"]{--st-bg:#e6dcff;--st-bar:#d2c2fb;--st-ink:#22163f;--st-muted:#55448a}
+.carnet-sticky.is-dragging{transform:rotate(-1.2deg) scale(1.02);box-shadow:0 2px 0 rgba(0,0,0,.08),0 22px 44px rgba(0,0,0,.34);transition:box-shadow .18s ease}
+.carnet-sticky[data-state="error"]{outline:2px dashed var(--danger);outline-offset:2px}
+.carnet-sticky-bar{display:flex;align-items:center;gap:2px;min-height:40px;padding:2px 4px;border-radius:10px 10px 0 0;background:var(--st-bar);
+  cursor:grab;touch-action:none;-webkit-user-select:none;user-select:none}
+.carnet-sticky.is-dragging .carnet-sticky-bar{cursor:grabbing}
+.carnet-sticky.is-folded .carnet-sticky-bar{border-radius:10px}
+.carnet-sticky-bar button{flex:0 0 auto;display:inline-grid;place-items:center;min-width:36px;min-height:36px;padding:0;margin:0;border:0;border-radius:8px;
+  background:transparent;color:var(--st-muted);cursor:pointer;font:inherit}
+.carnet-sticky-bar button:hover:not(:disabled){background:rgba(0,0,0,.08);color:var(--st-ink)}
+.carnet-sticky-bar button:disabled{opacity:.4;cursor:default}
+.carnet-sticky-bar button:focus-visible,.carnet-sticky-text:focus-visible{outline:3px solid var(--st-ink);outline-offset:1px}
+.carnet-sticky-bar svg{width:18px;height:18px}
+.carnet-sticky-grip{cursor:grab;font-size:16px;letter-spacing:-1px}
+.carnet-sticky-dot{width:14px;height:14px;border-radius:50%;background:var(--st-bg);box-shadow:inset 0 0 0 2px var(--st-muted)}
+.carnet-sticky-title{flex:1 1 auto;min-width:0;padding:0 4px;font-size:.78rem;font-weight:700;color:var(--st-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0}
+.carnet-sticky.is-folded .carnet-sticky-title{opacity:1}
+.carnet-sticky-copy.is-done{color:#1d7a3a}
+.carnet-sticky-text{display:block;box-sizing:border-box;width:100%;min-height:64px;margin:0;padding:8px 12px 12px;border:0;border-radius:0 0 10px 10px;resize:none;overflow:auto;
+  background:transparent;color:var(--st-ink);font:inherit;font-size:15px;line-height:1.45;-webkit-user-select:text;user-select:text}
+.carnet-sticky-text::placeholder{color:var(--st-muted);opacity:.8}
+.carnet-stickies[data-readonly] .carnet-sticky-bar{cursor:default}
+.carnet-sticky-clip{position:fixed;left:-9999px;top:0;opacity:0}
+.hq-carnet .carnet-sticky-add svg{width:20px;height:20px}
+@media (pointer:coarse){.carnet-sticky-bar button{min-width:40px;min-height:40px}.carnet-sticky-bar{min-height:44px}}
+@media (prefers-reduced-motion:reduce){.carnet-sticky,.carnet-sticky.is-dragging{transition:none;transform:none}}
+.carnet-paper.c16-dragging .carnet-sticky{box-shadow:0 6px 14px rgba(0,0,0,.2)}
+@media print{.carnet-stickies{display:none!important}}
+
+/* ================================================================ Phase 16E: small pleasures (hq-carnet-motion.js / hq-carnet-stickies.js)
+   Ripples from the pressed point, page-curl shading while turning, new-block glow, confetti for a finished list, sticky-note
+   lift on hover, colour cross-fades. Transforms / opacity only; nothing moves with reduced motion. */
+.hq-carnet button,.carnet-sticky button,.c16-toast button{-webkit-tap-highlight-color:transparent}
+.c16-rel{position:relative}
+.c16-clip{overflow:hidden}
+.c16-ripple{position:absolute;border-radius:50%;pointer-events:none;background:currentColor;opacity:0;transform:scale(0);z-index:0}
+
+/* page curl: the edge that lifts darkens a little as the page turns */
+.carnet-paper.c16-dragging::after{content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;z-index:6;
+  background:linear-gradient(to left,rgba(0,0,0,calc(var(--c16-curl,0) * .32)) 0,rgba(0,0,0,0) 22%)}
+.carnet-paper.c16-dragging[data-c16-dir="prev"]::after{background:linear-gradient(to right,rgba(0,0,0,calc(var(--c16-curl,0) * .32)) 0,rgba(0,0,0,0) 22%)}
+
+/* a new block glows briefly where it appeared */
+@media (prefers-reduced-motion:no-preference){
+  .carnet-editor>.c16-new{animation:c16-glow .9s ease-out}
+}
+@keyframes c16-glow{from{background-color:color-mix(in srgb,var(--accent) 16%,transparent)}to{background-color:transparent}}
+
+/* confetti */
+.c16-confetti{position:fixed;z-index:70;width:7px;height:7px;border-radius:50%;pointer-events:none;transform:translate3d(-50%,-50%,0)}
+
+/* library cards and toolbar buttons: a gentle lift under the mouse */
+@media (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+  .hq-carnet .carnet-card{transition:transform .2s cubic-bezier(.2,.8,.2,1),box-shadow .2s ease,border-color .15s ease}
+  .hq-carnet .carnet-card:hover{transform:translate3d(0,-2px,0);box-shadow:0 8px 20px rgba(0,0,0,.18)}
+  .hq-carnet .carnet-bar .carnet-btn:hover:not(:disabled){transform:translate3d(0,-1px,0)}
+  .carnet-sticky:not(.is-dragging):hover{transform:translate3d(0,-2px,0) rotate(-.3deg);box-shadow:0 2px 0 rgba(0,0,0,.08),0 16px 32px rgba(0,0,0,.3)}
+}
+
+/* sticky notes: colours cross-fade; the "Copié" bubble */
+@media (prefers-reduced-motion:no-preference){
+  .carnet-sticky,.carnet-sticky-bar{transition:background-color .28s ease,box-shadow .18s ease,transform .18s cubic-bezier(.2,1.35,.35,1)}
+  .carnet-sticky.is-dragging{transition:box-shadow .18s ease}
+}
+.carnet-sticky-bubble{position:fixed;z-index:80;padding:4px 10px;border-radius:999px;background:var(--text,#111);color:var(--bg,#fff);
+  font-size:.78rem;font-weight:800;pointer-events:none;white-space:nowrap;transform:translate3d(-50%,0,0);opacity:0}
+@media print{.c16-confetti,.carnet-sticky-bubble{display:none!important}}
