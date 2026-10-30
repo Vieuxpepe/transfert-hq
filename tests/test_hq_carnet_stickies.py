@@ -179,6 +179,7 @@ class HttpTests(unittest.TestCase):
         src = (Path(__file__).resolve().parents[1] / "iphone_bridge.py").read_text(encoding="utf-8")
         self.assertEqual(src.count('raw == "/api/carnet/stickies"'), 2)
         self.assertIn('<script src="/assets/hq-carnet-stickies.js"></script>', src)
+        self.assertIn('<script src="/assets/hq-carnet-sizing.js"></script>', src)
 
 
 if __name__ == "__main__":

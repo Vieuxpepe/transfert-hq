@@ -1062,3 +1062,16 @@ Carnet — finitions (phase 16E)
   Notes      La note se pose avec un petit rebond, penche quand on la prend, oscille en se posant ; couleur en fondu ;
              le texte s'enroule en repliant ; bulle « Copié ». Au survol (souris) : cartes, boutons et notes se soulèvent.
   Réduction  Avec « réduire les animations » : aucune onde, aucun mouvement, aucun confetti ; seuls des fondus restent.
+
+Carnet — taille de la page, du texte et de la bibliothèque (phase 16G)
+-----------------------------------------------------------------------
+  Page       PC (≥ 900 px, souris) : poignée sur le bord droit de la page ; glisser élargit / rétrécit (aimants Étroite
+             640, Normale 820, Large 1080, Pleine largeur), double-clic ou Entrée : largeur par défaut, Échap pendant le
+             glisser : annule. Flèches sur la poignée (Maj = plus vite), Début / Fin. Aussi dans « ⋯ » → Affichage.
+  Texte      A− / A+ / Défaut dans « ⋯ » → Affichage (tous les appareils), Ctrl+< et Ctrl+> au clavier. Taille et
+             interligne changent ensemble en pixels entiers : le texte reste sur les lignes du papier.
+  Bibliothèque PC, bibliothèque ancrée : glisser la ligne entre la bibliothèque et la page (220–440 px) ; double-clic :
+             par défaut.
+  Mémoire    Réglages de CET appareil (localStorage « hq_carnet_sizing_v1 », au mieux : refusé = valable jusqu'au
+             rechargement). Rien n'est envoyé à HQ, aucune note n'est modifiée.
+  Tests      node tests/check_hq_carnet_sizing.mjs ; python tests/visual_carnet_16c_playwright.py.
