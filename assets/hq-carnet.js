@@ -1864,6 +1864,19 @@
     close: "M6 6l12 12M18 6L6 18",
     trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
   };
+  // 16F: library icons (filters and tools)
+  const LIB_ICON = {
+    all: "M4 6h16M4 12h16M4 18h16",
+    pinned: "M9 4h6l-1 6 3 3H7l3-3zM12 13v7",
+    recent: "M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z",
+    unfiled: "M4 13l2.5-7h11l2.5 7v5H4zM4 13h5l1 2h4l1-2h5",
+    decisions: "M9 12l2 2 4-4M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z",
+    trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+    bulk: "M4 6h11M4 12h11M4 18h11M18 5l2 2-2 2M18 11l2 2-2 2",
+    cockpit: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+    ask: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4-4",
+    reviews: "M6 3h9l4 4v14H6zM14 3v5h5M9 13l2 2 4-4",
+  };
   const COLORS = { blue: "Bleu", green: "Vert", amber: "Ambre", coral: "Corail", violet: "Violet", pink: "Rose", teal: "Sarcelle", graphite: "Graphite" };
 
   function iconButton(id, label, icon, extra) {
@@ -2498,10 +2511,22 @@
       el("div", { class: "carnet-lib-actions" }, [
         el("button", { type: "button", id: "btn-carnet-lib-new", class: "carnet-small carnet-primary", text: "+ Nouvelle page" }),
         el("button", { type: "button", id: "btn-carnet-lib-templates", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", text: "Modèles" }),
-        el("button", { type: "button", id: "btn-carnet-lib-bulk", class: "carnet-small carnet-quiet", "aria-label": "Opérations groupées sur les pages affichées", text: "Opérations…" }),
-        el("button", { type: "button", id: "btn-carnet-lib-intel", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Cockpit du projet : décisions, mesures, changements et jalons", text: "Cockpit" }),
-        el("button", { type: "button", id: "btn-carnet-lib-ask", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Preuves du carnet : retrouver les passages qui répondent à une question", text: "Preuves" }),
-        el("button", { type: "button", id: "btn-carnet-lib-reviews", class: "carnet-small carnet-quiet", "aria-haspopup": "dialog", "aria-label": "Revues : dossiers de preuves à relire", text: "Revues" }),
+      ]),
+    ]);
+    // 16F: the four tools live in one quiet footer (pinned to the bottom of the panel) instead of crowding the header.
+    const toolBtn = (id, label, text, icon, popup) => {
+      const b = el("button", { type: "button", id, class: "carnet-small carnet-quiet carnet-lib-tool", "aria-label": label, title: label, "aria-haspopup": popup ? "dialog" : null });
+      b.appendChild(svgIcon(icon));
+      b.appendChild(el("span", { text }));
+      return b;
+    };
+    const tools = el("div", { class: "carnet-lib-tools", role: "group", "aria-label": "Outils" }, [
+      el("span", { class: "carnet-lib-label", "aria-hidden": "true", text: "Outils" }),
+      el("div", { class: "carnet-lib-tools-grid" }, [
+        toolBtn("btn-carnet-lib-bulk", "Opérations groupées sur les pages affichées", "Opérations", LIB_ICON.bulk, false),
+        toolBtn("btn-carnet-lib-intel", "Cockpit du projet : décisions, mesures, changements et jalons", "Cockpit", LIB_ICON.cockpit, true),
+        toolBtn("btn-carnet-lib-ask", "Preuves du carnet : retrouver les passages qui répondent à une question", "Preuves", LIB_ICON.ask, true),
+        toolBtn("btn-carnet-lib-reviews", "Revues : dossiers de preuves à relire", "Revues", LIB_ICON.reviews, true),
       ]),
     ]);
     const search = el("input", {
@@ -2512,6 +2537,7 @@
     for (const [key, label] of FILTERS.concat([["trash", "Corbeille"]])) {
       if (key === "trash") filters.appendChild(el("span", { class: "carnet-filter-sep", role: "separator", "aria-orientation": "horizontal" }));
       filters.appendChild(el("button", { type: "button", class: "carnet-chip" + (key === "trash" ? " carnet-chip-trash" : ""), "data-carnet-filter": key, "aria-pressed": "false" }, [
+        svgIcon(LIB_ICON[key] || LIB_ICON.all),
         el("span", { class: "carnet-chip-name", text: label }),
         el("span", { class: "carnet-count", "data-carnet-fcount": key, text: "" }),
       ]));
@@ -2519,7 +2545,7 @@
     const scopes = el("div", { class: "carnet-lib-scopes" });
     const list = el("div", { id: "carnet-library-list", class: "carnet-lib-list", role: "list", "aria-label": "Pages" });
     const scopeLabel = el("p", { class: "carnet-lib-scope", "aria-live": "polite" });
-    aside.append(head, search, filters, scopes, scopeLabel, list);
+    aside.append(head, search, filters, scopes, scopeLabel, list, tools);
 
     search.addEventListener("input", () => {
       ui.lib.query = search.value;
