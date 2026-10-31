@@ -198,6 +198,37 @@ def main():
                 p.screenshot(path=str(shots / "inv-desktop.jpg"), type="jpeg", quality=60, scale="css")
             b.close()
 
+            print("-- linked to Projets")
+            b, ctx = ctx_for(pw, srv, False)
+            H = {"Origin": srv.base, "Content-Type": "application/json"}
+            proj = ctx.request.post(srv.base + "/api/projects", data=json.dumps({"action": "project.create", "name": "Bras robot", "hue": 212}), headers=H).json()["project"]
+            p = open_inv(ctx, srv, errors, "#inventaire/" + box["id"])
+            p.locator(f'.inv-item[data-inv-item="{item["id"]}"] .inv-item-open').click()
+            p.wait_for_selector(".inv-sheet .inv-projects .inv-proj-form")
+            p.locator(".inv-proj-form input").fill("20")
+            p.locator(".inv-proj-add").click()
+            wait(lambda: p.locator(".inv-proj-row").count() == 1, "the project appears in the item", p)
+            line = json.loads((srv.root / ".hq-projects" / "projects.json").read_text("utf-8"))["projects"][0]["bom"][0]
+            check((line["item"], line["qty"], line["name"], line["unit"]) == (item["id"], 20, "Vis M4×12", "pcs"), f"« Ajouter au projet » puts it in the parts list ({line['qty']})")
+            check("Il en manque 7" in p.locator(".inv-projects").inner_text(), "the item knows 20 are promised for 13 in stock")
+            check("Ouvrir" in p.locator(".inv-toast").inner_text(), "the toast offers to open the project")
+            p.keyboard.press("Escape")
+            p.wait_for_selector(".inv-sheet", state="detached")
+            chip = p.locator(f'.inv-item[data-inv-item="{item["id"]}"] .inv-proj-chip')
+            check(chip.count() == 1 and "Bras robot" in chip.inner_text() and "manque 7" in chip.inner_text(), "the card shows the project and the shortfall")
+            p.goto(srv.base + "/#projets/" + proj["id"] + "/bom")
+            p.wait_for_selector(".prj-bom-row .prj-to-inv")
+            p.locator(".prj-bom-row .prj-to-inv").click()
+            p.wait_for_selector(".inv-sheet .inv-projects")
+            check(p.evaluate("() => document.body.dataset.view") == "inventaire", "« Voir dans l'inventaire » opens the Inventaire")
+            check(p.locator(".inv-sheet-head h3").inner_text() == "Vis M4×12", "on that very item")
+            check(p.locator(".inv-place-head .inv-title").inner_text() == "Boîte visserie", "in the box where it is stored")
+            if shots:
+                p.wait_for_timeout(500)
+                p.screenshot(path=str(shots / "inv-linked.jpg"), type="jpeg", quality=60, scale="css")
+            p.keyboard.press("Escape")
+            b.close()
+
             print("-- scanned label link [phone]")
             b, ctx = ctx_for(pw, srv, True, login=False)
             p = ctx.new_page()

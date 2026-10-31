@@ -1128,6 +1128,40 @@ Inventaire (hq_inventory.py, assets/hq-inventory.js)
              couvercle de couleur selon le type (pièce, meuble, étagère, tiroir, boîte, sac) et son code sur ruban noir ; les
              photos de ce qu'il contient dépassent de la fenêtre. Ouvrir un tiroir le fait glisser jusqu'en haut ; les
              quantités roulent, une jauge montre le niveau par rapport au seuil, la recherche surligne ce qui correspond.
+  Projets    Lié aux Projets dans les deux sens. Dans la fiche d'un objet, « Dans les projets » liste les projets qui
+             l'utilisent (quantité, déjà sorti ou non) et « Ajouter au projet » l'ajoute à la liste de pièces du projet choisi
+             (son image file vers le bouton Projets). La carte de l'objet montre ses projets et ce qui est réservé, ou ce
+             qui manque (« manque 7 ») ; les projets terminés et les pièces déjà sorties ne réservent rien. Côté Projets,
+             l'icône boîte d'une pièce ouvre l'objet dans l'Inventaire (#inventaire/objet/<id>).
+  Mouvement  Une entrée par page (plaque, tiroirs qui sortent un à un, poignées, photos qui dépassent, ruban du code),
+             puis seulement en réponse : tiroirs et objets glissent vers leur nouvelle place, la jauge part de son ancien
+             niveau, un objet qui passe sous son seuil tremble, un objet supprimé se froisse, une sous-branche de l'arbre se
+             déplie en cascade, une nouvelle photo se développe, les étiquettes se collent sur le carton.
   Stockage   .hq-inventory/inventory.json (admin seulement ; rôle upload refusé ; révision par fiche, 409 si modifiée
              ailleurs ; fichier illisible ou redirigé jamais réécrit). Tests : tests/test_hq_inventory.py,
              tests/check_hq_inventory.mjs, tests/visual_inventory_playwright.py.
+
+Projets (hq_projects.py, assets/hq-projects.js)
+-----------------------------------------------
+  Quoi       Les constructions au long cours. Chaque projet est une feuille de dessin : un plan bleu à sa couleur et un
+             cartouche (statut, début, échéance, avancement, coût des pièces, révision), puis cinq onglets.
+  Où j'en    Une note scotchée sous le cartouche, tapée sur place et enregistrée au fil de la frappe (« Enregistré »),
+  suis       pour reprendre sans chercher : ce que tu faisais, la prochaine étape. Elle s'affiche aussi sur la carte du projet
+             avec son âge (« il y a 2 j »). Max 1000 caractères ; la dernière version écrite gagne (pas de conflit).
+  Mouvement  Une seule entrée par page : la carte s'agrandit en plan, le plan se déroule, le cartouche est tamponné case
+             par case, la note est scotchée. Ensuite tout répond à tes gestes : les cartes glissent d'une colonne à l'autre,
+             une tâche finie lance des étincelles, un jalon coché trace sa coche et pulse, le marqueur d'onglet glisse et
+             le contenu arrive du bon côté, l'avancement se remplit et compte, l'état d'une pièce bascule, une photo du
+             journal se « développe ». Tout est coupé en mouvement réduit.
+  Tâches     Le tableau Kanban existant (kanban.json), filtré sur le projet : ajout rapide, flèches ou glisser-déposer
+             entre À faire / En cours / Fait, échéance, jalon, note. Sur téléphone, une colonne à la fois.
+             « Tâches libres » regroupe les cartes hors projet, dont celles créées depuis le Carnet (inchangé). Supprimer un
+             projet laisse ses cartes sur le tableau ; Annuler le rétablit en entier.
+  Jalons     Étapes datées à cocher ; une tâche peut appartenir à un jalon ; l'avancement compte tâches et jalons.
+  Pièces     Liste des pièces : quantité, prix, état (À commander › Commandé › En main), lien vers un objet de
+             l'Inventaire avec son stock ; « Sortir du stock » retire la quantité de l'Inventaire, une seule fois.
+  Liens      Pages du Carnet, images de la Forge, dessins de Dessiner, fichiers de Transfert.
+  Journal    Photos (prises au téléphone) et notes, datées, du plus récent au plus ancien.
+  Stockage   .hq-projects/projects.json (admin seulement, révision par projet, 409 si modifié ailleurs) ; un kanban.json
+             illisible n'est jamais réécrit. Le bloc Système › Tâches renvoie vers Projets. Tests : tests/test_hq_projects.py,
+             tests/check_hq_projects.mjs, tests/visual_projects_playwright.py.

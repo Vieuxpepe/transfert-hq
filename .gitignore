@@ -33,6 +33,7 @@ hq_planner.json
 .hq-agent-state/
 .hq-carnet/
 .hq-inventory/
+.hq-projects/
 agent_config.json
 *.json.tmp
 .tmp/

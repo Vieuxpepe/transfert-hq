@@ -43,6 +43,17 @@ assert.deepEqual(P.placeOptions(ix, null).map((o) => [o.label, o.depth]), [["Bur
 for (const h of ["#inventaire", "#inventaire/plc-0123456789abcdef", "#inventaire/sans-emplacement"]) assert.ok(P.HASH_RE.test(h), h);
 for (const h of ["#inventaire/plc-XYZ", "#inventaire/../x", "#carnet/page-1/block-1"]) assert.ok(!P.HASH_RE.test(h), h);
 assert.equal(P.fmtQty({ qty: 12500, unit: "pcs" }), "12 500 pcs");
+assert.ok(P.HASH_RE.test("#inventaire/objet/itm-0123456789abcdef"), "item links");
+assert.ok(!P.HASH_RE.test("#inventaire/objet/plc-0123456789abcdef"));
+// the link to Projets: where an item is used, and what live projects hold
+const projs = [
+  { id: "a", status: "active", bom: [{ item: "itm-1", qty: 4, used: false }, { item: "itm-2", qty: 1, used: false }] },
+  { id: "b", status: "done", bom: [{ item: "itm-1", qty: 9, used: false }] },
+  { id: "c", status: "paused", bom: [{ item: "itm-1", qty: 2, used: true }, { item: "itm-1", qty: 3, used: false }] },
+];
+assert.deepEqual(P.usage(projs, "itm-1").map((u) => u.project.id), ["a", "b", "c", "c"]);
+assert.equal(P.reserved(projs, "itm-1"), 7, "finished projects and parts already taken out hold nothing");
+assert.equal(P.reserved(null, "itm-1"), 0, "Projets unavailable: nothing reserved");
 
 // house rules
 const src = readFileSync(new URL("../assets/hq-inventory.js", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");

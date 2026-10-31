@@ -30,7 +30,8 @@
   // each kind of place has its own lid colour (hue on the HQ palette); everything else stays steel
   const KIND_HUE = { room: 168, furniture: 34, shelf: 262, drawer: 340, box: 205, bag: 96, other: 220 };
   const PLACE_RE = /^plc-[0-9a-f]{16}$/;
-  const HASH_RE = /^#inventaire(?:\/(plc-[0-9a-f]{16}|sans-emplacement))?$/;
+  const HASH_RE = /^#inventaire(?:\/(plc-[0-9a-f]{16}|sans-emplacement|objet\/itm-[0-9a-f]{16}))?$/;
+  const PROJECT_LIVE = { active: 1, idea: 1, paused: 1 }; // a finished project no longer holds stock
   const PHOTO_MAX_SIDE = 1600;
   const POLL_MS = 20000;
 
@@ -157,7 +158,21 @@
     return String(i.qty).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + (i.unit ? " " + i.unit : "");
   }
 
-  const pure = { fold, index, pathOf, pathText, descendants, countDeep, isLow, search, parseTags, labelUrl, placeOptions, fmtQty, HASH_RE };
+  /** Where an item is used: [{project, line}] over every project's parts list. */
+  function usage(projects, id) {
+    const out = [];
+    for (const p of projects || []) for (const b of p.bom || []) if (b.item === id) out.push({ project: p, line: b });
+    return out;
+  }
+
+  /** How many are promised to live projects and not yet taken out of the stock. */
+  function reserved(projects, id) {
+    let n = 0;
+    for (const u of usage(projects, id)) if (PROJECT_LIVE[u.project.status] && !u.line.used) n += u.line.qty;
+    return n;
+  }
+
+  const pure = { usage, reserved, fold, index, pathOf, pathText, descendants, countDeep, isLow, search, parseTags, labelUrl, placeOptions, fmtQty, HASH_RE };
 
   // ------------------------------------------------------------------ browser layer
 
@@ -166,7 +181,7 @@
     data: null, ix: null, rev: -1, loading: false, failed: "",
     sel: "", q: "", filter: "all", open: new Set(), pollTimer: 0,
     bodyEl: null, treeEl: null, mainEl: null, searchEl: null, chips: null, sheet: null, toastEl: null, toastTimer: 0,
-    landed: "", bump: "",
+    landed: "", bump: "", projects: null, enter: true, gauges: new Map(), justOpened: "", lowFlash: "", newPhoto: "",
   };
 
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -192,6 +207,8 @@
     print: "M7 8V4h10v4M6 17H4v-7h16v7h-2M7 14h10v6H7z",
     warn: "M12 4l9 16H3zM12 10v4M12 17v.5",
     tag: "M4 4h7l9 9-7 7-9-9zM8 8h.01",
+    project: "M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3",
+    open: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
     home: "M4 10.5 12 4l8 6.5V20H4z",
   };
 
@@ -359,6 +376,7 @@
   // ---------------------------------------------------------------- navigation
 
   function go(sel, opts) {
+    if ((sel || "") !== S.sel) S.enter = true;
     S.sel = sel || "";
     const o = opts || {};
     if (S.sel && S.sel !== "none") for (const p of pathOf(S.ix, S.sel)) if (p.id !== S.sel) S.open.add(p.id);
@@ -404,7 +422,18 @@
     const m = HASH_RE.exec(h || "");
     if (!m) return false;
     if (typeof S.win.setView === "function" && S.doc.body.dataset.view !== "inventaire") S.win.setView("inventaire");
-    const target = m[1] === "sans-emplacement" ? "none" : m[1] || "";
+    let target = m[1] === "sans-emplacement" ? "none" : m[1] || "";
+    if (target.startsWith("objet/")) {
+      // a part of a project points here: open the item where it is stored
+      const id = target.slice(6);
+      S.openItem = id;
+      const it = S.data && S.data.items.find((x) => x.id === id);
+      target = it ? it.place || "none" : "";
+      if (S.data && !it) {
+        S.openItem = null;
+        toast("Cet objet n'est plus dans l'inventaire");
+      }
+    }
     S.pendingSel = target;
     if (!S.data) show();
     else {
@@ -413,11 +442,19 @@
         toast("Cet emplacement n'existe plus");
         go("", { fromHash: true });
       } else {
-        S.landed = target;
+        S.landed = S.openItem || target;
         go(target, { fromHash: true });
+        openPendingItem();
       }
     }
     return true;
+  }
+
+  function openPendingItem() {
+    const id = S.openItem;
+    S.openItem = null;
+    const it = id && S.data && S.data.items.find((x) => x.id === id);
+    if (it) S.win.setTimeout(() => editItem(it), calm() ? 0 : 420);
   }
 
   // ---------------------------------------------------------------- render
@@ -435,8 +472,17 @@
     }
     if (!S.data) return;
     if (S.pendingSel !== null && S.pendingSel !== undefined) {
-      const t = S.pendingSel;
+      let t = S.pendingSel;
       S.pendingSel = null;
+      if (S.openItem) {
+        const it = S.data.items.find((x) => x.id === S.openItem);
+        if (it) t = it.place || "none";
+        else {
+          S.openItem = null;
+          toast("Cet objet n'est plus dans l'inventaire");
+        }
+        S.win.setTimeout(openPendingItem, 0);
+      }
       if (!t || t === "none" || S.ix.places.has(t)) {
         S.sel = t;
         S.landed = t;
@@ -523,8 +569,12 @@
         tw.addEventListener("click", (ev) => {
           ev.stopPropagation();
           if (open) S.open.delete(p.id);
-          else S.open.add(p.id);
+          else {
+            S.open.add(p.id);
+            S.justOpened = p.id;
+          }
           renderTree();
+          S.justOpened = "";
         });
         const main = el("button", { type: "button", class: "inv-tree-go", "data-inv-place": p.id }, [icon(p.kind), el("span", { class: "inv-tree-name", text: p.name }), el("span", { class: "inv-n", text: String(countDeep(S.ix, p.id)) })]);
         main.style.setProperty("--hue", String(KIND_HUE[p.kind] || 220));
@@ -532,7 +582,7 @@
         row.append(tw, main);
         li.appendChild(row);
         if (kids.length && open) {
-          const sub = el("ul", { role: "group" });
+          const sub = el("ul", { role: "group", class: S.justOpened === p.id ? "is-opening" : null });
           walk(p.id, sub, depth + 1);
           li.appendChild(sub);
         }
@@ -564,7 +614,9 @@
   function renderMain() {
     const m = S.mainEl;
     if (!m || !S.data) return;
+    S.flipBefore = S.enter ? null : flipCapture();
     m.textContent = "";
+    m.classList.toggle("is-enter", !!S.enter && !calm());
     if (S.q.trim()) {
       renderSearch(m);
       finishRender();
@@ -614,7 +666,52 @@
     finishRender();
   }
 
+  function flipCapture() {
+    const map = new Map();
+    if (!S.mainEl || calm()) return map;
+    for (const n of S.mainEl.querySelectorAll("[data-flip]")) map.set(n.getAttribute("data-flip"), n.getBoundingClientRect());
+    return map;
+  }
+
+  function anim(node, frames, opts) {
+    if (!node || calm() || typeof node.animate !== "function") return null;
+    try {
+      return node.animate(frames, opts);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** Drawers and items glide to their new place; new ones drop in; gauges move from their last level. */
+  function flipPlay() {
+    const before = S.flipBefore;
+    S.flipBefore = null;
+    if (before) {
+      for (const n of S.mainEl.querySelectorAll("[data-flip]")) {
+        const was = before.get(n.getAttribute("data-flip"));
+        const r = n.getBoundingClientRect();
+        if (was) {
+          const dx = was.left - r.left;
+          const dy = was.top - r.top;
+          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) anim(n, [{ transform: "translate(" + dx + "px," + dy + "px)" }, { transform: "none" }], { duration: Math.min(560, 260 + Math.hypot(dx, dy) * 0.35), easing: "cubic-bezier(.2,1.35,.35,1)" });
+        } else if (before.size) {
+          anim(n, [{ opacity: 0, transform: "translate3d(0,-10px,0) scale(.97)" }, { opacity: 1, transform: "none" }], { duration: 360, easing: "cubic-bezier(.2,1.35,.35,1)" });
+        }
+      }
+    }
+    for (const g of S.mainEl.querySelectorAll(".inv-gauge-fill[data-id]")) {
+      const id = g.getAttribute("data-id");
+      const to = Number(g.style.getPropertyValue("--f")) || 0;
+      const from = S.gauges.has(id) ? S.gauges.get(id) : 0;
+      if (Math.abs(to - from) > 0.001) anim(g, [{ width: from * 100 + "%" }, { width: to * 100 + "%" }], { duration: S.gauges.has(id) ? 420 : 800, easing: "cubic-bezier(.2,.8,.2,1)", delay: S.gauges.has(id) ? 0 : 250 });
+      S.gauges.set(id, to);
+    }
+  }
+
   function finishRender() {
+    flipPlay();
+    S.enter = false;
+    S.lowFlash = "";
     S.landed = "";
     S.bump = "";
     S.bumpDir = 0;
@@ -757,7 +854,7 @@
     const n = countDeep(S.ix, p.id);
     const sub = (S.ix.kids.get(p.id) || []).length;
     const low = [p.id].concat(descendants(S.ix, p.id).map((d) => d.id)).some((id) => (S.ix.items.get(id) || []).some(isLow));
-    const b = el("button", { type: "button", class: "inv-tile inv-drawer" + (low ? " has-low" : ""), "data-inv-place": p.id, "aria-label": p.name + ", " + n + (n > 1 ? " objets" : " objet") });
+    const b = el("button", { type: "button", class: "inv-tile inv-drawer" + (low ? " has-low" : ""), "data-inv-place": p.id, "data-flip": "p:" + p.id, "aria-label": p.name + ", " + n + (n > 1 ? " objets" : " objet") });
     b.style.setProperty("--hue", String(KIND_HUE[p.kind] || 220));
     b.style.setProperty("--k", String(Math.min(k, 12)));
     const win = el("span", { class: "inv-drawer-window", "aria-hidden": "true" });
@@ -830,7 +927,7 @@
 
   function itemCard(i, withPath, k) {
     const low = isLow(i);
-    const li = el("li", { class: "inv-item" + (low ? " is-low" : "") + (S.landed === i.id ? " is-landed" : ""), "data-inv-item": i.id });
+    const li = el("li", { class: "inv-item" + (low ? " is-low" : "") + (S.landed === i.id ? " is-landed" : "") + (S.lowFlash === i.id ? " is-crossing" : ""), "data-inv-item": i.id, "data-flip": "i:" + i.id });
     li.style.setProperty("--k", String(Math.min(k || 0, 12)));
     li.style.setProperty("--hue", String(hueOf(i.place)));
     const open = el("button", { type: "button", class: "inv-item-open", "aria-label": "Ouvrir " + i.name });
@@ -841,11 +938,26 @@
     const text = el("span", { class: "inv-item-text" }, [q ? marked(i.name, "inv-item-name") : el("span", { class: "inv-item-name", text: i.name })]);
     if (withPath) text.appendChild(q ? marked(pathText(S.ix, i.place), "inv-item-path") : el("span", { class: "inv-item-path", text: pathText(S.ix, i.place) }));
     if (i.tags.length) text.appendChild(el("span", { class: "inv-tags" }, i.tags.slice(0, 4).map((t) => el("span", { class: "inv-tag", text: "#" + t }))));
+    const used = usage(S.projects, i.id);
+    if (used.length) {
+      const res = reserved(S.projects, i.id);
+      const short = res - i.qty;
+      const chip = el("span", { class: "inv-proj-chip" + (short > 0 ? " is-short" : ""), title: used.map((u) => u.project.name + " : " + u.line.qty).join(" · ") });
+      const dots = el("span", { class: "inv-proj-dots", "aria-hidden": "true" });
+      for (const u of used.slice(0, 4)) {
+        const d = el("span", { class: "inv-proj-dot" });
+        d.style.setProperty("--ph", String(u.project.hue));
+        dots.appendChild(d);
+      }
+      chip.append(dots, used.length === 1 ? used[0].project.name : used.length + " projets");
+      if (res) chip.appendChild(el("span", { class: "inv-proj-res", text: short > 0 ? "manque " + short : res + " réservé" + (res > 1 ? "s" : "") }));
+      text.appendChild(chip);
+    }
     open.appendChild(text);
     const f = fill(i);
     if (f !== null) {
       const g = el("span", { class: "inv-gauge" + (low ? " is-low" : ""), role: "img", "aria-label": "Seuil : " + i.min + (i.unit ? " " + i.unit : "") });
-      const bar = el("span", { class: "inv-gauge-fill" });
+      const bar = el("span", { class: "inv-gauge-fill", "data-id": i.id });
       bar.style.setProperty("--f", f.toFixed(3));
       g.append(bar, el("span", { class: "inv-gauge-min", "aria-hidden": "true" }));
       li.appendChild(g);
@@ -894,7 +1006,11 @@
     S.bumpDir = d;
     buzz(6);
     renderMain();
-    if (!was && isLow(i)) toast("« " + i.name + " » passe sous son seuil (" + i.min + ")");
+    if (!was && isLow(i)) {
+      S.lowFlash = i.id;
+      renderMain();
+      toast("« " + i.name + " » passe sous son seuil (" + i.min + ")");
+    }
     const p = pendingAdjust.get(i.id) || { delta: 0, timer: 0 };
     p.delta += d;
     if (p.timer) S.win.clearTimeout(p.timer);
@@ -1025,13 +1141,14 @@
     const paint = () => {
       strip.textContent = "";
       list.forEach((id, k) => {
-        const fig = el("div", { class: "inv-photo" }, [el("img", { src: "/api/carnet/asset/" + id, alt: "Photo " + (k + 1), decoding: "async" })]);
+        const fig = el("div", { class: "inv-photo" + (S.newPhoto === id ? " is-new" : "") }, [el("img", { src: "/api/carnet/asset/" + id, alt: "Photo " + (k + 1), decoding: "async" })]);
         fig.appendChild(btn("", { cls: "inv-photo-x", icon: "close", aria: "Retirer la photo " + (k + 1), on: () => {
           list.splice(k, 1);
           paint();
         } }));
         strip.appendChild(fig);
       });
+      S.newPhoto = "";
       addCam.disabled = addLib.disabled = list.length >= max;
     };
     const pick = (capture) => {
@@ -1044,7 +1161,9 @@
           strip.appendChild(ph);
           status.textContent = "Envoi de la photo…";
           try {
-            list.push(await uploadPhoto(f));
+            const id = await uploadPhoto(f);
+            list.push(id);
+            S.newPhoto = id;
             status.textContent = "";
           } catch (e) {
             status.textContent = (e && e.message) || "Photo refusée";
@@ -1096,6 +1215,7 @@
       field("Note", note),
       el("div", { class: "inv-field" }, [el("span", { class: "inv-flabel", text: "Photos" }), photoEditor(photos, (S.limits && S.limits.photos) || 6)]),
     ]);
+    if (!isNew) body.insertBefore(projectsPanel(i), body.children[4]); // right under « Emplacement »: where it is, then what it is for
     qty.setAttribute("aria-label", "Quantité");
     const save = btn(isNew ? "Ajouter" : "Enregistrer", { cls: "inv-primary inv-save", on: async () => {
       const q = parseInt(qty.value, 10);
@@ -1128,7 +1248,128 @@
     if (isNew) box.querySelector("input").focus();
   }
 
+  // ---- the link to Projets: where an item is used, and putting it in a project's parts list
+
+  async function loadProjects() {
+    try {
+      const out = await call("/api/projects");
+      S.projects = out.projects || [];
+    } catch (_) {
+      S.projects = S.projects || null; // Projets unavailable: the Inventaire works on its own
+    }
+  }
+
+  function openProject(pid) {
+    try {
+      S.win.location.hash = "#projets/" + pid + "/bom";
+    } catch (_) {}
+  }
+
+  function projectsPanel(i) {
+    const box = el("section", { class: "inv-projects", "aria-label": "Projets" });
+    const paint = () => {
+      box.textContent = "";
+      box.appendChild(el("span", { class: "inv-flabel", text: "Dans les projets" }));
+      if (S.projects === null) {
+        box.appendChild(el("p", { class: "inv-hint", text: "Projets indisponibles pour l'instant." }));
+        return;
+      }
+      const used = usage(S.projects, i.id);
+      if (used.length) {
+        const ul = el("ul", { class: "inv-proj-list" });
+        for (const u of used) {
+          const row = el("li", { class: "inv-proj-row" + (u.line.used ? " is-used" : "") });
+          row.style.setProperty("--ph", String(u.project.hue));
+          row.append(
+            el("span", { class: "inv-proj-dot", "aria-hidden": "true" }),
+            el("span", { class: "inv-proj-name", text: u.project.name }),
+            el("span", { class: "inv-proj-qty", text: u.line.qty + (u.line.unit ? " " + u.line.unit : "") + (u.line.used ? " · sorti" : "") }),
+            btn("", { cls: "inv-x inv-proj-open", icon: "open", aria: "Ouvrir le projet " + u.project.name, on: () => {
+              closeSheet(true);
+              openProject(u.project.id);
+            } }),
+          );
+          ul.appendChild(row);
+        }
+        box.appendChild(ul);
+        const res = reserved(S.projects, i.id);
+        if (res) box.appendChild(el("p", { class: "inv-hint" + (res > i.qty ? " is-warn" : ""), text: res > i.qty ? "Il en manque " + (res - i.qty) + " pour tous les projets." : res + " réservé" + (res > 1 ? "s" : "") + " sur " + i.qty + " : il en reste " + (i.qty - res) + " de libre." }));
+      }
+      const live = S.projects.filter((p) => p.status !== "done");
+      if (!live.length) {
+        box.appendChild(el("p", { class: "inv-hint", text: S.projects.length ? "Aucun projet en cours." : "Crée un projet dans Projets pour y ajouter cet objet." }));
+        return;
+      }
+      const sel = el("select", { "aria-label": "Projet" }, live.map((p) => el("option", { value: p.id, text: p.name })));
+      const n = el("input", { type: "number", min: "1", step: "1", inputmode: "numeric", value: "1", "aria-label": "Quantité pour le projet" });
+      const add = btn("Ajouter au projet", { cls: "secondary inv-proj-add", icon: "project", on: async () => {
+        const p = S.projects.find((x) => x.id === sel.value);
+        if (!p) return;
+        add.disabled = true;
+        try {
+          const out = await call("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "bom.add", id: p.id, rev: p.rev, bom: { name: i.name, item: i.id, qty: Math.max(1, parseInt(n.value, 10) || 1), unit: i.unit } }) });
+          const k = S.projects.findIndex((x) => x.id === p.id);
+          if (k >= 0) S.projects[k] = out.project;
+          flyToProjects(box.closest(".inv-sheet"), i);
+          paint();
+          renderMain();
+          toast("Ajouté à « " + p.name + " »", "Ouvrir", () => {
+            closeSheet(true);
+            openProject(p.id);
+          });
+        } catch (e) {
+          if (e && e.status === 409) await loadProjects();
+          toast((e && e.message) || "Ajout impossible", null, null, true);
+          paint();
+        } finally {
+          add.disabled = false;
+        }
+      } });
+      box.appendChild(el("div", { class: "inv-proj-form" }, [sel, n, add]));
+    };
+    paint();
+    if (S.projects === null) loadProjects().then(paint);
+    return box;
+  }
+
+  /** The item's picture flies to the Projets button: it is now in that project's parts list. */
+  function flyToProjects(from, i) {
+    if (calm() || !from) return;
+    const target = S.doc.querySelector('.bottom-nav [data-nav="projets"]');
+    const src = from.querySelector(".inv-photo img") || from.querySelector(".inv-sheet-head h3");
+    if (!target || !src) return;
+    const a = src.getBoundingClientRect();
+    const b = target.getBoundingClientRect();
+    const ghost = el("span", { class: "inv-fly", "aria-hidden": "true" });
+    if (i.photos[0]) ghost.appendChild(el("img", { src: "/api/carnet/asset/" + i.photos[0], alt: "" }));
+    else ghost.textContent = (i.name.trim()[0] || "?").toUpperCase();
+    ghost.style.left = a.left + Math.min(a.width, 80) / 2 - 28 + "px";
+    ghost.style.top = a.top + Math.min(a.height, 80) / 2 - 28 + "px";
+    S.doc.body.appendChild(ghost);
+    const dx = b.left + b.width / 2 - (a.left + Math.min(a.width, 80) / 2);
+    const dy = b.top + b.height / 2 - (a.top + Math.min(a.height, 80) / 2);
+    const run2 = anim(ghost, [
+      { transform: "translate(0,0) scale(1)", opacity: 1 },
+      { transform: "translate(" + dx * 0.5 + "px," + (dy * 0.5 - 90) + "px) scale(.8) rotate(-12deg)", opacity: 1, offset: 0.5 },
+      { transform: "translate(" + dx + "px," + dy + "px) scale(.2) rotate(-20deg)", opacity: 0.2 },
+    ], { duration: 760, easing: "cubic-bezier(.45,0,.2,1)" });
+    const end = () => {
+      ghost.remove();
+      anim(target, [{ transform: "scale(1)" }, { transform: "scale(1.22)", offset: 0.4 }, { transform: "none" }], { duration: 420, easing: "cubic-bezier(.2,1.35,.35,1)" });
+    };
+    if (run2) run2.finished.then(end, end);
+    else end();
+    buzz(10);
+  }
+
   async function deleteItem(i) {
+    const card = S.mainEl && S.mainEl.querySelector('[data-inv-item="' + i.id + '"]');
+    if (card) {
+      // the card crumples before it goes
+      const a = anim(card, [{ transform: "none", opacity: 1 }, { transform: "scale(.9,.8) rotate(-2deg)", opacity: 1, offset: 0.35 }, { transform: "translate3d(0,24px,0) scale(.3) rotate(8deg)", opacity: 0 }], { duration: 380, easing: "cubic-bezier(.4,0,.7,1)", fill: "forwards" });
+      if (a) await a.finished.catch(() => {});
+    }
     const out = await run({ action: "item.delete", id: i.id, rev: i.rev });
     if (out) {
       buzz(10);
@@ -1356,6 +1597,10 @@
 
   function show() {
     S.counted = false;
+    S.enter = true;
+    loadProjects().then(() => {
+      if (S.data && !S.sheet) renderMain();
+    });
     if (!S.app) S.app = S.doc.getElementById("hq-inv-app");
     if (!S.app) return;
     if (!S.bodyEl) build();
