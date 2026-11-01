@@ -38,6 +38,7 @@ import hq_carnet
 import hq_diagnostics
 import hq_diagnostics_ui
 import hq_drawings
+import hq_ai
 import hq_files
 import hq_folder_backups
 import hq_inventory
@@ -2263,6 +2264,59 @@ def bind_hq() -> None:
         resolve_writable_dir=resolve_writable_dir,
         unique_in_dir=unique_in_dir,
         system_names=SYSTEM_NAMES,
+    )
+    def _ai_carnet() -> dict:
+        nb = hq_carnet.get_notebook()
+        pages = []
+        for pg in nb.get("pages") or []:
+            if pg.get("deleted_at") is not None:
+                continue
+            blocks = (pg.get("content") or {}).get("blocks") or []
+            text = "\n".join(str(b.get("text") or "") for b in blocks if isinstance(b, dict))
+            pages.append({"id": pg["id"], "title": hq_carnet.derive_title(text), "text": text[:20000],
+                          "block": blocks[0].get("id") if blocks and isinstance(blocks[0], dict) else None, "updated": pg.get("updated_at")})
+        return {"pages": pages}
+
+    def _ai_note(lines: list) -> dict:
+        nb = hq_carnet.get_notebook(meta=True)
+        out = hq_carnet.mutate({"action": "page_create", "expected_notebook_rev": nb["notebook_rev"],
+                                "content": {"version": hq_carnet.CONTENT_VERSION,
+                                            "blocks": [{"type": "paragraph", "text": str(t), "marks": []} for t in lines] or [{"type": "paragraph", "text": "", "marks": []}]}})
+        page = out.get("page") or {}
+        blocks = (page.get("content") or {}).get("blocks") or [{}]
+        return {"id": page.get("id"), "block": blocks[0].get("id")}
+
+    def _ai_files(ws: list) -> list:
+        found = []
+        seen = 0
+        for top in ("Inbox", "Uni", "Print"):
+            base = ROOT / top
+            for dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                for n in filenames + dirnames:
+                    seen += 1
+                    if seen > 8000:
+                        break
+                    if n.startswith(".") or n.lower() in SYSTEM_NAMES:
+                        continue
+                    sc = hq_ai.score(n, ws)
+                    if sc:
+                        found.append((sc, "/".join(Path(dirpath, n).relative_to(ROOT).parts)))
+        found.sort(key=lambda t: (-t[0], t[1]))
+        return [r for _, r in found[:15]]
+
+    hq_ai.bind(  # the assistant: reads the local stores for context, writes only after a confirmation, key stays on this PC
+        root=ROOT,
+        key=lambda: str(CONFIG.get("gemini_api_key") or os.environ.get("HQ_GEMINI_KEY") or "").strip(),
+        calendar=lambda a, b: hq_calendar.query(a, b, with_catalog=False).get("items") or [],
+        projects=lambda: hq_projects.http_get({})[1],
+        inventory=hq_inventory.snapshot,
+        carnet=_ai_carnet,
+        files=_ai_files,
+        save_event=hq_calendar.save_event,
+        projects_apply=hq_projects.apply,
+        inventory_apply=hq_inventory.apply,
+        carnet_note=_ai_note,
     )
     hq_folder_backups.bind(  # Fichiers: automatic backups of chosen folders, rolling window, to backup_dir/Dossiers
         root=ROOT,
@@ -5002,6 +5056,7 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/hq-font-inter.woff2" as="font" type="font/woff2" crossorigin/>
 <link rel="preload" href="/assets/hq-font-fraunces.woff2" as="font" type="font/woff2" crossorigin/>
 <link rel="stylesheet" href="/assets/hq-theme.css"/>
+<link rel="stylesheet" href="/assets/hq-ai.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
@@ -5030,6 +5085,7 @@ def render_app() -> bytes:
   <div class="view-bar">
     <p class="view-label" id="view-label">Accueil</p>
     <div class="view-tools">
+    <button type="button" class="view-search view-ai" id="btn-ai" aria-label="Assistant" data-help="Assistant : pose une question sur tes notes, ton agenda, tes projets ou ton inventaire, ou dis une phrase à noter. Ctrl+J."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9-4.9-1.9 4.9-1.9zM18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg></button>
     <button type="button" class="view-search" id="btn-search-bar" aria-label="Recherche" data-help="Recherche partout : dossiers, scènes, appareils, Carnet, prompts Forge, calendrier et noms de fichiers. Ctrl+K ou Cmd+K."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.9"/><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="m15 15 5 5"/></svg></button>
     <button type="button" class="mode-toggle" id="mode-toggle" aria-pressed="true" data-help="Mode simple : le terminal et les outils avancés sont masqués.">Mode simple</button>
     </div>
@@ -6412,6 +6468,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-home.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
+<script src="/assets/hq-ai.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-struct.js"></script>
@@ -7696,6 +7753,10 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_files.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw == "/api/ai":  # the assistant: usage and whether a key is set (admin: not in the upload allowlist)
+            code, payload = hq_ai.http_get(parse_qs(parsed.query))
+            self._json(code, payload)
+            return True
         if raw == "/api/backups/folders":  # Fichiers: automatic folder backups (admin: not in the upload allowlist)
             code, payload = hq_folder_backups.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
@@ -8094,6 +8155,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
             code, payload = hq_files.http_post(data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/ai":  # the assistant: ask / capture / apply (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_ai.http_post(data)
             self._json(code, payload)
             return True
         if raw == "/api/backups/folders":  # Fichiers: automatic folder backups (CSRF checked before routing)

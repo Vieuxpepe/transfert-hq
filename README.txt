@@ -1274,3 +1274,13 @@ Apparence commune (assets/hq-theme.css, assets/hq-theme.js)
   Pages      la page ouverte apparaît en fondu (animation Web sur l'opacité seulement : ne remplace jamais
              l'animation propre d'une page, les feuilles fixes restent en place). Rien ne bouge en
              mouvement réduit.
+
+ASSISTANT (bouton ✦ dans la barre, ou Ctrl+J)
+  Demander : pose une question sur ton HQ (agenda, projets, inventaire, Carnet, noms de fichiers).
+    La réponse cite ses sources [1] [2]… ; un clic sur une source ouvre la page. « Approfondir » utilise
+    le modèle plus fort (Gemini 3.6 Flash, 20/jour).
+  Noter : une phrase → des propositions (événement, tâche, note de projet, stock, note Carnet).
+    Rien n'est écrit avant « Enregistrer » ; au plus 3 actions à la fois, chaque id est revérifié.
+  Clé : "gemini_api_key" dans bridge_config.json (ignoré par git), jamais dans le code ni la page.
+    Les appels partent de ce PC ; les quotas du jour sont comptés dans .hq-ai/usage.json et un modèle
+    occupé (429/503) passe au suivant. Redémarrer le pont après avoir changé la clé.

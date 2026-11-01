@@ -55,3 +55,5 @@ assets/uploads/
 iphone_bridge.py.bak*
 .DS_Store
 Thumbs.db
+
+.hq-ai/
