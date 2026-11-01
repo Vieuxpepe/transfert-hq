@@ -96,9 +96,13 @@ def main() -> None:
                 check("Bientôt" in card and "dans" in card, f"with a countdown ({card!r})")
                 check(page.evaluate("() => { const f = document.querySelector('#home-next .hq-cal-ring .fill'); return parseFloat(f.style.strokeDashoffset) < parseFloat(f.style.strokeDasharray); }"),
                       "its ring has started to fill")
+                # A critical state opens the panel by itself (README « Un état critique ouvre HQ »), so the toggle
+                # is checked from whatever state it is in: one click flips it, a second puts it back.
+                was_open = page.get_attribute("#hq-attention-toggle", "aria-expanded") == "true"
                 page.click("#hq-attention-toggle")
-                check(page.locator("#hq-attention-panel").is_visible(), "the status opens what needs attention")
+                check(page.locator("#hq-attention-panel").is_visible() != was_open, "the status opens (or closes) what needs attention")
                 page.click("#hq-attention-toggle")
+                check(page.locator("#hq-attention-panel").is_visible() == was_open, "and a second tap puts it back")
 
                 # Today open, Carnet « Reprendre ».
                 check(page.get_attribute("#hq-today-toggle", "aria-expanded") == "true", "Today is open by default")

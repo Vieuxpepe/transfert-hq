@@ -2818,7 +2818,9 @@
         card.style.viewTransitionName = "hq-cal-pick";
         morphFrom = item.id;
       });
-      vt.finished.finally(() => { if (card) card.style.viewTransitionName = ""; });
+      // a quick second tap skips this morph: its promises reject, which is expected, not an error
+      vt.ready.catch(() => {});
+      vt.finished.catch(() => {}).finally(() => { if (card) card.style.viewTransitionName = ""; });
     } catch (_) {
       shape.style.viewTransitionName = "";
       buildDetail(item, true);
@@ -2883,7 +2885,8 @@
         detail.classList.remove("is-closing", "is-morphing");
         shape.style.viewTransitionName = "hq-cal-pick";
       });
-      vt.finished.finally(() => { shape.style.viewTransitionName = ""; });
+      vt.ready.catch(() => {});
+      vt.finished.catch(() => {}).finally(() => { shape.style.viewTransitionName = ""; });
     } catch (_) {
       detail.hidden = true;
       detail.textContent = "";

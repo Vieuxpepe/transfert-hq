@@ -99,9 +99,9 @@ def login(page, url):
 
 def open_folder(page):
     page.click('.bottom-nav [data-nav="fichiers"]')
-    page.click('#file-list [data-open="Uni"].fname')
-    page.click(f'#file-list [data-open="{FOLDER}"].fname')
-    page.wait_for_selector(f'#file-list li.file[data-rel="{FOLDER}/support.stl"]')
+    page.click('#hq-files-app .fx-folder[data-rel="Uni"]')
+    page.click(f'#hq-files-app .fx-folder[data-rel="{FOLDER}"]')
+    page.wait_for_selector(f'#hq-files-app .fx-item[data-rel="{FOLDER}/support.stl"]')
 
 
 def double_tap_row(page, name):
@@ -110,18 +110,18 @@ def double_tap_row(page, name):
         page.wait_for_function("() => document.body.dataset.view === 'fichiers'")
         page.wait_for_load_state("networkidle"); page.wait_for_timeout(300)
     rel = f"{FOLDER}/{name}"
-    for _ in range(30):  # the list may re-render after Retour: tap only once the row is centred and still
-        meta = page.locator(f'#file-list li.file[data-rel="{rel}"] .meta')
-        meta.evaluate("el => el.scrollIntoView({ block: 'center' })")  # not under the fixed bottom nav
+    for _ in range(30):  # the folder may re-render after Retour: tap only once the card is centred and still
+        card = page.locator(f'#hq-files-app .fx-item[data-rel="{rel}"]')
+        card.evaluate("el => el.scrollIntoView({ block: 'center' })")  # not under the fixed bottom nav
         page.wait_for_timeout(150)
-        b = meta.bounding_box()
-        x, y = b["x"] + min(40, b["width"] / 2), b["y"] + b["height"] / 2
+        b = card.bounding_box()
+        x, y = b["x"] + b["width"] / 2, b["y"] + b["height"] / 3
         page.wait_for_timeout(150)
-        hit = page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y), r = e && e.closest('li.file'); return r ? r.dataset.rel : null; }", [x, y])
-        if hit == rel and meta.bounding_box() == b:
+        hit = page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y), r = e && e.closest('.fx-item'); return r ? r.dataset.rel : null; }", [x, y])
+        if hit == rel and card.bounding_box() == b:
             break
     else:
-        raise AssertionError(("row never settled", rel))
+        raise AssertionError(("card never settled", rel))
     page.touchscreen.tap(x, y); page.touchscreen.tap(x, y)
     page.wait_for_function("() => document.body.dataset.view === 'lecteur'", timeout=5000)
     shown = page.locator("#player-name").inner_text()
@@ -215,7 +215,7 @@ def touch_flow(browser, device, url, engine, label):
     page.on("request", lambda r: external.append(r.url) if not r.url.startswith(url) and not r.url.startswith("data:") and not r.url.startswith("blob:") else None)
     login(page, url)
     open_folder(page)
-    assert "🧊" in page.locator(f'#file-list li.file[data-rel="{FOLDER}/support.stl"] a.fname').inner_text()
+    assert page.locator(f'#hq-files-app .fx-item[data-rel="{FOLDER}/support.stl"] .fx-stamp').inner_text().strip() == "STL"
     # Binary STL
     double_tap_row(page, "support.stl")
     wait_model(page, 24)

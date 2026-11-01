@@ -239,6 +239,52 @@ Accueil
   Requête vide : récents locaux (hq_palette_recents : kind, id, label, hint)
   et favoris déjà chargés. L'exécution repasse par les mêmes endpoints.
   Le tri des fichiers (hq_files_sort) reste dans le navigateur.
+  Accueil vivant (assets/hq-home-fx.js, hq-home-fx.css ; ne change rien à ce qui
+  est affiché, ne lit rien du réseau) :
+    Ciel   l'en-tête a un ciel à l'heure : soleil (6 h–20 h) ou lune sur son arc
+           dans le coin bas-droit, nuages qui dérivent le jour, étoiles qui
+           scintillent et étoile filante de temps en temps la nuit, lumières
+           d'aurore lentes ; léger parallaxe sous la souris.
+    Texte  le bonjour arrive lettre par lettre (vague au survol) ; une horloge
+           à rouleaux (chiffres d'odomètre, deux-points qui clignote, ligne des
+           secondes) qui défile depuis 00:00 à chaque ouverture d'Accueil.
+    Gestes les actions s'inclinent vers la souris et s'éclairent dessous ; un
+           appui fait une onde et des étincelles, chaque icône fait son geste
+           (obturateur, page qui tourne, agenda qui saute, flèche qui part, loupe
+           qui cherche ; verrou qui tremble, « z » de la veille, capture qui
+           pince, dossier qui s'ouvre). Chaque carte a un projecteur doux qui suit
+           la souris ; le soulignement du titre s'étire au survol.
+    Listes les lignes arrivent l'une après l'autre (activité, aujourd'hui, depuis
+           hier, attention, appareils) ; une ligne nouvelle clignote ; les anneaux
+           des appareils balaient jusqu'à leur niveau puis respirent.
+    Autres le point d'état pulse (plus vite si critique) ; la carte « Prochain »
+           capte un reflet et pulse quand c'est bientôt ; zone de dépôt à pointillés
+           qui défilent. Tout est coupé en mouvement réduit.
+    Fond   un coucher de soleil calme derrière Accueil : ciel violet en haut,
+           bande rose, lueur chaude à l'horizon où un soleil bas respire très
+           lentement, deux collines douces, quelques étoiles pâles la nuit, une
+           poignée de petites braises qui montent, grain fin. Plus chaud le jour,
+           plus profond la nuit, pastel en thème clair ; l'en-tête prend la même
+           lumière chaude. Cartes en verre dépoli presque opaque. Rien ne bouge
+           hors d'Accueil ni en mouvement réduit.
+    Pages  chaque page a son propre coucher de soleil (même calme, autre
+           personnalité) : Carnet bibliothèque à l'heure dorée (grain de papier),
+           Calendrier aube, Dessiner atelier au crépuscule (lumière à gauche),
+           Forge braises, Fichiers coucher sur la mer (vagues, reflet du soleil),
+           Projets plan au crépuscule (grille fine), Inventaire forêt au soir,
+           Lecteur cinéma de nuit, Système aurore boréale. Le passage d'une page
+           à l'autre fond les couleurs en ~1,5 s. Accueil seul suit l'heure.
+    Heure  le ciel et l'horloge suivent l'heure du PC (window.hqNow, comme le
+           bonjour), même si l'horloge du téléphone dérive.
+    Tests  tests/check_hq_home_fx.mjs.
+  Téléphone : cartes plus serrées (mêmes contenus, ~140 px de moins).
+  Fichiers ne se remplit qu'à l'ouverture de Fichiers : aucun nom de fichier ni
+  aperçu de photo dans la page tant qu'on reste sur Accueil.
+  /assets/ : envoyés compressés (gzip) quand le navigateur l'accepte et
+  revalidés par ETag (Cache-Control: no-cache) : ~3 Mo -> ~0,8 Mo au premier
+  chargement, puis des 304 ; un fichier modifié se voit au chargement suivant.
+  La page HTML elle-même n'est pas compressée (elle porte le jeton CSRF).
+  Tests : tests/test_asset_delivery.py.
 
 Routes ajoutées (admin ; le rôle upload reste sur son allowlist)
 ----------------------------------------------------------------
@@ -1165,3 +1211,66 @@ Projets (hq_projects.py, assets/hq-projects.js)
   Stockage   .hq-projects/projects.json (admin seulement, révision par projet, 409 si modifié ailleurs) ; un kanban.json
              illisible n'est jamais réécrit. Le bloc Système › Tâches renvoie vers Projets. Tests : tests/test_hq_projects.py,
              tests/check_hq_projects.mjs, tests/visual_projects_playwright.py.
+
+Fichiers (hq_files.py, assets/hq-files.js)
+------------------------------------------
+  Quoi       Un explorateur visuel à la place de l'ancienne liste. Les dossiers sont de vrais dossiers (onglet à la couleur
+             de leur racine : Inbox vert, Uni violet, Print orange) d'où dépassent les photos qu'ils contiennent ; les
+             fichiers sont des feuilles au coin plié avec un tampon de type (PDF, XLSX, STL…) ; les images se montrent.
+             Le chemin est une rangée d'onglets. Vignettes ou liste, tri Nom / Récents / Taille, filtre du dossier (tout
+             est retenu sur l'appareil). Les favoris, la recherche globale et l'Accueil y mènent comme avant.
+  Aperçu     Un clic ouvre l'aperçu : image, PDF, texte, audio, vidéo. On y renomme sur place, on passe au fichier
+             suivant (← →, ou en glissant au téléphone), on ouvre, télécharge, édite un texte (Ctrl+S), imprime (Print/),
+             déplace ou met à la corbeille. Chansons, vidéos et modèles 3D : double clic / double tap = Lecteur (le clic
+             simple attend ~300 ms) ; « Lecteur » dans l'aperçu aussi.
+  Gestes     Glisser des fichiers de l'ordinateur pour les envoyer ici (ou sur un dossier) ; envoi par morceaux avec
+             anneaux de progression. Glisser une carte sur un dossier ou un onglet du chemin pour la déplacer. Sélection :
+             Ctrl/Maj-clic, appui long au téléphone ou « Sélection », puis Déplacer (choix du dossier en naviguant, sans
+             taper de chemin) ou Corbeille. « Dossier » crée un dossier sur place ; F2 renomme ; flèches, Entrée, Suppr,
+             Retour arrière (dossier parent), Ctrl+A. Chaque déplacement et chaque suppression propose « Annuler ».
+  Corbeille  Supprimer met à la corbeille (<ROOT>/.hq-trash, index trash.json) : Restaurer remet l'élément à sa place
+             (nouveau nom si la place est prise, dossier recréé s'il a disparu) ; vidée automatiquement après 30 jours,
+             ou à la main (« Vider la corbeille », suppression définitive d'un élément). Une corbeille redirigée (lien) ou
+             un index illisible ne sont jamais touchés. Les racines ne se suppriment pas.
+  Sauvegarde Dans un dossier, « Sauvegarde auto » le copie automatiquement (toutes les heures, chaque jour ou chaque
+  auto       semaine) vers <backup_dir>/Dossiers/<nom> (<id>)/<AAAAMMJJ_HHMMSS>/ ; seules les N copies les plus récentes
+             sont gardées (10 par défaut, 1 à 50) : quand une nouvelle arrive, la plus ancienne part. Aucune copie si rien
+             n'a changé (mêmes fichiers, tailles et dates) ; un fichier ouvert ailleurs est ignoré et signalé. Première
+             copie tout de suite ; « Sauvegarder maintenant », Pause, fréquence et nombre de copies modifiables. La fenêtre
+             se voit : N cases ; la copie en cours tombe dans la première et s'y remplit comme un verre (lumière de scan,
+             pourcentage), puis se scelle (coche, étincelles, onde) ; les autres glissent, la plus ancienne bascule et
+             part en poussière. Autour du bouclier, un anneau se remplit jusqu'à la prochaine copie (compte à rebours en
+             direct) ; « Prochaines copies » montre les heures. Pause givre les copies ; « Rien n'a changé » fait hocher la
+             plus récente (« = identique »). Activer scelle le bouclier dans une gerbe d'étincelles ; le bouclier des
+             dossiers brille, tourne pendant une copie et éclate quand elle arrive. Tout est coupé en mouvement réduit.
+             « Restaurer » ramène une copie à côté du dossier sous un nouveau nom (« … (sauvegarde du 31 oct. 16 h 49) ») :
+             rien n'est jamais écrasé. Un dossier sauvegardé porte un bouclier ; renommé ou déplacé dans Fichiers, sa
+             sauvegarde le suit. À la racine, « Sauvegardes » liste tout. « Arrêter » garde les copies sur le disque.
+             Sûreté : copie dans <stamp>.partial puis renommée (une copie interrompue ne compte jamais) ; liens et jonctions
+             ignorés ; seules les copies marquées de CE dossier sont supprimées par la rotation ; destination refusée si
+             elle est dans le dossier sauvegardé. Les copies automatiques respectent backup_auto_paused ; un échec donne une
+             alerte (une seule jusqu'au retour à la normale) et se réessaie toutes les heures. Réglages dans
+             .hq-backups/jobs.json (hq_folder_backups.py ; GET/POST /api/backups/folders, admin seulement). Tests :
+             tests/test_hq_folder_backups.py, tests/check_hq_files.mjs, tests/visual_files_playwright.py.
+  Mouvement  Le dossier s'ouvre (rabat) et son contenu se déverse ; les cartes glissent vers leur nouvelle place, volent
+             dans le dossier où on les dépose, se froissent et filent vers la Corbeille, brillent en arrivant ; l'aperçu
+             s'ouvre depuis la vignette. Tout est coupé en mouvement réduit.
+  Routes     GET /api/files/trash, GET /api/files/peek?rel=… (contenu d'un dossier pour les vignettes), POST /api/files
+             (trash / restore / purge / empty) — admin seulement, rôle upload refusé. Tests : tests/test_hq_files.py,
+             tests/check_hq_files.mjs, tests/visual_files_playwright.py (et visual_media / visual_model adaptés).
+
+Apparence commune (assets/hq-theme.css, assets/hq-theme.js)
+-----------------------------------------------------------
+  Polices    Inter (texte et chiffres, alignés) et Fraunces (titres h1–h3, bonjour), servies par HQ
+             (assets/hq-font-*.woff2, ~115 Ko au total, préchargées ; licence SIL OFL dans docs/fonts-OFL.txt).
+  Couleurs   chaque page prend une couleur tirée de son coucher de soleil : Accueil abricot, Carnet or,
+             Calendrier lavande, Dessiner corail, Forge braise, Fichiers mer, Projets bleu plan, Inventaire
+             feuille, Lecteur rose néon, Système menthe. Thème clair : versions foncées. Chacune ≥ 4,5:1 sur
+             les cartes et sous le texte des boutons (tests/check_hq_theme.mjs). Le Carnet garde son indigo à
+             l'intérieur ; le thème « midnight » garde sa couleur. --accent reste une propriété simple (le code
+             qui la lit reçoit l'hexadécimal écrit).
+  Menu       barre latérale (et barre du bas au téléphone) en verre dépoli ; le surlignage glisse vers la
+             page ouverte, son icône rebondit et s'éclaire ; survol : l'icône se soulève.
+  Pages      la page ouverte apparaît en fondu (animation Web sur l'opacité seulement : ne remplace jamais
+             l'animation propre d'une page, les feuilles fixes restent en place). Rien ne bouge en
+             mouvement réduit.

@@ -16,6 +16,7 @@
   function now() {
     return new Date(Date.now() + offsetMs);
   }
+  window.hqNow = now; // the HQ clock, shared with hq-home-fx.js (sky and clock follow the PC, like the greeting)
 
   function parseMinute(text) {
     const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?$/.exec(String(text || ""));

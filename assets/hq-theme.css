@@ -1,0 +1,73 @@
+/* Transfert HQ — the look that ties the pages together (assets/hq-theme.js).
+ * Two fonts served by HQ itself (Inter for text and numbers, Fraunces for titles; SIL OFL, see docs/fonts-OFL.txt),
+ * an accent colour per page taken from its sunset (every one at least 4.5:1 on the cards and under its button text,
+ * tests/check_hq_theme.mjs), a frosted sidebar whose highlight glides to the page you open, and a soft fade when a
+ * page changes. The `theme-midnight` theme keeps its own accent. Motion is off with reduced motion. */
+
+@font-face{font-family:"Inter HQ";src:url("/assets/hq-font-inter.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:"Fraunces HQ";src:url("/assets/hq-font-fraunces.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+
+
+:root{--font:"Inter HQ",system-ui,-apple-system,"Segoe UI",sans-serif;--font-display:"Fraunces HQ",Georgia,"Times New Roman",serif}
+body{font-family:var(--font);font-feature-settings:"cv11" 1,"ss03" 1;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}
+/* --accent is not registered as a <color>: code that reads it (canvas drawing, tests) keeps getting the hex it wrote */
+button,input,select,textarea{font-family:inherit}
+h1,h2,h3,.home-greet{font-family:var(--font-display);font-optical-sizing:auto;font-weight:650;letter-spacing:-.012em}
+h1,.home-greet{font-weight:600;letter-spacing:-.02em}
+.home-greet{font-weight:620}
+/* numbers stay in Inter, lined up */
+.home-clock-face,.home-next-when,.fx-meta,.fx-bk-num,.badge,.fx-n,.device-tile-meta,.hq-cal-time,time{font-variant-numeric:tabular-nums}
+.home-clock-face{font-family:var(--font);font-weight:700;letter-spacing:-.03em}
+
+/* ---------------------------------------------------------------- an accent per page, from its sunset */
+body:not(.theme-midnight)[data-view="accueil"]{--accent:#ffab70;--accent2:#ffab70}
+body:not(.theme-midnight)[data-view="carnet"]{--accent:#f2c46b;--accent2:#f2c46b}
+body:not(.theme-midnight)[data-view="calendrier"]{--accent:#c3a6ff;--accent2:#c3a6ff}
+body:not(.theme-midnight)[data-view="dessiner"]{--accent:#ff9478;--accent2:#ff9478}
+body:not(.theme-midnight)[data-view="forge"]{--accent:#ff7a45;--accent2:#ff7a45}
+body:not(.theme-midnight)[data-view="fichiers"]{--accent:#5fd0f0;--accent2:#5fd0f0}
+body:not(.theme-midnight)[data-view="projets"]{--accent:#7fb0ff;--accent2:#7fb0ff}
+body:not(.theme-midnight)[data-view="inventaire"]{--accent:#a8dc72;--accent2:#a8dc72}
+body:not(.theme-midnight)[data-view="lecteur"]{--accent:#ff7fb8;--accent2:#ff7fb8}
+body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:#3dffb5;--accent2:#3dffb5}
+@media (prefers-color-scheme: light){
+  body:not(.theme-midnight)[data-view="accueil"]{--accent:#a4461b;--accent2:#a4461b}
+  body:not(.theme-midnight)[data-view="carnet"]{--accent:#7d5810;--accent2:#7d5810}
+  body:not(.theme-midnight)[data-view="calendrier"]{--accent:#6440b0;--accent2:#6440b0}
+  body:not(.theme-midnight)[data-view="dessiner"]{--accent:#a63d26;--accent2:#a63d26}
+  body:not(.theme-midnight)[data-view="forge"]{--accent:#a5360f;--accent2:#a5360f}
+  body:not(.theme-midnight)[data-view="fichiers"]{--accent:#0b6680;--accent2:#0b6680}
+  body:not(.theme-midnight)[data-view="projets"]{--accent:#1f4fae;--accent2:#1f4fae}
+  body:not(.theme-midnight)[data-view="inventaire"]{--accent:#366b17;--accent2:#366b17}
+  body:not(.theme-midnight)[data-view="lecteur"]{--accent:#a12a63;--accent2:#a12a63}
+  body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:#08724f;--accent2:#08724f}
+}
+::selection{background:color-mix(in srgb,var(--accent) 32%,transparent)}
+html{scrollbar-color:color-mix(in srgb,var(--accent) 35%,var(--line)) transparent}
+
+/* ---------------------------------------------------------------- the frosted sidebar and its gliding highlight */
+.bottom-nav{background:color-mix(in srgb,var(--panel) 70%,transparent);-webkit-backdrop-filter:blur(22px) saturate(150%);backdrop-filter:blur(22px) saturate(150%)}
+@media (min-width:900px){
+  .bottom-nav{background:linear-gradient(180deg,color-mix(in srgb,var(--panel) 58%,transparent),color-mix(in srgb,var(--panel) 40%,transparent));
+    border-right:1px solid color-mix(in srgb,var(--line) 55%,transparent);box-shadow:1px 0 0 color-mix(in srgb,#fff 4%,transparent)}
+}
+.bottom-nav button{position:relative;z-index:1;transition:color .35s ease}
+.bottom-nav .nav-ink{position:absolute;left:0;top:0;z-index:0;width:0;height:0;border-radius:12px;pointer-events:none;opacity:0;
+  background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 22%,transparent),color-mix(in srgb,var(--accent) 10%,transparent));
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 42%,transparent),0 8px 22px -10px color-mix(in srgb,var(--accent) 70%,transparent);
+  transition:transform .55s cubic-bezier(.2,1.25,.35,1),width .55s cubic-bezier(.2,1.25,.35,1),height .55s cubic-bezier(.2,1.25,.35,1),opacity .3s ease}
+.bottom-nav .nav-ink.is-still{transition:opacity .3s ease}
+.bottom-nav.has-ink .nav-ink{opacity:1}
+.bottom-nav.has-ink button.active{background:transparent;box-shadow:none}
+.bottom-nav button.active .nav-svg{filter:drop-shadow(0 0 6px color-mix(in srgb,var(--accent) 65%,transparent))}
+.bottom-nav button .nav-ico{transition:transform .35s cubic-bezier(.2,1.4,.4,1)}
+
+/* the page fades in when you open it (opacity only: fixed sheets inside a page stay where they are) */
+@keyframes hq-ico-pop{0%{transform:scale(1)}35%{transform:scale(1.32) rotate(-8deg)}70%{transform:scale(.94)}100%{transform:none}}
+@media (prefers-reduced-motion:no-preference){
+  .bottom-nav button.is-pop .nav-ico{animation:hq-ico-pop .55s cubic-bezier(.2,.8,.2,1)}
+  @media (hover:hover){.bottom-nav button:not(.active):hover .nav-ico{transform:translateY(-2px) scale(1.08)}}
+}
+@media (prefers-reduced-motion:reduce){
+  .bottom-nav .nav-ink{transition:none}
+}

@@ -63,7 +63,8 @@ class AssetHttpTests(unittest.TestCase):
         self.assertEqual(status, 200, name)
         self.assertEqual(headers.get("content-type"), expected_type, name)
         self.assertEqual(headers.get("x-content-type-options"), "nosniff", name)
-        self.assertEqual(headers.get("cache-control"), "no-store", name)
+        self.assertEqual(headers.get("cache-control"), "no-cache", name)  # revalidated every load (ETag), never stale
+        self.assertTrue(headers.get("etag", "").startswith('"a'), name)
         self.assertEqual(headers.get("content-security-policy"), CSP, name)
         self.assertEqual(body, (SOURCE / "assets" / name).read_bytes(), name)
 

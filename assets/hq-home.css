@@ -227,3 +227,25 @@ body[data-view="accueil"] .hq-capture-fab{display:none}
   .home-v2 .home-col:empty{min-height:80px;border:2px dashed transparent}
   .home-v2.is-editing .home-col:empty{border-color:color-mix(in srgb,var(--line) 80%,transparent);border-radius:20px}
 }
+
+/* ---- phone: tighter cards (same content, about a screen shorter) ---- */
+@media (max-width:759.98px){
+  body[data-view="accueil"] .accueil-grid.home-v2{gap:10px}
+  .home-v2 section.hq{padding:13px 14px}
+  .home-v2 .home-head{margin-bottom:9px}
+  .home-v2 .home-head h2{font-size:.98rem}
+  .home-v2 button.home-act{min-height:70px;padding:8px 3px;gap:5px}
+  .home-act-ico{width:36px;height:36px;border-radius:12px}
+  .home-v2 .home-pc .icon-btn{min-height:54px;padding:6px 4px;gap:3px;border-radius:14px}
+  .home-v2 .home-pc .icon-btn .ico svg{width:21px;height:21px}
+  .home-v2 .home-pc .icon-btn .lbl{font-size:.72rem}
+  .home-v2 .home-pc .home-head button.home-chip{min-height:32px;padding:4px 12px}
+  .home-v2 .home-send-more{flex-wrap:nowrap;gap:6px}
+  .home-v2 .home-send-more button.home-chip{flex:1 1 0;min-width:0;min-height:34px;padding:5px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .home-send-hint{margin:8px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .home-v2 .hq-list li.device-tile{min-height:50px;padding:7px 9px;gap:9px}
+  .home-v2 .device-ring{width:34px;height:34px}
+  .home-v2 button.carnet-home-resume{padding:10px 12px}
+  .home-v2 .carnet-home-actions{margin-top:10px}
+  .home-v2 .home-today #hq-today-panel{margin-top:6px}
+}

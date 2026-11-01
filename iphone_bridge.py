@@ -17,6 +17,7 @@ import socket
 import struct
 import subprocess
 import sys
+import gzip
 import tempfile
 import threading
 import time
@@ -37,6 +38,8 @@ import hq_carnet
 import hq_diagnostics
 import hq_diagnostics_ui
 import hq_drawings
+import hq_files
+import hq_folder_backups
 import hq_inventory
 import hq_projects
 import hq_companion
@@ -125,6 +128,36 @@ ASSET_CONTENT_TYPES = {
     ".woff2": "font/woff2",
     ".gz": "application/gzip",  # Phase 4: the vendored OCR language data (served raw; the engine inflates it itself)
 }
+# /assets/ text files go out gzipped when the browser accepts it (about 3 MB -> 0.8 MB for the page's scripts and
+# styles) and revalidate with an ETag (mtime + size): still read live from disk, but an unchanged file costs a 304.
+ASSET_GZIP_SUFFIXES = {".js", ".mjs", ".css", ".json", ".svg", ".webmanifest"}
+ASSET_GZIP_MIN = 1024
+_ASSET_GZ_CACHE: dict[str, tuple[int, int, bytes]] = {}
+_ASSET_GZ_LOCK = threading.Lock()
+
+
+def asset_etag(st: os.stat_result) -> str:
+    return f'"a{st.st_mtime_ns:x}-{st.st_size:x}"'
+
+
+def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
+    """Gzipped bytes of an asset, cached by (mtime, size). None when the file changed while being read."""
+    key = str(path)
+    with _ASSET_GZ_LOCK:
+        hit = _ASSET_GZ_CACHE.get(key)
+        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+            return hit[2]
+    data = path.read_bytes()
+    if len(data) != st.st_size:
+        return None
+    packed = gzip.compress(data, compresslevel=6, mtime=0)
+    with _ASSET_GZ_LOCK:
+        if len(_ASSET_GZ_CACHE) > 256:
+            _ASSET_GZ_CACHE.clear()
+        _ASSET_GZ_CACHE[key] = (st.st_mtime_ns, st.st_size, packed)
+    return packed
+
+
 UPLOAD_POST_EXACT = {
     "/login", "/logout",
     "/api/me", "/api/presence",
@@ -2222,6 +2255,28 @@ def bind_hq() -> None:
         scenes=lambda: [s for s in (CONFIG.get("scenes") or []) if isinstance(s, dict)],
         actions=lambda: [a for a in (CONFIG.get("actions") or []) if isinstance(a, dict)],
         devices=cached_roster_devices,
+    )
+    hq_files.bind(  # Fichiers: recycle bin + folder previews, confined by the same path rules as every file route
+        root=ROOT,
+        parse_rel=parse_rel,
+        resolve_rel=lambda rel: resolve_rel(rel, must_exist=True, allow_dir=True),
+        resolve_writable_dir=resolve_writable_dir,
+        unique_in_dir=unique_in_dir,
+        system_names=SYSTEM_NAMES,
+    )
+    hq_folder_backups.bind(  # Fichiers: automatic backups of chosen folders, rolling window, to backup_dir/Dossiers
+        root=ROOT,
+        parse_rel=parse_rel,
+        resolve_dir=lambda rel: (lambda p: p if p and p.is_dir() else None)(resolve_rel(rel, must_exist=True, allow_dir=True)),
+        resolve_writable_dir=resolve_writable_dir,
+        unique_in_dir=unique_in_dir,
+        target=cc_ext.backup_target_status,
+        paused=cc_ext.backup_auto_paused,
+        remove_folder=cc_ext._remove_backup_folder,
+        is_link_stat=cc_ext._is_link_stat,
+        system_names=SYSTEM_NAMES,
+        log=lambda kind, message, level: cc_ext.log_activity(kind, message, level=level),
+        alert=lambda title, detail: cc_ext.push_alert(title, detail),
     )
     hq_inventory.bind(root=ROOT, asset_exists=lambda a: hq_carnet.media.asset_exists(a))  # Inventaire: photos live in the Carnet image store
     hq_projects.bind(  # Projets: tasks stay on kanban.json; parts can take stock from the Inventaire
@@ -4940,8 +4995,13 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-carnet.css"/>
 <link rel="stylesheet" href="/assets/hq-inventory.css"/>
 <link rel="stylesheet" href="/assets/hq-projects.css"/>
+<link rel="stylesheet" href="/assets/hq-files.css"/>
 <link rel="stylesheet" href="/assets/hq-forge.css"/>
 <link rel="stylesheet" href="/assets/hq-home.css"/>
+<link rel="stylesheet" href="/assets/hq-home-fx.css"/>
+<link rel="preload" href="/assets/hq-font-inter.woff2" as="font" type="font/woff2" crossorigin/>
+<link rel="preload" href="/assets/hq-font-fraunces.woff2" as="font" type="font/woff2" crossorigin/>
+<link rel="stylesheet" href="/assets/hq-theme.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
@@ -5190,6 +5250,7 @@ def render_app() -> bytes:
         </label>
       </div>
       <ul class="files" id="file-list"></ul>
+      <div id="hq-files-app" hidden></div>
     </section>
 
     <section class="hq" aria-labelledby="media-title">
@@ -6346,8 +6407,11 @@ def render_app() -> bytes:
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-inventory.js"></script>
 <script src="/assets/hq-projects.js"></script>
+<script src="/assets/hq-files.js"></script>
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-home.js"></script>
+<script src="/assets/hq-home-fx.js"></script>
+<script src="/assets/hq-theme.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-struct.js"></script>
@@ -6706,6 +6770,43 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_asset(self, path: Path, ctype: str) -> None:
+        """An /assets/ file: 304 when the browser already has this version (ETag), else the bytes, gzipped for text
+        files when accepted. Cache-Control: no-cache (always revalidated, so an edited file shows on the next load)."""
+        try:
+            st = path.stat()
+        except OSError:
+            self._send(404, b"missing")
+            return
+        etag = asset_etag(st)
+        sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
+        common = [("ETag", etag), ("Cache-Control", "no-cache"), ("Vary", "Accept-Encoding")]
+        if etag in sent or "*" in sent:
+            self.send_response(304)
+            for k, v in common:
+                self.send_header(k, v)
+            self._security_headers()
+            self.end_headers()
+            return
+        body = None
+        extra = list(common)
+        accepts = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+        if accepts and path.suffix.lower() in ASSET_GZIP_SUFFIXES and st.st_size >= ASSET_GZIP_MIN:
+            body = asset_gzip(path, st)
+            if body is not None:
+                extra.append(("Content-Encoding", "gzip"))
+        if body is None:
+            body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in extra:
+            self.send_header(k, v)
+        self._security_headers()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _drain_refused_body(self) -> list[tuple[str, str]]:
         """Pre-body POST refusal (status already decided): read and discard a small declared body so the client
@@ -7591,6 +7692,14 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_carnet.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw in ("/api/files/trash", "/api/files/peek"):  # Fichiers (admin: not in the upload allowlist)
+            code, payload = hq_files.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
+        if raw == "/api/backups/folders":  # Fichiers: automatic folder backups (admin: not in the upload allowlist)
+            code, payload = hq_folder_backups.http_get(parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         if raw == "/api/projects":  # Projets (admin: not in the upload allowlist)
             code, payload = hq_projects.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
@@ -7978,6 +8087,24 @@ class Handler(BaseHTTPRequestHandler):
         if _vm:
             self._carnet_voice_post(_vm.group(1))
             return True
+        if raw == "/api/files":  # Fichiers: corbeille (CSRF is checked for every POST before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_files.http_post(data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/backups/folders":  # Fichiers: automatic folder backups (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_folder_backups.http_post(data)
+            self._json(code, payload)
+            return True
         if raw == "/api/projects":  # Projets (CSRF is checked for every POST before routing)
             try:
                 data = self._read_json()
@@ -8097,7 +8224,7 @@ class Handler(BaseHTTPRequestHandler):
                 # the page and every other response keep the unchanged policy.
                 self._wasm_ok = name == "vendor-tesseract-worker.min.js"
                 try:
-                    self._send(200, path.read_bytes(), ctype)
+                    self._send_asset(path, ctype)
                 finally:
                     self._wasm_ok = False
                 return
@@ -8926,6 +9053,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
                 return
             new_rel = "/".join(dest.relative_to(ROOT).parts)
+            if dest.is_dir():
+                hq_folder_backups.moved("/".join(parts or []), new_rel)  # automatic backups follow the folder
             self._json(200, {"ok": True, "rel": new_rel})
             return
 
@@ -8962,6 +9091,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
                 return
             new_rel = "/".join(Path(target).resolve().relative_to(ROOT).parts)
+            if Path(target).is_dir():
+                hq_folder_backups.moved("/".join(parts or []), new_rel)  # automatic backups follow the folder
             self._json(200, {"ok": True, "rel": new_rel})
             return
 
@@ -9117,6 +9248,10 @@ def main() -> None:
             hq_calendar.tick()
         except Exception as e:
             sys.stderr.write(f"calendar tick: {e}\n")
+        try:
+            hq_folder_backups.tick()
+        except Exception as e:
+            sys.stderr.write(f"folder backups tick: {e}\n")
 
     cc_ext.start_monitor(
         get_devices=lambda: presence_list(),

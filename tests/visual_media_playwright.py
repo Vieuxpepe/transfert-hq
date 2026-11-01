@@ -53,15 +53,19 @@ def login(page, url):
     page.wait_for_selector('.bottom-nav [data-nav="lecteur"]')
 
 
+def tile(page, name):
+    return page.locator(f'#hq-files-app .fx-item[data-rel="{FOLDER}/{name}"]')
+
+
 def open_folder(page):
     page.click('.bottom-nav [data-nav="fichiers"]')
-    page.click('#file-list [data-open="Inbox"].fname')
-    page.click(f'#file-list [data-open="{FOLDER}"].fname')
-    page.wait_for_selector(f'#file-list li.file[data-rel="{FOLDER}/tone.wav"]')
+    page.click('#hq-files-app .fx-folder[data-rel="Inbox"]')
+    page.click(f'#hq-files-app .fx-folder[data-rel="{FOLDER}"]')
+    page.wait_for_selector(f'#hq-files-app .fx-item[data-rel="{FOLDER}/tone.wav"]')
 
 
 def row_meta(page, name):
-    return page.locator(f'#file-list li.file[data-rel="{FOLDER}/{name}"] .meta')
+    return tile(page, name).locator(".fx-meta")
 
 
 def wait_audio_metadata(page, label):
@@ -90,33 +94,36 @@ def desktop_flow(browser, url, have_mp4):
     open_folder(page)
     if SHOTS:
         page.screenshot(path=f"{SHOTS}/media-desktop-fichiers.png")
-    # Single click on a media name still opens /files/ in a new tab, after the ~300 ms double-click window.
     popups = []
     page.on("popup", lambda pg: popups.append(pg))
-    page.click(f'#file-list li.file[data-rel="{FOLDER}/tone.wav"] a.fname')
-    page.wait_for_timeout(150)
-    assert not popups, "media name opened before the double-click window"
-    with page.expect_popup() as pop:
-        pass
-    assert "/files/Inbox/Musique/tone.wav" in pop.value.url, pop.value.url
-    pop.value.close(); popups.clear()
-    assert page.evaluate("document.body.dataset.view") == "fichiers"
-    # Non-media names are unchanged and immediate.
-    with page.expect_popup(timeout=250) as pop:
-        page.click('#file-list li.file:has(a.fname:text("notes.txt")) a.fname')
-    assert "/files/Inbox/Musique/notes.txt" in pop.value.url
-    pop.value.close(); popups.clear()
-    # Double-click on a media NAME opens the Lecteur and no tab.
-    page.dblclick(f'#file-list li.file[data-rel="{FOLDER}/tone.wav"] a.fname')
+    # A single click on a song waits out the double-click window, then opens the quick look (never a new tab).
+    tile(page, "tone.wav").click()
+    page.wait_for_timeout(120)
+    assert page.locator(".fx-sheet.is-ql").count() == 0, "quick look opened inside the double-click window"
+    page.wait_for_selector(".fx-sheet.is-ql .fx-ql-audio", timeout=3000)
+    assert page.locator('.fx-sheet.is-ql a[href="/files/Inbox/Musique/tone.wav"]').count() == 1, "« Ouvrir » keeps the /files/ link"
+    assert page.locator(".fx-sheet.is-ql .fx-btn", has_text="Lecteur").count() == 1
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('.fx-sheet')")
+    # Other files open their quick look at once.
+    tile(page, "notes.txt").click()
+    page.wait_for_selector(".fx-sheet.is-ql .fx-ql-text", timeout=1000)
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('.fx-sheet')")
+    # Double-click on a song opens the Lecteur: no quick look, no tab.
+    tile(page, "tone.wav").dblclick()
     assert_lecteur(page, "tone.wav")
     page.wait_for_timeout(500)
     assert not popups, [pg.url for pg in popups]
+    assert page.locator(".fx-sheet").count() == 0
     page.click('.bottom-nav [data-nav="fichiers"]')
-    page.wait_for_selector(f'#file-list li.file[data-rel="{FOLDER}/tone.wav"]')
-    # Non-media rows keep no double-click behavior.
-    page.dblclick(f'#file-list li.file:has(a.fname:text("notes.txt")) .meta')
+    page.wait_for_selector(f'#hq-files-app .fx-item[data-rel="{FOLDER}/tone.wav"]')
+    # Other files keep no double-click behavior (just their quick look).
+    tile(page, "notes.txt").dblclick()
     page.wait_for_timeout(300)
     assert page.evaluate("document.body.dataset.view") == "fichiers"
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('.fx-sheet')")
     # Double-click a song row: Lecteur tab, player on the file, metadata loads, served with ranges.
     row_meta(page, "tone.wav").dblclick()
     assert_lecteur(page, "tone.wav")
@@ -164,17 +171,20 @@ def touch_flow(browser, device, url, label, strict_metadata=True):
     open_folder(page)
     if SHOTS:
         page.screenshot(path=f"{SHOTS}/media-{label}-fichiers.png")
-    meta = row_meta(page, "tone.wav")
-    meta.scroll_into_view_if_needed()
-    box = meta.bounding_box()
-    x, y = box["x"] + min(40, box["width"] / 2), box["y"] + box["height"] / 2
-    # A single tap does nothing new.
-    page.touchscreen.tap(x, y)
-    page.wait_for_timeout(450)
-    assert page.evaluate("document.body.dataset.view") == "fichiers"
+    card = tile(page, "tone.wav")
+    card.evaluate("el => el.scrollIntoView({ block: 'center' })")  # clear of the fixed bottom nav
+    page.wait_for_timeout(300)
+    box = card.bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 3
     # Behave like iOS Safari, which doesn't reliably fire dblclick: swallow it, so only the
-    # explicit double-tap handler can open the Lecteur.
+    # tap counting can open the Lecteur.
     page.evaluate("document.addEventListener('dblclick', e => { window.__dblclickSeen = true; e.stopImmediatePropagation(); }, true)")
+    # A single tap opens the quick look (after the double-tap window), still in Fichiers.
+    page.touchscreen.tap(x, y)
+    page.wait_for_selector(".fx-sheet.is-ql .fx-ql-audio", timeout=3000)
+    assert page.evaluate("document.body.dataset.view") == "fichiers"
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => !document.querySelector('.fx-sheet')")
     # Double tap (well under 300 ms) opens the Lecteur.
     page.touchscreen.tap(x, y); page.touchscreen.tap(x, y)
     assert_lecteur(page, "tone.wav")
@@ -191,20 +201,17 @@ def touch_flow(browser, device, url, label, strict_metadata=True):
     assert page.locator('#player-list [data-play]').count() >= 3
     page.click('#btn-player-back')
     page.wait_for_function("() => document.body.dataset.view === 'fichiers'")
-    page.wait_for_selector(f'#file-list li.file[data-rel="{FOLDER}/tone.wav"]')
-    # Media name: a single tap opens the file (new tab) after the double-tap window…
-    page.wait_for_load_state("networkidle"); page.wait_for_timeout(300)  # Retour re-renders the list (setView + navigate)
-    name = page.locator(f'#file-list li.file[data-rel="{FOLDER}/tone.wav"] a.fname')
-    name.scroll_into_view_if_needed()
-    nb = name.bounding_box(); nx, ny = nb["x"] + min(30, nb["width"] / 2), nb["y"] + nb["height"] / 2
-    with ctx.expect_page(timeout=3000) as pop:
-        page.touchscreen.tap(nx, ny)
-    assert "/files/Inbox/Musique/tone.wav" in pop.value.url, pop.value.url
-    pop.value.close()
-    assert page.evaluate("document.body.dataset.view") == "fichiers"
-    # …and a double tap on the name opens the Lecteur without a tab.
+    page.wait_for_selector(f'#hq-files-app .fx-item[data-rel="{FOLDER}/tone.wav"]')
+    page.wait_for_load_state("networkidle"); page.wait_for_timeout(500)  # Retour re-renders the folder
+    # From the quick look, « Lecteur » plays the song.
+    t = tile(page, "tone.wav")
+    t.evaluate("el => el.scrollIntoView({ block: 'center' })")
+    page.wait_for_timeout(300)
+    b = t.bounding_box()
+    page.touchscreen.tap(b["x"] + b["width"] / 2, b["y"] + b["height"] / 3)
+    page.wait_for_selector(".fx-sheet.is-ql .fx-btn:has-text('Lecteur')", timeout=3000)
     pages_before = len(ctx.pages)
-    page.touchscreen.tap(nx, ny); page.touchscreen.tap(nx, ny)
+    page.locator(".fx-sheet.is-ql .fx-btn", has_text="Lecteur").tap()
     assert_lecteur(page, "tone.wav")
     page.wait_for_timeout(500)
     assert len(ctx.pages) == pages_before, [pg.url for pg in ctx.pages]

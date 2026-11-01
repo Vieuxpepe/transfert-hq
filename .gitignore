@@ -34,6 +34,8 @@ hq_planner.json
 .hq-carnet/
 .hq-inventory/
 .hq-projects/
+.hq-trash/
+.hq-backups/
 agent_config.json
 *.json.tmp
 .tmp/
