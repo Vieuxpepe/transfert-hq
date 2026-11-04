@@ -58,3 +58,15 @@ Thumbs.db
 
 .hq-ai/
 .hq-restart.log
+
+# Local-only workspace (not part of the shipped repo)
+.hq-forge/
+artifacts/
+_backup_*/
+_backup_*
+_deploy_*/
+_p*_test/
+Claude outputs/
+CONVERSATION_*.txt
+.bridge_config.json.bak*
+voice_line_tools/

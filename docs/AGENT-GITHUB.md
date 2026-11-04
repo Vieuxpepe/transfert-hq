@@ -11,7 +11,7 @@ Update the **Current focus** section when you push work you want reviewed.
 | Item | Value |
 |------|--------|
 | Remote | `https://github.com/Vieuxpepe/transfert-hq` |
-| Typical feature branch | `transferania-persona` (confirm on GitHub before reviewing) |
+| Integration branch | `main` (Transferania companion + persona; `transferania-persona` may mirror `main`) |
 | Default doc entry | `README.txt` (architecture, security, companions) |
 | Local runtime | Not in repo — operator runs `iphone_bridge.py` (~8765) on Windows |
 
@@ -163,7 +163,7 @@ Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
 
 ## Current focus (update on push)
 
-**Branch note:** confirm latest SHA on `transferania-persona` (after `3df656f`, doc only). Many HQ companion/dangling files may exist locally but not on GitHub until pushed.
+**Branch note:** use **`main`** at the latest SHA. Older docs may mention `transferania-persona`; that branch should match `main` after integration merges.
 
 **Doc accuracy (Level 4 finding):** Adult UI + `nsfw_enabled` bind are documented above under *Adult register*; remote code may lag until bridge/companion assets are committed.
 
