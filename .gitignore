@@ -70,3 +70,17 @@ Claude outputs/
 CONVERSATION_*.txt
 .bridge_config.json.bak*
 voice_line_tools/
+
+# Ad-hoc repo-root experiments (shared tooling lives under scripts/)
+/gen_*.py
+/generate_*.py
+/check_*.py
+/install_peft*.py
+/package_lewd_bank.py
+/scan_audio_bank.py
+/test_audiophile_master.py
+/test_bigvgan*.py
+/test_expressive_bench.py
+/test_utf8_synth.py
+/test_xtts_lora_inject.py
+/apply_displacement.py
