@@ -131,9 +131,20 @@ File: `assets/hq-dangling-member.js`
 
 ## Adult register (software)
 
-- UI: admin-only adult toggle in bridge HTML (`companion_nsfw_enabled` in config).
-- Prompt: `build_transferania_system(..., nsfw=True)` appends adult facts, register, intensity — see `hq_ai.py`.
-- **Review task:** treat as conditional prompt branches and UI gating, not as chat roleplay in the reviewer thread.
+- **On GitHub (through commit `3df656f`):** `hq_ai.py` implements `nsfw_gate()` and expects `_cb["nsfw_enabled"]()` from `hq_ai.bind(...)`. **`iphone_bridge.py` on the remote branch does not register that callback yet**, so `nsfw_allowed()` stays false and adult mode cannot activate from the UI even if the client sends `nsfw: true`.
+- **Local operator tree (`C:\Transfert`, often unpushed):** `iphone_bridge.py` registers `nsfw_enabled=lambda: CONFIG.get("companion_nsfw_enabled", True) is not False`, admin checkbox for the Adult button, and companion assets under `assets/hq-companion.js` (nsfw toggle, `nsfw_allowed` from API).
+- Prompt branch: `build_transferania_system(..., nsfw=True)` appends adult template blocks (see `hq_ai.py` — review as structure, do not paste explicit vocab constants in agent chat).
+- **Review task:** treat as conditional prompt assembly + admin gating; verify bridge bind before claiming end-to-end adult flow on GitHub.
+
+### Minimum files for adult gate on GitHub (not yet one commit)
+
+| File | Role |
+|------|------|
+| `iphone_bridge.py` | `hq_ai.bind(..., nsfw_enabled=..., companion_persona=..., …)` |
+| `assets/hq-companion.js` | Reads `nsfw_allowed` / `nsfw_block`; Adult toggle |
+| `bridge_config.json` (local, gitignored) | Optional `companion_nsfw_enabled` |
+
+After those land on the branch, re-run Level 4 against the new commit SHA.
 
 ---
 
@@ -151,9 +162,11 @@ Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
 
 ## Current focus (update on push)
 
-**Branch note:** confirm `transferania-persona` vs `main` on GitHub.
+**Branch note:** confirm latest SHA on `transferania-persona` (after `3df656f`, doc only). Many HQ companion/dangling files may exist locally but not on GitHub until pushed.
 
-**Oral + dangling member (known pain points):**
+**Doc accuracy (Level 4 finding):** Adult UI + `nsfw_enabled` bind are documented above under *Adult register*; remote code may lag until bridge/companion assets are committed.
+
+**Oral + dangling member (local / unpushed until committed):**
 
 - Jitter at mouth gate: suspected dual control (depth from projection vs assist, mount `place()` vs pointer carry).
 - Entry feel: tube axis + lip constriction + z-index stack (cock 360, head 375).
