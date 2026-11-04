@@ -48,13 +48,16 @@
   const ADULT_RHYTHM_PORTRAIT = "/assets/companion/transferania-adult-rhythm.jpg";
   const LAYERED_PORTRAIT = "/assets/companion/rig-neutral-v1/source.jpg";
   const RIG_NEUTRAL_BASE = "/assets/companion/rig-neutral-v1/";
-  const BUST_SLAP_FALLBACK = "/assets/companion/bust-slap.m4a";
-  const BUST_SLAP_SFX = [1, 2, 3].map(index =>
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_0" + index + ".wav");
+  const BUST_SLAP_FALLBACK = null;
+  const BUST_SLAP_SFX = [
+    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_01.8465daef.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_02.adb1d64a.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_03.7db333dd.ogg",
+  ];
   const PLEASURE_GRUNT_SFX = [
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_01.wav",
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_02.wav",
-    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_03.wav",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_01.03b4a7e1.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_02.29257906.ogg",
+    "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_03.26af343f.ogg",
   ];
 
   function rigNeutralLayerSrc(asset) {
@@ -1222,6 +1225,9 @@
     } else {
       S.win.clearTimeout(S.adultFxIdleT);
       clearAdultLoopFx(S.win);
+      clearAdultSessionBleed(S.win);
+      stopTitPullElasticLoop();
+      stopPullBreathBed();
       const st = ensureLive2DState();
       stopLive2DLoop(S.win);
       if (S.adultFxTimers) {
@@ -3086,6 +3092,7 @@
     S.readPreview = null;
     S.messages.push({ role: "user", text, ts: Date.now() });
     renderLog();
+    playNaturalVoiceCue(win, "message_ack");
     S.inputEl.value = "";
     if (S.nsfwAllowed && readNsfw(win)) playAdultFx(win, "send-pulse", 900);
     try {
@@ -3328,8 +3335,9 @@
       musicNod: { cls: "is-idle-music-nod", ms: 780, ix: 0, iy: -16 }
     };
     const v = burst[kind] || burst.sway;
-    const idleCue = { stretchYawn: "stretch", musicNod: "music_started", lipBite: "lip_bite" }[kind];
+    const idleCue = { stretchYawn: "stretch", musicNod: "music_started", lipBite: "lip_bite", hairTuck: "hair_tuck" }[kind];
     if (idleCue) playNaturalVoiceCue(win, idleCue);
+    if (kind === "hairTuck" && !muted(win) && readForgeSound(win)) playHairPatImpactSfx(win, 0.38);
     if (v.tease) {
       S.el.classList.add("is-idle-tease-peek");
       setLive2DTarget(win, sign * 2.6, 0.5);
@@ -3517,8 +3525,10 @@
 
   function watchCompanionAttention(win) {
     if (calm(win)) return;
-    const tick = () => syncCompanionAttention(win);
+    // motion1: skip the attention poll while the tab is hidden; catch up as soon as it is visible again.
+    const tick = () => { if (!win.document.hidden) syncCompanionAttention(win); };
     win.setInterval(tick, isCompactUI(win) ? 340 : 200);
+    win.document.addEventListener("visibilitychange", () => { if (!win.document.hidden) tick(); });
     let scrollT = 0;
     let lastScroll = null;
     win.addEventListener(
@@ -3722,6 +3732,7 @@
     }
     applyMood(win, "celebrate");
     pulseCompanionMotion(win);
+    if (!muted(win) && readForgeSound(win)) playNaturalVoiceCue(win, "toast_celebrate");
   }
 
   function syncListening(on) {
@@ -4273,46 +4284,591 @@
     return tone;
   }
 
-  function beginCompanionReactionBus(ctx, now, profile) {
-    const tone = companionReactionTone(ctx, now, profile);
-    if (tone) tone.connect(ctx.destination);
-    return tone;
+  function ensureCompanionSfxBus(ctx) {
+    if (!ctx) return null;
+    const host = S.win;
+    if (!host?.HqCompanionSfxBus) return null;
+    if (!S.sfxBus || S.sfxBusCtx !== ctx) {
+      S.sfxBusCtx = ctx;
+      S.sfxBus = host.HqCompanionSfxBus.create(ctx);
+    }
+    return S.sfxBus;
   }
 
-  function connectCompanionReactionOut(gainNode, tone, ctx) {
+  function updateCompanionSfxDuck(win) {
+    if (!win) return;
+    const bus = ensureCompanionSfxBus(S.audioCtx);
+    if (!bus) return;
+    const speech = !!(S.currentAudio || S.voicePreview ||
+      S.el?.classList.contains("is-speaking") || S.el?.classList.contains("is-voice-lipsync"));
+    const media = !!S.el?.classList.contains("is-music-grooving");
+    bus.setDuck(speech ? 0.48 : media ? 0.64 : 1);
+  }
+
+  function canRouteSpeechThroughBus(win, url) {
+    try {
+      const AC = win.AudioContext || win.webkitAudioContext;
+      if (!AC || calm(win)) return false;
+      return new win.URL(String(url || ""), win.location.href).origin === win.location.origin;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function speechPlaybackGainDb(url) {
+    const fromManifest = S.reactionAudio?.playbackGainDbForUrl?.(url);
+    if (Number.isFinite(fromManifest)) return fromManifest;
+    if (String(url || "").includes("/lewd_wav_bank/")) {
+      const phase = Number(S.reactionAudio?.phaseGainDb?.());
+      return Number.isFinite(phase) ? phase : -1.5;
+    }
+    const voice = Number(S.reactionAudio?.voiceGainDb?.());
+    return Number.isFinite(voice) ? voice : 0;
+  }
+
+  function stopSpeechWebVoice(win, immediate) {
+    const entry = S.speechWebVoice;
+    if (!entry) return;
+    S.speechWebVoice = null;
+    const ctx = S.audioCtx;
+    const now = ctx?.currentTime ?? 0;
+    const finish = () => {
+      try { entry.source.disconnect(); } catch (_) {}
+      try { entry.gain.disconnect(); } catch (_) {}
+      try { entry.audio.pause(); } catch (_) {}
+    };
+    if (immediate || !ctx || !entry.gain?.gain) {
+      finish();
+      return;
+    }
+    try {
+      entry.gain.gain.cancelScheduledValues(now);
+      entry.gain.gain.setValueAtTime(entry.gain.gain.value, now);
+      entry.gain.gain.linearRampToValueAtTime(0.001, now + 0.08);
+      win.setTimeout(finish, 90);
+    } catch (_) {
+      finish();
+    }
+  }
+
+  function wireSpeechMediaToBus(win, audio, url) {
+    if (!audio || S.speechWebVoice?.audio === audio) return;
+    const AC = win.AudioContext || win.webkitAudioContext;
+    if (!AC) return;
+    if (!S.audioCtx) S.audioCtx = new AC();
+    const ctx = S.audioCtx;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    ensureCompanionSfxBus(ctx);
+    const source = ctx.createMediaElementSource(audio);
+    const g = ctx.createGain();
+    const t = ctx.currentTime;
+    const vol = 10 ** (speechPlaybackGainDb(url) / 20);
+    g.gain.setValueAtTime(vol, t);
+    source.connect(g);
+    connectCompanionReactionOut(g, null, ctx);
+    S.speechWebVoice = { source, gain: g, audio };
+  }
+
+  function playImpactBodyThud(ctx, when, strength) {
+    if (!ctx || !ctx.createOscillator) return;
+    try {
+      const bus = ensureCompanionSfxBus(ctx);
+      const str = clampNum(Number(strength) || 0.45, 0, 1);
+      const vol = 0.04 + str * 0.05;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(92, when);
+      osc.frequency.exponentialRampToValueAtTime(44, when + 0.07);
+      g.gain.setValueAtTime(0.001, when);
+      g.gain.linearRampToValueAtTime(vol, when + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.001, when + 0.13);
+      osc.connect(g);
+      if (bus) bus.connectImpact(g);
+      else g.connect(ctx.destination);
+      osc.start(when);
+      osc.stop(when + 0.14);
+    } catch (_) {}
+  }
+
+  function beginCompanionReactionBus(ctx, now, profile) {
+    ensureCompanionSfxBus(ctx);
+    return null;
+  }
+
+  function connectCompanionReactionOut(gainNode, _tone, ctx) {
     if (!gainNode) return;
     const audioCtx = ctx || gainNode.context || S.audioCtx;
-    const dest = tone || (audioCtx && audioCtx.destination);
-    if (dest) gainNode.connect(dest);
+    const bus = ensureCompanionSfxBus(audioCtx);
+    if (bus) bus.connectVoice(gainNode);
+    else if (audioCtx) gainNode.connect(audioCtx.destination);
+  }
+
+  function connectCompanionImpactOut(gainNode, ctx) {
+    if (!gainNode) return;
+    const audioCtx = ctx || gainNode.context || S.audioCtx;
+    const bus = ensureCompanionSfxBus(audioCtx);
+    if (bus) bus.connectImpact(gainNode);
+    else if (audioCtx) gainNode.connect(audioCtx.destination);
   }
 
   function ensureBustSlapBuffer(win, ctx, url) {
+    if (!url) return Promise.resolve(null);
+    primeCompanionAudioContext(win);
+    const decodeCtx = ctx || S.audioCtx;
+    if (!decodeCtx) return Promise.resolve(null);
     if (!S.bustSlapBuffers) S.bustSlapBuffers = {};
-    if (S.bustSlapBuffers[url]) return Promise.resolve(S.bustSlapBuffers[url]);
+    if (S.bustSlapDecodeCtx !== decodeCtx) {
+      S.bustSlapBuffers = {};
+      S.bustSlapDecodeCtx = decodeCtx;
+    }
+    const cached = S.bustSlapBuffers[url];
+    if (cached && typeof cached !== "function") return Promise.resolve(cached);
+    if (cached) return cached;
     const load = win.fetch(url)
       .then(res => { if (!res.ok) throw new Error("impact missing"); return res.arrayBuffer(); })
-      .then(ab => ctx.decodeAudioData(ab))
+      .then(ab => decodeCtx.decodeAudioData(ab))
       .then(buffer => { S.bustSlapBuffers[url] = buffer; return buffer; })
       .catch(() => { delete S.bustSlapBuffers[url]; return null; });
     S.bustSlapBuffers[url] = load;
     return load;
   }
 
-  function warmImpactAudio(win) {
-    if (!win || !readForgeSound(win) || muted(win) || win.document.hidden) return Promise.resolve([]);
+  const TIT_PULL_ELASTIC_RE = /else_tit_pull_(01|07)\./i;
+  const TIT_PULL_SLOSH_RE = /else_tit_pull_(10|13)\./i;
+  const TIT_PULL_LOOP_RE = /else_tit_pull_02\./i;
+
+  function titPullStemPool(pool, kind, stemId) {
+    if (!pool?.length) return pool;
+    const urls = pool.map(String);
+    if (stemId) {
+      const stem = String(stemId).padStart(2, "0");
+      const one = urls.filter(u => new RegExp(`else_tit_pull_${stem}\\.`, "i").test(u));
+      if (one.length) return one;
+    }
+    if (kind === "slosh") {
+      const slosh = urls.filter(u => TIT_PULL_SLOSH_RE.test(u));
+      return slosh.length ? slosh : pool;
+    }
+    if (kind === "elastic") {
+      const elastic = urls.filter(u => TIT_PULL_ELASTIC_RE.test(u));
+      return elastic.length ? elastic : pool;
+    }
+    return pool;
+  }
+
+  function ensureTitPullUndertoneBuf(ctx) {
+    if (S.titPullUndertoneBuf && S.titPullUndertoneRate === ctx.sampleRate) return S.titPullUndertoneBuf;
+    const rate = ctx.sampleRate;
+    const len = Math.floor(rate * 2.5);
+    const buf = ctx.createBuffer(1, len, rate);
+    const ch = buf.getChannelData(0);
+    let b0 = 0;
+    let b1 = 0;
+    let b2 = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.969 * b2 + white * 0.153852;
+      ch[i] = (b0 + b1 + b2) * 0.09;
+    }
+    S.titPullUndertoneBuf = buf;
+    S.titPullUndertoneRate = rate;
+    return buf;
+  }
+
+  function startTitPullLoopUndertone(loop, at) {
+    const ctx = loop.ctx;
+    if (!ctx) return;
+    const buf = ensureTitPullUndertoneBuf(ctx);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 780;
+    bp.Q.value = 0.55;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 1850;
+    const g = ctx.createGain();
+    const target = Math.max(0.0001, loop.baseVol * 0.09);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(target, at + 0.42);
+    src.connect(bp);
+    bp.connect(lp);
+    lp.connect(g);
+    connectCompanionReactionOut(g, null, ctx);
+    src.start(at);
+    loop.undertone = { source: src, gain: g, bp, lp };
+  }
+
+  function titPullLoopUrl(win) {
+    const pool = manifestImpactUrls("tit_pull");
+    return pool.find(u => TIT_PULL_LOOP_RE.test(String(u))) ||
+      pool.find(u => TIT_PULL_ELASTIC_RE.test(String(u)));
+  }
+
+  function stopTitPullElasticLoop() {
+    const loop = S.titPullLoop;
+    S.titPullLoop = null;
+    stopPullBreathBed();
+    if (!loop) return;
+    const stopVoice = (voice) => {
+      if (!voice || !S.audioCtx) return;
+      const now = S.audioCtx.currentTime;
+      try {
+        voice.gain.gain.cancelScheduledValues(now);
+        voice.gain.gain.setTargetAtTime(0, now, 0.04);
+        voice.source.stop(now + 0.1);
+      } catch (_) {}
+      try {
+        voice.source.disconnect();
+        voice.hp.disconnect();
+        if (voice.mud) voice.mud.disconnect();
+        voice.lp.disconnect();
+        voice.peak.disconnect();
+        voice.gain.disconnect();
+      } catch (_) {}
+    };
+    if (loop.undertone) {
+      const ut = loop.undertone;
+      try {
+        if (S.audioCtx) {
+          const now = S.audioCtx.currentTime;
+          ut.gain.gain.cancelScheduledValues(now);
+          ut.gain.gain.setTargetAtTime(0, now, 0.05);
+          ut.source.stop(now + 0.12);
+        } else ut.source.stop();
+      } catch (_) {}
+      try {
+        ut.source.disconnect();
+        ut.bp.disconnect();
+        ut.lp.disconnect();
+        ut.gain.disconnect();
+      } catch (_) {}
+    }
+    stopVoice(loop.bed);
+    for (const voice of loop.voices || []) stopVoice(voice);
+  }
+
+  /** Full buffer — long grain bed baked offline; native loop=true. */
+  function titPullLoopRegionSafe(buf) {
+    const dur = Number(buf?.duration) || 0;
+    if (dur <= 0.05) return { start: 0, end: dur };
+    return { start: 0, end: Math.max(0.04, dur - 0.00025) };
+  }
+
+  function connectTitPullLoopBed(ctx, buf, region, at, vol) {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.loopStart = region.start;
+    src.loopEnd = region.end;
+    src.playbackRate.value = 1;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 105;
+    hp.Q.value = 0.65;
+    const mud = ctx.createBiquadFilter();
+    mud.type = "peaking";
+    mud.frequency.value = 340;
+    mud.Q.value = 0.85;
+    mud.gain.value = -1.8;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 3000;
+    lp.Q.value = 0.65;
+    const peak = ctx.createBiquadFilter();
+    peak.type = "peaking";
+    peak.frequency.value = 2150;
+    peak.Q.value = 0.75;
+    peak.gain.value = 0.85;
+    const g = ctx.createGain();
+    const target = Math.max(0.0001, vol * 0.52);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(target, at + 0.1);
+    src.connect(hp);
+    hp.connect(mud);
+    mud.connect(lp);
+    lp.connect(peak);
+    peak.connect(g);
+    connectCompanionReactionOut(g, null, ctx);
+    src.start(at, region.start);
+    return { source: src, gain: g, hp, mud, lp, peak };
+  }
+
+  function warmTitPullImpactAudio(win) {
+    if (!win || muted(win) || !readForgeSound(win)) return;
+    const urls = manifestImpactUrls("tit_pull");
+    if (!urls.length) return;
+    primeCompanionAudioContext(win);
+    if (!S.audioCtx) return;
+    const ctx = S.audioCtx;
+    for (const url of urls) void ensureBustSlapBuffer(win, ctx, url);
+  }
+
+  function titPullLoopAudioTension(tension) {
+    const t = clampNum(Number(tension) || 0, 0, 1);
+    return clampNum(t / 0.74, 0, 1);
+  }
+
+  function titPullLoopTensionShape(tension) {
+    const t = titPullLoopAudioTension(tension);
+    const onset = 0.12;
+    if (t <= onset) return 0;
+    const pull = clampNum((t - onset) / (1 - onset), 0, 1);
+    return Math.pow(pull, 3.2);
+  }
+
+  function titPullLoopGain(tension) {
+    const t = clampNum(Number(tension) || 0, 0, 1);
+    const voiceDb = Number(S.reactionAudio?.voiceGainDb?.());
+    const voiceMul = Number.isFinite(voiceDb) ? 10 ** (voiceDb / 20) : 1;
+    const shaped = titPullLoopTensionShape(t);
+    const whisper = 0.007;
+    const ceiling = 0.082;
+    return (whisper + shaped * (ceiling - whisper)) * voiceMul;
+  }
+
+  function ensurePullBreathNoiseBuf(ctx) {
+    if (S.pullBreathNoiseBuf && S.pullBreathNoiseRate === ctx.sampleRate) return S.pullBreathNoiseBuf;
+    const rate = ctx.sampleRate;
+    const len = Math.max(1, Math.floor(rate * 2.4));
+    const buf = ctx.createBuffer(1, len, rate);
+    const ch = buf.getChannelData(0);
+    let b0 = 0;
+    let b1 = 0;
+    let b2 = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.969 * b2 + white * 0.153852;
+      ch[i] = (b0 + b1 + b2) * 0.11;
+    }
+    S.pullBreathNoiseBuf = buf;
+    S.pullBreathNoiseRate = rate;
+    return buf;
+  }
+
+  function pullBreathBedGain(tension) {
+    const shaped = titPullLoopTensionShape(tension);
+    if (shaped <= 0) return 0;
+    const voiceDb = Number(S.reactionAudio?.voiceGainDb?.());
+    const voiceMul = Number.isFinite(voiceDb) ? 10 ** (voiceDb / 20) : 1;
+    return (0.0035 + shaped * 0.024) * voiceMul;
+  }
+
+  function stopPullBreathBed() {
+    const bed = S.pullBreathBed;
+    S.pullBreathBed = null;
+    if (!bed || !S.audioCtx) return;
+    const now = S.audioCtx.currentTime;
+    try {
+      bed.gain.gain.cancelScheduledValues(now);
+      bed.gain.gain.setTargetAtTime(0.0001, now, 0.05);
+      bed.lfo.stop(now + 0.14);
+      bed.gainOffset.stop(now + 0.14);
+      bed.source.stop(now + 0.16);
+    } catch (_) {}
+    try {
+      bed.source.disconnect();
+      bed.bp.disconnect();
+      bed.lp.disconnect();
+      bed.lfo.disconnect();
+      bed.lfoDepth.disconnect();
+      bed.gainOffset.disconnect();
+      bed.gain.disconnect();
+    } catch (_) {}
+  }
+
+  function startPullBreathBed(loop, at) {
+    const ctx = loop.ctx;
+    if (!ctx) return;
+    stopPullBreathBed();
+    const buf = ensurePullBreathNoiseBuf(ctx);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 420;
+    bp.Q.value = 0.42;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 1180;
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine";
+    lfo.frequency.value = 0.34 + Math.random() * 0.08;
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.value = 0.36;
+    const g = ctx.createGain();
+    const base = Math.max(0.0001, pullBreathBedGain(loop.baseTension ?? 0));
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(base, at + 0.55);
+    const gainOffset = ctx.createConstantSource();
+    gainOffset.offset.value = 1;
+    src.connect(bp);
+    bp.connect(lp);
+    lp.connect(g);
+    gainOffset.connect(g.gain);
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(g.gain);
+    connectCompanionReactionOut(g, null, ctx);
+    src.start(at);
+    lfo.start(at);
+    gainOffset.start(at);
+    S.pullBreathBed = { source: src, bp, lp, lfo, lfoDepth, gainOffset, gain: g, ctx };
+    loop.breath = S.pullBreathBed;
+  }
+
+  function updatePullBreathBedGain(tension) {
+    const bed = S.pullBreathBed;
+    if (!bed || !S.audioCtx || muted(S.win) || !readForgeSound(S.win)) return;
+    const t = clampNum(Number(tension) || 0, 0, 1);
+    const shaped = titPullLoopTensionShape(t);
+    const target = shaped <= 0 ? 0.0001 : Math.max(0.0001, pullBreathBedGain(t));
+    bed.gain.gain.setTargetAtTime(target, S.audioCtx.currentTime, shaped <= 0 ? 0.06 : 0.16 + (1 - shaped) * 0.08);
+  }
+
+  function updateTitPullElasticLoopGain(tension) {
+    const loop = S.titPullLoop;
+    if (!loop || !S.audioCtx || muted(loop.win || S.win) || !readForgeSound(loop.win || S.win)) return;
+    const t = clampNum(Number(tension) || 0, 0, 1);
+    const shaped = titPullLoopTensionShape(t);
+    loop.baseVol = titPullLoopGain(t);
+    const now = S.audioCtx.currentTime;
+    const bedMul = 0.38 + shaped * 0.34;
+    const underMul = 0.02 + shaped * 0.085;
+    const smooth = 0.14 + (1 - shaped) * 0.1;
+    if (loop.bed?.gain) {
+      loop.bed.gain.gain.setTargetAtTime(Math.max(0.0001, loop.baseVol * bedMul), now, smooth);
+    }
+    if (loop.undertone?.gain) {
+      loop.undertone.gain.gain.setTargetAtTime(Math.max(0.0001, loop.baseVol * underMul), now, smooth + 0.03);
+    }
+    updatePullBreathBedGain(t);
+  }
+
+  function startTitPullElasticLoop(win, tension) {
+    if (!win || muted(win) || !readForgeSound(win) || calm(win)) return;
+    if (!S.reactionAudio?.hasImpact?.("tit_pull")) return;
+    stopTitPullElasticLoop();
+    const url = titPullLoopUrl(win);
+    if (!url) return;
+    primeCompanionAudioContext(win);
+    try {
+      const AC = win.AudioContext || win.webkitAudioContext;
+      if (!AC) return;
+      if (!S.audioCtx) S.audioCtx = new AC();
+      const ctx = S.audioCtx;
+      if (ctx.state === "suspended") ctx.resume();
+      ensureBustSlapBuffer(win, ctx, url).then(buf => {
+        if (!buf || !(S.bustPull && S.bustPull.active) || muted(win) || !readForgeSound(win)) return;
+        if (ctx.state === "suspended") ctx.resume().catch(() => {});
+        const now = ctx.currentTime;
+        updateCompanionSfxDuck(win);
+        const region = titPullLoopRegionSafe(buf);
+        const loopAt = now + 0.12;
+        const baseVol = titPullLoopGain(tension);
+        const loop = {
+          win,
+          ctx,
+          region,
+          baseVol,
+          baseTension: tension
+        };
+        S.titPullLoop = loop;
+        loop.bed = connectTitPullLoopBed(ctx, buf, region, loopAt, baseVol);
+        startTitPullLoopUndertone(loop, loopAt);
+        startPullBreathBed(loop, loopAt + 0.08);
+        updateTitPullElasticLoopGain(tension);
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  function manifestImpactUrls(poolKey) {
+    const fromManifest = S.reactionAudio?.impactUrls?.(poolKey);
+    if (fromManifest?.length) return fromManifest;
+    if (poolKey === "slap") return BUST_SLAP_SFX;
+    return [];
+  }
+
+  function bustSlapImpactUrls() {
+    return manifestImpactUrls("slap");
+  }
+
+  function impactBufferReady(url) {
+    if (S.reactionAudio?.getDecodedBuffer?.(url)) return true;
+    const cached = S.bustSlapBuffers?.[url];
+    return cached && typeof cached !== "function";
+  }
+
+  function warmImpactSlapAudio(win, primaryUrl) {
+    if (!win || !readForgeSound(win) || muted(win)) return Promise.resolve([]);
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
       if (!AC) return Promise.resolve([]);
       if (!S.audioCtx) S.audioCtx = new AC();
-      return Promise.all(BUST_SLAP_SFX.map(url => ensureBustSlapBuffer(win, S.audioCtx, url)));
-    } catch (_) { return Promise.resolve([]); }
+      const pool = bustSlapImpactUrls();
+      const urls = [primaryUrl];
+      const extra = pool.find(u => u !== primaryUrl && !impactBufferReady(u));
+      if (extra) urls.push(extra);
+      return Promise.all(urls.map(u => ensureBustSlapBuffer(win, S.audioCtx, u))).then(() => {
+        scheduleFullImpactWarm(win);
+      });
+    } catch (_) {
+      return Promise.resolve([]);
+    }
   }
 
-  function playBustSlapSfx(win, strength) {
+  function scheduleFullImpactWarm(win) {
+    if (S.slapImpactWarmFull) return;
+    S.slapImpactWarmFull = true;
+    win.setTimeout(() => {
+      if (!win || muted(win) || !readForgeSound(win) || win.document.hidden) return;
+      try {
+        if (!S.audioCtx) return;
+        const pending = bustSlapImpactUrls().filter(u => !impactBufferReady(u));
+        if (!pending.length) return;
+        Promise.all(pending.map(u => ensureBustSlapBuffer(win, S.audioCtx, u))).catch(() => {});
+      } catch (_) {}
+    }, 2500);
+  }
+
+  function warmImpactAudio(win) {
+    const pool = bustSlapImpactUrls();
+    if (S.nsfwOn) warmTitPullImpactAudio(win);
+    if (!pool.length) return Promise.resolve([]);
+    return warmImpactSlapAudio(win, pool[0]);
+  }
+
+  function playManifestImpact(win, poolKey, strength, opts) {
+    poolKey = poolKey || "slap";
+    opts = opts || {};
     if (!win || muted(win) || !readForgeSound(win) || calm(win) || win.document.hidden) return;
+    const poolRaw = manifestImpactUrls(poolKey);
+    if (!poolRaw.length) {
+      if (poolKey === "slap") playRecordedReaction(win, "surprised");
+      return;
+    }
     const requestedAt = Date.now();
-    if (S.lastImpactAt !== undefined && requestedAt - S.lastImpactAt < 110) return;
-    S.lastImpactAt = requestedAt;
+    const titPullSoft = poolKey === "tit_pull" || opts.softContact;
+    let pool = poolRaw;
+    if (titPullSoft) pool = titPullStemPool(pool, opts.release ? "slosh" : "elastic", opts.stem);
+    if (!pool.length) pool = poolRaw;
+    if (titPullSoft) {
+      if (!opts.skipCooldown) {
+        const minGap = opts.release ? 260 : 580;
+        if (S.lastTitPullAt && requestedAt - S.lastTitPullAt < minGap) return;
+        S.lastTitPullAt = requestedAt;
+      }
+    } else if (S.lastImpactAt !== undefined && requestedAt - S.lastImpactAt < 110) {
+      return;
+    }
+    if (!titPullSoft) S.lastImpactAt = requestedAt;
     const request = S.impactRequest = (S.impactRequest || 0) + 1;
     try {
       const AC = win.AudioContext || win.webkitAudioContext;
@@ -4320,31 +4876,73 @@
       if (!S.audioCtx) S.audioCtx = new AC();
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume();
-      if (!S.bustSlapSelection) S.bustSlapSelection = {};
-      const index = S.bustSlapVariant || 0;
-      const url = win.HqCompanionReactionAudio?.pickVariant(BUST_SLAP_SFX, S.bustSlapSelection) ||
-        BUST_SLAP_SFX[index % BUST_SLAP_SFX.length];
-      S.bustSlapVariant = (index + 1) % BUST_SLAP_SFX.length;
+      if (!S.impactSelections) S.impactSelections = {};
+      if (!S.impactSelections[poolKey]) S.impactSelections[poolKey] = {};
+      const selection = S.impactSelections[poolKey];
+      const index = S.impactVariant?.[poolKey] || 0;
+      const url = win.HqCompanionReactionAudio?.pickVariant(pool, selection) ||
+        pool[index % pool.length];
+      if (!S.impactVariant) S.impactVariant = {};
+      S.impactVariant[poolKey] = (index + 1) % pool.length;
       const str = clampNum(Number(strength) || 0.45, 0, 1);
-      const vol = 0.1 + str * 0.075 + Math.max(0, str - 0.58) * 0.06;
+      const impactDb = Number(S.reactionAudio?.impactGainDb?.());
+      const voiceDb = Number(S.reactionAudio?.voiceGainDb?.());
+      const impactMul = Number.isFinite(impactDb) ? 10 ** (impactDb / 20) : 10 ** (3.5 / 20);
+      const voiceMul = Number.isFinite(voiceDb) ? 10 ** (voiceDb / 20) : 1;
+      let volMul = Number(opts.volumeMul) || (poolKey === "hair_pat" ? 0.52 : poolKey === "muffled" ? 0.74 : 1);
+      let vol;
+      if (titPullSoft) {
+        volMul = Number(opts.volumeMul) || 0.55;
+        const pullStr = clampNum(str * 0.62, 0, 0.72);
+        vol = (0.05 + pullStr * 0.09) * voiceMul * volMul;
+      } else {
+        vol = (0.1 + str * 0.075 + Math.max(0, str - 0.58) * 0.06) * impactMul * volMul;
+      }
+      if (poolKey === "slap") void warmImpactSlapAudio(win, url);
+      const alt = pool.find(u => u !== url);
       ensureBustSlapBuffer(win, ctx, url)
-        .then(buf => buf ? { buf, natural: true } :
-          ensureBustSlapBuffer(win, ctx, BUST_SLAP_FALLBACK).then(buf => ({ buf, natural: false })))
-        .then(({ buf, natural }) => {
-          if (request !== S.impactRequest || Date.now() - requestedAt > 250) return;
+        .then(buf => buf ? buf : alt ? ensureBustSlapBuffer(win, ctx, alt) : null)
+        .then(buf => {
+          const waitMs = titPullSoft ? 3200 : 250;
+          if (request !== S.impactRequest || Date.now() - requestedAt > waitMs) return;
           if (muted(win) || !readForgeSound(win) || win.document.hidden) return;
-          if (!buf) { playVocalSynthFx(win, "spank"); return; }
-          const now = ctx.currentTime, pitch = natural ? 1 : 0.8 + Math.random() * 0.12;
+          if (!buf) {
+            if (poolKey === "slap") playRecordedReaction(win, "surprised");
+            return;
+          }
+          if (ctx.state === "suspended") ctx.resume().catch(() => {});
+          const now = ctx.currentTime;
+          updateCompanionSfxDuck(win);
+          if (opts.bodyThud !== false && poolKey !== "hair_pat" && !titPullSoft) playImpactBodyThud(ctx, now, str);
+          const pitch = titPullSoft ? 0.94 + Math.random() * 0.05 : 1;
           const src = ctx.createBufferSource();
           src.buffer = buf;
           src.playbackRate.value = pitch;
           const g = ctx.createGain(), tail = buf.duration / pitch;
+          const attack = titPullSoft ? 0.048 : 0.015;
           g.gain.setValueAtTime(0.001, now);
-          g.gain.linearRampToValueAtTime(vol, now + 0.008);
-          g.gain.setValueAtTime(vol, now + Math.max(0.009, tail - 0.04));
+          g.gain.linearRampToValueAtTime(vol, now + attack);
+          g.gain.setValueAtTime(vol, now + Math.max(attack + 0.01, tail - 0.05));
           g.gain.exponentialRampToValueAtTime(0.001, now + tail);
-          src.connect(g);
-          connectCompanionReactionOut(g, null, ctx);
+          let outNode = g;
+          if (titPullSoft) {
+            const hp = ctx.createBiquadFilter();
+            hp.type = "highpass";
+            hp.frequency.value = 65;
+            hp.Q.value = 0.55;
+            const lp = ctx.createBiquadFilter();
+            lp.type = "lowpass";
+            lp.frequency.value = 2500;
+            lp.Q.value = 0.6;
+            src.connect(hp);
+            hp.connect(lp);
+            lp.connect(g);
+            outNode = g;
+          } else {
+            src.connect(g);
+          }
+          if (titPullSoft) connectCompanionReactionOut(outNode, null, ctx);
+          else connectCompanionImpactOut(g, ctx);
           if (!S.activeImpactVoices) S.activeImpactVoices = [];
           while (S.activeImpactVoices.length >= 2) {
             const old = S.activeImpactVoices.shift();
@@ -4364,7 +4962,101 @@
           src.start(now);
           src.stop(now + tail);
         }).catch(() => {});
-    } catch (_) { playVocalSynthFx(win, "spank"); }
+    } catch (_) {}
+  }
+
+  function playBustSlapSfx(win, strength, poolKey) {
+    playManifestImpact(win, poolKey || "slap", strength);
+  }
+
+  function playGrabImpactSfx(win, strength) {
+    if (!S.reactionAudio?.hasImpact?.("grab")) return;
+    playManifestImpact(win, "grab", strength, { bodyThud: false, volumeMul: 0.82 });
+  }
+
+  function playTitPullImpactSfx(win, strength, opts) {
+    if (!S.reactionAudio?.hasImpact?.("tit_pull")) {
+      playGrabImpactSfx(win, strength * 0.45);
+      return;
+    }
+    playManifestImpact(win, "tit_pull", strength, {
+      bodyThud: false,
+      softContact: true,
+      release: !!opts?.release,
+      stem: opts?.stem,
+      skipCooldown: !!opts?.skipCooldown,
+      volumeMul: opts?.volumeMul ?? (opts?.release ? 0.34 : 0.29)
+    });
+  }
+
+  function playHairPatImpactSfx(win, strength) {
+    if (!S.reactionAudio?.hasImpact?.("hair_pat")) return;
+    playManifestImpact(win, "hair_pat", strength, { bodyThud: false });
+  }
+
+  function resetPullSfxGate() {
+    S.pullSfx = null;
+  }
+
+  function tickBustPullImpactSfx(win, tension, dist, shape) {
+    if (!win || muted(win) || !readForgeSound(win) || calm(win)) return;
+    if (!(S.bustPull && S.bustPull.active)) return;
+    const t = clampNum(Number(tension) || 0, 0, 1);
+    if (t < 0.08) return;
+    if (!S.pullSfx) S.pullSfx = { grabAt: 0, muffledAt: 0, tierBit: 0 };
+    const now = win.performance.now();
+    const move = clampNum(Number(dist) / 96, 0, 1);
+    const shear = Math.abs(Number(shape?.shear) || 0);
+    const hasTitPull = S.reactionAudio?.hasImpact?.("tit_pull");
+
+    if (S.titPullLoop && hasTitPull) {
+      updateTitPullElasticLoopGain(t);
+      if (move >= 0.1 && now - S.pullSfx.grabAt > 1050) {
+        playTitPullImpactSfx(win, 0.1 + t * 0.16 + move * 0.06, { stem: "07" });
+        S.pullSfx.grabAt = now;
+      }
+      return;
+    }
+
+    const hasGrab = S.reactionAudio?.hasImpact?.("grab");
+    const hasMuff = S.reactionAudio?.hasImpact?.("muffled");
+    const pullSfx = (str, release) => {
+      if (hasTitPull) playTitPullImpactSfx(win, str, release ? { release: true } : undefined);
+      else if (hasGrab) playGrabImpactSfx(win, str);
+    };
+    const stretchSfx = (str) => {
+      if (hasTitPull) return;
+      if (hasMuff) playManifestImpact(win, "muffled", str, { bodyThud: false, volumeMul: 0.54 });
+    };
+
+    if (t >= 0.28 && !(S.pullSfx.tierBit & 1)) {
+      S.pullSfx.tierBit |= 1;
+      pullSfx(0.22 + t * 0.16);
+      S.pullSfx.grabAt = now;
+    }
+    if (t >= 0.48 && !(S.pullSfx.tierBit & 2)) {
+      S.pullSfx.tierBit |= 2;
+      pullSfx(0.28 + t * 0.18);
+      S.pullSfx.grabAt = now;
+      S.pullSfx.muffledAt = now;
+    }
+    if (t >= 0.68 && !(S.pullSfx.tierBit & 4)) {
+      S.pullSfx.tierBit |= 4;
+      pullSfx(0.34 + t * 0.2);
+      S.pullSfx.grabAt = now;
+      S.pullSfx.muffledAt = now;
+    }
+
+    if (move < 0.12 && shear < 0.04) return;
+    const gapGrab = t > 0.55 ? 720 : 920;
+    if (now - S.pullSfx.grabAt > gapGrab) {
+      pullSfx(0.14 + t * 0.22 + move * 0.08);
+      S.pullSfx.grabAt = now;
+    }
+    if (!hasTitPull && now - S.pullSfx.muffledAt > (t > 0.55 ? 640 : 820)) {
+      stretchSfx(0.18 + t * 0.28 + shear * 0.22);
+      S.pullSfx.muffledAt = now;
+    }
   }
 
   function stopImpactAudio() {
@@ -4378,8 +5070,23 @@
   function ensurePleasureGruntBuffer(win, ctx, url) {
     if (!S.pleasureGruntBuffers) S.pleasureGruntBuffers = {};
     const cached = S.pleasureGruntBuffers[url];
-    if (cached && cached.then) return cached;
-    if (cached) return Promise.resolve(cached);
+    if (cached && typeof cached !== "function") return Promise.resolve(cached);
+    if (cached) return cached;
+    const shared = S.reactionAudio?.getDecodedBuffer?.(url);
+    if (shared) {
+      S.pleasureGruntBuffers[url] = shared;
+      return Promise.resolve(shared);
+    }
+    const viaReaction = S.reactionAudio?.ensureDecodedBuffer?.(url);
+    if (viaReaction) {
+      const load = viaReaction.then(buf => {
+        if (buf) S.pleasureGruntBuffers[url] = buf;
+        else delete S.pleasureGruntBuffers[url];
+        return buf;
+      });
+      S.pleasureGruntBuffers[url] = load;
+      return load;
+    }
     const load = win.fetch(url)
       .then((res) => {
         if (!res.ok) throw new Error("pleasure grunt missing");
@@ -4425,7 +5132,12 @@
       music_started: { kind: "humming", gap: 45000, priority: 0 },
       idle_humming: { kind: "humming", gap: 120000, priority: 0 },
       stretch: { kind: "yawn", gap: 90000, priority: 0 },
-      lip_bite: { kind: "lipsmack", gap: 15000, priority: 0 }
+      lip_bite: { kind: "lipsmack", gap: 15000, priority: 0 },
+      hair_tuck: { kind: "lipsmack", gap: 22000, priority: 0 },
+      toast_celebrate: { kind: "celebrate", gap: 12000, priority: 1 },
+      typing_backchannel: { kind: "typing_backchannel", gap: 45000, priority: 0 },
+      message_ack: { kind: "ack", gap: 6000, priority: 0 },
+      mock_scandal: { kind: "mock_scandal", gap: 20000, priority: 1 }
     }[context];
     if (!cue || !win || !S.el || S.el.hidden || S.currentAudio || S.voicePreview ||
         win.document.hidden || muted(win) || !readForgeSound(win)) return 0;
@@ -4445,6 +5157,7 @@
     const grooving = Array.from(win.document.querySelectorAll("audio, video"))
       .some(media => !media.paused && !media.ended && media.readyState > 2);
     S.el.classList.toggle("is-music-grooving", grooving);
+    updateCompanionSfxDuck(win);
     if (grooving) {
       if (!wasGrooving) playNaturalVoiceCue(win, "music_started");
       const avatar = S.el.querySelector(".hq-companion-avatar");
@@ -4462,6 +5175,13 @@
     return true;
   }
 
+  function playRecordedReactionChain(win, kinds) {
+    for (const kind of kinds) {
+      if (playRecordedReaction(win, kind)) return true;
+    }
+    return false;
+  }
+
   function playPleasureGruntSfx(win, tension, kind = "pleasure") {
     if (!win || muted(win) || !readForgeSound(win) || calm(win)) return;
     if (playRecordedReaction(win, kind)) return;
@@ -4475,7 +5195,8 @@
       const ctx = S.audioCtx;
       if (ctx.state === "suspended") ctx.resume().catch(() => {});
       if (typeof S.pleasureGruntVariant !== "number") S.pleasureGruntVariant = 0;
-      const url = PLEASURE_GRUNT_SFX[S.pleasureGruntVariant % PLEASURE_GRUNT_SFX.length];
+      const pool = S.pleasureGruntUrls?.length ? S.pleasureGruntUrls : PLEASURE_GRUNT_SFX;
+      const url = pool[S.pleasureGruntVariant % pool.length];
       S.pleasureGruntVariant += 1;
       const t = clampNum(Number(tension) || 0.5, 0, 1);
       ensurePleasureGruntBuffer(win, ctx, url).then((buf) => {
@@ -4515,6 +5236,44 @@
     syncContactBlush(win);
   }
 
+  function pullContactBlushShape(tension) {
+    const t = clampNum(Number(tension) || 0, 0, 1);
+    const eased = clampNum(t / 0.92, 0, 1);
+    const smooth = eased * eased * (3 - 2 * eased);
+    return clampNum(0.14 + smooth * 0.86, 0, 1);
+  }
+
+  /** Drop contact/pull presentation that must not survive adult mode off (classes, vars, timers). */
+  function clearAdultSessionBleed(win) {
+    if (!S.el) return;
+    S.contactBlush = 0;
+    S.contactBlushUntil = 0;
+    S.contactFlushUntil = 0;
+    S.contactWarmthSession = 0;
+    S.pullReleaseSteam = 0;
+    S.pullReleaseSteamUntil = 0;
+    S.pullReleaseSteamSpan = 0;
+    S.pullReleaseUntil = 0;
+    S.bustAfterglowUntil = 0;
+    S.bustAfterglowStrength = 0;
+    S.bustAfterglowDuration = 0;
+    S.feverActive = false;
+    S.el.classList.remove(
+      "has-contact-blush",
+      "is-contact-flushed",
+      "is-contact-fever-tease",
+      "is-contact-sting-flash",
+      "is-steamy-glass",
+      "is-pull-release-steam",
+      "is-bust-afterglow",
+      "is-fever-climax",
+      "is-wind-blown"
+    );
+    clearPullVar("--pull-blush");
+    clearPullVar("--pull-steam");
+    clearPullVar("--rig-contact-blush");
+  }
+
   function syncContactBlush(win) {
     if (!win || !S.el || !S.nsfwOn) return;
     const now = Date.now();
@@ -4524,12 +5283,28 @@
       if (S.contactBlush <= 0.03) S.contactBlush = 0;
     }
     let live = S.contactBlush || 0;
-    if (S.bustPull && S.bustPull.active && S.pullTarget) {
-      live = clampNum(live + S.pullTarget.tension * 0.38, 0, 1);
+    let pullBlush = 0;
+    let pullSteam = 0;
+    const perfNow = win.performance.now();
+    if (S.bustPull && S.bustPull.active) {
+      const t = clampNum(S.pullMotion?.tension ?? S.pullTarget?.tension ?? 0, 0, 1);
+      pullBlush = pullContactBlushShape(t);
+      live = clampNum(Math.max(live, pullBlush), 0, 1);
+      pullSteam = clampNum(pullBlush * pullBlush * 0.88 + Math.max(0, t - 0.5) * 0.42, 0, 1);
+    } else if (S.pullReleaseSteamUntil && perfNow < S.pullReleaseSteamUntil) {
+      const span = Math.max(1, Number(S.pullReleaseSteamSpan) || 1400);
+      const rel = (S.pullReleaseSteamUntil - perfNow) / span;
+      pullSteam = clampNum((S.pullReleaseSteam || 0) * rel, 0, 1);
+    } else if (S.pullReleaseSteamUntil) {
+      S.pullReleaseSteam = 0;
+      S.pullReleaseSteamUntil = 0;
+      S.pullReleaseSteamSpan = 0;
     }
     if (win.performance.now() < (S.slapMotionUntil || 0)) {
       live = clampNum(live + (S.lastSlapBlushBoost || 0.28), 0, 1);
     }
+    setPullVar("--pull-blush", pullBlush.toFixed(3));
+    setPullVar("--pull-steam", pullSteam.toFixed(3));
     // Read only by the rig's blush layers: written on them, not the whole companion (see setPullVar).
     setPullVar("--rig-contact-blush", live.toFixed(3));
     S.el.classList.toggle("has-contact-blush", live > 0.05);
@@ -4537,7 +5312,8 @@
       S.contactFlushUntil = 0;
       S.el.classList.remove("is-contact-flushed");
     }
-    if (live >= 0.85 && !S.el.classList.contains("is-contact-flushed") &&
+    const pullReleaseBeat = S.pullReleaseUntil && perfNow < S.pullReleaseUntil;
+    if (live >= 0.85 && !pullReleaseBeat && !S.el.classList.contains("is-contact-flushed") &&
         (!S.lastContactFlushAt || now - S.lastContactFlushAt > 24000)) {
       S.lastContactFlushAt = now;
       S.contactFlushUntil = now + 8000;
@@ -4721,7 +5497,11 @@
         });
       }
       if (tier.synth && !muted(win) && readForgeSound(win)) soon(() => playVocalSynthFx(win, tier.synth, intensity));
-      if (tier.afterglow) triggerBustAfterglow(win, tier.afterglow, 8000);
+      if (tier.afterglow) {
+        triggerBustAfterglow(win, tier.afterglow, 8000);
+        if (S.nsfwOn) win.setTimeout(() => playLewdPhaseWav(win, "afterglow_cooldown"), windup + 420);
+      }
+      if (intensity >= 0.48 && !muted(win) && readForgeSound(win)) soon(() => playGrabImpactSfx(win, intensity * 0.72));
     }
     if (bust && intensity >= 0.55 && !ex.finisherDone) maybeSlapPleasureGrunt(win, intensity);
     if (bust && ex.burst >= 4 && intensity >= 0.35) {
@@ -4761,6 +5541,7 @@
   function resetPullInteractionFx() {
     resetPullPleasureGruntGate();
     resetPullExpressiveGate();
+    resetPullSfxGate();
   }
 
   function tickPullExpressiveReactions(win, tension, shape) {
@@ -4890,13 +5671,30 @@
 
   function playVocalSynthFx(win, kind, pitchMod) {
     if (!win || muted(win) || !readForgeSound(win) || win.document.hidden || S.voicePreview) return;
+    if (kind === "spank") {
+      playBustSlapSfx(win, 0.42);
+      return;
+    }
+    const synthRecorded = {
+      mwah: ["kiss"],
+      purr: ["purr", "contented"],
+      gasp: ["surprised"],
+      sigh: ["exhale"],
+      moan: ["moan"],
+      whisper: ["lipsmack"],
+      gag: ["whimper"],
+      choke: ["whimper"],
+      pop: ["pop", "giggle"],
+      clink: ["clink"],
+      pounce: ["pounce"],
+      dizzy: ["dizzy"],
+      cupid: ["cupid", "kiss"]
+    }[kind];
+    if (synthRecorded && playRecordedReactionChain(win, synthRecorded)) return;
     if (S.currentAudio) return;
     if ((kind === "gasp" || kind === "sigh") && !calm(win)) {
       S.breathEvent = { kind: kind, t0: win.performance.now() };
     }
-    const recordedKind = { mwah: "kiss", purr: "contented", gasp: "surprised", sigh: "contented",
-      moan: "moan", whisper: "lipsmack" }[kind];
-    if (recordedKind && playRecordedReaction(win, recordedKind)) return;
     const fxNow = Date.now();
     if (!S.synthFxLastByKind) S.synthFxLastByKind = {};
     const fxGap = kind === "spank" || kind === "pop" ? 180 : 650;
@@ -5207,7 +6005,7 @@
     if (S.el) {
       S.el.style.setProperty("--arousal-pct", String(Math.round(next)));
       S.el.style.setProperty("--companion-warm", (next / 100).toFixed(3));
-      S.el.classList.toggle("is-steamy-glass", next >= 74);
+      S.el.classList.toggle("is-steamy-glass", next >= 74 && S.nsfwOn);
       S.el.classList.toggle("is-lewd-heat", next >= 52 && S.nsfwOn);
     }
     if (S.arousalRing) {
@@ -5217,7 +6015,7 @@
     if (S.nsfwOn && delta >= 3 && reason && /caress|poitrine|décolleté|décollete|tirée|tiree|claquement|charnel|gorge|bulle|fessée|spank|slingshot/i.test(String(reason))) {
       triggerBustAfterglow(win, clampNum(delta / 22, 0.32, 1), 11000 + delta * 40);
     }
-    if (next >= 100 && !S.feverActive) {
+    if (next >= 100 && !S.feverActive && S.nsfwOn) {
       S.feverActive = true;
       const windup = beginReactionWindup(win);
       const fireClimax = () => {
@@ -5353,7 +6151,8 @@
       S.framePokeT = win.setTimeout(() => frame.classList.remove("is-poked"), 700);
     });
     syncCompanionFrame(win);
-    win.setInterval(() => syncCompanionFrame(win), 1000);
+    win.setInterval(() => { if (!win.document.hidden) syncCompanionFrame(win); }, 1000); // motion1: hidden-tab guard
+    win.document.addEventListener("visibilitychange", () => { if (!win.document.hidden) syncCompanionFrame(win); });
     return frame;
   }
 
@@ -5650,10 +6449,12 @@
         //    its own length, toward the tip when she drops.
         // Exaggerated so ordinary bounces read; soft tanh limits keep it on
         // visible skin and never freeze it.
-        const across = (yaw * 1.5 + roll) * 3;
+        // Calm gains: the highlight trails the skin slightly rather than
+        // outrunning it (a reflection mostly stays put as the skin moves).
+        const across = yaw * 1.4 + roll * 1.0;   // the fan spreads at the rim: the root moves most
         const lim = across > 0 ? BUST_SPEC_SWEEP.right[side] : BUST_SPEC_SWEEP.left[side];
         sweep = lim * Math.tanh(across / lim);
-        const along = -pitch * 0.6;
+        const along = -pitch * 0.3;
         turn = 6 * Math.tanh(along / 6);
       }
       // The rig hands a pull between variables in one frame (pull start and
@@ -5709,7 +6510,8 @@
     // amounts with shared limits, so whole-body motion moves them in unison.
     // Soft limits across the fan (degrees), keyed by direction of travel then
     // breast: past ~+25deg the right band slides under the lace.
-    right: { left: 25, right: 25 }, left: { left: 30, right: 30 },
+    // Upward travel (both, to stay in unison) stops at 12deg: past ~frame 8 the left oval leaves the skin.
+    right: { left: 25, right: 25 }, left: { left: 12, right: 12 },
     // Root -> tip direction (image space), as in the bake's ROOT.
     tip: { left: [-0.705, 0.709], right: [0.699, 0.715] } };
 
@@ -5740,11 +6542,11 @@
   // breasts (avatar bob, av-stack bounce/shimmy/wobble/sway, torso...). The
   // reflection rides along rigidly, which reads as a sticker. Mirror each such
   // animation onto the reflection, scaled, so the highlight reacts with the
-  // breast: half the travel, the same rotation, and the same squash/stretch
+  // breast: a small share of the travel, the same rotation, the same squash/stretch
   // again about the dome centre (the physical reshape of a reflection).
   // Keyframes are read once when an animation starts, never per frame; the
   // copy runs on the compositor and composites with the JS-written transform.
-  const BUST_SHEEN_MIRROR_TRAVEL = 0.5;
+  const BUST_SHEEN_MIRROR_TRAVEL = 0.18;
   function bustSheenSplit(value) {
     const out = [];
     let depth = 0, cur = "";
@@ -6253,8 +7055,14 @@
       blink(win);
     }
     if (!muted(win) && readForgeSound(win)) {
-      if (opts && opts.bustSlap) playBustSlapSfx(win, hit.strength);
-      else playVocalSynthFx(win, "spank");
+      if (opts && opts.bustSlap) {
+        const pool = hit.strength < 0.46 && S.reactionAudio?.hasImpact?.("muffled") ? "muffled" : "slap";
+        playBustSlapSfx(win, hit.strength, pool);
+      } else {
+        const pool = hit.strength < 0.5 && S.reactionAudio?.hasImpact?.("muffled") ? "muffled" : "slap";
+        if (S.reactionAudio?.hasImpact?.(pool)) playManifestImpact(win, pool, hit.strength * 0.88);
+        else playVocalSynthFx(win, "spank");
+      }
     }
     pullHaptic(win, Math.round(3 + hit.strength * 5));
     tickSlapExpressiveReactions(win, av, hit, opts);
@@ -6281,7 +7089,7 @@
   }
 
   function applyWindBlownShiver(win, av) {
-    if (!S.el) return;
+    if (!S.el || !S.nsfwOn) return;
     S.el.classList.remove("is-breath-listening");
     S.el.classList.add("is-wind-blown", "is-steamy-glass");
     playVocalSynthFx(win, "gasp");
@@ -7036,26 +7844,136 @@
     return { bustImg, hairImg, sheen, syncLayers };
   }
 
-  function attachExpressiveMouth(win, wrap) {
-    const installAudio = () => {
-      if (!win.HqCompanionReactionAudio || S.reactionAudio) return;
-      S.reactionAudio = win.HqCompanionReactionAudio.create(win, () => readForgeSound(win) && !muted(win) &&
-        !win.document.hidden && !!S.el && !S.el.classList.contains("is-speaking") && !S.el.classList.contains("is-voice-lipsync"), Math.random,
-        () => ({ smoothStops: true, paceReactions: true,
+  function ensureReactionAudioScript(win) {
+    if (win.HqCompanionReactionAudio && win.HqCompanionSfxBus) return Promise.resolve();
+    if (S.reactionAudioScriptLoad) return S.reactionAudioScriptLoad;
+    S.reactionAudioScriptLoad = new Promise((resolve) => {
+      const loadChain = (src, attr) => new Promise((res) => {
+        let el = attr ? win.document.querySelector(`script[${attr}]`) : null;
+        if (el) {
+          el.addEventListener("load", () => res(), { once: true });
+          el.addEventListener("error", () => res(), { once: true });
+          return;
+        }
+        el = win.document.createElement("script");
+        el.src = src;
+        if (attr) el.setAttribute(attr, "");
+        el.addEventListener("load", () => res(), { once: true });
+        el.addEventListener("error", () => res(), { once: true });
+        win.document.head.appendChild(el);
+      });
+      loadChain("/assets/hq-companion-sfx-bus.js", "data-hq-sfx-bus")
+        .then(() => loadChain("/assets/hq-companion-reaction-audio.js", "data-hq-reaction-audio"))
+        .then(() => resolve());
+    });
+    return S.reactionAudioScriptLoad;
+  }
+
+  function primeCompanionAudioContext(win) {
+    if (S.audioCtxPrimed) return;
+    S.audioCtxPrimed = true;
+    try {
+      const AC = win.AudioContext || win.webkitAudioContext;
+      if (!AC) return;
+      if (!S.audioCtx) S.audioCtx = new AC();
+      ensureCompanionSfxBus(S.audioCtx);
+      if (S.audioCtx.state === "suspended") S.audioCtx.resume().catch(() => {});
+      updateCompanionSfxDuck(win);
+    } catch (_) {}
+  }
+
+  function prefetchReactionUrls(win, urls) {
+    if (!urls?.length) return;
+    if (!S.reactionPrefetchUrls) S.reactionPrefetchUrls = new Set();
+    for (const url of urls) {
+      if (!url || S.reactionPrefetchUrls.has(url)) continue;
+      S.reactionPrefetchUrls.add(url);
+      win.fetch(url).catch(() => {});
+    }
+  }
+
+  function warmReactionSamples(win, urls, background) {
+    if (!urls?.length) return;
+    primeCompanionAudioContext(win);
+    S.reactionAudio?.warmSamples?.(urls)?.catch?.(() => {});
+    if (!background?.length) return;
+    const idle = win.requestIdleCallback || ((cb) => win.setTimeout(cb, 160));
+    idle(() => warmReactionSamples(win, background, null));
+  }
+
+  function bindHotReactionPrefetch(win) {
+    if (S.hotReactionPrefetchBound) return;
+    S.hotReactionPrefetchBound = true;
+    const run = () => {
+      if (S.hotReactionPrefetchDone) return;
+      S.hotReactionPrefetchDone = true;
+      warmReactionSamples(
+        win,
+        S.reactionAudio?.warmPriorityUrls?.({ nsfwOn: !!S.nsfwOn })?.hot ||
+          S.reactionAudio?.hotPrefetchUrls?.(),
+        S.reactionAudio?.warmPriorityUrls?.({ nsfwOn: !!S.nsfwOn })?.background ||
+          S.reactionAudio?.backgroundPrefetchUrls?.()
+      );
+    };
+    win.addEventListener("pointerdown", run, { once: true, capture: true });
+    win.addEventListener("keydown", run, { once: true, capture: true });
+  }
+
+  function watchCompanionAudioPrime(win) {
+    if (S.companionAudioPrimeWatch || !win.IntersectionObserver) return;
+    const attach = () => {
+      if (!S.el || S.companionAudioPrimeWatch) return;
+      S.companionAudioPrimeWatch = new win.IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) primeCompanionAudioContext(win);
+      }, { threshold: 0.08 });
+      S.companionAudioPrimeWatch.observe(S.el);
+    };
+    if (S.el) attach();
+    else win.requestAnimationFrame(attach);
+  }
+
+  function installReactionAudioPlayer(win) {
+    if (S.reactionAudio) return S.reactionAudio.ready;
+    if (!win.HqCompanionReactionAudio) return Promise.resolve(false);
+    primeCompanionAudioContext(win);
+    S.reactionAudio = win.HqCompanionReactionAudio.create(win, () => readForgeSound(win) && !muted(win) &&
+      !win.document.hidden && !!S.el && !S.el.classList.contains("is-speaking") && !S.el.classList.contains("is-voice-lipsync"), Math.random,
+      () => {
+        primeCompanionAudioContext(win);
+        const bus = ensureCompanionSfxBus(S.audioCtx);
+        return { smoothStops: true, paceReactions: true,
           audioContext: S.audioCtx,
+          sfxBus: bus,
+          nsfwOn: !!S.nsfwOn,
+          connectVoiceOut: (node) => { if (bus && node) bus.connectVoice(node); },
           typing: !!S.typingAt && Date.now() - S.typingAt < 5000,
           busy: !!(S.busy || S.chatBusy || S.voicePreview || S.currentAudio),
-          mediaPlaying: !!S.el?.classList.contains("is-music-grooving") }));
-      warmImpactAudio(win);
-    };
-    if (win.HqCompanionReactionAudio) installAudio();
-    else if (!win.document.querySelector("script[data-hq-reaction-audio]")) {
-      const audioScript = win.document.createElement("script");
-      audioScript.src = "/assets/hq-companion-reaction-audio.js";
-      audioScript.setAttribute("data-hq-reaction-audio", "");
-      audioScript.addEventListener("load", installAudio, { once: true });
-      win.document.head.appendChild(audioScript);
-    }
+          mediaPlaying: !!S.el?.classList.contains("is-music-grooving") };
+      });
+    bindHotReactionPrefetch(win);
+    watchCompanionAudioPrime(win);
+    S.reactionAudio.ready.then((ok) => {
+      if (!ok) return;
+      const urls = S.reactionAudio.pleasureGruntUrls?.();
+      if (urls?.length) S.pleasureGruntUrls = urls;
+      const slaps = S.reactionAudio.slapImpactUrls?.();
+      if (slaps?.length) {
+        const idle = win.requestIdleCallback || ((cb) => win.setTimeout(cb, 320));
+        idle(() => warmReactionSamples(win, slaps.slice(0, 2), slaps.slice(2)));
+      }
+      if (S.nsfwOn) warmTitPullImpactAudio(win);
+      watchCompanionAudioPrime(win);
+      updateCompanionSfxDuck(win);
+    });
+    return S.reactionAudio.ready;
+  }
+
+  function bootstrapCompanionAudio(win) {
+    return ensureReactionAudioScript(win).then(() => installReactionAudioPlayer(win));
+  }
+
+  function attachExpressiveMouth(win, wrap) {
+    bootstrapCompanionAudio(win);
     const install = () => {
       if (!win.HqCompanionMouth || !S.el) return;
       S.mouthRig = win.HqCompanionMouth.attach(win, wrap, S.el, () => startLive2DLoop(win), {
@@ -8536,7 +9454,10 @@
     setPullVar("--pull-stretch-y", (shape.stretch || 1).toFixed(4));
     const pullT = clampNum(tension, 0, 1);
     if (calm(S.win)) syncRigClothing(ensureLive2DState(),0,{left:{sy:1,pull:pullT},right:{sy:1,pull:pullT}},true);
-    const avatarShake = calm(S.win) ? 0 : clampNum(pullT * 2.55 + pullT * pullT * 3.1, 0, 6.5);
+    const pullReach = clampNum(Math.hypot(tx, ty) / Math.max(52, width * 0.15), 0, 1);
+    const vibrMix = clampNum(pullT * 0.52 + pullReach * 0.48, 0, 1);
+    const vibrAmp = vibrMix * vibrMix;
+    const avatarShake = calm(S.win) ? 0 : clampNum(0.35 + vibrAmp * 3.4, 0, 4.2);
     const bubbleShake = calm(S.win) ? 0 : clampNum(pullT * 4.8 + pullT * pullT * 8.2, 0, 14);
     const bubbleShakeY = calm(S.win) ? 0 : clampNum(pullT * 1.55 + pullT * pullT * 3.1, 0, 5.8);
     const avatarAmp = calm(S.win) ? 0.24 : clampNum(0.26 + pullT * 0.34, 0.26, 0.58);
@@ -8550,6 +9471,14 @@
     clearPullVar("--bust-shake-rot");
     const shakeDur = Math.max(0.11, 0.26 - pullT * 0.1).toFixed(3) + "s";
     setPullVar("--bust-shake-dur", shakeDur);
+    const bustVibrX = calm(S.win) ? 0 : clampNum(0.12 + vibrAmp * 2.6, 0, 2.9);
+    const bustVibrY = calm(S.win) ? 0 : clampNum(0.08 + vibrAmp * 1.55, 0, 1.75);
+    const bustVibrRot = calm(S.win) ? 0 : clampNum(vibrAmp * 0.42, 0, 0.48);
+    const bustVibrDur = Math.max(0.07, 0.19 - vibrAmp * 0.06).toFixed(3) + "s";
+    setPullVar("--pull-bust-vibr-x", bustVibrX.toFixed(2) + "px");
+    setPullVar("--pull-bust-vibr-y", bustVibrY.toFixed(2) + "px");
+    setPullVar("--pull-bust-vibr-rot", bustVibrRot.toFixed(3) + "deg");
+    setPullVar("--pull-bust-vibr-dur", bustVibrDur);
     setPullVar("--bubble-shake-dur", shakeDur);
     setPullVar("--bust-pull-x", tx.toFixed(2) + "px");
     setPullVar("--bust-pull-y", ty.toFixed(2) + "px");
@@ -8603,8 +9532,9 @@
       setPullVar("--rig-breast-cut-x", cutX.toFixed(2) + "px");
       setPullVar("--rig-breast-cut-y", cutY.toFixed(2) + "px");
       const faceContact = clampNum(contact, 0, 1);
-      const exprGate = clampNum(pullT * 2.35 + faceContact * 0.34, 0, 1);
-      const mouthOpen = clampNum(Math.pow(pullT, 0.82) * 1.08 + faceContact * pullT * 0.35, 0, 1);
+      const blushFace = pullContactBlushShape(pullT);
+      const exprGate = clampNum(blushFace * 1.08 + faceContact * 0.26 + pullT * 0.12, 0, 1);
+      const mouthOpen = clampNum(Math.pow(blushFace, 0.72) * 1.05 + faceContact * blushFace * 0.32, 0, 1);
       const pullMouthOpen = mouthOpen;
       setPullVar("--rig-pull-mouth-open", mouthOpen.toFixed(3));
       setPullVar("--rig-pull-mouth-overlay", exprGate.toFixed(3));
@@ -8616,10 +9546,10 @@
       mouthStyle.setProperty("--rig-mouth-y", (mouthOpen * 5 + pullT * 0.6).toFixed(2) + "px");
       setPullVar(
         "--rig-pull-eye-close",
-        clampNum(0.04 + exprGate * (0.9 + pullT * 0.1), 0.04, 1).toFixed(3));
+        clampNum(0.04 + blushFace * (0.82 + exprGate * 0.18), 0.04, 1).toFixed(3));
       setPullVar(
         "--rig-pull-eye-opacity",
-        clampNum(exprGate * (0.86 + pullT * 0.12), 0, 0.98).toFixed(3));
+        clampNum(exprGate * (0.78 + blushFace * 0.22), 0, 0.98).toFixed(3));
       const shearMag = Math.abs(shape.shear || 0);
       setPullVar("--pull-lobe-sy", clampNum(shape.stretch || 1, 0.88, 1.18).toFixed(4));
       setPullVar("--pull-lobe-sx", clampNum(1 + shearMag * 0.16 + Math.abs(tx) / Math.max(width, 1) * 0.035, 0.94, 1.16).toFixed(4));
@@ -8694,6 +9624,8 @@
     }
     S.el.classList.add("is-bust-pull");
     tickPullExpressiveReactions(S.win, tension, shape);
+    tickBustPullImpactSfx(S.win, pullT, Math.hypot(tx, ty), shape);
+    updateTitPullElasticLoopGain(pullT);
     syncContactBlush(S.win);
     S.mouthRig?.syncInteraction();
     updateBustCastProjection(S.win, ensureLive2DState(), isCompactUI(S.win));
@@ -8814,16 +9746,27 @@
     if (S.pullFollowRaf) S.win.cancelAnimationFrame(S.pullFollowRaf);
     S.pullFollowRaf = 0;
     S.pullTarget = null;
-    S.el.classList.remove("is-bust-pull", "has-pull-landmarks", "pull-tier-light", "pull-tier-medium", "pull-tier-deep");
+    S.el.classList.remove("is-bust-pull", "has-pull-landmarks", "pull-tier-light", "pull-tier-medium", "pull-tier-deep", "is-pull-release-steam");
     S.mouthRig?.syncInteraction();
     clearPullVar("--bust-shake");
     clearPullVar("--bust-shake-amp");
     clearPullVar("--bust-shake-dur");
+    clearPullVar("--pull-bust-vibr-x");
+    clearPullVar("--pull-bust-vibr-y");
+    clearPullVar("--pull-bust-vibr-rot");
+    clearPullVar("--pull-bust-vibr-dur");
+    clearPullVar("--pull-blush");
+    clearPullVar("--pull-steam");
+    S.pullReleaseSteam = 0;
+    S.pullReleaseSteamUntil = 0;
+    S.pullReleaseSteamSpan = 0;
+    S.pullReleaseUntil = 0;
     S.el.style.removeProperty("--bubble-shake");
     S.el.style.removeProperty("--bubble-shake-y");
     S.el.style.removeProperty("--bubble-shake-amp");
     S.el.style.removeProperty("--bubble-shake-dur");
     stopBustPullVoice();
+    stopTitPullElasticLoop();
     S.pullMotion = null;
     S.pullGaze = null;
     resetPullInteractionFx();
@@ -8880,6 +9823,7 @@
     }
     const pull = S.bustPull;
     S.bustPull = null;
+    stopTitPullElasticLoop();
     if (S.bustPullRaf) win.cancelAnimationFrame(S.bustPullRaf);
     S.bustPullRaf = 0;
     if (pull && S.el) {
@@ -8902,11 +9846,25 @@
     const reduced = calm(win);
     const dur = reduced ? 160 : 2520;
     const peakPullT = S.pullExpress && S.pullExpress.peakT ? S.pullExpress.peakT : (motion.tension || 0);
+    S.pullReleaseUntil = start + 1600;
     stopBustPullVoice();
+    stopTitPullElasticLoop();
     {
       const releaseSpeed = recent ? Math.hypot(motion.vx || 0, motion.vy || 0) : 0;
       const bounce = clampNum(peakPullT * 0.7 + releaseSpeed / 260, 0, 1);
+      if (peakPullT >= 0.28) {
+        bumpContactBlush(win, 0.1 + peakPullT * 0.24 + bounce * 0.08, 4200);
+        S.pullReleaseSteam = clampNum(0.55 + peakPullT * 0.42 + bounce * 0.12, 0, 1);
+        S.pullReleaseSteamSpan = 1400;
+        S.pullReleaseSteamUntil = start + S.pullReleaseSteamSpan;
+        syncContactBlush(win);
+        S.el.classList.add("is-pull-release-steam");
+      }
       playBustBounceSfx(win, bounce, 0);
+      if (!muted(win) && readForgeSound(win)) {
+        playTitPullImpactSfx(win, 0.26 + bounce * 0.34, { release: true });
+        if (peakPullT >= 0.38) playRecordedReaction(win, "exhale");
+      }
       {
         const cx = parseFloat(S.el.style.getPropertyValue("--pull-contact-x"));
         const cy = parseFloat(S.el.style.getPropertyValue("--pull-contact-y"));
@@ -9319,9 +10277,12 @@
         if (S.currentAudio !== audio || ctx.state !== "running" || S.voiceMeter) return;
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
-        const source = ctx.createMediaElementSource(audio);
+        const wired = S.speechWebVoice?.audio === audio ? S.speechWebVoice.source : null;
+        const source = wired || ctx.createMediaElementSource(audio);
         source.connect(analyser);
-        analyser.connect(ctx.destination);
+        if (!wired) {
+          source.connect(ctx.destination);
+        }
         S.voiceMeter = { source, analyser, data: new Uint8Array(analyser.fftSize), lastAt: -Infinity };
         if (S.nsfwOn) startLive2DLoop(win);
       };
@@ -12116,6 +13077,26 @@
         return;
       }
     }
+    const treatRecorded = {
+      coffee: "treat_coffee",
+      strawberry: "treat_strawberry",
+      rose: "treat_rose",
+      champagne: "treat_champagne"
+    }[treatKey];
+    if (treatRecorded) {
+      const sample = S.reactionAudio?.pickReaction?.(treatRecorded);
+      if (sample?.url) {
+        playAudioUrl(win, sample.url);
+        return;
+      }
+    }
+    if (treatKey === "champagne") {
+      const clink = S.reactionAudio?.pickReaction?.("clink");
+      if (clink?.url) {
+        playAudioUrl(win, clink.url);
+        return;
+      }
+    }
     const valid = ["coffee", "strawberry", "rose", "kiss", "caress", "champagne"];
     if (!valid.includes(treatKey)) return;
     if (!S.audioCycles) S.audioCycles = { treats: {}, lewd: {} };
@@ -12137,10 +13118,17 @@
         (S.phaseAudioAt[phaseKey] !== undefined && now - S.phaseAudioAt[phaseKey] < 8000)) return;
     const reserve = () => { S.lastPhaseAudioAt = now; S.phaseAudioAt[phaseKey] = now; };
     const recorded = S.reactionAudio?.pickPhase(phaseKey);
-    if (recorded) { reserve(); playAudioUrl(win, recorded.url); return; }
+    if (recorded) {
+      reserve();
+      playAudioUrl(win, recorded.url);
+      if (S.nsfwOn && (phaseKey === "phase8_rear_grind" || phaseKey === "booty_arch")) {
+        win.setTimeout(() => playRecordedReaction(win, "booty_breath"), 280);
+      }
+      return;
+    }
     const valid = [
       "deepthroat", "cum_begging", "booty_arch", "climax_fever", "whisper_ear", "morning_wood",
-      "phase7_size_worship", "phase8_rear_grind", "phase9_breast_vivid"
+      "phase7_size_worship", "phase8_rear_grind", "phase9_breast_vivid", "afterglow_cooldown", "tease_deny"
     ];
     if (!valid.includes(phaseKey)) return;
     reserve();
@@ -12159,14 +13147,30 @@
     const finish = entry => {
       for (const timer of entry.timers) win.clearTimeout(timer);
       S.retiringSpeechAudio.delete(entry);
-      try { entry.audio.pause(); } catch (_) {}
+      if (entry.webVoice) stopSpeechWebVoice(win, true);
+      else try { entry.audio.pause(); } catch (_) {}
     };
     const immediate = !readVoice(win) || muted(win) || win.document.hidden;
     if (immediate) for (const entry of [...S.retiringSpeechAudio]) finish(entry);
     if (!audio) return;
-    if (immediate || !Number.isFinite(audio.volume) || !win.setTimeout) { audio.pause(); return; }
-    const entry = { audio, timers: [] }, volume = audio.volume;
+    const webVoice = S.speechWebVoice?.audio === audio ? S.speechWebVoice : null;
+    if (immediate || !Number.isFinite(audio.volume) || !win.setTimeout) {
+      if (webVoice) stopSpeechWebVoice(win, true);
+      else try { audio.pause(); } catch (_) {}
+      return;
+    }
+    const entry = { audio, timers: [], webVoice }, volume = audio.volume;
     S.retiringSpeechAudio.add(entry);
+    const ctx = S.audioCtx;
+    const rampGain = webVoice && ctx?.currentTime !== undefined;
+    if (rampGain) {
+      const now = ctx.currentTime;
+      try {
+        webVoice.gain.gain.cancelScheduledValues(now);
+        webVoice.gain.gain.setValueAtTime(webVoice.gain.gain.value, now);
+        webVoice.gain.gain.linearRampToValueAtTime(0.001, now + 0.08);
+      } catch (_) {}
+    }
     for (let step = 1; step <= 4; step++) entry.timers.push(win.setTimeout(() => {
       audio.volume = volume * (1 - step / 4);
       if (step === 4) finish(entry);
@@ -12182,7 +13186,10 @@
     win.clearTimeout(S.speechPause);
     const previousAudio = S.currentAudio;
     S.currentAudio = null;
+    const speechImmediate = muted(win) || win.document.hidden || !readVoice(win);
+    if (speechImmediate) stopSpeechWebVoice(win, true);
     fadeAudioOut(win, previousAudio);
+    updateCompanionSfxDuck(win);
     if (win.speechSynthesis) win.speechSynthesis.cancel();
     if (S.root) S.root.classList.remove("is-speaking");
     if (S.el) S.el.classList.remove("is-speaking");
@@ -12193,17 +13200,21 @@
     if (!url || !readVoice(win) || win.document.hidden) return;
     try {
       stopSpeech(win);
+      const request = S.speechRequest;
       const audio = new win.Audio(url);
       S.currentAudio = audio;
       if (S.root) S.root.classList.add("is-speaking");
       if (S.el) S.el.classList.add("is-speaking");
       startVoiceLipsyncLoop(win);
+      updateCompanionSfxDuck(win);
       const finish = () => {
         if (S.currentAudio !== audio) return;
         if (S.root) S.root.classList.remove("is-speaking");
         if (S.el) S.el.classList.remove("is-speaking");
         stopVoiceLipsyncLoop(win);
+        if (S.speechWebVoice?.audio === audio) stopSpeechWebVoice(win, true);
         S.currentAudio = null;
+        updateCompanionSfxDuck(win);
       };
       const failed = () => {
         if (S.currentAudio !== audio) return;
@@ -12212,7 +13223,17 @@
       };
       audio.onended = finish;
       audio.onerror = failed;
-      audio.play().then(() => attachVoiceMeter(win, audio)).catch(failed);
+      const routeBus = canRouteSpeechThroughBus(win, url);
+      audio.play().then(() => {
+        if (request !== S.speechRequest || S.currentAudio !== audio) return;
+        if (routeBus) {
+          try {
+            primeCompanionAudioContext(win);
+            wireSpeechMediaToBus(win, audio, url);
+          } catch (_) { /* Element playback remains if graph wiring fails. */ }
+        }
+        attachVoiceMeter(win, audio);
+      }).catch(failed);
     } catch (_) {}
   }
 
@@ -12305,6 +13326,7 @@
       if (!S.typeBeats) S.typeBeats = [];
       if (!S.typeBeats.length || now - S.typeBeats[S.typeBeats.length - 1] > 40) S.typeBeats.push(now);
       if (S.typeBeats.length > 14) S.typeBeats.shift();
+      if (S.typeBeats.length >= 8 && Math.random() < 0.07) playNaturalVoiceCue(win, "typing_backchannel");
     }
     if (kind === "nav") S.navTimes = S.navTimes.filter((t) => now - t < 60000).concat(now);
   }
@@ -13818,6 +14840,11 @@
         S.pullMotion = null;
         S.pullHapticTier = 0;
         pullHaptic(win, 4);
+        if (!muted(win) && readForgeSound(win)) {
+          warmTitPullImpactAudio(win);
+          playTitPullImpactSfx(win, 0.18, { stem: "01", skipCooldown: true });
+          startTitPullElasticLoop(win, 0.22);
+        }
         S.pullGaze = { x: clampNum((ev.clientX - r0.left - r0.width * 0.5) / r0.width, -1, 1),
           y: clampNum((ev.clientY - r0.top - r0.height * 0.24) / r0.height, -1, 1) };
         S.el.style.setProperty("--pull-contact-x", clampNum((ev.clientX - r0.left) / r0.width * 100, 0, 100).toFixed(2) + "%");
@@ -15521,6 +16548,7 @@
 
   function start(win) {
     S.win = win;
+    bootstrapCompanionAudio(win);
     const boot = () => {
       build(win);
       ensureCompanionFloatChrome(win);
@@ -15590,6 +16618,19 @@
           startLive2DLoop(win);
         }
       });
+      // motion1: freeze CSS loops while nothing of her can be seen (tab hidden, full-screen AI panel, element hidden).
+      const syncAnimPause = () => {
+        if (!S.el) return;
+        const off = !!(win.document.hidden || win.document.body.classList.contains("hq-ai-open") || S.el.hidden);
+        if (S.el.classList.contains("is-anim-paused") !== off) S.el.classList.toggle("is-anim-paused", off);
+      };
+      S.syncAnimPause = syncAnimPause;
+      win.document.addEventListener("visibilitychange", syncAnimPause);
+      try {
+        new win.MutationObserver(syncAnimPause).observe(win.document.body, { attributes: true, attributeFilter: ["class"] });
+        if (S.el) new win.MutationObserver(syncAnimPause).observe(S.el, { attributes: true, attributeFilter: ["hidden"] });
+      } catch (_) {}
+      syncAnimPause();
       scheduleBlink(win);
       win.setInterval(() => pulse(win), PULSE_MS);
       // Sleepy / Dozing Off Mode after 2 min of inactivity
@@ -15877,7 +16918,7 @@
         syncCompanionMusic(win);
         syncIdleContinuousStates(win);
       };
-      win.setInterval(syncMusicGroove, 2800);
+      win.setInterval(() => { if (!win.document.hidden) syncMusicGroove(); }, 2800); // motion1: hidden-tab guard
 
       // 10. Time-of-Day Circadian Aura & Initial Warmth
       const syncCircadianRitual = () => {

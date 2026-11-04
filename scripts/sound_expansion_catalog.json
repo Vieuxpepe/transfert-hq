@@ -1,0 +1,650 @@
+[
+  {
+    "file": "Else_contented_purr_01.mp3",
+    "section": "samples",
+    "event": "purr",
+    "text": "[contented purr hum] ..."
+  },
+  {
+    "file": "Else_glass_clink_01.mp3",
+    "section": "samples",
+    "event": "clink",
+    "text": "[crystal glass clink] ..."
+  },
+  {
+    "file": "Else_glass_clink_02.mp3",
+    "section": "samples",
+    "event": "clink",
+    "text": "[champagne flute ting] ..."
+  },
+  {
+    "file": "Else_glass_clink_03.mp3",
+    "section": "samples",
+    "event": "clink",
+    "text": "[soft toast clink] ..."
+  },
+  {
+    "file": "Else_lip_pop_01.mp3",
+    "section": "samples",
+    "event": "pop",
+    "text": "[crisp lip pop] ..."
+  },
+  {
+    "file": "Else_lip_pop_02.mp3",
+    "section": "samples",
+    "event": "pop",
+    "text": "[playful bubble pop] ..."
+  },
+  {
+    "file": "Else_playful_pounce_01.mp3",
+    "section": "samples",
+    "event": "pounce",
+    "text": "[playful pounce chirp with fabric rustle] ..."
+  },
+  {
+    "file": "Else_playful_pounce_02.mp3",
+    "section": "samples",
+    "event": "pounce",
+    "text": "[catlike pounce hop] ..."
+  },
+  {
+    "file": "Else_playful_pounce_03.mp3",
+    "section": "samples",
+    "event": "pounce",
+    "text": "[bouncy landing squeak] ..."
+  },
+  {
+    "file": "Else_dizzy_wobble_01.mp3",
+    "section": "samples",
+    "event": "dizzy",
+    "text": "[dizzy wobble breath whoa] ..."
+  },
+  {
+    "file": "Else_dizzy_wobble_02.mp3",
+    "section": "samples",
+    "event": "dizzy",
+    "text": "[comical dizzy spin hum] ..."
+  },
+  {
+    "file": "Else_dizzy_wobble_03.mp3",
+    "section": "samples",
+    "event": "dizzy",
+    "text": "[lightheaded woozy sigh] ..."
+  },
+  {
+    "file": "Else_cupid_sparkle_01.mp3",
+    "section": "samples",
+    "event": "cupid",
+    "text": "[sparkling kiss chirp] ..."
+  },
+  {
+    "file": "Else_cupid_sparkle_02.mp3",
+    "section": "samples",
+    "event": "cupid",
+    "text": "[tiny romantic harp hum with lip smack] ..."
+  },
+  {
+    "file": "Else_ack_mhm_01.mp3",
+    "section": "samples",
+    "event": "ack",
+    "text": "[soft acknowledging mh-hm] ..."
+  },
+  {
+    "file": "Else_ack_mhm_02.mp3",
+    "section": "samples",
+    "event": "ack",
+    "text": "[quick yeah breath] ..."
+  },
+  {
+    "file": "Else_ack_mhm_03.mp3",
+    "section": "samples",
+    "event": "ack",
+    "text": "[gentle listening mhm] ..."
+  },
+  {
+    "file": "Else_ack_mhm_04.mp3",
+    "section": "samples",
+    "event": "ack",
+    "text": "[quiet got it hum] ..."
+  },
+  {
+    "file": "Else_typing_backchannel_01.mp3",
+    "section": "samples",
+    "event": "typing_backchannel",
+    "text": "[barely audible listening breath] ..."
+  },
+  {
+    "file": "Else_typing_backchannel_02.mp3",
+    "section": "samples",
+    "event": "typing_backchannel",
+    "text": "[soft attentive hmm while listening] ..."
+  },
+  {
+    "file": "Else_typing_backchannel_03.mp3",
+    "section": "samples",
+    "event": "typing_backchannel",
+    "text": "[tiny lip sound acknowledging typing] ..."
+  },
+  {
+    "file": "Else_celebrate_gasp_01.mp3",
+    "section": "samples",
+    "event": "celebrate",
+    "text": "[bright surprised happy gasp] ..."
+  },
+  {
+    "file": "Else_celebrate_gasp_02.mp3",
+    "section": "samples",
+    "event": "celebrate",
+    "text": "[excited little cheer breath] ..."
+  },
+  {
+    "file": "Else_celebrate_gasp_03.mp3",
+    "section": "samples",
+    "event": "celebrate",
+    "text": "[delighted laugh gasp] ..."
+  },
+  {
+    "file": "Else_mock_scandal_gasp_01.mp3",
+    "section": "samples",
+    "event": "mock_scandal",
+    "text": "[playful scandalized gasp oh my] ..."
+  },
+  {
+    "file": "Else_mock_scandal_gasp_02.mp3",
+    "section": "samples",
+    "event": "mock_scandal",
+    "text": "[teasing shocked inhale] ..."
+  },
+  {
+    "file": "Else_mock_scandal_gasp_03.mp3",
+    "section": "samples",
+    "event": "mock_scandal",
+    "text": "[flirty faux outrage sigh] ..."
+  },
+  {
+    "file": "Else_booty_breath_moan_01.mp3",
+    "section": "samples",
+    "event": "booty_breath",
+    "text": "[low breathy moan under grind] ..."
+  },
+  {
+    "file": "Else_booty_breath_moan_02.mp3",
+    "section": "samples",
+    "event": "booty_breath",
+    "text": "[soft rhythmic exhale moan] ..."
+  },
+  {
+    "file": "Else_treat_coffee_sip_01.mp3",
+    "section": "samples",
+    "event": "treat_coffee",
+    "text": "[coffee sip and soft ah] ..."
+  },
+  {
+    "file": "Else_treat_coffee_sip_02.mp3",
+    "section": "samples",
+    "event": "treat_coffee",
+    "text": "[warm sip exhale] ..."
+  },
+  {
+    "file": "Else_treat_strawberry_bite_01.mp3",
+    "section": "samples",
+    "event": "treat_strawberry",
+    "text": "[juicy strawberry bite mmh] ..."
+  },
+  {
+    "file": "Else_treat_strawberry_bite_02.mp3",
+    "section": "samples",
+    "event": "treat_strawberry",
+    "text": "[playful fruit bite giggle] ..."
+  },
+  {
+    "file": "Else_treat_rose_rustle_01.mp3",
+    "section": "samples",
+    "event": "treat_rose",
+    "text": "[rose petal rustle and soft inhale] ..."
+  },
+  {
+    "file": "Else_treat_champagne_clink_01.mp3",
+    "section": "samples",
+    "event": "treat_champagne",
+    "text": "[champagne sip with glass clink] ..."
+  },
+  {
+    "file": "Else_fabric_grab_01.mp3",
+    "section": "impacts",
+    "event": "grab",
+    "impact": true,
+    "text": "[fabric grab squeeze thump] ..."
+  },
+  {
+    "file": "Else_fabric_grab_02.mp3",
+    "section": "impacts",
+    "event": "grab",
+    "impact": true,
+    "text": "[handful cloth pull impact] ..."
+  },
+  {
+    "file": "Else_fabric_grab_03.mp3",
+    "section": "impacts",
+    "event": "grab",
+    "impact": true,
+    "text": "[deep squeeze rustle hit] ..."
+  },
+  {
+    "file": "Else_soft_hair_pat_01.mp3",
+    "section": "impacts",
+    "event": "hair_pat",
+    "impact": true,
+    "text": "[soft hair pat rustle] ..."
+  },
+  {
+    "file": "Else_soft_hair_pat_02.mp3",
+    "section": "impacts",
+    "event": "hair_pat",
+    "impact": true,
+    "text": "[gentle head pat tap] ..."
+  },
+  {
+    "file": "Else_impact_muffled_slap_01.mp3",
+    "section": "impacts",
+    "event": "muffled",
+    "impact": true,
+    "text": "[muffled body slap through fabric] ..."
+  },
+  {
+    "file": "Else_impact_muffled_slap_02.mp3",
+    "section": "impacts",
+    "event": "muffled",
+    "impact": true,
+    "text": "[muffled clothing slap] ..."
+  },
+  {
+    "file": "Else_impact_muffled_slap_03.mp3",
+    "section": "impacts",
+    "event": "muffled",
+    "impact": true,
+    "text": "[soft padded smack] ..."
+  },
+  {
+    "file": "Else_afterglow_cooldown_01.mp3",
+    "section": "phases",
+    "event": "afterglow_cooldown",
+    "text": "[breathy afterglow whisper] still trembling for you..."
+  },
+  {
+    "file": "Else_afterglow_cooldown_02.mp3",
+    "section": "phases",
+    "event": "afterglow_cooldown",
+    "text": "[soft satisfied murmur] give me a second mon amour..."
+  },
+  {
+    "file": "Else_afterglow_cooldown_03.mp3",
+    "section": "phases",
+    "event": "afterglow_cooldown",
+    "text": "[quiet post-climax sigh] mmh... stay close..."
+  },
+  {
+    "file": "Else_tease_deny_01.mp3",
+    "section": "phases",
+    "event": "tease_deny",
+    "text": "[teasing whisper] not yet Maître... almost..."
+  },
+  {
+    "file": "Else_tease_deny_02.mp3",
+    "section": "phases",
+    "event": "tease_deny",
+    "text": "[playful denial breath] ah-ah... wait..."
+  },
+  {
+    "file": "Else_tease_deny_03.mp3",
+    "section": "phases",
+    "event": "tease_deny",
+    "text": "[edging whimper] please... but not yet..."
+  },
+  {
+    "file": "Else_whisper_ear_alt_01.mp3",
+    "section": "phases",
+    "event": "whisper_ear",
+    "text": "[whisper in ear] can you feel me breathing..."
+  },
+  {
+    "file": "Else_whisper_ear_alt_02.mp3",
+    "section": "phases",
+    "event": "whisper_ear",
+    "text": "[close ear whisper] only for you..."
+  },
+  {
+    "file": "Else_whisper_ear_alt_03.mp3",
+    "section": "phases",
+    "event": "whisper_ear",
+    "text": "[hot breath at ear] stay right there..."
+  },
+  {
+    "file": "Else_oral_suction_shallow_01.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[soft wet suction slurp close mic] ..."
+  },
+  {
+    "file": "Else_oral_suction_shallow_02.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[rhythmic cheek suction wet mouth] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_01.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[deeper throat suction gulp wet] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_02.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[deep hollow cheek suction wet slurp] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_03.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[slow deep throat pull vacuum wet mouth] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_04.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[rhythmic deep bobbing suction gulp] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_05.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[tight lips deep shaft suction smack wet] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_06.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[muffled deep oral suction close mic] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_07.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[urgent deep swallow suction wet] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_08.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[soft deep throat suction with saliva smack] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_09.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[heavy wet gulp deep intake suction] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_10.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[deep suction release inhale wet pop] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_11.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[layered cheek and throat deep suction] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_12.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[sticky wet deep pull off and re-suck] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_13.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[low rumble deep throat vacuum wet] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_14.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[fast shallow-to-deep suction crescendo wet] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_15.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[breathy deep suction with tongue wet smack] ..."
+  },
+  {
+    "file": "Else_oral_suction_deep_16.mp3",
+    "section": "samples",
+    "event": "wet_mouth",
+    "text": "[double gulp deep throat suction wet] ..."
+  },
+  {
+    "file": "Else_oral_suction_release_01.mp3",
+    "section": "samples",
+    "event": "pop",
+    "text": "[mouth pop off suction release] ..."
+  },
+  {
+    "file": "Else_oral_suction_release_02.mp3",
+    "section": "samples",
+    "event": "pop",
+    "text": "[wet lip pop pull away] ..."
+  },
+  {
+    "file": "Else_oral_gulp_01.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[soft single swallow gulp close mic] ..."
+  },
+  {
+    "file": "Else_oral_gulp_02.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[double swallow gulp wet throat] ..."
+  },
+  {
+    "file": "Else_oral_gulp_03.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[quick tiny gulp after suction] ..."
+  },
+  {
+    "file": "Else_oral_gulp_04.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[slow audible swallow gulp saliva] ..."
+  },
+  {
+    "file": "Else_oral_gulp_05.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[deep throat gulp taking length wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_06.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[nervous swallow gulp before sucking again] ..."
+  },
+  {
+    "file": "Else_oral_gulp_07.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[heavy gulp with wet mouth smack] ..."
+  },
+  {
+    "file": "Else_oral_gulp_08.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[light throat clear then swallow gulp] ..."
+  },
+  {
+    "file": "Else_oral_gulp_09.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[rhythmic gulp gulp wet intake] ..."
+  },
+  {
+    "file": "Else_oral_gulp_10.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[sticky swallow after deep oral wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_11.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[muffled gulp inside closed lips] ..."
+  },
+  {
+    "file": "Else_oral_gulp_12.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[desperate fast swallow gulp wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_13.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[satisfied slow gulp exhale wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_14.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[triple quick gulps throat wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_15.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[big swallow with cheek hollow wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_16.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[gulp and saliva smack lips] ..."
+  },
+  {
+    "file": "Else_oral_gulp_17.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[shallow gulp at tip wet mouth] ..."
+  },
+  {
+    "file": "Else_oral_gulp_18.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[full depth swallow gulp throat] ..."
+  },
+  {
+    "file": "Else_oral_gulp_19.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[breathy gulp inhale then swallow] ..."
+  },
+  {
+    "file": "Else_oral_gulp_20.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[wet adam's apple gulp close] ..."
+  },
+  {
+    "file": "Else_oral_gulp_21.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[soft whimper gulp swallow wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_22.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[urgent repeated gulps throat] ..."
+  },
+  {
+    "file": "Else_oral_gulp_23.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[lazy slow gulp with tongue wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_24.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[final big swallow after deep suck] ..."
+  },
+  {
+    "file": "Else_oral_gulp_25.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[tiny sip-gulp wet lips] ..."
+  },
+  {
+    "file": "Else_oral_gulp_26.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[hollow mouth gulp echo wet] ..."
+  },
+  {
+    "file": "Else_oral_gulp_27.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[gulp choke-back wet throat] ..."
+  },
+  {
+    "file": "Else_oral_gulp_28.mp3",
+    "section": "samples",
+    "event": "gulp",
+    "text": "[syncopated gulp wet smack] ..."
+  },
+  {
+    "file": "Else_tit_pull_01.mp3",
+    "section": "impacts",
+    "event": "tit_pull",
+    "impact": true,
+    "text": "Soft rubbery elastic skin stretch on boob, gentle sustained tension squeak while flesh pulls, human body foley only, no birds, no animals, no speech, no impacts or gunshots",
+    "note": "Soft rubbery elastic skin stretch — onset accent"
+  },
+  {
+    "file": "Else_tit_pull_02.mp3",
+    "section": "impacts",
+    "event": "tit_pull",
+    "impact": true,
+    "text": "Comic rubber elastic stretch pull with prominent rubber squeak and squeaky tension creak, twangy elastic skin elongation, sharpish but muted squeaks not cartoon boing, body foley, human body foley only, no birds, no animals, no speech, no impacts or gunshots",
+    "note": "Elastic skin pull stretch (loop bed while pulling)"
+  },
+  {
+    "file": "Else_tit_pull_07.mp3",
+    "section": "impacts",
+    "event": "tit_pull",
+    "impact": true,
+    "text": "Micro elastic fibers stretching in boob skin through thin fabric, tiny rubber tension, human body foley only, no birds, no animals, no speech, no impacts or gunshots",
+    "note": "Micro elastic fibers — motion accent"
+  },
+  {
+    "file": "Else_tit_pull_10.mp3",
+    "section": "impacts",
+    "event": "tit_pull",
+    "impact": true,
+    "text": "Soft boob slosh jiggle, gentle internal liquid flesh movement, close mic body foley, human body foley only, no birds, no animals, no speech, no impacts or gunshots",
+    "note": "Soft boob slosh jiggle — release"
+  },
+  {
+    "file": "Else_tit_pull_13.mp3",
+    "section": "impacts",
+    "event": "tit_pull",
+    "impact": true,
+    "text": "Subtle underboob slosh while chest rocks, quiet wet flesh liquid shuffle, human body foley only, no birds, no animals, no speech, no impacts or gunshots",
+    "note": "Subtle underboob slosh while chest rocks — release / motion"
+  }
+]

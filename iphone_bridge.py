@@ -66,6 +66,35 @@ import hq_search
 
 PORT = 8765
 ROOT = Path(__file__).resolve().parent
+REACTION_MANIFEST_REVISION_PATH = ROOT / "assets/companion/chat/reactions/manifest.revision"
+
+
+def reaction_manifest_revision() -> str:
+    try:
+        text = REACTION_MANIFEST_REVISION_PATH.read_text(encoding="utf-8").strip()
+        return text or "dev"
+    except OSError:
+        return "dev"
+
+
+def reaction_hot_preload_link_tags() -> str:
+    """Preload the first hmm + giggle take (fetch/decode path)."""
+    runtime = ROOT / "assets/companion/chat/reactions/manifest.runtime.json"
+    try:
+        data = json.loads(runtime.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    tags: list[str] = []
+    samples = data.get("samples") or {}
+    for kind in ("hmm", "giggle"):
+        pool = samples.get(kind)
+        items = pool if isinstance(pool, list) else ([pool] if isinstance(pool, dict) else [])
+        url = next((item.get("url") for item in items if isinstance(item, dict) and item.get("url")), None)
+        if url:
+            tags.append(f'<link rel="preload" href="{html.escape(url)}" as="fetch" crossorigin>')
+    return "\n".join(tags)
+
+
 CONFIG_PATH = ROOT / "bridge_config.json"
 PID_PATH = ROOT / "bridge.pid"
 TMP_DIR = ROOT / ".tmp"
@@ -148,6 +177,17 @@ _ASSET_GZ_LOCK = threading.Lock()
 
 def asset_etag(st: os.stat_result) -> str:
     return f'"a{st.st_mtime_ns:x}-{st.st_size:x}"'
+
+
+_REACTION_FP_OGG = re.compile(r"^/.+/reactions/elevenlabs_[0-9]+/[a-z0-9_-]+\.[0-9a-f]{8}\.ogg$", re.I)
+
+
+def reaction_fingerprinted_ogg_asset(path: Path) -> bool:
+    try:
+        rel = path.relative_to(ROOT / "assets").as_posix()
+    except ValueError:
+        return False
+    return path.suffix.lower() == ".ogg" and _REACTION_FP_OGG.match("/assets/" + rel) is not None
 
 
 def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
@@ -5394,6 +5434,7 @@ def render_app() -> bytes:
     lan_url = _qr.get("LAN") or ""
     ts_url = _qr.get("Tailscale") or ""
     serve_url = _qr.get("Serve") or ""
+    reaction_manifest_rev = html.escape(reaction_manifest_revision(), quote=True)
     chips = ""  # file manager breadcrumbs replace chips
     opts = "".join(
         f'<option value="{html.escape(f)}"{" selected" if f == default_folder else ""}>{html.escape(f)}</option>'
@@ -6929,6 +6970,9 @@ def render_app() -> bytes:
 <script src="/assets/hq-home.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
+<script src="/assets/hq-companion-sfx-bus.js"></script>
+<script src="/assets/hq-companion-reaction-audio.js"></script>
+<script src="/assets/hq-dangle-audio.js"></script>
 <script src="/assets/hq-dangling-member.js"></script>
 <script src="/assets/hq-chrome.js"></script>
 <script src="/assets/hq-polish.js"></script>
@@ -6936,6 +6980,10 @@ def render_app() -> bytes:
 <script src="/assets/hq-dessiner-motion.js"></script>
 <script src="/assets/hq-ai.js"></script>
 <script src="/assets/hq-companion-lewd-lines.js"></script>
+<link rel="preload" href="/assets/hq-companion-sfx-bus.js" as="script">
+<link rel="preload" href="/assets/hq-companion-reaction-audio.js" as="script">
+<link rel="preload" href="/assets/companion/chat/reactions/manifest.runtime.json?v={reaction_manifest_rev}" as="fetch" crossorigin>
+{reaction_hot_preload_link_tags()}
 <script src="/assets/hq-companion.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-eng.js"></script>
@@ -7399,7 +7447,10 @@ class Handler(BaseHTTPRequestHandler):
         sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
         # perf9: immutable only when ?v= names THIS version; a stale or missing tag stays no-cache (revalidated).
         want = (parse_qs(urlparse(self.path).query).get("v") or [""])[0]
-        cache = ASSET_IMMUTABLE_CC if want and want == asset_version(st) else "no-cache"
+        if reaction_fingerprinted_ogg_asset(path) or (want and want == asset_version(st)):
+            cache = ASSET_IMMUTABLE_CC
+        else:
+            cache = "no-cache"
         common = [("ETag", etag), ("Cache-Control", cache), ("Vary", "Accept-Encoding")]
         if etag in sent or "*" in sent:
             self.send_response(304)

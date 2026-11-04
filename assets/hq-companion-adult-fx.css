@@ -3331,7 +3331,7 @@
   inset:0;
   pointer-events:none;
 }
-.hq-bust-spec::before{content:""}
+.hq-bust-spec::before{content:"";opacity:.35}
 .hq-bust-spec > i{
   opacity:.76;
   will-change:transform,opacity;
@@ -3357,8 +3357,8 @@
 }
 .hq-bust-spec > i::before{background-position:var(--spec-a,50% 50%);opacity:calc(1 - var(--spec-w,0))}
 .hq-bust-spec > i::after{background-position:var(--spec-b,50% 50%);opacity:var(--spec-w,0)}
-.hq-bust-spec.is-left > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-left-gloss-sweep.png?v=contrast1")}
-.hq-bust-spec.is-right > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-right-gloss-sweep.png?v=contrast1")}
+.hq-bust-spec.is-left > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-left-gloss-sweep.png?v=oil5")}
+.hq-bust-spec.is-right > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-right-gloss-sweep.png?v=oil5")}
 /* Inner-edge gloss on the cleavage side: thin arcs just inside the outline. */
 .hq-bust-spec.is-left::before{background:
   radial-gradient(ellipse 0.30% 0.30% at 42.65% 64.83%,rgba(255,247,242,0.11) 0,rgba(255,247,242,0.09) 50%,rgba(255,247,242,0) 100%),
@@ -3689,6 +3689,12 @@
 @property --bubble-shake-y{syntax:"<length>";inherits:false;initial-value:0px}
 @property --bubble-shake-amp{syntax:"<number>";inherits:false;initial-value:1}
 @property --bubble-shake-dur{syntax:"<time>";inherits:false;initial-value:.16s}
+@property --pull-bust-vibr-x{syntax:"<length>";inherits:false;initial-value:0px}
+@property --pull-bust-vibr-y{syntax:"<length>";inherits:false;initial-value:0px}
+@property --pull-bust-vibr-rot{syntax:"<angle>";inherits:false;initial-value:0deg}
+@property --pull-bust-vibr-dur{syntax:"<time>";inherits:false;initial-value:.18s}
+@property --pull-blush{syntax:"<number>";inherits:false;initial-value:0}
+@property --pull-steam{syntax:"<number>";inherits:false;initial-value:0}
 /* Same for the pull tug (read only by the avatar) and the bubble's pull offset (read only by it). */
 @property --tug-x{syntax:"<length>";inherits:false;initial-value:0px}
 @property --tug-y{syntax:"<length>";inherits:false;initial-value:0px}
@@ -3882,3 +3888,8 @@
 .cloth-fold-thread{stroke:#a68599;stroke-width:1.8;opacity:.6}
 .hq-companion-rig-setting{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 0;font-size:12px}
 .hq-companion-rig-setting select{max-width:100%;min-height:40px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:5px}
+
+/* motion1: reduced motion: effect loops play once and stop. */
+@media (prefers-reduced-motion:reduce){
+  .hq-companion *,.hq-companion *::before,.hq-companion *::after{animation-iteration-count:1!important}
+}

@@ -16,7 +16,7 @@ for(let cycle=0;cycle<10;cycle++){
 }
 const sounds=[],timers=new Map();let serial=0,enabled=true;
 const scene={smoothStops:true,paceReactions:false,mediaPlaying:true};
-const sample={url:'/assets/companion/chat/reactions/test.wav',duration_ms:1000,natural:true};
+const sample={url:'/assets/companion/chat/reactions/test.deadbee1.ogg',duration_ms:1000,natural:true};
 const win={document:{hidden:false},
  setTimeout(fn,ms){const id=++serial;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),
  Audio:class{constructor(url){this.url=url;sounds.push(this);}play(){return Promise.resolve();}pause(){this.paused=true;}},

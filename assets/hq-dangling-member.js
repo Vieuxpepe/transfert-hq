@@ -36,6 +36,9 @@
     const img = swing && swing.querySelector(".hq-dangling-member");
     if (!swing || !img) return;
 
+    const dangleAudio = global.HqDangleAudio;
+    if (dangleAudio) dangleAudio.bind(win);
+
     const canvas = doc.createElement("canvas");
     canvas.className = "hq-dangling-member-canvas";
     canvas.setAttribute("aria-hidden", "true");
@@ -46,6 +49,7 @@
     let cw = 0;
     let ch = 0;
     let padX = 0;
+    let padY = 0;
     let bufW = 0;
     let bufH = 0;
     let maxTravel = 180;
@@ -170,22 +174,12 @@
     }
 
     function dir(t) {
+      if (oralEngaged && oralAngTable) {
+        const s = clamp(Math.round(t * (ch - 1)), 0, ch - 1);
+        return oralAngTable[s];
+      }
       if (oralEngaged) {
-        // Transferina's mouth opening faces left; entry angle is mostly horizontal (~75 deg = 1.31 rad).
-        const throatAngle = 1.31 + oralBob * 0.005;
-        const lip = oralLipT > 0 ? oralLipT : 0.88;
-        const bend_w = 0.18;
-        const t_start = lip - bend_w;
-        let u = 0;
-        if (t <= t_start) {
-          u = 0;
-        } else if (t < lip) {
-          const p = (t - t_start) / bend_w;
-          u = p * p * (3 - 2 * p);
-        } else {
-          u = 1;
-        }
-        return clamp(angle * (1 - u) + throatAngle * u, -MAX_ANGLE * 1.35, MAX_ANGLE * 1.35);
+        return clamp(angle * 0.2 + 1.52 * 0.8, -MAX_ANGLE * 1.35, MAX_ANGLE * 1.35);
       }
       const along = Math.pow(t, 1.2);
       const lag = clamp(tip - angle, -1.15, 1.15);
@@ -327,7 +321,7 @@
       if (!ctx) return;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, bufW, bufH);
-      ctx.drawImage(img, 0, 0, texW, texH, padX, 0, cw, ch);
+      ctx.drawImage(img, 0, 0, texW, texH, padX, padY, cw, ch);
       dirty = false;
     }
 
@@ -420,7 +414,7 @@
       findOralLipT();
       const mid = padX + cw * 0.5;
       let x = 0;
-      let y = 0;
+      let y = padY;
       for (let s = 0; s < ch; s += 1) {
         const left = rowL[s];
         const right = rowR[s];
@@ -446,17 +440,28 @@
           y += Math.cos(ap) * stepNow;
         }
         const row = s * cw;
+        // perf15: bulge depends only on the row (s); computed once per row with
+        // the exact same expression, so every deposit is bit-identical.
+        const bulgeBase =
+          1 +
+          throbBump(along) * 0.18 * (0.62 + 0.38 * Math.sin(along * Math.PI)) +
+          jiggle * Math.sin(jigglePhase * 1.15) * 0.07 * Math.sin(along * Math.PI);
+        const bulge = bulgeBase * oralBulgeScale(t);
+        const halfCw = cw * 0.5;
+        if (oralEngaged && oralLipT > 0 && s > Math.round(oralLipT * ch) + ORAL_TUBE_DEPTH + 10) {
+          continue;
+        }
         for (let u = left; u <= right; u += 1) {
           const si = (row + u) * 4;
           const al = srcPx[si + 3];
           if (al < 8) continue;
-          const bulgeBase =
-            1 +
-            throbBump(along) * 0.18 * (0.62 + 0.38 * Math.sin(along * Math.PI)) +
-            jiggle * Math.sin(jigglePhase * 1.15) * 0.07 * Math.sin(along * Math.PI);
-          const bulge = bulgeBase * oralBulgeScale(t);
-          const ox = (u - cw * 0.5 + 0.5) * bulge;
-          deposit(mid + x + nx * ox, y + ny * ox, srcPx[si], srcPx[si + 1], srcPx[si + 2], al);
+          const ox = (u - halfCw + 0.5) * bulge;
+          const depX = mid + x + nx * ox;
+          const depY = y + ny * ox;
+          if (oralEngaged && oralChinMaxY > 0 && s >= oralLipRow - 10 && depY > oralChinMaxY) {
+            continue;
+          }
+          deposit(depX, depY, srcPx[si], srcPx[si + 1], srcPx[si + 2], al);
         }
       }
       const dst = dstImg.data;
@@ -499,7 +504,7 @@
       for (let g = 0; g < spots.length; g += 1) {
         const u = clamp(spots[g] + Math.sin(time * 0.4 + g * 1.3) * 0.03, 0.06, 0.94);
         let x = padX + cw * 0.5;
-        let y = 0;
+        let y = padY;
         let ang = 0;
         const n = Math.max(1, Math.round(ch * u));
         for (let s = 1; s <= n; s += 1) {
@@ -559,6 +564,7 @@
         throbStart = now;
         throbAmp = throbNextAmp;
         nodLatched = false;
+        if (dangleAudio && throbAmp > 0.62) dangleAudio.playThrob(win);
         if (throbAmp > 0.75 && Math.random() < 0.34) {
           throbNextAmp = 0.55;
           nextThrobAt = now + 480;
@@ -680,6 +686,9 @@
     let oralLipTSm = -1;
     let oralBulgeK = 0;
     let oralBob = 0;
+    let oralAngTable = null;
+    let oralChinMaxY = 0;
+    let oralLipRow = 0;
 
     function tipClient() {
       return shaftClient(0.96);
@@ -688,7 +697,7 @@
     function shaftClient(t01) {
       if (!canvas || !cw || !ch || !bufW || !bufH) return null;
       let x = padX + cw * 0.5;
-      let y = 0;
+      let y = padY;
       const n = Math.max(1, Math.round(ch * clamp(t01, 0.05, 1)));
       for (let s = 1; s <= n; s += 1) {
         const u = (s - 0.5) / ch;
@@ -786,11 +795,11 @@
       mount.style.zIndex = on ? "360" : "";
     }
 
-    const ORAL_HEAD_SRC = "/assets/transferina-head-open-profile-mouth.png";
+    const ORAL_HEAD_SRC = "/assets/transferina-head-open-profile-mouth.png?v=2";
     const ORAL_HEAD_ASPECT = 1022 / 772;
-    const ORAL_MOUTH_U = 0.108;
-    const ORAL_MOUTH_V = 0.504;
-    const ORAL_SCALE = 0.68;
+    const ORAL_MOUTH_U = 0.088;
+    const ORAL_MOUTH_V = 0.490;
+    const ORAL_SCALE = 0.82;
     const ORAL_FLOAT_GAP = 0.58;
     const ORAL_FLOAT_Y = 0.46;
     const ORAL_NEAR_PAD = 100;
@@ -800,7 +809,7 @@
     const ORAL_MAX_DEPTH = 84;
     const ORAL_MAGNET_PAD = 112;
     const ORAL_MAGNET_INSET = 16;
-    const ORAL_TUBE_DEPTH = 108;
+    const ORAL_TUBE_DEPTH = 136;
     let oralHead = null;
     let oralPhase = "idle";
     let oralEngaged = false;
@@ -862,30 +871,441 @@
       const px = box.left + box.width * 0.5;
       const py = box.top;
       const dx = mouth.x - px;
-      const dy = Math.max(32, mouth.y - py);
+      const dy = mouth.y - py;
       const phi = Math.atan2(dx, dy);
-      const dist = Math.hypot(dx, dy);
-      // Transferina's mouth opening faces left; entry angle is mostly horizontal (~75 deg = 1.31 rad).
-      const throatAngle = 1.31 + oralBob * 0.005;
-      const bend_w = 0.18;
-      const L_b = (ch || 333) * bend_w;
-      const dTheta = throatAngle - phi;
-      const ratio = Math.min(0.6, L_b / Math.max(1, dist));
-      const baseAim = clamp(phi - 0.5 * ratio * dTheta, -MAX_ANGLE, MAX_ANGLE);
-      const targetTip = oralPhase === "active" ? throatAngle : clamp(baseAim * 0.2 + throatAngle * 0.8, -MAX_ANGLE * 1.35, MAX_ANGLE * 1.35);
-      return { base: baseAim, tip: targetTip };
+      const throatAngle = 1.52 + oralBob * 0.005;
+      const baseAim = clamp(phi * 0.70, -MAX_ANGLE, MAX_ANGLE);
+      return { base: baseAim, tip: throatAngle };
+    }
+
+    const ORAL_TEX_W = 772;
+    const ORAL_TEX_H = 1022;
+    let oralHeadImg = null;
+    let oralHeadImgLoaded = false;
+    let oralLastGirth = -1;
+    let oralLastDepth = -1;
+
+    function loadOralHeadImg() {
+      if (oralHeadImg) return;
+      oralHeadImg = new win.Image();
+      oralHeadImg.onload = () => {
+        oralHeadImgLoaded = true;
+        if (oralHead) drawOralHeadCanvas(oralLastGirth >= 0 ? oralLastGirth : 0, oralLastDepth >= 0 ? oralLastDepth : 0);
+      };
+      oralHeadImg.src = ORAL_HEAD_SRC;
+      if (oralHeadImg.complete) oralHeadImgLoaded = true;
+    }
+
+    function drawOralHeadCanvas(girthK, depth) {
+      if (!oralHead || !oralHeadImgLoaded) return;
+      const ctx = oralHead.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, ORAL_TEX_W, ORAL_TEX_H);
+
+      const d = depth || 0;
+      if (girthK <= 0.01 && d <= 5) {
+        ctx.drawImage(oralHeadImg, 0, 0);
+        oralLastGirth = 0;
+        oralLastDepth = 0;
+        return;
+      }
+      oralLastGirth = girthK;
+      oralLastDepth = d;
+
+      // 1. Rigid skull, hair & eyes (y: 0 .. 430) is 100% untouched
+      const ySplitUpper = 430;
+      ctx.drawImage(oralHeadImg, 0, 0, ORAL_TEX_W, ySplitUpper, 0, 0, ORAL_TEX_W, ySplitUpper);
+
+      // 2. Lips & natural jaw opening (y: 430 .. 740)
+      const ySplitLower = 740;
+      const N = 48;
+      const sliceH = (ySplitLower - ySplitUpper) / N;
+
+      function jawDy(y) {
+        if (y < 430) return 0;
+        if (y <= 490) {
+          // Upper lip lifts over girth
+          return -4.5 * Math.sin((y - 430) / 60 * Math.PI) * girthK;
+        }
+        if (y <= 620) {
+          // Lower lip & jaw open downward to accommodate thick girth
+          const u = (y - 490) / 130;
+          return 28.0 * Math.sin(u * Math.PI * 0.75) * girthK;
+        }
+        if (y <= 720) {
+          // Smooth taper back to stationary lower neck
+          const u = (720 - y) / 100;
+          return 28.0 * Math.sin(Math.PI * 0.75) * (u * u) * girthK;
+        }
+        return 0;
+      }
+
+      function upperDx(y) {
+        if (y >= 430 && y <= 490) {
+          // Upper lip retracts backwards (+3.8px) over girth
+          return 3.8 * Math.sin((y - 430) / 60 * Math.PI) * girthK;
+        }
+        return 0;
+      }
+
+      // Draw all facial slices seamlessly across full width - NO vertical cutting on the face!
+      for (let i = 0; i < N; i += 1) {
+        const sy0 = Math.round(ySplitUpper + i * sliceH);
+        const sy1 = Math.round(ySplitUpper + (i + 1) * sliceH);
+        if (sy1 <= sy0) continue;
+        const dy0 = Math.round(sy0 + jawDy(sy0));
+        const dy1 = Math.round(sy1 + jawDy(sy1));
+        const targetH = Math.max(1, dy1 - dy0);
+        const dx0 = Math.round(upperDx(sy0));
+        ctx.drawImage(oralHeadImg, 0, sy0, ORAL_TEX_W, sy1 - sy0, dx0, dy0, ORAL_TEX_W, targetH);
+      }
+
+      // 3. Continuous shaft throat dilation (drawn BEFORE lower neck & shoulders so original torso/dress sits cleanly on top!)
+      let throatPts = null;
+      let throatChokerPts = null;
+      if (d > 42) {
+        const throatDepth = d - 42;
+        // Smooth gradual ease-in over 26px of penetration (soft natural entry)
+        const entry_u = clamp(throatDepth / 26, 0, 1);
+        const entryT = entry_u * entry_u * (3 - 2 * entry_u);
+        const maxAmp = 60.0 * entryT;
+
+        const yStart = 630;
+        // Corona rim travels all the way down past the neck into upper chest
+        const yCorona = 636 + (throatDepth / 74) * 174;
+        // As the mushroom head sinks into the torso cavity (Y=810 to 860),
+        // the head flare and dome taper smoothly dissolve, leaving the shaft intact
+        const rawFade = clamp((860 - yCorona) / 50, 0, 1);
+        const headFade = rawFade * rawFade * (3 - 2 * rawFade);
+
+        // Smooth entry starting below jawline (y0 = 622)
+        const y0 = 622;
+        const domeLen = 44;
+        const yMaxBound = 865;
+        const y1 = Math.min(yMaxBound, yCorona + domeLen);
+
+        if (y1 > y0 + 4) {
+          const steps = Math.round(Math.max(30, (y1 - y0) / 2.0));
+          const pts = [];
+          const chokerPts = [];
+
+          function neckBaseX(curY) {
+            if (curY <= 760) return 194 + ((curY - 630) / 130) * 33;
+            if (curY <= 850) return 227 - ((curY - 760) / 90) * 44;
+            return 183 + ((curY - 850) / 15) * 17;
+          }
+
+          for (let s = 0; s <= steps; s += 1) {
+            const t = s / steps;
+            const curY = y0 + t * (y1 - y0);
+
+            // Smooth cubic ease-in curving down naturally under the jawline (no angular horizontal ledge)
+            const top_u = clamp((curY - y0) / 22, 0, 1);
+            const topT = top_u * top_u * (3 - 2 * top_u);
+
+            // True un-squished anatomical mushroom profile matching full 70-80px glans asset length:
+            // 1. Continuous trailing shaft column (shape = 1.0)
+            // 2. Coronal sulcus transition over 32px (subtle dip to 0.93 then flaring to 1.48 at rim)
+            // 3. Proud elongated mushroom dome curving smoothly into rounded apex
+            // When pushed way deep, headFade smoothly transitions the head profile into uniform 1.0 shaft
+            let shape = 0;
+            if (curY < yCorona - 32) {
+              shape = 1.0;
+            } else if (curY < yCorona) {
+              const u = clamp((curY - (yCorona - 32)) / 32, 0, 1);
+              const flare = 1.0 - 0.07 * Math.sin(u * Math.PI) + 0.48 * (u * u * u);
+              shape = 1.0 + (flare - 1.0) * headFade;
+            } else if (curY <= yCorona + domeLen) {
+              const u = clamp((curY - yCorona) / domeLen, 0, 1);
+              const dome = 1.48 * Math.sqrt(Math.max(0, 1 - u * u));
+              shape = 1.0 * (1 - headFade) + dome * headFade;
+            } else {
+              shape = 1.0 * (1 - headFade);
+            }
+
+            // Smooth rounded bottom transition at base of neck / chest
+            const cu = clamp((yMaxBound - curY) / 24, 0, 1);
+            const collarT = cu * cu * (3 - 2 * cu);
+
+            // Vascular pulsation (140 BPM pulse) + involuntary swallowing micro-tremor when deep
+            let pulseAmp = 1.0;
+            let spasmDisp = 0;
+            if (d > 42) {
+              const now = win.performance.now();
+              const pulsePhase = (now * 0.0147); // ~140 BPM
+              pulseAmp = 1.0 + 0.055 * Math.sin(pulsePhase) * Math.min(1.0, (d - 42) / 60);
+              if (d > 65) {
+                const struggleT = Math.min(1.0, (d - 65) / 55);
+                spasmDisp = Math.sin(now * 0.175 + curY * 0.12) * (1.8 * struggleT);
+              }
+            }
+
+            const disp = maxAmp * pulseAmp * shape * topT * collarT + spasmDisp * shape * collarT;
+            const px = neckBaseX(curY) - disp;
+
+            pts.push({ x: px, y: curY });
+            if (curY >= 718 && curY <= 742) {
+              chokerPts.push({ x: px, y: curY });
+            }
+          }
+
+          throatPts = pts;
+          throatChokerPts = chokerPts;
+
+          ctx.save();
+
+          // 3a. Fill full neck distension polygon with skin gradient
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i += 1) {
+            ctx.lineTo(pts[i].x, pts[i].y);
+          }
+          ctx.lineTo(280, y1);
+          ctx.lineTo(280, y0);
+          ctx.closePath();
+
+          const grad = ctx.createLinearGradient(194 - maxAmp * 1.50, yStart, 280, yStart);
+          grad.addColorStop(0, "rgba(228, 150, 130, 1)");
+          grad.addColorStop(0.35, "rgba(224, 144, 124, 1)");
+          grad.addColorStop(1, "rgba(216, 136, 116, 1)");
+          ctx.fillStyle = grad;
+          ctx.fill();
+
+          // 3b. Stretch choker band over the bulge across to X=280
+          if (chokerPts.length >= 2) {
+            ctx.beginPath();
+            ctx.moveTo(chokerPts[0].x, chokerPts[0].y);
+            for (let i = 1; i < chokerPts.length; i += 1) {
+              ctx.lineTo(chokerPts[i].x, chokerPts[i].y);
+            }
+            ctx.lineTo(280, chokerPts[chokerPts.length - 1].y);
+            ctx.lineTo(280, chokerPts[0].y);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(58, 21, 38, 1)";
+            ctx.fill();
+          }
+
+          ctx.restore();
+        }
+      }
+
+      // 4. Stationary lower neck & shoulders drawn ON TOP of the right half!
+      // This preserves 100% of the original torso, chest, dress, shading and textures without altering any torso colors or shapes!
+      ctx.drawImage(oralHeadImg, 0, ySplitLower, ORAL_TEX_W, ORAL_TEX_H - ySplitLower, 0, ySplitLower, ORAL_TEX_W, ORAL_TEX_H - ySplitLower);
+
+      // 5. Stroke skin contours and choker front border (crisp on top of the character silhouette)
+      if (throatPts && throatPts.length >= 2) {
+        ctx.save();
+
+        if (throatChokerPts && throatChokerPts.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(throatChokerPts[0].x, throatChokerPts[0].y);
+          for (let i = 1; i < throatChokerPts.length; i += 1) {
+            ctx.lineTo(throatChokerPts[i].x, throatChokerPts[i].y);
+          }
+          ctx.strokeStyle = "rgba(35, 12, 22, 0.95)";
+          ctx.lineWidth = 3.6;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.stroke();
+        }
+
+        ctx.beginPath();
+        for (let i = 0; i < throatPts.length - 1; i += 1) {
+          const p0 = throatPts[i];
+          const p1 = throatPts[i + 1];
+          if (p0.y >= 718 && p1.y <= 742 && throatChokerPts && throatChokerPts.length >= 2) continue;
+          ctx.moveTo(p0.x, p0.y);
+          ctx.lineTo(p1.x, p1.y);
+        }
+        ctx.strokeStyle = "rgba(196, 112, 96, 0.95)";
+        ctx.lineWidth = 3.6;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      // 6. Deep penetration cheek & nose flush (escalates to extreme red the deeper it is pushed down)
+      if (d > 14) {
+        const flushNorm = clamp((d - 14) / (ORAL_TUBE_DEPTH - 14), 0, 1);
+        const flushK = Math.pow(flushNorm, 0.82);
+
+        ctx.save();
+
+        // 6a. Ambient facial heat glow
+        ctx.save();
+        ctx.translate(200, 362);
+        ctx.scale(1, 62 / 88);
+        const ambGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 88);
+        ambGrad.addColorStop(0, `rgba(225, 12, 28, ${(0.32 * flushK).toFixed(3)})`);
+        ambGrad.addColorStop(0.65, `rgba(220, 15, 30, ${(0.14 * flushK).toFixed(3)})`);
+        ambGrad.addColorStop(1, "rgba(220, 15, 30, 0)");
+        ctx.fillStyle = ambGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, 88, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // 6b. Deep core cheek flush (extreme saturated crimson)
+        ctx.save();
+        ctx.translate(205, 356);
+        ctx.scale(1, 38 / 58);
+        const cheekGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 58);
+        cheekGrad.addColorStop(0, `rgba(242, 6, 18, ${(0.82 * flushK).toFixed(3)})`);
+        cheekGrad.addColorStop(0.55, `rgba(235, 12, 26, ${(0.52 * flushK).toFixed(3)})`);
+        cheekGrad.addColorStop(1, "rgba(225, 16, 32, 0)");
+        ctx.fillStyle = cheekGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, 58, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        // 6c. Nose bridge heat flush
+        ctx.save();
+        ctx.translate(166, 346);
+        ctx.scale(1, 19 / 28);
+        const noseGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 28);
+        noseGrad.addColorStop(0, `rgba(240, 10, 22, ${(0.62 * flushK).toFixed(3)})`);
+        noseGrad.addColorStop(0.6, `rgba(232, 14, 28, ${(0.32 * flushK).toFixed(3)})`);
+        noseGrad.addColorStop(1, "rgba(225, 18, 32, 0)");
+        ctx.fillStyle = noseGrad;
+        ctx.beginPath();
+        ctx.arc(0, 0, 28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        ctx.restore();
+      }
+
+      // 7. Reflex tears at outer eye corner streaming down flushed cheek (locked directly to face canvas)
+      if (d > 45) {
+        const tearProg = clamp((d - 45) / (ORAL_TUBE_DEPTH - 45), 0, 1);
+        const tearAlpha = Math.min(1.0, tearProg * 1.25);
+        ctx.save();
+
+        const eyeCornerX = 227;
+        const eyeCornerY = 316;
+
+        // Glassy wet pooling in corner of the eye
+        const poolGrad = ctx.createRadialGradient(eyeCornerX, eyeCornerY, 0, eyeCornerX, eyeCornerY, 6);
+        poolGrad.addColorStop(0, `rgba(255, 255, 255, ${(0.95 * tearAlpha).toFixed(3)})`);
+        poolGrad.addColorStop(0.4, `rgba(215, 240, 255, ${(0.85 * tearAlpha).toFixed(3)})`);
+        poolGrad.addColorStop(1, "rgba(180, 220, 255, 0)");
+        ctx.fillStyle = poolGrad;
+        ctx.beginPath();
+        ctx.arc(eyeCornerX, eyeCornerY, 5.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Bright glint highlight
+        ctx.fillStyle = `rgba(255, 255, 255, ${(0.98 * tearAlpha).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(eyeCornerX - 1.2, eyeCornerY - 1.2, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Tear trail dripping down across flushed cheekbone as penetration deepens
+        if (d > 60) {
+          const streamProg = clamp((d - 60) / 65, 0, 1);
+          const maxTrailLen = 65 * streamProg;
+          const trailPts = [
+            { x: eyeCornerX, y: eyeCornerY + 2 },
+            { x: eyeCornerX - 3.5, y: eyeCornerY + 18 },
+            { x: eyeCornerX - 6.5, y: eyeCornerY + 38 },
+            { x: eyeCornerX - 7.5, y: eyeCornerY + maxTrailLen }
+          ];
+
+          // Soft translucent watery sheen
+          ctx.beginPath();
+          ctx.moveTo(trailPts[0].x, trailPts[0].y);
+          for (let p = 1; p < trailPts.length; p += 1) {
+            ctx.lineTo(trailPts[p].x, trailPts[p].y);
+          }
+          ctx.strokeStyle = `rgba(210, 242, 255, ${(0.65 * tearAlpha).toFixed(3)})`;
+          ctx.lineWidth = 3.2;
+          ctx.lineCap = "round";
+          ctx.stroke();
+
+          // Intense specular light reflection along center of tear trail
+          ctx.beginPath();
+          ctx.moveTo(trailPts[0].x, trailPts[0].y);
+          for (let p = 1; p < trailPts.length; p += 1) {
+            ctx.lineTo(trailPts[p].x, trailPts[p].y);
+          }
+          ctx.strokeStyle = `rgba(255, 255, 255, ${(0.88 * tearAlpha).toFixed(3)})`;
+          ctx.lineWidth = 1.3;
+          ctx.stroke();
+
+          // Droplet bulb gathering at tear tip
+          if (streamProg > 0.4) {
+            const dropTip = trailPts[trailPts.length - 1];
+            const dropAlpha = (streamProg - 0.4) / 0.6;
+            ctx.fillStyle = `rgba(220, 245, 255, ${(0.85 * dropAlpha).toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(dropTip.x, dropTip.y + 1.5, 3.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = `rgba(255, 255, 255, ${(0.95 * dropAlpha).toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(dropTip.x - 0.8, dropTip.y + 0.8, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        ctx.restore();
+      }
+
+      // 8. Drool / Saliva stretch at corner of mouth & lower lip
+      if (d > 48) {
+        const droolT = clamp((d - 48) / (ORAL_TUBE_DEPTH - 48), 0, 1);
+        const droolAlpha = Math.min(1.0, droolT * 1.3);
+        const now = win.performance.now();
+        const droolWobble = Math.sin(now * 0.012) * 1.5;
+
+        ctx.save();
+        const lipX = 64;
+        const lipY = 512 + (d > 55 ? jawDy(512) : 0);
+        const droolLen = 16 + droolT * 38;
+
+        // Drool string
+        ctx.beginPath();
+        ctx.moveTo(lipX, lipY);
+        ctx.quadraticCurveTo(lipX - 4 + droolWobble, lipY + droolLen * 0.5, lipX - 2, lipY + droolLen);
+        ctx.strokeStyle = `rgba(220, 245, 255, ${(0.68 * droolAlpha).toFixed(3)})`;
+        ctx.lineWidth = 2.6;
+        ctx.lineCap = "round";
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(lipX, lipY);
+        ctx.quadraticCurveTo(lipX - 4 + droolWobble, lipY + droolLen * 0.5, lipX - 2, lipY + droolLen);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${(0.92 * droolAlpha).toFixed(3)})`;
+        ctx.lineWidth = 1.0;
+        ctx.stroke();
+
+        // Droplet at bottom
+        ctx.fillStyle = `rgba(235, 250, 255, ${(0.85 * droolAlpha).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(lipX - 2, lipY + droolLen + 2, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = `rgba(255, 255, 255, ${(0.95 * droolAlpha).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(lipX - 2.8, lipY + droolLen + 1.2, 1.0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
     }
 
     function ensureOralHead() {
       if (calm(win)) return null;
       if (!oralHead) {
-        oralHead = doc.createElement("img");
-        oralHead.src = ORAL_HEAD_SRC;
+        oralHead = doc.createElement("canvas");
+        oralHead.width = ORAL_TEX_W;
+        oralHead.height = ORAL_TEX_H;
         oralHead.className = "hq-oral-head";
-        oralHead.alt = "";
-        oralHead.draggable = false;
         oralHead.setAttribute("aria-hidden", "true");
         doc.body.appendChild(oralHead);
+        loadOralHeadImg();
       }
       return oralHead;
     }
@@ -905,17 +1325,46 @@
       const top = Math.round(mouth.y - oy);
       head.style.left = left + "px";
       head.style.top = top + "px";
-      const stretch = (1 + depth * 0.003).toFixed(3);
-      const headBobRot = (oralBob * 0.32).toFixed(2);
-      head.style.transform = `rotate(${headBobRot}deg) scaleX(${stretch})`;
-      if (head.dataset.oralStretch !== stretch) {
-        head.dataset.oralStretch = stretch;
-        head.style.setProperty("--oral-stretch", stretch);
+
+      // Animate lips, jaw opening and traveling throat skin bulge
+      const girthK = clamp((depth - 8) / 34, 0, 0.82);
+      if (Math.abs(girthK - oralLastGirth) > 0.005 || Math.abs(depth - oralLastDepth) > 0.4) {
+        drawOralHeadCanvas(girthK, depth);
       }
+
+      const girthTilt = 4.8 * girthK;
+      const headBobRot = oralBob * 0.26;
+      let shakeRot = 0;
+      let shakeX = 0;
+      let shakeY = 0;
+      if (!calm(win) && depth > 16) {
+        const struggleNorm = Math.max(0, (depth - 16) / (ORAL_TUBE_DEPTH - 16));
+        const struggle = Math.min(1.4, Math.pow(struggleNorm, 1.35));
+        const now = win.performance.now();
+        const t1 = now * 0.044;
+        const t2 = now * 0.081;
+        const t3 = now * 0.126;
+        const rotJitter = Math.sin(t1) * 0.62 + Math.sin(t2) * 0.28 + Math.sin(t3) * 0.10;
+        shakeRot = rotJitter * 2.8 * struggle;
+
+        const xJitter = Math.cos(t2 * 0.95) * 0.6 + Math.sin(t1 * 1.3) * 0.4;
+        const yJitter = Math.sin(t1 * 1.15) * 0.65 + Math.cos(t2 * 1.1) * 0.35;
+        shakeX = xJitter * (0.9 * struggle);
+        shakeY = yJitter * (1.3 * struggle);
+      }
+      const rot = (headBobRot + shakeRot + girthTilt).toFixed(2);
+      const sx = shakeX.toFixed(2);
+      const sy = shakeY.toFixed(2);
+      head.style.transform = `translate(${sx}px, ${sy}px) rotate(${rot}deg)`;
       head.classList.add("is-active");
     }
 
     function clearOral() {
+      const wasActive = oralPhase === "active";
+      const depthSnap = oralDepthSm;
+      if (dangleAudio && wasActive && depthSnap > 3) {
+        dangleAudio.playOralRelease(win, depthSnap);
+      }
       oralPhase = "idle";
       oralEngaged = false;
       oralDepth = 0;
@@ -929,10 +1378,14 @@
       oralLipMinBulge = 1;
       oralBulgeK = 0;
       oralBob = 0;
+      oralAngTable = null;
       if (oralHead) {
         oralHead.classList.remove("is-active");
         oralHead.style.transform = "";
       }
+      if (dangleAudio) dangleAudio.clearOralAudio({ release: false });
+      oralLastGirth = -1;
+      oralLastDepth = -1;
       const av = doc.querySelector(".hq-companion-avatar");
       const comp = av && (av.closest(".hq-companion") || av);
       if (comp) comp.classList.remove("is-oral-session");
@@ -951,7 +1404,7 @@
 
     function captureOralTube(mouth) {
       if (!mouth) return;
-      const throatAngle = 1.31;
+      const throatAngle = 1.52;
       oralTubeUx = Math.sin(throatAngle);
       oralTubeUy = Math.cos(throatAngle);
       oralTubeEntry = throatAngle;
@@ -965,6 +1418,7 @@
       if (!oralEngaged || !canvas || !ch) {
         oralLipT = -1;
         oralLipTSm = -1;
+        oralAngTable = null;
         return;
       }
       const mouth = oralMouthAnchor();
@@ -976,21 +1430,86 @@
       const dy = mouth.y - py;
       const dist = Math.hypot(dx, dy);
       const phi = Math.atan2(dx, dy);
-      const throatAngle = 1.31 + oralBob * 0.005;
-      const dTheta = throatAngle - phi;
-      const s_lip = dist * (1 + 0.04 * dTheta * dTheta);
-      const shaftLen = Math.max(50, ch);
-      const depthT = 1 - (oralDepthSm / shaftLen);
-      const geomT = s_lip / shaftLen;
-      const targetT = clamp(oralDepthSm > 2 ? Math.min(depthT, geomT) : geomT, 0.35, 0.96);
-      if (oralLipTSm < 0) oralLipTSm = targetT;
-      else oralLipTSm += (targetT - oralLipTSm) * 0.18;
-      oralLipT = oralLipTSm;
-      const lipOpenPx = Math.max(8, mouth.av.width * 0.105);
+      const throatAngle = 1.52 + oralBob * 0.005;
+      const baseAngle = clamp(phi * 0.70, -MAX_ANGLE, MAX_ANGLE);
+
+      const h0 = dist * 0.38;
+      const h1 = dist * 0.38;
+      const p0x = 0;
+      const p0y = 0;
+      const p1x = h0 * Math.sin(baseAngle);
+      const p1y = h0 * Math.cos(baseAngle);
+      const p3x = dx;
+      const p3y = dy;
+      const p2x = dx - h1 * Math.sin(throatAngle);
+      const p2y = dy - h1 * Math.cos(throatAngle);
+
+      const M = 64;
+      const lens = new Float32Array(M + 1);
+      let totalL = 0;
+      let prevX = p0x;
+      let prevY = p0y;
+      for (let i = 1; i <= M; i += 1) {
+        const w = i / M;
+        const c0 = (1 - w) * (1 - w) * (1 - w);
+        const c1 = 3 * (1 - w) * (1 - w) * w;
+        const c2 = 3 * (1 - w) * w * w;
+        const c3 = w * w * w;
+        const bx = c0 * p0x + c1 * p1x + c2 * p2x + c3 * p3x;
+        const by = c0 * p0y + c1 * p1y + c2 * p2y + c3 * p3y;
+        totalL += Math.hypot(bx - prevX, by - prevY);
+        lens[i] = totalL;
+        prevX = bx;
+        prevY = by;
+      }
+
+      const s_lip = clamp(Math.round(totalL), 10, ch - 2);
+      oralLipT = s_lip / ch;
+      oralLipTSm = oralLipT;
+
+      if (!oralAngTable || oralAngTable.length !== ch) {
+        oralAngTable = new Float32Array(ch);
+      }
+
+      for (let s = 0; s < ch; s += 1) {
+        if (s >= s_lip) {
+          oralAngTable[s] = throatAngle;
+        } else {
+          const targetL = (s / s_lip) * totalL;
+          let lo = 0;
+          let hi = M;
+          while (lo < hi - 1) {
+            const mid = (lo + hi) >> 1;
+            if (lens[mid] <= targetL) lo = mid;
+            else hi = mid;
+          }
+          const span = lens[lo + 1] - lens[lo];
+          const f = span > 0.001 ? (targetL - lens[lo]) / span : 0;
+          const w = (lo + f) / M;
+          const d0 = 3 * (1 - w) * (1 - w);
+          const d1 = 6 * (1 - w) * w;
+          const d2 = 3 * w * w;
+          const vx = d0 * (p1x - p0x) + d1 * (p2x - p1x) + d2 * (p3x - p2x);
+          const vy = d0 * (p1y - p0y) + d1 * (p2y - p1y) + d2 * (p3y - p2y);
+          oralAngTable[s] = Math.atan2(vx, vy);
+        }
+      }
+
+      const tipPt = tipClient() || { x: mouth.x, y: mouth.y };
+      const along = oralTubeAlong(tipPt, mouth);
+      const targetDepth = clamp(Math.max(0, along), 0, ORAL_TUBE_DEPTH);
+      oralDepthSm = targetDepth;
+      oralDepth = targetDepth;
+      oralBulgeK = targetDepth;
+      oralLipRow = s_lip;
+
+      const lipOpenPx = Math.max(8, mouth.av.width * 0.12);
       const rect = canvas.getBoundingClientRect();
       const shaftWidePx = Math.max(mountRectW, (rect.width * cw) / Math.max(1, bufW)) * 0.44;
-      oralLipMinBulge = clamp(lipOpenPx / shaftWidePx, 0.38, 0.72);
-      oralBulgeK = oralDepthSm;
+      oralLipMinBulge = clamp(lipOpenPx / shaftWidePx, 0.38, 0.58);
+      const headW = mouth.av.width * ORAL_SCALE;
+      const jawShiftPx = (28 * (headW / ORAL_TEX_W)) * clamp((oralDepthSm - 6) / 28, 0, 1);
+      oralChinMaxY = padY + dy + headW * 0.125 + jawShiftPx;
     }
 
     function oralBulgeScale(t) {
@@ -1029,6 +1548,7 @@
           oralMouthCache = oralMouthAnchorFresh();
           captureOralTube(oralMouthCache);
           ensureOralPortraitCalm();
+          if (dangleAudio) dangleAudio.playOralPhase(win, "near", 0);
         } else {
           clearOral();
           return;
@@ -1059,13 +1579,14 @@
       } else {
         oralPhase = "near";
       }
+      if (dangleAudio && oralEngaged) dangleAudio.playOralPhase(win, oralPhase, oralDepthSm);
       if (oralPhase === "active" || oralPhase === "near") {
-        const targetDepth = clamp(along, 0, ORAL_TUBE_DEPTH);
-        oralDepthSm += (targetDepth - oralDepthSm) * 0.18;
-        oralDepth = oralDepthSm;
-        oralBulgeK = oralDepthSm;
+        const targetDepth = clamp(Math.max(0, along), 0, ORAL_TUBE_DEPTH);
+        oralDepth = targetDepth;
+        oralDepthSm = targetDepth;
+        oralBulgeK = targetDepth;
         setCockLayer(true);
-        if (Math.abs(targetDepth - oralDepth) > 0.2 || Math.abs(oralBob) > 0.1) dirty = true;
+        if (Math.abs(oralBob) > 0.1 || oralDepth > 16) dirty = true;
         paintOralHead(mouth, oralDepth);
       }
     }
@@ -1160,6 +1681,7 @@
       const onFace = giveName === "face" || giveName === "head";
       if (comp.classList.contains("is-cock-on-tit") !== onTit) comp.classList.toggle("is-cock-on-tit", onTit);
       if (comp.classList.contains("is-cock-on-face") !== onFace) comp.classList.toggle("is-cock-on-face", onFace);
+      if (name === "tit" && touching && give > 0.22 && dangleAudio) dangleAudio.playTitPull(win, give);
     }
 
     function pokeAvatar() {
@@ -1195,6 +1717,7 @@
           nodStart = win.performance.now();
           nodAmp = 0.16;
         }
+        if (dangleAudio) dangleAudio.playZoneTouch(win, name, depth);
         ensureTick();
       }
       pokeName = name;
@@ -1218,6 +1741,7 @@
 
     function canUseOral() {
       if (flickBusy()) return false;
+      if (oralEngaged) return true;
       if (flickSpent) return true;
       const prox = tipOralProximity();
       return !!(prox && prox.dist <= ORAL_NEAR_PAD);
@@ -1276,6 +1800,7 @@
     }
 
     function playJiggle() {
+      if (dangleAudio?.playFlickJiggle(win)) return;
       const voice = ensureJiggleVoice();
       voice.pause();
       voice.src = jiggleLines[Math.floor(Math.random() * jiggleLines.length)];
@@ -1285,6 +1810,7 @@
     }
 
     function playSlap() {
+      if (dangleAudio?.playFlickSlap(win, 0.85)) return;
       if (!slapVoice) {
         slapVoice = new Audio(slapLine);
         slapVoice.preload = "auto";
@@ -1622,8 +2148,9 @@
     function applyLayout() {
       maxTravel = Math.max(cw * 2.2, mountRectW * pxPerScreen * PULL_SCREEN);
       padX = Math.ceil(ch * 0.92 + cw);
+      padY = Math.ceil(cw * 1.5 + 40);
       bufW = cw + padX * 2;
-      bufH = ch + Math.ceil(ch * 0.34);
+      bufH = ch + padY + Math.ceil(ch * 0.34);
     }
 
     function resizeCanvas() {
@@ -1647,6 +2174,7 @@
       canvas.height = bufH;
       canvas.style.setProperty("--dangle-cw", String(cw));
       canvas.style.setProperty("--dangle-pad", String(padX));
+      canvas.style.setProperty("--dangle-pad-y", String(padY));
       canvas.style.setProperty("--dangle-buf-w", String(bufW));
       if (!ctx) {
         ctx = canvas.getContext("2d", { alpha: true });
@@ -1708,6 +2236,7 @@
         const speed = (Math.abs(dx) / dtMs) * 1000;
         if (speed < 140) return;
         grazeArmed = false;
+        if (dangleAudio) dangleAudio.playDragSnap(win, speed);
         if (!running) angle = swayAngle();
         const impulse = clamp(Math.sign(dx) * (0.55 + Math.min(1.3, speed / 1100)), -1.9, 1.9);
         vel += impulse;
@@ -1721,30 +2250,33 @@
       "pointerdown",
       (ev) => {
         if (ev.button !== 0) return;
-        if (!slapVoice) slapVoice = new Audio(slapLine);
-        if (!slapVoice._unlocked) {
-          slapVoice.volume = 0;
-          const slapUnlock = slapVoice.play();
-          if (slapUnlock && slapUnlock.then) {
-            slapUnlock.then(() => {
-              slapVoice.pause();
-              slapVoice.currentTime = 0;
-              slapVoice.volume = 0.95;
-              slapVoice._unlocked = true;
-            }).catch(() => {});
+        if (dangleAudio) dangleAudio.prime(win);
+        else {
+          if (!slapVoice) slapVoice = new Audio(slapLine);
+          if (!slapVoice._unlocked) {
+            slapVoice.volume = 0;
+            const slapUnlock = slapVoice.play();
+            if (slapUnlock && slapUnlock.then) {
+              slapUnlock.then(() => {
+                slapVoice.pause();
+                slapVoice.currentTime = 0;
+                slapVoice.volume = 0.95;
+                slapVoice._unlocked = true;
+              }).catch(() => {});
+            }
           }
-        }
-        const voice = ensureJiggleVoice();
-        if (!voice._unlocked) {
-          voice.src = jiggleLines[0];
-          voice.volume = 0;
-          const unlocked = voice.play();
-          if (unlocked && unlocked.then) {
-            unlocked.then(() => {
-              voice.pause();
-              voice.volume = 0.9;
-              voice._unlocked = true;
-            }).catch(() => {});
+          const voice = ensureJiggleVoice();
+          if (!voice._unlocked) {
+            voice.src = jiggleLines[0];
+            voice.volume = 0;
+            const unlocked = voice.play();
+            if (unlocked && unlocked.then) {
+              unlocked.then(() => {
+                voice.pause();
+                voice.volume = 0.9;
+                voice._unlocked = true;
+              }).catch(() => {});
+            }
           }
         }
         mount.setPointerCapture(ev.pointerId);
@@ -1804,11 +2336,19 @@
             const dAlong = dx * oralTubeUx + dy * oralTubeUy;
             const dPerp = -dx * oralTubeUy + dy * oralTubeUx;
             let effAlong = dAlong;
-            if (oralDepthSm >= ORAL_TUBE_DEPTH && dAlong > 0) {
-              effAlong *= 0.35;
+            // Progressive viscous resistance as the thick member packs deep into the throat
+            if (oralDepthSm > 75 && dAlong > 0) {
+              const resNorm = clamp((oralDepthSm - 75) / (ORAL_TUBE_DEPTH - 75), 0, 1);
+              // Resistance stiffens up to 72% pushback at the hilt
+              const resistK = 1.0 - 0.72 * (resNorm * resNorm);
+              effAlong *= resistK;
             }
-            const effPerp = dPerp * 0.20;
-            oralBob = clamp(oralBob + dPerp * 0.35, -22, 26);
+            if (oralDepthSm >= ORAL_TUBE_DEPTH && dAlong > 0) {
+              effAlong *= 0.20;
+            }
+            const effPerp = dPerp;
+            oralBob = clamp(oralBob + dPerp * 0.25, -24, 24);
+            if (dangleAudio) dangleAudio.playOralMotion(win, oralDepthSm, effAlong, effPerp);
             const effDx = effAlong * oralTubeUx - effPerp * oralTubeUy;
             const effDy = effAlong * oralTubeUy + effPerp * oralTubeUx;
             const box = mount.getBoundingClientRect();
@@ -1852,8 +2392,16 @@
       } catch (_) {}
       if (wasMoving) {
         const wasOral = oralPhase === "active" && oralDepth > 4;
+        const releaseDepth = oralDepthSm;
         clearOral();
         if (wasOral) {
+          // If released while deeply packed in the throat, elastic recoil ejects back slightly
+          if (releaseDepth > 85) {
+            vel = clamp(-2.8 * (releaseDepth / ORAL_TUBE_DEPTH), -4.5, -1.2);
+            tipVel = vel * 1.5;
+            jiggle = 0.45;
+            jigglePhase = 0;
+          }
           ensureTick();
           return;
         }
@@ -1876,6 +2424,7 @@
       vel = (ptr.smVx * pxPerScreen) / y;
       vel = clamp(vel, -8, 8);
       tipVel += vel * 2.6;
+      if (dangleAudio) dangleAudio.playDragSnap(win, Math.hypot(ptr.smVx, ptr.smVy));
       if (slack > 0.04) vel += Math.sign(tip || 1) * slack * 4;
       ripple = clamp(ripple + Math.min(0.16, Math.abs(vel) * 0.045), -0.2, 0.2);
       ensureTick();

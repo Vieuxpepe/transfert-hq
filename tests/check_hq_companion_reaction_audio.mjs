@@ -4,7 +4,7 @@ import {readFileSync,existsSync} from 'node:fs';
 const require=createRequire(import.meta.url);
 const {create}=require('../assets/hq-companion-reaction-audio.js');
 const manifest=JSON.parse(readFileSync(new URL('../assets/companion/chat/reactions/manifest.json',import.meta.url)));
-for(const sample of Object.values({...manifest.samples,...manifest.phases,...manifest.impacts}).flat()){
+for(const sample of Object.values({...manifest.samples,...manifest.phases,...manifest.impacts}).flatMap(v=>Array.isArray(v)?v:[v])){
  assert.ok(sample.duration_ms>=150&&sample.duration_ms<=12000);
  assert.ok(existsSync(new URL('..'+sample.url,import.meta.url)),'reaction file exists locally');
 }
@@ -17,10 +17,14 @@ class Audio{
 const win={document:{hidden:false},Audio,fetch:async()=>({ok:true,json:async()=>manifest})};
 const player=create(win,()=>enabled,()=>0);
 assert.equal(await player.ready,true);
+const sampleFor=(pool,url)=>Array.isArray(pool)?pool.find(s=>s.url===url):pool;
 const hmmDuration=player.start('hmm');
-assert.equal(hmmDuration,manifest.samples.hmm.duration_ms/sounds[0].playbackRate,'animation uses the actual playback duration');
-assert.equal(sounds[0].preservesPitch,false,'rate variation changes pitch rather than stretching audio');
-assert.ok(Math.abs(12*Math.log2(sounds[0].playbackRate)+.45)<1e-10,'lower pitch stays within 45 cents');
+const hmmSample=sampleFor(manifest.samples.hmm,sounds[0].url);
+assert.equal(hmmDuration,hmmSample.duration_ms/sounds[0].playbackRate,'animation uses the actual playback duration');
+assert.equal(sounds[0].preservesPitch,!!hmmSample.natural,'natural takes keep pitch; legacy takes vary rate');
+if(!hmmSample.natural){
+ assert.ok(Math.abs(12*Math.log2(sounds[0].playbackRate)+.45)<1e-10,'lower pitch stays within 45 cents');
+}
 assert.ok(Math.abs(sounds[0].volume-.25*10**(-6/20))<1e-6,'idle reaction gets another 6 dB attenuation');
 assert.equal(player.start('laugh'),manifest.samples.laugh.find(s=>s.url===sounds[1].url).duration_ms/sounds[1].playbackRate);
 assert.equal(sounds[1].playbackRate,1,'imported takes retain their original pitch and tempo');
@@ -30,8 +34,10 @@ enabled=false;assert.equal(player.start('exhale'),0);
 assert.equal(sounds[1].paused,true,'disabled sound stops current playback');
 enabled=true;win.document.hidden=true;assert.equal(player.start('hmm'),0,'hidden pages remain quiet');
 win.document.hidden=false;player.start('exhale');player.stop();assert.equal(sounds.at(-1).paused,true,'speech/interruption can stop a reaction');
-const firstPitch=sounds[0].playbackRate;
-player.start('hmm');assert.notEqual(sounds.at(-1).playbackRate,firstPitch,'repeated reactions avoid nearly identical pitches');
+if(!hmmSample.natural){
+ const firstPitch=sounds[0].playbackRate;
+ player.start('hmm');assert.notEqual(sounds.at(-1).playbackRate,firstPitch,'repeated reactions avoid nearly identical pitches');
+}
 const upper=create(win,()=>true,()=>1);await upper.ready;
 for(const kind of Object.keys(manifest.samples)){
  const duration=upper.start(kind),sound=sounds.at(-1);

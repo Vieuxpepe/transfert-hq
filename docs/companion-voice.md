@@ -99,8 +99,12 @@ The French slap line belongs to the existing strong slap payoff. Pull surrender
 and release use the short exclamation pool instead. Other spoken phase banks
 remain available where the downloads contain no matching replacement. The three enthusiastic-slap recordings are physical impacts, not vocal reactions.
 They replace the old impact in shuffled bags of three, without immediate repeats. They keep their original pitch
-and full duration; the legacy impact is used only if an imported file fails to load.
+and full duration; if an imported file fails to load, playback falls back to a surprised vocal reaction instead of the legacy m4a impact.
 Separate vocal reactions use the pleasure pool, never the impact recordings.
+
+Phase lines (`playLewdPhaseWav`), treat WAVs, imported phase OGGs and local XTTS URLs all play through
+`playAudioUrl`, which routes same-origin speech media into the shared SFX bus (manifest phase/voice gain,
+ducking under media, room EQ). Cross-origin clips keep plain element playback so CORS cannot silence the graph.
 
 Short recordings use the existing sound-effects toggle. Spoken recordings use
 the existing voice toggle; adult recordings require adult mode. Mute, hidden
@@ -117,7 +121,47 @@ stretch yawns and lip gestures have separate cooldowns. An automatic interaction
 reply can still display text while a recording plays, but does not cut it off
 with another spoken line; normal chat speech keeps its existing priority.
 
-Re-import with `python scripts/import_else_voice_lines.py "<source folder>"`.
+Re-import with `python scripts/import_else_voice_lines.py "<source folder>"` for full
+replacements from original MP3 exports. Additive sound-design batches use
+`python scripts/generate_elevenlabs_sound_design.py` then
+`python scripts/merge_elevenlabs_sound_design.py` (catalog:
+`scripts/elevenlabs_sound_design_catalog.json`; bank folder `elevenlabs_20261104`).
+Delivery uses **OGG Vorbis** at 30 kbps with the arcade soft-stereo preset
+(`scripts/reaction_ogg_preset.py`, matching the Desktop Godot v24 compressor).
+Re-encode the full bank with `python scripts/transcode_reaction_bank_to_ogg.py --reencode-all`
+(from original MP3 when present, else pre-mastering backup WAV, else the existing OGG).
+Verify delivery with `python scripts/verify_reaction_ogg_delivery.py`.
+The browser loads `manifest.runtime.json` (~16 KB routing) instead of the full
+`manifest.json` (~250 KB provenance/metadata). Reaction clips are stored as
+`clip.<8-char sha256>.ogg` with **`Cache-Control: immutable`** (one-year) from the bridge.
+Regenerate fingerprints after re-encode: `python scripts/fingerprint_reaction_oggs.py`.
+
+**Sound expansion (2026-11-04):** `scripts/sound_expansion_catalog.json` lists synth replacements,
+micro-reactions, treat one-shots, extra impacts and phase alts. Integrate with
+`python scripts/integrate_sound_expansion.py` (merges available MP3s with `--skip-missing`, refreshes
+contexts, slim + fingerprint). Generate missing MP3s via
+`python scripts/generate_elevenlabs_sound_design.py --skip-existing` (requires `ELEVENLABS_API_KEY`).
+Oral **gulp** one-shots (`samples.gulp`, `Else_oral_gulp_*.mp3`) use ElevenLabs **text-to-sound**
+(`eleven_text_to_sound_v3`) via `python scripts/generate_oral_gulp_variants.py`, then arcade OGG
+encode + manifest fingerprint; dangling oral plays them from `hq-dangle-audio.js` on depth and stroke.
+**Tit pull** foley (`impacts.tit_pull`, `Else_tit_pull_*.mp3`) uses the same SFX API via
+`python scripts/generate_tit_pull_variants.py`; bust pull and dangle tit contact play them through
+`playTitPullImpactSfx` / `playImpactPool(..., "tit_pull")`.
+After changing the Desktop compressor preset, update `scripts/reaction_ogg_preset.py`
+and run `python -m unittest tests.test_reaction_ogg_preset` (set
+`GODOT_AUDIO_COMPRESSOR_PRESET` if the GUI script lives elsewhere).
+Tune expressiveness in the catalog via `voice_settings` to match the ElevenLabs UI:
+**Creative** stability (API `stability` 0) and **High** similarity (`similarity_boost` 1).
+Dashboard sliders do not apply to API generations unless the script sends the same values.
+
+Reaction playback loads `hq-companion-sfx-bus.js` and `hq-companion-reaction-audio.js` early (HTML preload +
+companion `bootstrapCompanionAudio`), routes voice reactions and impacts through a shared Web Audio bus (room EQ,
+gentle compression, stereo impact path, ducking under speech and active media), caches `manifest.json` via a version
+query (`MANIFEST_REVISION`),
+prefetches and **decodes** hot reaction OGGs on first pointer/key after the bank is ready
+(with a second idle pass for alternate takes), plays warmed clips via `AudioBuffer` when
+possible, and decodes slap impacts lazily (one–two before first slap, the rest after a short delay).
+The manifest and reaction script are also preloaded from the Forge HTML shell.
 Validate with `node tests/check_hq_companion_reaction_audio.mjs` and
 `node tests/check_hq_companion_recorded_routes.mjs`, alongside the existing voice
 playback and pull-audio checks. `tests/check_hq_companion_natural_voice.mjs`

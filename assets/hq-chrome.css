@@ -58,6 +58,17 @@
   transform:none!important;
   filter:none;
 }
+/* Dangle oral uses the floating profile canvas; hide the live portrait face so we do not stack two mouths. */
+.hq-companion.is-oral-session.has-layered-portrait .hq-companion-rig-face-wrap,
+.hq-companion.is-oral-session.has-layered-portrait .hq-companion-face-adult,
+.hq-companion.is-oral-session.has-layered-portrait img.hq-companion-face-adult,
+.hq-companion.is-oral-session.has-layered-portrait .hq-companion-large-portrait-img,
+.hq-companion.is-oral-session .hq-companion-face-adult,
+.hq-companion.is-oral-session img.hq-companion-face-adult{
+  opacity:0!important;
+  visibility:hidden!important;
+  pointer-events:none!important;
+}
 .hq-companion.is-flick-jiggle .hq-companion-avatar{
   animation:hq-companion-flick-jiggle .72s ease-out both!important;
   transform-origin:50% 72%;
@@ -105,6 +116,7 @@
   width:calc(100% * var(--dangle-buf-w, 1) / var(--dangle-cw, 1));
   max-width:none;
   margin-left:calc(-100% * var(--dangle-pad, 0) / var(--dangle-cw, 1));
+  margin-top:calc(-100% * var(--dangle-pad-y, 0) / var(--dangle-cw, 1));
 }
 .hq-dangling-member-mount.is-softbody .hq-dangling-member{display:none}
 .hq-dangling-member-mount.is-softbody .hq-dangling-member-canvas{display:block}
@@ -162,11 +174,11 @@ body[data-view] .view-bar{padding-right:84px}
   width:auto;
   height:auto;
   pointer-events:none;
-  transform-origin:10.8% 50.4%;
+  transform-origin:8.8% 49.0%;
   opacity:0;
   transition:opacity .22s ease;
   filter:drop-shadow(0 5px 10px rgba(0,0,0,.32));
-  transform:scaleX(var(--oral-stretch, 1));
+  image-rendering:auto;
 }
 .hq-oral-head.is-active{
   opacity:1;

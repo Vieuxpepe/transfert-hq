@@ -1,0 +1,13 @@
+{
+  "keep_stems": ["01", "02", "07", "10", "13"],
+  "loop_while_pulling": "02",
+  "notes": {
+    "01": "Soft rubbery elastic skin stretch — onset accent",
+    "02": "Elastic skin pull stretch (loop bed while pulling)",
+    "07": "Micro elastic fibers — motion accent",
+    "10": "Soft boob slosh jiggle — release",
+    "13": "Subtle underboob slosh while chest rocks — release / motion"
+  },
+  "elastic_stems": ["01", "02", "07"],
+  "slosh_stems": ["10", "13"]
+}

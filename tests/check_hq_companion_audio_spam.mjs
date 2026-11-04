@@ -43,7 +43,7 @@ now+=200;api.playVocalSynthFx(win,'mwah');assert.equal(oscillators.length,1,'per
 state.currentAudio={};now+=1000;api.playVocalSynthFx(win,'mwah');assert.equal(oscillators.length,1,'legacy effects do not play under speech');
 const audioBox={module:{exports:{}},Date:Clock};
 vm.runInNewContext(readFileSync(new URL('../assets/hq-companion-reaction-audio.js',import.meta.url),'utf8'),audioBox);
-const sample={url:'/assets/companion/chat/reactions/test.wav',duration_ms:1000};
+const sample={url:'/assets/companion/chat/reactions/test.deadbee1.ogg',duration_ms:1000};
 const player=audioBox.module.exports.create({...win,fetch:async()=>({ok:true,json:async()=>({samples:{hmm:sample}})})},()=>true,()=>1,
  ()=>({paceReactions:true}));await player.ready;
 for(let i=0;i<3;i++){assert.ok(player.start('hmm')>0);audios.at(-1).onended();now+=12000;}

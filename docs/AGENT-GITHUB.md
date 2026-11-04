@@ -117,7 +117,8 @@ File: `assets/hq-dangling-member.js`
 | `initDanglingMember` | Entry |
 | `shaftClient(t)` / `tipClient()` | Screen geometry along shaft |
 | `avatarZones()` | head / face / tit hit boxes |
-| `maybeFlick()` | One-shot slap hand |
+| `playSlap()` / `playJiggle()` | Flick contact → `HqDangleAudio` (manifest slap + giggle pools, SFX bus) |
+| `HqDangleAudio` | `assets/hq-dangle-audio.js` — zone/tit pull impacts, oral gulp/suction, throb, drag snap |
 | `flickBusy()` / `flickBusyUntil` | Blocks oral during hand anim |
 | `oralEngaged`, `oralPhase` | Oral state machine |
 | `oralMouthAnchorFresh()` | Floater mouth position (left of avatar) |
