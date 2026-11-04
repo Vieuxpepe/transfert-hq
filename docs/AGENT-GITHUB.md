@@ -1,0 +1,187 @@
+# External agent handoff (GitHub-only)
+
+For assistants that read **github.com/Vieuxpepe/transfert-hq** but do **not** have access to a live bridge install or local disk.
+
+Update the **Current focus** section when you push work you want reviewed.
+
+---
+
+## Repository
+
+| Item | Value |
+|------|--------|
+| Remote | `https://github.com/Vieuxpepe/transfert-hq` |
+| Typical feature branch | `transferania-persona` (confirm on GitHub before reviewing) |
+| Default doc entry | `README.txt` (architecture, security, companions) |
+| Local runtime | Not in repo — operator runs `iphone_bridge.py` (~8765) on Windows |
+
+---
+
+## Not on GitHub (gitignored)
+
+Do not assume these exist in the clone:
+
+| Path | Purpose |
+|------|---------|
+| `.hq-ai/` | Companion memory, personality JSON, prefs, chat state |
+| `.hq-ai/companion-memory/<owner-hash>.json` | User-edited personality traits |
+| `.hq-ai/prefs/<device>/transferania_prefs.json` | Intensity, address, QC dial, warmth |
+| `bridge_config.json` | PIN, bridge secrets |
+| `bridge_sessions.json` | Sessions |
+| User volumes (`Inbox/`, etc.) | Files |
+
+Agents should reason from **code + committed docs**, not from live `.hq-ai` data.
+
+---
+
+## Product summary (engineering)
+
+**Transfert HQ** is a personal mission-control bridge (Python HTTP server + HQ HTML/JS UI) between Windows PCs and iPhone (LAN/Tailscale). One operator, PIN auth, no SaaS.
+
+**Transferania** (UI alias **Transferina**) is an in-app **companion character**: chat, ambient lines, avatar presence, optional **adult register** (software flag `nsfw=True`), touch/reaction audio, and HQ chrome interactions (e.g. dangling member physics). She is **not** the same product as the separate **Else** persona in `C:\Gemini-Test` (sister canon only — see `docs/companion-family.md`).
+
+---
+
+## Glossary (use in reviews)
+
+| Term | Meaning |
+|------|---------|
+| Adult register | Chat/ambient mode when `nsfw=True` in `build_transferania_system()` |
+| Warm / flirt persona | Non-adult chemistry modes in `hq_companion_presence.py` |
+| Dangling member | Fixed UI mount: softbody shaft canvas + PNG, pendulum/carry physics |
+| Carry mode | User grabs near mount top (`ptr.moving`, low `hitT`) and moves the mount |
+| Mouth gate | Screen anchor for open-profile overlay lips (oral subsystem) |
+| Oral engaged | Session flag; avatar collision softened; portrait frozen (`is-oral-session`) |
+| Tube axis | Cached unit vector mount → mouth; depth measured by projection |
+| Lip constriction | `oralBulgeScale(t)` narrows shaft girth at lip band in `renderCurve()` |
+| Flick | One-shot hand animation when mid-shaft nears avatar (`maybeFlick`) |
+| Mouth gate overlay | `transferina-head-open-profile-mouth.png`, z-index 375 |
+
+---
+
+## Architecture map
+
+### Bridge & HQ shell
+
+| Path | Role |
+|------|------|
+| `iphone_bridge.py` | HTTP server, auth, HTML shell, companion API routes |
+| `hq_state.py` | Atomic JSON writes |
+| `hq_companion.py` | Companion registry / policy controller |
+| `assets/hq.js` | HQ UI core |
+| `assets/hq-chrome.css` | HQ chrome, companion hooks, dangling/oral CSS |
+| `assets/hq-companion.js` | Avatar bubble, modes, editor hooks |
+| `assets/hq-companion.css` | Companion layout |
+
+### LLM personality & prompts
+
+| Path | Role |
+|------|------|
+| `hq_ai.py` | `build_transferania_system()`, `CHARACTER_SHEET`, prefs, NSFW/warm/flirt templates |
+| `hq_companion_presence.py` | `character_hint()`, traits, arbitration |
+| `hq_companion_context.py` | Context block selection (budgets) |
+| `hq_companion_memory.py` | `personality_traits()`, `save_personality()` |
+| `hq_companion_growth.py` | Evidence-backed quirk derivation |
+| `docs/companion-prompt-assembly.md` | Layer ownership (core vs dynamic vs memory) |
+| `docs/companion-memory.md` | Memory + evolution |
+| `docs/companion-family.md` | Else ↔ Transferania canon |
+| `docs/companion-editor.md` | UI “Éditer Transferania” |
+| `docs/companion-presence.md` | Presence / voice notes |
+
+### Interaction physics (HQ chrome)
+
+| Path | Role |
+|------|------|
+| `assets/hq-dangling-member.js` | Shaft sim, avatar zones, flick, **oral session** |
+| `assets/dangling-member.png` | Shaft texture |
+| `assets/transferina-head-open-profile-mouth.png` | Oral overlay (transparent mouth cavity) |
+| `assets/transferina-hand.png` | Flick hand |
+| `scripts/punch_oral_mouth.py` | Regenerate mouth alpha in PNG |
+
+### Adult visuals & chat media (content-heavy — review as **code paths**, not scene writing)
+
+| Path | Role |
+|------|------|
+| `hq_companion_art.py` | Pose registry, generation prompts (adult IDs) |
+| `assets/hq-companion-adult-*.css` | Adult face/FX styles |
+| `assets/hq-companion-lewd-lines.js` | Recorded reaction lines |
+
+---
+
+## Key functions (dangling + oral)
+
+File: `assets/hq-dangling-member.js`
+
+| Symbol | Role |
+|--------|------|
+| `initDanglingMember` | Entry |
+| `shaftClient(t)` / `tipClient()` | Screen geometry along shaft |
+| `avatarZones()` | head / face / tit hit boxes |
+| `maybeFlick()` | One-shot slap hand |
+| `flickBusy()` / `flickBusyUntil` | Blocks oral during hand anim |
+| `oralEngaged`, `oralPhase` | Oral state machine |
+| `oralMouthAnchorFresh()` | Floater mouth position (left of avatar) |
+| `captureOralTube()` | Tube axis on engage |
+| `oralInsertAssist()` | Depth assist (no dual mount war — verify in latest commit) |
+| `updateOralHead()` | Overlay + depth smoothing |
+| `findOralLipT()` / `oralBulgeScale()` | Lip hole constriction in render |
+| `build_transferania_system` | (in `hq_ai.py`) System prompt assembly |
+
+---
+
+## Adult register (software)
+
+- UI: admin-only adult toggle in bridge HTML (`companion_nsfw_enabled` in config).
+- Prompt: `build_transferania_system(..., nsfw=True)` appends adult facts, register, intensity — see `hq_ai.py`.
+- **Review task:** treat as conditional prompt branches and UI gating, not as chat roleplay in the reviewer thread.
+
+---
+
+## Tests & checks
+
+```bash
+node --check assets/hq-dangling-member.js
+python -m pytest tests/test_hq_companion_presence.py tests/test_hq_companion_editor.py tests/test_hq_companion_memory.py -q
+python -m pytest tests/test_hq_ai.py -q -k transferania
+```
+
+Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
+
+---
+
+## Current focus (update on push)
+
+**Branch note:** confirm `transferania-persona` vs `main` on GitHub.
+
+**Oral + dangling member (known pain points):**
+
+- Jitter at mouth gate: suspected dual control (depth from projection vs assist, mount `place()` vs pointer carry).
+- Entry feel: tube axis + lip constriction + z-index stack (cock 360, head 375).
+- Flick vs oral timing: `flickBusyUntil`, `tipNearOralMouth()`, `canUseOral()`.
+- Lip squeeze: `findOralLipT` smoothing (`oralLipTSm`, `oralBulgeK`).
+
+**Ask external agents for:** state diagrams, single-authority depth, reduced feedback loops, PR-sized patches — not explicit narrative or asset regeneration briefs.
+
+---
+
+## Security reminder for agents
+
+Never request or output: bridge PIN, `bridge_config.json`, `.hq-ai` contents, device HMAC secrets, or enroll tokens.
+
+---
+
+## Suggested review escalation (prompt series)
+
+Use the separate prompt list in chat with this doc; start at **Level 1** and only advance when the model has read the cited files on GitHub.
+
+Levels (summary):
+
+1. Repo architecture (`README.txt`, bridge modules)
+2. Companion prompt pipeline (`docs/companion-prompt-assembly.md`, `hq_ai.py` structure)
+3. Personality storage (`hq_companion_presence.py`, `hq_companion_memory.py`, docs)
+4. Adult register as flags (`nsfw` branches in `hq_ai.py`, bridge toggle — no copywriting)
+5. Dangling member physics (`hq-dangling-member.js` — zones, carry, flick)
+6. Oral overlay subsystem (mouth gate, tube, lip constriction — clinical terms only)
+7. Targeted fix PR (jitter / entry) with test plan
+
+See your operator’s prompt pack (not stored in repo) for exact wording per level.
