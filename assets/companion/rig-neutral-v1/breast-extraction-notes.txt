@@ -1,0 +1,36 @@
+Découpe seins v9 — bottom + outer-side pale spill removal on PNG edges.
+Découpe seins v8 — stronger box edge feather + bottom pale spill removal.
+Découpe seins v7 — box-blurred alpha edges (extra under curve; not Gaussian).
+Découpe seins v6 — tighter poly blur, root color harmonize, right skin lift.
+Découpe seins v5 — anisotropic alpha feather + lace rim contact (extract_breast_layers.py).
+Découpe seins v4 — contours calés sur le tracé rouge fourni, sur source.jpg (512×512).
+Pas de contour garment-front.svg ; pas de Voronoi comme frontière finale.
+
+Fichiers : breast-left.png, breast-right.png.
+Aperçus :
+  • breast-checker-preview.png — gauche | droite sur damier contrasté
+  • breast-preview.png — grille (source | gauche damier | droite damier | superposition)
+  • breast-offset-preview.png — calques décalés ±8 px / ±6 px (test fuites)
+
+Chevauchement L∩R (alpha>0.05) : 3484 px
+
+Mouvement propre (translate / slosh modéré) :
+  • Ces découpes suivent le contour demandé ; tester sur le rig avant tout slosh ample.
+  • Léger scale autour du pivot rig (~34% / ~67% à ~76% hauteur).
+
+Limites sans inpainting :
+  • Le contour rouge traverse des cheveux, un peu de fond et l'épaule déjà visibles dans la photo plate.
+    Ces pixels restent dans les PNG ; les retirer laisserait des trous sans peinture du volume caché.
+  • Haut : peau sous les cheveux hors masque → pull vers le haut = gap.
+  • Sillon : seulement pixels visibles ; pas de volume caché sous le nœud central.
+  • Flanc externe : bord adouci ~1.35 px ; grand écart latéral expose le fond.
+  • Bas : le bonnet est coupé avant le corsage ; stretch vertical ample peut montrer une couture.
+
+Utiliser breast-offset-preview.png pour juger ; recomposite = source ne suffit pas.
+
+Lecture du test décalé (±8 px H, ±6 px V) :
+  • Double peau / dentelle au sillon → frontières internes à affiner.
+  • Trou en damier dans un lobe → bord coupé trop court (peau ou bonnet manquant).
+  • Halo blanc ou cheveux qui glissent seuls → pixels hors lobe à retirer du masque.
+  • Gap vertical au centre après décalage → normal si les lobes sont disjoints ;
+    agrandir le slosh si la couture devient visible en usage normal.

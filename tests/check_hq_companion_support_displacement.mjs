@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+const source=readFileSync(new URL('../assets/hq-companion.js',import.meta.url),'utf8');
+const start=source.indexOf('  function supportMapPixel('),end=source.indexOf('  function grabWeights(',start);
+let nodes=0;
+const node=()=>({attrs:{},style:{},setAttribute(k,v){this.attrs[k]=v;},appendChild(){},querySelector(k){return this.children[k]??=(node());},children:{}});
+const layers={left:{style:{}},right:{style:{}}};
+const state={nsfwOn:true,win:{document:{createElement(){return {getContext:()=>({createImageData:()=>({data:new Uint8ClampedArray(64*64*4)}),putImageData(){}}),toDataURL:()=>"data:image/png;base64,test"};},createElementNS(){nodes++;return node();}}},avatar:{appendChild(){},classList:{toggle(){}}},
+ el:{style:{},classList:{contains:()=>true},querySelector:s=>s.endsWith('left')?layers.left:layers.right},cursorSupport:{side:'left',lift:.055,u:.29,v:.86}};
+const context={S:state,calm:()=>false,clampNum:(v,a,b)=>Math.max(a,Math.min(b,v)),setLive2dStyleVar:(s,k,v)=>s[k]=v};
+vm.createContext(context);vm.runInContext(source.slice(start,end)+';this.update=updateCursorSupport;',context);
+const st={};for(let i=0;i<120;i++)context.update(st,1/60);
+assert.equal(nodes,3,'one SVG and two filters, never recreated each frame');
+assert.equal(st.supportFilters.left.displacement.attrs.scale,'0.2');
+assert.ok(layers.left.style.filter.includes('url('));
+assert.equal(layers.right.style.filter,'','other side remains untouched');
+state.cursorSupport=null;for(let i=0;i<120;i++)context.update(st,1/60);
+assert.equal(layers.left.style.filter,'','releasing removes the filter');
+assert.equal(nodes,3,'settling reuses the same map');
+console.log('check_hq_companion_support_displacement: localized filter, reuse and release cleanup ok');

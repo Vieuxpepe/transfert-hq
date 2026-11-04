@@ -1,0 +1,1349 @@
+{
+  "voice_name": "Else - Project Voice",
+  "voice_id": "hBlh399It8ij4tnAyFcj",
+  "provider": "ElevenLabs",
+  "model": "mixed",
+  "samples": {
+    "hmm": {
+      "url": "/assets/companion/chat/reactions/else_hmm_soft_v2.wav",
+      "duration_ms": 640
+    },
+    "laugh": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_01.wav",
+        "duration_ms": 2351,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -2.839,
+          "measured_rms_dbfs": -24.78,
+          "measured_peak_dbfs": -6.161,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 60,
+          "active_end_ms": 2080
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_02.wav",
+        "duration_ms": 2273,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -4.445,
+          "measured_rms_dbfs": -23.015,
+          "measured_peak_dbfs": -4.555,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 60,
+          "active_end_ms": 2020
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_03.wav",
+        "duration_ms": 2508,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.108,
+          "measured_rms_dbfs": -25.035,
+          "measured_peak_dbfs": -5.892,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2250
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_04.wav",
+        "duration_ms": 2273,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -2.326,
+          "measured_rms_dbfs": -23.674,
+          "measured_peak_dbfs": -7.068,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 50,
+          "active_end_ms": 2000
+        }
+      }
+    ],
+    "exhale": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_01.wav",
+        "duration_ms": 1881,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -27.709,
+          "measured_peak_dbfs": -17.086,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 140,
+          "active_end_ms": 1140
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_02.wav",
+        "duration_ms": 1959,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.102,
+          "measured_rms_dbfs": -24.898,
+          "measured_peak_dbfs": -13.583,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 1290
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_03.wav",
+        "duration_ms": 2116,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -27.609,
+          "measured_peak_dbfs": -15.984,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 1670
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_04.wav",
+        "duration_ms": 2508,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.801,
+          "measured_rms_dbfs": -25.199,
+          "measured_peak_dbfs": -12.911,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2030
+        }
+      }
+    ],
+    "questioning": {
+      "url": "/assets/companion/chat/reactions/else_questioning_v1.wav",
+      "duration_ms": 640
+    },
+    "surprised": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_gasp_of_shock_01.wav",
+        "duration_ms": 1411,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.601,
+          "measured_rms_dbfs": -25.399,
+          "measured_peak_dbfs": -11.239,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 60,
+          "active_end_ms": 1140
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_gasp_of_shock_02.wav",
+        "duration_ms": 1489,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -27.069,
+          "measured_peak_dbfs": -13.345,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 1230
+        }
+      }
+    ],
+    "thinking": {
+      "url": "/assets/companion/chat/reactions/else_thinking_v1.wav",
+      "duration_ms": 880
+    },
+    "giggle": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_01.wav",
+        "duration_ms": 2351,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -2.839,
+          "measured_rms_dbfs": -24.78,
+          "measured_peak_dbfs": -6.161,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 60,
+          "active_end_ms": 2080
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_02.wav",
+        "duration_ms": 2273,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -4.445,
+          "measured_rms_dbfs": -23.015,
+          "measured_peak_dbfs": -4.555,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 60,
+          "active_end_ms": 2020
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_03.wav",
+        "duration_ms": 2508,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.108,
+          "measured_rms_dbfs": -25.035,
+          "measured_peak_dbfs": -5.892,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2250
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_04.wav",
+        "duration_ms": 2273,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -2.326,
+          "measured_rms_dbfs": -23.674,
+          "measured_peak_dbfs": -7.068,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 50,
+          "active_end_ms": 2000
+        }
+      }
+    ],
+    "sympathetic": {
+      "url": "/assets/companion/chat/reactions/else_sympathetic_v1.wav",
+      "duration_ms": 720
+    },
+    "yawn": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_big_yawn_01.wav",
+        "duration_ms": 2351,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.94,
+          "measured_rms_dbfs": -22.06,
+          "measured_peak_dbfs": -10.854,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 240,
+          "active_end_ms": 2210
+        }
+      }
+    ],
+    "contented": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_01.wav",
+        "duration_ms": 1881,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -27.709,
+          "measured_peak_dbfs": -17.086,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 140,
+          "active_end_ms": 1140
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_02.wav",
+        "duration_ms": 1959,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.102,
+          "measured_rms_dbfs": -24.898,
+          "measured_peak_dbfs": -13.583,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 1290
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_03.wav",
+        "duration_ms": 2116,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -27.609,
+          "measured_peak_dbfs": -15.984,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 1670
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_04.wav",
+        "duration_ms": 2508,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.801,
+          "measured_rms_dbfs": -25.199,
+          "measured_peak_dbfs": -12.911,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2030
+        }
+      }
+    ],
+    "kiss": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_kiss_01.wav",
+        "duration_ms": 1149,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -35.332,
+          "measured_peak_dbfs": -16.375,
+          "fade_in_ms": 120,
+          "fade_out_ms": 177,
+          "active_start_ms": 140,
+          "active_end_ms": 670
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_loud_kiss_01.wav",
+        "duration_ms": 1149,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -31.23,
+          "measured_peak_dbfs": -16.461,
+          "fade_in_ms": 120,
+          "fade_out_ms": 163,
+          "active_start_ms": 190,
+          "active_end_ms": 680
+        }
+      }
+    ],
+    "humming": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_humming_a_song_01.wav",
+        "duration_ms": 1881,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.799,
+          "measured_rms_dbfs": -25.201,
+          "measured_peak_dbfs": -12.565,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 20,
+          "active_end_ms": 1370
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_humming_a_song_02.wav",
+        "duration_ms": 1881,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.821,
+          "measured_rms_dbfs": -25.179,
+          "measured_peak_dbfs": -12.502,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 70,
+          "active_end_ms": 1260
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_humming_a_song_03.wav",
+        "duration_ms": 3788,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.449,
+          "measured_rms_dbfs": -24.551,
+          "measured_peak_dbfs": -10.73,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 70,
+          "active_end_ms": 3320
+        }
+      }
+    ],
+    "moan": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_loud_moaning_yip_01.wav",
+        "duration_ms": 2194,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -5.147,
+          "measured_rms_dbfs": -20.853,
+          "measured_peak_dbfs": -6.293,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 1980
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_01.wav",
+        "duration_ms": 2194,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -26.668,
+          "measured_peak_dbfs": -14.481,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 110,
+          "active_end_ms": 1780
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_02.wav",
+        "duration_ms": 2116,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -26.179,
+          "measured_peak_dbfs": -14.398,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 1520
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_04.wav",
+        "duration_ms": 2194,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -26.397,
+          "measured_peak_dbfs": -15.192,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 110,
+          "active_end_ms": 1610
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_05.wav",
+        "duration_ms": 2429,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.259,
+          "measured_rms_dbfs": -25.741,
+          "measured_peak_dbfs": -14.222,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 110,
+          "active_end_ms": 1860
+        }
+      }
+    ],
+    "lipsmack": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_smacking_lips_01.wav",
+        "duration_ms": 1228,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -35.951,
+          "measured_peak_dbfs": -14.984,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 40,
+          "active_end_ms": 780
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_smacking_lips_02.wav",
+        "duration_ms": 1149,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -39.959,
+          "measured_peak_dbfs": -18.186,
+          "fade_in_ms": 120,
+          "fade_out_ms": 183,
+          "active_start_ms": 100,
+          "active_end_ms": 650
+        }
+      }
+    ],
+    "whimper": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_aaaa_01.wav",
+        "duration_ms": 2429,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -26.562,
+          "measured_peak_dbfs": -9.8,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 110,
+          "active_end_ms": 2060
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_aaaa_02.wav",
+        "duration_ms": 2429,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.282,
+          "measured_rms_dbfs": -27.425,
+          "measured_peak_dbfs": -8.718,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 2090
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_aaaa_03.wav",
+        "duration_ms": 2429,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": 0,
+          "measured_rms_dbfs": -28.593,
+          "measured_peak_dbfs": -13.397,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 130,
+          "active_end_ms": 2090
+        }
+      }
+    ],
+    "pleasure": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_01.wav",
+        "duration_ms": 2508,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.685,
+          "measured_rms_dbfs": -24.511,
+          "measured_peak_dbfs": -7.315,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2140
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_02.wav",
+        "duration_ms": 2847,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.476,
+          "measured_rms_dbfs": -26.38,
+          "measured_peak_dbfs": -8.524,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2470
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_03.wav",
+        "duration_ms": 3082,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.37,
+          "measured_rms_dbfs": -24.63,
+          "measured_peak_dbfs": -8.537,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 2730
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_04.wav",
+        "duration_ms": 2926,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.35,
+          "measured_rms_dbfs": -24.65,
+          "measured_peak_dbfs": -8.908,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 2580
+        }
+      }
+    ]
+  },
+  "phases": {
+    "cum_begging": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_cum_all_over_me_01.wav",
+        "duration_ms": 3082,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -5.9,
+          "measured_rms_dbfs": -20.1,
+          "measured_peak_dbfs": -4.265,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 2790
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_cum_all_over_me_02.wav",
+        "duration_ms": 3161,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -6.168,
+          "measured_rms_dbfs": -19.832,
+          "measured_peak_dbfs": -5.751,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 130,
+          "active_end_ms": 2840
+        }
+      }
+    ],
+    "deepthroat": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_let_me_drain_those_massive_balls_with_my_tight_throat_01.wav",
+        "duration_ms": 4362,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.878,
+          "measured_rms_dbfs": -24.122,
+          "measured_peak_dbfs": -7.993,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 130,
+          "active_end_ms": 4000
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_let_me_drain_those_massive_balls_with_my_tight_throat_02.wav",
+        "duration_ms": 4598,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.478,
+          "measured_rms_dbfs": -22.522,
+          "measured_peak_dbfs": -5.706,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 130,
+          "active_end_ms": 4250
+        }
+      }
+    ],
+    "phase9_breast_vivid": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_of_pleasure_allez_frappe_mes_seins_plus_fort_01.wav",
+        "duration_ms": 3709,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.398,
+          "measured_rms_dbfs": -22.602,
+          "measured_peak_dbfs": -6.58,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 60,
+          "active_end_ms": 3400
+        }
+      }
+    ],
+    "climax_fever": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_orgasm_oui_oui_encore_plus_01.wav",
+        "duration_ms": 3004,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -6.172,
+          "measured_rms_dbfs": -19.828,
+          "measured_peak_dbfs": -6.068,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2690
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_orgasm_loudly_01.wav",
+        "duration_ms": 3004,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -7.342,
+          "measured_rms_dbfs": -18.658,
+          "measured_peak_dbfs": -5.06,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 80,
+          "active_end_ms": 2670
+        }
+      }
+    ],
+    "pull_surrender": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_oh_my_fucking_god_01.wav",
+        "duration_ms": 3082,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.323,
+          "measured_rms_dbfs": -25.696,
+          "measured_peak_dbfs": -8.677,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 2750
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_oh_my_fucking_god_02.wav",
+        "duration_ms": 3004,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -0.823,
+          "measured_rms_dbfs": -26.362,
+          "measured_peak_dbfs": -8.177,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 130,
+          "active_end_ms": 2620
+        }
+      }
+    ],
+    "phase7_size_worship": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_such_a_fat_cock_01.wav",
+        "duration_ms": 3631,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.278,
+          "measured_rms_dbfs": -25.379,
+          "measured_peak_dbfs": -5.722,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 120,
+          "active_end_ms": 3290
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_such_a_fat_cock_02.wav",
+        "duration_ms": 3318,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -2.048,
+          "measured_rms_dbfs": -25.626,
+          "measured_peak_dbfs": -6.952,
+          "fade_in_ms": 120,
+          "fade_out_ms": 200,
+          "active_start_ms": 100,
+          "active_end_ms": 2990
+        }
+      }
+    ]
+  },
+  "import": {
+    "date": "2026-11-03",
+    "model": "eleven_v4",
+    "files": 46,
+    "unique_audio": 44,
+    "sources": [
+      {
+        "source": "Else_big_yawn_01.mp3",
+        "source_sha256": "030e04726e53b73e6a4f60eeb26c8de78eb800ce978577a1a3a1d8bebc28f49d",
+        "audio_sha256": "a49737e77b24297289588ea42883a179935e238c7393c512df6a575ac4971609",
+        "section": "samples",
+        "event": "yawn",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_big_yawn_01.wav",
+        "context": "samples.yawn",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_cute_jiggling_01.mp3",
+        "source_sha256": "26c3f4ac2b1fc0cbc0ad24ebc8d404c1182425a483c5dc707138bfb6262c5b90",
+        "audio_sha256": "718f9f84cbe69895d4f264b5f469c8f00cc77aabcd0a597a68e9994ba0145122",
+        "section": "samples",
+        "event": "giggle",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_01.wav",
+        "context": "samples.giggle",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_cute_jiggling_02.mp3",
+        "source_sha256": "d1096ace3c8751734c1e8aff4c8e59e536a2abbca40de4dbd90ae2596e0123db",
+        "audio_sha256": "54aeaddc11259d81a22af92321c6d1507a6b9a61de19705b9c346a63d91f4a2b",
+        "section": "samples",
+        "event": "giggle",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_02.wav",
+        "context": "samples.giggle",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_cute_jiggling_03.mp3",
+        "source_sha256": "cafe0bed7a8fd58953b1451ad6b32e6c0d54cfa8b81e567e9290b3da69de0990",
+        "audio_sha256": "32dd9bea3b0dbfd41d2bb989a96b422a76527cd36f3b5749bd0ecb57dde97e18",
+        "section": "samples",
+        "event": "giggle",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_03.wav",
+        "context": "samples.giggle",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_cute_jiggling_04.mp3",
+        "source_sha256": "68ee75bebee42b3d94f90bcac2f32e9a4186c8fec12afad8797b4081c2e09682",
+        "audio_sha256": "b31d3af59fc5142fe690325986c870a1bd9820d6d865ccc8ae284e4ae5f64afb",
+        "section": "samples",
+        "event": "giggle",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_04.wav",
+        "context": "samples.giggle",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_cute_jiggling_05.mp3",
+        "source_sha256": "68ee75bebee42b3d94f90bcac2f32e9a4186c8fec12afad8797b4081c2e09682",
+        "audio_sha256": "b31d3af59fc5142fe690325986c870a1bd9820d6d865ccc8ae284e4ae5f64afb",
+        "section": "samples",
+        "event": "giggle",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_cute_jiggling_04.wav",
+        "context": "samples.giggle",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_enthusiastic_kiss_01.mp3",
+        "source_sha256": "b0df1e30d7e1e2ed049029a9b06fcf90f72ec759967355376ee3c3d3caa8e5e3",
+        "audio_sha256": "09b45e14690f850a1ad171e9dcd019b0d7b6053bcb67839a9147a2d607673187",
+        "section": "samples",
+        "event": "kiss",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_kiss_01.wav",
+        "context": "samples.kiss",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_enthusiastic_slap_on_tits_01.mp3",
+        "source_sha256": "617d5c89c46f4fdd5328e15244b1c33aee547afaaefbb0c9b836b79a4e91ecd3",
+        "audio_sha256": "26961f8b83561a463e9805ba376e31d04048dcc03e8a04b3a753e05b9cda8241",
+        "section": "impacts",
+        "event": "slap",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_01.wav",
+        "context": "impacts.slap",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_enthusiastic_slap_on_tits_02.mp3",
+        "source_sha256": "dfa5ca9527b9c03ee920afaad4e257f3e115b4b21ecafc0df35b054f4dc970b3",
+        "audio_sha256": "ff89928f585aafd99ff806658a0f182e5dc4f7036e2302c35594c52a0fc5b5a3",
+        "section": "impacts",
+        "event": "slap",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_02.wav",
+        "context": "impacts.slap",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_enthusiastic_slap_on_tits_03.mp3",
+        "source_sha256": "59dd0c08bf7d6cfc897af313483dd6e43ce6f958aa2594672bb48fe58f2392cd",
+        "audio_sha256": "c3cf1d281b89cccb47c725cc5665cf9ba9444d6d780009c5c38abb24794a54fb",
+        "section": "impacts",
+        "event": "slap",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_03.wav",
+        "context": "impacts.slap",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_gasp_of_shock_01.mp3",
+        "source_sha256": "9ad209c466c590683ba35af8cee2bb4435eebc7e78c1e96ab13e34ac8a171f1a",
+        "audio_sha256": "0d0008e066c1db7b7922451dddff3fa93b7f3cecf6039941c3b05393f55d52fb",
+        "section": "samples",
+        "event": "surprised",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_gasp_of_shock_01.wav",
+        "context": "samples.surprised",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_gasp_of_shock_02.mp3",
+        "source_sha256": "2392d917e3c76ed21c314e9bc61da00c192791864a44c521bd6ca9c2a462c4ca",
+        "audio_sha256": "22a339f075e3d87a621576e713f6bcb73c0ab5008f9a46ca54683bcd5478a1a7",
+        "section": "samples",
+        "event": "surprised",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_gasp_of_shock_02.wav",
+        "context": "samples.surprised",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_humming_a_song_01.mp3",
+        "source_sha256": "41f3d4214704e29ded06a64a95414c5714d23387d05522c67959393576401309",
+        "audio_sha256": "fd1fdfbcc672b577b9cc3b322c8525a770631e4f720e0753554e3597066216f1",
+        "section": "samples",
+        "event": "humming",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_humming_a_song_01.wav",
+        "context": "samples.humming",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_humming_a_song_02.mp3",
+        "source_sha256": "98f4d08abd5b780656389be230169d998b866d606cbb5eb026aa83e54a434fbf",
+        "audio_sha256": "3ccbba96739765567dc9123fddeb7824b2a42b16489791bb7a31d434ee63b973",
+        "section": "samples",
+        "event": "humming",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_humming_a_song_02.wav",
+        "context": "samples.humming",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_humming_a_song_03.mp3",
+        "source_sha256": "d63fd3ca9d1103da8b8455ec0410647fbc11a1bf9b4ec751600ca56d10390fce",
+        "audio_sha256": "639181b1214982de719da38930fbdbeec74a63c8a00f15548e3ffd41387b3d91",
+        "section": "samples",
+        "event": "humming",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_humming_a_song_03.wav",
+        "context": "samples.humming",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_loud_kiss_01.mp3",
+        "source_sha256": "f29bddf90d2767c95749c7b67f1bd88b59555a556edbc3aaba052ba12a82f2ef",
+        "audio_sha256": "f0e89a3247dd8b6b703e76b051a888f94f5d46c12de3bf2ff76bd404b414ad7c",
+        "section": "samples",
+        "event": "kiss",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_loud_kiss_01.wav",
+        "context": "samples.kiss",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_loud_moaning_yip_01.mp3",
+        "source_sha256": "12e0df597bed59cb77b98d88593fdca4f464dda097bb850a9124244cc37ff3d9",
+        "audio_sha256": "abdff8649ec881257ffe0a16908965487e2fca9f80d6590dc85df1fa3610648f",
+        "section": "samples",
+        "event": "moan",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_loud_moaning_yip_01.wav",
+        "context": "samples.moan",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_moaning_loudly_-_cum_all_over_me_01.mp3",
+        "source_sha256": "66edb291b6b3e06966bf8dae139cb155a1c7a2e2b7957b7bee5542e36740cb3a",
+        "audio_sha256": "14dd851d41b2b99f65124b94c4262afc82faa846192088dba1ba9d2bb5bd99c4",
+        "section": "phases",
+        "event": "cum_begging",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_cum_all_over_me_01.wav",
+        "context": "phases.cum_begging",
+        "match_method": "History chronological order after audio-verified 06:39 generation; two adjacent timestamp pairs; not independently audio-matched"
+      },
+      {
+        "source": "Else_moaning_loudly_-_cum_all_over_me_02.mp3",
+        "source_sha256": "f314683e53ee845b7b7614b2c49c6f4972ac3252c808760e0f55eb5ff2187c70",
+        "audio_sha256": "0d913f95db915a1e003183bf46a243c1d9ad1bc0be61bd57c62b5e1c04d1e974",
+        "section": "phases",
+        "event": "cum_begging",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_cum_all_over_me_02.wav",
+        "context": "phases.cum_begging",
+        "match_method": "History chronological order after audio-verified 06:39 generation; two adjacent timestamp pairs; not independently audio-matched"
+      },
+      {
+        "source": "Else_moaning_loudly_-_let_me_drain_those_massive_balls_with_my_tight_throat_01.mp3",
+        "source_sha256": "5658647640ec19ef619f87c7e8e294b4960eac4f8f003ae30d000da23a0c7b8c",
+        "audio_sha256": "e143713ab32033acbe2d46026ad6c2438553307efa29b98fbd031f9c7dbbef29",
+        "section": "phases",
+        "event": "deepthroat",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_let_me_drain_those_massive_balls_with_my_tight_throat_01.wav",
+        "context": "phases.deepthroat",
+        "match_method": "History chronological order after audio-verified 06:39 generation; two adjacent timestamp pairs; not independently audio-matched"
+      },
+      {
+        "source": "Else_moaning_loudly_-_let_me_drain_those_massive_balls_with_my_tight_throat_02.mp3",
+        "source_sha256": "ed07e3397840bad4ad9af2ade4b27ffed0947a1b083ca6191e12b458f77a1e51",
+        "audio_sha256": "b261268ce952024ae32b856ba3c2ba68e3edbc2daa09aa86282f047b01b0bee2",
+        "section": "phases",
+        "event": "deepthroat",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_loudly_let_me_drain_those_massive_balls_with_my_tight_throat_02.wav",
+        "context": "phases.deepthroat",
+        "match_method": "History chronological order after audio-verified 06:39 generation; two adjacent timestamp pairs; not independently audio-matched"
+      },
+      {
+        "source": "Else_moaning_of_pleasure_-_allez_frappe_mes_seins_plus_fort_01.mp3",
+        "source_sha256": "42e1f169a829a29e5f3e835225b9c5bac9fffef5d9c27d0cbedff8a87ecc29d3",
+        "audio_sha256": "2833b32ca9d3acd477d2f43c2c7950b10d373afdb982ad870aad4b65061a4fc0",
+        "section": "phases",
+        "event": "phase9_breast_vivid",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_moaning_of_pleasure_allez_frappe_mes_seins_plus_fort_01.wav",
+        "context": "phases.phase9_breast_vivid",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_orgasm_-_oui_oui_encore_plus_01.mp3",
+        "source_sha256": "5882bf4c626544d71efe58f0b24dd63f0efa12d5638c02610c892dc41a1dba10",
+        "audio_sha256": "5c602dd6e8ccc64a556d2c6a02e50e0ab1d2228a528fd511ed67346256af3197",
+        "section": "phases",
+        "event": "climax_fever",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_orgasm_oui_oui_encore_plus_01.wav",
+        "context": "phases.climax_fever",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_orgasm_loudly_01.mp3",
+        "source_sha256": "3e49a27db05b82d3bb7de12b101928b3d0ee1c420ac19d9ac1c25a89fc518d3d",
+        "audio_sha256": "e03b8a0a28fa80b409a62ebab5540e807707b2d4a31b8114f92d568ec60df209",
+        "section": "phases",
+        "event": "climax_fever",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_orgasm_loudly_01.wav",
+        "context": "phases.climax_fever",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_seductive_moan_01.mp3",
+        "source_sha256": "89a318beedd15648a7ab3cafc0d4103ab9408b4d882bf94459aed4c6039fba39",
+        "audio_sha256": "af78d394fcd1026faf32af0e2b62b36a482b7eb496a513121ab2e5d131f7f878",
+        "section": "samples",
+        "event": "moan",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_01.wav",
+        "context": "samples.moan",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_seductive_moan_02.mp3",
+        "source_sha256": "888dfcb810c72ef0fe503e164cc9642195f5713cf1539d5bc7342e81a515bdee",
+        "audio_sha256": "dfaffd3eb80a5fcf01c6e1575be162c0958d17e025b2f3737f2f1c712a56b5fd",
+        "section": "samples",
+        "event": "moan",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_02.wav",
+        "context": "samples.moan",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_seductive_moan_03.mp3",
+        "source_sha256": "888dfcb810c72ef0fe503e164cc9642195f5713cf1539d5bc7342e81a515bdee",
+        "audio_sha256": "dfaffd3eb80a5fcf01c6e1575be162c0958d17e025b2f3737f2f1c712a56b5fd",
+        "section": "samples",
+        "event": "moan",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_02.wav",
+        "context": "samples.moan",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_seductive_moan_04.mp3",
+        "source_sha256": "6831eda1365b05524c00d219fffb7d6e7bddd100bf74f839bdfb193e18681f53",
+        "audio_sha256": "f8bf551a1f24bb08a61f4d65c3767550c2663f27a6e443a6924716b44bccb761",
+        "section": "samples",
+        "event": "moan",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_04.wav",
+        "context": "samples.moan",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_seductive_moan_05.mp3",
+        "source_sha256": "cd2657296f8ea540bcb86818394b6174e734c28b985700899623aedb751d2ca8",
+        "audio_sha256": "c13c6dbddc22353a75f8df67335fe99093b7d96c1ca58625a52fb53642febe0a",
+        "section": "samples",
+        "event": "moan",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_seductive_moan_05.wav",
+        "context": "samples.moan",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_sigh_of_satisfaction_01.mp3",
+        "source_sha256": "657e6f0b9cd5c90a30812910194e3625f4056bae549c2ca1b74208192b56b7a1",
+        "audio_sha256": "804598d5b031eca8b205ad4f55c71bf0940cc61ac8e5fba42798739e0e42051a",
+        "section": "samples",
+        "event": "contented",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_01.wav",
+        "context": "samples.contented",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_sigh_of_satisfaction_02.mp3",
+        "source_sha256": "1d27841bb12198bd4352027747ad5faa7e4a923f81fb390bfc566d2fbfd2f24f",
+        "audio_sha256": "e6af77ff4ccbc6dc7175a9adb58039874c42aed49093f8f331fc99c23881fbd2",
+        "section": "samples",
+        "event": "contented",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_02.wav",
+        "context": "samples.contented",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_sigh_of_satisfaction_03.mp3",
+        "source_sha256": "465bb8672470fb1986949949afb4f86732b5026842c2b1b67f989d0f85972d10",
+        "audio_sha256": "984e906d1dae6e795b30da4cb49faff81fe62efc5d3681500ce5d979e5779917",
+        "section": "samples",
+        "event": "contented",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_03.wav",
+        "context": "samples.contented",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_sigh_of_satisfaction_04.mp3",
+        "source_sha256": "2cc6db3ca355b330ccba944b908087153b76f71751de95b6c9fde24404e5791e",
+        "audio_sha256": "d7ce22f430f564c9525f461ebb3e8b847065021fb9583fa86ba1103460fa12c7",
+        "section": "samples",
+        "event": "contented",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_sigh_of_satisfaction_04.wav",
+        "context": "samples.contented",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_smacking_lips_01.mp3",
+        "source_sha256": "903dab059bed11d0231e2c45e81cc702e2411f1f66d19631435f6e6bc4a8be57",
+        "audio_sha256": "a02508ae5a40c6235b6b4adc65720967cbcfcc59a4b80cc72b88491ba02f18d3",
+        "section": "samples",
+        "event": "lipsmack",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_smacking_lips_01.wav",
+        "context": "samples.lipsmack",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_smacking_lips_02.mp3",
+        "source_sha256": "f0907dce8ee4ef2a1031332776798ffbe95d1940814504a26e19a6a3fed817a1",
+        "audio_sha256": "1e73393f6572884aa9f1e1a7f0600fd8fc4d269c75e4d7ba4a15270f9e363d39",
+        "section": "samples",
+        "event": "lipsmack",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_smacking_lips_02.wav",
+        "context": "samples.lipsmack",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_aaaa_01.mp3",
+        "source_sha256": "9b7e81a5619ec38855d566be9fbbaff4d42298b2770f6cc19201ae0a62745928",
+        "audio_sha256": "4fd6914a3dae74763190eaff2199e7b23d8060e46e266d9d4f83ad5a957b49a0",
+        "section": "samples",
+        "event": "whimper",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_aaaa_01.wav",
+        "context": "samples.whimper",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_aaaa_02.mp3",
+        "source_sha256": "af54c11a12272f0b64275106c20cfaf38629bf90893b7714996b2e4a622f34fc",
+        "audio_sha256": "fb20617e16dbdb032390d1425ba486949fc782b983f6446a000bf1e8fb496f21",
+        "section": "samples",
+        "event": "whimper",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_aaaa_02.wav",
+        "context": "samples.whimper",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_aaaa_03.mp3",
+        "source_sha256": "7dd07a80d03fe4402342be99ce4e7828af5153496f635fb6483fa4d3e65da59e",
+        "audio_sha256": "403beba9e6438e69c1e0a2b01db60eac164058529574d1cc449152732443949f",
+        "section": "samples",
+        "event": "whimper",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_aaaa_03.wav",
+        "context": "samples.whimper",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_oh_my_fucking_god_01.mp3",
+        "source_sha256": "e8219075ed58e5e6770639f050e85dfefa7b25131f94bf366c7368a236c3605d",
+        "audio_sha256": "f7ab907e9baae7d1f19e054ed26e08c6a549d5a58bbda57f1e2bbfe8e0b1f3c8",
+        "section": "phases",
+        "event": "pull_surrender",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_oh_my_fucking_god_01.wav",
+        "context": "phases.pull_surrender",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_oh_my_fucking_god_02.mp3",
+        "source_sha256": "b7a32b9cf224d423bde27f446b73124e541d90243f246e9dc4becd88a6ed0a2c",
+        "audio_sha256": "c0d31d6a05ea0e45f8f31c938e8092d8716dfafff32aba3e9e6d5b66e0a9888a",
+        "section": "phases",
+        "event": "pull_surrender",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_oh_my_fucking_god_02.wav",
+        "context": "phases.pull_surrender",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_such_a_fat_cock_01.mp3",
+        "source_sha256": "fd7e2ca575077e17888bc2fab75a45569b646395218198eeca425d6a52730e27",
+        "audio_sha256": "c14a6bd694d778fd61e5ffea1f225aa8a624fda578036f786441de5d0c411e0f",
+        "section": "phases",
+        "event": "phase7_size_worship",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_such_a_fat_cock_01.wav",
+        "context": "phases.phase7_size_worship",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_whimpering_-_such_a_fat_cock_02.mp3",
+        "source_sha256": "3ef562fb6498f797be4edd5e5439351d76b280cd6b99ee85aedcd5c29ac8517d",
+        "audio_sha256": "01ae41acd714aad737cd8205b523dca139f2cb54ee09615b8d8da10866e01256",
+        "section": "phases",
+        "event": "phase7_size_worship",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_whimpering_such_a_fat_cock_02.wav",
+        "context": "phases.phase7_size_worship",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_yap_of_pleasure_01.mp3",
+        "source_sha256": "f27ee25b736734f434cd06c65e915352b7ff2e967aecfbfea4188397a9df8266",
+        "audio_sha256": "8ff40d9cb9fdcc25ab519f5ef9804ca62b15c55a59f8f652eb4c787b8966da49",
+        "section": "samples",
+        "event": "pleasure",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_01.wav",
+        "context": "samples.pleasure",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_yap_of_pleasure_02.mp3",
+        "source_sha256": "e42d2b9527eaf7bcf4f583aac870c6d35ae8a6549b611442e14723dd9520056c",
+        "audio_sha256": "2067ee35618d792134d4f28943a5aadf6746628a8d14a9ddfdfce669edfeac16",
+        "section": "samples",
+        "event": "pleasure",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_02.wav",
+        "context": "samples.pleasure",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_yap_of_pleasure_03.mp3",
+        "source_sha256": "799f36cc1b8b5dfa36b34a73037f708da0e2f8a0b4339638894aeb8bf81f1b5f",
+        "audio_sha256": "5c74d8135b4b696400998e729a59e92984001d0d0f2b0c2bd15aa25910683a99",
+        "section": "samples",
+        "event": "pleasure",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_03.wav",
+        "context": "samples.pleasure",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      },
+      {
+        "source": "Else_yap_of_pleasure_04.mp3",
+        "source_sha256": "eaa3f132f1dfe36ec2e6afca71d85d809c81ce582964cb851d3899e08b18d484",
+        "audio_sha256": "f89db31c1e01476064986eabe945ab51cb619caa16408c81f0ae523f379d07ac",
+        "section": "samples",
+        "event": "pleasure",
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_yap_of_pleasure_04.wav",
+        "context": "samples.pleasure",
+        "match_method": "Identical MP3 audio payload SHA-256"
+      }
+    ]
+  },
+  "contexts": {
+    "samples.yawn": "Morning stretch and quiet-session stretch",
+    "samples.giggle": "Cursor tickling and playful conversation laughter",
+    "samples.kiss": "Lip kiss gesture, requested kiss and kiss treat",
+    "samples.lipsmack": "Lip-bite gesture and existing close whisper gesture",
+    "impacts.slap": "Rotating physical impact sounds for existing slap events",
+    "samples.surprised": "Existing surprise and gasp reactions",
+    "samples.humming": "Occasional quiet idle humming, actual media playback starts and music nods",
+    "samples.moan": "Existing heightened contact reaction tiers",
+    "samples.contented": "Gentle petting, contentment and release sighs",
+    "samples.whimper": "Existing held pull gesture, one recording per gesture",
+    "samples.pleasure": "Existing sustained contact and release response",
+    "phases.cum_begging": "Existing matching spoken phase",
+    "phases.deepthroat": "Existing matching spoken phase",
+    "phases.phase9_breast_vivid": "Existing strong slap payoff",
+    "phases.climax_fever": "Existing climax event and maximum warmth event",
+    "phases.pull_surrender": "Existing pull surrender and pull release",
+    "phases.phase7_size_worship": "Existing matching size-reaction phase"
+  },
+  "impacts": {
+    "slap": [
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_01.wav",
+        "duration_ms": 1149,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -2.86,
+          "measured_rms_dbfs": -29.992,
+          "measured_peak_dbfs": -6.14,
+          "fade_in_ms": 20,
+          "fade_out_ms": 40,
+          "active_start_ms": 110,
+          "active_end_ms": 710
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_02.wav",
+        "duration_ms": 1071,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -1.284,
+          "measured_rms_dbfs": -31.561,
+          "measured_peak_dbfs": -7.716,
+          "fade_in_ms": 20,
+          "fade_out_ms": 40,
+          "active_start_ms": 130,
+          "active_end_ms": 700
+        }
+      },
+      {
+        "url": "/assets/companion/chat/reactions/elevenlabs_20261103/else_enthusiastic_slap_on_tits_03.wav",
+        "duration_ms": 993,
+        "natural": true,
+        "model": "eleven_v4",
+        "mastering": {
+          "level_reduction_db": -3.7,
+          "measured_rms_dbfs": -27.509,
+          "measured_peak_dbfs": -5.3,
+          "fade_in_ms": 20,
+          "fade_out_ms": 40,
+          "active_start_ms": 100,
+          "active_end_ms": 690
+        }
+      }
+    ]
+  },
+  "mastering": {
+    "gain_db": -3.0,
+    "treble_gain_db": -3.0,
+    "treble_frequency_hz": 3500,
+    "voice_fade_in_ms": 120,
+    "voice_fade_out_ms": 200,
+    "impact_fade_in_ms": 20,
+    "impact_fade_out_ms": 40,
+    "voice_target_rms_dbfs": -26,
+    "impact_target_rms_dbfs": -24,
+    "peak_ceiling_dbfs": -9,
+    "max_level_reduction_db": 12,
+    "idle_playback_gain_db": -6,
+    "filters": "treble=g=-3.0:f=3500.0,volume=-3.0dB",
+    "source": "original MP3; never previously mastered WAV"
+  }
+}

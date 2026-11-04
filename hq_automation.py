@@ -62,7 +62,7 @@ EXEC_MAX = 64
 RUNS_MAX = 200
 RULES_MAX = 50
 ACTIONS_MAX = 8
-TELEMETRY_MAX = 4000
+TELEMETRY_MAX = 5000
 PUSH_MAX = 20
 BACKUP_INDEX_MAX = 60
 RESTORE_FILE_MAX = 5000
@@ -1391,8 +1391,15 @@ def _telemetry_doc() -> tuple[dict, bool]:
     return {"version": 1, "samples": samples}, False
 
 
-def record_sample(device_id: str, *, free: int | None, total: int | None, scope: str) -> None:
-    doc, bad = _telemetry_doc()
+def record_samples(items: list[dict]) -> None:
+    """Append several samples with one read and one atomic write.
+
+    Each item: {"device_id", "free", "total", "scope"}.
+    """
+    items = [it for it in (items or []) if isinstance(it, dict)]
+    if not items:
+        return
+    doc, bad = _telemetry_doc()  # the single parse; malformed file -> kept, skip
     if bad:
         return
     try:
@@ -1401,28 +1408,37 @@ def record_sample(device_id: str, *, free: int | None, total: int | None, scope:
         retain_h = 36
     retain_h = max(24, min(48, retain_h))
     now = _now()
-    pct = None
-    if free is not None and total:
-        try:
-            pct = round(100.0 * (1 - (float(free) / float(total))), 2)
-        except (TypeError, ValueError, ZeroDivisionError):
-            pct = None
-    doc["samples"].append(
-        {
-            "t": now,
-            "device": str(device_id)[:80],
-            "free": free,
-            "total": total,
-            "pct_used": pct,
-            "scope": "remote" if scope == "remote" else "local",
-        }
-    )
+    for it in items:
+        free = it.get("free")
+        total = it.get("total")
+        scope = it.get("scope")
+        pct = None
+        if free is not None and total:
+            try:
+                pct = round(100.0 * (1 - (float(free) / float(total))), 2)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pct = None
+        doc["samples"].append(
+            {
+                "t": now,
+                "device": str(it.get("device_id"))[:80],
+                "free": free,
+                "total": total,
+                "pct_used": pct,
+                "scope": "remote" if scope == "remote" else "local",
+            }
+        )
     cutoff = now - retain_h * 3600
     doc["samples"] = [s for s in doc["samples"] if float(s.get("t") or 0) >= cutoff][-TELEMETRY_MAX:]
     try:
-        _write_state(TELEMETRY_NAME, doc)
+        # Already parsed + validated above: skip _write_state/write_json_atomic re-parses.
+        hq_state.write_json_atomic(_root() / TELEMETRY_NAME, doc, verify_existing=False, compact=True)
     except (OSError, RuntimeError):
         pass
+
+
+def record_sample(device_id: str, *, free: int | None, total: int | None, scope: str) -> None:
+    record_samples([{"device_id": device_id, "free": free, "total": total, "scope": scope}])
 
 
 def sample_from_devices(devices: list[dict]) -> None:
@@ -1443,6 +1459,7 @@ def sample_from_devices(devices: list[dict]) -> None:
     take_remote = (now - _last_remote_sample) >= remote_every
     if not take_local and not take_remote:
         return
+    batch: list[dict] = []
     for device in devices or []:
         if not isinstance(device, dict):
             continue
@@ -1456,19 +1473,20 @@ def sample_from_devices(devices: list[dict]) -> None:
             for disk in disks:
                 if not isinstance(disk, dict):
                     continue
-                record_sample(
-                    f"{device.get('id')}:{disk.get('name') or 'disk'}",
-                    free=disk.get("free"),
-                    total=disk.get("total"),
-                    scope=scope,
-                )
+                batch.append({
+                    "device_id": f"{device.get('id')}:{disk.get('name') or 'disk'}",
+                    "free": disk.get("free"),
+                    "total": disk.get("total"),
+                    "scope": scope,
+                })
         elif device.get("free") is not None or device.get("total") is not None:
-            record_sample(
-                str(device.get("id") or "device"),
-                free=device.get("free"),
-                total=device.get("total"),
-                scope=scope,
-            )
+            batch.append({
+                "device_id": str(device.get("id") or "device"),
+                "free": device.get("free"),
+                "total": device.get("total"),
+                "scope": scope,
+            })
+    record_samples(batch)  # one read + one write per tick
     if take_local:
         _last_local_sample = now
     if take_remote:

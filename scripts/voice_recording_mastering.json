@@ -1,0 +1,14 @@
+{
+  "gain_db": -3.0,
+  "treble_gain_db": -3.0,
+  "treble_frequency_hz": 3500,
+  "voice_fade_in_ms": 120,
+  "voice_fade_out_ms": 200,
+  "impact_fade_in_ms": 20,
+  "impact_fade_out_ms": 40,
+  "voice_target_rms_dbfs": -26,
+  "impact_target_rms_dbfs": -24,
+  "peak_ceiling_dbfs": -9,
+  "max_level_reduction_db": 12,
+  "idle_playback_gain_db": -6
+}

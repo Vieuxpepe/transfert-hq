@@ -466,6 +466,8 @@
     $("forge-wait").hidden = !(job && job.waiting);
     $("forge-start-now").disabled = false;
     progressBox.hidden = !active && !(job && job.state === "unknown");
+    progressBox.classList.toggle("is-live", !!active);
+    if (progressBar) progressBar.classList.toggle("is-live", !!active);
     if (job) {
       progressBar.value = Number(job.progress || 0);
       const eta = active ? etaCopy(job.eta) : "";
@@ -3049,6 +3051,9 @@
     void node.offsetWidth;
     node.classList.add("forge-reveal");
     if ((submitted && celebrateSubmit) || node.dataset.triage === "favorite") node.classList.add("forge-reveal-celebrate");
+    if (node.classList.contains("forge-reveal-celebrate") && typeof window.hqPolishBurst === "function") {
+      window.hqPolishBurst(node);
+    }
     if (!submitted) return;
     if (revealSeen && revealTarget) revealSeen.unobserve(revealTarget);
     revealTarget = node;

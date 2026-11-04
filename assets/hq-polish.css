@@ -1,0 +1,102 @@
+/* Transfert HQ — shared visual polish (assets/hq-polish.js). Motion gated in no-preference blocks. */
+
+/* ---- typography rhythm */
+.view-label,#view-label{font-family:var(--font-display);font-weight:620;letter-spacing:-.02em;color:var(--text)}
+body[data-view] .sec-head h2{font-family:var(--font-display);font-weight:650;letter-spacing:-.015em}
+.hq-live-num,.fx-bk-num,.fx-meta,.device-tile-meta,.hq-cal-time,.player-count,#player-count,.badge{font-variant-numeric:tabular-nums}
+
+/* ---- ambient hour (all pages, via .home-bg data-hour-tone) */
+.home-bg[data-hour-tone="night"]{filter:brightness(.88) saturate(.92)}
+.home-bg[data-hour-tone="dawn"]{filter:brightness(.96) saturate(1.05)}
+.home-bg[data-hour-tone="day"]{filter:brightness(1) saturate(1)}
+.home-bg[data-hour-tone="dusk"]{filter:brightness(.94) saturate(1.08)}
+@media (prefers-reduced-motion:reduce){.home-bg{filter:none!important}}
+
+/* ---- pointer light (desktop) */
+.hq-spot{--sx:50%;--sy:50%;position:relative;overflow:hidden}
+.hq-spot::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:0;transition:opacity .35s ease;
+  background:radial-gradient(520px circle at var(--sx) var(--sy),color-mix(in srgb,var(--accent) 14%,transparent),transparent 58%)}
+@media (hover:hover) and (pointer:fine){.hq-spot:hover::before,.hq-spot:focus-within::before{opacity:1}}
+
+/* ---- skeletons & empty */
+@keyframes hq-skel-shim{0%{background-position:120% 0}100%{background-position:-40% 0}}
+.hq-skel{position:relative;overflow:hidden;border-radius:10px;background:color-mix(in srgb,var(--line) 40%,var(--panel));
+  background-image:linear-gradient(90deg,transparent,color-mix(in srgb,var(--text) 8%,transparent),transparent);
+  background-size:200% 100%;min-height:1.1em;color:transparent!important;user-select:none}
+@media (prefers-reduced-motion:no-preference){.hq-skel{animation:hq-skel-shim 1.4s ease-in-out infinite}}
+.hq-empty-ico{display:block;width:48px;height:48px;margin:0 auto 10px;border-radius:14px;
+  background:color-mix(in srgb,var(--accent) 16%,var(--panel));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 28%,var(--line))}
+.hq-empty-state{text-align:center;padding:20px 12px;color:var(--muted);font-size:var(--text-sm)}
+
+/* ---- deal-in lists */
+@keyframes hq-deal{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:no-preference){
+  .hq-deal-in>*{animation:hq-deal .42s var(--hq-out,cubic-bezier(.2,.8,.2,1)) both;animation-delay:calc(var(--di,0) * 50ms)}
+}
+
+/* ---- success burst */
+@keyframes hq-burst{0%{opacity:.85;transform:scale(.4)}100%{opacity:0;transform:scale(2.6)}}
+.hq-burst{position:fixed;z-index:200;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,color-mix(in srgb,var(--accent) 70%,#fff),transparent 70%)}
+@media (prefers-reduced-motion:no-preference){.hq-burst.is-go{animation:hq-burst .65s var(--hq-out,cubic-bezier(.2,.8,.2,1)) forwards}}
+
+/* ---- nav streak & lecteur hint */
+@keyframes hq-nav-streak{0%{opacity:0;transform:translate(var(--sx,0),var(--sy,0)) scaleX(.2)}30%{opacity:1}100%{opacity:0;transform:translate(var(--tx,0),var(--ty,0)) scaleX(1)}}
+.nav-streak{position:fixed;z-index:119;height:3px;width:48px;border-radius:99px;pointer-events:none;opacity:0;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);transform-origin:left center}
+@media (prefers-reduced-motion:no-preference){.nav-streak.is-go{animation:hq-nav-streak .55s var(--hq-out,cubic-bezier(.2,.8,.2,1)) forwards}}
+.bottom-nav button[data-nav="lecteur"].hq-nav-hint{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
+@media (prefers-reduced-motion:no-preference){
+  .bottom-nav button[data-nav="lecteur"].hq-nav-hint{animation:hq-hint 1.6s ease-in-out 3}
+}
+@keyframes hq-hint{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 50%,transparent)}50%{box-shadow:0 0 0 8px transparent}}
+
+/* ---- status chip flash */
+@keyframes hq-chip-flash{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent)}100%{box-shadow:0 0 0 12px transparent}}
+@media (prefers-reduced-motion:no-preference){#status-chip.is-flash{animation:hq-chip-flash .7s ease-out}}
+
+/* ---- Système: details spring */
+details.hq-acc>summary{cursor:pointer;list-style:none}
+details.hq-acc>summary::-webkit-details-marker{display:none}
+details.hq-acc[open]>:not(summary){animation:hq-deal .32s var(--hq-out,cubic-bezier(.2,.8,.2,1)) both}
+@media (prefers-reduced-motion:reduce){details.hq-acc[open]>:not(summary){animation:none}}
+
+/* ---- print / export send */
+@keyframes hq-print-out{0%{opacity:1;transform:none}100%{opacity:0;transform:translate(30vw,-20vh) rotate(8deg) scale(.85)}}
+.hq-print-ghost{position:fixed;z-index:180;pointer-events:none;border-radius:8px;background:var(--panel);border:1px solid var(--line);
+  box-shadow:0 8px 28px rgba(0,0,0,.35);padding:10px 14px;font-weight:800;font-size:var(--text-sm)}
+@media (prefers-reduced-motion:no-preference){.hq-print-ghost.is-go{animation:hq-print-out .55s var(--hq-in,cubic-bezier(.4,0,1,1)) forwards}}
+
+/* ---- Dessiner atelier */
+body[data-view="dessiner"] #hq-sk-app .sk-stage,body[data-view="dessiner"] #hq-sk-app .sk-3d-stage{
+  box-shadow:inset 48px 0 80px -60px color-mix(in srgb,var(--accent) 12%,transparent),inset 0 0 0 1px var(--line)}
+body[data-view="dessiner"] #hq-sk-app .sk-stage::after,body[data-view="dessiner"] #hq-sk-app .sk-3d-stage::after{
+  content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
+  background:radial-gradient(120% 90% at 100% 50%,transparent 40%,color-mix(in srgb,#000 28%,transparent))}
+.sk-tool.on::after{content:"";position:absolute;inset:-2px;border-radius:inherit;pointer-events:none;opacity:.35;
+  background:radial-gradient(circle at 30% 30%,color-mix(in srgb,var(--accent) 40%,transparent),transparent 70%)}
+.sk-tool{position:relative}
+@keyframes sk-stamp-ghost{0%{opacity:.7;transform:scale(1.2) rotate(-12deg)}100%{opacity:0;transform:scale(.9) rotate(-6deg)}}
+.sk-stamp-ghost{position:absolute;right:12px;bottom:12px;z-index:4;padding:6px 10px;border-radius:8px;font-weight:800;font-size:var(--text-xs);
+  border:2px solid var(--ok);color:var(--ok);pointer-events:none;background:color-mix(in srgb,var(--panel) 92%,transparent)}
+@media (prefers-reduced-motion:no-preference){.sk-stamp-ghost.is-go{animation:sk-stamp-ghost .9s var(--hq-out,cubic-bezier(.2,.8,.2,1)) forwards}}
+
+/* ---- Lecteur cinema+ */
+.player-primary.is-playing .player-name::after{content:"";display:inline-block;width:6px;height:6px;margin-left:8px;border-radius:50%;vertical-align:middle;
+  background:var(--accent);box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 50%,transparent)}
+@media (prefers-reduced-motion:no-preference){
+  .player-primary.is-playing .player-name::after{animation:hq-hint 1.4s ease-in-out infinite}
+  .player-primary.is-playing .player-name{animation:hq-play-shim 2.4s ease-in-out infinite}
+}
+@keyframes hq-play-shim{0%,100%{opacity:1}50%{opacity:.88}}
+.player-primary.is-audio-tint{background:linear-gradient(180deg,color-mix(in srgb,var(--pl-tint,var(--accent)) 12%,transparent),transparent 120px)}
+.player-list .player-item.is-current{position:relative}
+.player-list .player-item.is-current::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:99px;background:var(--accent);transition:transform .35s var(--hq-spring,cubic-bezier(.2,1.35,.35,1))}
+
+/* ---- Calendrier today column wash */
+.hq-cal-weekcol.is-today-col{background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 8%,transparent),transparent 240px)}
+@media (prefers-color-scheme:light){.hq-cal-weekcol.is-today-col{background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 12%,transparent),transparent 240px)}}
+@media (prefers-reduced-motion:no-preference){
+  #hq-cal-app .hq-cal-now::before{animation:hq-cal-pulse 2.4s ease-in-out infinite}
+}
+@keyframes hq-cal-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.65;transform:scale(1.15)}}

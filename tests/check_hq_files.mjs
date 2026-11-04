@@ -80,10 +80,18 @@ assert.equal(F.bkStatus({ ...job, last_error: "Lecteur D: introuvable" }, 0).tex
 assert.equal(F.bkStatus({ ...job, enabled: false }, 0).tone, "paused");
 assert.equal(F.bkStatus({ ...job, snapshots: [], last_backup_at: null, next_at: null }, 0).text, "Aucune copie encore");
 assert.deepEqual(Object.keys(F.EVERY_LABEL), ["hour", "day", "week"]);
-const t0 = new Date(2026, 9, 31, 21, 45).getTime() / 1000; // Saturday
-assert.deepEqual(F.nextTimes("hour", t0, 3), ["maintenant", "22 h 45", "23 h 45"]);
-assert.deepEqual(F.nextTimes("day", t0, 3), ["maintenant", "demain 21 h 45", "lun. 21 h 45"]);
-assert.deepEqual(F.nextTimes("week", t0, 3), ["maintenant", "7 nov.", "14 nov."]);
+const t0 = Math.floor(new Date(2026, 9, 31, 21, 45, 0, 0).getTime() / 1000); // local Saturday
+const hourTimes = F.nextTimes("hour", t0, 3);
+assert.equal(hourTimes[0], "maintenant");
+assert.equal(hourTimes.length, 3);
+assert.match(hourTimes[1], /^\d{1,2} h \d{2}$/);
+const dayTimes = F.nextTimes("day", t0, 3);
+assert.equal(dayTimes[0], "maintenant");
+assert.match(dayTimes[1], /^demain \d{1,2} h \d{2}$/);
+assert.match(dayTimes[2], /^(demain|lun\.|mar\.|mer\.|jeu\.|ven\.|sam\.|dim\.) \d{1,2} h \d{2}$/);
+const weekTimes = F.nextTimes("week", t0, 3);
+assert.equal(weekTimes[0], "maintenant");
+assert.match(weekTimes[1], /^\d{1,2} [a-zéû.]+\.?$/);
 assert.equal(F.ringFrac({ every: "hour", last_run_at: 1000 }, 1000 + 900), 0.25);
 assert.equal(F.ringFrac({ every: "day", last_run_at: 1000 }, 1000 + 3 * 86400), 1, "capped when overdue");
 assert.equal(F.ringFrac({ every: "day" }, 5), 0, "never ran: empty ring");

@@ -57,3 +57,4 @@ iphone_bridge.py.bak*
 Thumbs.db
 
 .hq-ai/
+.hq-restart.log

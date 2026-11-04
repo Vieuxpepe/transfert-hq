@@ -183,6 +183,7 @@
                 body: JSON.stringify({ id: btn.dataset.quickScene }),
               }));
               if (typeof toast === "function") toast("Scène lancée");
+              if (typeof window.hqPolishFlashChip === "function") window.hqPolishFlashChip();
             } catch (e) {
               if (typeof toast === "function") toast(e.message, "err");
             }
@@ -417,6 +418,7 @@
         return `<div class="palette-group${many ? "" : " is-solo"}" role="group" aria-label="${esc(group.label)}"><p class="palette-group-label">${esc(group.label)}</p><ul>${items}</ul></div>`;
       })
       .join("");
+    if (window.HqChrome && typeof window.HqChrome.paletteRendered === "function") window.HqChrome.paletteRendered();
     const active = list.querySelector("li.active");
     if (input) {
       input.setAttribute("aria-controls", "hq-palette-list");
@@ -514,6 +516,7 @@
         body: JSON.stringify({ id: hit.id }),
       }));
       if (typeof toast === "function") toast("Scène lancée");
+      if (typeof window.hqPolishFlashChip === "function") window.hqPolishFlashChip();
       return "ok";
     }
     if (hit.kind === "action") {
@@ -573,6 +576,7 @@
       input.focus();
     }
     queryPalette("").catch(() => {});
+    if (window.HqChrome && typeof window.HqChrome.paletteOpened === "function") window.HqChrome.paletteOpened();
   }
 
   function closePalette() {

@@ -1,0 +1,12 @@
+[
+  {"id":"greeting","message":"Bonjour","mode":"social","expression":"neutral","quirk":false},
+  {"id":"correction","prelude":["I like coffee.","I dislike coffee."],"message":"Do you remember whether I like coffee?","mode":"recall","expression":"thoughtful","quirk":false,"required":["I dislike coffee"],"selected_kind":"correction"},
+  {"id":"comfort","message":"I feel overwhelmed","mode":"comfort","expression":"reassurance","quirk":false},
+  {"id":"practical","message":"Fix the API bug","mode":"practical","expression":"concentration","quirk":false},
+  {"id":"sisters","message":"Tell me about your sister Else.","mode":"social","expression":"neutral","quirk":true},
+  {"id":"long_conversation","history_pairs":80,"message":"robot calibration again","mode":"social","expression":"neutral","quirk":false,"required":["robot calibration older evidence"],"forbidden":["unrelated gardening archived"],"selected_kind":"history_relevant"},
+  {"id":"recent_repetition","history":[{"role":"user","text":"I finished something earlier."},{"role":"assistant","text":"Bravo pour cette victoire !"}],"message":"I finished the painting.","mode":"social","expression":"pride","quirk":false},
+  {"id":"unknown_ritual","message":"Notre rituel du café ?","mode":"social","expression":"neutral","quirk":false,"forbidden":["TOUCHE FACULTATIVE"]},
+  {"id":"changed_opinion","prelude":["I tried painting and it worked because colour helped.","I tried painting and it failed because the pigments faded."],"message":"What do you think about painting?","mode":"social","expression":"neutral","quirk":false,"required":["ce qui a changé","pigments faded","colour helped"]},
+  {"id":"tight_budget","budget":6000,"prelude":["I like coffee.","I dislike coffee."],"message":"Do you remember coffee?","mode":"recall","expression":"thoughtful","quirk":false,"required":["I dislike coffee"],"selected_kind":"correction"}
+]

@@ -41,6 +41,14 @@ const src = readFileSync(new URL("../assets/hq-theme.js", import.meta.url), "utf
 assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|fetch\(/.test(src));
 assert.ok(/prefers-reduced-motion/.test(src) && /prefers-reduced-motion/.test(css));
 assert.ok(!/animation:[^;}]*infinite/.test(css), "no endless motion in the shared look");
+assert.ok(/--hq-spring:/.test(css), "motion tokens live in theme");
+assert.ok(/runViewChange/.test(src), "view transitions hook");
+assert.ok(/hqViewTransitionHold|vtBlocked/.test(src), "calendar morph can block root VT");
+assert.ok(/__hqViewMotionHandled/.test(src), "panel fade fallback when theme bypassed");
 assert.ok(bridge.includes('<link rel="stylesheet" href="/assets/hq-theme.css"/>') && bridge.includes('<script src="/assets/hq-theme.js"></script>'));
+assert.ok(bridge.includes("hq-chrome.css") && bridge.includes("hq-chrome.js"), "chrome motion layer");
+assert.ok(bridge.includes("hq-polish.css") && bridge.includes("hq-polish.js"), "visual polish layer");
+assert.ok(bridge.includes("hq-lecteur.css") && bridge.includes("hq-lecteur.js"), "lecteur motion layer");
+assert.ok(bridge.includes("hq-dessiner-motion"), "dessiner motion layer");
 assert.ok(/rel="preload" href="\/assets\/hq-font-inter\.woff2" as="font"/.test(bridge), "the text font is preloaded");
 console.log("check_hq_theme: ok");

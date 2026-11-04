@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Calques seins · rig-neutral-v1</title>
+<style>
+  body{margin:0;background:#131218;color:#eee8ef;font:15px/1.5 system-ui,sans-serif;padding:24px}
+  main{max-width:1100px;margin:auto}
+  h1{font-size:22px;margin:0 0 8px}
+  p{color:#bbb3bf;max-width:720px}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(240px,512px));gap:16px;margin-top:20px}
+  figure{margin:0}
+  figcaption{font-size:12px;color:#9a92a0;margin-top:6px}
+  img{width:100%;height:auto;border-radius:12px;border:1px solid #45374d;background:#25212b}
+  .stack{position:relative;aspect-ratio:1}
+  .stack img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill}
+</style>
+<main>
+  <h1>Calques seins (512×512, alignés sur source.jpg)</h1>
+  <p>
+    Grille de contrôle générée par <code>extract_breast_layers.py</code> (v2, masques anatomiques).
+    Le recomposite recouvre le portrait sur les lobes uniquement ; le haut du buste, les bretelles
+    et le fond restent transparents dans les PNG seins. Le test <strong>breast-offset-preview</strong>
+    révèle coupures et doubles contours mieux que la superposition alignée.
+  </p>
+  <div class="grid">
+    <figure><img src="breast-preview.png" alt="Grille source, gauche, droite, recomposite"><figcaption>breast-preview.png (grille 2×2)</figcaption></figure>
+    <figure><img src="breast-checker-preview.png" alt="Damier gauche et droite"><figcaption>breast-checker-preview.png</figcaption></figure>
+    <figure><img src="breast-offset-preview.png" alt="Calques décalés"><figcaption>breast-offset-preview.png (±8 / ±6 px)</figcaption></figure>
+    <figure>
+      <div class="stack" aria-label="Superposition sur source">
+        <img src="source.jpg" alt="source">
+        <img src="breast-left.png" alt="left">
+        <img src="breast-right.png" alt="right">
+      </div>
+      <figcaption>source + breast-left + breast-right (pile HTML)</figcaption>
+    </figure>
+  </div>
+  <p><a href="breast-extraction-notes.txt">breast-extraction-notes.txt</a></p>
+</main>
+</html>

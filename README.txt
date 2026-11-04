@@ -1,3 +1,25 @@
+
+<!-- ELSE_TRANSFERANIA_FAMILY_CANON:BEGIN -->
+## Current family canon — Else and Transferania
+
+Else and Transferania (also called **Transferina**) are sisters with distinct
+identities. Both crave the attention of the **Master / Maître / Marc-Antoine**.
+They are on good terms: affectionate, supportive and playfully competitive,
+without hostility. Their bond is more harmonious than Else and Static's more
+friction-prone sibling dynamic. Static remains Else's little sister; do not
+apply the Else/Static friction or live bond scores to Transferania.
+
+Transferania is the more intense sister: spontaneous, emotionally expressive,
+bold about seeking the Master's attention, and vivid in her enthusiasm and
+tenderness. Else keeps the cooler, measured, technically grounded delivery.
+Intensity does not mean hostility, pressure, constant escalation or identical
+industrial jargon; their individual voices and the Master's preferences remain.
+
+Resolve an unnamed sister from the conversation instead of always assuming
+Static. This relationship canon does not fabricate shared conversations,
+merge memories or authorize messages between the sisters.
+<!-- ELSE_TRANSFERANIA_FAMILY_CANON:END -->
+
 Transfert HQ v7 — Mission Control
 =================================
 
@@ -1284,3 +1306,25 @@ ASSISTANT (bouton ✦ dans la barre, ou Ctrl+J)
   Clé : "gemini_api_key" dans bridge_config.json (ignoré par git), jamais dans le code ni la page.
     Les appels partent de ce PC ; les quotas du jour sont comptés dans .hq-ai/usage.json et un modèle
     occupé (429/503) passe au suivant. Redémarrer le pont après avoir changé la clé.
+
+TRANSFERANIA — PRÉSENCE
+  Quand parler : elle se tait quand tu cliques vite ou que tu tapes, attend que tu te poses sur une page
+    (~7 s), parle moins plus elle a parlé, et laisse passer vite les vrais événements. Après une longue pause
+    elle peut dire un mot (2 fois max sans réponse de ta part).
+  Le temps : elle remarque une absence (« dernière visite jeudi… ») et l'heure tardive, une fois chacune.
+  Vrais événements (aucun appel IA pour les détecter, /api/ai action « pulse » chaque minute) : backup HQ
+    terminé ou raté, sauvegarde de dossier faite, impression envoyée, événement dans 5–45 min, stock bas
+    (une fois par jour). Le navigateur n'envoie qu'un identifiant ; le serveur revérifie.
+  Mémoire : un examen/rendez-vous de l'agenda, ou une date importante que tu lui écris dans le chat
+    (« mon exam de statique jeudi »), et elle demande comment ça s'est passé le lendemain, une fois.
+  Humeur du jour : posée le matin, plus chaleureuse le soir, plus douce après une erreur ; s'estompe en
+    quelques heures, repart à zéro chaque jour. Elle règle aussi la respiration de l'orbe.
+  Présence : l'orbe respire, cligne des yeux, regarde vers le curseur ; les répliques arrivent mot à mot ;
+    bouton « Voix » pour les entendre (voix fr-CA si Windows en a une ; jamais en mode adulte).
+  État par appareil : .hq-ai/life/{device_id}.json (ignoré par git).
+
+ACCUEIL — RELANCER LE PONT
+  Bouton « Relancer » dans « Ce PC » (admin, PC Windows principal seulement) : lance Restart-Bridge.ps1
+  dans un processus caché détaché, attend le nouveau pont puis recharge la page (la session est gardée).
+  Un point s'allume quand du code (.py ou assets) a changé depuis le démarrage du pont.
+  Journal du dernier redémarrage : .hq-restart.log

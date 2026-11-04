@@ -64,7 +64,8 @@
 .home-odo-d{display:block;height:1.2em;line-height:1.2em;text-align:center}
 .home-colon{padding:0 2px;opacity:.75;transform:translateY(-.06em)}
 .home-clock-sec{display:block;width:100%;height:3px;border-radius:3px;background:color-mix(in srgb,var(--text) 12%,transparent);overflow:hidden}
-.home-clock-sec i{display:block;height:100%;width:0;border-radius:inherit;background:linear-gradient(90deg,var(--home-amb,#8cc8ff),var(--accent));transition:width 1s linear}
+.home-clock-sec i{display:block;height:100%;width:100%;border-radius:inherit;background:linear-gradient(90deg,var(--home-amb,#8cc8ff),var(--accent));transform:scaleX(0);transform-origin:left center;transition:transform 1s linear} /* perf11: scaleX, not width: no layout every frame */
+@media (prefers-reduced-motion:reduce){.home-clock-sec i,.home-odo-col{transition:none}}
 @media (max-width:759.98px){
   .home-fx section.home-hero{min-height:0}
   .home-orb{left:calc(80% + var(--op,.5) * 14%);top:calc(124px - var(--oh,.6) * 22px);width:40px;height:40px}
@@ -158,9 +159,10 @@
 @keyframes hf-drift{from{transform:translateX(0) scale(var(--s,1))}to{transform:translateX(170vw) scale(var(--s,1))}}
 @keyframes hf-aurora{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(8%,6%) scale(1.12)}66%{transform:translate(-6%,4%) scale(.94)}}
 @keyframes hf-spin{to{transform:rotate(360deg)}}
-@keyframes hf-glow{0%,100%{filter:brightness(1)}50%{filter:brightness(1.12)}}
+/* Opacity + scale rather than a brightness filter: re-filtering the orb's wide glow every frame was costly. */
+@keyframes hf-glow{0%,100%{opacity:.9;transform:scale(1)}50%{opacity:1;transform:scale(1.03)}}
 @keyframes hf-shoot{0%{opacity:0;transform:rotate(-24deg) translateX(0)}10%{opacity:1}100%{opacity:0;transform:rotate(-24deg) translateX(260px)}}
-@keyframes hf-letter{from{opacity:0;transform:translateY(.55em) rotate(8deg);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
+@keyframes hf-letter{from{opacity:0;transform:translateY(.55em) rotate(8deg) scale(1.08)}60%{opacity:.85}to{opacity:1;transform:none}} /* perf11: no blur filter animation */
 @keyframes hf-wave{0%,100%{transform:none}40%{transform:translateY(-.18em)}}
 @keyframes hf-blink{0%,49%{opacity:.8}50%,100%{opacity:.2}}
 @keyframes hf-ping{0%{transform:scale(1);opacity:.55}100%{transform:scale(2.8);opacity:0}}
@@ -170,7 +172,11 @@
 @keyframes hf-tile{from{opacity:0;transform:translateY(10px) scale(.94)}to{opacity:1;transform:none}}
 @keyframes hf-new{0%{background-color:color-mix(in srgb,var(--accent) 22%,transparent);transform:translateX(-10px)}100%{background-color:transparent;transform:none}}
 @keyframes hf-ring{from{--used:0}}
-@keyframes hf-breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ring,var(--ok)) 45%,transparent)}50%{box-shadow:0 0 0 5px transparent}}
+/* perf11: the ring breathes through a static halo layer (opacity/transform), not an animated box-shadow */
+@keyframes hf-breathe{0%,100%{opacity:0;transform:none}25%,75%{opacity:.55}50%{opacity:0;transform:scale(1.12)}}
+.home-fx .device-tile:not(.is-off) .device-ring::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;opacity:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,var(--ok)) 45%,transparent)}
+/* perf11: frozen while Accueil is off screen, hidden or scrolled away */
+.hf-paused,.hf-paused *,.hf-paused *::before,.hf-paused *::after{animation-play-state:paused!important}
 @keyframes hf-flash{0%{opacity:.9}100%{opacity:0}}
 @keyframes hf-shutter{0%,100%{transform:none}30%{transform:scale(.8)}60%{transform:scale(1.15)}}
 @keyframes hf-flip{0%{transform:none}40%{transform:rotateY(70deg) rotate(-6deg)}100%{transform:none}}
@@ -206,8 +212,7 @@
   .home-fx .device-tile.fx-in{animation-name:hf-tile}
   .home-fx .fx-new{animation:hf-new 1.4s cubic-bezier(.2,.8,.2,1) both}
   .home-fx .device-ring.fx-ring{animation:hf-ring 1.4s cubic-bezier(.2,.8,.2,1) .35s both}
-  .home-fx .device-tile:not(.is-off) .device-ring{animation:hf-breathe 3.2s ease-in-out 1.8s infinite}
-  .home-fx .device-tile:not(.is-off) .device-ring.fx-ring{animation:hf-ring 1.4s cubic-bezier(.2,.8,.2,1) .35s both,hf-breathe 3.2s ease-in-out 1.8s infinite}
+  .home-fx .device-tile:not(.is-off) .device-ring::after{animation:hf-breathe 3.2s ease-in-out 1.8s infinite}
   .home-fx .is-fire .home-act-ico::after{animation:hf-flash .5s ease-out}
   .home-fx #btn-camera.is-fire .home-act-ico svg{animation:hf-shutter .5s ease}
   .home-fx #home-act-note.is-fire .home-act-ico svg{animation:hf-flip .6s ease}
@@ -316,7 +321,8 @@ body[data-view="accueil"] .home-fx section.home-hero{background-image:radial-gra
 
 @keyframes hf-sun{0%,100%{opacity:.5;transform:translateX(-50%) scale(1)}50%{opacity:.58;transform:translateX(-50%) scale(1.04)}}
 @keyframes hf-rise{0%{transform:translate3d(0,0,0);opacity:0}15%{opacity:.35}70%{opacity:.25}100%{transform:translate3d(0,-70vh,0);opacity:0}}
-@keyframes hf-sway{0%,100%{margin-left:0}50%{margin-left:var(--sway,40px)}}
+/* translate (not margin-left) so the sway composes with hf-rise on the GPU instead of relayouting every frame */
+@keyframes hf-sway{0%,100%{translate:0 0}50%{translate:var(--sway,40px) 0}}
 @keyframes hf-wave-slide{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @keyframes hf-bgtwinkle{0%,100%{opacity:.2}50%{opacity:.6}}
 @media (prefers-reduced-motion:no-preference){
@@ -328,3 +334,16 @@ body[data-view="accueil"] .home-fx section.home-hero{background-image:radial-gra
 @media (prefers-reduced-motion:reduce){.bg-lights{display:none}}
 
 @media (prefers-color-scheme: light){.home-clock-face{filter:none}}
+
+/* Redémarrer le pont: a dot when code on disk is newer than the running bridge, a spin while it restarts */
+#btn-restart-bridge{position:relative}
+#btn-restart-bridge.is-due::after{content:"";position:absolute;top:6px;right:10px;width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--panel)}
+#btn-restart-bridge.is-busy{opacity:.75;cursor:progress}
+@media (prefers-reduced-motion:no-preference){
+  #btn-restart-bridge.is-busy .ico svg{animation:hq-restart-spin 1s linear infinite}
+  #btn-restart-bridge.is-due::after{animation:hq-restart-due 2.4s ease-in-out 3}
+}
+@keyframes hq-restart-spin{to{transform:rotate(360deg)}}
+@keyframes hq-restart-due{50%{transform:scale(1.5);opacity:.6}}
+.home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])){grid-template-columns:repeat(5,minmax(0,1fr))}
+@media (max-width:420px){.home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])) .lbl{font-size:.68rem;letter-spacing:-.01em}}

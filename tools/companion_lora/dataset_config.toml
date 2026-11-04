@@ -1,0 +1,15 @@
+[general]
+enable_bucket = true
+keep_tokens = 1
+caption_extension = ".txt"
+min_bucket_reso = 512
+max_bucket_reso = 1536
+
+[[datasets]]
+resolution = 1024
+batch_size = 1
+
+  [[datasets.subsets]]
+  image_dir = "C:/Transfert/.hq-ai/companion_lora_dataset/10_transferania"
+  class_tokens = "transferania"
+  num_repeats = 3

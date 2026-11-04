@@ -29,6 +29,42 @@ ACTIVITY_PATH_NAME = "bridge_activity.json"
 
 _lock = threading.Lock()
 _activity: list[dict] = []
+
+
+def _atomic_write(path: Path, payload: "str | bytes") -> None:
+    """perf4: same-dir hidden temp file, flush, fsync, os.replace.
+
+    str is written like Path.write_text(encoding="utf-8") (same newline handling),
+    bytes are written verbatim. On any failure the destination is left untouched.
+    The temp name starts with "." so root scans/migration skip it (*.json.tmp is gitignored).
+    """
+    dest = Path(path)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}-{threading.get_ident()}.json.tmp")
+    try:
+        if isinstance(payload, bytes):
+            with open(tmp, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(tmp, dest)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 _alerts: list[dict] = []
 _inbox: dict[str, list[dict]] = {}
 _seen_presence: dict[str, dict] = {}
@@ -159,7 +195,7 @@ def log_activity(kind: str, message: str, **extra: Any) -> None:
 def _persist_activity() -> None:
     try:
         path = _root() / ACTIVITY_PATH_NAME
-        path.write_text(json.dumps(_activity[:ACTIVITY_MAX], indent=2) + "\n", encoding="utf-8")
+        _atomic_write(path, json.dumps(_activity[:ACTIVITY_MAX], indent=2) + "\n")
     except OSError:
         pass
 
@@ -376,12 +412,20 @@ def _load_ingest() -> dict:
         return {}
 
 
+_last_ingest_text: str | None = None
+
+
 def _save_ingest(state: dict) -> None:
+    global _last_ingest_text
     try:
         items = list(state.items())
         if len(items) > 2000:
             state = dict(items[-2000:])
-        _ingest_state_path().write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        text = json.dumps(state, indent=2) + "\n"
+        if text == _last_ingest_text:
+            return  # unchanged since last write: skip disk I/O
+        _ingest_state_path().write_text(text, encoding="utf-8")
+        _last_ingest_text = text
     except OSError:
         pass
 
@@ -490,6 +534,10 @@ def harvest_local_screenshots(state: dict) -> int:
     return n
 
 
+_REMOTE_SHOT_MIN_SEC = 60.0
+_last_remote_shot_scan: dict[str, float] = {}  # peer host -> time.monotonic() of last attempt
+
+
 def harvest_remote_screenshots(peers: list[dict], state: dict) -> int:
     import base64
 
@@ -570,6 +618,13 @@ Get-ChildItem -LiteralPath $dirs -File -ErrorAction SilentlyContinue |
         host = str(peer.get("ip") or "").strip()
         if not host:
             continue
+        # Per-peer throttle: SSH + remote PowerShell scan at most once per 60 s.
+        # Recorded on attempt (success or failure); first scan after restart runs now.
+        mono = time.monotonic()
+        last = _last_remote_shot_scan.get(host)
+        if last is not None and (mono - last) < _REMOTE_SHOT_MIN_SEC:
+            continue
+        _last_remote_shot_scan[host] = mono
         short = str(peer.get("name") or host).split(".")[0]
         target = {"id": f"shot-{short}", "label": short, "type": "ssh", "host": host, "user": user}
         try:
@@ -1176,7 +1231,7 @@ def persist_transfers(items: list[dict]) -> None:
         slim = []
         for t in items[:40]:
             slim.append({k: t.get(k) for k in ("id", "name", "size", "size_h", "folder", "ip", "state", "started", "finished", "rel", "files", "error")})
-        transfers_path().write_text(json.dumps(slim, indent=2) + "\n", encoding="utf-8")
+        _atomic_write(transfers_path(), json.dumps(slim, indent=2) + "\n")
     except OSError:
         pass
 
@@ -1229,7 +1284,7 @@ def record_presence_snapshot(devices: list[dict]) -> None:
     items.append({"t": now, "at_h": datetime.now().strftime("%H:%M"), **counts})
     items = items[-PRESENCE_HIST_MAX:]
     try:
-        path.write_text(json.dumps(items) + "\n", encoding="utf-8")
+        _atomic_write(path, json.dumps(items) + "\n")
     except OSError:
         pass
 
@@ -1768,66 +1823,117 @@ def kanban_default() -> dict:
     }
 
 
-def kanban_get() -> dict:
-    path = kanban_path()
-    if not path.is_file():
-        data = kanban_default()
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        return data
+_KANBAN_LOCK = threading.RLock()
+
+
+class KanbanCorruptError(ValueError):
+    """kanban.json exists but is unreadable: the file is kept and writes are refused."""
+
+
+def _kanban_preserve_corrupt(path: Path) -> Path | None:
+    # Leading "." so startup root migration never moves it into Inbox.
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    side = path.with_name(f".{path.name}.corrupt-{stamp}")
+    try:
+        if not side.exists():
+            shutil.copy2(path, side)
+        return side
+    except OSError:
+        return None
+
+
+def _kanban_read_existing(path: Path) -> dict | None:
+    """Parsed board, or None when the existing file is unreadable or not a board."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("columns"):
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict) and data.get("columns"):
+        return data
+    return None
+
+
+def _kanban_load_for_write() -> dict:
+    """Caller holds _KANBAN_LOCK. Missing file -> default board; corrupt -> sidecar copy + refuse."""
+    path = kanban_path()
+    if not path.is_file():
+        return kanban_default()
+    data = _kanban_read_existing(path)
+    if data is None:
+        side = _kanban_preserve_corrupt(path)
+        where = f" (copie : {side.name})" if side else ""
+        raise KanbanCorruptError(f"kanban.json illisible - fichier conserv\u00e9, modification refus\u00e9e{where}")
+    return data
+
+
+def _kanban_write(data: dict) -> dict:
+    _atomic_write(kanban_path(), json.dumps(data, indent=2) + "\n")
+    log_activity("kanban", "Kanban mis \u00e0 jour")
+    return data
+
+
+def kanban_get() -> dict:
+    path = kanban_path()
+    with _KANBAN_LOCK:
+        if not path.is_file():
+            data = kanban_default()
+            _atomic_write(path, json.dumps(data, indent=2) + "\n")
             return data
-    except (OSError, json.JSONDecodeError):
-        pass
+        data = _kanban_read_existing(path)
+    if data is not None:
+        return data
+    # Unreadable file: show an empty board but never write it (mutations refuse).
     return kanban_default()
 
 
 def kanban_save(data: dict) -> dict:
-    kanban_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    log_activity("kanban", "Kanban mis à jour")
-    return data
+    with _KANBAN_LOCK:
+        _kanban_load_for_write()  # refuse to overwrite an unreadable kanban.json
+        return _kanban_write(data)
 
 
 def kanban_add(column_id: str, title: str) -> dict:
-    data = kanban_get()
-    card = {"id": f"c-{int(time.time()*1000)}", "title": title[:120], "created": time.time()}
-    for col in data["columns"]:
-        if col.get("id") == column_id:
-            col.setdefault("cards", []).insert(0, card)
-            break
-    else:
-        raise ValueError("Colonne inconnue")
-    return kanban_save(data)
+    with _KANBAN_LOCK:
+        data = _kanban_load_for_write()
+        card = {"id": f"c-{int(time.time()*1000)}", "title": title[:120], "created": time.time()}
+        for col in data["columns"]:
+            if col.get("id") == column_id:
+                col.setdefault("cards", []).insert(0, card)
+                break
+        else:
+            raise ValueError("Colonne inconnue")
+        return _kanban_write(data)
 
 
 def kanban_move(card_id: str, to_column: str) -> dict:
-    data = kanban_get()
-    found = None
-    for col in data["columns"]:
-        cards = col.get("cards") or []
-        for i, c in enumerate(cards):
-            if c.get("id") == card_id:
-                found = cards.pop(i)
+    with _KANBAN_LOCK:
+        data = _kanban_load_for_write()
+        found = None
+        for col in data["columns"]:
+            cards = col.get("cards") or []
+            for i, c in enumerate(cards):
+                if c.get("id") == card_id:
+                    found = cards.pop(i)
+                    break
+            if found:
                 break
-        if found:
-            break
-    if not found:
-        raise ValueError("Carte introuvable")
-    for col in data["columns"]:
-        if col.get("id") == to_column:
-            col.setdefault("cards", []).insert(0, found)
-            break
-    else:
-        raise ValueError("Colonne cible inconnue")
-    return kanban_save(data)
+        if not found:
+            raise ValueError("Carte introuvable")
+        for col in data["columns"]:
+            if col.get("id") == to_column:
+                col.setdefault("cards", []).insert(0, found)
+                break
+        else:
+            raise ValueError("Colonne cible inconnue")
+        return _kanban_write(data)
 
 
 def kanban_delete(card_id: str) -> dict:
-    data = kanban_get()
-    for col in data["columns"]:
-        col["cards"] = [c for c in (col.get("cards") or []) if c.get("id") != card_id]
-    return kanban_save(data)
+    with _KANBAN_LOCK:
+        data = _kanban_load_for_write()
+        for col in data["columns"]:
+            col["cards"] = [c for c in (col.get("cards") or []) if c.get("id") != card_id]
+        return _kanban_write(data)
 
 
 # ---- v6: search ----

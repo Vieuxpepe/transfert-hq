@@ -90,23 +90,28 @@ def path_lock(path: Path | str) -> threading.RLock:
         return lock
 
 
-def write_json_atomic(path: Path | str, data: Any) -> None:
+def write_json_atomic(path: Path | str, data: Any, *, verify_existing: bool = True, compact: bool = False) -> None:
     """Replace ``path`` with JSON ``data``.
 
     Raises RuntimeError when the current file exists but is not a JSON object
     or array — the bytes on disk are preserved.
     """
+    # verify_existing=False: caller just parsed + validated the file itself;
+    # skip the re-parse (temp + fsync + os.replace unchanged).
     dest = Path(path)
     lock = path_lock(dest)
     with lock:
-        if dest.is_file():
+        if verify_existing and dest.is_file():
             try:
                 existing = json.loads(dest.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as e:
                 raise RuntimeError(f"{dest.name} illisible — fichier conservé") from e
             if not isinstance(existing, (dict, list)):
                 raise RuntimeError(f"{dest.name} illisible — fichier conservé")
-        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        if compact:
+            text = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
+        else:
+            text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
         # Same directory as dest, so a private-state temp file inherits that
         # directory ACL (controller-only) before os.replace.
         tmp = dest.parent / (dest.name + ".tmp")

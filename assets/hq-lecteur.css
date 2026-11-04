@@ -1,0 +1,26 @@
+/* Transfert HQ — Lecteur cinema motion (assets/hq-lecteur.js). */
+
+@keyframes pl-curtain{from{clip-path:inset(100% 0 0 0);opacity:.6}to{clip-path:inset(0);opacity:1}}
+@keyframes pl-cross{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
+@keyframes pl-grain{0%,100%{opacity:.04}50%{opacity:.07}}
+@keyframes pl-deal{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes pl-fly-ghost{to{opacity:0;transform:var(--fly-to,none)}}
+
+.player-stage{position:relative;isolation:isolate}
+.player-stage::before{content:"";position:absolute;inset:0;border-radius:12px;pointer-events:none;opacity:0;z-index:2;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(255,255,255,.03) 2px,rgba(255,255,255,.03) 3px)}
+.player-stage.is-cinema::before{opacity:1}
+.player-name,.player-where{transition:opacity var(--hq-dur) ease,transform var(--hq-dur) var(--hq-out)}
+.player-stage.is-enter video,.player-stage.is-enter audio,.player-stage.is-enter .player-model{animation:pl-cross .42s var(--hq-out) both}
+.player-list .player-item.pl-in{animation:pl-deal .4s var(--hq-out) both;animation-delay:calc(var(--pli,0) * 45ms)}
+.pl-fly-clone{position:fixed;z-index:200;pointer-events:none;border-radius:10px;overflow:hidden;object-fit:cover;box-shadow:0 12px 40px rgba(0,0,0,.45)}
+
+@media (prefers-reduced-motion:no-preference){
+  body[data-view="lecteur"] .player-stage.is-curtain{animation:pl-curtain .55s var(--hq-out) both}
+  body[data-view="lecteur"] .player-stage.is-cinema::before{animation:pl-grain 4s ease-in-out infinite}
+}
+@media (prefers-reduced-motion:reduce){
+  .player-stage.is-curtain,.player-stage.is-enter video,.player-stage.is-enter audio,.player-stage.is-enter .player-model,
+  .player-list .player-item.pl-in,.pl-fly-clone{animation:none!important}
+  .player-stage::before{display:none}
+}

@@ -10,10 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import hq_ai as ai  # noqa: E402
 
+DEV = "hqtestdevice01ab"
+DEV2 = "hqtestdevice02xy"
 
-def reply(text, thought=None):
+
+def reply(text, thought=None, finish_reason="STOP"):
     parts = ([{"text": thought, "thought": True}] if thought else []) + [{"text": text}]
-    return 200, {"candidates": [{"content": {"parts": parts}}]}
+    cand: dict = {"content": {"parts": parts}, "finishReason": finish_reason}
+    return 200, {"candidates": [cand]}
 
 
 class Base(unittest.TestCase):
@@ -35,7 +39,10 @@ class Base(unittest.TestCase):
             return self.answers.pop(0) if self.answers else reply("ok")
 
         ai._minute.clear()
-        ai.bind(root=self.root, key=lambda: "test-key", now=lambda: self.clock[0], post=post,
+        ai.bind(companion_context_config=lambda: {}, root=self.root, extra_keys=lambda: [], key=lambda: "test-key", now=lambda: self.clock[0], post=post,
+                companion_persona=lambda: "flirt",
+                client_is_controller=lambda ip: str(ip).startswith("127.") or ip == "::1",
+                nsfw_enabled=lambda: True,
                 calendar=lambda a, b: [{"title": "Labo GIA1077", "start": "2026-11-05T14:00", "end": "2026-11-05T16:00", "category": "study"}],
                 projects=lambda: self.projects, inventory=lambda: self.inv,
                 carnet=lambda: {"pages": [{"id": "page-1", "title": "Statique ch. 4", "text": "Moment d'inertie : I = somme y² dA", "block": "block-1", "updated": 1}]},
@@ -143,6 +150,312 @@ class PureTests(unittest.TestCase):
         with self.assertRaises(ai.AiError):
             ai.extract_json("rien")
 
+    def test_transferania_split_and_compress(self):
+        msgs = [{"role": "user", "text": f"m{i}"} for i in range(25)]
+        old, kept = ai.split_over_keep(msgs, 20)
+        self.assertEqual(len(old), 5)
+        self.assertEqual(len(kept), 20)
+        summary = ai.compress_chunk_deterministic("deja", old)
+        self.assertIn("deja", summary)
+        self.assertIn("m0", summary)
+
+    def test_personality_prefs_and_system(self):
+        p = ai.normalize_transferania_prefs({"nickname": " Cap ", "address": "vous", "qc_dial": "medium", "intensity": 9, "topics_off": ["a", "b"], "celebrate": True})
+        self.assertEqual(p["nickname"], "Cap")
+        self.assertEqual(p["address"], "vous")
+        self.assertEqual(p["intensity"], 3)
+        self.assertEqual(len(p["topics_off"]), 2)
+        sys = ai.build_transferania_system("chat", "flirt", nsfw=False, view="carnet", device_id=DEV, prefs=p, signals={"celebrate": "Note enregistrée"}, summary="Il aime le café.")
+        self.assertIn("Transferania", sys)
+        self.assertIn("Muse", sys)
+        self.assertIn("Cap", sys)
+        self.assertIn("MÉMOIRE", sys)
+        self.assertIn("Note enregistrée", sys)
+        self.assertIn("PRIORITÉ", sys)
+        self.assertIn("FAITS", sys)
+
+    def test_nsfw_system_uses_adult_blocks(self):
+        sys = ai.build_transferania_system("chat", "warm", nsfw=True, view="fichiers", device_id=DEV, signals={"escalate": "plus direct"}, summary="")
+        self.assertIn("FAITS (mode adulte)", sys)
+        self.assertIn("REGISTRE CHAT ADULTE", sys)
+        self.assertIn("PRIORITÉ (mode adulte)", sys)
+        self.assertIn("Intensité adulte", sys)
+
+    def test_extract_companion_photo(self):
+        allowed = {"warm": "warm.jpg", "soft": "soft.jpg"}
+        text, pid = ai.extract_companion_photo("Tu me fais bander. [photo:warm]", allowed=allowed)
+        self.assertEqual(pid, "warm")
+        self.assertEqual(text, "Tu me fais bander.")
+        text2, pid2 = ai.extract_companion_photo("Salut [photo:nope]", allowed=allowed)
+        self.assertIsNone(pid2)
+        self.assertEqual(text2, "Salut")
+        self.assertIn("warm", ai.companion_chat_photo_prompt(allowed))
+
+    def test_extract_companion_fx_and_segments(self):
+        allowed = {"warm": "warm.jpg"}
+        loops = {"tease-bob": ""}
+        clean, photo, loop, fx = ai.extract_companion_chat_media(
+            "Coucou [photo:warm] [fx:kiss] [loop:tease-bob]", photo_allowed=allowed, loop_allowed=loops
+        )
+        self.assertEqual(clean, "Coucou")
+        self.assertEqual(photo, "warm")
+        self.assertEqual(loop, "tease-bob")
+        self.assertEqual(fx, "kiss")
+        segs = ai.split_reply_segments("Partie un. Partie deux longue " + "x" * 200)
+        self.assertGreaterEqual(len(segs), 2)
+
+    def test_warmth_and_facts(self):
+        ai.bump_warmth(DEV, 5)
+        self.assertGreaterEqual(ai.load_transferania_prefs(DEV).get("warmth"), 5)
+        data = ai.load_transferania(DEV)
+        ai.merge_thread_facts(data, "J'adore les poses archées", "Tu veux encore?")
+        self.assertTrue(any("poses" in f.lower() or "adore" in f.lower() for f in data.get("facts") or []))
+        self.assertTrue(data.get("open_thread"))
+
+
+class AmbientTests(Base):
+    def ambient_post(self, *args, **kwargs):
+        out = ai.http_post(*args, **kwargs)
+        if out[1].get("reason") == "coalescing":
+            self.clock[0] += 8
+            out = ai.http_post(*args, **kwargs)
+        return out
+
+    def test_ambient_returns_line(self):
+        self.answers = [reply("Forge ouverte — tu vas briller.")]
+        code, out = self.ambient_post({"action": "ambient", "view": "forge", "digest": "Vue : Forge", "persona": "warm", "device_id": DEV})
+        self.assertEqual(code, 200, out)
+        self.assertIn("line", out)
+        self.assertFalse(out.get("fallback"))
+        self.assertEqual(out["persona"], "warm")
+
+    def test_ambient_off_is_fallback_without_call(self):
+        ai.bind(companion_persona=lambda: "off")
+        code, out = self.ambient_post({"action": "ambient", "view": "accueil", "persona": "flirt", "device_id": DEV})
+        self.assertEqual(code, 200)
+        self.assertTrue(out.get("fallback"))
+        self.assertEqual(out["persona"], "off")
+        self.assertEqual(self.calls, [])
+
+    def test_flirt_capped_to_warm_on_server(self):
+        ai.bind(companion_persona=lambda: "warm")
+        self.answers = [reply("Salut.")]
+        code, out = self.ambient_post({"action": "ambient", "view": "accueil", "persona": "flirt", "device_id": DEV})
+        self.assertEqual(out["persona"], "warm")
+
+
+    def test_ambient_quota_increments(self):
+        self.answers = [reply("Coucou.")]
+        self.ambient_post({"action": "ambient", "view": "accueil", "digest": "Vue : Accueil", "persona": "warm", "device_id": DEV})
+        st = ai.status()
+        self.assertEqual(st["ambient"]["used"], 1)
+        self.assertEqual(st["ambient"]["per_day"], ai.AMBIENT_DAILY)
+
+
+    def test_nsfw_admin_session_only(self):
+        ai.bind(nsfw_enabled=lambda: True, client_is_controller=lambda ip: False)
+        st = ai.status("100.64.0.1", "upload")
+        self.assertFalse(st["nsfw_allowed"])
+        self.assertFalse(st.get("session_admin"))
+        st2 = ai.status("100.64.0.1", "admin")
+        self.assertTrue(st2["nsfw_allowed"])
+        self.assertTrue(st2.get("session_admin"))
+        self.answers = [reply("Mode admin.")]
+        out = self.ambient_post({"action": "ambient", "view": "accueil", "digest": "x", "persona": "flirt", "nsfw": True, "device_id": DEV}, client_ip="100.64.0.1", role="admin")[1]
+        self.assertTrue(out.get("nsfw"))
+        out2 = self.ambient_post({"action": "ambient", "view": "accueil", "digest": "x", "nsfw": True, "device_id": DEV}, client_ip="100.64.0.1", role="upload")[1]
+        self.assertFalse(out2.get("nsfw"))
+
+
+    def test_preview_dry_nsfw(self):
+        code, out = self.ambient_post(
+            {"action": "preview", "kind": "ambient", "view": "fichiers", "digest": "Vue: test", "nsfw": True, "device_id": DEV},
+            client_ip="127.0.0.1",
+            role="admin",
+        )
+        self.assertEqual(code, 200, out)
+        self.assertTrue(out.get("nsfw_active"))
+        self.assertIn("dirty talk", out.get("system", "").lower())
+
+    def test_nsfw_truncated_end_heuristic(self):
+        self.assertTrue(ai.nsfw_truncated_end("viens me montrer ce que tu as dans le pantalon, je veux sentir le poids de t"))
+        self.assertFalse(ai.nsfw_truncated_end("Viens ici. Maintenant."))
+
+    def test_nsfw_ambient_retries_next_model_on_safety_cut(self):
+        cut = "Laisse tomber ces écrans et viens me montrer ce que tu as dans le pantalon, je veux sentir le poids de t"
+        full = "Laisse tomber ces écrans et viens me montrer ce que tu as dans le pantalon, je veux sentir le poids de ta queue."
+        self.answers = [reply(cut, finish_reason="SAFETY"), reply(full)]
+        out = self.ambient_post(
+            {"action": "ambient", "view": "plus", "digest": "Vue : Système", "persona": "flirt", "nsfw": True, "device_id": DEV},
+            client_ip="127.0.0.1",
+            role="admin",
+        )[1]
+        self.assertTrue(out.get("nsfw"))
+        self.assertIn("queue", out.get("line", "").lower())
+        models = [c[0] for c in self.calls]
+        self.assertEqual(models[0], "gemini-3.5-flash-lite")
+        self.assertEqual(models[1], "gemma-4-26b-a4b-it")
+
+
+class TransferaniaTests(Base):
+    def test_prefs_persist_on_server(self):
+        code, out = ai.http_post({"action": "transferania", "op": "prefs", "save": True, "prefs": {"nickname": "Pilote", "intensity": 1}, "device_id": DEV})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["prefs"]["nickname"], "Pilote")
+        st = ai.status(device_id=DEV)
+        self.assertEqual(st["personality"]["nickname"], "Pilote")
+
+    def test_threads_isolated_by_device(self):
+        self.answers = [reply("Salut device1"), reply("Salut device2")]
+        ai.http_post({"action": "transferania", "op": "send", "message": "ping1", "view": "accueil", "digest": "x", "persona": "warm", "device_id": DEV})
+        ai.http_post({"action": "transferania", "op": "send", "message": "ping2", "view": "accueil", "digest": "x", "persona": "warm", "device_id": DEV2})
+        h1 = ai.transferania_history(device_id=DEV)["messages"]
+        h2 = ai.transferania_history(device_id=DEV2)["messages"]
+        self.assertEqual(len(h1), 2)
+        self.assertEqual(len(h2), 2)
+        self.assertIn("ping1", h1[0]["text"])
+        self.assertIn("ping2", h2[0]["text"])
+
+    def test_chat_persists_and_replies(self):
+        self.answers = [reply("Salut, je me souviens de toi.")]
+        code, out = ai.http_post({"action": "transferania", "op": "send", "message": "Bonjour Transferania", "view": "accueil", "digest": "Vue : Accueil", "persona": "warm", "device_id": DEV})
+        self.assertEqual(code, 200, out)
+        self.assertIn("Salut", out["reply"])
+        self.assertTrue(any(m.get("role") == "user" for m in out["messages"]))
+        hist = ai.http_get({"transferania": ["1"], "device_id": [DEV]})[1]
+        self.assertEqual(len(hist["messages"]), 2)
+        self.assertEqual(hist["name"], ai.TRANSFERANIA_NAME)
+
+    def test_nsfw_chat_stores_photo_from_tag(self):
+        chat = self.root / "assets" / "companion" / "chat"
+        chat.mkdir(parents=True, exist_ok=True)
+        (chat / "warm.jpg").write_bytes(b"\xff\xd8\xff")
+        self.answers = [reply("Regarde bien. [photo:warm]")]
+        code, out = ai.http_post(
+            {
+                "action": "transferania",
+                "op": "send",
+                "message": "montre",
+                "view": "accueil",
+                "digest": "x",
+                "persona": "warm",
+                "device_id": DEV,
+                "nsfw": True,
+            },
+            client_ip="127.0.0.1",
+            role="admin",
+        )
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out.get("photo"), "warm")
+        self.assertEqual(out["reply"], "Regarde bien.")
+        her = [m for m in out["messages"] if m.get("role") == "assistant"][-1]
+        self.assertEqual(her.get("photo"), "warm")
+        self.assertEqual(her.get("photo_href"), "/assets/companion/chat/warm.jpg")
+
+    def test_ambient_not_stored_in_chat_history(self):
+        self.answers = [reply("Forge ouverte.")]
+        ai.http_post({"action": "ambient", "view": "forge", "digest": "Vue : Forge", "persona": "warm", "device_id": DEV})
+        hist = ai.transferania_history(device_id=DEV)["messages"]
+        self.assertEqual(hist, [])
+
+    def test_celebrate_signal_requires_text(self):
+        sig = ai.parse_companion_signals({"celebrate": True})
+        self.assertEqual(sig["celebrate"], "")
+        sig2 = ai.parse_companion_signals({"celebrate": "Règle enregistrée"})
+        self.assertEqual(sig2["celebrate"], "Règle enregistrée")
+        sig3 = ai.parse_companion_signals({"ui": {"lecteur": "playing"}, "returning": True, "idle_ambient": True})
+        self.assertEqual(sig3["ui"]["lecteur"], "playing")
+        self.assertTrue(sig3["returning"])
+        self.assertTrue(sig3["idle_ambient"])
+
+    def test_navigation_digest_tag(self):
+        ctx = ai.gather_ambient("accueil", "Vue : Accueil\nTitre : Bonjour")
+        self.assertIn("(navigation seulement)", ctx)
+
+    def test_recent_ambient_ring(self):
+        ai.push_recent_ambient("Ligne un.", DEV)
+        ai.push_recent_ambient("Ligne deux.", DEV)
+        ai.push_recent_ambient("Ligne trois.", DEV)
+        ai.push_recent_ambient("Ligne quatre.", DEV)
+        prefs = ai.load_transferania_prefs(DEV)
+        self.assertEqual(len(prefs.get("recent_ambient") or []), 3)
+        self.assertEqual(prefs["recent_ambient"][-1], "Ligne quatre.")
+
+    def test_retains_twenty_one_source_messages(self):
+        ai.bind(key=lambda: "")
+        data = ai._empty_transferania()
+        for i in range(21):
+            data["messages"].append({"role": "user" if i % 2 == 0 else "assistant", "text": f"t{i}", "ts": float(i)})
+        ai.maybe_compress(data)
+        self.assertEqual(len(data["messages"]), 21)
+        self.assertFalse(data.get("summary"))
+
+    def test_retains_101_source_messages(self):
+        ai.bind(key=lambda: "")
+        data = ai._empty_transferania()
+        for i in range(101):
+            data["messages"].append(
+                {"role": "user" if i % 2 == 0 else "assistant", "text": f"t{i}", "ts": float(i), "nsfw": True}
+            )
+        ai.maybe_compress(data)
+        self.assertEqual(len(data["messages"]), 101)
+        self.assertFalse(data.get("summary"))
+
+    def test_clear_memory(self):
+        ai._record_transferania("user", "test", device_id=DEV)
+        code, out = ai.http_post({"action": "transferania", "op": "clear", "device_id": DEV})
+        self.assertTrue(out.get("cleared"))
+        self.assertEqual(ai.transferania_history(device_id=DEV)["messages"], [])
+
+    def test_device_id_required(self):
+        code, out = ai.http_post({"action": "transferania", "op": "history"})
+        self.assertEqual(code, 400)
+        self.assertEqual(out.get("code"), "device_id")
+
+    def test_status_includes_transferania(self):
+        st = ai.status()
+        self.assertIn("transferania", st)
+        self.assertEqual(st["name"], ai.TRANSFERANIA_NAME)
+
+    def test_reflection_and_expanded_memory_pipeline(self):
+        data = ai._empty_transferania()
+        ai.merge_thread_facts(
+            data,
+            "J'adore le café noir le matin. Je travaille sur le moteur Live2D. Je suis super content du rendu !",
+            "Moi aussi j'adore te voir avancer dessus, tu veux une pause ?",
+        )
+        self.assertGreaterEqual(len(data.get("facts") or []), 2)
+        self.assertTrue(any("café noir" in f for f in data["facts"]))
+        self.assertTrue(any("Live2D" in f for f in data["facts"]))
+        self.assertEqual(len(data.get("recent_replies") or []), 1)
+        self.assertIn("?", data.get("open_thread") or "")
+        ai.save_transferania(data, DEV)
+
+        sig = ai.parse_companion_signals({
+            "tension_level": 3,
+            "tension_label": "Brûlante & Audacieuse",
+            "warmth": 74,
+            "fav_acts": "petite fessée coquine, baiser",
+            "interactions": ["petite fessée coquine", "souffle chaud sur sa nuque"],
+        })
+        self.assertEqual(sig["tension_level"], 3)
+        self.assertEqual(sig["warmth"], 74)
+        self.assertEqual(len(sig["interactions"]), 2)
+
+        sys_prompt = ai.build_transferania_system(
+            "chat",
+            "flirt",
+            nsfw=False,
+            view="accueil",
+            device_id=DEV,
+            signals=sig,
+        )
+        self.assertIn("RÉFLEXION INTERNE & ÉTAT RELATIONNEL", sys_prompt)
+        self.assertIn("petite fessée coquine", sys_prompt)
+        self.assertIn("Variété & fraîcheur obligatoire", sys_prompt)
+        self.assertIn("café noir", sys_prompt)
+
+
 
 class WiringTests(unittest.TestCase):
     def test_bridge(self):
@@ -150,6 +463,12 @@ class WiringTests(unittest.TestCase):
         self.assertIn('raw == "/api/ai"', src)
         self.assertIn("hq_ai.bind(", src)
         self.assertIn('id="btn-ai"', src)
+        self.assertIn("hq-companion.js", src)
+        self.assertIn("companion_persona", src)
+        ai_py = (Path(__file__).resolve().parents[1] / "hq_ai.py").read_text(encoding="utf-8")
+        self.assertIn('a == "transferania"', ai_py)
+        self.assertIn("transferania_prefs.json", ai_py)
+        self.assertIn("TRANSFERANIA_THREADS", ai_py)
         self.assertNotIn("AQ.", src, "no API key in the code")
 
 

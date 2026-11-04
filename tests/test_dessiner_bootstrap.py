@@ -83,6 +83,8 @@ class AssetHttpTests(unittest.TestCase):
 
     def test_every_shipped_asset_has_an_explicit_type(self):
         for path in (SOURCE / "assets").iterdir():
+            if path.is_dir() or path.suffix.lower() == ".bak":
+                continue
             self.assertIn(path.suffix.lower(), iphone_bridge.ASSET_CONTENT_TYPES, path.name)
         self.assertEqual(iphone_bridge.ASSET_CONTENT_TYPES[".mjs"], JS)
 

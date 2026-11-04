@@ -35,6 +35,7 @@ _lock = threading.Lock()
 _root: Path | None = None
 _events: list[dict] = []
 _malformed = False
+_disk_sig = None  # (mtime_ns, size) of the file as we last loaded/wrote it
 _seq = 0
 
 
@@ -73,8 +74,16 @@ def _sanitize_meta(meta: dict | None) -> dict:
     return out
 
 
+def _file_sig(path):
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def _load() -> None:
-    global _events, _malformed
+    global _events, _malformed, _disk_sig
     path = _path()
     if not path.is_file():
         with _lock:
@@ -102,19 +111,26 @@ def _load() -> None:
     with _lock:
         _events = cleaned
         _malformed = False
+        _disk_sig = _file_sig(path)
 
 
 def _persist() -> None:
     """Atomic replace. A malformed on-disk file is left untouched."""
-    global _malformed
+    global _malformed, _disk_sig
     if _malformed:
         return
     path = _path()
     payload = {"version": 1, "events": _events[:MAX_EVENTS]}
+    # Skip the re-parse only when the file is exactly as we last loaded/wrote
+    # it; any outside change (or unknown state) still gets the full check.
+    sig = _file_sig(path)
+    verify = sig is None or _disk_sig is None or sig != _disk_sig
     try:
-        hq_state.write_json_atomic(path, payload)
+        hq_state.write_json_atomic(path, payload, verify_existing=verify)
     except RuntimeError:
         _malformed = True
+        return
+    _disk_sig = _file_sig(path)
 
 
 def record(

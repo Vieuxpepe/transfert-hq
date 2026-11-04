@@ -2801,6 +2801,25 @@
     return typeof document.startViewTransition === "function" && !calm();
   }
 
+  /** Marks HQ nav to skip a root view transition while a calendar morph runs. */
+  function calViewTransition(update) {
+    const w = typeof window !== "undefined" ? window : null;
+    const release = () => {
+      if (!w) return;
+      w.hqViewTransitionHold = Math.max(0, (w.hqViewTransitionHold || 0) - 1);
+    };
+    if (w) w.hqViewTransitionHold = (w.hqViewTransitionHold || 0) + 1;
+    try {
+      const vt = document.startViewTransition(update);
+      if (vt && vt.finished) vt.finished.finally(release);
+      else release();
+      return vt;
+    } catch (err) {
+      release();
+      throw err;
+    }
+  }
+
   function openDetail(item, source) {
     const shape = source && source.closest("#hq-cal-app") ? source.querySelector(".hq-cal-face") || source : null;
     if (!shape || !canMorph()) {
@@ -2811,7 +2830,7 @@
     let card = null;
     const seq = sheetSeq;
     try {
-      const vt = document.startViewTransition(() => {
+      const vt = calViewTransition(() => {
         shape.style.viewTransitionName = "";
         if (seq !== sheetSeq) return; // closed before it arrived
         card = buildDetail(item, false);
@@ -2878,7 +2897,7 @@
     sheetOpener = null;
     releaseSheet();
     try {
-      const vt = document.startViewTransition(() => {
+      const vt = calViewTransition(() => {
         card.style.viewTransitionName = "";
         detail.hidden = true;
         detail.textContent = "";

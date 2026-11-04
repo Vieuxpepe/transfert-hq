@@ -1,0 +1,66 @@
+[
+  {
+    "file": "background.png",
+    "size": [
+      1254,
+      1254
+    ],
+    "mode": "RGB",
+    "alpha_range": null,
+    "bounds": null
+  },
+  {
+    "file": "face.png",
+    "size": [
+      1254,
+      1254
+    ],
+    "mode": "RGBA",
+    "alpha_range": [
+      0,
+      255
+    ],
+    "bounds": [
+      0,
+      0,
+      1232,
+      1220
+    ]
+  },
+  {
+    "file": "hair.png",
+    "size": [
+      1254,
+      1254
+    ],
+    "mode": "RGBA",
+    "alpha_range": [
+      0,
+      255
+    ],
+    "bounds": [
+      43,
+      0,
+      1220,
+      1230
+    ]
+  },
+  {
+    "file": "torso.png",
+    "size": [
+      1254,
+      1254
+    ],
+    "mode": "RGBA",
+    "alpha_range": [
+      0,
+      255
+    ],
+    "bounds": [
+      0,
+      39,
+      1240,
+      1254
+    ]
+  }
+]

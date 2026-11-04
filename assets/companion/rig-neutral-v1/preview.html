@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transferania · Layer study 01</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#131218;color:#eee8ef;font:15px/1.5 system-ui,sans-serif;padding:32px}main{max-width:800px;margin:auto}h1{font-size:28px;margin:0 0 8px}p{color:#bbb3bf;margin:0 0 24px}.layout{display:grid;grid-template-columns:minmax(280px,480px) 250px;gap:28px}.stage{position:relative;aspect-ratio:1;overflow:hidden;background:repeating-conic-gradient(#302b36 0% 25%,#25212b 0% 50%) 0 0/20px 20px;border-radius:18px;border:1px solid #55455d}.stage img{position:absolute;pointer-events:none;object-fit:fill;display:block}.background{inset:0;width:100%;height:100%}.torso{left:3%;top:34%;width:94%;height:72%}.face{left:5%;top:-1%;width:90%;height:82%}.hair{left:5%;top:-1%;width:90%;height:92%}.stage img.hidden{display:none}aside{background:#201b26;border:1px solid #45374d;border-radius:16px;padding:20px;height:max-content}label{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #3b3042}input{accent-color:#bd8dd2;width:18px;height:18px}.badge{display:inline-block;background:#493446;color:#f1c8e2;border-radius:20px;padding:4px 12px;font-size:12px;margin-bottom:20px}small{display:block;color:#bcb0c3;margin-top:20px}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:20px}a{color:#dbb8ed}@media(max-width:720px){body{padding:18px}.layout{grid-template-columns:1fr}aside{display:flex;flex-wrap:wrap;gap:0 18px}label{border:0}small{width:100%}}
+</style>
+<style>.stage img{inset:0;width:100%;height:100%;left:0;top:0}.stage .garment{transform:translate3d(var(--pull-x,0px),var(--pull-y,0px),0)}.stage{touch-action:none;cursor:grab}.stage.is-pulling{cursor:grabbing}</style>
+<main><span class="badge">FIVE-LAYER RIG · ORIGINAL GARMENT TEXTURE</span><h1>Transferania · Layer study 01</h1><p>Drag the lower part to inspect the independent garment layer. Toggle layers to check the reconstructed areas beneath it.</p>
+<div class="layout"><div class="stage" aria-label="Layered character preview">
+<img class="background" src="background.svg" alt="Reconstructed room">
+<img class="torso" src="torso.svg" alt="Clothed torso base">
+<img class="face" src="face.svg" alt="Face and neck">
+<img class="garment" src="garment-front.svg" alt="Original garment front">
+<img class="hair" src="hair.svg" alt="Hair">
+</div><aside><label><input type="checkbox" checked data-layer="background">Background</label><label><input type="checkbox" checked data-layer="torso">Clothed torso</label><label><input type="checkbox" checked data-layer="face">Face and neck</label><label><input type="checkbox" checked data-layer="garment">Original garment front</label><label><input type="checkbox" checked data-layer="hair">Hair</label><small>The garment front uses the supplied original image pixels. The background, torso, face and hair are reconstructed layers. Available in the HQ companion under Outils → Calques.</small></aside></div>
+<div class="links"><a href="manifest.json">Asset manifest</a><a href="prompts.txt">Generation prompts</a></div></main>
+<script>
+document.querySelectorAll('[data-layer]').forEach(input=>input.addEventListener('change',()=>document.querySelector('.stage .'+input.dataset.layer).classList.toggle('hidden',!input.checked)));
+const stage=document.querySelector('.stage');let held=null,raf=0;
+function position(x,y){stage.style.setProperty('--pull-x',x+'px');stage.style.setProperty('--pull-y',y+'px')}
+stage.addEventListener('pointerdown',e=>{const r=stage.getBoundingClientRect();if(held||e.button||(e.clientY-r.top)/r.height<.55)return;e.preventDefault();cancelAnimationFrame(raf);held={id:e.pointerId,x:e.clientX,y:e.clientY,dx:0,dy:0};stage.setPointerCapture(e.pointerId);stage.classList.add('is-pulling')});
+stage.addEventListener('pointermove',e=>{if(!held||held.id!==e.pointerId)return;const r=stage.getBoundingClientRect(),x=e.clientX-held.x,y=e.clientY-held.y,d=Math.hypot(x,y),scale=d?r.width*.11*Math.tanh(d/(r.width*.4))/d:0;held.dx=x*scale;held.dy=y*scale;position(held.dx,held.dy)});
+function release(e){if(!held||held.id!==e.pointerId)return;const p=held;held=null;stage.classList.remove('is-pulling');try{stage.releasePointerCapture(e.pointerId)}catch(_){}const start=performance.now();function step(now){const t=Math.min(1,(now-start)/700),s=(now-start)/1000,k=Math.exp(-11.5*s)*(Math.cos(11*s)+11.5/11*Math.sin(11*s));position(p.dx*k,p.dy*k);if(t<1)raf=requestAnimationFrame(step);else{raf=0;position(0,0)}}raf=requestAnimationFrame(step)}
+stage.addEventListener('pointerup',release);stage.addEventListener('pointercancel',release);stage.addEventListener('lostpointercapture',release);
+</script>
+</html>
+

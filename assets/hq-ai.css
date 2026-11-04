@@ -117,17 +117,27 @@
 @keyframes ai-fade{from{opacity:0}to{opacity:1}}
 @keyframes ai-dot{0%,80%,100%{transform:translateY(0);opacity:.35}40%{transform:translateY(-5px);opacity:1}}
 @keyframes ai-glow{0%,100%{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent),0 6px 18px -6px color-mix(in srgb,var(--accent) 80%,transparent)}50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--accent) 10%,transparent),0 6px 22px -4px color-mix(in srgb,var(--accent) 90%,transparent)}}
+@keyframes ai-think{0%,100%{transform:scale(1);filter:brightness(1)}50%{transform:scale(1.06);filter:brightness(1.15)}}
 @keyframes ai-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes ai-msg-rise{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes ai-para-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes ai-ref-pulse{0%{box-shadow:none}40%{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 25%,transparent)}100%{box-shadow:none}}
+@keyframes ai-src-in{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}
 @keyframes ai-shimmer{from{background-position:120% 0}to{background-position:-120% 0}}
 @media (prefers-reduced-motion:no-preference){
   .ai-back.is-in{animation:ai-fade .2s ease}
   .ai-back.is-in .ai-panel{animation:ai-in .38s cubic-bezier(.2,.9,.25,1)}
   .ai-back.is-out{animation:ai-fade .2s ease reverse forwards}
   .ai-orb{animation:ai-glow 3.2s ease-in-out infinite}
+  .ai-orb.is-think{animation:ai-think 1.15s ease-in-out infinite}
   .ai-dots i{animation:ai-dot 1.1s ease-in-out infinite}
   .ai-dots i:nth-child(2){animation-delay:.15s}
   .ai-dots i:nth-child(3){animation-delay:.3s}
   .ai-chip,.ai-card,.ai-ref.is-full{animation:ai-rise .4s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 60ms)}
+  .ai-msg.is-ai.ai-msg-rise{animation:ai-msg-rise .48s cubic-bezier(.2,.9,.25,1) both}
+  .ai-msg.is-ai .ai-para-in{animation:ai-para-in .4s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--pi,0) * 70ms + 80ms)}
+  .ai-ref.is-ref-pulse{animation:ai-ref-pulse .55s ease}
+  .ai-sources .ai-ref.ai-src-in{animation:ai-src-in .38s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 55ms + 120ms)}
   .ai-primary.is-busy::after{animation:ai-shimmer 1.1s linear infinite}
   @media (max-width:759.98px){.ai-back.is-in .ai-panel{animation:ai-up .38s cubic-bezier(.2,.9,.25,1)}}
 }

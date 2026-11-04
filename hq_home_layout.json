@@ -1,0 +1,16 @@
+{
+  "order": [
+    "carnet",
+    "today",
+    "devices",
+    "pc",
+    "send",
+    "feed"
+  ],
+  "hidden": [],
+  "side": [
+    "devices",
+    "pc",
+    "send"
+  ]
+}

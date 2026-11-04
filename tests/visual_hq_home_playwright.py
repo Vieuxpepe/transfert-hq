@@ -116,7 +116,7 @@ def main() -> None:
                     page.click("#home-devices-off")
                     check(page.evaluate("() => [...document.querySelectorAll('#hq-devices .device-tile.is-off')].every((t) => getComputedStyle(t).display !== 'none')"),
                           "« n hors ligne » unfolds them")
-                check(page.locator("#hq-actions .icon-btn svg").count() == 4, "this PC: four line icons")
+                check(page.locator("#hq-actions .icon-btn:not([hidden]) svg").count() == 4, "this PC: four line icons (Relancer only on the Windows PC)")
                 metas = page.locator("#hq-devices .device-tile:not(.is-off) .device-tile-total").all_inner_texts()
                 check(any(m.startswith("sur ") and "Go" in m for m in metas), f"a device with storage gives its total ({metas})")
                 check(page.evaluate("() => [...document.querySelectorAll('#hq-devices .device-tile-meta')].every((m) => m.scrollWidth <= m.clientWidth + 1)"),

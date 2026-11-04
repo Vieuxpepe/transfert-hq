@@ -16,6 +16,11 @@
   const $ = (sel, el) => (el || document).querySelector(sel);
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const say = (msg, kind) => { if (typeof window.toast === "function") window.toast(msg, kind || "ok"); };
+  const skMotion = (kind, detail) => {
+    const app = document.getElementById("hq-sk-app");
+    if (!app) return;
+    try { app.dispatchEvent(new CustomEvent("hq-sk-motion", { detail: Object.assign({ kind }, detail || {}) })); } catch (_) {}
+  };
   const TOOLS = {
     quick: [["select", "Sélection", "↖"], ["pen", "Stylo", "✎"], ["eraser", "Gomme", "⌫"], ["text", "Texte", "T"],
       ["dimlin", "Cote", "↔"], ["dimang", "Cote ∠", "∠"], ["pan", "Main", "✋"]],
@@ -284,11 +289,13 @@
     cancelAction();
     scheduleDraft();
     refreshAll();
+    skMotion("mode", { mode });
   }
   function setTool(tool) {
     st.tool = tool; st.angleTaps = []; cancelAction();
     if (tool !== "select") st.multi = false;
     refreshAll();
+    skMotion("tool", { tool });
   }
 
   function renderToolbar() {
@@ -350,6 +357,7 @@
     root.querySelector('[data-act="view2d"]').setAttribute("aria-selected", on ? "false" : "true");
     root.querySelector('[data-act="view3d"]').setAttribute("aria-selected", on ? "true" : "false");
     if (on) scheduleMesh(); else resize();
+    skMotion("view", { tab3d: on });
   }
 
   function scheduleMesh() {
@@ -1200,6 +1208,7 @@
       }
       st.stem = res.stem; st.name = String(name).trim() || "croquis"; st.dirty = false; flushDraft();
       say("Enregistré : " + res.stem);
+      skMotion("save");
       showSaved(res);
       if (st.link && st.link.onSaved) { try { st.link.onSaved({ stem: res.stem, parent: res.parent || "" }); } catch (_) {} }
     } catch (e) { say("Échec de l'enregistrement : " + e.message, "err"); }

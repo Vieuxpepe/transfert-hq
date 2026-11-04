@@ -39,6 +39,7 @@ import hq_diagnostics
 import hq_diagnostics_ui
 import hq_drawings
 import hq_ai
+import hq_companion_art
 import hq_files
 import hq_folder_backups
 import hq_inventory
@@ -75,6 +76,7 @@ UPLOAD_TTL_SEC = 6 * 3600
 LOOPBACK_ONLY = False  # legacy flag; PIN is mandatory at startup (fail closed)
 BIND_HOST = "0.0.0.0"
 REQ_TIMEOUT_SEC = 30
+KEEPALIVE_IDLE_SEC = 30  # perf9: idle HTTP/1.1 keep-alive connection lifetime
 REQ_SEM_MAX = 64
 
 # Active content must never execute on the HQ origin
@@ -125,6 +127,10 @@ ASSET_CONTENT_TYPES = {
     ".webmanifest": "application/manifest+json",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".wav": "audio/wav",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
     ".gz": "application/gzip",  # Phase 4: the vendored OCR language data (served raw; the engine inflates it itself)
@@ -133,6 +139,9 @@ ASSET_CONTENT_TYPES = {
 # styles) and revalidate with an ETag (mtime + size): still read live from disk, but an unchanged file costs a 304.
 ASSET_GZIP_SUFFIXES = {".js", ".mjs", ".css", ".json", ".svg", ".webmanifest"}
 ASSET_GZIP_MIN = 1024
+# _send() replies (API JSON, HTML pages) are gzipped too when larger than this and the client accepts it.
+SEND_GZIP_MIN = 1024
+SEND_GZIP_TYPES = {"application/json", "application/javascript", "text/javascript", "image/svg+xml", "application/manifest+json"}
 _ASSET_GZ_CACHE: dict[str, tuple[int, int, bytes]] = {}
 _ASSET_GZ_LOCK = threading.Lock()
 
@@ -157,6 +166,51 @@ def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
             _ASSET_GZ_CACHE.clear()
         _ASSET_GZ_CACHE[key] = (st.st_mtime_ns, st.st_size, packed)
     return packed
+
+
+# perf9 (fix 4): page <script>/<link> URLs carry ?v=<mtime+size>; such a URL is cached for a year (immutable) when the
+# version still matches the file, so a repeat load makes no request at all. Un-versioned URLs (JS loaders, tests) keep
+# no-cache + ETag. Any edit changes the URL on the next page render (stat cached _ASSET_VER_TTL seconds at most).
+ASSET_IMMUTABLE_CC = "public, max-age=31536000, immutable"
+_ASSET_VER_TTL = 5.0
+_ASSET_VER_CACHE: dict[str, tuple[float, str | None]] = {}
+_ASSET_VER_LOCK = threading.Lock()
+_PAGE_ASSET_RE = re.compile(rb'(<script src="|<link rel="stylesheet" href=")/assets/([A-Za-z0-9._-]+\.(?:js|css))"')
+
+
+def asset_version(st: os.stat_result) -> str:
+    return f"{st.st_mtime_ns:x}{st.st_size:x}"
+
+
+def asset_version_for(rel: str) -> str | None:
+    key = f"{ROOT}|{rel}"
+    now = time.monotonic()
+    with _ASSET_VER_LOCK:
+        hit = _ASSET_VER_CACHE.get(key)
+        if hit and now - hit[0] < _ASSET_VER_TTL:
+            return hit[1]
+    try:
+        ver = asset_version((ROOT / "assets" / rel).stat())
+    except OSError:
+        ver = None
+    with _ASSET_VER_LOCK:
+        if len(_ASSET_VER_CACHE) > 512:
+            _ASSET_VER_CACHE.clear()
+        _ASSET_VER_CACHE[key] = (now, ver)
+    return ver
+
+
+def version_page_assets(body: bytes) -> bytes:
+    """Served page only (render_app() output itself is unchanged): add ?v= to its static script/stylesheet links."""
+    def sub(m: "re.Match[bytes]") -> bytes:
+        ver = asset_version_for(m.group(2).decode("ascii"))
+        if not ver:
+            return m.group(0)
+        return m.group(1) + b"/assets/" + m.group(2) + b"?v=" + ver.encode("ascii") + b'"'
+    try:
+        return _PAGE_ASSET_RE.sub(sub, body)
+    except Exception:
+        return body
 
 
 UPLOAD_POST_EXACT = {
@@ -240,11 +294,128 @@ _SESSIONS: dict[str, dict] = {}  # token -> {exp, role, user}
 _SESSIONS_LOCK = threading.Lock()
 SESSIONS_PATH = ROOT / "bridge_sessions.json"
 _CONFIG_LOCK = threading.Lock()
+
+
+def _atomic_write(path: Path, payload: "str | bytes") -> None:
+    """perf4: same-dir hidden temp file, flush, fsync, os.replace.
+
+    str is written like Path.write_text(encoding="utf-8") (same newline handling),
+    bytes are written verbatim. On any failure the destination is left untouched.
+    The temp name starts with "." so root scans/migration skip it (*.json.tmp is gitignored).
+    """
+    dest = Path(path)
+    tmp = dest.with_name(f".{dest.name}.{os.getpid()}-{threading.get_ident()}.json.tmp")
+    try:
+        if isinstance(payload, bytes):
+            with open(tmp, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(tmp, dest)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+# perf4: last good copy of bridge_config.json. Leading "." on purpose: root files
+# without a skipped suffix are migrated into Inbox at startup, and this holds the PIN.
+CONFIG_BAK_PATH = CONFIG_PATH.with_name("." + CONFIG_PATH.name + ".bak")
+
+
+def _save_config_text(text: str) -> None:
+    """Caller holds _CONFIG_LOCK. Back up the current file only if it parses, then replace atomically."""
+    try:
+        prev = CONFIG_PATH.read_bytes() if CONFIG_PATH.is_file() else b""
+        if prev:
+            json.loads(prev.decode("utf-8"))
+            old_bak = CONFIG_BAK_PATH.read_bytes() if CONFIG_BAK_PATH.is_file() else None
+            if old_bak != prev:
+                _atomic_write(CONFIG_BAK_PATH, prev)
+    except (OSError, ValueError) as e:
+        sys.stderr.write(f"bridge_config backup not updated: {type(e).__name__}\n")
+    _atomic_write(CONFIG_PATH, text)
 _PRESENCE: dict[str, dict] = {}
 _PRESENCE_LOCK = threading.Lock()
 _TRANSFERS: list[dict] = []
 _TRANSFERS_LOCK = threading.Lock()
 _STARTED_AT = time.time()
+_RESTART_LOCK = threading.Lock()
+_RESTART = {"at": 0.0}
+RESTART_GAP = 30.0  # seconds between two restart requests
+
+
+def bridge_code_changed(root: Path | None = None, started: float | None = None) -> bool:
+    """True when a .py file or an asset on disk is newer than this process: a restart would apply it."""
+    base = Path(root or ROOT)
+    t0 = float(started if started is not None else _STARTED_AT) + 2
+    try:
+        files = list(base.glob("*.py")) + [p for p in (base / "assets").iterdir() if p.is_file()]
+    except OSError:
+        return False
+    for f in files:
+        try:
+            if f.stat().st_mtime > t0:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def restart_supported(root: Path | None = None) -> bool:
+    return _is_windows() and (Path(root or ROOT) / "Restart-Bridge.ps1").is_file()
+
+
+def restart_command(root: Path | None = None) -> list[str]:
+    script = Path(root or ROOT) / "Restart-Bridge.ps1"
+    return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script)]
+
+
+def restart_bridge_detached(spawn=None) -> None:
+    """Run Restart-Bridge.ps1 in its own hidden process group so it outlives this process (which it stops)."""
+    log = ROOT / ".hq-restart.log"
+    cmd = restart_command()
+    if spawn is not None:
+        spawn(cmd)
+        return
+    new_group, no_window, breakaway = 0x00000200, 0x08000000, 0x01000000
+    with open(log, "ab") as out:
+        out.write(f"\n--- {datetime.now():%Y-%m-%d %H:%M:%S} restart requested\n".encode())
+        out.flush()
+        kw = dict(cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, close_fds=True)
+        try:
+            subprocess.Popen(cmd, creationflags=new_group | no_window | breakaway, **kw)
+        except OSError:
+            subprocess.Popen(cmd, creationflags=new_group | no_window, **kw)
+
+
+def request_restart(now: float | None = None) -> tuple[int, dict]:
+    t = time.time() if now is None else now
+    if not restart_supported():
+        return 501, {"error": "Redémarrage possible seulement sur le PC Windows principal (Restart-Bridge.ps1 introuvable)."}
+    with _RESTART_LOCK:
+        if t - _RESTART["at"] < RESTART_GAP:
+            return 429, {"error": "Redémarrage déjà en cours."}
+        _RESTART["at"] = t
+    return 200, {"ok": True, "pid": os.getpid()}
 UPLOAD_SESSIONS: dict[str, dict] = {}
 UPLOAD_SESSIONS_LOCK = threading.Lock()
 CLIENT_CHUNK = 2 * 1024 * 1024
@@ -830,7 +1001,7 @@ def load_config(*, write: bool = True) -> dict:
         base["auth_generation"] = gen
     if write:
         with _CONFIG_LOCK:
-            CONFIG_PATH.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
+            _save_config_text(json.dumps(base, indent=2) + "\n")
     return base
 
 
@@ -844,7 +1015,7 @@ except SystemExit as _fatal:  # Phase 15: a malformed config otherwise dies in a
 
 def save_config() -> None:
     with _CONFIG_LOCK:
-        CONFIG_PATH.write_text(json.dumps(CONFIG, indent=2) + "\n", encoding="utf-8")
+        _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
 
 
 def ensure_folders_and_migrate() -> None:
@@ -936,7 +1107,7 @@ def _persist_sessions() -> None:
             _SESSIONS.clear()
             _SESSIONS.update(slim)
             payload = dict(slim)
-        SESSIONS_PATH.write_text(json.dumps(payload), encoding="utf-8")
+            _atomic_write(SESSIONS_PATH, json.dumps(payload))
     except OSError as e:
         sys.stderr.write(f"persist sessions: {e}\n")
 
@@ -1267,7 +1438,27 @@ def tailscale_bin() -> str | None:
     return None
 
 
+_TS_IP_LOCK = threading.Lock()
+_TS_IP_CACHE: dict = {"at": None, "ip": None}
+TS_IP_TTL_OK = 60.0  # seconds a good `tailscale ip -4` answer is reused (was: one process per /api/status|health)
+TS_IP_TTL_FAIL = 10.0  # a failure/empty answer is retried soon so recovery is quick
+
+
 def tailscale_ipv4() -> str | None:
+    """Cached wrapper around _tailscale_ipv4_uncached() (monotonic TTL, thread-safe)."""
+    now = time.monotonic()
+    with _TS_IP_LOCK:
+        at = _TS_IP_CACHE["at"]
+        ip = _TS_IP_CACHE["ip"]
+        if at is not None and (now - at) < (TS_IP_TTL_OK if ip else TS_IP_TTL_FAIL):
+            return ip
+        ip = _tailscale_ipv4_uncached()
+        _TS_IP_CACHE["at"] = time.monotonic()
+        _TS_IP_CACHE["ip"] = ip
+        return ip
+
+
+def _tailscale_ipv4_uncached() -> str | None:
     exe = tailscale_bin()
     if not exe:
         return None
@@ -1452,7 +1643,7 @@ def bridge_status() -> dict:
             if isinstance(c, dict) and c.get("id")
         ],
         "chunk": CLIENT_CHUNK,
-        "shell_targets": cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers),
+        "shell_targets": cc_ext.list_shell_targets(tailscale_peers_fn=_tailscale_peers_for_status),
         "ssh_user": str(CONFIG.get("ssh_user") or ""),
         "actions": [
             {"id": a.get("id"), "label": a.get("label"), "type": a.get("type")}
@@ -1627,11 +1818,34 @@ def cached_roster_devices() -> list[dict]:
     return hq_companion.overlay_roster([host_device_entry(), *presence_list(), *peers])
 
 
+DEVICES_CACHE_MAX_AGE = 25.0  # /api/devices reuses the roster cache when younger than this
+
+
 def devices_roster() -> dict:
     peers = tailscale_peers()
     devices = [host_device_entry()] + presence_list() + peers
     _store_roster_cache(devices)
     return {"devices": [hq_devices.present(d) for d in hq_companion.overlay_roster(devices)]}
+
+
+_TS_PEERS_LOCK = threading.Lock()
+_TS_PEERS_CACHE: dict = {"at": None, "peers": []}
+TS_PEERS_TTL_OK = 30.0  # perf10: /api/status shell_targets only; roster/devices stay live
+TS_PEERS_TTL_FAIL = 10.0
+
+
+def _tailscale_peers_for_status() -> list[dict]:
+    """Cached tailscale_peers() for bridge_status() (one `tailscale status --json` per 30 s)."""
+    now = time.monotonic()
+    with _TS_PEERS_LOCK:
+        at = _TS_PEERS_CACHE["at"]
+        peers = _TS_PEERS_CACHE["peers"]
+        if at is not None and (now - at) < (TS_PEERS_TTL_OK if peers else TS_PEERS_TTL_FAIL):
+            return [dict(p) for p in peers]
+        peers = tailscale_peers()
+        _TS_PEERS_CACHE["at"] = time.monotonic()
+        _TS_PEERS_CACHE["peers"] = [dict(p) for p in peers]
+        return peers
 
 
 def tailscale_peers() -> list[dict]:
@@ -2308,6 +2522,8 @@ def bind_hq() -> None:
     hq_ai.bind(  # the assistant: reads the local stores for context, writes only after a confirmation, key stays on this PC
         root=ROOT,
         key=lambda: str(CONFIG.get("gemini_api_key") or os.environ.get("HQ_GEMINI_KEY") or "").strip(),
+        # Second Google project: its own per-model quota, tried after key 1 for each model.
+        extra_keys=lambda: [str(CONFIG.get("gemini_api_key_2") or os.environ.get("HQ_GEMINI_KEY_2") or "").strip()],
         calendar=lambda a, b: hq_calendar.query(a, b, with_catalog=False).get("items") or [],
         projects=lambda: hq_projects.http_get({})[1],
         inventory=hq_inventory.snapshot,
@@ -2317,6 +2533,11 @@ def bind_hq() -> None:
         projects_apply=hq_projects.apply,
         inventory_apply=hq_inventory.apply,
         carnet_note=_ai_note,
+        companion_persona=lambda: str(CONFIG.get("companion_persona") or "flirt").strip().lower(),
+        companion_context_config=lambda: CONFIG.get("companion_context", {}),
+        client_is_controller=lambda ip: cc_ext.classify_ip(str(ip or "")) in ("local", "lan", "tailscale"),
+        nsfw_enabled=lambda: CONFIG.get("companion_nsfw_enabled", True) is not False,
+        activity=lambda n: cc_ext.activity_list(n),  # Transferania reacts to true events: backups, prints
     )
     hq_folder_backups.bind(  # Fichiers: automatic backups of chosen folders, rolling window, to backup_dir/Dossiers
         root=ROOT,
@@ -2491,7 +2712,7 @@ def upload_init(name: str, size: int, folder: str) -> dict:
         "indexes": [],
     }
     d = chunk_upload_dir(upload_id)
-    (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    _atomic_write(d / "meta.json", json.dumps(meta))
     with UPLOAD_SESSIONS_LOCK:
         UPLOAD_SESSIONS[upload_id] = meta
     return {"id": upload_id, "chunk": chunk}
@@ -2532,7 +2753,7 @@ def upload_chunk(upload_id: str, index: int, data: bytes) -> dict:
         idxs.sort()
     meta["indexes"] = idxs
     meta["received"] = received
-    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    _atomic_write(meta_path, json.dumps(meta))
     with UPLOAD_SESSIONS_LOCK:
         UPLOAD_SESSIONS[upload_id] = meta
     return {"ok": True, "received": received, "size": meta.get("size")}
@@ -2651,11 +2872,36 @@ function toast(msg, kind='ok', ms=3200) {
   t.className = 'toast ' + kind;
   t.textContent = msg;
   box.appendChild(t);
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const hide = () => {
+    if (reduce) { t.remove(); return; }
+    t.classList.add('is-leaving');
+    t.classList.remove('show');
+    setTimeout(() => t.remove(), 260);
+  };
   setTimeout(() => t.classList.add('show'), 10);
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, ms);
+  setTimeout(hide, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+function hqSessionIsAdmin() {
+  return document.body.classList.contains('session-admin');
+}
+function hqApplySessionRole(me) {
+  const admin = !!(me && String(me.role || '').toLowerCase() === 'admin');
+  document.body.classList.toggle('session-admin', admin);
+  const navIntime = document.getElementById('nav-intime');
+  if (navIntime) navIntime.hidden = !admin;
+  const openIntime = document.getElementById('hq-intime-open');
+  if (openIntime) openIntime.hidden = !admin;
+  if (admin) {
+    try {
+      const want = localStorage.getItem('tf_hq_view') || '';
+      if (want === 'intime' && document.body.dataset.view !== 'intime') setView('intime');
+    } catch (_) {}
+  } else if (document.body.dataset.view === 'intime') setView('accueil');
+  return admin;
+}
 function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
@@ -2804,6 +3050,8 @@ function hqNavReveal(b) {
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
+  if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
+  const commit = () => {
   document.body.dataset.view = view;
   if (window.hqHideHelp) window.hqHideHelp();
   const lab = $('#view-label');
@@ -2845,6 +3093,10 @@ function setView(name) {
   } else if (window.hqForgeHide) {
     try { window.hqForgeHide(); } catch (e) { console.error(e); }
   }
+  };
+  if (window.HqTheme && typeof window.HqTheme.runViewChange === 'function') {
+    window.HqTheme.runViewChange(window, view, commit);
+  } else commit();
 }
 function isSimpleMode() {
   try { return (localStorage.getItem('tf_hq_mode') || 'simple') === 'simple'; } catch (_) { return true; }
@@ -2871,8 +3123,19 @@ function setupModeToggle() {
 function setupNav() {
   $$('.bottom-nav [data-nav]').forEach(b => b.addEventListener('click', () => setView(b.dataset.nav)));
   $('#status-chip')?.addEventListener('click', () => setView('plus'));
+  $('#hq-intime-open')?.addEventListener('click', () => { if (hqSessionIsAdmin()) setView('intime'); else toast('Réservé admin', 'err'); });
+  $('#hq-intime-focus-chat')?.addEventListener('click', () => {
+    if (window.HqCompanion && typeof window.HqCompanion.setExpanded === 'function') window.HqCompanion.setExpanded(true);
+  });
+  $('#hq-intime-fold')?.addEventListener('click', () => {
+    if (window.HqCompanion && typeof window.HqCompanion.setCollapsed === 'function') window.HqCompanion.setCollapsed(true, true);
+  });
+  $('#hq-intime-reset')?.addEventListener('click', () => {
+    if (window.HqCompanion && typeof window.HqCompanion.resetFloatHome === 'function') window.HqCompanion.resetFloatHome();
+  });
   let saved = 'accueil';
   try { saved = localStorage.getItem('tf_hq_view') || 'accueil'; } catch (_) {}
+  if (saved === 'intime' && !hqSessionIsAdmin()) saved = 'accueil';
   setView(saved);
   const wide = window.matchMedia('(min-width: 900px)');
   if (wide.addEventListener) wide.addEventListener('change', () => {
@@ -2894,9 +3157,21 @@ function escapeAttr(s) { return escapeHtml(s); }
 let currentRel = '';
 let itemsCache = [];
 
+// perf10: startup asks /api/me several times (hq, carnet, capture); share one GET for 4 s.
+let _hqMeMemo = null;
+function _hqMeCopy(d) { return (d && typeof d === 'object' && !(d instanceof Response)) ? JSON.parse(JSON.stringify(d)) : d; }
 async function api(url, opts={}) {
+  if (url === '/api/me' && !opts.hqFresh && Object.keys(opts).every(k => k === 'timeoutMs')) {
+    const now = Date.now();
+    if (!_hqMeMemo || now - _hqMeMemo.at > 4000) {
+      const p = api(url, { ...opts, hqFresh: true });
+      _hqMeMemo = { at: now, p };
+      p.catch(() => { if (_hqMeMemo && _hqMeMemo.p === p) _hqMeMemo = null; });
+    }
+    return _hqMeMemo.p.then(_hqMeCopy);
+  }
   const timeoutMs = Number(opts.timeoutMs || 15000);
-  const { timeoutMs: _drop, ...fetchOpts } = opts;
+  const { timeoutMs: _drop, hqFresh: _fresh, ...fetchOpts } = opts;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   let res;
@@ -3786,6 +4061,7 @@ async function refreshHQ() {
     await pollInbox();
     const me = await api('/api/me', { timeoutMs: 8000 }).catch(() => null);
     if (me && $('#hq-role')) $('#hq-role').textContent = (me.user || '') + ' · ' + (me.role || '');
+    hqApplySessionRole(me);
   } catch (_) {}
 }
 
@@ -3954,6 +4230,7 @@ function renderScenes(scenes) {
     try {
       await withBusy('Lancement…', () => api('/api/scene', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.scene }) }));
       toast('Scène lancée');
+      if (typeof window.hqPolishFlashChip === 'function') window.hqPolishFlashChip();
       await refreshHQ();
     } catch (e) { toast(e.message, 'err'); }
   }));
@@ -4024,6 +4301,46 @@ function setupHQ() {
       toast('PC verrouillé');
     } catch (e) { toast(e.message, 'err'); }
   });
+  const rb = $('#btn-restart-bridge');
+  if (rb && !rb.__wired) {
+    rb.__wired = true;
+    api('/api/pc/restart-bridge').then((st) => {
+      rb.hidden = !(st && st.supported);
+      rb.classList.toggle('is-due', !!(st && st.pending));
+      if (st && st.pending) rb.setAttribute('data-help', 'Du code a changé depuis le démarrage du pont : redémarre pour l appliquer.');
+    }).catch(() => { rb.hidden = true; });
+    rb.addEventListener('click', async () => {
+      if (!confirm('Redémarrer le pont HQ sur le PC principal ? La page se reconnecte toute seule.')) return;
+      let before = 0;
+      try { before = (await api('/api/diag/live')).pid || 0; } catch (_) {}
+      try {
+        await api('/api/pc/restart-bridge', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      } catch (e) { toast(e.message, 'err'); return; }
+      rb.disabled = true;
+      rb.classList.add('is-busy');
+      toast('Redémarrage du pont…');
+      const t0 = Date.now();
+      const poll = async () => {
+        try {
+          const r = await fetch('/api/diag/live', { credentials:'same-origin', cache:'no-store' });
+          const live = r.ok ? await r.json() : null;
+          if (live && live.pid && live.pid !== before) {
+            toast('Pont redémarré');
+            setTimeout(() => location.reload(), 500);
+            return;
+          }
+        } catch (_) {}
+        if (Date.now() - t0 > 45000) {
+          rb.disabled = false;
+          rb.classList.remove('is-busy');
+          toast('Le pont ne répond pas encore : lance Restart-Bridge.bat sur le PC.', 'err');
+          return;
+        }
+        setTimeout(poll, 1500);
+      };
+      setTimeout(poll, 2500);
+    });
+  }
   $('#btn-sleep')?.addEventListener('click', async () => {
     if (!confirm('Mettre le PC en veille ?')) return;
     try {
@@ -4321,6 +4638,9 @@ function hqPlayerClear() {
   hqPlayerMessage('');
   hqPlayerRenderList();
 }
+function hqPlayerStagePulse(kind) {
+  if (window.hqPlayerStageFx) { try { window.hqPlayerStageFx(kind); } catch (_) {} }
+}
 function hqPlayerLoad(rel, autoplay) {
   const video = $('#player-video'), audio = $('#player-audio');
   if (!video || !audio) return;
@@ -4335,6 +4655,7 @@ function hqPlayerLoad(rel, autoplay) {
     hqPlayerStop(video); hqPlayerStop(audio);
     hqPlayerRenderList();
     hqModelLoad(rel);
+    hqPlayerStagePulse('model');
     return;
   }
   hqModelStop();
@@ -4346,6 +4667,7 @@ function hqPlayerLoad(rel, autoplay) {
       ? 'Le format .' + ext + ' ne se lit pas dans un navigateur (MKV, AVI, WMV… : ni Safari ni Chrome). Utilise « Sauver » puis ouvre-le avec VLC.'
       : "Ce fichier n'est ni une musique, ni une vidéo, ni un modèle 3D.");
     hqPlayerRenderList();
+    hqPlayerStagePulse(kind);
     return;
   }
   use.hidden = false;
@@ -4356,6 +4678,7 @@ function hqPlayerLoad(rel, autoplay) {
     const started = use.play();
     if (started && started.catch) started.catch(e => { if (e && e.name === 'NotAllowedError') hqPlayerMessage('Appuie sur lecture pour démarrer.'); });
   }
+  hqPlayerStagePulse(kind);
 }
 function hqPlayerError(e) {
   const el = e.target;
@@ -4384,6 +4707,12 @@ function hqPlayerInit() {
   $('#player-filter').addEventListener('input', hqPlayerRenderList);
   $('#player-list').addEventListener('click', (e) => { const b = e.target.closest('[data-play]'); if (b) hqPlayerOpen(b.dataset.play, true); });
   $('#btn-player-fit').addEventListener('click', () => { if (hqModel.viewer) hqModel.viewer.fit(); });
+}
+function hqPlayerFlyFromRow(row) {
+  if (!row || !window.hqPlayerFlyFrom) return;
+  const img = row.querySelector('img');
+  const r = row.getBoundingClientRect();
+  window.hqPlayerFlyFrom(r, img && img.src ? img.src : '');
 }
 function hqPlayerOpen(rel, autoplay) {
   if (!rel) return;
@@ -4458,6 +4787,7 @@ document.addEventListener('dblclick', (e) => {
   if (!row) return;
   e.preventDefault();
   try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+  hqPlayerFlyFromRow(row);
   hqPlayerOpen(row.dataset.rel, true);
 });
 // Media names: a single click waits ~300 ms for a second one, then opens the file as before
@@ -4499,6 +4829,7 @@ document.addEventListener('pointerup', (e) => {
     hqLastTap = null;
     e.preventDefault();
     hqGhostClick = { until: now + 600, x: e.clientX, y: e.clientY };
+    hqPlayerFlyFromRow(row);
     hqPlayerOpen(rel, true);
     return;
   }
@@ -4603,7 +4934,51 @@ body[data-view="inventaire"] [data-panel="inventaire"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="lecteur"] [data-panel="lecteur"],
 body[data-view="forge"] [data-panel="forge"],
+body[data-view="intime"] [data-panel="intime"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
+body:not(.session-admin) .bottom-nav [data-nav="intime"]{display:none!important}
+body[data-view="intime"] .hq-intime-panel{
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  gap:0;
+  min-height:calc(100dvh - var(--nav-h,64px) - 88px);
+  padding:0 0 calc(12px + env(safe-area-inset-bottom,0px));
+  pointer-events:none;
+}
+.hq-intime-bar{
+  position:sticky;
+  top:0;
+  z-index:2;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:10px 14px;
+  padding:10px 12px 12px;
+  margin:0 0 8px;
+  border-radius:16px;
+  border:1px solid color-mix(in srgb,var(--line) 75%,transparent);
+  background:color-mix(in srgb,var(--panel) 92%,transparent);
+  backdrop-filter:blur(10px);
+  pointer-events:auto;
+}
+.hq-intime-bar-copy h2{margin:0;font-size:1.05rem;line-height:1.25}
+.hq-intime-kicker{margin:4px 0 0;font-size:var(--text-xs);color:var(--muted);max-width:min(520px,100%)}
+.hq-intime-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.hq-intime-actions button{width:auto;min-height:var(--tap-min);padding:8px 12px;font-size:var(--text-sm)}
+.hq-intime-ambient{
+  flex:1 1 auto;
+  min-height:40vh;
+  margin:0 8px;
+  border-radius:20px;
+  pointer-events:none;
+  background:
+    radial-gradient(120% 80% at 15% 0%,color-mix(in srgb,var(--accent) 14%,transparent),transparent 58%),
+    radial-gradient(90% 70% at 95% 100%,color-mix(in srgb,var(--accent2) 12%,transparent),transparent 52%),
+    linear-gradient(180deg,color-mix(in srgb,var(--panel) 40%,transparent),transparent 70%);
+  border:1px dashed color-mix(in srgb,var(--line) 55%,transparent);
+}
 .player-name{margin:0;font-weight:800;font-size:1.05rem;word-break:break-word}
 .player-where{margin:2px 0 12px}
 .player-stage video{display:block;width:100%;max-height:62vh;background:#000;border-radius:12px}
@@ -4703,7 +5078,7 @@ li.file.is-dir .fname{color:var(--ok)}
 .status dd{margin:2px 0 8px;font-weight:700;word-break:break-all;font-family:var(--font-mono)}
 .status dt{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
 #toasts{position:fixed;left:50%;bottom:calc(var(--nav-h) + 12px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:99;width:min(92vw,420px);display:grid;gap:8px;pointer-events:none}
-.toast{opacity:0;transform:translateY(8px);transition:.25s;background:var(--panel);border:1px solid var(--line);
+.toast{opacity:0;transform:translateY(14px);background:var(--panel);border:1px solid var(--line);
   padding:12px 14px;border-radius:12px;box-shadow:0 10px 30px #0004;font-weight:700}
 .toast.show{opacity:1;transform:none}
 .toast.err{border-color:var(--danger)}
@@ -4816,11 +5191,12 @@ body.kiosk .bottom-nav{display:none}
   font-size:var(--text-sm);font-family:var(--font);color:var(--text)}
 .op-busy{position:fixed;left:50%;bottom:calc(var(--nav-h) + 56px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);
   z-index:90;width:min(92vw,420px);margin:0}
-.busy-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1s infinite}
+.busy-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);position:relative}
 .busy-elapsed{margin-left:auto;color:var(--muted)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .skeleton{opacity:.7}
-li.hint.skeleton::after{content:'';display:inline-block;width:4ch;animation:pulse 1.2s infinite}
+li.hint.skeleton::after{content:'';display:inline-block;width:4ch}
+@media (prefers-reduced-motion:no-preference){li.hint.skeleton::after{animation:pulse 1.2s infinite}}
 button:disabled,.btn:disabled{opacity:.72;cursor:not-allowed}
 :where(button,a,input,select,textarea,summary,[role="button"],.palette-card li):focus-visible{outline:var(--focus-ring);outline-offset:2px}
 .accueil-main,.accueil-side,.accueil-grid,section{min-width:0}
@@ -4929,6 +5305,7 @@ body.wall{{background:#070b10}}
 {APP_JS}
 // wallboard extras
 async function refreshWall() {{
+  if (document.hidden) return;
   try {{
     const [h, act, al, med, st] = await Promise.all([
       api('/api/health'), api('/api/activity'), api('/api/alerts'), api('/api/media/recent'), api('/api/status')
@@ -4971,7 +5348,10 @@ async function refreshWall() {{
 }}
 document.addEventListener('DOMContentLoaded', () => {{
   refreshWall();
-  setInterval(refreshWall, 6000);
+  setInterval(refreshWall, 20000);
+}});
+document.addEventListener('visibilitychange', () => {{
+  if (!document.hidden) refreshWall();
 }});
 </script>
 <script src="/assets/hq-features.js"></script>
@@ -5056,13 +5436,26 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/hq-font-inter.woff2" as="font" type="font/woff2" crossorigin/>
 <link rel="preload" href="/assets/hq-font-fraunces.woff2" as="font" type="font/woff2" crossorigin/>
 <link rel="stylesheet" href="/assets/hq-theme.css"/>
+<link rel="stylesheet" href="/assets/hq-chrome.css"/>
+<link rel="stylesheet" href="/assets/hq-polish.css"/>
+<link rel="stylesheet" href="/assets/hq-lecteur.css"/>
+<link rel="stylesheet" href="/assets/hq-dessiner-motion.css"/>
 <link rel="stylesheet" href="/assets/hq-ai.css"/>
+<link rel="stylesheet" href="/assets/hq-companion.css"/>
+<link rel="stylesheet" href="/assets/hq-companion-adult-face.css"/>
+<link rel="stylesheet" href="/assets/hq-companion-adult-fx.css"/>
 <script src="/assets/qrcode.min.js"></script>
 </head>
 <body data-view="accueil">
 <a class="skip-link" href="#main">Aller au contenu</a>
+<div class="hq-dangling-member-mount" aria-hidden="true">
+  <div class="hq-dangling-member-swing">
+    <img class="hq-dangling-member" src="/assets/dangling-member.png" alt="" width="153" height="486" decoding="async" draggable="false"/>
+  </div>
+</div>
 <nav class="bottom-nav" aria-label="Navigation HQ">
   <button type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
+  <button type="button" id="nav-intime" data-nav="intime" hidden data-help="Espace rien qu'à vous deux — visible seulement avec une session admin (PIN admin)."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 20.5s-6.5-4.2-6.5-9.4a4.9 4.9 0 0 1 9.3-2.1A4.9 4.9 0 0 1 18.5 11c0 5.2-6.5 9.5-6.5 9.5z"/></svg></span><span class="nav-label">Intime</span></button>
   <button type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
   <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
   <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
@@ -5177,6 +5570,7 @@ def render_app() -> bytes:
         <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille" data-help="Met ce PC en veille."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/></svg></span><span class="lbl">Veille</span></button>
         <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture" data-help="Enregistre une capture d'écran dans Captures."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="lbl">Capture</span></button>
         <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="lbl">Dossier</span></button>
+        <button type="button" class="icon-btn" id="btn-restart-bridge" hidden aria-label="Redémarrer le pont HQ" data-help="Redémarre le pont HQ sur le PC principal (applique les mises à jour). La page se reconnecte toute seule."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></svg></span><span class="lbl">Relancer</span></button>
       </div>
       <div class="row hq-actions mode-complet-only" id="hq-custom-actions" aria-label="Actions personnalisées"></div>
       <div class="row hq-actions mode-complet-only" id="hq-scenes" aria-label="Scènes"></div>
@@ -5319,7 +5713,7 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="lecteur">
-    <section class="hq hq-primary" aria-labelledby="player-title">
+    <section class="hq hq-primary player-primary" aria-labelledby="player-title">
       <div class="sec-head">
         <h2 id="player-title">Lecteur</h2>
         <p class="sec-hint">Musique, vidéos et modèles 3D déjà dans Transfert</p>
@@ -6300,6 +6694,21 @@ def render_app() -> bytes:
     </dialog>
   </div>
 
+  <div data-panel="intime" class="hq-intime-panel" id="hq-intime-panel" aria-labelledby="hq-intime-title">
+    <div class="hq-intime-bar">
+      <div class="hq-intime-bar-copy">
+        <h2 id="hq-intime-title">Tête-à-tête</h2>
+        <p class="hq-intime-kicker">Session admin · déplace-la avec ⠿, les bords de bulle ou pince l'avatar — comme partout ailleurs sur HQ.</p>
+      </div>
+      <div class="hq-intime-actions">
+        <button type="button" class="ghost" id="hq-intime-fold">Replier</button>
+        <button type="button" class="secondary" id="hq-intime-reset">Reset position</button>
+        <button type="button" class="secondary" id="hq-intime-focus-chat">Ouvrir le fil</button>
+      </div>
+    </div>
+    <div class="hq-intime-ambient" aria-hidden="true"></div>
+  </div>
+
   <div data-panel="plus">
     <nav class="sys-jump" aria-label="Sections Système">
       <button type="button" data-jump="system-session">Session</button>
@@ -6445,6 +6854,58 @@ def render_app() -> bytes:
         <dt>Discord</dt><dd>{"activé" if str(CONFIG.get("discord_webhook_url") or "").strip() else "off"}</dd>
         <dt>PWA</dt><dd>iPhone: Partager → Sur l'écran d'accueil</dd>
       </dl>
+      <div class="field" style="margin-top:12px">
+        <label><input type="checkbox" id="hq-polish-sound"/> Sons discrets lors des succès ( très faible )</label>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" id="hq-companion-on" checked/> Transferania — bulle flottante (commentaires + chat)</label>
+      </div>
+      <div class="field">
+        <label for="hq-companion-persona">Personnalité de Transferania</label>
+        <select id="hq-companion-persona">
+          <option value="flirt">Complice (un peu flirteuse)</option>
+          <option value="warm">Chaleureuse</option>
+          <option value="off">Désactivée</option>
+        </select>
+        <p class="hint">Mémoire par appareil (identifiant local dans le navigateur) : iPhone et PC ont chacun leur fil Transferania. Bulle repliée par défaut — tape l’icône pour ouvrir.</p>
+      </div>
+      <div class="field">
+        <label for="hq-companion-nickname">Surnom (Transferania t'appelle ainsi)</label>
+        <input type="text" id="hq-companion-nickname" maxlength="40" placeholder="Optionnel" autocomplete="nickname"/>
+      </div>
+      <div class="field">
+        <label for="hq-companion-address">Forme d'adresse</label>
+        <select id="hq-companion-address">
+          <option value="tu">Tu (tutoiement)</option>
+          <option value="vous">Vous</option>
+          <option value="custom">Autre…</option>
+        </select>
+        <input type="text" id="hq-companion-address-custom" maxlength="30" placeholder="Ex. capitaine" hidden/>
+      </div>
+      <div class="field">
+        <label for="hq-companion-qc">Registre québécois</label>
+        <select id="hq-companion-qc">
+          <option value="light">Léger</option>
+          <option value="medium">Marqué</option>
+          <option value="off">Standard (off)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="hq-companion-intensity">Intensité complice <span id="hq-companion-intensity-val">2</span>/3</label>
+        <input type="range" id="hq-companion-intensity" min="1" max="3" step="1" value="2"/>
+      </div>
+      <div class="field">
+        <label for="hq-companion-topics-off">Sujets à éviter (un par ligne, max 5)</label>
+        <textarea id="hq-companion-topics-off" rows="3" maxlength="400" placeholder="Ex. travail&#10;famille"></textarea>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" id="hq-companion-celebrate" checked/> Célébrer les petites victoires (toasts succès)</label>
+      </div>
+      <div class="field">
+        <label><input type="checkbox" id="hq-companion-nsfw-visible"/> Afficher le bouton <strong>Adulte</strong> à côté de l'avatar Transferania</label>
+        <p class="hint">Visible seulement avec une session <strong>admin</strong> (PIN admin). Les comptes envoi ne voient pas ce bouton. Règle l'intensité 1–3 ci-dessus pour le registre en mode adulte.</p>
+        <button type="button" class="secondary" id="hq-intime-open" hidden style="margin-top:8px">Ouvrir l'espace Tête-à-tête ›</button>
+      </div>
     </section>
   </div>
 
@@ -6468,7 +6929,14 @@ def render_app() -> bytes:
 <script src="/assets/hq-home.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
+<script src="/assets/hq-dangling-member.js"></script>
+<script src="/assets/hq-chrome.js"></script>
+<script src="/assets/hq-polish.js"></script>
+<script src="/assets/hq-lecteur.js"></script>
+<script src="/assets/hq-dessiner-motion.js"></script>
 <script src="/assets/hq-ai.js"></script>
+<script src="/assets/hq-companion-lewd-lines.js"></script>
+<script src="/assets/hq-companion.js"></script>
 <script src="/assets/hq-carnet-media.js"></script>
 <script src="/assets/hq-carnet-eng.js"></script>
 <script src="/assets/hq-carnet-struct.js"></script>
@@ -6636,6 +7104,10 @@ def _diag_record_5xx(handler, code: int, obj) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "TransfertBridge/7.0"
+    # perf9 (fix 3): HTTP/1.1 keep-alive so the page's ~100 assets reuse a few connections. Only bodiless GETs keep the
+    # connection; any other method or a request body closes after the reply (parse_request), and any final reply without
+    # Content-Length closes too (end_headers). Idle kept-alive connections release _REQ_SEM and end after KEEPALIVE_IDLE_SEC.
+    protocol_version = "HTTP/1.1"
 
     def setup(self) -> None:
         super().setup()
@@ -6643,6 +7115,47 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(REQ_TIMEOUT_SEC)
         except OSError:
             pass
+        try:  # perf9 (fix 2): headers and body are separate small writes; no Nagle / delayed-ACK stall between them
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except (OSError, AttributeError):
+            pass
+
+    def parse_request(self) -> bool:
+        ok = super().parse_request()
+        if ok and (
+            self.command != "GET"
+            or self.headers.get("Transfer-Encoding")
+            or (self.headers.get("Content-Length") or "0").strip() not in ("", "0")
+        ):
+            self.close_connection = True
+        return ok
+
+    def end_headers(self) -> None:
+        buf = b"".join(getattr(self, "_headers_buffer", None) or []).lower()
+        try:
+            code = int(buf[9:12])
+        except ValueError:
+            code = 200
+        if code >= 200 and getattr(self, "request_version", "HTTP/1.0") != "HTTP/0.9":
+            if not getattr(self, "close_connection", True) and code not in (204, 304) and b"\r\ncontent-length:" not in buf:
+                self.close_connection = True
+            if getattr(self, "close_connection", True) and b"\r\nconnection:" not in buf:
+                self.send_header("Connection", "close")
+        super().end_headers()
+
+    def _await_next_request(self) -> bool:
+        """Keep-alive: wait (at most KEEPALIVE_IDLE_SEC) for the next request's first byte; False on idle/EOF/error."""
+        sock = self.connection
+        try:
+            sock.settimeout(KEEPALIVE_IDLE_SEC)
+            return bool(self.rfile.peek(1))
+        except (OSError, ValueError):
+            return False
+        finally:
+            try:
+                sock.settimeout(REQ_TIMEOUT_SEC)
+            except OSError:
+                pass
 
     def handle(self) -> None:
         """Bound concurrent handlers; refuse quickly with 503 when saturated."""
@@ -6660,10 +7173,30 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return
+        held = True
         try:
-            super().handle()
+            self.close_connection = True
+            self.handle_one_request()
+            while not self.close_connection:
+                _REQ_SEM.release()  # an idle kept-alive connection never holds a slot
+                held = False
+                if not self._await_next_request():
+                    break
+                if not _REQ_SEM.acquire(blocking=False):
+                    self.close_connection = True
+                    try:
+                        self.connection.sendall(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                            b"Content-Length: 11\r\nConnection: close\r\n\r\nServer busy"
+                        )
+                    except OSError:
+                        pass
+                    break
+                held = True
+                self.handle_one_request()
         finally:
-            _REQ_SEM.release()
+            if held:
+                _REQ_SEM.release()
 
     def log_message(self, fmt: str, *args) -> None:
         # Access log keeps client / method / path / status / size but never the query string (it can carry
@@ -6817,6 +7350,10 @@ class Handler(BaseHTTPRequestHandler):
     ) -> None:
         if code in (401, 403) and getattr(self, "_prebody_refusal", False):
             headers = list(headers or []) + self._drain_refused_body()
+        gz = self._gzip_send_body(code, body, content_type, headers)
+        if gz is not None:
+            body = gz
+            headers = list(headers or []) + [("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -6828,6 +7365,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _gzip_send_body(self, code, body, content_type, headers) -> bytes | None:
+        """Gzipped body for _send() when worthwhile and safe, else None (send as-is). Text/JSON/HTML/JS only,
+        > SEND_GZIP_MIN bytes, client sent Accept-Encoding: gzip, no Range request, and no caller-set
+        Content-Encoding / Content-Range / Content-Disposition (downloads) / ETag (left untouched)."""
+        try:
+            if not isinstance(body, (bytes, bytearray)) or len(body) <= SEND_GZIP_MIN:
+                return None
+            if code < 200 or code in (204, 206, 304):
+                return None
+            req = getattr(self, "headers", None)
+            if req is None or "gzip" not in (req.get("Accept-Encoding") or "").lower() or req.get("Range"):
+                return None
+            ct = (content_type or "").split(";", 1)[0].strip().lower()
+            if not (ct.startswith("text/") or ct in SEND_GZIP_TYPES):
+                return None
+            for k, _v in headers or []:
+                if str(k).lower() in ("content-encoding", "content-range", "content-disposition", "etag"):
+                    return None
+            return gzip.compress(bytes(body), compresslevel=5, mtime=0)
+        except Exception:
+            return None
+
     def _send_asset(self, path: Path, ctype: str) -> None:
         """An /assets/ file: 304 when the browser already has this version (ETag), else the bytes, gzipped for text
         files when accepted. Cache-Control: no-cache (always revalidated, so an edited file shows on the next load)."""
@@ -6838,7 +7397,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         etag = asset_etag(st)
         sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
-        common = [("ETag", etag), ("Cache-Control", "no-cache"), ("Vary", "Accept-Encoding")]
+        # perf9: immutable only when ?v= names THIS version; a stale or missing tag stays no-cache (revalidated).
+        want = (parse_qs(urlparse(self.path).query).get("v") or [""])[0]
+        cache = ASSET_IMMUTABLE_CC if want and want == asset_version(st) else "no-cache"
+        common = [("ETag", etag), ("Cache-Control", cache), ("Vary", "Accept-Encoding")]
         if etag in sent or "*" in sent:
             self.send_response(304)
             for k, v in common:
@@ -7754,7 +8316,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(code, payload)
             return True
         if raw == "/api/ai":  # the assistant: usage and whether a key is set (admin: not in the upload allowlist)
-            code, payload = hq_ai.http_get(parse_qs(parsed.query))
+            ip = self.client_address[0] if self.client_address else ""
+            code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
+            self._json(code, payload)
+            return True
+        if raw == "/api/companion/art":
+            nsfw = CONFIG.get("companion_nsfw_enabled", True) is not False
+            code, payload = hq_companion_art.http_get(role=self._role(), nsfw=nsfw, root=ROOT)
             self._json(code, payload)
             return True
         if raw == "/api/backups/folders":  # Fichiers: automatic folder backups (admin: not in the upload allowlist)
@@ -8163,7 +8731,18 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
-            code, payload = hq_ai.http_post(data)
+            ip = self.client_address[0] if self.client_address else ""
+            code, payload = hq_ai.http_post(data, client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
+            self._json(code, payload)
+            return True
+        if raw == "/api/companion/art":
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            nsfw = CONFIG.get("companion_nsfw_enabled", True) is not False
+            code, payload = hq_companion_art.http_post(ROOT, data, role=self._role(), nsfw=nsfw)
             self._json(code, payload)
             return True
         if raw == "/api/backups/folders":  # Fichiers: automatic folder backups (CSRF checked before routing)
@@ -8219,6 +8798,8 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             return
         except ConnectionResetError:
+            return
+        except ConnectionAbortedError:  # client closed the tab mid-reply (WinError 10053): not a server error
             return
         except Exception as e:
             rid = _diag_record_exc(self, e)
@@ -8286,13 +8867,22 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw.startswith("/assets/"):
-            name = Path(raw[len("/assets/") :]).name
-            path = ROOT / "assets" / name
+            rel = unquote(raw[len("/assets/") :].lstrip("/"))
+            if not rel or ".." in rel.replace("\\", "/"):
+                self._send(404, b"missing")
+                return
+            assets_root = (ROOT / "assets").resolve()
+            path = (assets_root / rel).resolve()
+            try:
+                path.relative_to(assets_root)
+            except ValueError:
+                self._send(404, b"missing")
+                return
             if path.is_file():
                 ctype = ASSET_CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
                 # Phase 4: ONLY the vendored OCR worker script is allowed to compile WebAssembly (its own response CSP);
                 # the page and every other response keep the unchanged policy.
-                self._wasm_ok = name == "vendor-tesseract-worker.min.js"
+                self._wasm_ok = path.name == "vendor-tesseract-worker.min.js"
                 try:
                     self._send_asset(path, ctype)
                 finally:
@@ -8334,7 +8924,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw in ("/", "/index.html"):
-            self._send(200, render_app())
+            self._send(200, version_page_assets(render_app()))
             return
 
         if raw == "/api/list":
@@ -8357,6 +8947,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if raw == "/api/status":
             self._json(200, bridge_status())
+            return
+
+        if raw == "/api/pc/restart-bridge":
+            if self._role() != "admin":
+                self._json(200, {"ok": True, "supported": False})
+                return
+            self._json(200, {"ok": True, "supported": restart_supported(), "pending": bridge_code_changed(), "pid": os.getpid(), "started_at": _STARTED_AT})
             return
 
         if raw == "/api/health":
@@ -8467,11 +9064,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/wallboard" or raw == "/wallboard.html":
-            self._send(200, render_wallboard())
+            self._send(200, version_page_assets(render_wallboard()))
             return
 
         if raw == "/api/devices":
-            self._json(200, devices_roster())
+            # Serve the roster cache when fresh (< DEVICES_CACHE_MAX_AGE s); ?refresh=1 forces a live probe.
+            _force = (parse_qs(parsed.query).get("refresh") or [""])[0] in ("1", "true", "yes")
+            _age = roster_cache_age()
+            if not _force and _age is not None and _age < DEVICES_CACHE_MAX_AGE:
+                self._json(200, {"devices": [hq_devices.present(d) for d in cached_roster_devices()]})
+            else:
+                self._json(200, devices_roster())
             return
 
         if raw == "/api/transfers":
@@ -8540,6 +9143,8 @@ class Handler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             return
         except ConnectionResetError:
+            return
+        except ConnectionAbortedError:  # client closed the tab mid-reply (WinError 10053): not a server error
             return
         except ValueError as e:
             try:
@@ -8734,6 +9339,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(500, {"error": str(e)})
                 return
             self._json(200, {"ok": True, **info})
+            return
+
+        if raw == "/api/pc/restart-bridge":
+            if not self._require_admin():
+                return
+            code, out = request_restart()
+            if code == 200:
+                cc_ext.log_activity("action", f"Redémarrage du pont demandé depuis {self.client_address[0]}")
+            self._json(code, out)
+            if code == 200:
+                def _go() -> None:
+                    try:
+                        restart_bridge_detached()
+                    except Exception as e:
+                        sys.stderr.write(f"restart failed: {e}\n")
+                        with _RESTART_LOCK:
+                            _RESTART["at"] = 0.0
+
+                threading.Timer(0.6, _go).start()
             return
 
         if raw == "/api/pc/lock":

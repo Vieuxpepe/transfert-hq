@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {readFileSync} from 'node:fs';
+const source=readFileSync(new URL('../assets/hq-companion.js',import.meta.url),'utf8');
+const helper=source.slice(source.indexOf('  function setSupportCursor('),source.indexOf('  function cursorSupportContact('));
+const S={},ctx={S};vm.createContext(ctx);vm.runInContext(helper+';this.set=setSupportCursor;',ctx);
+const element=(value='',priority='')=>({style:{value,priority,getPropertyValue(){return this.value;},getPropertyPriority(){return this.priority;},setProperty(k,v,p=''){this.value=v;this.priority=p;},removeProperty(){this.value='';this.priority='';}}});
+const a=element('pointer','important'),b=element('grab');
+ctx.set(a);assert.equal(a.style.value,'n-resize');assert.equal(a.style.priority,'important');
+ctx.set(a);ctx.set(b);assert.equal(a.style.value,'pointer');assert.equal(a.style.priority,'important');
+assert.equal(b.style.value,'n-resize');ctx.set(null);assert.equal(b.style.value,'grab');
+const c=element();ctx.set(c);ctx.set(null);assert.equal(c.style.value,'');
+console.log('check_hq_companion_support_cursor: priority, target switching and original cursor restoration ok');

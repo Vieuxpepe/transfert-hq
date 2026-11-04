@@ -320,6 +320,10 @@
 
   function buzz(ms) {
     try {
+      if (typeof S.win.hqPolishHaptic === "function") {
+        S.win.hqPolishHaptic(Array.isArray(ms) ? "stock" : ms >= 12 ? "drop" : "tick");
+        return;
+      }
       if (S.win.navigator.vibrate) S.win.navigator.vibrate(ms);
     } catch (_) {}
   }
@@ -1682,6 +1686,16 @@
     renderBar();
   }
 
+  function flyToLecteur(fromEl) {
+    if (typeof S.win.hqPlayerFlyFrom !== "function" || !fromEl) return;
+    const card = fromEl.closest ? fromEl.closest(".fx-card, li.file") : fromEl;
+    if (!card) return;
+    const img = card.querySelector("img");
+    const rect = card.getBoundingClientRect();
+    S.win.hqPlayerFlyFrom(rect, img && img.src ? img.src : "");
+    if (typeof S.win.hqPolishLecteurHint === "function") S.win.hqPolishLecteurHint(true);
+  }
+
   function wireItem(t, it) {
     const rel = it.rel;
     let press = 0;
@@ -1709,6 +1723,7 @@
           S.win.clearTimeout(t.__tap);
           t.__tap = 0;
           closeSheet(true);
+          flyToLecteur(t);
           S.win.hqPlayerOpen(rel, true);
           return;
         }
@@ -2081,6 +2096,7 @@
     if (ok) {
       buzz(10);
       toast(ok > 1 ? ok + " fichiers envoyés dans « " + folder.split("/").pop() + " »" : "Envoyé dans « " + folder.split("/").pop() + " »");
+      if (typeof S.win.hqPolishBurst === "function") S.win.hqPolishBurst(S.trayEl);
       if (S.rel === folder || S.rel === "" ) await load(S.rel === "" ? folder : S.rel);
       else if (within(folder, S.rel)) await load(S.rel);
     }
@@ -2244,13 +2260,16 @@
     ];
     if (FOR_LECTEUR.test(it.name) && typeof S.win.hqPlayerOpen === "function") acts.push(btn("Lecteur", { icon: "play", on: () => {
       closeSheet(true);
+      flyToLecteur(tile || stage);
       S.win.hqPlayerOpen(it.rel, true);
     } }));
     if (EDITABLE.test(it.name)) acts.push(btn("Éditer", { icon: "edit", on: () => editText(it) }));
     if (it.rel.startsWith("Print/")) acts.push(btn("Imprimer", { icon: "print", on: async () => {
       try {
+        if (typeof S.win.hqPolishPrintSend === "function") S.win.hqPolishPrintSend(it.name);
         await postJson("/api/print", { rel: it.rel });
         toast("Envoyé à l'imprimante");
+        if (typeof S.win.hqPolishBurst === "function") S.win.hqPolishBurst(tile || stage);
       } catch (e) {
         toast((e && e.message) || "Impression impossible", null, null, true);
       }

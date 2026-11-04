@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+const {rigPostureGoal:goal,stepRigPosture:step,rigPostureGravity:gravity,clothTensionTarget:load,stepClothTension:cloth,rigClothCurves:curves,rigClothTextureTransform:texture}=createRequire(import.meta.url)('../assets/hq-companion.js').pure;
+assert.deepEqual(goal('unknown'),goal('upright'));
+assert.deepEqual(goal('__proto__'),goal('upright'));
+let p={pitch:0,roll:0};
+const first=step(p,'forward',1/60);
+assert.ok(first.pitch>0&&first.pitch<goal('forward').pitch);
+for(let i=0;i<240;i++) p=step(p,'forward',1/60);
+assert.ok(Math.abs(p.pitch-goal('forward').pitch)<.001);
+assert.deepEqual(step(p,'reclined',1,true),p,'direct manipulation holds the current posture');
+assert.deepEqual(step(p,'reclined',1/60,false,true),goal('reclined'),'reduced motion applies a static posture');
+let a={pitch:0,roll:0},b={pitch:0,roll:0};
+for(let i=0;i<60;i++)a=step(a,'left',1/60);
+for(let i=0;i<120;i++)b=step(b,'left',1/120);
+assert.ok(Math.abs(a.roll-b.roll)<1e-10,'pose easing is frame-rate independent');
+assert.deepEqual(gravity(0,0),{tilt:0,hang:0,spread:0});
+assert.ok(gravity(.8,0).hang>0);
+assert.ok(gravity(-.85,0).hang<0&&gravity(-.85,0).spread>0);
+assert.equal(gravity(0,-.8).tilt,-gravity(0,.8).tilt);
+for(const pitch of [-1e9,-1,0,1,1e9,NaN])for(const roll of [-1e9,0,1e9,NaN]) {
+ const g=gravity(pitch,roll);assert.ok(Object.values(g).every(Number.isFinite));
+ assert.ok(Math.abs(g.tilt)<=Math.PI/6&&Math.abs(g.hang)<3&&g.spread<=1);
+}
+assert.equal(load({}),0);assert.equal(load({sy:1}),0);
+assert.ok(load({speed:30})>load({speed:0}));assert.ok(load({support:.8})>load({support:0}));
+assert.ok(load({pull:.8})>load({pull:.2}));assert.ok(load({sy:1.1})>load({sy:1}));
+assert.equal(load({pull:100,x:10000}),1);
+let t=0;for(let i=0;i<60;i++)t=cloth(t,1,1/60);
+assert.ok(t>.99&&t<=1);
+for(let i=0;i<120;i++)t=cloth(t,0,1/60);
+assert.equal(t,0,'fabric completely relaxes after release');
+assert.equal(cloth(.2,.8,0,true),.8);
+assert.notEqual(curves('left',0),curves('left',1));
+assert.notEqual(curves('left',1),curves('right',1));
+assert.ok(!curves('right',NaN).includes('NaN'));
+console.log('Posture: bounded gravity, stable easing, freeze, reduced motion; fabric: load, relaxation and geometry passed');
+
+assert.notEqual(texture('left',0),texture('left',.7));
+assert.notEqual(texture('right',.7,-1),texture('right',.7,1));
+assert.ok(!texture('left',NaN,Infinity).includes('NaN'));

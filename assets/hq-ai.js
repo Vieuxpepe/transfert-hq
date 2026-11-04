@@ -167,23 +167,42 @@
     S.back = back;
     S.panel = panel;
     S.tabs = tabs;
+    S.headOrb = head.querySelector(".ai-orb");
   }
 
-  function open(tab) {
+  function syncOrbBusy() {
+    if (S.headOrb) S.headOrb.classList.toggle("is-think", !!S.busy);
+  }
+
+  function open(opts) {
     if (!S.back) build();
     S.ret = S.doc.activeElement;
     S.back.hidden = false;
     S.back.classList.remove("is-out");
     void S.back.offsetWidth;
     S.back.classList.add("is-in");
+    S.doc.body.classList.add("hq-ai-open");
+    const tab = typeof opts === "string" ? opts : (opts && opts.tab) || S.tab;
+    const seed = opts && opts.seed ? String(opts.seed) : "";
     setTab(tab || S.tab, true);
     loadStatus();
+    if (seed) {
+      S.win.requestAnimationFrame(() => {
+        const ta = S.body.querySelector("textarea");
+        if (ta) {
+          ta.value = seed;
+          grow(ta);
+          ta.focus({ preventScroll: true });
+        }
+      });
+    }
   }
 
   function close() {
     if (!S.back || S.back.hidden) return;
     S.back.classList.remove("is-in");
     S.back.classList.add("is-out");
+    S.doc.body.classList.remove("hq-ai-open");
     S.win.setTimeout(() => {
       if (S.back.classList.contains("is-out")) S.back.hidden = true;
     }, calm() ? 0 : 220);
@@ -231,6 +250,21 @@
       return;
     }
     if (!st) return;
+    const amb = st.ambient;
+    if (amb && typeof amb.used === "number") {
+      const pct = Math.min(100, Math.round((100 * amb.used) / amb.per_day));
+      const meter = el("span", { class: "ai-meter", title: "Répliques ambient " + amb.used + " / " + amb.per_day }, [el("i")]);
+      meter.firstChild.style.width = pct + "%";
+      f.appendChild(el("span", { class: "ai-quota is-companion" }, [el("span", { text: "Transferania (ambient)" }), meter, el("span", { class: "ai-n", text: amb.used + "/" + amb.per_day })]));
+    }
+    const tr = st.transferania;
+    if (tr && typeof tr.used === "number") {
+      const pct = Math.min(100, Math.round((100 * tr.used) / tr.per_day));
+      const meter = el("span", { class: "ai-meter", title: "Chat Transferania " + tr.used + " / " + tr.per_day }, [el("i")]);
+      meter.firstChild.style.width = pct + "%";
+      const mem = tr.messages ? " · " + tr.messages + " msg" : "";
+      f.appendChild(el("span", { class: "ai-quota is-companion" }, [el("span", { text: "Transferania (chat)" + mem }), meter, el("span", { class: "ai-n", text: tr.used + "/" + tr.per_day })]));
+    }
     const pick = (id) => (st.models || []).find((m) => m.id === id);
     const show = [pick(lastModel || "gemini-3.1-flash-lite"), pick("gemma-4-26b-a4b-it")].filter(Boolean);
     for (const m of show) {
@@ -276,6 +310,23 @@
     S.sendBtn = go;
     b.append(list, el("div", { class: "ai-compose" }, [ta, el("div", { class: "ai-compose-row" }, [deep, go])]));
     list.scrollTop = list.scrollHeight;
+    syncOrbBusy();
+    if (!calm()) {
+      S.win.requestAnimationFrame(() => {
+        const nodes = list.querySelectorAll(".ai-msg.is-ai.ai-msg-reveal");
+        const last = nodes[nodes.length - 1];
+        if (!last) return;
+        last.classList.add("ai-msg-rise");
+        last.querySelectorAll("p, ul").forEach((p, pi) => {
+          p.classList.add("ai-para-in");
+          p.style.setProperty("--pi", String(pi));
+        });
+        last.querySelectorAll(".ai-sources .ai-ref.is-full").forEach((c, ci) => {
+          c.style.setProperty("--i", String(ci));
+          c.classList.add("ai-src-in");
+        });
+      });
+    }
   }
 
   function grow(ta) {
@@ -287,7 +338,7 @@
     if (m.role === "user") return el("div", { class: "ai-msg is-user" }, [el("p", { text: m.text })]);
     if (m.pending) return el("div", { class: "ai-msg is-ai is-pending", "aria-label": "Réflexion…" }, [el("span", { class: "ai-dots" }, [el("i"), el("i"), el("i")])]);
     if (m.error) return el("div", { class: "ai-msg is-ai is-error" }, [el("p", { text: m.error })]);
-    const box = el("div", { class: "ai-msg is-ai" });
+    const box = el("div", { class: "ai-msg is-ai ai-msg-reveal" });
     for (const blk of parseAnswer(m.text, (m.sources || []).length)) {
       if (blk.type === "p") box.appendChild(paintRuns(el("p"), blk.runs, m.sources));
       else {
@@ -319,7 +370,15 @@
   }
 
   function sourceChip(s, full) {
-    const b = el("button", { type: "button", class: "ai-ref" + (full ? " is-full" : ""), title: s.label, on: { click: () => go(s) } }, [el("span", { class: "ai-ref-n", text: String(s.n) })]);
+    const b = el("button", { type: "button", class: "ai-ref" + (full ? " is-full" : ""), title: s.label, on: { click: () => {
+      if (!calm()) {
+        b.classList.add("is-ref-pulse");
+        S.win.setTimeout(() => b.classList.remove("is-ref-pulse"), 650);
+      } else if (typeof b.animate === "function") {
+        b.animate([{ transform: "scale(1)" }, { transform: "scale(1.06)" }, { transform: "none" }], { duration: 280, easing: "cubic-bezier(.2,.8,.2,1)" });
+      }
+      go(s);
+    } } }, [el("span", { class: "ai-ref-n", text: String(s.n) })]);
     if (full) b.appendChild(el("span", { class: "ai-ref-l", text: s.label }));
     return b;
   }
@@ -336,6 +395,11 @@
     if (!t) return;
     close();
     if (typeof S.win.setView === "function") S.win.setView(t.view);
+    if (typeof S.win.HqTheme !== "undefined" && S.win.HqTheme.navComet) {
+      try {
+        S.win.HqTheme.navComet(S.win, t.view);
+      } catch (_) {}
+    }
     if (t.hash) {
       try {
         if (S.win.location.hash === t.hash) S.win.dispatchEvent(new S.win.HashChangeEvent("hashchange"));
@@ -348,13 +412,14 @@
     const q = String(text || "").trim();
     if (!q || S.busy) return;
     S.busy = true;
+    syncOrbBusy();
     const history = S.thread.filter((m) => !m.pending && !m.error).slice(-6).map((m) => ({ role: m.role === "user" ? "user" : "model", text: m.text }));
     S.thread.push({ role: "user", text: q });
     const wait = { role: "ai", pending: true };
     S.thread.push(wait);
     paintAsk();
     try {
-      const out = await call("/api/ai", { action: "ask", q, history, deep: S.deep });
+      const out = await call("/api/ai", { action: "ask", q, history, deep: S.deep, nsfw: typeof S.win.hqCompanionNsfwOn === "function" && S.win.hqCompanionNsfwOn() });
       Object.assign(wait, { pending: false, text: out.answer, sources: out.sources || [], cited: out.cited || [], model_label: out.model_label });
       paintFoot(out.model);
       loadStatus();
@@ -362,6 +427,7 @@
       Object.assign(wait, { pending: false, error: (e && e.message) || "L'assistant n'a pas pu répondre" });
     } finally {
       S.busy = false;
+      syncOrbBusy();
       paintAsk();
       const last = S.list && S.list.lastElementChild;
       if (last && !calm() && typeof last.animate === "function") last.animate([{ opacity: 0, transform: "translateY(8px) scale(.98)" }, { opacity: 1, transform: "none" }], { duration: 320, easing: "cubic-bezier(.2,.8,.2,1)" });
@@ -406,6 +472,7 @@
     const t = String(text || "").trim();
     if (!t || S.busy) return;
     S.busy = true;
+    syncOrbBusy();
     S.noteBtn.disabled = true;
     S.noteBtn.classList.add("is-busy");
     S.results.textContent = "";
@@ -421,6 +488,7 @@
       S.results.appendChild(el("p", { class: "ai-warn", text: (e && e.message) || "Je n'ai pas compris" }));
     } finally {
       S.busy = false;
+      syncOrbBusy();
       S.noteBtn.disabled = false;
       S.noteBtn.classList.remove("is-busy");
     }
@@ -496,6 +564,10 @@
       try {
         S.win.hqToast("Noté ✓");
       } catch (_) {}
+    }
+    if ((res.done || []).length && typeof S.win.hqPolishBurst === "function") {
+      const first = r.querySelector(".ai-done");
+      S.win.hqPolishBurst(first || r);
     }
     if (typeof S.win.refreshFiles === "function") S.win.refreshFiles().catch(() => {});
   }

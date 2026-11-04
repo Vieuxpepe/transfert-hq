@@ -1,0 +1,24 @@
+/* Paste into DevTools on .hq-companion-rig-bust-left/right for live A/B */
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-bust-left,
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-bust-right {
+  --rig-bust-lobe-scale: 1.12; /* was 1.1 — tiny mass bump */
+  filter:
+    drop-shadow(0 0.5px 0.6px rgba(28, 8, 14, 0.55))   /* sharp contact */
+    drop-shadow(0 3px 6px rgba(45, 12, 24, 0.22))      /* soft ambient */
+    drop-shadow(0 8px 14px rgba(45, 12, 24, 0.10));    /* far falloff */
+}
+
+/* Optional sheen sibling (screen) — lag highlight during pull via JS */
+.hq-companion-rig-bust-sheen {
+  pointer-events: none;
+  mix-blend-mode: screen;
+  opacity: calc(0.35 + var(--pull-tension, 0) * 0.25);
+  background:
+    radial-gradient(circle at 33% 66%, rgba(255,236,220,0.55) 0 2%, transparent 9%),
+    radial-gradient(circle at 66% 67%, rgba(255,236,220,0.48) 0 2%, transparent 9%);
+  filter: blur(1.2px);
+  transform: translate3d(var(--rig-sheen-x, 0px), var(--rig-sheen-y, -1.5px), 0);
+}
+
+/* Pull squash/stretch — widen lobe ranges slightly (JS clamps today ~0.9–1.12) */
+/* --pull-lobe-sy: 0.88 .. 1.18 ; --pull-lobe-sx: 0.94 .. 1.16 */

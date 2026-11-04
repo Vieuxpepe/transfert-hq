@@ -94,6 +94,7 @@
     calendrier: { name: "Aube", dark: ["#2c3866", "#e59b78", "#7a5c8e", "#1b2140"], light: ["#dfe7f8", "#fcd2bd", "#e6d6ee", "#eef2fb"] },
     dessiner: { name: "Crépuscule d'atelier", dark: ["#1f3a4a", "#e07a5f", "#3d7a7a", "#14262f"], light: ["#d9ecee", "#fbcbbc", "#cfe8e4", "#edf6f6"] },
     forge: { name: "Braises", dark: ["#3b1a22", "#e8622c", "#9a2f2a", "#200f14"], light: ["#f6dcd6", "#ffc2a0", "#f3c0b4", "#fbeeea"] },
+    intime: { name: "Chambre pourpre", dark: ["#381428", "#ff3377", "#8a244c", "#1f0914"], light: ["#fbe4ec", "#ff80ab", "#f8bbd0", "#fdf0f4"] },
     fichiers: { name: "Coucher sur la mer", dark: ["#1d2f52", "#e2a14a", "#2f6f86", "#10203a"], light: ["#d8e5f6", "#fdd9a8", "#c8e6ee", "#ecf3fa"] },
     projets: { name: "Plan au crépuscule", dark: ["#1a2a55", "#f0955a", "#2c5d9a", "#111b38"], light: ["#d7e1f7", "#fdd2b2", "#cfdcf5", "#edf1fb"] },
     inventaire: { name: "Forêt au soir", dark: ["#23352a", "#d8a04c", "#4f6b3a", "#16211a"], light: ["#e1ecdc", "#f7dcab", "#d8e6c8", "#f1f6ec"] },
@@ -153,6 +154,14 @@
     }
   };
   const onHome = () => S.doc.body.dataset.view === "accueil";
+  /** perf11: the CSS effects pause off Accueil, in a hidden tab, and (header) when scrolled out of view. */
+  const syncPause = () => {
+    if (!S.home) return;
+    const off = S.doc.hidden || !onHome();
+    S.home.classList.toggle("hf-paused", off);
+    if (S.hero) S.hero.classList.toggle("hf-paused", off || S.heroOut === true);
+    if (S.bg) S.bg.classList.toggle("hf-paused", S.doc.hidden);
+  };
   /** The PC's time (hq-home.js corrects for this device's clock), so sky, clock and greeting always agree. */
   const hqNow = () => {
     try {
@@ -180,7 +189,7 @@
     const aurora = el("div", "home-aurora");
     aurora.append(el("span", "a1"), el("span", "a2"), el("span", "a3"));
     const stars = el("div", "home-stars");
-    for (const st of starField(46, 1077)) {
+    for (const st of starField(18, 1077)) { // perf11: 18 stars (was 46), the same first ones
       const s = el("span", "home-star");
       s.style.cssText = "left:" + st.x + "%;top:" + st.y + "%;width:" + st.size + "px;height:" + st.size + "px;animation-delay:" + st.delay + "s;animation-duration:" + st.dur + "s";
       stars.appendChild(s);
@@ -341,8 +350,8 @@
     }
     if (S.sec) {
       const s = date.getSeconds();
-      S.sec.style.transition = s === 0 ? "none" : "";
-      S.sec.style.width = ((s + 1) / 60) * 100 + "%";
+      S.sec.style.transition = s === 0 || calm() ? "none" : "";
+      S.sec.style.transform = "scaleX(" + ((s + 1) / 60).toFixed(4) + ")"; // perf11: a transform, not width: no layout every frame
     }
   }
 
@@ -598,6 +607,7 @@
         const v = S.doc.body.dataset.view;
         if (v === last) return;
         last = v;
+        syncPause();
         paintBackground(); // each page has its own sunset
         if (v === "accueil") enter();
       }).observe(S.doc.body, { attributes: true, attributeFilter: ["data-view"] });
@@ -609,6 +619,14 @@
       }, 1000);
       shootingStars();
       S.home.classList.toggle("is-fine", fine());
+      S.doc.addEventListener("visibilitychange", syncPause);
+      if (typeof win.IntersectionObserver === "function") {
+        new win.IntersectionObserver((es) => {
+          S.heroOut = !es[es.length - 1].isIntersecting;
+          syncPause();
+        }).observe(S.hero);
+      }
+      syncPause();
     };
     if (S.doc.readyState === "loading") S.doc.addEventListener("DOMContentLoaded", boot, { once: true });
     else boot();

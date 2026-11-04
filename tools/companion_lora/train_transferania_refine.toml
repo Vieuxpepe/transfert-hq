@@ -1,0 +1,36 @@
+# Fine-tune from epoch-4 checkpoint (lower LR, more epochs)
+
+pretrained_model_name_or_path = "C:/AI/stable-diffusion-webui-forge/models/Stable-diffusion/waiIllustriousSDXL_v170.safetensors"
+dataset_config = "C:/Transfert/tools/companion_lora/dataset_config.toml"
+output_dir = "C:/Transfert/.hq-ai/companion_lora_output"
+output_name = "transferania_char"
+save_model_as = "safetensors"
+
+network_weights = "C:/Transfert/.hq-ai/companion_lora_output/transferania_char-000004.safetensors"
+
+max_train_epochs = 10
+save_every_n_epochs = 2
+train_batch_size = 1
+gradient_accumulation_steps = 1
+
+network_module = "networks.lora"
+network_dim = 32
+network_alpha = 16
+network_train_unet_only = true
+
+optimizer_type = "AdamW8bit"
+learning_rate = 4e-5
+unet_lr = 4e-5
+lr_scheduler = "cosine"
+lr_warmup_steps = 20
+
+mixed_precision = "fp16"
+save_precision = "fp16"
+cache_latents = true
+cache_latents_to_disk = true
+cache_text_encoder_outputs = true
+gradient_checkpointing = true
+xformers = false
+
+seed = 42
+max_data_loader_n_workers = 0

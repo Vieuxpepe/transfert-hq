@@ -1,0 +1,72 @@
+/* Transferania adult portraits (hq-companion.js) — mood images in Adulte mode */
+.hq-companion-face-normal{display:contents}
+.hq-companion-face-adult{
+  display:none;
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  border-radius:50%;
+  pointer-events:none;
+  object-fit:cover;
+  object-position:center 38%;
+  transition:opacity .4s ease,transform .35s var(--hq-spring,cubic-bezier(.2,1.35,.35,1));
+}
+.hq-companion.is-nsfw .hq-companion-avatar{
+  padding:0!important;
+  overflow:hidden;
+  background:#120810!important;
+  border-color:color-mix(in srgb,#ff8fab 50%,var(--line))!important;
+}
+.hq-companion.is-nsfw.is-minimal .hq-companion-avatar{
+  width:72px!important;
+  height:72px!important;
+}
+.hq-companion.is-nsfw:not(.is-minimal) .hq-companion-avatar{
+  width:var(--companion-adult-avatar,168px)!important;
+  height:var(--companion-adult-avatar,168px)!important;
+}
+.hq-companion.is-nsfw .hq-companion-face{
+  position:absolute!important;
+  inset:0!important;
+  width:100%!important;
+  height:100%!important;
+  max-width:none!important;
+  margin:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  border-radius:50%!important;
+  display:block!important;
+  overflow:hidden!important;
+}
+.hq-companion.is-nsfw .hq-companion-avatar img.hq-companion-face-adult{
+  width:100%!important;
+  height:100%!important;
+  max-width:none!important;
+  filter:none!important;
+  animation:none!important;
+}
+.hq-companion.is-nsfw .hq-companion-face-normal{display:none!important}
+.hq-companion.is-nsfw .hq-companion-face-adult{
+  display:block!important;
+  z-index:1;
+}
+.hq-companion.is-nsfw .hq-companion-hair,
+.hq-companion.is-nsfw .hq-companion-bangs,
+.hq-companion.is-nsfw .hq-companion-blush,
+.hq-companion.is-nsfw .hq-companion-lips{display:none!important}
+@media (prefers-reduced-motion:no-preference){
+  .hq-companion.is-nsfw:not(.is-minimal):not(.is-nsfw-switch-on) .hq-companion-face-adult{
+    animation:hq-companion-adult-portrait-breathe 4.6s ease-in-out infinite;
+  }
+  .hq-companion.is-nsfw.is-blink .hq-companion-face-adult{
+    animation:none;
+    transform:scaleY(.97);
+    opacity:.92;
+  }
+}
+@keyframes hq-companion-adult-portrait-breathe{
+  0%,100%{transform:scale(1)}
+  50%{transform:scale(1.03)}
+}

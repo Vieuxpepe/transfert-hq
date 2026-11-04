@@ -1,0 +1,113 @@
+.hq-expressive-mouth{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  z-index:6;
+  pointer-events:none;
+  overflow:visible;
+}
+.hq-expressive-eyes{
+  position:absolute;inset:0;z-index:3;pointer-events:none;overflow:visible;
+}
+.hq-companion .hq-companion-avatar svg.hq-expressive-eyes{
+  width:100%!important;height:100%!important;filter:none!important;animation:none!important;
+}
+.hq-companion.has-layered-portrait.has-expressive-eyes .hq-companion-rig-eyelids{
+  display:none!important;
+}
+/* The avatar's generic SVG rules size toolbar icons to 22–28px. This SVG
+   is a portrait layer and must retain the face's full registration frame. */
+.hq-companion .hq-companion-avatar svg.hq-expressive-mouth{
+  width:100%!important;
+  height:100%!important;
+  filter:none!important;
+  animation:none!important;
+}
+.hq-mouth-jaw{display:none}
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face-wrap.has-tongue-jaw .hq-companion-rig-face-lower{
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27% 33%,transparent 36%);
+  mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27% 33%,transparent 36%);
+}
+.hq-companion .has-tongue-jaw .hq-mouth-jaw{
+  display:block;
+  z-index:2;
+  pointer-events:none;
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 33%,#000 36% 44%,transparent 50%);
+  mask-image:linear-gradient(to bottom,transparent 0 33%,#000 36% 44%,transparent 50%);
+  transform-origin:52% 33%;
+  transform:scaleY(calc(1 + var(--mouth-jaw,0) * .065));
+}
+/* Closed-mouth gasp: hand the chin to the jaw copy without opening the mouth slot. */
+.hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-companion-rig-face-lower{
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 46%,transparent 49% 100%);
+  mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 46%,transparent 49% 100%);
+}
+.hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-mouth-jaw{
+  display:block;
+  z-index:2;
+  pointer-events:none;
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 45%,#000 48% 100%);
+  mask-image:linear-gradient(to bottom,transparent 0 45%,#000 48% 100%);
+  transform-origin:52% 46%;
+  transform:scaleY(calc(1 + var(--mouth-jaw,0) * .065));
+}
+/* The pull interaction uses an intact face texture and owns its alignment. */
+.hq-companion.is-bust-pull .hq-mouth-jaw{display:none!important}
+.hq-companion.has-expressive-mouth .hq-companion-rig-face-mouth,
+.hq-companion.has-expressive-mouth .hq-companion-rig-mouth-open{
+  display:none!important;
+}
+.hq-mouth-control{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 9px;
+  font:inherit;
+  color:inherit;
+}
+.hq-mouth-control select{
+  max-width:160px;
+  font:inherit;
+  color:inherit;
+  background:var(--panel,#292233);
+  border:1px solid var(--line,#5a435e);
+  border-radius:7px;
+  padding:5px;
+}
+
+/* Glass-licking steam & saliva smear overlay */
+.hq-companion-glass-saliva {
+  position: absolute;
+  top: 28%;
+  left: 44%;
+  width: 58px;
+  height: 52px;
+  border-radius: 46% 54% 50% 50% / 38% 38% 62% 62%;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 235, 245, 0.48) 0%, rgba(240, 190, 215, 0.28) 45%, rgba(255, 255, 255, 0.12) 65%, transparent 75%);
+  box-shadow: 0 0 16px rgba(255, 180, 210, 0.35), inset 0 -3px 8px rgba(255, 255, 255, 0.32);
+  filter: blur(1.2px);
+  pointer-events: none;
+  z-index: 12;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.6);
+  transition: opacity 0.35s ease-out, transform 0.4s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+.hq-companion-glass-saliva::after {
+  content: "";
+  position: absolute;
+  top: 75%;
+  left: 48%;
+  width: 4px;
+  height: 18px;
+  border-radius: 3px;
+  background: linear-gradient(to bottom, rgba(255, 230, 242, 0.38), rgba(255, 255, 255, 0.08) 80%, transparent 100%);
+  filter: blur(0.6px);
+}
+.hq-companion.is-glass-licking .hq-companion-glass-saliva {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.15);
+}
+.hq-companion.is-glass-licking svg.hq-expressive-mouth {
+  filter: drop-shadow(0 2px 8px rgba(255, 110, 160, 0.42));
+}

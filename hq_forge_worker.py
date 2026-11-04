@@ -486,7 +486,7 @@ def submission_body(settings: dict, task_id: str) -> dict:
         "width": settings["width"],
         "height": settings["height"],
         "batch_size": 1,
-        "n_iter": 1,
+        "n_iter": max(1, min(4, int(settings.get("n_iter") or 1))),
         "save_images": False,
         "send_images": True,
         "script_name": "",

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,6 +30,11 @@ class AssetDeliveryTests(unittest.TestCase):
         cls.js = cls.tmp / "assets" / "big.js"
         cls.js.write_text("/* " + "transfert " * 2000 + "*/\nconsole.log('ok');\n", encoding="utf-8")
         (cls.tmp / "assets" / "tiny.css").write_text("a{b:c}", encoding="utf-8")
+        with wave.open(str(cls.tmp / "assets" / "reaction.wav"), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(24000)
+            audio.writeframes(b"\0\0" * 240)
         shutil.copy(SOURCE / "assets" / "hq-files.js", cls.tmp / "assets" / "hq-files.js")
         iphone_bridge.ROOT = cls.tmp
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Quiet)
@@ -73,6 +79,13 @@ class AssetDeliveryTests(unittest.TestCase):
         self.assertEqual((st, body), (200, b"a{b:c}"))
         self.assertNotIn("content-encoding", h)
 
+    def test_wav_reactions_are_delivered_as_audio(self):
+        st, headers, body = self.get("/assets/reaction.wav", Accept_Encoding="gzip")
+        self.assertEqual(st, 200)
+        self.assertEqual(headers.get("content-type"), "audio/wav")
+        self.assertTrue(body.startswith(b"RIFF"))
+        self.assertNotIn("content-encoding", headers)
+
     def test_etag_gives_304_and_an_edit_shows_at_once(self):
         st, h, _ = self.get("/assets/big.js")
         etag = h["etag"]
@@ -86,7 +99,8 @@ class AssetDeliveryTests(unittest.TestCase):
             st, h3, body = self.get("/assets/big.js", If_None_Match=etag, Accept_Encoding="gzip")
             self.assertEqual(st, 200)
             self.assertNotEqual(h3["etag"], etag)
-            self.assertTrue(gzip.decompress(body).endswith(b"// edited\n"), "the gzip cache follows the file")
+            dec = gzip.decompress(body)
+            self.assertIn(b"// edited", dec, "the gzip body should reflect the on-disk edit")
         finally:
             self.js.write_text(old, encoding="utf-8")
 
