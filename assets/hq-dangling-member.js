@@ -880,22 +880,64 @@
 
     const ORAL_TEX_W = 772;
     const ORAL_TEX_H = 1022;
+    const ORAL_EYELID_PATCH_SRC = "/assets/transferina_eyelid_closed_patch.png?v=1";
     let oralHeadImg = null;
     let oralHeadImgLoaded = false;
+    let oralEyelidPatchImg = null;
+    let oralEyelidPatchLoaded = false;
     let oralLastGirth = -1;
     let oralLastDepth = -1;
 
     function loadOralHeadImg() {
-      if (oralHeadImg) return;
-      oralHeadImg = new win.Image();
-      oralHeadImg.onload = () => {
-        oralHeadImgLoaded = true;
-        if (oralHead) drawOralHeadCanvas(oralLastGirth >= 0 ? oralLastGirth : 0, oralLastDepth >= 0 ? oralLastDepth : 0);
-      };
-      oralHeadImg.src = ORAL_HEAD_SRC;
-      if (oralHeadImg.complete) oralHeadImgLoaded = true;
+      if (!oralHeadImg) {
+        oralHeadImg = new win.Image();
+        oralHeadImg.onload = () => {
+          oralHeadImgLoaded = true;
+          if (oralHead) drawOralHeadCanvas(oralLastGirth >= 0 ? oralLastGirth : 0, oralLastDepth >= 0 ? oralLastDepth : 0);
+        };
+        oralHeadImg.src = ORAL_HEAD_SRC;
+        if (oralHeadImg.complete) oralHeadImgLoaded = true;
+      }
+      if (!oralEyelidPatchImg) {
+        oralEyelidPatchImg = new win.Image();
+        oralEyelidPatchImg.onload = () => {
+          oralEyelidPatchLoaded = true;
+          if (oralHead) drawOralHeadCanvas(oralLastGirth >= 0 ? oralLastGirth : 0, oralLastDepth >= 0 ? oralLastDepth : 0);
+        };
+        oralEyelidPatchImg.src = ORAL_EYELID_PATCH_SRC;
+        if (oralEyelidPatchImg.complete) oralEyelidPatchLoaded = true;
+      }
     }
 
+    // Eyelid organic refinement (eyelid only). false -> exact previous smoothstep motion.
+    const ORAL_EYELID_ORGANIC = true;
+    // EYELID_SHIFT_BEGIN
+    function oralEyelidShift(prog, travel, refine, seed) {
+      if (prog >= 1) return 0;
+      if (prog <= 0) return -travel;
+      if (!refine) {
+        const e = prog * prog * (3 - 2 * prog);
+        return Math.round(-travel * (1 - e));
+      }
+      const k = Math.min(1.05, Math.max(0.95, seed || 1));
+      const p = Math.pow(prog, k); // +-5% timing, endpoints fixed
+      const e = p * p * (3 - 2 * p);
+      let off = 0;
+      if (p < 0.08) off -= 1.5 * Math.sin(Math.PI * p / 0.08); // anticipation tick up
+      if (p > 0.9) off += 1.5 * Math.sin(Math.PI * (p - 0.9) / 0.1); // soft settle, returns to 0
+      return Math.round(-travel * (1 - e) + off);
+    }
+    // EYELID_SHIFT_END
+    // perf16: canvas gradients are pure values; reuse one per slot while its inputs (key) are unchanged.
+    function oralCachedGrad(ctx, slot, key, make) {
+      let c = drawOralHeadCanvas._grads;
+      if (!c || c.ctx !== ctx) c = drawOralHeadCanvas._grads = { ctx, slots: Object.create(null) };
+      const hit = c.slots[slot];
+      if (hit && hit.key === key) return hit.g;
+      const g = make();
+      c.slots[slot] = { key, g };
+      return g;
+    }
     function drawOralHeadCanvas(girthK, depth) {
       if (!oralHead || !oralHeadImgLoaded) return;
       const ctx = oralHead.getContext("2d");
@@ -1064,10 +1106,13 @@
           ctx.lineTo(280, y0);
           ctx.closePath();
 
-          const grad = ctx.createLinearGradient(194 - maxAmp * 1.50, yStart, 280, yStart);
-          grad.addColorStop(0, "rgba(228, 150, 130, 1)");
-          grad.addColorStop(0.35, "rgba(224, 144, 124, 1)");
-          grad.addColorStop(1, "rgba(216, 136, 116, 1)");
+          const grad = oralCachedGrad(ctx, "neck", (194 - maxAmp * 1.50) + "|" + yStart, () => {
+            const g = ctx.createLinearGradient(194 - maxAmp * 1.50, yStart, 280, yStart);
+            g.addColorStop(0, "rgba(228, 150, 130, 1)");
+            g.addColorStop(0.35, "rgba(224, 144, 124, 1)");
+            g.addColorStop(1, "rgba(216, 136, 116, 1)");
+            return g;
+          });
           ctx.fillStyle = grad;
           ctx.fill();
 
@@ -1138,10 +1183,13 @@
         ctx.save();
         ctx.translate(200, 362);
         ctx.scale(1, 62 / 88);
-        const ambGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 88);
-        ambGrad.addColorStop(0, `rgba(225, 12, 28, ${(0.32 * flushK).toFixed(3)})`);
-        ambGrad.addColorStop(0.65, `rgba(220, 15, 30, ${(0.14 * flushK).toFixed(3)})`);
-        ambGrad.addColorStop(1, "rgba(220, 15, 30, 0)");
+        const ambGrad = oralCachedGrad(ctx, "amb", (0.32 * flushK).toFixed(3) + "|" + (0.14 * flushK).toFixed(3), () => {
+          const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 88);
+          g.addColorStop(0, `rgba(225, 12, 28, ${(0.32 * flushK).toFixed(3)})`);
+          g.addColorStop(0.65, `rgba(220, 15, 30, ${(0.14 * flushK).toFixed(3)})`);
+          g.addColorStop(1, "rgba(220, 15, 30, 0)");
+          return g;
+        });
         ctx.fillStyle = ambGrad;
         ctx.beginPath();
         ctx.arc(0, 0, 88, 0, Math.PI * 2);
@@ -1152,10 +1200,13 @@
         ctx.save();
         ctx.translate(205, 356);
         ctx.scale(1, 38 / 58);
-        const cheekGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 58);
-        cheekGrad.addColorStop(0, `rgba(242, 6, 18, ${(0.82 * flushK).toFixed(3)})`);
-        cheekGrad.addColorStop(0.55, `rgba(235, 12, 26, ${(0.52 * flushK).toFixed(3)})`);
-        cheekGrad.addColorStop(1, "rgba(225, 16, 32, 0)");
+        const cheekGrad = oralCachedGrad(ctx, "cheek", (0.82 * flushK).toFixed(3) + "|" + (0.52 * flushK).toFixed(3), () => {
+          const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 58);
+          g.addColorStop(0, `rgba(242, 6, 18, ${(0.82 * flushK).toFixed(3)})`);
+          g.addColorStop(0.55, `rgba(235, 12, 26, ${(0.52 * flushK).toFixed(3)})`);
+          g.addColorStop(1, "rgba(225, 16, 32, 0)");
+          return g;
+        });
         ctx.fillStyle = cheekGrad;
         ctx.beginPath();
         ctx.arc(0, 0, 58, 0, Math.PI * 2);
@@ -1166,10 +1217,13 @@
         ctx.save();
         ctx.translate(166, 346);
         ctx.scale(1, 19 / 28);
-        const noseGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, 28);
-        noseGrad.addColorStop(0, `rgba(240, 10, 22, ${(0.62 * flushK).toFixed(3)})`);
-        noseGrad.addColorStop(0.6, `rgba(232, 14, 28, ${(0.32 * flushK).toFixed(3)})`);
-        noseGrad.addColorStop(1, "rgba(225, 18, 32, 0)");
+        const noseGrad = oralCachedGrad(ctx, "nose", (0.62 * flushK).toFixed(3) + "|" + (0.32 * flushK).toFixed(3), () => {
+          const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 28);
+          g.addColorStop(0, `rgba(240, 10, 22, ${(0.62 * flushK).toFixed(3)})`);
+          g.addColorStop(0.6, `rgba(232, 14, 28, ${(0.32 * flushK).toFixed(3)})`);
+          g.addColorStop(1, "rgba(225, 18, 32, 0)");
+          return g;
+        });
         ctx.fillStyle = noseGrad;
         ctx.beginPath();
         ctx.arc(0, 0, 28, 0, Math.PI * 2);
@@ -1177,6 +1231,78 @@
         ctx.restore();
 
         ctx.restore();
+      }
+
+      // 6b. Eyelid descent (progresses with oral entry, d = 8 -> 75, then LOCKS)
+      if (oralEyelidPatchLoaded && d > 8) {
+        // Model: half-lidded "droop". The closed-lid patch slides down from above but is
+        // masked to its own final footprint, so the LASH LINE is always the leading edge
+        // (no flat skin band revealed by a hard wipe). Smoothstep timing: gentle start,
+        // half-lidded around mid depth, soft settle. Monotonic; at prog = 1 the exact
+        // original closed-state draw path is used -> pixel-identical closed frame.
+        const CLOSE_COMPLETE_DEPTH = 75;
+        const LID_TRAVEL = 46; // px the lash line travels (open upper lash -> closed lash)
+        const prog = clamp((d - 8) / (CLOSE_COMPLETE_DEPTH - 8), 0, 1);
+        const easeProg = prog * prog * (3 - 2 * prog);
+        const targetOx = 96;
+        const targetOy = 244;
+        if (d <= 8.5 || drawOralHeadCanvas._lidSeed == null) {
+          // new closing cycle -> fresh bounded timing variation (+-5%)
+          drawOralHeadCanvas._lidSeed = 0.95 + 0.1 * Math.random();
+        }
+        const lidRefine = ORAL_EYELID_ORGANIC && !calm(win);
+        const shift = oralEyelidShift(prog, LID_TRAVEL, lidRefine, drawOralHeadCanvas._lidSeed);
+        // Retouch region (covers the open lashes) stays above the moving lash line
+        const retouchEdge = prog >= 1 ? 1e4 : targetOy + shift + 50;
+
+        if (prog > 0.05) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, 0, 772, retouchEdge);
+          ctx.clip();
+          ctx.globalAlpha = Math.min(1.0, (prog - 0.05) / 0.25);
+          const lashGrad = oralCachedGrad(ctx, "lash", "const", () => {
+            const g = ctx.createRadialGradient(148, 268, 8, 148, 268, 46);
+            g.addColorStop(0, "rgba(244, 172, 152, 1.0)");
+            g.addColorStop(0.72, "rgba(235, 155, 136, 0.98)");
+            g.addColorStop(1, "rgba(225, 142, 124, 0)");
+            return g;
+          });
+          ctx.fillStyle = lashGrad;
+          ctx.beginPath();
+          ctx.moveTo(108, 274);
+          ctx.lineTo(116, 246);
+          ctx.lineTo(142, 238);
+          ctx.lineTo(192, 246);
+          ctx.lineTo(188, 298);
+          ctx.lineTo(130, 304);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+
+        if (prog >= 1) {
+          ctx.drawImage(oralEyelidPatchImg, targetOx, targetOy, 155, 100);
+        } else {
+          if (!drawOralHeadCanvas._lidOff) {
+            const lc = ctx.canvas.ownerDocument.createElement("canvas");
+            lc.width = 155;
+            lc.height = 100;
+            drawOralHeadCanvas._lidOff = lc;
+          }
+          const lc = drawOralHeadCanvas._lidOff;
+          const lctx = lc.getContext("2d");
+          lctx.globalCompositeOperation = "source-over";
+          lctx.clearRect(0, 0, 155, 100);
+          lctx.drawImage(oralEyelidPatchImg, 0, shift, 155, 100);
+          lctx.globalCompositeOperation = "destination-in";
+          lctx.drawImage(oralEyelidPatchImg, 0, 0, 155, 100);
+          lctx.globalCompositeOperation = "source-over";
+          ctx.save();
+          ctx.globalAlpha = Math.min(1.0, prog / 0.15);
+          ctx.drawImage(lc, targetOx, targetOy, 155, 100);
+          ctx.restore();
+        }
       }
 
       // 7. Reflex tears at outer eye corner streaming down flushed cheek (locked directly to face canvas)
@@ -1189,10 +1315,13 @@
         const eyeCornerY = 316;
 
         // Glassy wet pooling in corner of the eye
-        const poolGrad = ctx.createRadialGradient(eyeCornerX, eyeCornerY, 0, eyeCornerX, eyeCornerY, 6);
-        poolGrad.addColorStop(0, `rgba(255, 255, 255, ${(0.95 * tearAlpha).toFixed(3)})`);
-        poolGrad.addColorStop(0.4, `rgba(215, 240, 255, ${(0.85 * tearAlpha).toFixed(3)})`);
-        poolGrad.addColorStop(1, "rgba(180, 220, 255, 0)");
+        const poolGrad = oralCachedGrad(ctx, "pool", (0.95 * tearAlpha).toFixed(3) + "|" + (0.85 * tearAlpha).toFixed(3), () => {
+          const g = ctx.createRadialGradient(eyeCornerX, eyeCornerY, 0, eyeCornerX, eyeCornerY, 6);
+          g.addColorStop(0, `rgba(255, 255, 255, ${(0.95 * tearAlpha).toFixed(3)})`);
+          g.addColorStop(0.4, `rgba(215, 240, 255, ${(0.85 * tearAlpha).toFixed(3)})`);
+          g.addColorStop(1, "rgba(180, 220, 255, 0)");
+          return g;
+        });
         ctx.fillStyle = poolGrad;
         ctx.beginPath();
         ctx.arc(eyeCornerX, eyeCornerY, 5.5, 0, Math.PI * 2);

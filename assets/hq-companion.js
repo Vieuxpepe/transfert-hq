@@ -189,6 +189,15 @@
   const NAV_PREFIX = ["Vue :", "Titre :", "Indicateur :", "Ancre :", "Mode calendrier :", "Forge :", "Dossier :", "Éléments visibles :", "Page carnet :", "Lecture :"];
   const DWELL_MS = 7000; // a page has to hold your attention a moment before she says anything about it
   const PULSE_MS = 60000;
+  // eyes1: general eye life on the ordinary (non-NSFW) face: irregular blinks, micro drift,
+  // catchlight shimmer, mood lids, event reactions. false = exact pre-eyes1 behaviour.
+  const EYES_ALIVE = true;
+  const EYES_BLINK_MIN_MS = 2500;
+  const EYES_BLINK_MAX_MS = 7000;
+  const EYES_DRIFT_MAX_PX = 1.6;
+  // pupils1: pupil scale bounds (CSS-drawn pupil core inside the ordinary-face eye).
+  const EYES_PUPIL_MIN = 0.9;
+  const EYES_PUPIL_MAX = 1.14;
 
   function navOnly(dig) {
     return String(dig || "")
@@ -472,6 +481,7 @@
     idleWalkStep: 0,
     idleWalkNextAt: 0,
     idleExtrasT: 0,
+    idleHummingNoteI: 0,
     morningStretchDone: false,
     voiceLipsyncT: 0,
     gripTapAt: 0,
@@ -965,7 +975,10 @@
       S.fxStatusText.textContent = "Forge · " + job.label + " en cours… " + secs + " s";
     };
     paint();
-    S.forgeStatusTick = win.setInterval(paint, 1000);
+    // perf16: cosmetic label only; skip while the tab is hidden (it repaints from job.t0 on the next visible tick).
+    S.forgeStatusTick = win.setInterval(() => {
+      if (!win.document.hidden) paint();
+    }, 1000);
   }
 
   function wireFxPanel(win, panel, parts) {
@@ -3240,8 +3253,14 @@
     "is-idle-lip-bite", "is-idle-shoulder-roll", "is-idle-pendulum-hair", "is-idle-foot-tap",
     "is-idle-aftershock", "is-idle-aftershock-2", "is-idle-shiver", "is-idle-stretch-yawn",
     "is-idle-hiccup", "is-idle-tease-peek", "is-idle-forge-spark", "is-idle-bubble-tail",
-    "is-idle-mirror-check", "is-idle-walk-cycle", "is-idle-music-nod", "is-idle-steam-curl"
+    "is-idle-mirror-check", "is-idle-walk-cycle", "is-idle-music-nod", "is-idle-steam-curl",
+    "is-idle-groove-sway", "is-idle-kiss-blow", "is-idle-shy-wiggle", "is-idle-cute-wink",
+    "is-idle-heart-flutter", "is-idle-sparkle-shimmy"
   ];
+
+  const CUTE_NSFW_IDLE_KINDS = new Set([
+    "grooveSway", "kissBlow", "shyWiggle", "cuteWink", "heartFlutter", "sparkleShimmy"
+  ]);
 
   function idleAnimBlocked(win) {
     if (!win || !S.el || S.el.hidden || win.document.hidden) return true;
@@ -3291,19 +3310,20 @@
     }
   }
 
-  function spawnIdleBubbleDoodle(win) {
+  function spawnIdleBubbleDoodle(win, symbol) {
     if (!S.bubble || idleAnimBlocked(win)) return;
     if (S.bubble.querySelector(".hq-companion-idle-doodle")) return;
     const d = win.document.createElement("span");
     d.className = "hq-companion-idle-doodle";
     d.setAttribute("aria-hidden", "true");
-    d.textContent = Math.random() < 0.5 ? "♥" : "✨";
+    d.textContent = symbol || (Math.random() < 0.5 ? "♥" : "✨");
     S.bubble.appendChild(d);
     win.setTimeout(() => d.remove(), 3400);
   }
 
   function playIdleAnim(win, kind) {
     if (kind === "humming") { startIdleHumming(win); return; }
+    if (CUTE_NSFW_IDLE_KINDS.has(kind) && !S.nsfwOn) return;
     if (idleAnimBlocked(win)) {
       if (S.nsfwOn && /^(settle|aftershock|hiccup)$/.test(kind)) triggerBustSettleProfile(win, "generic");
       return;
@@ -3332,11 +3352,21 @@
       teasePeek: { tease: true },
       aftershock: { aftershock: true },
       walkCycle: { walk: true },
-      musicNod: { cls: "is-idle-music-nod", ms: 780, ix: 0, iy: -16 }
+      musicNod: { cls: "is-idle-music-nod", ms: 780, ix: 0, iy: -16 },
+      grooveSway: { cls: "is-idle-groove-sway", ms: 1100, ix: sign * 20, iy: -8 },
+      kissBlow: { cls: "is-idle-kiss-blow", ms: 900, ix: 0, iy: -10, kiss: true },
+      shyWiggle: { cls: "is-idle-shy-wiggle", ms: 1050, ix: sign * 16, iy: 4, shy: true },
+      cuteWink: { cls: "is-idle-cute-wink", ms: 720, wink: true },
+      heartFlutter: { cls: "is-idle-heart-flutter", ms: 1400, hearts: true },
+      sparkleShimmy: { cls: "is-idle-sparkle-shimmy", ms: 950, ix: sign * 28, iy: -4, sparkle: true }
     };
     const v = burst[kind] || burst.sway;
-    const idleCue = { stretchYawn: "stretch", musicNod: "music_started", lipBite: "lip_bite", hairTuck: "hair_tuck" }[kind];
+    const idleCue = {
+      stretchYawn: "stretch", musicNod: "music_started", lipBite: "lip_bite", hairTuck: "hair_tuck",
+      kissBlow: "idle_kiss", heartFlutter: "idle_heart"
+    }[kind];
     if (idleCue) playNaturalVoiceCue(win, idleCue);
+    if (kind === "shyWiggle" && Math.random() < 0.38) playNaturalVoiceCue(win, "idle_shy");
     if (kind === "hairTuck" && !muted(win) && readForgeSound(win)) playHairPatImpactSfx(win, 0.38);
     if (v.tease) {
       S.el.classList.add("is-idle-tease-peek");
@@ -3379,6 +3409,50 @@
       win.setTimeout(() => S.el && S.el.classList.remove("is-idle-steam-curl"), v.ms);
       return;
     }
+    if (v.kiss && S.el) {
+      stripIdleBurstClasses();
+      S.el.style.setProperty("--idle-sign", String(sign));
+      S.el.classList.add(v.cls);
+      spawnIdleKiss(win);
+      if (S.nsfwOn) {
+        applyLive2DImpulse(win, 0, v.iy || -10, sign * 4);
+        startLive2DLoop(win);
+      }
+      win.setTimeout(() => S.el && S.el.classList.remove(v.cls), v.ms);
+      return;
+    }
+    if (v.wink && S.el) {
+      stripIdleBurstClasses();
+      S.el.classList.add(v.cls);
+      blink(win);
+      setLive2DTarget(win, sign * 1.8, -0.6);
+      win.setTimeout(() => {
+        if (S.el) {
+          S.el.classList.remove(v.cls);
+          setLive2DTarget(win, 0, -1.1);
+        }
+      }, v.ms);
+      return;
+    }
+    if (v.hearts && S.el) {
+      stripIdleBurstClasses();
+      S.el.classList.add(v.cls);
+      spawnIdleHeartFloat(win);
+      win.setTimeout(() => S.el && S.el.classList.remove(v.cls), v.ms);
+      return;
+    }
+    if (v.sparkle && S.el) {
+      stripIdleBurstClasses();
+      S.el.style.setProperty("--idle-sign", String(sign));
+      S.el.classList.add(v.cls);
+      spawnIdleBubbleDoodle(win, "✨");
+      if (S.nsfwOn) {
+        applyLive2DImpulse(win, v.ix || 0, v.iy || 0, sign * 6);
+        startLive2DLoop(win);
+      }
+      win.setTimeout(() => S.el && S.el.classList.remove(v.cls), v.ms);
+      return;
+    }
     if (v.lip && S.el) {
       stripIdleBurstClasses();
       S.el.classList.add(v.cls);
@@ -3392,6 +3466,7 @@
       return;
     }
     stripIdleBurstClasses();
+    S.el.style.setProperty("--idle-sign", String(sign));
     if (v.cls) S.el.classList.add(v.cls);
     win.setTimeout(() => S.el && S.el.classList.remove(v.cls), v.ms || 800);
     if (v.settle) {
@@ -3419,7 +3494,15 @@
 
   function pickIdleAnimKind() {
     const r = Math.random();
-    if (r >= 0.70 && r < 0.82) return "humming";
+    if (r >= 0.70 && r < 0.78) return "humming";
+    if (S.nsfwOn) {
+      if (r >= 0.78 && r < 0.815) return "grooveSway";
+      if (r >= 0.815 && r < 0.845) return "kissBlow";
+      if (r >= 0.845 && r < 0.87) return "shyWiggle";
+      if (r >= 0.87 && r < 0.89) return "cuteWink";
+      if (r >= 0.89 && r < 0.91) return "heartFlutter";
+      if (r >= 0.91 && r < 0.93) return "sparkleShimmy";
+    }
     if (r < 0.04) return "aftershock";
     if (r < 0.07) return "walkCycle";
     if (r < 0.09) return "stretchYawn";
@@ -3519,6 +3602,7 @@
       S.lookSince = 0;
     }
     applyCompanionDof(win);
+    tickEyesAlive(win);
     win.hqCompanionUserLooking = () => !!S.userLookingAtCompanion;
     win.hqCompanionAttention = () => S.attentionScore || 0;
   }
@@ -5105,8 +5189,24 @@
   function stopIdleHumming(win) {
     if (!S.el?.classList.contains("is-idle-humming")) return;
     win.clearTimeout(S.idleHummingT);
+    win.clearInterval(S.idleHummingNoteI);
+    S.idleHummingNoteI = 0;
     S.el.classList.remove("is-idle-humming");
+    S.el.style.removeProperty("--rig-hum-beat");
     S.reactionAudio?.stop("humming");
+  }
+
+  function scheduleIdleHummingNotes(win) {
+    win.clearInterval(S.idleHummingNoteI);
+    if (idleAnimBlocked(win) || !S.el?.classList.contains("is-idle-humming")) return;
+    const avatar = S.el.querySelector(".hq-companion-avatar");
+    if (!avatar) return;
+    const tick = () => {
+      if (!S.el?.classList.contains("is-idle-humming")) return;
+      spawnMusicNote(win, avatar);
+    };
+    tick();
+    S.idleHummingNoteI = win.setInterval(tick, 650 + Math.random() * 250);
   }
 
   function startIdleHumming(win) {
@@ -5119,9 +5219,12 @@
     if (S.reactionAudio?.isPlaying()) return false;
     const duration = playNaturalVoiceCue(win, "idle_humming") || 3600;
     S.lastIdleHummingAt = now;
+    const beatSec = Math.max(0.95, Math.min(2.2, duration / 1000));
+    S.el.style.setProperty("--rig-hum-beat", beatSec.toFixed(2) + "s");
     S.el.classList.add("is-idle-humming");
     win.clearTimeout(S.idleHummingT);
-    S.idleHummingT = win.setTimeout(() => S.el?.classList.remove("is-idle-humming"), duration);
+    S.idleHummingT = win.setTimeout(() => stopIdleHumming(win), duration);
+    scheduleIdleHummingNotes(win);
     startLive2DLoop(win);
     return true;
   }
@@ -5131,6 +5234,9 @@
       tickle: { kind: "giggle", gap: 8000, priority: 1 },
       music_started: { kind: "humming", gap: 45000, priority: 0 },
       idle_humming: { kind: "humming", gap: 120000, priority: 0 },
+      idle_kiss: { kind: "kiss", gap: 45000, priority: 0 },
+      idle_shy: { kind: "giggle", gap: 90000, priority: 0 },
+      idle_heart: { kind: "contented", gap: 60000, priority: 0 },
       stretch: { kind: "yawn", gap: 90000, priority: 0 },
       lip_bite: { kind: "lipsmack", gap: 15000, priority: 0 },
       hair_tuck: { kind: "lipsmack", gap: 22000, priority: 0 },
@@ -5243,6 +5349,32 @@
     return clampNum(0.14 + smooth * 0.86, 0, 1);
   }
 
+  const PULL_FX_COALESCE_MS = 14;
+
+  function pullFxRenderedRecently(nowMs) {
+    return !!(S.el && S.el.classList.contains("is-bust-pull") &&
+      S.pullFxAt && nowMs - S.pullFxAt < PULL_FX_COALESCE_MS);
+  }
+
+  function markPullFxRendered(win) {
+    if (!win || !S.el) return;
+    S.pullFxAt = win.performance.now();
+  }
+
+  function cachePullFaceMetrics() {
+    if (!S.face) return;
+    const w = S.face.clientWidth;
+    const h = S.face.clientHeight;
+    if (w > 0) S.pullFaceWidth = w;
+    if (h > 0) S.pullFaceHeight = h;
+  }
+
+  function pullFaceSpan() {
+    const w = (S.pullFaceWidth > 0 ? S.pullFaceWidth : S.face?.clientWidth) || 72;
+    const h = (S.pullFaceHeight > 0 ? S.pullFaceHeight : S.face?.clientHeight) || w;
+    return { w, h };
+  }
+
   /** Drop contact/pull presentation that must not survive adult mode off (classes, vars, timers). */
   function clearAdultSessionBleed(win) {
     if (!S.el) return;
@@ -5272,6 +5404,9 @@
     clearPullVar("--pull-blush");
     clearPullVar("--pull-steam");
     clearPullVar("--rig-contact-blush");
+    S.pullFaceWidth = 0;
+    S.pullFaceHeight = 0;
+    S.pullFxAt = 0;
   }
 
   function syncContactBlush(win) {
@@ -6491,7 +6626,7 @@
       if (el.__specA !== frameA) { el.__specA = frameA; el.style.setProperty("--spec-a", frameA); }
       if (el.__specB !== frameB) { el.__specB = frameB; el.style.setProperty("--spec-b", frameB); }
       if (el.__specW !== w) { el.__specW = w; el.style.setProperty("--spec-w", w); }
-      const opacity = (reduced ? 0.76 : 0.86).toFixed(2);
+      const opacity = (reduced ? 0.84 : 0.95).toFixed(2);
       if (el.__specTransform !== transform) {
         el.__specTransform = transform;
         el.style.transform = transform;
@@ -6840,6 +6975,46 @@
     note.style.setProperty("--nx", (Math.random() * 32 - 16) + "px");
     host.appendChild(note);
     win.setTimeout(() => note.remove(), 2150);
+  }
+
+  function spawnIdleKiss(win) {
+    const av = S.el?.querySelector(".hq-companion-avatar");
+    if (!av || !win.document) return;
+    const host = S.el.querySelector(".hq-companion-av-row") || av.parentElement;
+    if (!host) return;
+    const r = av.getBoundingClientRect();
+    const hr = host.getBoundingClientRect();
+    const k = win.document.createElement("span");
+    k.className = "hq-companion-idle-kiss";
+    k.setAttribute("aria-hidden", "true");
+    k.textContent = Math.random() < 0.55 ? "💋" : "♥";
+    k.style.left = (r.left + r.width * 0.62 - hr.left + (Math.random() * 12 - 6)) + "px";
+    k.style.top = (r.top + r.height * 0.18 - hr.top) + "px";
+    k.style.setProperty("--nx", (8 + Math.random() * 14) + "px");
+    host.appendChild(k);
+    win.setTimeout(() => k.remove(), 1200);
+  }
+
+  function spawnIdleHeartFloat(win) {
+    const av = S.el?.querySelector(".hq-companion-avatar");
+    if (!av || !win.document) return;
+    const host = S.el.querySelector(".hq-companion-av-row") || av.parentElement;
+    if (!host) return;
+    const r = av.getBoundingClientRect();
+    const hr = host.getBoundingClientRect();
+    const n = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < n; i++) {
+      const h = win.document.createElement("span");
+      h.className = "hq-companion-idle-heart";
+      h.setAttribute("aria-hidden", "true");
+      h.textContent = "♥";
+      h.style.left = (r.left + r.width * (0.35 + Math.random() * 0.35) - hr.left) + "px";
+      h.style.top = (r.top + r.height * (0.55 + Math.random() * 0.2) - hr.top) + "px";
+      h.style.setProperty("--nx", (Math.random() * 24 - 12) + "px");
+      h.style.animationDelay = (i * 0.12) + "s";
+      host.appendChild(h);
+      win.setTimeout(() => h.remove(), 1800 + i * 120);
+    }
   }
 
   function spawnCursorKiss(win, x, y, symbol) {
@@ -7978,7 +8153,14 @@
       if (!win.HqCompanionMouth || !S.el) return;
       S.mouthRig = win.HqCompanionMouth.attach(win, wrap, S.el, () => startLive2DLoop(win), {
         start: kind => S.reactionAudio?.start(kind, { interrupt: false, priority: 0 }) || 0,
-        stop: kind => S.reactionAudio?.stop(kind)
+        stop: kind => S.reactionAudio?.stop(kind),
+        onSpeechPause(word) {
+          if (calm(win) || !S.nsfwOn || !S.el) return;
+          const w = String(word || "");
+          const pause = /[.!?…]["»)]?\s*$/.test(w) ? 340 : /[,;:]["»)]?\s*$/.test(w) ? 180 : 0;
+          if (pause < 180) return;
+          S.breathEvent = { kind: pause >= 320 ? "sigh" : "gasp", t0: win.performance.now() };
+        }
       });
     };
     if (win.HqCompanionMouth) { Promise.resolve().then(install); return; }
@@ -8444,7 +8626,7 @@
   // value; a common ancestor cannot supply these inputs through inheritance.
   const L2D_LOCAL_VARS = new Set([
     "--rig-body-bob", "--rig-body-tilt", "--rig-parallax-x", "--rig-parallax-y",
-    "--rig-head-sway", "--rig-head-nod", "--rig-bust-heave", "--rig-head-steady-y",
+    "--rig-head-sway", "--rig-head-nod", "--rig-neck-lift", "--rig-bust-heave", "--rig-head-steady-y",
     "--rig-saccade-x", "--rig-saccade-y",
     "--rig-hair-left-tip-x", "--rig-hair-left-tip-y", "--rig-hair-left-tip-rot",
     "--rig-hair-right-tip-x", "--rig-hair-right-tip-y", "--rig-hair-right-tip-rot",
@@ -9432,8 +9614,7 @@
 
   function renderBustPull(frame, gaze, contact = 1) {
     if (!S.el || !S.face) return;
-    const width = S.face.clientWidth || 72;
-    const height = S.face.clientHeight || width;
+    const { w: width, h: height } = pullFaceSpan();
     const rig = S.el.classList.contains("has-layered-portrait");
     const touch = !!((S.bustPull && S.bustPull.pointerType === "touch") || S.pullSettleTouch);
     const tier = pullLoadTier(frame.tension || 0);
@@ -9626,6 +9807,7 @@
     tickPullExpressiveReactions(S.win, tension, shape);
     tickBustPullImpactSfx(S.win, pullT, Math.hypot(tx, ty), shape);
     updateTitPullElasticLoopGain(pullT);
+    markPullFxRendered(S.win);
     syncContactBlush(S.win);
     S.mouthRig?.syncInteraction();
     updateBustCastProjection(S.win, ensureLive2DState(), isCompactUI(S.win));
@@ -9637,7 +9819,7 @@
     const touch = !!(S.bustPull && S.bustPull.pointerType === "touch");
     const relax = touchRelax(S.win.performance.now());
     const reach = (touch ? 0.24 : 0.74) * (0.82 + relax * 0.18);
-    S.pullTarget = bustPullResponse(dx, dy, S.face.clientWidth, reach);
+    S.pullTarget = bustPullResponse(dx, dy, pullFaceSpan().w, reach);
     updateBustPullFrame(S.win.performance.now());
     if (S.bustPull && S.bustPull.active) {
       bustPullCry(S.win, Math.hypot(dx, dy), S.pullTarget.tension);
@@ -9761,6 +9943,9 @@
     S.pullReleaseSteamUntil = 0;
     S.pullReleaseSteamSpan = 0;
     S.pullReleaseUntil = 0;
+    S.pullFaceWidth = 0;
+    S.pullFaceHeight = 0;
+    S.pullFxAt = 0;
     S.el.style.removeProperty("--bubble-shake");
     S.el.style.removeProperty("--bubble-shake-y");
     S.el.style.removeProperty("--bubble-shake-amp");
@@ -9838,7 +10023,7 @@
     S.pullFollowRaf = 0;
     S.pullTarget = null;
     S.pullSettleTouch = S.lastPullPointerType === "touch";
-    const motion = S.pullMotion || { ...bustPullResponse(x, y, S.face.clientWidth), vx: 0, vy: 0, time: start };
+    const motion = S.pullMotion || { ...bustPullResponse(x, y, pullFaceSpan().w), vx: 0, vy: 0, time: start };
     const recent = start - motion.time < 90;
     const feel = releaseFeel(recent ? Math.hypot(motion.vx || 0, motion.vy || 0) : 0);
     const maxVelocity = Math.max(8, Math.hypot(motion.x, motion.y) * 4);
@@ -10302,27 +10487,29 @@
     const level = Math.pow(clampNum((rms - .008) * 6, 0, 1), .65) * .82;
     meter.level = level;
     setLive2dStyleVar(S.el.style, "--rig-voice-level", level.toFixed(4));
+    if (S.el.classList.contains("is-voice-lipsync")) {
+      const bump = 0.008 + level * 0.044;
+      S.el.style.setProperty("--rig-voice-nod", (1 + bump).toFixed(4));
+      if (S.nsfwOn && level > 0.05) {
+        const st = ensureLive2DState();
+        const prev = meter.peak || 0;
+        if (level >= prev + 0.07 || (level > 0.22 && time - (meter.impulseAt || 0) > 90)) {
+          st.head.vnod = clampNum(st.head.vnod + 1.6 + level * 3.4, -44, 44);
+          meter.impulseAt = time;
+        }
+        meter.peak = level > prev * 0.92 ? level : prev * 0.94;
+      }
+    }
   }
 
   function startVoiceLipsyncLoop(win) {
     if (!win || calm(win)) return;
     stopVoiceLipsyncLoop(win);
-    if (S.el) S.el.classList.add("is-voice-lipsync");
-    S.voiceLipsyncT = win.setInterval(() => {
-      if (!S.el || (!S.el.classList.contains("is-speaking") && !(S.root && S.root.classList.contains("is-speaking")))) {
-        stopVoiceLipsyncLoop(win);
-        return;
-      }
-      const bump = 0.014 + Math.random() * 0.024;
-      S.el.style.setProperty("--rig-voice-nod", (1 + bump).toFixed(4));
-      if (S.nsfwOn) {
-        const st = ensureLive2DState();
-        st.head.vnod = clampNum(st.head.vnod + 2.8 + Math.random() * 2.2, -44, 44);
-      }
-      win.setTimeout(() => {
-        if (S.el) S.el.style.setProperty("--rig-voice-nod", "1");
-      }, 85);
-    }, 130 + Math.random() * 70);
+    if (S.el) {
+      S.el.classList.add("is-voice-lipsync");
+      S.el.style.setProperty("--rig-voice-nod", "1");
+    }
+    if (S.nsfwOn) startLive2DLoop(win);
   }
 
   function applyLive2DImpulse(win, fx, fy, frot) {
@@ -10514,6 +10701,17 @@
       b.r = clampNum(b.r + b.vr * h, -4.2, 4.2);
     }
     return b;
+  }
+
+  function tickSpeechHairKick(st, mouthMotion) {
+    if (!mouthMotion || calm(S.win)) return;
+    const env = mouthMotion.envelope || 0;
+    const prev = st.speechEnv || 0;
+    if (env > 0.74 && prev <= 0.74) {
+      st.hair.vy = clampNum(st.hair.vy - 2.4 - env * 1.2, -95, 95);
+      st.hair.vrot = clampNum(st.hair.vrot + (Math.random() > 0.5 ? 1 : -1) * (0.9 + env * 0.8), -110, 110);
+    }
+    st.speechEnv = env;
   }
 
   function tickJawFollow(st, dt, nowMs, warmth, reduced) {
@@ -10723,7 +10921,7 @@
         S.bustStrokeBY = clampNum(S.bustStrokeBY + Math.sin(S.bustPetOrbitAngle) * S.bustPetOrbitAmp * 1.15, -24, 24);
       }
       const afterglow = tickBustAfterglow(nowMs);
-      syncContactBlush(win);
+      if (!pullFxRenderedRecently(nowMs)) syncContactBlush(win);
       const phoneShake = st.phoneShake;
       const floatDragging = !!(S.companionDragActive && S.nsfwOn);
       const shakePosCap = floatDragging ? 16.5 : 8.5;
@@ -11125,6 +11323,7 @@
       tickJawFollow(st, dt, nowMs, warmth, reducedMotion);
       tickEyeLife(st, nowMs, reducedMotion);
       const mouthMotion = S.mouthRig?.motion;
+      tickSpeechHairKick(st, mouthMotion);
       const characterPose = expressionPose(S.characterExpression,
         nowMs - (S.characterExpression?.startedAt || 0),
         characterMotionQuery?.matches || floatDragging || S.el.classList.contains("is-bust-pull") ||
@@ -11144,11 +11343,16 @@
       const speaking =
         !!(S.root && S.root.classList.contains("is-speaking")) ||
         !!(S.el && S.el.classList.contains("is-speaking"));
-      const speechNod = speaking ? Math.sin(nowMs * 0.0115) * 0.016 : 0;
+      const voiceLevel = parseFloat(S.el.style.getPropertyValue("--rig-voice-level")) || 0;
+      const speechBeat = mouthMotion?.envelope || 0;
+      const speechNod = speaking ?
+        speechBeat * 0.034 + voiceLevel * 0.028 + Math.sin(nowMs * 0.0115) * 0.006 : 0;
       const voiceNod = parseFloat(S.el.style.getPropertyValue("--rig-voice-nod")) || 1;
       const voiceBump = S.el.classList.contains("is-voice-lipsync") ? (voiceNod - 1) * 1.35 : 0;
-      setLive2dStyleVar(stEl, "--rig-head-nod", clampNum(1 + st.head.nod * (floatDragging ? 0.034 : 0.022) + speechNod + voiceBump + (mouthMotion?.headNod || 0) + characterPose.nod,
+      const nodMix = speechNod + voiceBump + (mouthMotion?.headNod || 0);
+      setLive2dStyleVar(stEl, "--rig-head-nod", clampNum(1 + st.head.nod * (floatDragging ? 0.034 : 0.022) + nodMix + characterPose.nod,
         floatDragging ? 0.928 : 0.956, floatDragging ? 1.072 : 1.044).toFixed(4));
+      setLive2dStyleVar(stEl, "--rig-neck-lift", (-nodMix * 2.6).toFixed(2) + "px");
       if (S.el.classList.contains("has-layered-portrait")) {
         const pulling = S.el.classList.contains("is-bust-pull");
         let pullTension = 0;
@@ -11159,10 +11363,11 @@
             pullTension = Number.isFinite(cssT) ? clampNum(cssT, 0, 1) : 0;
           }
         }
-        const browSpeak = speaking ? Math.sin(st.phase * 1.32) * 0.48 : 0;
+        const browSpeak = speaking ? Math.sin(st.phase * 1.32) * 0.48 + speechBeat * 0.38 : 0;
         const browIdle = Math.sin(st.phase * 0.58 + 0.2) * 0.34 + Math.sin(st.phase * 1.08 + 0.55) * 0.14;
         const browAuto = mouthMotion?.browAuto !== false;
-        const browRaise = (browAuto ? browIdle + browSpeak : 0) + pullTension * 0.82;
+        const browLift = (mouthMotion?.browLift || 0) * 0.85;
+        const browRaise = (browAuto ? browIdle + browSpeak : 0) + pullTension * 0.82 + browLift;
         // Independent eyebrow expressions; mouth selection does not own them.
         const targetLeftY = -browRaise * 0.78 - (mouthMotion?.browLeft || 0) * 1.65 - (browAuto ? characterPose.browLeft : 0);
         const targetRightY = -browRaise * 0.74 - (mouthMotion?.browRight || 0) * 1.65 - (browAuto ? characterPose.browRight : 0);
@@ -11188,7 +11393,8 @@
         const voiceOpen = voiceActive ? clampNum((voiceNod - 1) * 9.5 + 0.035, 0, 0.11) : 0;
         const idleMouth = 0.006 + Math.sin(st.phase * 0.88 + 1.05) * 0.011;
         const targetSy = clampNum(
-          1 + idleMouth + speechWave * 0.052 + voiceOpen + voiceBump * 0.85,
+          1 + idleMouth + speechWave * 0.052 + voiceOpen + voiceBump * 0.85 +
+            (mouthMotion?.envelope || 0) * 0.038 + (mouthMotion?.open || 0) * 0.028,
           0.992, 1.15);
         const targetSx = clampNum(
           1 + speechWave * 0.018 + voiceOpen * 0.35,
@@ -11679,7 +11885,7 @@
       setLive2dStyleVar(stEl, "--rig-sheen-y", (-1.5 + st.bust.y * 0.32 + breathWave * 0.4).toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-underboob-x", (st.bust.x * 0.45).toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-underboob-y", (st.bust.y * 0.48 + breathWave * 0.35).toFixed(2) + "px");
-      updateBustCastProjection(win, st, compact);
+      if (!pullFxRenderedRecently(nowMs)) updateBustCastProjection(win, st, compact);
     };
 
     scheduleLive2DFrame(win, step, 0);
@@ -12804,7 +13010,7 @@
     if (!S.el || calm(win) || S.el.classList.contains("is-bust-pull")) return;
     const circ = getCircadianMotionScale();
     const slow = !!(opts && opts.slow);
-    const duration = slow ? (700 + Math.random() * 180) : (235 + Math.random() * 25) * circ.blinkMul;
+    const duration = slow ? (700 + Math.random() * 180) : (235 + Math.random() * 25) * circ.blinkMul * (EYES_ALIVE && !S.nsfwOn ? eyesBlinkDurMul() : 1);
     S.el.style.setProperty("--rig-blink-ms", `${duration.toFixed(0)}ms`);
     S.el.classList.remove("is-blink-asym");
     if (S.el.classList.contains("has-layered-portrait") && Math.random() < 0.38) {
@@ -12830,7 +13036,81 @@
         else if (Math.sin(ensureLive2DState().phase) > 0.82 && Math.random() < 0.1) win.setTimeout(() => blink(win), 180);
       }
       scheduleBlink(win);
-    }, (2100 + Math.random() * 5000 + (Math.random() < 0.12 ? 2000 : 0)) * circ.blinkMul);
+    }, EYES_ALIVE && !S.nsfwOn ? eyesBlinkDelayMs(circ.blinkMul) : (2100 + Math.random() * 5000 + (Math.random() < 0.12 ? 2000 : 0)) * circ.blinkMul);
+  }
+
+  // eyes1 helpers. Driven by the existing attention poll (200/340 ms, hidden-tab guarded);
+  // no new timers, listeners or layout reads. Only CSS vars/classes on the ordinary face.
+  function eyesAliveMoodKey() {
+    if (!S.el) return "neutral";
+    const c = S.el.classList;
+    if (c.contains("is-eyes-widen") || c.contains("is-mood-celebrate")) return "bright";
+    if (c.contains("is-soft")) return "soft";
+    if (S.busy || c.contains("is-mood-error")) return "narrow";
+    return "neutral";
+  }
+
+  function eyesBlinkDelayMs(circMul, rand) {
+    const r = typeof rand === "function" ? rand : Math.random;
+    const mood = eyesAliveMoodKey();
+    const moodMul = mood === "soft" ? 1.12 : mood === "bright" ? 0.82 : 1;
+    const base = EYES_BLINK_MIN_MS + r() * (EYES_BLINK_MAX_MS - EYES_BLINK_MIN_MS);
+    return Math.round(clampNum(base * moodMul * (Number(circMul) || 1), EYES_BLINK_MIN_MS, EYES_BLINK_MAX_MS));
+  }
+
+  function eyesBlinkDurMul() {
+    const mood = eyesAliveMoodKey();
+    return mood === "soft" ? 1.22 : mood === "bright" ? 0.85 : 1;
+  }
+
+  function eyesAliveReset() {
+    S.eyesAliveOn = false;
+    S.eyesAlive = null;
+    if (S.el) S.el.classList.remove("is-eyes-alive", "is-eyes-widen", "is-eyes-narrow");
+    if (S.face) ["--eye-drift-x", "--eye-drift-y", "--eye-glint-a", "--eye-pupil"].forEach((k) => S.face.style.removeProperty(k));
+  }
+
+  function tickEyesAlive(win, rand) {
+    if (!EYES_ALIVE || !S.el) return;
+    const el = S.el;
+    const c = el.classList;
+    const off = S.nsfwOn || calm(win) || win.document.hidden || el.hidden || !S.face ||
+      c.contains("is-anim-paused") || c.contains("is-dozing") || c.contains("is-bust-pull");
+    if (off) { if (S.eyesAliveOn) eyesAliveReset(); return; }
+    const r = typeof rand === "function" ? rand : Math.random;
+    const now = Date.now();
+    if (!S.eyesAliveOn) { c.add("is-eyes-alive"); S.eyesAliveOn = true; }
+    const ea = S.eyesAlive || (S.eyesAlive = { nextDriftAt: 0, busy: !!S.busy, speaking: c.contains("is-speaking"), widenUntil: 0, narrow: false, glint: r() * 6.28, glintLast: "", pupilPh: r() * 6.28, pupilRate: 0.05, pupilNextAt: 0, dilateUntil: 0, pupilLast: "" });
+    // Reply arrived (busy -> idle): brief widen. Speaking start/end: a blink.
+    const busy = !!S.busy;
+    if (ea.busy && !busy) { c.add("is-eyes-widen"); ea.widenUntil = now + 420; ea.dilateUntil = now + 500; }
+    ea.busy = busy;
+    if (ea.widenUntil && now > ea.widenUntil) { c.remove("is-eyes-widen"); ea.widenUntil = 0; }
+    const narrow = busy || c.contains("is-mood-error");
+    if (narrow !== ea.narrow) { c.toggle("is-eyes-narrow", narrow); ea.narrow = narrow; }
+    const speaking = c.contains("is-speaking");
+    if (speaking !== ea.speaking) { ea.speaking = speaking; blink(win); }
+    // Micro drift: irregular 1-2 px saccades with a smooth CSS return; mostly home while she is looked at.
+    if (now >= ea.nextDriftAt) {
+      const home = r() < (S.userLookingAtCompanion ? 0.75 : 0.4);
+      const dx = home ? 0 : (r() * 2 - 1) * EYES_DRIFT_MAX_PX;
+      const dy = home ? 0 : (r() * 2 - 1) * EYES_DRIFT_MAX_PX * 0.6;
+      S.face.style.setProperty("--eye-drift-x", dx.toFixed(2) + "px");
+      S.face.style.setProperty("--eye-drift-y", dy.toFixed(2) + "px");
+      ea.nextDriftAt = now + 260 + r() * 900;
+    }
+    // Catchlight shimmer: slow, small opacity breathing (0.66-0.90).
+    ea.glint += 0.11 + r() * 0.05;
+    const a = (Math.round((0.78 + Math.sin(ea.glint) * 0.12) * 50) / 50).toFixed(2); // perf16: 0.02 steps -> fewer style writes
+    if (a !== ea.glintLast) { ea.glintLast = a; S.face.style.setProperty("--eye-glint-a", a); }
+    // pupils1: slow irregular breathing (+-3.5%), mood offset, brief dilation on a new reply.
+    if (now >= ea.pupilNextAt) { ea.pupilRate = 0.03 + r() * 0.05; ea.pupilNextAt = now + 1800 + r() * 3200; }
+    ea.pupilPh += ea.pupilRate;
+    const mk = eyesAliveMoodKey();
+    const moodOff = mk === "bright" || mk === "soft" ? 0.04 : mk === "narrow" ? -0.05 : 0;
+    const dil = ea.dilateUntil && now < ea.dilateUntil ? 0.06 : 0;
+    const p = (Math.round(clampNum(1 + Math.sin(ea.pupilPh) * 0.035 + moodOff + dil, EYES_PUPIL_MIN, EYES_PUPIL_MAX) * 50) / 50).toFixed(2); // perf16
+    if (p !== ea.pupilLast) { ea.pupilLast = p; S.face.style.setProperty("--eye-pupil", p); }
   }
 
   // Measuring a rig element right after the frame loop wrote its styles forces a full style + layout
@@ -14214,6 +14494,14 @@
     S.avatar = av;
     S.face = face;
     S.adultPortrait = adultPortrait;
+    if (win.ResizeObserver) {
+      S.pullFaceResize?.disconnect();
+      S.pullFaceResize = new win.ResizeObserver(() => {
+        if (!S.el || !S.el.classList.contains("is-bust-pull")) return;
+        cachePullFaceMetrics();
+      });
+      S.pullFaceResize.observe(face);
+    }
     const svgNS = "http://www.w3.org/2000/svg";
     const pullSvg = doc.createElementNS(svgNS, "svg");
     pullSvg.setAttribute("width", "0");
@@ -14850,6 +15138,7 @@
         S.el.style.setProperty("--pull-contact-x", clampNum((ev.clientX - r0.left) / r0.width * 100, 0, 100).toFixed(2) + "%");
         S.el.style.setProperty("--pull-contact-y", clampNum(relY0 * 100, 0, 100).toFixed(2) + "%");
         setAnchoredGrabPoint((ev.clientX - r0.left) / r0.width, relY0);
+        cachePullFaceMetrics();
         setBustPull(0, 0);
         S.pullDeepGlanceDone = false;
         if (S.treatsTray) S.treatsTray.classList.remove("is-open");
@@ -16969,6 +17258,16 @@
     resetFloatHome: resetCompanionPose,
     COMPANION_NAME,
     testCry: bustPullCry,
-    testStop: stopBustPullVoice
+    testStop: stopBustPullVoice,
+    testIdle: {
+      state: S,
+      playIdleAnim,
+      pickIdleAnimKind,
+      stripIdleBurstClasses,
+      IDLE_ANIM_STRIP,
+      CUTE_NSFW_IDLE_KINDS,
+      startIdleHumming,
+      stopIdleHumming
+    }
   };
 });

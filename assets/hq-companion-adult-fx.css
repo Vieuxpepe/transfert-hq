@@ -3357,8 +3357,8 @@
 }
 .hq-bust-spec > i::before{background-position:var(--spec-a,50% 50%);opacity:calc(1 - var(--spec-w,0))}
 .hq-bust-spec > i::after{background-position:var(--spec-b,50% 50%);opacity:var(--spec-w,0)}
-.hq-bust-spec.is-left > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-left-gloss-sweep.png?v=oil5")}
-.hq-bust-spec.is-right > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-right-gloss-sweep.png?v=oil5")}
+.hq-bust-spec.is-left > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-left-gloss-sweep.png?v=oil2")}
+.hq-bust-spec.is-right > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-right-gloss-sweep.png?v=oil2")}
 /* Inner-edge gloss on the cleavage side: thin arcs just inside the outline. */
 .hq-bust-spec.is-left::before{background:
   radial-gradient(ellipse 0.30% 0.30% at 42.65% 64.83%,rgba(255,247,242,0.11) 0,rgba(255,247,242,0.09) 50%,rgba(255,247,242,0) 100%),

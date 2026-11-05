@@ -167,33 +167,86 @@
       smile: input.smiling ? .72 : input.speaking ? .12 : 0, round: (input.pull || 0) * .25 };
   }
 
+  function speechJaw(pose, envelope = 0) {
+    const open = clamp(pose.open || 0, 0, 1);
+    const smile = clamp(pose.smile || 0, 0, 1);
+    const seal = clamp(pose.seal || 0, 0, 1);
+    const env = clamp(envelope, 0, 1);
+    if (open <= 0 && env <= 0) return 0;
+    if (seal > .85 && open < .06) return clamp(open * .55, 0, .04);
+    return clamp(Math.max(open * .95, smile * .40 + open * .34, open + env * .38), 0, 1.08);
+  }
+
+  function speechHeadMotion(pose, envelope = 0, reduced = false) {
+    if (reduced) return { headTilt: 0, headNod: 0, browLift: 0, aperture: 0 };
+    const open = clamp(pose.open || 0, 0, 1);
+    const smile = clamp(pose.smile || 0, 0, 1);
+    const round = clamp(pose.round || 0, 0, 1);
+    const seal = clamp(pose.seal || 0, 0, 1);
+    const env = clamp(envelope, 0, 1);
+    if (seal > .85 && open < .06 && env < .04) {
+      return { headTilt: 0, headNod: 0, browLift: 0, aperture: 0 };
+    }
+    const aperture = clamp(Math.max(open, smile * .32, env * .58), 0, 1);
+    return {
+      headTilt: clamp((round - .18) * .48 + open * .09, -.38, .38),
+      headNod: aperture * .016 + env * .024,
+      browLift: aperture * .26 + env * .2,
+      aperture
+    };
+  }
+
   function expressionTarget(mode, input = {}) {
     // Interaction reaction temporarily overrides the selected expression.
     // Keep tongue/head offsets neutral while the pull owns face alignment.
     if (input.pulling) return { open: .96, smile: .10, round: .18,
       extend: 0, curl: 0, sway: 0, jaw: 0, headTilt: 0, headNod: 0 };
-    if (input.speaking) {
-      const t = (input.time || 0) / 1000;
-      const measured = Number.isFinite(input.audioLevel);
-      const cadence = Math.pow(Math.abs(Math.sin(t * 9.1) * Math.cos(t * 3.7)), 1.3);
-      const open = input.reduced ? .24 : measured ? clamp(input.audioLevel, 0, .85) :
-        clamp(Math.max(cadence * .66, input.voice || 0), 0, .78);
-      return { open, smile: input.smiling ? .40 : .10, round: open * (.18 + .16 * Math.sin(t * 4.3)),
-        extend: 0, curl: 0, sway: 0, jaw: input.reduced ? 0 : open * .95, headTilt: 0, headNod: 0 };
+    const t = (input.time || 0) / 1000;
+    const measuredVoice = input.speaking && Number.isFinite(input.audioLevel);
+    if (measuredVoice) {
+      const open = input.reduced ? .24 : clamp(input.audioLevel, 0, .85);
+      const round = open * (.18 + .16 * Math.sin(t * 4.3));
+      const smile = input.smiling ? .40 : .10;
+      const head = speechHeadMotion({ open, smile, round, seal: 1 }, open, input.reduced);
+      return { open, smile, round,
+        extend: 0, curl: 0, sway: 0,
+        jaw: input.reduced || open < 0.008 ? 0 : speechJaw({ open, smile, round }, open),
+        headTilt: head.headTilt, headNod: head.headNod };
     }
     if (input.textPose) {
+      const head = speechHeadMotion(input.textPose, input.textEnvelope || 0, input.reduced);
       return { ...input.textPose, extend: 0, curl: 0, sway: 0,
-        jaw: input.reduced ? 0 : input.textPose.open * .95, headTilt: 0, headNod: 0 };
+        jaw: input.reduced ? 0 : speechJaw(input.textPose, input.textEnvelope || 0),
+        headTilt: head.headTilt, headNod: head.headNod };
     }
     if (Number.isFinite(input.textLevel)) {
       const open = clamp(input.textLevel, 0, .7);
-      return { open, smile: .10, round: open * .22, extend: 0, curl: 0, sway: 0,
-        jaw: input.reduced ? 0 : open * .95, headTilt: 0, headNod: 0 };
+      const smile = .10, round = open * .22;
+      const head = speechHeadMotion({ open, smile, round, seal: 1 }, input.textEnvelope || 0, input.reduced);
+      return { open, smile, round, extend: 0, curl: 0, sway: 0,
+        jaw: input.reduced ? 0 : speechJaw({ open, smile, round }, input.textEnvelope || 0),
+        headTilt: head.headTilt, headNod: head.headNod };
+    }
+    if (input.speaking) {
+      const cadence = Math.pow(Math.abs(Math.sin(t * 9.1) * Math.cos(t * 3.7)), 1.3);
+      const open = input.reduced ? .24 : clamp(Math.max(cadence * .66, input.voice || 0), 0, .78);
+      const round = open * (.18 + .16 * Math.sin(t * 4.3));
+      const smile = input.smiling ? .40 : .10;
+      const head = speechHeadMotion({ open, smile, round, seal: 1 }, cadence, input.reduced);
+      return { open, smile, round,
+        extend: 0, curl: 0, sway: 0,
+        jaw: input.reduced || open < 0.008 ? 0 : speechJaw({ open, smile, round }, cadence),
+        headTilt: head.headTilt, headNod: head.headNod };
     }
     if (mode === "auto" && input.humming && !input.reduced) {
       const beat = Math.sin((input.time || 0) * .0045);
       return { open: 0, smile: .20, round: .10, press: .24, seal: 1,
         extend: 0, curl: 0, sway: 0, jaw: 0, headTilt: beat * .7, headNod: Math.abs(beat) * .45 };
+    }
+    if (mode === "auto" && input.kissBlow && !input.reduced) {
+      const beat = Math.sin((input.time || 0) * .011);
+      return { open: 0, smile: .32, round: .24, press: .48, seal: 1,
+        extend: 0, curl: 0, sway: 0, jaw: 0, headTilt: beat * .45, headNod: -.012 };
     }
     if (mode === "auto" && input.lifePose && !input.reduced) return {
       ...input.lifePose, bite: 0, extend: 0, curl: 0, sway: 0, headTilt: 0, headNod: 0
@@ -226,6 +279,10 @@
   }
 
   function target(mode, input = {}) { return { bite: 0, seal: 0, asym: 0, press: 0, shift: 0, ...expressionTarget(mode, input) }; }
+
+  function measuredVoiceInput(input = {}) {
+    return !!(input.speaking && Number.isFinite(input.audioLevel));
+  }
 
   function geometry(open, smile, round, extend = 0, curl = 0, sway = 0, bite = 0, asym = 0, press = 0) {
     open = clamp(open, 0, 1); smile = clamp(smile, 0, 1); round = clamp(round, 0, 1);
@@ -294,6 +351,7 @@
   }
 
   function attach(win, wrap, host, wake, reactionAudio = null) {
+    const onSpeechPause = typeof reactionAudio?.onSpeechPause === "function" ? reactionAudio.onSpeechPause : null;
     const existing = wrap.querySelector(".hq-expressive-mouth");
     if (existing) return existing.mouthRig;
     const doc = win.document, ns = "http://www.w3.org/2000/svg";
@@ -391,6 +449,7 @@
     let thinkingCount = 0, nextLaughAt = 0, lastPreparedAt = -Infinity;
     let nextIdleAt = win.performance.now() + 9000 + Math.random() * 7000, nextListenAt = 0;
     let wasThinking = false, wasTyping = false, wasVoice = false, wasTickled = false;
+    let nextSpeechBlinkAt = 0;
     const postponeIdle = time => { nextIdleAt = time + 9500 + Math.random() * 10000; };
     const clearGesture = () => { if (gesture?.audioOwned) reactionAudio?.stop(gesture.kind); gesture = null; };
     const beginGesture = (kind, time, strength = 1) => {
@@ -419,7 +478,8 @@
       lifePose = null;
       let label = "rest";
       if (mode !== "auto" || reduced()) { clearGesture(); anticipation = null; nextIdleAt = Math.max(nextIdleAt, time + 9500); }
-      else if (pulling || voice || textBeat || host.classList.contains("is-idle-humming")) {
+      else if (pulling || voice || textBeat || host.classList.contains("is-idle-humming") ||
+          host.classList.contains("is-idle-kiss-blow")) {
         clearGesture();
         if (pulling || voice) anticipation = null;
         nextIdleAt = Math.max(nextIdleAt, time + 9500);
@@ -476,13 +536,38 @@
       textPose: textBeat ? visemeAt(textBeat.plan, time - textBeat.at, textBeat.duration, textBeat.word, textBeat.startPose) : null,
       pulling: host.classList.contains("is-bust-pull"),
       humming: host.classList.contains("is-idle-humming"),
+      kissBlow: host.classList.contains("is-idle-kiss-blow"),
       speaking: host.classList.contains("is-speaking") || host.classList.contains("is-voice-lipsync"),
       audioLevel: (() => { const level = parseFloat(host.style.getPropertyValue("--rig-voice-level")); return Number.isFinite(level) ? level : null; })(),
       voice: host.classList.contains("is-voice-lipsync") ? clamp((parseFloat(host.style.getPropertyValue("--rig-voice-nod")) - 1) * 12, 0, .9) : 0,
       pull: host.classList.contains("is-bust-pull") ? parseFloat(host.style.getPropertyValue("--pull-tension")) || 0 : 0,
-      smiling: host.classList.contains("is-tickled") });
+      smiling: host.classList.contains("is-tickled"),
+      textEnvelope: textBeat && time >= textBeat.at && time < textBeat.at + textBeat.duration ?
+        textEnvelope(textBeat.word, time - textBeat.at, textBeat.duration) : 0 });
     const rig = {
-      get motion() { return { headTilt: current.headTilt, headNod: current.headNod, browLeft: brows.left, browRight: brows.right, browAuto: browMode === "auto" }; },
+      get motion() {
+        const now = win.performance.now();
+        let env = 0;
+        if (textBeat && now >= textBeat.at && now < textBeat.at + textBeat.duration) {
+          env = textEnvelope(textBeat.word, now - textBeat.at, textBeat.duration);
+        }
+        const head = speechHeadMotion(
+          { open: current.open, smile: current.smile, round: current.round, seal: current.seal },
+          env,
+          reduced());
+        return {
+          headTilt: current.headTilt,
+          headNod: current.headNod,
+          browLeft: brows.left,
+          browRight: brows.right,
+          browAuto: browMode === "auto",
+          open: current.open,
+          jaw: current.jaw,
+          envelope: env,
+          browLift: head.browLift,
+          aperture: head.aperture
+        };
+      },
       prepareSpeech(word, owner, phonemes, warm = false, playful = false) {
         if (reduced() || !/\p{L}/u.test(String(word || ""))) return;
         const first = (Array.isArray(phonemes) ? phonemes.find(id => Object.hasOwn(VISEMES, id)) : wordVisemes(word)[0]) || "M";
@@ -503,7 +588,11 @@
         const playful = anticipation?.owner === owner ? anticipation.playful : textBeat?.owner === owner ? textBeat.playful : lastPlayful;
         if (anticipation?.owner === owner) anticipation = null;
         clearGesture(); lifePose = null;
-        textBeat = { word: String(word || ""), plan: sequence, duration: pacedDuration, owner, at: win.performance.now(), startPose, warm, playful };
+        const pauseMs = textPause(String(word || ""));
+        textBeat = {
+          word: String(word || ""), plan: sequence, duration: pacedDuration, owner,
+          at: win.performance.now(), startPose, warm, playful, pauseMs, pauseBreathDone: !pauseMs
+        };
         lastPaint = -Infinity;
         if (wake) wake();
         return pacedDuration;
@@ -545,9 +634,28 @@
         paintEyes(time);
         advanceLife(time);
         const input = inputs(time), to = target(mode, input);
+        const speakingNow = input.speaking;
+        host.classList.toggle("is-speech-articulating", !!(speakingNow || articulating));
+        if ((speakingNow || articulating) && !reduced() && time >= nextSpeechBlinkAt) {
+          rig.blink(165 + Math.random() * 55, Math.random() < .28);
+          nextSpeechBlinkAt = time + 1900 + Math.random() * 2100;
+        } else if (!speakingNow && !textBeat) nextSpeechBlinkAt = time + 1200;
+        if (textBeat?.pauseMs && !textBeat.pauseBreathDone) {
+          const elapsedWord = time - textBeat.at;
+          const active = textBeat.duration - Math.min(textBeat.pauseMs, textBeat.duration * .72);
+          if (elapsedWord >= active - 4) {
+            textBeat.pauseBreathDone = true;
+            if (onSpeechPause) onSpeechPause(textBeat.word);
+          }
+        }
+        const visemeDrive = !!input.textPose && !measuredVoiceInput(input);
         const closingLips = input.textPose && input.textPose.seal > .9 && input.textPose.open < .025;
-        const follow = reduced() ? 1 : 1 - Math.exp(-elapsed * (input.textPose && !input.speaking ? closingLips ? 75 : 40 : 16));
-        for (const key of keys) current[key] += (to[key] - current[key]) * follow;
+        const follow = reduced() ? 1 : 1 - Math.exp(-elapsed * (visemeDrive ? closingLips ? 75 : 40 : 16));
+        const jawFollow = reduced() ? 1 : 1 - Math.exp(-elapsed * (visemeDrive ? 58 : input.speaking ? 26 : 16));
+        for (const key of keys) {
+          const rate = key === "jaw" ? jawFollow : follow;
+          current[key] += (to[key] - current[key]) * rate;
+        }
         const browPose = browTarget(browMode, { ...inputs(time), time: Math.max(0, time - browStart) });
         for (const key of ["left", "right"]) brows[key] += (browPose[key] - brows[key]) * follow;
         paint();
@@ -635,5 +743,5 @@
     rig.syncInteraction();
     return rig;
   }
-  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, VISEMES, MODES, BROW_MODES };
+  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
 });

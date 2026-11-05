@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
-const {geometry,target,browTarget,eyeGeometry,blinkClosure,textEnvelope,wordVisemes,visemeAt,textWordDuration,lifeGesture,VISEMES,MODES,BROW_MODES}=require('../assets/hq-companion-mouth.js');
+const {geometry,target,browTarget,eyeGeometry,blinkClosure,textEnvelope,wordVisemes,visemeAt,textWordDuration,lifeGesture,speechJaw,VISEMES,MODES,BROW_MODES}=require('../assets/hq-companion-mouth.js');
 for(const mode of Object.keys(MODES)) for(const time of [0,100,900,5000]){
  const t=target(mode,{time,speaking:true,pull:.7,voice:.2});
  for(const k of ['open','smile','round'])assert.ok(t[k]>=0&&t[k]<=1);
@@ -82,7 +82,7 @@ for(const mode of Object.keys(MODES)) {
  assert.equal(quiet.open,0,'measured silence closes the mouth without a synthetic pulse');
  assert.equal(quiet.jaw,0,'measured silence closes the jaw');
  assert.ok(loud.open>soft.open&&loud.jaw>soft.jaw,'voice intensity drives lips and jaw together in every selected mode');
- assert.ok(Math.abs(loud.jaw-loud.open*.95)<1e-9,'jaw follows the same opening envelope');
+ assert.ok(loud.jaw>=loud.open*.95,'jaw follows the opening envelope');
  assert.equal(loud.extend,0,'speaking temporarily suppresses other mouth gestures');
 }
 assert.equal(target('auto',{speaking:true,audioLevel:1,pulling:true}).open,.96,'pull reactions keep priority over speaking');
@@ -95,7 +95,7 @@ assert.equal(textEnvelope('Bonjour',141,140),0,'word animation expires');
 for(const mode of Object.keys(MODES)) {
  const pose=target(mode,{textLevel:.45});
  assert.equal(pose.open,.45,'silent text animates regardless of the saved mouth mode');
- assert.equal(pose.jaw,.45*.95,'jaw follows streamed words');
+ assert.ok(pose.jaw>=.45*.95,'jaw follows streamed words');
  assert.equal(pose.extend,0);
 }
 assert.equal(target('auto',{textLevel:.5,speaking:true,audioLevel:0}).open,0,'actual voice silence takes priority over text beats');
@@ -114,8 +114,9 @@ for(const word of ['Bonjour','papa','beau','vous','chérie!','…']) for(let ela
  const pose=visemeAt(wordVisemes(word),elapsed,600,word);
  for(const value of Object.values(pose)) assert.ok(Number.isFinite(value)&&value>=0&&value<=1,'visemes remain bounded through transitions');
  const to=target('auto',{textPose:pose});
- assert.ok(Math.abs(to.jaw-pose.open*.95)<1e-9,'jaw follows changing sound shapes');
+ assert.ok(Math.abs(to.jaw-speechJaw(pose))<1e-9,'jaw follows the speech chin driver');
 }
+assert.ok(target('auto',{textPose:VISEMES.E}).jaw>speechJaw({open:VISEMES.E.open,smile:0,round:0}),'smile-heavy vowels move the chin with the lips');
 assert.deepEqual(visemeAt(wordVisemes('Bonjour.'),500,600,'Bonjour.'),VISEMES.M,'punctuation keeps the drawn lips closed until speech ends');
 assert.deepEqual(visemeAt(['I'],0,140,'me',VISEMES.U),VISEMES.U,'a new word starts from the preceding lip shape');
 assert.equal(visemeAt(['O'],139,140,'you').seal,1,'unpunctuated words retain their drawn mouth through the last frame');

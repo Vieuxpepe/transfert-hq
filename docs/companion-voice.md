@@ -172,9 +172,15 @@ in the source folder, and legacy audio files remain in their existing locations.
 
 Idle humming can also occur without music after at least 20 seconds of inactivity.
 The existing idle roulette chooses it occasionally, with a two-minute cooldown.
-A closed-mouth smile, small head nod and gentle sway follow the recording's
-duration. Interaction and speech cancel it; reduced motion suppresses it.
+A closed-mouth smile, small head nod and left–right sway follow the recording's
+duration (or a silent fallback when Son is off). Floating note particles appear
+while she hums. Interaction and speech cancel it; reduced motion suppresses it.
 With sound effects disabled, the same brief animation remains silent.
+
+In adult mode, the idle roulette can also trigger short cutesy bursts: groove
+sway, kiss blow, shy wiggle, cute wink, heart flutter and sparkle shimmy. They
+reuse existing reaction pools where noted (kiss, giggle, contented) and stay off
+when adult mode is disabled.
 
 Batch mastering is configured in `scripts/voice_recording_mastering.json`.
 Re-run the importer to apply a new setting consistently to all recordings.
