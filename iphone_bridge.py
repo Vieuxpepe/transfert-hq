@@ -17,6 +17,7 @@ import socket
 import struct
 import subprocess
 import sys
+import collections
 import gzip
 import tempfile
 import threading
@@ -171,8 +172,12 @@ ASSET_GZIP_MIN = 1024
 # _send() replies (API JSON, HTML pages) are gzipped too when larger than this and the client accepts it.
 SEND_GZIP_MIN = 1024
 SEND_GZIP_TYPES = {"application/json", "application/javascript", "text/javascript", "image/svg+xml", "application/manifest+json"}
-_ASSET_GZ_CACHE: dict[str, tuple[int, int, bytes]] = {}
+_ASSET_GZ_CACHE: "collections.OrderedDict[str, tuple[int, int, bytes]]" = collections.OrderedDict()  # LRU: oldest first
 _ASSET_GZ_LOCK = threading.Lock()
+_ASSET_GZ_MAX_ENTRIES = 256
+_ASSET_GZ_MAX_BYTES = 48 * 1024 * 1024  # bounded memory for compressed copies
+_ASSET_GZ_BYTES = 0
+_ASSET_GZ_INFLIGHT: dict[str, threading.Lock] = {}  # per-path lock: concurrent requests compress a file once
 
 
 def asset_etag(st: os.stat_result) -> str:
@@ -190,22 +195,48 @@ def reaction_fingerprinted_ogg_asset(path: Path) -> bool:
     return path.suffix.lower() == ".ogg" and _REACTION_FP_OGG.match("/assets/" + rel) is not None
 
 
+def _gz_lookup(key: str, st: os.stat_result) -> bytes | None:
+    hit = _ASSET_GZ_CACHE.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        _ASSET_GZ_CACHE.move_to_end(key)
+        return hit[2]
+    return None
+
+
 def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
-    """Gzipped bytes of an asset, cached by (mtime, size). None when the file changed while being read."""
+    """Gzipped bytes of an asset, cached (LRU, bounded entries and bytes) by (mtime, size).
+    None when the file changed while being read. Concurrent requests for one file compress it once."""
+    global _ASSET_GZ_BYTES
     key = str(path)
     with _ASSET_GZ_LOCK:
-        hit = _ASSET_GZ_CACHE.get(key)
-        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
-            return hit[2]
-    data = path.read_bytes()
-    if len(data) != st.st_size:
-        return None
-    packed = gzip.compress(data, compresslevel=6, mtime=0)
-    with _ASSET_GZ_LOCK:
-        if len(_ASSET_GZ_CACHE) > 256:
-            _ASSET_GZ_CACHE.clear()
-        _ASSET_GZ_CACHE[key] = (st.st_mtime_ns, st.st_size, packed)
-    return packed
+        got = _gz_lookup(key, st)
+        if got is not None:
+            return got
+        flight = _ASSET_GZ_INFLIGHT.setdefault(key, threading.Lock())
+    try:
+        with flight:
+            with _ASSET_GZ_LOCK:
+                got = _gz_lookup(key, st)
+            if got is not None:
+                return got
+            data = path.read_bytes()
+            if len(data) != st.st_size:
+                return None
+            packed = gzip.compress(data, compresslevel=6, mtime=0)
+            with _ASSET_GZ_LOCK:
+                old = _ASSET_GZ_CACHE.pop(key, None)
+                if old:
+                    _ASSET_GZ_BYTES -= len(old[2])
+                _ASSET_GZ_CACHE[key] = (st.st_mtime_ns, st.st_size, packed)
+                _ASSET_GZ_BYTES += len(packed)
+                while len(_ASSET_GZ_CACHE) > 1 and (len(_ASSET_GZ_CACHE) > _ASSET_GZ_MAX_ENTRIES
+                                                    or _ASSET_GZ_BYTES > _ASSET_GZ_MAX_BYTES):
+                    _, ev = _ASSET_GZ_CACHE.popitem(last=False)
+                    _ASSET_GZ_BYTES -= len(ev[2])
+            return packed
+    finally:
+        with _ASSET_GZ_LOCK:
+            _ASSET_GZ_INFLIGHT.pop(key, None)
 
 
 # perf9 (fix 4): page <script>/<link> URLs carry ?v=<mtime+size>; such a URL is cached for a year (immutable) when the
@@ -2543,19 +2574,26 @@ def bind_hq() -> None:
     def _ai_files(ws: list) -> list:
         found = []
         seen = 0
+        limit_hit = False
         for top in ("Inbox", "Uni", "Print"):
+            if limit_hit:
+                break
             base = ROOT / top
             for dirpath, dirnames, filenames in os.walk(base):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                 for n in filenames + dirnames:
                     seen += 1
                     if seen > 8000:
+                        limit_hit = True
                         break
                     if n.startswith(".") or n.lower() in SYSTEM_NAMES:
                         continue
                     sc = hq_ai.score(n, ws)
                     if sc:
                         found.append((sc, "/".join(Path(dirpath, n).relative_to(ROOT).parts)))
+                if limit_hit:
+                    dirnames[:] = []  # stop descending: the cap must end the whole os.walk, not just this directory
+                    break
         found.sort(key=lambda t: (-t[0], t[1]))
         return [r for _, r in found[:15]]
 
@@ -2988,11 +3026,14 @@ window.hqSketchFail = function (reason, kind) {
   app.textContent = '';
   app.appendChild(box);
 };
+let skLoadTried = false;
 function hqSketchStart() {
   if (!window.hqSketchShow) {
-    // Classic scripts at the end of <body> all run before DOMContentLoaded, so a
-    // missing module after that point is a load failure, not a race.
-    if (document.readyState !== 'loading') window.hqSketchFail(skMissingReason(), 'load');
+    // The drawing modules are loaded on first use (not with the page): inject them once, in order.
+    // If they were already attempted and the entry point is still missing, that is a load failure.
+    if (skRetrying) return;
+    if (!skLoadTried) { skLoadTried = true; hqSketchRetry('load'); return; }
+    window.hqSketchFail(skMissingReason(), 'load');
     return;
   }
   try { window.hqSketchShow(); } catch (e) { console.error(e); window.hqSketchFail(SK_INIT_ERROR, 'init'); }
@@ -3002,6 +3043,7 @@ function hqSketchRetry(kind, btn) {
   // Scripts present but init threw: state may be half-built, reload is the safe retry.
   if (kind === 'init' && window.hqSketchShow) { location.reload(); return; }
   if (skRetrying) return;
+  skLoadTried = true;
   skRetrying = true;
   if (btn) { btn.disabled = true; btn.textContent = 'Nouvel essai…'; }
   // Re-inject only what never ran, in page order; never re-run hq-dessiner.js once it has.
@@ -3079,6 +3121,34 @@ window.addEventListener('load', () => {
   if (document.body.dataset.view === 'dessiner' && app && !app.querySelector('.sk, .sk-fail')) hqSketchStart();
 }, { once: true });
 
+// Forge: ten classic scripts, order matters (hq-forge.js defines window.hqForgeHooks the others use). Loaded once, on first
+// use, sequentially; a failing add-on is skipped like a missing optional module, a failing core file allows a later retry.
+const HQ_FORGE_SCRIPTS = ['hq-forge.js', 'hq-forge-next.js', 'hq-forge-explore.js', 'hq-forge-night.js', 'hq-forge-vault-search.js',
+  'hq-forge-inpaint.js', 'hq-forge-bricks.js', 'hq-forge-lineage.js', 'hq-forge-style.js', 'hq-forge-couch.js'];
+let hqForgeLoading = null;
+function hqForgeLoad() {
+  if (window.hqForgeShow) return Promise.resolve();
+  if (hqForgeLoading) return hqForgeLoading;
+  const one = (name) => new Promise((resolve) => {
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.async = false;
+    el.onload = () => resolve(true);
+    el.onerror = () => { el.remove(); resolve(false); };
+    document.body.appendChild(el);
+  });
+  hqForgeLoading = HQ_FORGE_SCRIPTS.reduce((chain, name, i) => chain.then(async (ok) => {
+    const loaded = await one(name);
+    return i === 0 ? loaded : ok;
+  }), Promise.resolve(true)).then((coreOk) => {
+    if (!coreOk || !window.hqForgeShow) {
+      hqForgeLoading = null;  // allow a retry on the next visit
+      if (typeof toast === 'function') toast('Forge indisponible (module non chargé)');
+    }
+  });
+  return hqForgeLoading;
+}
+window.hqForgeLoad = hqForgeLoad;
 // Narrow phones may scroll the bottom nav sideways: keep the active target in view.
 function hqNavReveal(b) {
   const nav = b.parentElement;
@@ -3128,8 +3198,13 @@ function setView(name) {
   if (view === 'inventaire' && window.hqInventoryShow) {
     try { window.hqInventoryShow(); } catch (e) { console.error(e); }  // an Inventaire failure never aborts HQ
   }
-  if (view === 'forge' && window.hqForgeShow) {
-    try { window.hqForgeShow(); } catch (e) { console.error(e); }
+  if (view === 'forge') {
+    // Forge modules load on first visit (not with the page); the view may change again before they arrive.
+    hqForgeLoad().then(() => {
+      if (document.body.dataset.view === 'forge' && window.hqForgeShow) {
+        try { window.hqForgeShow(); } catch (e) { console.error(e); }
+      }
+    }).catch((e) => console.error(e));
   } else if (window.hqForgeHide) {
     try { window.hqForgeHide(); } catch (e) { console.error(e); }
   }
@@ -7026,20 +7101,6 @@ def render_app() -> bytes:
 <script src="/assets/hq-carnet-stickies.js"></script>
 <script src="/assets/hq-carnet-sizing.js"></script>
 <script src="/assets/hq-carnet-feel.js"></script>
-<script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
-<script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
-<script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
-<script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
-<script src="/assets/hq-forge.js"></script>
-<script src="/assets/hq-forge-next.js"></script>
-<script src="/assets/hq-forge-explore.js"></script>
-<script src="/assets/hq-forge-night.js"></script>
-<script src="/assets/hq-forge-vault-search.js"></script>
-<script src="/assets/hq-forge-inpaint.js"></script>
-<script src="/assets/hq-forge-bricks.js"></script>
-<script src="/assets/hq-forge-lineage.js"></script>
-<script src="/assets/hq-forge-style.js"></script>
-<script src="/assets/hq-forge-couch.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">

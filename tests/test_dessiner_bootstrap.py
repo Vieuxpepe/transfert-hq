@@ -122,11 +122,16 @@ class BootstrapPageTests(unittest.TestCase):
         self.app_js = iphone_bridge.APP_JS
         self.dessiner = (SOURCE / "assets" / "hq-dessiner.js").read_text(encoding="utf-8")
 
-    def test_dessiner_scripts_are_tagged_in_order(self):
-        tags = re.findall(r'<script src="/assets/([^"]+)" data-sk="([^"]+)"></script>', self.html)
-        self.assertEqual([t[0] for t in tags], list(DESSINER_JS))
-        self.assertTrue(all(src == sk for src, sk in tags))
-        self.assertLess(self.html.index("function setView"), self.html.index('data-sk="hq-sketch-core.js"'))
+    def test_dessiner_scripts_are_loaded_on_demand_in_order(self):
+        # Perf: the drawing modules are no longer fetched with the page; they are injected on first use, in order.
+        self.assertNotIn("data-sk=", self.html)
+        for name in DESSINER_JS:
+            self.assertNotIn('<script src="/assets/%s"' % name, self.html)
+        order = [self.app_js.index("['%s'," % name) for name in DESSINER_JS]
+        self.assertEqual(order, sorted(order))
+        start = self._block("function hqSketchStart() {", "\n}\n")
+        self.assertIn("hqSketchRetry('load')", start)
+        self.assertIn("skLoadTried", start)  # attempted once; a second miss is reported, never a loop
         self.assertIn('<div id="hq-sk-app"><p class="hint">Chargement…</p></div>', self.html)
 
     def _block(self, start, end):

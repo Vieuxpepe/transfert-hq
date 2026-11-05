@@ -106,21 +106,49 @@
       if(priority<=0)return dbToGain(gainDb.idle)* (context().mediaPlaying===false?10**(-4/20):1);
       return dbToGain(gainDb.voice);
     };
+    // Decoded-buffer LRU + bounded fetch/decode concurrency. `warmed` keeps insertion order = recency; in-flight
+    // promises are never evicted, and a buffer being played stays alive through its own source node.
+    const MAX_DECODED=48,MAX_JOBS=3;
+    let runningJobs=0;const jobQueue=[];
+    const pumpJobs=()=>{
+      while(runningJobs<MAX_JOBS&&jobQueue.length){
+        const run=jobQueue.shift();runningJobs++;
+        run().finally(()=>{runningJobs--;pumpJobs();});
+      }
+    };
+    const enqueueJob=(fn)=>new Promise((resolve)=>{jobQueue.push(()=>fn().then(resolve,()=>resolve(null)));pumpJobs();});
+    const touchBuffer=(url,buf)=>{warmed.delete(url);warmed.set(url,buf);};
+    const trimDecoded=()=>{
+      let decoded=0;for(const v of warmed.values())if(typeof v?.then!=='function')decoded++;
+      if(decoded<=MAX_DECODED)return;
+      for(const [k,v] of warmed){
+        if(decoded<=MAX_DECODED)break;
+        if(typeof v?.then==='function')continue;
+        warmed.delete(k);decoded--;
+      }
+    };
     const sampleBuffer=(url)=>{
       const hit=warmed.get(url);
-      return hit&&typeof hit.then!=='function'?hit:null;
+      if(!hit||typeof hit.then==='function')return null;
+      touchBuffer(url,hit);
+      return hit;
     };
     const warmSample=(win,url)=>{
       if(!url)return Promise.resolve(null);
       const hit=warmed.get(url);
-      if(hit)return typeof hit.then==='function'?hit:Promise.resolve(hit);
+      if(hit){
+        if(typeof hit.then==='function')return hit;
+        touchBuffer(url,hit);
+        return Promise.resolve(hit);
+      }
       const ctx=ensureReactionCtx();
       if(!ctx)return Promise.resolve(null);
       if(ctx.state==='suspended')ctx.resume().catch(()=>{});
-      const job=win.fetch(url).then(r=>r.ok?r.arrayBuffer():Promise.reject()).then(ab=>ctx.decodeAudioData(ab)).then(buf=>{
-        warmed.set(url,buf);
+      const job=enqueueJob(()=>win.fetch(url).then(r=>r.ok?r.arrayBuffer():Promise.reject()).then(ab=>ctx.decodeAudioData(ab))).then(buf=>{
+        if(!buf){warmed.delete(url);return null;}
+        touchBuffer(url,buf);trimDecoded();
         return buf;
-      }).catch(()=>{warmed.delete(url);return null;});
+      });
       warmed.set(url,job);
       return job;
     };

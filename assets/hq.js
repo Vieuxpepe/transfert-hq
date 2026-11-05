@@ -486,6 +486,7 @@
     }
     if (hit.kind === "prompt") {
       if (typeof setView === "function") setView("forge");
+      if (typeof window.hqForgeLoad === "function") await window.hqForgeLoad().catch(() => {});
       const hooks = window.hqForgeHooks;
       if (!hooks || typeof hooks.openImage !== "function") return "fail";
       await hooks.openImage(hit.id);
