@@ -4,6 +4,7 @@ import os
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -70,6 +71,43 @@ class ImageSearchCacheTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlinks not permitted here")
         self.assertEqual(_ids(B.search_content("dragon")), {a})
+
+    def test_overlapping_searches_while_images_change(self):
+        # search returns at most 5 hits per group: 3 stable images with a token the churning images never contain
+        stable = {_add(self.tmp, "zorblax stable %d" % i) for i in range(3)}
+        for i in range(60):
+            _add(self.tmp, "dragon filler %d" % i)  # keeps the cache non-trivial
+        stop = threading.Event()
+        problems = []
+
+        def churn():  # adds, edits and removes other images while searches run
+            n = 0
+            while not stop.is_set():
+                n += 1
+                iid = _add(self.tmp, "dragon churn %d" % n)
+                meta = B.hq_forge_gallery.gallery_dir(self.tmp) / iid / "meta.json"
+                meta.write_text(json.dumps({"id": iid, "created": "x", "settings": {"prompt": "dragon edited %d" % n}}), encoding="utf-8")
+                shutil.rmtree(B.hq_forge_gallery.gallery_dir(self.tmp) / iid, ignore_errors=True)
+
+        def searcher():
+            for _ in range(25):
+                try:
+                    got = _ids(B.search_content("zorblax"))
+                except Exception as exc:  # noqa: BLE001
+                    problems.append(repr(exc))
+                    return
+                if not stable <= got:  # a failed/partial image read would silently drop stable images
+                    problems.append("missing %d stable images" % len(stable - got))
+                    return
+
+        mut = threading.Thread(target=churn)
+        mut.start()
+        workers = [threading.Thread(target=searcher) for _ in range(6)]
+        [w.start() for w in workers]
+        [w.join() for w in workers]
+        stop.set()
+        mut.join()
+        self.assertEqual(problems, [])
 
 
 if __name__ == "__main__":

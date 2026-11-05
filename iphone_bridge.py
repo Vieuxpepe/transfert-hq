@@ -2404,8 +2404,8 @@ def search_content(q: str) -> list[dict]:
         if base.is_dir() and not base.is_symlink():
             key_root = str(base)
             with _IMG_SEARCH_LOCK:
-                cache = _IMG_SEARCH_CACHE.setdefault(key_root, {})
-            live = set()
+                cache = dict(_IMG_SEARCH_CACHE.get(key_root) or {})  # private snapshot: no shared dict is touched below
+            fresh = {}
             with os.scandir(base) as it:
                 children = [(e.name, e.path) for e in it if not e.is_symlink() and hq_forge_gallery.IMG_RE.fullmatch(e.name)]
             for name, cpath in children:
@@ -2415,22 +2415,21 @@ def search_content(q: str) -> list[dict]:
                     continue
                 if stat.S_ISLNK(st.st_mode):
                     continue
-                live.add(name)
                 sig = (st.st_mtime_ns, st.st_size)
                 hit = cache.get(name)
                 if hit and hit[0] == sig:
+                    fresh[name] = hit
                     out.append(dict(hit[1]))
                     continue
                 try:
-                    meta = hq_forge_gallery.get(ROOT, name)
+                    meta = hq_forge_gallery.get(ROOT, name)  # file read happens outside the lock
                 except hq_forge_gallery.GalleryError:
-                    cache.pop(name, None)
                     continue
                 row = {"id": name, "prompt": (meta.get("settings") or {}).get("prompt") or "", "created": meta.get("created")}
-                cache[name] = (sig, row)
+                fresh[name] = (sig, row)
                 out.append(dict(row))
-            for gone in [k for k in cache if k not in live]:
-                cache.pop(gone, None)
+            with _IMG_SEARCH_LOCK:
+                _IMG_SEARCH_CACHE[key_root] = fresh  # swap in the pruned result in one step (vanished ids drop out)
         return out
 
     def events():
