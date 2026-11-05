@@ -16,6 +16,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import stat
 import sys
 import collections
 import gzip
@@ -2375,6 +2376,10 @@ def palette_catalog() -> list[dict]:
     return items
 
 
+_IMG_SEARCH_CACHE: dict[str, dict] = {}  # gallery dir -> {image id: ((mtime_ns, size), search row)}
+_IMG_SEARCH_LOCK = threading.Lock()
+
+
 def search_content(q: str) -> list[dict]:
     """Palette content hits: Carnet pages, Forge prompts (normal gallery only, never the vault),
     calendar event titles and Inbox file names. A source that fails is skipped."""
@@ -2392,17 +2397,39 @@ def search_content(q: str) -> list[dict]:
         return out
 
     def images():
+        # Each image's prompt is cached against its meta.json (mtime_ns, size): a query stats the files instead of opening
+        # and parsing every one. An edit changes mtime/size, a new image is a new folder, a removed one drops out below.
         base = hq_forge_gallery.gallery_dir(ROOT)
         out = []
         if base.is_dir() and not base.is_symlink():
-            for child in base.iterdir():
-                if child.is_symlink() or not hq_forge_gallery.IMG_RE.fullmatch(child.name):
+            key_root = str(base)
+            with _IMG_SEARCH_LOCK:
+                cache = dict(_IMG_SEARCH_CACHE.get(key_root) or {})  # private snapshot: no shared dict is touched below
+            fresh = {}
+            with os.scandir(base) as it:
+                children = [(e.name, e.path) for e in it if not e.is_symlink() and hq_forge_gallery.IMG_RE.fullmatch(e.name)]
+            for name, cpath in children:
+                try:
+                    st = os.lstat(os.path.join(cpath, "meta.json"))
+                except OSError:
+                    continue
+                if stat.S_ISLNK(st.st_mode):
+                    continue
+                sig = (st.st_mtime_ns, st.st_size)
+                hit = cache.get(name)
+                if hit and hit[0] == sig:
+                    fresh[name] = hit
+                    out.append(dict(hit[1]))
                     continue
                 try:
-                    meta = hq_forge_gallery.get(ROOT, child.name)
+                    meta = hq_forge_gallery.get(ROOT, name)  # file read happens outside the lock
                 except hq_forge_gallery.GalleryError:
                     continue
-                out.append({"id": child.name, "prompt": (meta.get("settings") or {}).get("prompt") or "", "created": meta.get("created")})
+                row = {"id": name, "prompt": (meta.get("settings") or {}).get("prompt") or "", "created": meta.get("created")}
+                fresh[name] = (sig, row)
+                out.append(dict(row))
+            with _IMG_SEARCH_LOCK:
+                _IMG_SEARCH_CACHE[key_root] = fresh  # swap in the pruned result in one step (vanished ids drop out)
         return out
 
     def events():

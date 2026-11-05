@@ -6337,6 +6337,22 @@
       S.bustCastSize = 0;
       S.bustCasts = null;
       S.bustSpecs = null;
+      S.bustStackEls = null;
+      return;
+    }
+    // Fast path (once per sync, ~1/s): when every stack and every layer built by the last full pass is still the same
+    // connected element, skip the ~15 selector queries and map rebuilds and only do the per-sync refresh below.
+    const known = S.bustStackEls;
+    if (known && known.length === stacks.length && known.every((el, i) => el === stacks[i] && el.isConnected) &&
+        S.bustLights && S.bustLights.length === stacks.length && S.bustLights.every((el) => el.isConnected) &&
+        S.bustDents && S.bustDents.every((el) => el.isConnected) && S.bustNl && S.bustNl.every((el) => el.isConnected) &&
+        S.bustCasts && S.bustSpecs && S.bustShades && S.bustRipples &&
+        [S.bustCasts, S.bustSpecs, S.bustShades, S.bustRipples].every((m) => Object.values(m).every((el) => el && el.isConnected)) &&
+        S.bustCastReceiver && S.bustCastReceiver.isConnected) {
+      S.bustNlKey = "";
+      S.bustSpecSize = stacks[0].offsetWidth || S.bustSpecSize || 0;
+      if (!win.ResizeObserver) S.bustCastSize = parseFloat(win.getComputedStyle(stacks[0]).width) || 0;
+      updateBustCastProjection(win, ensureLive2DState(), isCompactUI(win));
       return;
     }
     stacks.forEach((stack) => {
@@ -6436,6 +6452,7 @@
     S.el.querySelectorAll(".hq-bust-shade").forEach((el) => (S.bustShades[el.classList.contains("is-left") ? "left" : "right"] = el));
     S.bustRipples = {};
     S.el.querySelectorAll(".hq-bust-ripple").forEach((el) => (S.bustRipples[el.classList.contains("is-left") ? "left" : "right"] = el));
+    S.bustStackEls = Array.from(stacks);
     // Also initialize the static projection when reduced motion suppresses RAF.
     updateBustCastProjection(win, ensureLive2DState(), isCompactUI(win));
   }

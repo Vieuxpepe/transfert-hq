@@ -160,7 +160,8 @@
     const off = S.doc.hidden || !onHome();
     S.home.classList.toggle("hf-paused", off);
     if (S.hero) S.hero.classList.toggle("hf-paused", off || S.heroOut === true);
-    if (S.bg) S.bg.classList.toggle("hf-paused", S.doc.hidden);
+    // The global background only animates on Accueil too (its frozen frame keeps each page's look); it resumes on return.
+    if (S.bg) S.bg.classList.toggle("hf-paused", off);
   };
   /** The PC's time (hq-home.js corrects for this device's clock), so sky, clock and greeting always agree. */
   const hqNow = () => {
