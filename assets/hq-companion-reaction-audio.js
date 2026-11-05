@@ -108,7 +108,7 @@
     };
     // Decoded-buffer LRU + bounded fetch/decode concurrency. `warmed` keeps insertion order = recency; in-flight
     // promises are never evicted, and a buffer being played stays alive through its own source node.
-    const MAX_DECODED=48,MAX_JOBS=3;
+    const MAX_DECODED=48,MAX_JOBS=3,MAX_DECODED_BYTES=48*1024*1024;
     let runningJobs=0;const jobQueue=[];
     const pumpJobs=()=>{
       while(runningJobs<MAX_JOBS&&jobQueue.length){
@@ -118,13 +118,20 @@
     };
     const enqueueJob=(fn)=>new Promise((resolve)=>{jobQueue.push(()=>fn().then(resolve,()=>resolve(null)));pumpJobs();});
     const touchBuffer=(url,buf)=>{warmed.delete(url);warmed.set(url,buf);};
+    // Decoded PCM is 4 bytes per sample per channel: bound the cache by memory as well as by count, so a few long stereo
+    // clips cannot hold more than MAX_DECODED_BYTES. Oldest resolved buffers go first; in-flight jobs are never evicted.
+    const bufferBytes=buf=>{
+      const n=Number(buf?.length)||Math.round((Number(buf?.duration)||0)*(Number(buf?.sampleRate)||44100));
+      return n*(Number(buf?.numberOfChannels)||1)*4;
+    };
     const trimDecoded=()=>{
-      let decoded=0;for(const v of warmed.values())if(typeof v?.then!=='function')decoded++;
-      if(decoded<=MAX_DECODED)return;
+      let decoded=0,bytes=0;
+      for(const v of warmed.values())if(typeof v?.then!=='function'){decoded++;bytes+=bufferBytes(v);}
+      if(decoded<=MAX_DECODED&&bytes<=MAX_DECODED_BYTES)return;
       for(const [k,v] of warmed){
-        if(decoded<=MAX_DECODED)break;
+        if(decoded<=1||(decoded<=MAX_DECODED&&bytes<=MAX_DECODED_BYTES))break;
         if(typeof v?.then==='function')continue;
-        warmed.delete(k);decoded--;
+        warmed.delete(k);decoded--;bytes-=bufferBytes(v);
       }
     };
     const sampleBuffer=(url)=>{
