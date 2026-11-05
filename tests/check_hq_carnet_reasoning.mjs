@@ -221,6 +221,7 @@ assert.ok(!/require\(["']\.\/hq-carnet-(ask|history|sources|verifications)/.test
 
 // ---- the loader chain loads the model before its UI and both before the Reader
 const bridge = readFileSync(new URL("../iphone_bridge.py", import.meta.url), "utf8");
-const chain = bridge.split("\n").find((l) => l.includes("hq-carnet-modal.js") && l.includes("load("));
-assert.ok(chain.indexOf("hq-carnet-reasoning.js") > 0 && chain.indexOf("hq-carnet-reasoning.js") < chain.indexOf("hq-carnet-reasoning-ui.js") && chain.indexOf("hq-carnet-reasoning-ui.js") < chain.indexOf("hq-carnet-reader.js"));
+const listStart = bridge.indexOf("const HQ_CARNET_SCRIPTS");
+const chain = bridge.slice(listStart, bridge.indexOf("];", listStart)); // the single ordered Carnet loader list
+assert.ok(listStart > 0 && chain.indexOf("hq-carnet-reasoning.js") > 0 && chain.indexOf("hq-carnet-reasoning.js") < chain.indexOf("hq-carnet-reasoning-ui.js") && chain.indexOf("hq-carnet-reasoning-ui.js") < chain.indexOf("hq-carnet-reader.js"));
 console.log("reasoning client checks ok");
