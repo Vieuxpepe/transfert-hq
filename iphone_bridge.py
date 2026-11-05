@@ -3002,10 +3002,8 @@ function hqForgeLoad() {
     el.onerror = () => { el.remove(); resolve(false); };
     document.body.appendChild(el);
   });
-  hqForgeLoading = HQ_FORGE_SCRIPTS.reduce((chain, name, i) => chain.then(async (ok) => {
-    const loaded = await one(name);
-    return i === 0 ? loaded : ok;
-  }), Promise.resolve(true)).then((coreOk) => {
+  hqForgeLoading = Promise.all(HQ_FORGE_SCRIPTS.map(one)).then((results) => {
+    const coreOk = results[0];
     if (!coreOk || !window.hqForgeShow) {
       hqForgeLoading = null;  // allow a retry on the next visit
       if (typeof toast === 'function') toast('Forge indisponible (module non chargé)');
@@ -3075,7 +3073,8 @@ function hqCarnetLoad() {
     el.onerror = () => { el.remove(); resolve(); };
     document.body.appendChild(el);
   });
-  hqCarnetLoading = HQ_CARNET_SCRIPTS.reduce((chain, name) => chain.then(() => one(name)), Promise.resolve()).then(() => {
+  // All elements are inserted at once: downloads run in parallel, execution stays in list order (async = false).
+  hqCarnetLoading = Promise.all(HQ_CARNET_SCRIPTS.map(one)).then(() => {
     hqCarnetLoading = null;  // a later call retries only what never ran
     const v = document.body.dataset.view;
     if (v === 'carnet' && window.hqCarnetShow) { try { window.hqCarnetShow(); } catch (e) { console.error(e); } }
