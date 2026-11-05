@@ -7551,10 +7551,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = None
         extra = list(common)
+        range_hdr = self.headers.get("Range")
         accepts = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
         # A Range request is answered from the identity bytes (a range of a gzip stream would be meaningless).
         if accepts and not range_hdr and path.suffix.lower() in ASSET_GZIP_SUFFIXES and st.st_size >= ASSET_GZIP_MIN:
-        range_hdr = self.headers.get("Range")
             body = asset_gzip(path, st)
             if body is not None:
                 extra.append(("Content-Encoding", "gzip"))
