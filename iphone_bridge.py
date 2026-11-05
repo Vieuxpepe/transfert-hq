@@ -3071,6 +3071,80 @@ function hqSketchRetry(kind, btn) {
   };
   next();
 }
+// Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
+// when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
+// the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
+// failing tag was); a retry only re-injects the ones that never ran.
+const HQ_CARNET_SCRIPTS = [
+  'hq-carnet-media.js',
+  'hq-carnet-eng.js',
+  'hq-carnet-struct.js',
+  'hq-carnet-rich.js',
+  'hq-carnet-field.js',
+  'hq-carnet-field-ui.js',
+  'hq-carnet-modal.js',
+  'hq-carnet-errors.js',
+  'hq-carnet-sources.js',
+  'hq-carnet-eng-ui.js',
+  'hq-carnet-history-ui.js',
+  'hq-carnet-reviews.js',
+  'hq-carnet-intel.js',
+  'hq-carnet-intel-ui.js',
+  'hq-carnet-ask.js',
+  'hq-carnet-ask-ui.js',
+  'hq-carnet-annotations.js',
+  'hq-carnet-annotations-ui.js',
+  'hq-carnet-verifications.js',
+  'hq-carnet-verifications-ui.js',
+  'hq-carnet-reasoning.js',
+  'hq-carnet-reasoning-ui.js',
+  'hq-carnet-reviews-ui.js',
+  'hq-carnet-portals.js',
+  'hq-carnet-portals-ui.js',
+  'hq-carnet-reader.js',
+  'hq-carnet-reader-ui.js',
+  'hq-carnet-image-ui.js',
+  'hq-carnet-structured-ui.js',
+  'hq-carnet-nav.js',
+  'hq-carnet-polish-ui.js',
+  'hq-carnet-dessiner.js',
+  'hq-carnet-commands.js',
+  'hq-carnet-templates.js',
+  'hq-carnet-editor-ui.js',
+  'hq-carnet.js',
+  'hq-carnet-capture.js',
+  'hq-carnet-motion.js',
+  'hq-carnet-stickies.js',
+  'hq-carnet-sizing.js',
+  'hq-carnet-feel.js'
+];
+const hqCarnetDone = new Set();
+let hqCarnetLoading = null;
+function hqCarnetLoad() {
+  if (window.hqCarnetShow && hqCarnetDone.size >= HQ_CARNET_SCRIPTS.length) return Promise.resolve();
+  if (hqCarnetLoading) return hqCarnetLoading;
+  const one = (name) => new Promise((resolve) => {
+    if (hqCarnetDone.has(name)) { resolve(); return; }
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.async = false;
+    el.onload = () => { hqCarnetDone.add(name); resolve(); };
+    el.onerror = () => { el.remove(); resolve(); };
+    document.body.appendChild(el);
+  });
+  hqCarnetLoading = HQ_CARNET_SCRIPTS.reduce((chain, name) => chain.then(() => one(name)), Promise.resolve()).then(() => {
+    hqCarnetLoading = null;  // a later call retries only what never ran
+    const v = document.body.dataset.view;
+    if (v === 'carnet' && window.hqCarnetShow) { try { window.hqCarnetShow(); } catch (e) { console.error(e); } }
+    else if (v === 'accueil' && window.hqCarnetHome) { try { window.hqCarnetHome(); } catch (e) { console.error(e); } }
+  });
+  return hqCarnetLoading;
+}
+window.hqCarnetLoad = hqCarnetLoad;
+window.addEventListener('load', () => {
+  const go = () => { hqCarnetLoad().catch(() => {}); };
+  if (window.requestIdleCallback) window.requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 800);
+}, { once: true });
 // Carnet bootstrap fallback: if hq-carnet.js never ran, show a durable error with retry
 // instead of « Chargement… ». A Carnet failure never aborts HQ startup/navigation.
 let carnetRetrying = false;
@@ -3095,22 +3169,14 @@ function hqCarnetMissing() {
     if (carnetRetrying) return;
     carnetRetrying = true;
     btn.disabled = true;
-    const load = (src, done, optional) => {
-      const el = document.createElement('script');
-      el.src = src;
-      el.onload = done;
-      el.onerror = () => { el.remove(); if (optional) { done(); return; } carnetRetrying = false; btn.disabled = false; };
-      document.body.appendChild(el);
-    };
-    // Stage 04/05: the structured-content and sources modules must load before the editor.
-    // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-modal.js', () => load('/assets/hq-carnet-errors.js', () => load('/assets/hq-carnet-annotations.js', () => load('/assets/hq-carnet-annotations-ui.js', () => load('/assets/hq-carnet-verifications.js', () => load('/assets/hq-carnet-verifications-ui.js', () => load('/assets/hq-carnet-reasoning.js', () => load('/assets/hq-carnet-reasoning-ui.js', () => load('/assets/hq-carnet-reader.js', () => load('/assets/hq-carnet-reader-ui.js', () => load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-portals.js', () => load('/assets/hq-carnet-portals-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
+    hqCarnetLoad().then(() => {
       carnetRetrying = false;
+      if (!window.hqCarnetShow) { btn.disabled = false; return; }
       app.textContent = '';
-      if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
+      if (document.body.dataset.view === 'carnet') {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    })))))))))))))))))))))))))))))))), true))));
+    });
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -3182,8 +3248,10 @@ function setView(name) {
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'carnet' && window.hqCarnetShow) {
     try { window.hqCarnetShow(); } catch (e) { console.error(e); }  // a Carnet failure never aborts HQ
-  } else if (view === 'carnet' && document.readyState !== 'loading') {
-    hqCarnetMissing();
+  } else if (view === 'carnet') {
+    hqCarnetLoad().then(() => {  // loaded on demand; hqCarnetLoad shows Carnet itself when it lands
+      if (document.body.dataset.view === 'carnet' && !window.hqCarnetShow) hqCarnetMissing();
+    }).catch(() => {});
   }
   if (view === 'accueil' && window.hqCarnetHome) {
     try { window.hqCarnetHome(); } catch (e) { console.error(e); }  // admin-only summary; never aborts HQ
@@ -7060,47 +7128,6 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/companion/chat/reactions/manifest.runtime.json?v={reaction_manifest_rev}" as="fetch" crossorigin>
 {reaction_hot_preload_link_tags()}
 <script src="/assets/hq-companion.js"></script>
-<script src="/assets/hq-carnet-media.js"></script>
-<script src="/assets/hq-carnet-eng.js"></script>
-<script src="/assets/hq-carnet-struct.js"></script>
-<script src="/assets/hq-carnet-rich.js"></script>
-<script src="/assets/hq-carnet-field.js"></script>
-<script src="/assets/hq-carnet-field-ui.js"></script>
-<script src="/assets/hq-carnet-modal.js"></script>
-<script src="/assets/hq-carnet-errors.js"></script>
-<script src="/assets/hq-carnet-sources.js"></script>
-<script src="/assets/hq-carnet-eng-ui.js"></script>
-<script src="/assets/hq-carnet-history-ui.js"></script>
-<script src="/assets/hq-carnet-reviews.js"></script>
-<script src="/assets/hq-carnet-intel.js"></script>
-<script src="/assets/hq-carnet-intel-ui.js"></script>
-<script src="/assets/hq-carnet-ask.js"></script>
-<script src="/assets/hq-carnet-ask-ui.js"></script>
-<script src="/assets/hq-carnet-annotations.js"></script>
-<script src="/assets/hq-carnet-annotations-ui.js"></script>
-<script src="/assets/hq-carnet-verifications.js"></script>
-<script src="/assets/hq-carnet-verifications-ui.js"></script>
-<script src="/assets/hq-carnet-reasoning.js"></script>
-<script src="/assets/hq-carnet-reasoning-ui.js"></script>
-<script src="/assets/hq-carnet-reviews-ui.js"></script>
-<script src="/assets/hq-carnet-portals.js"></script>
-<script src="/assets/hq-carnet-portals-ui.js"></script>
-<script src="/assets/hq-carnet-reader.js"></script>
-<script src="/assets/hq-carnet-reader-ui.js"></script>
-<script src="/assets/hq-carnet-image-ui.js"></script>
-<script src="/assets/hq-carnet-structured-ui.js"></script>
-<script src="/assets/hq-carnet-nav.js"></script>
-<script src="/assets/hq-carnet-polish-ui.js"></script>
-<script src="/assets/hq-carnet-dessiner.js"></script>
-<script src="/assets/hq-carnet-commands.js"></script>
-<script src="/assets/hq-carnet-templates.js"></script>
-<script src="/assets/hq-carnet-editor-ui.js"></script>
-<script src="/assets/hq-carnet.js"></script>
-<script src="/assets/hq-carnet-capture.js"></script>
-<script src="/assets/hq-carnet-motion.js"></script>
-<script src="/assets/hq-carnet-stickies.js"></script>
-<script src="/assets/hq-carnet-sizing.js"></script>
-<script src="/assets/hq-carnet-feel.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">

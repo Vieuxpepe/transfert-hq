@@ -854,7 +854,7 @@ class StaticSecurityTests(unittest.TestCase):
 
     def test_script_order_and_print_only_container(self):
         html = iphone_bridge.render_app().decode("utf-8")
-        self.assertLess(html.index('<script src="/assets/hq-carnet-rich.js"></script>'), html.index('<script src="/assets/hq-carnet.js"></script>'))
+        self.assertLess(html.index("'hq-carnet-rich.js'"), html.index("'hq-carnet.js'"))
         css = self.files["hq-carnet.css"]
         self.assertIn("#hq-carnet-print{display:none}", css)
         self.assertIn("@media print", css)

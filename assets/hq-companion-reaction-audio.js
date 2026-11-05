@@ -256,7 +256,7 @@
       getDecodedBuffer:url=>sampleBuffer(url),
       ensureDecodedBuffer:url=>warmSample(win,url).then(()=>sampleBuffer(url)),
       warmSample:(url)=>warmSample(win,url),
-      warmSamples:(urls)=>warmSamples(win,urls),stop,isPlaying:()=>!!active,has:kind=>!!bank[kind]?.length,pickReaction:kind=>pick(bank,kind),pickPhase:kind=>pick(phases,kind),start(kind,options={}){
+      warmSamples:(a,b)=>warmSamples(win,Array.isArray(a)?a:b),stop,isPlaying:()=>!!active,has:kind=>!!bank[kind]?.length,pickReaction:kind=>pick(bank,kind),pickPhase:kind=>pick(phases,kind),start(kind,options={}){
       if(!enabled()||win.document.hidden){stop();return 0;}
       const priority=Number(options.priority)||0;
       const scene=context(),now=Date.now();

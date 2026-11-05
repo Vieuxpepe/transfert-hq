@@ -8134,7 +8134,8 @@
       const slaps = S.reactionAudio.slapImpactUrls?.();
       if (slaps?.length) {
         const idle = win.requestIdleCallback || ((cb) => win.setTimeout(cb, 320));
-        idle(() => warmReactionSamples(win, slaps.slice(0, 2), slaps.slice(2)));
+        // Only the first takes at idle: the full set is decoded after the first slap (scheduleFullImpactWarm) instead of ~40 fetches at startup.
+        idle(() => { if (!win.document.hidden) warmReactionSamples(win, slaps.slice(0, 2), null); });
       }
       if (S.nsfwOn) warmTitPullImpactAudio(win);
       watchCompanionAudioPrime(win);

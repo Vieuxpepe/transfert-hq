@@ -480,6 +480,7 @@
 
   async function dispatchPalette(hit) {
     if (hit.kind === "page") {
+      if (typeof window.hqCarnetOpen !== "function" && typeof window.hqCarnetLoad === "function") await window.hqCarnetLoad().catch(() => {});
       if (typeof window.hqCarnetOpen !== "function") return "fail";
       await window.hqCarnetOpen(hit.id);
       return "ok";

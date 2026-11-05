@@ -1318,6 +1318,10 @@
   function openLink(lk) {
     if (lk.kind === "carnet") {
       if (typeof S.win.setView === "function") S.win.setView("carnet");
+      if (typeof S.win.hqCarnetOpen !== "function" && typeof S.win.hqCarnetLoad === "function") {
+        S.win.hqCarnetLoad().then(() => { if (typeof S.win.hqCarnetOpen === "function") S.win.hqCarnetOpen(lk.ref); }).catch(() => {});
+        return;
+      }
       if (typeof S.win.hqCarnetOpen === "function") S.win.hqCarnetOpen(lk.ref);
       return;
     }

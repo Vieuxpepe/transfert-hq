@@ -178,9 +178,9 @@ class HttpTests(unittest.TestCase):
     def test_routes_are_wired(self):
         src = (Path(__file__).resolve().parents[1] / "iphone_bridge.py").read_text(encoding="utf-8")
         self.assertEqual(src.count('raw == "/api/carnet/stickies"'), 2)
-        self.assertIn('<script src="/assets/hq-carnet-stickies.js"></script>', src)
-        self.assertIn('<script src="/assets/hq-carnet-sizing.js"></script>', src)
-        self.assertIn('<script src="/assets/hq-carnet-feel.js"></script>', src)
+        self.assertIn("'hq-carnet-stickies.js'", src)
+        self.assertIn("'hq-carnet-sizing.js'", src)
+        self.assertIn("'hq-carnet-feel.js'", src)
         self.assertLess(src.index("hq-carnet-sizing.js"), src.index("hq-carnet-feel.js"))
 
 
