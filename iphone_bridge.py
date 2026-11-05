@@ -175,6 +175,8 @@ SEND_GZIP_TYPES = {"application/json", "application/javascript", "text/javascrip
 _ASSET_GZ_CACHE: "collections.OrderedDict[str, tuple[int, int, bytes]]" = collections.OrderedDict()  # LRU: oldest first
 _ASSET_GZ_LOCK = threading.Lock()
 _ASSET_GZ_MAX_ENTRIES = 256
+ASSET_STREAM_MIN = 1024 * 1024  # larger binary assets are streamed; smaller ones are read whole and the handle closed
+ASSET_STREAM_CHUNK = 256 * 1024  # binary /assets/ files are streamed in chunks of this size
 _ASSET_GZ_MAX_BYTES = 48 * 1024 * 1024  # bounded memory for compressed copies
 _ASSET_GZ_BYTES = 0
 _ASSET_GZ_INFLIGHT: dict[str, threading.Lock] = {}  # per-path lock: concurrent requests compress a file once
@@ -2984,6 +2986,108 @@ function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
 }
+// Forge: ten classic scripts, order matters (hq-forge.js defines window.hqForgeHooks the others use). Loaded once, on first
+// use, sequentially; a failing add-on is skipped like a missing optional module, a failing core file allows a later retry.
+const HQ_FORGE_SCRIPTS = ['hq-forge.js', 'hq-forge-next.js', 'hq-forge-explore.js', 'hq-forge-night.js', 'hq-forge-vault-search.js',
+  'hq-forge-inpaint.js', 'hq-forge-bricks.js', 'hq-forge-lineage.js', 'hq-forge-style.js', 'hq-forge-couch.js'];
+let hqForgeLoading = null;
+function hqForgeLoad() {
+  if (window.hqForgeShow) return Promise.resolve();
+  if (hqForgeLoading) return hqForgeLoading;
+  const one = (name) => new Promise((resolve) => {
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.async = false;
+    el.onload = () => resolve(true);
+    el.onerror = () => { el.remove(); resolve(false); };
+    document.body.appendChild(el);
+  });
+  hqForgeLoading = HQ_FORGE_SCRIPTS.reduce((chain, name, i) => chain.then(async (ok) => {
+    const loaded = await one(name);
+    return i === 0 ? loaded : ok;
+  }), Promise.resolve(true)).then((coreOk) => {
+    if (!coreOk || !window.hqForgeShow) {
+      hqForgeLoading = null;  // allow a retry on the next visit
+      if (typeof toast === 'function') toast('Forge indisponible (module non chargé)');
+    }
+  });
+  return hqForgeLoading;
+}
+window.hqForgeLoad = hqForgeLoad;
+// Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
+// when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
+// the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
+// failing tag was); a retry only re-injects the ones that never ran.
+const HQ_CARNET_SCRIPTS = [
+  'hq-carnet-media.js',
+  'hq-carnet-eng.js',
+  'hq-carnet-struct.js',
+  'hq-carnet-rich.js',
+  'hq-carnet-field.js',
+  'hq-carnet-field-ui.js',
+  'hq-carnet-modal.js',
+  'hq-carnet-errors.js',
+  'hq-carnet-sources.js',
+  'hq-carnet-eng-ui.js',
+  'hq-carnet-history-ui.js',
+  'hq-carnet-reviews.js',
+  'hq-carnet-intel.js',
+  'hq-carnet-intel-ui.js',
+  'hq-carnet-ask.js',
+  'hq-carnet-ask-ui.js',
+  'hq-carnet-annotations.js',
+  'hq-carnet-annotations-ui.js',
+  'hq-carnet-verifications.js',
+  'hq-carnet-verifications-ui.js',
+  'hq-carnet-reasoning.js',
+  'hq-carnet-reasoning-ui.js',
+  'hq-carnet-reviews-ui.js',
+  'hq-carnet-portals.js',
+  'hq-carnet-portals-ui.js',
+  'hq-carnet-reader.js',
+  'hq-carnet-reader-ui.js',
+  'hq-carnet-image-ui.js',
+  'hq-carnet-structured-ui.js',
+  'hq-carnet-nav.js',
+  'hq-carnet-polish-ui.js',
+  'hq-carnet-dessiner.js',
+  'hq-carnet-commands.js',
+  'hq-carnet-templates.js',
+  'hq-carnet-editor-ui.js',
+  'hq-carnet.js',
+  'hq-carnet-capture.js',
+  'hq-carnet-motion.js',
+  'hq-carnet-stickies.js',
+  'hq-carnet-sizing.js',
+  'hq-carnet-feel.js'
+];
+const hqCarnetDone = new Set();
+let hqCarnetLoading = null;
+function hqCarnetLoad() {
+  if (window.hqCarnetShow && hqCarnetDone.size >= HQ_CARNET_SCRIPTS.length) return Promise.resolve();
+  if (hqCarnetLoading) return hqCarnetLoading;
+  const one = (name) => new Promise((resolve) => {
+    if (hqCarnetDone.has(name)) { resolve(); return; }
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.async = false;
+    el.onload = () => { hqCarnetDone.add(name); resolve(); };
+    el.onerror = () => { el.remove(); resolve(); };
+    document.body.appendChild(el);
+  });
+  hqCarnetLoading = HQ_CARNET_SCRIPTS.reduce((chain, name) => chain.then(() => one(name)), Promise.resolve()).then(() => {
+    hqCarnetLoading = null;  // a later call retries only what never ran
+    const v = document.body.dataset.view;
+    if (v === 'carnet' && window.hqCarnetShow) { try { window.hqCarnetShow(); } catch (e) { console.error(e); } }
+    else if (v === 'accueil' && window.hqCarnetHome) { try { window.hqCarnetHome(); } catch (e) { console.error(e); } }
+  });
+  return hqCarnetLoading;
+}
+window.hqCarnetLoad = hqCarnetLoad;
+window.addEventListener('load', () => {
+  const go = () => { hqCarnetLoad().catch(() => {}); };
+  if (window.requestIdleCallback) window.requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 800);
+}, { once: true });
 // Dessiner bootstrap watchdog: the tab must never stay on « Chargement… ».
 // Event-driven only (script error events, setView, one check at window load).
 const SK_SCRIPTS = [
@@ -3071,80 +3175,6 @@ function hqSketchRetry(kind, btn) {
   };
   next();
 }
-// Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
-// when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
-// the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
-// failing tag was); a retry only re-injects the ones that never ran.
-const HQ_CARNET_SCRIPTS = [
-  'hq-carnet-media.js',
-  'hq-carnet-eng.js',
-  'hq-carnet-struct.js',
-  'hq-carnet-rich.js',
-  'hq-carnet-field.js',
-  'hq-carnet-field-ui.js',
-  'hq-carnet-modal.js',
-  'hq-carnet-errors.js',
-  'hq-carnet-sources.js',
-  'hq-carnet-eng-ui.js',
-  'hq-carnet-history-ui.js',
-  'hq-carnet-reviews.js',
-  'hq-carnet-intel.js',
-  'hq-carnet-intel-ui.js',
-  'hq-carnet-ask.js',
-  'hq-carnet-ask-ui.js',
-  'hq-carnet-annotations.js',
-  'hq-carnet-annotations-ui.js',
-  'hq-carnet-verifications.js',
-  'hq-carnet-verifications-ui.js',
-  'hq-carnet-reasoning.js',
-  'hq-carnet-reasoning-ui.js',
-  'hq-carnet-reviews-ui.js',
-  'hq-carnet-portals.js',
-  'hq-carnet-portals-ui.js',
-  'hq-carnet-reader.js',
-  'hq-carnet-reader-ui.js',
-  'hq-carnet-image-ui.js',
-  'hq-carnet-structured-ui.js',
-  'hq-carnet-nav.js',
-  'hq-carnet-polish-ui.js',
-  'hq-carnet-dessiner.js',
-  'hq-carnet-commands.js',
-  'hq-carnet-templates.js',
-  'hq-carnet-editor-ui.js',
-  'hq-carnet.js',
-  'hq-carnet-capture.js',
-  'hq-carnet-motion.js',
-  'hq-carnet-stickies.js',
-  'hq-carnet-sizing.js',
-  'hq-carnet-feel.js'
-];
-const hqCarnetDone = new Set();
-let hqCarnetLoading = null;
-function hqCarnetLoad() {
-  if (window.hqCarnetShow && hqCarnetDone.size >= HQ_CARNET_SCRIPTS.length) return Promise.resolve();
-  if (hqCarnetLoading) return hqCarnetLoading;
-  const one = (name) => new Promise((resolve) => {
-    if (hqCarnetDone.has(name)) { resolve(); return; }
-    const el = document.createElement('script');
-    el.src = '/assets/' + name;
-    el.async = false;
-    el.onload = () => { hqCarnetDone.add(name); resolve(); };
-    el.onerror = () => { el.remove(); resolve(); };
-    document.body.appendChild(el);
-  });
-  hqCarnetLoading = HQ_CARNET_SCRIPTS.reduce((chain, name) => chain.then(() => one(name)), Promise.resolve()).then(() => {
-    hqCarnetLoading = null;  // a later call retries only what never ran
-    const v = document.body.dataset.view;
-    if (v === 'carnet' && window.hqCarnetShow) { try { window.hqCarnetShow(); } catch (e) { console.error(e); } }
-    else if (v === 'accueil' && window.hqCarnetHome) { try { window.hqCarnetHome(); } catch (e) { console.error(e); } }
-  });
-  return hqCarnetLoading;
-}
-window.hqCarnetLoad = hqCarnetLoad;
-window.addEventListener('load', () => {
-  const go = () => { hqCarnetLoad().catch(() => {}); };
-  if (window.requestIdleCallback) window.requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 800);
-}, { once: true });
 // Carnet bootstrap fallback: if hq-carnet.js never ran, show a durable error with retry
 // instead of « Chargement… ». A Carnet failure never aborts HQ startup/navigation.
 let carnetRetrying = false;
@@ -3187,34 +3217,6 @@ window.addEventListener('load', () => {
   if (document.body.dataset.view === 'dessiner' && app && !app.querySelector('.sk, .sk-fail')) hqSketchStart();
 }, { once: true });
 
-// Forge: ten classic scripts, order matters (hq-forge.js defines window.hqForgeHooks the others use). Loaded once, on first
-// use, sequentially; a failing add-on is skipped like a missing optional module, a failing core file allows a later retry.
-const HQ_FORGE_SCRIPTS = ['hq-forge.js', 'hq-forge-next.js', 'hq-forge-explore.js', 'hq-forge-night.js', 'hq-forge-vault-search.js',
-  'hq-forge-inpaint.js', 'hq-forge-bricks.js', 'hq-forge-lineage.js', 'hq-forge-style.js', 'hq-forge-couch.js'];
-let hqForgeLoading = null;
-function hqForgeLoad() {
-  if (window.hqForgeShow) return Promise.resolve();
-  if (hqForgeLoading) return hqForgeLoading;
-  const one = (name) => new Promise((resolve) => {
-    const el = document.createElement('script');
-    el.src = '/assets/' + name;
-    el.async = false;
-    el.onload = () => resolve(true);
-    el.onerror = () => { el.remove(); resolve(false); };
-    document.body.appendChild(el);
-  });
-  hqForgeLoading = HQ_FORGE_SCRIPTS.reduce((chain, name, i) => chain.then(async (ok) => {
-    const loaded = await one(name);
-    return i === 0 ? loaded : ok;
-  }), Promise.resolve(true)).then((coreOk) => {
-    if (!coreOk || !window.hqForgeShow) {
-      hqForgeLoading = null;  // allow a retry on the next visit
-      if (typeof toast === 'function') toast('Forge indisponible (module non chargé)');
-    }
-  });
-  return hqForgeLoading;
-}
-window.hqForgeLoad = hqForgeLoad;
 // Narrow phones may scroll the bottom nav sideways: keep the active target in view.
 function hqNavReveal(b) {
   const nav = b.parentElement;
@@ -7550,21 +7552,76 @@ class Handler(BaseHTTPRequestHandler):
         body = None
         extra = list(common)
         accepts = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
-        if accepts and path.suffix.lower() in ASSET_GZIP_SUFFIXES and st.st_size >= ASSET_GZIP_MIN:
+        # A Range request is answered from the identity bytes (a range of a gzip stream would be meaningless).
+        if accepts and not range_hdr and path.suffix.lower() in ASSET_GZIP_SUFFIXES and st.st_size >= ASSET_GZIP_MIN:
+        range_hdr = self.headers.get("Range")
             body = asset_gzip(path, st)
             if body is not None:
                 extra.append(("Content-Encoding", "gzip"))
-        if body is None:
-            body = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in extra:
-            self.send_header(k, v)
-        self._security_headers()
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        if body is not None:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in extra:
+                self.send_header(k, v)
+            self._security_headers()
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
+        # Identity bytes are streamed in chunks (no whole-file read into memory), with single-range support (media seeking).
+        try:
+            f = open(path, "rb")
+        except OSError:
+            self._send(404, b"missing")
+            return
+        with f:
+            size = os.fstat(f.fileno()).st_size  # the length we promise is the length of the file we hold open
+            small = None
+            if size <= ASSET_STREAM_MIN:
+                # Small files: read and close the handle before sending (as before), so a slow client never keeps a
+                # Windows file locked against an editor saving it. Only large files are streamed.
+                small = f.read()
+                f.close()
+                size = len(small)
+            rng = parse_byte_range(range_hdr, size) if range_hdr else None
+            if_range = (self.headers.get("If-Range") or "").strip()
+            if rng is not None and if_range and if_range != etag:
+                rng = None  # the file changed since the client's first response: send it whole
+            if rng == "unsatisfiable":
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Accept-Ranges", "bytes")
+                self._security_headers()
+                self.end_headers()
+                return
+            start, end = rng if isinstance(rng, tuple) else (0, size - 1)
+            length = max(0, end - start + 1)
+            self.send_response(206 if isinstance(rng, tuple) else 200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(length))
+            if isinstance(rng, tuple):
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            for k, v in extra:
+                self.send_header(k, v)
+            self._security_headers()
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            if small is not None:
+                self.wfile.write(small[start:start + length])
+                return
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(ASSET_STREAM_CHUNK, remaining))
+                if not chunk:
+                    self.close_connection = True  # file shrank mid-transfer: never leave a keep-alive body half-framed
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def _drain_refused_body(self) -> list[tuple[str, str]]:
         """Pre-body POST refusal (status already decided): read and discard a small declared body so the client
