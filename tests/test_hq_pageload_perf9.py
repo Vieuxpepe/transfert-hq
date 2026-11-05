@@ -186,7 +186,7 @@ class PageLoadPerf9(unittest.TestCase):
         self.assertNotIn('<script src="/assets/hq.js"></script>', out)
         self.assertEqual(len(re.findall(r'<link rel="stylesheet" href="/assets/[^"?]+\?v=', out)),
                          len(re.findall(r'<link rel="stylesheet" href="/assets/', raw.decode("utf-8"))))
-        self.assertIn("load('/assets/hq-carnet-modal.js'", out)  # JS loaders stay un-versioned
+        self.assertIn("'hq-carnet-modal.js'", out)  # JS loader lists stay un-versioned
 
 
 if __name__ == "__main__":

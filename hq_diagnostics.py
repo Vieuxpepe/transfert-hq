@@ -287,6 +287,8 @@ def required_assets(render_app: Callable[[], str] | None) -> list[str]:
         if isinstance(html, (bytes, bytearray)):
             html = bytes(html).decode("utf-8", errors="replace")
         names = {m for m in re.findall(r"/assets/([A-Za-z0-9._-]+\.(?:js|css|png|svg|wasm|json))", html)}
+        # Feature scripts loaded on demand (Carnet, Forge, Dessiner) are listed by bare name in the shell's loader arrays.
+        names |= set(re.findall(r"'(hq-[A-Za-z0-9._-]+\.js)'", html))
         return sorted(names)
     except Exception:
         return []

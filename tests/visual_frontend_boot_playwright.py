@@ -60,8 +60,10 @@ def main() -> None:
                     page.reload()
                 page.wait_for_load_state("load")
                 page.wait_for_timeout(800)
+                page.wait_for_function("() => typeof window.hqCarnetShow === 'function'", timeout=15000)  # Carnet loads when the browser is idle after load
                 check(page.evaluate("() => typeof window.hqCarnetShow === 'function'"), f"{attempt}: hq-carnet.js initialised")
-                check(page.evaluate("() => typeof window.hqForgeShow === 'function'"), f"{attempt}: hq-forge.js initialised")
+                if attempt == "fresh":  # after a reload the last view (Forge) is restored, which legitimately loads it
+                    check(page.evaluate("() => typeof window.hqForgeShow === 'undefined'"), f"{attempt}: hq-forge.js is not loaded until Forge is opened")
                 page.locator('.bottom-nav [data-nav="accueil"]').click()
                 page.locator("#hq-today-toggle").click()
                 page.wait_for_function("() => !/Chargement/.test(document.querySelector('#hq-cal-today').textContent || '')", timeout=10000)
@@ -70,6 +72,8 @@ def main() -> None:
                 page.wait_for_function("() => document.querySelector('#hq-carnet-app .carnet, #hq-carnet-app .carnet-fail')", timeout=10000)
                 check(page.locator("#hq-carnet-app .carnet-fail").count() == 0, f"{attempt}: Carnet opens")
                 page.locator('.bottom-nav [data-nav="forge"]').click()
+                page.wait_for_function("() => typeof window.hqForgeShow === 'function'", timeout=10000)
+                check(True, f"{attempt}: hq-forge.js initialised on first visit")
                 page.wait_for_function("() => !/^Lecture de Forge/.test(document.querySelector('#forge-status').textContent || '') && document.querySelector('#forge-checkpoint').options.length > 0", timeout=10000)
                 check(True, f"{attempt}: Forge Studio reads Forge and fills the model menu")
                 real = [p for p in problems if "due to access control checks" not in p]  # WebKit: fetches aborted by the reload itself

@@ -616,8 +616,9 @@ class HttpTests(unittest.TestCase):
         html = iphone_bridge.render_app().decode("utf-8")
         self.assertIn('data-nav="dessiner"', html)
         self.assertIn('<div data-panel="dessiner">', html)
-        self.assertIn("/assets/hq-sketch-core.js", html)
-        self.assertIn("/assets/hq-dessiner.js", html)
+        self.assertIn("'hq-sketch-core.js'", html)  # loaded on first use by the page loader (SK_SCRIPTS)
+        self.assertIn("'hq-dessiner.js'", html)
+        self.assertIn("'/assets/' + name", html)
         self.assertIn("/api/drawings", iphone_bridge.ADMIN_PREFIXES)
         self.assertNotIn("/api/drawings", iphone_bridge.UPLOAD_POST_EXACT)
         for asset in ("hq-sketch-core.js", "hq-dessiner.js", "hq-dessiner.css"):

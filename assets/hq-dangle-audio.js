@@ -224,7 +224,12 @@
           }
           const slap = player.impactUrls?.("slap")?.slice(0, 2) || [];
           warm.push(...slap);
-          if (warm.length && player.warmSamples) player.warmSamples(win, warm).catch(() => {});
+          // Decode these on the first gesture, not at page load (nothing can play before one anyway).
+          if (warm.length && player.warmSamples) {
+            const run = () => { try { player.warmSamples(warm).catch(() => {}); } catch (_) {} };
+            win.addEventListener("pointerdown", run, { once: true, capture: true });
+            win.addEventListener("keydown", run, { once: true, capture: true });
+          }
         }
         return ok;
       });

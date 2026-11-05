@@ -8,6 +8,7 @@ vault is never a source. Results use the palette's shape: {kind, id, label, hint
 
 from __future__ import annotations
 
+import functools
 import os
 import unicodedata
 from pathlib import Path
@@ -22,6 +23,15 @@ def fold(text) -> str:
     """Lower case without accents, for matching only (never shown)."""
     if not isinstance(text, str):
         return ""
+    return _fold_str(text) if len(text) <= 512 else _fold_uncached(text)
+
+
+@functools.lru_cache(maxsize=8192)
+def _fold_str(text: str) -> str:  # titles / names / queries repeat across keystrokes and searches
+    return _fold_uncached(text)
+
+
+def _fold_uncached(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", text)
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold()
 
@@ -127,6 +137,12 @@ def search_files(tokens: list[str], files) -> list[dict]:
 
 
 def inbox_files(root: Path, *, limit: int = FILES_SCAN_MAX) -> list[dict]:
+    # Not cached on purpose: directory mtimes are not a reliable change signal (NTFS can lag a create), and a
+    # stale listing would hide a just-uploaded file. The scan is bounded by FILES_SCAN_MAX.
+    return _inbox_files_scan(root, limit=limit)
+
+
+def _inbox_files_scan(root: Path, *, limit: int = FILES_SCAN_MAX) -> list[dict]:
     """Names of files in Inbox and its direct subfolders (rel paths from the HQ root). Hidden and
     underscore entries are skipped; links are not followed; at most `limit` entries are looked at."""
     out: list[dict] = []

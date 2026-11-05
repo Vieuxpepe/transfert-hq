@@ -480,12 +480,14 @@
 
   async function dispatchPalette(hit) {
     if (hit.kind === "page") {
+      if (typeof window.hqCarnetOpen !== "function" && typeof window.hqCarnetLoad === "function") await window.hqCarnetLoad().catch(() => {});
       if (typeof window.hqCarnetOpen !== "function") return "fail";
       await window.hqCarnetOpen(hit.id);
       return "ok";
     }
     if (hit.kind === "prompt") {
       if (typeof setView === "function") setView("forge");
+      if (typeof window.hqForgeLoad === "function") await window.hqForgeLoad().catch(() => {});
       const hooks = window.hqForgeHooks;
       if (!hooks || typeof hooks.openImage !== "function") return "fail";
       await hooks.openImage(hit.id);

@@ -20,7 +20,9 @@ class Couch(unittest.TestCase):
 
     def test_page_wires_the_toggle_without_inline_handlers(self):
         html = (SOURCE / "iphone_bridge.py").read_text(encoding="utf-8")
-        self.assertIn('<script src="/assets/hq-forge-couch.js"></script>', html)
+        # Forge modules are loaded on first visit by hqForgeLoad(), no longer as page tags.
+        self.assertNotIn('<script src="/assets/hq-forge-couch.js"></script>', html)
+        self.assertIn("'hq-forge-couch.js'", html)
         tag = re.search(r'<button[^>]*id="forge-couch"[^>]*>', html).group(0)
         self.assertNotRegex(tag, r"\son\w+=")
         self.assertIn('aria-pressed="false"', tag)

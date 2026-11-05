@@ -1336,14 +1336,17 @@ class StaticMediaTests(unittest.TestCase):
 
     def test_page_loads_media_module_before_the_editor_and_retry_chain_keeps_stage05_shape(self):
         text = (self.ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
-        media_i = text.index('<script src="/assets/hq-carnet-media.js"></script>')
-        rich_i = text.index('<script src="/assets/hq-carnet-rich.js"></script>')
-        core_i = text.index('<script src="/assets/hq-carnet.js"></script>')
+        media_i = text.index("'hq-carnet-media.js'")
+        rich_i = text.index("'hq-carnet-rich.js'")
+        core_i = text.index("'hq-carnet.js'")
         self.assertLess(media_i, rich_i)
         self.assertLess(rich_i, core_i)
-        # Stage 07 inserts the engineering modules: eng (model, needed by rich) after media, eng-ui (lazy UI) before the editor
-        self.assertIn("load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-portals.js', () => load('/assets/hq-carnet-portals-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js'", text)
-        self.assertIn("load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js'", text)
+        block = text[text.index("const HQ_CARNET_SCRIPTS"):]
+        block = block[: block.index("];")]
+        pos = lambda n: block.index("'%s.js'" % n)
+        # Stage 07: eng (model, needed by rich) after media, eng-ui (lazy UI) before the editor; the single loader list keeps the page order
+        order = [pos(n) for n in ("hq-carnet-media", "hq-carnet-eng", "hq-carnet-struct", "hq-carnet-rich", "hq-carnet-field", "hq-carnet-field-ui", "hq-carnet-sources", "hq-carnet-eng-ui", "hq-carnet")]
+        self.assertEqual(order, sorted(order))
 
     def test_handler_security_headers_default_is_unchanged(self):
         text = (self.ROOT / "iphone_bridge.py").read_text(encoding="utf-8")

@@ -17,6 +17,7 @@ import socket
 import struct
 import subprocess
 import sys
+import collections
 import gzip
 import tempfile
 import threading
@@ -171,8 +172,14 @@ ASSET_GZIP_MIN = 1024
 # _send() replies (API JSON, HTML pages) are gzipped too when larger than this and the client accepts it.
 SEND_GZIP_MIN = 1024
 SEND_GZIP_TYPES = {"application/json", "application/javascript", "text/javascript", "image/svg+xml", "application/manifest+json"}
-_ASSET_GZ_CACHE: dict[str, tuple[int, int, bytes]] = {}
+_ASSET_GZ_CACHE: "collections.OrderedDict[str, tuple[int, int, bytes]]" = collections.OrderedDict()  # LRU: oldest first
 _ASSET_GZ_LOCK = threading.Lock()
+_ASSET_GZ_MAX_ENTRIES = 256
+ASSET_STREAM_MIN = 1024 * 1024  # larger binary assets are streamed; smaller ones are read whole and the handle closed
+ASSET_STREAM_CHUNK = 256 * 1024  # binary /assets/ files are streamed in chunks of this size
+_ASSET_GZ_MAX_BYTES = 48 * 1024 * 1024  # bounded memory for compressed copies
+_ASSET_GZ_BYTES = 0
+_ASSET_GZ_INFLIGHT: dict[str, threading.Lock] = {}  # per-path lock: concurrent requests compress a file once
 
 
 def asset_etag(st: os.stat_result) -> str:
@@ -190,22 +197,48 @@ def reaction_fingerprinted_ogg_asset(path: Path) -> bool:
     return path.suffix.lower() == ".ogg" and _REACTION_FP_OGG.match("/assets/" + rel) is not None
 
 
+def _gz_lookup(key: str, st: os.stat_result) -> bytes | None:
+    hit = _ASSET_GZ_CACHE.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        _ASSET_GZ_CACHE.move_to_end(key)
+        return hit[2]
+    return None
+
+
 def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
-    """Gzipped bytes of an asset, cached by (mtime, size). None when the file changed while being read."""
+    """Gzipped bytes of an asset, cached (LRU, bounded entries and bytes) by (mtime, size).
+    None when the file changed while being read. Concurrent requests for one file compress it once."""
+    global _ASSET_GZ_BYTES
     key = str(path)
     with _ASSET_GZ_LOCK:
-        hit = _ASSET_GZ_CACHE.get(key)
-        if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
-            return hit[2]
-    data = path.read_bytes()
-    if len(data) != st.st_size:
-        return None
-    packed = gzip.compress(data, compresslevel=6, mtime=0)
-    with _ASSET_GZ_LOCK:
-        if len(_ASSET_GZ_CACHE) > 256:
-            _ASSET_GZ_CACHE.clear()
-        _ASSET_GZ_CACHE[key] = (st.st_mtime_ns, st.st_size, packed)
-    return packed
+        got = _gz_lookup(key, st)
+        if got is not None:
+            return got
+        flight = _ASSET_GZ_INFLIGHT.setdefault(key, threading.Lock())
+    try:
+        with flight:
+            with _ASSET_GZ_LOCK:
+                got = _gz_lookup(key, st)
+            if got is not None:
+                return got
+            data = path.read_bytes()
+            if len(data) != st.st_size:
+                return None
+            packed = gzip.compress(data, compresslevel=6, mtime=0)
+            with _ASSET_GZ_LOCK:
+                old = _ASSET_GZ_CACHE.pop(key, None)
+                if old:
+                    _ASSET_GZ_BYTES -= len(old[2])
+                _ASSET_GZ_CACHE[key] = (st.st_mtime_ns, st.st_size, packed)
+                _ASSET_GZ_BYTES += len(packed)
+                while len(_ASSET_GZ_CACHE) > 1 and (len(_ASSET_GZ_CACHE) > _ASSET_GZ_MAX_ENTRIES
+                                                    or _ASSET_GZ_BYTES > _ASSET_GZ_MAX_BYTES):
+                    _, ev = _ASSET_GZ_CACHE.popitem(last=False)
+                    _ASSET_GZ_BYTES -= len(ev[2])
+            return packed
+    finally:
+        with _ASSET_GZ_LOCK:
+            _ASSET_GZ_INFLIGHT.pop(key, None)
 
 
 # perf9 (fix 4): page <script>/<link> URLs carry ?v=<mtime+size>; such a URL is cached for a year (immutable) when the
@@ -2543,19 +2576,26 @@ def bind_hq() -> None:
     def _ai_files(ws: list) -> list:
         found = []
         seen = 0
+        limit_hit = False
         for top in ("Inbox", "Uni", "Print"):
+            if limit_hit:
+                break
             base = ROOT / top
             for dirpath, dirnames, filenames in os.walk(base):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
                 for n in filenames + dirnames:
                     seen += 1
                     if seen > 8000:
+                        limit_hit = True
                         break
                     if n.startswith(".") or n.lower() in SYSTEM_NAMES:
                         continue
                     sc = hq_ai.score(n, ws)
                     if sc:
                         found.append((sc, "/".join(Path(dirpath, n).relative_to(ROOT).parts)))
+                if limit_hit:
+                    dirnames[:] = []  # stop descending: the cap must end the whole os.walk, not just this directory
+                    break
         found.sort(key=lambda t: (-t[0], t[1]))
         return [r for _, r in found[:15]]
 
@@ -2946,6 +2986,107 @@ function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
 }
+// Forge: ten classic scripts, order matters (hq-forge.js defines window.hqForgeHooks the others use). Loaded once, on first
+// use, sequentially; a failing add-on is skipped like a missing optional module, a failing core file allows a later retry.
+const HQ_FORGE_SCRIPTS = ['hq-forge.js', 'hq-forge-next.js', 'hq-forge-explore.js', 'hq-forge-night.js', 'hq-forge-vault-search.js',
+  'hq-forge-inpaint.js', 'hq-forge-bricks.js', 'hq-forge-lineage.js', 'hq-forge-style.js', 'hq-forge-couch.js'];
+let hqForgeLoading = null;
+function hqForgeLoad() {
+  if (window.hqForgeShow) return Promise.resolve();
+  if (hqForgeLoading) return hqForgeLoading;
+  const one = (name) => new Promise((resolve) => {
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.async = false;
+    el.onload = () => resolve(true);
+    el.onerror = () => { el.remove(); resolve(false); };
+    document.body.appendChild(el);
+  });
+  hqForgeLoading = Promise.all(HQ_FORGE_SCRIPTS.map(one)).then((results) => {
+    const coreOk = results[0];
+    if (!coreOk || !window.hqForgeShow) {
+      hqForgeLoading = null;  // allow a retry on the next visit
+      if (typeof toast === 'function') toast('Forge indisponible (module non chargé)');
+    }
+  });
+  return hqForgeLoading;
+}
+window.hqForgeLoad = hqForgeLoad;
+// Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
+// when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
+// the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
+// failing tag was); a retry only re-injects the ones that never ran.
+const HQ_CARNET_SCRIPTS = [
+  'hq-carnet-media.js',
+  'hq-carnet-eng.js',
+  'hq-carnet-struct.js',
+  'hq-carnet-rich.js',
+  'hq-carnet-field.js',
+  'hq-carnet-field-ui.js',
+  'hq-carnet-modal.js',
+  'hq-carnet-errors.js',
+  'hq-carnet-sources.js',
+  'hq-carnet-eng-ui.js',
+  'hq-carnet-history-ui.js',
+  'hq-carnet-reviews.js',
+  'hq-carnet-intel.js',
+  'hq-carnet-intel-ui.js',
+  'hq-carnet-ask.js',
+  'hq-carnet-ask-ui.js',
+  'hq-carnet-annotations.js',
+  'hq-carnet-annotations-ui.js',
+  'hq-carnet-verifications.js',
+  'hq-carnet-verifications-ui.js',
+  'hq-carnet-reasoning.js',
+  'hq-carnet-reasoning-ui.js',
+  'hq-carnet-reviews-ui.js',
+  'hq-carnet-portals.js',
+  'hq-carnet-portals-ui.js',
+  'hq-carnet-reader.js',
+  'hq-carnet-reader-ui.js',
+  'hq-carnet-image-ui.js',
+  'hq-carnet-structured-ui.js',
+  'hq-carnet-nav.js',
+  'hq-carnet-polish-ui.js',
+  'hq-carnet-dessiner.js',
+  'hq-carnet-commands.js',
+  'hq-carnet-templates.js',
+  'hq-carnet-editor-ui.js',
+  'hq-carnet.js',
+  'hq-carnet-capture.js',
+  'hq-carnet-motion.js',
+  'hq-carnet-stickies.js',
+  'hq-carnet-sizing.js',
+  'hq-carnet-feel.js'
+];
+const hqCarnetDone = new Set();
+let hqCarnetLoading = null;
+function hqCarnetLoad() {
+  if (window.hqCarnetShow && hqCarnetDone.size >= HQ_CARNET_SCRIPTS.length) return Promise.resolve();
+  if (hqCarnetLoading) return hqCarnetLoading;
+  const one = (name) => new Promise((resolve) => {
+    if (hqCarnetDone.has(name)) { resolve(); return; }
+    const el = document.createElement('script');
+    el.src = '/assets/' + name;
+    el.async = false;
+    el.onload = () => { hqCarnetDone.add(name); resolve(); };
+    el.onerror = () => { el.remove(); resolve(); };
+    document.body.appendChild(el);
+  });
+  // All elements are inserted at once: downloads run in parallel, execution stays in list order (async = false).
+  hqCarnetLoading = Promise.all(HQ_CARNET_SCRIPTS.map(one)).then(() => {
+    hqCarnetLoading = null;  // a later call retries only what never ran
+    const v = document.body.dataset.view;
+    if (v === 'carnet' && window.hqCarnetShow) { try { window.hqCarnetShow(); } catch (e) { console.error(e); } }
+    else if (v === 'accueil' && window.hqCarnetHome) { try { window.hqCarnetHome(); } catch (e) { console.error(e); } }
+  });
+  return hqCarnetLoading;
+}
+window.hqCarnetLoad = hqCarnetLoad;
+window.addEventListener('load', () => {
+  const go = () => { hqCarnetLoad().catch(() => {}); };
+  if (window.requestIdleCallback) window.requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 800);
+}, { once: true });
 // Dessiner bootstrap watchdog: the tab must never stay on « Chargement… ».
 // Event-driven only (script error events, setView, one check at window load).
 const SK_SCRIPTS = [
@@ -2988,11 +3129,14 @@ window.hqSketchFail = function (reason, kind) {
   app.textContent = '';
   app.appendChild(box);
 };
+let skLoadTried = false;
 function hqSketchStart() {
   if (!window.hqSketchShow) {
-    // Classic scripts at the end of <body> all run before DOMContentLoaded, so a
-    // missing module after that point is a load failure, not a race.
-    if (document.readyState !== 'loading') window.hqSketchFail(skMissingReason(), 'load');
+    // The drawing modules are loaded on first use (not with the page): inject them once, in order.
+    // If they were already attempted and the entry point is still missing, that is a load failure.
+    if (skRetrying) return;
+    if (!skLoadTried) { skLoadTried = true; hqSketchRetry('load'); return; }
+    window.hqSketchFail(skMissingReason(), 'load');
     return;
   }
   try { window.hqSketchShow(); } catch (e) { console.error(e); window.hqSketchFail(SK_INIT_ERROR, 'init'); }
@@ -3002,6 +3146,7 @@ function hqSketchRetry(kind, btn) {
   // Scripts present but init threw: state may be half-built, reload is the safe retry.
   if (kind === 'init' && window.hqSketchShow) { location.reload(); return; }
   if (skRetrying) return;
+  skLoadTried = true;
   skRetrying = true;
   if (btn) { btn.disabled = true; btn.textContent = 'Nouvel essai…'; }
   // Re-inject only what never ran, in page order; never re-run hq-dessiner.js once it has.
@@ -3053,22 +3198,14 @@ function hqCarnetMissing() {
     if (carnetRetrying) return;
     carnetRetrying = true;
     btn.disabled = true;
-    const load = (src, done, optional) => {
-      const el = document.createElement('script');
-      el.src = src;
-      el.onload = done;
-      el.onerror = () => { el.remove(); if (optional) { done(); return; } carnetRetrying = false; btn.disabled = false; };
-      document.body.appendChild(el);
-    };
-    // Stage 04/05: the structured-content and sources modules must load before the editor.
-    // Stage 06: the image pipeline is optional (the editor then reports "Images indisponibles" and keeps working).
-    load('/assets/hq-carnet-modal.js', () => load('/assets/hq-carnet-errors.js', () => load('/assets/hq-carnet-annotations.js', () => load('/assets/hq-carnet-annotations-ui.js', () => load('/assets/hq-carnet-verifications.js', () => load('/assets/hq-carnet-verifications-ui.js', () => load('/assets/hq-carnet-reasoning.js', () => load('/assets/hq-carnet-reasoning-ui.js', () => load('/assets/hq-carnet-reader.js', () => load('/assets/hq-carnet-reader-ui.js', () => load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js', () => load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-portals.js', () => load('/assets/hq-carnet-portals-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js', () => {
+    hqCarnetLoad().then(() => {
       carnetRetrying = false;
+      if (!window.hqCarnetShow) { btn.disabled = false; return; }
       app.textContent = '';
-      if (document.body.dataset.view === 'carnet' && window.hqCarnetShow) {
+      if (document.body.dataset.view === 'carnet') {
         try { window.hqCarnetShow(); } catch (e) { console.error(e); }
       }
-    })))))))))))))))))))))))))))))))), true))));
+    });
   });
   box.append(title, why, btn);
   app.textContent = '';
@@ -3112,8 +3249,10 @@ function setView(name) {
   if (view === 'fichiers') refreshFiles().catch(() => {});
   if (view === 'carnet' && window.hqCarnetShow) {
     try { window.hqCarnetShow(); } catch (e) { console.error(e); }  // a Carnet failure never aborts HQ
-  } else if (view === 'carnet' && document.readyState !== 'loading') {
-    hqCarnetMissing();
+  } else if (view === 'carnet') {
+    hqCarnetLoad().then(() => {  // loaded on demand; hqCarnetLoad shows Carnet itself when it lands
+      if (document.body.dataset.view === 'carnet' && !window.hqCarnetShow) hqCarnetMissing();
+    }).catch(() => {});
   }
   if (view === 'accueil' && window.hqCarnetHome) {
     try { window.hqCarnetHome(); } catch (e) { console.error(e); }  // admin-only summary; never aborts HQ
@@ -3128,8 +3267,13 @@ function setView(name) {
   if (view === 'inventaire' && window.hqInventoryShow) {
     try { window.hqInventoryShow(); } catch (e) { console.error(e); }  // an Inventaire failure never aborts HQ
   }
-  if (view === 'forge' && window.hqForgeShow) {
-    try { window.hqForgeShow(); } catch (e) { console.error(e); }
+  if (view === 'forge') {
+    // Forge modules load on first visit (not with the page); the view may change again before they arrive.
+    hqForgeLoad().then(() => {
+      if (document.body.dataset.view === 'forge' && window.hqForgeShow) {
+        try { window.hqForgeShow(); } catch (e) { console.error(e); }
+      }
+    }).catch((e) => console.error(e));
   } else if (window.hqForgeHide) {
     try { window.hqForgeHide(); } catch (e) { console.error(e); }
   }
@@ -6985,61 +7129,6 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/companion/chat/reactions/manifest.runtime.json?v={reaction_manifest_rev}" as="fetch" crossorigin>
 {reaction_hot_preload_link_tags()}
 <script src="/assets/hq-companion.js"></script>
-<script src="/assets/hq-carnet-media.js"></script>
-<script src="/assets/hq-carnet-eng.js"></script>
-<script src="/assets/hq-carnet-struct.js"></script>
-<script src="/assets/hq-carnet-rich.js"></script>
-<script src="/assets/hq-carnet-field.js"></script>
-<script src="/assets/hq-carnet-field-ui.js"></script>
-<script src="/assets/hq-carnet-modal.js"></script>
-<script src="/assets/hq-carnet-errors.js"></script>
-<script src="/assets/hq-carnet-sources.js"></script>
-<script src="/assets/hq-carnet-eng-ui.js"></script>
-<script src="/assets/hq-carnet-history-ui.js"></script>
-<script src="/assets/hq-carnet-reviews.js"></script>
-<script src="/assets/hq-carnet-intel.js"></script>
-<script src="/assets/hq-carnet-intel-ui.js"></script>
-<script src="/assets/hq-carnet-ask.js"></script>
-<script src="/assets/hq-carnet-ask-ui.js"></script>
-<script src="/assets/hq-carnet-annotations.js"></script>
-<script src="/assets/hq-carnet-annotations-ui.js"></script>
-<script src="/assets/hq-carnet-verifications.js"></script>
-<script src="/assets/hq-carnet-verifications-ui.js"></script>
-<script src="/assets/hq-carnet-reasoning.js"></script>
-<script src="/assets/hq-carnet-reasoning-ui.js"></script>
-<script src="/assets/hq-carnet-reviews-ui.js"></script>
-<script src="/assets/hq-carnet-portals.js"></script>
-<script src="/assets/hq-carnet-portals-ui.js"></script>
-<script src="/assets/hq-carnet-reader.js"></script>
-<script src="/assets/hq-carnet-reader-ui.js"></script>
-<script src="/assets/hq-carnet-image-ui.js"></script>
-<script src="/assets/hq-carnet-structured-ui.js"></script>
-<script src="/assets/hq-carnet-nav.js"></script>
-<script src="/assets/hq-carnet-polish-ui.js"></script>
-<script src="/assets/hq-carnet-dessiner.js"></script>
-<script src="/assets/hq-carnet-commands.js"></script>
-<script src="/assets/hq-carnet-templates.js"></script>
-<script src="/assets/hq-carnet-editor-ui.js"></script>
-<script src="/assets/hq-carnet.js"></script>
-<script src="/assets/hq-carnet-capture.js"></script>
-<script src="/assets/hq-carnet-motion.js"></script>
-<script src="/assets/hq-carnet-stickies.js"></script>
-<script src="/assets/hq-carnet-sizing.js"></script>
-<script src="/assets/hq-carnet-feel.js"></script>
-<script src="/assets/hq-sketch-core.js" data-sk="hq-sketch-core.js"></script>
-<script src="/assets/hq-solid-view.js" data-sk="hq-solid-view.js"></script>
-<script src="/assets/hq-face-sketch.js" data-sk="hq-face-sketch.js"></script>
-<script src="/assets/hq-dessiner.js" data-sk="hq-dessiner.js"></script>
-<script src="/assets/hq-forge.js"></script>
-<script src="/assets/hq-forge-next.js"></script>
-<script src="/assets/hq-forge-explore.js"></script>
-<script src="/assets/hq-forge-night.js"></script>
-<script src="/assets/hq-forge-vault-search.js"></script>
-<script src="/assets/hq-forge-inpaint.js"></script>
-<script src="/assets/hq-forge-bricks.js"></script>
-<script src="/assets/hq-forge-lineage.js"></script>
-<script src="/assets/hq-forge-style.js"></script>
-<script src="/assets/hq-forge-couch.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -7461,22 +7550,77 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = None
         extra = list(common)
+        range_hdr = self.headers.get("Range")
         accepts = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
-        if accepts and path.suffix.lower() in ASSET_GZIP_SUFFIXES and st.st_size >= ASSET_GZIP_MIN:
+        # A Range request is answered from the identity bytes (a range of a gzip stream would be meaningless).
+        if accepts and not range_hdr and path.suffix.lower() in ASSET_GZIP_SUFFIXES and st.st_size >= ASSET_GZIP_MIN:
             body = asset_gzip(path, st)
             if body is not None:
                 extra.append(("Content-Encoding", "gzip"))
-        if body is None:
-            body = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        for k, v in extra:
-            self.send_header(k, v)
-        self._security_headers()
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        if body is not None:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in extra:
+                self.send_header(k, v)
+            self._security_headers()
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
+        # Identity bytes are streamed in chunks (no whole-file read into memory), with single-range support (media seeking).
+        try:
+            f = open(path, "rb")
+        except OSError:
+            self._send(404, b"missing")
+            return
+        with f:
+            size = os.fstat(f.fileno()).st_size  # the length we promise is the length of the file we hold open
+            small = None
+            if size <= ASSET_STREAM_MIN:
+                # Small files: read and close the handle before sending (as before), so a slow client never keeps a
+                # Windows file locked against an editor saving it. Only large files are streamed.
+                small = f.read()
+                f.close()
+                size = len(small)
+            rng = parse_byte_range(range_hdr, size) if range_hdr else None
+            if_range = (self.headers.get("If-Range") or "").strip()
+            if rng is not None and if_range and if_range != etag:
+                rng = None  # the file changed since the client's first response: send it whole
+            if rng == "unsatisfiable":
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Accept-Ranges", "bytes")
+                self._security_headers()
+                self.end_headers()
+                return
+            start, end = rng if isinstance(rng, tuple) else (0, size - 1)
+            length = max(0, end - start + 1)
+            self.send_response(206 if isinstance(rng, tuple) else 200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(length))
+            if isinstance(rng, tuple):
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            for k, v in extra:
+                self.send_header(k, v)
+            self._security_headers()
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            if small is not None:
+                self.wfile.write(small[start:start + length])
+                return
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = f.read(min(ASSET_STREAM_CHUNK, remaining))
+                if not chunk:
+                    self.close_connection = True  # file shrank mid-transfer: never leave a keep-alive body half-framed
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def _drain_refused_body(self) -> list[tuple[str, str]]:
         """Pre-body POST refusal (status already decided): read and discard a small declared body so the client

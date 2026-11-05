@@ -729,13 +729,17 @@ class StaticAndParityTests(unittest.TestCase):
 
     def test_page_loads_modules_in_dependency_order(self):
         text = (self.ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
-        rich = text.index('<script src="/assets/hq-carnet-rich.js"></script>')
-        srcs = text.index('<script src="/assets/hq-carnet-sources.js"></script>')
-        core = text.index('<script src="/assets/hq-carnet.js"></script>')
+        rich = text.index("'hq-carnet-rich.js'")
+        srcs = text.index("'hq-carnet-sources.js'")
+        core = text.index("'hq-carnet.js'")
         self.assertLess(rich, srcs)
         self.assertLess(srcs, core)
+        block = text[text.index("const HQ_CARNET_SCRIPTS"):]
+        block = block[: block.index("];")]
+        pos = lambda n: block.index("'%s.js'" % n)
         # Stage 07: the lazy engineering UI module loads between the sources module and the editor
-        self.assertIn("load('/assets/hq-carnet-struct.js', () => load('/assets/hq-carnet-rich.js', () => load('/assets/hq-carnet-field.js', () => load('/assets/hq-carnet-field-ui.js', () => load('/assets/hq-carnet-sources.js', () => load('/assets/hq-carnet-eng-ui.js', () => load('/assets/hq-carnet-history-ui.js', () => load('/assets/hq-carnet-reviews.js', () => load('/assets/hq-carnet-intel.js', () => load('/assets/hq-carnet-intel-ui.js', () => load('/assets/hq-carnet-ask.js', () => load('/assets/hq-carnet-ask-ui.js', () => load('/assets/hq-carnet-reviews-ui.js', () => load('/assets/hq-carnet-portals.js', () => load('/assets/hq-carnet-portals-ui.js', () => load('/assets/hq-carnet-image-ui.js', () => load('/assets/hq-carnet-structured-ui.js', () => load('/assets/hq-carnet-nav.js', () => load('/assets/hq-carnet-polish-ui.js', () => load('/assets/hq-carnet-dessiner.js', () => load('/assets/hq-carnet-commands.js', () => load('/assets/hq-carnet-templates.js', () => load('/assets/hq-carnet-editor-ui.js', () => load('/assets/hq-carnet.js'", text)
+        order = [pos(n) for n in ("hq-carnet-rich", "hq-carnet-field", "hq-carnet-field-ui", "hq-carnet-sources", "hq-carnet-eng-ui", "hq-carnet")]
+        self.assertEqual(order, sorted(order))
 
     def test_editor_hooks_use_the_single_state_machine(self):
         js = (self.ROOT / "assets" / "hq-carnet.js").read_text(encoding="utf-8")

@@ -517,17 +517,17 @@ class VerifiedPdfTests(FrozenTests):
 class LoaderTests(unittest.TestCase):
     def test_script_chain_is_balanced_and_loads_modal_and_reader_before_the_editor(self):
         text = (Path(__file__).resolve().parent.parent / "iphone_bridge.py").read_text(encoding="utf-8")
-        start = text.index("    load('/assets/hq-carnet-modal.js'")
-        stmt = text[start : text.index("\n  });", start)]
-        self.assertEqual(stmt.count("("), stmt.count(")"), "the nested loader chain must stay balanced (a stray paren blanks the whole Carnet)")
-        order = [stmt.index("'/assets/" + n + ".js'") for n in ("hq-carnet-modal", "hq-carnet-reader", "hq-carnet-reader-ui", "hq-carnet-media", "hq-carnet-sources", "hq-carnet-portals-ui", "hq-carnet")]
+        block = text[text.index("const HQ_CARNET_SCRIPTS"):]
+        block = block[: block.index("];")]
+        pos = lambda n: block.index("'%s.js'" % n)
+        self.assertEqual(block.count("["), 1, "one flat loader list (no nested chain to unbalance)")
+        order = [pos(n) for n in ("hq-carnet-modal", "hq-carnet-reader", "hq-carnet-reader-ui", "hq-carnet")]
         self.assertEqual(order, sorted(order))
-        self.assertIn("load('/assets/hq-carnet-media.js', () => load('/assets/hq-carnet-eng.js'", stmt)
-        self.assertEqual(stmt.count(", true)"), 1, "exactly one optional load (the image pipeline)")
-        html = text
+        order = [pos(n) for n in ("hq-carnet-media", "hq-carnet-sources", "hq-carnet-portals-ui", "hq-carnet")]
+        self.assertEqual(order, sorted(order))
+        self.assertLess(pos("hq-carnet-media"), pos("hq-carnet-eng"))
         for name in ("hq-carnet-modal", "hq-carnet-reader", "hq-carnet-reader-ui"):
-            self.assertIn('<script src="/assets/' + name + '.js"></script>', html)
-        self.assertLess(html.index('<script src="/assets/hq-carnet-modal.js"></script>'), html.index('<script src="/assets/hq-carnet-sources.js"></script>'))
+            self.assertIn("'" + name + ".js'", block)
 
 
 class ReportLineTests(RBase2):
