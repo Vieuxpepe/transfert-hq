@@ -60,8 +60,10 @@ def main() -> None:
                     page.reload()
                 page.wait_for_load_state("load")
                 page.wait_for_timeout(800)
+                page.wait_for_function("() => typeof window.hqCarnetShow === 'function'", timeout=15000)  # Carnet loads when the browser is idle after load
                 check(page.evaluate("() => typeof window.hqCarnetShow === 'function'"), f"{attempt}: hq-carnet.js initialised")
-                check(page.evaluate("() => typeof window.hqForgeShow === 'undefined'"), f"{attempt}: hq-forge.js is not loaded until Forge is opened")
+                if attempt == "fresh":  # after a reload the last view (Forge) is restored, which legitimately loads it
+                    check(page.evaluate("() => typeof window.hqForgeShow === 'undefined'"), f"{attempt}: hq-forge.js is not loaded until Forge is opened")
                 page.locator('.bottom-nav [data-nav="accueil"]').click()
                 page.locator("#hq-today-toggle").click()
                 page.wait_for_function("() => !/Chargement/.test(document.querySelector('#hq-cal-today').textContent || '')", timeout=10000)
