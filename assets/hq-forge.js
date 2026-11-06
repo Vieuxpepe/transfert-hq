@@ -3985,7 +3985,16 @@
   syncRanges();
 
   window.hqForgeShow = function () {
-    refreshStatus().then(() => refreshVault()).then(() => Promise.all([resume(), loadGallery(true), loadPresetList()])).catch(() => {});
+    const t0 = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+    const markDone = () => {
+      const ms = Math.round(performance.now() - t0);
+      if (window.hqPerfMark) window.hqPerfMark("forge", { op: "forge-show", ms }, { force: ms > 400 });
+    };
+    refreshStatus()
+      .then(() => refreshVault())
+      .then(() => Promise.all([resume(), loadGallery(true), loadPresetList()]))
+      .catch(() => {})
+      .finally(markDone);
     queueUsual();
     refreshStatus().catch(() => {}).then(() => loadDevices()).then(() => resumeBatch()).catch(() => {});
   };

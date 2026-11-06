@@ -1,0 +1,18 @@
+---
+description: Carnet notebook and UI — grep anchors, no full-file reads
+globs:
+  - assets/hq-carnet*.js
+  - hq_carnet*.py
+  - tests/test_hq_carnet*.py
+alwaysApply: false
+---
+
+# Carnet changes (agents)
+
+1. Read **`docs/carnet-agent-anchors.md`** and **`docs/frontend-view-index.md`** (view `carnet`).
+2. **Never** read all of **`assets/hq-carnet.js`** — grep symbols from anchors (±80 lines).
+3. Server logic: **`hq_carnet.py`**; routes: **`docs/hq-api-route-index.md`** (`/api/carnet*`).
+4. After edits: **`python scripts/verify_carnet_smoke.py`** — see **`docs/test-index.md#carnet`** for deeper tests.
+5. HQ browser symptoms: still use **`agent-brief`** first if the bug is “Carnet broken in HQ” without a clear server fault.
+
+Skill: **`.cursor/skills/carnet-change/SKILL.md`**.

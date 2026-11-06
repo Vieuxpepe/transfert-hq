@@ -19,3 +19,12 @@ Use case: background-extraction / precise-object-edit. Edit target: supplied ill
 FINAL SOURCE-TEXTURE LAYER (no further image generation)
 At the user's explicit request to reuse the old image, garment-front.svg embeds the original source.jpg bytes with a non-destructive SVG contour mask and a feathered upper join. build_layers.py packages that texture without resampling or repainting its pixels. The four supporting PNGs came from the built-in image_gen tool; no CLI fallback was used. Registered SVG wrappers place all five parts in a shared 512 x 512 frame. The torso also has a subdued vector cloth underpainting to prevent a second detailed garment front from showing underneath the moving original.
 The live HQ option is Outils > Calques. It loads the five SVGs on selection, remembers the choice and can restore the previous flat portrait.
+
+LOWER BODY (transparent_background=true)
+Use case: outpainting / precise-object-edit. Edit target: supplied square bust-cropped illustration. Asset: aligned LOWER BODY continuation for the 2D puppet rig. Same 512 square canvas and registration as source; do not recenter the bust crop. Keep the original warm window light from the right. Paint only hips, waist, upper thighs and matching black outfit continuation in the lower 42 percent of the canvas; upper 58 percent must stay fully transparent. No head, breasts, room, text or checkerboard. Match the illustrated anime style and skin tone of the reference portrait.
+
+ARMS (transparent_background=true)
+Use case: background-extraction. Edit target: supplied portrait. Produce isolated LEFT or RIGHT upper arm and shoulder only on transparent 512 canvas, hanging naturally at the side, matching skin tone and lighting. No face, torso, room or checkerboard. Register each arm in the left or right third of the canvas at shoulder height.
+
+BODY LAYER PACKAGING (no image generation)
+Primary source: gen-fullbody-neutral-v1.jpg (1024, resized to 512, vertically nudged <=6 px). scripts/build_rig_body_layers.py extracts lower-body + arms with seam at Y=402; build_layers.py embeds PNGs as SVG layers alongside the existing bust/face/hair rig.

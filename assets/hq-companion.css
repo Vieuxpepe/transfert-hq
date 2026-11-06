@@ -185,7 +185,7 @@
 .hq-companion-av-row{display:flex;flex-direction:row;align-items:center;justify-content:flex-end;gap:6px;pointer-events:none;position:relative}
 .hq-companion-av-toolbar{display:flex;flex-direction:row;align-items:center;justify-content:flex-end;gap:6px;pointer-events:auto;flex-shrink:0}
 .hq-companion.is-nsfw:not(.is-minimal) .hq-companion-av-row{flex-direction:column;align-items:flex-end;gap:10px}
-.hq-companion.is-nsfw:not(.is-minimal) .hq-companion-av-toolbar{position:relative;z-index:24;width:max-content;gap:2px;padding:3px;border-radius:999px;border:1px solid color-mix(in srgb,#c44b7a 26%,var(--line));background:color-mix(in srgb,var(--panel) 88%,#120810);box-shadow:0 6px 18px rgba(0,0,0,.28);backdrop-filter:blur(10px);}
+.hq-companion.is-nsfw:not(.is-minimal) .hq-companion-av-toolbar{position:relative;z-index:24;width:max-content;gap:2px;padding:3px;border-radius:999px;border:1px solid color-mix(in srgb,#c44b7a 26%,var(--line));background:color-mix(in srgb,var(--panel) 88%,#120810);box-shadow:0 6px 18px rgba(0,0,0,.28);backdrop-filter:none;}
 /* Inside the capsule the controls drop their own borders and read as one segmented group. */
 .hq-companion.is-nsfw:not(.is-minimal) .hq-companion-av-toolbar>.hq-companion-float-handle,
 .hq-companion.is-nsfw:not(.is-minimal) .hq-companion-av-toolbar .hq-companion-fx-menu-toggle,
@@ -605,7 +605,7 @@ body.hq-ai-open .hq-companion,body.hq-ai-open .hq-companion-boudoir-backdrop,bod
   width:max-content;
   max-width:calc(100vw - 24px);
   background:color-mix(in srgb, var(--panel) 92%, transparent);
-  backdrop-filter:blur(10px);
+  backdrop-filter:none;
   padding:4px 8px;
   border-radius:16px;
   border:1px solid color-mix(in srgb, var(--line) 55%, #ff8fab 45%);
@@ -1195,7 +1195,7 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   }
   .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-underboob-shadow{
     opacity:calc(var(--pull-underboob-opacity, 1) * 0.42);
-    filter:blur(1.8px);
+    filter:none;
   }
   .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-bust-sheen{
     display:block!important;
@@ -1720,9 +1720,9 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   background:
     radial-gradient(ellipse 58% 50% at 50% 36%, color-mix(in srgb, var(--companion-accent,var(--accent)) 24%, transparent) 0%, transparent 70%),
     radial-gradient(ellipse 85% 75% at 50% 48%, rgba(255,120,170,calc(.06 + var(--companion-dof-glow,.2)*.14)) 0%, transparent 74%);
-  filter:blur(calc(7px + var(--companion-dof-blur,2px)*1.6));
+  display:none;
+  filter:none;
   opacity:calc(.32 + var(--companion-dof-focus,.35)*.5);
-  transition:opacity .5s ease, filter .55s ease;
 }
 .hq-companion.is-dof-portrait .hq-companion-avatar{
   position:relative;
@@ -1732,36 +1732,49 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   filter:drop-shadow(0 14px 32px rgba(0,0,0,.26)) brightness(calc(1 + var(--companion-dof-focus,.4)*.07)) saturate(calc(1 + var(--companion-dof-focus,.4)*.1));
 }
 .hq-companion.is-dof-portrait .hq-companion-rig-background{
-  filter:blur(calc(var(--companion-dof-blur,2px)*1.25));
+  filter:none;
   opacity:calc(.86 + var(--companion-dof-focus,.3)*.14);
-  transition:filter .45s ease, opacity .45s ease;
 }
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-rig-background{
-  filter:blur(calc(var(--companion-dof-blur,2px)*.45));
+  filter:none;
 }
 .hq-companion.is-dof-portrait .hq-companion-rig-hair-left,
 .hq-companion.is-dof-portrait .hq-companion-rig-hair-right,
 .hq-companion.is-dof-portrait .hq-companion-rig-hair-left-tip,
 .hq-companion.is-dof-portrait .hq-companion-rig-hair-right-tip{
-  filter:blur(calc(var(--companion-dof-blur,2px)*.7));
-  transition:filter .45s ease;
+  filter:none;
 }
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-rig-hair-left,
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-rig-hair-right,
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-rig-hair-left-tip,
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-rig-hair-right-tip{
-  filter:blur(calc(var(--companion-dof-blur,2px)*.28));
+  filter:none;
 }
 .hq-companion.is-dof-portrait .hq-companion-bubble{
-  backdrop-filter:blur(calc(5px + (1 - var(--companion-dof-focus,.35))*5px)) saturate(1.05);
-  -webkit-backdrop-filter:blur(calc(5px + (1 - var(--companion-dof-focus,.35))*5px)) saturate(1.05);
-  transition:backdrop-filter .45s ease, box-shadow .45s ease;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
 }
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-bubble{
   box-shadow:0 14px 44px rgba(0,0,0,.28),0 0 0 1px color-mix(in srgb,var(--companion-accent,var(--accent)) calc(22% + var(--companion-dof-focus,.4)*18%),transparent),inset 0 1px 0 color-mix(in srgb,#fff 14%,transparent);
 }
 .hq-companion.is-dof-portrait.is-user-looking .hq-companion-line{
   text-shadow:0 0 calc(10px * var(--companion-dof-focus,.45)) color-mix(in srgb, var(--companion-accent,var(--accent)) 18%, transparent);
+}
+/* Adaptive GPU savings when the Live2D loop reports sustained frame pressure (JS toggles is-perf-lite). */
+.hq-companion.is-perf-lite:not(.is-user-looking) .hq-companion-dof-bokeh{
+  display:none;
+}
+.hq-companion.is-perf-lite:not(.is-user-looking).is-dof-portrait .hq-companion-rig-background,
+.hq-companion.is-perf-lite:not(.is-user-looking).is-dof-portrait .hq-companion-rig-hair-left,
+.hq-companion.is-perf-lite:not(.is-user-looking).is-dof-portrait .hq-companion-rig-hair-right,
+.hq-companion.is-perf-lite:not(.is-user-looking).is-dof-portrait .hq-companion-rig-hair-left-tip,
+.hq-companion.is-perf-lite:not(.is-user-looking).is-dof-portrait .hq-companion-rig-hair-right-tip{
+  filter:none!important;
+  transition:none;
+}
+.hq-companion.is-perf-lite:not(.is-user-looking).is-dof-portrait .hq-companion-bubble{
+  backdrop-filter:none!important;
+  -webkit-backdrop-filter:none!important;
 }
 @media (prefers-reduced-motion:reduce){
   .hq-companion-dof-bokeh,
@@ -2043,8 +2056,8 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
 .hq-companion.has-layered-portrait .hq-companion-avatar img.hq-companion-face-adult,
 .hq-companion.has-layered-portrait .hq-companion-face .hq-companion-l2d-bust{display:none!important;visibility:hidden!important}
 .hq-companion.has-layered-portrait{
-  --rig-mouth-cx:51.7%;
-  --rig-mouth-cy:33.2%;
+  --rig-mouth-cx:52.0%;
+  --rig-mouth-cy:31.5%;
 }
 .hq-companion-rig-clip{position:absolute;inset:0;overflow:hidden;border-radius:50%}
 .hq-companion-rig-body{position:absolute;inset:0;z-index:1;transform-origin:52% 68%;transform:perspective(900px) translate3d(var(--rig-parallax-x,0px),var(--rig-parallax-y,0px),0) rotateX(var(--rig-tilt-x,0deg)) rotateY(var(--rig-tilt-y,0deg)) rotate(var(--rig-body-tilt,0deg));will-change:transform}
@@ -2058,10 +2071,23 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   mask-image:linear-gradient(#fff,#fff),radial-gradient(ellipse 36% 40% at 34% 66%,#fff 0 56%,transparent 58%),radial-gradient(ellipse 36% 40% at 67% 66%,#fff 0 56%,transparent 58%),radial-gradient(ellipse 11% 36% at 50% 64%,#fff 0 54%,transparent 58%);
   mask-composite:subtract,add,add,add;
 }
+.hq-companion-rig-lower-body{z-index:0.85;translate:0 calc(var(--rig-body-bob,0px) * 0.92)}
+.hq-companion-rig-arm-left,.hq-companion-rig-arm-right{
+  z-index:1.12;
+  translate:var(--rig-arm-par-x,0px) calc(var(--rig-body-bob,0px) * 0.88);
+  transform-origin:50% 28%;
+}
+.hq-companion-rig-arm-left{--rig-arm-par-x:calc(var(--rig-parallax-x,0px) * -0.35)}
+.hq-companion-rig-arm-right{--rig-arm-par-x:calc(var(--rig-parallax-x,0px) * 0.35)}
+.hq-companion.is-nsfw.is-expanded.has-layered-portrait .hq-companion-rig-clip{
+  border-radius:44% 44% 20% 20%/40% 40% 60% 60%;
+  inset:0 0 -14% 0;
+}
 .hq-companion-rig-neck{z-index:2;translate:0 calc(var(--rig-body-bob,0px) + var(--rig-neck-lift,0px));-webkit-mask-image:linear-gradient(to bottom,transparent 0 40%,#000 50%);mask-image:linear-gradient(to bottom,transparent 0 40%,#000 50%)}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-neck{
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0 40%,#000 50%,transparent 58%);
-  mask-image:linear-gradient(to bottom,transparent 0 40%,#000 50%,transparent 58%);
+  /* Below face-wrap so neck face-clone does not reprint chin. */
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 54%,#000 58%,transparent 64%);
+  mask-image:linear-gradient(to bottom,transparent 0 54%,#000 58%,transparent 64%);
 }
 .hq-companion-rig-face-wrap{
   position:absolute;inset:0;z-index:2;
@@ -2157,15 +2183,20 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   100%{opacity:calc(.72 + var(--pull-tension,0) * .25);filter:brightness(1)}
 }
 .hq-companion-rig-face-lower{
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 100%);
-  mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 100%);
+  /* TEMP stable face: disable forehead/lower split (24/27% mask = under-eye dark band). */
+  -webkit-mask-image:none;
+  mask-image:none;
 }
+/* TEMP: hide duplicate forehead layer (same face.svg); split caused under-eye seam. */
+.hq-companion.has-layered-portrait .hq-companion-rig-forehead{display:none!important;}
+
+/* mouthanim1b: expressive mouth re-enabled (chinrestore1 disable removed). */
 .hq-companion-rig-face-mouth{
   position:absolute;inset:0;
   z-index:1;
   pointer-events:none;
   clip-path:inset(28% 36% 62% 36%);
-  transform-origin:var(--rig-mouth-cx,51.7%) var(--rig-mouth-cy,33.2%);
+  transform-origin:var(--rig-mouth-cx,52.0%) var(--rig-mouth-cy,31.5%);
   transform:scale(var(--rig-mouth-sx,1),var(--rig-mouth-sy,1)) translate3d(0,var(--rig-mouth-y,0px),0);
   will-change:auto;
 }
@@ -2182,8 +2213,8 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
 .hq-companion-rig-mouth-open::before{
   content:"";
   position:absolute;
-  left:var(--rig-mouth-cx,51.7%);
-  top:var(--rig-mouth-cy,33.2%);
+  left:var(--rig-mouth-cx,52.0%);
+  top:var(--rig-mouth-cy,31.5%);
   width:10.5%;
   height:5.4%;
   transform:translate(-50%,-50%) scale(var(--rig-pull-mouth-lip-sx,1),var(--rig-pull-mouth-lip-sy,.5));
@@ -2236,7 +2267,7 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
 }
 .hq-companion-rig-face{z-index:2;translate:0 var(--rig-body-bob,0px);-webkit-mask-image:linear-gradient(to bottom,#000 0 46%,transparent 52%);mask-image:linear-gradient(to bottom,#000 0 46%,transparent 52%);transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1));will-change:transform,translate}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face:not(.hq-companion-rig-face-lower){display:none}
-.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face.hq-companion-rig-face-lower{display:block;translate:none;transform:none;-webkit-mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 100%);mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 100%)}
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face.hq-companion-rig-face-lower{display:block;translate:none;transform:none;-webkit-mask-image:none;mask-image:none}
 .hq-companion-rig-eyelids{position:absolute;inset:0;z-index:3;pointer-events:none;translate:0 calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
 .hq-companion-rig-eyelids::before,.hq-companion-rig-eyelids::after{content:"";position:absolute;width:11.5%;height:4.2%;border-radius:50% 50% 42% 42%;background:linear-gradient(180deg,rgba(247,196,187,.92) 0%,rgba(210,145,138,.9) 58%,rgba(92,38,48,.96) 100%);box-shadow:0 .08em .14em rgba(48,16,22,.35);opacity:0;transform-origin:50% 0;transform:rotate(-13deg) scaleY(.05)}
 .hq-companion-rig-eyelids::before{left:36.5%;top:21.5%}
@@ -2268,9 +2299,18 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   pointer-events:none;
 }
 /* Layered: solid torso at idle (same as pull). Cup holes only on background during pull. */
+
+/* Knock out torso underpainting face under the moving face layer (SFW layered). */
+.hq-companion.has-layered-portrait:not(.is-nsfw) .hq-companion-rig-torso{
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 36%,#000 44%,#000 100%),radial-gradient(ellipse 36% 40% at 34% 66%,#fff 0 56%,transparent 58%),radial-gradient(ellipse 36% 40% at 67% 66%,#fff 0 56%,transparent 58%),radial-gradient(ellipse 11% 36% at 50% 64%,#fff 0 54%,transparent 58%);
+  -webkit-mask-composite:source-out,source-over,source-over,source-over;
+  mask-image:linear-gradient(to bottom,transparent 0 36%,#000 44%,#000 100%),radial-gradient(ellipse 36% 40% at 34% 66%,#fff 0 56%,transparent 58%),radial-gradient(ellipse 36% 40% at 67% 66%,#fff 0 56%,transparent 58%),radial-gradient(ellipse 11% 36% at 50% 64%,#fff 0 54%,transparent 58%);
+  mask-composite:subtract,add,add,add;
+}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-torso{
-  -webkit-mask-image:none!important;
-  mask-image:none!important;
+  /* Hide torso underpainting face (offset vs face layer); keep neck/bust. */
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0 36%,#000 44%,#000 100%)!important;
+  mask-image:linear-gradient(to bottom,transparent 0 36%,#000 44%,#000 100%)!important;
 }
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-background{
   -webkit-mask-image:none!important;
@@ -2443,7 +2483,7 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
     radial-gradient(ellipse 26% 14% at 30% 90%, rgba(45, 12, 24, 0.68) 0%, rgba(45, 12, 24, 0.35) 45%, transparent 75%),
     radial-gradient(ellipse 27% 14% at 67% 91%, rgba(45, 12, 24, 0.65) 0%, rgba(45, 12, 24, 0.32) 45%, transparent 75%),
     radial-gradient(ellipse 8% 18% at 50% 74%, rgba(35, 10, 18, 0.58) 0%, rgba(35, 10, 18, 0.25) 48%, transparent 75%);
-  filter:blur(2.5px);
+  filter:none;
   transform:translate3d(calc(var(--rig-underboob-x, 0px) + var(--pull-underboob-x, 0px)), calc(var(--rig-underboob-y, 0px) + var(--pull-underboob-y, 0px)), 0);
   will-change:transform,opacity;
 }
@@ -2550,7 +2590,7 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   background:
     radial-gradient(circle at 33% 66%, rgba(255, 236, 220, 0.52) 0 2%, transparent 9%),
     radial-gradient(circle at 66% 67%, rgba(255, 236, 220, 0.46) 0 2%, transparent 9%);
-  filter:blur(1.2px);
+  filter:none;
   transform:translate3d(calc(var(--rig-sheen-x, 0px) + var(--rig-sheen-lobe-x, 0px)), calc(var(--rig-sheen-y, -1.5px) + var(--rig-sheen-lobe-y, 0px)), 0);
 }
 /* Layered bust 3D specular pop: dynamic screen sheen with specular lag */
@@ -2612,7 +2652,7 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   z-index:1;
   mix-blend-mode:overlay;
   opacity:calc(.025 + var(--rig-spec-power, .4) * .045);
-  filter:blur(2.4px);
+  filter:none;
 }
 .hq-companion-rig-lobe-lit-left{
   background:radial-gradient(
@@ -2699,6 +2739,66 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   clip-path:ellipse(50% 46.30723781% at 50% 53.69276219%);
 }
 .hq-companion-rig-hair-left,.hq-companion-rig-hair-right,.hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip{transform-origin:50% 22.20384047%}
+/* accessories-v1 layers */
+/* Necklace shares the 1254x1354 placement; above face/neck, below hair. */
+.hq-companion-rig-necklace{
+  z-index:3;
+  top:-7.97448166%;bottom:auto;height:107.97448166%;
+  translate:0 calc(var(--rig-body-bob,0px) + var(--rig-neck-lift,0px));
+  pointer-events:none;
+  filter:none!important;
+}
+.hq-companion-rig-necklace[hidden]{display:none!important}
+/* Earrings follow the head; sit above face, below hair. */
+.hq-companion-rig-earrings{
+  position:absolute;inset:0;z-index:3;pointer-events:none;
+  translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));
+  transform-origin:54.5% 42%;
+  transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1));
+}
+.hq-companion-rig-earrings[hidden]{display:none!important}
+.hq-companion-rig-earring{position:absolute;pointer-events:none;user-select:none;object-fit:fill;max-width:none}
+/* Original gold pair: top-left coords on the 1254 face canvas. */
+.hq-companion-rig-earrings.is-origine .hq-companion-rig-earring-left{
+  left:37.71929825%;top:45.13556619%;width:5.02392344%;height:7.25677831%;
+}
+.hq-companion-rig-earrings.is-origine .hq-companion-rig-earring-right{
+  left:63.63636364%;top:41.06858054%;width:4.46570973%;height:7.33652313%;
+}
+/* Shape pair (48x74): pivot top-center at (503,569) / (825,518). */
+.hq-companion-rig-earrings.is-shape .hq-companion-rig-earring-left{
+  left:38.19776714%;top:45.37480064%;width:3.8277512%;height:5.90111643%;
+  transform-origin:50% 0%;
+}
+.hq-companion-rig-earrings.is-shape .hq-companion-rig-earring-right{
+  left:63.87559809%;top:41.30781499%;width:3.8277512%;height:5.90111643%;
+  transform-origin:50% 0%;
+}
+/* Keep hair (incl. variants) above the ring; do not clip accessory overhang. */
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-necklace,
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-earrings{
+  overflow:visible;
+}
+/* Minimal Accessoires selector next to Calques. */
+.hq-companion-accessories-panel{
+  display:flex;flex-direction:column;gap:6px;
+  margin:4px 2px 8px;padding:8px 10px;
+  border-radius:10px;
+  background:color-mix(in srgb, var(--panel, #1c1520) 88%, #c44b7a 12%);
+  border:1px solid color-mix(in srgb, #c44b7a 28%, transparent);
+}
+.hq-companion-accessories-panel[hidden]{display:none!important}
+.hq-companion-accessories-row{
+  display:grid;grid-template-columns:72px 1fr;gap:8px;align-items:center;
+  font-size:12px;color:var(--text, #eee8ef);
+}
+.hq-companion-accessories-row select{
+  width:100%;min-height:28px;border-radius:8px;
+  border:1px solid color-mix(in srgb, #c44b7a 35%, transparent);
+  background:color-mix(in srgb, var(--panel, #161018) 92%, #000 8%);
+  color:inherit;padding:2px 6px;
+}
+.hq-companion-accessories-row select:disabled{opacity:.45}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-portrait-rig{display:block}
 .hq-companion.has-layered-portrait.is-bust-pull.is-nsfw .hq-companion-avatar,
 .hq-companion.has-layered-portrait.is-bust-pull .hq-companion-portrait-rig{
@@ -3408,6 +3508,31 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
 
 /* motion1: pause every companion loop while she cannot be seen (class toggled by hq-companion.js). */
 .hq-companion.is-anim-paused,.hq-companion.is-anim-paused *,.hq-companion.is-anim-paused *::before,.hq-companion.is-anim-paused *::after{animation-play-state:paused!important}
+@media (prefers-reduced-motion:no-preference){
+  .hq-companion.is-css-idle-portrait.has-layered-portrait .hq-companion-av-stack{
+    animation:hq-companion-css-idle-sway 5.2s ease-in-out infinite;
+    will-change:transform;
+  }
+  .hq-companion.is-css-idle-portrait.has-layered-portrait .hq-companion-face{
+    animation:hq-companion-idle-breathe calc(var(--breath,4.4s)*1.05) ease-in-out infinite;
+  }
+}
+@keyframes hq-companion-css-idle-sway{
+  0%,100%{transform:translate3d(0,0,0) rotate(0deg)}
+  50%{transform:translate3d(0,-2px,0) rotate(.35deg)}
+}
+html[data-hq-motion-tier="parked"] .hq-dangling-member-swing,
+html[data-hq-motion-tier="parked"] .home-sky,
+html[data-hq-motion-tier="parked"] .home-sky *{
+  animation-play-state:paused!important;
+}
+html[data-hq-motion-tier="lite"] .hq-dangling-member-mount:not(.is-wobbling) .hq-dangling-member-swing{
+  animation-duration:4.8s;
+}
+.hq-dangling-member-mount:not(.is-softbody) .hq-dangling-member-canvas,
+.hq-dangling-member-mount:not(.is-softbody) .hq-dangling-member-vein-canvas{
+  display:none!important;
+}
 /* motion1: reduced motion: loops play once and stop (rest pose = first/last keyframe); state indicators stay visible. */
 @media (prefers-reduced-motion:reduce){
   .hq-companion,.hq-companion *,.hq-companion *::before,.hq-companion *::after{animation-iteration-count:1!important}

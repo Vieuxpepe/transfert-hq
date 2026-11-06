@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import ctypes
 import hashlib
 import hmac
@@ -161,6 +162,7 @@ ASSET_CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".html": "text/html; charset=utf-8",
     ".wav": "audio/wav",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
@@ -292,6 +294,9 @@ UPLOAD_POST_EXACT = {
     "/api/me", "/api/presence",
     "/api/upload",
     "/api/upload/init", "/api/upload/chunk", "/api/upload/complete",
+    "/api/hq/client-log",
+    "/api/hq/repro-note",
+    "/api/hq/lag-capture",
 }
 UPLOAD_POST_PREFIX = ()
 COOKIE_NAME = "transfert_session"
@@ -787,6 +792,99 @@ def captures_dir() -> Path:
     return d
 
 
+LAG_CAPTURE_MAX_FILES = hq_diagnostics.LAG_CAPTURE_MAX_FILES
+_LAG_CAPTURE_LAST: dict[str, float] = {}
+_LAG_CAPTURE_LOCK = threading.Lock()
+
+
+def lag_captures_dir() -> Path:
+    d = ROOT / ".hq-carnet" / "diagnostics" / "lag-captures"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _prune_lag_captures(out_dir: Path) -> None:
+    hq_diagnostics.prune_lag_capture_files(ROOT)
+
+
+def lag_capture_screenshot(
+    *,
+    session_id: str = "",
+    reason: str = "",
+    hq_view_b64: str = "",
+    hq_meta: dict | None = None,
+) -> dict:
+    """Primary-screen capture on lag spike (Windows). Stored compressed under lag-captures/."""
+    if sys.platform != "win32":
+        return {"ok": False, "error": "platform_unsupported"}
+    sess = re.sub(r"[^a-fA-F0-9]", "", str(session_id or ""))[:16] or "nosess"
+    gap = 45.0
+    with _LAG_CAPTURE_LOCK:
+        now = time.time()
+        last = _LAG_CAPTURE_LAST.get(sess, 0.0)
+        if now - last < gap:
+            return {"ok": False, "error": "throttled", "retry_sec": max(1, int(gap - (now - last)))}
+        _LAG_CAPTURE_LAST[sess] = now
+    out_dir = lag_captures_dir()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tag = re.sub(r"[^a-zA-Z0-9_-]", "", str(reason or "lag"))[:20] or "lag"
+    dest = unique_in_dir(out_dir, f"lag_{stamp}_{sess}_{tag}.jpg")
+    q = int(hq_diagnostics.LAG_CAPTURE_JPEG_QUALITY)
+    ps = f"""
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object {{ $_.MimeType -eq 'image/jpeg' }}
+$ep = New-Object System.Drawing.Imaging.EncoderParameters(1)
+$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]{q})
+$bmp.Save('{str(dest).replace("'", "''")}', $enc, $ep)
+$g.Dispose(); $bmp.Dispose()
+"""
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if r.returncode != 0 or not dest.is_file():
+        err = (r.stderr or r.stdout or "screenshot failed").strip()[:300]
+        return {"ok": False, "error": err}
+    final_path = Path(hq_diagnostics.reencode_lag_capture_file(dest))
+    rel = "/".join(final_path.relative_to(ROOT).parts)
+    hq_view_rel = None
+    raw_b64 = str(hq_view_b64 or "").strip()
+    if raw_b64.startswith("data:"):
+        raw_b64 = raw_b64.split(",", 1)[-1]
+    if raw_b64:
+        try:
+            blob = base64.b64decode(raw_b64, validate=True)
+            if 0 < len(blob) <= hq_diagnostics.LAG_HQ_VIEW_MAX_BYTES:
+                comp, ext = hq_diagnostics.compress_lag_image_blob(blob)
+                hq_dest = unique_in_dir(out_dir, f"lag_{stamp}_{sess}_{tag}_hq{ext}")
+                hq_dest.write_bytes(comp)
+                hq_view_rel = "/".join(hq_dest.relative_to(ROOT).parts)
+        except (ValueError, OSError):
+            hq_view_rel = None
+    _prune_lag_captures(out_dir)
+    out = {
+        "ok": True,
+        "screenshot_rel": rel,
+        "rel": rel,
+        "name": final_path.name,
+        "size": final_path.stat().st_size,
+        "reason": tag,
+        "format": final_path.suffix.lstrip(".").lower() or "jpg",
+    }
+    if hq_view_rel:
+        out["hq_view_rel"] = hq_view_rel
+    if isinstance(hq_meta, dict) and hq_meta:
+        out["hq_meta"] = {str(k)[:32]: hq_meta[k] for k in list(hq_meta.keys())[:12]}
+    return out
+
+
 def apply_auto_route(folder_rel: str, filename: str) -> str:
     """Remap uploads: screenshots -> Inbox/Captures; else extension auto_route on root folders."""
     if looks_like_screenshot(filename):
@@ -933,6 +1031,15 @@ def default_config() -> dict:
         "telemetry_local_sec": 45,
         "telemetry_remote_sec": 180,
         "telemetry_retain_hours": 36,
+        # --- Client debug HUD (browser → .hq-carnet/diagnostics/client-browser.jsonl)
+        # client_debug_hud: bool — show HUD + POST /api/hq/client-log
+        # client_debug_agent: bool — less perf spam; view/mark focused (see docs/agent-debugging.md)
+        # client_debug_perf_interval_sec: int — 0 = load/exit perf only; 15 = every 15s
+        # client_debug_log_when_collapsed: bool — if false, skip noisy logs while HUD collapsed
+        "client_debug_hud": False,
+        "client_debug_perf_interval_sec": 15,
+        "client_debug_log_when_collapsed": False,
+        "client_debug_agent": True,
         "created": datetime.now().isoformat(timespec="seconds"),
         "note": "Mission Control HQ v7. PIN required in bridge_config.json. public_base_urls optional (Serve HTTPS). Never commit PIN. push_enabled / daily_brief_discord restent off par défaut.",
     }
@@ -1140,6 +1247,58 @@ def pin_enabled() -> bool:
     if isinstance(users, list) and any(isinstance(u, dict) and str(u.get("pin") or "").strip() for u in users):
         return True
     return bool(str(CONFIG.get("pin", "") or "").strip())
+
+
+def client_debug_hud_enabled() -> bool:
+    """Perf HUD + browser log shipping (bridge_config client_debug_hud, or HQ_CLIENT_DEBUG env)."""
+    env = os.environ.get("HQ_CLIENT_DEBUG", "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    try:
+        return bool(CONFIG.get("client_debug_hud", False))
+    except Exception:
+        return False
+
+
+def client_debug_perf_interval_sec() -> int:
+    try:
+        v = int(CONFIG.get("client_debug_perf_interval_sec", 15))
+    except (TypeError, ValueError):
+        v = 15
+    return max(0, min(3600, v))
+
+
+def client_debug_log_when_collapsed() -> bool:
+    try:
+        return bool(CONFIG.get("client_debug_log_when_collapsed", False))
+    except Exception:
+        return False
+
+
+def client_debug_agent_enabled() -> bool:
+    try:
+        return bool(CONFIG.get("client_debug_agent", False))
+    except Exception:
+        return False
+
+
+def client_debug_capture_effective() -> dict:
+    """Effective client debug flags for agent triage (config + HQ_CLIENT_DEBUG env)."""
+    env = os.environ.get("HQ_CLIENT_DEBUG", "").strip().lower()
+    source = "config"
+    if env in ("0", "false", "no", "off"):
+        source = "env_off"
+    elif env in ("1", "true", "yes", "on"):
+        source = "env_on"
+    return {
+        "hud_enabled": client_debug_hud_enabled(),
+        "agent_mode": client_debug_agent_enabled(),
+        "perf_interval_sec": client_debug_perf_interval_sec(),
+        "log_when_collapsed": client_debug_log_when_collapsed(),
+        "source": source,
+    }
 
 
 def pin_value() -> str:
@@ -3021,6 +3180,7 @@ let hqForgeLoading = null;
 function hqForgeLoad() {
   if (window.hqForgeShow) return Promise.resolve();
   if (hqForgeLoading) return hqForgeLoading;
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const one = (name) => new Promise((resolve) => {
     const el = document.createElement('script');
     el.src = '/assets/' + name;
@@ -3030,6 +3190,9 @@ function hqForgeLoad() {
     document.body.appendChild(el);
   });
   hqForgeLoading = Promise.all(HQ_FORGE_SCRIPTS.map(one)).then((results) => {
+    const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0);
+    const ok = !!(results[0] && window.hqForgeShow);
+    if (window.hqPerfMark) window.hqPerfMark('forge', { op: 'script-load', ms, ok, scripts: HQ_FORGE_SCRIPTS.length }, { force: ms > 600 || !ok });
     const coreOk = results[0];
     if (!coreOk || !window.hqForgeShow) {
       hqForgeLoading = null;  // allow a retry on the next visit
@@ -3091,6 +3254,7 @@ let hqCarnetLoading = null;
 function hqCarnetLoad() {
   if (window.hqCarnetShow && hqCarnetDone.size >= HQ_CARNET_SCRIPTS.length) return Promise.resolve();
   if (hqCarnetLoading) return hqCarnetLoading;
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const one = (name) => new Promise((resolve) => {
     if (hqCarnetDone.has(name)) { resolve(); return; }
     const el = document.createElement('script');
@@ -3102,6 +3266,9 @@ function hqCarnetLoad() {
   });
   // All elements are inserted at once: downloads run in parallel, execution stays in list order (async = false).
   hqCarnetLoading = Promise.all(HQ_CARNET_SCRIPTS.map(one)).then(() => {
+    const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0);
+    const ok = !!window.hqCarnetShow;
+    if (window.hqPerfMark) window.hqPerfMark('carnet', { op: 'script-load', ms, ok, scripts: HQ_CARNET_SCRIPTS.length, loaded: hqCarnetDone.size }, { force: ms > 800 || !ok });
     hqCarnetLoading = null;  // a later call retries only what never ran
     const v = document.body.dataset.view;
     if (v === 'carnet' && window.hqCarnetShow) { try { window.hqCarnetShow(); } catch (e) { console.error(e); } }
@@ -3166,7 +3333,12 @@ function hqSketchStart() {
     window.hqSketchFail(skMissingReason(), 'load');
     return;
   }
-  try { window.hqSketchShow(); } catch (e) { console.error(e); window.hqSketchFail(SK_INIT_ERROR, 'init'); }
+  try {
+    const skT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    window.hqSketchShow();
+    const skMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - skT0);
+    if (window.hqPerfMark && skMs >= 16) window.hqPerfMark('dessiner', { op: 'show', ms: skMs });
+  } catch (e) { console.error(e); window.hqSketchFail(SK_INIT_ERROR, 'init'); }
 }
 let skRetrying = false;
 function hqSketchRetry(kind, btn) {
@@ -3255,8 +3427,11 @@ function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
+  const viewT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const commit = () => {
+  const prevView = document.body.dataset.view;
   document.body.dataset.view = view;
+  if (window.hqClientLogView) { try { window.hqClientLogView(prevView, view); } catch (_) {} }
   if (window.hqHideHelp) window.hqHideHelp();
   const lab = $('#view-label');
   const title = viewTitle(view);
@@ -3278,7 +3453,12 @@ function setView(name) {
     try { window.hqCarnetShow(); } catch (e) { console.error(e); }  // a Carnet failure never aborts HQ
   } else if (view === 'carnet') {
     hqCarnetLoad().then(() => {  // loaded on demand; hqCarnetLoad shows Carnet itself when it lands
-      if (document.body.dataset.view === 'carnet' && !window.hqCarnetShow) hqCarnetMissing();
+      const lazyMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
+      if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-lazy', target: 'carnet', ms: lazyMs, ok: !!window.hqCarnetShow }, { force: lazyMs > 400 || !window.hqCarnetShow });
+      if (document.body.dataset.view === 'carnet' && !window.hqCarnetShow) {
+        hqCarnetMissing();
+        if (window.hqClientLog) { try { window.hqClientLog({ level: 'warn', kind: 'carnet', message: 'carnet module missing after load', force: true }); } catch (_) {} }
+      }
     }).catch(() => {});
   }
   if (view === 'accueil' && window.hqCarnetHome) {
@@ -3297,6 +3477,8 @@ function setView(name) {
   if (view === 'forge') {
     // Forge modules load on first visit (not with the page); the view may change again before they arrive.
     hqForgeLoad().then(() => {
+      const lazyMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
+      if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-lazy', target: 'forge', ms: lazyMs, ok: !!(window.hqForgeShow) }, { force: lazyMs > 400 });
       if (document.body.dataset.view === 'forge' && window.hqForgeShow) {
         try { window.hqForgeShow(); } catch (e) { console.error(e); }
       }
@@ -3304,6 +3486,8 @@ function setView(name) {
   } else if (window.hqForgeHide) {
     try { window.hqForgeHide(); } catch (e) { console.error(e); }
   }
+  const viewMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
+  if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-commit', ms: viewMs, from: prevView, to: view }, { force: viewMs > 120 });
   };
   if (window.HqTheme && typeof window.HqTheme.runViewChange === 'function') {
     window.HqTheme.runViewChange(window, view, commit);
@@ -3530,6 +3714,7 @@ async function navigate(rel) {
 async function refreshFiles() {
   const list = $('#file-list');
   if (!list) return;
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const qs = new URLSearchParams();
   if (currentRel) qs.set('path', currentRel);
   const data = await api('/api/list?' + qs.toString());
@@ -3537,6 +3722,8 @@ async function refreshFiles() {
   itemsCache = data.items || [];
   renderCrumbs(data.breadcrumb || []);
   renderFiles();
+  const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0);
+  if (window.hqPerfMark && ms >= 250) window.hqPerfMark('fichiers', { op: 'list', ms: ms, path: currentRel || '' });
 }
 
 async function deleteItem(rel, type, name) {
@@ -5048,6 +5235,7 @@ document.addEventListener('pointerup', (e) => {
 });
 
 document.addEventListener('DOMContentLoaded', async () => {
+  const hqBootT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   setupModeToggle();
   setupNav();
   document.addEventListener('click', (e) => {
@@ -5089,6 +5277,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
   setupHQ();
+  if (window.hqPerfMark) {
+    const bootMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - hqBootT0);
+    window.hqPerfMark('bridge', { op: 'boot-ready', ms: bootMs, session_ok: ready }, { force: true });
+  }
   if (!ready) {
     toast('Session lente — nouvel essai…', 'err');
   }
@@ -5606,7 +5798,21 @@ def render_app() -> bytes:
     ts_url = _qr.get("Tailscale") or ""
     serve_url = _qr.get("Serve") or ""
     reaction_manifest_rev = html.escape(reaction_manifest_revision(), quote=True)
-    chips = ""  # file manager breadcrumbs replace chips
+    debug_hud = client_debug_hud_enabled()
+    debug_perf_sec = client_debug_perf_interval_sec()
+    debug_log_collapsed = client_debug_log_when_collapsed()
+    debug_agent = client_debug_agent_enabled()
+    hq_debug_session = secrets.token_hex(6) if debug_hud else ""
+    debug_attr = (
+        f' data-hq-debug="1" data-hq-debug-perf-sec="{debug_perf_sec}"'
+        f' data-hq-debug-log-collapsed="{"1" if debug_log_collapsed else "0"}"'
+        f' data-hq-debug-agent="{"1" if debug_agent else "0"}"'
+        f' data-hq-session="{hq_debug_session}"'
+        if debug_hud
+        else ""
+    )
+    debug_css_link = '<link rel="stylesheet" href="/assets/hq-debug-panel.css"/>' if debug_hud else ""
+    debug_js_tag = '<script src="/assets/hq-debug-panel.js"></script>' if debug_hud else ""
     opts = "".join(
         f'<option value="{html.escape(f)}"{" selected" if f == default_folder else ""}>{html.escape(f)}</option>'
         for f in folders
@@ -5656,9 +5862,10 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-companion.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-face.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-fx.css"/>
+{debug_css_link}
 <script src="/assets/qrcode.min.js"></script>
 </head>
-<body data-view="accueil">
+<body data-view="accueil"{debug_attr}>
 <a class="skip-link" href="#main">Aller au contenu</a>
 <div class="hq-dangling-member-mount" aria-hidden="true">
   <div class="hq-dangling-member-swing">
@@ -7139,11 +7346,14 @@ def render_app() -> bytes:
 <script src="/assets/hq-files.js"></script>
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-home.js"></script>
+<script src="/assets/hq-motion-coordinator.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
 <script src="/assets/hq-companion-sfx-bus.js"></script>
 <script src="/assets/hq-companion-reaction-audio.js"></script>
 <script src="/assets/hq-dangle-audio.js"></script>
+<script src="/assets/dangling-member-vein-paths.js"></script>
+<script src="/assets/hq-palm-hand.js"></script>
 <script src="/assets/hq-dangling-member.js"></script>
 <script src="/assets/hq-chrome.js"></script>
 <script src="/assets/hq-polish.js"></script>
@@ -7157,6 +7367,7 @@ def render_app() -> bytes:
 {reaction_hot_preload_link_tags()}
 <script src="/assets/hq-companion.js"></script>
 <script src="/assets/hq-model-view.js"></script>
+{debug_js_tag}
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
@@ -7210,6 +7421,7 @@ def _diag_ensure() -> None:
             return
         hq_diagnostics.init_identity(ROOT, version="7.0", started_at=_STARTED_AT)
         hq_diagnostics.ERRORS.attach(ROOT)
+        hq_diagnostics.CLIENT_LOG.attach(ROOT)
         _DIAG_STATE["root"] = str(ROOT)
         _DIAG_STATE["assets"] = None
 
@@ -7230,9 +7442,24 @@ def _diag_record_exc(handler, exc: BaseException) -> str:
     try:
         _diag_ensure()
         sub = hq_diagnostics.path_category(getattr(handler, "path", ""))
-        return hq_diagnostics.ERRORS.record(sub, exc=exc, path=getattr(handler, "path", ""), status=500)
+        return hq_diagnostics.ERRORS.record(
+            sub,
+            exc=exc,
+            path=getattr(handler, "path", ""),
+            status=500,
+            session_id=_hq_session_header(handler),
+        )
     except Exception:
         return ""
+
+
+def _hq_session_header(handler) -> str | None:
+    try:
+        raw = handler.headers.get("X-HQ-Session") or handler.headers.get("x-hq-session") or ""
+        s = re.sub(r"[^a-fA-F0-9]", "", str(raw))[: hq_diagnostics.CLIENT_SESSION_MAX]
+        return s or None
+    except Exception:
+        return None
 
 
 _LOG_QUERY = re.compile(r"\?\S*")
@@ -7261,7 +7488,13 @@ def _diag_record_5xx(handler, code: int, obj) -> None:
         if sub == "/api/diag":  # readiness / probe 503 is the designed signal, not an application fault (and must not flood the log)
             return
         fixed = obj.get("code") if isinstance(obj, dict) and isinstance(obj.get("code"), str) else None
-        hq_diagnostics.ERRORS.record(sub, path=path, status=code, code=fixed or f"http_{code}")
+        hq_diagnostics.ERRORS.record(
+            sub,
+            path=path,
+            status=code,
+            code=fixed or f"http_{code}",
+            session_id=_hq_session_header(handler),
+        )
     except Exception:
         pass
 
@@ -7800,6 +8033,77 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     lim = 50
                 self._json(200, {"errors": hq_diagnostics.ERRORS.recent(lim), "summary": hq_diagnostics.ERRORS.summary()})
+            elif raw == "/api/diag/client-log":
+                try:
+                    lim = int((qs.get("limit", ["40"])[0] or "40"))
+                except ValueError:
+                    lim = 40
+                sess = hq_diagnostics.normalize_client_session_id(
+                    (qs.get("session_id", [""])[0] or qs.get("session", [""])[0] or "")
+                )
+                self._json(
+                    200,
+                    {
+                        "lines": hq_diagnostics.CLIENT_LOG.tail(lim, session_id=sess),
+                        "summary": hq_diagnostics.CLIENT_LOG.summary(),
+                        "session_filter": sess,
+                    },
+                )
+            elif raw == "/api/diag/lag-captures":
+                try:
+                    lim = int((qs.get("limit", ["10"])[0] or "10"))
+                except ValueError:
+                    lim = 10
+                self._json(200, {"files": hq_diagnostics.list_lag_capture_files(ROOT, limit=lim)})
+            elif raw.startswith("/api/diag/lag-capture/"):
+                name = unquote(raw.split("/api/diag/lag-capture/", 1)[1].split("?", 1)[0])
+                path_s = hq_diagnostics.lag_capture_path(ROOT, name)
+                if not path_s:
+                    self._json(404, {"error": "Inconnu"})
+                else:
+                    self._send_file(Path(path_s), as_download=False)
+            elif raw == "/api/diag/session-bundle":
+                try:
+                    lim = int((qs.get("limit", ["50"])[0] or "50"))
+                except ValueError:
+                    lim = 50
+                sess = hq_diagnostics.normalize_client_session_id(
+                    (qs.get("session_id", [""])[0] or qs.get("session", [""])[0] or "")
+                )
+                cap = client_debug_capture_effective()
+                self._json(
+                    200,
+                    hq_diagnostics.session_bundle(
+                        root=ROOT,
+                        config=CONFIG,
+                        config_path=CONFIG_PATH,
+                        asset_names=_diag_asset_names(),
+                        limit=lim,
+                        capture_effective=cap,
+                        session_id=sess,
+                    ),
+                )
+            elif raw == "/api/diag/agent-brief":
+                try:
+                    lim = int((qs.get("limit", ["50"])[0] or "50"))
+                except ValueError:
+                    lim = 50
+                sess = hq_diagnostics.normalize_client_session_id(
+                    (qs.get("session_id", [""])[0] or qs.get("session", [""])[0] or "")
+                )
+                cap = client_debug_capture_effective()
+                self._json(
+                    200,
+                    hq_diagnostics.agent_brief(
+                        root=ROOT,
+                        config=CONFIG,
+                        config_path=CONFIG_PATH,
+                        asset_names=_diag_asset_names(),
+                        limit=lim,
+                        capture_effective=cap,
+                        session_id=sess,
+                    ),
+                )
             else:
                 self._json(404, {"error": "Inconnu"})
         except Exception as e:  # a diagnostics bug must answer, not crash the handler thread
@@ -7811,6 +8115,47 @@ class Handler(BaseHTTPRequestHandler):
         if not raw.startswith("/api/diag/"):
             return False
         if not self._require_admin():
+            return True
+        if raw == "/api/diag/repro-note":
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            _diag_ensure()
+            rep = hq_diagnostics.append_repro_note(
+                ROOT,
+                session_id=str(data.get("session_id") or ""),
+                note=str(data.get("note") or ""),
+                role=self._role(),
+                view=str(data.get("view") or ""),
+            )
+            self._json(200 if rep.get("ok") else 400, rep)
+            return True
+        if raw == "/api/diag/save-agent-packet":
+            try:
+                data = self._read_json()
+            except ValueError:
+                data = {}
+            try:
+                lim = int(data.get("limit") or 50)
+            except (TypeError, ValueError):
+                lim = 50
+            _diag_ensure()
+            cap = client_debug_capture_effective()
+            brief = hq_diagnostics.agent_brief(
+                root=ROOT,
+                config=CONFIG,
+                config_path=CONFIG_PATH,
+                asset_names=_diag_asset_names(),
+                limit=lim,
+                capture_effective=cap,
+            )
+            md = brief.get("packet_md") or brief.get("brief_md") or ""
+            rep = hq_diagnostics.write_agent_packet_file(ROOT, str(md))
+            if rep.get("ok"):
+                rep["agent_packet_disk"] = hq_diagnostics.agent_packet_disk_hint(ROOT)
+            self._json(200 if rep.get("ok") else 400, rep)
             return True
         if raw != "/api/diag/write-probe":
             self._json(404, {"error": "Inconnu"})
@@ -9466,6 +9811,73 @@ class Handler(BaseHTTPRequestHandler):
                 cid = secrets.token_hex(8)
             presence_upsert(cid, data, self.client_address[0])
             self._json(200, {"ok": True, "id": cid, "path": cc_ext.classify_ip(self.client_address[0])})
+            return
+
+        if raw == "/api/hq/client-log":
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            if len(json.dumps(data, ensure_ascii=False)) > 65536:
+                self._json(413, {"error": "Payload trop volumineux"})
+                return
+            _diag_ensure()
+            page = str(data.get("page") or "")[:200]
+            view = str(data.get("view") or "")[:80]
+            session_id = str(data.get("session_id") or "")[:32]
+            rep = hq_diagnostics.CLIENT_LOG.ingest(
+                data.get("entries"), page=page, role=self._role(), view=view, session_id=session_id
+            )
+            self._json(200, rep)
+            return
+
+        if raw == "/api/hq/lag-capture":
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            rep = lag_capture_screenshot(
+                session_id=str(data.get("session_id") or ""),
+                reason=str(data.get("reason") or ""),
+                hq_view_b64=str(data.get("hq_view_b64") or data.get("hq_view") or ""),
+                hq_meta=data.get("hq_meta") if isinstance(data.get("hq_meta"), dict) else None,
+            )
+            code = 200 if rep.get("ok") else (429 if rep.get("error") == "throttled" else 500)
+            if rep.get("ok"):
+                _diag_ensure()
+                try:
+                    pkt = hq_diagnostics.persist_agent_packet_from_snapshot(
+                        root=ROOT,
+                        config=CONFIG,
+                        config_path=CONFIG_PATH,
+                        asset_names=_diag_asset_names(),
+                        limit=50,
+                        capture_effective=client_debug_capture_effective(),
+                        session_id=str(data.get("session_id") or ""),
+                    )
+                    rep["agent_packet"] = pkt
+                except Exception:
+                    pass
+            self._json(code, rep)
+            return
+
+        if raw == "/api/hq/repro-note":
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            _diag_ensure()
+            rep = hq_diagnostics.append_repro_note(
+                ROOT,
+                session_id=str(data.get("session_id") or ""),
+                note=str(data.get("note") or ""),
+                role=self._role(),
+                view=str(data.get("view") or ""),
+            )
+            self._json(200 if rep.get("ok") else 400, rep)
             return
 
         if raw == "/api/scratchpad":

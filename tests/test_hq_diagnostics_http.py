@@ -31,7 +31,17 @@ import iphone_bridge as B  # noqa: E402
 SECRET = "S3CR3T-WEBHOOK-TOKEN-0123456789abcdef0123456789abcdef"
 ADMIN_PIN, UPLOAD_PIN = "424242", "111111"
 SHA = "457c665a643a737e812423f9922cd6bf33d8ba18"
-GET_EPS = ("/api/diag/live", "/api/diag/ready", "/api/diag/info", "/api/diag/subsystems", "/api/diag/backup", "/api/diag/errors")
+GET_EPS = (
+    "/api/diag/live",
+    "/api/diag/ready",
+    "/api/diag/info",
+    "/api/diag/subsystems",
+    "/api/diag/backup",
+    "/api/diag/errors",
+    "/api/diag/client-log",
+    "/api/diag/session-bundle",
+    "/api/diag/agent-brief",
+)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -120,6 +130,7 @@ class Http(unittest.TestCase):
 
     def setUp(self) -> None:
         D.ERRORS.clear_for_tests()
+        D.CLIENT_LOG.clear_for_tests()
 
     def all_admin_text(self) -> str:
         out = []
@@ -161,7 +172,94 @@ class AccessControl(Http):
         self.assertEqual(self.admin.req("/api/diag/write-probe/../x", "POST", b"{}")[0], 404)
 
 
-class Secrecy(Http):
+class ClientLogHttp(Http):
+    def test_upload_role_can_ship_browser_logs(self):
+        body = json.dumps({"page": "/accueil", "entries": [{"level": "warn", "message": "test client log"}]}).encode()
+        st, _h, raw = self.upload.req("/api/hq/client-log", "POST", body, {"Content-Type": "application/json"})
+        self.assertEqual(st, 200, raw)
+        rep = json.loads(raw.decode())
+        self.assertEqual(rep.get("accepted"), 1)
+        log = self.root / ".hq-carnet" / "diagnostics" / D.CLIENT_LOG_NAME
+        self.assertTrue(log.is_file())
+        line = log.read_text(encoding="utf-8").strip().splitlines()[-1]
+        self.assertIn("test client log", line)
+        self.assertNotIn(str(self.root), line)
+
+    def test_anonymous_client_log_is_refused(self):
+        body = json.dumps({"entries": [{"level": "error", "message": "nope"}]}).encode()
+        self.assertEqual(self.anon.req("/api/hq/client-log", "POST", body, {"Content-Type": "application/json"})[0], 401)
+
+    def test_lag_capture_requires_auth_and_returns_rel(self):
+        body = json.dumps({"session_id": "abc123", "reason": "longtask"}).encode()
+        self.assertEqual(
+            self.anon.req("/api/hq/lag-capture", "POST", body, {"Content-Type": "application/json"})[0],
+            401,
+        )
+        fake = {"ok": True, "screenshot_rel": ".hq-carnet/diagnostics/lag-captures/lag_fake.png", "rel": ".hq-carnet/diagnostics/lag-captures/lag_fake.png", "name": "lag_fake.png", "size": 12}
+        with mock.patch.object(B, "lag_capture_screenshot", return_value=fake):
+            st, _h, raw = self.admin.req("/api/hq/lag-capture", "POST", body, {"Content-Type": "application/json"})
+        self.assertEqual(st, 200, raw)
+        rep = json.loads(raw.decode())
+        self.assertTrue(rep.get("ok"))
+        self.assertIn("lag-captures", rep.get("screenshot_rel") or "")
+
+    def test_lag_capture_image_admin_get(self):
+        cap_dir = self.root / ".hq-carnet" / "diagnostics" / "lag-captures"
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        name = "lag_20260102_120000_abc123_test.jpg"
+        (cap_dir / name).write_bytes(b"\xff\xd8\xff\xd9")
+        st, h, body = self.admin.req("/api/diag/lag-capture/" + name)
+        self.assertEqual(st, 200, body)
+        self.assertIn("image/jpeg", h.get("Content-Type", ""))
+        st2, _h2, _b2 = self.anon.req("/api/diag/lag-capture/" + name)
+        self.assertEqual(st2, 401)
+        self.assertEqual(self.admin.req("/api/diag/lag-capture/../secrets.png")[0], 404)
+
+    def test_lag_captures_list(self):
+        cap_dir = self.root / ".hq-carnet" / "diagnostics" / "lag-captures"
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        (cap_dir / "lag_20260102_120001_abc123_list.jpg").write_bytes(b"\xff\xd8\xff")
+        st, _h, raw = self.admin.req("/api/diag/lag-captures?limit=5")
+        self.assertEqual(st, 200, raw)
+        rep = json.loads(raw.decode())
+        names = [f.get("name") for f in rep.get("files") or []]
+        self.assertIn("lag_20260102_120001_abc123_list.jpg", names)
+
+    def test_lag_capture_screenshot_reencodes_and_prunes_on_windows(self):
+        cap_dir = self.root / ".hq-carnet" / "diagnostics" / "lag-captures"
+        cap_dir.mkdir(parents=True, exist_ok=True)
+        B._LAG_CAPTURE_LAST.clear()
+
+        def fake_run(cmd, **kwargs):
+            ps = cmd[-1] if isinstance(cmd, list) and cmd else ""
+            m = re.search(r"\$bmp\.Save\('((?:[^']|'')+)'\,", ps)
+            if not m:
+                return subprocess.CompletedProcess(cmd, 1, "", "no path")
+            path_s = m.group(1).replace("''", "'")
+            Path(path_s).write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        def fake_reencode(path):
+            p = Path(path)
+            out, ext = D.compress_lag_image_blob(p.read_bytes())
+            dest = p.with_suffix(ext)
+            dest.write_bytes(out)
+            if dest.resolve() != p.resolve():
+                p.unlink(missing_ok=True)
+            return str(dest)
+
+        with mock.patch.object(B.sys, "platform", "win32"), mock.patch.object(
+            B.subprocess, "run", side_effect=fake_run
+        ), mock.patch.object(D, "reencode_lag_capture_file", side_effect=fake_reencode), mock.patch.object(
+            D, "prune_lag_capture_files"
+        ) as prune:
+            rep = B.lag_capture_screenshot(session_id="abc123456789", reason="longtask")
+        self.assertTrue(rep.get("ok"), rep)
+        self.assertIn(rep.get("format"), ("webp", "jpg"))
+        self.assertTrue(str(rep.get("name") or "").endswith("." + rep["format"]))
+        self.assertIn("lag-captures", rep.get("screenshot_rel") or "")
+        prune.assert_called_once_with(self.root)
+
     def test_no_secret_pin_token_or_full_path_in_any_diagnostics_response(self):
         text = self.all_admin_text()
         for bad in (SECRET, ADMIN_PIN, UPLOAD_PIN, self.admin.token, self.upload.token, str(self.root), self.tmp, str(self.backup_dir)):
@@ -185,7 +283,22 @@ class Secrecy(Http):
         for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "XMLHttpRequest", "WebSocket",
                     "setInterval", "setTimeout", "http://", "https://", "localStorage", "sendBeacon"):
             self.assertNotIn(bad, js, bad)
-        self.assertEqual(sorted(set(re.findall(r'api\("(/api/diag/[a-z-]+)', js))), ["/api/diag/backup", "/api/diag/errors", "/api/diag/info", "/api/diag/live", "/api/diag/ready", "/api/diag/subsystems", "/api/diag/write-probe"])
+        self.assertEqual(
+            sorted(set(re.findall(r'api\("(/api/diag/[a-z-]+)', js))),
+            [
+                "/api/diag/agent-brief",
+                "/api/diag/backup",
+                "/api/diag/client-log",
+                "/api/diag/errors",
+                "/api/diag/info",
+                "/api/diag/lag-captures",
+                "/api/diag/live",
+                "/api/diag/ready",
+                "/api/diag/save-agent-packet",
+                "/api/diag/subsystems",
+                "/api/diag/write-probe",
+            ],
+        )
 
     def test_write_probe_ignores_any_body_and_writes_nowhere_else(self):
         before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
@@ -238,6 +351,56 @@ class ErrorRecording(Http):
         e = self.admin.j("/api/diag/errors")[1]["errors"][0]
         self.assertEqual((e["status"], e["code"], e["message"]), (503, "storage_error", "storage_error"))
         self.assertNotIn("texte libre", json.dumps(e))
+
+    def test_5xx_records_session_id_from_header(self):
+        sess = "a1b2c3d4e5f67890"
+        with mock.patch.object(
+            B.hq_carnet,
+            "http_get",
+            return_value=(503, {"error": "x", "code": "storage_error"}),
+        ):
+            self.admin.req("/api/carnet", headers={"X-HQ-Session": sess})
+        e = self.admin.j("/api/diag/errors")[1]["errors"][0]
+        self.assertEqual(e.get("session_id"), sess)
+
+    def test_repro_note_http_and_bundle(self):
+        body = json.dumps({"session_id": "deadbeef", "view": "accueil", "note": "agent repro"}).encode()
+        st, rep = self.upload.j("/api/hq/repro-note", "POST", data=body, headers={"Content-Type": "application/json"})
+        self.assertEqual(st, 200)
+        self.assertTrue(rep.get("ok"))
+        bundle = self.admin.j("/api/diag/session-bundle?limit=10")[1]
+        notes = bundle.get("repro_notes") or []
+        self.assertTrue(any(n.get("note") == "agent repro" for n in notes))
+        triage = bundle.get("agent_triage") or {}
+        self.assertIn("top_issues", triage)
+        self.assertIsInstance(bundle.get("timeline"), list)
+
+    def test_agent_brief_admin_only_and_shape(self):
+        st, body = self.admin.j("/api/diag/agent-brief?limit=10")
+        self.assertEqual(st, 200)
+        self.assertEqual(set(body.keys()), D.AGENT_BRIEF_KEYS)
+        self.assertIn("brief_md", body)
+        self.assertIn("agent_triage", body)
+        self.assertEqual(set(body["agent_triage"].keys()), D.AGENT_TRIAGE_KEYS)
+        self.assertNotIn("client_log", body)
+        self.assertEqual(self.anon.j("/api/diag/agent-brief")[0], 401)
+        st2, bundle = self.admin.j("/api/diag/session-bundle?limit=10")
+        self.assertEqual(body["agent_triage"], bundle.get("agent_triage"))
+        self.assertEqual(body["timeline"], bundle.get("timeline"))
+
+    def test_save_agent_packet_http(self):
+        st, rep = self.admin.j(
+            "/api/diag/save-agent-packet",
+            "POST",
+            data=json.dumps({"limit": 10}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(st, 200)
+        self.assertTrue(rep.get("ok"))
+        rel = rep.get("relative") or ""
+        self.assertIn("agent-packet-latest.md", rel)
+        p = self.root / ".hq-carnet" / "diagnostics" / "agent-packet-latest.md"
+        self.assertTrue(p.is_file())
 
     def test_4xx_is_not_an_error_record(self):
         self.admin.j("/api/carnet/reader-pdf")  # a structured 4xx refusal is normal operation

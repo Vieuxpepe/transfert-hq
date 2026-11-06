@@ -1,0 +1,69 @@
+name: Animation & motion perf
+
+on:
+  push:
+    paths:
+      - "assets/hq-companion.js"
+      - "assets/hq-companion.css"
+      - "assets/hq-companion-adult-fx.css"
+      - "assets/hq-companion-mouth.js"
+      - "assets/hq-companion-mouth.css"
+      - "assets/hq-dangling-member.js"
+      - "assets/hq-dangle-audio.js"
+      - "assets/dangling-member-vein-paths.js"
+      - "assets/hq-home-fx.js"
+      - "assets/hq-motion-coordinator.js"
+      - "assets/hq-debug-panel.js"
+      - "assets/hq-chrome.css"
+      - "tests/test_hq_dangling_perf*.py"
+      - "tests/test_hq_motion_coordinator.py"
+      - "tests/test_hq_motion_tools.py"
+      - "tests/test_hq_motion_perf*.py"
+      - "tests/visual_hq_motion_fps_playwright.py"
+      - "tests/test_hq_avatar_idle_perf*.py"
+      - "tests/test_hq_idle_perf11.py"
+      - "tests/check_hq_files.mjs"
+      - "scripts/verify_animation_pipeline.py"
+      - "docs/agent-animation-pipeline.md"
+  pull_request:
+    paths:
+      - "assets/hq-companion.js"
+      - "assets/hq-companion.css"
+      - "assets/hq-companion-adult-fx.css"
+      - "assets/hq-companion-mouth.js"
+      - "assets/hq-companion-mouth.css"
+      - "assets/hq-dangling-member.js"
+      - "assets/hq-dangle-audio.js"
+      - "assets/dangling-member-vein-paths.js"
+      - "assets/hq-home-fx.js"
+      - "assets/hq-motion-coordinator.js"
+      - "assets/hq-debug-panel.js"
+      - "assets/hq-chrome.css"
+      - "tests/test_hq_dangling_perf*.py"
+      - "tests/test_hq_motion_coordinator.py"
+      - "tests/test_hq_motion_tools.py"
+      - "tests/test_hq_motion_perf*.py"
+      - "tests/visual_hq_motion_fps_playwright.py"
+      - "tests/test_hq_avatar_idle_perf*.py"
+      - "tests/test_hq_idle_perf11.py"
+      - "tests/check_hq_files.mjs"
+      - "scripts/verify_animation_pipeline.py"
+      - "docs/agent-animation-pipeline.md"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Animation perf guards
+        run: python scripts/verify_animation_pipeline.py
+      - name: Install Playwright
+        run: pip install playwright && playwright install chromium
+      - name: Motion FPS browser gate
+        run: python tests/visual_hq_motion_fps_playwright.py

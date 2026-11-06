@@ -12,6 +12,7 @@ import shutil
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT.parent / "transferania-adult-neutral.jpg"
+BODY_SCRIPT = ROOT.parents[2] / "scripts" / "build_rig_body_layers.py"
 
 
 def uri(path):
@@ -26,10 +27,19 @@ def svg(name, body):
     )
 
 
+if BODY_SCRIPT.is_file():
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, str(BODY_SCRIPT)], check=True)
+
 shutil.copyfile(SOURCE, ROOT / "source.jpg")
 for name, x, y, width, height in [
     ("background", 0, 0, 512, 512),
     ("torso", 15.36, 174.08, 481.28, 368.64),
+    ("lower-body", 0, 0, 512, 512),
+    ("arm-left", 0, 0, 512, 512),
+    ("arm-right", 0, 0, 512, 512),
     ("face", 25.6, -5.12, 460.8, 419.84),
     ("hair", 25.6, -5.12, 460.8, 471.04),
 ]:
@@ -59,7 +69,7 @@ svg("garment-front.svg",
 
 manifest = {
     "name": "Transferania neutral layer study 01",
-    "status": "five_layer_opt_in_rig",
+    "status": "eight_layer_opt_in_rig",
     "canvas": [512, 512],
     "source": "source.jpg",
     "source_sha256": hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
@@ -68,6 +78,9 @@ manifest = {
         for name, role in [
             ("background", "reconstructed background"),
             ("torso", "clothed underpainting"),
+            ("lower-body", "generated hips and thighs continuation"),
+            ("arm-left", "generated left upper arm"),
+            ("arm-right", "generated right upper arm"),
             ("face", "reconstructed face and neck"),
             ("garment-front", "masked original garment-front pixels"),
             ("hair", "reconstructed hair"),
@@ -78,4 +91,4 @@ manifest = {
     "production": "Available in the live HQ companion through Outils > Calques. The toggle restores the prior flat portrait when switched off. Textures load only when selected."
 }
 (ROOT / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-print("Packaged five registered SVG layers, original source and manifest")
+print("Packaged eight registered SVG layers, original source and manifest")

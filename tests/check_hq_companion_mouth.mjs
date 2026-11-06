@@ -171,3 +171,7 @@ assert.equal(hum.open,0,'humming keeps the lips closed');
 assert.ok(hum.seal>0&&Math.abs(hum.headTilt)<1&&hum.headNod<.5,'humming has a small sealed smile and bounded head motion');
 assert.equal(target('auto',{humming:true,speaking:true,audioLevel:0}).seal,0,'speech takes priority over humming');
 assert.equal(target('auto',{humming:true,reduced:true}).headTilt,0,'humming respects reduced motion');
+const kiss=target('auto',{kissBlow:true,time:400});
+assert.equal(kiss.open,0,'kiss blow keeps the lips closed');
+assert.ok(kiss.seal>0&&kiss.press>.4,'kiss blow uses a sealed pucker');
+assert.equal(target('auto',{kissBlow:true,speaking:true,audioLevel:0}).seal,0,'speech takes priority over kiss blow');

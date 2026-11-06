@@ -1,0 +1,18 @@
+---
+description: HQ frontend views, lazy loads, setView
+globs:
+  - iphone_bridge.py
+  - assets/hq.js
+  - assets/hq-*-panel.js
+  - docs/frontend-view-index.md
+alwaysApply: false
+---
+
+# HQ views (agents)
+
+1. **`docs/frontend-view-index.md`** — map `data-view` → lazy load → show hook.
+2. Navigation bugs: search **`setView`** in **`iphone_bridge.py`** (inline JS string).
+3. Lag: **`agent_triage.slowest_marks`** or JSONL `perf-mark` (not guessing).
+4. Carnet/Forge lazy load lists: **`HQ_CARNET_SCRIPTS`**, **`HQ_FORGE_SCRIPTS`** in same file.
+
+HQ incidents: **`docs/agent-debugging.md`** first.

@@ -1,0 +1,23 @@
+---
+description: HQ browser diagnostics — agent brief, triage, symptom index
+globs:
+  - assets/hq-debug-panel.js
+  - hq_diagnostics.py
+  - iphone_bridge.py
+  - docs/agent-debugging.md
+  - docs/hq-symptom-index.md
+alwaysApply: false
+---
+
+# HQ client debug (agents)
+
+**Stop rules:** fetch **`GET /api/diag/agent-brief?limit=50`** (or Maître pastes **`brief_md`**) **before** repo search. If **`agent_triage.capture_hint`** is set, only fix capture and re-fetch.
+
+1. **`docs/agent-debugging.md`** · **`docs/agent-conventions.md`** · **`AGENTS.md`**
+2. Maps: **`hq-api-route-index.md`**, **`frontend-view-index.md`**, **`test-index.md`**
+2. Read **`agent_triage`** (`top_issues`, `slowest_marks`, `likely_subsystem`, `degraded_now`, `view_context`)
+3. Skim **`timeline`**; join **`request_id`** with server errors
+4. Full raw lines: **`GET /api/diag/session-bundle`**
+5. CLI: `python scripts/agent_hq_brief.py --pin 1427785 --packet` · UAC auto-accepted ([agent-conventions.md](docs/agent-conventions.md))
+
+Do not hunt random paths when brief, bundle, or `/diagnostics` is available.

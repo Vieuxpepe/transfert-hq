@@ -52,6 +52,16 @@ Architecture
   assets/hq-sw.js    service worker Web Push (opt-in)
   assets/qrcode.min.js
 
+Client debug HUD (navigateur → disque)
+--------------------------------------
+  **Agents:** docs/agent-conventions.md · AGENTS.md · verify: python scripts/verify_all_agent_maps.py
+  Optionnel : bridge_config.json → client_debug_hud:true (ou env HQ_CLIENT_DEBUG=1).
+  Panneau perf + envoi vers .hq-carnet/diagnostics/client-browser.jsonl (2 fichiers max,
+  rotation toutes les 200 lignes). Perf : client_debug_perf_interval_sec (15 par défaut, 0 = départ/sortie seulement).
+  client_debug_log_when_collapsed:true pour aussi journaliser perf quand le panneau est replié.
+  Corréler avec le serveur : champ request_id dans le JSONL ↔ errors.jsonl admin (/diagnostics).
+  Détail agent : docs/client-debug-log.md · bundle GET /api/diag/session-bundle.
+
 Les modules hq_* reçoivent des callbacks. Ils ne lancent pas de shell arbitraire
 et n'importent pas le serveur HTTP (pas de cycle).
 

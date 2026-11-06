@@ -19,6 +19,19 @@ th{font-weight:600;width:34%}code{font-family:Consolas,monospace;font-size:.92em
 <h1>Diagnostics</h1>
 <p class="muted">Local et en lecture seule, sauf le test d'écriture explicite. Aucun rafraîchissement automatique.
 <button id="refresh" type="button">Rafraîchir</button></p>
+<section aria-labelledby="agent-guide-title">
+<h2 id="agent-guide-title">Guide agents (debug HQ)</h2>
+<p class="muted">Pipeline complet : <code>docs/agent-debugging.md</code> dans le dépôt (résumé aussi dans <code>AGENTS.md</code>).</p>
+<ol>
+<li>Activer la capture : <code>client_debug_hud</code> ou <code>HQ_CLIENT_DEBUG=1</code>, redémarrer le bridge, recharger HQ.</li>
+<li>Brief agent (coller dans le chat) : <code>GET /api/diag/agent-brief?limit=50</code> — champ <code>brief_md</code>.</li>
+<li>Bundle complet : <code>GET /api/diag/session-bundle?limit=50</code> — <code>agent_triage</code> + <code>timeline</code> + journal.</li>
+<li>Symptômes : <code>docs/hq-symptom-index.md</code>.</li>
+<li>Fichiers : <code>.hq-carnet/diagnostics/client-browser.jsonl</code> (2×200 lignes max).</li>
+<li>Lag : <code>agent_triage.slowest_marks</code> ou <code>kind: perf-mark</code>.</li>
+<li>Erreurs API : <code>request_id</code> client ↔ <code>server_errors</code> / <code>errors.jsonl</code>.</li>
+</ol>
+</section>
 <div id="root" aria-live="polite">Chargement…</div>
 <script src="/assets/hq-diagnostics.js"></script>
 </body></html>

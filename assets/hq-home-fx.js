@@ -157,7 +157,8 @@
   /** perf11: the CSS effects pause off Accueil, in a hidden tab, and (header) when scrolled out of view. */
   const syncPause = () => {
     if (!S.home) return;
-    const off = S.doc.hidden || !onHome();
+    const motionOff = S.win.HqMotion && S.win.HqMotion.homeEffectsPaused();
+    const off = S.doc.hidden || !onHome() || motionOff;
     S.home.classList.toggle("hf-paused", off);
     if (S.hero) S.hero.classList.toggle("hf-paused", off || S.heroOut === true);
     // The global background only animates on Accueil too (its frozen frame keeps each page's look); it resumes on return.
@@ -624,6 +625,7 @@
       if (typeof win.IntersectionObserver === "function") {
         new win.IntersectionObserver((es) => {
           S.heroOut = !es[es.length - 1].isIntersecting;
+          if (S.win.HqMotion) S.win.HqMotion.setHomeSeen(!S.heroOut);
           syncPause();
         }).observe(S.hero);
       }

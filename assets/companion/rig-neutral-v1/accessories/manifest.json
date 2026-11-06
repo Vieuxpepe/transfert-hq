@@ -1,0 +1,75 @@
+﻿{
+  "name": "Transferania accessories (hair, necklaces, earrings)",
+  "canvas": [1254, 1354],
+  "face_canvas": [1254, 1254],
+  "placement": {
+    "css": { "top": "-7.97448166%", "height": "107.97448166%", "width": "100%" },
+    "note": "1254x1354 RGBA sits 100px above the 1254x1254 face canvas"
+  },
+  "defaults": {
+    "hair": "default",
+    "necklace": "none",
+    "earring": "baked",
+    "earringColor": "or"
+  },
+  "hair": [
+    { "id": "default", "label": "Classique", "file": null, "note": "assets/companion/rig-neutral-v1/hair-new-baked.png (baked earrings)" },
+    { "id": "tresses", "label": "Tresses", "file": "hair/hair-tresses-1354.png" },
+    { "id": "carre", "label": "Carré", "file": "hair/hair-carre-1354.png" },
+    { "id": "queue", "label": "Queue", "file": "hair/hair-queue-1354.png" },
+    { "id": "chignons", "label": "Chignons", "file": "hair/hair-chignons-1354.png" },
+    { "id": "frange", "label": "Frange", "file": "hair/hair-frange-1354.png" },
+    { "id": "wolf", "label": "Wolf", "file": "hair/hair-wolf-1354.png" },
+    { "id": "glamour", "label": "Glamour", "file": "hair/hair-glamour-1354.png" },
+    { "id": "matin", "label": "Matin", "file": "hair/hair-matin-1354.png" },
+    { "id": "pro", "label": "Pro", "file": "hair/hair-pro-1354.png" },
+    { "id": "caverne", "label": "Caverne", "file": "hair/hair-caverne-1354.png" }
+  ],
+  "necklaces": [
+    { "id": "none", "label": "Aucun", "file": null },
+    { "id": "etincelle", "label": "Étincelle", "file": "necklaces/collier-etincelle-1354.png" },
+    { "id": "ambre", "label": "Ambre", "file": "necklaces/collier-ambre-1354.png" },
+    { "id": "perles", "label": "Perles", "file": "necklaces/collier-perles-1354.png" },
+    { "id": "minerai", "label": "Minerai", "file": "necklaces/collier-minerai-1354.png" },
+    { "id": "circuit", "label": "Circuit", "file": "necklaces/collier-circuit-1354.png" },
+    { "id": "flanelle", "label": "Flanelle", "file": "necklaces/collier-flanelle-1354.png" },
+    { "id": "erable", "label": "Érable", "file": "necklaces/collier-erable-1354.png" },
+    { "id": "fraise", "label": "Fraise", "file": "necklaces/collier-fraise-1354.png" },
+    { "id": "chat", "label": "Chat", "file": "necklaces/collier-chat-1354.png" },
+    { "id": "etoile", "label": "Étoile", "file": "necklaces/collier-etoile-1354.png" },
+    { "id": "dealwithit", "label": "Deal with it", "file": "necklaces/collier-dealwithit-1354.png" },
+    { "id": "doge", "label": "Doge", "file": "necklaces/collier-doge-1354.png" },
+    { "id": "canards", "label": "Canards", "file": "necklaces/collier-canards-1354.png" },
+    { "id": "poutine", "label": "Poutine", "file": "necklaces/collier-poutine-1354.png" }
+  ],
+  "earrings": {
+    "bare_hair_file": "earrings/hair-no-earrings.png",
+    "original": {
+      "left": { "file": "earrings/earring-left.png", "topLeft": [473, 566], "pivot": [503, 569], "size": [63, 91] },
+      "right": { "file": "earrings/earring-right.png", "topLeft": [798, 515], "pivot": [825, 518], "size": [56, 92] }
+    },
+    "shapes": [
+      { "id": "creole", "label": "Créole", "file": "earrings/shapes/creole.png", "size": [48, 74], "pivot": "top-center" },
+      { "id": "goutte", "label": "Goutte", "file": "earrings/shapes/goutte.png", "size": [48, 74], "pivot": "top-center" },
+      { "id": "etincelle", "label": "Étincelle", "file": "earrings/shapes/etincelle.png", "size": [48, 74], "pivot": "top-center" },
+      { "id": "lune", "label": "Lune", "file": "earrings/shapes/lune.png", "size": [48, 74], "pivot": "top-center" },
+      { "id": "perle", "label": "Perle", "file": "earrings/shapes/perle.png", "size": [48, 74], "pivot": "top-center" }
+    ],
+    "modes": [
+      { "id": "baked", "label": "Intégrées (défaut)" },
+      { "id": "none", "label": "Aucune" },
+      { "id": "origine", "label": "Or d'origine" }
+    ],
+    "colors": [
+      { "id": "or", "label": "Or", "filter": "none" },
+      { "id": "argent", "label": "Argent", "filter": "grayscale(0.35) brightness(1.45) saturate(0.25)" },
+      { "id": "or-rose", "label": "Or rose", "filter": "hue-rotate(-18deg) saturate(1.25) brightness(1.08)" },
+      { "id": "emeraude", "label": "Émeraude", "filter": "hue-rotate(95deg) saturate(1.55) brightness(0.95)" },
+      { "id": "rubis", "label": "Rubis", "filter": "hue-rotate(-35deg) saturate(1.7) brightness(1.02)" },
+      { "id": "saphir", "label": "Saphir", "filter": "hue-rotate(195deg) saturate(1.45) brightness(0.98)" }
+    ],
+    "pivots_px": { "left": [503, 569], "right": [825, 518] }
+  },
+  "stack": ["face/neck", "necklace", "earrings", "hair"],
+  "ui": "Outils > Accessoires (à côté de Calques)"
+}

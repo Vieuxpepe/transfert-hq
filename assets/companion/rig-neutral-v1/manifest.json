@@ -1,6 +1,6 @@
 {
   "name": "Transferania neutral layer study 01",
-  "status": "five_layer_opt_in_rig",
+  "status": "eight_layer_opt_in_rig",
   "canvas": [
     512,
     512
@@ -15,6 +15,18 @@
     {
       "file": "torso.svg",
       "role": "clothed underpainting"
+    },
+    {
+      "file": "lower-body.svg",
+      "role": "generated hips and thighs continuation"
+    },
+    {
+      "file": "arm-left.svg",
+      "role": "generated left upper arm"
+    },
+    {
+      "file": "arm-right.svg",
+      "role": "generated right upper arm"
     },
     {
       "file": "face.svg",

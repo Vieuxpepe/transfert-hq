@@ -10,7 +10,7 @@
 .home-fx section.home-hero > *:not(.home-sky){position:relative;z-index:1}
 .home-sky{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none;border-radius:inherit;--px:0;--py:0}
 .home-sky > *{position:absolute;inset:0;transition:transform 1.2s cubic-bezier(.2,.8,.2,1)}
-.home-aurora{transform:translate(calc(var(--px) * 10px),calc(var(--py) * 8px));filter:blur(28px);opacity:.75}
+.home-aurora{transform:translate(calc(var(--px) * 10px),calc(var(--py) * 8px));filter:none;opacity:.75}
 .home-aurora span{position:absolute;border-radius:50%;mix-blend-mode:screen}
 .home-aurora .a1{width:46%;height:120%;left:-6%;top:-40%;background:radial-gradient(closest-side,color-mix(in srgb,var(--home-amb,#8cc8ff) 70%,transparent),transparent)}
 .home-aurora .a2{width:40%;height:110%;right:-4%;bottom:-50%;background:radial-gradient(closest-side,color-mix(in srgb,var(--bg-b,#e5843f) 45%,transparent),transparent)}
@@ -26,7 +26,7 @@
 .sky-dawn .home-clouds,.sky-dusk .home-clouds{opacity:.16}
 .home-cloud{position:absolute;left:-30%;width:200px;height:52px;border-radius:999px;transform:scale(var(--s,1));transform-origin:left center;
   background:radial-gradient(60% 90% at 30% 70%,rgba(255,255,255,.9),transparent 70%),radial-gradient(50% 100% at 62% 45%,rgba(255,255,255,.85),transparent 70%),
-    radial-gradient(40% 80% at 82% 72%,rgba(255,255,255,.8),transparent 70%);filter:blur(3px)}
+    radial-gradient(40% 80% at 82% 72%,rgba(255,255,255,.8),transparent 70%);filter:none}
 .home-orb{position:absolute;inset:auto;left:calc(58% + var(--op,.5) * 38%);top:calc(95% - var(--oh,.6) * 30%);width:56px;height:56px;transform:translate(-50%,-50%);
   transition:left 2s cubic-bezier(.2,.8,.2,1),top 2s cubic-bezier(.2,.8,.2,1)}
 .home-orb > span{position:absolute;inset:0;border-radius:50%}
@@ -45,7 +45,7 @@
 @media (prefers-color-scheme: light){
   .home-star{background:#5160c9;box-shadow:none}
   .sky-night .home-sky{background:linear-gradient(180deg,rgba(40,50,120,.12),transparent)}
-  .home-cloud{filter:blur(3px) drop-shadow(0 4px 8px rgba(80,100,140,.15))}
+  .home-cloud{filter:none}
   .home-aurora span{mix-blend-mode:multiply}
   .home-aurora{opacity:.5}
   .home-clock-face{filter:none}
@@ -314,8 +314,8 @@ body.hq-bg-off .home-bg{display:none}
 
 /* frosted glass, but mostly opaque: the warmth shows through without competing with the text */
 body[data-view="accueil"] .home-fx section.hq:not(.home-hero),body[data-view="accueil"] .home-fx button.home-act{
-  background:color-mix(in srgb,var(--panel) 90%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}
-body[data-view="accueil"] .home-fx section.home-hero{background-color:color-mix(in srgb,var(--panel) 82%,transparent);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+  background:color-mix(in srgb,var(--panel) 90%,transparent);-webkit-backdrop-filter:none;backdrop-filter:none}
+body[data-view="accueil"] .home-fx section.home-hero{background-color:color-mix(in srgb,var(--panel) 82%,transparent);-webkit-backdrop-filter:none;backdrop-filter:none}
 body[data-view="accueil"] .home-fx section.home-hero{background-image:radial-gradient(120% 130% at 0% 0%,color-mix(in srgb,var(--home-amb,#8cc8ff) 26%,transparent),transparent 62%),
   radial-gradient(90% 120% at 100% 100%,color-mix(in srgb,var(--bg-b,#e5843f) 24%,transparent),transparent 62%)}
 

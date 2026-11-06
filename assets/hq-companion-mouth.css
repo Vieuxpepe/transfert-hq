@@ -111,3 +111,22 @@
 .hq-companion.is-glass-licking svg.hq-expressive-mouth {
   filter: drop-shadow(0 2px 8px rgba(255, 110, 160, 0.42));
 }
+
+
+/* TEMP facesplit-disable: hard face-lower/jaw mask handoffs painted horizontal bands across
+   nose/cheeks/chin while speaking. Keep .hq-expressive-mouth SVG for lips/visemes; drop the
+   clipped face-strip jaw until registration is fixed. */
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face-wrap.has-tongue-jaw .hq-companion-rig-face-lower{
+  -webkit-mask-image:none!important;
+  mask-image:none!important;
+}
+.hq-companion .has-tongue-jaw .hq-mouth-jaw{
+  display:none!important;
+}
+.hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-companion-rig-face-lower{
+  -webkit-mask-image:none!important;
+  mask-image:none!important;
+}
+.hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-mouth-jaw{
+  display:none!important;
+}

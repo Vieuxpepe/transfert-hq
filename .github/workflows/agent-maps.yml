@@ -1,0 +1,36 @@
+name: Agent maps & quota
+
+on:
+  push:
+    paths:
+      - "docs/agent-conventions.md"
+      - "docs/hq-api-route-index.md"
+      - "docs/frontend-view-index.md"
+      - "docs/test-index.md"
+      - "docs/carnet-agent-anchors.md"
+      - "AGENTS.md"
+      - ".cursor/skills/**"
+      - ".cursor/rules/**"
+      - "scripts/verify_*.py"
+  pull_request:
+    paths:
+      - "docs/agent-conventions.md"
+      - "docs/hq-api-route-index.md"
+      - "docs/frontend-view-index.md"
+      - "docs/test-index.md"
+      - "docs/carnet-agent-anchors.md"
+      - "AGENTS.md"
+      - ".cursor/skills/**"
+      - ".cursor/rules/**"
+      - "scripts/verify_*.py"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Agent verify bundle
+        run: python scripts/verify_all_agent_maps.py

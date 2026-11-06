@@ -1,0 +1,18 @@
+---
+description: HQ HTTP routes and iphone_bridge handlers
+globs:
+  - iphone_bridge.py
+  - cc_ext.py
+  - docs/hq-api-route-index.md
+alwaysApply: false
+---
+
+# Bridge / API routes (agents)
+
+1. Open **`docs/hq-api-route-index.md`** — find prefix → backend module.
+2. In **`iphone_bridge.py`**, search **`if raw ==`** / **`startswith("/api/…")`** for that path only.
+3. Do **not** read the entire **`Handler`** class linearly.
+4. New route: match existing `_json` / CSRF / role patterns; add row to **`hq-api-route-index.md`**.
+5. Tests: **`python scripts/verify_bridge_smoke.py`** · **`docs/test-index.md`**.
+
+Skill: **`.cursor/skills/bridge-route/SKILL.md`**.

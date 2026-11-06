@@ -1,0 +1,101 @@
+/* Dev-only overlay: perf HUD + log shipper (hq-debug-panel.js). Kept small and out of the main chrome path. */
+#hq-debug-panel {
+  position: fixed;
+  left: max(8px, env(safe-area-inset-left, 0px));
+  right: auto;
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  z-index: 120000;
+  width: min(320px, calc(100vw - 16px));
+  max-height: 42vh;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #dbeafe;
+  background: rgba(8, 12, 18, 0.92);
+  border: 1px solid rgba(120, 160, 220, 0.35);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  backdrop-filter: blur(6px);
+}
+#hq-debug-panel.is-collapsed .hq-debug-body {
+  display: none;
+}
+#hq-debug-panel.is-floating {
+  bottom: auto;
+}
+#hq-debug-panel .hq-debug-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(120, 160, 220, 0.2);
+  user-select: none;
+  cursor: grab;
+  touch-action: none;
+}
+#hq-debug-panel .hq-debug-head:active {
+  cursor: grabbing;
+}
+#hq-debug-panel .hq-debug-title {
+  flex: 1;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: inherit;
+}
+#hq-debug-panel .hq-debug-head button {
+  cursor: pointer;
+}
+#hq-debug-panel .hq-debug-copy,
+#hq-debug-panel .hq-debug-brief,
+#hq-debug-panel .hq-debug-packet,
+#hq-debug-panel .hq-debug-snap,
+#hq-debug-panel .hq-debug-bundle,
+#hq-debug-panel .hq-debug-note,
+#hq-debug-panel .hq-debug-spike {
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 160, 220, 0.35);
+  background: rgba(30, 45, 70, 0.6);
+  color: #dbeafe;
+  cursor: pointer;
+}
+#hq-debug-panel .hq-debug-copy:hover,
+#hq-debug-panel .hq-debug-brief:hover,
+#hq-debug-panel .hq-debug-packet:hover,
+#hq-debug-panel .hq-debug-snap:hover,
+#hq-debug-panel .hq-debug-bundle:hover,
+#hq-debug-panel .hq-debug-note:hover,
+#hq-debug-panel .hq-debug-spike:hover {
+  background: rgba(50, 70, 110, 0.85);
+}
+#hq-debug-panel .hq-debug-spike {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+  padding: 6px 8px 8px;
+  overflow: auto;
+  max-height: 36vh;
+}
+#hq-debug-panel .hq-debug-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+}
+#hq-debug-panel .hq-debug-warn {
+  color: #fbbf24;
+}
+#hq-debug-panel .hq-debug-bad {
+  color: #f87171;
+}
+#hq-debug-panel .hq-debug-log {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(120, 160, 220, 0.25);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12vh;
+  overflow: auto;
+  opacity: 0.92;
+}

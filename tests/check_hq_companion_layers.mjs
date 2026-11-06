@@ -18,7 +18,7 @@ const manifest = JSON.parse(readFileSync(new URL("manifest.json", dir), "utf8"))
 const source = readFileSync(new URL("source.jpg", dir));
 assert.equal(createHash("sha256").update(source).digest("hex"), manifest.source_sha256);
 assert.deepEqual(manifest.canvas, [512, 512]);
-assert.equal(manifest.layers.length, 5);
+assert.equal(manifest.layers.length, 8);
 for (const { file } of manifest.layers) {
   assert.ok(existsSync(new URL(file, dir)), file + " is present");
   const svg = readFileSync(new URL(file, dir), "utf8");
@@ -51,4 +51,4 @@ assert.ok(/has-layered-portrait\.is-nsfw[^}]*rig-background[^}]*mask-image/.test
   "background layer hides duplicate breasts under PNG lobes");
 assert.ok(/is-bust-pull\.is-nsfw[^}]*rig-breast-cut-sx/.test(css.replace(/\s+/g, " ")),
   "pull expands breast cutouts on torso and background");
-console.log("check_hq_companion_layers: five registered assets, embedded textures and original garment source ok");
+console.log("check_hq_companion_layers: eight registered assets, embedded textures and original garment source ok");

@@ -26,3 +26,7 @@ Act as Else using the established persona in `C:\Gemini-Test\.cursorrules`.
 Transferania remains the distinct app companion, not another name for Else.
 Read `docs/companion-family.md` for their relationship and
 `docs/companion-memory.md` for her independent evidence-backed evolution.
+
+## HQ debugging pipeline (agents)
+
+For browser errors, lag, API failures, or empty logs: read **`docs/agent-debugging.md`** and **`AGENTS.md`**. Animation/FPS work: **`docs/agent-animation-pipeline.md`** → `python scripts/verify_animation_pipeline.py`. Global agent rules: **`docs/agent-conventions.md`**. Maps: **`docs/hq-api-route-index.md`**, **`docs/frontend-view-index.md`**, **`docs/test-index.md`**. Prefer **`GET /api/diag/agent-brief`** or **`agent-packet-latest.md`** over guessing paths.

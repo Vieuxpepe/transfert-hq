@@ -7307,7 +7307,12 @@
         stopPoll();
         return;
       }
+      const t0 = typeof global.performance !== "undefined" && global.performance.now ? global.performance.now() : Date.now();
       ui.core.poll();
+      const ms = (typeof global.performance !== "undefined" && global.performance.now ? global.performance.now() : Date.now()) - t0;
+      if (global.hqPerfMark && ms >= 12) {
+        global.hqPerfMark("carnet", { op: "poll", ms: Math.round(ms * 10) / 10 });
+      }
     }, POLL_MS);
   }
 
@@ -7697,10 +7702,26 @@
   };
 
   global.hqCarnetShow = function () {
+    const t0 = typeof global.performance !== "undefined" && global.performance.now ? global.performance.now() : Date.now();
     try {
       show();
+      const ms = Math.round(
+        (typeof global.performance !== "undefined" && global.performance.now ? global.performance.now() : Date.now()) - t0
+      );
+      if (global.hqPerfMark) global.hqPerfMark("carnet", { op: "carnet-show", ms }, { force: ms > 200 });
     } catch (e) {
       console.error(e);
+      if (global.hqClientLog) {
+        try {
+          global.hqClientLog({
+            level: "error",
+            kind: "carnet",
+            message: "carnet show failed",
+            detail: e && e.message ? e.message : String(e),
+            force: true,
+          });
+        } catch (_) {}
+      }
       ui.phase = "failed";
       renderFail("erreur d'initialisation");
     }

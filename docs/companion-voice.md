@@ -176,6 +176,16 @@ A closed-mouth smile, small head nod and left–right sway follow the recording'
 duration (or a silent fallback when Son is off). Floating note particles appear
 while she hums. Interaction and speech cancel it; reduced motion suppresses it.
 With sound effects disabled, the same brief animation remains silent.
+Idle particles (notes, hearts, kiss marks) are capped so long humming or back-to-back
+cutesy bursts do not pile up DOM nodes or layout reads. Open-palm hand gestures (`HqPalmHand`) follow the same rules: one active animation, per-kind cooldowns,
+a **3 s global floor** between gestures (1.5 s before `push_soft` after another palm), at most four spark
+particles. In adult mode, when the mouse cursor stays close to her portrait (~450 ms dwell, warmth or
+gaze), she may reach out once with both open palms to try to catch it (9 s cooldown). Idle wave is
+rarer and only after ~45 s without any palm overlay. In **Adulte** mode, if the shaft rests
+near her **face** ~**3 s** while still, she traces the nearest annotation path (`trace_vein`,
+12 s cooldown). When the shaft **rests on her tit or face** (soft-body rest), she holds it with `grip_pole` (`transferina-hand-grip.png`, 9 s cooldown) until the rest ends or you drag away — `releaseHold()` clears the pose. When the shaft is **stimulated** (touch warmth, rest on her, oral, face/tit
+contact, finger trace, or a **throb** beat), painted veins **pulse on the canvas** together —
+locked to `throbNow` on throbs, ~7% phase wobble per path id so they almost sync. Stroke width scales with shaft size (~5% of `cw`, halo + core). Veins render on a **separate transparent canvas** (`hq-dangling-member-vein-canvas`) with its own rAF loop so `renderFlat()` never wipes the throb.
 
 In adult mode, the idle roulette can also trigger short cutesy bursts: groove
 sway, kiss blow, shy wiggle, cute wink, heart flutter and sparkle shimmy. They

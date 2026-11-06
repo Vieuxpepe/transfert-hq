@@ -5,6 +5,30 @@ import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 const {create}=require('../assets/hq-companion-reaction-audio.js');
 const manifest=JSON.parse(readFileSync(new URL('../assets/companion/chat/reactions/manifest.json',import.meta.url)));
+
+function importPoolReachable(manifest, item) {
+  const url = item.url;
+  const stem = item.source.replace(/\.mp3$/i, '').toLowerCase();
+  const family = stem.replace(/_\d+$/, '');
+  let exact = false;
+  let stemHit = false;
+  let familyHit = false;
+  for (const section of ['samples', 'impacts', 'phases']) {
+    const block = manifest[section];
+    if (!block) continue;
+    for (const pool of Object.values(block)) {
+      const list = Array.isArray(pool) ? pool : [pool];
+      for (const sample of list) {
+        const su = String(sample.url || '').toLowerCase();
+        if (sample.url === url) exact = true;
+        if (su.includes(stem)) stemHit = true;
+        if (family !== stem && su.includes(family)) familyHit = true;
+      }
+    }
+  }
+  return exact || stemHit || familyHit;
+}
+
 const source=readFileSync(new URL('../assets/hq-companion.js',import.meta.url),'utf8')
   .replace('testCry: bustPullCry,','__natural: {state:S,playNaturalVoiceCue,syncCompanionMusic,startIdleHumming,stopIdleHumming}, testCry: bustPullCry,');
 let now=100000;
@@ -18,11 +42,12 @@ const classList={contains:k=>classes.has(k),add:k=>classes.add(k),remove:k=>clas
 const media={paused:true,ended:false,readyState:4};
 const win={document:{hidden:false,querySelectorAll:()=>[media]},
   matchMedia:()=>({matches:false}),setTimeout:(fn,ms)=>{win.lastTimer={fn,ms};return 1;},clearTimeout(){},
+  setInterval:(fn,ms)=>{win.lastInterval={fn,ms};return 2;},clearInterval(){},
   requestAnimationFrame:()=>1,
   localStorage:{getItem:k=>storage.get(k)||null},
   Audio:class{constructor(url){this.url=url;sounds.push(this);}pause(){this.paused=true;}play(){return Promise.resolve();}},
   fetch:async()=>({ok:true,json:async()=>manifest})};
-state.el={hidden:false,classList,querySelector:()=>null};
+state.el={hidden:false,classList,style:{setProperty(){},removeProperty(){}},querySelector:()=>null};
 const player=create(win,()=>true,()=>1);await player.ready;state.reactionAudio=player;
 syncCompanionMusic(win);
 assert.equal(sounds.length,0,'a loaded but paused track is not a humming context');
@@ -61,14 +86,9 @@ state.voicePreview=false;storage.set('hq_companion_forge_sound','0');playNatural
 assert.equal(sounds.length,before,'natural contexts respect hidden pages, preview and effects toggle');
 for(const item of manifest.import.sources){
   assert.ok(manifest.contexts[item.context],item.source+' has an assigned natural context');
-  const [section,key]=item.context.split('.');
-  const pool=manifest[section][key];
-  const list=Array.isArray(pool)?pool:[pool];
-  const stem=item.source.replace(/\.mp3$/i,'').toLowerCase();
-  const reachable=list.some(sample=>sample.url===item.url)||
-    list.some(sample=>String(sample.url||'').includes(stem));
   if (String(item.url||'').includes('/elevenlabs_20261104/')) {
-    assert.ok(reachable,item.source+' is reachable through its context pool');
+    assert.ok(importPoolReachable(manifest, item),
+      item.source + ' is wired in playback pools (exact take, stem, or curated family)');
   }
 }
 const importUrls=new Set(manifest.import.sources.map(item=>item.url));

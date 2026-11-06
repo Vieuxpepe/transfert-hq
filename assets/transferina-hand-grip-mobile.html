@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" light dark>
+  <title>Grip hand — preview</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #121018;
+      color: #eee;
+      padding: max(16px, env(safe-area-inset-top)) 16px 32px;
+      line-height: 1.45;
+    }
+    h1 { font-size: 1.1rem; margin: 0 0 8px; font-weight: 600; }
+    p { margin: 0 0 12px; color: #a89aad; font-size: 0.92rem; }
+    .card {
+      background: #1c1824;
+      border-radius: 14px;
+      padding: 12px;
+      margin: 16px 0;
+      border: 1px solid rgba(255,255,255,.08);
+    }
+    .card h2 { font-size: 0.85rem; margin: 0 0 10px; color: #c9bfd4; font-weight: 600; }
+    img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 10px;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .on-dark {
+      background: repeating-conic-gradient(rgba(255,255,255,.06) 0% 25%, transparent 0% 50%) 50%/20px 20px, #0a0810;
+      padding: 8px;
+      border-radius: 10px;
+    }
+    code { font-size: 0.82em; color: #e8b4c8; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <h1>transferina-hand-grip</h1>
+  <p>Sprite jeu · gesture <code>grip_pole</code>. Ouvre cette page depuis le même pont que l’app (iPhone / Safari).</p>
+
+  <div class="card">
+    <h2>Fond clair (facile à voir)</h2>
+    <img src="/assets/transferina-hand-grip-showcase.png" alt="Main grip — showcase" width="976" height="352" decoding="async">
+  </div>
+
+  <div class="card">
+    <h2>Fichier jeu (transparent)</h2>
+    <div class="on-dark">
+      <img src="/assets/transferina-hand-grip.png" alt="Main grip — PNG transparent" width="976" height="352" decoding="async">
+    </div>
+  </div>
+
+  <p><code>/assets/transferina-hand-grip-showcase.png</code></p>
+</body>
+</html>

@@ -680,6 +680,445 @@ class Backups(Base):
         self.assertEqual(D._label_dir("D:\\Backups\\Transfert\\"), "D:/…/Transfert")
 
 
+class ClientBrowserLog(unittest.TestCase):
+    def test_ingest_scrubs_and_writes_jsonl(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-clog-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        rep = D.CLIENT_LOG.ingest(
+            [{"level": "error", "message": "fail at C:\\Users\\secret\\Transfert\\x", "detail": "stack"}],
+            page="/intime?pin=SECRET",
+            role="admin",
+        )
+        self.assertEqual(rep["accepted"], 1)
+        p = Path(root, ".hq-carnet", "diagnostics", D.CLIENT_LOG_NAME)
+        self.assertTrue(p.is_file())
+        line = p.read_text(encoding="utf-8").strip()
+        self.assertNotIn("Users", line)
+        self.assertNotIn("SECRET", line)
+        self.assertIn("fail at", line)
+        rep2 = D.CLIENT_LOG.ingest(
+            [{"level": "warn", "message": "api fail", "view": "carnet", "request_id": "abc12def"}],
+            page="/",
+            role="admin",
+            view="accueil",
+        )
+        self.assertEqual(rep2["accepted"], 1)
+        line2 = p.read_text(encoding="utf-8").strip().splitlines()[-1]
+        self.assertIn("carnet", line2)
+        self.assertIn("abc12def", line2)
+
+    def test_perf_mark_kind(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-pmark-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        rep = D.CLIENT_LOG.ingest(
+            [{"level": "warn", "kind": "perf-mark", "message": "perf-mark companion live2d-frame", "data": {"subsystem": "companion", "op": "live2d-frame", "ms": 24}}],
+            page="/",
+            role="admin",
+            session_id="s1",
+        )
+        self.assertEqual(rep["accepted"], 1)
+        line = (Path(root) / ".hq-carnet" / "diagnostics" / D.CLIENT_LOG_NAME).read_text(encoding="utf-8")
+        self.assertIn("perf-mark", line)
+        self.assertIn("companion", line)
+
+    def test_lag_spike_kind_with_screenshot_path(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-lag-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        rep = D.CLIENT_LOG.ingest(
+            [
+                {
+                    "level": "warn",
+                    "kind": "lag-spike",
+                    "message": "lag spike: longtask",
+                    "detail": "screenshot=.hq-carnet/diagnostics/lag-captures/lag_test.png",
+                    "data": {"reason": "longtask", "screenshot": ".hq-carnet/diagnostics/lag-captures/lag_test.png", "ms": 140},
+                }
+            ],
+            page="/",
+            role="admin",
+            session_id="s9",
+        )
+        self.assertEqual(rep["accepted"], 1)
+        line = (Path(root) / ".hq-carnet" / "diagnostics" / D.CLIENT_LOG_NAME).read_text(encoding="utf-8")
+        self.assertIn("lag-spike", line)
+        self.assertIn("screenshot=", line)
+        self.assertIn('"ms": 140', line)
+
+    def test_client_log_tail_filters_by_session(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-sess-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        D.CLIENT_LOG.ingest(
+            [{"level": "info", "message": "a", "session_id": "sess-a"}],
+            page="/",
+            role="admin",
+            session_id="sess-a",
+        )
+        D.CLIENT_LOG.ingest(
+            [{"level": "info", "message": "b", "session_id": "sess-b"}],
+            page="/",
+            role="admin",
+            session_id="sess-b",
+        )
+        all_tail = D.CLIENT_LOG.tail(10)
+        self.assertEqual(len(all_tail), 2)
+        only_a = D.CLIENT_LOG.tail(10, session_id="sess-a")
+        self.assertEqual([x.get("message") for x in only_a], ["a"])
+
+    def test_agent_triage_includes_last_lag_spikes(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-lag-tri-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        D.CLIENT_LOG.ingest(
+            [
+                {
+                    "level": "warn",
+                    "kind": "lag-spike",
+                    "message": "lag spike: lowfps",
+                    "detail": "screenshot=.hq-carnet/diagnostics/lag-captures/lag_x.png",
+                    "data": {"reason": "lowfps", "screenshot_rel": ".hq-carnet/diagnostics/lag-captures/lag_x.png"},
+                    "view": "accueil",
+                    "session_id": "s1",
+                }
+            ],
+            page="/",
+            role="admin",
+            session_id="s1",
+        )
+        triage = D.build_agent_triage(
+            client_lines=D.CLIENT_LOG.tail(20),
+            server_errs=[],
+            repro_notes=[],
+            degraded={},
+            client_summary={"count": 1},
+            last_view="accueil",
+            capture_effective={"hud_enabled": True},
+        )
+        spikes = triage.get("last_lag_spikes") or []
+        self.assertEqual(len(spikes), 1)
+        self.assertEqual(spikes[0].get("reason"), "lowfps")
+        self.assertTrue(any("Lag spike" in x for x in triage.get("top_issues") or []))
+
+    def test_persist_agent_packet_writes_file(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-pkt-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        cfg_path = os.path.join(tmp, "bridge_config.json")
+        rep = D.persist_agent_packet_from_snapshot(
+            root=root,
+            config={"pin": ""},
+            config_path=cfg_path,
+            asset_names=ASSETS,
+            limit=20,
+        )
+        self.assertTrue(rep.get("ok"))
+        pkt = Path(root) / ".hq-carnet" / "diagnostics" / "agent-packet-latest.md"
+        self.assertTrue(pkt.is_file())
+        self.assertIn("agent", pkt.read_text(encoding="utf-8").lower())
+
+    def test_lag_capture_prune_keeps_fifty(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-lag-prune-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        cap = Path(root) / ".hq-carnet" / "diagnostics" / D.LAG_CAPTURES_DIR_NAME
+        cap.mkdir(parents=True, exist_ok=True)
+        for i in range(55):
+            name = f"lag_20260102_{i:06d}_abc123_r{i}.jpg"
+            self.assertIsNotNone(D.safe_lag_capture_basename(name))
+            p = cap / name
+            p.write_bytes(b"\xff\xd8\xff")
+            os.utime(p, (1000 + i, 1000 + i))
+        D.prune_lag_capture_files(root)
+        remaining = [x for x in cap.iterdir() if x.is_file()]
+        self.assertEqual(len(remaining), D.LAG_CAPTURE_MAX_FILES)
+
+    def test_safe_lag_capture_basename_accepts_webp_and_jpg(self) -> None:
+        ok = "lag_20260102_120000_abc123_longtask.webp"
+        hq = "lag_20260102_120000_abc123_longtask_hq.jpg"
+        self.assertEqual(D.safe_lag_capture_basename(ok), ok)
+        self.assertEqual(D.safe_lag_capture_basename(hq), hq)
+        self.assertIsNone(D.safe_lag_capture_basename("lag_bad.png"))
+        self.assertIsNone(D.safe_lag_capture_basename("notlag_20260102_120000_abc123_x.webp"))
+
+    def test_compress_lag_image_blob_shrinks_large_png(self) -> None:
+        try:
+            from io import BytesIO
+
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        buf = BytesIO()
+        Image.new("RGB", (2400, 1350), (32, 64, 96)).save(buf, "PNG")
+        raw = buf.getvalue()
+        self.assertGreater(len(raw), 8000)
+        out, ext = D.compress_lag_image_blob(raw)
+        self.assertIn(ext, (".webp", ".jpg"))
+        self.assertLess(len(out), len(raw))
+
+    def test_reencode_lag_capture_file_replaces_on_disk(self) -> None:
+        try:
+            from io import BytesIO
+
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        tmp = tempfile.mkdtemp(prefix="p15-lag-re-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        src = Path(tmp) / "lag_20260102_120000_abc123_x.png"
+        buf = BytesIO()
+        Image.new("RGB", (800, 600), (200, 100, 50)).save(buf, "PNG")
+        src.write_bytes(buf.getvalue())
+        final = Path(D.reencode_lag_capture_file(src))
+        self.assertTrue(final.is_file())
+        self.assertIn(final.suffix.lower(), (".webp", ".jpg"))
+        self.assertFalse(src.is_file())
+
+    def test_rotate_keeps_at_most_two_log_files(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-clog-rot-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        p = Path(root, ".hq-carnet", "diagnostics", D.CLIENT_LOG_NAME)
+        need = D.CLIENT_LOG_LINES_PER_FILE + 3
+        accepted = 0
+        for i in range(0, need, D.CLIENT_BATCH_MAX):
+            batch = [{"level": "info", "message": "x%d" % (i + j)} for j in range(min(D.CLIENT_BATCH_MAX, need - i))]
+            rep = D.CLIENT_LOG.ingest(batch, page="/", role="admin")
+            accepted += rep["accepted"]
+        self.assertGreaterEqual(accepted, D.CLIENT_LOG_LINES_PER_FILE)
+        self.assertTrue(p.is_file())
+        self.assertTrue(p.with_name(D.CLIENT_LOG_NAME + ".1").is_file())
+        self.assertFalse(p.with_name(D.CLIENT_LOG_NAME + ".2").exists())
+        active_lines = len(p.read_text(encoding="utf-8").splitlines())
+        self.assertLessEqual(active_lines, 3)
+
+
+class SessionBundle(unittest.TestCase):
+    def test_bundle_merges_client_and_server(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-bundle-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.ERRORS.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        D.ERRORS.attach(root)
+        D.CLIENT_LOG.ingest(
+            [{"level": "warn", "kind": "api", "message": "fetch 500 /api/x", "request_id": "deadbeef"}],
+            page="/",
+            role="admin",
+            session_id="sess1",
+        )
+        D.ERRORS.record("carnet", message="server side", request_id="deadbeef")
+        bundle = D.session_bundle(root=root, config={"pin": ""}, config_path=os.path.join(tmp, "cfg.json"), asset_names=ASSETS, limit=20)
+        self.assertIn("client_log", bundle)
+        self.assertIn("deadbeef", bundle.get("request_ids") or [])
+        self.assertIn("redaction", bundle)
+        self.assertIn("agent_triage", bundle)
+        self.assertIn("timeline", bundle)
+        self.assertEqual(set(bundle["agent_triage"].keys()), D.AGENT_TRIAGE_KEYS)
+
+    def test_append_repro_note_and_bundle(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-repro-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        rep = D.append_repro_note(root, session_id="abc123def", note="repro steps here", role="admin", view="carnet")
+        self.assertTrue(rep.get("ok"))
+        notes = D.repro_notes_recent(root, 5)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].get("view"), "carnet")
+        bundle = D.session_bundle(root=root, config={"pin": ""}, config_path=os.path.join(tmp, "cfg.json"), asset_names=ASSETS, limit=20)
+        self.assertEqual(len(bundle.get("repro_notes") or []), 1)
+
+
+class AgentTriage(unittest.TestCase):
+    def test_triage_capture_hint_when_hud_off(self) -> None:
+        triage = D.build_agent_triage(
+            client_lines=[],
+            server_errs=[],
+            degraded={},
+            repro_notes=[],
+            client_summary={"count": 0},
+            last_view=None,
+            capture_effective={"hud_enabled": False, "source": "config"},
+        )
+        self.assertFalse(triage["capture_ok"])
+        self.assertIn("client_debug_hud", triage["capture_hint"] or "")
+
+    def test_timeline_sorted(self) -> None:
+        tl = D.build_agent_timeline(
+            client_lines=[
+                {"at": "2026-01-02T10:00:00Z", "level": "info", "message": "b", "kind": "meta"},
+                {"at": "2026-01-02T09:00:00Z", "level": "error", "message": "a", "kind": "error"},
+            ],
+            server_errs=[
+                {
+                    "at": "2026-01-02T11:00:00Z",
+                    "path_category": "/api/carnet",
+                    "status": 500,
+                    "code": "storage_error",
+                    "request_id": "abc",
+                }
+            ],
+            repro_notes=[],
+            limit=10,
+        )
+        self.assertEqual([e["summary"] for e in tl], ["a", "b", "/api/carnet HTTP 500 storage_error"])
+
+    def test_slowest_marks_order(self) -> None:
+        triage = D.build_agent_triage(
+            client_lines=[
+                {
+                    "at": "t1",
+                    "level": "warn",
+                    "kind": "perf-mark",
+                    "message": "slow",
+                    "data": {"subsystem": "carnet", "op": "poll", "ms": 50},
+                },
+                {
+                    "at": "t2",
+                    "level": "info",
+                    "kind": "perf-mark",
+                    "message": "fast",
+                    "data": {"subsystem": "api", "op": "fetch-slow", "ms": 900},
+                },
+            ],
+            server_errs=[],
+            degraded={},
+            repro_notes=[],
+            client_summary={"count": 2},
+            last_view="carnet",
+            capture_effective={"hud_enabled": True},
+        )
+        marks = triage["slowest_marks"]
+        self.assertEqual(marks[0]["ms"], 900.0)
+        self.assertEqual(triage["likely_subsystem"], "api")
+
+    def test_agent_brief_has_markdown(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-brief-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        brief = D.agent_brief(
+            root=root,
+            config={"pin": ""},
+            config_path=os.path.join(tmp, "cfg.json"),
+            asset_names=ASSETS,
+            limit=10,
+            capture_effective={"hud_enabled": False},
+        )
+        self.assertIn("brief_md", brief)
+        self.assertIn("# HQ agent brief", brief["brief_md"])
+        self.assertNotIn("client_log", brief)
+        self.assertEqual(set(brief.keys()), D.AGENT_BRIEF_KEYS)
+
+    def test_brief_matches_bundle_triage(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-brief-par-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        D.CLIENT_LOG.ingest(
+            [{"level": "warn", "kind": "perf-mark", "message": "x", "data": {"subsystem": "api", "op": "fetch-slow", "ms": 1200}}],
+            page="/",
+            role="admin",
+            view="carnet",
+        )
+        cap = {"hud_enabled": True, "source": "config"}
+        bundle = D.session_bundle(
+            root=root,
+            config={"pin": ""},
+            config_path=os.path.join(tmp, "cfg.json"),
+            asset_names=ASSETS,
+            limit=10,
+            capture_effective=cap,
+        )
+        brief = D.agent_brief(
+            root=root,
+            config={"pin": ""},
+            config_path=os.path.join(tmp, "cfg.json"),
+            asset_names=ASSETS,
+            limit=10,
+            capture_effective=cap,
+        )
+        self.assertEqual(bundle["agent_triage"], brief["agent_triage"])
+        self.assertEqual(bundle["timeline"], brief["timeline"])
+        self.assertTrue(bundle["agent_triage"]["capture_ok"])
+
+    def test_request_id_index_and_error_hints(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-rid-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.ERRORS.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        D.ERRORS.attach(root)
+        D.CLIENT_LOG.ingest(
+            [{"level": "warn", "kind": "api", "message": "fetch 503 /api/carnet", "request_id": "cafebabe"}],
+            page="/",
+            role="admin",
+        )
+        D.ERRORS.record("/api/carnet", path="/api/carnet", status=503, code="storage_error", request_id="cafebabe")
+        bundle = D.session_bundle(
+            root=root,
+            config={"pin": ""},
+            config_path=os.path.join(tmp, "cfg.json"),
+            asset_names=ASSETS,
+            limit=10,
+            capture_effective={"hud_enabled": True},
+        )
+        idx = bundle.get("request_id_index") or {}
+        self.assertIn("cafebabe", idx)
+        self.assertTrue(idx["cafebabe"]["client"])
+        self.assertEqual(idx["cafebabe"]["server"].get("code"), "storage_error")
+        hints = bundle["agent_triage"].get("error_code_hints") or []
+        self.assertTrue(any(h.get("code") == "storage_error" for h in hints))
+        self.assertIn("config_effective", bundle)
+        brief = D.agent_brief(
+            root=root,
+            config={"pin": ""},
+            config_path=os.path.join(tmp, "cfg.json"),
+            asset_names=ASSETS,
+            limit=10,
+            capture_effective={"hud_enabled": True},
+        )
+        self.assertIn("packet_md", brief)
+    def test_write_agent_packet_file(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-pkt-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        rep = D.write_agent_packet_file(root, "# test packet\n")
+        self.assertTrue(rep.get("ok"))
+        p = Path(root) / ".hq-carnet" / "diagnostics" / D.AGENT_PACKET_NAME
+        self.assertTrue(p.is_file())
+        self.assertIn("test packet", p.read_text(encoding="utf-8"))
+
+    def test_recommended_files_when_likely_carnet(self) -> None:
+        triage = D.build_agent_triage(
+            client_lines=[{"at": "t", "level": "warn", "kind": "carnet", "message": "x", "view": "carnet"}],
+            server_errs=[],
+            degraded={},
+            repro_notes=[],
+            client_summary={"count": 1},
+            last_view="carnet",
+            capture_effective={"hud_enabled": True},
+        )
+        self.assertEqual(triage.get("likely_subsystem"), "carnet")
+        self.assertIn("assets/hq-carnet.js", triage.get("recommended_files") or [])
+
+
 class RequiredAssets(unittest.TestCase):
     def test_extracts_asset_names_from_real_html_bytes_or_str(self):
         html = b'<script src="/assets/a.js"></script><link href="/assets/b.css"/> load(\'/assets/c-d.js\')'

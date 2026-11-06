@@ -28,7 +28,16 @@ def test_bulge_expression_unchanged():
     assert "const ox = (u - halfCw + 0.5) * bulge;" in body
 
 
-def test_not_merged_or_capped():
+def test_unified_paint_scheduler():
     src = JS.read_text(encoding="utf-8")
-    assert "function glistenLoop(" in src and "function tick(" in src
+    assert "function danglePaintLoop(" in src and "function tick(" in src
     assert "const GLISTEN_IDLE_MS = 60;" in src
+    assert "const VEIN_IDLE_MS = 80;" in src
+    assert "if (hot && ensureVeinSwellField()) warpVeinOverlay" in src
+    assert "veinRenderHot() || !veinSwellBaked" in src
+    assert "function paintVeinPulseCold(" in src
+    assert "function strokeVeinPulseMaroon(" in src
+    assert "function scheduleDanglePaint(" in src
+    hot_merge = src[src.index("function paintVeinPulse(") : src.index("function paintVeinHighlight(")]
+    assert "getImageData(0, 0, bufW, bufH)" in hot_merge
+    assert "paintVeinPulseCold" in hot_merge

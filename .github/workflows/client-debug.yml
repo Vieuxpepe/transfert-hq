@@ -1,0 +1,39 @@
+name: HQ client debug
+
+on:
+  push:
+    paths:
+      - "assets/hq-debug-panel.js"
+      - "assets/hq-debug-panel.css"
+      - "hq_diagnostics.py"
+      - "iphone_bridge.py"
+      - "tests/test_hq_client_debug_smoke.py"
+      - "tests/test_hq_diagnostics.py"
+      - "tests/test_hq_diagnostics_http.py"
+      - "docs/agent-debugging.md"
+      - "docs/client-debug-log.md"
+      - "docs/hq-symptom-index.md"
+  pull_request:
+    paths:
+      - "assets/hq-debug-panel.js"
+      - "assets/hq-debug-panel.css"
+      - "hq_diagnostics.py"
+      - "iphone_bridge.py"
+      - "tests/test_hq_client_debug_smoke.py"
+      - "tests/test_hq_diagnostics.py"
+      - "tests/test_hq_diagnostics_http.py"
+      - "docs/agent-debugging.md"
+      - "docs/client-debug-log.md"
+      - "docs/hq-symptom-index.md"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Client debug smoke + unit slice
+        run: |
+          python scripts/verify_agent_pipeline.py

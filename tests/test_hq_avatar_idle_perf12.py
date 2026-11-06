@@ -18,13 +18,33 @@ class AvatarIdlePerf12Tests(unittest.TestCase):
         self.assertTrue(50 <= int(m.group(1)) <= 90)  # ~11-20 fps shimmer
 
     def test_loop_has_busy_check_and_wake(self):
-        for name in ("function glistenBusy", "function wakeGlisten", "function glistenLoop", "function glistenQueue"):
+        for name in (
+            "function glistenBusy",
+            "function wakeGlisten",
+            "function danglePaintLoop",
+            "function scheduleDanglePaint",
+        ):
             self.assertIn(name, self.src)
 
     def test_busy_covers_pointer_and_oral_states(self):
-        body = self.src[self.src.index("function glistenBusy"):]
-        body = body[: body.index("function glistenQueue")]
-        for name in ("running", "dragging", "ptr.active", "oralEngaged", "oralPhase", "oralDepthSm", "restName", "throbStart", "nodStart", "warmth", "give"):
+        glisten = self.src[self.src.index("function glistenBusy") :]
+        glisten = glisten[: glisten.index("function danglePaintDeepSleep")]
+        sim = self.src[self.src.index("function simBusy") :]
+        sim = sim[: sim.index("function glistenBusy")]
+        body = glisten + sim
+        for name in (
+            "running",
+            "dragging",
+            "ptr.active",
+            "oralEngaged",
+            "oralPhase",
+            "oralDepthSm",
+            "restName",
+            "throbStart",
+            "nodStart",
+            "warmth",
+            "give",
+        ):
             self.assertIn(name, body)
 
     def test_parks_when_hidden_and_offscreen(self):
@@ -43,6 +63,7 @@ class AvatarIdlePerf12Tests(unittest.TestCase):
 
     def test_reduced_motion_still_respected(self):
         self.assertIn("prefers-reduced-motion", self.src)
+        self.assertIn("motionReduced", self.src)
 
 
 if __name__ == "__main__":

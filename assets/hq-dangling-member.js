@@ -31,7 +31,10 @@
   function initDanglingMember(win) {
     const doc = win.document;
     const mount = doc.querySelector(".hq-dangling-member-mount");
-    if (!mount || calm(win)) return;
+    if (!mount) return;
+    if (mount.__hqDangleInited) return;
+    mount.__hqDangleInited = true;
+    const motionReduced = calm(win);
     const swing = mount.querySelector(".hq-dangling-member-swing");
     const img = swing && swing.querySelector(".hq-dangling-member");
     if (!swing || !img) return;
@@ -43,6 +46,10 @@
     canvas.className = "hq-dangling-member-canvas";
     canvas.setAttribute("aria-hidden", "true");
     swing.appendChild(canvas);
+    const veinCanvas = doc.createElement("canvas");
+    veinCanvas.className = "hq-dangling-member-vein-canvas";
+    veinCanvas.setAttribute("aria-hidden", "true");
+    swing.appendChild(veinCanvas);
 
     let texW = 0;
     let texH = 0;
@@ -55,6 +62,13 @@
     let maxTravel = 180;
     let pxPerScreen = 1;
     let ctx = null;
+    let veinCtx = null;
+    let danglePaintArmed = false;
+    let dangleArmTimer = 0;
+    let danglePaintOn = false;
+    let danglePaintFrame = false;
+    let danglePaintTimer = 0;
+    let danglePaintLast = 0;
     let srcPx = null;
     let dstImg = null;
     let accR = null;
@@ -93,6 +107,13 @@
     let phase = 0;
     let throbStart = -1;
     let throbNow = 0;
+    let veinSwellBaked = false;
+    let veinWasHot = false;
+    let memberBake = null;
+    let memberBakeCtx = null;
+    let memberBakeKey = "";
+    let swellIdleScheduled = false;
+    let veinPulseLastStrength = -1;
     let throbEnv = 0;
     let throbEnvTip = 0;
     let throbPhase = 0;
@@ -314,6 +335,8 @@
       stretch = clamp(stretch, 0, 0.3);
       ripple = clamp(ripple, -0.2, 0.2);
       phase += dt * 8.5;
+      tickVeinTrace(dt);
+      stepVeinPulse(dt);
       dirty = true;
     }
 
@@ -323,6 +346,726 @@
       ctx.clearRect(0, 0, bufW, bufH);
       ctx.drawImage(img, 0, 0, texW, texH, padX, padY, cw, ch);
       dirty = false;
+    }
+
+    function memberBakeKeyNow() {
+      return cw + "x" + ch + "x" + padX + "x" + padY + "x" + veinSwellMode;
+    }
+
+    function invalidateMemberBake() {
+      memberBakeKey = "";
+    }
+
+    function drawFlatTo(targetCtx) {
+      if (!targetCtx || !cw || !ch) return;
+      targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+      targetCtx.clearRect(0, 0, bufW, bufH);
+      targetCtx.drawImage(img, 0, 0, texW, texH, padX, padY, cw, ch);
+    }
+
+    function rebuildMemberBake(nowMs, withSwell) {
+      if (!cw || !bufW || !bufH) return false;
+      if (!memberBake) {
+        memberBake = doc.createElement("canvas");
+        memberBakeCtx = memberBake.getContext("2d", { alpha: true });
+      }
+      if (!memberBakeCtx) return false;
+      memberBake.width = bufW;
+      memberBake.height = bufH;
+      drawFlatTo(memberBakeCtx);
+      if (withSwell && ensureVeinSwellField()) {
+        const saved = ctx;
+        ctx = memberBakeCtx;
+        paintVeinSwell(nowMs || win.performance.now(), true);
+        ctx = saved;
+      }
+      memberBakeKey = memberBakeKeyNow() + (withSwell ? ":s" : ":f");
+      return true;
+    }
+
+    function blitMemberBake(nowMs) {
+      if (!ctx) return;
+      const key = memberBakeKeyNow();
+      const wantSwell = veinSwellBaked;
+      const bakeKey = key + (wantSwell ? ":s" : ":f");
+      if (!memberBake || memberBakeKey !== bakeKey) {
+        if (!rebuildMemberBake(nowMs, wantSwell && !!swellW)) {
+          renderFlat();
+          return;
+        }
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, bufW, bufH);
+      ctx.drawImage(memberBake, 0, 0);
+      dirty = false;
+    }
+
+    function scheduleSwellIdleBake() {
+      if (motionReduced || swellIdleScheduled || veinSwellBaked || veinRenderHot()) return;
+      swellIdleScheduled = true;
+      const run = () => {
+        swellIdleScheduled = false;
+        if (!ctx || doc.hidden || veinRenderHot()) return;
+        if (!ensureVeinSwellField()) return;
+        rebuildMemberBake(win.performance.now(), true);
+        veinSwellBaked = true;
+        scheduleDanglePaint(0);
+      };
+      if (typeof win.requestIdleCallback === "function") win.requestIdleCallback(run, { timeout: 900 });
+      else win.setTimeout(run, 450);
+    }
+
+    function ensureVeinSwellField() {
+      if (!cw || !ch) return false;
+      const key = cw + "x" + ch + "x" + padX + "x" + padY + "x" + veinSwellMode;
+      if (swellW && swellKey === key) return true;
+      const paths = ensureVeinBufPaths();
+      if (!paths.length) return false;
+      swellKey = key;
+      const n = cw * ch;
+      swellDx = new Float32Array(n);
+      swellDy = new Float32Array(n);
+      swellW = new Float32Array(n);
+      swellDist = new Float32Array(n);
+      swellDist2 = new Float32Array(n);
+      swellPath = new Uint16Array(n);
+      swellPath2 = new Uint16Array(n);
+      swellTx = new Float32Array(n);
+      swellTx2 = new Float32Array(n);
+      swellNx = new Float32Array(n);
+      swellNy = new Float32Array(n);
+      swellTier = new Float32Array(n);
+      const tune = veinSwellTune();
+      swellRad = Math.max(tune.radMin, cw * tune.radScale);
+      const rad = swellRad;
+      const rad2 = rad * rad;
+      for (let p = 0; p < paths.length; p += 1) {
+        const pts = paths[p].pts;
+        const tier = paths[p].tier === "secondary" ? 0.72 : 1;
+        for (let i = 0; i < pts.length - 1; i += 1) {
+          const ax = pts[i].x - padX;
+          const ay = pts[i].y - padY;
+          const bx = pts[i + 1].x - padX;
+          const by = pts[i + 1].y - padY;
+          const sdx = bx - ax;
+          const sdy = by - ay;
+          const len2 = sdx * sdx + sdy * sdy || 1;
+          const minX = Math.max(0, Math.floor(Math.min(ax, bx) - rad));
+          const maxX = Math.min(cw - 1, Math.ceil(Math.max(ax, bx) + rad));
+          const minY = Math.max(0, Math.floor(Math.min(ay, by) - rad));
+          const maxY = Math.min(ch - 1, Math.ceil(Math.max(ay, by) + rad));
+          const sl = Math.sqrt(len2);
+          const tx = sdx / sl;
+          const pathId = p + 1;
+          for (let y = minY; y <= maxY; y += 1) {
+            for (let x = minX; x <= maxX; x += 1) {
+              let t = ((x - ax) * sdx + (y - ay) * sdy) / len2;
+              t = t < 0 ? 0 : t > 1 ? 1 : t;
+              const px = ax + sdx * t;
+              const py = ay + sdy * t;
+              const ox = x - px;
+              const oy = y - py;
+              const d2 = ox * ox + oy * oy;
+              if (d2 > rad2 || d2 < 0.2) continue;
+              const d = Math.sqrt(d2);
+              const dome = Math.sin((d / rad) * Math.PI) * tier;
+              const idx = y * cw + x;
+              swellW[idx] += dome;
+              swellDx[idx] += (ox / d) * dome;
+              swellDy[idx] += (oy / d) * dome;
+              if (swellDist[idx] === 0 || d < swellDist[idx]) {
+                if (swellPath[idx] && swellPath[idx] !== pathId) {
+                  swellDist2[idx] = swellDist[idx];
+                  swellPath2[idx] = swellPath[idx];
+                  swellTx2[idx] = swellTx[idx];
+                }
+                swellDist[idx] = d;
+                swellNx[idx] = ox / d;
+                swellNy[idx] = oy / d;
+                swellTier[idx] = tier;
+                swellPath[idx] = pathId;
+                swellTx[idx] = tx;
+              } else if (swellPath[idx] !== pathId && (swellPath2[idx] === 0 || d < swellDist2[idx])) {
+                swellDist2[idx] = d;
+                swellPath2[idx] = pathId;
+                swellTx2[idx] = tx;
+              }
+            }
+          }
+        }
+      }
+      const blurVec = (src, radius) => {
+        const nPix = cw * ch;
+        const horiz = new Float32Array(nPix);
+        const vert = new Float32Array(nPix);
+        const r = radius;
+        const span = r * 2 + 1;
+        for (let y = 0; y < ch; y += 1) {
+          for (let x = 0; x < cw; x += 1) {
+            let s = 0;
+            for (let k = -r; k <= r; k += 1) {
+              const xx = x + k < 0 ? 0 : x + k >= cw ? cw - 1 : x + k;
+              s += src[y * cw + xx];
+            }
+            horiz[y * cw + x] = s / span;
+          }
+        }
+        for (let y = 0; y < ch; y += 1) {
+          for (let x = 0; x < cw; x += 1) {
+            let s = 0;
+            for (let k = -r; k <= r; k += 1) {
+              const yy = y + k < 0 ? 0 : y + k >= ch ? ch - 1 : y + k;
+              s += horiz[yy * cw + x];
+            }
+            vert[y * cw + x] = s / span;
+          }
+        }
+        return vert;
+      };
+      const fieldPeak = (dx, dy) => {
+        let peak = 0;
+        const nPix = cw * ch;
+        for (let i = 0; i < nPix; i += 1) {
+          const mag = Math.hypot(dx[i], dy[i]);
+          if (mag > peak) peak = mag;
+        }
+        return peak;
+      };
+      const peakBefore = fieldPeak(swellDx, swellDy);
+      swellDx = blurVec(blurVec(swellDx, 4), 3);
+      swellDy = blurVec(blurVec(swellDy, 4), 3);
+      if (veinSwellMode === "extreme") {
+        swellDx = blurVec(blurVec(swellDx, 6), 5);
+        swellDy = blurVec(blurVec(swellDy, 6), 5);
+      }
+      const peakAfter = fieldPeak(swellDx, swellDy);
+      if (peakBefore > 0.01 && peakAfter > 0.01) {
+        const gain = peakBefore / peakAfter;
+        const nPix = cw * ch;
+        for (let i = 0; i < nPix; i += 1) {
+          swellDx[i] *= gain;
+          swellDy[i] *= gain;
+        }
+      }
+      swellNxRaw = new Float32Array(swellNx);
+      swellNyRaw = new Float32Array(swellNy);
+      swellNx = blurVec(blurVec(swellNx, 3), 2);
+      swellNy = blurVec(blurVec(swellNy, 3), 2);
+      swellImg = ctx.createImageData(cw, ch);
+      return true;
+    }
+
+    function spreadVeinInk() {
+      inkPx = null;
+      if (!srcPx || !swellW || !cw || !ch) return;
+      const n = cw * ch;
+      const ink = new Uint8Array(n);
+      const lumaAt = (i) => {
+        const o = i * 4;
+        if (srcPx[o + 3] < 40) return 255;
+        return srcPx[o] * 0.3 + srcPx[o + 1] * 0.59 + srcPx[o + 2] * 0.11;
+      };
+      for (let y = 3; y < ch - 3; y += 1) {
+        for (let x = 3; x < cw - 3; x += 1) {
+          const i = y * cw + x;
+          if (swellW[i] < 0.18) continue;
+          const lum = lumaAt(i);
+          if (lum > 48) continue;
+          let hi = lum;
+          for (let oy = -3; oy <= 3; oy += 1) {
+            for (let ox = -3; ox <= 3; ox += 1) {
+              const l = lumaAt((y + oy) * cw + (x + ox));
+              if (l > hi) hi = l;
+            }
+          }
+          if (hi - lum > 34) ink[i] = 1;
+        }
+      }
+      inkPx = new Uint8ClampedArray(srcPx);
+      for (let y = 2; y < ch - 2; y += 1) {
+        for (let x = 2; x < cw - 2; x += 1) {
+          const i = y * cw + x;
+          if (ink[i] || swellW[i] < 0.12) continue;
+          let bd = 9;
+          let br = 0;
+          let bg = 0;
+          let bb = 0;
+          for (let oy = -2; oy <= 2; oy += 1) {
+            for (let ox = -2; ox <= 2; ox += 1) {
+              const d = Math.abs(ox) + Math.abs(oy);
+              if (d === 0 || d > 2) continue;
+              const k = (y + oy) * cw + (x + ox);
+              if (!ink[k] || d >= bd) continue;
+              bd = d;
+              const j = k * 4;
+              br = srcPx[j];
+              bg = srcPx[j + 1];
+              bb = srcPx[j + 2];
+            }
+          }
+          if (bd > 2) continue;
+          const mix = bd === 1 ? 0.62 : 0.28;
+          const o = i * 4;
+          inkPx[o] = srcPx[o] + (br - srcPx[o]) * mix;
+          inkPx[o + 1] = srcPx[o + 1] + (bg - srcPx[o + 1]) * mix;
+          inkPx[o + 2] = srcPx[o + 2] + (bb - srcPx[o + 2]) * mix;
+        }
+      }
+    }
+
+    function sampleShaft(sx, sy, buf) {
+      const data = buf || srcPx;
+      if (!data || sx < 0 || sy < 0 || sx > cw - 1.001 || sy > ch - 1.001) return null;
+      const x0 = sx | 0;
+      const y0 = sy | 0;
+      const x1 = x0 + 1 < cw ? x0 + 1 : x0;
+      const y1 = y0 + 1 < ch ? y0 + 1 : y0;
+      const fx = sx - x0;
+      const fy = sy - y0;
+      const i00 = (y0 * cw + x0) * 4;
+      const i10 = (y0 * cw + x1) * 4;
+      const i01 = (y1 * cw + x0) * 4;
+      const i11 = (y1 * cw + x1) * 4;
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
+      return [
+        data[i00] * w00 + data[i10] * w10 + data[i01] * w01 + data[i11] * w11,
+        data[i00 + 1] * w00 + data[i10 + 1] * w10 + data[i01 + 1] * w01 + data[i11 + 1] * w11,
+        data[i00 + 2] * w00 + data[i10 + 2] * w10 + data[i01 + 2] * w01 + data[i11 + 2] * w11,
+        data[i00 + 3] * w00 + data[i10 + 3] * w10 + data[i01 + 3] * w01 + data[i11 + 3] * w11
+      ];
+    }
+
+    function veinFieldAt(x, y) {
+      const x0 = x <= 0 ? 0 : x >= cw - 1 ? cw - 1 : x | 0;
+      const y0 = y <= 0 ? 0 : y >= ch - 1 ? ch - 1 : y | 0;
+      const x1 = x0 + 1 < cw ? x0 + 1 : x0;
+      const y1 = y0 + 1 < ch ? y0 + 1 : y0;
+      const fx = x <= x0 ? 0 : x >= x1 ? 1 : x - x0;
+      const fy = y <= y0 ? 0 : y >= y1 ? 1 : y - y0;
+      const i00 = y0 * cw + x0;
+      const i10 = y0 * cw + x1;
+      const i01 = y1 * cw + x0;
+      const i11 = y1 * cw + x1;
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
+      return [
+        swellDx[i00] * w00 + swellDx[i10] * w10 + swellDx[i01] * w01 + swellDx[i11] * w11,
+        swellDy[i00] * w00 + swellDy[i10] * w10 + swellDy[i01] * w01 + swellDy[i11] * w11,
+        swellDist[i00] * w00 + swellDist[i10] * w10 + swellDist[i01] * w01 + swellDist[i11] * w11
+      ];
+    }
+
+    function veinSwellTune() {
+      if (veinSwellMode === "extreme") {
+        return { ampExcited: 4.4, cap: 0.4, radScale: 0.24, radMin: 13, soft: 0.62, fat: 4.73, fadePow: 1.12 };
+      }
+      return { ampExcited: 4.4, cap: 0.4, radScale: 0.14, radMin: 8, soft: 0.62, fat: 0, fadePow: 2 };
+    }
+
+    function setVeinSwellMode(mode) {
+      const next = mode === "extreme" ? "extreme" : "epic";
+      if (next === veinSwellMode && mount.dataset.veinSwell === next) return next;
+      veinSwellMode = next;
+      mount.dataset.veinSwell = next;
+      swellKey = "";
+      try {
+        win.localStorage.setItem("hq-vein-swell", next);
+      } catch (_) {}
+      return next;
+    }
+
+    function veinSwellWiden(x, y, pulse) {
+      const x0 = x <= 0 ? 0 : x >= cw - 1 ? cw - 1 : x | 0;
+      const y0 = y <= 0 ? 0 : y >= ch - 1 ? ch - 1 : y | 0;
+      const x1 = x0 + 1 < cw ? x0 + 1 : x0;
+      const y1 = y0 + 1 < ch ? y0 + 1 : y0;
+      let dist = 0;
+      let nx = 0;
+      let ny = 0;
+      let tier = 1;
+      const cells = [y0 * cw + x0, y0 * cw + x1, y1 * cw + x0, y1 * cw + x1];
+      for (let c = 0; c < 4; c += 1) {
+        const i = cells[c];
+        const d = swellDist[i];
+        if (d > 0.2 && (dist === 0 || d < dist)) {
+          dist = d;
+          nx = swellNx[i];
+          ny = swellNy[i];
+          tier = swellTier[i] || 1;
+        }
+      }
+      if (!(dist > 0.2) || !swellRad) return [x, y];
+      const mag = Math.hypot(nx, ny);
+      if (mag < 0.22) return [x, y];
+      nx /= mag;
+      ny /= mag;
+      const u = dist / swellRad;
+      if (u >= 1) return [x, y];
+      const excited = clamp((pulse - 0.55) / 0.25, 0, 1);
+      let agree = 1;
+      for (let c = 0; c < 4; c += 1) {
+        const i = cells[c];
+        if (!(swellDist[i] > 0.2)) continue;
+        const nmag = Math.hypot(swellNx[i], swellNy[i]);
+        if (nmag < 0.05) continue;
+        const dot = nx * (swellNx[i] / nmag) + ny * (swellNy[i] / nmag);
+        if (dot < agree) agree = dot;
+      }
+      const calm = clamp((agree - 0.15) / 0.85, 0.12, 1) * clamp((mag - 0.22) / 0.55, 0, 1);
+      const tune = veinSwellTune();
+      const fade = Math.pow(1 - u, tune.fadePow);
+      const fat = excited * tune.fat * tier * fade * calm;
+      let srcDist = dist / (1 + fat);
+      const floor = dist * 0.2;
+      if (srcDist < floor) srcDist = floor;
+      const push = dist - srcDist;
+      return [x - nx * push, y - ny * push];
+    }
+
+    function veinSwellSample(x, y, pulse) {
+      if (veinSwellMode === "extreme") return veinSwellWiden(x, y, pulse);
+      const field = veinFieldAt(x, y);
+      const dx = field[0];
+      const dy = field[1];
+      const len = Math.hypot(dx, dy);
+      if (!(len > 0.04)) return [x, y];
+      const excited = clamp((pulse - 0.55) / 0.25, 0, 1);
+      const tune = veinSwellTune();
+      const amp = 0.25 + pulse * 0.12 + excited * tune.ampExcited;
+      let push = Math.min(1, len) * amp;
+      const dist = field[2];
+      if (dist > 0.4) {
+        const cap = dist * tune.cap;
+        push = cap * (1 - Math.exp(-push / (cap * tune.soft)));
+      }
+      return [x - (dx / len) * push, y - (dy / len) * push];
+    }
+
+    function sampleRaster(data, w, h, sx, sy) {
+      if (sx < 0) sx = 0;
+      else if (sx > w - 1.001) sx = w - 1.001;
+      if (sy < 0) sy = 0;
+      else if (sy > h - 1.001) sy = h - 1.001;
+      const x0 = sx | 0;
+      const y0 = sy | 0;
+      const x1 = x0 + 1 < w ? x0 + 1 : x0;
+      const y1 = y0 + 1 < h ? y0 + 1 : y0;
+      const fx = sx - x0;
+      const fy = sy - y0;
+      const i00 = (y0 * w + x0) * 4;
+      const i10 = (y0 * w + x1) * 4;
+      const i01 = (y1 * w + x0) * 4;
+      const i11 = (y1 * w + x1) * 4;
+      const w00 = (1 - fx) * (1 - fy);
+      const w10 = fx * (1 - fy);
+      const w01 = (1 - fx) * fy;
+      const w11 = fx * fy;
+      return [
+        data[i00] * w00 + data[i10] * w10 + data[i01] * w01 + data[i11] * w11,
+        data[i00 + 1] * w00 + data[i10 + 1] * w10 + data[i01 + 1] * w01 + data[i11 + 1] * w11,
+        data[i00 + 2] * w00 + data[i10 + 2] * w10 + data[i01 + 2] * w01 + data[i11 + 2] * w11,
+        data[i00 + 3] * w00 + data[i10 + 3] * w10 + data[i01 + 3] * w01 + data[i11 + 3] * w11
+      ];
+    }
+
+    function warpVeinOverlay(pulse) {
+      if (!veinCtx || !swellDx || !cw || !ch) return;
+      const src = veinCtx.getImageData(padX, padY, cw, ch);
+      const dst = veinCtx.createImageData(cw, ch);
+      const d = dst.data;
+      const coarse = !veinRenderHot();
+      const stride = coarse ? 2 : 1;
+      for (let y = 0; y < ch; y += stride) {
+        for (let x = 0; x < cw; x += stride) {
+          let r = 0;
+          let g = 0;
+          let b = 0;
+          let a = 0;
+          const steps = coarse ? 1 : (veinSwellMode === "extreme" ? 3 : 2);
+          const inv = 1 / (steps * steps);
+          for (let oy = 0; oy < steps; oy += 1) {
+            for (let ox = 0; ox < steps; ox += 1) {
+              const at = veinSwellSample(x + ox / steps, y + oy / steps, pulse);
+              const pix = sampleRaster(src.data, cw, ch, at[0], at[1]);
+              r += pix[0];
+              g += pix[1];
+              b += pix[2];
+              a += pix[3];
+            }
+          }
+          const rv = r * inv;
+          const gv = g * inv;
+          const bv = b * inv;
+          const av = a * inv;
+          const write = (px, py) => {
+            const di = (py * cw + px) * 4;
+            d[di] = rv;
+            d[di + 1] = gv;
+            d[di + 2] = bv;
+            d[di + 3] = av;
+          };
+          write(x, y);
+          if (stride === 2) {
+            if (x + 1 < cw) write(x + 1, y);
+            if (y + 1 < ch) write(x, y + 1);
+            if (x + 1 < cw && y + 1 < ch) write(x + 1, y + 1);
+          }
+        }
+      }
+      veinCtx.putImageData(dst, padX, padY);
+    }
+
+    function swellRenderScale() {
+      return veinSwellMode === "extreme" ? 3 : 2;
+    }
+
+    function blurRaster(data, w, h) {
+      const n = data.length;
+      if (!swellBlur || swellBlur.length !== n) swellBlur = new Float32Array(n);
+      const tmp = swellBlur;
+      for (let y = 0; y < h; y += 1) {
+        const row = y * w;
+        for (let x = 0; x < w; x += 1) {
+          const xl = x > 0 ? x - 1 : x;
+          const xr = x + 1 < w ? x + 1 : x;
+          const i = (row + x) * 4;
+          const il = (row + xl) * 4;
+          const ir = (row + xr) * 4;
+          tmp[i] = data[il] * 0.25 + data[i] * 0.5 + data[ir] * 0.25;
+          tmp[i + 1] = data[il + 1] * 0.25 + data[i + 1] * 0.5 + data[ir + 1] * 0.25;
+          tmp[i + 2] = data[il + 2] * 0.25 + data[i + 2] * 0.5 + data[ir + 2] * 0.25;
+          tmp[i + 3] = data[il + 3] * 0.25 + data[i + 3] * 0.5 + data[ir + 3] * 0.25;
+        }
+      }
+      for (let y = 0; y < h; y += 1) {
+        const yu = y > 0 ? y - 1 : y;
+        const yd = y + 1 < h ? y + 1 : y;
+        for (let x = 0; x < w; x += 1) {
+          const i = (y * w + x) * 4;
+          const iu = (yu * w + x) * 4;
+          const id = (yd * w + x) * 4;
+          data[i] = tmp[iu] * 0.25 + tmp[i] * 0.5 + tmp[id] * 0.25;
+          data[i + 1] = tmp[iu + 1] * 0.25 + tmp[i + 1] * 0.5 + tmp[id + 1] * 0.25;
+          data[i + 2] = tmp[iu + 2] * 0.25 + tmp[i + 2] * 0.5 + tmp[id + 2] * 0.25;
+          data[i + 3] = tmp[iu + 3] * 0.25 + tmp[i + 3] * 0.5 + tmp[id + 3] * 0.25;
+        }
+      }
+    }
+
+    function ensureSwellHi() {
+      if (!cw || !ch || !img || !texW || !texH) return false;
+      const scale = swellRenderScale();
+      const w = cw * scale;
+      const h = ch * scale;
+      const key = w + "x" + h;
+      if (!swellHi) {
+        swellHi = doc.createElement("canvas");
+        swellHiCtx = swellHi.getContext("2d", { willReadFrequently: true });
+      }
+      if (!swellHiCtx) return false;
+      if (swellHi.width !== w || swellHi.height !== h || swellHiKey !== key) {
+        swellHi.width = w;
+        swellHi.height = h;
+        swellHiKey = key;
+        swellHiCtx.imageSmoothingEnabled = true;
+        swellHiCtx.imageSmoothingQuality = "high";
+        swellHiCtx.clearRect(0, 0, w, h);
+        swellHiCtx.drawImage(img, 0, 0, texW, texH, 0, 0, w, h);
+        swellHiPx = swellHiCtx.getImageData(0, 0, w, h).data;
+        swellHiImg = swellHiCtx.createImageData(w, h);
+      }
+      return !!swellHiPx && !!swellHiImg;
+    }
+
+    function swellDistAt(px, py) {
+      if (!swellDist || !cw || !ch) return 0;
+      const ix = px <= 0 ? 0 : px >= cw - 1 ? cw - 1 : px | 0;
+      const iy = py <= 0 ? 0 : py >= ch - 1 ? ch - 1 : py | 0;
+      return swellDist[iy * cw + ix];
+    }
+
+    function shadeVeinRelief(r, g, b, x, y, pulse) {
+      if (!swellDist || !swellRad) return [r, g, b];
+      const ix = x <= 0 ? 0 : x >= cw - 1 ? cw - 1 : x | 0;
+      const iy = y <= 0 ? 0 : y >= ch - 1 ? ch - 1 : y | 0;
+      const idx = iy * cw + ix;
+      const dist = swellDist[idx];
+      if (!(dist > 0.3)) return [r, g, b];
+      const u = dist / swellRad;
+      if (u >= 1) return [r, g, b];
+      let nx0 = swellNx[idx];
+      let ny0 = swellNy[idx];
+      if (swellNxRaw && swellNyRaw) {
+        const rx = swellNxRaw[idx];
+        const ry = swellNyRaw[idx];
+        if (rx * rx + ry * ry > 0.04) {
+          nx0 = rx;
+          ny0 = ry;
+        }
+      }
+      const mag = Math.hypot(nx0, ny0);
+      if (mag < 0.2) return [r, g, b];
+      const nx = nx0 / mag;
+      const ny = ny0 / mag;
+      const ndot = nx * -0.62 + ny * -0.78;
+      const excited = clamp((pulse - 0.55) / 0.25, 0, 1);
+      const lit = 0.55 + excited * 0.4;
+      const crestBand = clamp(1 - u / 0.2, 0, 1);
+      const crestFace = clamp((ndot - 0.18) / 0.62, 0, 1);
+      const crest = crestBand * crestBand * crestFace * lit;
+      const lift = crest * 14;
+      const rimIn = clamp((u - 0.4) / 0.22, 0, 1);
+      const rimOut = clamp((1.02 - u) / 0.3, 0, 1);
+      const underside = 0.45 + clamp(-ndot, 0, 1) * 0.55;
+      const crease = rimIn * rimOut * underside * (0.07 + excited * 0.09);
+      const valley = clamp((u - 0.74) / 0.26, 0, 1) * (0.035 + excited * 0.03);
+      const castAt = swellDistAt(x - (2.2 + excited * 1.1), y - (2.8 + excited * 1.4));
+      let cast = 0;
+      if (castAt > 0.3 && swellRad) {
+        const cu = castAt / swellRad;
+        if (cu < 0.4 && u > 0.3) {
+          const near = 1 - cu / 0.4;
+          const offVein = clamp((u - 0.3) / 0.34, 0, 1);
+          cast = near * offVein * (0.07 + excited * 0.06);
+        }
+      }
+      let under = 0;
+      if (swellPath && swellPath2 && swellDist2) {
+        const mine = swellPath[idx];
+        const other = swellPath2[idx];
+        const otherD = swellDist2[idx];
+        const reach = swellRad * 0.3;
+        if (mine && other && mine !== other && otherD > 0 && otherD < reach && u < 0.38) {
+          const front = Math.abs(swellTx[idx]) >= Math.abs(swellTx2[idx]) ? mine : other;
+          if (mine !== front) {
+            const pinch = (1 - u / 0.38) * (1 - otherD / reach);
+            under = pinch * (0.18 + excited * 0.08);
+          }
+        }
+      }
+      const mul = Math.max(0.72, 1 - crease - valley - cast - under);
+      return [
+        clamp(r * mul + lift, 0, 255),
+        clamp(g * mul + lift * 0.9, 0, 255),
+        clamp(b * mul + lift * 0.8, 0, 255)
+      ];
+    }
+
+    function tintSwellPurple(r, g, b, a, pulse, x, y) {
+      if (a < 8) return [r, g, b];
+      const k = clamp((pulse - 0.4) / 0.6, 0, 1);
+      const along = y / Math.max(1, ch - 1);
+      const head = clamp((along - 0.28) / 0.52, 0, 1);
+      const side = cw > 1 ? x / cw : 0.5;
+      const under = clamp((side - 0.42) / 0.46, 0, 1);
+      const lift = k * (12 + head * 40 + under * 18);
+      return [
+        clamp(r + lift * 0.1, 0, 255),
+        clamp(g - lift * 0.5, 0, 255),
+        clamp(b + lift * (0.85 + head * 0.35), 0, 255)
+      ];
+    }
+
+    function paintVeinSwell(nowMs, blit) {
+      if (!ctx || !srcPx || !cw || !ch) return;
+      if (!ensureVeinSwellField() || !ensureSwellHi()) return;
+      const pulse = veinPulseStrength(nowMs || win.performance.now());
+      const scale = swellRenderScale();
+      const hw = cw * scale;
+      const hh = ch * scale;
+      const hd = swellHiImg.data;
+      const step = 1 / scale;
+      const stride = veinRenderHot() ? 1 : 2;
+      for (let y = 0; y < hh; y += stride) {
+        const ly = y * step;
+        for (let x = 0; x < hw; x += stride) {
+          const at = veinSwellSample(x * step, ly, pulse);
+          const pix = sampleRaster(swellHiPx, hw, hh, at[0] * scale, at[1] * scale);
+          const shade = shadeVeinRelief(pix[0], pix[1], pix[2], x * step, ly, pulse);
+          const tint = tintSwellPurple(shade[0], shade[1], shade[2], pix[3], pulse, x * step, ly);
+          const di = (y * hw + x) * 4;
+          hd[di] = tint[0];
+          hd[di + 1] = tint[1];
+          hd[di + 2] = tint[2];
+          hd[di + 3] = pix[3];
+          if (stride === 2) {
+            const xr = x + 1 < hw;
+            const yr = y + 1 < hh;
+            if (xr) {
+              const d2 = (y * hw + x + 1) * 4;
+              hd[d2] = tint[0];
+              hd[d2 + 1] = tint[1];
+              hd[d2 + 2] = tint[2];
+              hd[d2 + 3] = pix[3];
+            }
+            if (yr) {
+              const d3 = ((y + 1) * hw + x) * 4;
+              hd[d3] = tint[0];
+              hd[d3 + 1] = tint[1];
+              hd[d3 + 2] = tint[2];
+              hd[d3 + 3] = pix[3];
+            }
+            if (xr && yr) {
+              const d4 = ((y + 1) * hw + x + 1) * 4;
+              hd[d4] = tint[0];
+              hd[d4 + 1] = tint[1];
+              hd[d4 + 2] = tint[2];
+              hd[d4 + 3] = pix[3];
+            }
+          }
+        }
+      }
+      if (veinSwellMode === "extreme") {
+        blurRaster(hd, hw, hh);
+        blurRaster(hd, hw, hh);
+      }
+      swellHiCtx.putImageData(swellHiImg, 0, 0);
+      const dst = swellImg.data;
+      const area = scale * scale;
+      for (let y = 0; y < ch; y += 1) {
+        for (let x = 0; x < cw; x += 1) {
+          const di = (y * cw + x) * 4;
+          let r = 0;
+          let g = 0;
+          let b = 0;
+          let a = 0;
+          for (let oy = 0; oy < scale; oy += 1) {
+            for (let ox = 0; ox < scale; ox += 1) {
+              const si = ((y * scale + oy) * hw + (x * scale + ox)) * 4;
+              r += hd[si];
+              g += hd[si + 1];
+              b += hd[si + 2];
+              a += hd[si + 3];
+            }
+          }
+          dst[di] = r / area;
+          dst[di + 1] = g / area;
+          dst[di + 2] = b / area;
+          dst[di + 3] = a / area;
+        }
+      }
+      if (blit !== false) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(swellHi, padX, padY, cw, ch);
+      }
+    }
+
+    function bodyIsFlat() {
+      return (
+        !running &&
+        !restName &&
+        !oralEngaged &&
+        !dragging &&
+        throbNow < 0.01 &&
+        nodNow < 0.01 &&
+        jiggle < 0.02
+      );
     }
 
     function bakeSource() {
@@ -412,6 +1155,11 @@
       boxR = 0;
       boxB = 0;
       findOralLipT();
+      if (veinRenderHot() || !veinSwellBaked) {
+        paintVeinSwell(win.performance.now(), false);
+        veinSwellBaked = true;
+      }
+      const skin = swellImg && swellImg.data.length === srcPx.length ? swellImg.data : srcPx;
       const mid = padX + cw * 0.5;
       let x = 0;
       let y = padY;
@@ -453,7 +1201,7 @@
         }
         for (let u = left; u <= right; u += 1) {
           const si = (row + u) * 4;
-          const al = srcPx[si + 3];
+          const al = skin[si + 3];
           if (al < 8) continue;
           const ox = (u - halfCw + 0.5) * bulge;
           const depX = mid + x + nx * ox;
@@ -461,7 +1209,7 @@
           if (oralEngaged && oralChinMaxY > 0 && s >= oralLipRow - 10 && depY > oralChinMaxY) {
             continue;
           }
-          deposit(depX, depY, srcPx[si], srcPx[si + 1], srcPx[si + 2], al);
+          deposit(depX, depY, skin[si], skin[si + 1], skin[si + 2], al);
         }
       }
       const dst = dstImg.data;
@@ -663,12 +1411,61 @@
       swing.classList.remove("is-dangle-active");
       mount.classList.remove("is-wobbling");
       renderFlat();
+      scheduleDanglePaint(VEIN_IDLE_MS);
     }
 
     let pokeName = "";
     let pokeClear = 0;
     let contactAim = null;
     let restName = "";
+    let palmPatSpentForRest = false;
+    let pushSoftOralSpent = false;
+    const STILL_VEIN_MS = 3000;
+    let veinStillMs = 0;
+    let veinTraceSpent = false;
+    let veinTraceU = -1;
+    let veinPathSide = 1;
+    let veinTracePath = null;
+    let veinTracePathId = "";
+    let veinPulseSm = 0;
+    let veinBufPaths = null;
+    let veinMask = null;
+    let veinMaskCtx = null;
+    let veinStamp = null;
+    let veinStampCtx = null;
+    let veinStampImg = null;
+    let veinBufKey = "";
+    let swellKey = "";
+    let veinSwellMode = "epic";
+    let veinSwellTapAt = 0;
+    try {
+      const savedSwell = win.localStorage.getItem("hq-vein-swell");
+      if (savedSwell === "extreme") veinSwellMode = "extreme";
+    } catch (_) {}
+    mount.dataset.veinSwell = veinSwellMode;
+    let swellDx = null;
+    let swellDy = null;
+    let swellW = null;
+    let swellDist = null;
+    let swellDist2 = null;
+    let swellPath = null;
+    let swellPath2 = null;
+    let swellTx = null;
+    let swellTx2 = null;
+    let swellNx = null;
+    let swellNy = null;
+    let swellNxRaw = null;
+    let swellNyRaw = null;
+    let swellTier = null;
+    let swellRad = 0;
+    let swellImg = null;
+    let swellHi = null;
+    let swellHiCtx = null;
+    let swellHiPx = null;
+    let swellHiImg = null;
+    let swellHiKey = "";
+    let swellBlur = null;
+    let inkPx = null;
     let restAngle = 0;
     let restAnchor = null;
     let warmth = 0;
@@ -1775,6 +2572,11 @@
         hit.pack.el.classList.remove("is-cock-bump");
         pokeClear = 0;
       }, 280);
+      if (palmHand && (hit.zone.name === "tit" || hit.zone.name === "face") && !palmPatSpentForRest) {
+        const near = cockNearAvatar();
+        if (near && palmHand.play("grip_pole", { near })) palmPatSpentForRest = true;
+        else if (near && hit.zone.name === "tit" && palmHand.play("pat", { near })) palmPatSpentForRest = true;
+      }
     }
 
     function followRest() {
@@ -1817,6 +2619,7 @@
       if (oralEngaged) {
         pokeName = "";
         restName = "";
+        endRestPalm();
         restAnchor = null;
         contactAim = null;
         return;
@@ -1851,15 +2654,15 @@
       }
       pokeName = name;
       maybeFlick();
+      maybePalmNotYet();
     }
 
     let flickSpent = false;
     let flickBusyUntil = 0;
     let flickLean = 0;
-    let flickHand = null;
 
     function flickBusy() {
-      return win.performance.now() < flickBusyUntil;
+      return win.performance.now() < flickBusyUntil || !!(palmHand && palmHand.busy());
     }
 
     function tipNearOralMouth() {
@@ -1874,6 +2677,42 @@
       if (flickSpent) return true;
       const prox = tipOralProximity();
       return !!(prox && prox.dist <= ORAL_NEAR_PAD);
+    }
+
+    function companionFaceClient() {
+      const av = doc.querySelector(".hq-companion-avatar");
+      if (!av) return null;
+      const comp = av.closest(".hq-companion");
+      if (!comp || !comp.classList.contains("is-nsfw")) return null;
+      const r = av.getBoundingClientRect();
+      if (r.width < 8) return null;
+      return {
+        x: r.left + r.width * 0.5,
+        y: r.top + r.height * 0.36,
+        mouthY: r.top + r.height * 0.42
+      };
+    }
+
+    function shaftNearCompanionFace() {
+      const face = companionFaceClient();
+      if (!face) return null;
+      const ts = [0.92, 0.82, 0.72, 0.6, 0.48];
+      let bestD = 1e9;
+      let bestP = null;
+      let bestT = 0.5;
+      for (let i = 0; i < ts.length; i += 1) {
+        const p = shaftClient(ts[i]);
+        if (!p) continue;
+        const d = Math.hypot(p.x - face.x, p.y - face.mouthY);
+        if (d < bestD) {
+          bestD = d;
+          bestP = p;
+          bestT = ts[i];
+        }
+      }
+      const limit = clamp(mountRectW * 0.14, 38, 58);
+      if (!bestP || bestD > limit) return null;
+      return { face, at: bestP, dist: bestD, along: bestT };
     }
 
     function cockNearAvatar() {
@@ -1900,11 +2739,710 @@
       return { at: hit, near: best };
     }
 
+    function bulgeAlongRow(s, along) {
+      const bulgeBase =
+        1 +
+        throbBump(along) * 0.18 * (0.62 + 0.38 * Math.sin(along * Math.PI)) +
+        jiggle * Math.sin(jigglePhase * 1.15) * 0.07 * Math.sin(along * Math.PI);
+      return bulgeBase * oralBulgeScale((s + 0.5) / ch);
+    }
+
+    function artVeinKnotToBufTex(rowT, laneNorm) {
+      if (!rowL || !rowR || !cw || !ch) return null;
+      const s = clamp(Math.round(rowT * (ch - 1)), 0, ch - 1);
+      const left = rowL[s];
+      const right = rowR[s];
+      if (left > right) return null;
+      const cx = (left + right) * 0.5;
+      const half = Math.max(1, (right - left) * 0.5);
+      const u = cx + laneNorm * half;
+      return { x: padX + u, y: padY + s };
+    }
+
+    function artVeinKnotToBuf(rowT, laneNorm) {
+      if (!cw || !ch || !rowL || !rowR) return null;
+      const S = clamp(Math.round(rowT * (ch - 1)), 0, ch - 1);
+      const left = rowL[S];
+      const right = rowR[S];
+      if (left > right) return null;
+      const centerCol = (left + right) * 0.5;
+      const halfCol = Math.max(1, (right - left) * 0.5);
+      const uCol = centerCol + laneNorm * halfCol * 0.94;
+      const mid = padX + cw * 0.5;
+      let x = 0;
+      let y = padY;
+      for (let s = 1; s <= S; s += 1) {
+        const ap = dir((s - 0.5) / ch);
+        const alongStep = (s - 1) / Math.max(1, ch - 1);
+        x += Math.sin(ap) * stepLen(alongStep);
+        y += Math.cos(ap) * stepLen(alongStep);
+      }
+      const along = S / Math.max(1, ch - 1);
+      const ang = dir((S + 0.5) / ch);
+      const nx = Math.cos(ang);
+      const ny = -Math.sin(ang);
+      const bulge = bulgeAlongRow(S, along);
+      const ox = (uCol - cw * 0.5 + 0.5) * bulge;
+      return { x: mid + x + nx * ox, y: y + ny * ox };
+    }
+
+    function clientFromArtVein(rowT, laneNorm) {
+      if (!canvas) return null;
+      const dep = artVeinKnotToBuf(rowT, laneNorm);
+      if (!dep) return null;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width < 2) return null;
+      return {
+        x: rect.left + (dep.x / bufW) * rect.width,
+        y: rect.top + (dep.y / bufH) * rect.height
+      };
+    }
+
+    function buildVeinPathClientProcedural(sideSign) {
+      const samples = [0.14, 0.24, 0.36, 0.46, 0.56, 0.66, 0.76, 0.86];
+      const pts = [];
+      for (let i = 0; i < samples.length; i += 1) {
+        const p = shaftClient(samples[i]);
+        if (!p) return null;
+        const j = Math.min(samples.length - 1, i + 1);
+        const p1 = shaftClient(samples[j]) || p;
+        const dx = p1.x - p.x;
+        const dy = p1.y - p.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = (-dy / len) * sideSign;
+        const ny = (dx / len) * sideSign;
+        const inset = 5 + i * 1.1;
+        pts.push({ x: p.x + nx * inset, y: p.y + ny * inset });
+      }
+      return orientVeinTracePath(pts);
+    }
+
+    function orientVeinTracePath(path) {
+      if (!path || path.length < 2) return path;
+      if (path[0].y > path[path.length - 1].y) return path.slice().reverse();
+      return path;
+    }
+
+    function knotsToClientPath(knots) {
+      if (!knots || knots.length < 2 || !rowL) return null;
+      const sorted = knots.slice().sort(function (a, b) {
+        return a[0] - b[0];
+      });
+      const pts = [];
+      for (let i = 0; i < sorted.length; i += 1) {
+        const p = clientFromArtVein(sorted[i][0], sorted[i][1]);
+        if (p) pts.push(p);
+      }
+      if (pts.length < 2) return null;
+      return orientVeinTracePath(pts);
+    }
+
+    function distPointToPolyline(px, py, path) {
+      let best = 1e9;
+      for (let i = 0; i < path.length - 1; i += 1) {
+        const ax = path[i].x;
+        const ay = path[i].y;
+        const bx = path[i + 1].x;
+        const by = path[i + 1].y;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len2 = dx * dx + dy * dy || 1e-6;
+        let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+        t = clamp(t, 0, 1);
+        const qx = ax + dx * t;
+        const qy = ay + dy * t;
+        best = Math.min(best, Math.hypot(px - qx, py - qy));
+      }
+      return best;
+    }
+
+    function buildVeinPathClientFromId(id) {
+      const api = global.DanglingVeinPathApi;
+      const art = global.DanglingVeinPaths;
+      let knots = null;
+      if (api && typeof api.getPathById === "function") knots = api.getPathById(id, "auto");
+      if (!knots && art && art.paths) {
+        const rec = art.paths.find(function (p) {
+          return p.id === id;
+        });
+        if (rec) knots = rec.dense && rec.dense.length >= 2 ? rec.dense : rec.sparse;
+      }
+      return knotsToClientPath(knots);
+    }
+
+    function pickVeinPathForContact(nearPoint) {
+      const api = global.DanglingVeinPathApi;
+      const list =
+        api && typeof api.listPaths === "function"
+          ? api.listPaths()
+          : global.DanglingVeinPaths && global.DanglingVeinPaths.paths
+            ? global.DanglingVeinPaths.paths.map(function (p) {
+                return { id: p.id, tier: p.tier, side: p.side };
+              })
+            : [];
+      let bestPath = null;
+      let bestId = "";
+      let bestTier = "primary";
+      let bestD = 1e9;
+      for (let i = 0; i < list.length; i += 1) {
+        const meta = list[i];
+        const path = buildVeinPathClientFromId(meta.id);
+        if (!path) continue;
+        const d = distPointToPolyline(nearPoint.x, nearPoint.y, path);
+        if (d < bestD) {
+          bestD = d;
+          bestPath = path;
+          bestId = meta.id;
+          bestTier = meta.tier || "primary";
+        }
+      }
+      if (bestPath) {
+        return {
+          path: orientVeinTracePath(bestPath),
+          id: bestId,
+          tier: bestTier,
+          dist: bestD
+        };
+      }
+      const sideSign = contactSide || 1;
+      const fallback = buildVeinPathClient(sideSign);
+      return fallback
+        ? {
+            path: orientVeinTracePath(fallback),
+            id: sideSign < 0 ? "left" : "right",
+            tier: "primary",
+            dist: 1e9
+          }
+        : null;
+    }
+
+    function buildVeinPathClient(sideSign) {
+      const art = global.DanglingVeinPaths;
+      const side = sideSign < 0 ? "left" : "right";
+      const api = global.DanglingVeinPathApi;
+      const knots =
+        api && typeof api.getPolyline === "function"
+          ? api.getPolyline(side, "auto")
+          : art && art[side + "_dense"] && art[side + "_dense"].length >= 2
+            ? art[side + "_dense"]
+            : art && art[side]
+              ? art[side]
+              : null;
+      if (knots && knots.length >= 2 && rowL) {
+        return knotsToClientPath(knots);
+      }
+      return buildVeinPathClientProcedural(sideSign);
+    }
+
+    function clientToBuf(cx, cy) {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return { x: 0, y: 0 };
+      return {
+        x: ((cx - rect.left) / rect.width) * bufW,
+        y: ((cy - rect.top) / rect.height) * bufH
+      };
+    }
+
+    function veinPathPhaseSeed(id) {
+      let h = 0;
+      const s = String(id || "");
+      for (let i = 0; i < s.length; i += 1) h = (h * 33 + s.charCodeAt(i)) | 0;
+      return ((h >>> 0) % 1000) / 1000 * Math.PI * 2;
+    }
+
+    function veinPathsReady() {
+      const art = global.DanglingVeinPaths;
+      return !!(
+        mount.classList.contains("is-softbody") &&
+        rowL &&
+        art &&
+        Array.isArray(art.paths) &&
+        art.paths.length
+      );
+    }
+
+    function veinIdlePulseFloor(nowMs) {
+      if (!veinPathsReady()) return 0;
+      const t = (nowMs || win.performance.now()) * 0.001;
+      const idleBreath = 0.5 + 0.5 * Math.sin(t * 4.15);
+      return 0.11 + idleBreath * 0.09;
+    }
+
+    function veinPulseNeedsFrame() {
+      return veinPulseSm > 0.022 || throbNow > 0.008 || veinTraceU >= 0;
+    }
+
+    function veinStimLevel(nowMs) {
+      let s = veinIdlePulseFloor(nowMs);
+      if (throbNow > 0.008) s = Math.max(s, throbNow);
+      if (oralEngaged) s = Math.max(s, 0.74);
+      if (veinTraceU >= 0) s = Math.max(s, 0.42 + veinTraceU * 0.58);
+      if (give > 0.1) s = Math.max(s, give * 0.78);
+      if (warmth > 0.16) s = Math.max(s, warmth * 0.58);
+      if (restName) s = Math.max(s, 0.26 + give * 0.2);
+      if (ptr.active) s = Math.max(s, 0.72);
+      if (pokeName === "face" || pokeName === "head" || giveName === "face") s = Math.max(s, 0.55);
+      if (pokeName === "tit" || giveName === "tit") s = Math.max(s, 0.38);
+      return clamp(s, 0, 1);
+    }
+
+    function stepVeinPulse(dt) {
+      const target = veinStimLevel(win.performance.now());
+      const k = target > veinPulseSm ? 10 : 3.2;
+      veinPulseSm += (target - veinPulseSm) * k * dt;
+      if (target < 0.05 && veinPulseSm < 0.04) veinPulseSm = 0;
+    }
+
+    function veinPulseStrength(nowMs) {
+      const t = (nowMs || win.performance.now()) * 0.001;
+      const wave = 0.5 + 0.5 * Math.sin(t * 4.15);
+      const idle = 0.42 + 0.2 * wave;
+      const stim = clamp((veinPulseSm - 0.22) / 0.78, 0, 1);
+      let s = idle + stim * (1 - idle);
+      if (throbNow > 0.015) s = 1;
+      return clamp(s, 0, 1);
+    }
+
+    let veinBoxKey = "";
+    function syncVeinOverlayBox() {
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      if (w < 2 || h < 2) return false;
+      const left = canvas.offsetLeft;
+      const top = canvas.offsetTop;
+      const key = left + "," + top + "," + w + "," + h;
+      if (key !== veinBoxKey) {
+        veinBoxKey = key;
+        veinCanvas.style.position = "absolute";
+        veinCanvas.style.margin = "0";
+        veinCanvas.style.left = left + "px";
+        veinCanvas.style.top = top + "px";
+        veinCanvas.style.width = w + "px";
+        veinCanvas.style.height = h + "px";
+        veinCanvas.style.zIndex = "2";
+      }
+      return true;
+    }
+
+    function veinBufPerCss() {
+      const cssW = canvas.clientWidth;
+      if (cssW < 2 || !bufW) return cw > 0 && mountRectW > 0 ? cw / mountRectW : 1;
+      return bufW / cssW;
+    }
+
+    function ensureVeinBufPaths() {
+      const key = bufW + "x" + bufH + "x" + cw;
+      if (veinBufPaths && veinBufKey === key) return veinBufPaths;
+      veinBufKey = key;
+      veinBufPaths = [];
+      const art = global.DanglingVeinPaths;
+      const api = global.DanglingVeinPathApi;
+      if (!art || !Array.isArray(art.paths) || !rowL) return veinBufPaths;
+      for (let i = 0; i < art.paths.length; i += 1) {
+        const rec = art.paths[i];
+        let knots =
+          api && typeof api.getPathById === "function" ? api.getPathById(rec.id, "auto") : null;
+        if (!knots && rec.dense && rec.dense.length >= 2) knots = rec.dense;
+        else if (!knots && rec.sparse && rec.sparse.length >= 2) knots = rec.sparse;
+        if (!knots || knots.length < 2) continue;
+        const pts = [];
+        for (let j = 0; j < knots.length; j += 1) {
+          const p = artVeinKnotToBufTex(knots[j][0], knots[j][1]);
+          if (p) pts.push(p);
+        }
+        if (pts.length < 2) continue;
+        veinBufPaths.push({ id: rec.id, tier: rec.tier || "primary", pts: shapeVeinPts(pts, rec.id) });
+      }
+      return veinBufPaths;
+    }
+
+    function shapeVeinPts(pts, id) {
+      if (pts.length < 3) return pts;
+      const next = [pts[0]];
+      for (let i = 1; i < pts.length - 1; i += 1) {
+        next.push({
+          x: pts[i - 1].x * 0.18 + pts[i].x * 0.64 + pts[i + 1].x * 0.18,
+          y: pts[i - 1].y * 0.12 + pts[i].y * 0.76 + pts[i + 1].y * 0.12
+        });
+      }
+      next.push(pts[pts.length - 1]);
+      const phase = veinPathPhaseSeed(id);
+      const amp = veinBufPerCss() * (1.55 + ((phase * 17) % 1) * 1.1);
+      return next.map(function (p, i) {
+        const i0 = Math.max(0, i - 1);
+        const i1 = Math.min(next.length - 1, i + 1);
+        let dx = next[i1].x - next[i0].x;
+        let dy = next[i1].y - next[i0].y;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len;
+        const ny = dx / len;
+        const u = i / (next.length - 1);
+        const wander =
+          Math.sin(u * 9.4 + phase) * 0.62 + Math.sin(u * 21.7 + phase * 1.7) * 0.38;
+        const off = amp * wander;
+        return { x: p.x + nx * off, y: p.y + ny * off };
+      });
+    }
+
+    function traceVeinPts(draw, pts) {
+      draw.beginPath();
+      draw.moveTo(pts[0].x, pts[0].y);
+      if (pts.length === 2) {
+        draw.lineTo(pts[1].x, pts[1].y);
+        return;
+      }
+      for (let i = 1; i < pts.length - 1; i += 1) {
+        const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+        const my = (pts[i].y + pts[i + 1].y) * 0.5;
+        draw.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+      }
+      const last = pts[pts.length - 1];
+      draw.lineTo(last.x, last.y);
+    }
+
+    function veinPulseStrokeWidths(tier, pulseA) {
+      const scale = veinBufPerCss();
+      const boost = pulseA >= 0.75 ? 1.16 : 1;
+      const swell = (0.9 + 0.26 * clamp(pulseA, 0, 1)) * boost;
+      const css = (tier === "secondary" ? 1.6 : 2.2) * swell;
+      const diam = Math.max(1.5, css * scale);
+      const blur = Math.max(1.6, 2.35 * scale);
+      return {
+        feather: diam * 2.45,
+        body: diam * 1.35,
+        core: diam,
+        blur: blur
+      };
+    }
+
+    function veinDrawIsOverlay(vctx) {
+      return !!(vctx && veinCtx && vctx === veinCtx);
+    }
+
+    function strokeVeinPulsePath(pts, tier, pulseA, vctx) {
+      const draw = vctx || veinCtx || ctx;
+      if (!draw || pts.length < 2) return;
+      const a = clamp(pulseA, 0, 1);
+      const w = veinPulseStrokeWidths(tier, a);
+      const secondary = tier === "secondary";
+      const featherA = (secondary ? 0.26 : 0.32) + a * (secondary ? 0.06 : 0.08);
+      const coreA = (secondary ? 0.7 : 0.84) + a * (secondary ? 0.08 : 0.1);
+      draw.shadowOffsetX = 0;
+      draw.shadowOffsetY = 0;
+      const softRun = (width, blur, alpha) => {
+        const grain = (i) => {
+          const x = Math.sin(i * 12.9898 + pts.length * 78.233) * 43758.5453;
+          return x - Math.floor(x);
+        };
+        const step = Math.max(3, Math.round(pts.length / 9));
+        for (let i = 0; i < pts.length - 1; i += step) {
+          const end = Math.min(pts.length - 1, i + step + 1);
+          const slice = pts.slice(Math.max(0, i - 1), end + 1);
+          if (slice.length < 2) continue;
+          const u = i / Math.max(1, pts.length - 1);
+          const bulge = 0.3 + grain(i + 3) * 1.15;
+          const taper = 0.55 + 0.45 * Math.sin(Math.PI * u);
+          const fade = 0.55 + grain(i + 9) * 0.5;
+          const g = Math.round(clamp(alpha * fade, 0, 1) * 255);
+          const ink = "rgb(" + g + "," + g + "," + g + ")";
+          draw.beginPath();
+          draw.moveTo(slice[0].x, slice[0].y);
+          for (let k = 1; k < slice.length; k += 1) draw.lineTo(slice[k].x, slice[k].y);
+          draw.lineWidth = width * bulge * taper;
+          draw.strokeStyle = ink;
+          draw.stroke();
+        }
+      };
+      softRun(w.feather, 0, featherA);
+      softRun(w.core, 0, coreA);
+      draw.shadowBlur = 0;
+      draw.shadowColor = "rgba(0,0,0,0)";
+    }
+
+    function strokeVeinPulseMaroon(pts, tier, pulseA, draw) {
+      const vdraw = draw || veinCtx || ctx;
+      if (!vdraw || pts.length < 2) return;
+      const a = clamp(pulseA, 0, 1);
+      const w = veinPulseStrokeWidths(tier, a);
+      const secondary = tier === "secondary";
+      const featherA = ((secondary ? 0.26 : 0.32) + a * (secondary ? 0.06 : 0.08)) * 0.55;
+      const coreA = ((secondary ? 0.7 : 0.84) + a * (secondary ? 0.08 : 0.1)) * 0.72;
+      const blurPx = Math.max(1.4, veinBufPerCss() * 1.35);
+      vdraw.save();
+      vdraw.lineJoin = "round";
+      vdraw.lineCap = "round";
+      vdraw.shadowBlur = blurPx;
+      vdraw.shadowColor = "rgba(148,46,58,0.45)";
+      const run = (width, alpha) => {
+        const grain = (i) => {
+          const x = Math.sin(i * 12.9898 + pts.length * 78.233) * 43758.5453;
+          return x - Math.floor(x);
+        };
+        const step = Math.max(3, Math.round(pts.length / 9));
+        for (let i = 0; i < pts.length - 1; i += step) {
+          const end = Math.min(pts.length - 1, i + step + 1);
+          const slice = pts.slice(Math.max(0, i - 1), end + 1);
+          if (slice.length < 2) continue;
+          const u = i / Math.max(1, pts.length - 1);
+          const bulge = 0.3 + grain(i + 3) * 1.15;
+          const taper = 0.55 + 0.45 * Math.sin(Math.PI * u);
+          const fade = 0.55 + grain(i + 9) * 0.5;
+          const inkA = clamp(alpha * fade, 0, 1);
+          vdraw.beginPath();
+          vdraw.moveTo(slice[0].x, slice[0].y);
+          for (let k = 1; k < slice.length; k += 1) vdraw.lineTo(slice[k].x, slice[k].y);
+          vdraw.lineWidth = width * bulge * taper;
+          vdraw.strokeStyle = "rgba(148,46,58," + inkA.toFixed(3) + ")";
+          vdraw.stroke();
+        }
+      };
+      run(w.feather, featherA);
+      run(w.core, coreA);
+      vdraw.shadowBlur = 0;
+      vdraw.restore();
+    }
+
+    function paintVeinPulseCold(nowMs, vctx, strength) {
+      const draw = vctx || veinCtx;
+      if (!draw || !cw) return;
+      const paths = ensureVeinBufPaths();
+      if (!paths.length) return;
+      const syncPhase =
+        throbNow > 0.02 ? throbPhase * Math.PI * 2 : (nowMs * 0.001) * 4.15;
+      draw.save();
+      draw.globalCompositeOperation = "source-over";
+      for (let i = 0; i < paths.length; i += 1) {
+        const vp = paths[i];
+        if (vp.pts.length < 2) continue;
+        const wobble = 0.88 + 0.12 * Math.sin(veinPathPhaseSeed(vp.id) + syncPhase);
+        const a = strength * wobble * (vp.tier === "secondary" ? 0.84 : 1);
+        strokeVeinPulseMaroon(vp.pts, vp.tier || "primary", a, draw);
+      }
+      draw.restore();
+    }
+
+    function ensureVeinMerge() {
+      if (!bufW || !bufH) return false;
+      if (!veinMask) {
+        veinMask = doc.createElement("canvas");
+        veinMaskCtx = veinMask.getContext("2d", { willReadFrequently: true });
+        veinStamp = doc.createElement("canvas");
+        veinStampCtx = veinStamp.getContext("2d", { willReadFrequently: true });
+      }
+      if (!veinMaskCtx || !veinStampCtx) return false;
+      if (veinMask.width !== bufW || veinMask.height !== bufH) {
+        veinMask.width = bufW;
+        veinMask.height = bufH;
+        veinStamp.width = bufW;
+        veinStamp.height = bufH;
+        veinStampImg = veinMaskCtx.createImageData(bufW, bufH);
+      }
+      return !!veinStampImg;
+    }
+
+    function paintVeinPulse(nowMs, vctx) {
+      const draw = vctx || veinCtx;
+      if (!draw || !cw) return;
+      const paths = ensureVeinBufPaths();
+      mount.dataset.veinOverlay = String(paths.length);
+      if (!paths.length) return;
+      const strength = veinPulseStrength(nowMs);
+      if (strength < 0.012) return;
+      const hot = veinRenderHot();
+      if (!hot && veinSwellBaked) {
+        if (
+          Math.abs(strength - veinPulseLastStrength) < 0.006 &&
+          throbNow < 0.015 &&
+          veinTraceU < 0
+        ) {
+          return;
+        }
+        veinPulseLastStrength = strength;
+        paintVeinPulseCold(nowMs, draw, strength);
+        return;
+      }
+      if (!ensureVeinMerge()) return;
+      const syncPhase =
+        throbNow > 0.02 ? throbPhase * Math.PI * 2 : (nowMs * 0.001) * 4.15;
+      const g = veinMaskCtx;
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.globalCompositeOperation = "source-over";
+      g.shadowBlur = 0;
+      g.fillStyle = "#000";
+      g.fillRect(0, 0, bufW, bufH);
+      g.globalCompositeOperation = "lighten";
+      g.globalAlpha = 1;
+      g.lineJoin = "round";
+      g.lineCap = "round";
+      for (let i = 0; i < paths.length; i += 1) {
+        const vp = paths[i];
+        if (vp.pts.length < 2) continue;
+        const wobble = 0.88 + 0.12 * Math.sin(veinPathPhaseSeed(vp.id) + syncPhase);
+        const a = strength * wobble * (vp.tier === "secondary" ? 0.84 : 1);
+        strokeVeinPulsePath(vp.pts, vp.tier || "primary", a, g);
+      }
+      g.shadowBlur = 0;
+      const src = g.getImageData(0, 0, bufW, bufH).data;
+      const dst = veinStampImg.data;
+      for (let i = 0; i < src.length; i += 4) {
+        const cov = src[i];
+        const alpha = cov < 8 ? 0 : Math.min(196, Math.round(255 * Math.pow(cov / 255, 1.35)));
+        dst[i] = 148;
+        dst[i + 1] = 46;
+        dst[i + 2] = 58;
+        dst[i + 3] = alpha;
+      }
+      veinStampCtx.setTransform(1, 0, 0, 1, 0, 0);
+      veinStampCtx.putImageData(veinStampImg, 0, 0);
+      const blurPx = Math.max(2.1, veinBufPerCss() * 2.05);
+      draw.save();
+      draw.globalCompositeOperation = "source-over";
+      draw.globalAlpha = 1;
+      draw.filter = "blur(" + blurPx.toFixed(2) + "px)";
+      draw.drawImage(veinStamp, 0, 0);
+      draw.filter = "none";
+      draw.restore();
+    }
+
+    function paintVeinHighlight(vctx) {
+      const draw = vctx || veinCtx;
+      if (veinTraceU < 0 || !draw || !cw) return;
+      const path = veinTracePath || buildVeinPathClient(veinPathSide);
+      if (!path || path.length < 2) return;
+      const veinPointAt = (u) => {
+        const t = clamp(u, 0, 1) * (path.length - 1);
+        const i0 = Math.floor(t);
+        const i1 = Math.min(path.length - 1, i0 + 1);
+        const k = t - i0;
+        return {
+          x: path[i0].x + (path[i1].x - path[i0].x) * k,
+          y: path[i0].y + (path[i1].y - path[i0].y) * k
+        };
+      };
+      draw.save();
+      draw.globalCompositeOperation = "source-over";
+      draw.lineJoin = "round";
+      draw.lineCap = "round";
+      const traceW = clamp(cw * 0.046, 2.8, 8);
+      draw.lineWidth = traceW;
+      draw.strokeStyle = "rgba(196,88,108," + (0.18 + veinTraceU * 0.36).toFixed(3) + ")";
+      draw.beginPath();
+      const s0 = clientToBuf(path[0].x, path[0].y);
+      draw.moveTo(s0.x, s0.y);
+      for (let i = 1; i < path.length; i += 1) {
+        const u = i / (path.length - 1);
+        if (u >= veinTraceU) {
+          const mid = veinPointAt(veinTraceU);
+          const bm = clientToBuf(mid.x, mid.y);
+          draw.lineTo(bm.x, bm.y);
+          break;
+        }
+        const b = clientToBuf(path[i].x, path[i].y);
+        draw.lineTo(b.x, b.y);
+      }
+      draw.stroke();
+      if (!veinDrawIsOverlay(draw)) {
+        draw.globalCompositeOperation = "multiply";
+        draw.lineWidth = Math.max(1.2, traceW * 0.55);
+        draw.strokeStyle = "rgba(138, 6, 24, " + (0.28 + veinTraceU * 0.42).toFixed(3) + ")";
+        draw.beginPath();
+        draw.moveTo(s0.x, s0.y);
+        for (let i = 1; i < path.length; i += 1) {
+          const u = i / (path.length - 1);
+          if (u >= veinTraceU) {
+            const mid = veinPointAt(veinTraceU);
+            const bm = clientToBuf(mid.x, mid.y);
+            draw.lineTo(bm.x, bm.y);
+            break;
+          }
+          const b = clientToBuf(path[i].x, path[i].y);
+          draw.lineTo(b.x, b.y);
+        }
+        draw.stroke();
+      } else {
+        draw.globalCompositeOperation = "source-over";
+        draw.lineWidth = Math.max(1.2, traceW * 0.55);
+        draw.strokeStyle = "rgba(150, 8, 28, " + (0.4 + veinTraceU * 0.45).toFixed(3) + ")";
+        draw.beginPath();
+        draw.moveTo(s0.x, s0.y);
+        for (let i = 1; i < path.length; i += 1) {
+          const u = i / (path.length - 1);
+          if (u >= veinTraceU) {
+            const mid = veinPointAt(veinTraceU);
+            const bm = clientToBuf(mid.x, mid.y);
+            draw.lineTo(bm.x, bm.y);
+            break;
+          }
+          const b = clientToBuf(path[i].x, path[i].y);
+          draw.lineTo(b.x, b.y);
+        }
+        draw.stroke();
+      }
+      draw.restore();
+    }
+
+    function shaftNearlyStillForVein(nearFace) {
+      if (
+        ptr.active ||
+        dragging ||
+        oralEngaged
+      ) {
+        return false;
+      }
+      const velOk = Math.abs(vel) < (nearFace ? 0.075 : 0.052);
+      const tipOk = Math.abs(tipVel) < (nearFace ? 0.05 : 0.035) && Math.abs(tip) < (nearFace ? 0.04 : 0.028);
+      const motionOk = throbNow < 0.03 && nodNow < 0.03 && jiggle < (nearFace ? 0.05 : 0.03);
+      return velOk && tipOk && motionOk;
+    }
+
+    function shaftNearlyStill() {
+      return shaftNearlyStillForVein(false);
+    }
+
+    function tickVeinTrace(dt) {
+      if (!palmHand || flickBusy() || oralEngaged) {
+        veinStillMs = 0;
+        return;
+      }
+      const nearFace = shaftNearCompanionFace();
+      if (!nearFace) {
+        veinStillMs = 0;
+        veinTraceSpent = false;
+        return;
+      }
+      if (!shaftNearlyStillForVein(true)) {
+        veinStillMs = 0;
+        return;
+      }
+      veinStillMs += dt * 1000;
+      if (veinTraceSpent || veinStillMs < STILL_VEIN_MS) return;
+      const picked = pickVeinPathForContact(nearFace.at);
+      if (!picked || !picked.path) return;
+      veinTracePath = picked.path;
+      veinTracePathId = picked.id;
+      veinPathSide = contactSide || 1;
+      const top = picked.path[0];
+      const fingerStart = {
+        x: top.x,
+        y: top.y - clamp(mountRectW * 0.035, 6, 14)
+      };
+      if (
+        palmHand.play("trace_vein", {
+          path: picked.path,
+          start: fingerStart
+        })
+      ) {
+        veinTraceSpent = true;
+        veinStillMs = 0;
+        ensureTick();
+      }
+    }
+
     function jiggleTransferina() {
       const av = doc.querySelector(".hq-companion-avatar");
       const comp = av && (av.closest(".hq-companion") || av);
       if (!comp) return;
-      comp.classList.remove("is-flick-jiggle");
+      comp.classList.remove("is-flick-jiggle", "is-palm-soft-jiggle");
       void comp.offsetWidth;
       comp.classList.add("is-flick-jiggle");
       if (comp._flickJiggle) win.clearTimeout(comp._flickJiggle);
@@ -1912,6 +3450,20 @@
         comp.classList.remove("is-flick-jiggle");
         comp._flickJiggle = 0;
       }, 740);
+    }
+
+    function jiggleTransferinaSoft() {
+      const av = doc.querySelector(".hq-companion-avatar");
+      const comp = av && (av.closest(".hq-companion") || av);
+      if (!comp) return;
+      comp.classList.remove("is-flick-jiggle", "is-palm-soft-jiggle");
+      void comp.offsetWidth;
+      comp.classList.add("is-palm-soft-jiggle");
+      if (comp._palmJiggle) win.clearTimeout(comp._palmJiggle);
+      comp._palmJiggle = win.setTimeout(() => {
+        comp.classList.remove("is-palm-soft-jiggle");
+        comp._palmJiggle = 0;
+      }, 820);
     }
 
     const jiggleLines = [1, 2, 3, 4, 5].map(
@@ -1950,192 +3502,71 @@
       slapVoice.play().catch(() => {});
     }
 
+    let palmHand = null;
+    if (global.HqPalmHand) {
+      palmHand = global.HqPalmHand.create(win, {
+        calm,
+        cockNear: cockNearAvatar,
+        mountRectW: () => mountRectW,
+        mountBox: () => mount.getBoundingClientRect(),
+        place,
+        jiggle: jiggleTransferina,
+        jiggleSoft: jiggleTransferinaSoft,
+        playSlap,
+        playJiggle,
+        onVeinTrace(active, u) {
+          veinTraceU = active ? u : -1;
+          if (active) {
+            dirty = true;
+            ensureTick();
+          }
+        }
+      });
+      win.HqPalmHand = palmHand;
+    }
+
+    function endRestPalm() {
+      if (palmHand && typeof palmHand.releaseHold === "function") palmHand.releaseHold();
+      palmPatSpentForRest = false;
+    }
+
+    function maybePalmNotYet() {
+      if (!palmHand || oralEngaged || flickBusy()) return;
+      if (!tipNearOralMouth()) {
+        pushSoftOralSpent = false;
+        return;
+      }
+      if (canUseOral()) return;
+      if (pushSoftOralSpent) return;
+      const near = cockNearAvatar();
+      if (!near) return;
+      if (palmHand.play("push_soft", { near })) pushSoftOralSpent = true;
+    }
+
     function maybeFlick() {
-      if (flickSpent) return;
+      if (flickSpent || !palmHand) return;
       if (tipNearOralMouth()) return;
       if (oralEngaged) return;
       const near = cockNearAvatar();
       if (!near) return;
+      const av = doc.querySelector(".hq-companion-avatar");
+      if (!av) return;
+      const r = av.getBoundingClientRect();
+      const cx = r.left + r.width * 0.5;
       flickSpent = true;
       flickBusyUntil = win.performance.now() + 1560;
-      const hand = flickHand || doc.createElement("img");
-      hand.src = "/assets/transferina-hand.png";
-      if (!flickHand) {
-        flickHand = hand;
-        hand.className = "hq-flick-hand";
-        hand.alt = "";
-        hand.draggable = false;
-        hand.setAttribute("aria-hidden", "true");
-        doc.body.appendChild(hand);
-      }
-      const av = doc.querySelector(".hq-companion-avatar").getBoundingClientRect();
-      const w = 78;
-      const h = w * (352 / 976);
-      const ox = w * 0.88;
-      const oy = h * 0.5;
-      const palmLocal = { x: -0.36 * w, y: 0.14 * h };
-      const cx = av.left + av.width * 0.5;
-      const cy = av.top + av.height * 0.42;
-      let ux = near.at.x - cx;
-      let uy = near.at.y - cy;
-      const span = Math.hypot(ux, uy) || 1;
-      ux /= span;
-      uy /= span;
-      const girth = Math.max(18, mountRectW * 0.42);
-      const lean = clamp(ux * 14, -8, 8);
-      const slapDeg = 90 + lean;
-      const windDeg = slapDeg + 28;
-      const skin = {
-        x: near.at.x - ux * girth * 0.42,
-        y: near.at.y - uy * girth * 0.42,
-      };
-      const palmOffset = (deg) => {
-        const rad = (deg * Math.PI) / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-        const lx = palmLocal.x;
-        const ly = palmLocal.y;
-        return {
-          x: lx * cos - ly * sin,
-          y: lx * sin + ly * cos,
-        };
-      };
-      const capFor = (deg) => {
-        const p = palmOffset(deg);
-        return { x: skin.x - p.x, y: skin.y - p.y };
-      };
-      const landed = capFor(slapDeg);
-      const start = {
-        x: cx + ux * Math.min(av.width * 0.2, 28),
-        y: cy + uy * Math.min(av.height * 0.12, 16),
-      };
-      const ctrl = {
-        x: (start.x + landed.x) * 0.5 - uy * 22,
-        y: (start.y + landed.y) * 0.5 + ux * 22,
-      };
-      const bez = (t, a, c, e) => {
-        const u = 1 - t;
-        return u * u * a + 2 * u * t * c + t * t * e;
-      };
-      hand.style.width = w + "px";
-      hand.style.left = start.x - ox + "px";
-      hand.style.top = start.y - oy + "px";
-      const dirX = ux;
-      const dirY = uy;
-      let contacted = false;
-      let contactU = 1;
-      let holdX = start.x;
-      let holdY = start.y;
-      let holdRot = slapDeg;
-      let baseLeft = 0;
-      let baseTop = 0;
-      const t0 = win.performance.now();
-      const dur = 1500;
-      let flickTrail = null;
-      let flickLastSpawn = 0;
-      const flickParticles = calm(win)
-        ? null
-        : {
-            spawn(x, y, vx, vy, strength) {
-              const sp = Math.hypot(vx, vy) || 1;
-              const nx = vx / sp;
-              const ny = vy / sp;
-              const px = x - nx * (10 + strength * 8);
-              const py = y - ny * (10 + strength * 8);
-              const el = doc.createElement("span");
-              el.className = "hq-flick-particle";
-              el.setAttribute("aria-hidden", "true");
-              el.style.left = px + "px";
-              el.style.top = py + "px";
-              el.style.width = 5 + strength * 16 + "px";
-              el.style.setProperty("--hq-flick-rot", (Math.atan2(vy, vx) * 180) / Math.PI + "deg");
-              el.style.setProperty("--hq-flick-dx", (-nx * (6 + strength * 5)).toFixed(1) + "px");
-              el.style.setProperty("--hq-flick-dy", (-ny * (6 + strength * 5)).toFixed(1) + "px");
-              doc.body.appendChild(el);
-              win.setTimeout(() => el.remove(), 460);
-            },
-            follow(capX, capY, rot, now) {
-              if (!flickTrail) {
-                flickTrail = { x: capX, y: capY, t: now };
-                return;
-              }
-              const dt = Math.max(0.008, (now - flickTrail.t) / 1000);
-              const vx = (capX - flickTrail.x) / dt;
-              const vy = (capY - flickTrail.y) / dt;
-              flickTrail = { x: capX, y: capY, t: now };
-              const speed = Math.hypot(vx, vy);
-              if (speed < 140 || now - flickLastSpawn < 26) return;
-              flickLastSpawn = now;
-              const palm = palmOffset(rot);
-              const px = capX + palm.x * 0.42;
-              const py = capY + palm.y * 0.42;
-              const strength = clamp(speed / 820, 0.28, 0.95);
-              this.spawn(px, py, vx, vy, strength);
-              if (speed > 360 && Math.random() < 0.45) this.spawn(px, py, vx, vy, strength * 0.72);
-            },
-          };
-      const paint = (capX, capY, deg, op) => {
-        hand.style.opacity = String(op);
-        hand.style.transform =
-          "translate(" +
-          (capX - start.x).toFixed(1) +
-          "px, " +
-          (capY - start.y).toFixed(1) +
-          "px) rotate(" +
-          deg.toFixed(1) +
-          "deg)";
-      };
-      const frame = (now) => {
-        const u = Math.min(1, (now - t0) / dur);
-        if (!contacted) {
-          const raw = u < 0.14 ? 0 : Math.min(1, (u - 0.14) / 0.36);
-          const along = 1 - (1 - raw) * (1 - raw);
-          const rot = windDeg + along * (slapDeg - windDeg);
-          let capX = bez(along, start.x, ctrl.x, landed.x);
-          let capY = bez(along, start.y, ctrl.y, landed.y);
-          const palm = palmOffset(rot);
-          const palmX = capX + palm.x;
-          const palmY = capY + palm.y;
-          if (along > 0.72 && Math.hypot(palmX - skin.x, palmY - skin.y) < 22) {
-            const planted = capFor(rot);
-            capX = planted.x;
-            capY = planted.y;
-            contacted = true;
-            contactU = u;
-            holdX = capX;
-            holdY = capY;
-            holdRot = rot;
-            const box = mount.getBoundingClientRect();
-            baseLeft = box.left;
-            baseTop = box.top;
-            flickLean = near.at.x < cx ? -1.8 : 1.8;
-            jiggle = 1;
-            jigglePhase = 0;
-            jiggleTransferina();
-            playSlap();
-            win.setTimeout(playJiggle, 180);
-            contactAim = null;
-            restName = "";
-            restAnchor = null;
-            ensureTick();
-          }
-          paint(capX, capY, rot, u < 0.12 ? u / 0.12 : 1);
-          if (flickParticles && raw > 0.05) flickParticles.follow(capX, capY, rot, now);
-        } else {
-          const k = clamp((u - contactU) / 0.3, 0, 1);
-          const ease = 1 - (1 - k) * (1 - k);
-          const travel = ease * 52;
-          place(baseLeft + dirX * travel, baseTop + dirY * travel);
-          const capX = holdX + dirX * travel;
-          const capY = holdY + dirY * travel;
-          const rot = holdRot;
-          const fade = clamp((u - contactU - 0.3) / 0.22, 0, 1);
-          paint(capX, capY, rot, 1 - fade);
-          if (flickParticles && k < 0.85) flickParticles.follow(capX, capY, rot, now);
+      palmHand.play("slap", {
+        onSlapContact: () => {
+          flickLean = near.at.x < cx ? -1.8 : 1.8;
+          jiggle = 1;
+          jigglePhase = 0;
+          contactAim = null;
+          restName = "";
+        endRestPalm();
+          restAnchor = null;
+          ensureTick();
         }
-        if (u < 1) win.requestAnimationFrame(frame);
-      };
-      win.requestAnimationFrame(frame);
+      });
     }
 
     function tick(t) {
@@ -2171,98 +3602,259 @@
       else stopSim();
     }
 
-    // Idle shimmer loop. Full frame rate whenever anything is in motion
-    // (sim running, pointer/oral engagement, resting on the avatar, throb/nod,
-    // warmth/give settling);
-    // ~15 fps when only the glisten is left; parked while the tab is hidden
-    // or the mount is not on screen, and woken by ensureTick/visibility/IO.
     const GLISTEN_IDLE_MS = 60;
-    let glistenOn = false;
-    let glistenFrame = false;
-    let glistenTimer = 0;
-    let glistenLast = 0;
+    const VEIN_IDLE_MS = 80;
     let glistenSeen = true;
-    function glistenBusy() {
+
+    function veinRenderHot() {
+      return !!(
+        dragging || ptr.active || oralEngaged || oralDepthSm > 0.01 ||
+        throbNow > 0.02 || veinTraceU >= 0
+      );
+    }
+
+    function simBusy() {
       return (
         running ||
         dragging ||
         ptr.active ||
         oralEngaged ||
         oralPhase !== "idle" ||
-        oralDepthSm > 0.01 ||
+        oralDepthSm > 0.01
+      );
+    }
+
+    function glistenBusy() {
+      return (
+        simBusy() ||
         !!restName ||
         throbStart >= 0 ||
         nodStart >= 0 ||
-        warmth > 0 ||
+        warmth > 0.008 ||
         Math.abs(give) > 0.0005 ||
         Math.abs(giveVel) > 0.0005
       );
     }
-    function glistenQueue() {
-      if (glistenFrame) return;
-      glistenFrame = true;
-      win.requestAnimationFrame(glistenLoop);
+
+    function danglePaintDeepSleep() {
+      if (!danglePaintArmed) return true;
+      const motion = win.HqMotion;
+      if (motion && !motion.dangleShouldRun()) return true;
+      return doc.hidden || !glistenSeen || motionReduced;
     }
-    function glistenLoop(t) {
-      glistenFrame = false;
-      if (!glistenOn) return;
-      if (doc.hidden) {
-        glistenOn = false;
+
+    function armDanglePaint() {
+      if (danglePaintArmed) {
+        if (!mount.classList.contains("is-softbody") && img.complete) resizeCanvas();
+        scheduleDanglePaint(0);
         return;
       }
-      if (!glistenBusy()) {
-        if (!glistenSeen) {
-          glistenOn = false;
-          return;
-        }
-        const throbIn = nextThrobAt ? nextThrobAt - win.performance.now() : Infinity;
-        const wait = Math.min(GLISTEN_IDLE_MS - (t - glistenLast), throbIn - 24);
-        if (glistenLast && wait > 4) {
-          glistenTimer = win.setTimeout(() => {
-            glistenTimer = 0;
-            glistenQueue();
-          }, wait);
-          return;
-        }
+      danglePaintArmed = true;
+      if (dangleArmTimer) {
+        win.clearTimeout(dangleArmTimer);
+        dangleArmTimer = 0;
       }
-      glistenLast = t;
-      updateThrob(t);
-      followRest();
-      if (!running) updateBodyFeel(t, !!restName, restName ? 14 : 0, restName);
-      if (running || doc.hidden || !cw) {
-        glistenQueue();
+      if (img.complete) resizeCanvas();
+      scheduleDanglePaint(0);
+    }
+
+    function danglePaintColdFlat() {
+      return bodyIsFlat() && veinSwellBaked && !veinRenderHot() && !simBusy() && !glistenBusy();
+    }
+
+    function clearDanglePaintTimer() {
+      if (danglePaintTimer) {
+        win.clearTimeout(danglePaintTimer);
+        danglePaintTimer = 0;
+      }
+    }
+
+    function scheduleDanglePaint(delayMs) {
+      if (motionReduced || !ctx) {
+        danglePaintOn = false;
         return;
       }
+      if (danglePaintDeepSleep()) {
+        danglePaintOn = false;
+        return;
+      }
+      danglePaintOn = true;
+      if (danglePaintFrame) return;
+      if (delayMs > 4) {
+        clearDanglePaintTimer();
+        danglePaintTimer = win.setTimeout(() => {
+          danglePaintTimer = 0;
+          danglePaintQueue();
+        }, delayMs);
+        return;
+      }
+      danglePaintQueue();
+    }
+
+    function danglePaintQueue() {
+      if (danglePaintFrame || !danglePaintOn || danglePaintDeepSleep()) return;
+      danglePaintFrame = true;
+      win.requestAnimationFrame(danglePaintLoop);
+    }
+
+    function paintFlatOrCurve(t) {
       if (restName || oralEngaged || throbNow > 0.01 || nodNow > 0.01) renderCurve();
       else renderFlat();
-      paintGlisten(t);
-      glistenQueue();
     }
-    function wakeGlisten() {
-      if (!ctx) return;
-      if (glistenTimer) {
-        win.clearTimeout(glistenTimer);
-        glistenTimer = 0;
+
+    function paintVeinOverlayFrame(t, hot, paintRaster) {
+      if (!syncVeinOverlayBox()) {
+        if (running) return;
+        if (paintRaster) {
+          if (hot) {
+            renderFlat();
+            if (ensureVeinSwellField()) paintVeinSwell(t);
+          } else blitMemberBake(t);
+          paintGlisten(t);
+        } else {
+          blitMemberBake(t);
+          paintGlisten(t);
+        }
+        paintVeinPulse(t, ctx);
+        paintVeinHighlight(ctx);
+        return;
       }
-      glistenOn = true;
-      glistenQueue();
+      veinCtx.setTransform(1, 0, 0, 1, 0, 0);
+      veinCtx.clearRect(0, 0, veinCanvas.width, veinCanvas.height);
+      paintVeinPulse(t, veinCtx);
+      paintVeinHighlight(veinCtx);
+      if (hot && ensureVeinSwellField()) warpVeinOverlay(veinPulseStrength(t));
     }
+
+    function danglePaintLoop(t) {
+      danglePaintFrame = false;
+      if (!danglePaintOn || danglePaintDeepSleep()) {
+        danglePaintOn = false;
+        return;
+      }
+      if (!veinCtx || !bufW || !bufH) {
+        scheduleDanglePaint(120);
+        return;
+      }
+      if (!veinPathsReady()) {
+        scheduleDanglePaint(120);
+        return;
+      }
+      const hot = veinRenderHot();
+      const coldFlat = danglePaintColdFlat();
+      const minGap = hot ? 0 : coldFlat ? VEIN_IDLE_MS : GLISTEN_IDLE_MS;
+      const prev = danglePaintLast;
+      if (!hot && prev && t - prev < minGap) {
+        scheduleDanglePaint(Math.max(8, minGap - (t - prev)));
+        return;
+      }
+      danglePaintLast = t;
+      const dt = prev ? Math.min(0.05, (t - prev) / 1000) : 0.016;
+      const paintStart = win.performance.now();
+      updateThrob(t);
+      stepVeinPulse(dt);
+      if (veinWasHot && !hot) {
+        veinSwellBaked = false;
+        invalidateMemberBake();
+        veinPulseLastStrength = -1;
+      }
+      veinWasHot = hot;
+      const paintRaster = hot || !veinSwellBaked;
+
+      if (running) {
+        paintVeinOverlayFrame(t, hot, paintRaster);
+        if (paintRaster) veinSwellBaked = true;
+        scheduleDanglePaint(hot ? 0 : VEIN_IDLE_MS);
+        return;
+      }
+
+      followRest();
+      if (!running) updateBodyFeel(t, !!restName, restName ? 14 : 0, restName);
+
+      if (bodyIsFlat()) {
+        if (paintRaster) {
+          if (hot) {
+            renderFlat();
+            if (ensureVeinSwellField()) paintVeinSwell(t);
+            paintGlisten(t);
+            rebuildMemberBake(t, true);
+          } else {
+            rebuildMemberBake(t, false);
+            blitMemberBake(t);
+            paintGlisten(t);
+            scheduleSwellIdleBake();
+          }
+        } else {
+          blitMemberBake(t);
+          paintGlisten(t);
+        }
+      } else {
+        paintFlatOrCurve(t);
+        paintGlisten(t);
+      }
+
+      paintVeinOverlayFrame(t, hot, paintRaster);
+      if (paintRaster) veinSwellBaked = true;
+
+      const paintCost = win.performance.now() - paintStart;
+      if (win.HqMotion) win.HqMotion.noteCost("dangle", paintCost);
+
+      if (coldFlat) {
+        const throbIn = nextThrobAt ? nextThrobAt - win.performance.now() : Infinity;
+        scheduleDanglePaint(Math.min(VEIN_IDLE_MS * 2, Math.max(VEIN_IDLE_MS, throbIn - 24)));
+      } else if (hot || glistenBusy()) {
+        danglePaintQueue();
+      } else {
+        const throbIn = nextThrobAt ? nextThrobAt - win.performance.now() : Infinity;
+        scheduleDanglePaint(Math.min(GLISTEN_IDLE_MS * 2, Math.max(GLISTEN_IDLE_MS, throbIn - 24)));
+      }
+    }
+
+    function wakeGlisten() {
+      if (!ctx || motionReduced) return;
+      clearDanglePaintTimer();
+      danglePaintOn = true;
+      scheduleDanglePaint(0);
+    }
+
+    function wakeVeinPulse() {
+      wakeGlisten();
+    }
+
     function startGlisten() {
-      if (glistenOn || !ctx) return;
+      if (danglePaintOn || !ctx || motionReduced) return;
       wakeGlisten();
     }
     doc.addEventListener("visibilitychange", () => {
       if (!doc.hidden) wakeGlisten();
+      else if (veinCtx) veinCtx.clearRect(0, 0, bufW, bufH);
     });
     if (typeof win.IntersectionObserver === "function") {
       new win.IntersectionObserver((entries) => {
         const last = entries[entries.length - 1];
         glistenSeen = !last || last.isIntersecting;
-        if (glistenSeen) wakeGlisten();
+        if (win.HqMotion) win.HqMotion.setDangleSeen(glistenSeen);
+        if (glistenSeen) {
+          if (!danglePaintArmed && !dangleArmTimer) {
+            dangleArmTimer = win.setTimeout(() => {
+              dangleArmTimer = 0;
+              armDanglePaint();
+            }, 900);
+          }
+          wakeGlisten();
+        }
       }).observe(mount);
     }
+    mount.addEventListener(
+      "pointerenter",
+      () => {
+        armDanglePaint();
+      },
+      { passive: true }
+    );
 
     function ensureTick() {
+      armDanglePaint();
       mount.classList.add("is-wobbling");
       swing.classList.add("is-dangle-active");
       wakeGlisten();
@@ -2299,15 +3891,36 @@
       ch = nextCh;
       pxPerScreen = cw / mountRectW;
       applyLayout();
+      veinBufKey = "";
+      veinBufPaths = null;
+      veinBoxKey = "";
+      swellKey = "";
+      invalidateMemberBake();
       canvas.width = bufW;
       canvas.height = bufH;
+      veinCanvas.width = bufW;
+      veinCanvas.height = bufH;
       canvas.style.setProperty("--dangle-cw", String(cw));
       canvas.style.setProperty("--dangle-pad", String(padX));
       canvas.style.setProperty("--dangle-pad-y", String(padY));
       canvas.style.setProperty("--dangle-buf-w", String(bufW));
+      veinCanvas.style.setProperty("--dangle-cw", String(cw));
+      veinCanvas.style.setProperty("--dangle-pad", String(padX));
+      veinCanvas.style.setProperty("--dangle-pad-y", String(padY));
+      veinCanvas.style.setProperty("--dangle-buf-w", String(bufW));
       if (!ctx) {
         ctx = canvas.getContext("2d", { alpha: true });
         if (ctx) ctx.imageSmoothingEnabled = true;
+      }
+      if (!veinCtx) {
+        veinCtx = veinCanvas.getContext("2d", { alpha: true });
+        if (veinCtx) veinCtx.imageSmoothingEnabled = true;
+      }
+      if (!danglePaintArmed) {
+        mount.classList.remove("is-softbody");
+        resizePending = false;
+        dirty = true;
+        return;
       }
       mount.classList.add("is-softbody");
       bakeSource();
@@ -2315,9 +3928,12 @@
       dirty = true;
       if (!running) {
         renderFlat();
-        paintGlisten(win.performance.now());
+        if (!motionReduced) paintGlisten(win.performance.now());
       }
+      if (motionReduced) return;
       startGlisten();
+      stepVeinPulse(0.05);
+      veinPulseSm = Math.max(veinPulseSm, veinIdlePulseFloor(win.performance.now()));
     }
 
     function queueResize() {
@@ -2426,6 +4042,7 @@
         throbEnvTip = 0;
         throbPhase = 0;
         restName = "";
+        endRestPalm();
         restAnchor = null;
         contactAim = null;
         if (!oralEngaged) {
@@ -2512,6 +4129,14 @@
 
     function endPointer(ev) {
       if (!ptr.active) return;
+      const tapMoved = Math.hypot((ev.clientX || 0) - ptr.downX, (ev.clientY || 0) - ptr.downY);
+      if (tapMoved < 12) {
+        const nowTap = win.performance.now();
+        if (nowTap - veinSwellTapAt < 360) {
+          veinSwellTapAt = 0;
+          setVeinSwellMode(veinSwellMode === "extreme" ? "epic" : "extreme");
+        } else veinSwellTapAt = nowTap;
+      }
       ptr.active = false;
       dragging = false;
       const wasMoving = ptr.moving;
@@ -2543,6 +4168,7 @@
           tipVel = 0;
         } else {
           restName = "";
+        endRestPalm();
           vel = clamp(vel, -5.5, 5.5);
           hangLean = 0;
         }
@@ -2559,6 +4185,31 @@
       ensureTick();
     }
 
+    win.__hqVeinSwell = function (mode) {
+      if (mode) setVeinSwellMode(mode);
+      return veinSwellMode;
+    };
+
+    win.__hqVeinDebug = function () {
+      let paths = 0;
+      try {
+        paths = ensureVeinBufPaths().length;
+      } catch (_) {
+        paths = 0;
+      }
+      const box = veinCanvas.getBoundingClientRect();
+      return {
+        ready: veinPathsReady(),
+        paths: paths,
+        sm: veinPulseSm,
+        strength: veinPulseStrength(win.performance.now()),
+        overlay: mount.dataset.veinOverlay || "",
+        box: Math.round(box.width),
+        softbody: mount.classList.contains("is-softbody"),
+        swell: veinSwellMode
+      };
+    };
+
     mount.addEventListener("pointerup", endPointer);
     mount.addEventListener("pointercancel", endPointer);
     win.addEventListener("resize", () => {
@@ -2570,6 +4221,18 @@
       const box = mount.getBoundingClientRect();
       place(box.left, box.top);
     });
+  }
+
+  if (typeof document !== "undefined") {
+    const boot = () => {
+      try {
+        initDanglingMember(global);
+      } catch (err) {
+        console.error("HqDanglingMember init failed:", err);
+      }
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });
+    else boot();
   }
 
   return { initDanglingMember, calm };

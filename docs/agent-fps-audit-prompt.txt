@@ -1,0 +1,108 @@
+FPS / jank audit — transfert-hq (Transferania companion)
+============================================================
+
+Copy everything below the line into an external agent (GitHub-only clone is enough unless the operator provides a live browser).
+
+---
+
+You are auditing frame time and jank in the Transferania HQ companion on GitHub. You do not have a live bridge or browser unless the operator gives you one. Reason from code and committed assets on branch main.
+
+Repo: https://github.com/Vieuxpepe/transfert-hq
+Branch: main (ignore stale docs that only mention transferania-persona)
+Handoff doc: docs/AGENT-GITHUB.md
+Runtime (not in repo): iphone_bridge.py serves HQ + static assets; companion runs in the browser as .hq-companion DOM + JS.
+
+GOAL
+----
+Find credible causes of dropped frames or main-thread stalls during:
+
+1. Idle adult mode (layered portrait, live2D loop running)
+2. Bust pull (hold + release settle)
+3. Dangling-member interaction (assets/hq-dangling-member.js)
+4. Toggle adult off/on (no bleed of compositor/audio state)
+
+Deliver file:line evidence, not generic WebGL/SSR advice. Separate Rendering/Painting risks from Scripting risks.
+
+DO NOT ASSUME (common wrong audits)
+------------------------------------
+- There is no custom fragment-shader gloss pipeline or SSR. Rig gloss is PNG layers + CSS filter / transforms.
+- Physics is not a separate fixed-timestep engine; it lives in startLive2DLoop rAF with dt clamped (clampNum(rawDt, 0.004, 0.032) in assets/hq-companion.js).
+- Impact audio uses cached decoded buffers + Web Audio createBufferSource per hit, with cooldowns (e.g. ~110 ms global, tit-pull motion accents ~1050 ms, dangle gap() in assets/hq-dangle-audio.js). Do not claim 60 new Audio() per second without tracing call sites.
+- Reaction manifest loads manifest.runtime.json once at init (~250 KB path in assets/hq-companion-reaction-audio.js), not multi-MB JSON every frame.
+
+PRIMARY FILES TO AUDIT
+----------------------
+Main loop:
+  assets/hq-companion.js — startLive2DLoop, scheduleLive2DFrame, postPaintRects,
+  syncContactBlush, renderBustPull, setPullVar, live2dVarScope
+
+Pull / FX CSS:
+  assets/hq-companion.css, assets/hq-companion-adult-fx.css — is-bust-pull, shake/vibr
+  keyframes, --pull-*, steam mist, contact blush filters
+
+Audio / impacts:
+  assets/hq-companion.js (playManifestImpact, tit pull loop/breath bed),
+  assets/hq-dangle-audio.js, assets/hq-companion-sfx-bus.js,
+  assets/hq-companion-reaction-audio.js
+
+Dangle:
+  assets/hq-dangling-member.js
+
+Static checks:
+  tests/check_hq_companion_*.mjs, tests/test_hq_dangling_perf15.py,
+  tests/test_hq_motion_perf14.py
+
+HYPOTHESES TO VALIDATE OR REJECT (with code cites)
+--------------------------------------------------
+1. Compositor: backdrop-filter on .hq-companion-steam-mist during pull / is-steamy-glass;
+   filter on rig bust/face during pull; infinite CSS animations (hq-companion-bust-shake-soft,
+   hq-companion-pull-bust-vibr) while is-bust-pull.
+
+2. Main thread: Per-frame setPullVar / rig CSS custom properties during pull; double
+   syncContactBlush (live2D step + renderBustPull); live2dVarIndex / stylesheet rescans on
+   DOM changes.
+
+3. Layout: Whether hot paths call getBoundingClientRect / getComputedStyle inside the same
+   rAF turn as writes (note: postPaintRects defers reads — verify callers respect that).
+
+4. Throttling: Compact collapsed mode 48 ms min gap on live2D unless bust-pull/drag —
+   confirm pull still runs uncapped.
+
+5. Memory / GC: Short-lived Web Audio nodes per impact vs S.activeImpactVoices cap (2);
+   long-lived tit-pull loop + breath bed nodes during hold.
+
+6. Asset weight: Larger rig gloss PNGs under assets/companion/rig-neutral-v1/ — bandwidth/
+   memory, not shader ALU.
+
+METHOD (required)
+-----------------
+1. Static pass: grep/read the files above; build a call graph for rAF → pull → blush →
+   steam → audio.
+
+2. Rank findings: P0 (likely visible jank) / P1 / P2 with mechanism and when it triggers
+   (NSFW only? pull only?).
+
+3. Propose fixes: smallest diffs first (e.g. drop backdrop-filter on low-end, reduce filter
+   during pull, batch setPullVar, throttle blush sync). No drive-by refactors.
+
+4. Optional live pass (only if operator can run Chrome Performance): record 5 s idle adult,
+   5 s deep pull, note Scripting vs Painting share.
+
+OUT OF SCOPE
+------------
+- Merging unrelated forge/carnet branches
+- Committing secrets or bridge_config.json
+- ElevenLabs regen or rebaking OGG unless tied to decode spikes with evidence
+- FPS claims without tying to a code path or profile slice
+
+OUTPUT FORMAT
+-------------
+1. Executive summary (3–5 bullets)
+2. Findings table: ID | Severity | Trigger | Evidence (file:line) | Fix idea | Risk of fix
+3. Rejected hypotheses (what you checked and why it is not the issue)
+4. Suggested measurement checklist for the operator (exact UI steps + DevTools settings)
+
+START HERE
+----------
+Read docs/AGENT-GITHUB.md, then scan assets/hq-companion.js for requestAnimationFrame,
+renderBustPull, and syncContactBlush.

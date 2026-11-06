@@ -82,6 +82,25 @@
   84%{transform:scale(1.012,.992) rotate(-.3deg)}
   100%{transform:scale(1,1) rotate(0deg)}
 }
+.hq-companion.is-palm-soft-jiggle .hq-companion-avatar{
+  animation:hq-companion-palm-soft-jiggle .82s ease-out both!important;
+  transform-origin:50% 72%;
+}
+@keyframes hq-companion-palm-soft-jiggle{
+  0%,100%{transform:scale(1) rotate(0deg)}
+  38%{transform:scale(1.03,.98) rotate(-1deg)}
+  62%{transform:scale(.99,1.02) rotate(.65deg)}
+}
+.hq-flick-hand.is-open-palm{filter:drop-shadow(0 5px 7px rgba(196,75,122,.22)) drop-shadow(0 6px 8px rgba(0,0,0,.28))}
+.hq-flick-hand.is-palm-mirror{transform-origin:12% 50%}
+.hq-flick-hand.is-point-hand{
+  transform-origin:18% 42%;
+  filter:drop-shadow(0 4px 6px rgba(196,75,122,.18)) drop-shadow(0 5px 7px rgba(0,0,0,.26));
+}
+.hq-flick-hand.is-grip-hand{
+  transform-origin:33% 48%;
+  filter:drop-shadow(0 5px 7px rgba(196,75,122,.2)) drop-shadow(0 6px 9px rgba(0,0,0,.32));
+}
 /* Dangling member — pinned to the top-right; slap physics in hq-chrome.js. */
 .hq-dangling-member-mount{
   position:fixed;
@@ -97,7 +116,7 @@
   -webkit-user-select:none;
 }
 .hq-dangling-member-mount:active{cursor:grabbing}
-.hq-dangling-member-swing{transform-origin:50% 0;overflow:visible}
+.hq-dangling-member-swing{transform-origin:50% 0;overflow:visible;position:relative}
 .hq-dangling-member-swing.is-dangle-active{will-change:transform}
 .hq-dangling-member{
   display:block;
@@ -113,6 +132,8 @@
   pointer-events:none;
   -webkit-user-drag:none;
   filter:drop-shadow(0 12px 14px rgba(0,0,0,.42));
+  position:relative;
+  z-index:0;
   width:calc(100% * var(--dangle-buf-w, 1) / var(--dangle-cw, 1));
   max-width:none;
   margin-left:calc(-100% * var(--dangle-pad, 0) / var(--dangle-cw, 1));
@@ -120,6 +141,17 @@
 }
 .hq-dangling-member-mount.is-softbody .hq-dangling-member{display:none}
 .hq-dangling-member-mount.is-softbody .hq-dangling-member-canvas{display:block}
+.hq-dangling-member-vein-canvas{
+  display:none;
+  position:absolute;
+  margin:0;
+  height:auto;
+  pointer-events:none;
+  -webkit-user-drag:none;
+  max-width:none;
+  z-index:2;
+}
+.hq-dangling-member-mount.is-softbody .hq-dangling-member-vein-canvas{display:block}
 body[data-view] .view-bar{padding-right:84px}
 @media (min-width:900px){
   .hq-dangling-member-mount{width:78px;right:max(18px, env(safe-area-inset-right))}

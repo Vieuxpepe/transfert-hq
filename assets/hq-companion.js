@@ -26,6 +26,37 @@
   const LS_FORGE_POSE_LOCK = "hq_companion_forge_pose_lock";
   const LS_LAST_PORTRAIT_HREF = "hq_companion_last_portrait_href";
   const LS_LAYERED_PORTRAIT = "hq_companion_layered_portrait";
+  const LS_ACCESSORIES = "hq_companion_accessories_v1";
+  const ACCESSORIES_BASE = "/assets/companion/rig-neutral-v1/accessories/";
+  const ACCESSORIES_DEFAULT = Object.freeze({ hair: "default", necklace: "none", earring: "baked", earringColor: "or" });
+  const ACCESSORIES_HAIR = [
+    ["default", "Classique"], ["tresses", "Tresses"], ["carre", "Carré"], ["queue", "Queue"],
+    ["chignons", "Chignons"], ["frange", "Frange"], ["wolf", "Wolf"], ["glamour", "Glamour"],
+    ["matin", "Matin"], ["pro", "Pro"], ["caverne", "Caverne"],
+  ];
+  const ACCESSORIES_NECKLACES = [
+    ["none", "Aucun"], ["etincelle", "Étincelle"], ["ambre", "Ambre"], ["perles", "Perles"],
+    ["minerai", "Minerai"], ["circuit", "Circuit"], ["flanelle", "Flanelle"], ["erable", "Érable"],
+    ["fraise", "Fraise"], ["chat", "Chat"], ["etoile", "Étoile"], ["dealwithit", "Deal with it"],
+    ["doge", "Doge"], ["canards", "Canards"], ["poutine", "Poutine"],
+  ];
+  const ACCESSORIES_EARRING_MODES = [
+    ["baked", "Intégrées (défaut)"], ["none", "Aucune"], ["origine", "Or d'origine"],
+    ["creole", "Créole"], ["goutte", "Goutte"], ["etincelle", "Étincelle"], ["lune", "Lune"], ["perle", "Perle"],
+  ];
+  const ACCESSORIES_EARRING_COLORS = [
+    ["or", "Or"], ["argent", "Argent"], ["or-rose", "Or rose"],
+    ["emeraude", "Émeraude"], ["rubis", "Rubis"], ["saphir", "Saphir"],
+  ];
+  const EARRING_COLOR_FILTER = Object.freeze({
+    or: "none",
+    argent: "grayscale(0.35) brightness(1.45) saturate(0.25)",
+    "or-rose": "hue-rotate(-18deg) saturate(1.25) brightness(1.08)",
+    emeraude: "hue-rotate(95deg) saturate(1.55) brightness(0.95)",
+    rubis: "hue-rotate(-35deg) saturate(1.7) brightness(1.02)",
+    saphir: "hue-rotate(195deg) saturate(1.45) brightness(0.98)",
+  });
+  /* accessories-v1 integrated */
   const TREAT_FORGE_KEYS = { "☕": "coffee", "🍓": "strawberry", "🌹": "rose", "💋": "kiss" };
   const LS_COLLAPSED = "hq_companion_collapsed";
   const LS_FX_SECTION = "hq_companion_fx_section";
@@ -68,8 +99,55 @@
     if (id === "garment-front") {
       return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     }
-    return RIG_NEUTRAL_BASE + id + ".svg";
+    return RIG_NEUTRAL_BASE + id + ".svg?v=mouthrest1";
   }
+
+  function readAccessories(win) {
+    try {
+      const raw = win && win.localStorage && win.localStorage.getItem(LS_ACCESSORIES);
+      if (!raw) return Object.assign({}, ACCESSORIES_DEFAULT);
+      const parsed = JSON.parse(raw);
+      const hairIds = new Set(ACCESSORIES_HAIR.map((x) => x[0]));
+      const neckIds = new Set(ACCESSORIES_NECKLACES.map((x) => x[0]));
+      const earIds = new Set(ACCESSORIES_EARRING_MODES.map((x) => x[0]));
+      const colIds = new Set(ACCESSORIES_EARRING_COLORS.map((x) => x[0]));
+      return {
+        hair: hairIds.has(parsed.hair) ? parsed.hair : "default",
+        necklace: neckIds.has(parsed.necklace) ? parsed.necklace : "none",
+        earring: earIds.has(parsed.earring) ? parsed.earring : "baked",
+        earringColor: colIds.has(parsed.earringColor) ? parsed.earringColor : "or",
+      };
+    } catch (_) {
+      return Object.assign({}, ACCESSORIES_DEFAULT);
+    }
+  }
+
+  function writeAccessories(win, patch) {
+    const next = Object.assign(readAccessories(win), patch || {});
+    try { win.localStorage.setItem(LS_ACCESSORIES, JSON.stringify(next)); } catch (_) {}
+    return next;
+  }
+
+  function rigHairTextureSrc(acc) {
+    const a = acc || ACCESSORIES_DEFAULT;
+    const bareEars = a.earring !== "baked";
+    if (!a.hair || a.hair === "default") {
+      return bareEars
+        ? ACCESSORIES_BASE + "earrings/hair-no-earrings.png"
+        : RIG_NEUTRAL_BASE + "hair-new-baked.png";
+    }
+    return ACCESSORIES_BASE + "hair/hair-" + a.hair + "-1354.png";
+  }
+
+  function rigNecklaceSrc(id) {
+    if (!id || id === "none") return "";
+    return ACCESSORIES_BASE + "necklaces/collier-" + id + "-1354.png";
+  }
+
+  function rigEarringFilter(colorId) {
+    return EARRING_COLOR_FILTER[colorId] || EARRING_COLOR_FILTER.or;
+  }
+
   const ADULT_BOOTY_POSES = { "all-fours": "/assets/companion/chat/all-fours.jpg", "all-fours-side": "/assets/companion/chat/all-fours-side.jpg", "all-fours-broom": "/assets/companion/chat/all-fours-broom.jpg", "bed-prone": "/assets/companion/chat/bed-prone.jpg", "booty-arch-mirror": "/assets/companion/chat/booty-arch-mirror.jpg", "doggystyle-lookback": "/assets/companion/chat/doggystyle-lookback.jpg" };
   const ADULT_LOOP_MS = { "tease-sway": 2600, "tease-glow": 2400, "tease-ken": 2800, "tease-bob": 4200, "tease-arch": 4600, "tease-booty": 4600 };
   const ADULT_LOOP_HREF = { "tease-01": "/assets/companion/loops/tease-01.jpg", "tease-02": "/assets/companion/loops/tease-02.jpg" };
@@ -95,6 +173,43 @@
     } catch (_) {
       return false;
     }
+  }
+
+  function ensureCompanionPalmHand(win) {
+    if (win.HqPalmHand) return win.HqPalmHand;
+    const factory = global.HqPalmHand;
+    if (!factory || typeof factory.create !== "function") return null;
+    win.HqPalmHand = factory.create(win, {
+      calm,
+      jiggleSoft() {
+        if (!S.el || calm(win)) return;
+        S.el.classList.remove("is-flick-jiggle", "is-palm-soft-jiggle");
+        void S.el.offsetWidth;
+        S.el.classList.add("is-palm-soft-jiggle");
+        win.clearTimeout(S.palmSoftJiggleT);
+        S.palmSoftJiggleT = win.setTimeout(() => {
+          if (S.el) S.el.classList.remove("is-palm-soft-jiggle");
+        }, 820);
+      }
+    });
+    return win.HqPalmHand;
+  }
+
+  /** Screen / avatar palm overlay; gated on adult mode and visibility. */
+  function requestPalmGesture(win, kind, opts) {
+    if (!win || calm(win) || !S.nsfwOn || !S.el || S.el.hidden) return false;
+    const palm = ensureCompanionPalmHand(win);
+    if (!palm || typeof palm.play !== "function") return false;
+    if (typeof palm.ready === "function" && !palm.ready(kind)) return false;
+    return !!palm.play(kind, opts || {});
+  }
+
+  function palmAmbientBlocked(win) {
+    if (!S.el || lifeMotionBlocked()) return true;
+    if (S.companionDragActive) return true;
+    if (S.el.classList.contains("is-idle-humming")) return true;
+    if (S.bustPull && S.bustPull.active) return true;
+    return false;
   }
 
   function digest(win) {
@@ -386,7 +501,7 @@
     return `translate(${x} ${y}) skewX(${shear.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)}) translate(${-x} ${-y})`;
   }
 
-  const pure = { rigPostureGoal, stepRigPosture, rigPostureGravity, clothTensionTarget, stepClothTension, rigClothCurves, rigClothTextureTransform, supportMapPixel, sampleLateralSwipe, cursorSupportContact, cursorSupportSpring, lateralImpact, grabWeights, releaseFeel, digest, seedForView, VIEW_LABEL, COMPANION_NAME, DEFAULT_PREFS, getDeviceId, navOnly, decide, paceWords, glance, orbVars, pickVoice, speechDelivery, speechSegments, expressionPose, DWELL_MS, bustPullResponse, bustPullSpring, bustPullSettle, bustPullGravity, bustPullFollow, rigSecondaryMotion, rigHairMotion, readLayeredPortrait, anchoredPullFrame };
+  const pure = { rigPostureGoal, stepRigPosture, rigPostureGravity, clothTensionTarget, stepClothTension, rigClothCurves, rigClothTextureTransform, supportMapPixel, sampleLateralSwipe, cursorSupportContact, cursorSupportSpring, lateralImpact, grabWeights, releaseFeel, digest, seedForView, VIEW_LABEL, COMPANION_NAME, DEFAULT_PREFS, getDeviceId, navOnly, decide, paceWords, glance, orbVars, pickVoice, speechDelivery, speechSegments, expressionPose, DWELL_MS, bustPullResponse, bustPullSpring, bustPullSettle, bustPullGravity, bustPullFollow, rigSecondaryMotion, rigHairMotion, readLayeredPortrait, anchoredPullFrame, readAccessories, writeAccessories, rigHairTextureSrc, rigNecklaceSrc, ACCESSORIES_DEFAULT };
 
   const S = {
     win: null,
@@ -462,6 +577,12 @@
     lastPulseMotionAt: 0,
     companionTypingLean: false,
     typingLeanT: 0,
+    palmHushDebounceT: 0,
+    palmSoftJiggleT: 0,
+    cursorCatchInside: false,
+    cursorCatchTryAt: 0,
+    cursorCatchDwellStart: 0,
+    palmHushThisFocus: false,
     viewGlanceT: 0,
     wasCollapsedMinimal: false,
     companionFloat: { x: 0, y: 0 },
@@ -473,6 +594,7 @@
     intimeMode: false,
     intimeSync: false,
     chromeMotionRaf: 0,
+    perfPressure: false,
     idleFidgetT: 0,
     idleAmbientJiggleT: 0,
     idleAnimRouletteT: 0,
@@ -867,6 +989,7 @@
     }
     S.fxDebugMenu.classList.add("is-open");
     if (S.fxDebugToggle) S.fxDebugToggle.setAttribute("aria-expanded", "true");
+    if (typeof S.syncMotionPerfSelect === "function") S.syncMotionPerfSelect();
     if (S.renderFxRecents) S.renderFxRecents();
     const sheet = isCompactUI(win);
     if (S.fxDebug && sheet) {
@@ -3215,12 +3338,13 @@
 
   function applyCompanionDof(win) {
     if (!win || !S.el || S.el.hidden) return;
-    const rm = win.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const active = !S.el.classList.contains("is-minimal") || S.intimeMode;
     S.el.classList.toggle("is-dof-portrait", active);
     const focus = typeof S.attentionScore === "number" ? S.attentionScore : 0;
     const looking = !!S.userLookingAtCompanion;
-    S.el.classList.toggle("is-user-looking", looking);
+    if (S.el.classList.contains("is-user-looking") !== looking) {
+      S.el.classList.toggle("is-user-looking", looking);
+    }
     // Root variables restyle the whole companion (and re-blur the bubble backdrop): write them only
     // when they actually change, with focus snapped to 0.05 steps.
     const focusVal = (Math.round(focus * 20) / 20).toFixed(2);
@@ -3233,16 +3357,9 @@
       S.lastDofGlow = glowVal;
       S.el.style.setProperty("--companion-dof-glow", glowVal);
     }
-    if (rm) {
+    if (S.lastAppliedBlur !== 0) {
+      S.lastAppliedBlur = 0;
       S.el.style.setProperty("--companion-dof-blur", "0px");
-      return;
-    }
-    const blurBase = isCompactUI(win) ? 2 : 3.2;
-    const blur = blurBase * (1 - focus * 0.85);
-    const lastBlur = typeof S.lastAppliedBlur === "number" ? S.lastAppliedBlur : -1;
-    if (Math.abs(blur - lastBlur) > 0.25) {
-      S.lastAppliedBlur = blur;
-      S.el.style.setProperty("--companion-dof-blur", blur.toFixed(2) + "px");
     }
     syncIdleContinuousStates(win);
   }
@@ -3323,6 +3440,13 @@
 
   function playIdleAnim(win, kind) {
     if (kind === "humming") { startIdleHumming(win); return; }
+    if (kind === "handWave") {
+      if (idleAnimBlocked(win) || !S.nsfwOn || palmAmbientBlocked(win)) return;
+      const idleMs = Date.now() - (S.lastActAt || Date.now());
+      if (idleMs < 8000) return;
+      requestPalmGesture(win, "wave");
+      return;
+    }
     if (CUTE_NSFW_IDLE_KINDS.has(kind) && !S.nsfwOn) return;
     if (idleAnimBlocked(win)) {
       if (S.nsfwOn && /^(settle|aftershock|hiccup)$/.test(kind)) triggerBustSettleProfile(win, "generic");
@@ -3355,7 +3479,7 @@
       musicNod: { cls: "is-idle-music-nod", ms: 780, ix: 0, iy: -16 },
       grooveSway: { cls: "is-idle-groove-sway", ms: 1100, ix: sign * 20, iy: -8 },
       kissBlow: { cls: "is-idle-kiss-blow", ms: 900, ix: 0, iy: -10, kiss: true },
-      shyWiggle: { cls: "is-idle-shy-wiggle", ms: 1050, ix: sign * 16, iy: 4, shy: true },
+      shyWiggle: { cls: "is-idle-shy-wiggle", ms: 1050, ix: sign * 16, iy: 4 },
       cuteWink: { cls: "is-idle-cute-wink", ms: 720, wink: true },
       heartFlutter: { cls: "is-idle-heart-flutter", ms: 1400, hearts: true },
       sparkleShimmy: { cls: "is-idle-sparkle-shimmy", ms: 950, ix: sign * 28, iy: -4, sparkle: true }
@@ -3423,6 +3547,7 @@
     }
     if (v.wink && S.el) {
       stripIdleBurstClasses();
+      S.el.style.setProperty("--idle-sign", String(sign));
       S.el.classList.add(v.cls);
       blink(win);
       setLive2DTarget(win, sign * 1.8, -0.6);
@@ -3502,6 +3627,7 @@
       if (r >= 0.87 && r < 0.89) return "cuteWink";
       if (r >= 0.89 && r < 0.91) return "heartFlutter";
       if (r >= 0.91 && r < 0.93) return "sparkleShimmy";
+      if (r >= 0.93 && r < 0.9375) return "handWave";
     }
     if (r < 0.04) return "aftershock";
     if (r < 0.07) return "walkCycle";
@@ -3601,10 +3727,18 @@
       S.userLookingAtCompanion = false;
       S.lookSince = 0;
     }
+    if (win.HqMotion) win.HqMotion.setCompanionAttention(S.userLookingAtCompanion, S.attentionVisibleRatio);
+    if (!wasLooking && S.userLookingAtCompanion && S.nsfwOn) startLive2DLoop(win);
     applyCompanionDof(win);
     tickEyesAlive(win);
     win.hqCompanionUserLooking = () => !!S.userLookingAtCompanion;
     win.hqCompanionAttention = () => S.attentionScore || 0;
+    win.hqCompanionPerf = () => ({
+      perfPressure: !!S.perfPressure,
+      perfLite: !!(S.el && S.el.classList.contains("is-perf-lite")),
+      hidden: !!(win.document && win.document.hidden),
+      view: S.el && S.el.dataset ? S.el.dataset.view || "" : "",
+    });
   }
 
   function watchCompanionAttention(win) {
@@ -3814,6 +3948,7 @@
         return;
       } catch (_) {}
     }
+    requestPalmGesture(win, "celebrate");
     applyMood(win, "celebrate");
     pulseCompanionMotion(win);
     if (!muted(win) && readForgeSound(win)) playNaturalVoiceCue(win, "toast_celebrate");
@@ -5187,10 +5322,11 @@
   }
 
   function stopIdleHumming(win) {
-    if (!S.el?.classList.contains("is-idle-humming")) return;
     win.clearTimeout(S.idleHummingT);
     win.clearInterval(S.idleHummingNoteI);
+    S.idleHummingT = 0;
     S.idleHummingNoteI = 0;
+    if (!S.el?.classList.contains("is-idle-humming")) return;
     S.el.classList.remove("is-idle-humming");
     S.el.style.removeProperty("--rig-hum-beat");
     S.reactionAudio?.stop("humming");
@@ -5203,10 +5339,14 @@
     if (!avatar) return;
     const tick = () => {
       if (!S.el?.classList.contains("is-idle-humming")) return;
+      if (idleAnimBlocked(win)) {
+        stopIdleHumming(win);
+        return;
+      }
       spawnMusicNote(win, avatar);
     };
     tick();
-    S.idleHummingNoteI = win.setInterval(tick, 650 + Math.random() * 250);
+    S.idleHummingNoteI = win.setInterval(tick, 950 + Math.random() * 400);
   }
 
   function startIdleHumming(win) {
@@ -5221,6 +5361,7 @@
     S.lastIdleHummingAt = now;
     const beatSec = Math.max(0.95, Math.min(2.2, duration / 1000));
     S.el.style.setProperty("--rig-hum-beat", beatSec.toFixed(2) + "s");
+    S.el.style.setProperty("--idle-sign", Math.random() > 0.5 ? "1" : "-1");
     S.el.classList.add("is-idle-humming");
     win.clearTimeout(S.idleHummingT);
     S.idleHummingT = win.setTimeout(() => stopIdleHumming(win), duration);
@@ -5248,6 +5389,7 @@
     if (!cue || !win || !S.el || S.el.hidden || S.currentAudio || S.voicePreview ||
         win.document.hidden || muted(win) || !readForgeSound(win)) return 0;
     if (context === "music_started" && !S.el.classList.contains("is-music-grooving")) return 0;
+    if ((context === "idle_kiss" || context === "idle_shy" || context === "idle_heart") && !S.nsfwOn) return 0;
     if (!S.reactionAudio?.has(cue.kind)) return 0;
     const now = Date.now();
     if (!S.naturalVoiceNextAt) S.naturalVoiceNextAt = {};
@@ -5359,6 +5501,68 @@
   function markPullFxRendered(win) {
     if (!win || !S.el) return;
     S.pullFxAt = win.performance.now();
+  }
+
+  /** Full rate only for contact and voice. Pointer, typing, and scroll stay on the idle gap. */
+  function live2dInteractionHot(nowMs) {
+    if (!S.el) return false;
+    if (S.bustPull && S.bustPull.active) return true;
+    if (S.companionDragActive) return true;
+    if (S.companionFloatInertia && S.companionFloatInertia.active) return true;
+    if (nowMs < (S.slapMotionUntil || 0)) return true;
+    if (S.el.classList.contains("is-nsfw-fx-rhythm")) return true;
+    if (S.el.classList.contains("is-speaking") || S.el.classList.contains("is-voice-lipsync")) return true;
+    if (pullFxRenderedRecently(nowMs)) return true;
+    return false;
+  }
+
+  /** ms between Live2D physics steps when idle (0 = every frame). */
+  function live2dFrameMinGap(win, nowMs) {
+    if (live2dInteractionHot(nowMs)) return 0;
+    const motion = win.HqMotion;
+    if (motion) {
+      return motion.live2dMinGap({
+        hot: false,
+        compact: isCompactUI(win),
+        collapsed: S.collapsed,
+        view: (win.document.body && win.document.body.dataset.view) || "",
+        perfPressure: S.perfPressure,
+        looking: S.userLookingAtCompanion,
+        intime: S.intimeMode,
+        minimal: !!(S.el && S.el.classList.contains("is-minimal")),
+      });
+    }
+    const compact = isCompactUI(win);
+    const view = (win.document.body && win.document.body.dataset.view) || "";
+    if (view === "accueil" && S.perfPressure) return 72;
+    if (compact && S.collapsed) return 48;
+    if (S.el && S.el.classList.contains("is-minimal") && !S.intimeMode) return 40;
+    if (S.perfPressure) return 50;
+    return 32;
+  }
+
+  function noteLive2dFrameCost(st, costMs, hot) {
+    if (!st || costMs <= 0) return;
+    st.emaFrameMs = st.emaFrameMs ? st.emaFrameMs * 0.9 + costMs * 0.1 : costMs;
+    const pressure = st.emaFrameMs > 13.5;
+    if (S.perfPressure !== pressure) S.perfPressure = pressure;
+    const win = S.win;
+    if (win && win.HqMotion) win.HqMotion.noteCost("live2d", costMs);
+    if (!S.el) return;
+    const motionTier = win && win.HqMotion ? win.HqMotion.tier() : "full";
+    const lite = !!pressure || motionTier === "lite";
+    if (S.el.classList.contains("is-perf-lite") !== lite) S.el.classList.toggle("is-perf-lite", lite);
+    if (win && win.hqPerfMark && (costMs >= 55 || pressure !== st._perfMarkPressure)) {
+      win.hqPerfMark("companion", {
+        op: "live2d-frame",
+        ms: Math.round(costMs * 10) / 10,
+        ema: Math.round((st.emaFrameMs || 0) * 10) / 10,
+        pressure: !!pressure,
+        hot: !!hot,
+        perfLite: !!lite,
+      });
+    }
+    st._perfMarkPressure = pressure;
   }
 
   function cachePullFaceMetrics() {
@@ -6337,22 +6541,6 @@
       S.bustCastSize = 0;
       S.bustCasts = null;
       S.bustSpecs = null;
-      S.bustStackEls = null;
-      return;
-    }
-    // Fast path (once per sync, ~1/s): when every stack and every layer built by the last full pass is still the same
-    // connected element, skip the ~15 selector queries and map rebuilds and only do the per-sync refresh below.
-    const known = S.bustStackEls;
-    if (known && known.length === stacks.length && known.every((el, i) => el === stacks[i] && el.isConnected) &&
-        S.bustLights && S.bustLights.length === stacks.length && S.bustLights.every((el) => el.isConnected) &&
-        S.bustDents && S.bustDents.every((el) => el.isConnected) && S.bustNl && S.bustNl.every((el) => el.isConnected) &&
-        S.bustCasts && S.bustSpecs && S.bustShades && S.bustRipples &&
-        [S.bustCasts, S.bustSpecs, S.bustShades, S.bustRipples].every((m) => Object.values(m).every((el) => el && el.isConnected)) &&
-        S.bustCastReceiver && S.bustCastReceiver.isConnected) {
-      S.bustNlKey = "";
-      S.bustSpecSize = stacks[0].offsetWidth || S.bustSpecSize || 0;
-      if (!win.ResizeObserver) S.bustCastSize = parseFloat(win.getComputedStyle(stacks[0]).width) || 0;
-      updateBustCastProjection(win, ensureLive2DState(), isCompactUI(win));
       return;
     }
     stacks.forEach((stack) => {
@@ -6452,7 +6640,6 @@
     S.el.querySelectorAll(".hq-bust-shade").forEach((el) => (S.bustShades[el.classList.contains("is-left") ? "left" : "right"] = el));
     S.bustRipples = {};
     S.el.querySelectorAll(".hq-bust-ripple").forEach((el) => (S.bustRipples[el.classList.contains("is-left") ? "left" : "right"] = el));
-    S.bustStackEls = Array.from(stacks);
     // Also initialize the static projection when reduced motion suppresses RAF.
     updateBustCastProjection(win, ensureLive2DState(), isCompactUI(win));
   }
@@ -6978,9 +7165,21 @@
     );
   }
 
+  function idleParticleHost(win) {
+    return (S.el && S.el.querySelector(".hq-companion-av-row")) || null;
+  }
+
+  function idleParticleCount(host) {
+    if (!host?.querySelectorAll) return 0;
+    return host.querySelectorAll(".hq-companion-music-note, .hq-companion-idle-heart, .hq-companion-idle-kiss").length;
+  }
+
+  const IDLE_PARTICLE_CAP = 5;
+
   function spawnMusicNote(win, el) {
     if (!el || !win.document) return;
-    const host = (S.el && S.el.querySelector(".hq-companion-av-row")) || el.parentElement || win.document.body;
+    const host = idleParticleHost(win) || el.parentElement || win.document.body;
+    if (idleParticleCount(host) >= IDLE_PARTICLE_CAP) return;
     const r = el.getBoundingClientRect();
     const hr = host.getBoundingClientRect();
     const note = win.document.createElement("span");
@@ -6997,8 +7196,8 @@
   function spawnIdleKiss(win) {
     const av = S.el?.querySelector(".hq-companion-avatar");
     if (!av || !win.document) return;
-    const host = S.el.querySelector(".hq-companion-av-row") || av.parentElement;
-    if (!host) return;
+    const host = idleParticleHost(win) || av.parentElement;
+    if (!host || idleParticleCount(host) >= IDLE_PARTICLE_CAP) return;
     const r = av.getBoundingClientRect();
     const hr = host.getBoundingClientRect();
     const k = win.document.createElement("span");
@@ -7015,11 +7214,13 @@
   function spawnIdleHeartFloat(win) {
     const av = S.el?.querySelector(".hq-companion-avatar");
     if (!av || !win.document) return;
-    const host = S.el.querySelector(".hq-companion-av-row") || av.parentElement;
+    const host = idleParticleHost(win) || av.parentElement;
     if (!host) return;
+    const existing = idleParticleCount(host);
+    if (existing >= IDLE_PARTICLE_CAP) return;
     const r = av.getBoundingClientRect();
     const hr = host.getBoundingClientRect();
-    const n = 1 + Math.floor(Math.random() * 3);
+    const n = Math.min(2, IDLE_PARTICLE_CAP - existing, 1 + Math.floor(Math.random() * 2));
     for (let i = 0; i < n; i++) {
       const h = win.document.createElement("span");
       h.className = "hq-companion-idle-heart";
@@ -8185,7 +8386,7 @@
     let script = win.document.querySelector("script[data-hq-mouth-module]");
     if (!script) {
       script = win.document.createElement("script");
-      script.src = "/assets/hq-companion-mouth.js";
+      script.src = "/assets/hq-companion-mouth.js?v=mouthrest1";
       script.setAttribute("data-hq-mouth-module", "");
       script.addEventListener("load", install, { once: true });
       win.document.head.appendChild(script);
@@ -8358,7 +8559,7 @@
     cleft.className = "hq-companion-rig-cleavage-cleft";
     cleft.setAttribute("aria-hidden", "true");
     garment.appendChild(cleft);
-    for (const part of ["background", "torso", "face", "garment-surface", "hair-base", "hair-left", "hair-right"]) {
+    for (const part of ["background", "torso", "lower-body", "arm-left", "arm-right", "face", "garment-surface", "hair-base", "hair-left", "hair-right"]) {
       const image = doc.createElement("img");
       image.className = "hq-companion-rig-layer hq-companion-rig-" + part;
       image.alt = "";
@@ -8491,6 +8692,38 @@
         }
       }
     }
+    // Hair / necklace / earring accessory slots (face stack only; textures load lazily).
+    const necklace = doc.createElement("img");
+    necklace.className = "hq-companion-rig-layer hq-companion-rig-necklace";
+    necklace.alt = "";
+    necklace.draggable = false;
+    necklace.decoding = "async";
+    necklace.hidden = true;
+    body.appendChild(necklace);
+    const earringWrap = doc.createElement("span");
+    earringWrap.className = "hq-companion-rig-earrings";
+    earringWrap.setAttribute("aria-hidden", "true");
+    earringWrap.hidden = true;
+    const earringLeft = doc.createElement("img");
+    earringLeft.className = "hq-companion-rig-earring hq-companion-rig-earring-left";
+    earringLeft.alt = "";
+    earringLeft.draggable = false;
+    earringLeft.decoding = "async";
+    const earringRight = doc.createElement("img");
+    earringRight.className = "hq-companion-rig-earring hq-companion-rig-earring-right";
+    earringRight.alt = "";
+    earringRight.draggable = false;
+    earringRight.decoding = "async";
+    earringWrap.append(earringLeft, earringRight);
+    body.appendChild(earringWrap);
+    S.accessoryLayers = {
+      necklace,
+      earringWrap,
+      earringLeft,
+      earringRight,
+      hairImgs: images.filter((img) => (img.dataset.rigAsset || "") === "hair"),
+    };
+
     const sheen = doc.createElement("span");
     sheen.className = "hq-companion-rig-bust-sheen";
     sheen.setAttribute("aria-hidden", "true");
@@ -8529,16 +8762,68 @@
     function ensure() {
       if (loading) return loading;
       // Download the larger texture pack only when this portrait is selected.
+      const acc = readAccessories(win);
       loading = Promise.all(images.map((image) => new Promise((resolve, reject) => {
         image.onload = resolve;
         image.onerror = reject;
-        image.src = rigNeutralLayerSrc(image.dataset.rigAsset);
-      }))).then(() => { ready = true; sync(); });
+        const asset = image.dataset.rigAsset;
+        image.src = asset === "hair" ? rigHairTextureSrc(acc) : rigNeutralLayerSrc(asset);
+      }))).then(() => {
+        ready = true;
+        applyAccessories(win);
+        sync();
+      });
       return loading;
     }
     S.ensureLayeredPortrait = ensure;
+    S.applyAccessories = () => applyAccessories(win);
     sync();
     return rig;
+  }
+
+  function applyAccessories(win) {
+    if (!S.accessoryLayers) return;
+    const acc = readAccessories(win || S.win);
+    const { necklace, earringWrap, earringLeft, earringRight, hairImgs } = S.accessoryLayers;
+    const hairSrc = rigHairTextureSrc(acc);
+    (hairImgs || []).forEach((img) => {
+      if (img && img.getAttribute("src") !== hairSrc) img.src = hairSrc;
+    });
+    const neckSrc = rigNecklaceSrc(acc.necklace);
+    if (!neckSrc) {
+      necklace.hidden = true;
+      necklace.removeAttribute("src");
+    } else {
+      if (necklace.getAttribute("src") !== neckSrc) necklace.src = neckSrc;
+      necklace.hidden = false;
+    }
+    const mode = acc.earring;
+    const filter = rigEarringFilter(acc.earringColor);
+    const showEars = mode !== "baked" && mode !== "none";
+    if (!showEars) {
+      earringWrap.hidden = true;
+      earringLeft.removeAttribute("src");
+      earringRight.removeAttribute("src");
+      earringWrap.classList.remove("is-shape", "is-origine");
+      return;
+    }
+    earringWrap.hidden = false;
+    earringLeft.style.filter = filter;
+    earringRight.style.filter = filter;
+    if (mode === "origine") {
+      earringWrap.classList.add("is-origine");
+      earringWrap.classList.remove("is-shape");
+      const leftSrc = ACCESSORIES_BASE + "earrings/earring-left.png";
+      const rightSrc = ACCESSORIES_BASE + "earrings/earring-right.png";
+      if (earringLeft.getAttribute("src") !== leftSrc) earringLeft.src = leftSrc;
+      if (earringRight.getAttribute("src") !== rightSrc) earringRight.src = rightSrc;
+    } else {
+      earringWrap.classList.add("is-shape");
+      earringWrap.classList.remove("is-origine");
+      const shapeSrc = ACCESSORIES_BASE + "earrings/shapes/" + mode + ".png";
+      if (earringLeft.getAttribute("src") !== shapeSrc) earringLeft.src = shapeSrc;
+      if (earringRight.getAttribute("src") !== shapeSrc) earringRight.src = shapeSrc;
+    }
   }
 
   function ensureLive2DState() {
@@ -8562,6 +8847,8 @@
         phase: 0,
         lastT: 0,
         lastWorkAt: 0,
+        emaFrameMs: 0,
+        castFrame: 0,
         idleJigglePhase: 0,
         raf: 0,
         waitT: 0
@@ -10256,13 +10543,17 @@
         S.chromeMotionRaf = 0;
         return;
       }
-      S.chromeMotionRaf = win.requestAnimationFrame(tick);
       const compact = isCompactUI(win);
-      if (compact && lastTick && t - lastTick < 32) return;
+      const minGap = compact ? 32 : (S.perfPressure ? 20 : 0);
+      if (minGap && lastTick && t - lastTick < minGap) {
+        S.chromeMotionRaf = win.requestAnimationFrame(tick);
+        return;
+      }
       lastTick = t;
       const dt = clampNum(last ? (t - last) / 1000 : 0.016, 0.004, compact ? 0.05 : 0.05);
       last = t;
       tickCompanionFloatInertia(win, dt);
+      S.chromeMotionRaf = win.requestAnimationFrame(tick);
     };
     S.chromeMotionRaf = win.requestAnimationFrame(tick);
   }
@@ -10684,6 +10975,8 @@
         S.companionTypingLean = false;
         if (S.el) S.el.classList.remove("is-user-typing");
       }, 2400);
+    } else {
+      win.clearTimeout(S.palmHushDebounceT);
     }
   }
 
@@ -10866,6 +11159,31 @@
       win.clearTimeout(st.waitT);
       st.waitT = 0;
     }
+    S.perfPressure = false;
+    if (S.el) S.el.classList.remove("is-perf-lite");
+    syncCssIdlePortraitMotion(win);
+  }
+
+  function syncCssIdlePortraitMotion(win, nowMs) {
+    if (!S.el) return;
+    const pageView = (win.document.body && win.document.body.dataset.view) || "";
+    const t = nowMs || win.performance.now();
+    const hot = live2dInteractionHot(t);
+    const motion = win.HqMotion;
+    const keepAlive = isCompactUI(win) && S.el.classList.contains("has-layered-portrait") && S.nsfwOn;
+    const live2dOff =
+      !hot &&
+      motion &&
+      !motion.companionLive2dShouldRun({
+        hot: hot,
+        keepAlive: keepAlive,
+        intime: S.intimeMode,
+        view: pageView,
+        collapsed: S.collapsed,
+        looking: S.userLookingAtCompanion,
+      });
+    const on = !!(S.nsfwOn && S.el.classList.contains("has-layered-portrait") && live2dOff);
+    S.el.classList.toggle("is-css-idle-portrait", on);
   }
 
   function scheduleLive2DFrame(win, step, delayMs) {
@@ -10906,10 +11224,22 @@
       const layeredPortrait = !!(S.el && S.el.classList.contains("has-layered-portrait"));
       const compact = isCompactUI(win);
       const keepAliveCollapsed = compact && layeredPortrait && S.nsfwOn;
-      const minGap = compact && S.collapsed ?
-        (floatDraggingEarly || (S.bustPull && S.bustPull.active) ? 0 : 48) : 0;
-      if (minGap && st.lastWorkAt && nowMs - st.lastWorkAt < minGap) {
-        scheduleLive2DFrame(win, step, Math.max(1, minGap - (nowMs - st.lastWorkAt)));
+      const hot = live2dInteractionHot(nowMs);
+      const pageView = (win.document.body && win.document.body.dataset.view) || "";
+      const accueilPressure = pageView === "accueil" && S.perfPressure;
+      const motion = win.HqMotion;
+      if (
+        motion &&
+        !motion.companionLive2dShouldRun({
+          hot: hot,
+          keepAlive: keepAliveCollapsed,
+          intime: S.intimeMode,
+          view: pageView,
+          collapsed: S.collapsed,
+          looking: S.userLookingAtCompanion,
+        })
+      ) {
+        stopLive2DLoop(win);
         return;
       }
       if (compact && S.collapsed && !S.companionDragActive && !(S.bustPull && S.bustPull.active) && !keepAliveCollapsed) {
@@ -10921,7 +11251,8 @@
         st.waitT = 0;
       }
       st.lastWorkAt = nowMs;
-      scheduleLive2DFrame(win, step, 0);
+      const workStart = (win.performance && win.performance.now) ? win.performance.now() : nowMs;
+      try {
       const rawDt = st.lastT ? (nowMs - st.lastT) / 1000 : 0.016;
       st.lastT = nowMs;
       // Clamp dt for rock-solid numerical stability across frame drops or tab switches
@@ -11082,7 +11413,7 @@
       let avatarAX = 0, avatarAY = 0, bubbleAX = 0, bubbleAY = 0;
       const avatar = S.avatar;
       const avMotion = st.avatarMotion;
-      const motionEvery = compact ? 90 : 45;
+      const motionEvery = hot ? (compact ? 90 : 45) : (compact ? 120 : 90);
       // Phones sample her avatar motion too (every 90 ms instead of 28), so her own animations move the
       // bust there as well; the bubble motion below stays desktop-only.
       const sampleMotion = !st.lastMotionSample || nowMs - st.lastMotionSample >= motionEvery;
@@ -11185,7 +11516,13 @@
       const feelK = 1 / bustFeel.softness;
       const feelC = 1 / bustFeel.bounce;
       const feelAsym = 0.28 * bustFeel.weight;
-      const physSteps = Math.min(10, Math.max(1, Math.ceil(dt / 0.005)));
+      let physSteps = Math.min(10, Math.max(1, Math.ceil(dt / 0.005)));
+      if (!hot) {
+        if (physSteps > 6) physSteps = 6;
+        if (S.perfPressure && physSteps > 4) physSteps = 4;
+      } else if (accueilPressure && physSteps > 3) {
+        physSteps = 3;
+      }
       const ph = dt / physSteps;
       for (let physStep = 0; physStep < physSteps; physStep += 1) {
         // 3. Soft-Body Bust Spring — lower ω, higher ζ feel for mass + viscous drag
@@ -11819,11 +12156,19 @@
       setLive2dStyleVar(stEl, "--rig-bust-right-sy", (rsy * (1 + press * 0.035 + sq * 0.05)).toFixed(4));
       setLive2dStyleVar(stEl, "--rig-bust-left-sx", (lsx * (1 - press * 0.05 - sq * 0.08)).toFixed(4));
       setLive2dStyleVar(stEl, "--rig-bust-right-sx", (rsx * (1 - press * 0.05 - sq * 0.08)).toFixed(4));
+      st.decorFrame = (st.decorFrame || 0) + 1;
+      const decorEvery = hot ? 1 : ((accueilPressure || S.perfPressure) ? 3 : 2);
+      const decorSkip =
+        pageView === "accueil" && !S.userLookingAtCompanion && !hot
+          ? (win.HqMotion && win.HqMotion.tier() === "lite" ? 5 : 4)
+          : decorEvery;
+      const publishDecor = st.decorFrame % decorSkip === 0;
       if (layeredLobeDisp) {
         setLive2dStyleVar(stEl, "--rig-bust-ripple-left-opacity", "0");
         setLive2dStyleVar(stEl, "--rig-bust-ripple-right-opacity", "0");
         setLive2dStyleVar(stEl, "--rig-bust-ripple-left-scale", "1");
         setLive2dStyleVar(stEl, "--rig-bust-ripple-right-scale", "1");
+        if (publishDecor) {
         const avgLobeX = (leftX + rightX) * 0.5;
         const avgLobeY = (leftY + rightY) * 0.5;
         setLive2dStyleVar(stEl, "--rig-sheen-lobe-x", (avgLobeX * 0.48).toFixed(2) + "px");
@@ -11850,6 +12195,7 @@
           wNorm: wNorm || 0,
           mobileLite: isCompactUI(S.win)
         });
+        }
       } else {
         setLive2dStyleVar(stEl, "--rig-bust-ripple-left-opacity", "0");
         setLive2dStyleVar(stEl, "--rig-bust-ripple-right-opacity", "0");
@@ -11891,19 +12237,46 @@
       setLive2dStyleVar(stEl, "--rig-hair-right-rot", rightHair.rotation.toFixed(2) + "deg");
       const leftTip = tickHairTip(st, "left", leftHair, dt, pullHairFreeze);
       const rightTip = tickHairTip(st, "right", rightHair, dt, pullHairFreeze);
-      setLive2dStyleVar(stEl, "--rig-hair-left-tip-x", leftTip.x.toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-hair-left-tip-y", leftTip.y.toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-hair-left-tip-rot", leftTip.r.toFixed(2) + "deg");
-      setLive2dStyleVar(stEl, "--rig-hair-right-tip-x", rightTip.x.toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-hair-right-tip-y", rightTip.y.toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-hair-right-tip-rot", rightTip.r.toFixed(2) + "deg");
-      setLive2dStyleVar(stEl, "--l2d-sheen-x", (st.head.x * 3.2 + st.bust.x * 1.8).toFixed(1) + "%");
-      setLive2dStyleVar(stEl, "--l2d-sheen-y", (st.head.y * 2.5 + st.bust.y * 2.2).toFixed(1) + "%");
-      setLive2dStyleVar(stEl, "--rig-sheen-x", (st.bust.x * 0.35 + depthX * 0.6).toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-sheen-y", (-1.5 + st.bust.y * 0.32 + breathWave * 0.4).toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-underboob-x", (st.bust.x * 0.45).toFixed(2) + "px");
-      setLive2dStyleVar(stEl, "--rig-underboob-y", (st.bust.y * 0.48 + breathWave * 0.35).toFixed(2) + "px");
-      if (!pullFxRenderedRecently(nowMs)) updateBustCastProjection(win, st, compact);
+      if (publishDecor) {
+        setLive2dStyleVar(stEl, "--rig-hair-left-tip-x", leftTip.x.toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-hair-left-tip-y", leftTip.y.toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-hair-left-tip-rot", leftTip.r.toFixed(2) + "deg");
+        setLive2dStyleVar(stEl, "--rig-hair-right-tip-x", rightTip.x.toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-hair-right-tip-y", rightTip.y.toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-hair-right-tip-rot", rightTip.r.toFixed(2) + "deg");
+        setLive2dStyleVar(stEl, "--l2d-sheen-x", (st.head.x * 3.2 + st.bust.x * 1.8).toFixed(1) + "%");
+        setLive2dStyleVar(stEl, "--l2d-sheen-y", (st.head.y * 2.5 + st.bust.y * 2.2).toFixed(1) + "%");
+        setLive2dStyleVar(stEl, "--rig-sheen-x", (st.bust.x * 0.35 + depthX * 0.6).toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-sheen-y", (-1.5 + st.bust.y * 0.32 + breathWave * 0.4).toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-underboob-x", (st.bust.x * 0.45).toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-underboob-y", (st.bust.y * 0.48 + breathWave * 0.35).toFixed(2) + "px");
+      }
+      if (!pullFxRenderedRecently(nowMs)) {
+        st.castFrame = (st.castFrame || 0) + 1;
+        let castEvery = hot ? 1 : S.perfPressure ? 3 : 2;
+        if (accueilPressure) castEvery = hot ? 3 : 4;
+        if (st.castFrame % castEvery === 0) updateBustCastProjection(win, st, compact);
+      }
+      } finally {
+        const costMs = ((win.performance && win.performance.now) ? win.performance.now() : nowMs) - workStart;
+        noteLive2dFrameCost(st, costMs, hot);
+        const loopAlive = !!(S.nsfwOn && S.el && !S.el.hidden && !win.document.hidden) &&
+          !(compact && S.collapsed && !S.companionDragActive && !(S.bustPull && S.bustPull.active) && !keepAliveCollapsed) &&
+          (!motion ||
+            motion.companionLive2dShouldRun({
+              hot: hot,
+              keepAlive: keepAliveCollapsed,
+              intime: S.intimeMode,
+              view: pageView,
+              collapsed: S.collapsed,
+              looking: S.userLookingAtCompanion,
+            }));
+        if (loopAlive) {
+          const gap = live2dFrameMinGap(win, nowMs);
+          const wait = gap > 0 ? Math.max(0, gap - costMs) : 0;
+          scheduleLive2DFrame(win, step, wait);
+        } else syncCssIdlePortraitMotion(win, nowMs);
+      }
     };
 
     scheduleLive2DFrame(win, step, 0);
@@ -12168,6 +12541,7 @@
       kickBustSoftSide(st, "left", 0, 26, 0);
       kickBustSoftSide(st, "right", 0, 24, 0.04);
       startLive2DLoop(win);
+      if (Math.random() < 0.15) requestPalmGesture(win, "pat");
     }
     runTreatReactionChain(win, av, item);
     if (forgeKey) {
@@ -13220,6 +13594,42 @@
           const dy = last.clientY - (r.top + r.height / 2);
           const curDist = Math.hypot(dx, dy);
           const avRad = Math.max(28, r.width / 2);
+          const catchWarmOk = (typeof S.warmth === "number" ? S.warmth : 0) >= 40;
+          const catchGazeOk = !!S.userLookingAtCompanion;
+          const inCatchRing = curDist > 4 && curDist < avRad * 1.32;
+
+          if (
+            S.nsfwOn &&
+            !palmAmbientBlocked(win) &&
+            (catchWarmOk || catchGazeOk) &&
+            inCatchRing
+          ) {
+            const catchNow = win.performance.now();
+            if (!S.cursorCatchDwellStart) S.cursorCatchDwellStart = catchNow;
+            const dwell = catchNow - S.cursorCatchDwellStart;
+            if (
+              dwell >= 450 &&
+              !S.cursorCatchInside &&
+              (!S.cursorCatchTryAt || catchNow - S.cursorCatchTryAt > 1200)
+            ) {
+              S.cursorCatchTryAt = catchNow;
+              if (requestPalmGesture(win, "catch_cursor", { x: last.clientX, y: last.clientY })) {
+                S.cursorCatchInside = true;
+              }
+            }
+          } else {
+            if (curDist > avRad * 1.72) {
+              S.cursorCatchInside = false;
+              S.cursorCatchTryAt = 0;
+              S.cursorCatchDwellStart = 0;
+            } else if (
+              curDist >= avRad * 1.32 ||
+              palmAmbientBlocked(win) ||
+              (!catchWarmOk && !catchGazeOk)
+            ) {
+              S.cursorCatchDwellStart = 0;
+            }
+          }
 
           // 1. Circle-Spin Dizzy Detection when circling cursor around her avatar
           if (curDist > 12 && curDist < avRad * 4.2) {
@@ -14022,9 +14432,13 @@
       S.el.classList.remove("is-companion-dragging");
       if (drag.moved && S.nsfwOn) {
         const lv = companionReleaseVelocity(drag);
+        const perf = typeof win.performance !== "undefined" && win.performance.now ? win.performance.now() : Date.now();
+        const dragMs = drag.startedAt != null ? perf - drag.startedAt : 0;
+        const releaseSpeed = Math.hypot(lv.vx, lv.vy);
         feedCompanionFloatMotion(win, lv.vx * 0.03, lv.vy * 0.03, { release: true });
         startCompanionFloatInertia(win, lv.vx, lv.vy);
-        triggerSlingshotAftershock(win, lv.vx * 0.012, lv.vy * 0.012, Math.hypot(lv.vx, lv.vy) * 0.012);
+        triggerSlingshotAftershock(win, lv.vx * 0.012, lv.vy * 0.012, releaseSpeed * 0.012);
+        if (dragMs >= 400 || releaseSpeed >= 420) requestPalmGesture(win, "shield");
       } else if (drag.moved) {
         const lv = companionReleaseVelocity(drag);
         startCompanionFloatInertia(win, lv.vx, lv.vy);
@@ -14089,7 +14503,8 @@
         velRing: [],
         ox: seed.ox,
         oy: seed.oy,
-        moved: false
+        moved: false,
+        startedAt: typeof win.performance !== "undefined" && win.performance.now ? win.performance.now() : Date.now()
       };
       S.companionDragActive = true;
       S.companionDragVel = { vx: 0, vy: 0 };
@@ -14288,8 +14703,21 @@
       }
     });
     input.addEventListener("input", () => syncCompanionInputMotion(win));
-    input.addEventListener("focus", () => syncCompanionInputMotion(win));
-    input.addEventListener("blur", () => syncCompanionInputMotion(win));
+    input.addEventListener("focus", () => {
+      syncCompanionInputMotion(win);
+      if (S.palmHushThisFocus) return;
+      win.clearTimeout(S.palmHushDebounceT);
+      S.palmHushDebounceT = win.setTimeout(() => {
+        if (S.inputEl && win.document.activeElement === S.inputEl && requestPalmGesture(win, "hush")) {
+          S.palmHushThisFocus = true;
+        }
+      }, 520);
+    });
+    input.addEventListener("blur", () => {
+      syncCompanionInputMotion(win);
+      S.palmHushThisFocus = false;
+      win.clearTimeout(S.palmHushDebounceT);
+    });
     S.inputEl = input;
     const sendBtn = doc.createElement("button");
     sendBtn.type = "button";
@@ -15941,6 +16369,83 @@
       if (S.syncLayeredPortrait) S.syncLayeredPortrait();
     });
     S.layeredPortraitBtn = fxLayered;
+    const fxAccessories = doc.createElement("button");
+    fxAccessories.type = "button";
+    fxAccessories.className = "hq-companion-fx-debug-btn";
+    fxAccessories.textContent = "Accessoires";
+    fxAccessories.title = "Coiffure, collier et boucles d'oreilles";
+    fxAccessories.setAttribute("aria-expanded", "false");
+    fxAccessories.dataset.fxKind = "look";
+    const fxAccPanel = doc.createElement("div");
+    fxAccPanel.className = "hq-companion-accessories-panel";
+    fxAccPanel.hidden = true;
+    const fillSelect = (sel, pairs, value) => {
+      sel.textContent = "";
+      pairs.forEach(([id, label]) => {
+        const opt = doc.createElement("option");
+        opt.value = id;
+        opt.textContent = label;
+        sel.appendChild(opt);
+      });
+      sel.value = value;
+    };
+    const accNow = readAccessories(win);
+    const mkAccRow = (labelText, selectEl) => {
+      const row = doc.createElement("label");
+      row.className = "hq-companion-accessories-row";
+      const span = doc.createElement("span");
+      span.textContent = labelText;
+      row.append(span, selectEl);
+      return row;
+    };
+    const hairSel = doc.createElement("select");
+    hairSel.setAttribute("aria-label", "Coiffure");
+    fillSelect(hairSel, ACCESSORIES_HAIR, accNow.hair);
+    const neckSel = doc.createElement("select");
+    neckSel.setAttribute("aria-label", "Collier");
+    fillSelect(neckSel, ACCESSORIES_NECKLACES, accNow.necklace);
+    const earSel = doc.createElement("select");
+    earSel.setAttribute("aria-label", "Boucles d'oreilles");
+    fillSelect(earSel, ACCESSORIES_EARRING_MODES, accNow.earring);
+    const colorSel = doc.createElement("select");
+    colorSel.setAttribute("aria-label", "Couleur des boucles");
+    fillSelect(colorSel, ACCESSORIES_EARRING_COLORS, accNow.earringColor);
+    const syncColorEnabled = () => {
+      const on = earSel.value !== "baked" && earSel.value !== "none";
+      colorSel.disabled = !on;
+    };
+    syncColorEnabled();
+    const onAccChange = () => {
+      writeAccessories(win, {
+        hair: hairSel.value,
+        necklace: neckSel.value,
+        earring: earSel.value,
+        earringColor: colorSel.value,
+      });
+      syncColorEnabled();
+      if (typeof S.applyAccessories === "function") S.applyAccessories();
+      else if (S.ensureLayeredPortrait) S.ensureLayeredPortrait().then(() => S.applyAccessories && S.applyAccessories()).catch(() => {});
+    };
+    hairSel.addEventListener("change", onAccChange);
+    neckSel.addEventListener("change", onAccChange);
+    earSel.addEventListener("change", onAccChange);
+    colorSel.addEventListener("change", onAccChange);
+    fxAccPanel.append(
+      mkAccRow("Coiffure", hairSel),
+      mkAccRow("Collier", neckSel),
+      mkAccRow("Boucles", earSel),
+      mkAccRow("Couleur", colorSel)
+    );
+    fxAccessories.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const open = fxAccPanel.hidden;
+      fxAccPanel.hidden = !open;
+      fxAccessories.setAttribute("aria-expanded", String(open));
+      if (open && S.ensureLayeredPortrait) S.ensureLayeredPortrait().catch(() => {});
+    });
+    S.accessoriesBtn = fxAccessories;
+    S.accessoriesPanel = fxAccPanel;
     const fxHead = doc.createElement("div");
     fxHead.className = "hq-companion-fx-debug-head";
     const fxHeadRow = doc.createElement("div");
@@ -16011,7 +16516,8 @@
     fxRelease.title = "Animation instantanée · release";
     [fxRhythm, fxRelease, fxBooty].forEach((b) => (b.dataset.fxKind = "anim"));
     fxLayered.dataset.fxKind = "look";
-    const fxAnimGroup = makeQuickGroup("Animer", [fxRhythm, fxRelease, fxBooty, fxLayered]);
+    const fxAnimGroup = makeQuickGroup("Animer", [fxRhythm, fxRelease, fxBooty, fxLayered, fxAccessories]);
+    fxAnimGroup.appendChild(fxAccPanel);
     const fxGenGroup = makeQuickGroup("Générer", [fxReplayFav, fxImg2]);
     const warpLabel = doc.createElement("label");
     warpLabel.className = "hq-companion-fx-opt hq-companion-fx-opt-check";
@@ -16035,6 +16541,29 @@
       setBustNormalLight(win, nlightBox.checked);
     });
     nlightLabel.append(nlightBox, doc.createTextNode(" Lumière 3D"));
+    const motionPerfLabel = doc.createElement("label");
+    motionPerfLabel.className = "hq-companion-fx-opt";
+    motionPerfLabel.textContent = "Fluidité HQ";
+    const motionPerfSelect = doc.createElement("select");
+    motionPerfSelect.className = "hq-companion-fx-intensity hq-companion-motion-perf";
+    motionPerfSelect.title = "Auto s'adapte · Économique limite les boucles · Fluide garde le rythme";
+    [["auto", "Auto (s'adapte)"], ["lite", "Économique"], ["smooth", "Fluide"]].forEach(([v, label]) => {
+      const opt = doc.createElement("option");
+      opt.value = v;
+      opt.textContent = label;
+      motionPerfSelect.appendChild(opt);
+    });
+    const syncMotionPerfSelect = () => {
+      if (!win.HqMotion) return;
+      const m = win.HqMotion.getMode();
+      if (motionPerfSelect.value !== m) motionPerfSelect.value = m;
+    };
+    motionPerfSelect.addEventListener("change", () => {
+      if (win.HqMotion) win.HqMotion.setMode(motionPerfSelect.value);
+    });
+    win.addEventListener("hq:motion-mode", syncMotionPerfSelect);
+    syncMotionPerfSelect();
+    motionPerfLabel.appendChild(motionPerfSelect);
     // Bust feel sliders: weight, softness, bounce (1 = default), saved per device, applied live.
     const feelRanges = {};
     const feelRow = (key, label, title) => {
@@ -16106,6 +16635,7 @@
     fxOpts.append(
       warpLabel,
       nlightLabel,
+      motionPerfLabel,
       feelRow("weight", "Poids", "Plus lourd : descend plus loin qu'il ne remonte, se pose par en dessous"),
       feelRow("softness", "Souplesse", "Plus souple : moins raide, plus d'amplitude"),
       feelRow("bounce", "Rebond", "Plus de rebond : moins amorti, rebonds plus nombreux et plus longs"),
@@ -16152,6 +16682,7 @@
     // Settings (Forge options + mouth/brow/pronunciation pickers added by hq-companion-mouth.js) stay folded.
     appendForgeMenuSection(doc, fxDebug, "Réglages", [fxOpts], fxOpenFirst("Réglages", false)).classList.add("is-settings");
     wireFxPanel(win, fxDebug, { pinMode: fxPinMode, recents: fxRecents, empty: fxEmpty });
+    S.syncMotionPerfSelect = syncMotionPerfSelect;
     S.fxDebug = fxDebug;
     const fxDebugToggle = doc.createElement("button");
     fxDebugToggle.type = "button";

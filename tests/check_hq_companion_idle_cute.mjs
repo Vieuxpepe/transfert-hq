@@ -116,6 +116,10 @@ try {
   stopIdleHumming(win);
   assert.equal(classes.has('is-idle-humming'), false);
   assert.equal(intervals.length, 0, 'humming clears note interval');
+  S.idleHummingNoteI = win.setInterval(() => {}, 500);
+  assert.equal(intervals.length, 1);
+  stopIdleHumming(win);
+  assert.equal(intervals.length, 0, 'stopIdleHumming clears orphaned note timers');
 } finally {
   Math.random = origRandom;
 }

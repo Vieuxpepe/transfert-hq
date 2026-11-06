@@ -142,6 +142,112 @@
     return section("Erreurs récentes", kids);
   }
 
+  function renderAgentGuide() {
+    return section("Rappel agents", [
+      el("p", {
+        "class": "muted",
+        text:
+          "Guide : docs/agent-debugging.md · Symptômes : docs/hq-symptom-index.md · Brief : GET /api/diag/agent-brief · Bundle : GET /api/diag/session-bundle",
+      }),
+      el("p", {
+        text:
+          "Ordre : (1) agent-brief / brief_md (2) capture_hint vide (3) top_issues + likely_subsystem (4) request_id ↔ erreurs serveur.",
+      }),
+    ]);
+  }
+
+  function renderAgentBrief(res) {
+    var b = res && res.body;
+    var st = res && res.status;
+    if (st !== 200 || !b) {
+      return section("Brief agent", [el("p", { text: "Brief indisponible (session expirée ?)." })]);
+    }
+    var triage = b.agent_triage || {};
+    var kids = [];
+    if (triage.capture_hint) {
+      kids.push(el("p", { "class": "err", text: String(triage.capture_hint) }));
+    } else if (triage.capture_ok) {
+      kids.push(el("p", { "class": "muted", text: "Capture client active." }));
+    }
+    if (triage.likely_subsystem) {
+      kids.push(el("p", { text: "Sous-système probable : " + String(triage.likely_subsystem) }));
+    }
+    (triage.top_issues || []).forEach(function (line) {
+      kids.push(el("div", { text: "• " + String(line) }));
+    });
+    if (!(triage.top_issues || []).length) {
+      kids.push(el("p", { text: "Aucun problème résumé dans le tail actuel." }));
+    }
+    var btn = el("button", { type: "button", text: "Copier brief_md" });
+    btn.addEventListener("click", function () {
+      var md = b.brief_md;
+      if (typeof md !== "string" || !md.trim()) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(md).catch(function () {});
+      }
+      btn.textContent = "OK";
+    });
+    var pkt = el("button", { type: "button", text: "Copier packet agent" });
+    pkt.addEventListener("click", function () {
+      var md = b.packet_md;
+      if (typeof md !== "string" || !md.trim()) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(md).catch(function () {});
+      }
+      pkt.textContent = "OK";
+    });
+    kids.push(btn);
+    kids.push(pkt);
+    var save = el("button", { type: "button", text: "Enregistrer packet sur disque" });
+    save.addEventListener("click", function () {
+      save.disabled = true;
+      api("/api/diag/save-agent-packet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 40 }),
+      }).then(function (r) {
+        save.disabled = false;
+        if (r.status === 200 && r.body && r.body.ok) save.textContent = "OK";
+        else save.textContent = "Échec";
+      });
+    });
+    kids.push(save);
+    if (b.agent_packet_disk && b.agent_packet_disk.relative) {
+      kids.push(el("p", { "class": "muted", text: "Fichier : " + b.agent_packet_disk.relative }));
+    }
+    return section("Brief agent (triage)", kids);
+  }
+
+  function renderClientLog(block) {
+    var lines = (block && block.lines) || [];
+    var s = (block && block.summary) || {};
+    var kids = [
+      el("p", {
+        "class": "muted",
+        text:
+          (lines.length ? lines.length + " lignes" : "Aucune") +
+          " · fichier " +
+          (s.file || "client-browser.jsonl") +
+          " · " +
+          (s.files_max || 2) +
+          " fichiers max",
+      }),
+      el("p", { "class": "muted", text: "Brief : GET /api/diag/agent-brief · Bundle complet : GET /api/diag/session-bundle" }),
+    ];
+    if (!lines.length) kids.push(el("p", { text: "Aucune entrée navigateur récente." }));
+    lines.forEach(function (x) {
+      var bits = [x.at, x.view ? "view=" + x.view : "", x.kind ? "kind=" + x.kind : "", x.level, x.message].filter(Boolean).join("  ");
+      kids.push(
+        el("div", { "class": "err" }, [
+          el("code", { text: bits + (x.request_id ? "  #" + x.request_id : "") + (x.session_id ? "  sess=" + x.session_id : "") }),
+          x.detail ? el("div", { "class": "muted", text: x.detail }) : null,
+          x.data ? el("div", { "class": "muted", text: JSON.stringify(x.data) }) : null,
+        ])
+      );
+    });
+    return section("Journal navigateur (client-browser.jsonl)", kids);
+  }
+
   function renderDeploy(info) {
     var inp = el("input", { type: "text", placeholder: "SHA attendu (7–40 hex)", value: lastExpected, autocomplete: "off", spellcheck: "false" });
     var out = el("span", { "class": "muted", text: "" });
@@ -159,12 +265,46 @@
     return section("Déploiement", [table([row("Build en cours", info.build_sha || "unknown"), row("Dossier sur disque", info.checkout_sha || "unknown")]), inp, btn, out]);
   }
 
+  function renderLagCaptures(res) {
+    var files = (res && res.body && res.body.files) || [];
+    var kids = [
+      el("p", {
+        "class": "muted",
+        text:
+          "Dernières captures lag (WebP/JPEG, max 50 on disk). Agents : GET /api/diag/lag-capture/<name> (admin, basename sûr).",
+      }),
+    ];
+    if (!files.length) {
+      kids.push(el("p", { text: "Aucune capture lag enregistrée." }));
+      return section("Captures lag (retention)", kids);
+    }
+    files.forEach(function (f) {
+      var name = f.name || f.basename || "";
+      var rel = f.relative || f.screenshot_rel || name;
+      var link = el("a", {
+        href: "/api/diag/lag-capture/" + encodeURIComponent(name),
+        text: name,
+        target: "_blank",
+        rel: "noopener",
+      });
+      kids.push(
+        el("div", { "class": "err" }, [
+          link,
+          el("span", { "class": "muted", text: "  " + (f.modified_at || f.mtime || f.at || "") + "  " + fmtBytes(f.size || 0) }),
+          el("div", { "class": "muted", text: rel }),
+        ])
+      );
+    });
+    return section("Captures lag (retention)", kids);
+  }
+
   function load(keepVerify) {
     Promise.all([api("/api/diag/info"), api("/api/diag/live"), api("/api/diag/ready"), api("/api/diag/subsystems"),
-                 api(keepVerify && state.verify ? "/api/diag/backup?verify=1" : "/api/diag/backup"), api("/api/diag/errors?limit=30")]).then(function (r) {
+                 api(keepVerify && state.verify ? "/api/diag/backup?verify=1" : "/api/diag/backup"), api("/api/diag/errors?limit=30"),
+                 api("/api/diag/client-log?limit=40"), api("/api/diag/agent-brief?limit=40"), api("/api/diag/lag-captures?limit=10")]).then(function (r) {
       var info = r[0].body || {};
       root.textContent = "";
-      [renderInstance(info), renderHealth(r[1], r[2]), renderSubs(r[3]), renderStorage(), renderBackup(r[4]), renderErrors(r[5]), renderDeploy(info)].forEach(function (n) { root.appendChild(n); });
+      [renderInstance(info), renderHealth(r[1], r[2]), renderSubs(r[3]), renderStorage(), renderBackup(r[4]), renderErrors(r[5]), renderClientLog(r[6].body), renderLagCaptures(r[7]), renderAgentBrief(r[8]), renderAgentGuide(), renderDeploy(info)].forEach(function (n) { root.appendChild(n); });
     }).catch(function () { root.textContent = "Diagnostics indisponibles (session expirée ou accès refusé)."; });
   }
 

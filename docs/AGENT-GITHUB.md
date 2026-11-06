@@ -92,10 +92,19 @@ Agents should reason from **code + committed docs**, not from live `.hq-ai` data
 
 | Path | Role |
 |------|------|
-| `assets/hq-dangling-member.js` | Shaft sim, avatar zones, flick, **oral session** |
+| `assets/hq-dangling-member.js` | Shaft sim, avatar zones, flick, **oral session**, palm hooks |
+| `assets/hq-palm-hand.js` | Open-palm + slap overlay (single active gesture, particle cap) |
 | `assets/dangling-member.png` | Shaft texture |
+| `docs/dangling-vein-paths-viewer.html` | **Open in a browser** — your guide PNG + thick extracted paths (regenerated with extract script) |
+| `docs/dangling-vein-paths-overlay.png` | 3× PNG QA snapshot of the same |
+| `assets/dangling-member-vein-paths.js` | Browser bundle of vein paths for trace gesture |
 | `assets/transferina-head-open-profile-mouth.png` | Oral overlay (transparent mouth cavity) |
-| `assets/transferina-hand.png` | Flick hand |
+| `assets/transferina-hand.png` | Slap / flick hand |
+| `assets/transferina-hand-open.png` | Open-palm gestures (pat, hush, wave, …) |
+| `assets/transferina-hand-point.png` | Pointing hand — vein trace when shaft rests near her |
+| `assets/transferina-hand-grip.png` | Grip hand — `grip_pole` hold on shaft when resting on tit/face |
+| `assets/transferina-hand-grip-showcase.png` | Same art on light background (phone preview) |
+| `assets/transferina-hand-grip-mobile.html` | **iPhone:** open on bridge — `/assets/transferina-hand-grip-mobile.html` |
 | `scripts/punch_oral_mouth.py` | Regenerate mouth alpha in PNG |
 
 ### Adult visuals & chat media (content-heavy — review as **code paths**, not scene writing)
@@ -158,6 +167,7 @@ python -m pytest tests/test_hq_ai.py -q -k transferania
 ```
 
 Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
+`tests/check_hq_palm_hand.mjs` covers `HqPalmHand` busy/cooldown/dual catch (no browser).
 
 ---
 

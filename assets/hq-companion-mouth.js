@@ -1,3 +1,4 @@
+/* mouthanim1b installed candidate: tight cover, lip-neutral face, teeth/tongue/depth. Tight lip cover; lip-neutralized face. Live chinrestore1 untouched. */
 /* Independent vector mouth rig. No portrait textures or chest physics changed. */
 (function (root, factory) {
   const api = factory();
@@ -361,17 +362,17 @@
     svg.setAttribute("viewBox", "0 0 512 512");
     svg.setAttribute("aria-hidden", "true");
     svg.innerHTML = `<defs>
-      <linearGradient id="${id}-skin" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e8bba8"/><stop offset="1" stop-color="#e8b5a2"/></linearGradient>
-      <radialGradient id="${id}-fade"><stop offset=".68" stop-color="white"/><stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient>
-      <mask id="${id}-patch"><ellipse cx="0" cy="5" rx="34" ry="34" fill="url(#${id}-fade)"/></mask>
-      <radialGradient id="${id}-inside" cy="25%"><stop stop-color="#200912"/><stop offset="1" stop-color="#571522"/></radialGradient>
+      <linearGradient id="${id}-skin" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f0beab"/><stop offset="1" stop-color="#e9b19f"/></linearGradient>
+      <radialGradient id="${id}-fade"><stop offset=".82" stop-color="white"/><stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient>
+      <mask id="${id}-patch"><ellipse cx="0" cy="-1" rx="26" ry="11" fill="url(#${id}-fade)"/></mask>
+      <radialGradient id="${id}-inside" cx="50%" cy="20%" r="85%"><stop stop-color="#0a0306"/><stop offset=".45" stop-color="#2a0c14"/><stop offset="1" stop-color="#5c1830"/></radialGradient>
       <linearGradient id="${id}-lip" x2="0" y2="1"><stop stop-color="#a22435"/><stop offset="1" stop-color="#d4545c"/></linearGradient>
       <linearGradient id="${id}-teeth" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#a37a6a"/><stop offset=".38" stop-color="#ddc7af"/><stop offset="1" stop-color="#eee1cd"/></linearGradient>
       <radialGradient id="${id}-tongue" cx="50%" cy="35%" r="75%"><stop stop-color="#a85c70"/><stop offset=".5" stop-color="#82394f"/><stop offset="1" stop-color="#4b1d30"/></radialGradient>
       <linearGradient id="${id}-tongue-out" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#6e2b40"/><stop offset=".45" stop-color="#b45f77"/><stop offset="1" stop-color="#cd7d90"/></linearGradient>
       <clipPath id="${id}-clip"><path data-part="clip"/></clipPath></defs>
-      <g transform="translate(266 170) rotate(-10)">
-        <rect x="-35" y="-30" width="70" height="70" fill="url(#${id}-skin)" mask="url(#${id}-patch)"/>
+      <g transform="translate(266.3 159.1) rotate(-10)">
+        <rect x="-28" y="-14" width="56" height="28" fill="url(#${id}-skin)" mask="url(#${id}-patch)"/>
         <g data-mouth-shape="">
         <path data-part="cavity" fill="url(#${id}-inside)"/>
         <g clip-path="url(#${id}-clip)"><path data-part="teeth" fill="url(#${id}-teeth)"/>
@@ -522,14 +523,18 @@
       const g = geometry(current.open, current.smile, current.round, current.extend, current.curl, current.sway, current.bite, current.asym, current.press);
       for (const name of ["cavity", "upper", "lower", "teeth", "tongue", "highlight", "tongueOut", "tongueFold", "tongueShine"]) parts[name].setAttribute("d", g[name]);
       parts.clip.setAttribute("d", g.cavity);
-      parts.teeth.style.opacity = String(clamp(current.open * 5 + current.smile * .8, 0, 1) * (1 - current.press));
-      parts.tongue.style.opacity = String(clamp((current.open - .12) * 3, 0, 1));
+            // Rest-safe interior: idle smile must NOT reveal teeth/cavity. Gate on open only
+      // (lifePose smile ~0.27–0.43 with open≈0). Speaking shapes still use open>0.05.
+      const openGate = clamp((current.open - .05) * 14, 0, 1);
+      parts.cavity.style.opacity = String(openGate);
+      parts.teeth.style.opacity = String(openGate * clamp(current.open * 5, 0, 1) * (1 - current.press));
+      parts.tongue.style.opacity = String(openGate * clamp((current.open - .12) * 3, 0, 1));
       parts.tongueOut.style.opacity = String(clamp(current.extend * 7, 0, 1));
       parts.tongueFold.style.opacity = String(clamp(current.extend * 7, 0, 1) * .45);
       parts.tongueShine.style.opacity = String(clamp(current.extend * 7, 0, 1) * .35);
       host.classList.toggle("is-glass-licking", current.extend > .62);
-      // At rest, show the original painted mouth exactly as before.
-      svg.style.opacity = String(clamp(Math.max(current.open * 25, current.smile * 5, current.seal), 0, 1));
+      // Lip-neutralized face: keep SVG visible at rest (closed lips, no interior).
+      svg.style.opacity = String(clamp(Math.max(current.open * 25, current.smile * 5, current.seal, 0.92), 0, 1)); // candidate: lips neutralized on face — keep closed SVG visible at rest
     };
     const inputs = time => ({ time: mode === "lick" ? Math.max(0, time - modeStart) : time, reduced: reduced(),
       lifePose,
