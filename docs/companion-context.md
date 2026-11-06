@@ -17,8 +17,10 @@ Intensity does not mean hostility, pressure, constant escalation or identical
 industrial jargon; their individual voices and the Master's preferences remain.
 
 Resolve an unnamed sister from the conversation instead of always assuming
-Static. This relationship canon does not fabricate shared conversations,
-merge memories or authorize messages between the sisters.
+Static. Do not invent private sister chats behind the Master's back, and never
+merge their memory stores. Master-triggered sister dialogue and rare ambient
+sister banter on an open HQ are allowed: each turn stays in that sister's own
+voice and log.
 <!-- ELSE_TRANSFERANIA_FAMILY_CANON:END -->
 
 
@@ -28,8 +30,8 @@ Defaults need no migration. Add optional settings under `companion_context` in
 ```json
 {
   "companion_context": {
-    "chat_input_budget": 12000,
-    "ambient_input_budget": 4000,
+    "chat_input_budget": 24000,
+    "ambient_input_budget": 5000,
     "ambient_daily_limit": 240,
     "chat_daily_limit": 1000,
     "model_input_tpm": {
@@ -50,10 +52,11 @@ are separate.
 
 **Per-model caps.** `chat_input_budget` is the ceiling; each model gets
 `model_input_cap` = the smaller of that budget and 85 % of its per-minute token
-allowance, converted to bytes. With a 100 000 budget, Gemini Flash Lite (250K
-TPM) receives the full prompt while Gemma (16K TPM) receives a re-fitted prompt
-built with the same priorities, instead of being skipped. Summaries trigger at
-the smallest cap in the chain, so a fallback model still has the summary.
+allowance, converted to bytes. Defaults assume Flash Lite as the usual chat
+answerer (`24000` / ambient `5000`). Gemini Flash Lite (250K TPM) takes the full
+configured budget; Gemma (16K TPM) receives a re-fitted prompt with the same
+priorities when its cap is smaller. Summaries trigger at the smallest cap in the
+chain, so a fallback model still has the summary.
 
 **Calibration.** Google meters tokens, HQ counts bytes. Every successful call
 records `estimate / promptTokenCount` in `.hq-ai/token-calibration.json` (last

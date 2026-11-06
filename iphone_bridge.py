@@ -7366,7 +7366,9 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/hq-companion-reaction-audio.js" as="script">
 <link rel="preload" href="/assets/companion/chat/reactions/manifest.runtime.json?v={reaction_manifest_rev}" as="fetch" crossorigin>
 {reaction_hot_preload_link_tags()}
+<script src="/assets/hq-sister.js"></script>
 <script src="/assets/hq-companion.js"></script>
+<script src="/assets/hq-else-chip.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 {debug_js_tag}
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">

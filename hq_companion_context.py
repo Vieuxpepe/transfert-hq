@@ -10,23 +10,39 @@ def normalize(text):
     return re.sub(r"\s+", " ", str(text)).strip()
 
 
+def _stem(word):
+    for suf in ("ements", "ement", "ations", "ation", "ures", "ure", "euses", "euse", "eurs", "eur",
+                "ieres", "iere", "istes", "iste", "ables", "able", "ent", "ant", "ais", "ait",
+                "ir", "er", "re", "es", "s", "ing", "ed", "ly"):
+        if word.endswith(suf) and len(word) - len(suf) >= 4:
+            return word[:-len(suf)]
+    return word
+
+
 def terms(text):
     text = re.sub(r"\bthé\b", "teadrink", str(text), flags=re.I)
     text = "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
     stop = set("je tu il elle le la les de du des un une mon ma mes ton ta tes nous vous on et pour avec dans que est pas sur the a an i you my your we our to and is it in for of what how why can do did about please this that actually decided need finish finished use because".split())
-    return {{"coffee":"cafe", "tea":"teadrink"}.get(word, word)
-            for word in set(re.findall(r"[a-z0-9]{3,}", text)) - stop}
+    out = set()
+    for word in set(re.findall(r"[a-z0-9]{3,}", text)) - stop:
+        mapped = {"coffee": "cafe", "tea": "teadrink"}.get(word, word)
+        out.add(mapped)
+        out.add(_stem(mapped))
+    return out
 
 
 def page_kind(text):
     """Only server formatter prefixes classify a block, never words inside its body."""
     head = text.splitlines()[0].strip() if text.strip() else ""
     for prefix, kind in (("ÉVÉNEMENT RÉEL", "event"), ("À DEMANDER", "event"),
+                         ("DONNÉES HQ EN DIRECT", "event"),
                          ("SUJET PARTAGÉ", "followthrough"), ("POURQUOI CELA COMPTAIT", "followthrough"),
+                         ("SŒUR PRÉSENTE", "sister"),
                          ("Action réussie à l'instant", "event"), ("Échec ou erreur récente", "behavior"),
                          ("TEMPS (vrai)", "time"), ("PRÉSENCE", "behavior"), ("NUANCE DE RÉPONSE", "behavior"),
                          ("DÉJÀ DIT", "behavior"),
-                         ("VOIX TRANSFERANIA", "delivery"), ("TOUCHE FACULTATIVE", "quirk"),
+                         ("VOIX TRANSFERANIA", "delivery"), ("VOIX ELSE", "delivery"),
+                         ("TOUCHE FACULTATIVE", "quirk"),
                          ("SUJET EN ATTENTE", "continuity"), ("ÉPISODE ÉNONCÉ", "continuity"),
                          ("Rituel partagé", "continuity"), ("Avis provisoire", "continuity")):
         if head.startswith(prefix):
@@ -34,7 +50,7 @@ def page_kind(text):
     return "page"
 
 
-PRIORITY = {"correction": 100, "event": 95, "followthrough": 92, "time": 90,
+PRIORITY = {"correction": 100, "event": 95, "followthrough": 92, "sister": 91, "time": 90,
             "behavior": 88, "memory": 85, "summary": 80, "history_recent": 76, "page": 70,
             "continuity": 68, "history_relevant": 65,
             "delivery": 30, "quirk": 20}

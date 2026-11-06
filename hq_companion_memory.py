@@ -18,6 +18,7 @@ import hq_companion_presence as presence
 import hq_companion_growth as growth
 
 _owner = ContextVar("companion_owner", default="admin")
+_memory_scope = ContextVar("companion_memory_scope", default="transferania")
 _lock = threading.RLock()
 _root = Path(".")
 _now = lambda: 0.0
@@ -30,6 +31,19 @@ class StoreError(RuntimeError):
 def bind(*, root, now):
     global _root, _now
     _root, _now = Path(root), now
+
+
+@contextmanager
+def memory_scope(name: str):
+    """Isolate memory JSON and personality by character: ``transferania`` (default) or ``else``."""
+    key = str(name or "").strip().lower()
+    if key not in ("transferania", "else"):
+        key = "transferania"
+    token = _memory_scope.set(key)
+    try:
+        yield
+    finally:
+        _memory_scope.reset(token)
 
 
 def current_owner():
@@ -53,15 +67,33 @@ def fold(text):
     return re.sub(r"\s+", " ", text.replace("’", "'")).strip()
 
 
+def _stem(word):
+    for suf in ("ements", "ement", "ations", "ation", "ures", "ure", "euses", "euse", "eurs", "eur",
+                "ieres", "iere", "istes", "iste", "ables", "able", "ent", "ant", "ais", "ait",
+                "ir", "er", "re", "es", "s", "ing", "ed", "ly"):
+        if word.endswith(suf) and len(word) - len(suf) >= 4:
+            return word[:-len(suf)]
+    return word
+
+
 def terms(text):
     stop = {"je", "tu", "il", "elle", "le", "la", "les", "des", "de", "du", "un", "une", "the", "a", "i", "you", "my", "mon", "ma", "mes", "sur", "on", "to", "and", "et", "est", "is", "que", "pas", "pour", "avec", "ton", "ta", "tes", "comment", "how", "what", "quel", "quelle", "bonjour", "salut", "hello", "hi", "merci", "thanks", "ok", "oui", "non", "yes", "no"}
     words = set(re.findall(r"[a-z0-9]{2,}", fold(re.sub(r"\bthé\b", "teadrink", str(text), flags=re.I)))) - stop
-    return {{"coffee": "cafe", "tea": "teadrink"}.get(word, word) for word in words}
+    out = set()
+    for word in words:
+        mapped = {"coffee": "cafe", "tea": "teadrink"}.get(word, word)
+        out.add(mapped)
+        out.add(_stem(mapped))
+    return out
 
 
 def path():
     key = hashlib.sha256(current_owner().encode("utf-8")).hexdigest()[:32]
-    return _root / ".hq-ai" / "companion-memory" / (key + ".json")
+    scope = _memory_scope.get()
+    base = _root / ".hq-ai" / "companion-memory"
+    if scope == "else":
+        base = base / "else"
+    return base / (key + ".json")
 
 
 def _empty():
@@ -635,3 +667,58 @@ def close_followup(followup_id):
                 f.update(status="dropped", updated_at=_now())
         _save(data)
     return snapshot()
+
+
+def note_sister_line(speaker: str, text: str, device: str) -> None:
+    """Light episode note from a Master-triggered sister dialogue (current memory_scope)."""
+    line = re.sub(r"\s+", " ", str(text or "").strip())[:400]
+    who = str(speaker or "").strip().lower()
+    if not line or who not in ("transferania", "else"):
+        return
+    label = "Transferania" if who == "transferania" else "Else"
+    with _lock:
+        data = _load()
+        _record_episode(data, f"{label} a dit (dialogue sœurs) : {line}", "experience", device, None, topic="sister_dialogue")
+        _save(data)
+
+
+def remember_fact(text, device):
+    """Mirror an explicit durable fact into shared owner memory without extra API calls."""
+    cleaned = str(text or "").strip()[:500]
+    if not cleaned:
+        return
+    with _lock:
+        data = _load()
+        now = _now()
+        items = extract(cleaned) or [{"kind": "fact", "subject": fold(cleaned)[:120], "polarity": "neutral", "text": cleaned}]
+        for item in items:
+            _remember(data, item, str(device or ""), now, evidence="explicit_statement")
+            _project_followup(data, item, str(device or ""), now)
+        _save(data)
+
+
+def forget_text(query):
+    """Forget active shared memories matching query substring (accent/case-insensitive)."""
+    q = fold(str(query or "")).strip(" .!?")
+    if len(q) < 3:
+        return 0
+    removed = 0
+    with _lock:
+        data = _load()
+        now = _now()
+        for m in data["memories"]:
+            if m["status"] in ("active", "pending_confirmation"):
+                mt = fold(m.get("text", "")).strip(" .!?")
+                if q in mt or (mt and mt in q):
+                    m["status"] = "forgotten"
+                    data["forgotten"][hashlib.sha256(m["key"].encode()).hexdigest()[:24]] = now
+                    removed += 1
+                    for episode in data["episodes"]:
+                        if episode.get("source_key") == m["key"]:
+                            episode["status"] = "forgotten"
+                    for f in data["followups"]:
+                        if f.get("linked_key") == m["key"]:
+                            f.update(status="dropped", updated_at=now)
+        if removed:
+            _save(data)
+    return removed

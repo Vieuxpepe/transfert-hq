@@ -99,7 +99,7 @@
     if (id === "garment-front") {
       return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     }
-    return RIG_NEUTRAL_BASE + id + ".svg?v=mouthrest1";
+    return RIG_NEUTRAL_BASE + id + ".svg?v=eyesv3";
   }
 
   function readAccessories(win) {
@@ -353,7 +353,7 @@
     for (let i = 0; i < parts.length; i += 2) {
       const w = parts[i];
       if (!w) continue;
-      let d = 75 + Math.min(85, w.length * 8);
+      let d = 115 + Math.min(125, w.length * 14);
       if (/[.!?…]["»)]?$/.test(w)) d += 340;
       else if (/[,;:]$/.test(w)) d += 180;
       else if (/^[—–-]$/.test(w)) d += 210;
@@ -618,6 +618,8 @@
     cleavageGather: 0,
     pullRenderX: 0,
     pullRenderShear: 0,
+    pullRenderSkip: 1,
+    pullRenderFrame: 0,
     pullSloshX: 0,
     pullSloshY: 0,
     pullDeepGlanceDone: false,
@@ -896,15 +898,39 @@
     }
   }
 
-  // perf10: applyNsfwStatus runs more than once at startup; share one GET within 5 s.
+  // Invariant Forge UI defaults are cached locally; force remains available for an explicit settings refresh.
+  const FORGE_UI_DEFAULTS_CACHE = "hq-forge-ui-defaults-v1";
+  const FORGE_UI_DEFAULTS_TTL = 6 * 60 * 60 * 1000;
   let forgeUiDefaultsInflight = null;
-  let forgeUiDefaultsAt = 0;
+  let forgeUiDefaultsLoaded = false;
+  function applyForgeUiDefaults(win, defaults) {
+    if (!defaults || typeof defaults !== "object") return;
+    S.forgeUiDefaults = defaults;
+    forgeUiDefaultsLoaded = true;
+    if (S.forgeHybridBox && win.localStorage.getItem(LS_FORGE_HYBRID) == null) {
+      S.forgeHybridBox.checked = !!defaults.hybrid_default;
+    }
+    if (S.forgeStockRange && win.localStorage.getItem(LS_FORGE_STOCK_CHANCE) == null) {
+      const pct = Math.round(Number(defaults.stock_chance || 0.5) * 100);
+      S.forgeStockRange.value = String(Math.max(10, Math.min(90, pct)));
+    }
+    if (S.nsfwOn) syncAdultPortrait();
+  }
+
   function refreshForgeUiDefaults(win, force) {
     if (!S.sessionAdmin || !S.nsfwAllowed) return Promise.resolve();
-    const now = Date.now();
-    if (!force && forgeUiDefaultsInflight && now - forgeUiDefaultsAt < 5000) return forgeUiDefaultsInflight;
-    forgeUiDefaultsAt = now;
-    forgeUiDefaultsInflight = refreshForgeUiDefaultsNow(win);
+    if (!force && forgeUiDefaultsLoaded) return Promise.resolve();
+    if (!force) {
+      try {
+        const cached = JSON.parse(win.localStorage.getItem(FORGE_UI_DEFAULTS_CACHE) || "null");
+        if (cached && Date.now() - Number(cached.at || 0) < FORGE_UI_DEFAULTS_TTL && cached.defaults) {
+          applyForgeUiDefaults(win, cached.defaults);
+          return Promise.resolve();
+        }
+      } catch (_) {}
+    }
+    if (forgeUiDefaultsInflight) return forgeUiDefaultsInflight;
+    forgeUiDefaultsInflight = refreshForgeUiDefaultsNow(win).finally(() => { forgeUiDefaultsInflight = null; });
     return forgeUiDefaultsInflight;
   }
 
@@ -913,15 +939,10 @@
     try {
       const data = await fetchJson(win, "/api/companion/art", null, { timeoutMs: 12000 });
       if (data && data.ui_defaults) {
-        S.forgeUiDefaults = data.ui_defaults;
-        if (S.forgeHybridBox && win.localStorage.getItem(LS_FORGE_HYBRID) == null) {
-          S.forgeHybridBox.checked = !!data.ui_defaults.hybrid_default;
-        }
-        if (S.forgeStockRange && win.localStorage.getItem(LS_FORGE_STOCK_CHANCE) == null) {
-          const pct = Math.round(Number(data.ui_defaults.stock_chance || 0.5) * 100);
-          S.forgeStockRange.value = String(Math.max(10, Math.min(90, pct)));
-        }
-        if (S.nsfwOn) syncAdultPortrait();
+        applyForgeUiDefaults(win, data.ui_defaults);
+        try {
+          win.localStorage.setItem(FORGE_UI_DEFAULTS_CACHE, JSON.stringify({ at: Date.now(), defaults: data.ui_defaults }));
+        } catch (_) {}
       }
     } catch (_) {}
   }
@@ -2463,6 +2484,13 @@
       txt.className = "hq-companion-msg-text";
       txt.textContent = String(m.text || "");
       row.append(who, txt);
+      if (!isUser && (m.model_label || m.model)) {
+        const meta = doc.createElement("span");
+        meta.className = "hq-companion-msg-model";
+        meta.textContent = String(m.model_label || m.model);
+        meta.title = String(m.model || m.model_label || "");
+        row.appendChild(meta);
+      }
       if (m.photo_href) {
         const pic = doc.createElement("img");
         pic.className = "hq-companion-msg-photo";
@@ -2471,6 +2499,77 @@
         pic.loading = "lazy";
         pic.decoding = "async";
         row.appendChild(pic);
+      }
+      if (!isUser && m.suggest_capture && typeof S.win.hqAiOpen === "function") {
+        const capBtn = doc.createElement("button");
+        capBtn.type = "button";
+        capBtn.className = "hq-companion-capture-pill";
+        capBtn.textContent = "→ Noter";
+        capBtn.title = "Ouvrir dans « Noter » : " + String(m.suggest_capture).slice(0, 80);
+        capBtn.addEventListener("click", () => S.win.hqAiOpen({ tab: "note", seed: String(m.suggest_capture) }));
+        row.appendChild(capBtn);
+      }
+      if (m.has_image) {
+        const badge = doc.createElement("span");
+        badge.className = "hq-companion-capture-pill";
+        badge.textContent = "📷 Image";
+        row.appendChild(badge);
+      }
+      if (!isUser && m.text) {
+        const pinBtn = doc.createElement("button");
+        pinBtn.type = "button";
+        pinBtn.className = "hq-companion-capture-pill";
+        pinBtn.textContent = m._pinned ? "📌 ✓" : "📌";
+        pinBtn.title = "Épingler ce moment dans les Souvenirs (Polaroids)";
+        pinBtn.disabled = !!m._pinned;
+        pinBtn.addEventListener("click", async () => {
+          pinBtn.disabled = true;
+          try {
+            await callTransferania(S.win, {
+              op: "souvenir_pin",
+              text: String(m.text || ""),
+              photo_href: m.photo_href || "",
+              view: (S.win && S.win.document && S.win.document.body && S.win.document.body.dataset.view) || "accueil",
+            });
+            m._pinned = true;
+            pinBtn.textContent = "📌 ✓";
+            toastMsg(S.win, "Souvenir épinglé 📌");
+          } catch (e) {
+            pinBtn.disabled = false;
+            toastMsg(S.win, (e && e.message) || "Impossible d'épingler ce souvenir");
+          }
+        });
+        row.appendChild(pinBtn);
+      }
+      if (!isUser && Array.isArray(m.proposals) && m.proposals.length) {
+        m.proposals.forEach((p) => {
+          if (!p || !p.label) return;
+          const card = doc.createElement("div");
+          card.className = "hq-companion-proposal-card";
+          card.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 8px;border-radius:8px;background:rgba(255,255,255,0.06);font-size:12px;";
+          const lbl = doc.createElement("span");
+          lbl.style.flex = "1";
+          lbl.textContent = String(p.label);
+          const applyBtn = doc.createElement("button");
+          applyBtn.type = "button";
+          applyBtn.className = "hq-companion-capture-pill";
+          applyBtn.textContent = p._applied ? "Enregistré ✓" : "Confirmer ✓";
+          applyBtn.disabled = !!p._applied;
+          applyBtn.addEventListener("click", async () => {
+            applyBtn.disabled = true;
+            try {
+              await fetchJson(S.win, "/api/ai", { action: "apply", proposals: [p] });
+              p._applied = true;
+              applyBtn.textContent = "Enregistré ✓";
+              toastMsg(S.win, "Action appliquée : " + p.label);
+            } catch (e) {
+              applyBtn.disabled = false;
+              toastMsg(S.win, (e && e.message) || "Erreur d'application");
+            }
+          });
+          card.append(lbl, applyBtn);
+          row.appendChild(card);
+        });
       }
       S.logEl.appendChild(row);
     });
@@ -2503,6 +2602,10 @@
       if (S.hasSummary && !S.hadSummary) pulseMemChip();
       S.hadSummary = S.hasSummary;
       if (out.prefs) S.prefs = Object.assign({}, DEFAULT_PREFS, out.prefs);
+      if (out.thought) {
+        S.currentThought = String(out.thought);
+        syncLargePortraitCaption(win);
+      }
       renderLog();
     } catch (_) {}
   }
@@ -2518,10 +2621,18 @@
     if (S.expanded) {
       setCollapsed(false, true);
       loadHistory();
+      if (S.win.HqSister && typeof S.win.HqSister.loadHistory === "function") {
+        S.win.HqSister.loadHistory().then(() => {
+          if (S.renderCompanionSisterStrip) S.renderCompanionSisterStrip();
+        }).catch(() => {});
+      } else if (S.renderCompanionSisterStrip) {
+        S.renderCompanionSisterStrip();
+      }
       if (!S.readTarget) winFocusInput();
       if (S.nsfwOn) startLive2DLoop(S.win);
-    } else if (isCompactUI(S.win)) {
-      setCollapsed(true, true);
+    } else {
+      if (S.sisterStripEl) S.sisterStripEl.hidden = true;
+      if (isCompactUI(S.win)) setCollapsed(true, true);
     }
     syncVisibility();
   }
@@ -3203,13 +3314,95 @@
       }
     };
 
+    const thoughtsSec = toolsSection(doc, "💭 Journal intime (Pensées d'atelier)");
+    const renderThoughts = async () => {
+      thoughtsSec.body.replaceChildren(doc.createTextNode("Chargement…"));
+      try {
+        const out = await callTransferania(win, { op: "thoughts" });
+        thoughtsSec.body.replaceChildren();
+        if (out.current) {
+          S.currentThought = String(out.current);
+          syncLargePortraitCaption(win);
+          const curBox = doc.createElement("div");
+          curBox.style.cssText = "padding:8px 10px;border-radius:8px;background:rgba(255,180,210,0.09);border:1px solid rgba(255,180,210,0.22);margin-bottom:8px;font-style:italic;";
+          curBox.textContent = "« " + out.current + " »";
+          thoughtsSec.body.appendChild(curBox);
+        }
+        const list = Array.isArray(out.thoughts) ? out.thoughts : [];
+        if (list.length) {
+          list.slice().reverse().slice(0, 6).forEach((th) => {
+            if (!th || !th.text) return;
+            const row = doc.createElement("div");
+            row.style.cssText = "font-size:0.86em;opacity:0.86;margin:4px 0;";
+            const when = th.at ? new Date(th.at * 1000).toLocaleTimeString("fr-CA", { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+            row.textContent = (when ? "[" + when + "] " : "• ") + String(th.text);
+            thoughtsSec.body.appendChild(row);
+          });
+        } else if (!out.current) {
+          thoughtsSec.body.appendChild(doc.createTextNode("Aucune pensée consignée pour l'instant."));
+        }
+      } catch (e) {
+        thoughtsSec.body.replaceChildren(doc.createTextNode((e && e.message) || "Journal intime indisponible"));
+      }
+    };
+
+    const souvenirsSec = toolsSection(doc, "📌 Souvenirs épinglés (Polaroids)");
+    const renderSouvenirs = async () => {
+      souvenirsSec.body.replaceChildren(doc.createTextNode("Chargement…"));
+      try {
+        const out = await callTransferania(win, { op: "souvenirs" });
+        souvenirsSec.body.replaceChildren();
+        const list = Array.isArray(out.souvenirs) ? out.souvenirs : [];
+        if (!list.length) {
+          souvenirsSec.body.appendChild(doc.createTextNode("Aucun souvenir épinglé (clique sur 📌 sous une réplique de Transferania pour la garder ici)."));
+          return;
+        }
+        const grid = doc.createElement("div");
+        grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;";
+        list.forEach((sv) => {
+          if (!sv || !sv.id) return;
+          const card = doc.createElement("div");
+          card.style.cssText = "padding:8px 10px;border-radius:10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);display:flex;flex-direction:column;gap:6px;";
+          if (sv.photo_href) {
+            const img = doc.createElement("img");
+            img.src = String(sv.photo_href);
+            img.alt = "";
+            img.loading = "lazy";
+            img.decoding = "async";
+            img.style.cssText = "width:100%;max-height:130px;object-fit:cover;border-radius:6px;";
+            card.appendChild(img);
+          }
+          const cap = doc.createElement("p");
+          cap.style.cssText = "margin:0;font-size:0.88em;line-height:1.35;flex:1;";
+          cap.textContent = "« " + String(sv.text || "") + " »";
+          const meta = doc.createElement("div");
+          meta.style.cssText = "display:flex;align-items:center;justify-content:space-between;font-size:0.75em;opacity:0.78;gap:6px;";
+          const dateStr = sv.at ? new Date(sv.at * 1000).toLocaleDateString("fr-CA") : "";
+          const info = doc.createElement("span");
+          info.textContent = [dateStr, sv.view ? "sur " + sv.view : ""].filter(Boolean).join(" · ");
+          const del = toolsButton(doc, "Retirer", async () => {
+            await callTransferania(win, { op: "souvenir_delete", id: sv.id });
+            renderSouvenirs();
+          });
+          meta.append(info, del);
+          card.append(cap, meta);
+          grid.appendChild(card);
+        });
+        souvenirsSec.body.appendChild(grid);
+      } catch (e) {
+        souvenirsSec.body.replaceChildren(doc.createTextNode((e && e.message) || "Souvenirs indisponibles"));
+      }
+    };
+
     const foot = doc.createElement("div");
     foot.style.textAlign = "right";
     foot.appendChild(toolsButton(doc, "Fermer", close));
-    dialog.append(chat.box, prefs.box, facts.box, backups.box, stats.box, foot);
+    dialog.append(chat.box, prefs.box, thoughtsSec.box, souvenirsSec.box, facts.box, backups.box, stats.box, foot);
     dialog.addEventListener("close", () => dialog.remove());
     doc.body.appendChild(dialog);
     dialog.showModal();
+    renderThoughts();
+    renderSouvenirs();
     renderFacts();
     renderBackups();
     renderStats();
@@ -3217,8 +3410,10 @@
   async function sendChat() {
     const win = S.win;
     if (!win || !S.inputEl || S.chatBusy || S.blocked) return;
-    const text = (S.inputEl.value || "").trim();
-    if (!text) return;
+    const rawText = (S.inputEl.value || "").trim();
+    const attachedImg = S.pendingChatImage || null;
+    if (!rawText && !attachedImg) return;
+    const text = rawText || "Regarde cette image.";
     const view = win.document.body.dataset.view || "accueil";
     let persona = readPersona(win);
     if (S.cap === "warm" && persona === "flirt") persona = "warm";
@@ -3226,15 +3421,21 @@
     syncListening(true);
     S.el && S.el.classList.add("hq-companion-chat-busy");
     S.readPreview = null;
-    S.messages.push({ role: "user", text, ts: Date.now() });
+    S.messages.push({ role: "user", text, ts: Date.now(), has_image: !!attachedImg });
     renderLog();
     playNaturalVoiceCue(win, "message_ack");
     S.inputEl.value = "";
+    S.pendingChatImage = null;
+    if (S.imgBtn) {
+      S.imgBtn.textContent = "📷";
+      S.imgBtn.classList.remove("is-armed");
+    }
     if (S.nsfwAllowed && readNsfw(win)) playAdultFx(win, "send-pulse", 900);
     try {
       const out = await callTransferania(win, {
         op: "send",
         message: text,
+        image: attachedImg || undefined,
         view,
         digest: digest(win),
         persona,
@@ -3250,9 +3451,21 @@
         S.warmth = Math.min(100, out.warmth);
         syncLargePortraitCaption(win);
       }
+      if (out.thought) {
+        S.currentThought = String(out.thought);
+        syncLargePortraitCaption(win);
+      }
+      if (out.reply) setEmotionalAfterglow("warm", 0.8);
       applyLive2DImpulse(win, (Math.random() > 0.5 ? 1 : -1) * 32, -48, (Math.random() > 0.5 ? 1 : -1) * 22);
       applyCharacterExpression(win, out.expression);
       setLineAnimated(win, out.reply || "");
+      if (out.reply) {
+        try {
+          win.dispatchEvent(new CustomEvent("hq-transferania-line", {
+            detail: { text: String(out.reply), sister_cue: false, nsfw: !!out.nsfw },
+          }));
+        } catch (_) {}
+      }
       const pacing = (out.reply && pacingOn(win) && !calm(win)) ? paceReply(win, out) : null;
       if (!pacing) {
         renderLog();
@@ -3824,12 +4037,32 @@
     applyCompanionDof(S.win);
   }
 
+  function setEmotionalAfterglow(kind, strength, durationMs) {
+    const dur = Number(durationMs) > 0 ? Number(durationMs) : 20 * 60000;
+    S.emotionalAfterglow = {
+      kind: String(kind || "warm"),
+      strength: clampNum(Number(strength) || 0.75, 0.2, 1),
+      until: Date.now() + dur,
+    };
+  }
+
+  function getEmotionalAfterglow() {
+    const ag = S.emotionalAfterglow;
+    if (!ag || !ag.until || Date.now() >= ag.until) return null;
+    return ag;
+  }
+
   function applyMood(win, kind) {
     if (!S.el || calm(win)) return;
     S.el.classList.remove("is-mood-celebrate", "is-mood-error", "is-mood-afterglow");
-    if (kind === "celebrate") S.el.classList.add("is-mood-celebrate");
-    else if (kind === "error") S.el.classList.add("is-mood-error");
-    else if (kind === "afterglow") S.el.classList.add("is-mood-afterglow");
+    if (kind === "celebrate") {
+      S.el.classList.add("is-mood-celebrate");
+      setEmotionalAfterglow("celebrate", 0.85);
+    } else if (kind === "error") S.el.classList.add("is-mood-error");
+    else if (kind === "afterglow") {
+      S.el.classList.add("is-mood-afterglow");
+      setEmotionalAfterglow("soft", 0.75);
+    }
     syncAdultPortrait();
     if (kind === "celebrate") onAdultMoodFx(win);
     if (kind) {
@@ -3854,6 +4087,10 @@
   function viewNudge(win, fromView, toView) {
     if (calm(win) || isCompactUI(win) || !S.el || toView === "intime" || S.intimeMode) return;
     navGlanceCompanion(win, toView);
+    if (getEmotionalAfterglow()) {
+      syncAdultPortrait();
+      blink(win, { slow: true });
+    }
     const av = S.el.querySelector(".hq-companion-avatar");
     const nav = win.document.querySelector('.bottom-nav button[data-nav="' + toView + '"]');
     if (!av || !nav) return;
@@ -4026,6 +4263,9 @@
       const st = await fetchJson(win, aiGetUrl(win));
       applyNsfwStatus(st);
       syncNsfwUI();
+      if (win.HqSister && typeof win.HqSister.syncFromStatus === "function") {
+        win.HqSister.syncFromStatus(st);
+      }
       if (st && st.companion_cap) {
         S.cap = st.companion_cap;
         const personaSel = win.document.getElementById("hq-companion-persona");
@@ -4051,6 +4291,18 @@
       if (out.mood) applyOrbMood(out.mood);
       applyCharacterExpression(win, out.expression);
       setLineAnimated(win, out.line || "…");
+      if (out.line && win.HqSister && typeof win.HqSister.handleTransferaniaLine === "function") {
+        win.HqSister.handleTransferaniaLine({
+          text: String(out.line),
+          sister_cue: !!out.sister_cue,
+          fallback: !!out.fallback,
+          nsfw: !!out.nsfw,
+        });
+      } else if (out.line) {
+        try {
+          win.dispatchEvent(new CustomEvent("hq-transferania-line", { detail: { text: String(out.line) } }));
+        } catch (_) {}
+      }
       blink(win);
       if (!S.voicePreview) speak(win, out.line || "", null, out.context_usage && out.context_usage.conversation_mode,
         out.expression && out.expression.voice !== "neutral" ? out.expression.voice : undefined);
@@ -4096,6 +4348,10 @@
     try {
       const out = await fetchJson(win, "/api/ai", withDevice(win, { action: "pulse", view: win.document.body.dataset.view || "accueil" }));
       if (out && out.mood) applyOrbMood(out.mood);
+      if (out && out.thought) {
+        S.currentThought = String(out.thought);
+        syncLargePortraitCaption(win);
+      }
       const ev = out && out.event;
       if (ev && ev.id && ev.id !== S.lastEventId) {
         if (!(S.pendingEvent && S.pendingEvent.id === ev.id)) S.pendingEvent = { id: String(ev.id), kind: String(ev.kind || "") };
@@ -4138,6 +4394,8 @@
     if (why === "return") return "warm";
     if (warm >= 0.55) return "warm";
     if (soft >= 0.5) return "soft";
+    const ag = getEmotionalAfterglow();
+    if (ag) return ag.kind === "soft" ? "soft" : "warm";
     return "neutral";
   }
 
@@ -5511,7 +5769,7 @@
     if (S.companionFloatInertia && S.companionFloatInertia.active) return true;
     if (nowMs < (S.slapMotionUntil || 0)) return true;
     if (S.el.classList.contains("is-nsfw-fx-rhythm")) return true;
-    if (S.el.classList.contains("is-speaking") || S.el.classList.contains("is-voice-lipsync")) return true;
+    if (S.el.classList.contains("is-speaking") || S.el.classList.contains("is-voice-lipsync") || S.el.classList.contains("is-speech-articulating")) return true;
     if (pullFxRenderedRecently(nowMs)) return true;
     return false;
   }
@@ -5534,11 +5792,11 @@
     }
     const compact = isCompactUI(win);
     const view = (win.document.body && win.document.body.dataset.view) || "";
-    if (view === "accueil" && S.perfPressure) return 72;
-    if (compact && S.collapsed) return 48;
-    if (S.el && S.el.classList.contains("is-minimal") && !S.intimeMode) return 40;
-    if (S.perfPressure) return 50;
-    return 32;
+    if (view === "accueil" && S.perfPressure) return 42;
+    if (compact && S.collapsed) return 28;
+    if (S.el && S.el.classList.contains("is-minimal") && !S.intimeMode) return 22;
+    if (S.perfPressure) return 30;
+    return 15;
   }
 
   function noteLive2dFrameCost(st, costMs, hot) {
@@ -6320,10 +6578,13 @@
   function syncLargePortraitCaption(win) {
     if (!S.largePortraitCaption) return;
     const info = getSessionTensionInfo(win);
-    S.largePortraitCaption.textContent = "Niv. " + info.level + " · " + info.label + " (" + info.warmth + "%)";
+    const thoughtSuffix = S.currentThought ? " · 💭 " + S.currentThought.slice(0, 64) : "";
+    S.largePortraitCaption.textContent = "Niv. " + info.level + " · " + info.label + " (" + info.warmth + "%)" + thoughtSuffix;
+    if (S.currentThought) S.largePortraitCaption.title = "💭 " + S.currentThought;
   }
 
   function addArousalWarmth(win, delta, reason) {
+    if (delta >= 4) setEmotionalAfterglow("warm", clampNum(0.6 + delta * 0.02, 0.6, 0.95));
     if (delta > 0 && reason && reason !== "init") {
       recordFavoriteInteraction(win, reason);
       if (!Array.isArray(S.recentInteractions)) S.recentInteractions = [];
@@ -6502,7 +6763,7 @@
     if (el.classList.contains("is-mood-error")) return "pout";
     if (el.classList.contains("is-fever-climax") || el.classList.contains("is-lewd-heat")) return "hot";
     const portraitMood = S.adultPortrait && S.adultPortrait.dataset.mood;
-    if (el.classList.contains("is-mood-afterglow") || portraitMood === "tender" || portraitMood === "soft") return "tender";
+    if (el.classList.contains("is-mood-afterglow") || portraitMood === "tender" || portraitMood === "soft" || getEmotionalAfterglow()) return "tender";
     if (el.classList.contains("is-time-latenight") && (S.warmth || 22) < 40) return "sleepy";
     return "playful";
   }
@@ -8386,7 +8647,7 @@
     let script = win.document.querySelector("script[data-hq-mouth-module]");
     if (!script) {
       script = win.document.createElement("script");
-      script.src = "/assets/hq-companion-mouth.js?v=mouthrest1";
+      script.src = "/assets/hq-companion-mouth.js?v=jawfix4";
       script.setAttribute("data-hq-mouth-module", "");
       script.addEventListener("load", install, { once: true });
       win.document.head.appendChild(script);
@@ -8773,7 +9034,13 @@
         applyAccessories(win);
         sync();
       });
-      return loading;
+      return loading.then(() => {
+        const jawEl = rig.querySelector(".hq-mouth-jaw");
+        const faceEl = rig.querySelector(".hq-companion-rig-face-lower");
+        if (jawEl && faceEl && faceEl.src && jawEl.getAttribute("src") !== faceEl.getAttribute("src")) {
+          jawEl.src = faceEl.src;
+        }
+      });
     }
     S.ensureLayeredPortrait = ensure;
     S.applyAccessories = () => applyAccessories(win);
@@ -10118,6 +10385,23 @@
     updateBustCastProjection(S.win, ensureLive2DState(), isCompactUI(S.win));
   }
 
+  /** During active bust pull, skip some DOM/CSS commits while the spring still integrates every frame. */
+  function shouldCommitBustPullVisuals(nowMs, frame, hadPrevMotion) {
+    if (!S.bustPull || !S.bustPull.active || !frame) return true;
+    if (!hadPrevMotion || !S.pullTarget) return true;
+    const vx = S.pullMotion && S.pullMotion.vx ? S.pullMotion.vx : 0;
+    const vy = S.pullMotion && S.pullMotion.vy ? S.pullMotion.vy : 0;
+    const err = Math.hypot(frame.x - S.pullTarget.x, frame.y - S.pullTarget.y);
+    const sp = Math.hypot(vx, vy) + err * 22;
+    let skip = 1;
+    if (sp < 32) skip = 3;
+    else if (sp < 88) skip = 2;
+    S.pullRenderSkip = skip;
+    S.pullRenderFrame = (S.pullRenderFrame || 0) + 1;
+    if (skip <= 1) return true;
+    return S.pullRenderFrame % skip === 0;
+  }
+
   function setBustPull(dx, dy) {
     if (!S.el || !S.win || !S.face) return;
     const layered = S.el.classList.contains("has-layered-portrait");
@@ -10145,13 +10429,17 @@
     };
     const frame = bustPullFollow(prev || { x: 0, y: 0, tension: 0 }, resistedTarget, dt, calm(S.win));
     const fresh = prev && dt < 0.12;
+    const hadPrevMotion = !!prev;
     S.pullMotion = { ...frame, time: now,
       vx: fresh ? prev.vx * 0.42 + clampNum((frame.x - prev.x) / dt, -140, 140) * 0.58 : 0,
       vy: fresh ? prev.vy * 0.42 + clampNum((frame.y - prev.y) / dt, -140, 140) * 0.58 : 0 };
-    renderBustPull(frame, S.pullGaze);
+    const settling =
+      Math.hypot(frame.x - S.pullTarget.x, frame.y - S.pullTarget.y) <= 0.08 &&
+      Math.abs(frame.tension - S.pullTarget.tension) <= 0.004;
+    if (settling || shouldCommitBustPullVisuals(now, frame, hadPrevMotion)) renderBustPull(frame, S.pullGaze);
     if (S.pullFollowRaf) S.win.cancelAnimationFrame(S.pullFollowRaf);
     S.pullFollowRaf = 0;
-    if (Math.hypot(frame.x - S.pullTarget.x, frame.y - S.pullTarget.y) > 0.08 || Math.abs(frame.tension - S.pullTarget.tension) > 0.004) {
+    if (!settling) {
       S.pullFollowRaf = S.win.requestAnimationFrame(updateBustPullFrame);
     }
   }
@@ -10265,6 +10553,8 @@
     S.pullDeepGlanceDone = false;
     S.pullRenderX = 0;
     S.pullRenderShear = 0;
+    S.pullRenderSkip = 1;
+    S.pullRenderFrame = 0;
     S.pullSloshKickShear = 0;
     S.pullSloshKickStretch = 1;
     S.layeredPullBase = null;
@@ -10743,10 +11033,114 @@
     }
   }
 
+  function stopWorkshopLofi() {
+    if (!S.workshopLofi) return;
+    try { S.workshopLofi.stop(); } catch (_) {}
+    S.workshopLofi = null;
+    if (S.lofiBtn) {
+      S.lofiBtn.classList.remove("is-armed");
+      S.lofiBtn.textContent = "🎵";
+    }
+    if (S.el) S.el.classList.remove("is-music-grooving");
+  }
+
+  function toggleWorkshopLofi(win) {
+    if (S.workshopLofi) {
+      stopWorkshopLofi();
+      toastMsg(win, "Ambiance Lo-Fi d'atelier arrêtée");
+      return;
+    }
+    if (!win || muted(win)) {
+      toastMsg(win, "Active le son de Transferania pour écouter l'ambiance Lo-Fi 🎵");
+      return;
+    }
+    const AC = win.AudioContext || win.webkitAudioContext;
+    if (!AC) return;
+    try {
+      if (!S.audioCtx) S.audioCtx = new AC();
+      const ctx = S.audioCtx;
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.001, ctx.currentTime);
+      master.gain.linearRampToValueAtTime(0.032, ctx.currentTime + 0.8);
+      master.connect(ctx.destination);
+
+      // Soft vinyl/rain pink-noise bed (2s looping buffer, 0 network bytes)
+      const sr = ctx.sampleRate || 44100;
+      const noiseBuf = ctx.createBuffer(1, sr * 2, sr);
+      const ch = noiseBuf.getChannelData(0);
+      let b0 = 0, b1 = 0, b2 = 0;
+      for (let i = 0; i < ch.length; i += 1) {
+        const w = Math.random() * 2 - 1;
+        b0 = 0.997 * b0 + w * 0.029;
+        b1 = 0.985 * b1 + w * 0.032;
+        b2 = 0.950 * b2 + w * 0.048;
+        ch[i] = (b0 + b1 + b2) * 0.18;
+      }
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = noiseBuf;
+      noiseSrc.loop = true;
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "lowpass";
+      noiseFilter.frequency.setValueAtTime(620, ctx.currentTime);
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.35, ctx.currentTime);
+      noiseSrc.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(master);
+      noiseSrc.start();
+
+      // Warm Rhodes seventh chords cycling gently every 2.8s
+      const chords = [
+        [261.63, 329.63, 392.00, 493.88], // Cmaj7
+        [220.00, 261.63, 329.63, 392.00], // Am7
+        [174.61, 220.00, 261.63, 349.23], // Fmaj7
+        [196.00, 246.94, 293.66, 349.23], // G7
+      ];
+      let chordIdx = 0;
+      const playChord = () => {
+        if (!S.workshopLofi || win.document.hidden || muted(win)) return;
+        const now = ctx.currentTime;
+        const notes = chords[chordIdx % chords.length];
+        chordIdx += 1;
+        notes.forEach((freq, idx) => {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = idx % 2 === 0 ? "sine" : "triangle";
+          osc.frequency.setValueAtTime(freq, now);
+          g.gain.setValueAtTime(0.0005, now);
+          g.gain.linearRampToValueAtTime(0.16 / notes.length, now + 0.35);
+          g.gain.exponentialRampToValueAtTime(0.0008, now + 2.65);
+          osc.connect(g);
+          g.connect(master);
+          osc.start(now);
+          osc.stop(now + 2.7);
+        });
+      };
+      playChord();
+      const timer = win.setInterval(playChord, 2800);
+      S.workshopLofi = {
+        stop() {
+          win.clearInterval(timer);
+          try { noiseSrc.stop(); } catch (_) {}
+          try { noiseSrc.disconnect(); noiseFilter.disconnect(); noiseGain.disconnect(); master.disconnect(); } catch (_) {}
+        },
+      };
+      if (S.lofiBtn) {
+        S.lofiBtn.classList.add("is-armed");
+        S.lofiBtn.textContent = "🎵 ON";
+      }
+      if (S.el) S.el.classList.add("is-music-grooving");
+      setEmotionalAfterglow("warm", 0.8);
+      toastMsg(win, "🎵 Ambiance Lo-Fi d'atelier activée — on écoute ensemble ♥");
+    } catch (_) {}
+  }
+
   function stopVoiceLipsyncLoop(win) {
     if (!win) return;
     win.clearInterval(S.voiceLipsyncT);
     S.voiceLipsyncT = 0;
+    S.currentVisemes = null;
     if (S.voiceMeter) {
       try { S.voiceMeter.source.disconnect(); S.voiceMeter.analyser.disconnect(); } catch (_) {}
       S.voiceMeter = null;
@@ -10755,6 +11149,7 @@
       S.el.classList.remove("is-voice-lipsync");
       S.el.style.removeProperty("--rig-voice-nod");
       S.el.style.removeProperty("--rig-voice-level");
+      delete S.el.dataset.voiceVowel;
     }
   }
 
@@ -10786,27 +11181,61 @@
   }
 
   function sampleVoiceMeter(time) {
+    if (!S.el) return;
     const meter = S.voiceMeter;
-    if (!meter || !S.el || time - meter.lastAt < 32) return;
-    meter.lastAt = time;
-    meter.analyser.getByteTimeDomainData(meter.data);
-    let energy = 0;
-    for (const sample of meter.data) { const value = (sample - 128) / 128; energy += value * value; }
-    const rms = Math.sqrt(energy / meter.data.length);
-    const level = Math.pow(clampNum((rms - .008) * 6, 0, 1), .65) * .82;
-    meter.level = level;
+    const visemes = S.currentVisemes;
+    const audio = S.currentAudio;
+    if (!meter && !(visemes && audio && !audio.paused)) return;
+    const lastAt = meter ? meter.lastAt : (S.visemeLastAt || -Infinity);
+    if (time - lastAt < 16) return;
+    if (meter) meter.lastAt = time;
+    else S.visemeLastAt = time;
+    let level = 0;
+    if (meter) {
+      meter.analyser.getByteTimeDomainData(meter.data);
+      let energy = 0;
+      for (const sample of meter.data) { const value = (sample - 128) / 128; energy += value * value; }
+      const rms = Math.sqrt(energy / meter.data.length);
+      level = Math.pow(clampNum((rms - .008) * 6, 0, 1), .65) * .82;
+    }
+    if (visemes && visemes.length && audio && !audio.paused) {
+      const pos = Math.max(0, (Number(audio.currentTime) || 0) * 30);
+      const idx = Math.min(visemes.length - 1, Math.floor(pos));
+      const nextIdx = Math.min(visemes.length - 1, idx + 1);
+      const frac = clampNum(pos - idx, 0, 1);
+      const vf = visemes[idx];
+      const vfNext = visemes[nextIdx];
+      if (vf && typeof vf === "object") {
+        const a0 = clampNum(Number(vf.a) || 0, 0, 1);
+        const a1 = vfNext && typeof vfNext === "object" ? clampNum(Number(vfNext.a) || 0, 0, 1) : a0;
+        const vAmp = (a0 + (a1 - a0) * frac) * 0.85;
+        level = meter ? (level * 0.55 + vAmp * 0.45) : vAmp;
+        const nextVowel = String((frac > 0.55 && vfNext && vfNext.v) ? vfNext.v : (vf.v || "sil"));
+        if (S.el.dataset.voiceVowel !== nextVowel) S.el.dataset.voiceVowel = nextVowel;
+      }
+    }
+    const prevSmooth = (meter ? meter.smoothLevel : S.visemeSmoothLevel) || 0;
+    const alpha = level > prevSmooth ? 0.38 : 0.24;
+    level = prevSmooth + (level - prevSmooth) * alpha;
+    if (level < 0.008) level = 0;
+    if (meter) { meter.level = level; meter.smoothLevel = level; }
+    else S.visemeSmoothLevel = level;
     setLive2dStyleVar(S.el.style, "--rig-voice-level", level.toFixed(4));
     if (S.el.classList.contains("is-voice-lipsync")) {
       const bump = 0.008 + level * 0.044;
       S.el.style.setProperty("--rig-voice-nod", (1 + bump).toFixed(4));
       if (S.nsfwOn && level > 0.05) {
         const st = ensureLive2DState();
-        const prev = meter.peak || 0;
-        if (level >= prev + 0.07 || (level > 0.22 && time - (meter.impulseAt || 0) > 90)) {
+        const prev = (meter ? meter.peak : S.visemePeak) || 0;
+        const impAt = (meter ? meter.impulseAt : S.visemeImpulseAt) || 0;
+        if (level >= prev + 0.07 || (level > 0.22 && time - impAt > 90)) {
           st.head.vnod = clampNum(st.head.vnod + 1.6 + level * 3.4, -44, 44);
-          meter.impulseAt = time;
+          if (meter) meter.impulseAt = time;
+          else S.visemeImpulseAt = time;
         }
-        meter.peak = level > prev * 0.92 ? level : prev * 0.94;
+        const nextPeak = level > prev * 0.92 ? level : prev * 0.94;
+        if (meter) meter.peak = nextPeak;
+        else S.visemePeak = nextPeak;
       }
     }
   }
@@ -12180,7 +12609,9 @@
       setLive2dStyleVar(stEl, "--rig-bust-left-sx", (lsx * (1 - press * 0.05 - sq * 0.08)).toFixed(4));
       setLive2dStyleVar(stEl, "--rig-bust-right-sx", (rsx * (1 - press * 0.05 - sq * 0.08)).toFixed(4));
       st.decorFrame = (st.decorFrame || 0) + 1;
-      const decorEvery = hot ? 1 : ((accueilPressure || S.perfPressure) ? 3 : 2);
+      const pullContact = !!(S.bustPull && S.bustPull.active);
+      let decorEvery = hot ? 1 : ((accueilPressure || S.perfPressure) ? 3 : 2);
+      if (pullContact) decorEvery = Math.max(decorEvery, hot ? 2 : 3);
       const decorSkip =
         pageView === "accueil" && !S.userLookingAtCompanion && !hot
           ? (win.HqMotion && win.HqMotion.tier() === "lite" ? 5 : 4)
@@ -13460,7 +13891,7 @@
     if (!S.el) return "neutral";
     const c = S.el.classList;
     if (c.contains("is-eyes-widen") || c.contains("is-mood-celebrate")) return "bright";
-    if (c.contains("is-soft")) return "soft";
+    if (c.contains("is-soft") || getEmotionalAfterglow()) return "soft";
     if (S.busy || c.contains("is-mood-error")) return "narrow";
     return "neutral";
   }
@@ -13613,6 +14044,25 @@
           S.lastCursorX = last.clientX;
           S.lastCursorY = last.clientY;
           const r = cachedRect(win, av, 250);
+          // 0. Proximity hover tease on mouth in NSFW or warm mode
+          if (S.el && S.face && S.nsfwOn && !S.chestContactOwned && (!S.bustPull || !S.bustPull.active)) {
+            // Mouth center is roughly at 52% width, 32.5% height of the avatar box
+            const mouthX = r.left + r.width * 0.52;
+            const mouthY = r.top + r.height * 0.325;
+            const mouthDist = Math.hypot(last.clientX - mouthX, last.clientY - mouthY);
+            if (mouthDist < 38) {
+              const hoverAmt = (1 - mouthDist / 38).toFixed(2);
+              const hoverDx = Math.max(-1, Math.min(1, (last.clientX - mouthX) / 38)).toFixed(2);
+              S.el.dataset.mouthHover = hoverAmt;
+              S.el.dataset.mouthHoverDx = hoverDx;
+            } else if (S.el.dataset.mouthHover) {
+              delete S.el.dataset.mouthHover;
+              delete S.el.dataset.mouthHoverDx;
+            }
+          } else if (S.el && S.el.dataset.mouthHover) {
+            delete S.el.dataset.mouthHover;
+            delete S.el.dataset.mouthHoverDx;
+          }
           const dx = last.clientX - (r.left + r.width / 2);
           const dy = last.clientY - (r.top + r.height / 2);
           const curDist = Math.hypot(dx, dy);
@@ -13927,13 +14377,14 @@
     stopVoiceLipsyncLoop(win);
   }
 
-  function playAudioUrl(win, url, onFailure) {
+  function playAudioUrl(win, url, onFailure, visemes) {
     if (!url || !readVoice(win) || win.document.hidden) return;
     try {
       stopSpeech(win);
       const request = S.speechRequest;
       const audio = new win.Audio(url);
       S.currentAudio = audio;
+      S.currentVisemes = Array.isArray(visemes) && visemes.length ? visemes : null;
       if (S.root) S.root.classList.add("is-speaking");
       if (S.el) S.el.classList.add("is-speaking");
       startVoiceLipsyncLoop(win);
@@ -14037,7 +14488,7 @@
       .then((data) => {
         if (request !== S.speechRequest || !readVoice(win) || win.document.hidden) return;
         if (data && data.ok && data.audio_url) {
-          playAudioUrl(win, data.audio_url, () => fallbackSpeech(win, t, delivery));
+          playAudioUrl(win, data.audio_url, () => fallbackSpeech(win, t, delivery), data.visemes);
         } else {
           fallbackSpeech(win, t, delivery);
         }
@@ -14649,7 +15100,24 @@
     });
     S.headMasterBtn = headMasterBtn;
 
-    head.append(title, memChip, headPortraitBtn, headMasterBtn, collapseBtn);
+    const headSisterBtn = doc.createElement("button");
+    headSisterBtn.type = "button";
+    headSisterBtn.className = "hq-companion-head-btn hq-companion-sister-btn";
+    headSisterBtn.textContent = "Sœurs";
+    headSisterBtn.title = "Dialogue sœurs avec Else";
+    headSisterBtn.setAttribute("aria-label", "Dialogue sœurs");
+    headSisterBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (S.sisterBarEl) {
+        S.sisterBarEl.hidden = !S.sisterBarEl.hidden;
+        headSisterBtn.classList.toggle("is-on", !S.sisterBarEl.hidden);
+        if (!S.sisterBarEl.hidden && S.sisterTopicEl) S.sisterTopicEl.focus();
+      }
+      // Do not force-open Else here — only Master "Parler" / exchange opens her.
+    });
+    S.headSisterBtn = headSisterBtn;
+
+    head.append(title, memChip, headPortraitBtn, headMasterBtn, headSisterBtn, collapseBtn);
 
     const log = doc.createElement("div");
     log.className = "hq-companion-log";
@@ -14768,7 +15236,147 @@
     toolsBtn.textContent = "Outils";
     toolsBtn.setAttribute("title", "Régénérer, modifier, faits, sauvegardes, coût");
     toolsBtn.addEventListener("click", () => openCompanionTools());
-    composeRow.append(toolsBtn, escalateBtn, sendBtn);
+
+    const attachChatImageFile = (file) => {
+      if (!file || !/^image\//i.test(file.type || "")) return;
+      const reader = new win.FileReader();
+      reader.onload = () => {
+        const img = new win.Image();
+        img.onload = () => {
+          const maxDim = 768;
+          let w = img.width || 256, h = img.height || 256;
+          if (w > maxDim || h > maxDim) {
+            const sc = maxDim / Math.max(w, h);
+            w = Math.max(1, Math.round(w * sc));
+            h = Math.max(1, Math.round(h * sc));
+          }
+          const cvs = doc.createElement("canvas");
+          cvs.width = w;
+          cvs.height = h;
+          const ctx2d = cvs.getContext("2d");
+          if (ctx2d) ctx2d.drawImage(img, 0, 0, w, h);
+          S.pendingChatImage = cvs.toDataURL("image/jpeg", 0.82);
+          if (S.imgBtn) {
+            S.imgBtn.textContent = "📷 ✓";
+            S.imgBtn.classList.add("is-armed");
+          }
+          toastMsg(win, "Image jointe au prochain message");
+        };
+        img.src = String(reader.result || "");
+      };
+      reader.readAsDataURL(file);
+    };
+    const filePicker = doc.createElement("input");
+    filePicker.type = "file";
+    filePicker.accept = "image/png,image/jpeg,image/webp,image/gif";
+    filePicker.hidden = true;
+    filePicker.addEventListener("change", () => {
+      const f = filePicker.files && filePicker.files[0];
+      if (f) attachChatImageFile(f);
+      filePicker.value = "";
+    });
+    const imgBtn = doc.createElement("button");
+    imgBtn.type = "button";
+    imgBtn.className = "hq-companion-tools";
+    imgBtn.textContent = "📷";
+    imgBtn.setAttribute("title", "Joindre ou supprimer une image (ou coller / glisser)");
+    imgBtn.addEventListener("click", () => {
+      if (S.pendingChatImage) {
+        S.pendingChatImage = null;
+        imgBtn.textContent = "📷";
+        imgBtn.classList.remove("is-armed");
+        toastMsg(win, "Image retirée");
+      } else {
+        filePicker.click();
+      }
+    });
+    S.imgBtn = imgBtn;
+    input.addEventListener("paste", (ev) => {
+      const files = ev.clipboardData && ev.clipboardData.files;
+      if (files && files.length && /^image\//i.test(files[0].type || "")) {
+        ev.preventDefault();
+        attachChatImageFile(files[0]);
+      }
+    });
+    compose.addEventListener("dragover", (ev) => { ev.preventDefault(); });
+    compose.addEventListener("drop", (ev) => {
+      const files = ev.dataTransfer && ev.dataTransfer.files;
+      if (files && files.length && /^image\//i.test(files[0].type || "")) {
+        ev.preventDefault();
+        attachChatImageFile(files[0]);
+      }
+    });
+
+    const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
+    const micBtn = doc.createElement("button");
+    micBtn.type = "button";
+    micBtn.className = "hq-companion-tools";
+    micBtn.textContent = "🎙️";
+    micBtn.hidden = !SpeechRec;
+    micBtn.setAttribute("title", "Dictée vocale mains-libres (fr-CA)");
+    micBtn.addEventListener("click", () => {
+      if (!SpeechRec) return;
+      if (S.activeSpeechRec) {
+        try { S.activeSpeechRec.stop(); } catch (_) {}
+        return;
+      }
+      stopSpeech(win);
+      const rec = new SpeechRec();
+      rec.lang = "fr-CA";
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      S.activeSpeechRec = rec;
+      micBtn.classList.add("is-armed");
+      syncListening(true);
+      rec.onresult = (ev) => {
+        const tr = ev.results && ev.results[0] && ev.results[0][0] ? String(ev.results[0][0].transcript || "").trim() : "";
+        if (tr) {
+          input.value = (input.value ? input.value + " " : "") + tr;
+          sendChat();
+        }
+      };
+      rec.onend = () => {
+        S.activeSpeechRec = null;
+        micBtn.classList.remove("is-armed");
+        syncListening(S.busy || S.chatBusy);
+      };
+      rec.onerror = () => {
+        S.activeSpeechRec = null;
+        micBtn.classList.remove("is-armed");
+        syncListening(S.busy || S.chatBusy);
+      };
+      try { rec.start(); } catch (_) { S.activeSpeechRec = null; micBtn.classList.remove("is-armed"); }
+    });
+
+    const briefBtn = doc.createElement("button");
+    briefBtn.type = "button";
+    briefBtn.className = "hq-companion-tools";
+    briefBtn.textContent = "📋 Atelier";
+    briefBtn.setAttribute("title", "Table d'atelier : bilan 48h, tâches, stocks bas et suivis");
+    briefBtn.addEventListener("click", async () => {
+      if (S.chatBusy) return;
+      try {
+        const out = await callTransferania(win, { op: "briefing" });
+        if (out && out.briefing) {
+          S.messages.push({ role: "assistant", text: out.briefing, ts: Date.now(), kind: "chat" });
+          renderLog();
+          setExpanded(true);
+          setLineAnimated(win, out.briefing.split("\n")[0] || out.briefing);
+        }
+      } catch (e) {
+        toastMsg(win, (e && e.message) || "Bilan indisponible");
+      }
+    });
+
+    const lofiBtn = doc.createElement("button");
+    lofiBtn.type = "button";
+    lofiBtn.className = "hq-companion-tools";
+    lofiBtn.textContent = "🎵";
+    lofiBtn.setAttribute("title", "Écouter ensemble : ambiance Lo-Fi d'atelier (0 Mo réseau)");
+    lofiBtn.addEventListener("click", () => toggleWorkshopLofi(win));
+    S.lofiBtn = lofiBtn;
+
+    composeRow.append(toolsBtn, briefBtn, lofiBtn, imgBtn, micBtn, filePicker, escalateBtn, sendBtn);
     compose.append(input, composeRow);
 
     const actions = doc.createElement("div");
@@ -14870,6 +15478,118 @@
     });
     S.masterBarEl = masterBarEl;
 
+    const sisterBarEl = doc.createElement("div");
+    sisterBarEl.className = "hq-companion-sister-bar";
+    sisterBarEl.hidden = true;
+    const sisterTopicEl = doc.createElement("input");
+    sisterTopicEl.type = "text";
+    sisterTopicEl.maxLength = 200;
+    sisterTopicEl.placeholder = "Sujet pour les sœurs (optionnel)…";
+    sisterTopicEl.autocomplete = "off";
+    const sisterAmbientBtn = doc.createElement("button");
+    sisterAmbientBtn.type = "button";
+    sisterAmbientBtn.className = "hq-companion-sister-pref";
+    sisterAmbientBtn.textContent = "Banter";
+    const sisterReactBtn = doc.createElement("button");
+    sisterReactBtn.type = "button";
+    sisterReactBtn.className = "hq-companion-sister-pref";
+    sisterReactBtn.textContent = "Réact.";
+    const syncSisterPrefBtns = () => {
+      const amb = win.HqSister ? win.HqSister.ambientEnabled() : true;
+      const rea = win.HqSister ? win.HqSister.reactEnabled() : true;
+      sisterAmbientBtn.classList.toggle("is-on", amb);
+      sisterReactBtn.classList.toggle("is-on", rea);
+      sisterAmbientBtn.title = amb ? "Banter sœurs activé" : "Banter sœurs coupé";
+      sisterReactBtn.title = rea ? "Réactions sœur activées" : "Réactions sœur coupées";
+    };
+    sisterAmbientBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!win.HqSister) return;
+      win.HqSister.setAmbient(!win.HqSister.ambientEnabled(), true);
+      syncSisterPrefBtns();
+    });
+    sisterReactBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!win.HqSister) return;
+      win.HqSister.setReact(!win.HqSister.reactEnabled(), true);
+      syncSisterPrefBtns();
+    });
+    const sisterGoEl = doc.createElement("button");
+    sisterGoEl.type = "button";
+    sisterGoEl.textContent = "Parler";
+    sisterGoEl.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (win.HqSister && win.HqSister.isBusy()) return;
+      const topic = (sisterTopicEl.value || "").trim();
+      try {
+        if (win.HqSisterCore && typeof win.HqSisterCore.ensureSister === "function") {
+          win.HqSisterCore.ensureSister(win);
+        }
+        if (win.HqSister) {
+          await win.HqSister.runExchange({ topic, openExpanded: false });
+        } else if (win.HqElse && typeof win.HqElse.runSister === "function") {
+          await win.HqElse.runSister({ ambient: false, topic });
+        }
+      } catch (e) {
+        toastMsg(win, (e && e.message) || "Dialogue sœurs indisponible");
+      }
+    });
+    const sisterNudgeEl = doc.createElement("button");
+    sisterNudgeEl.type = "button";
+    sisterNudgeEl.className = "hq-companion-sister-nudge";
+    sisterNudgeEl.textContent = "↔";
+    sisterNudgeEl.title = "Pousser un peu les sœurs (2× = banter)";
+    sisterNudgeEl.setAttribute("aria-label", "Nudge entre sœurs");
+    sisterNudgeEl.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!win.HqSister || win.HqSister.isBusy() || typeof win.HqSister.runNudge !== "function") return;
+      try {
+        await win.HqSister.runNudge({ toward: "transferania" });
+      } catch (e) {
+        toastMsg(win, (e && e.message) || "Nudge sœurs indisponible");
+      }
+    });
+    sisterBarEl.append(sisterTopicEl, sisterAmbientBtn, sisterReactBtn, sisterGoEl, sisterNudgeEl);
+    S.sisterBarEl = sisterBarEl;
+    S.sisterTopicEl = sisterTopicEl;
+    S.syncSisterPrefBtns = syncSisterPrefBtns;
+    syncSisterPrefBtns();
+
+    const sisterStripEl = doc.createElement("div");
+    sisterStripEl.className = "hq-companion-sister-strip";
+    sisterStripEl.hidden = true;
+    sisterStripEl.setAttribute("aria-label", "Transcript sœurs");
+    S.sisterStripEl = sisterStripEl;
+    const renderCompanionSisterStrip = () => {
+      if (!S.sisterStripEl) return;
+      const rows = win.HqSister ? win.HqSister.stripRows(6) : [];
+      const label = win.HqSister ? win.HqSister.labelSpeaker : ((s) => s);
+      S.sisterStripEl.replaceChildren();
+      const show = !!(S.expanded && rows.length);
+      S.sisterStripEl.hidden = !show;
+      rows.forEach((m) => {
+        const row = doc.createElement("button");
+        row.type = "button";
+        row.className = "hq-companion-sister-row is-" + m.speaker;
+        row.textContent = label(m.speaker) + " · " + String(m.text);
+        row.title = "Faire réagir l'autre sœur";
+        row.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!win.HqSister || win.HqSister.isBusy() || !win.HqSister.reactEnabled()) return;
+          const speaker = m.speaker === "else" ? "transferania" : "else";
+          win.HqSister.runReact(String(m.text || ""), speaker);
+        });
+        S.sisterStripEl.appendChild(row);
+      });
+      S.sisterStripEl.scrollTop = S.sisterStripEl.scrollHeight;
+    };
+    S.renderCompanionSisterStrip = renderCompanionSisterStrip;
+
     const memoryPanel = doc.createElement("section");
     memoryPanel.className = "hq-companion-memory-panel";
     memoryPanel.id = "hq-companion-memory-panel";
@@ -14934,7 +15654,7 @@
     eyebrow.append(eyebrowName, eyebrowHeat);
     const bubbleGrip = createBubbleGrip(doc);
     S.bubbleGrip = bubbleGrip;
-    bubble.append(head, log, newMessageBtn, eyebrow, line, readMore, quickRepliesEl, masterBarEl, memoryPanel, compose, actions, bubbleGrip);
+    bubble.append(head, log, newMessageBtn, eyebrow, line, readMore, quickRepliesEl, masterBarEl, sisterBarEl, sisterStripEl, memoryPanel, compose, actions, bubbleGrip);
     const av = doc.createElement("button");
     av.type = "button";
     av.className = "hq-companion-avatar";
@@ -17802,6 +18522,59 @@
       S.sessionStartAt = Date.now();
       addArousalWarmth(win, 0, "init");
 
+      if (!win.__hqSisterLineBound) {
+        win.__hqSisterLineBound = true;
+        win.addEventListener("hq-sister-line", (ev) => {
+          const text = ev && ev.detail && ev.detail.text;
+          const who = ev && ev.detail && ev.detail.speaker;
+          if (S.renderCompanionSisterStrip) S.renderCompanionSisterStrip();
+          if (!text || who !== "transferania") return;
+          if (S.el) {
+            S.el.classList.add("is-sister-speaking");
+            if (!S.el.hidden) setLineAnimated(win, String(text));
+            win.setTimeout(() => S.el && S.el.classList.remove("is-sister-speaking"), 1400);
+          }
+        });
+        win.addEventListener("hq-sister-glance", (ev) => {
+          const to = ev && ev.detail && ev.detail.to;
+          if (to !== "transferania" || !S.el) return;
+          S.el.classList.add("is-sister-glance");
+          win.setTimeout(() => S.el && S.el.classList.remove("is-sister-glance"), 900);
+        });
+        win.addEventListener("hq-sister-event", () => {
+          if (!S.el) return;
+          S.el.classList.add("is-sister-event");
+          win.setTimeout(() => S.el && S.el.classList.remove("is-sister-event"), 1800);
+        });
+        win.addEventListener("hq-sister-history", () => {
+          if (S.renderCompanionSisterStrip) S.renderCompanionSisterStrip();
+        });
+        win.addEventListener("hq-sister-prefs", () => {
+          if (S.syncSisterPrefBtns) S.syncSisterPrefBtns();
+        });
+        win.addEventListener("hq-sister-busy", (ev) => {
+          const on = !!(ev && ev.detail && ev.detail.busy);
+          S.sisterBusy = on;
+          if (S.headSisterBtn) S.headSisterBtn.disabled = on;
+          if (S.sisterBarEl) {
+            S.sisterBarEl.querySelectorAll("button,input").forEach((el) => { el.disabled = on; });
+          }
+        });
+        win.addEventListener("hq-sister-nudge", (ev) => {
+          const d = (ev && ev.detail) || {};
+          if (!S.el) return;
+          S.el.classList.add("is-sister-nudge");
+          win.setTimeout(() => S.el && S.el.classList.remove("is-sister-nudge"), 1200);
+          if (d.soft && d.peek && d.peek.speaker === "transferania" && d.peek.text && !S.el.hidden) {
+            setLineAnimated(win, String(d.peek.text));
+          }
+        });
+        if (win.HqSister && typeof win.HqSister.loadHistory === "function") {
+          win.HqSister.loadHistory().then(() => {
+            if (S.renderCompanionSisterStrip) S.renderCompanionSisterStrip();
+          }).catch(() => {});
+        }
+      }
       win.setTimeout(async () => {
         if (win.document.body.classList.contains("hq-ai-open")) return;
         if (readCollapsed(win) && !hasPendingSignals()) {
@@ -17827,6 +18600,7 @@
     sendChat,
     setExpanded,
     setCollapsed,
+    setLineAnimated,
     syncIntimeView,
     resetFloatHome: resetCompanionPose,
     COMPANION_NAME,

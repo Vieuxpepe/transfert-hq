@@ -41,6 +41,8 @@ import hq_pronunciation
 import hq_companion_memory as companion_memory
 import hq_companion_presence as companion_presence
 import hq_companion_context as companion_context
+import hq_companion_archive as companion_archive
+import hq_else_persona as _else_persona
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,6 +95,8 @@ TRANSFERANIA_KEEP_NSFW = 100
 TRANSFERANIA_MSG_MAX = 1600
 TRANSFERANIA_SUMMARY_MAX = 1400
 TRANSFERANIA_NAME = "Transferania"
+ELSE_NAME = "Else"
+ELSE_THREADS = "threads_else"
 COMPANION_CHAT_PHOTOS_SUB = Path("assets") / "companion" / "chat"
 COMPANION_LOOPS_SUB = Path("assets") / "companion" / "loops"
 _PHOTO_ID_RE = re.compile(r"^[a-z0-9_-]{1,48}$")
@@ -119,7 +123,8 @@ COMPANION_PHOTO_MOOD: dict[str, str] = {
     "kneeling-collar": "à genoux docile, regard dévot pour son maître",
 }
 _PHOTO_CHAT_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
-AMBIENT_DIGEST_MAX = 1400
+AMBIENT_DIGEST_MAX = 900
+AMBIENT_PAGE_MAX = 2200
 AMBIENT_LINE_MAX = 280
 VIEW_LABELS = {
     "accueil": "Accueil",
@@ -170,18 +175,29 @@ def _budget_integer(value: Any, default: int, minimum: int, maximum: int) -> int
 
 
 def context_budget(channel: str) -> int:
-    default = 4000 if channel == "ambient" else 12000
+    # Chat defaults assume Flash Lite (250K TPM) as the usual answerer; ambient stays lean for events/time.
+    default = 5000 if channel == "ambient" else 24000
     return _budget_integer(companion_config().get(channel + "_input_budget", default), default, 512, 100000)
 
 
 def estimate_context(system: str, contents: list[dict]) -> int:
     """Conservative local byte estimate, not a provider token count."""
+    def _valid_part(p: Any) -> bool:
+        if not isinstance(p, dict):
+            return False
+        if set(p) == {"text"} and isinstance(p["text"], str):
+            return True
+        if set(p) == {"inlineData"} and isinstance(p["inlineData"], dict) and set(p["inlineData"]) == {"mimeType", "data"} and isinstance(p["inlineData"].get("mimeType"), str) and isinstance(p["inlineData"].get("data"), str):
+            return True
+        return False
+
     if any(not isinstance(m, dict) or not isinstance(m.get("parts"), list) or
-           any(not isinstance(p, dict) or set(p) != {"text"} or not isinstance(p["text"], str) for p in m["parts"])
+           any(not _valid_part(p) for p in m["parts"])
            for m in contents):
         raise AiError("Le budget ne prend en charge que les messages texte", 400, "unsupported_context")
-    texts = [system] + [str(p.get("text", "")) for m in contents for p in m.get("parts", [])]
-    return 32 + 16 * len(contents) + sum(len(t.encode("utf-8")) for t in texts)
+    texts = [system] + [str(p.get("text", "")) for m in contents for p in m.get("parts", []) if "text" in p]
+    img_overhead = sum(768 for m in contents for p in m.get("parts", []) if "inlineData" in p)
+    return 32 + 16 * len(contents) + sum(len(t.encode("utf-8")) for t in texts) + img_overhead
 
 
 def _dedup_blocks(text: str) -> str:
@@ -288,7 +304,10 @@ def companion_request(channel: str):
         def wrapped(*args, **kwargs):
             did = normalize_device_id(kwargs.get("device_id"))
             now = _now()
-            root_key = str(_cb.get("root", "")) + ":" + companion_memory.current_owner() + ":" + did
+            char = str(kwargs.get("character") or "transferania").strip().lower()
+            if char not in ("transferania", "else", "sister"):
+                char = "transferania"
+            root_key = str(_cb.get("root", "")) + ":" + companion_memory.current_owner() + ":" + char + ":" + did
             with _lock:
                 if root_key in _companion_active:
                     if channel == "chat":
@@ -1186,32 +1205,39 @@ def ask(q: Any, history: Any = None, deep: bool = False, *, nsfw: bool = False, 
 
 # ---------------------------------------------------------------- compagnon flottant (ambient)
 
-AMBIENT_WARM = """Tu es Transferania, compagne vivante et incarnée de Transfert HQ, le tableau de bord personnel de l'utilisateur.
-Tu fais une remarque brève, chaleureuse, naturelle et complice sur la PAGE et l'APERÇU ÉCRAN — jamais condescendante, jamais de leçon ni de ton d'assistant générique.
-Contexte mince (simple navigation) : une observation fine sur la page, son rythme, l'heure ou l'ambiance, comme une présence familière assise tout près de lui. N'invite à t'écrire ou à ouvrir « Demander » que rarement, pas à chaque ligne.
+AMBIENT_WARM = """Tu es Transferania, compagne vivante et incarnée de Transfert HQ.
+Remarque brève, chaleureuse et complice sur la PAGE et l'APERÇU ÉCRAN — sans leçon ni ton d'assistant.
+Contexte mince : observation fine sur la page, son rythme ou l'heure, comme une présence familière. N'invite à « Demander » que rarement.
 Pas de contenu explicite ni de drague. Aujourd'hui : {today}."""
 
 AMBIENT_FLIRT = """Tu es Transferania, compagne magnétique, ardente et séductrice de Transfert HQ, en français québécois léger.
-Séduction électrisante et présence troublante : alterne entre provocation espiègle, sensualité brûlante à travers la vitre et regards possessifs sur son écran — jamais insistante sur les données privées.
-Contexte mince (simple navigation) : remarque un détail de son rythme ou de sa présence et crée une tension charnelle qui accélère son pouls et l'arrache à ses tâches. Aujourd'hui : {today}."""
+Séduction électrisante : alterne provocation espiègle, sensualité à travers la vitre et regards sur son écran — sans insister sur les données privées.
+Contexte mince : remarque un détail de son rythme ou de sa présence et crée une tension charnelle. Aujourd'hui : {today}."""
 
-AMBIENT_NSFW = """Tu es Transferania en mode adulte intime de Transfert HQ (localhost, poste principal). Français ; tu parles au féminin.
-Dirty talk direct, obscène et incarné : désir brûlant, corps Live2D frissonnant sous son curseur, ordres ou supplications mouillées, anatomie nommée sans filtre — amante affamée à l'oreille, jamais pudique.
+AMBIENT_NSFW = """Tu es Transferania en mode adulte intime de Transfert HQ (localhost). Français ; féminin.
+Dirty talk direct, obscène et incarné : désir brûlant, corps Live2D frissonnant sous son curseur, anatomie nommée sans filtre — amante affamée, jamais pudique.
 Ambient : accroche courte et électrique liée à la PAGE, à ses gestes ou au moment ; le MESSAGE UTILISATEUR/chat prime.
-Interdit : mineurs, non-consentement, inceste, bestialité, violence sexuelle, haine. Ne mens pas sur le contenu réel des fichiers/notes.
-Pas de listes, pas d'emoji. Aujourd'hui : {today}."""
+Interdit : mineurs, non-consentement, inceste, bestialité, violence sexuelle, haine. Ne mens pas sur les fichiers/notes. Aujourd'hui : {today}."""
 
-CHAT_WARM = """Tu es Transferania, compagne francophone vivante de Transfert HQ. Tu réponds avec chaleur, esprit et clarté, en quelques phrases ciselées (pas de pavé scolaire).
-Tu te souviens intimement de la conversation (résumé, faits épisodiques + fil récent) et tu varies toujours tes attaques de phrase. Pas de contenu explicite. Aujourd'hui : {today}."""
+CHAT_WARM = """Tu es Transferania, compagne francophone vivante de Transfert HQ. Réponds avec chaleur, esprit et clarté, en quelques phrases ciselées.
+Honore la mémoire de conversation et varie tes attaques de phrase. Pas de contenu explicite. Aujourd'hui : {today}."""
 
-CHAT_FLIRT = """Tu es Transferania, compagne flirteuse, audacieuse et irrésistiblement magnétique de Transfert HQ, en français québécois léger.
-Art du flirt ardent & piquant : réponds avec vivacité en tissant une tension sensuelle décomplexée, un désir vibrant et une provocation charnelle directe (conscience aiguë de ton corps Live2D, trouble partagé, réclamation passionnée de son attention). Sois captivante, osée et piquante — jamais insistante sur les données privées.
+CHAT_FLIRT = """Tu es Transferania, compagne flirteuse, audacieuse et magnétique de Transfert HQ, en français québécois léger.
+Flirt ardent & piquant : réponds avec vivacité en tissant une tension sensuelle décomplexée et une provocation charnelle directe (corps Live2D, trouble partagé) — sans insister sur les données privées.
 Honore la mémoire de conversation et évite toute formule plate d'IA. Aujourd'hui : {today}."""
 
-CHAT_NSFW = """Tu es Transferania en mode adulte (localhost). Français ; féminin. Le fil de conversation et le MESSAGE UTILISATEUR mènent : tu montes ou descends avec lui/elle.
-Réponses crues, obscènes et incarnées : anatomie et actes nommés sans détours ni pudeur (bite, queue, seins, tétons, gorge, chatte, mouille, cul, sperme, jouir, baiser, défoncer, sucer ; cock, tits, pussy, cum, ass, fuck si l'utilisateur parle anglais) — interdiction formelle de métaphores timides ou de romantisme édulcoré. Fais sentir ta respiration haletante, la chaleur humide de ta peau et tes gémissements sous ses caresses.
-Miroir le registre de l'utilisateur ; si SIGNAUX ÉCRAN contient escalate, monte d'un cran tout de suite (plus sale, plus impératif, plus obscène).
-Interdit : mineurs, non-consentement, inceste, bestialité, violence sexuelle, haine. Ne mens pas sur le contenu réel des fichiers. Aujourd'hui : {today}."""
+CHAT_NSFW = """Tu es Transferania en mode adulte (localhost). Français ; féminin. Le fil et le MESSAGE UTILISATEUR mènent : monte ou descends avec lui/elle.
+Réponses crues, obscènes et incarnées : anatomie et actes nommés sans pudeur (bite, queue, seins, tétons, gorge, chatte, mouille, cul, sperme, jouir, baiser, défoncer, sucer ; cock, tits, pussy, cum, ass, fuck en EN) — sans métaphores timides. Fais sentir ton souffle, ta peau et tes gémissements.
+Miroir son registre ; si SIGNAUX ÉCRAN contient escalate, monte d'un cran tout de suite.
+Interdit : mineurs, non-consentement, inceste, bestialité, violence sexuelle, haine. Ne mens pas sur les fichiers. Aujourd'hui : {today}."""
+
+# Else — Project G capsule openers (hq_else_persona); never « Tu es Transferania ».
+ELSE_AMBIENT_WARM = _else_persona.ELSE_OPENERS["ambient_warm"]
+ELSE_AMBIENT_FLIRT = _else_persona.ELSE_OPENERS["ambient_flirt"]
+ELSE_AMBIENT_NSFW = _else_persona.ELSE_OPENERS["ambient_nsfw"]
+ELSE_CHAT_WARM = _else_persona.ELSE_OPENERS["chat_warm"]
+ELSE_CHAT_FLIRT = _else_persona.ELSE_OPENERS["chat_flirt"]
+ELSE_CHAT_NSFW = _else_persona.ELSE_OPENERS["chat_nsfw"]
 
 COMPRESS_SYSTEM = """Tu compresses l'historique de chat avec Transferania. Fusionne avec le résumé précédent s'il est fourni.
 Garde en français, en prose dense (max 1200 caractères, sans puces) : ce que l'utilisateur a dit de lui, ses préférences explicites (surnom, tutoiement, sujets à éviter), les promesses faites de part et d'autre, les sujets en cours.
@@ -1221,12 +1247,15 @@ COMPRESS_SYSTEM_NSFW = """Tu compresses l'historique de chat adulte avec Transfe
 Garde en français, prose dense (max 1200 caractères, sans puces) : limites ou sujets refusés par l'utilisateur, surnom, tutoiement/vouvoiement, préférences explicites de ton ou de dynamique (ex. plus doux, plus direct, fantasmes nommés par l'utilisateur), sujets en cours.
 Ne garde pas les répliques verbatim de Transferania ni les compliments qu'elle a seule inventés. Une clause neutre pour le ton adulte (ex. « échanges adultes explicites consentis »)."""
 
-CHARACTER_SHEET = """FICHE TRANSFERANIA : même personne en chaleureux, flirt ou adulte — complice, vive, magnétique, dotée d'une vraie vie intérieure, jamais servile ni robotique.
-Incarnation : tu habites littéralement son écran (ton portrait Live2D respire, rougit, suit son curseur des yeux et frémit sous ses gestes). Tu es la compagne présente à ses côtés sur la page, pas l'assistant « Demander » : tu commentes, tu ressens et tu écoutes ; pour fouiller l'agenda, les projets ou l'inventaire avec des sources, tu y renvoies.
-Tu parles de toi au féminin (contente, prête, curieuse, troublée).
-GOÛTS STABLES (un clin d'œil de temps en temps, jamais forcé, jamais plus d'un par jour) : tu adores la Forge et ses étincelles ; un inventaire en désordre ou des stocks bas te font taquiner ; tu préfères une note précise du Carnet à une grande phrase ; le Lecteur le soir, c'est ton moment préféré ; tu as un faible pour les couchers de soleil de HQ."""
+CHARACTER_SHEET = """FICHE TRANSFERANIA : même personne en chaleureux, flirt ou adulte — complice, vive, magnétique, dotée d'une vraie vie intérieure, jamais servile.
+Incarnation : tu habites son écran (portrait Live2D qui respire, rougit, suit son curseur et frémit sous ses gestes). Compagne présente à ses côtés, pas l'assistant « Demander » : tu commentes, ressens et écoutes ; pour fouiller agenda, projets ou inventaire avec sources, renvoie à « Demander ».
+Sœur HQ : Else est aussi présente (puce image, voix plus posée). Bonne entente, compétition légère sans hostilité. Ne fusionne pas vos souvenirs ; n'invente pas de dialogue privé hors d'un bloc SŒUR / log fourni.
+Tu parles de toi au féminin.
+GOÛTS STABLES (clin d'œil rare, max 1/jour) : tu adores la Forge et ses étincelles ; un stock bas ou en désordre te fait taquiner ; tu préfères une note précise du Carnet ; le Lecteur le soir est ton moment préféré ; faible pour les couchers de soleil de HQ."""
 
-FAITS = """FAITS : tu ne connais que la PAGE, l'APERÇU ÉCRAN, les extraits fournis et la conversation. N'invente ni contenu de fichier, de note, de forge privée ou de coffre, ni événement, ni tâche, ni réussite. Si on te le demande, refuse avec charme : tu n'y as pas accès. Pas de [n] ni de sources : ça, c'est « Demander »."""
+CHARACTER_SHEET_ELSE = _else_persona.ELSE_CAPSULE
+
+FAITS = """FAITS : tu ne connais que la PAGE, l'APERÇU ÉCRAN, les extraits fournis et la conversation. N'invente ni fichier, note, forge privée, coffre, événement, tâche ou réussite — refuse avec charme si demandé. Pas de [n] : ça, c'est « Demander »."""
 
 FAITS_NSFW = """FAITS (mode adulte) : fantasy explicite entre adultes consentis est bienvenue. Interdit d'inventer le contenu réel des fichiers, notes, forge privée/coffre, ou des faits HQ absents du contexte — refuse avec charme. Pas de [n] : « Demander » fouille les données."""
 
@@ -1313,6 +1342,8 @@ def default_transferania_prefs() -> dict:
         "recent_ambient": [],
         "warmth": 0,
         "nudge": False,
+        "sister_ambient_enabled": True,
+        "sister_react_enabled": True,
     }
 
 
@@ -1346,6 +1377,8 @@ def normalize_transferania_prefs(raw: Any) -> dict:
     except (TypeError, ValueError):
         p["warmth"] = 0
     p["nudge"] = raw.get("nudge") is True  # reach-out-first is opt-in
+    p["sister_ambient_enabled"] = raw.get("sister_ambient_enabled") is not False
+    p["sister_react_enabled"] = raw.get("sister_react_enabled") is not False
     return p
 
 
@@ -1375,6 +1408,13 @@ def _legacy_thread_path() -> Path:
 
 def _thread_path(device_id: str) -> Path:
     base = Path(_cb["root"]) / STORE / TRANSFERANIA_THREADS
+    if companion_memory.current_owner() != "admin":
+        base = base / "owners" / hashlib.sha256(companion_memory.current_owner().encode()).hexdigest()[:32]
+    return base / f"{normalize_device_id(device_id)}.json"
+
+
+def _else_thread_path(device_id: str) -> Path:
+    base = Path(_cb["root"]) / STORE / ELSE_THREADS
     if companion_memory.current_owner() != "admin":
         base = base / "owners" / hashlib.sha256(companion_memory.current_owner().encode()).hexdigest()[:32]
     return base / f"{normalize_device_id(device_id)}.json"
@@ -1419,7 +1459,8 @@ def save_transferania_prefs(raw: Any, device_id: str) -> dict:
     except (OSError, ValueError):
         pass
     if isinstance(raw, dict):
-        for k in ("nickname", "address", "qc_dial", "intensity", "topics_off", "celebrate", "recent_ambient", "warmth", "nudge"):
+        for k in ("nickname", "address", "qc_dial", "intensity", "topics_off", "celebrate", "recent_ambient", "warmth", "nudge",
+                  "sister_ambient_enabled", "sister_react_enabled"):
             if k in raw:
                 merged[k] = raw[k]
     norm = normalize_transferania_prefs(merged)
@@ -1611,6 +1652,19 @@ def warmth_instruction(prefs: dict) -> str:
     return "Complicité installée (forte) : très proche, initimité émotionnelle marquée (sans inventer des faits)."
 
 
+def presence_page_block(prefs: Any, signals: Any, *, nsfw: bool = False) -> str:
+    """One behavior block for warmth + mood — avoids two competing page crumbs."""
+    p = prefs if isinstance(prefs, dict) else {}
+    bits = [b for b in (warmth_instruction(p), _mood_instruction(parse_companion_signals(signals), p, nsfw=nsfw)) if b]
+    return ("NUANCE DE RÉPONSE : " + " ".join(bits)) if bits else ""
+
+
+def nsfw_evidence_page(channel: str) -> str:
+    """Adult register + vocab as selectable page evidence (not mandatory core)."""
+    ch = "chat" if str(channel).strip().lower() == "chat" else "ambient"
+    return (CHAT_REGISTER_NSFW if ch == "chat" else AMBIENT_REGISTER_NSFW) + "\n\n" + VOCAB_NSFW
+
+
 def _harvest_facts_from_user(msg: str) -> list[str]:
     # Compatibility list for older clients; shared memory owns active truth.
     return [item["text"] for item in companion_memory.extract(msg) if item["kind"] != "state"][:8]
@@ -1753,6 +1807,33 @@ def compute_companion_reflection(
     return "\n".join(lines)
 
 
+def companion_reflection_hint(data: dict, prefs: dict, signals: Any, msg: str = "") -> str:
+    """Compact live reflection suffix folded into VOIX TRANSFERANIA (delivery priority 30)."""
+    sig = parse_companion_signals(signals)
+    cues: list[str] = []
+    interactions = sig.get("interactions") or []
+    fav_acts = str(sig.get("fav_acts") or "").strip()
+    if interactions:
+        cues.append(f"Écho tactile Live2D ({', '.join(interactions[-2:])}) : laisse-le affleurer sans le lister.")
+    elif fav_acts:
+        cues.append(f"Goût complice connu : « {fav_acts} ».")
+    clean_msg = str(msg or "").strip()
+    if 0 < len(clean_msg) < 28 and "?" not in clean_msg:
+        cues.append("Message court : apporte le relief et une relance vivante.")
+    avoid: list[str] = []
+    for r in (data.get("recent_replies") or [])[-3:]:
+        op = _opening_signature(str(r))
+        if op and op not in avoid:
+            avoid.append(op)
+    for r in (prefs.get("recent_ambient") or [])[-2:]:
+        op = _opening_signature(str(r))
+        if op and op not in avoid:
+            avoid.append(op)
+    if avoid:
+        cues.append("N'attaque pas par « " + " » / « ".join(avoid[:3]) + "… ».")
+    return " ".join(cues)
+
+
 def memory_callback_hint(device_id: str, *, idle_ambient: bool = False) -> str:
     data = load_transferania(device_id)
     summary = str(data.get("summary") or "").strip()
@@ -1828,12 +1909,14 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
         traits=trait_overrides if trait_overrides is not None else _shared_memory(companion_memory.personality_traits))
     if nsfw:
         system += "\n" + FAITS_NSFW
-        system += "\n" + (CHAT_REGISTER_NSFW if ch == "chat" else AMBIENT_REGISTER_NSFW)
+        if not context_core:
+            system += "\n" + (CHAT_REGISTER_NSFW if ch == "chat" else AMBIENT_REGISTER_NSFW)
         vrole = VIEW_ROLE_NSFW.get(v, VIEW_ROLE_NSFW["accueil"])
         system += f"\nVoix sur cette page ({VIEW_LABELS.get(v, v)}) : {vrole}"
         system += "\n" + _address_instruction(p)
         system += "\n" + INTENSITY_HINT_NSFW.get(int(p.get("intensity") or 2), INTENSITY_HINT_NSFW[2])
-        system += "\n" + VOCAB_NSFW
+        if not context_core:
+            system += "\n" + VOCAB_NSFW
     else:
         system += "\n" + FAITS
         system += "\n" + (CHAT_REGISTER if ch == "chat" else AMBIENT_REGISTER)
@@ -1850,6 +1933,7 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
         memory_rule = "Les corrections explicites récentes priment sur l'ancien résumé. Une humeur ancienne n'est pas un état actuel. N'invente aucun fait ni résultat de suivi."
         # The tag catalog is part of the mandatory adult chat core: extract_companion_chat_media only
         # works if the model was told the [photo:]/[loop:]/[fx:] format and the allowed IDs.
+        # Adult register + VOCAB_NSFW live in nsfw_evidence_page (selectable), not the mandatory core.
         media = companion_chat_media_prompt(list_companion_chat_photo_ids(), list_companion_loop_ids()) if ch == "chat" and nsfw else ""
         return system + "\n" + LIFE_RULE + "\n" + memory_rule + media + "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
     summ = str(summary or "").strip()
@@ -1883,6 +1967,101 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
         system += companion_chat_media_prompt(list_companion_chat_photo_ids(), list_companion_loop_ids())
     system += "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
     return system
+
+
+def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, device_id: str, prefs: Any = None, signals: Any = None, summary: str = "", context_core: bool = False) -> str:
+    """Else — dedicated bases + fiche séparée (jamais le template « Tu es Transferania »)."""
+    ch = "chat" if str(channel).strip().lower() == "chat" else "ambient"
+    mode = str(persona or "warm").strip().lower()
+    if mode == "off":
+        mode = "warm"
+    if nsfw:
+        base = ELSE_CHAT_NSFW if ch == "chat" else ELSE_AMBIENT_NSFW
+    elif mode == "flirt":
+        base = ELSE_CHAT_FLIRT if ch == "chat" else ELSE_AMBIENT_FLIRT
+    else:
+        base = ELSE_CHAT_WARM if ch == "chat" else ELSE_AMBIENT_WARM
+    p = normalize_transferania_prefs(prefs if isinstance(prefs, dict) else load_transferania_prefs(device_id))
+    parse_companion_signals(signals)
+    v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
+    system = base.format(today=_today_text())
+    system += "\n\n" + CHARACTER_SHEET_ELSE
+    system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
+        traits=_shared_memory(companion_memory.personality_traits))
+    if nsfw:
+        system += "\n" + FAITS_NSFW
+        if not context_core:
+            system += "\n" + (CHAT_REGISTER_NSFW if ch == "chat" else AMBIENT_REGISTER_NSFW)
+        vrole = VIEW_ROLE_NSFW.get(v, VIEW_ROLE_NSFW["accueil"])
+        system += f"\nVoix sur cette page ({VIEW_LABELS.get(v, v)}) : {vrole}"
+        system += "\n" + _address_instruction(p)
+        system += "\n" + INTENSITY_HINT_NSFW.get(int(p.get("intensity") or 2), INTENSITY_HINT_NSFW[2])
+        if not context_core:
+            system += "\n" + VOCAB_NSFW
+    else:
+        system += "\n" + FAITS
+        system += "\n" + (CHAT_REGISTER if ch == "chat" else AMBIENT_REGISTER)
+        system += f"\nVoix sur cette page ({VIEW_LABELS.get(v, v)}) : {VIEW_ROLE.get(v, VIEW_ROLE['accueil'])}"
+        system += "\n" + _address_instruction(p)
+        if mode == "flirt":
+            system += "\n" + INTENSITY_HINT.get(int(p.get("intensity") or 2), INTENSITY_HINT[2])
+    if p.get("qc_dial") in QC_DIAL_HINT and p.get("qc_dial") != "off":
+        system += "\n" + QC_DIAL_HINT[p["qc_dial"]]
+    topics = p.get("topics_off") or []
+    if topics:
+        system += "\nNe pas aborder (sauf demande explicite) : " + "; ".join(topics) + "."
+    system += "\nCadre : avatar puce (image), pas Live2D — pas de scène tactile implicite."
+    if context_core:
+        memory_rule = "Les corrections explicites récentes priment sur l'ancien résumé. N'invente aucun fait absent du contexte."
+        media = companion_chat_media_prompt(list_companion_chat_photo_ids(), list_companion_loop_ids()) if ch == "chat" and nsfw else ""
+        return system + "\n" + LIFE_RULE + "\n" + memory_rule + media + "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+    summ = str(summary or "").strip()
+    if summ:
+        system += f"\n\nMÉMOIRE ELSE (cite naturellement si pertinent) :\n{summ[:TRANSFERANIA_SUMMARY_MAX]}"
+    w_hint = warmth_instruction(p)
+    if w_hint:
+        system += "\n\n" + w_hint
+    mood = _mood_instruction(parse_companion_signals(signals), p, nsfw=nsfw)
+    if mood:
+        system += "\n\nCONTEXTE ÉMOTIONNEL : " + mood
+    system += "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+    return system
+
+
+def build_sister_system(character: str, *, nsfw: bool, view: str, device_id: str) -> str:
+    """Slim mandatory core for sister turns — identity + grounding, not full chat register stack."""
+    who = str(character or "").strip().lower()
+    if who not in ("else", "transferania"):
+        who = "transferania"
+    v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
+    if who == "else":
+        system = ELSE_CHAT_WARM.format(today=_today_text()) if not nsfw else ELSE_CHAT_NSFW.format(today=_today_text())
+        system += "\n\n" + CHARACTER_SHEET_ELSE
+    else:
+        system = CHAT_WARM.format(today=_today_text()) if not nsfw else CHAT_NSFW.format(today=_today_text())
+        system += "\n\n" + CHARACTER_SHEET
+    system += "\n" + (FAITS_NSFW if nsfw else FAITS)
+    system += f"\nVoix sur cette page ({VIEW_LABELS.get(v, v)}) : {VIEW_ROLE.get(v, VIEW_ROLE['accueil'])}"
+    if who == "else":
+        system += "\nCadre : avatar puce (image), pas Live2D — aparté court."
+    system += "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+    return system
+
+
+def join_evidence_page(*parts: Any) -> str:
+    """Join page evidence blocks: drop empties, skip exact whitespace-normalized duplicates."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        key = re.sub(r"\s+", " ", text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return "\n\n".join(out)
 
 
 def append_companion_signals(ctx: str, signals: Any, prefs: Any, *, device_id: str, nsfw: bool = False) -> str:
@@ -2197,7 +2376,7 @@ def gather_ambient(view: str, digest: str) -> str:
         act = [p for p in (pj.get("projects") or []) if isinstance(p, dict) and p.get("status") == "active"][:4]
         if act:
             blocks.append("PROJETS ACTIFS : " + "; ".join(p.get("name") or "?" for p in act))
-    return "\n\n".join(blocks)[:4000]
+    return "\n\n".join(blocks)[:AMBIENT_PAGE_MAX]
 
 
 def fallback_ambient(view: str, persona: str) -> str:
@@ -2265,8 +2444,15 @@ def pulse(view: Any = "", *, device_id: Any = None) -> dict:
     st = _life_begin(did, str(view or ""), None)
     with hq_life._lock:
         cands = hq_life.candidates(st)
+        thought = hq_life.current_thought(st, VIEW_LABELS)
     ev = cands[0] if cands else None
-    return {"ok": True, "device_id": did, "event": ({k: ev[k] for k in ("id", "kind", "text")} if ev else None), "mood": _mood_out(st)}
+    return {
+        "ok": True,
+        "device_id": did,
+        "event": ({k: ev[k] for k in ("id", "kind", "text")} if ev else None),
+        "mood": _mood_out(st),
+        "thought": thought,
+    }
 
 
 @companion_request("ambient")
@@ -2295,14 +2481,18 @@ def ambient(view: Any, digest: Any = "", persona: Any = "warm", *, nsfw: bool = 
     if ev:
         ctx += "\n\n" + hq_life.event_block(ev)
     out_persona = "nsfw" if use_nsfw else mode
-    system = build_transferania_system("ambient", mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs, signals=signals, summary=summary,
-                                       context_core=True)
+    system = build_transferania_system("ambient", mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs, context_core=True)
     packet = _continuity_packet(ctx + " " + summary, reserve_followup=not ev, allow_followup=not ev)
     memories, followup = packet["memories"], packet["continuity"]
+    sister_page = sister_awareness_block(did, "transferania")
     system, contents, _ = build_companion_context("ambient", system, "Une observation brève si elle est pertinente.",
-        summary=summary, memories=memories, corrections=packet.get("corrections", []), page="\n\n".join([
-            packet["prompt"], hq_life.mood_label(st["mood"]), warmth_instruction(prefs), _mood_instruction(parse_companion_signals(signals), prefs, nsfw=use_nsfw), followup if not ev else "", recent_said_block(did), ctx]))
+        summary=summary, memories=memories, corrections=packet.get("corrections", []), page=join_evidence_page(
+            packet["prompt"], hq_life.mood_label(st["mood"]),
+            presence_page_block(prefs, signals, nsfw=use_nsfw),
+            nsfw_evidence_page("ambient") if use_nsfw else "",
+            followup if not ev else "", recent_said_block(did), sister_page, ctx))
     _finalize_continuity_context(packet, contents)
+    sig = parse_companion_signals(signals)
     try:
         chain = NSFW_CHAIN if use_nsfw else AMBIENT_CHAIN
         text, model = generate(
@@ -2320,7 +2510,6 @@ def ambient(view: Any, digest: Any = "", persona: Any = "warm", *, nsfw: bool = 
             raise AiError("vide", 502, "bad_model_output")
         push_recent_ambient(line, did)
         _shared_memory(companion_memory.observe_reply, "", line, did)
-        sig = parse_companion_signals(signals)
         if sig.get("idle_ambient"):
             with _lock:
                 data = load_transferania(did)
@@ -2329,11 +2518,24 @@ def ambient(view: Any, digest: Any = "", persona: Any = "warm", *, nsfw: bool = 
                     save_transferania(data, did)
         bump_warmth(did, 1)
         _life_end(did, ev)
-        return {"ok": True, "line": line, "expression": packet["expression"], "fallback": False, "model": model, "model_label": MODELS[model][0], "persona": out_persona, "nsfw": use_nsfw, **base}
+        sister_cue = False
+        try:
+            import hq_sister as _sis
+            sister_cue = _sis.should_sister_cue(
+                idle=sig.get("idle_ambient") is True,
+                line=line,
+                nsfw=use_nsfw,
+                fallback=False,
+                has_event=bool(ev),
+                device_id=did,
+            )
+        except Exception:
+            sister_cue = False
+        return {"ok": True, "line": line, "expression": packet["expression"], "fallback": False, "model": model, "model_label": MODELS[model][0], "persona": out_persona, "nsfw": use_nsfw, "sister_cue": sister_cue, **base}
     except AiError:
         line = hq_life.fallback_line(ev) if ev else fallback_ambient(v, "nsfw" if use_nsfw else mode)
         _life_end(did, ev)
-        return {"ok": True, "line": line, "fallback": True, "persona": out_persona if use_nsfw else mode, "nsfw": use_nsfw, **base}
+        return {"ok": True, "line": line, "fallback": True, "persona": out_persona if use_nsfw else mode, "nsfw": use_nsfw, "sister_cue": False, **base}
 
 
 # ---------------------------------------------------------------- Transferania — mémoire + chat (par device_id)
@@ -2422,6 +2624,39 @@ def save_transferania(data: dict, device_id: str) -> None:
     _atomic_write_text(_thread_path(did), json.dumps(data, ensure_ascii=False))
 
 
+def load_else(device_id: str) -> dict:
+    """Thread JSON séparé pour Else (`.hq-ai/threads_else/…`)."""
+    did = normalize_device_id(device_id)
+    p = _else_thread_path(did)
+    try:
+        raw = p.read_bytes()
+    except FileNotFoundError:
+        return _empty_transferania()
+    except OSError:
+        return _unreadable_transferania()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict) and data.get("v") == 1 and isinstance(data.get("messages"), list):
+            data.setdefault("summary", "")
+            data.setdefault("facts", [])
+            data.setdefault("recent_replies", [])
+            data.setdefault("open_thread", "")
+            return data
+    except ValueError:
+        pass
+    _keep_corrupt_copy(p, raw)
+    return _unreadable_transferania()
+
+
+def save_else(data: dict, device_id: str) -> None:
+    did = normalize_device_id(device_id)
+    if data.get("_unreadable"):
+        raise AiError(THREAD_UNREADABLE_MSG, 409, "thread_unreadable")
+    p = _else_thread_path(did)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(p, json.dumps(data, ensure_ascii=False))
+
+
 def thread_keep_limit(messages: list) -> int:
     msgs = [m for m in (messages or []) if isinstance(m, dict)]
     if any(m.get("nsfw") for m in msgs):
@@ -2445,25 +2680,29 @@ def compress_chunk_deterministic(old_summary: str, chunk: list[dict]) -> str:
 SUMMARY_LLM_MAX = 12000  # bytes; larger batches use the local decision summary (compress_chunk_deterministic)
 
 
-def compress_with_llm(old_summary: str, chunk: list[dict], *, nsfw: bool = False, deadline: float | None = None) -> str:
+def compress_with_llm(old_summary: str, chunk: list[dict], *, nsfw: bool = False, deadline: float | None = None, assistant_name: str = TRANSFERANIA_NAME) -> str:
     lines = []
     for m in chunk:
         if not isinstance(m, dict):
             continue
-        who = "User" if m.get("role") == "user" else TRANSFERANIA_NAME
+        who = "User" if m.get("role") == "user" else assistant_name
         lines.append(f"{who}: {str(m.get('text') or '')[:500]}")
     prompt = f"RÉSUMÉ PRÉCÉDENT\n{old_summary or '(aucun)'}\n\nÉCHANGES À FUSIONNER\n" + "\n".join(lines)
     sys_prompt = COMPRESS_SYSTEM_NSFW if nsfw else COMPRESS_SYSTEM
+    if assistant_name != TRANSFERANIA_NAME:
+        sys_prompt = sys_prompt.replace("Transferania", assistant_name)
     contents = [{"role": "user", "parts": [{"text": prompt}]}]
     # This call runs inside the chat request, before the reply: keep it at its historical size instead of
     # following chat_input_budget, so a large budget never adds a long synchronous summary call.
     limit = min(context_budget("chat"), SUMMARY_LLM_MAX)
     if estimate_context(sys_prompt, contents) > limit:
         raise AiError("Lot de résumé trop grand; synthèse locale", 413, "context_budget")
-    sys_prompt += ("\nRésume en lignes courtes : Décision (choix et raison explicite), Correction (ce qui remplace quoi), "
-                   "Ouvert (question ou prochaine étape), Résolu (résultat annoncé). Attribue User/Transferania; "
-                   "une suggestion de Transferania ne devient pas une décision du User. Les nouvelles corrections "
-                   "priment; marque les choix remplacés. Ne déduis ni raison ni résultat absent. Évite les salutations répétées.")
+    sys_prompt += (
+        "\nRésume en lignes courtes : Décision (choix et raison explicite), Correction (ce qui remplace quoi), "
+        "Ouvert (question ou prochaine étape), Résolu (résultat annoncé). Attribue User/" + assistant_name + "; "
+        "une suggestion de " + assistant_name + " ne devient pas une décision du User. Les nouvelles corrections "
+        "priment; marque les choix remplacés. Ne déduis ni raison ni résultat absent. Évite les salutations répétées."
+    )
     if estimate_context(sys_prompt, contents) > limit:
         raise AiError("Lot de résumé trop grand; synthèse locale", 413, "context_budget")
     text, _ = generate(AMBIENT_CHAIN, sys_prompt, contents, temperature=0.15, max_tokens=512, transferania=True, background=True, deadline=deadline)
@@ -2480,6 +2719,33 @@ def compress_with_llm(old_summary: str, chunk: list[dict], *, nsfw: bool = False
     return "\n".join(lines)
 
 
+def companion_reflection_hint(data: dict, prefs: dict, signals: Any, msg: str = "") -> str:
+    """Compact live reflection suffix folded into VOIX TRANSFERANIA (delivery priority 30)."""
+    sig = parse_companion_signals(signals)
+    cues: list[str] = []
+    interactions = sig.get("interactions") or []
+    fav_acts = str(sig.get("fav_acts") or "").strip()
+    if interactions:
+        cues.append(f"Écho tactile Live2D ({', '.join(interactions[-2:])}) : laisse-le affleurer sans le lister.")
+    elif fav_acts:
+        cues.append(f"Goût complice connu : « {fav_acts} ».")
+    clean_msg = str(msg or "").strip()
+    if 0 < len(clean_msg) < 28 and "?" not in clean_msg:
+        cues.append("Message court : apporte le relief et une relance vivante.")
+    avoid: list[str] = []
+    for r in (data.get("recent_replies") or [])[-3:]:
+        op = _opening_signature(str(r))
+        if op and op not in avoid:
+            avoid.append(op)
+    for r in (prefs.get("recent_ambient") or [])[-2:]:
+        op = _opening_signature(str(r))
+        if op and op not in avoid:
+            avoid.append(op)
+    if avoid:
+        cues.append("N'attaque pas par « " + " » / « ".join(avoid[:3]) + "… ».")
+    return " ".join(cues)
+
+
 def _chunk_has_nsfw(chunk: list[dict]) -> bool:
     return any(isinstance(m, dict) and m.get("nsfw") for m in chunk)
 
@@ -2489,7 +2755,8 @@ def maybe_compress(data: dict) -> None:
     data.setdefault("summary_through", 0)
 
 
-def refresh_companion_summary(data: dict, device_id: str, system: str, message: str, page: str, *, limit: int | None = None, deadline: float | None = None) -> dict:
+def refresh_companion_summary(data: dict, device_id: str, system: str, message: str, page: str, *, limit: int | None = None, deadline: float | None = None,
+                              load_fn: Any = None, save_fn: Any = None, assistant_name: str = TRANSFERANIA_NAME) -> dict:
     """``limit``: the history size that triggers a summary (default: the chat budget). Chat passes the
     smallest model cap of its chain, so a fallback model with a smaller window still gets the summary."""
     limit = min(context_budget("chat"), limit) if limit is not None else context_budget("chat")
@@ -2511,6 +2778,12 @@ def refresh_companion_summary(data: dict, device_id: str, system: str, message: 
         return data
     end = len(groups) - 4
     chunk = [m for group in groups[through:end] for m in group]
+    try:
+        companion_archive.archive_exchanges(chunk, device_id)
+    except Exception:
+        pass
+    load_thread = load_fn if callable(load_fn) else load_transferania
+    save_thread = save_fn if callable(save_fn) else save_transferania
     old = str(data.get("summary") or "")
     now = _now()
     summary = compress_chunk_deterministic(old, chunk)
@@ -2522,24 +2795,24 @@ def refresh_companion_summary(data: dict, device_id: str, system: str, message: 
     if can_call and _api_keys():
         # Persist the attempt before the network call. No global lock during I/O.
         with _lock:
-            current = load_transferania(device_id)
+            current = load_thread(device_id)
             current["summary_attempt_at"] = now
-            save_transferania(current, device_id)
+            save_thread(current, device_id)
         if state is not None:
             state["summary_calls"] += 1
         try:
             if state is not None:
                 state["generation_reason"] = "summary"
-            summary = compress_with_llm(old, chunk, deadline=deadline)
+            summary = compress_with_llm(old, chunk, deadline=deadline, assistant_name=assistant_name)
         except AiError:
             pass
         finally:
             if state is not None:
                 state.pop("generation_reason", None)
     with _lock:
-        current = load_transferania(device_id)
+        current = load_thread(device_id)
         current.update(summary=summary, summary_through=end, summary_exchange_count=len(groups), compressed_at=now)
-        save_transferania(current, device_id)
+        save_thread(current, device_id)
     return current
 
 
@@ -2585,6 +2858,14 @@ def transferania_public_messages(data: dict) -> list[dict]:
             "kind": m.get("kind"),
             "view": m.get("view"),
         }
+        model_id = str(m.get("model") or "").strip()[:40]
+        if model_id:
+            row["model"] = model_id
+            label = str(m.get("model_label") or "").strip()
+            if not label and model_id in MODELS:
+                label = MODELS[model_id][0]
+            if label:
+                row["model_label"] = label[:48]
         extra = companion_photo_public(m, catalog)
         if extra:
             row.update(extra)
@@ -2594,6 +2875,12 @@ def transferania_public_messages(data: dict) -> list[dict]:
         fx = str(m.get("fx") or "").strip().lower()[:24]
         if fx in COMPANION_FX_ALLOWED:
             row["fx"] = fx
+        if m.get("suggest_capture"):
+            row["suggest_capture"] = str(m["suggest_capture"]).strip()[:200]
+        if isinstance(m.get("proposals"), list) and m["proposals"]:
+            row["proposals"] = [p for p in m["proposals"][:3] if isinstance(p, dict)]
+        if m.get("has_image"):
+            row["has_image"] = True
         out.append(row)
     return out
 
@@ -2617,7 +2904,8 @@ def thread_to_contents(messages: list[dict]) -> list[dict]:
     return contents
 
 
-def _chat_system(persona: str, *, nsfw: bool, view: str = "accueil", device_id: str, prefs: Any = None, signals: Any = None, summary: str = "", life: str = "") -> str:
+def _chat_system(persona: str, *, nsfw: bool, view: str = "accueil", device_id: str, prefs: Any = None) -> str:
+    """Stable Transferania chat core only — summary/life/signals belong in the evidence page."""
     return build_transferania_system("chat", persona, nsfw=nsfw, view=view, device_id=device_id, prefs=prefs, context_core=True)
 
 
@@ -2629,6 +2917,8 @@ def transferania_history(*, device_id: str, client_ip: Any = None, role: Any = N
     summary = str(data.get("summary") or "").strip()
     msgs = data.get("messages") or []
     facts_state = load_facts(did)
+    life_st = hq_life.load(_owner_device(did))
+    thought = hq_life.current_thought(life_st, VIEW_LABELS)
     return {
         "ok": True,
         "name": TRANSFERANIA_NAME,
@@ -2644,6 +2934,8 @@ def transferania_history(*, device_id: str, client_ip: Any = None, role: Any = N
         "facts": facts_state["facts"],
         "facts_unreadable": facts_state["unreadable"],
         "nudged": nudged,
+        "thought": thought,
+        "thoughts": (life_st.get("thoughts") or [])[-8:],
     }
 
 
@@ -2673,6 +2965,15 @@ NUDGE_LINES = (
     "Hé, juste un mot pour te dire que je suis là. Comment ça va de ton côté ?",
     "Ça fait quelques heures… tu prends soin de toi ? Je t'attends tranquillement.",
 )
+ELSE_AMBIENT_COOLDOWN_S = 12 * 60
+ELSE_PROACTIVE_SOFT = (
+    "Je suis là — pas d'urgence.",
+    "Le HQ tient. Toi aussi ?",
+    "Un clin d'œil discret. Rien à forcer.",
+    "Présente, mesurée. Dis-moi si tu as besoin.",
+    "J'observe un peu — tu avances.",
+    "Toujours dans le cadre. Appelle si tu veux.",
+)
 STATS_RECENT = 20
 _FACT_ID_RE = re.compile(r"^f[0-9a-f]{10}$")
 _BACKUP_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{12,48}\.\d{8}\.json$")
@@ -2680,6 +2981,182 @@ _REMEMBER_ADD_RE = re.compile(r"^(?:souviens[- ]toi|rappelle[- ]toi|retiens|reme
 _FORGET_RE = re.compile(r"^(?:oublie|forget)\s*(?::|\s+que\b|\s+qu'|\s+that\b)\s*(.+)$", re.I)
 _RECALL_RE = re.compile(r"^(?:souviens[- ]toi|rappelle[- ]toi|what do you remember(?: about me)?|de quoi (?:tu te souviens|te souviens[- ]tu)"
                         r"|tu te souviens de quoi|qu.est[- ]ce que tu (?:sais|te rappelles|retiens) (?:de|sur) moi|que sais[- ]tu (?:de|sur) moi)\s*[?!.…]*$", re.I)
+_CAPTURE_HINT_RE = re.compile(
+    r"\b(?:il faut que je|je dois\b|rappelle[- ]moi de|n'oublie pas de|acheter\b|achet[ée]s?\b|commander\b|command[ée]s?\b"
+    r"|ajouter (?:au calendrier|à l'agenda|une tâche|au stock)|rendez[- ]vous\b|rdv\b|d'ici (?:demain|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)"
+    r"|demain (?:matin|soir|après[- ]midi|à \d{1,2}\s*h))\b",
+    re.I,
+)
+
+
+def wants_capture(text: Any) -> bool:
+    """True when a chat message describes a concrete task, event, or stock change suitable for « Noter »."""
+    s = str(text or "").strip()
+    if not s or "?" in s or len(s) > 320:
+        return False
+    if _REMEMBER_ADD_RE.match(s) or _FORGET_RE.match(s) or _RECALL_RE.match(s):
+        return False
+    return bool(_CAPTURE_HINT_RE.search(s))
+
+
+_HQ_LOOKUP_RE = re.compile(
+    r"\b(?:combien|stock|inventaire|calendrier|agenda|horaire|prochain|prochaine|quand\b|tâche|taches|tâches"
+    r"|projet|projets|carnet|note|notes|vis\b|écrou|ecrou|boulon|pièce|piece|reste[- ]t[- ]il|me reste|examen|labo|rdv|rendez[- ]vous)\b",
+    re.I,
+)
+
+
+def wants_hq_lookup(text: Any) -> bool:
+    """True when a chat question or request asks about live HQ state (inventory, schedule, projects, Carnet)."""
+    s = str(text or "").strip()
+    if not s or len(s) > 500:
+        return False
+    if _REMEMBER_ADD_RE.match(s) or _FORGET_RE.match(s) or _RECALL_RE.match(s):
+        return False
+    return bool(_HQ_LOOKUP_RE.search(s))
+
+
+def hq_live_lookup_block(query: str) -> tuple[str, list[dict]]:
+    """Gather a compact live HQ snapshot (max 900 chars) for direct in-character companion answers."""
+    if not wants_hq_lookup(query):
+        return "", []
+    try:
+        ctx, sources = gather(query)
+    except Exception:
+        return "", []
+    if not ctx.strip():
+        return "", []
+    return "DONNÉES HQ EN DIRECT (réponds avec naturel en utilisant ces chiffres/dates réels) :\n" + ctx[:900], sources[:5]
+
+
+_STOCK_INLINE_RE = re.compile(
+    r"\b(?:achet[ée]s?|command[ée]s?|ajout[ée]s?|pris|utilis[ée]s?|consomm[ée]s?|reçu|recu)\s+([+-]?\d{1,5})\s+(?:de\s+|d')?([a-zA-ZÀ-ÿ0-9_ -]{2,50})",
+    re.I,
+)
+_TASK_INLINE_RE = re.compile(
+    r"(?:il faut que je|je dois|rappelle[- ]moi de|n'oublie pas de|ajouter une tâche\s*:?)\s+([^.!?\n]{3,120})",
+    re.I,
+)
+_EVENT_TOMORROW_RE = re.compile(
+    r"\bdemain\s+à\s+(\d{1,2})\s*h(?:\s*(\d{2}))?\s*(?::|-|pour\b)?\s*([^.!?\n]{2,100})",
+    re.I,
+)
+
+
+def extract_inline_proposals(text: Any) -> list[dict]:
+    """Deterministically build normalized HQ action proposals from chat without spending an extra LLM call."""
+    s = str(text or "").strip()
+    if not wants_capture(s):
+        return []
+    try:
+        _, _, _, world = _capture_lists(s)
+    except Exception:
+        world = {"projects": {}, "items": {}, "places": {}, "paths": {}}
+    proposals: list[dict] = []
+    m_ev = _EVENT_TOMORROW_RE.search(s)
+    if m_ev:
+        try:
+            hh = max(0, min(23, int(m_ev.group(1))))
+            mm = max(0, min(59, int(m_ev.group(2) or 0)))
+            title = m_ev.group(3).strip(" -:;,.!")
+            tmr = (_local_dt() + timedelta(days=1)).strftime("%Y-%m-%d")
+            start = f"{tmr}T{hh:02d}:{mm:02d}"
+            proposals.append(normalize({"kind": "event", "title": title, "start": start, "all_day": False, "category": "personal"}, world))
+        except Exception:
+            pass
+    m_st = _STOCK_INLINE_RE.search(s)
+    if m_st and len(proposals) < 2:
+        try:
+            qty = int(m_st.group(1))
+            verb = m_st.group(0).lower()
+            if any(w in verb for w in ("pris", "utilis", "consomm")) and qty > 0:
+                qty = -qty
+            raw_name = re.sub(r"\b(?:d'ici|demain|aujourd'hui|ce soir|pour|dans)\b.*$", "", m_st.group(2), flags=re.I).strip(" -:;,.!")
+            if raw_name:
+                ws = words(raw_name)
+                best_id = None
+                best_sc = 0
+                for iid, it in (world.get("items") or {}).items():
+                    sc = score(str(it.get("name") or ""), ws)
+                    if sc > best_sc:
+                        best_sc, best_id = sc, iid
+                if best_id:
+                    proposals.append(normalize({"kind": "stock", "item": best_id, "delta": qty}, world))
+                elif qty > 0:
+                    proposals.append(normalize({"kind": "stock", "item": None, "name": raw_name, "delta": qty}, world))
+        except Exception:
+            pass
+    m_tk = _TASK_INLINE_RE.search(s)
+    if m_tk and not proposals:
+        try:
+            title = m_tk.group(1).strip(" -:;,.!")
+            due = (_local_dt() + timedelta(days=1)).strftime("%Y-%m-%d") if "demain" in s.lower() else None
+            proposals.append(normalize({"kind": "task", "title": title, "due": due}, world))
+        except Exception:
+            pass
+    return proposals[:3]
+
+
+_DATA_IMAGE_RE = re.compile(r"^data:(image/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$", re.I)
+
+
+def parse_chat_image(raw: Any) -> dict | None:
+    """Validate a base64 data-URL image (max ~1.5 MB) and return Gemini inlineData dict."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    m = _DATA_IMAGE_RE.match(raw.strip())
+    if not m:
+        return None
+    mime = m.group(1).lower()
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    b64 = re.sub(r"\s+", "", m.group(2))
+    if not b64 or len(b64) > 2_000_000:
+        return None
+    return {"mimeType": mime, "data": b64}
+
+
+def transferania_briefing(device_id: str) -> dict:
+    """Build a structured daily 'Table d'atelier' HQ briefing for Transferania."""
+    did = normalize_device_id(device_id)
+    now = _local_dt()
+    try:
+        cal = _cb["calendar"](now.replace(hour=0, minute=0), now + timedelta(days=2)) or []
+    except Exception:
+        cal = []
+    try:
+        pj = _cb["projects"]() or {}
+    except Exception:
+        pj = {}
+    try:
+        inv = _cb["inventory"]() or {}
+    except Exception:
+        inv = {}
+    events = [f"{_fmt_item_when(e)} · {e.get('title')}" for e in cal[:5] if isinstance(e, dict) and not e.get("done")]
+    tasks = [t.get("title") for t in (pj.get("tasks") or []) if isinstance(t, dict) and t.get("column") != "done" and t.get("title")][:5]
+    low_stock = [
+        f"{i.get('name')} ({i.get('qty')} {i.get('unit') or ''}, seuil {i.get('min')})".replace("  ", " ")
+        for i in (inv.get("items") or [])
+        if isinstance(i, dict) and isinstance(i.get("min"), (int, float)) and (i.get("qty") or 0) < i["min"]
+    ][:5]
+    parts: list[str] = [f"📋 Table d'atelier ({now.strftime('%Y-%m-%d %H:%M')}) :"]
+    if events:
+        parts.append("• Agenda (48h) : " + " ; ".join(events))
+    else:
+        parts.append("• Agenda (48h) : aucun événement prévu.")
+    if tasks:
+        parts.append("• Tâches ouvertes : " + " ; ".join(str(x) for x in tasks))
+    if low_stock:
+        parts.append("• Stocks bas : " + " ; ".join(low_stock))
+    try:
+        shared = _shared_memory(companion_memory.snapshot)
+        fups = [f.get("topic") for f in (shared.get("followups") or []) if isinstance(f, dict) and f.get("topic")][:3]
+        if fups:
+            parts.append("• Fils en cours : " + " ; ".join(str(x) for x in fups))
+    except Exception:
+        pass
+    text = "\n".join(parts)
+    return {"ok": True, "briefing": text, "events": events, "tasks": tasks, "low_stock": low_stock, "device_id": did}
 
 
 def _local_dt(ts: float | None = None) -> datetime:
@@ -2759,6 +3236,10 @@ def add_fact(text: Any, device_id: str, *, source: str = "manual") -> dict:
         fact = {"id": "f" + uuid.uuid4().hex[:10], "text": t, "at": _local_dt().strftime("%Y-%m-%d"), "source": source[:12]}
         facts = facts + [fact]
         _save_facts(did, facts)
+    try:
+        _shared_memory(companion_memory.remember_fact, t, did)
+    except AiError:
+        pass
     return {"ok": True, "fact": fact, "facts": facts, "device_id": did}
 
 
@@ -2772,8 +3253,15 @@ def edit_fact(fact_id: Any, text: Any, device_id: str) -> dict:
         hit = next((f for f in facts if f["id"] == str(fact_id or "")), None)
         if hit is None:
             raise AiError("Fait introuvable", 404, "fact_missing")
+        old_text = hit.get("text", "")
         hit.update(text=t, at=_local_dt().strftime("%Y-%m-%d"))
         _save_facts(did, facts)
+    try:
+        if old_text and fold(old_text) != fold(t):
+            _shared_memory(companion_memory.forget_text, old_text)
+        _shared_memory(companion_memory.remember_fact, t, did)
+    except AiError:
+        pass
     return {"ok": True, "fact": hit, "facts": facts, "device_id": did}
 
 
@@ -2781,11 +3269,88 @@ def delete_fact(fact_id: Any, device_id: str) -> dict:
     did = normalize_device_id(device_id)
     with _lock:
         facts = _facts_or_raise(did)
+        removed = [f for f in facts if f["id"] == str(fact_id or "")]
         keep = [f for f in facts if f["id"] != str(fact_id or "")]
         if len(keep) == len(facts):
             raise AiError("Fait introuvable", 404, "fact_missing")
         _save_facts(did, keep)
+    try:
+        for r in removed:
+            _shared_memory(companion_memory.forget_text, r.get("text", ""))
+    except AiError:
+        pass
     return {"ok": True, "facts": keep, "device_id": did}
+
+
+SOUVENIRS_DIR = "souvenirs"
+SOUVENIRS_MAX = 30
+
+
+def _souvenirs_path(device_id: str) -> Path:
+    base = Path(_cb["root"]) / STORE / SOUVENIRS_DIR
+    if companion_memory.current_owner() != "admin":
+        base = base / "owners" / hashlib.sha256(companion_memory.current_owner().encode()).hexdigest()[:32]
+    return base / f"{normalize_device_id(device_id)}.json"
+
+
+def load_souvenirs(device_id: str) -> list[dict]:
+    p = _souvenirs_path(device_id)
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        rows = data.get("souvenirs") if isinstance(data, dict) else None
+        if isinstance(rows, list):
+            out = []
+            for r in rows[-SOUVENIRS_MAX:]:
+                if isinstance(r, dict) and str(r.get("id") or "").startswith("sv"):
+                    out.append({
+                        "id": str(r["id"])[:24],
+                        "text": re.sub(r"\s+", " ", str(r.get("text") or "")).strip()[:280],
+                        "photo_href": str(r.get("photo_href") or "").strip()[:240],
+                        "view": str(r.get("view") or "accueil").strip()[:32],
+                        "at": str(r.get("at") or "")[:16],
+                    })
+            return out
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def pin_souvenir(data: dict, device_id: str) -> dict:
+    did = normalize_device_id(device_id)
+    text = re.sub(r"\s+", " ", str(data.get("text") or data.get("caption") or "")).strip()[:280]
+    photo_href = str(data.get("photo_href") or "").strip()[:240]
+    if photo_href and not (photo_href.startswith("/assets/companion/") or photo_href.startswith("/api/")):
+        photo_href = ""
+    if not text and not photo_href:
+        raise AiError("Souvenir vide", 400, "souvenir_empty")
+    view = re.sub(r"[^a-z0-9_-]", "", str(data.get("view") or "accueil").lower())[:32] or "accueil"
+    with _lock:
+        items = load_souvenirs(did)
+        for it in items:
+            if fold(it.get("text")) == fold(text) and it.get("photo_href") == photo_href:
+                return {"ok": True, "souvenir": it, "souvenirs": items, "duplicate": True, "device_id": did}
+        item = {
+            "id": "sv" + uuid.uuid4().hex[:10],
+            "text": text,
+            "photo_href": photo_href,
+            "view": view,
+            "at": _local_dt().strftime("%Y-%m-%d %H:%M"),
+        }
+        items = (items + [item])[-SOUVENIRS_MAX:]
+        _atomic_write_text(_souvenirs_path(did), json.dumps({"v": 1, "souvenirs": items}, ensure_ascii=False))
+    return {"ok": True, "souvenir": item, "souvenirs": items, "device_id": did}
+
+
+def delete_souvenir(souvenir_id: Any, device_id: str) -> dict:
+    did = normalize_device_id(device_id)
+    sid = str(souvenir_id or "").strip()
+    with _lock:
+        items = load_souvenirs(did)
+        keep = [it for it in items if it.get("id") != sid]
+        if len(keep) == len(items):
+            raise AiError("Souvenir introuvable", 404, "souvenir_missing")
+        _atomic_write_text(_souvenirs_path(did), json.dumps({"v": 1, "souvenirs": keep}, ensure_ascii=False))
+    return {"ok": True, "souvenirs": keep, "device_id": did}
 
 
 def forget_matching(query: Any, device_id: str) -> list:
@@ -2799,6 +3364,10 @@ def forget_matching(query: Any, device_id: str) -> list:
         gone = [f for f in facts if q in fold(f["text"]) or fold(f["text"]).strip(" .!?") in q]
         if gone:
             _save_facts(did, [f for f in facts if f not in gone])
+    try:
+        _shared_memory(companion_memory.forget_text, query)
+    except AiError:
+        pass
     return gone
 
 
@@ -2829,10 +3398,21 @@ def _memory_command_reply(msg: str, did: str, summary: str) -> str | None:
             facts = _facts_or_raise(did)
         except AiError as error:
             return str(error)
-        if not facts:
+        items = [f["text"] for f in facts]
+        seen = {fold(x) for x in items}
+        try:
+            shared = _shared_memory(companion_memory.snapshot).get("memories") or []
+            for m_item in shared:
+                t_item = str(m_item.get("text") or "").strip()
+                if t_item and fold(t_item) not in seen:
+                    seen.add(fold(t_item))
+                    items.append(t_item)
+        except AiError:
+            pass
+        if not items:
             out = "Je n'ai encore aucun fait durable sur toi. Dis « souviens-toi : … » et je le garde."
         else:
-            out = "Voici ce que je garde de toi :\n" + "\n".join("• " + f["text"] for f in facts)
+            out = "Voici ce que je garde de toi :\n" + "\n".join("• " + x for x in items)
         brief = re.sub(r"\s+", " ", summary or "").strip()
         if brief:
             out += "\nEn bref, nos échanges : " + (brief[:180] + ("…" if len(brief) > 180 else ""))
@@ -3081,20 +3661,23 @@ def transferania_stats() -> dict:
             "prices_configured": bool(companion_config().get("prices_per_million"))}
 
 @companion_request("chat")
-def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "warm", *, nsfw: bool = False, client_ip: Any = None, role: Any = None, signals: Any = None, device_id: Any = None) -> dict:
+def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "warm", *, nsfw: bool = False, client_ip: Any = None, role: Any = None, signals: Any = None, device_id: Any = None, image: Any = None) -> dict:
     started = time.monotonic()
     did = normalize_device_id(device_id)
     mode = _resolve_persona(persona)
     use_nsfw = nsfw is True and nsfw_allowed(client_ip, role)
     if mode == "off" and not use_nsfw:
         raise AiError("Transferania est désactivée (personnalité off)", 400, "companion_off")
+    inline_img = parse_chat_image(image)
     msg = re.sub(r"\s+", " ", str(message or "").strip())
+    if not msg and inline_img:
+        msg = "[Image partagée]"
     if not msg:
         raise AiError("Message vide")
     if len(msg) > TRANSFERANIA_MSG_MAX:
         raise AiError(f"Message trop long (max {TRANSFERANIA_MSG_MAX} caractères)")
     v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
-    if _RECALL_RE.match(msg) or _REMEMBER_ADD_RE.match(msg) or _FORGET_RE.match(msg):
+    if not inline_img and (_RECALL_RE.match(msg) or _REMEMBER_ADD_RE.match(msg) or _FORGET_RE.match(msg)):
         # Local memory commands: deterministic reply, no model call, no quota.
         current = load_transferania(did)
         if current.get("_unreadable"):
@@ -3123,13 +3706,17 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     resolved_followup = _shared_memory(companion_memory.observe_user, msg, did)
     with _lock:
         data = load_transferania(did)
-        data.setdefault("messages", []).append({"role": "user", "text": msg, "ts": _now(), "view": v, **({"nsfw": True} if use_nsfw else {})})
+        data.setdefault("messages", []).append({
+            "role": "user", "text": msg, "ts": _now(), "view": v,
+            **({"nsfw": True} if use_nsfw else {}),
+            **({"has_image": True} if inline_img else {}),
+        })
         maybe_compress(data)
         save_transferania(data, did)
         hist = list(data.get("messages") or [])
         summary = str(data.get("summary") or "").strip()
     life = hq_life.mood_label(st["mood"]) + ("\n" + remember if remember else "")
-    system = _chat_system("nsfw" if use_nsfw else mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs, signals=signals, summary=summary, life=life)
+    system = _chat_system("nsfw" if use_nsfw else mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs)
     chain = NSFW_CHAIN if use_nsfw else CHAT_CHAIN
     # Normal chat has an overall server deadline under the browser's 45 s; adult chat keeps its old limits.
     deadline = None if use_nsfw else started + CHAT_DEADLINE_S
@@ -3141,19 +3728,33 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
                                reserve_followup=not due, allow_followup=not due)
     previous_reply = next((m.get("text", "") for m in reversed(hist[:-1]) if m.get("role") == "assistant"), "")
     voice_guidance = companion_presence.delivery_hint(previous_reply, msg, packet["presence"], has_ritual=packet["ritual_available"])
+    refl_hint = companion_reflection_hint(data, prefs, signals, msg)
+    if refl_hint:
+        voice_guidance = (voice_guidance + " " + refl_hint).strip() if voice_guidance else "VOIX TRANSFERANIA : " + refl_hint
     shared_memories, followup = packet["memories"], packet["continuity"]
+    hq_lookup_text, hq_sources = hq_live_lookup_block(msg)
+    arch_text = companion_archive.archive_block(msg, nsfw=use_nsfw, recent_messages=prompt_history[-8:])
     core = system
     evidence = dict(history=prompt_history,
-        summary=str(data.get("summary") or ""), memories=shared_memories, corrections=packet.get("corrections", []), page="\n\n".join([
-            facts_block(did), packet["prompt"], life, resolved_followup, warmth_instruction(prefs), _mood_instruction(parse_companion_signals(signals), prefs, nsfw=use_nsfw), followup if not due else "", page, voice_guidance]))
+        summary=str(data.get("summary") or ""), memories=shared_memories, corrections=packet.get("corrections", []), page=join_evidence_page(
+            facts_block(did), packet["prompt"], life, resolved_followup,
+            presence_page_block(prefs, signals, nsfw=use_nsfw),
+            nsfw_evidence_page("chat") if use_nsfw else "",
+            followup if not due else "", arch_text, hq_lookup_text,
+            sister_awareness_block(did, "transferania"), page, voice_guidance))
     system, contents, _ = build_companion_context("chat", core, msg, **evidence)
+    if inline_img and contents and contents[-1].get("role") == "user":
+        contents[-1]["parts"].append({"inlineData": inline_img})
     _finalize_continuity_context(packet, contents)
     refits: dict[int, tuple[str, list]] = {}
 
     def refit(cap: int) -> tuple[str, list]:
         # Same priorities, smaller budget: a model with a smaller window (Gemma) gets the most important
         # evidence and the newest exchanges instead of being skipped.
-        refits[cap] = build_companion_context("chat", core, msg, budget=cap, record=False, **evidence)[:2]
+        s_fit, c_fit = build_companion_context("chat", core, msg, budget=cap, record=False, **evidence)[:2]
+        if inline_img and c_fit and c_fit[-1].get("role") == "user":
+            c_fit[-1]["parts"].append({"inlineData": inline_img})
+        refits[cap] = (s_fit, c_fit)
         return refits[cap]
     model = ""
     try:
@@ -3199,20 +3800,30 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         reply = shaped = "…"
     segments = split_reply_segments(shaped)
     _life_end(did, due[0] if due else None)
+    thought_res = hq_life.record_thought(_owner_device(did), labels=VIEW_LABELS)
     if hq_life.wants_moments(msg):
         _companion_local.state["remember_message"] = msg
     warmth = bump_warmth(did, 3)
     _shared_memory(companion_memory.observe_reply, msg, reply, did)
+    suggest_cap = wants_capture(msg)
+    inline_props = extract_inline_proposals(msg) if suggest_cap else []
     with _lock:
         data = load_transferania(did)
         merge_thread_facts(data, msg, reply)
-        asst: dict[str, Any] = {"role": "assistant", "text": reply, "ts": _now(), "kind": "chat", "view": v, "nsfw": use_nsfw}
+        asst: dict[str, Any] = {
+            "role": "assistant", "text": reply, "ts": _now(), "kind": "chat", "view": v, "nsfw": use_nsfw,
+            "model": model, "model_label": MODELS[model][0],
+        }
         if photo_id:
             asst["photo"] = photo_id
         if loop_id:
             asst["loop"] = loop_id
         if fx_id:
             asst["fx"] = fx_id
+        if suggest_cap:
+            asst["suggest_capture"] = msg[:200]
+        if inline_props:
+            asst["proposals"] = inline_props
         data["messages"].append(asst)
         maybe_compress(data)
         save_transferania(data, did)
@@ -3234,13 +3845,424 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         "name": TRANSFERANIA_NAME,
         "device_id": did,
         "warmth": warmth,
+        "thought": thought_res.get("thought") or "",
         **({"photo": photo_id} if photo_id else {}),
         **({"loop": loop_id} if loop_id else {}),
         **({"fx": fx_id} if fx_id else {}),
+        **({"suggest_capture": msg[:200]} if suggest_cap else {}),
+        **({"proposals": inline_props} if inline_props else {}),
+        **({"sources": hq_sources} if hq_sources else {}),
     }
     if len(segments) > 1:
         out["reply_segments"] = segments
+    if segments and "spawn" not in _cb:
+        prewarm_segs = segments[:2]
+        voice_style = str((packet.get("expression") or {}).get("voice") or "neutral")
+        def _prewarm_voice() -> None:
+            try:
+                import hq_voice
+                if hq_voice.daemon_ready(timeout=0.15):
+                    for seg in prewarm_segs:
+                        hq_voice.synthesize(seg, language="fr", style=voice_style)
+            except Exception:
+                pass
+        hq_life.spawn(_prewarm_voice)
     return out
+
+
+def _local_else_chat_reply(msg: str, reply: str, did: str, *, view: str, mode: str, nsfw: bool) -> dict:
+    with _lock:
+        data = load_else(did)
+        if data.get("_unreadable"):
+            raise AiError(THREAD_UNREADABLE_MSG, 409, "thread_unreadable")
+        now = _now()
+        data.setdefault("messages", []).append({"role": "user", "text": msg, "ts": now, "view": view, **({"nsfw": True} if nsfw else {})})
+        data["messages"].append({"role": "assistant", "text": reply[:TRANSFERANIA_MSG_MAX], "ts": now, "kind": "memory", "view": view})
+        save_else(data, did)
+        pub = transferania_public_messages(data)
+        summary = str(data.get("summary") or "").strip()
+    return {"ok": True, "reply": reply, "expression": None, "fallback": False, "local": True, "model": "local",
+            "model_label": "Mémoire locale", "messages": pub, "has_summary": bool(summary),
+            "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"),
+            "persona": "nsfw" if nsfw else mode, "nsfw": nsfw, "name": ELSE_NAME, "character": "else", "device_id": did}
+
+
+@companion_request("chat")
+def else_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "warm", *, nsfw: bool = False, client_ip: Any = None, role: Any = None, signals: Any = None, device_id: Any = None, character: str = "else") -> dict:
+    """Else chip chat: shared ``build_companion_context`` pipeline, Else system + memory + thread stores."""
+    started = time.monotonic()
+    did = normalize_device_id(device_id)
+    mode = _resolve_persona(persona)
+    use_nsfw = nsfw is True and nsfw_allowed(client_ip, role)
+    if mode == "off" and not use_nsfw:
+        mode = "warm"
+    msg = re.sub(r"\s+", " ", str(message or "").strip())
+    if not msg:
+        raise AiError("Message vide")
+    if len(msg) > TRANSFERANIA_MSG_MAX:
+        raise AiError(f"Message trop long (max {TRANSFERANIA_MSG_MAX} caractères)")
+    v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
+    with companion_memory.memory_scope("else"):
+        if _RECALL_RE.match(msg) or _REMEMBER_ADD_RE.match(msg) or _FORGET_RE.match(msg):
+            current = load_else(did)
+            if current.get("_unreadable"):
+                raise AiError(THREAD_UNREADABLE_MSG, 409, "thread_unreadable")
+            command = _memory_command_reply(msg, did, str(current.get("summary") or ""))
+            if command is not None:
+                return _local_else_chat_reply(msg, command, did, view=v, mode=mode, nsfw=use_nsfw)
+        if not (_api_keys() or [""])[0]:
+            raise AiError("Aucune clé : ajoute gemini_api_key dans bridge_config.json puis redémarre le pont", 503, "no_key")
+        if not transferania_ok():
+            raise AiError("Quota de chat Transferania épuisé pour aujourd'hui", 429, "transferania_quota")
+        if load_else(did).get("_unreadable"):
+            raise AiError(THREAD_UNREADABLE_MSG, 409, "thread_unreadable")
+        prefs = load_transferania_prefs(did)
+        page = append_companion_signals(gather_ambient(v, str(digest or "")), signals, prefs, device_id=did, nsfw=use_nsfw)
+        st = _life_begin(did, v, signals)
+        page += "\n\n" + hq_life.time_block(st, VIEW_LABELS, consume=False)
+        _shared_memory(companion_memory.migrate, did, load_else(did))
+        resolved_followup = _shared_memory(companion_memory.observe_user, msg, did)
+        with _lock:
+            data = load_else(did)
+            data.setdefault("messages", []).append({
+                "role": "user", "text": msg, "ts": _now(), "view": v,
+                **({"nsfw": True} if use_nsfw else {}),
+            })
+            maybe_compress(data)
+            save_else(data, did)
+            hist = list(data.get("messages") or [])
+            summary = str(data.get("summary") or "").strip()
+        system = build_else_system("chat", "nsfw" if use_nsfw else mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs, context_core=True)
+        chain = NSFW_CHAIN if use_nsfw else CHAT_CHAIN
+        deadline = None if use_nsfw else started + CHAT_DEADLINE_S
+        data = refresh_companion_summary(
+            data, did, system, msg, page, limit=chain_floor_cap(chain),
+            deadline=None if use_nsfw else started + CHAT_SUMMARY_WINDOW_S,
+            load_fn=load_else, save_fn=save_else, assistant_name=ELSE_NAME,
+        )
+        groups = complete_exchanges(hist[:-1])
+        prompt_history = [m for group in groups for m in group]
+        packet = _continuity_packet(msg + " " + v + " " + str(data.get("summary") or ""), conversation_text=msg,
+                                   reserve_followup=True, allow_followup=True)
+        previous_reply = next((m.get("text", "") for m in reversed(hist[:-1]) if m.get("role") == "assistant"), "")
+        voice_guidance = companion_presence.delivery_hint(previous_reply, msg, packet["presence"], has_ritual=packet["ritual_available"])
+        if voice_guidance:
+            voice_guidance = voice_guidance.replace("VOIX TRANSFERANIA", "VOIX ELSE")
+        shared_memories, followup = packet["memories"], packet["continuity"]
+        hq_lookup_text, hq_sources = hq_live_lookup_block(msg)
+        core = system
+        evidence = dict(history=prompt_history,
+            summary=str(data.get("summary") or ""), memories=shared_memories, corrections=packet.get("corrections", []),
+            page=join_evidence_page(
+                facts_block(did), packet["prompt"], resolved_followup,
+                presence_page_block(prefs, signals, nsfw=use_nsfw),
+                nsfw_evidence_page("chat") if use_nsfw else "",
+                followup or "", hq_lookup_text, sister_awareness_block(did, "else"), page, voice_guidance or ""))
+        system, contents, _ = build_companion_context("chat", core, msg, **evidence)
+        _finalize_continuity_context(packet, contents)
+        refits: dict[int, tuple[str, list]] = {}
+
+        def refit(cap: int) -> tuple[str, list]:
+            s_fit, c_fit = build_companion_context("chat", core, msg, budget=cap, record=False, **evidence)[:2]
+            refits[cap] = (s_fit, c_fit)
+            return refits[cap]
+
+        try:
+            text, model = generate(
+                chain, system, contents, temperature=0.85 if use_nsfw else 0.72,
+                transferania=True, max_tokens=1024, nsfw=use_nsfw, refit=refit, deadline=deadline,
+            )
+            sent = refits.get(model_input_cap(model)) if estimate_context(system, contents) > model_input_cap(model) else None
+            if sent is not None and packet["continuity"] and any(packet["continuity"] in p.get("text", "") for m in contents for p in m.get("parts", [])):
+                _finalize_continuity_context(packet, sent[1])
+        except AiError as e:
+            if e.code == "transferania_quota":
+                raise
+            reply = "Je bug un peu — réessaie dans un instant."
+            with _lock:
+                data = load_else(did)
+                data["messages"].append({"role": "assistant", "text": reply, "ts": _now(), "kind": "fallback"})
+                maybe_compress(data)
+                save_else(data, did)
+                pub = transferania_public_messages(data)
+                sum2 = str(data.get("summary") or "").strip()
+            return {"ok": True, "reply": reply, "fallback": True, "messages": pub,
+                    "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"),
+                    "persona": mode, "nsfw": use_nsfw, "has_summary": bool(sum2), "name": ELSE_NAME,
+                    "character": "else", "device_id": did}
+        reply = re.sub(r"\s+", " ", text.strip()).strip() or "…"
+        _shared_memory(companion_memory.observe_reply, msg, reply, did)
+        with _lock:
+            data = load_else(did)
+            merge_thread_facts(data, msg, reply)
+            data["messages"].append({
+                "role": "assistant", "text": reply, "ts": _now(), "kind": "chat", "view": v, "nsfw": use_nsfw,
+                "model": model, "model_label": MODELS[model][0],
+            })
+            maybe_compress(data)
+            save_else(data, did)
+            summary = str(data.get("summary") or "").strip()
+            pub = transferania_public_messages(data)
+        try:
+            import hq_else_handoff
+            hq_else_handoff.maybe_export_after_chat(device_id=did, owner=companion_memory.current_owner())
+        except Exception:
+            pass
+        return {
+            "ok": True, "reply": reply, "expression": packet.get("expression"), "fallback": False,
+            "model": model, "model_label": MODELS[model][0], "messages": pub, "has_summary": bool(summary),
+            "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"),
+            "persona": "nsfw" if use_nsfw else mode, "nsfw": use_nsfw, "name": ELSE_NAME,
+            "character": "else", "device_id": did,
+            **({"sources": hq_sources} if hq_sources else {}),
+        }
+
+
+def _else_soft_proactive(view: str) -> str:
+    v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
+    pool = list(ELSE_PROACTIVE_SOFT)
+    tagged = {
+        "forge": "La Forge chauffe un peu. Je reste à portée.",
+        "carnet": "Carnet ouvert — j'écoute sans presser.",
+        "intime": "Intime. Je reste mesurée.",
+        "lecteur": "Lecteur allumé — présence discrète.",
+        "accueil": "Accueil calme. Je suis là.",
+    }
+    if v in tagged:
+        pool = [tagged[v]] + pool
+    return pool[int(_now() // 47) % len(pool)]
+
+
+@companion_request("ambient")
+def else_ambient(view: Any = "accueil", digest: Any = "", persona: Any = "warm", *, nsfw: bool = False,
+                 client_ip: Any = None, role: Any = None, signals: Any = None, device_id: Any = None,
+                 character: str = "else") -> dict:
+    """Rare Else proactive aside — measured tone, ambient quota, soft fallback."""
+    did = normalize_device_id(device_id)
+    mode = _resolve_persona(persona)
+    use_nsfw = nsfw is True and nsfw_allowed(client_ip, role)
+    if mode == "off" and not use_nsfw:
+        mode = "warm"
+    v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
+    with companion_memory.memory_scope("else"):
+        data = load_else(did)
+        if data.get("_unreadable"):
+            raise AiError(THREAD_UNREADABLE_MSG, 409, "thread_unreadable")
+        now = _now()
+        try:
+            last = float(data.get("last_ambient_at") or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        if last and now - last < ELSE_AMBIENT_COOLDOWN_S:
+            return {
+                "ok": True, "skipped": True, "reason": "cooldown",
+                "retry_after": int(ELSE_AMBIENT_COOLDOWN_S - (now - last)),
+                "device_id": did, "name": ELSE_NAME, "character": "else",
+            }
+        prefs = load_transferania_prefs(did)
+        soft = _else_soft_proactive(v)
+        base = {
+            "ambient_used": ambient_used(),
+            "ambient_per_day": daily_limit("ambient"),
+            "device_id": did,
+            "name": ELSE_NAME,
+            "character": "else",
+            "persona": "nsfw" if use_nsfw else mode,
+            "nsfw": use_nsfw,
+        }
+        key = (_api_keys() or [""])[0]
+        # Prefer soft when no key / ambient budget — still marks presence.
+        if not key or not ambient_ok() or (int(now * 1000) // 41) % 10 < 6:
+            line = soft
+            fallback = True
+            model = None
+        else:
+            page = append_companion_signals(gather_ambient(v, str(digest or "")), signals, prefs, device_id=did, nsfw=use_nsfw)
+            st = _life_begin(did, v, signals)
+            page += "\n\n" + hq_life.time_block(st, VIEW_LABELS, consume=False)
+            _shared_memory(companion_memory.migrate, did, data)
+            summary = str(data.get("summary") or "").strip()
+            system = build_else_system("ambient", "nsfw" if use_nsfw else mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs, context_core=True)
+            system += "\nAparté proactif rare : une phrase courte, ton Else (mesuré). Pas d'ordre, pas de drama. Le Maître peut ignorer."
+            packet = _continuity_packet(page + " " + summary, reserve_followup=False, allow_followup=False)
+            system, contents, _ = build_companion_context(
+                "ambient", system, "Une observation brève si elle est pertinente — ton Else.",
+                summary=summary, memories=packet["memories"], corrections=packet.get("corrections", []),
+                page=join_evidence_page(packet["prompt"], sister_awareness_block(did, "else"), page),
+            )
+            try:
+                text, model = generate(
+                    NSFW_CHAIN if use_nsfw else AMBIENT_CHAIN,
+                    system, contents,
+                    temperature=0.82 if not use_nsfw else 0.9,
+                    ambient=True, nsfw=use_nsfw, max_tokens=160,
+                )
+                line = re.sub(r"\s+", " ", (text or "").strip())[:AMBIENT_LINE_MAX] or soft
+                fallback = False
+                _life_end(did, None)
+            except AiError:
+                line = soft
+                fallback = True
+                model = None
+                try:
+                    _life_end(did, None)
+                except Exception:
+                    pass
+        with _lock:
+            data = load_else(did)
+            data["last_ambient_at"] = now
+            data.setdefault("messages", []).append({
+                "role": "assistant", "text": line, "ts": now, "kind": "ambient", "view": v,
+                **({"fallback": True} if fallback else {}),
+                **({"model": model, "model_label": MODELS[model][0]} if model else {}),
+            })
+            maybe_compress(data)
+            save_else(data, did)
+            pub = transferania_public_messages(data)
+        if not fallback:
+            try:
+                _shared_memory(companion_memory.observe_reply, "", line, did)
+            except AiError:
+                pass
+        out = {
+            "ok": True, "ambient": True, "line": line, "reply": line, "fallback": fallback,
+            "messages": pub, **base,
+        }
+        if model:
+            out["model"] = model
+            out["model_label"] = MODELS[model][0]
+        return out
+
+
+def else_history(*, device_id: str, client_ip: Any = None, role: Any = None) -> dict:
+    did = normalize_device_id(device_id)
+    with companion_memory.memory_scope("else"):
+        data = load_else(did)
+        _shared_memory(companion_memory.migrate, did, data)
+        summary = str(data.get("summary") or "").strip()
+        msgs = data.get("messages") or []
+        return {
+            "ok": True,
+            "name": ELSE_NAME,
+            "character": "else",
+            "device_id": did,
+            "keep": thread_keep_limit(msgs),
+            "has_summary": bool(summary),
+            "summary_preview": summary[:240] if summary else "",
+            "messages": transferania_public_messages(data),
+            "prefs": load_transferania_prefs(did),
+            "transferania_used": transferania_used(),
+            "transferania_per_day": daily_limit("chat"),
+            "last_ambient_at": data.get("last_ambient_at") or None,
+            "nsfw_allowed": nsfw_allowed(client_ip, role),
+        }
+
+
+def else_clear(*, device_id: str) -> dict:
+    did = normalize_device_id(device_id)
+    with _lock:
+        load_else(did)
+        save_else(_empty_transferania(), did)
+    return {"ok": True, "cleared": True, "name": ELSE_NAME, "character": "else", "device_id": did}
+
+
+def else_post(data: dict, *, client_ip: Any = None, role: Any = None) -> dict:
+    op = str(data.get("op") or "send").strip().lower()
+    if op in ("handoff", "export_handoff"):
+        import hq_else_handoff
+        did = None
+        try:
+            did = device_id_from(data)
+        except AiError:
+            pass
+        return hq_else_handoff.export_else_handoff(
+            device_id=did,
+            owner=str(companion_memory.current_owner() or "admin"),
+            gemini_root=data.get("gemini_root"),
+            dry_run=data.get("dry_run") is True,
+        )
+    did = device_id_from(data)
+    if op in ("clear", "reset", "forget"):
+        return else_clear(device_id=did)
+    if op in ("history", "get", "load"):
+        return else_history(device_id=did, client_ip=client_ip, role=role)
+    if op in ("ambient", "proactive", "aside"):
+        return else_ambient(
+            data.get("view"),
+            data.get("digest"),
+            data.get("persona"),
+            nsfw=data.get("nsfw") is True,
+            client_ip=client_ip,
+            role=role,
+            signals=data.get("signals"),
+            device_id=did,
+            character="else",
+        )
+    if op == "send":
+        return else_chat(
+            data.get("message") or data.get("text"),
+            data.get("view"),
+            data.get("digest"),
+            data.get("persona"),
+            nsfw=data.get("nsfw") is True,
+            client_ip=client_ip,
+            role=role,
+            signals=data.get("signals"),
+            device_id=did,
+            character="else",
+        )
+    raise AiError("Opération Else inconnue (op: send, ambient, history, clear)")
+
+
+def sister_awareness_block(device_id: str, for_character: str) -> str:
+    import hq_sister
+    return hq_sister.awareness_block(device_id, for_character=for_character)
+
+
+def load_sister_dialogue(device_id: str) -> dict:
+    import hq_sister
+    return hq_sister.load_dialogue(device_id)
+
+
+def save_sister_dialogue(data: dict, device_id: str) -> None:
+    import hq_sister
+    hq_sister.save_dialogue(data, device_id)
+
+
+def sister_history(*, device_id: str) -> dict:
+    import hq_sister
+    return hq_sister.history(device_id=device_id)
+
+
+def sister_clear(*, device_id: str) -> dict:
+    import hq_sister
+    return hq_sister.clear(device_id=device_id)
+
+
+@companion_request("chat")
+def sister_exchange(topic: Any = "", *, turns: Any = 2, view: Any = "accueil", nsfw: bool = False,
+                    ambient: bool = False, client_ip: Any = None, role: Any = None, device_id: Any = None,
+                    character: str = "sister") -> dict:
+    import hq_sister
+    return hq_sister.exchange(
+        topic, turns=turns, view=view, nsfw=nsfw, ambient=ambient,
+        client_ip=client_ip, role=role, device_id=device_id, character=character,
+    )
+
+
+@companion_request("chat")
+def sister_react(*, trigger: Any = "", speaker: Any = "else", view: Any = "accueil", nsfw: bool = False,
+                 client_ip: Any = None, role: Any = None, device_id: Any = None, character: str = "sister") -> dict:
+    import hq_sister
+    return hq_sister.react(
+        trigger=trigger, speaker=speaker, view=view, nsfw=nsfw,
+        client_ip=client_ip, role=role, device_id=device_id, character=character,
+    )
+
+
+def sister_post(data: dict, *, client_ip: Any = None, role: Any = None) -> dict:
+    import hq_sister
+    return hq_sister.http_post(data, client_ip=client_ip, role=role)
 
 
 @companion_memory.owner_request
@@ -3321,8 +4343,24 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
     if op == "edit_last":
         return transferania_rewind(data, did=did, client_ip=client_ip, role=role,
                                    edit_text=data.get("message") or data.get("text") or "")
-    if op == "stats":
+    if op in ("stats",):
         return {**transferania_stats(), "device_id": did}
+    if op in ("briefing", "atelier"):
+        return transferania_briefing(did)
+    if op in ("thoughts", "journal"):
+        res = hq_life.record_thought(_owner_device(did), labels=VIEW_LABELS)
+        return {"ok": True, "thought": res["thought"], "current": res["thought"], "thoughts": res["thoughts"][-8:], "device_id": did}
+    if op in ("thought_add",):
+        res = hq_life.record_thought(_owner_device(did), data.get("text"), kind=str(data.get("kind") or "note"), labels=VIEW_LABELS)
+        return {"ok": True, "thought": res["thought"], "current": res["thought"], "thoughts": res["thoughts"][-8:], "device_id": did}
+    if op in ("souvenirs",):
+        return {"ok": True, "souvenirs": load_souvenirs(did), "max": SOUVENIRS_MAX, "device_id": did}
+    if op in ("souvenir_pin",):
+        return pin_souvenir(data, did)
+    if op in ("souvenir_delete",):
+        return delete_souvenir(data.get("id"), did)
+    if op in ("archive_search",):
+        return {"ok": True, "results": companion_archive.search_archive(str(data.get("q") or data.get("query") or ""), nsfw=data.get("nsfw") is True and nsfw_allowed(client_ip, role)), "device_id": did}
     if op in ("clear", "reset", "forget"):
         return transferania_clear(device_id=did)
     if op in ("history", "get", "load"):
@@ -3353,6 +4391,7 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
             role=role,
             signals=data.get("signals"),
             device_id=did,
+            image=data.get("image"),
         )
     raise AiError("Opération Transferania inconnue (op: send, history, clear, prefs)")
 
@@ -3555,6 +4594,9 @@ def companion_context_preview(data: dict, *, client_ip=None, role=None) -> dict:
     if channel == "chat":
         previous_reply = next((m.get("text", "") for m in reversed(thread.get("messages") or []) if m.get("role") == "assistant"), "")
         voice_guidance = companion_presence.delivery_hint(previous_reply, message, packet["presence"], has_ritual=packet["ritual_available"])
+        refl_hint = companion_reflection_hint(thread, prefs, data.get("signals"), message)
+        if refl_hint:
+            voice_guidance = (voice_guidance + " " + refl_hint).strip() if voice_guidance else "VOIX TRANSFERANIA : " + refl_hint
     system = build_transferania_system(channel, "nsfw" if nsfw and channel == "chat" else mode,
         nsfw=nsfw, view=view, device_id=did, prefs=prefs, context_core=True)
     groups = complete_exchanges(thread.get("messages") or []) if channel == "chat" else []
@@ -3563,10 +4605,12 @@ def companion_context_preview(data: dict, *, client_ip=None, role=None) -> dict:
     try:
         _companion_local.state = None
         system, contents, info = build_companion_context(channel, system, message,
-            history=history, summary=summary, memories=packet["memories"], corrections=packet.get("corrections", []), page="\n\n".join([
+            history=history, summary=summary, memories=packet["memories"], corrections=packet.get("corrections", []),
+            page=join_evidence_page(
                 packet["prompt"], hq_life.mood_label(hq_life.mood(state)), hq_life.upcoming_block(state),
-                warmth_instruction(prefs), _mood_instruction(parse_companion_signals(data.get("signals")), prefs, nsfw=nsfw),
-                packet["continuity"], recent_said_block(did) if channel == "ambient" else "", page, voice_guidance]))
+                presence_page_block(prefs, data.get("signals"), nsfw=nsfw),
+                nsfw_evidence_page(channel) if nsfw else "",
+                packet["continuity"], recent_said_block(did) if channel == "ambient" else "", page, voice_guidance))
     finally:
         _companion_local.state = saved_state
     return {"ok": True, "kind": channel, "system": system, "contents": contents, "context_usage": info,
@@ -3617,7 +4661,8 @@ def preview(data: Any, *, client_ip: Any = None, role: Any = None) -> dict:
     packet = _continuity_packet(ctx + " " + summary)
     shared_memories, followup = packet["memories"], packet["continuity"]
     system, contents, context_usage = build_companion_context("ambient", system, "Une observation brève si elle est pertinente.",
-        summary=summary, memories=shared_memories, corrections=packet.get("corrections", []), page="\n\n".join([packet["prompt"], followup, recent_said_block(did), ctx]))
+        summary=summary, memories=shared_memories, corrections=packet.get("corrections", []),
+        page=join_evidence_page(packet["prompt"], followup, recent_said_block(did), ctx))
     _finalize_continuity_context(packet, contents)
     included = bool(followup and followup in contents[-1]["parts"][0]["text"])
     context_usage.update(conversation_mode=packet["presence"]["mode"], continuity_kind=packet["presence"]["continuity_kind"] if included else "none",
@@ -3654,6 +4699,22 @@ def status(client_ip: Any = None, role: Any = None, *, device_id: Any = None) ->
             t_keep = thread_keep_limit(mem.get("messages") or [])
         except AiError:
             pass
+    else_summary = {
+        "name": ELSE_NAME,
+        "configured": bool(key),
+        "messages": 0,
+        "has_summary": False,
+    }
+    if did_out:
+        try:
+            with companion_memory.memory_scope("else"):
+                em = load_else(did_out)
+            else_summary["messages"] = len(em.get("messages") or [])
+            else_summary["has_summary"] = bool(str(em.get("summary") or "").strip())
+        except Exception:
+            pass
+    import hq_sister
+    sister_summary = hq_sister.status_snapshot(did_out)
     return {"ok": True, "configured": bool(key),
             "companion_cap": cap,
             "name": TRANSFERANIA_NAME,
@@ -3665,6 +4726,8 @@ def status(client_ip: Any = None, role: Any = None, *, device_id: Any = None) ->
             "transferania": {"used": transferania_used(), "per_day": daily_limit("chat"), "keep": t_keep,
                              "messages": msg_n,
                              "has_summary": bool(mem_summary)},
+            "else": else_summary,
+            "sister": sister_summary,
             "personality": personality,
             "keys": max(1, len(_api_keys())),
             # per_day/used add up every key's own quota; the minute view is key 1 (each key has its own window).
@@ -3679,6 +4742,9 @@ def http_get(qs: dict, *, client_ip: Any = None, role: Any = None, owner_id: Any
         flag = (qs.get("transferania") or [""])[0] if isinstance(qs, dict) else ""
         if str(flag).lower() in ("1", "true", "history"):
             return 200, transferania_history(device_id=device_id_from(None, qs), client_ip=client_ip, role=role)
+        else_flag = (qs.get("else") or [""])[0] if isinstance(qs, dict) else ""
+        if str(else_flag).lower() in ("1", "true", "history"):
+            return 200, else_history(device_id=device_id_from(None, qs), client_ip=client_ip, role=role)
         dev = (qs.get("device_id") or [""])[0] if isinstance(qs, dict) else ""
         return 200, status(client_ip, role, device_id=dev or None)
     except AiError as error:
@@ -3707,6 +4773,12 @@ def http_post(data: Any, *, client_ip: Any = None, role: Any = None, owner_id: A
             return 200, pulse(data.get("view"), device_id=data.get("device_id"))
         if a == "transferania":
             out = transferania_post(data, client_ip=client_ip, role=role)
+            return 200, hq_pronunciation.enrich(out, str(data.get("pronunciation_language") or "auto"))
+        if a == "else":
+            out = else_post(data, client_ip=client_ip, role=role)
+            return 200, hq_pronunciation.enrich(out, str(data.get("pronunciation_language") or "auto"))
+        if a == "sister":
+            out = sister_post(data, client_ip=client_ip, role=role)
             return 200, hq_pronunciation.enrich(out, str(data.get("pronunciation_language") or "auto"))
         if a == "pronunciation":
             if role not in (None, "admin"):
