@@ -7347,6 +7347,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-home.js"></script>
 <script src="/assets/hq-motion-coordinator.js"></script>
+<script src="/assets/hq-kinetic-score.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
 <script src="/assets/hq-companion-sfx-bus.js"></script>

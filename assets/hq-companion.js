@@ -10843,6 +10843,29 @@
     st.head.vnod = clampNum(st.head.vnod + iy * 0.08, -36, 36);
   }
 
+  function bindKineticScore(win) {
+    const K = win && win.HqKinetic;
+    if (!K || K.__companionBound) return;
+    K.__companionBound = true;
+    K.subscribe("companion", (ev) => {
+      if (!win || lifeMotionBlocked()) return;
+      if (ev.phase === "end" || ev.energy < 0.03) return;
+      const lite = ev.tier === "lite" ? 0.7 : 1;
+      const e = ev.energy * lite;
+      const dx = (ev.direction && ev.direction.x) || 0;
+      const dy = (ev.direction && ev.direction.y) || 0;
+      if (ev.kind === "uiPulse" && ev.source === "accueil") {
+        applyLive2DImpulse(win, dx * 16 * e, dy * 24 * e, dx * 7 * e);
+        startLive2DLoop(win);
+        return;
+      }
+      if (ev.source === "member" && (ev.kind === "contact" || ev.kind === "release")) {
+        applyLive2DImpulse(win, dx * 28 * e, dy * 22 * e, dx * 11 * e);
+        startLive2DLoop(win);
+      }
+    });
+  }
+
   function setLive2DTarget(win, tx, ty) {
     if (!win || calm(win)) return;
     const st = ensureLive2DState();
@@ -17389,6 +17412,7 @@
     bootstrapCompanionAudio(win);
     const boot = () => {
       build(win);
+      bindKineticScore(win);
       ensureCompanionFloatChrome(win);
       scheduleIdleMicroFidget(win);
       bindSettings(win);

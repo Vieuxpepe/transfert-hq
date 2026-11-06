@@ -487,6 +487,15 @@
     S.home.addEventListener("click", (ev) => {
       const b = ev.target.closest && ev.target.closest(".home-act, .home-pc .icon-btn");
       if (!b || calm()) return;
+      if (S.win.HqKinetic) {
+        S.win.HqKinetic.emit({
+          kind: "uiPulse",
+          source: "accueil",
+          intensity: 0.52,
+          direction: { x: 0, y: -1 },
+          durationMs: 540,
+        });
+      }
       b.classList.remove("is-fire");
       void b.offsetWidth;
       b.classList.add("is-fire");

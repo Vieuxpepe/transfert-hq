@@ -19,7 +19,7 @@ Optional deep audit prompt (external agent, code-only): [agent-fps-audit-prompt.
 
 ## 2. Classify the subsystem
 
-Shared tier / budgets: [assets/hq-motion-coordinator.js](../assets/hq-motion-coordinator.js) (`HqMotion.tier()`, auto-lite from Live2D EMA). User-facing control: **Outils → Réglages → Fluidité HQ** (same as debug HUD motion dropdown; `localStorage` `hq-motion-mode`).
+Shared tier / budgets: [assets/hq-motion-coordinator.js](../assets/hq-motion-coordinator.js) (`HqMotion.tier()`, auto-lite from Live2D EMA). Shared motion **intent** (sparse phrases): [assets/hq-kinetic-score.js](../assets/hq-kinetic-score.js) (`HqKinetic.emit` / `subscribe`; rAF only while envelopes are active). User-facing control: **Outils → Réglages → Fluidité HQ** (same as debug HUD motion dropdown; `localStorage` `hq-motion-mode`).
 
 | Symptom | First files |
 |---------|-------------|

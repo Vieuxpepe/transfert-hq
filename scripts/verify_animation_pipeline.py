@@ -47,6 +47,7 @@ def run_dangling_perf15() -> None:
 def main() -> int:
     for rel in (
         "assets/hq-motion-coordinator.js",
+        "assets/hq-kinetic-score.js",
         "assets/hq-companion.js",
         "assets/hq-dangling-member.js",
         "assets/hq-home-fx.js",
@@ -54,10 +55,12 @@ def main() -> int:
         node_check(rel)
 
     run(["node", str(ROOT / "tests" / "check_hq_files.mjs")])
+    run(["node", str(ROOT / "tests" / "test_hq_kinetic_score.mjs")])
 
     unittest_modules(
         "tests.test_hq_motion_coordinator",
         "tests.test_hq_motion_tools",
+        "tests.test_hq_kinetic_score",
         "tests.test_hq_motion_perf14",
         "tests.test_hq_motion_perf16",
         "tests.test_hq_avatar_idle_perf12",

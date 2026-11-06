@@ -3564,6 +3564,18 @@
           restName = "";
         endRestPalm();
           restAnchor = null;
+          if (win.HqKinetic) {
+            const side = near.at.x < cx ? -1 : 1;
+            win.HqKinetic.emit({
+              kind: "contact",
+              source: "member",
+              intensity: 0.86,
+              direction: { x: side, y: -0.12 },
+              delayMs: 55,
+              durationMs: 760,
+              replace: true,
+            });
+          }
           ensureTick();
         }
       });
@@ -4027,6 +4039,7 @@
         mount.setPointerCapture(ev.pointerId);
         ptr.active = true;
         dragging = true;
+        if (win.HqKinetic) win.HqKinetic.setManipulating(true);
         readMount();
         pxPerScreen = cw / mountRectW;
         ptr.downX = ev.clientX;
@@ -4129,6 +4142,7 @@
 
     function endPointer(ev) {
       if (!ptr.active) return;
+      if (win.HqKinetic) win.HqKinetic.setManipulating(false);
       const tapMoved = Math.hypot((ev.clientX || 0) - ptr.downX, (ev.clientY || 0) - ptr.downY);
       if (tapMoved < 12) {
         const nowTap = win.performance.now();
@@ -4171,6 +4185,19 @@
         endRestPalm();
           vel = clamp(vel, -5.5, 5.5);
           hangLean = 0;
+        }
+        if (win.HqKinetic) {
+          const spd = Math.hypot(ptr.smVx, ptr.smVy);
+          if (spd > 140) {
+            win.HqKinetic.emit({
+              kind: "release",
+              source: "member",
+              intensity: clamp(spd / 720, 0.28, 0.92),
+              direction: { x: ptr.smVx, y: ptr.smVy },
+              delayMs: 35,
+              durationMs: 620,
+            });
+          }
         }
         ensureTick();
         return;

@@ -110,6 +110,9 @@ assert.ok(bridge.indexOf("hq-palm-hand.js") < bridge.indexOf("hq-dangling-member
 assert.ok(bridge.includes("dangling-member-vein-paths.js"));
 assert.ok(bridge.indexOf("dangling-member-vein-paths.js") < bridge.indexOf("hq-palm-hand.js"));
 assert.ok(bridge.indexOf("hq-motion-coordinator.js") < bridge.indexOf("hq-home-fx.js"));
+assert.ok(bridge.indexOf("hq-kinetic-score.js") > bridge.indexOf("hq-motion-coordinator.js"));
+assert.ok(bridge.indexOf("hq-kinetic-score.js") < bridge.indexOf("hq-home-fx.js"));
+assert.ok(readFileSync(new URL("../assets/hq-kinetic-score.js", import.meta.url), "utf8").includes("HqKinetic"));
 const dangle = readFileSync(new URL("../assets/hq-dangling-member.js", import.meta.url), "utf8");
 assert.ok(readFileSync(new URL("../assets/hq-motion-coordinator.js", import.meta.url), "utf8").includes("HqMotion"));
 assert.ok(dangle.includes("shaftNearCompanionFace"), "vein trace face proximity");
