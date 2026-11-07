@@ -1344,6 +1344,11 @@ def default_transferania_prefs() -> dict:
         "nudge": False,
         "sister_ambient_enabled": True,
         "sister_react_enabled": True,
+        "else_proactive": True,
+        "else_proactive_cadence": "normal",
+        "else_voice": False,
+        "else_address": "",
+        "else_topics_off": [],
     }
 
 
@@ -1379,7 +1384,30 @@ def normalize_transferania_prefs(raw: Any) -> dict:
     p["nudge"] = raw.get("nudge") is True  # reach-out-first is opt-in
     p["sister_ambient_enabled"] = raw.get("sister_ambient_enabled") is not False
     p["sister_react_enabled"] = raw.get("sister_react_enabled") is not False
+    p["else_proactive"] = raw.get("else_proactive") is not False
+    cad = str(raw.get("else_proactive_cadence") or "normal").strip().lower()
+    p["else_proactive_cadence"] = cad if cad in ("quiet", "normal", "often") else "normal"
+    p["else_voice"] = raw.get("else_voice") is True
+    eaddr = str(raw.get("else_address") or "").strip()[:30]
+    if eaddr.lower() in ("tu", "vous"):
+        p["else_address"] = eaddr.lower()
+    elif eaddr:
+        p["else_address"] = eaddr
+    else:
+        p["else_address"] = ""
+    eoff = raw.get("else_topics_off")
+    if isinstance(eoff, list):
+        p["else_topics_off"] = [str(x).strip()[:80] for x in eoff if str(x).strip()][:5]
+    elif isinstance(eoff, str) and eoff.strip():
+        p["else_topics_off"] = [ln.strip()[:80] for ln in eoff.splitlines() if ln.strip()][:5]
     return p
+
+
+ELSE_CADENCE_COOLDOWN_S = {
+    "quiet": 20 * 60,
+    "normal": 12 * 60,
+    "often": 7 * 60,
+}
 
 
 def _prefs_path() -> Path:
@@ -1459,8 +1487,11 @@ def save_transferania_prefs(raw: Any, device_id: str) -> dict:
     except (OSError, ValueError):
         pass
     if isinstance(raw, dict):
-        for k in ("nickname", "address", "qc_dial", "intensity", "topics_off", "celebrate", "recent_ambient", "warmth", "nudge",
-                  "sister_ambient_enabled", "sister_react_enabled"):
+        for k in (
+            "nickname", "address", "qc_dial", "intensity", "topics_off", "celebrate", "recent_ambient", "warmth", "nudge",
+            "sister_ambient_enabled", "sister_react_enabled",
+            "else_proactive", "else_proactive_cadence", "else_voice", "else_address", "else_topics_off",
+        ):
             if k in raw:
                 merged[k] = raw[k]
     norm = normalize_transferania_prefs(merged)
@@ -1988,13 +2019,17 @@ def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, devi
     system += "\n\n" + CHARACTER_SHEET_ELSE
     system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
         traits=_shared_memory(companion_memory.personality_traits))
+    # Else-specific address / topics override shared prefs when set.
+    else_prefs = dict(p)
+    if p.get("else_address"):
+        else_prefs["address"] = p["else_address"]
     if nsfw:
         system += "\n" + FAITS_NSFW
         if not context_core:
             system += "\n" + (CHAT_REGISTER_NSFW if ch == "chat" else AMBIENT_REGISTER_NSFW)
         vrole = VIEW_ROLE_NSFW.get(v, VIEW_ROLE_NSFW["accueil"])
         system += f"\nVoix sur cette page ({VIEW_LABELS.get(v, v)}) : {vrole}"
-        system += "\n" + _address_instruction(p)
+        system += "\n" + _address_instruction(else_prefs)
         system += "\n" + INTENSITY_HINT_NSFW.get(int(p.get("intensity") or 2), INTENSITY_HINT_NSFW[2])
         if not context_core:
             system += "\n" + VOCAB_NSFW
@@ -2002,12 +2037,12 @@ def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, devi
         system += "\n" + FAITS
         system += "\n" + (CHAT_REGISTER if ch == "chat" else AMBIENT_REGISTER)
         system += f"\nVoix sur cette page ({VIEW_LABELS.get(v, v)}) : {VIEW_ROLE.get(v, VIEW_ROLE['accueil'])}"
-        system += "\n" + _address_instruction(p)
+        system += "\n" + _address_instruction(else_prefs)
         if mode == "flirt":
             system += "\n" + INTENSITY_HINT.get(int(p.get("intensity") or 2), INTENSITY_HINT[2])
     if p.get("qc_dial") in QC_DIAL_HINT and p.get("qc_dial") != "off":
         system += "\n" + QC_DIAL_HINT[p["qc_dial"]]
-    topics = p.get("topics_off") or []
+    topics = list(p.get("else_topics_off") or []) or list(p.get("topics_off") or [])
     if topics:
         system += "\nNe pas aborder (sauf demande explicite) : " + "; ".join(topics) + "."
     system += "\nCadre : avatar puce (image), pas Live2D — pas de scène tactile implicite."
@@ -2965,7 +3000,7 @@ NUDGE_LINES = (
     "Hé, juste un mot pour te dire que je suis là. Comment ça va de ton côté ?",
     "Ça fait quelques heures… tu prends soin de toi ? Je t'attends tranquillement.",
 )
-ELSE_AMBIENT_COOLDOWN_S = 12 * 60
+ELSE_AMBIENT_COOLDOWN_S = ELSE_CADENCE_COOLDOWN_S["normal"]
 ELSE_PROACTIVE_SOFT = (
     "Je suis là — pas d'urgence.",
     "Le HQ tient. Toi aussi ?",
@@ -3870,6 +3905,14 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     return out
 
 
+def _else_favor_meter(did: str, *, fresh: bool = True) -> dict:
+    try:
+        import hq_sister
+        return hq_sister._master_favor_meter(did, fresh=fresh)
+    except Exception:
+        return {"favor": "tie", "tease": ""}
+
+
 def _local_else_chat_reply(msg: str, reply: str, did: str, *, view: str, mode: str, nsfw: bool) -> dict:
     with _lock:
         data = load_else(did)
@@ -3884,7 +3927,8 @@ def _local_else_chat_reply(msg: str, reply: str, did: str, *, view: str, mode: s
     return {"ok": True, "reply": reply, "expression": None, "fallback": False, "local": True, "model": "local",
             "model_label": "Mémoire locale", "messages": pub, "has_summary": bool(summary),
             "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"),
-            "persona": "nsfw" if nsfw else mode, "nsfw": nsfw, "name": ELSE_NAME, "character": "else", "device_id": did}
+            "persona": "nsfw" if nsfw else mode, "nsfw": nsfw, "name": ELSE_NAME, "character": "else", "device_id": did,
+            "meter": _else_favor_meter(did)}
 
 
 @companion_request("chat")
@@ -3989,7 +4033,7 @@ def else_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "wa
             return {"ok": True, "reply": reply, "fallback": True, "messages": pub,
                     "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"),
                     "persona": mode, "nsfw": use_nsfw, "has_summary": bool(sum2), "name": ELSE_NAME,
-                    "character": "else", "device_id": did}
+                    "character": "else", "device_id": did, "meter": _else_favor_meter(did)}
         reply = re.sub(r"\s+", " ", text.strip()).strip() or "…"
         _shared_memory(companion_memory.observe_reply, msg, reply, did)
         with _lock:
@@ -4013,7 +4057,7 @@ def else_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "wa
             "model": model, "model_label": MODELS[model][0], "messages": pub, "has_summary": bool(summary),
             "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"),
             "persona": "nsfw" if use_nsfw else mode, "nsfw": use_nsfw, "name": ELSE_NAME,
-            "character": "else", "device_id": did,
+            "character": "else", "device_id": did, "meter": _else_favor_meter(did),
             **({"sources": hq_sources} if hq_sources else {}),
         }
 
@@ -4053,13 +4097,19 @@ def else_ambient(view: Any = "accueil", digest: Any = "", persona: Any = "warm",
             last = float(data.get("last_ambient_at") or 0)
         except (TypeError, ValueError):
             last = 0.0
-        if last and now - last < ELSE_AMBIENT_COOLDOWN_S:
+        prefs = load_transferania_prefs(did)
+        if prefs.get("else_proactive") is False:
             return {
-                "ok": True, "skipped": True, "reason": "cooldown",
-                "retry_after": int(ELSE_AMBIENT_COOLDOWN_S - (now - last)),
+                "ok": True, "skipped": True, "reason": "disabled",
                 "device_id": did, "name": ELSE_NAME, "character": "else",
             }
-        prefs = load_transferania_prefs(did)
+        cool = ELSE_CADENCE_COOLDOWN_S.get(str(prefs.get("else_proactive_cadence") or "normal"), ELSE_AMBIENT_COOLDOWN_S)
+        if last and now - last < cool:
+            return {
+                "ok": True, "skipped": True, "reason": "cooldown",
+                "retry_after": int(cool - (now - last)),
+                "device_id": did, "name": ELSE_NAME, "character": "else",
+            }
         soft = _else_soft_proactive(v)
         base = {
             "ambient_used": ambient_used(),
@@ -4186,6 +4236,48 @@ def else_post(data: dict, *, client_ip: Any = None, role: Any = None) -> dict:
         return else_clear(device_id=did)
     if op in ("history", "get", "load"):
         return else_history(device_id=did, client_ip=client_ip, role=role)
+    if op == "prefs":
+        keys = (
+            "else_proactive", "else_proactive_cadence", "else_voice",
+            "else_address", "else_topics_off", "address", "topics_off",
+        )
+        if data.get("save") is True or isinstance(data.get("prefs"), dict):
+            payload = data.get("prefs") if isinstance(data.get("prefs"), dict) else {k: data.get(k) for k in keys if k in data}
+            return {"ok": True, "prefs": save_transferania_prefs(payload, did), "device_id": did, "character": "else"}
+        return {"ok": True, "prefs": load_transferania_prefs(did), "device_id": did, "character": "else"}
+    if op in ("memory", "memory_forget", "memory_correct", "memory_remember", "memory_add"):
+        if role not in (None, "admin"):
+            raise AiError("Mémoire réservée à la session administrateur", 403, "forbidden")
+        with companion_memory.memory_scope("else"):
+            _shared_memory(companion_memory.migrate, did, load_else(did))
+            try:
+                if op == "memory_forget":
+                    return {**_shared_memory(companion_memory.forget, str(data.get("id") or "")), "character": "else"}
+                if op == "memory_correct":
+                    return {
+                        **_shared_memory(companion_memory.correct, str(data.get("id") or ""), data.get("text")),
+                        "character": "else",
+                    }
+                if op in ("memory_remember", "memory_add"):
+                    text = str(data.get("text") or data.get("message") or "").strip()
+                    if not text:
+                        raise AiError("Souvenir vide", 400, "memory_empty")
+                    _shared_memory(companion_memory.remember_fact, text, did)
+                    snap = _shared_memory(companion_memory.snapshot)
+                    return {"ok": True, "character": "else", "device_id": did, "remembered": True, **snap}
+                snap = _shared_memory(companion_memory.snapshot)
+                return {"ok": True, "character": "else", "device_id": did, **snap}
+            except ValueError as error:
+                if isinstance(error, AiError):
+                    raise
+                raise AiError(str(error), 400, "memory_validation") from error
+    if op in ("voice", "speak", "tts"):
+        import hq_voice
+        text = str(data.get("text") or data.get("message") or "")
+        res = hq_voice.synthesize(text, language=data.get("language", "fr"), style=data.get("style") or "thoughtful")
+        if res and res.get("ok"):
+            return {"ok": True, "device_id": did, "character": "else", "quiet": True, **res}
+        return {"ok": False, "error": (res.get("error") if res else "Synthèse vocale indisponible"), "device_id": did, "character": "else"}
     if op in ("ambient", "proactive", "aside"):
         return else_ambient(
             data.get("view"),
@@ -4211,7 +4303,7 @@ def else_post(data: dict, *, client_ip: Any = None, role: Any = None) -> dict:
             device_id=did,
             character="else",
         )
-    raise AiError("Opération Else inconnue (op: send, ambient, history, clear)")
+    raise AiError("Opération Else inconnue (op: send, ambient, prefs, memory, voice, history, clear)")
 
 
 def sister_awareness_block(device_id: str, for_character: str) -> str:

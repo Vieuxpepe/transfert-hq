@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import ipaddress
 import json
 import os
@@ -1142,32 +1143,99 @@ def run_scene(scene_id: str) -> dict:
 
 # ---- media strip ----
 
+RECENT_MEDIA_CACHE_SEC = 120.0
+RECENT_MEDIA_CACHE_MAX = 500
+RECENT_MEDIA_SCAN_CAP = max(RECENT_MEDIA_CACHE_MAX * 2, 1200)
+_recent_media_cache: tuple[str, float, list[dict], tuple] | None = None
+_recent_media_lock = threading.Lock()
+
+
+def _recent_media_fingerprint(root: Path, folders: list[Path]) -> tuple:
+    """Identity of watched folders for cache hits — not directory mtime (new files bump mtime and would break TTL cache).
+
+    We still invalidate when a watched folder appears/disappears or is replaced (dev/ino), which matches
+    ``test_recent_media_cache_avoids_repeated_directory_scan`` (new file same TTL → cached; TTL expiry → rescan).
+    """
+    parts: list[tuple[str, int, int]] = []
+    for folder in folders:
+        if not folder.is_dir():
+            parts.append(("", 0, 0))
+            continue
+        try:
+            rel = "/".join(folder.relative_to(root).parts)
+            st = folder.stat()
+            parts.append((rel, int(st.st_ino), int(st.st_dev)))
+        except OSError:
+            parts.append(("", 0, 0))
+    return tuple(parts)
+
+
 def recent_media(limit: int = 16) -> list[dict]:
+    global _recent_media_cache
+    root = _root()
+    now = time.monotonic()
     folders = [
-        _root() / "Inbox" / "Captures",
-        _root() / "Inbox" / "Screenshots",
-        _root() / "Inbox" / "Photos",
+        root / "Inbox" / "Captures",
+        root / "Inbox" / "Screenshots",
+        root / "Inbox" / "Photos",
     ]
+    fp = _recent_media_fingerprint(root, folders)
+    with _recent_media_lock:
+        cached = _recent_media_cache
+        if cached and cached[0] == str(root) and cached[3] == fp and now - cached[1] < RECENT_MEDIA_CACHE_SEC:
+            rows = cached[2]
+            return [dict(item) for item in rows[:limit]]
+    need = max(int(limit), RECENT_MEDIA_CACHE_MAX)
     exts = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"}
-    items: list[dict] = []
+    candidates: list[tuple[float, dict]] = []
+    scanned = 0
     for folder in folders:
         if not folder.is_dir():
             continue
-        for p in folder.iterdir():
-            if p.is_file() and p.suffix.lower() in exts:
-                st = p.stat()
-                rel = "/".join(p.relative_to(_root()).parts)
-                items.append(
-                    {
-                        "rel": rel,
-                        "name": p.name,
-                        "mtime": st.st_mtime,
-                        "size": st.st_size,
-                        "size_h": human_size(st.st_size) if human_size else str(st.st_size),
-                    }
-                )
+        try:
+            with os.scandir(folder) as it:
+                for entry in it:
+                    scanned += 1
+                    if scanned > RECENT_MEDIA_SCAN_CAP:
+                        break
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    name = entry.name
+                    if name.startswith("."):
+                        continue
+                    suf = os.path.splitext(name)[1].lower()
+                    if suf not in exts:
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    rel = "/".join((folder / name).relative_to(root).parts)
+                    candidates.append(
+                        (
+                            st.st_mtime,
+                            {
+                                "rel": rel,
+                                "name": name,
+                                "mtime": st.st_mtime,
+                                "size": st.st_size,
+                                "size_h": human_size(st.st_size) if human_size else str(st.st_size),
+                            },
+                        )
+                    )
+        except OSError:
+            continue
+        if scanned > RECENT_MEDIA_SCAN_CAP:
+            break
+    items = [pair[1] for pair in heapq.nlargest(need, candidates, key=lambda x: x[0])]
     items.sort(key=lambda x: x["mtime"], reverse=True)
-    return items[:limit]
+    cached_items = items[:RECENT_MEDIA_CACHE_MAX]
+    with _recent_media_lock:
+        _recent_media_cache = (str(root), time.monotonic(), cached_items, fp)
+    return [dict(item) for item in cached_items[:limit]]
 
 
 # ---- health ----

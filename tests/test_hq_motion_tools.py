@@ -27,6 +27,11 @@ class MotionTools(unittest.TestCase):
         self.assertIn("danglePaintArmed", dang)
         self.assertIn(':not(.is-softbody) .hq-dangling-member-canvas', CSS)
 
+    def test_animation_workflow_tracks_bridge_and_home_css(self):
+        workflow = (ROOT / ".github" / "workflows" / "animation-perf.yml").read_text(encoding="utf-8")
+        for required in ("iphone_bridge.py", "assets/hq-home-fx.css", ".github/workflows/animation-perf.yml"):
+            self.assertEqual(workflow.count(f'"{required}"'), 2, required)
+
 
 if __name__ == "__main__":
     unittest.main()

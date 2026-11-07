@@ -17,7 +17,7 @@ def main() -> int:
             sys.executable,
             "-m",
             "unittest",
-            "tests.test_hq_diagnostics_http.Secrecy.test_cookies_and_headers_are_not_echoed",
+            "tests.test_hq_diagnostics_http.ClientLogHttp.test_cookies_and_headers_are_not_echoed",
             "tests.test_hq_diagnostics_http.ErrorRecording.test_save_agent_packet_http",
             "-v",
         ],
@@ -26,6 +26,14 @@ def main() -> int:
             "-m",
             "unittest",
             "tests.test_hq_diagnostics_http.ClientLogHttp.test_upload_role_can_ship_browser_logs",
+            "-v",
+        ],
+        [
+            sys.executable,
+            "-m",
+            "unittest",
+            "tests.test_hq_backend_latency",
+            "tests.test_media_viewer.MediaRouteTests.test_files_header_supports_unicode_filename",
             "-v",
         ],
     ]

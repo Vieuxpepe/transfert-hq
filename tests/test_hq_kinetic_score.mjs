@@ -73,6 +73,24 @@ for (let i = 0; i < 20; i += 1) b.advance(40);
 assert.ok(order.includes("start"));
 assert.ok(order.includes("end") || b.ctx.HqKinetic.getState().active === 0);
 
+const delayed = bootKinetic("full");
+const delayedEvents = [];
+delayed.ctx.HqKinetic.subscribe("delayed", (ev) => delayedEvents.push(ev));
+delayed.ctx.HqKinetic.emit({
+  kind: "echo",
+  source: "companion",
+  intensity: 1,
+  delayMs: 120,
+  durationMs: 200,
+});
+delayed.advance(40);
+assert.equal(delayed.ctx.HqKinetic.getState().active, 1, "delayed phrase must survive zero-energy frames");
+assert.equal(delayedEvents.filter((ev) => ev.phase === "pulse").length, 0);
+delayed.advance(120);
+assert.ok(delayedEvents.some((ev) => ev.phase === "pulse"), "delayed phrase must pulse after its delay");
+delayed.advance(300);
+assert.equal(delayed.ctx.HqKinetic.getState().active, 0);
+
 const parked = bootKinetic("parked");
 assert.equal(parked.ctx.HqKinetic.emit({ kind: "uiPulse", source: "accueil" }), null);
 

@@ -710,6 +710,25 @@ class ClientBrowserLog(unittest.TestCase):
         self.assertIn("carnet", line2)
         self.assertIn("abc12def", line2)
 
+    def test_api_data_keeps_safe_route_category(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p15-api-route-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        root = make_root(tmp, notebook=True)
+        D.CLIENT_LOG.clear_for_tests()
+        D.CLIENT_LOG.attach(root)
+        rep = D.CLIENT_LOG.ingest(
+            [
+                {"level": "warn", "kind": "api", "message": "slow", "data": {"path": "/api/carnet?page=secret"}},
+                {"level": "warn", "kind": "api", "message": "failed", "data": {"path": "/api/private/secret-id"}},
+            ],
+            page="/",
+            role="admin",
+        )
+        self.assertEqual(rep["accepted"], 2)
+        rows = D.CLIENT_LOG.tail(2)
+        self.assertEqual(rows[0]["data"]["path"], "/api/carnet")
+        self.assertEqual(rows[1]["data"]["path"], "/api/other")
+
     def test_perf_mark_kind(self) -> None:
         tmp = tempfile.mkdtemp(prefix="p15-pmark-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
@@ -945,6 +964,24 @@ class SessionBundle(unittest.TestCase):
 
 
 class AgentTriage(unittest.TestCase):
+    def test_top_issues_prefers_newest_server_errors(self) -> None:
+        triage = D.build_agent_triage(
+            client_lines=[],
+            server_errs=[
+                {"at": "2026-01-01T10:00:00Z", "path_category": "/old", "status": 500, "type": "Err", "request_id": "a"},
+                {"at": "2026-01-02T12:00:00Z", "path_category": "/new", "status": 500, "type": "Err", "request_id": "b"},
+            ],
+            degraded={},
+            repro_notes=[],
+            client_summary={"count": 0},
+            last_view=None,
+            capture_effective={"hud_enabled": True},
+            bridge_started_iso="2026-01-01T11:00:00Z",
+        )
+        issues = triage.get("top_issues") or []
+        self.assertTrue(any("new" in x for x in issues))
+        self.assertFalse(any("old" in x for x in issues))
+
     def test_triage_capture_hint_when_hud_off(self) -> None:
         triage = D.build_agent_triage(
             client_lines=[],

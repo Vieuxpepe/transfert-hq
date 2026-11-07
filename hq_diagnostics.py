@@ -145,7 +145,8 @@ def scrub(text: Any, root: Any = None, limit: int = MESSAGE_MAX) -> str:
 KNOWN_API = frozenset((
     "carnet", "diag", "hq", "status", "health", "list", "upload", "inbox", "inbox-zero", "calendar", "drawings", "backup", "backups",
     "events", "device", "palette", "automation", "runs", "telemetry", "brief", "push", "schedules", "terminal", "shell", "captures",
-    "print", "me", "presence", "scratchpad", "activity", "alerts", "media", "pc", "files",
+    "print", "me", "presence", "scratchpad", "activity", "alerts", "media", "pc", "files", "forge", "companion", "projects",
+    "inventory", "today", "home-layout", "agent", "ai",
 ))
 KNOWN_TOP = frozenset(("assets", "diagnostics", "login", "logout", "files", "download", "media", "wallboard", "manifest.webmanifest"))
 
@@ -169,6 +170,40 @@ def path_category(path: Any) -> str:
 
 def _utc_iso(ts: float | None = None) -> str:
     return datetime.fromtimestamp(time.time() if ts is None else ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc_iso_at(s: Any) -> datetime | None:
+    if not isinstance(s, str) or not s.strip():
+        return None
+    try:
+        raw = s.strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _error_before_bridge(at: Any, bridge_started_iso: str | None) -> bool:
+    """True if the error timestamp is strictly before bridge boot (drop from current triage)."""
+    b = _parse_utc_iso_at(bridge_started_iso)
+    if b is None:
+        return False
+    e = _parse_utc_iso_at(at)
+    if e is None:
+        return False
+    return e < b
+
+
+def _server_errs_for_triage(server_errs: list[dict], bridge_started_iso: str | None) -> list[dict]:
+    rows = [
+        dict(r)
+        for r in server_errs
+        if isinstance(r, dict) and not _error_before_bridge(r.get("at"), bridge_started_iso)
+    ]
+    rows.sort(key=lambda r: _at_sort_key(r.get("at")), reverse=True)
+    return rows
 
 
 def _islink(p: str) -> bool:
@@ -908,7 +943,7 @@ class ClientBrowserLog:
             elif isinstance(v, float):
                 out[key] = float(v)
             elif isinstance(v, str):
-                out[key] = scrub(v, self._root, limit=120)
+                out[key] = path_category(v) if key in ("path", "route") else scrub(v, self._root, limit=120)
             else:
                 out[key] = scrub(str(v), self._root, limit=120)
         return out or None
@@ -1856,6 +1891,7 @@ def build_agent_triage(
     client_summary: dict,
     last_view: str | None,
     capture_effective: dict | None,
+    bridge_started_iso: str | None = None,
 ) -> dict:
     cap = capture_effective if isinstance(capture_effective, dict) else {}
     hud = bool(cap.get("hud_enabled"))
@@ -1873,10 +1909,11 @@ def build_agent_triage(
             "HUD is on but client_log is empty. Hard-refresh HQ, reproduce the issue, then fetch bundle again."
         )
 
-    server_by_rid = {e.get("request_id"): e for e in server_errs if isinstance(e, dict) and e.get("request_id")}
+    triage_server_errs = _server_errs_for_triage(server_errs, bridge_started_iso)
+    server_by_rid = {e.get("request_id"): e for e in triage_server_errs if isinstance(e, dict) and e.get("request_id")}
 
     top_issues: list[str] = []
-    for row in server_errs[:AGENT_TOP_ISSUES_MAX]:
+    for row in triage_server_errs[:AGENT_TOP_ISSUES_MAX]:
         if not isinstance(row, dict):
             continue
         rid = row.get("request_id")
@@ -1963,11 +2000,11 @@ def build_agent_triage(
 
     likely, reason = _score_likely_subsystem(
         client_lines=client_lines,
-        server_errs=server_errs,
+        server_errs=triage_server_errs,
         degraded=degraded,
         last_view=last_view,
     )
-    code_hints = build_error_code_hints(server_errs)
+    code_hints = build_error_code_hints(triage_server_errs)
 
     recommended = list(SUBSYSTEM_FILE_HINTS.get(likely or "", []))[:8] if likely else []
     companion_hint, companion_files = _companion_accueil_lag_hint(client_lines)
@@ -2158,6 +2195,7 @@ def _assemble_session_snapshot(
         client_summary=client_summary,
         last_view=last_view,
         capture_effective=capture_effective,
+        bridge_started_iso=str(ident.get("started_at_utc") or "") or None,
     )
     _assert_agent_triage_shape(triage)
     timeline = build_agent_timeline(

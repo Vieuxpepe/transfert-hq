@@ -90,6 +90,7 @@ Verify scripts (recommended):
 | Art API | `python -m unittest tests.test_hq_companion_art -v` |
 | Character / memory / voice | `python -m unittest tests.test_hq_companion_character tests.test_hq_companion_memory -v` |
 | Else image chip (memory/thread/API/handoff) | `python -m unittest tests.test_hq_else_chip -v` |
+| Else chip client contracts (moods/voice/DND/prefs) | `python -m unittest tests.test_hq_else_chip_client -v` |
 | Sister dialogue (Else ↔ Transferania) | `python -m unittest tests.test_hq_sister_dialogue -v` |
 | Sister UI director (JS helpers) | `python -m unittest tests.test_hq_sister_ui -v` |
 

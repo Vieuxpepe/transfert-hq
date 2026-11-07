@@ -1,0 +1,45 @@
+name: HQ backend latency
+
+on:
+  push:
+    paths:
+      - "iphone_bridge.py"
+      - "cc_ext.py"
+      - "hq_ai.py"
+      - "hq_calendar.py"
+      - "hq_companion_art.py"
+      - "hq_events.py"
+      - "scripts/fetch_session_bundle.py"
+      - "scripts/verify_bridge_smoke.py"
+      - "tests/carnet_test_server.py"
+      - "tests/test_hq_backend_latency.py"
+      - "tests/test_hq_startup_perf10.py"
+      - "tests/test_media_viewer.py"
+      - ".github/workflows/backend-latency.yml"
+  pull_request:
+    paths:
+      - "iphone_bridge.py"
+      - "cc_ext.py"
+      - "hq_ai.py"
+      - "hq_calendar.py"
+      - "hq_companion_art.py"
+      - "hq_events.py"
+      - "scripts/fetch_session_bundle.py"
+      - "scripts/verify_bridge_smoke.py"
+      - "tests/carnet_test_server.py"
+      - "tests/test_hq_backend_latency.py"
+      - "tests/test_hq_startup_perf10.py"
+      - "tests/test_media_viewer.py"
+      - ".github/workflows/backend-latency.yml"
+
+jobs:
+  bounded-routes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Route latency and Unicode filename guards
+        run: |
+          python -m unittest tests.test_hq_backend_latency tests.test_hq_startup_perf10.ForgeStatusCache.test_http_get_does_not_block_on_forge_probe tests.test_media_viewer.MediaRouteTests.test_files_header_supports_unicode_filename -v

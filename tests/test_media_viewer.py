@@ -90,6 +90,7 @@ class MediaRouteTests(unittest.TestCase):
         (inbox / "Musique").mkdir()
         (inbox / "Musique" / "chanson été.wav").write_bytes(cls.song)
         (inbox / "notes.txt").write_text("pas un média", encoding="utf-8")
+        (inbox / "l’été.txt").write_text("apostrophe typographique", encoding="utf-8")
         (inbox / "evil.html").write_text("<script>alert(1)</script>", encoding="utf-8")
         (inbox / "film.mkv").write_bytes(b"\x1a\x45\xdf\xa3")
         (inbox / "vide.mp3").write_bytes(b"")
@@ -254,6 +255,15 @@ class MediaRouteTests(unittest.TestCase):
         self.assertIn("attachment", headers["content-disposition"])
         self.assertNotIn("text/html", headers["content-type"])
 
+    def test_files_header_supports_unicode_filename(self):
+        status, headers, body = self.get("/files/Inbox/l%E2%80%99%C3%A9t%C3%A9.txt")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, "apostrophe typographique".encode())
+        disposition = headers["content-disposition"]
+        disposition.encode("latin-1")
+        self.assertIn('filename="l__t_.txt"', disposition)
+        self.assertIn("filename*=UTF-8''l%E2%80%99%C3%A9t%C3%A9.txt", disposition)
+
     def test_deterministic_types(self):
         expected = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav", ".flac": "audio/flac",
                     ".ogg": "audio/ogg", ".opus": "audio/ogg", ".mp4": "video/mp4", ".m4v": "video/mp4",
@@ -368,8 +378,8 @@ class LecteurTabStaticTests(unittest.TestCase):
         self.assertIn("try { window.hqPlayerView(view); } catch (e) { console.error(e); }", self.js)
         # Combined with PR #15: the Dessiner watchdog and the guarded Calendrier hook are still in setView.
         set_view = re.search(r"function setView\(name\) \{(.*?)\n\}", self.js, re.S).group(1)
-        self.assertIn("if (view === 'dessiner') hqSketchStart();", set_view)
-        self.assertIn("try { window.hqCalendarShow(); } catch (e) { console.error(e); }", set_view)
+        self.assertIn("if (view === 'dessiner') hqDeferViewRender", set_view)
+        self.assertIn("window.hqCalendarShow()", set_view)
         self.assertIn("window.hqPlayerView(view)", set_view)
 
     def test_gestures(self):

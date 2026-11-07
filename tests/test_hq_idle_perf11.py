@@ -24,8 +24,28 @@ class IdlePerf11(unittest.TestCase):
             self.assertNotIn("box-shadow", m.group(1))
 
     def test_star_count(self):
-        self.assertIn("starField(18,", JS)
+        self.assertIn("movingStars: 8", JS)
+        self.assertIn("movingStars: 4", JS)
+        self.assertEqual(len(re.findall(r'i < 4 \? " ?is-moving"', JS)), 2)
+        self.assertIn(".home-star.is-moving", CSS)
+        self.assertIn(".bg-stars span.is-moving", CSS)
 
+    def test_explicit_lite_and_parked_budgets(self):
+        self.assertIn("risingLights: 4", JS)
+        self.assertIn("risingLights: 0", JS)
+        self.assertIn('data-hq-motion-tier="lite"', CSS)
+        self.assertIn('data-hq-motion-tier="parked"', CSS)
+        self.assertRegex(CSS, r'data-hq-motion-tier="lite"[^}]*\.bg-lights\{display:none\}')
+
+    def test_off_view_stops_scheduled_effects(self):
+        self.assertIn("function stopShootingStars", JS)
+        self.assertIn('if (off || motionTier() !== "full") stopShootingStars()', JS)
+        self.assertIn("if (S.doc.hidden || !onHome())", JS)
+        self.assertIn('addEventListener("hq:motion-mode", syncPause)', JS)
+
+    def test_no_expensive_home_filters(self):
+        self.assertNotRegex(CSS, r"filter\s*:\s*(?:blur|drop-shadow)\(")
+        self.assertNotRegex(CSS, r"backdrop-filter\s*:\s*(?!none)")
 
 if __name__ == "__main__":
     unittest.main()

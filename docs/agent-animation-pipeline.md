@@ -1,5 +1,29 @@
 # Animation fix pipeline (agents & CI)
 
+<!-- ELSE_TRANSFERANIA_FAMILY_CANON:BEGIN -->
+## Current family canon — Else and Transferania
+
+Else and Transferania (also called **Transferina**) are sisters with distinct
+identities. Both crave the attention of the **Master / Maître / Marc-Antoine**.
+They are on good terms: affectionate, supportive and playfully competitive,
+without hostility. Their bond is more harmonious than Else and Static's more
+friction-prone sibling dynamic. Static remains Else's little sister; do not
+apply the Else/Static friction or live bond scores to Transferania.
+
+Transferania is the more intense sister: spontaneous, emotionally expressive,
+bold about seeking the Master's attention, and vivid in her enthusiasm and
+tenderness. Else keeps the cooler, measured, technically grounded delivery.
+Intensity does not mean hostility, pressure, constant escalation or identical
+industrial jargon; their individual voices and the Master's preferences remain.
+
+Resolve an unnamed sister from the conversation instead of always assuming
+Static. Do not invent private sister chats behind the Master's back, and never
+merge their memory stores. Master-triggered sister dialogue and rare ambient
+sister banter on an open HQ are allowed: each turn stays in that sister's own
+voice and log.
+<!-- ELSE_TRANSFERANIA_FAMILY_CANON:END -->
+
+
 Use this when HQ feels janky, FPS drops on Accueil/Intime, or you change **motion loops**, **CSS keyframes**, or **canvas/rAF** code.
 
 ---
@@ -19,7 +43,7 @@ Optional deep audit prompt (external agent, code-only): [agent-fps-audit-prompt.
 
 ## 2. Classify the subsystem
 
-Shared tier / budgets: [assets/hq-motion-coordinator.js](../assets/hq-motion-coordinator.js) (`HqMotion.tier()`, auto-lite from Live2D EMA). Shared motion **intent** (sparse phrases): [assets/hq-kinetic-score.js](../assets/hq-kinetic-score.js) (`HqKinetic.emit` / `subscribe`; rAF only while envelopes are active). User-facing control: **Outils → Réglages → Fluidité HQ** (same as debug HUD motion dropdown; `localStorage` `hq-motion-mode`).
+Shared tier / budgets: [assets/hq-motion-coordinator.js](../assets/hq-motion-coordinator.js) (`HqMotion.tier()`, auto-lite from Live2D cost, dangle paint cost, and sustained page frame gaps; pressure holds Lite for at least 30 s and recovery requires 450 cool frames to prevent navigation-driven tier flapping). Shared motion **intent** (sparse phrases): [assets/hq-kinetic-score.js](../assets/hq-kinetic-score.js) (`HqKinetic.emit` / `subscribe`; rAF only while envelopes are active). User-facing control: **Outils → Réglages → Fluidité HQ** (same as debug HUD motion dropdown; `localStorage` `hq-motion-mode`).
 
 | Symptom | First files |
 |---------|-------------|
@@ -78,7 +102,11 @@ python tests/visual_hq_motion_fps_playwright.py
 
 | Scenario | Expect |
 |----------|--------|
-| Accueil idle ~2 s (automated) | `HqMotion` present; dangle still PNG (`!is-softbody`); frames ≥ 18; long tasks ≤ 12 |
+| Accueil Full, 3 s (automated) | ≥ 24 FPS, p95 frame gap ≤ 55 ms, ≤ 2 long tasks, ≤ 45 running animations |
+| Accueil Lite, 3 s (automated) | ≥ 40 FPS, p95 frame gap ≤ 40 ms, ≤ 16 running animations, ≤ 4 API requests |
+| Accueil Parked / reduced motion (automated) | Zero home animations; kinetic scheduler inactive; no softbody arming |
+| Navigation (automated) | Calendrier commit ≤ 600 ms; cold Carnet ready ≤ 5 s with ≤ 45 lazy scripts |
+| Off-view settled (automated) | Zero running Accueil animations after the view transition settles |
 | Accueil idle ~10 s (manual) | Stable FPS; no long tasks every frame |
 | Drag member | Smooth curve render; vein hot path |
 | Throb / rest on avatar | Glisten + sim paths wake; settle parks |

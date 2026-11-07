@@ -136,6 +136,8 @@ class ElseMemoryScope(unittest.TestCase):
             self.assertEqual(asst.get("model_label"), ai.MODELS["gemini-3.1-flash-lite"][0])
             pub = next(m for m in (out.get("messages") or []) if m.get("role") == "assistant")
             self.assertEqual(pub.get("model"), "gemini-3.1-flash-lite")
+            self.assertEqual((out.get("meter") or {}).get("favor"), "else")
+            self.assertTrue((out.get("meter") or {}).get("tease"))
             # Else memory file should exist under companion-memory/else/
             else_mem = Path(ai._cb["root"]) / ".hq-ai" / "companion-memory" / "else"
             self.assertTrue(else_mem.is_dir())
@@ -215,6 +217,127 @@ class ElseMemoryScope(unittest.TestCase):
             self.assertEqual(code2, 200, out2)
             self.assertTrue(out2.get("skipped"))
             self.assertEqual(out2.get("reason"), "cooldown")
+        finally:
+            mem._owner.reset(token)
+
+    def test_else_voice_op_returns_structured_payload(self) -> None:
+        token = mem._owner.set("admin")
+        try:
+            import hq_voice
+            with mock.patch.object(hq_voice, "synthesize", return_value={
+                "ok": True,
+                "audio_url": "/assets/companion/chat/voice_cache/else-test.wav",
+                "engine": "test",
+                "delivery": "thoughtful",
+                "text": "Bonjour",
+            }):
+                code, out = ai.http_post(
+                    {"action": "else", "op": "voice", "text": "Bonjour Maître", "device_id": DEV},
+                    role="admin",
+                    owner_id="admin",
+                )
+            self.assertEqual(code, 200, out)
+            self.assertTrue(out.get("ok"))
+            self.assertTrue(out.get("quiet"))
+            self.assertEqual(out.get("character"), "else")
+            self.assertIn("audio_url", out)
+        finally:
+            mem._owner.reset(token)
+
+    def test_else_prefs_cadence_voice_and_address(self) -> None:
+        token = mem._owner.set("admin")
+        try:
+            code, out = ai.http_post(
+                {
+                    "action": "else",
+                    "op": "prefs",
+                    "save": True,
+                    "prefs": {
+                        "else_proactive": True,
+                        "else_proactive_cadence": "often",
+                        "else_voice": True,
+                        "else_address": "vous",
+                        "else_topics_off": ["politique"],
+                    },
+                    "device_id": DEV,
+                },
+                role="admin",
+                owner_id="admin",
+            )
+            self.assertEqual(code, 200, out)
+            prefs = out.get("prefs") or {}
+            self.assertEqual(prefs.get("else_proactive_cadence"), "often")
+            self.assertTrue(prefs.get("else_voice"))
+            self.assertEqual(prefs.get("else_address"), "vous")
+            self.assertEqual(prefs.get("else_topics_off"), ["politique"])
+            loaded = ai.load_transferania_prefs(DEV)
+            self.assertEqual(loaded.get("else_proactive_cadence"), "often")
+            self.assertEqual(ai.ELSE_CADENCE_COOLDOWN_S["often"], 7 * 60)
+        finally:
+            mem._owner.reset(token)
+
+    def test_else_memory_remember_and_forget(self) -> None:
+        token = mem._owner.set("admin")
+        try:
+            code, out = ai.http_post(
+                {"action": "else", "op": "memory_remember", "text": "Il préfère le matcha le soir", "device_id": DEV},
+                role="admin",
+                owner_id="admin",
+            )
+            self.assertEqual(code, 200, out)
+            self.assertTrue(out.get("remembered"))
+            mems = out.get("memories") or []
+            self.assertTrue(any("matcha" in (m.get("text") or "").lower() for m in mems))
+            hit = next(m for m in mems if "matcha" in (m.get("text") or "").lower())
+            code2, out2 = ai.http_post(
+                {"action": "else", "op": "memory_forget", "id": hit["id"], "device_id": DEV},
+                role="admin",
+                owner_id="admin",
+            )
+            self.assertEqual(code2, 200, out2)
+            remaining = out2.get("memories") or []
+            self.assertFalse(any(m.get("id") == hit["id"] for m in remaining))
+        finally:
+            mem._owner.reset(token)
+
+    def test_else_handoff_includes_view_trail_and_meter(self) -> None:
+        import hq_else_handoff as handoff
+        import hq_sister as sister
+        token = mem._owner.set("admin")
+        try:
+            with mem.memory_scope("else"):
+                ai.save_else({
+                    "v": 1,
+                    "summary": "Travail HQ en cours.",
+                    "messages": [
+                        {"role": "user", "text": "Ouvre le carnet", "ts": 10, "view": "carnet"},
+                        {"role": "assistant", "text": "Carnet prêt.", "ts": 11, "view": "carnet", "kind": "chat"},
+                        {"role": "user", "text": "Retour accueil", "ts": 20, "view": "accueil"},
+                        {"role": "assistant", "text": "Accueil.", "ts": 21, "view": "accueil", "kind": "chat"},
+                    ],
+                    "facts": [],
+                    "recent_replies": [],
+                    "open_thread": "",
+                }, DEV)
+            sister.save_dialogue({
+                "v": 1,
+                "topic": "attention",
+                "open_thread": "qui a le dernier mot",
+                "messages": [
+                    {"speaker": "else", "text": "Je reste calme.", "ts": 15},
+                    {"speaker": "transferania", "text": "Moi j'y vais.", "ts": 16},
+                ],
+                "last_ambient_at": 0.0,
+                "last_react_at": 0.0,
+            }, DEV)
+            digest = handoff.build_digest(device_id=DEV, owner="admin")
+            self.assertIn("carnet", digest.get("view_trail") or [])
+            self.assertIn("accueil", digest.get("view_trail") or [])
+            self.assertTrue(any("recent views" in b.lower() for b in digest["bullets"]))
+            self.assertTrue(digest.get("open_thread"))
+            self.assertTrue(any("open sister thread" in b.lower() for b in digest["bullets"]))
+            self.assertTrue((digest.get("meter") or {}).get("tease"))
+            self.assertTrue(any("attention tease" in b.lower() for b in digest["bullets"]))
         finally:
             mem._owner.reset(token)
 

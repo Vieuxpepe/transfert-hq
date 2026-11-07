@@ -114,6 +114,8 @@
     let passBallTimer = null;
     let historyInflight = null;
     let lastNudgeAt = 0;
+    let meterState = { favor: "tie", tease: "", else_last_at: null, transferania_last_at: null };
+    let lastEvent = null;
 
     function emit(name, detail) {
       try {
@@ -252,6 +254,30 @@
       return reactOn;
     }
 
+    function applyMeter(meter) {
+      if (!meter || typeof meter !== "object") return;
+      const favor = meter.favor === "else" || meter.favor === "transferania" ? meter.favor : "tie";
+      const tease = String(meter.tease || "");
+      const elseAt = meter.else_last_at || null;
+      const tAt = meter.transferania_last_at || null;
+      if (
+        meterState
+        && meterState.favor === favor
+        && meterState.tease === tease
+        && meterState.else_last_at === elseAt
+        && meterState.transferania_last_at === tAt
+      ) {
+        return;
+      }
+      meterState = {
+        favor,
+        tease,
+        else_last_at: elseAt,
+        transferania_last_at: tAt,
+      };
+      emit("hq-sister-meter", { meter: meterState });
+    }
+
     function syncFromStatus(status) {
       const sis = status && status.sister;
       if (!sis || typeof sis !== "object") return;
@@ -269,6 +295,7 @@
         writeFlag(LS_REACT, reactOn);
         if (!reactOn) cancelPendingReact();
       }
+      if (sis.meter) applyMeter(sis.meter);
       if (changed) emitPrefs({ fromStatus: true });
     }
 
@@ -397,12 +424,13 @@
           const peek = peekTextFrom(out || {}, job, type === "nudge" ? "ambient" : type);
           if (peek) emit(EV_PEEK, { reason: type, text: peek });
           if (out && out.event && out.event.id) {
-            emit(EV_EVENT, {
+            lastEvent = {
               id: out.event.id,
               kind: out.event.kind || "observe",
-              label: out.event.label || "",
+              label: out.event.label || out.event.id,
               topic: out.topic || "",
-            });
+            };
+            emit(EV_EVENT, lastEvent);
           }
         }
 
@@ -426,6 +454,7 @@
         }
 
         if (Array.isArray(out.messages)) setMessages(out.messages);
+        if (out && out.meter) applyMeter(out.meter);
         const turns = Array.isArray(out.turns) ? out.turns : [];
         if (turns.length) {
           await playTurns(turns, {
@@ -525,6 +554,7 @@
       historyInflight = request("history")
         .then((out) => {
           if (Array.isArray(out.messages)) setMessages(out.messages);
+          if (out && out.meter) applyMeter(out.meter);
           return out;
         })
         .catch(() => ({ ok: false, messages: messages.slice() }))
@@ -575,7 +605,7 @@
     ambientOn = readFlag(LS_AMBIENT, true);
     reactOn = readFlag(LS_REACT, true);
 
-    return {
+    const director = {
       LS_AMBIENT,
       LS_REACT,
       isBusy,
@@ -602,7 +632,13 @@
       request,
       withDevice,
       emit,
+      applyMeter,
+      get __meter() { return meterState; },
+      set __meter(v) { if (v && typeof v === "object") applyMeter(v); },
+      get __lastEvent() { return lastEvent; },
+      set __lastEvent(v) { if (v && typeof v === "object") lastEvent = v; },
     };
+    return director;
   }
 
   function ensureSister(win) {

@@ -99,7 +99,10 @@
       const e = phraseEnergy(ph, now);
       const prev = ph._lastE || 0;
       ph._lastE = e;
-      if (e > 0.008) {
+      const waiting = now <= ph.startAt + ph.delayMs;
+      if (waiting) {
+        next.push(ph);
+      } else if (e > 0.008) {
         deliver(ph, e, "pulse", e - prev);
         next.push(ph);
       } else if (prev > 0.008) {

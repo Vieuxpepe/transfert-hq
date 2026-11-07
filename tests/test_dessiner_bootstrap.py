@@ -162,11 +162,13 @@ class BootstrapPageTests(unittest.TestCase):
 
     def test_show_hooks_cannot_abort_startup(self):
         view = self._block("function setView(name) {", "\n}\n")
-        self.assertIn("try { window.hqCalendarShow(); } catch (e) { console.error(e); }", view)
+        self.assertIn("hqDeferViewRender(view, viewTicket", view)
+        self.assertIn("window.hqCalendarShow()", view)
         self.assertNotIn("toast(", view)  # calendar behavior unchanged apart from not aborting startup
-        self.assertIn("hqSketchStart()", view)
+        self.assertIn("hqSketchStart", view)
         start = self._block("function hqSketchStart() {", "\n}\n")
-        self.assertIn("try { window.hqSketchShow(); } catch (e) { console.error(e);", start)
+        self.assertIn("window.hqSketchShow();", start)
+        self.assertIn("catch (e) { console.error(e);", start)
 
     def test_dessiner_module_fails_visibly_and_registers_once(self):
         head = self.dessiner[: self.dessiner.index("const TOOLS")]

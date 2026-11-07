@@ -1,9 +1,9 @@
-﻿{
+{
   "name": "Transferania accessories (hair, necklaces, earrings)",
   "canvas": [1254, 1354],
   "face_canvas": [1254, 1254],
   "placement": {
-    "css": { "top": "-7.97448166%", "height": "107.97448166%", "width": "100%" },
+    "css": { "left": "5%", "width": "90%", "top": "-7.5390625%", "height": "88.538867%" },
     "note": "1254x1354 RGBA sits 100px above the 1254x1254 face canvas"
   },
   "defaults": {

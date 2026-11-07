@@ -125,7 +125,13 @@
     return pts.join(" ") + " L" + 2 * width + " " + height + " L0 " + height + " Z";
   }
 
-  const pure = { phase, orbAt, digits, seeded, starField, palette, pagePalette, wavePath, PAGES };
+  const HOME_MOTION_BUDGETS = Object.freeze({
+    full: Object.freeze({ movingStars: 8, risingLights: 4, ambientLoops: true }),
+    lite: Object.freeze({ movingStars: 4, risingLights: 0, ambientLoops: false }),
+    parked: Object.freeze({ movingStars: 0, risingLights: 0, ambientLoops: false }),
+  });
+
+  const pure = { phase, orbAt, digits, seeded, starField, palette, pagePalette, wavePath, PAGES, HOME_MOTION_BUDGETS };
 
   // ------------------------------------------------------------------ browser layer
 
@@ -154,6 +160,13 @@
     }
   };
   const onHome = () => S.doc.body.dataset.view === "accueil";
+  const motionTier = () => {
+    if (calm() || S.doc.hidden) return "parked";
+    try {
+      if (S.win.HqMotion && typeof S.win.HqMotion.tier === "function") return S.win.HqMotion.tier();
+    } catch (_) {}
+    return "full";
+  };
   /** perf11: the CSS effects pause off Accueil, in a hidden tab, and (header) when scrolled out of view. */
   const syncPause = () => {
     if (!S.home) return;
@@ -163,6 +176,8 @@
     if (S.hero) S.hero.classList.toggle("hf-paused", off || S.heroOut === true);
     // The global background only animates on Accueil too (its frozen frame keeps each page's look); it resumes on return.
     if (S.bg) S.bg.classList.toggle("hf-paused", off);
+    if (off || motionTier() !== "full") stopShootingStars();
+    else startShootingStars();
   };
   /** The PC's time (hq-home.js corrects for this device's clock), so sky, clock and greeting always agree. */
   const hqNow = () => {
@@ -191,8 +206,8 @@
     const aurora = el("div", "home-aurora");
     aurora.append(el("span", "a1"), el("span", "a2"), el("span", "a3"));
     const stars = el("div", "home-stars");
-    for (const st of starField(18, 1077)) { // perf11: 18 stars (was 46), the same first ones
-      const s = el("span", "home-star");
+    for (const [i, st] of starField(18, 1077).entries()) {
+      const s = el("span", "home-star" + (i < 4 ? " is-moving" : "") + (i < 2 ? " is-lite" : ""));
       s.style.cssText = "left:" + st.x + "%;top:" + st.y + "%;width:" + st.size + "px;height:" + st.size + "px;animation-delay:" + st.delay + "s;animation-duration:" + st.dur + "s";
       stars.appendChild(s);
     }
@@ -226,19 +241,31 @@
     S.orb.style.setProperty("--oh", String(o.h));
   }
 
+  function stopShootingStars() {
+    if (S.shootTimer) S.win.clearTimeout(S.shootTimer);
+    S.shootTimer = 0;
+    if (S.shoot) S.shoot.classList.remove("is-go");
+  }
+
+  function startShootingStars() {
+    if (S.shootTimer || !S.shoot || S.doc.hidden || !onHome() || motionTier() !== "full") return;
+    S.shootTimer = S.win.setTimeout(shootingStars, 6000 + Math.random() * 9000);
+  }
+
   function shootingStars() {
-    S.win.clearTimeout(S.shootTimer);
-    const again = () => {
-      S.shootTimer = S.win.setTimeout(shootingStars, 6000 + Math.random() * 9000);
-    };
-    if (calm() || S.doc.hidden || !onHome() || !(S.hero.classList.contains("sky-night") || S.hero.classList.contains("sky-dusk"))) return again();
+    S.shootTimer = 0;
+    if (calm() || S.doc.hidden || !onHome() || motionTier() !== "full") return;
+    if (!(S.hero.classList.contains("sky-night") || S.hero.classList.contains("sky-dusk"))) {
+      startShootingStars();
+      return;
+    }
     const sh = S.shoot;
     sh.style.left = 20 + Math.random() * 60 + "%";
     sh.style.top = 4 + Math.random() * 30 + "%";
     sh.classList.remove("is-go");
     void sh.offsetWidth;
     sh.classList.add("is-go");
-    again();
+    startShootingStars();
   }
 
   // ---- the background: slow glows in the colours of the hour, drifting lights, gentle waves, a little grain
@@ -249,14 +276,14 @@
     const mesh = el("div", "bg-mesh");
     for (let i = 1; i <= 3; i += 1) mesh.appendChild(el("span", "m" + i));
     const stars = el("div", "bg-stars");
-    for (const st of starField(26, 2026)) {
-      const s = el("span");
+    for (const [i, st] of starField(26, 2026).entries()) {
+      const s = el("span", (i < 4 ? "is-moving" : "") + (i < 2 ? " is-lite" : ""));
       s.style.cssText = "left:" + st.x + "%;top:" + st.y * 0.75 + "%;width:" + st.size + "px;height:" + st.size + "px;animation-delay:" + st.delay + "s;animation-duration:" + (st.dur + 2) + "s";
       stars.appendChild(s);
     }
     const lights = el("div", "bg-lights");
     const rnd = seeded(31);
-    for (let i = 0; i < 7; i += 1) {
+    for (let i = 0; i < HOME_MOTION_BUDGETS.full.risingLights; i += 1) {
       const l = el("span");
       const size = 6 + Math.round(rnd() * 16);
       l.style.cssText = "left:" + Math.round(rnd() * 100) + "%;width:" + size + "px;height:" + size + "px;animation-duration:" + (70 + Math.round(rnd() * 60)) + "s," + (12 + Math.round(rnd() * 10)) + "s;animation-delay:-" + Math.round(rnd() * 90) + "s,-" + Math.round(rnd() * 10) + "s;--sway:" + (20 + Math.round(rnd() * 60)) + "px;--c:" + (i % 4);
@@ -347,7 +374,7 @@
     }
     if (key !== S.last || spin) {
       S.cols.forEach((c, i) => (c.style.transform = "translateY(" + -ds[i] * 1.2 + "em)")); // rows 1.2em apart: no neighbour peeks in
-      if (S.last && key !== S.last && !spin) anim(S.clock, [{ filter: "brightness(1.6)" }, { filter: "none" }], { duration: 700 });
+      if (S.last && key !== S.last && !spin) anim(S.clock, [{ opacity: 0.72 }, { opacity: 1 }], { duration: 500 });
       S.last = key;
     }
     if (S.sec) {
@@ -528,7 +555,7 @@
         it.__fxSeen = true;
         if (seen.has(key)) continue;
         seen.add(key);
-        if (!calm()) {
+        if (!calm() && onHome() && !S.doc.hidden && motionTier() === "full") {
           it.style.setProperty("--fxk", String(Math.min(k, 12)));
           k += 1;
           it.classList.add(first ? "fx-in" : "fx-new");
@@ -540,6 +567,10 @@
     let queued = false;
     new S.win.MutationObserver(() => {
       if (queued) return;
+      if (S.doc.hidden || !onHome()) {
+        run();
+        return;
+      }
       queued = true;
       S.win.requestAnimationFrame(() => {
         queued = false;
@@ -551,7 +582,7 @@
 
   /** Opening Accueil again replays the lines of every list. */
   function replayLists() {
-    if (calm()) return;
+    if (calm() || motionTier() !== "full") return;
     for (const id of ["hq-recents", "hq-cal-today", "hq-since-list", "hq-devices"]) {
       const n = S.doc.getElementById(id);
       if (!n) continue;
@@ -579,7 +610,7 @@
     paintSky(now);
     paintClock(now, true);
     splitGreeting(true);
-    if (calm()) return;
+    if (calm() || motionTier() !== "full") return;
     if (S.orb) anim(S.orb, [{ transform: "translate(-50%,-50%) translateY(46px) scale(.6)", opacity: 0 }, { transform: "translate(-50%,-50%)", opacity: 1 }], { duration: 1200, easing: "cubic-bezier(.2,.8,.2,1)" });
     if (S.sky) anim(S.sky, [{ opacity: 0 }, { opacity: 1 }], { duration: 900, easing: "ease-out" });
     replayLists();
@@ -628,9 +659,9 @@
         paintClock(d, false);
         if (d.getSeconds() === 0) paintSky(d);
       }, 1000);
-      shootingStars();
       S.home.classList.toggle("is-fine", fine());
       S.doc.addEventListener("visibilitychange", syncPause);
+      S.win.addEventListener("hq:motion-mode", syncPause);
       if (typeof win.IntersectionObserver === "function") {
         new win.IntersectionObserver((es) => {
           S.heroOut = !es[es.length - 1].isIntersecting;

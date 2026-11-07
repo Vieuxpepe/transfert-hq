@@ -7,7 +7,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
   const clamp = (v, a, b) => Math.max(a, Math.min(b, Number(v) || 0));
-  const MODES = { auto: "Auto", neutral: "Repos", smile: "Sourire", open: "Ouverte",
+  const MODES = { auto: "Auto", neutral: "Repos", smile: "Sourire", bite: "Mordiller la lèvre", quicklick: "Humecter les lèvres", open: "Ouverte",
     wide: "Grande ouverte", laugh: "Rire", surprised: "Surprise", lick: "Langue / léchage" };
   const BROW_MODES = { auto: "Auto", neutral: "Repos", raise: "Lever les deux", left: "Lever le gauche", right: "Lever le droit", frown: "Froncer" };
   let serial = 0;
@@ -59,6 +59,31 @@
       amount = smooth(0, 300, elapsed) * (1 - smooth(1100, 1950, elapsed));
       pose.press = .30 * amount; pose.round = .20 * amount; pose.smile = .035 * amount;
       pose.shift = side * .72 * amount; pose.asym = side * .42 * amount;
+    } else if (kind === "quicklick") {
+      if (elapsed >= 750) return null;
+      amount = smooth(0, 180, elapsed) * (1 - smooth(420, 750, elapsed));
+      const reach = smooth(120, 320, elapsed) * (1 - smooth(380, 600, elapsed));
+      pose.open = .15 * amount;
+      pose.smile = .18 * amount;
+      pose.extend = .58 * reach;
+      pose.curl = .42 * reach;
+      pose.sway = Math.sin((elapsed - 180) * 0.018) * 0.45 * reach;
+      pose.jaw = .04 * amount;
+    } else if (kind === "swallow") {
+      if (elapsed >= 650) return null;
+      amount = smooth(0, 140, elapsed) * (1 - smooth(350, 650, elapsed));
+      pose.open = 0;
+      pose.press = .35 * amount;
+      pose.seal = .95 * amount;
+      pose.jaw = -0.045 * amount;
+    } else if (kind === "bite") {
+      if (elapsed >= 2200) return null;
+      amount = smooth(0, 340, elapsed) * (1 - smooth(1400, 2200, elapsed));
+      pose.bite = .78 * amount;
+      pose.smile = .24 * amount;
+      pose.asym = side * .28 * amount;
+      pose.open = .06 * amount;
+      pose.jaw = .025 * amount;
     } else if (kind === "laugh") {
       if (elapsed >= 2800) return null;
       amount = smooth(0, 320, elapsed) * (1 - smooth(1800, 2800, elapsed));
@@ -78,7 +103,8 @@
     if (!plan.length) return base;
     // A short spelling-based interval cannot display a long pronunciation.
     // Give vowels and full lip closures time to read, retaining punctuation.
-    const voiced = Math.min(750, plan.reduce((sum, id) => sum + visemeWeight(id), 0) * 30);
+    const perUnit = plan.length <= 1 ? 30 : 42;
+    const voiced = Math.min(820, plan.reduce((sum, id) => sum + visemeWeight(id), 0) * perUnit);
     return Math.min(1600, Math.max(base, Math.ceil(voiced + textPause(word))));
   }
 
@@ -120,7 +146,7 @@
     while (index < plan.length - 1 && at >= start + weights[index]) start += weights[index++];
     const from = index ? VISEMES[plan[index - 1]] : startPose;
     const to = VISEMES[plan[index]] || VISEMES.M;
-    const u = clamp((at - start) / weights[index] / .38, 0, 1), blend = u * u * (3 - 2 * u);
+    const u = clamp((at - start) / weights[index] / .72, 0, 1), blend = u * u * (3 - 2 * u);
     const release = punctuated ? clamp((active - elapsed) / Math.min(35, active * .15), 0, 1) : 1;
     const pose = {};
     for (const key of ["open", "smile", "round", "bite", "seal"]) {
@@ -159,11 +185,13 @@
     const t = (input.time || 0) / 1000;
     if (mode === "neutral") return { open: 0, smile: 0, round: 0 };
     if (mode === "smile") return { open: .12, smile: .95, round: 0 };
+    if (mode === "bite") return { open: .06, smile: .24, round: 0, bite: .78, asym: .26, seal: .85 };
+    if (mode === "quicklick") return { open: .16, smile: .18, round: .12, extend: .52, curl: .35, sway: 0, jaw: 0, headTilt: 0, headNod: 0 };
     if (mode === "open") return { open: .48, smile: .08, round: .12 };
     if (mode === "wide") return { open: .98, smile: .12, round: .18 };
     if (mode === "surprised") return { open: .80, smile: 0, round: .9 };
     if (mode === "laugh") return { open: input.reduced ? .68 : .65 + Math.sin(t * 11) * .17, smile: .95, round: 0 };
-    const speech = input.speaking ? .16 + .44 * Math.abs(Math.sin(t * 9.1) * Math.cos(t * 3.7)) : 0;
+    const speech = input.speaking ? .14 + .40 * Math.abs(Math.sin(t * 5.2) * Math.cos(t * 2.3)) : 0;
     return { open: clamp(Math.max(speech, input.voice || 0, (input.pull || 0) * .92), 0, 1),
       smile: input.smiling ? .72 : input.speaking ? .12 : 0, round: (input.pull || 0) * .25 };
   }
@@ -198,6 +226,19 @@
   }
 
   function expressionTarget(mode, input = {}) {
+    let hoverOpen = 0, hoverSway = 0;
+    if (input.mouthHover && !input.pulling && !input.speaking && mode !== "lick") {
+      hoverOpen = 0.16 * clamp(input.mouthHover, 0, 1);
+      hoverSway = clamp(input.mouthHoverDx || 0, -0.4, 0.4);
+    }
+    // Gaze-linked corner pull: subtle playful smirk toward or away from gaze
+    const gazeAsym = input.gazeX ? clamp(input.gazeX * 0.025, -0.18, 0.18) : 0;
+    // Ambient breath micro-pulse when warm & quiet
+    let breathOpen = 0;
+    if (mode === "auto" && !input.speaking && !input.pulling && !input.reduced && input.warmth >= 45) {
+      const bCycle = ((input.time || 0) % 3800) / 3800;
+      breathOpen = Math.pow(Math.sin(bCycle * Math.PI), 2.2) * 0.038;
+    }
     // Interaction reaction temporarily overrides the selected expression.
     // Keep tongue/head offsets neutral while the pull owns face alignment.
     if (input.pulling) return { open: .96, smile: .10, round: .18,
@@ -206,10 +247,17 @@
     const measuredVoice = input.speaking && Number.isFinite(input.audioLevel);
     if (measuredVoice) {
       const open = input.reduced ? .24 : clamp(input.audioLevel, 0, .85);
-      const round = open * (.18 + .16 * Math.sin(t * 4.3));
-      const smile = input.smiling ? .40 : .10;
+      const vShape = input.audioVowel || "";
+      const tp = open > 0.008 && input.textPose ? input.textPose : null;
+      const baseRound = vShape === "round" ? clamp(open * 0.56 + 0.08, 0, 0.52) :
+        vShape === "wide" ? open * 0.08 :
+        open * (.18 + .16 * Math.sin(t * 4.3));
+      const baseSmile = input.smiling ? .40 : (vShape === "wide" ? .34 : vShape === "round" ? .05 : .10);
+      const round = tp ? clamp(baseRound * 0.55 + (tp.round || 0) * 0.45, 0, 0.72) : baseRound;
+      const smile = tp ? clamp(baseSmile * 0.55 + (tp.smile || 0) * 0.45, 0, 0.75) : baseSmile;
+      const bite = tp ? clamp((tp.bite || 0) * 0.65, 0, 0.45) : 0;
       const head = speechHeadMotion({ open, smile, round, seal: 1 }, open, input.reduced);
-      return { open, smile, round,
+      return { open, smile, round, bite,
         extend: 0, curl: 0, sway: 0,
         jaw: input.reduced || open < 0.008 ? 0 : speechJaw({ open, smile, round }, open),
         headTilt: head.headTilt, headNod: head.headNod };
@@ -229,9 +277,9 @@
         headTilt: head.headTilt, headNod: head.headNod };
     }
     if (input.speaking) {
-      const cadence = Math.pow(Math.abs(Math.sin(t * 9.1) * Math.cos(t * 3.7)), 1.3);
-      const open = input.reduced ? .24 : clamp(Math.max(cadence * .66, input.voice || 0), 0, .78);
-      const round = open * (.18 + .16 * Math.sin(t * 4.3));
+      const cadence = Math.pow(Math.abs(Math.sin(t * 5.2) * Math.cos(t * 2.3)), 1.35);
+      const open = input.reduced ? .24 : clamp(Math.max(cadence * .58, input.voice || 0), 0, .72);
+      const round = open * (.18 + .16 * Math.sin(t * 2.9));
       const smile = input.smiling ? .40 : .10;
       const head = speechHeadMotion({ open, smile, round, seal: 1 }, cadence, input.reduced);
       return { open, smile, round,
@@ -250,9 +298,9 @@
         extend: 0, curl: 0, sway: 0, jaw: 0, headTilt: beat * .45, headNod: -.012 };
     }
     if (mode === "auto" && input.lifePose && !input.reduced) return {
-      ...input.lifePose, bite: 0, extend: 0, curl: 0, sway: 0, headTilt: 0, headNod: 0
+      ...input.lifePose, open: Math.max(input.lifePose.open || 0, hoverOpen, breathOpen), asym: (input.lifePose.asym || 0) + gazeAsym, sway: (input.lifePose.sway || 0) + hoverSway, extend: input.lifePose.extend || 0, curl: input.lifePose.curl || 0, headTilt: 0, headNod: 0
     };
-    if (mode !== "lick") return { ...baseTarget(mode, input), extend: 0, curl: 0, sway: 0, jaw: 0, headTilt: 0, headNod: 0 };
+    if (mode !== "lick") { const b = baseTarget(mode, input); return { ...b, open: Math.max(b.open || 0, hoverOpen, breathOpen), asym: (b.asym || 0) + gazeAsym, sway: (b.sway || 0) + hoverSway, extend: b.extend || 0, curl: b.curl || 0, jaw: b.jaw || 0, headTilt: b.headTilt || 0, headNod: b.headNod || 0 }; }
     // Prepare the lips, reach, curl the tip, then withdraw and rest.
     // Unequal stages keep the gesture from looking like a pendulum.
     const phase = ((input.time || 0) % 3200 + 3200) % 3200;
@@ -321,12 +369,16 @@
       tongueFold: `M 0 ${base + 2} Q ${tipX * .4} ${shoulder} ${tipX} ${tip - 2.5}`,
       tongueShine: `M ${tipX - tipWidth * .35} ${tip + .4} Q ${tipX} ${tip + tipDepth * .55} ${tipX + tipWidth * .35} ${tip + .4}`,
       tongue: `M ${-w * .64} ${bottom - 1.7} C ${-w * .37} ${bottom - 13 * open} ${w * .37} ${bottom - 13 * open} ${w * .64} ${bottom - 1.7} Q 0 ${bottom - .4} ${-w * .64} ${bottom - 1.7} Z`,
-      highlight: `M ${-w * .32} ${bottom + 4.5 * fullness} Q 0 ${bottom + 6.9 * fullness} ${w * .30} ${bottom + 3.9 * fullness}` };
+      highlight: `M ${-w * .32} ${bottom + 4.5 * fullness} Q 0 ${bottom + 6.9 * fullness} ${w * .30} ${bottom + 3.9 * fullness}`,
+      saliva: `M ${-w * 0.22} ${top + 0.2} Q ${-w * 0.18} ${(top + bottom) * 0.52} ${-w * 0.14} ${bottom - 0.2} M ${w * 0.20} ${top + 0.2} Q ${w * 0.16} ${(top + bottom) * 0.52} ${w * 0.12} ${bottom - 0.2}`,
+      cornerLeft: `M ${-w - 1.2} ${left + 0.8} Q ${-w - 3.2} ${left - 2.2} ${-w - 4.4} ${left - 4.8}`,
+      cornerRight: `M ${w + 1.2} ${right + 0.8} Q ${w + 3.2} ${right - 2.2} ${w + 4.4} ${right - 4.8}` };
   }
 
   function eyeGeometry(close, side = "left") {
     close = clamp(close, 0, 1);
-    const arc = -18 + close * 44;
+    const arcSpan = side === "right" ? 45 : 44;
+    const arc = -18 + close * arcSpan;
     const direction = side === "right" ? 1 : -1;
     const lashes = [0, 1, 2, 3, 4, 5, 6].map(i => {
       const t = side === "right" ? .80 - i * .075 : .20 + i * .075;
@@ -382,6 +434,9 @@
         <path data-part="tongueOut" fill="url(#${id}-tongue-out)"/>
         <path data-part="tongueFold" fill="none" stroke="#703047" stroke-width=".8" stroke-linecap="round"/>
         <path data-part="tongueShine" fill="none" stroke="#f0b6c0" stroke-width="1" stroke-linecap="round"/>
+        <path data-part="cornerLeft" fill="none" stroke="#7a2a38" stroke-width="0.85" stroke-linecap="round" opacity="0"/>
+        <path data-part="cornerRight" fill="none" stroke="#7a2a38" stroke-width="0.85" stroke-linecap="round" opacity="0"/>
+        <path data-part="saliva" fill="none" stroke="#f5c2cb" stroke-width="0.9" stroke-linecap="round" opacity="0"/>
         <path data-part="highlight" fill="none" stroke="#f4b4ac" stroke-width="1.2" stroke-linecap="round" opacity=".65"/>
       </g></g>`;
     const mouthShape = svg.querySelector("[data-mouth-shape]");
@@ -404,7 +459,7 @@
         <path data-eye-part="flick" fill="none" stroke="#351319" stroke-width="1.6" stroke-linecap="round"/>
         <path data-eye-part="lashes" fill="#19090f"/>
       </g>
-      <g data-eye="right" transform="translate(299 110) rotate(-13)" opacity="0">
+      <g data-eye="right" transform="translate(304 111) rotate(-11)" opacity="0">
         <path data-eye-part="lid" fill="url(#${id}-lid)" filter="url(#${id}-lid-soft)"/>
         <path data-eye-part="lash" fill="none" stroke="#19090f" stroke-width="3.8" stroke-linecap="round"/>
         <path data-eye-part="flick" fill="none" stroke="#351319" stroke-width="1.6" stroke-linecap="round"/>
@@ -440,6 +495,15 @@
       jaw.className = "hq-companion-rig-layer hq-mouth-jaw";
       jaw.removeAttribute("id");
       jaw.setAttribute("aria-hidden", "true");
+      jaw.dataset.rigAsset = "face";
+      const syncJawSrc = () => {
+        const src = face.getAttribute("src") || "/assets/companion/rig-neutral-v1/face.svg?v=mouthrest1";
+        if (jaw.getAttribute("src") !== src) jaw.src = src;
+      };
+      syncJawSrc();
+      if (win.MutationObserver) {
+        new win.MutationObserver(syncJawSrc).observe(face, { attributes: true, attributeFilter: ["src"] });
+      }
       wrap.insertBefore(jaw, face.nextSibling);
     }
     const keys = ["open", "smile", "round", "extend", "curl", "sway", "jaw", "headTilt", "headNod", "bite", "seal", "asym", "press", "shift"];
@@ -447,7 +511,7 @@
     let browMode = "auto", browStart = 0, brows = { left: 0, right: 0 }, wasPulling = false;
     let textBeat = null;
     let gesture = null, anticipation = null, lifePose = null, nextSide = 1, lastWarm = false, lastPlayful = false;
-    let thinkingCount = 0, nextLaughAt = 0, lastPreparedAt = -Infinity;
+    let thinkingCount = 0, nextLaughAt = 0, lastPreparedAt = -Infinity, wetGlossUntil = 0;
     let nextIdleAt = win.performance.now() + 9000 + Math.random() * 7000, nextListenAt = 0;
     let wasThinking = false, wasTyping = false, wasVoice = false, wasTickled = false;
     let nextSpeechBlinkAt = 0;
@@ -474,6 +538,7 @@
       const typing = host.classList.contains("is-user-typing"), pulling = host.classList.contains("is-bust-pull");
       const tickled = host.classList.contains("is-tickled") || !!host.querySelector(".hq-companion-avatar")?.classList.contains("is-tickled");
       const voiceEnded = wasVoice && !voice, thinkingStarted = thinking && !wasThinking, typingStarted = typing && !wasTyping;
+      if (host.classList.contains("is-glass-licking") || host.classList.contains("is-idle-kiss-blow") || mode === "lick" || mode === "bite") wetGlossUntil = Math.max(wetGlossUntil, time + 7500);
       const tickleStarted = tickled && !wasTickled;
       wasVoice = voice; wasThinking = thinking; wasTyping = typing; wasTickled = tickled;
       lifePose = null;
@@ -486,11 +551,23 @@
         nextIdleAt = Math.max(nextIdleAt, time + 9500);
         label = pulling ? "interaction" : "speech";
       } else {
-        if (voiceEnded) afterSpeech(time, lastWarm, lastPlayful && time - lastPreparedAt < 30000);
+        if (voiceEnded) {
+          afterSpeech(time, lastWarm, lastPlayful && time - lastPreparedAt < 30000);
+          if (Math.random() < 0.65) {
+            win.setTimeout(() => { if (!host.classList.contains("is-speaking")) beginGesture("swallow", win.performance.now()); }, 450);
+          }
+        }
         if (thinkingStarted) beginGesture(thinkingCount++ % 2 === 0 ? "press" : "hmm", time);
         if (tickleStarted && !thinking && time >= nextLaughAt) { beginGesture("laugh", time); nextLaughAt = time + 12000; }
-        if (typing && !thinking && !gesture && (typingStarted || time >= nextListenAt)) {
-          beginGesture("listen", time); nextListenAt = time + 8000 + Math.random() * 4000;
+                if (typing && !thinking && !gesture && (typingStarted || time >= nextListenAt)) {
+          const warmVal = parseFloat(host.dataset.warmth || host.style.getPropertyValue("--companion-warmth")) || 0;
+          if (warmVal >= 48 || host.classList.contains("is-playful")) {
+            beginGesture("bite", time);
+            wetGlossUntil = Math.max(wetGlossUntil, time + 8000);
+          } else {
+            beginGesture("listen", time);
+          }
+          nextListenAt = time + 8000 + Math.random() * 4000;
         }
         if (anticipation && time - anticipation.at < 180) {
           const amount = smooth(0, 120, time - anticipation.at), shape = VISEMES[anticipation.first];
@@ -523,6 +600,23 @@
       const g = geometry(current.open, current.smile, current.round, current.extend, current.curl, current.sway, current.bite, current.asym, current.press);
       for (const name of ["cavity", "upper", "lower", "teeth", "tongue", "highlight", "tongueOut", "tongueFold", "tongueShine"]) parts[name].setAttribute("d", g[name]);
       parts.clip.setAttribute("d", g.cavity);
+      if (parts.saliva && g.saliva) {
+        parts.saliva.setAttribute("d", g.saliva);
+        // Viscous saliva tethers appear when lips part slightly (open between 0.03 and 0.14)
+        const salivaOp = current.open > 0.025 && current.open < 0.14 ?
+          Math.sin(clamp((current.open - 0.025) / 0.115, 0, 1) * Math.PI) * (isWet ? 0.45 : 0.28) : 0;
+        parts.saliva.style.opacity = String(salivaOp.toFixed(3));
+      }
+      if (parts.cornerLeft && g.cornerLeft) parts.cornerLeft.setAttribute("d", g.cornerLeft);
+      if (parts.cornerRight && g.cornerRight) parts.cornerRight.setAttribute("d", g.cornerRight);
+      const creaseOp = clamp(Math.max((current.smile - 0.35) * 1.8, (Math.abs(current.asym) - 0.22) * 2.2), 0, 0.45);
+      if (parts.cornerLeft) parts.cornerLeft.style.opacity = String(creaseOp * (current.asym < -0.1 ? 0.35 : 1));
+      if (parts.cornerRight) parts.cornerRight.style.opacity = String(creaseOp * (current.asym > 0.1 ? 0.35 : 1));
+      const hShift = (current.headTilt * 5 + current.shift * 2.5).toFixed(2);
+      parts.highlight.setAttribute("transform", "translate(" + hShift + " 0)");
+      const isWet = (win.performance?.now?.() || 0) < wetGlossUntil;
+      parts.highlight.style.opacity = isWet ? "0.95" : ".65";
+      parts.highlight.setAttribute("stroke-width", isWet ? "1.5" : "1.2");
             // Rest-safe interior: idle smile must NOT reveal teeth/cavity. Gate on open only
       // (lifePose smile ~0.27–0.43 with open≈0). Speaking shapes still use open>0.05.
       const openGate = clamp((current.open - .05) * 14, 0, 1);
@@ -544,9 +638,14 @@
       kissBlow: host.classList.contains("is-idle-kiss-blow"),
       speaking: host.classList.contains("is-speaking") || host.classList.contains("is-voice-lipsync"),
       audioLevel: (() => { const level = parseFloat(host.style.getPropertyValue("--rig-voice-level")); return Number.isFinite(level) ? level : null; })(),
+      audioVowel: host.dataset.voiceVowel || "",
       voice: host.classList.contains("is-voice-lipsync") ? clamp((parseFloat(host.style.getPropertyValue("--rig-voice-nod")) - 1) * 12, 0, .9) : 0,
       pull: host.classList.contains("is-bust-pull") ? parseFloat(host.style.getPropertyValue("--pull-tension")) || 0 : 0,
       smiling: host.classList.contains("is-tickled"),
+      mouthHover: parseFloat(host.dataset.mouthHover) || 0,
+      mouthHoverDx: parseFloat(host.dataset.mouthHoverDx) || 0,
+      gazeX: parseFloat(host.style.getPropertyValue("--gx")) || 0,
+      warmth: parseFloat(host.dataset.warmth || host.style.getPropertyValue("--companion-warmth")) || 0,
       textEnvelope: textBeat && time >= textBeat.at && time < textBeat.at + textBeat.duration ?
         textEnvelope(textBeat.word, time - textBeat.at, textBeat.duration) : 0 });
     const rig = {
@@ -632,8 +731,15 @@
       },
       tick(dt, time) {
         if (reduced() && textBeat) textBeat = null;
-        const articulating = textBeat && time < textBeat.at + textBeat.duration;
-        if (doc.hidden || time - lastPaint < (time - blinkAt < blinkDuration || articulating ? 16 : 32)) return;
+        const articulating = !!(textBeat && time < textBeat.at + textBeat.duration);
+        const activeMouth = articulating ||
+          host.classList.contains("is-speaking") ||
+          host.classList.contains("is-voice-lipsync") ||
+          host.classList.contains("is-bust-pull") ||
+          host.classList.contains("is-idle-humming") ||
+          host.classList.contains("is-idle-kiss-blow") ||
+          !!gesture || !!anticipation || mode !== "auto";
+        if (doc.hidden || time - lastPaint < (time - blinkAt < blinkDuration || activeMouth ? 16 : 32)) return;
         const elapsed = Math.min(.12, lastPaint < 0 ? .04 : (time - lastPaint) / 1000);
         lastPaint = time;
         paintEyes(time);
@@ -654,9 +760,13 @@
           }
         }
         const visemeDrive = !!input.textPose && !measuredVoiceInput(input);
-        const closingLips = input.textPose && input.textPose.seal > .9 && input.textPose.open < .025;
-        const follow = reduced() ? 1 : 1 - Math.exp(-elapsed * (visemeDrive ? closingLips ? 75 : 40 : 16));
-        const jawFollow = reduced() ? 1 : 1 - Math.exp(-elapsed * (visemeDrive ? 58 : input.speaking ? 26 : 16));
+        const closingLips = (input.textPose && input.textPose.seal > .9 && input.textPose.open < .025) ||
+          (speakingNow && to.open < .025 && current.open > .04);
+        const speechRate = visemeDrive ? (closingLips ? 38 : 25) :
+          speakingNow ? (closingLips ? 34 : to.open > current.open ? 26 : 20) :
+          activeMouth ? 20 : 14;
+        const follow = reduced() ? 1 : 1 - Math.exp(-elapsed * speechRate);
+        const jawFollow = reduced() ? 1 : 1 - Math.exp(-elapsed * (visemeDrive ? 20 : speakingNow ? 18 : activeMouth ? 15 : 12));
         for (const key of keys) {
           const rate = key === "jaw" ? jawFollow : follow;
           current[key] += (to[key] - current[key]) * rate;
@@ -664,6 +774,13 @@
         const browPose = browTarget(browMode, { ...inputs(time), time: Math.max(0, time - browStart) });
         for (const key of ["left", "right"]) brows[key] += (browPose[key] - brows[key]) * follow;
         paint();
+      },
+      triggerGesture(kind, strength = 1) {
+        if (reduced()) return;
+        beginGesture(kind, win.performance.now(), strength);
+        if (kind === "quicklick") wetGlossUntil = Math.max(wetGlossUntil, win.performance.now() + 8000);
+        lastPaint = -Infinity;
+        if (wake) wake();
       },
       blink(duration, asym = false) {
         if (reduced()) return;
@@ -712,7 +829,7 @@
     }
     host.classList.add("has-expressive-mouth");
     if (!doc.querySelector("link[data-hq-mouth-style]")) {
-      const css = doc.createElement("link"); css.rel = "stylesheet"; css.href = "/assets/hq-companion-mouth.css";
+      const css = doc.createElement("link"); css.rel = "stylesheet"; css.href = "/assets/hq-companion-mouth.css?v=jawfix4";
       css.setAttribute("data-hq-mouth-style", ""); doc.head.appendChild(css);
     }
     const menu = host.querySelector(".hq-companion-fx-debug-opts") || host.querySelector(".hq-companion-fx-debug");

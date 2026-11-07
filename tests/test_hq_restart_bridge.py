@@ -35,6 +35,20 @@ class RestartTests(unittest.TestCase):
         self.assertTrue(b.bridge_code_changed(self.root, started), "an asset changed after the start")
         self.assertFalse(b.bridge_code_changed(self.root / "missing", started))
 
+    def test_boot_revision_is_stable_and_changes_with_content(self):
+        paths = ("a.py", "assets/x.js")
+        first = b.boot_revision_fingerprint(self.root, paths)
+        self.assertEqual(first, b.boot_revision_fingerprint(self.root, paths))
+        (self.root / "assets" / "x.js").write_text("changed")
+        self.assertNotEqual(first, b.boot_revision_fingerprint(self.root, paths))
+
+    def test_boot_revision_is_embedded_in_the_page(self):
+        page = b.render_app().decode("utf-8")
+        self.assertIn(f'data-hq-boot-revision="{b._BOOT_REVISION}"', page)
+        self.assertIn('meta name="hq-boot-revision"', page)
+        self.assertIn("window.HQ_BOOT_REVISION=Object.freeze(", page)
+        self.assertIn('id="hq-build-rev"', page)
+
     def test_only_on_windows_with_the_script(self):
         with mock.patch.object(b, "_is_windows", lambda: False):
             self.assertFalse(b.restart_supported(self.root))
@@ -66,6 +80,7 @@ class RestartTests(unittest.TestCase):
         self.assertIn('id="btn-restart-bridge" hidden', src, "hidden until the server says it is supported")
         self.assertIn('if raw == "/api/pc/restart-bridge":\n            if not self._require_admin():', src, "admin only")
         self.assertIn("api('/api/diag/live')", src, "the page waits for a new process before reloading")
+        self.assertIn("boot_revision_status()", src, "live and restart routes expose the loaded revision")
 
 
 if __name__ == "__main__":

@@ -406,8 +406,14 @@ def history(*, device_id: str) -> dict:
     ai = _ai()
     did = ai.normalize_device_id(device_id)
     data = load_dialogue(did)
-    return {"ok": True, "device_id": did, "topic": data.get("topic") or "", "messages": data.get("messages") or [],
-            "open_thread": _active_open_thread(data)}
+    return {
+        "ok": True,
+        "device_id": did,
+        "topic": data.get("topic") or "",
+        "messages": data.get("messages") or [],
+        "open_thread": _active_open_thread(data),
+        "meter": _master_favor_meter(did),
+    }
 
 
 def clear(*, device_id: str) -> dict:
@@ -507,6 +513,63 @@ def awareness_block(device_id: str, *, for_character: str, data: dict | None = N
     return _awareness_from_data(data, for_character=for_character)
 
 
+_FAVOR_METER_TTL_S = 1.5
+_favor_meter_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _master_favor_meter(device_id: str, *, fresh: bool = False) -> dict:
+    """Playful who-got-the-Master's-attention tease — timestamps only, no merged memory."""
+    ai = _ai()
+    did = ai.normalize_device_id(device_id)
+    if not fresh:
+        hit = _favor_meter_cache.get(did)
+        if hit and (_now() - hit[0]) < _FAVOR_METER_TTL_S:
+            return dict(hit[1])
+
+    def _last_user_ts(load_fn) -> float:
+        try:
+            data = load_fn(did)
+            for m in reversed(data.get("messages") or []):
+                if isinstance(m, dict) and m.get("role") == "user":
+                    try:
+                        return float(m.get("ts") or 0)
+                    except (TypeError, ValueError):
+                        return 0.0
+        except Exception:
+            return 0.0
+        return 0.0
+
+    with companion_memory.memory_scope("else"):
+        else_ts = _last_user_ts(ai.load_else)
+    with companion_memory.memory_scope("transferania"):
+        t_ts = _last_user_ts(ai.load_transferania)
+    if else_ts <= 0 and t_ts <= 0:
+        out = {"favor": "tie", "tease": "Personne n'a encore le dernier mot.", "else_last_at": None, "transferania_last_at": None}
+    elif else_ts > t_ts:
+        out = {
+            "favor": "else",
+            "tease": "Else a eu le dernier mot du Maître.",
+            "else_last_at": else_ts or None,
+            "transferania_last_at": t_ts or None,
+        }
+    elif t_ts > else_ts:
+        out = {
+            "favor": "transferania",
+            "tease": "Transferania a eu le dernier mot du Maître.",
+            "else_last_at": else_ts or None,
+            "transferania_last_at": t_ts or None,
+        }
+    else:
+        out = {
+            "favor": "tie",
+            "tease": "À égalité — le Maître les tient toutes les deux.",
+            "else_last_at": else_ts or None,
+            "transferania_last_at": t_ts or None,
+        }
+    _favor_meter_cache[did] = (_now(), out)
+    return dict(out)
+
+
 def status_snapshot(device_id: str | None) -> dict:
     out = {
         "name": "Else",
@@ -518,6 +581,7 @@ def status_snapshot(device_id: str | None) -> dict:
         "topic": "",
         "open_thread": "",
         "last_event_id": None,
+        "meter": {"favor": "tie", "tease": ""},
     }
     if not device_id:
         return out
@@ -534,6 +598,7 @@ def status_snapshot(device_id: str | None) -> dict:
             "topic": str(data.get("topic") or "")[:120],
             "open_thread": _active_open_thread(data),
             "last_event_id": str(data.get("last_event_id") or "")[:48] or None,
+            "meter": _master_favor_meter(did),
             "device_id": did,
         })
     except Exception:
@@ -907,6 +972,7 @@ def exchange(topic: Any = "", *, turns: Any = 2, view: Any = "accueil", nsfw: bo
         "open_thread": _active_open_thread(data),
         "turns": produced,
         "messages": data.get("messages") or [],
+        "meter": _master_favor_meter(did),
         "transferania_used": ai.transferania_used(),
         "transferania_per_day": ai.daily_limit("chat"),
     }
@@ -977,6 +1043,7 @@ def react(*, trigger: Any = "", speaker: Any = "else", view: Any = "accueil", ns
         "device_id": did,
         "turns": [row],
         "messages": data.get("messages") or [],
+        "meter": _master_favor_meter(did),
         "transferania_used": ai.transferania_used(),
         "transferania_per_day": ai.daily_limit("chat"),
     }

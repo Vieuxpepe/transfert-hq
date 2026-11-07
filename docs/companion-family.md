@@ -34,23 +34,28 @@ memories. Shared sister dialogue (Master-triggered, ambient banter, or rare reac
 is owned by `hq_sister.py`, stored under `.hq-ai/sister_dialogue/`, and may leave a
 light episode note in each sister's own memory file. Prompt cross-awareness uses a
 read-only `sister_awareness_block` (last log lines) — never a merged memory store.
-Else stays image-only (chip + bubble); Transferania keeps Live2D. Client stage
-director: `assets/hq-sister.js` (`window.HqSister`) queues exchange/ambient/react,
-syncs prefs from `status().sister`, and owns the bus. Events: `hq-sister-line`,
-`hq-sister-open`, `hq-sister-peek`, `hq-sister-event`, `hq-sister-nudge`,
-`hq-transferania-line`, `hq-else-line`, `hq-sister-busy`, `hq-sister-prefs`,
-`hq-sister-history`. Ambient banter peeks the chip (no forced bubble open);
-Master-triggered Sœurs still opens Else. Interactivity: Master `↔` nudge
-(soft glance, 2× escalates to 1-turn banter), click a sister-strip line to
-prompt the other, bidirectional Master-chat reacts (T→Else and Else→T), and
-occasional pass-ball after ambient/event. Naturalness: asymmetric ambient
-turns, view/hour situation seeds, sticky `open_thread` (~45 min), named
-random sister events (~half of free ambients — compete/care/tease/observe/
-invite, no open-fil interrupt, recent-id cooldown), Else sometimes asides to
-the Master, attention gates (no banter mid-chat / NSFW expanded), per-sister
-line caps, and glance micro-reactions without a model call. Prefs:
-`sister_ambient_enabled`, `sister_react_enabled`. Status exposes `else` +
-`sister` (incl. `open_thread`, `last_event_id`). Canon sync:
+Else stays image-only (chip + bubble + mood portrait grades); Transferania keeps
+Live2D. Client stage director: `assets/hq-sister.js` (`window.HqSister`) queues
+exchange/ambient/react, syncs prefs from `status().sister`, and owns the bus.
+Events: `hq-sister-line`, `hq-sister-open`, `hq-sister-peek`, `hq-sister-event`,
+`hq-sister-nudge`, `hq-sister-meter`, `hq-transferania-line`, `hq-else-line`,
+`hq-sister-busy`, `hq-sister-prefs`, `hq-sister-history`. Ambient banter peeks
+the chip (no forced bubble open); Master-triggered Sœurs still opens Else.
+Interactivity: Master `↔` nudge (soft glance, 2× escalates to 1-turn banter),
+click a sister-strip line to prompt the other, bidirectional Master-chat reacts,
+occasional pass-ball after ambient/event, long-press Else menu, and a playful
+last-word favor meter on both strips. Named sister events surface as a small
+label chip (`faveur`, `soin`, …). Naturalness: asymmetric ambient turns,
+view/hour situation seeds, sticky `open_thread` (~45 min), named random sister
+events (~half of free ambients — compete/care/tease/observe/invite), Else
+proactive asides (cadence quiet/normal/often), DND gates (mute timer, NSFW
+expanded, Forge/projets, mid-chat), per-sister line caps, glance micro-reactions
+without a model call, and `HqMotion` lite/parked pause for Else’s ring. Prefs
+live in Else’s Prefs panel (Banter / Réact. / Proactive / cadence / address /
+voice / silence / topics) plus `sister_ambient_enabled` /
+`sister_react_enabled`. Quiet voice prefers HQ `hq_voice` (`op: voice`,
+thoughtful) with browser speech fallback. Status exposes `else` + `sister`
+(incl. `open_thread`, `last_event_id`, `meter`). Canon sync:
 `C:\Gemini-Test\scripts\sync_family_canon_docs.py`.
 
 ## Else HQ ↔ Gemini-Test handoff
@@ -58,10 +63,12 @@ line caps, and glance micro-reactions without a model call. Prefs:
 Else on HQ uses the Project G **persona capsule** (`hq_else_persona.py`) — identity
 and voice only, no Gemini daemons. She can also be lightly proactive (`op: ambient`
 on the Else action): rare measured asides that peek the chip without opening the
-bubble, mostly soft lines, sometimes ambient-budget model text, with a ~12 min
-cooldown and a client **Pro.** toggle. After a real Else chip chat, HQ may refresh
-`C:\Gemini-Test\ELSE_TRANSFERT_HANDOFF.json` (evidence bullets). Gemini boot
-(`else_agent_boot.py` / `else_transfert_bridge.py`) ingests that digest into
-conversation memory once per hash. Manual: `python scripts/export_else_handoff.py`
-(`--dry-run` builds without writing). Stores stay partitioned; test/temp HQ roots
-do not auto-export; handoff files are never written into the Transfert tree.
+bubble, mostly soft lines, sometimes ambient-budget model text, with cadence
+cooldowns and Prefs → Else proactive. After a real Else chip chat, HQ may refresh
+`C:\Gemini-Test\ELSE_TRANSFERT_HANDOFF.json` (evidence bullets + `view_trail`,
+`open_thread`, sister attention `meter`). Gemini boot (`else_agent_boot.py` /
+`else_transfert_bridge.py`) ingests that digest into conversation memory once per
+hash; the handoff card also surfaces recent views and the favor tease. Manual:
+`python scripts/export_else_handoff.py` (`--dry-run` builds without writing).
+Stores stay partitioned; test/temp HQ roots do not auto-export; handoff files are
+never written into the Transfert tree.

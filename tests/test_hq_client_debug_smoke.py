@@ -17,6 +17,7 @@ sys.path.insert(0, str(SOURCE))
 
 import hq_diagnostics as D  # noqa: E402
 import iphone_bridge as B  # noqa: E402
+from scripts.fetch_session_bundle import fetch_bundle  # noqa: E402
 from tests.test_hq_diagnostics_http import ADMIN_PIN, Client, NoRedirect  # noqa: E402
 
 
@@ -114,6 +115,10 @@ class ClientDebugSmoke(unittest.TestCase):
         st, tail = self.admin.j("/api/diag/client-log?limit=5")
         self.assertEqual(st, 200, tail)
         self.assertTrue(tail.get("lines"))
+
+    def test_diagnostic_cli_accepts_expected_login_redirect(self):
+        brief = fetch_bundle(self.base, ADMIN_PIN, 5, brief=True)
+        self.assertEqual(set(brief.keys()), D.AGENT_BRIEF_KEYS)
 
 
 if __name__ == "__main__":

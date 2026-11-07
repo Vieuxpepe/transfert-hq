@@ -25,32 +25,40 @@
   animation:none!important;
 }
 .hq-mouth-jaw{display:none}
+/* Seamless radial chin/jaw handoff: stays strictly above the neck (34%..46.5%)
+   so only her chin tip articulates while her neck stays completely still. */
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face-wrap.has-tongue-jaw .hq-companion-rig-face-lower{
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27% 33%,transparent 36%);
-  mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27% 33%,transparent 36%);
+  -webkit-mask-image:linear-gradient(#fff,#fff),radial-gradient(ellipse 13.5% 5.8% at 52.2% 40.2%,#fff 0 46%,transparent 84%);
+  -webkit-mask-composite:source-out;
+  mask-image:linear-gradient(#fff,#fff),radial-gradient(ellipse 13.5% 5.8% at 52.2% 40.2%,#fff 0 46%,transparent 84%);
+  mask-composite:subtract;
 }
 .hq-companion .has-tongue-jaw .hq-mouth-jaw{
   display:block;
-  z-index:2;
+  z-index:3;
   pointer-events:none;
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0 33%,#000 36% 44%,transparent 50%);
-  mask-image:linear-gradient(to bottom,transparent 0 33%,#000 36% 44%,transparent 50%);
+  -webkit-mask-image:radial-gradient(ellipse 16.5% 6.6% at 52.2% 40.2%,#000 0 56%,rgba(0,0,0,.5) 78%,transparent 100%);
+  mask-image:radial-gradient(ellipse 16.5% 6.6% at 52.2% 40.2%,#000 0 56%,rgba(0,0,0,.5) 78%,transparent 100%);
   transform-origin:52% 33%;
-  transform:translateY(calc(var(--mouth-jaw,0) * 5px)) scaleY(calc(1 + var(--mouth-jaw,0) * .11));
+  transform:translateY(calc(var(--mouth-jaw,0) * 2.1px)) scaleY(calc(1 + var(--mouth-jaw,0) * .048));
+  will-change:transform;
 }
-/* Closed-mouth gasp: hand the chin to the jaw copy without opening the mouth slot. */
+/* Closed-mouth gasp / breath quiver: subtle chin follow above the neck. */
 .hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-companion-rig-face-lower{
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 46%,transparent 49% 100%);
-  mask-image:linear-gradient(to bottom,transparent 0 24%,#000 27%,#000 38%,transparent 39% 43%,#000 44% 46%,transparent 49% 100%);
+  -webkit-mask-image:linear-gradient(#fff,#fff),radial-gradient(ellipse 13% 5.4% at 52.2% 40.5%,#fff 0 44%,transparent 82%);
+  -webkit-mask-composite:source-out;
+  mask-image:linear-gradient(#fff,#fff),radial-gradient(ellipse 13% 5.4% at 52.2% 40.5%,#fff 0 44%,transparent 82%);
+  mask-composite:subtract;
 }
 .hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-mouth-jaw{
   display:block;
-  z-index:2;
+  z-index:3;
   pointer-events:none;
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0 45%,#000 48% 100%);
-  mask-image:linear-gradient(to bottom,transparent 0 45%,#000 48% 100%);
-  transform-origin:52% 46%;
-  transform:scaleY(calc(1 + var(--mouth-jaw,0) * .065));
+  -webkit-mask-image:radial-gradient(ellipse 16% 6.2% at 52.2% 40.5%,#000 0 54%,rgba(0,0,0,.48) 76%,transparent 100%);
+  mask-image:radial-gradient(ellipse 16% 6.2% at 52.2% 40.5%,#000 0 54%,rgba(0,0,0,.48) 76%,transparent 100%);
+  transform-origin:52% 34%;
+  transform:translateY(calc(var(--mouth-jaw,0) * 1.4px)) scaleY(calc(1 + var(--mouth-jaw,0) * .036));
+  will-change:transform;
 }
 /* The pull interaction uses an intact face texture and owns its alignment. */
 .hq-companion.is-bust-pull .hq-mouth-jaw{display:none!important}
@@ -110,23 +118,4 @@
 }
 .hq-companion.is-glass-licking svg.hq-expressive-mouth {
   filter: drop-shadow(0 2px 8px rgba(255, 110, 160, 0.42));
-}
-
-
-/* TEMP facesplit-disable: hard face-lower/jaw mask handoffs painted horizontal bands across
-   nose/cheeks/chin while speaking. Keep .hq-expressive-mouth SVG for lips/visemes; drop the
-   clipped face-strip jaw until registration is fixed. */
-.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face-wrap.has-tongue-jaw .hq-companion-rig-face-lower{
-  -webkit-mask-image:none!important;
-  mask-image:none!important;
-}
-.hq-companion .has-tongue-jaw .hq-mouth-jaw{
-  display:none!important;
-}
-.hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-companion-rig-face-lower{
-  -webkit-mask-image:none!important;
-  mask-image:none!important;
-}
-.hq-companion.has-layered-portrait.is-nsfw:not(.is-bust-pull) .hq-companion-rig-face-wrap.has-gasp-jaw:not(.has-tongue-jaw) .hq-mouth-jaw{
-  display:none!important;
 }

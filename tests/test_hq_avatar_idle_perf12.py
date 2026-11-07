@@ -55,7 +55,30 @@ class AvatarIdlePerf12Tests(unittest.TestCase):
     def test_ensure_tick_wakes_glisten(self):
         body = self.src[self.src.index("function ensureTick"):]
         body = body[: body.index("\n  }\n") if "\n  }\n" in body else 600]
+        self.assertIn("if (!danglePaintArmed) return", body)
         self.assertIn("wakeGlisten()", body)
+
+    def test_member_stays_png_until_direct_interaction(self):
+        observer = self.src[self.src.index("new win.IntersectionObserver"):]
+        observer = observer[: observer.index("function ensureTick")]
+        self.assertNotIn("armDanglePaint()", observer)
+        self.assertNotIn('"pointerenter"', observer)
+        self.assertRegex(self.src, r'"pointerdown"[\s\S]{0,180}armDanglePaint\(\)')
+
+    def test_settled_frame_parks_without_repaint(self):
+        body = self.src[self.src.index("function stopSim"):]
+        body = body[: body.index("\n    let pokeName")]
+        self.assertIn("danglePaintOn = false", body)
+        self.assertIn("clearDanglePaintTimer()", body)
+        self.assertNotIn("scheduleDanglePaint", body)
+        self.assertNotIn("renderFlat()", body)
+
+    def test_idle_veins_are_static(self):
+        body = self.src[self.src.index("function veinIdlePulseFloor"):]
+        body = body[: body.index("function veinPulseNeedsFrame")]
+        self.assertRegex(body, r"return\s+0\s*;")
+        self.assertNotIn("Math.sin", body)
+        self.assertNotIn("scheduleSwellIdleBake", self.src)
 
     def test_body_feel_writes_deduped(self):
         self.assertIn("getPropertyValue(\"--cock-give\")", self.src.replace("'", '"'))

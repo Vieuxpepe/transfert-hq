@@ -20,7 +20,7 @@
 .sky-dusk .home-stars,.sky-dawn .home-stars{opacity:.45}
 .home-star{position:absolute;border-radius:50%;background:#fff;box-shadow:0 0 6px rgba(255,255,255,.8)}
 .home-shoot{position:absolute;width:120px;height:2px;border-radius:2px;opacity:0;transform:rotate(-24deg);
-  background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.95));filter:drop-shadow(0 0 6px #fff)}
+  background:linear-gradient(90deg,rgba(255,255,255,0),rgba(255,255,255,.95));box-shadow:0 0 6px rgba(255,255,255,.7)}
 .home-clouds{transform:translate(calc(var(--px) * -24px),calc(var(--py) * -6px));opacity:0;transition:opacity 1.5s ease,transform 1.2s cubic-bezier(.2,.8,.2,1)}
 .sky-day .home-clouds{opacity:.55}
 .sky-dawn .home-clouds,.sky-dusk .home-clouds{opacity:.16}
@@ -57,8 +57,7 @@
 .home-ch{display:inline-block;white-space:pre}
 .home-clock{display:flex;flex-direction:column;align-items:flex-end;gap:5px;margin-left:auto;padding-top:2px;
   font-family:Bahnschrift,"DIN Alternate","Roboto Condensed",system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--text)}
-.home-clock-face{display:flex;align-items:center;font-size:2.3rem;font-weight:800;line-height:1;letter-spacing:-.02em;
-  filter:drop-shadow(0 2px 12px color-mix(in srgb,var(--home-amb,#8cc8ff) 40%,transparent))} /* on the whole face: a text-shadow would be clipped by each rolling digit's window */
+.home-clock-face{display:flex;align-items:center;font-size:2.3rem;font-weight:800;line-height:1;letter-spacing:-.02em}
 .home-odo{display:inline-block;height:1.2em;overflow:hidden}
 .home-odo-col{display:flex;flex-direction:column;transition:transform .9s cubic-bezier(.2,1.25,.35,1);transition-delay:calc(var(--k,0) * 70ms)}
 .home-odo-d{display:block;height:1.2em;line-height:1.2em;text-align:center}
@@ -85,7 +84,7 @@
 .home-fx button.home-next:hover{box-shadow:0 14px 30px -14px color-mix(in srgb,var(--cat,var(--accent)) 60%,transparent);border-color:color-mix(in srgb,var(--cat,var(--accent)) 60%,var(--line))}
 .home-fx button.home-next::after{content:"";position:absolute;inset:0;pointer-events:none;
   background:linear-gradient(105deg,transparent 35%,color-mix(in srgb,#fff 18%,transparent) 50%,transparent 65%);background-size:250% 100%;background-position:150% 0}
-.home-fx .home-next .hq-cal-ring{filter:drop-shadow(0 0 6px color-mix(in srgb,var(--cat,var(--accent)) 55%,transparent))}
+.home-fx .home-next .hq-cal-ring{box-shadow:0 0 6px color-mix(in srgb,var(--cat,var(--accent)) 55%,transparent)}
 
 /* ---------------------------------------------------------------- actions: tilt, light, gestures */
 .home-fx .home-actions{perspective:800px}
@@ -191,7 +190,7 @@
 @keyframes hf-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
 
 @media (prefers-reduced-motion:no-preference){
-  .home-star{animation:hf-twinkle 3s ease-in-out infinite}
+  .home-star.is-moving{animation:hf-twinkle 3s ease-in-out infinite}
   .home-shoot.is-go{animation:hf-shoot 1.1s cubic-bezier(.3,0,.6,1) forwards}
   .home-cloud{animation:hf-drift 120s linear infinite}
   .home-cloud.c1{animation-duration:160s}
@@ -247,7 +246,7 @@ body.hq-bg-off .home-bg{display:none}
 /* the low sun: a wide, soft glow sitting on the horizon, and the sun's disc just above the hills */
 .bg-mesh .m2{left:50%;bottom:-36vh;width:130vmax;height:80vh;transform:translateX(-50%);border-radius:50%;opacity:.5;
   background:radial-gradient(closest-side,color-mix(in srgb,var(--bg-b) 90%,#fff) 0%,color-mix(in srgb,var(--bg-b) 55%,transparent) 30%,transparent 72%)}
-.bg-mesh .m3{left:50%;bottom:4vh;width:26vmin;height:26vmin;transform:translateX(-50%);border-radius:50%;opacity:.22;filter:blur(2px);
+.bg-mesh .m3{left:50%;bottom:4vh;width:26vmin;height:26vmin;transform:translateX(-50%);border-radius:50%;opacity:.22;
   background:radial-gradient(closest-side,color-mix(in srgb,var(--bg-b) 70%,#fff) 0%,color-mix(in srgb,var(--bg-b) 40%,transparent) 55%,transparent 100%)}
 .bg-stars{position:absolute;inset:0 0 50% 0;opacity:0;transition:opacity 4s ease;-webkit-mask:linear-gradient(#000,transparent);mask:linear-gradient(#000,transparent)}
 .home-bg[data-phase="night"] .bg-stars{opacity:.55}
@@ -279,7 +278,7 @@ body.hq-bg-off .home-bg{display:none}
 /* Carnet: a library at golden hour — warmer paper grain, dust motes instead of embers */
 .home-bg[data-view="carnet"] .bg-grain{opacity:.09}
 .home-bg[data-view="carnet"] .bg-stars{display:none}
-.home-bg[data-view="carnet"] .bg-lights span{box-shadow:none;filter:blur(1px)}
+.home-bg[data-view="carnet"] .bg-lights span{box-shadow:none}
 /* Calendrier: dawn — the sun already a little higher, no stars */
 .home-bg[data-view="calendrier"] .m3{bottom:14vh;opacity:.3}
 .home-bg[data-view="calendrier"] .bg-stars{display:none}
@@ -291,7 +290,7 @@ body.hq-bg-off .home-bg{display:none}
 .home-bg[data-view="forge"] .bg-lights span{box-shadow:0 0 14px color-mix(in srgb,var(--bg-b) 80%,transparent)}
 .home-bg[data-view="forge"] .bg-waves .w1{fill:color-mix(in srgb,var(--bg-c) 30%,transparent)}
 /* Fichiers: sunset over the sea — waves instead of hills and the sun's path on the water */
-.home-bg[data-view="fichiers"] .m3{bottom:0;width:7vmin;height:30vh;border-radius:45% 45% 0 0;opacity:.16;filter:blur(6px)}
+.home-bg[data-view="fichiers"] .m3{bottom:0;width:7vmin;height:30vh;border-radius:45% 45% 0 0;opacity:.16}
 .home-bg[data-view="fichiers"] .bg-waves{height:min(12vh,110px)}
 .home-bg[data-view="fichiers"] .bg-waves .w1{fill:color-mix(in srgb,var(--bg-c) 30%,transparent)}
 .home-bg[data-view="fichiers"] .bg-waves .w2{fill:color-mix(in srgb,var(--bg-d) 60%,transparent)}
@@ -329,8 +328,25 @@ body[data-view="accueil"] .home-fx section.home-hero{background-image:radial-gra
   .bg-mesh .m2{animation:hf-sun 24s ease-in-out infinite}
   .bg-lights span{animation-name:hf-rise,hf-sway;animation-timing-function:linear,ease-in-out;animation-iteration-count:infinite,infinite}
   .bg-waves{animation:hf-wave-slide 180s linear infinite}
-  .bg-stars span{animation:hf-bgtwinkle 6s ease-in-out infinite}
+  .bg-stars span.is-moving{animation:hf-bgtwinkle 6s ease-in-out infinite}
 }
+/* Explicit Accueil budgets: full = 8 star accents + 4 lights; lite = 4 star accents; parked/off-view = 0. */
+html[data-hq-motion-tier="lite"] .home-star.is-moving:not(.is-lite),
+html[data-hq-motion-tier="lite"] .bg-stars span.is-moving:not(.is-lite){animation:none!important}
+html[data-hq-motion-tier="lite"] .home-cloud,
+html[data-hq-motion-tier="lite"] .home-aurora span,
+html[data-hq-motion-tier="lite"] .home-orb-rays,
+html[data-hq-motion-tier="lite"] .home-orb-core,
+html[data-hq-motion-tier="lite"] .bg-mesh .m2,
+html[data-hq-motion-tier="lite"] .bg-waves,
+html[data-hq-motion-tier="lite"] .home-fx .device-tile:not(.is-off) .device-ring::after{animation:none!important}
+html[data-hq-motion-tier="lite"] .bg-lights{display:none}
+html[data-hq-motion-tier="parked"] .home-fx *,
+html[data-hq-motion-tier="parked"] .home-fx *::before,
+html[data-hq-motion-tier="parked"] .home-fx *::after,
+html[data-hq-motion-tier="parked"] .home-bg *,
+html[data-hq-motion-tier="parked"] .home-bg *::before,
+html[data-hq-motion-tier="parked"] .home-bg *::after{animation-play-state:paused!important}
 @media (prefers-reduced-motion:reduce){.bg-lights{display:none}}
 
 @media (prefers-color-scheme: light){.home-clock-face{filter:none}}

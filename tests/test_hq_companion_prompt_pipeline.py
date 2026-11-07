@@ -152,6 +152,9 @@ class PromptPipelineTests(Base):
         adult = ai.build_transferania_system("chat", "warm", nsfw=True, view="accueil", device_id=DEV, context_core=True)
         self.assertIn("MÉDIA CHAT ADULTE", adult)
         self.assertIn("[fx:ID]", adult)
+        self.assertNotIn("VOCABULAIRE ADULTE", adult)
+        self.assertNotIn("REGISTRE CHAT ADULTE", adult)
+        self.assertIn("VOCABULAIRE ADULTE", ai.nsfw_evidence_page("chat"))
         for channel, nsfw in (("chat", False), ("ambient", True)):
             core = ai.build_transferania_system(channel, "warm", nsfw=nsfw, view="accueil", device_id=DEV, context_core=True)
             self.assertNotIn("MÉDIA CHAT ADULTE", core)
@@ -171,3 +174,17 @@ class PromptPipelineTests(Base):
             "persona": "warm"}, role="admin")
         self.assertEqual(code, 200, out)
         self.assertIn("DÉJÀ DIT (ambiant récent) : Accueil tranquille ce matin.", out["contents"][-1]["parts"][0]["text"])
+
+    def test_sister_presence_block_is_high_priority_page_kind(self):
+        import hq_companion_context as ctx
+        block = "SŒUR PRÉSENTE (Else sur le même HQ — échange loggé, pas une mémoire fusionnée) :\nElse : Coucou."
+        self.assertEqual(ctx.page_kind(block), "sister")
+        self.assertGreater(ctx.PRIORITY["sister"], ctx.PRIORITY["time"])
+        self.assertGreater(ctx.PRIORITY["sister"], ctx.PRIORITY["page"])
+        joined = ai.join_evidence_page(block, "", block, "VOIX ELSE : ton mesuré.")
+        self.assertEqual(joined.count("SŒUR PRÉSENTE"), 1)
+        self.assertIn("VOIX ELSE", joined)
+        _, _, info = ai.build_companion_context("chat", "core", "salut", page=joined)
+        kinds = [r["kind"] for r in info["selection_manifest"] if r["selected"] and r["kind"] not in {"system", "current_message"}]
+        self.assertIn("sister", kinds)
+        self.assertIn("delivery", kinds)

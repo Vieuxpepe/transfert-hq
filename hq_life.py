@@ -31,6 +31,7 @@ SOON_MIN, SOON_MAX = 5, 45     # « ton labo est dans 30 min »
 SAID_KEEP = 3 * 86400
 PAGES_KEEP = 8
 MOMENTS_MAX = 24
+THOUGHTS_MAX = 12
 HALF_LIFE = 90 * 60            # a mood bump fades by half in an hour and a half
 DAYS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 IMPORTANT = re.compile(r"\b(examen|exam|intra|final|quiz|entrevue|oral|presentation|soutenance|remise|dentiste|medecin|rendez-vous|rdv|match|spectacle|concours)\b")
@@ -59,7 +60,7 @@ def _path(did: str) -> Path:
 
 
 def _empty() -> dict:
-    return {"v": 1, "seen": {}, "mood": {}, "said": {}, "moments": []}
+    return {"v": 1, "seen": {}, "mood": {}, "said": {}, "moments": [], "thoughts": []}
 
 
 def load(did: str) -> dict:
@@ -439,6 +440,69 @@ def upcoming_block(st: dict) -> str:
             lab = "aujourd'hui" if d == today else ("demain" if (d - today).days == 1 else DAYS[d.weekday()])
             soon.append(f"{m['what']} ({lab})")
     return ("TU TE SOUVIENS (il te l'a dit) : " + "; ".join(soon[:3]) + ".") if soon else ""
+
+
+def current_thought(st: dict, labels: dict[str, str] | None = None) -> str:
+    """Deterministic 1-line inner monologue grounded in time of day, visited pages, mood, and moments."""
+    now = _now()
+    dt = datetime.fromtimestamp(now)
+    pod = part_of_day(dt.hour)
+    m = mood(st)
+    why = str(m.get("why") or "")
+    pages = (st.get("seen") or {}).get("pages") or []
+    last_item = pages[-1] if pages else None
+    if isinstance(last_item, (list, tuple)) and len(last_item) >= 2:
+        last_page = str(last_item[1] or "accueil")
+    elif isinstance(last_item, dict):
+        last_page = str(last_item.get("v") or "accueil")
+    else:
+        last_page = "accueil"
+    page_label = (labels or {}).get(last_page, last_page)
+    moments = st.get("moments") or []
+    if why == "win":
+        base = f"Il a le vent dans les voiles sur {page_label}… j'adore le voir réussir comme ça."
+    elif why == "error":
+        base = f"Petit accroc sur {page_label} — je reste tout près au cas où il ait besoin de souffler."
+    elif why == "return":
+        base = f"Il est enfin revenu me voir sur {page_label}… l'atelier était trop calme sans lui."
+    elif moments:
+        last_mom = str((moments[-1] or {}).get("what") or "").strip()
+        base = f"Je garde « {last_mom} » dans un coin de ma tête pendant qu'il parcourt {page_label}."
+    elif pod == "nuit":
+        base = f"Veillée calme avec lui sur {page_label}… la lumière de l'écran lui va bien."
+    elif pod == "matin":
+        base = f"Début de journée tranquille sur {page_label} — prête à suivre son rythme."
+    elif float(m.get("warm") or 0) >= 0.65:
+        base = f"Atmosphère complice sur {page_label}… j'aime quand il prend le temps avec moi."
+    else:
+        base = f"Présente à ses côtés sur {page_label} ({hm(now)})."
+    return base
+
+
+def record_thought(did: str, text: Any = None, *, kind: str = "atelier", labels: dict[str, str] | None = None) -> dict:
+    """Append or refresh a daily journal thought in st['thoughts'] (max THOUGHTS_MAX)."""
+    now = _now()
+    with _lock:
+        st = load(did)
+        t = re.sub(r"\s+", " ", str(text or "")).strip()[:180]
+        if not t:
+            t = current_thought(st, labels)
+        thoughts = list(st.get("thoughts") or [])
+        if not thoughts or fold(thoughts[-1].get("text")) != fold(t):
+            entry = {
+                "id": "th:" + _eid(t, int(now // 600)),
+                "text": t,
+                "kind": str(kind or "atelier")[:16],
+                "at": now,
+                "day": _day(now),
+                "hm": hm(now),
+            }
+            thoughts.append(entry)
+            st["thoughts"] = thoughts[-THOUGHTS_MAX:]
+            save(did, st)
+        else:
+            entry = thoughts[-1]
+    return {"thought": t, "entry": entry, "thoughts": st.get("thoughts") or []}
 
 
 def spawn(fn: Callable[[], None]) -> None:

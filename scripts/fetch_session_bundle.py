@@ -31,9 +31,14 @@ def login(base: str, pin: str) -> urllib.request.OpenerDirector:
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": base.rstrip("/")},
     )
-    with op.open(req, timeout=30) as resp:
-        if resp.status != 303:
-            raise SystemExit(f"login failed: HTTP {resp.status}")
+    try:
+        with op.open(req, timeout=30) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+        e.close()
+    if status != 303:
+        raise SystemExit(f"login failed: HTTP {status}")
     return op
 
 

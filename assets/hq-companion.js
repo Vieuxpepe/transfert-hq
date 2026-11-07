@@ -99,7 +99,7 @@
     if (id === "garment-front") {
       return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     }
-    return RIG_NEUTRAL_BASE + id + ".svg?v=eyesv3";
+    return RIG_NEUTRAL_BASE + id + ".svg?v=eyesv3d_b76";
   }
 
   function readAccessories(win) {
@@ -15559,6 +15559,47 @@
     S.syncSisterPrefBtns = syncSisterPrefBtns;
     syncSisterPrefBtns();
 
+    const sisterMeterEl = doc.createElement("div");
+    sisterMeterEl.className = "hq-companion-sister-meter";
+    sisterMeterEl.hidden = true;
+    sisterMeterEl.setAttribute("aria-live", "polite");
+    S.sisterMeterEl = sisterMeterEl;
+    const sisterEventEl = doc.createElement("div");
+    sisterEventEl.className = "hq-companion-sister-event";
+    sisterEventEl.hidden = true;
+    sisterEventEl.setAttribute("aria-live", "polite");
+    S.sisterEventEl = sisterEventEl;
+    const updateCompanionSisterMeter = (detail) => {
+      if (!S.sisterMeterEl) return;
+      const meter = (detail && detail.meter) || (win.HqSister && win.HqSister.__meter) || null;
+      const tease = meter && meter.tease ? String(meter.tease) : "";
+      const favor = (meter && meter.favor) || "tie";
+      S.sisterMeterEl.classList.toggle("is-else", favor === "else");
+      S.sisterMeterEl.classList.toggle("is-transferania", favor === "transferania");
+      if (!tease || !S.expanded) {
+        S.sisterMeterEl.hidden = true;
+        return;
+      }
+      S.sisterMeterEl.hidden = false;
+      S.sisterMeterEl.textContent = tease;
+    };
+    S.updateCompanionSisterMeter = updateCompanionSisterMeter;
+    const updateCompanionSisterEvent = (detail) => {
+      if (!S.sisterEventEl) return;
+      const ev = detail || (win.HqSister && win.HqSister.__lastEvent) || null;
+      if (!ev || (!ev.label && !ev.id)) {
+        S.sisterEventEl.hidden = true;
+        S.sisterEventEl.textContent = "";
+        return;
+      }
+      const kind = String(ev.kind || "observe").replace(/[^a-z0-9_-]/gi, "");
+      S.sisterEventEl.className = "hq-companion-sister-event is-" + kind;
+      S.sisterEventEl.hidden = !S.expanded;
+      S.sisterEventEl.textContent = String(ev.label || ev.id);
+      S.sisterEventEl.title = ev.id ? ("événement · " + ev.id) : "événement sœurs";
+    };
+    S.updateCompanionSisterEvent = updateCompanionSisterEvent;
+
     const sisterStripEl = doc.createElement("div");
     sisterStripEl.className = "hq-companion-sister-strip";
     sisterStripEl.hidden = true;
@@ -15571,6 +15612,7 @@
       S.sisterStripEl.replaceChildren();
       const show = !!(S.expanded && rows.length);
       S.sisterStripEl.hidden = !show;
+      updateCompanionSisterEvent();
       rows.forEach((m) => {
         const row = doc.createElement("button");
         row.type = "button";
@@ -15587,6 +15629,7 @@
         S.sisterStripEl.appendChild(row);
       });
       S.sisterStripEl.scrollTop = S.sisterStripEl.scrollHeight;
+      updateCompanionSisterMeter();
     };
     S.renderCompanionSisterStrip = renderCompanionSisterStrip;
 
@@ -15654,7 +15697,7 @@
     eyebrow.append(eyebrowName, eyebrowHeat);
     const bubbleGrip = createBubbleGrip(doc);
     S.bubbleGrip = bubbleGrip;
-    bubble.append(head, log, newMessageBtn, eyebrow, line, readMore, quickRepliesEl, masterBarEl, sisterBarEl, sisterStripEl, memoryPanel, compose, actions, bubbleGrip);
+    bubble.append(head, log, newMessageBtn, eyebrow, line, readMore, quickRepliesEl, masterBarEl, sisterBarEl, sisterMeterEl, sisterEventEl, sisterStripEl, memoryPanel, compose, actions, bubbleGrip);
     const av = doc.createElement("button");
     av.type = "button";
     av.className = "hq-companion-avatar";
@@ -18541,13 +18584,17 @@
           S.el.classList.add("is-sister-glance");
           win.setTimeout(() => S.el && S.el.classList.remove("is-sister-glance"), 900);
         });
-        win.addEventListener("hq-sister-event", () => {
+        win.addEventListener("hq-sister-event", (ev) => {
+          if (S.updateCompanionSisterEvent) S.updateCompanionSisterEvent(ev && ev.detail);
           if (!S.el) return;
           S.el.classList.add("is-sister-event");
           win.setTimeout(() => S.el && S.el.classList.remove("is-sister-event"), 1800);
         });
         win.addEventListener("hq-sister-history", () => {
           if (S.renderCompanionSisterStrip) S.renderCompanionSisterStrip();
+        });
+        win.addEventListener("hq-sister-meter", (ev) => {
+          if (S.updateCompanionSisterMeter) S.updateCompanionSisterMeter(ev && ev.detail);
         });
         win.addEventListener("hq-sister-prefs", () => {
           if (S.syncSisterPrefBtns) S.syncSisterPrefBtns();

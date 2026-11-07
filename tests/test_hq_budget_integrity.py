@@ -106,7 +106,7 @@ class IntegrityTests(Base):
         for invalid in (float("inf"), float("nan"), True, False, 1.5, {}, None):
             ai.bind(companion_context_config=lambda: {"chat_input_budget": invalid, "chat_daily_limit": invalid,
                     "model_input_tpm": {MODEL: invalid}})
-            self.assertEqual(ai.context_budget("chat"), 12000)
+            self.assertEqual(ai.context_budget("chat"), 24000)
             self.assertEqual(ai.daily_limit("chat"), 1000)
             self.assertEqual(ai.model_tpm(MODEL), 16000)
 

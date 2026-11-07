@@ -100,6 +100,9 @@ def build_digest(*, device_id: Any = None, owner: str = "admin") -> dict:
     episodes: list[str] = []
     sister_lines: list[str] = []
     open_thread = ""
+    views: list[str] = []
+    last_view = ""
+    meter: dict = {}
 
     if did:
         token = mem._owner.set(str(owner or "admin"))
@@ -114,9 +117,16 @@ def build_digest(*, device_id: Any = None, owner: str = "admin") -> dict:
                 for m in msgs[-MAX_EXCHANGES * 2 :]:
                     role = str(m.get("role") or "")
                     text = _clip(m.get("text") or "")
+                    view = re.sub(r"[^a-z0-9_-]", "", str(m.get("view") or "").lower())[:32]
+                    if view:
+                        views.append(view)
+                        last_view = view
                     if role not in ("user", "assistant") or not text:
                         continue
-                    recent.append({"role": role, "text": text, "ts": m.get("ts")})
+                    row = {"role": role, "text": text, "ts": m.get("ts")}
+                    if view:
+                        row["view"] = view
+                    recent.append(row)
                 memories = [_clip(m.get("text")) for m in (snap.get("memories") or [])[:6] if m.get("text")]
                 episodes = [_clip(e.get("text")) for e in (snap.get("episodes") or [])[-6:] if e.get("text")]
         finally:
@@ -131,13 +141,29 @@ def build_digest(*, device_id: Any = None, owner: str = "admin") -> dict:
             if text:
                 sister_lines.append(f"{label}: {text}")
         open_thread = _clip(dialogue.get("open_thread") or "", 200)
+        try:
+            meter = sister._master_favor_meter(did)
+        except Exception:
+            meter = {}
+
+    # Distinct recent views (order preserved, newest last).
+    view_trail: list[str] = []
+    for v in views[-12:]:
+        if not view_trail or view_trail[-1] != v:
+            view_trail.append(v)
+    view_trail = view_trail[-5:]
 
     bullets: list[str] = []
     if summary:
         bullets.append(f"On Transfert HQ, Else's chat summary: {summary}")
+    if last_view:
+        bullets.append(f"On Transfert HQ, Else's last page view: {last_view}")
+    if view_trail:
+        bullets.append("On Transfert HQ, Else recent views: " + " → ".join(view_trail))
     for m in recent[-6:]:
         who = "Master" if m["role"] == "user" else "Else"
-        bullets.append(f"On Transfert HQ ({who}): {m['text']}")
+        view_bit = f" [{m['view']}]" if m.get("view") else ""
+        bullets.append(f"On Transfert HQ ({who}{view_bit}): {m['text']}")
     for text in memories[:4]:
         bullets.append(f"On Transfert HQ (Else memory): {text}")
     for text in episodes[-3:]:
@@ -146,6 +172,8 @@ def build_digest(*, device_id: Any = None, owner: str = "admin") -> dict:
         bullets.append("On Transfert HQ sister log: " + " | ".join(sister_lines[-4:]))
     if open_thread:
         bullets.append(f"On Transfert HQ open sister thread: {open_thread}")
+    if meter.get("tease"):
+        bullets.append(f"On Transfert HQ sister attention tease: {meter.get('tease')}")
     empty = not did or (not summary and not recent and not memories and not sister_lines)
     bullets = bullets[:MAX_BULLETS]
 
@@ -161,11 +189,21 @@ def build_digest(*, device_id: Any = None, owner: str = "admin") -> dict:
         "episodes": episodes,
         "sister_lines": sister_lines,
         "open_thread": open_thread,
+        "last_view": last_view,
+        "view_trail": view_trail,
+        "meter": meter,
         "bullets": bullets,
         "note": "Evidence digest for Gemini-Test boot. Not a merged memory store. Do not invent beyond these lines.",
     }
     raw = json.dumps(
-        {"summary": summary, "bullets": bullets, "recent": recent, "sister": sister_lines},
+        {
+            "summary": summary,
+            "bullets": bullets,
+            "recent": recent,
+            "sister": sister_lines,
+            "views": view_trail,
+            "open_thread": open_thread,
+        },
         ensure_ascii=False,
         sort_keys=True,
     )

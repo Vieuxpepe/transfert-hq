@@ -401,6 +401,7 @@
   var LAG_CAPTURE_GAP_MS = 45000;
   var lastLagCaptureAt = 0;
   var lagCaptureInflight = false;
+  var lagCaptureSupported = true;
   var lastSpike = null;
 
   function hqLagMeta() {
@@ -455,7 +456,7 @@
   }
 
   function maybeLagCapture(reason, extra) {
-    if (agentMode || doc.hidden) return;
+    if (agentMode || doc.hidden || !lagCaptureSupported) return;
     var now = Date.now();
     if (lagCaptureInflight || now - lastLagCaptureAt < LAG_CAPTURE_GAP_MS) return;
     lagCaptureInflight = true;
@@ -476,11 +477,19 @@
           body: JSON.stringify(payload),
         })
         .then(function (r) {
-          if (!r.ok) return null;
+          if (!r.ok) {
+            if (r.status === 404 || r.status === 405 || r.status === 501) lagCaptureSupported = false;
+            return null;
+          }
           return r.json();
         })
         .then(function (j) {
-          if (!j || !j.ok) return;
+          if (!j || !j.ok) {
+            if (j && (j.error === "platform_unsupported" || j.error === "capture_unsupported")) {
+              lagCaptureSupported = false;
+            }
+            return;
+          }
           lastLagCaptureAt = Date.now();
           var rel = j.screenshot_rel || j.rel || "";
           var hqView = j.hq_view_rel || "";
@@ -525,6 +534,15 @@
     }
   }
 
+  function apiPath(raw) {
+    try {
+      var parsed = new URL(String(raw || ""), win.location && win.location.href ? win.location.href : undefined);
+      return parsed.pathname || "/";
+    } catch (_) {
+      return String(raw || "").split("?")[0].split("#")[0] || "/";
+    }
+  }
+
   function memLine() {
     var m = win.performance && win.performance.memory;
     if (!m) return "n/a (Chrome)";
@@ -564,8 +582,10 @@
         s.mode +
         " / " +
         s.tier +
-        (s.autoLite ? " autoLite" : "") +
-        (s.emaLive2d ? " l2d~" + s.emaLive2d + "ms" : "")
+        (s.autoLite ? " autoLite:" + (s.autoLiteReason || "pressure") : "") +
+        (s.emaLive2d ? " l2d~" + s.emaLive2d + "ms" : "") +
+        (s.emaDangle ? " dangle~" + s.emaDangle + "ms" : "") +
+        (s.emaFrameGap ? " gap~" + s.emaFrameGap + "ms" : "")
       );
     } catch (_) {
       return "motion: err";
@@ -811,6 +831,7 @@
   if (typeof origFetch === "function") {
     win.fetch = function (input, init) {
       var url = typeof input === "string" ? input : input && input.url ? input.url : "";
+      var path = apiPath(url);
       init = init || {};
       var hdrs = new Headers(init.headers || {});
       if (sessionId && !hdrs.has("X-HQ-Session")) hdrs.set("X-HQ-Session", sessionId);
@@ -819,7 +840,7 @@
       return origFetch.call(this, input, init).then(function (res) {
         try {
           var ms = Math.round((win.performance && win.performance.now ? win.performance.now() : Date.now()) - t0);
-          if (url.indexOf("/api/") >= 0 && res.ok && ms >= 800) {
+          if (path.indexOf("/api/") === 0 && res.ok && ms >= 800) {
             res
               .clone()
               .text()
@@ -830,7 +851,7 @@
                   rid = j.request_id || j.requestId || "";
                 } catch (_) {}
                 if (win.hqPerfMark) {
-                  win.hqPerfMark("api", { op: "fetch-slow", path: url.split("?")[0], ms: ms, status: res.status });
+                  win.hqPerfMark("api", { op: "fetch-slow", path: path, ms: ms, status: res.status });
                 }
                 pushEntry("warn", "fetch slow " + ms + "ms " + path, rid ? "request_id=" + rid : null, {
                   kind: "api",
@@ -841,12 +862,11 @@
               })
               .catch(function () {
                 if (win.hqPerfMark) {
-                  win.hqPerfMark("api", { op: "fetch-slow", path: url.split("?")[0], ms: ms, status: res.status });
+                  win.hqPerfMark("api", { op: "fetch-slow", path: path, ms: ms, status: res.status });
                 }
               });
           }
-          if (url.indexOf("/api/") >= 0 && !res.ok) {
-            var path = url.split("?")[0];
+          if (path.indexOf("/api/") === 0 && !res.ok) {
             var status = res.status;
             ms = Math.round((win.performance && win.performance.now ? win.performance.now() : Date.now()) - t0);
             res

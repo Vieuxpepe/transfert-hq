@@ -291,6 +291,116 @@ class StatsTests(FeatureBase):
         (self.root / ai.STORE / "context-usage.json").write_text("[[[", "utf-8")
         self.assertEqual(T("stats")[1]["median_latency_ms"], None)
 
+    def test_inflected_memory_bridge_reflection_and_capture_handoff(self):
+        # 1. Stemming in companion_memory and companion_context
+        self.assertTrue(ai.companion_memory.terms("soudure") & ai.companion_memory.terms("souder"))
+        self.assertTrue(ai.companion_context.terms("peintures") & ai.companion_context.terms("peinture"))
+        # 2. Facts bridge across devices (souviens-toi on DEV -> recalled on DEV2)
+        code, out = self.send("souviens-toi : j'adore souder l'acier")
+        self.assertEqual(code, 200)
+        self.assertIn("souviendrai", out["reply"])
+        code, out2 = T("send", device_id="device_beta_987654", message="de quoi tu te souviens ?")
+        self.assertEqual(code, 200)
+        self.assertIn("j'adore souder l'acier", out2["reply"])
+        # 3. Actionable message triggers suggest_capture handoff
+        code, out_cap = self.send("Il faut que je commande 20 vis M4 d'ici demain")
+        self.assertEqual(code, 200)
+        self.assertEqual(out_cap.get("suggest_capture"), "Il faut que je commande 20 vis M4 d'ici demain")
+        self.assertEqual(out_cap["messages"][-1].get("suggest_capture"), "Il faut que je commande 20 vis M4 d'ici demain")
+        # 4. Reflection hint reaches live chat VOIX TRANSFERANIA block
+        code, prev = ai.http_post({"action": "transferania", "op": "context_preview", "device_id": DEV, "channel": "chat", "message": "Salut", "signals": {"interactions": ["caresse joue"]}}, role="admin")
+        self.assertEqual(code, 200)
+        user_text = prev["contents"][-1]["parts"][0]["text"]
+        self.assertIn("VOIX TRANSFERANIA", user_text)
+        self.assertIn("Écho tactile Live2D", user_text)
+
+    def test_unconstrained_agency_vision_archive_and_briefing(self):
+        # 1. Live HQ lookup detection + inline action proposals
+        self.assertTrue(ai.wants_hq_lookup("Il me reste combien de vis M4 en stock ?"))
+        props_stock = ai.extract_inline_proposals("J'ai acheté 20 vis M4")
+        self.assertEqual(len(props_stock), 1)
+        self.assertEqual(props_stock[0]["kind"], "stock")
+        self.assertEqual(props_stock[0]["delta"], 20.0)
+
+        code, out_prop = self.send("Il faut que je commande du flux demain")
+        self.assertEqual(code, 200)
+        self.assertTrue(out_prop.get("proposals"))
+        self.assertEqual(out_prop["proposals"][0]["kind"], "task")
+
+        # 2. Multimodal image attachment in chat
+        tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        self.answers = [reply("Je vois un pixel.")]
+        code, out_img = T("send", message="Que vois-tu sur ce schéma ?", image=tiny_png)
+        self.assertEqual(code, 200)
+        self.assertTrue(out_img["messages"][-2].get("has_image"))
+        last_call_parts = self.calls[-1][1]["contents"][-1]["parts"]
+        self.assertTrue(any("inlineData" in p for p in last_call_parts))
+
+        # 3. Semantic SQLite Archive indexing and search
+        chunk = [
+            {"role": "user", "text": "Nous avons calibré l'oscilloscope Tektronix sur 50 MHz", "ts": 1700000000000},
+            {"role": "assistant", "text": "Parfait, le signal carré sur l'oscilloscope Tektronix est net.", "ts": 1700000005000},
+        ]
+        added = ai.companion_archive.archive_exchanges(chunk, DEV)
+        self.assertEqual(added, 1)
+        code, arch_out = T("archive_search", query="calibrer oscilloscope Tektronix")
+        self.assertEqual(code, 200)
+        self.assertTrue(arch_out["results"])
+        self.assertIn("Tektronix", arch_out["results"][0]["user_text"])
+
+        # 4. Workshop Briefing ("Table d'atelier")
+        code, brief_out = T("briefing")
+        self.assertEqual(code, 200)
+        self.assertIn("Table d'atelier", brief_out["briefing"])
+
+        # 5. Viseme envelope computation on a synthetic WAV
+        import wave, math, struct, hq_voice
+        wav_file = self.root / "test_viseme.wav"
+        with wave.open(str(wav_file), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            samples = [int(12000 * math.sin(2 * math.pi * 440 * i / 16000)) for i in range(8000)]
+            wf.writeframes(struct.pack("<" + "h" * len(samples), *samples))
+        vis = hq_voice.compute_viseme_envelope(wav_file, fps=30)
+        self.assertTrue(len(vis) >= 10)
+        self.assertTrue(any(v["a"] > 0.1 and v["v"] != "sil" for v in vis))
+
+    def test_sister_gifts_thoughts_and_souvenirs(self):
+        # 1. Inner Monologue / Journal Intime d'Atelier (hq_life + hq_ai)
+        code, th_add = T("thought_add", text="Je veille sur l'établi pendant que Marco soude.", kind="atelier")
+        self.assertEqual(code, 200)
+        self.assertTrue(th_add.get("ok"))
+        code, th_out = T("thoughts")
+        self.assertEqual(code, 200)
+        self.assertTrue(th_out["current"])
+        self.assertTrue(any("soude" in t["text"] for t in th_out["thoughts"]))
+
+        # Pulse and history include her current thought
+        code, p_out = ai.http_post({"action": "pulse", "device_id": DEV, "view": "accueil"}, role="admin")
+        self.assertEqual(code, 200)
+        self.assertIn("thought", p_out)
+        self.assertTrue(p_out["thought"])
+        code, hist = T("history")
+        self.assertEqual(code, 200)
+        self.assertIn("thought", hist)
+
+        # 2. Visual Memory Polaroids / Souvenirs Épinglés
+        code, pin_out = T("souvenir_pin", text="Notre premier test d'oscilloscope réussi ♥", photo_href="/assets/companion/chat/test.jpg", view="forge")
+        self.assertEqual(code, 200)
+        self.assertTrue(pin_out.get("ok"))
+        sv_id = pin_out["souvenir"]["id"]
+        self.assertEqual(pin_out["souvenir"]["view"], "forge")
+
+        code, sv_list = T("souvenirs")
+        self.assertEqual(code, 200)
+        self.assertEqual(len(sv_list["souvenirs"]), 1)
+        self.assertEqual(sv_list["souvenirs"][0]["id"], sv_id)
+
+        code, del_out = T("souvenir_delete", id=sv_id)
+        self.assertEqual(code, 200)
+        self.assertEqual(len(del_out["souvenirs"]), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

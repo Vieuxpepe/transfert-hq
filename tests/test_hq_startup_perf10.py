@@ -78,6 +78,31 @@ class ForgeStatusCache(unittest.TestCase):
         self.assertFalse(self._open(f"http://127.0.0.1:{port}"))
         self.assertLess(time.monotonic() - t, 1.5)
 
+    def test_http_get_does_not_block_on_forge_probe(self):
+        import threading, time
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_status(**_k):
+            entered.set()
+            release.wait(2)
+            self.calls += 1
+            return {"forge": "ready", "model": None, "message": "", "code": "ready"}
+
+        A.forge.status = slow_status
+        A._forge_port_open = lambda _o: True
+        tmp = Path(tempfile.mkdtemp(prefix="hq-art-get-"))
+        try:
+            started = time.monotonic()
+            code, payload = A.http_get(role="admin", nsfw=True, root=tmp)
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(code, 200)
+        self.assertLess(elapsed, 0.25)
+        self.assertIn(payload.get("forge"), ("offline", "ready", "busy", "error"))
+
 
 class StatusPeersCache(unittest.TestCase):
     def setUp(self):
@@ -109,10 +134,61 @@ class StatusPeersCache(unittest.TestCase):
 
 
 class FrontEndDedupe(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = (SOURCE / "iphone_bridge.py").read_text(encoding="utf-8")
+
     def test_companion_art_get_shared(self):
         js = (SOURCE / "assets" / "hq-companion.js").read_text(encoding="utf-8")
         self.assertIn("forgeUiDefaultsInflight", js)
         self.assertEqual(js.count('fetchJson(win, "/api/companion/art", null'), 1)
+        self.assertIn("FORGE_UI_DEFAULTS_TTL", js)
+        self.assertIn("applyForgeUiDefaults(win, cached.defaults)", js)
+
+    def test_carnet_is_strictly_on_demand(self):
+        start = self.bridge.index("const HQ_CARNET_SCRIPTS")
+        end = self.bridge.index("// Dessiner bootstrap watchdog", start)
+        loader = self.bridge[start:end]
+        self.assertIn("function hqCarnetLoad()", loader)
+        self.assertIn("requestIdleCallback", loader)
+        self.assertIn("addEventListener('load'", loader)
+        view = self.bridge[self.bridge.index("function setView(name)"):]
+        view = view[:view.index("function isSimpleMode")]
+        self.assertIn("hqDeferViewRender(view, viewTicket", view)
+        self.assertIn("hqCarnetLoad().then", view)
+
+    def test_heavy_view_rendering_is_staged(self):
+        calendar = (SOURCE / "assets" / "hq-calendar.js").read_text(encoding="utf-8")
+        self.assertIn("function render(staged, done)", calendar)
+        self.assertIn("if (staged) requestAnimationFrame(finish)", calendar)
+        self.assertIn('refresh("snap", true)', calendar)
+
+    def test_polling_is_serialized_and_staggered(self):
+        self.assertNotIn("hqTimer = setInterval", self.bridge)
+        for token in (
+            "const hqPollTasks",
+            "function hqPollTick",
+            "hqPollActive",
+            "task.nextAt",
+            "hqSchedulePoll(350)",
+            "function hqStartPollScheduler",
+        ):
+            self.assertIn(token, self.bridge)
+        self.assertIn("views:['accueil','ops']", self.bridge)
+        self.assertIn("views:['accueil','fichiers','ops']", self.bridge)
+
+    def test_refresh_is_scoped_and_does_not_duplicate_global_polls(self):
+        start = self.bridge.index("async function refreshHQ(")
+        end = self.bridge.index("async function renderHomeChart", start)
+        body = self.bridge[start:end]
+        self.assertIn("scope === 'status'", body)
+        self.assertIn("scope === 'roster'", body)
+        self.assertIn("scope !== 'secondary'", body)
+        self.assertNotIn("pollInbox()", body)
+        self.assertNotIn("api('/api/me'", body)
+        self.assertIn("if (view === 'accueil')", body)
+        self.assertIn("else if (view === 'fichiers')", body)
+        self.assertIn("else if (view === 'ops')", body)
 
     @unittest.skipUnless(shutil.which("node"), "node missing")
     def test_api_me_shared_in_node(self):

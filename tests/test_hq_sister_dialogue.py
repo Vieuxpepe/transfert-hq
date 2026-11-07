@@ -347,6 +347,40 @@ class SisterDialogue(unittest.TestCase):
         self.assertEqual(code, 200, out)
         self.assertTrue(out.get("aside"))
         self.assertEqual((out.get("turns") or [{}])[0].get("aside"), True)
+        self.assertIn("meter", out)
+        self.assertIn((out.get("meter") or {}).get("favor"), ("else", "transferania", "tie"))
+
+    def test_master_favor_meter_tracks_last_user(self) -> None:
+        with mem.memory_scope("else"):
+            ai.save_else({
+                "v": 1, "summary": "", "facts": [], "recent_replies": [], "open_thread": "",
+                "messages": [{"role": "user", "text": "Salut Else", "ts": 50}],
+            }, DEV)
+        with mem.memory_scope("transferania"):
+            ai.save_transferania({
+                "v": 1, "summary": "", "facts": [], "recent_replies": [], "open_thread": "",
+                "messages": [{"role": "user", "text": "Salut Transferania", "ts": 40}],
+            }, DEV)
+        sister._favor_meter_cache.clear()
+        meter = sister._master_favor_meter(DEV)
+        self.assertEqual(meter.get("favor"), "else")
+        self.assertIn("Else", meter.get("tease") or "")
+        hist = sister.history(device_id=DEV)
+        self.assertEqual((hist.get("meter") or {}).get("favor"), "else")
+        snap = sister.status_snapshot(DEV)
+        self.assertEqual((snap.get("meter") or {}).get("favor"), "else")
+        # Cache hit should avoid re-reading; fresh=True still sees updates.
+        cached = sister._master_favor_meter(DEV)
+        self.assertEqual(cached.get("favor"), "else")
+        with mem.memory_scope("transferania"):
+            ai.save_transferania({
+                "v": 1, "summary": "", "facts": [], "recent_replies": [], "open_thread": "",
+                "messages": [{"role": "user", "text": "Plus tard", "ts": 90}],
+            }, DEV)
+        stale = sister._master_favor_meter(DEV)
+        self.assertEqual(stale.get("favor"), "else")  # still within TTL
+        fresh = sister._master_favor_meter(DEV, fresh=True)
+        self.assertEqual(fresh.get("favor"), "transferania")
 
 
 if __name__ == "__main__":

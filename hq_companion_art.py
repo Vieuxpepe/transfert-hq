@@ -42,6 +42,11 @@ _STATUS_FAIL_TTL = 10.0
 _STATUS_PRECHECK_SEC = 0.4
 _STATUS_LOCK = threading.Lock()
 _STATUS_CACHE: dict = {}
+_STATUS_GEN = 0
+_STATUS_INFLIGHT = False
+_CN_LOCK = threading.Lock()
+_CN_GEN = 0
+_CN_INFLIGHT = False
 
 # Fast preview size (SDXL-friendly minimum; circle UI crops center).
 CANVAS_WIDTH = 512
@@ -1180,16 +1185,44 @@ def _forge_port_open(origin: str) -> bool:
 
 
 def invalidate_status_cache() -> None:
-    global _CN_MODELS_AT, _CN_MODELS
+    global _CN_MODELS_AT, _CN_MODELS, _STATUS_GEN, _CN_GEN
     with _STATUS_LOCK:
         _STATUS_CACHE.clear()
+        _STATUS_GEN += 1
+    with _CN_LOCK:
         _CN_MODELS_AT = 0.0
         _CN_MODELS = []
+        _CN_GEN += 1
 
 
-def cached_forge_status() -> dict:
+def _store_forge_status(origin: str, snap: dict, gen: int) -> None:
+    with _STATUS_LOCK:
+        if gen == _STATUS_GEN:
+            _STATUS_CACHE[origin] = (time.monotonic(), dict(snap))
+
+
+def _probe_forge_status(origin: str) -> dict:
+    if _forge_port_open(origin):
+        return forge.status()
+    return forge._status_payload("forge_offline")
+
+
+def _probe_forge_status_bg(origin: str, gen: int) -> None:
+    global _STATUS_INFLIGHT
+    try:
+        _store_forge_status(origin, _probe_forge_status(origin), gen)
+    except Exception:
+        _store_forge_status(origin, forge._status_payload("forge_error"), gen)
+    finally:
+        with _STATUS_LOCK:
+            _STATUS_INFLIGHT = False
+
+
+def cached_forge_status(*, wait: bool = True) -> dict:
     """forge.status() with a 60 s (ok) / 10 s (failure) cache and a fast offline pre-check.
-    Bypassed entirely when a test transport is installed."""
+    Bypassed entirely when a test transport is installed. ``wait=False`` returns
+    the last snapshot (or offline) immediately and refreshes in the background."""
+    global _STATUS_INFLIGHT
     if getattr(forge, "_test_transport", None) is not None:
         return forge.status()
     origin = getattr(forge, "_upstream", None) or getattr(forge, "UPSTREAM_ORIGIN", "http://127.0.0.1:7860")
@@ -1200,34 +1233,88 @@ def cached_forge_status() -> dict:
             ttl = _STATUS_OK_TTL if hit[1].get("forge") in ("ready", "busy") else _STATUS_FAIL_TTL
             if now - hit[0] < ttl:
                 return dict(hit[1])
-    if _forge_port_open(origin):
-        snap = forge.status()
-    else:
-        snap = forge._status_payload("forge_offline")
-    with _STATUS_LOCK:
-        _STATUS_CACHE[origin] = (time.monotonic(), dict(snap))
+        stale = dict(hit[1]) if hit is not None else None
+        gen = _STATUS_GEN
+    if not wait:
+        with _STATUS_LOCK:
+            if not _STATUS_INFLIGHT:
+                _STATUS_INFLIGHT = True
+                threading.Thread(
+                    target=_probe_forge_status_bg,
+                    args=(origin, gen),
+                    name="hq-forge-status",
+                    daemon=True,
+                ).start()
+        return stale if stale is not None else forge._status_payload("forge_offline")
+    snap = _probe_forge_status(origin)
+    _store_forge_status(origin, snap, gen)
     return snap
 
 
-def _fetch_controlnet_model_names() -> list[str]:
-    global _CN_MODELS_AT, _CN_MODELS
-    now = time.monotonic()
-    if _CN_MODELS and now - _CN_MODELS_AT < (10.0 if _CN_MODELS == ["None"] else 60.0):
-        return _CN_MODELS
+def _controlnet_names_fresh(now: float) -> bool:
+    if not _CN_MODELS:
+        return False
+    ttl = 10.0 if _CN_MODELS == ["None"] else 60.0
+    return now - _CN_MODELS_AT < ttl
+
+
+def _probe_controlnet_models() -> list[str]:
     origin = getattr(forge, "UPSTREAM_ORIGIN", "http://127.0.0.1:7860")
     if not _forge_port_open(origin):
-        _CN_MODELS = ["None"]
-        _CN_MODELS_AT = now
-        return _CN_MODELS
+        return ["None"]
     try:
         with urllib.request.urlopen(f"{origin}/controlnet/model_list", timeout=8) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
         names = [str(x) for x in (data.get("model_list") or []) if x]
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         names = ["None"]
-    _CN_MODELS = names or ["None"]
-    _CN_MODELS_AT = now
-    return _CN_MODELS
+    return names or ["None"]
+
+
+def _probe_controlnet_models_bg(gen: int) -> None:
+    global _CN_INFLIGHT, _CN_MODELS, _CN_MODELS_AT
+    try:
+        names = _probe_controlnet_models()
+        with _CN_LOCK:
+            if gen == _CN_GEN:
+                _CN_MODELS = names
+                _CN_MODELS_AT = time.monotonic()
+    except Exception:
+        with _CN_LOCK:
+            if gen == _CN_GEN and not _CN_MODELS:
+                _CN_MODELS = ["None"]
+                _CN_MODELS_AT = time.monotonic()
+    finally:
+        with _CN_LOCK:
+            _CN_INFLIGHT = False
+
+
+def _fetch_controlnet_model_names(*, wait: bool = True) -> list[str]:
+    global _CN_MODELS_AT, _CN_MODELS, _CN_INFLIGHT
+    now = time.monotonic()
+    with _CN_LOCK:
+        if _controlnet_names_fresh(now):
+            return list(_CN_MODELS)
+        stale = list(_CN_MODELS) if _CN_MODELS else []
+        gen = _CN_GEN
+    if not wait:
+        with _CN_LOCK:
+            if not _CN_INFLIGHT:
+                _CN_INFLIGHT = True
+                threading.Thread(
+                    target=_probe_controlnet_models_bg,
+                    args=(gen,),
+                    name="hq-cn-models",
+                    daemon=True,
+                ).start()
+        return stale or ["None"]
+    names = _probe_controlnet_models()
+    with _CN_LOCK:
+        if gen == _CN_GEN:
+            _CN_MODELS = names
+            _CN_MODELS_AT = time.monotonic()
+            return list(_CN_MODELS)
+    return names
 
 
 def _resolve_controlnet_model(meta: dict, models: list[str]) -> str:
@@ -1418,13 +1505,13 @@ def _controlnet_units(
     return units
 
 
-def controlnet_status(root: Path | None) -> dict:
+def controlnet_status(root: Path | None, *, wait: bool = True) -> dict:
     if root is None:
         return {"enabled": False, "reason": "no_root"}
     meta = load_forge_meta(root)
     if meta.get("controlnet") is False:
         return {"enabled": False, "reason": "disabled"}
-    models = _fetch_controlnet_model_names()
+    models = _fetch_controlnet_model_names(wait=wait)
     model = _resolve_controlnet_model(meta, models)
     module = _resolve_controlnet_module(meta, model)
     ref = _reference_path(root, meta)
@@ -2410,7 +2497,7 @@ def http_get(*, role: str, nsfw: bool, root: Path | None = None) -> tuple[int, d
         meta = load_forge_meta(root)
         if _strip_legacy_character_seed(meta):
             save_forge_meta(root, meta)
-    snap = cached_forge_status()
+    snap = cached_forge_status(wait=False)
     meta_cfg = load_forge_meta(root) if root else {}
     return 200, {
         "ok": True,
@@ -2421,7 +2508,7 @@ def http_get(*, role: str, nsfw: bool, root: Path | None = None) -> tuple[int, d
         "default_seed": FORGE_RANDOM_SEED,
         "seed_policy": "random_per_request",
         "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT, "steps": DEFAULT_STEPS},
-        "controlnet": controlnet_status(root),
+        "controlnet": controlnet_status(root, wait=False),
         "character_sheet": character_sheet_status(root),
         "reference_image_default": REFERENCE_IMAGE,
         "character_sheet_default": CHARACTER_SHEET_IMAGE,

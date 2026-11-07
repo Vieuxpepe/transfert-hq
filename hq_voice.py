@@ -7,6 +7,8 @@ Supports expressive vocal styling, multi-reference speaker blending, and warm ff
 from __future__ import annotations
 import os
 import sys
+import wave
+import struct
 import hashlib
 import subprocess
 import functools
@@ -186,6 +188,51 @@ def clean_text_for_speech(text: str) -> str:
     t = " ".join(t.split()).strip()
     return t
 
+def compute_viseme_envelope(wav_path: Path, fps: int = 30) -> list[dict[str, Any]]:
+    """Extract a lightweight amplitude + zero-crossing vowel shape envelope from a PCM WAV file."""
+    try:
+        with wave.open(str(wav_path), "rb") as reader:
+            nchannels, sampwidth, framerate, nframes, comptype, _ = reader.getparams()
+            if comptype != "NONE" or sampwidth not in (2, 3, 4) or framerate <= 0 or nframes <= 0:
+                return []
+            raw = reader.readframes(min(nframes, framerate * 30))
+        step_frames = max(1, framerate // fps)
+        frame_bytes = nchannels * sampwidth
+        chunk_bytes = step_frames * frame_bytes
+        out: list[dict[str, Any]] = []
+        for offset in range(0, len(raw), chunk_bytes):
+            chunk = raw[offset:offset + chunk_bytes]
+            if len(chunk) < frame_bytes * 4:
+                break
+            samples: list[int] = []
+            # Subsample every 4th frame for fast pure-Python computation (<2ms per line)
+            stride = frame_bytes * 4
+            for pos in range(0, len(chunk) - sampwidth + 1, stride):
+                if sampwidth == 2:
+                    val = struct.unpack_from("<h", chunk, pos)[0]
+                elif sampwidth == 3:
+                    b = chunk[pos:pos + 3]
+                    val = int.from_bytes(b, "little", signed=True) >> 8
+                else:
+                    val = struct.unpack_from("<i", chunk, pos)[0] >> 16
+                samples.append(val)
+            if not samples:
+                continue
+            rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+            norm_amp = min(1.0, round(rms / 9500.0, 3))
+            if norm_amp < 0.03:
+                out.append({"a": 0.0, "v": "sil"})
+                continue
+            zc = sum(1 for i in range(1, len(samples)) if (samples[i - 1] >= 0) != (samples[i] >= 0))
+            zcr = zc / max(1, len(samples))
+            # Classify mouth shape: low ZCR + high amp = 'open' (a/o), mid ZCR = 'round' (ou/eu), high ZCR = 'wide' (i/é/s)
+            vowel = "wide" if zcr > 0.34 else ("open" if norm_amp > 0.32 and zcr < 0.22 else "round")
+            out.append({"a": norm_amp, "v": vowel})
+        return out[:900]
+    except Exception:
+        return []
+
+
 def get_audio_hash(text: str, speaker: str = "default", lang: str = "fr", style: str = "expressive") -> str:
     raw = f"{text.strip().lower()}|{speaker}|{lang}|{style}"
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
@@ -231,6 +278,7 @@ def synthesize(
             "delivery": style,
             "audio_url": f"/assets/companion/chat/voice_cache/{cached_path.name}",
             "wav_url": f"/assets/companion/chat/voice_cache/{cached_path.name}",
+            "visemes": compute_viseme_envelope(cached_path),
             "text": clean_text
         }
 
@@ -318,6 +366,7 @@ def _finish(wav_path: Path, mp3_path: Path, mp3_filename: str, wav_filename: str
             "delivery": style,
             "audio_url": f"/assets/companion/chat/voice_cache/{output.name}",
             "wav_url": f"/assets/companion/chat/voice_cache/{output.name}",
+            "visemes": compute_viseme_envelope(output),
             "text": clean_text
         }
     except Exception as e:

@@ -64,7 +64,6 @@
     let ctx = null;
     let veinCtx = null;
     let danglePaintArmed = false;
-    let dangleArmTimer = 0;
     let danglePaintOn = false;
     let danglePaintFrame = false;
     let danglePaintTimer = 0;
@@ -112,7 +111,6 @@
     let memberBake = null;
     let memberBakeCtx = null;
     let memberBakeKey = "";
-    let swellIdleScheduled = false;
     let veinPulseLastStrength = -1;
     let throbEnv = 0;
     let throbEnvTip = 0;
@@ -398,21 +396,6 @@
       ctx.clearRect(0, 0, bufW, bufH);
       ctx.drawImage(memberBake, 0, 0);
       dirty = false;
-    }
-
-    function scheduleSwellIdleBake() {
-      if (motionReduced || swellIdleScheduled || veinSwellBaked || veinRenderHot()) return;
-      swellIdleScheduled = true;
-      const run = () => {
-        swellIdleScheduled = false;
-        if (!ctx || doc.hidden || veinRenderHot()) return;
-        if (!ensureVeinSwellField()) return;
-        rebuildMemberBake(win.performance.now(), true);
-        veinSwellBaked = true;
-        scheduleDanglePaint(0);
-      };
-      if (typeof win.requestIdleCallback === "function") win.requestIdleCallback(run, { timeout: 900 });
-      else win.setTimeout(run, 450);
     }
 
     function ensureVeinSwellField() {
@@ -1391,27 +1374,9 @@
       if (dragging || ptr.active) return;
       running = false;
       accum = 0;
-      if (restName) {
-        mount.classList.add("is-wobbling");
-        render(win.performance.now());
-        return;
-      }
-      angle = 0;
-      vel = 0;
-      tip = 0;
-      tipVel = 0;
-      hangLean = 0;
-      ripple = 0;
-      rippleVel = 0;
-      jiggle = 0;
-      slack = 0;
-      slackVel = 0;
-      stretch = 0;
-      stretchVel = 0;
+      danglePaintOn = false;
+      clearDanglePaintTimer();
       swing.classList.remove("is-dangle-active");
-      mount.classList.remove("is-wobbling");
-      renderFlat();
-      scheduleDanglePaint(VEIN_IDLE_MS);
     }
 
     let pokeName = "";
@@ -2962,10 +2927,7 @@
     }
 
     function veinIdlePulseFloor(nowMs) {
-      if (!veinPathsReady()) return 0;
-      const t = (nowMs || win.performance.now()) * 0.001;
-      const idleBreath = 0.5 + 0.5 * Math.sin(t * 4.15);
-      return 0.11 + idleBreath * 0.09;
+      return 0;
     }
 
     function veinPulseNeedsFrame() {
@@ -3662,10 +3624,6 @@
         return;
       }
       danglePaintArmed = true;
-      if (dangleArmTimer) {
-        win.clearTimeout(dangleArmTimer);
-        dangleArmTimer = 0;
-      }
       if (img.complete) resizeCanvas();
       scheduleDanglePaint(0);
     }
@@ -3794,7 +3752,6 @@
             rebuildMemberBake(t, false);
             blitMemberBake(t);
             paintGlisten(t);
-            scheduleSwellIdleBake();
           }
         } else {
           blitMemberBake(t);
@@ -3838,35 +3795,19 @@
       wakeGlisten();
     }
     doc.addEventListener("visibilitychange", () => {
-      if (!doc.hidden) wakeGlisten();
-      else if (veinCtx) veinCtx.clearRect(0, 0, bufW, bufH);
+      if (!doc.hidden && simBusy()) wakeGlisten();
     });
     if (typeof win.IntersectionObserver === "function") {
       new win.IntersectionObserver((entries) => {
         const last = entries[entries.length - 1];
         glistenSeen = !last || last.isIntersecting;
         if (win.HqMotion) win.HqMotion.setDangleSeen(glistenSeen);
-        if (glistenSeen) {
-          if (!danglePaintArmed && !dangleArmTimer) {
-            dangleArmTimer = win.setTimeout(() => {
-              dangleArmTimer = 0;
-              armDanglePaint();
-            }, 900);
-          }
-          wakeGlisten();
-        }
+        if (glistenSeen && simBusy()) wakeGlisten();
       }).observe(mount);
     }
-    mount.addEventListener(
-      "pointerenter",
-      () => {
-        armDanglePaint();
-      },
-      { passive: true }
-    );
 
     function ensureTick() {
-      armDanglePaint();
+      if (!danglePaintArmed) return;
       mount.classList.add("is-wobbling");
       swing.classList.add("is-dangle-active");
       wakeGlisten();
@@ -3943,9 +3884,8 @@
         if (!motionReduced) paintGlisten(win.performance.now());
       }
       if (motionReduced) return;
-      startGlisten();
+      if (simBusy()) startGlisten();
       stepVeinPulse(0.05);
-      veinPulseSm = Math.max(veinPulseSm, veinIdlePulseFloor(win.performance.now()));
     }
 
     function queueResize() {
@@ -3993,6 +3933,7 @@
         const speed = (Math.abs(dx) / dtMs) * 1000;
         if (speed < 140) return;
         grazeArmed = false;
+        armDanglePaint();
         if (dangleAudio) dangleAudio.playDragSnap(win, speed);
         if (!running) angle = swayAngle();
         const impulse = clamp(Math.sign(dx) * (0.55 + Math.min(1.3, speed / 1100)), -1.9, 1.9);
@@ -4007,6 +3948,7 @@
       "pointerdown",
       (ev) => {
         if (ev.button !== 0) return;
+        armDanglePaint();
         if (dangleAudio) dangleAudio.prime(win);
         else {
           if (!slapVoice) slapVoice = new Audio(slapLine);
@@ -4248,6 +4190,96 @@
       const box = mount.getBoundingClientRect();
       place(box.left, box.top);
     });
+
+    const toggleBtn = doc.getElementById("hq-dangling-toggle");
+    const LS_DANGLE_VIS = "hq_dangle_visible";
+
+    function triggerZipperAnimation() {
+      let zipper = doc.querySelector(".hq-dangling-zipper");
+      if (!zipper) {
+        zipper = doc.createElement("div");
+        zipper.className = "hq-dangling-zipper";
+        zipper.setAttribute("aria-hidden", "true");
+        const flaps = doc.createElement("div");
+        flaps.className = "hq-dangling-zipper-flaps";
+        const flapL = doc.createElement("div");
+        flapL.className = "hq-dangling-zipper-flap-left";
+        const flapR = doc.createElement("div");
+        flapR.className = "hq-dangling-zipper-flap-right";
+        flaps.append(flapL, flapR);
+        const teeth = doc.createElement("div");
+        teeth.className = "hq-dangling-zipper-teeth";
+        const pull = doc.createElement("div");
+        pull.className = "hq-dangling-zipper-pull";
+        zipper.append(flaps, teeth, pull);
+        doc.body.appendChild(zipper);
+      }
+      zipper.classList.remove("is-opening");
+      mount.classList.remove("is-unzipping");
+      // Force reflow
+      void zipper.offsetWidth;
+      void mount.offsetWidth;
+      zipper.classList.add("is-opening");
+      mount.classList.add("is-unzipping");
+
+      // Play subtle snap/pop audio accent if available
+      try {
+        if (dangleAudio && typeof dangleAudio.playDragSnap === "function") {
+          dangleAudio.playDragSnap(win, 500);
+        }
+      } catch (_) {}
+
+      win.setTimeout(() => {
+        zipper.classList.remove("is-opening");
+        mount.classList.remove("is-unzipping");
+      }, 550);
+    }
+
+    function applyDangleVisibility(visible, persist, animate) {
+      if (visible) {
+        mount.removeAttribute("hidden");
+        doc.body.classList.add("hq-dangle-enabled");
+        if (toggleBtn) {
+          toggleBtn.classList.add("is-active");
+          toggleBtn.setAttribute("aria-pressed", "true");
+        }
+        if (animate) {
+          triggerZipperAnimation();
+        }
+      } else {
+        mount.setAttribute("hidden", "true");
+        doc.body.classList.remove("hq-dangle-enabled");
+        if (toggleBtn) {
+          toggleBtn.classList.remove("is-active");
+          toggleBtn.setAttribute("aria-pressed", "false");
+        }
+        if (running) {
+          running = false;
+          danglePaintOn = false;
+          clearDanglePaintTimer();
+          swing.classList.remove("is-dangle-active");
+        }
+      }
+      if (persist) {
+        try {
+          win.localStorage.setItem(LS_DANGLE_VIS, visible ? "1" : "0");
+        } catch (_) {}
+      }
+    }
+
+    let initialVisible = false;
+    try {
+      initialVisible = win.localStorage.getItem(LS_DANGLE_VIS) === "1";
+    } catch (_) {}
+    applyDangleVisibility(initialVisible, false, false);
+
+    if (toggleBtn && !toggleBtn.__hqDangleBound) {
+      toggleBtn.__hqDangleBound = true;
+      toggleBtn.addEventListener("click", () => {
+        const isHidden = mount.hasAttribute("hidden") || !doc.body.classList.contains("hq-dangle-enabled");
+        applyDangleVisibility(isHidden, true, isHidden);
+      });
+    }
   }
 
   if (typeof document !== "undefined") {

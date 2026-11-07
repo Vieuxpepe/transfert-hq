@@ -11,6 +11,7 @@ folder tiles can show what is in them without opening them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,9 @@ TRASH_MAX = 2000
 PEEK_MAX = 60
 PEEK_PICS = 4
 PEEK_SCAN = 400
+PEEK_CACHE_SEC = 4.0
+_peek_cache_lock = threading.Lock()
+_peek_cache: dict[str, tuple[float, dict]] = {}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}
 ID_RE = re.compile(r"^tr-[0-9a-f]{12}\Z")
 
@@ -221,10 +225,20 @@ def listing() -> dict:
         return {"ok": True, "items": [_public(i) for i in kept], "size": sum(int(i.get("size") or 0) for i in kept), "keep_days": KEEP_DAYS}
 
 
+def _peek_folder_fingerprint(path: Path) -> str:
+    try:
+        st = path.stat()
+        raw = f"{st.st_mtime_ns}\0{st.st_dev}\0{st.st_ino}"
+    except OSError:
+        raw = "missing"
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
 def peek(rels: list[str]) -> dict:
     """{rel: {files, dirs, pics: [rel, ...]}} for up to PEEK_MAX folders (direct children only, hidden and system names skipped)."""
     out: dict[str, dict] = {}
     hidden = {n.lower() for n in (_cb.get("system_names") or ())}
+    now = time.monotonic()
     for rel in rels[:PEEK_MAX]:
         parts = _cb["parse_rel"](rel) if isinstance(rel, str) else None
         if not parts:
@@ -232,6 +246,13 @@ def peek(rels: list[str]) -> dict:
         path = _cb["resolve_rel"](rel)
         if not path or not Path(path).is_dir():
             continue
+        key = "/".join(parts)
+        fp = _peek_folder_fingerprint(Path(path))
+        with _peek_cache_lock:
+            hit = _peek_cache.get(key)
+            if hit and hit[0] == fp and now - hit[1][0] < PEEK_CACHE_SEC:
+                out[key] = dict(hit[1][1])
+                continue
         files = dirs = 0
         pics: list[str] = []
         try:
@@ -249,7 +270,10 @@ def peek(rels: list[str]) -> dict:
                             pics.append("/".join(parts + [e.name]))
         except OSError:
             continue
-        out["/".join(parts)] = {"files": files, "dirs": dirs, "pics": sorted(pics)}
+        row = {"files": files, "dirs": dirs, "pics": sorted(pics)}
+        out[key] = row
+        with _peek_cache_lock:
+            _peek_cache[key] = (fp, (now, row))
     return out
 
 

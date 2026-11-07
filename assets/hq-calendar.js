@@ -275,7 +275,7 @@
     if (nowLine) nowLine.scrollIntoView({ block: "center", inline: "nearest" });
   }
 
-  async function refresh(mode) {
+  async function refresh(mode, staged) {
     const root = document.getElementById("hq-cal-app");
     if (!root || typeof api !== "function") return;
     const gen = ++refreshGen;
@@ -297,12 +297,13 @@
           return refresh(mode);
         }
       }
-      render();
-      if (mode === "snap") scrollDayToNow();
-      else if (kept != null) {
-        const next = dayScroll();
-        if (next) next.scrollTop = kept;
-      }
+      render(!!staged, () => {
+        if (mode === "snap") scrollDayToNow();
+        else if (kept != null) {
+          const next = dayScroll();
+          if (next) next.scrollTop = kept;
+        }
+      });
     } catch (err) {
       if (gen !== refreshGen || state.data) return;
       root.textContent = "";
@@ -549,7 +550,7 @@
     return parts.join(" · ");
   }
 
-  function render() {
+  function render(staged, done) {
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
     if (drag || (swipe && swipe.locked)) {
@@ -570,31 +571,37 @@
     if (state.data && state.data.malformed) {
       root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
     }
-    const stage = h("div", { class: "hq-cal-stage" + (state.anim ? " is-" + state.anim : "") });
-    if (state.anim === "zoom" && state.zoomFrom) stage.style.transformOrigin = state.zoomFrom.x + "px " + state.zoomFrom.y + "px";
-    if (state.view === "day") stage.appendChild(dayView());
-    else if (state.view === "week") {
-      const first = weekStart(state.anchor);
-      const hint = threeDay() ? dayHint([0, 1, 2].map((n) => addLocalDays(first, n))) : null;
-      if (hint) stage.appendChild(hint);
-      stage.appendChild(weekView());
-    }
-    else if (state.view === "month") stage.appendChild(monthView());
-    else stage.appendChild(agendaView());
-    root.appendChild(stage);
-    root.appendChild(conditionalBlock());
-    state.anim = "";
-    state.prevView = state.view;
-    state.prevAnchor = state.anchor;
-    state.zoomFrom = null;
-    state.landed = "";
-    state.dropped = false;
-    state.burst = "";
-    paintPreview();
-    paintRecent();
-    paintLive();
-    if (before) requestAnimationFrame(() => glide(before)); // after the caller has put the scroll back
-    maybeCelebrate();
+    const finish = () => {
+      if (!root.isConnected || (staged && document.body.dataset.view !== "calendrier")) return;
+      const stage = h("div", { class: "hq-cal-stage" + (state.anim ? " is-" + state.anim : "") });
+      if (state.anim === "zoom" && state.zoomFrom) stage.style.transformOrigin = state.zoomFrom.x + "px " + state.zoomFrom.y + "px";
+      if (state.view === "day") stage.appendChild(dayView());
+      else if (state.view === "week") {
+        const first = weekStart(state.anchor);
+        const hint = threeDay() ? dayHint([0, 1, 2].map((n) => addLocalDays(first, n))) : null;
+        if (hint) stage.appendChild(hint);
+        stage.appendChild(weekView());
+      }
+      else if (state.view === "month") stage.appendChild(monthView());
+      else stage.appendChild(agendaView());
+      root.appendChild(stage);
+      root.appendChild(conditionalBlock());
+      state.anim = "";
+      state.prevView = state.view;
+      state.prevAnchor = state.anchor;
+      state.zoomFrom = null;
+      state.landed = "";
+      state.dropped = false;
+      state.burst = "";
+      paintPreview();
+      paintRecent();
+      paintLive();
+      if (before) requestAnimationFrame(() => glide(before)); // after the caller has put the scroll back
+      maybeCelebrate();
+      if (done) done();
+    };
+    if (staged) requestAnimationFrame(finish);
+    else finish();
   }
 
   function calm() {
@@ -3380,7 +3387,7 @@
       });
     }
     window.hqCalendarShow = function () {
-      refresh("snap");
+      refresh("snap", true);
     };
     // Global search: open the day of an event found in the palette (same as picking that day).
     window.hqCalendarOpenDay = function (key) {
@@ -3391,7 +3398,7 @@
       state.view = "day";
       refresh(sameDay(day, serverToday()) ? "snap" : undefined);
     };
-    if (document.body && document.body.dataset.view === "calendrier") refresh("snap");
+    if (document.body && document.body.dataset.view === "calendrier") refresh("snap", true);
     setInterval(() => {
       if (document.hidden) return;
       if (!document.body || document.body.dataset.view !== "calendrier") return;

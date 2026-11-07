@@ -102,6 +102,240 @@
   filter:drop-shadow(0 5px 7px rgba(196,75,122,.2)) drop-shadow(0 6px 9px rgba(0,0,0,.32));
 }
 /* Dangling member — pinned to the top-right; slap physics in hq-chrome.js. */
+/* Zipper fly reveal effect — mobile-first & hardware accelerated */
+.hq-dangling-zipper{
+  position:fixed;
+  top:0;
+  right:max(8px, env(safe-area-inset-right));
+  width:68px;
+  height:110px;
+  pointer-events:none;
+  z-index:48;
+  overflow:visible;
+  opacity:0;
+  will-change:opacity, transform;
+}
+.hq-dangling-zipper.is-opening{
+  opacity:1;
+}
+.hq-dangling-zipper-flaps{
+  position:absolute;
+  top:0;
+  left:0;
+  right:0;
+  bottom:0;
+  overflow:hidden;
+}
+.hq-dangling-zipper-flap-left,
+.hq-dangling-zipper-flap-right{
+  position:absolute;
+  top:0;
+  bottom:0;
+  width:50%;
+  background:linear-gradient(180deg, #18181b 0%, #27272a 45%, #18181b 100%);
+  border-bottom:1px solid #3f3f46;
+  box-shadow:inset 0 1px 2px rgba(255,255,255,.08), 0 3px 8px rgba(0,0,0,.45);
+  will-change:transform;
+}
+.hq-dangling-zipper-flap-left{
+  left:0;
+  border-right:1px solid #09090b;
+  transform-origin:0 0;
+}
+.hq-dangling-zipper-flap-right{
+  right:0;
+  border-left:1px solid #09090b;
+  transform-origin:100% 0;
+}
+.hq-dangling-zipper-teeth{
+  position:absolute;
+  top:0;
+  left:50%;
+  transform:translateX(-50%);
+  width:18px;
+  height:100%;
+  background:repeating-linear-gradient(
+    180deg,
+    #71717a 0px,
+    #71717a 2px,
+    #27272a 2px,
+    #27272a 3.5px,
+    #e4e4e7 3.5px,
+    #e4e4e7 5px,
+    #18181b 5px,
+    #18181b 7px
+  );
+  box-shadow:0 0 6px rgba(0,0,0,.7);
+  will-change:transform, opacity;
+}
+.hq-dangling-zipper-pull{
+  position:absolute;
+  top:0;
+  left:50%;
+  transform:translate3d(-50%, 0, 0);
+  width:16px;
+  height:28px;
+  background:linear-gradient(135deg, #f4f4f5 0%, #a1a1aa 45%, #3f3f46 100%);
+  border-radius:3px 3px 6px 6px;
+  border:1px solid #d4d4d8;
+  box-shadow:0 3px 8px rgba(0,0,0,.7), inset 0 1px 1px #fff;
+  z-index:3;
+  will-change:transform;
+}
+.hq-dangling-zipper-pull::after{
+  content:'';
+  position:absolute;
+  bottom:4px;
+  left:50%;
+  transform:translateX(-50%);
+  width:6px;
+  height:9px;
+  border-radius:2px;
+  background:#18181b;
+  box-shadow:inset 0 1px 2px #000;
+}
+
+.hq-dangling-zipper.is-opening .hq-dangling-zipper-pull{
+  animation:hq-zipper-slide .48s cubic-bezier(.2, 1, .3, 1) forwards;
+}
+.hq-dangling-zipper.is-opening .hq-dangling-zipper-flap-left{
+  animation:hq-flap-left .48s cubic-bezier(.2, 1, .3, 1) forwards;
+}
+.hq-dangling-zipper.is-opening .hq-dangling-zipper-flap-right{
+  animation:hq-flap-right .48s cubic-bezier(.2, 1, .3, 1) forwards;
+}
+.hq-dangling-zipper.is-opening .hq-dangling-zipper-teeth{
+  animation:hq-teeth-part .48s cubic-bezier(.2, 1, .3, 1) forwards;
+}
+
+@keyframes hq-zipper-slide{
+  0%{transform:translate3d(-50%, 0, 0) rotate(0deg);}
+  30%{transform:translate3d(-50%, 28px, 0) rotate(-6deg);}
+  65%{transform:translate3d(-50%, 65px, 0) rotate(5deg);}
+  100%{transform:translate3d(-50%, 96px, 0) rotate(0deg);opacity:0;}
+}
+@keyframes hq-flap-left{
+  0%{transform:translateX(0) rotate(0deg);}
+  40%{transform:translateX(-3px) rotate(-3deg);}
+  100%{transform:translateX(-16px) rotate(-14deg);opacity:0;}
+}
+@keyframes hq-flap-right{
+  0%{transform:translateX(0) rotate(0deg);}
+  40%{transform:translateX(3px) rotate(3deg);}
+  100%{transform:translateX(16px) rotate(14deg);opacity:0;}
+}
+@keyframes hq-teeth-part{
+  0%{transform:translateX(-50%) scaleX(1);opacity:1;}
+  50%{transform:translateX(-50%) scaleX(1.4);opacity:.9;}
+  100%{transform:translateX(-50%) scaleX(2.2);opacity:0;}
+}
+
+/* Emerge animation on the cock itself — fluid spring bounce */
+.hq-dangling-member-mount.is-unzipping{
+  animation:hq-cock-unzip .52s cubic-bezier(.16, 1, .3, 1) forwards;
+  transform-origin:50% 0;
+  will-change:transform, opacity, clip-path;
+  -webkit-clip-path:inset(0 0 0 0);
+  clip-path:inset(0 0 0 0);
+}
+@keyframes hq-cock-unzip{
+  0%{
+    -webkit-clip-path:inset(0 0 85% 0);
+    clip-path:inset(0 0 85% 0);
+    transform:translate3d(0, -38px, 0) scale(.82);
+    opacity:0;
+  }
+  35%{
+    -webkit-clip-path:inset(0 0 40% 0);
+    clip-path:inset(0 0 40% 0);
+    transform:translate3d(0, -12px, 0) scale(.92);
+    opacity:.95;
+  }
+  75%{
+    -webkit-clip-path:inset(0 0 0 0);
+    clip-path:inset(0 0 0 0);
+    transform:translate3d(0, 10px, 0) scale(1.05) rotate(1.5deg);
+    opacity:1;
+  }
+  100%{
+    -webkit-clip-path:inset(0 0 0 0);
+    clip-path:inset(0 0 0 0);
+    transform:translate3d(0, 0, 0) scale(1) rotate(0deg);
+    opacity:1;
+  }
+}
+
+@media (min-width:900px){
+  .hq-dangling-zipper{width:78px;right:max(18px, env(safe-area-inset-right));height:120px}
+}
+@media (max-width:520px){
+  .hq-dangling-zipper{width:54px;right:max(8px, env(safe-area-inset-right));height:95px}
+  .hq-dangling-zipper-pull{width:14px;height:24px}
+  @keyframes hq-zipper-slide{
+    0%{transform:translate3d(-50%, 0, 0) rotate(0deg);}
+    30%{transform:translate3d(-50%, 22px, 0) rotate(-6deg);}
+    65%{transform:translate3d(-50%, 52px, 0) rotate(5deg);}
+    100%{transform:translate3d(-50%, 78px, 0) rotate(0deg);opacity:0;}
+  }
+}
+
+.topbar-actions{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  flex-shrink:0;
+}
+.hq-dangling-toggle{
+  position:relative;
+  z-index:2;
+  font-family:var(--font-mono, monospace);
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.03em;
+  padding:6px 10px;
+  min-height:32px;
+  border-radius:999px;
+  border:1px solid color-mix(in srgb,var(--line) 75%,transparent);
+  background:var(--panel-2, #18181b);
+  color:var(--muted, #a1a1aa);
+  cursor:pointer;
+  display:inline-flex !important;
+  align-items:center;
+  gap:5px;
+  box-shadow:0 1px 4px rgba(0,0,0,.15);
+  transition:all .2s ease;
+  user-select:none;
+  -webkit-user-select:none;
+}
+@media (max-width:520px){
+  .topbar{flex-wrap:nowrap;gap:6px}
+  .brand-lockup{flex-shrink:1;min-width:0;overflow:hidden}
+  .hq-build-rev{display:none}
+  .status-chip{max-width:115px;padding:6px 9px;font-size:11px}
+  .hq-dangling-toggle{padding:5px 8px;font-size:11px;min-height:28px}
+}
+.hq-dangling-toggle:hover{
+  color:var(--text, #fff);
+  border-color:color-mix(in srgb,var(--accent, #c44b7a) 50%,var(--line));
+  transform:translateY(-1px);
+}
+.hq-dangling-toggle.is-active{
+  background:color-mix(in srgb,#c44b7a 24%,var(--panel-2, #18181b));
+  border-color:color-mix(in srgb,#c44b7a 65%,var(--line));
+  color:color-mix(in srgb,#ff7cb2 85%,var(--text, #fff));
+  box-shadow:0 0 10px rgba(196,75,122,.25);
+}
+.hq-dangling-toggle-dot{
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:var(--muted, #71717a);
+  transition:background .2s ease,box-shadow .2s ease;
+}
+.hq-dangling-toggle.is-active .hq-dangling-toggle-dot{
+  background:#ff6ba8;
+  box-shadow:0 0 6px #ff6ba8;
+}
 .hq-dangling-member-mount{
   position:fixed;
   top:0;
@@ -114,6 +348,10 @@
   touch-action:none;
   user-select:none;
   -webkit-user-select:none;
+}
+.hq-dangling-member-mount[hidden],
+body:not(.hq-dangle-enabled) .hq-dangling-member-mount{
+  display:none!important;
 }
 .hq-dangling-member-mount:active{cursor:grabbing}
 .hq-dangling-member-swing{transform-origin:50% 0;overflow:visible;position:relative}
@@ -152,15 +390,17 @@
   z-index:2;
 }
 .hq-dangling-member-mount.is-softbody .hq-dangling-member-vein-canvas{display:block}
-body[data-view] .view-bar{padding-right:84px}
+body.hq-dangle-enabled[data-view] .topbar,
+body.hq-dangle-enabled[data-view] .view-bar{padding-right:84px}
 @media (min-width:900px){
   .hq-dangling-member-mount{width:78px;right:max(18px, env(safe-area-inset-right))}
-  body[data-view] .view-bar{padding-right:100px}
+  body.hq-dangle-enabled[data-view] .topbar,
+  body.hq-dangle-enabled[data-view] .view-bar{padding-right:100px}
 }
 @media (max-width:520px){
   .hq-dangling-member-mount{width:54px}
-  body[data-view] .topbar,
-  body[data-view] .view-bar{padding-right:62px}
+  body.hq-dangle-enabled[data-view] .topbar,
+  body.hq-dangle-enabled[data-view] .view-bar{padding-right:62px}
 }
 @media (prefers-reduced-motion:no-preference){
   .hq-dangling-member-mount:not(.is-wobbling) .hq-dangling-member-swing{animation:hq-dangle 3.6s ease-in-out infinite}
