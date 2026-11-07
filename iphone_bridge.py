@@ -162,6 +162,7 @@ ASSET_CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".gif": "image/gif",
     ".html": "text/html; charset=utf-8",
     ".wav": "audio/wav",
     ".ico": "image/x-icon",
@@ -2452,7 +2453,16 @@ def hq_overall_state(attention: list[dict]) -> str:
     return "ok"
 
 
-def hq_snapshot() -> dict:
+_HQ_SNAPSHOT_CACHE: "tuple[float, dict] | None" = None
+_HQ_SNAPSHOT_CACHE_SEC = 2.0
+
+def hq_snapshot(force: bool = False) -> dict:
+    global _HQ_SNAPSHOT_CACHE
+    now = time.time()
+    if not force and _HQ_SNAPSHOT_CACHE is not None:
+        cached_at, cached_payload = _HQ_SNAPSHOT_CACHE
+        if now - cached_at < _HQ_SNAPSHOT_CACHE_SEC:
+            return dict(cached_payload)
     raw_devices = cached_roster_devices()
     devices = hq_devices.normalize_all(raw_devices)
     attention = hq_attention(raw_devices)
@@ -2461,7 +2471,7 @@ def hq_snapshot() -> dict:
         for s in (CONFIG.get("scenes") or [])
         if isinstance(s, dict) and s.get("id")
     ]
-    return {
+    payload = {
         "ok": True,
         "version": "7.0",
         "state": hq_overall_state(attention),
@@ -2469,12 +2479,14 @@ def hq_snapshot() -> dict:
         "devices": devices,
         "events": hq_events.recent(12),
         "scenes": scenes,
-        "generated_at": time.time(),
+        "generated_at": now,
         "cached": True,
         "roster_age_sec": roster_cache_age(),
         "calendar": _calendar_summary(),
         "agent": hq_companion.summary(),
     }
+    _HQ_SNAPSHOT_CACHE = (now, payload)
+    return payload
 
 
 def _calendar_summary() -> dict:
@@ -3423,6 +3435,18 @@ function hqNavReveal(b) {
   if (l < nav.scrollLeft) nav.scrollLeft = l;
   else if (r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = r - nav.clientWidth;
 }
+let viewTicket = 0;
+function hqDeferViewRender(view, ticket, fn) {
+  if (ticket !== viewTicket) return;
+  if (typeof requestAnimationFrame !== 'undefined') {
+    requestAnimationFrame(() => {
+      if (ticket !== viewTicket) return;
+      try { fn(); } catch (e) { console.error(e); }
+    });
+  } else {
+    try { fn(); } catch (e) { console.error(e); }
+  }
+}
 function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
@@ -3448,31 +3472,34 @@ function setView(name) {
   if (window.hqPlayerView) {
     try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
   }
-  if (view === 'fichiers') refreshFiles().catch(() => {});
+  const currentViewTicket = ++viewTicket;
+  if (view === 'fichiers') hqDeferViewRender(view, viewTicket, () => refreshFiles().catch(() => {}));
   if (view === 'carnet' && window.hqCarnetShow) {
-    try { window.hqCarnetShow(); } catch (e) { console.error(e); }  // a Carnet failure never aborts HQ
+    hqDeferViewRender(view, viewTicket, () => { try { window.hqCarnetShow(); } catch (e) { console.error(e); } });
   } else if (view === 'carnet') {
-    hqCarnetLoad().then(() => {  // loaded on demand; hqCarnetLoad shows Carnet itself when it lands
-      const lazyMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
-      if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-lazy', target: 'carnet', ms: lazyMs, ok: !!window.hqCarnetShow }, { force: lazyMs > 400 || !window.hqCarnetShow });
-      if (document.body.dataset.view === 'carnet' && !window.hqCarnetShow) {
-        hqCarnetMissing();
-        if (window.hqClientLog) { try { window.hqClientLog({ level: 'warn', kind: 'carnet', message: 'carnet module missing after load', force: true }); } catch (_) {} }
-      }
-    }).catch(() => {});
+    hqDeferViewRender(view, viewTicket, () => {
+      hqCarnetLoad().then(() => {
+        const lazyMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
+        if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-lazy', target: 'carnet', ms: lazyMs, ok: !!window.hqCarnetShow }, { force: lazyMs > 400 || !window.hqCarnetShow });
+        if (document.body.dataset.view === 'carnet' && !window.hqCarnetShow) {
+          hqCarnetMissing();
+          if (window.hqClientLog) { try { window.hqClientLog({ level: 'warn', kind: 'carnet', message: 'carnet module missing after load', force: true }); } catch (_) {} }
+        }
+      }).catch(() => {});
+    });
   }
   if (view === 'accueil' && window.hqCarnetHome) {
-    try { window.hqCarnetHome(); } catch (e) { console.error(e); }  // admin-only summary; never aborts HQ
+    hqDeferViewRender(view, viewTicket, () => { try { window.hqCarnetHome(); } catch (e) { console.error(e); } });
   }
   if (view === 'calendrier' && window.hqCalendarShow) {
-    try { window.hqCalendarShow(); } catch (e) { console.error(e); }  // log as before, never abort startup
+    hqDeferViewRender(view, viewTicket, () => { try { window.hqCalendarShow(); } catch (e) { console.error(e); } });
   }
-  if (view === 'dessiner') hqSketchStart();
+  if (view === 'dessiner') hqDeferViewRender(view, viewTicket, () => hqSketchStart());
   if (view === 'projets' && window.hqProjectsShow) {
-    try { window.hqProjectsShow(); } catch (e) { console.error(e); }  // a Projets failure never aborts HQ
+    hqDeferViewRender(view, viewTicket, () => { try { window.hqProjectsShow(); } catch (e) { console.error(e); } });
   }
   if (view === 'inventaire' && window.hqInventoryShow) {
-    try { window.hqInventoryShow(); } catch (e) { console.error(e); }  // an Inventaire failure never aborts HQ
+    hqDeferViewRender(view, viewTicket, () => { try { window.hqInventoryShow(); } catch (e) { console.error(e); } });
   }
   if (view === 'forge') {
     // Forge modules load on first visit (not with the page); the view may change again before they arrive.
@@ -4316,6 +4343,49 @@ function renderRecents() {
   $$('[data-open-rel]', el).forEach(b => b.addEventListener('click', () => navigate(b.dataset.openRel || '')));
 }
 
+let hqPollActive = false;
+let hqPollTimer = null;
+function hqSchedulePoll(ms = 350) {
+  if (hqPollTimer) clearTimeout(hqPollTimer);
+  hqPollTimer = setTimeout(hqPollTick, ms);
+}
+const hqPollTasks = [
+  { id: 'presence', intervalMs: 8000, nextAt: 0, run: async () => { beatPresence(); } },
+  { id: 'status', intervalMs: 8000, views:['accueil','ops'], nextAt: 0, run: async () => { await refreshHQ('status'); } },
+  { id: 'roster', intervalMs: 12000, views:['accueil','fichiers','ops'], nextAt: 0, run: async () => { await refreshHQ('roster'); } },
+  { id: 'secondary', intervalMs: 20000, views:['accueil','ops'], nextAt: 0, run: async () => { await refreshHQ('secondary'); } },
+  { id: 'inbox', intervalMs: 15000, nextAt: 0, run: async () => { await pollInbox(); } },
+  { id: 'me', intervalMs: 30000, nextAt: 0, run: async () => {
+    const me = await api('/api/me', { timeoutMs: 8000 }).catch(() => null);
+    if (me && $('#hq-role')) $('#hq-role').textContent = (me.user || '') + ' · ' + (me.role || '');
+    hqApplySessionRole(me);
+  }},
+  { id: 'scratchpad', intervalMs: 10000, views:['accueil','ops'], nextAt: 0, run: async () => { loadScratchpad(); } },
+];
+async function hqPollTick() {
+  if (document.hidden) { hqSchedulePoll(1000); return; }
+  if (hqPollActive) { hqSchedulePoll(350); return; }
+  hqPollActive = true;
+  const now = Date.now();
+  const currentView = document.body.dataset.view || 'accueil';
+  try {
+    for (const task of hqPollTasks) {
+      if (task.views && !task.views.includes(currentView)) continue;
+      if (now >= (task.nextAt || 0)) {
+        task.nextAt = now + task.intervalMs;
+        try { await task.run(); } catch (_) {}
+        break;
+      }
+    }
+  } finally {
+    hqPollActive = false;
+    hqSchedulePoll(350);
+  }
+}
+function hqStartPollScheduler() {
+  hqSchedulePoll(350);
+}
+
 function setupRecentsFilters() {
   $$('#recents-filters [data-recents]').forEach(b => b.addEventListener('click', () => {
     recentsFilter = b.dataset.recents || 'all';
@@ -4397,41 +4467,44 @@ function renderLauncher(_actions) {
   // Merged into Actions PC (hq-custom-actions) + Scènes
 }
 
-async function refreshHQ() {
-  try {
-    // Critical path first — don't wait on slow health/printers to paint the roster.
-    const [st, dev, tr] = await Promise.all([
-      api('/api/status', { timeoutMs: 12000 }),
-      api('/api/devices', { timeoutMs: 12000 }),
-      api('/api/transfers', { timeoutMs: 12000 }),
-    ]);
-    if ($('#hq-uptime')) $('#hq-uptime').textContent = st.uptime_h || '—';
-    const disk = st.disk_transfert || st.disk_d || {};
-    if ($('#hq-disk')) $('#hq-disk').textContent = (disk.free_h || '?') + ' libre / ' + (disk.total_h || '?');
-    if ($('#hq-host')) $('#hq-host').textContent = st.hostname || '—';
-    if ($('#hq-max')) $('#hq-max').textContent = st.max_upload_h || '—';
-    const chip = $('#status-chip');
-    if (chip) {
-      const free = disk.free_h || '';
-      chip.textContent = free ? ('● ' + free + ' libres') : '● État';
-    }
-    renderDevices(dev.devices || []);
-    renderTransfers(tr.transfers || []);
-    favoritesCache = st.favorites || favoritesCache || [];
-    renderFavorites();
-    renderCustomActions(st.actions || []);
-    renderScenes(st.scenes || []);
-    renderLauncher(st.actions || []);
-    renderTerminalCmds(st.terminal_commands || []);
-    fillShellTargets(st.shell_targets || []);
-    fillSendTargets(dev.devices || []);
-  } catch (e) {
-    if ($('#hq-dev-count')) $('#hq-dev-count').textContent = '!';
-    const el = $('#hq-devices');
-    if (el && /Chargement/.test(el.textContent || '')) {
-      el.innerHTML = `<li class="hint">Erreur HQ: ${escapeHtml(e.message || 'réseau')}</li>`;
+async function refreshHQ(scope = 'all') {
+  const view = document.body.dataset.view || 'accueil';
+  if (scope === 'status' || scope === 'roster' || scope !== 'secondary') {
+    try {
+      const [st, dev, tr] = await Promise.all([
+        api('/api/status', { timeoutMs: 12000 }),
+        api('/api/devices', { timeoutMs: 12000 }),
+        api('/api/transfers', { timeoutMs: 12000 }),
+      ]);
+      if ($('#hq-uptime')) $('#hq-uptime').textContent = st.uptime_h || '—';
+      const disk = st.disk_transfert || st.disk_d || {};
+      if ($('#hq-disk')) $('#hq-disk').textContent = (disk.free_h || '?') + ' libre / ' + (disk.total_h || '?');
+      if ($('#hq-host')) $('#hq-host').textContent = st.hostname || '—';
+      if ($('#hq-max')) $('#hq-max').textContent = st.max_upload_h || '—';
+      const chip = $('#status-chip');
+      if (chip) {
+        const free = disk.free_h || '';
+        chip.textContent = free ? ('● ' + free + ' libres') : '● État';
+      }
+      renderDevices(dev.devices || []);
+      renderTransfers(tr.transfers || []);
+      favoritesCache = st.favorites || favoritesCache || [];
+      renderFavorites();
+      renderCustomActions(st.actions || []);
+      renderScenes(st.scenes || []);
+      renderLauncher(st.actions || []);
+      renderTerminalCmds(st.terminal_commands || []);
+      fillShellTargets(st.shell_targets || []);
+      fillSendTargets(dev.devices || []);
+    } catch (e) {
+      if ($('#hq-dev-count')) $('#hq-dev-count').textContent = '!';
+      const el = $('#hq-devices');
+      if (el && /Chargement/.test(el.textContent || '')) {
+        el.innerHTML = `<li class="hint">Erreur HQ: ${escapeHtml(e.message || 'réseau')}</li>`;
+      }
     }
   }
+  if (scope === 'status' || scope === 'roster') return;
   // Secondary — best effort, never blocks first paint
   try {
     const [fav, act, al, med, health, q] = await Promise.all([
@@ -4452,14 +4525,16 @@ async function refreshHQ() {
     renderAlerts(al.alerts || []);
     renderMedia(med.items || []);
     renderQueue(q.queue || []);
-    if ($('#home-chart')) await renderHomeChart();
-    await loadKanban();
-    await loadPrinters();
-    renderOfflineQueue();
-    await pollInbox();
-    const me = await api('/api/me', { timeoutMs: 8000 }).catch(() => null);
-    if (me && $('#hq-role')) $('#hq-role').textContent = (me.user || '') + ' · ' + (me.role || '');
-    hqApplySessionRole(me);
+    if (view === 'accueil') {
+      if ($('#home-chart')) await renderHomeChart();
+      await loadKanban();
+      await loadPrinters();
+      renderOfflineQueue();
+    } else if (view === 'fichiers') {
+      // scoped files view
+    } else if (view === 'ops') {
+      renderOfflineQueue();
+    }
   } catch (_) {}
 }
 
@@ -4882,12 +4957,7 @@ function setupHQ() {
   refreshHQ();
   flushOfflineQueue();
   renderOfflineQueue();
-  hqTimer = setInterval(() => {
-    if (document.hidden) return;
-    beatPresence();
-    refreshHQ();
-    loadScratchpad();
-  }, 8000);
+  hqStartPollScheduler();
 }
 
 async function toggleFavorite() {
@@ -7502,6 +7572,14 @@ def _diag_record_5xx(handler, code: int, obj) -> None:
         pass
 
 
+def content_disposition(disposition: str, filename: str) -> str:
+    """Build a Latin-1 safe Content-Disposition value with UTF-8 filename* extension."""
+    clean_name = str(filename or "file").replace("\r", "").replace("\n", "")
+    ascii_name = re.sub(r"[^A-Za-z0-9._ -]", "_", clean_name) or "file"
+    encoded = quote(clean_name)
+    return f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "TransfertBridge/7.0"
     # perf9 (fix 3): HTTP/1.1 keep-alive so the page's ~100 assets reuse a few connections. Only bodiless GETs keep the
@@ -8209,10 +8287,7 @@ class Handler(BaseHTTPRequestHandler):
                 "sandbox; default-src 'none'; base-uri 'none'",
             )
         disp = "attachment" if force_attach else "inline"
-        self.send_header(
-            "Content-Disposition",
-            f"{disp}; filename=\"{path.name}\"; filename*=UTF-8''{quote(path.name)}",
-        )
+        self.send_header("Content-Disposition", content_disposition(disp, path.name))
         self.end_headers()
         with path.open("rb") as f:
             while True:
@@ -8260,7 +8335,7 @@ class Handler(BaseHTTPRequestHandler):
             if attachment:
                 self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
             disposition = "attachment" if attachment else "inline"
-            self.send_header("Content-Disposition", f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(path.name)}")
+            self.send_header("Content-Disposition", content_disposition(disposition, path.name))
             self.end_headers()
             f.seek(start)
             remaining = length
