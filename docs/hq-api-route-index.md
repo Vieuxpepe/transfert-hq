@@ -107,6 +107,7 @@ Frontend: **`assets/hq-companion.js`**, view **`intime`**.
 | `/api/calendar`, `/api/calendar/run` | `hq_calendar` | Calendrier |
 | `/api/projects` | `hq_projects` | Projets |
 | `/api/inventory` | `hq_inventory` | Inventaire |
+| `/api/mini-quests`, `/api/mini-quests/*` | `mini_quests` | Simulated Mini-Quêtes (admin; see `MINI_QUESTS.md`) |
 | `/api/drawings`, `/api/drawings/*` | `hq_drawings` | Dessiner |
 | `/api/ai` | `hq_ai` (+ `hq_sister` for sister ops) | Assistant / companions. POST `action`: `ask`, `ambient`, `transferania`, `else`, `sister`, … — sister ops: `exchange`, `ambient`, `react`, `history`, `prefs`, `clear`. Ambient may return `sister_cue`. GET `?else=1` / `?transferania=1` history. Status includes `else` + `sister`. |
 | `/api/agent` | `hq_agent` | Agent automation |

@@ -42,7 +42,7 @@ Use this table before opening large JS files.
 | `inventaire` | Inventaire | — | **`hqInventoryShow()`** | inventory module | — |
 | `ops` | Terminal | — | ops tools | `ops` UI (hidden in simple mode) | — |
 | `intime` | Tête-à-tête | companion bundle with page | **`HqCompanion`**, admin only | **`assets/hq-companion.js`** | `companion live2d-frame` |
-| `plus` | Plus / Système | — | status / settings chrome | inline | — |
+| `plus` | Plus / Système | — | status / settings chrome; Mini-Quêtes section `#system-mini-quests` | inline + `hq-mini-quests.js` | — |
 
 ---
 

@@ -1,0 +1,40 @@
+name: Mini-Quêtes
+
+on:
+  push:
+    paths:
+      - "mini_quests.py"
+      - "assets/hq-mini-quests.js"
+      - "assets/hq-mini-quests.css"
+      - "MINI_QUESTS.md"
+      - "iphone_bridge.py"
+      - "hq_diagnostics.py"
+      - "tests/test_mini_quests.py"
+      - "docs/hq-api-route-index.md"
+      - "docs/frontend-view-index.md"
+      - "docs/test-index.md"
+      - ".github/workflows/mini-quests.yml"
+  pull_request:
+    paths:
+      - "mini_quests.py"
+      - "assets/hq-mini-quests.js"
+      - "assets/hq-mini-quests.css"
+      - "MINI_QUESTS.md"
+      - "iphone_bridge.py"
+      - "hq_diagnostics.py"
+      - "tests/test_mini_quests.py"
+      - "docs/hq-api-route-index.md"
+      - "docs/frontend-view-index.md"
+      - "docs/test-index.md"
+      - ".github/workflows/mini-quests.yml"
+
+jobs:
+  mini-quests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Mini-Quêtes unit + bridge HTTP
+        run: python -m unittest tests.test_mini_quests -v
