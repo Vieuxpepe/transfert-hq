@@ -316,13 +316,13 @@ def main() -> None:
     finally:
         server_err = ""
         try:
-            if proc.stderr:
-                server_err = proc.stderr.read().decode("utf-8", errors="replace")
+            proc.terminate()
+            proc.wait(timeout=8)
         except Exception:
             pass
-        proc.terminate()
         try:
-            proc.wait(timeout=8)
+            if proc.stderr:
+                server_err = proc.stderr.read().decode("utf-8", errors="replace")
         except Exception:
             pass
         if server_err.strip():
