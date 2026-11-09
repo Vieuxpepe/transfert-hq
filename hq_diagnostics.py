@@ -146,7 +146,7 @@ KNOWN_API = frozenset((
     "carnet", "diag", "hq", "status", "health", "list", "upload", "inbox", "inbox-zero", "calendar", "drawings", "backup", "backups",
     "events", "device", "palette", "automation", "runs", "telemetry", "brief", "push", "schedules", "terminal", "shell", "captures",
     "print", "me", "presence", "scratchpad", "activity", "alerts", "media", "pc", "files", "forge", "companion", "projects",
-    "inventory", "today", "home-layout", "agent", "ai",
+    "inventory", "today", "home-layout", "agent", "ai", "mini-quests",
 ))
 KNOWN_TOP = frozenset(("assets", "diagnostics", "login", "logout", "files", "download", "media", "wallboard", "manifest.webmanifest"))
 

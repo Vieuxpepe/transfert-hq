@@ -53,6 +53,7 @@ Verify scripts (recommended):
 | If you changed… | Run |
 |-----------------|-----|
 | `iphone_bridge.py` routing, CSRF, access log | `python scripts/verify_bridge_smoke.py` |
+| Mini-Quêtes (`mini_quests.py`, `/api/mini-quests/*`) | `python -m unittest tests.test_mini_quests -v` |
 | Refusal / body drain | `python -m unittest tests.test_hq_refusal_drain -v` |
 | Phase 15 pins (regression guards) | `python tests/test_phase15_pins.py` (heavier) |
 | Bounded read-route latency + Unicode file headers | `python -m unittest tests.test_hq_backend_latency tests.test_hq_startup_perf10.ForgeStatusCache.test_http_get_does_not_block_on_forge_probe tests.test_media_viewer.MediaRouteTests.test_files_header_supports_unicode_filename -v` |
