@@ -32,7 +32,10 @@ RACE_CODE = "forge_ui_race"
 RACE_WARNING = "Forge's own interface can accept work after the last check."
 UNCERTAIN = frozenset({"busy", "progress_stale", "error", "timeout", "unavailable", "uncertain"})
 
-_kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+try:
+    _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+except (AttributeError, OSError):
+    _kernel = None
 
 CREATE_SUSPENDED = 0x00000004
 CREATE_NO_WINDOW = 0x08000000
@@ -49,60 +52,61 @@ WAIT_ABANDONED = 0x00000080
 WAIT_TIMEOUT = 258
 ERROR_ALREADY_EXISTS = 183
 
-_kernel.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-_kernel.CreateJobObjectW.restype = wintypes.HANDLE
-_kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
-_kernel.OpenJobObjectW.restype = wintypes.HANDLE
-_kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-_kernel.AssignProcessToJobObject.restype = wintypes.BOOL
-_kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-_kernel.TerminateJobObject.restype = wintypes.BOOL
-_kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
-_kernel.SetInformationJobObject.restype = wintypes.BOOL
-_kernel.QueryInformationJobObject.argtypes = [
-    wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)
-]
-_kernel.QueryInformationJobObject.restype = wintypes.BOOL
-_kernel.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
-_kernel.IsProcessInJob.restype = wintypes.BOOL
-_kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-_kernel.CreateMutexW.restype = wintypes.HANDLE
-_kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-_kernel.WaitForSingleObject.restype = wintypes.DWORD
-_kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
-_kernel.ReleaseMutex.restype = wintypes.BOOL
-_kernel.CreateProcessW.argtypes = [
-    wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.LPVOID, wintypes.LPVOID, wintypes.BOOL,
-    wintypes.DWORD, wintypes.LPVOID, wintypes.LPCWSTR, wintypes.LPVOID, wintypes.LPVOID,
-]
-_kernel.CreateProcessW.restype = wintypes.BOOL
-_kernel.ResumeThread.argtypes = [wintypes.HANDLE]
-_kernel.ResumeThread.restype = wintypes.DWORD
-_kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-_kernel.OpenProcess.restype = wintypes.HANDLE
-_kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
-_kernel.TerminateProcess.restype = wintypes.BOOL
-_kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-_kernel.GetExitCodeProcess.restype = wintypes.BOOL
-_kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-_kernel.CloseHandle.restype = wintypes.BOOL
-_kernel.DuplicateHandle.argtypes = [
-    wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
-    wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
-]
-_kernel.DuplicateHandle.restype = wintypes.BOOL
-_kernel.QueryFullProcessImageNameW.argtypes = [
-    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
-]
-_kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
-_kernel.GetProcessTimes.argtypes = [
-    wintypes.HANDLE, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID
-]
-_kernel.GetProcessTimes.restype = wintypes.BOOL
-_kernel.GetCurrentProcess.argtypes = []
-_kernel.GetCurrentProcess.restype = wintypes.HANDLE
-_kernel.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
-_kernel.GetSystemDirectoryW.restype = wintypes.UINT
+if _kernel is not None:
+    _kernel.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    _kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel.OpenJobObjectW.restype = wintypes.HANDLE
+    _kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _kernel.TerminateJobObject.restype = wintypes.BOOL
+    _kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    _kernel.SetInformationJobObject.restype = wintypes.BOOL
+    _kernel.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)
+    ]
+    _kernel.QueryInformationJobObject.restype = wintypes.BOOL
+    _kernel.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    _kernel.IsProcessInJob.restype = wintypes.BOOL
+    _kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel.CreateMutexW.restype = wintypes.HANDLE
+    _kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _kernel.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    _kernel.ReleaseMutex.restype = wintypes.BOOL
+    _kernel.CreateProcessW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.LPVOID, wintypes.LPVOID, wintypes.BOOL,
+        wintypes.DWORD, wintypes.LPVOID, wintypes.LPCWSTR, wintypes.LPVOID, wintypes.LPVOID,
+    ]
+    _kernel.CreateProcessW.restype = wintypes.BOOL
+    _kernel.ResumeThread.argtypes = [wintypes.HANDLE]
+    _kernel.ResumeThread.restype = wintypes.DWORD
+    _kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel.OpenProcess.restype = wintypes.HANDLE
+    _kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _kernel.TerminateProcess.restype = wintypes.BOOL
+    _kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    _kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel.CloseHandle.restype = wintypes.BOOL
+    _kernel.DuplicateHandle.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+    ]
+    _kernel.DuplicateHandle.restype = wintypes.BOOL
+    _kernel.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+    ]
+    _kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    _kernel.GetProcessTimes.argtypes = [
+        wintypes.HANDLE, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID
+    ]
+    _kernel.GetProcessTimes.restype = wintypes.BOOL
+    _kernel.GetCurrentProcess.argtypes = []
+    _kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    _kernel.GetSystemDirectoryW.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    _kernel.GetSystemDirectoryW.restype = wintypes.UINT
 
 
 class STARTUPINFOW(ctypes.Structure):
@@ -345,26 +349,51 @@ class LifecycleLock:
     def __init__(self, name: str) -> None:
         self._name = name
         self._handle = None
+        self._lock_file = None
         self.busy = False
 
     def __enter__(self):
-        self._handle = _kernel.CreateMutexW(None, False, self._name)
-        if not self._handle:
-            raise OSError(ctypes.get_last_error())
-        waited = _kernel.WaitForSingleObject(self._handle, 0)
-        self.busy = waited == WAIT_TIMEOUT
-        if self.busy:
+        if _kernel is not None:
+            self._handle = _kernel.CreateMutexW(None, False, self._name)
+            if not self._handle:
+                raise OSError(ctypes.get_last_error())
+            waited = _kernel.WaitForSingleObject(self._handle, 0)
+            self.busy = waited == WAIT_TIMEOUT
+            if self.busy:
+                return self
+            if waited not in (WAIT_OBJECT_0, WAIT_ABANDONED):
+                self.busy = True
             return self
-        if waited not in (WAIT_OBJECT_0, WAIT_ABANDONED):
-            self.busy = True
-        return self
+        else:
+            try:
+                import fcntl
+                import tempfile
+                clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", self._name)
+                lock_path = Path(tempfile.gettempdir()) / f"{clean_name}.lock"
+                self._lock_file = open(lock_path, "a+b")
+                fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.busy = False
+            except (BlockingIOError, OSError):
+                self.busy = True
+            return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self._handle and not self.busy:
-            _kernel.ReleaseMutex(self._handle)
-        if self._handle:
-            _kernel.CloseHandle(self._handle)
-            self._handle = None
+        if _kernel is not None:
+            if self._handle and not self.busy:
+                _kernel.ReleaseMutex(self._handle)
+            if self._handle:
+                _kernel.CloseHandle(self._handle)
+                self._handle = None
+        else:
+            if self._lock_file is not None:
+                try:
+                    if not self.busy:
+                        import fcntl
+                        fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+                    self._lock_file.close()
+                except Exception:
+                    pass
+                self._lock_file = None
 
 
 class Supervisor:

@@ -314,8 +314,19 @@ def main() -> None:
             ctx.close()
             browser.close()
     finally:
+        server_err = ""
+        try:
+            if proc.stderr:
+                server_err = proc.stderr.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
         proc.terminate()
-        proc.wait(timeout=8)
+        try:
+            proc.wait(timeout=8)
+        except Exception:
+            pass
+        if server_err.strip():
+            sys.stderr.write(f"\n--- carnet_test_server stderr ---\n{server_err}\n")
 
 
 if __name__ == "__main__":

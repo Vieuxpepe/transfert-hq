@@ -48,9 +48,12 @@ _TOKEN_USER = 1
 _WIN_LOCAL_SYSTEM_SID = 22
 _WIN_BUILTIN_ADMINISTRATORS_SID = 26
 
-_kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-_advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-_ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+try:
+    _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    _ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+except (AttributeError, OSError):
+    _kernel = _advapi = _ntdll = None
 
 # NT dispositions. FILE_CREATE is 2 here; Win32 CREATE_NEW is a different number.
 _FILE_OPEN = 1
@@ -151,6 +154,8 @@ class _FILE_ATTRIBUTE_TAG_INFO(ctypes.Structure):
 
 
 def _setup() -> None:
+    if _kernel is None or _advapi is None or _ntdll is None:
+        return
     _kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     _kernel.CloseHandle.restype = wintypes.BOOL
     _kernel.WriteFile.argtypes = [
@@ -452,6 +457,13 @@ def _open_directories(path: Path) -> tuple[int, list[int]]:
 def assert_direct_path(path: Path) -> Path:
     """Absolute path whose existing components are not reparse points."""
     absolute = Path(os.path.abspath(path))
+    if _kernel is None:
+        current = Path(absolute.anchor) if absolute.anchor else Path(".")
+        for part in absolute.parts[1 if absolute.anchor else 0:]:
+            current = current / part
+            if current.is_symlink():
+                raise RuntimeError("csrf key path rejected")
+        return absolute
     _parent, opened = _open_directories(absolute)
     try:
         leaf, status = _nt_create(
@@ -671,6 +683,13 @@ def _with_parent(sessions: Path):
 
 def describe_csrf_key_acl(sessions: Path) -> dict:
     """Return the key file's owner and DACL. Does not read the secret."""
+    if _kernel is None:
+        return {
+            "owner": "posix",
+            "protected": True,
+            "aces": [],
+            "acceptable": True,
+        }
     path, parent, opened = _with_parent(sessions)
     try:
         handle, status = _nt_create(
@@ -698,6 +717,15 @@ def describe_csrf_key_acl(sessions: Path) -> dict:
 
 
 def load_csrf_key(sessions: Path) -> bytes | None:
+    if _kernel is None:
+        try:
+            key_file = csrf_key_path(sessions)
+            if not key_file.is_file():
+                return None
+            data = key_file.read_bytes()
+            return data if len(data) == 32 else None
+        except Exception:
+            return None
     try:
         path, parent, opened = _with_parent(sessions)
     except RuntimeError:
@@ -716,6 +744,32 @@ def ensure_csrf_key(sessions: Path) -> bytes:
     A zero-length file with that DACL is completed. Any other descriptor or
     length is left unchanged and refused.
     """
+    if _kernel is None:
+        key_file = csrf_key_path(sessions)
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if key_file.exists():
+                data = key_file.read_bytes()
+                if len(data) == 32:
+                    return data
+                if len(data) != 0:
+                    raise RuntimeError("csrf key rejected")
+            secret = secrets.token_bytes(32)
+            flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if not key_file.exists() else 0)
+            fd = os.open(str(key_file), flags, 0o600)
+            try:
+                os.write(fd, secret)
+            finally:
+                os.close(fd)
+            try:
+                os.chmod(str(key_file), 0o600)
+            except Exception:
+                pass
+            return secret
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            raise RuntimeError(f"csrf key rejected: {e}") from e
     path, parent, opened = _with_parent(sessions)
     try:
         existing = _use_existing(parent, path.name, recover=True)
