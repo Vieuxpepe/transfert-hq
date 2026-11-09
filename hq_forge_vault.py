@@ -24,8 +24,12 @@ import unicodedata
 import zipfile
 from pathlib import Path
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+except ImportError:
+    AESGCM = None  # type: ignore
+    Argon2id = None  # type: ignore
 
 import hq_forge_gallery as gallery
 import hq_forge_vault_registry as registry
