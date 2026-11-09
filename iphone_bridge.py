@@ -7722,14 +7722,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "SAMEORIGIN" if frame_self else "DENY")
         # same-origin: keep Referer for CSRF on same-host GETs (logout); never leak off-origin
         self.send_header("Referrer-Policy", "same-origin")
-        policy = (
-            "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
-            + ("frame-ancestors 'self'" if frame_self else "frame-ancestors 'none'")
-            + "; base-uri 'self'"
+        import hq_forge_lifecycle_listener as _lifecycle_listener
+        policy = _lifecycle_listener.content_security_policy(
+            self.headers.get("Host") or "",
+            urlparse(self.path).path,
+            frame_self=frame_self,
+            wasm=bool(getattr(self, "_wasm_ok", False)),
         )
-        if getattr(self, "_wasm_ok", False):  # Phase 4: set ONLY while serving the vendored OCR worker script
-            policy = policy.replace("script-src 'self' 'unsafe-inline';", "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';", 1)
         self.send_header("Content-Security-Policy", policy)
 
     def _request_is_https(self) -> bool:
@@ -9470,6 +9469,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(405, {"error": "POST requis"})
             return
 
+        import hq_forge_lifecycle_listener as _lifecycle_listener
+        if _lifecycle_listener.is_lifecycle_action_path(raw):
+            self._json(404, {"error": "Inconnu"})
+            return
+        if raw == "/lifecycle-probe":
+            if not self._auth():
+                self._json(401, {"error": "PIN requis"})
+                return
+            credential = _lifecycle_listener.mint_csrf_for_session(SESSIONS_PATH, self._token() or "")
+            self._send(200, _lifecycle_listener.probe_page_html(credential))
+            return
+
         if raw == "/logout":
             if not self._check_csrf():
                 return
@@ -9816,6 +9827,13 @@ class Handler(BaseHTTPRequestHandler):
             # Forge generation workers: no browser session and no CSRF (no cookie is read), HMAC on every route
             # except the one-time-code enrollment. The body is never logged.
             self._forge_worker(raw)
+            return
+        import hq_forge_lifecycle_listener as _lifecycle_listener
+        if _lifecycle_listener.is_lifecycle_action_path(raw):
+            self._json(404, {"error": "Inconnu"})
+            return
+        # CSRF for cookie sessions + /login (same-origin form). No Bearer exception today.
+        if not self._check_csrf():
             return
 
         # Pre-body refusals below (CSRF 403, anonymous 401, upload-role 403) drain a small body (_drain_refused_body).
