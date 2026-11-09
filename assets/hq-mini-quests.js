@@ -1,5 +1,6 @@
 /* Mini-Quêtes UI — lives under Plus / Système (no new primary nav tab).
  * Talks to /api/mini-quests/* only. Plain ES2020, no HTML string injection of API text into tags.
+ * Active simmer job id survives Plus view reloads so polling continues across setView.
  */
 (function (root) {
   "use strict";
@@ -17,6 +18,8 @@
   var resultEl = null;
   var pollTimer = null;
   var busy = false;
+  var activeJobId = null;
+  var loadGen = 0;
 
   function apiFn() {
     return typeof root.api === "function" ? root.api : null;
@@ -60,6 +63,10 @@
     }
   }
 
+  function clearActiveJob() {
+    activeJobId = null;
+  }
+
   function summarize(payload) {
     if (!payload || typeof payload !== "object") return "";
     if (payload.note) return String(payload.note);
@@ -76,9 +83,32 @@
     return "OK";
   }
 
+  function findRunningSimmer(catalog) {
+    if (!catalog || !Array.isArray(catalog.jobs)) return null;
+    var found = null;
+    catalog.jobs.forEach(function (j) {
+      if (j && j.quest === "simmer" && j.status === "running" && j.id) found = j.id;
+    });
+    return found;
+  }
+
+  function startPolling(jobId) {
+    if (!jobId) return;
+    activeJobId = jobId;
+    busy = true;
+    stopPoll();
+    setState("running");
+    setResult("Simmer en cours…");
+    pollTimer = setInterval(function () {
+      pollJob(jobId);
+    }, 400);
+    pollJob(jobId);
+  }
+
   async function pollJob(jobId) {
     var api = apiFn();
     if (!api || !jobId) return;
+    if (activeJobId && jobId !== activeJobId) return;
     try {
       var data = await api("/api/mini-quests/jobs/" + encodeURIComponent(jobId), { timeoutMs: 8000 });
       var st = (data && data.job && data.job.status) || "running";
@@ -89,11 +119,13 @@
       }
       stopPoll();
       busy = false;
+      clearActiveJob();
       setState(st === "done" ? "done" : "error");
       setResult(summarize(data));
     } catch (err) {
       stopPoll();
       busy = false;
+      clearActiveJob();
       setState("error");
       setResult((err && err.message) || "Erreur de suivi");
     }
@@ -119,6 +151,7 @@
 
     busy = true;
     stopPoll();
+    clearActiveJob();
     setState("running");
     setResult("Démarrage…");
     try {
@@ -131,12 +164,8 @@
       });
       var state = mapHttpState(200, data);
       if (questId === "simmer" && data && data.job && data.job.id && data.status === "running") {
-        setState("running");
         setResult("Simmer lancé · suivi…");
-        pollTimer = setInterval(function () {
-          pollJob(data.job.id);
-        }, 400);
-        pollJob(data.job.id);
+        startPolling(data.job.id);
         return;
       }
       busy = false;
@@ -144,6 +173,7 @@
       setResult(summarize(data));
     } catch (err) {
       busy = false;
+      clearActiveJob();
       var msg = (err && err.message) || "Échec";
       var code = err && (err.status || err.code);
       if (code === 401 || code === 403 || code === 429) setState("refused");
@@ -222,25 +252,42 @@
     resultEl.id = "mq-result";
     resultEl.hidden = true;
     rootEl.appendChild(resultEl);
+  }
 
+  function restoreActive(catalog) {
+    var jobId = activeJobId || findRunningSimmer(catalog);
+    if (jobId) {
+      startPolling(jobId);
+      return;
+    }
     setState("available");
   }
 
   async function load() {
     rootEl = document.getElementById("hq-mini-quests");
     if (!rootEl) return;
+    var gen = ++loadGen;
     var api = apiFn();
     if (!api) {
       build(null);
+      if (gen !== loadGen) return;
       setState("error");
       setResult("API indisponible");
       return;
     }
     try {
       var data = await api("/api/mini-quests/", { timeoutMs: 8000 });
+      if (gen !== loadGen) return;
       build(data);
+      restoreActive(data);
     } catch (err) {
+      if (gen !== loadGen) return;
       build(null);
+      if (activeJobId) {
+        // Keep tracking a simmer even if catalog reload failed.
+        restoreActive(null);
+        return;
+      }
       var code = err && (err.status || err.code);
       if (code === 401 || code === 403) setState("refused");
       else setState("error");
@@ -259,15 +306,26 @@
     load();
     document.addEventListener("hq:view", onView);
     // Fallback: Plus jump / setView may not always dispatch hq:view on older builds.
+    var lastView = document.body ? document.body.dataset.view : "";
     var obs = new MutationObserver(function () {
-      if (document.body && document.body.dataset.view === "plus") onView();
+      var view = document.body ? document.body.dataset.view : "";
+      if (view === "plus" && view !== lastView) onView();
+      lastView = view;
     });
     if (document.body) {
       obs.observe(document.body, { attributes: true, attributeFilter: ["data-view"] });
     }
   }
 
-  root.HqMiniQuests = { start: start, load: load, runQuest: runQuest };
+  root.HqMiniQuests = {
+    start: start,
+    load: load,
+    runQuest: runQuest,
+    // Test/debug hooks: active simmer survives panel rebuilds.
+    getActiveJobId: function () {
+      return activeJobId;
+    },
+  };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", start);
   } else {

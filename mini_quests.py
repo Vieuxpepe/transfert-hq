@@ -182,10 +182,17 @@ def _append_log(message: str) -> None:
                 bak = path.with_name(path.name + ".1")
                 try:
                     os.replace(path, bak)
-                except OSError:
-                    pass
+                except OSError as e:
+                    # Fail-closed: never keep appending into an unrotatable full log.
+                    raise QuestError(
+                        "Journal Mini-Quêtes plein — rotation impossible",
+                        503,
+                        "storage_error",
+                    ) from e
             with path.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(payload)
+        except QuestError:
+            raise
         except OSError as e:
             raise QuestError("Journal Mini-Quêtes inaccessible", 503, "storage_error") from e
 
@@ -287,16 +294,32 @@ def simmer(*, duration_sec: float | None = None) -> dict[str, Any]:
         _prune_jobs_locked(now)
         _jobs[job_id] = job
 
-    starter = _cb.get("worker_start")
-    if callable(starter):
-        starter(_simmer_worker, job_id, duration)
-    else:
-        threading.Thread(
-            target=_simmer_worker,
-            args=(job_id, duration),
-            name=f"mini-quest-simmer-{job_id[:8]}",
-            daemon=True,
-        ).start()
+    try:
+        starter = _cb.get("worker_start")
+        if callable(starter):
+            starter(_simmer_worker, job_id, duration)
+        else:
+            threading.Thread(
+                target=_simmer_worker,
+                args=(job_id, duration),
+                name=f"mini-quest-simmer-{job_id[:8]}",
+                daemon=True,
+            ).start()
+    except Exception as e:
+        # Worker never started: release the slot and settle the job so capacity cannot leak.
+        with _jobs_lock:
+            failed = _jobs.get(job_id)
+            if failed is not None:
+                failed["status"] = "error"
+                failed["updated_at"] = _now()
+                failed["error"] = hq_diagnostics.scrub(str(e), _cb.get("root"), 120) or "démarrage impossible"
+            else:
+                _jobs.pop(job_id, None)
+        try:
+            _slots.release()
+        except ValueError:
+            pass
+        raise QuestError("Démarrage de la Mini-Quête impossible", 503, "worker_error") from e
 
     return {
         "ok": True,

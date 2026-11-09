@@ -32,10 +32,16 @@ Body cap: **4096** bytes. Unknown fields → `400`. Wrong method on a known pref
 | Concurrent long quests | 2 |
 | Simmer duration | 0.1–3.0 s (default 1.0) |
 | Whisper context | 160 chars, no control characters |
-| Quest log rotate | ~64 KiB → `quest_log.txt.1` |
+| Quest log rotate | ~64 KiB → `quest_log.txt.1` (fail-closed if rotate fails) |
 | In-memory jobs | 40, TTL 300 s |
 
+If the log exceeds the rotate threshold and `os.replace` fails, new writes are **refused** (503) instead of growing forever.
+
+A simmer whose worker thread fails to start releases its concurrency slot and settles the job as `error` (503 to the client).
+
 Log lines are single-line, control-stripped, and scrubbed via `hq_diagnostics.scrub` (paths, long tokens, emails).
+
+CI: `.github/workflows/mini-quests.yml` runs `python -m unittest tests.test_mini_quests -v` on Mini-Quêtes path changes.
 
 ## Simulated data
 

@@ -167,6 +167,45 @@ class UnitQuests(unittest.TestCase):
         self.assertTrue(path.with_name(path.name + ".1").is_file())
         self.assertIn("rotate-me", path.read_text(encoding="utf-8"))
 
+    def test_log_rotation_fail_closed_on_replace_error(self):
+        path = mq.log_path(self.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * (mq.LOG_ROTATE_BYTES + 10))
+        with mock.patch("mini_quests.os.replace", side_effect=OSError("deny rotate")):
+            with self.assertRaises(mq.QuestError) as cm:
+                mq.gear_whisper("should-fail")
+        self.assertEqual((cm.exception.status, cm.exception.code), (503, "storage_error"))
+        text = path.read_text(encoding="utf-8", errors="replace")
+        self.assertNotIn("should-fail", text)
+        self.assertFalse(path.with_name(path.name + ".1").is_file())
+
+    def test_worker_start_failure_releases_slot_and_marks_job(self):
+        def boom(*_a, **_k):
+            raise RuntimeError("thread boom")
+
+        mq.bind(root=self.root, now=lambda: 1_800_000_000.0, sleep=lambda _s: None, worker_start=boom)
+        with self.assertRaises(mq.QuestError) as cm:
+            mq.simmer(duration_sec=0.2)
+        self.assertEqual((cm.exception.status, cm.exception.code), (503, "worker_error"))
+
+        # Failed job is settled (not left running) and the semaphore is free again.
+        jobs = mq.catalog()["jobs"]
+        self.assertTrue(jobs)
+        self.assertEqual(jobs[-1]["status"], "error")
+        self.assertNotEqual(jobs[-1]["status"], "running")
+
+        done = threading.Event()
+
+        def start(fn, job_id, duration):
+            fn(job_id, duration)
+            done.set()
+
+        mq.bind(root=self.root, now=lambda: 1_800_000_000.0, sleep=lambda _s: None, worker_start=start)
+        out = mq.simmer(duration_sec=0.2)
+        self.assertEqual(out["status"], "running")
+        self.assertTrue(done.wait(2))
+        self.assertEqual(mq.get_job(out["job"]["id"])["job"]["status"], "done")
+
     def test_http_helpers_methods_and_validation(self):
         code, body = mq.http_get("/api/mini-quests/")
         self.assertEqual(code, 200)
@@ -321,6 +360,16 @@ class BridgeHttp(unittest.TestCase):
         self.assertIn("/assets/hq-mini-quests.css", text)
         self.assertIn('id="system-mini-quests"', text)
         self.assertNotIn('data-nav="mini-quests"', text)
+
+    def test_ui_preserves_active_simmer_across_reload(self):
+        js = (SOURCE / "assets" / "hq-mini-quests.js").read_text(encoding="utf-8")
+        self.assertIn("var activeJobId = null", js)
+        self.assertIn("function restoreActive(", js)
+        self.assertIn("function startPolling(", js)
+        self.assertIn("findRunningSimmer", js)
+        # View changes must not wipe a running simmer before restoreActive runs.
+        self.assertIn("restoreActive(data)", js)
+        self.assertRegex(js, r"activeJobId\s*=\s*jobId")
 
 
 if __name__ == "__main__":
