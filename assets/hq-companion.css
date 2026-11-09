@@ -2278,11 +2278,6 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
 .hq-companion-rig-eyelids::after{left:52.5%;top:18.6%}
 .hq-companion.has-layered-portrait.is-blink .hq-companion-rig-eyelids::before,.hq-companion.has-layered-portrait.is-blink .hq-companion-rig-eyelids::after{animation:hq-companion-rig-blink var(--rig-blink-ms,245ms) linear both}
 @keyframes hq-companion-rig-blink{0%{opacity:0;transform:rotate(-13deg) scaleY(.05)}12%{opacity:.42;transform:rotate(-13deg) scaleY(.25)}38%,51%{opacity:.96;transform:rotate(-13deg) scaleY(1)}72%{opacity:.75;transform:rotate(-13deg) scaleY(.7)}88%{opacity:.28;transform:rotate(-13deg) scaleY(.2)}100%{opacity:0;transform:rotate(-13deg) scaleY(.05)}}
-  24%{opacity:1}
-  50%{opacity:1}
-  78%{opacity:.35}
-  100%{opacity:0}
-}
 .hq-companion-rig-garment-front{position:absolute;inset:0;z-index:3;clip-path:circle(50% at 50% 50%);transform-origin:50% 64%;transform:matrix(1,0,var(--rig-motion-shear,0),var(--rig-motion-stretch,1),0,0);translate:0 var(--rig-bust-heave,0px);scale:1 var(--rig-bust-scale-y,1);rotate:var(--rig-bust-rot,0deg);will-change:transform,translate,scale,rotate}
 /* Layered PNG lobes: bulk bust motion on garment straps only; each breast moves on its own pivot. */
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-garment-front{

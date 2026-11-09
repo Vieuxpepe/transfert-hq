@@ -109,11 +109,7 @@ _MESSAGES = {
 
 
 def reset_for_tests() -> None:
-
-    global _generation, _recovered, _before_submit, _job_timeout, _poll_interval, _wait_timeout
-=======
-    global _generation, _recovered, _before_submit, _admission_hook, _prepared_token, _admission_timeout_ms, _job_timeout, _poll_interval
->>>>>>> forge-lifecycle-exact-port-infra
+    global _generation, _recovered, _before_submit, _admission_hook, _prepared_token, _admission_timeout_ms, _job_timeout, _poll_interval, _wait_timeout
     _generation += 1
     _job_vaults.clear()
     _wait_timeout = WAIT_TIMEOUT_SEC
@@ -1260,59 +1256,6 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
     except Exception:
         return 503, {"error": _MESSAGES["forge_error"], "code": "forge_error"}
 
-    with _LOCK:
-        stored = _load(root)
-        existing = stored["idempotency"].get(idempotency_key)
-        if isinstance(existing, str):
-            job = _find(stored, existing)
-            if job is not None:
-                if (job.get("destination") or "normal") != destination:
-                    return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
-                return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
-        active = _active_job(stored)
-        if active is not None:
-            return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
-        if _external_active():
-            return 409, {"error": _MESSAGES["active"], "code": "active"}
-        waiting = False
-        if upstream.get("forge") == "busy":
-            # B: a normal job may wait politely; private jobs keep the plain refusal.
-            if destination != "normal" or data.get("wait_if_busy") is not True:
-                return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
-            waiting = True
-        elif upstream.get("forge") != "ready":
-            code = upstream.get("code") or "forge_error"
-            return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
-        job_id = "job-" + os.urandom(12).hex()
-        task_id = "task(hq-" + os.urandom(12).hex() + ")"
-        job = {
-            "id": job_id,
-            "task_id": task_id,
-            "state": "queued",
-            "created": _now(),
-            "updated": _now(),
-            "idempotency_key": idempotency_key,
-            "destination": destination,
-            "settings": {} if destination == "private" else validated,
-            "submitted": False,
-            "progress": 0,
-            "step": 0,
-            "steps": validated["steps"],
-            "progress_stale": False,
-            "message": _MESSAGES["waiting"] if waiting else "En file.",
-            "waiting": waiting,
-            "error": "",
-            "images": [],
-            "seed_used": None,
-            **({"finish_of": finish_of} if finish_of else {}),
-        }
-        stored["jobs"].append(job)
-        stored["jobs"] = stored["jobs"][-200:]
-        stored["idempotency"][idempotency_key] = job_id
-        _trim_keys(stored)
-        _save(root, stored)
-        token = _generation
-=======
     try:
         admission = _acquire_admission(root)
     except _AdmissionBusy:
@@ -1326,15 +1269,21 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
                 if job is not None:
                     if (job.get("destination") or "normal") != destination:
                         return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
-                    return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
+                    return 200, {"job": _public(job, unlocked=_session_open(root, session_token, job))}
             if _gate_blocks(_read_gate(root)):
                 return 409, {"error": _MESSAGES["lifecycle_busy"], "code": "lifecycle_busy"}
             active = _active_job(stored)
             if active is not None:
                 return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+            if _external_active():
+                return 409, {"error": _MESSAGES["active"], "code": "active"}
+            waiting = False
             if upstream.get("forge") == "busy":
-                return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
-            if upstream.get("forge") != "ready":
+                # B: a normal job may wait politely; private jobs keep the plain refusal.
+                if destination != "normal" or data.get("wait_if_busy") is not True:
+                    return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
+                waiting = True
+            elif upstream.get("forge") != "ready":
                 code = upstream.get("code") or "forge_error"
                 return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
             _hook("before_admit")
@@ -1344,6 +1293,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             active = _active_job(stored)
             if active is not None:
                 return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+            if _external_active():
+                return 409, {"error": _MESSAGES["active"], "code": "active"}
             job_id = "job-" + os.urandom(12).hex()
             task_id = "task(hq-" + os.urandom(12).hex() + ")"
             job = {
@@ -1360,10 +1311,12 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
                 "step": 0,
                 "steps": validated["steps"],
                 "progress_stale": False,
-                "message": "En file.",
+                "message": _MESSAGES["waiting"] if waiting else "En file.",
+                "waiting": waiting,
                 "error": "",
                 "images": [],
                 "seed_used": None,
+                **({"finish_of": finish_of} if finish_of else {}),
             }
             stored["jobs"].append(job)
             stored["jobs"] = stored["jobs"][-200:]
@@ -1373,7 +1326,6 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             token = _generation
     finally:
         _release_admission(admission)
->>>>>>> forge-lifecycle-exact-port-infra
     inline = validated if destination == "private" else None
     if vault_id is not None:
         _job_vaults[job_id] = vault_id
