@@ -136,7 +136,8 @@ class IntegrityTests(Base):
         self.assertNotIn("totalTokenCount", measured)
         self.assertNotIn("candidatesTokenCount", measured)
         self.assertTrue(json.dumps(result, allow_nan=False))
-        row = ai.usage()["token_window"][ai.AMBIENT_CHAIN[0]][0]
+        model = result.get("model") or ai.CHAT_CHAIN[0]
+        row = (ai.usage()["token_window"].get(model) or ai.usage()["token_window"].get(ai.AMBIENT_CHAIN[0]))[0]
         self.assertGreater(row["tokens"], 0)
 
     def test_separate_processes_cannot_double_spend_the_same_capacity(self):

@@ -109,7 +109,7 @@ _MESSAGES = {
 
 
 def reset_for_tests() -> None:
-<<<<<<< HEAD
+
     global _generation, _recovered, _before_submit, _job_timeout, _poll_interval, _wait_timeout
 =======
     global _generation, _recovered, _before_submit, _admission_hook, _prepared_token, _admission_timeout_ms, _job_timeout, _poll_interval
@@ -1259,7 +1259,7 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
         upstream = forge.status(transport=transport)
     except Exception:
         return 503, {"error": _MESSAGES["forge_error"], "code": "forge_error"}
-<<<<<<< HEAD
+
     with _LOCK:
         stored = _load(root)
         existing = stored["idempotency"].get(idempotency_key)

@@ -1,0 +1,14 @@
+{
+  "peers": [
+    {
+      "name": "PC-A",
+      "share_path": "\\\\PC-A\\Transfert",
+      "auth": null
+    },
+    {
+      "name": "PC-B",
+      "share_path": "\\\\PC-B\\Transfert",
+      "auth": null
+    }
+  ]
+}
