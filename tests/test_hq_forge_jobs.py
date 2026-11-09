@@ -298,6 +298,63 @@ class Jobs(unittest.TestCase):
         code, payload = J.create_job(self.root, _body(wait_if_busy="yes"), "polite-key-7", transport=transport)
         self.assertEqual((code, payload["code"]), (409, "forge_busy"))
 
+    def test_waiting_job_blocks_claim_restart(self):
+        transport = Transport(progress=dict(self.BUSY))
+        code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-claim-1", transport=transport)
+        self.assertEqual(code, 202, payload)
+        self.assertTrue(payload["job"]["waiting"])
+        # A waiting job is actively queued; claim_restart must refuse
+        claimed, reason, _token = J.claim_restart(self.root)
+        self.assertFalse(claimed)
+        self.assertEqual(reason, "active")
+        # Cancel the waiting job so it transitions to terminal
+        J.cancel_job(self.root, payload["job"]["job_id"])
+        # Now restart can be claimed
+        claimed, reason, token = J.claim_restart(self.root)
+        self.assertTrue(claimed)
+        self.assertEqual(reason, "ok")
+        J.release_restart(self.root, token)
+
+    def test_claimed_restart_blocks_wait_if_busy_job(self):
+        transport = Transport(progress=dict(self.BUSY))
+        claimed, reason, token = J.claim_restart(self.root)
+        self.assertTrue(claimed)
+        # When restart is claimed, wait_if_busy cannot bypass lifecycle_busy
+        code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-claim-2", transport=transport)
+        self.assertEqual(code, 409)
+        self.assertEqual(payload["code"], "lifecycle_busy")
+        J.release_restart(self.root, token)
+        # Once released, job is admitted into waiting
+        code2, payload2 = J.create_job(self.root, _body(wait_if_busy=True), "polite-claim-2", transport=transport)
+        self.assertEqual(code2, 202)
+        self.assertTrue(payload2["job"]["waiting"])
+        J.cancel_job(self.root, payload2["job"]["job_id"])
+
+    def test_external_active_blocks_wait_if_busy(self):
+        transport = Transport(progress=dict(self.BUSY))
+        J.set_external_busy(lambda: True)
+        try:
+            code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-ext-1", transport=transport)
+            self.assertEqual(code, 409)
+            self.assertEqual(payload["code"], "active")
+        finally:
+            J.set_external_busy(None)
+        # Without external busy, wait_if_busy is admitted
+        code2, payload2 = J.create_job(self.root, _body(wait_if_busy=True), "polite-ext-1", transport=transport)
+        self.assertEqual(code2, 202)
+        self.assertTrue(payload2["job"]["waiting"])
+        J.cancel_job(self.root, payload2["job"]["job_id"])
+
+    def test_inpaint_busy_blocks_wait_if_busy(self):
+        transport = Transport(progress=dict(self.BUSY))
+        J.set_inpaint_busy(lambda: True)
+        try:
+            code, payload = J.create_job(self.root, _body(wait_if_busy=True), "polite-inp-1", transport=transport)
+            self.assertEqual(code, 409)
+            self.assertEqual(payload["code"], "active")
+        finally:
+            J.set_inpaint_busy(None)
+
     # ------------------------------------------------------------------ C: explore around
     def test_variation_strip_keeps_the_seed_and_records_each_subseed(self):
         import hq_forge_gallery as G

@@ -24,8 +24,21 @@ import unicodedata
 import zipfile
 from pathlib import Path
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+except ImportError:
+    AESGCM = None  # type: ignore
+    Argon2id = None  # type: ignore
+
+
+def crypto_available() -> bool:
+    return AESGCM is not None and Argon2id is not None
+
+
+def _require_crypto() -> None:
+    if not crypto_available():
+        raise VaultError("no_crypto")
 
 import hq_forge_gallery as gallery
 import hq_forge_vault_registry as registry
@@ -238,6 +251,7 @@ def _kdf_params(salt: bytes) -> dict:
 
 
 def _derive(params: dict, secret: bytes) -> bytes:
+    _require_crypto()
     if not isinstance(params, dict) or params.get("name") != "argon2id":
         raise VaultError("corrupt")
     salt = _unb64(params.get("salt"), 16)
@@ -258,11 +272,13 @@ def _derive(params: dict, secret: bytes) -> bytes:
 
 
 def _seal(key: bytes, plaintext: bytes, aad: bytes) -> bytes:
+    _require_crypto()
     nonce = os.urandom(12)
     return nonce + AESGCM(key).encrypt(nonce, plaintext, aad)
 
 
 def _open(key: bytes, blob: bytes, aad: bytes) -> bytes:
+    _require_crypto()
     if not isinstance(blob, (bytes, bytearray)) or len(blob) < 12 + 16:
         raise VaultError("corrupt")
     try:
@@ -1137,6 +1153,7 @@ def create_vault(hq_root: Path, token: str | None, passphrase: str, confirm: str
     """A new vault with its own keys in vaults/<random vid>/. It is not opened.
 
     The registry is written last: a crash before that leaves an unlisted folder that opens nothing."""
+    _require_crypto()
     _require_live(token)
     if passphrase != confirm or not passphrase_acceptable(passphrase):
         raise VaultError("validation")
@@ -1434,6 +1451,7 @@ def _open_with_budget(token: str | None, opener, vault: str = "legacy"):
 
 
 def unlock(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None = None) -> dict:
+    _require_crypto()
     def opener():
         header = _read_header(_root(hq_root, vid=vid))
         if header is None:
@@ -1451,6 +1469,7 @@ def unlock(hq_root: Path, token: str | None, passphrase: str, *, vid: str | None
 
 
 def unlock_with_recovery(hq_root: Path, token: str | None, recovery_key: str, *, vid: str | None = None) -> dict:
+    _require_crypto()
     def opener():
         header = _read_header(_root(hq_root, vid=vid))
         if header is None:
@@ -2911,6 +2930,7 @@ def http_status(code: str) -> int:
         "migration_failed": 409,
         "backup_first": 409,
         "confirm": 400,
+        "no_crypto": 503,
     }.get(code, 400)
 
 
@@ -2940,4 +2960,5 @@ def public_error(code: str) -> str:
         "backup_first": "Proposez d'abord la sauvegarde du coffre.",
         "confirm": "Tapez SUPPRIMER pour confirmer.",
         "disabled": "La génération privée reste désactivée tant que Forge n'a pas prouvé qu'il n'écrit pas de copie en clair.",
+        "no_crypto": "Le chiffrement du coffre n'est pas disponible.",
     }.get(code, "Le coffre a refusé l'opération.")

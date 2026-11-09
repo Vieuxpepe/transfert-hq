@@ -72,6 +72,6 @@ jobs:
       - name: Animation perf guards
         run: python scripts/verify_animation_pipeline.py
       - name: Install Playwright
-        run: pip install playwright && playwright install chromium
+        run: pip install playwright cryptography && playwright install chromium
       - name: Motion FPS browser gate
         run: python tests/visual_hq_motion_fps_playwright.py

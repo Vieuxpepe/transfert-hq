@@ -114,10 +114,24 @@ class CsrfKeyAcl(unittest.TestCase):
         self.sessions.write_text("{}", encoding="utf-8")
 
     def tearDown(self) -> None:
-        for name in ("junction", "lifecycle-csrf.key"):
-            path = self.root / name
-            if path.exists() and path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                subprocess.run(["cmd", "/c", "rmdir", str(path)], check=False)
+        if sys.platform == "win32" and self.root.exists():
+            for root, dirs, files in os.walk(self.root, topdown=False, followlinks=False):
+                for name in list(dirs):
+                    p = Path(root) / name
+                    try:
+                        if p.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                            subprocess.run(["cmd", "/c", "rmdir", str(p)], capture_output=True, check=False)
+                            dirs.remove(name)
+                    except OSError:
+                        pass
+                for name in files:
+                    p = Path(root) / name
+                    try:
+                        if p.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                            p.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            subprocess.run(["icacls", str(self.root), "/reset", "/t", "/c", "/q"], capture_output=True, check=False)
         self.tmp.cleanup()
 
     def assert_tight(self, facts: dict) -> None:

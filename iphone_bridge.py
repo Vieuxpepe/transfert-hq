@@ -4383,7 +4383,11 @@ async function hqPollTick() {
   }
 }
 function hqStartPollScheduler() {
-  hqSchedulePoll(350);
+  const now = Date.now();
+  for (const task of hqPollTasks) {
+    if (!task.nextAt) task.nextAt = now + task.intervalMs;
+  }
+  hqSchedulePoll(1000);
 }
 
 function setupRecentsFilters() {

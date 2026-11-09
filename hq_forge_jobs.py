@@ -16,6 +16,7 @@ import math
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 from ctypes import wintypes
@@ -62,15 +63,19 @@ _wait_timeout = WAIT_TIMEOUT_SEC
 PRODUCT_ADMISSION_MUTEX = "Local\\TransfertHQ-Forge-Admission"
 _WAIT_OBJECT_0 = 0
 _WAIT_ABANDONED = 0x00000080
-_kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-_kernel.CreateMutexW.restype = wintypes.HANDLE
-_kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-_kernel.WaitForSingleObject.restype = wintypes.DWORD
-_kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
-_kernel.ReleaseMutex.restype = wintypes.BOOL
-_kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-_kernel.CloseHandle.restype = wintypes.BOOL
+try:
+    from ctypes import wintypes
+    _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel.CreateMutexW.restype = wintypes.HANDLE
+    _kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _kernel.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    _kernel.ReleaseMutex.restype = wintypes.BOOL
+    _kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel.CloseHandle.restype = wintypes.BOOL
+except (AttributeError, OSError):
+    _kernel = None
 
 
 class _AdmissionBusy(Exception):
@@ -109,11 +114,7 @@ _MESSAGES = {
 
 
 def reset_for_tests() -> None:
-
-    global _generation, _recovered, _before_submit, _job_timeout, _poll_interval, _wait_timeout
-=======
-    global _generation, _recovered, _before_submit, _admission_hook, _prepared_token, _admission_timeout_ms, _job_timeout, _poll_interval
->>>>>>> forge-lifecycle-exact-port-infra
+    global _generation, _recovered, _before_submit, _admission_hook, _prepared_token, _admission_timeout_ms, _job_timeout, _poll_interval, _wait_timeout
     _generation += 1
     _job_vaults.clear()
     _wait_timeout = WAIT_TIMEOUT_SEC
@@ -735,21 +736,51 @@ def _acquire_admission(root: Path):
     name = admission_mutex_name(root)
     if name == PRODUCT_ADMISSION_MUTEX:
         raise _AdmissionBusy()
-    handle = _kernel.CreateMutexW(None, False, name)
-    if not handle:
-        raise _AdmissionBusy()
-    waited = int(_kernel.WaitForSingleObject(handle, _admission_timeout_ms))
-    if waited not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
-        _kernel.CloseHandle(handle)
-        raise _AdmissionBusy()
-    return handle
+    if _kernel is not None:
+        handle = _kernel.CreateMutexW(None, False, name)
+        if not handle:
+            raise _AdmissionBusy()
+        waited = int(_kernel.WaitForSingleObject(handle, _admission_timeout_ms))
+        if waited not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+            _kernel.CloseHandle(handle)
+            raise _AdmissionBusy()
+        return handle
+    # Non-Windows systems (e.g. Linux CI / testing): cross-process file lock via fcntl
+    import fcntl
+    lock_dir = Path(tempfile.gettempdir()) / "transfert_hq_locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / (name.replace("\\", "_").replace("/", "_") + ".lock")
+    fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + (_admission_timeout_ms / 1000.0)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return ("posix_lock", fd, lock_file)
+        except (BlockingIOError, OSError):
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise _AdmissionBusy()
+            time.sleep(0.02)
 
 
 def _release_admission(handle) -> None:
     if not handle:
         return
-    _kernel.ReleaseMutex(handle)
-    _kernel.CloseHandle(handle)
+    if isinstance(handle, tuple) and handle and handle[0] == "posix_lock":
+        import fcntl
+        fd = handle[1]
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return
+    if _kernel is not None:
+        _kernel.ReleaseMutex(handle)
+        _kernel.CloseHandle(handle)
 
 
 def _hook(point: str) -> None:
@@ -1260,59 +1291,6 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
     except Exception:
         return 503, {"error": _MESSAGES["forge_error"], "code": "forge_error"}
 
-    with _LOCK:
-        stored = _load(root)
-        existing = stored["idempotency"].get(idempotency_key)
-        if isinstance(existing, str):
-            job = _find(stored, existing)
-            if job is not None:
-                if (job.get("destination") or "normal") != destination:
-                    return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
-                return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
-        active = _active_job(stored)
-        if active is not None:
-            return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
-        if _external_active():
-            return 409, {"error": _MESSAGES["active"], "code": "active"}
-        waiting = False
-        if upstream.get("forge") == "busy":
-            # B: a normal job may wait politely; private jobs keep the plain refusal.
-            if destination != "normal" or data.get("wait_if_busy") is not True:
-                return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
-            waiting = True
-        elif upstream.get("forge") != "ready":
-            code = upstream.get("code") or "forge_error"
-            return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
-        job_id = "job-" + os.urandom(12).hex()
-        task_id = "task(hq-" + os.urandom(12).hex() + ")"
-        job = {
-            "id": job_id,
-            "task_id": task_id,
-            "state": "queued",
-            "created": _now(),
-            "updated": _now(),
-            "idempotency_key": idempotency_key,
-            "destination": destination,
-            "settings": {} if destination == "private" else validated,
-            "submitted": False,
-            "progress": 0,
-            "step": 0,
-            "steps": validated["steps"],
-            "progress_stale": False,
-            "message": _MESSAGES["waiting"] if waiting else "En file.",
-            "waiting": waiting,
-            "error": "",
-            "images": [],
-            "seed_used": None,
-            **({"finish_of": finish_of} if finish_of else {}),
-        }
-        stored["jobs"].append(job)
-        stored["jobs"] = stored["jobs"][-200:]
-        stored["idempotency"][idempotency_key] = job_id
-        _trim_keys(stored)
-        _save(root, stored)
-        token = _generation
-=======
     try:
         admission = _acquire_admission(root)
     except _AdmissionBusy:
@@ -1326,15 +1304,21 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
                 if job is not None:
                     if (job.get("destination") or "normal") != destination:
                         return 409, {"error": "Cette clé correspond déjà à une autre destination.", "code": "destination"}
-                    return 200, {"job": _public(job, unlocked=_session_open(root, session_token))}
+                    return 200, {"job": _public(job, unlocked=_session_open(root, session_token, job))}
             if _gate_blocks(_read_gate(root)):
                 return 409, {"error": _MESSAGES["lifecycle_busy"], "code": "lifecycle_busy"}
             active = _active_job(stored)
             if active is not None:
                 return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+            if _external_active():
+                return 409, {"error": _MESSAGES["active"], "code": "active"}
+            waiting = False
             if upstream.get("forge") == "busy":
-                return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
-            if upstream.get("forge") != "ready":
+                # B: a normal job may wait politely; private jobs keep the plain refusal.
+                if destination != "normal" or data.get("wait_if_busy") is not True:
+                    return 409, {"error": _MESSAGES["forge_busy"], "code": "forge_busy", "forge": "busy"}
+                waiting = True
+            elif upstream.get("forge") != "ready":
                 code = upstream.get("code") or "forge_error"
                 return 409, {"error": _MESSAGES.get(code, _MESSAGES["forge_error"]), "code": code, "forge": upstream.get("forge")}
             _hook("before_admit")
@@ -1344,6 +1328,8 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             active = _active_job(stored)
             if active is not None:
                 return 409, {"error": _MESSAGES["active"], "code": "active", "active_job_id": active.get("id")}
+            if _external_active():
+                return 409, {"error": _MESSAGES["active"], "code": "active"}
             job_id = "job-" + os.urandom(12).hex()
             task_id = "task(hq-" + os.urandom(12).hex() + ")"
             job = {
@@ -1360,10 +1346,12 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
                 "step": 0,
                 "steps": validated["steps"],
                 "progress_stale": False,
-                "message": "En file.",
+                "message": _MESSAGES["waiting"] if waiting else "En file.",
+                "waiting": waiting,
                 "error": "",
                 "images": [],
                 "seed_used": None,
+                **({"finish_of": finish_of} if finish_of else {}),
             }
             stored["jobs"].append(job)
             stored["jobs"] = stored["jobs"][-200:]
@@ -1373,7 +1361,6 @@ def create_job(root: Path, data: dict, idempotency_key: str, *, transport=None, 
             token = _generation
     finally:
         _release_admission(admission)
->>>>>>> forge-lifecycle-exact-port-infra
     inline = validated if destination == "private" else None
     if vault_id is not None:
         _job_vaults[job_id] = vault_id

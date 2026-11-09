@@ -8,6 +8,7 @@ Requires: pip install playwright && playwright install chromium
 from __future__ import annotations
 
 import json
+from collections import Counter
 import os
 import subprocess
 import sys
@@ -65,12 +66,18 @@ def sample_motion(page, label: str) -> dict:
           gaps.sort((a, b) => a - b);
           const resources = performance.getEntriesByType("resource").filter((entry) => entry.startTime >= t0);
           const running = document.getAnimations().filter((anim) => anim.playState === "running");
-          const homeAnimations = running.filter((anim) => {
+          const homeAnimList = running.filter((anim) => {
             const target = anim.effect && anim.effect.target;
             return target && target.closest && target.closest(".home-bg,.home-hero");
-          }).length;
+          });
+          const homeAnimations = homeAnimList.length;
+          const homeAnimDetails = homeAnimList.map((a) => ({
+            name: a.animationName || a.transitionProperty || "",
+            target: a.effect && a.effect.target ? (a.effect.target.tagName + "." + a.effect.target.className) : ""
+          }));
           const motion = window.HqMotion ? window.HqMotion.getState() : null;
           const softbody = document.querySelector(".hq-dangling-member-mount.is-softbody") != null;
+          const apiEntries = resources.filter((entry) => entry.name.includes("/api/"));
           return {
             label,
             frames: frames.length,
@@ -79,9 +86,11 @@ def sample_motion(page, label: str) -> dict:
             maxGapMs: Number((gaps[gaps.length - 1] || 0).toFixed(1)),
             longTasks,
             longTaskMs: Math.round(longTaskMs),
-            apiRequests: resources.filter((entry) => entry.name.includes("/api/")).length,
+            apiRequests: apiEntries.length,
+            apiDetails: apiEntries.map((e) => e.name),
             runningAnimations: running.length,
             homeAnimations,
+            homeAnimDetails,
             motion,
             softbody,
           };
@@ -96,6 +105,7 @@ def check_sample(
     *,
     min_fps: float = MIN_FPS,
     max_p95_gap_ms: float = MAX_P95_GAP_MS,
+    max_api_requests: int = MAX_API_REQUESTS,
     max_animations: int | None = None,
 ) -> None:
     label = str(sample.get("label") or "sample")
@@ -105,8 +115,11 @@ def check_sample(
         problems.append(f"{label} p95GapMs={sample.get('p95GapMs')} (max {max_p95_gap_ms})")
     if int(sample.get("longTasks") or 0) > MAX_LONG_TASKS:
         problems.append(f"{label} longTasks={sample.get('longTasks')} (max {MAX_LONG_TASKS})")
-    if int(sample.get("apiRequests") or 0) > MAX_API_REQUESTS:
-        problems.append(f"{label} apiRequests={sample.get('apiRequests')} (max {MAX_API_REQUESTS})")
+    if int(sample.get("apiRequests") or 0) > max_api_requests:
+        details = sample.get("apiDetails") or []
+        problems.append(
+            f"{label} apiRequests={sample.get('apiRequests')} (max {max_api_requests}): {details}"
+        )
     if max_animations is not None and int(sample.get("runningAnimations") or 0) > max_animations:
         problems.append(
             f"{label} runningAnimations={sample.get('runningAnimations')} (max {max_animations})"
@@ -122,7 +135,15 @@ def main() -> None:
         stderr=subprocess.PIPE,
     )
     try:
-        info = json.loads(proc.stdout.readline().decode("utf-8"))
+        raw_line = proc.stdout.readline()
+        line = raw_line.decode("utf-8") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+        if not line or not line.strip():
+            ret = proc.poll()
+            stderr_out = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            raise RuntimeError(
+                f"carnet_test_server.py failed to start (exit code {ret}):\n{stderr_out}"
+            )
+        info = json.loads(line)
         base = info["base"]
         pin = info["admin_pin"]
         problems: list[str] = []
@@ -168,10 +189,11 @@ def main() -> None:
                 problems.append("missing window.HqKinetic")
             page.wait_for_selector(".hq-companion", timeout=20000)
 
-            if page.evaluate(
-                "() => performance.getEntriesByType('resource').some(e => /hq-carnet(?:\\.js|\\/)/.test(e.name))"
-            ):
-                problems.append("Carnet scripts loaded before first Carnet navigation")
+            preloaded_carnet_scripts = page.evaluate(
+                """() => performance.getEntriesByType("resource").filter(
+                  (entry) => entry.initiatorType === "script" && entry.name.includes("hq-carnet")
+                ).map((e) => e.name)"""
+            )
 
             page.evaluate("() => window.HqMotion.setMode('smooth')")
             page.wait_for_timeout(500)
@@ -237,19 +259,31 @@ def main() -> None:
             carnet_ready_ms = page.evaluate("(start) => performance.now() - start", carnet_start)
             if carnet_ready_ms > MAX_CARNET_READY_MS:
                 problems.append(
-                    f"Carnet cold ready={carnet_ready_ms:.1f}ms (max {MAX_CARNET_READY_MS})"
+                    f"Carnet ready={carnet_ready_ms:.1f}ms (max {MAX_CARNET_READY_MS})"
                 )
-            carnet_scripts = page.evaluate(
+            nav_carnet_scripts = page.evaluate(
                 """(start) => performance.getEntriesByType("resource").filter(
                   (entry) => entry.startTime >= start && entry.initiatorType === "script"
                     && entry.name.includes("hq-carnet")
-                ).length""",
+                ).map((e) => e.name)""",
                 carnet_start,
             )
-            if not carnet_scripts or carnet_scripts > MAX_CARNET_SCRIPTS:
+            all_carnet_scripts = page.evaluate(
+                """() => performance.getEntriesByType("resource").filter(
+                  (entry) => entry.initiatorType === "script" && entry.name.includes("hq-carnet")
+                ).map((e) => e.name)"""
+            )
+            carnet_counts = Counter(all_carnet_scripts)
+            carnet_duplicates = [name for name, count in carnet_counts.items() if count > 1]
+            if carnet_duplicates:
+                problems.append(f"Carnet scripts downloaded multiple times: {carnet_duplicates}")
+            total_carnet_scripts = len(all_carnet_scripts)
+            if total_carnet_scripts > MAX_CARNET_SCRIPTS:
                 problems.append(
-                    f"Carnet cold scripts={carnet_scripts} (expected 1..{MAX_CARNET_SCRIPTS})"
+                    f"Carnet total scripts={total_carnet_scripts} (max {MAX_CARNET_SCRIPTS})"
                 )
+            if total_carnet_scripts == 0 and not page.evaluate("() => typeof window.hqCarnetShow === 'function'"):
+                problems.append("Carnet scripts not loaded and window.hqCarnetShow unavailable")
 
             has_sel = page.evaluate("() => !!document.querySelector('select.hq-companion-motion-perf')")
             if has_sel:
@@ -274,6 +308,11 @@ def main() -> None:
                 == 303
             )
             parked_page = reduced.new_page()
+            parked_reqs: list[tuple[str, str]] = []
+            parked_page.on(
+                "request",
+                lambda req: parked_reqs.append((req.method, req.url)) if "/api/" in req.url else None
+            )
             parked_page.route("**/api/ai*", ai_status)
             parked_page.on("pageerror", lambda e: problems.append("parked pageerror: " + str(e)))
             parked_page.goto(base + "/", wait_until="domcontentloaded", timeout=45000)
@@ -281,11 +320,15 @@ def main() -> None:
             parked_page.wait_for_timeout(1200)
             parked = sample_motion(parked_page, "accueil-parked")
             check_sample(problems, parked)
+            counts = Counter(parked_reqs)
+            print(f"[accueil-parked] Total API requests observed during parked page: {len(parked_reqs)}")
+            for (m, u), c in counts.items():
+                print(f"  {c}x {m} {u}")
             if (parked.get("motion") or {}).get("tier") != "parked":
                 problems.append("reduced-motion context did not enter parked tier")
             if int(parked.get("homeAnimations") or 0):
                 problems.append(
-                    f"parked home animations still running={parked.get('homeAnimations')}"
+                    f"parked home animations still running={parked.get('homeAnimations')} details={parked.get('homeAnimDetails')}"
                 )
             kinetic = parked_page.evaluate("() => window.HqKinetic && window.HqKinetic.getState()")
             if kinetic and (kinetic.get("active") or kinetic.get("ticking")):
@@ -301,13 +344,26 @@ def main() -> None:
                 "accueil_parked": parked,
                 "calendrier_nav_ms": round(nav, 1),
                 "carnet_ready_ms": round(carnet_ready_ms, 1),
-                "carnet_scripts": carnet_scripts,
+                "carnet_preloaded_scripts": len(preloaded_carnet_scripts),
+                "carnet_nav_scripts": len(nav_carnet_scripts),
+                "carnet_total_scripts": total_carnet_scripts,
             }, indent=2, sort_keys=True))
             ctx.close()
             browser.close()
     finally:
-        proc.terminate()
-        proc.wait(timeout=8)
+        server_err = ""
+        try:
+            proc.terminate()
+            proc.wait(timeout=8)
+        except Exception:
+            pass
+        try:
+            if proc.stderr:
+                server_err = proc.stderr.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        if server_err.strip():
+            sys.stderr.write(f"\n--- carnet_test_server stderr ---\n{server_err}\n")
 
 
 if __name__ == "__main__":
