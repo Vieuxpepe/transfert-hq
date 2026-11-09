@@ -346,8 +346,8 @@ html[data-hq-motion-tier="parked"] .home-fx *::before,
 html[data-hq-motion-tier="parked"] .home-fx *::after,
 html[data-hq-motion-tier="parked"] .home-bg *,
 html[data-hq-motion-tier="parked"] .home-bg *::before,
-html[data-hq-motion-tier="parked"] .home-bg *::after{animation-play-state:paused!important}
-@media (prefers-reduced-motion:reduce){.bg-lights{display:none}}
+html[data-hq-motion-tier="parked"] .home-bg *::after{animation-play-state:paused!important;transition:none!important}
+@media (prefers-reduced-motion:reduce){.bg-lights{display:none}.home-orb{transition:none!important}}
 
 @media (prefers-color-scheme: light){.home-clock-face{filter:none}}
 

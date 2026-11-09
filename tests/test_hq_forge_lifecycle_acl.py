@@ -116,9 +116,19 @@ class CsrfKeyAcl(unittest.TestCase):
     def tearDown(self) -> None:
         for name in ("junction", "lifecycle-csrf.key"):
             path = self.root / name
-            if path.exists() and path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                subprocess.run(["cmd", "/c", "rmdir", str(path)], check=False)
-        self.tmp.cleanup()
+            if path.exists():
+                if path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                    subprocess.run(["cmd", "/c", "rmdir", str(path)], check=False)
+                else:
+                    subprocess.run(["cmd", "/c", "icacls", str(path), "/reset"], capture_output=True, check=False)
+                    try:
+                        path.unlink()
+                    except Exception:
+                        pass
+        try:
+            self.tmp.cleanup()
+        except Exception:
+            pass
 
     def assert_tight(self, facts: dict) -> None:
         self.assertTrue(facts["acceptable"], facts)
