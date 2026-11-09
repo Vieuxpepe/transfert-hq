@@ -16,6 +16,7 @@ import math
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 from ctypes import wintypes
@@ -62,15 +63,19 @@ _wait_timeout = WAIT_TIMEOUT_SEC
 PRODUCT_ADMISSION_MUTEX = "Local\\TransfertHQ-Forge-Admission"
 _WAIT_OBJECT_0 = 0
 _WAIT_ABANDONED = 0x00000080
-_kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-_kernel.CreateMutexW.restype = wintypes.HANDLE
-_kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-_kernel.WaitForSingleObject.restype = wintypes.DWORD
-_kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
-_kernel.ReleaseMutex.restype = wintypes.BOOL
-_kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-_kernel.CloseHandle.restype = wintypes.BOOL
+try:
+    from ctypes import wintypes
+    _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    _kernel.CreateMutexW.restype = wintypes.HANDLE
+    _kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _kernel.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    _kernel.ReleaseMutex.restype = wintypes.BOOL
+    _kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    _kernel.CloseHandle.restype = wintypes.BOOL
+except (AttributeError, OSError):
+    _kernel = None
 
 
 class _AdmissionBusy(Exception):
@@ -731,21 +736,51 @@ def _acquire_admission(root: Path):
     name = admission_mutex_name(root)
     if name == PRODUCT_ADMISSION_MUTEX:
         raise _AdmissionBusy()
-    handle = _kernel.CreateMutexW(None, False, name)
-    if not handle:
-        raise _AdmissionBusy()
-    waited = int(_kernel.WaitForSingleObject(handle, _admission_timeout_ms))
-    if waited not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
-        _kernel.CloseHandle(handle)
-        raise _AdmissionBusy()
-    return handle
+    if _kernel is not None:
+        handle = _kernel.CreateMutexW(None, False, name)
+        if not handle:
+            raise _AdmissionBusy()
+        waited = int(_kernel.WaitForSingleObject(handle, _admission_timeout_ms))
+        if waited not in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+            _kernel.CloseHandle(handle)
+            raise _AdmissionBusy()
+        return handle
+    # Non-Windows systems (e.g. Linux CI / testing): cross-process file lock via fcntl
+    import fcntl
+    lock_dir = Path(tempfile.gettempdir()) / "transfert_hq_locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / (name.replace("\\", "_").replace("/", "_") + ".lock")
+    fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + (_admission_timeout_ms / 1000.0)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return ("posix_lock", fd, lock_file)
+        except (BlockingIOError, OSError):
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise _AdmissionBusy()
+            time.sleep(0.02)
 
 
 def _release_admission(handle) -> None:
     if not handle:
         return
-    _kernel.ReleaseMutex(handle)
-    _kernel.CloseHandle(handle)
+    if isinstance(handle, tuple) and handle and handle[0] == "posix_lock":
+        import fcntl
+        fd = handle[1]
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return
+    if _kernel is not None:
+        _kernel.ReleaseMutex(handle)
+        _kernel.CloseHandle(handle)
 
 
 def _hook(point: str) -> None:

@@ -122,7 +122,15 @@ def main() -> None:
         stderr=subprocess.PIPE,
     )
     try:
-        info = json.loads(proc.stdout.readline().decode("utf-8"))
+        raw_line = proc.stdout.readline()
+        line = raw_line.decode("utf-8") if isinstance(raw_line, (bytes, bytearray)) else raw_line
+        if not line or not line.strip():
+            ret = proc.poll()
+            stderr_out = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+            raise RuntimeError(
+                f"carnet_test_server.py failed to start (exit code {ret}):\n{stderr_out}"
+            )
+        info = json.loads(line)
         base = info["base"]
         pin = info["admin_pin"]
         problems: list[str] = []
