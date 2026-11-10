@@ -39,8 +39,8 @@ class InventoriaPipelineTests(unittest.TestCase):
     def _proposal(self, **kw) -> dict:
         base = {
             "op": "item.adjust",
-            "refs": {"name_hint": "Lait"},
-            "resolved": {"item_id": self.item_id, "confidence": "high"},
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
             "payload": {"id": self.item_id, "delta": -1},
             "label_fr": "Lait −1",
         }
@@ -80,7 +80,7 @@ class InventoriaPipelineTests(unittest.TestCase):
             exp = row["expected_inventory_rev"]
         c5, out5 = ivo.http_post(
             f"/api/inventoria/ops/{op_id}/commit",
-            {"idempotency_key": "idem-ivo-1", "expected_inventory_rev": exp, "preview_digest": dig},
+            {"idempotency_key": "idem-ivo-1"},
         )
         self.assertEqual(c5, 200, out5)
         qty1 = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]

@@ -25,6 +25,15 @@ PROPOSALS_MAX = 20
 SESSION_RE = re.compile(r"^/api/inventoria/sessions(?:/(ivo-[0-9a-f]{16}))?(?:/message)?\Z")
 OPS_RE = re.compile(r"^/api/inventoria/ops/(iop-[0-9a-f]{16})(?:/(validate|preview|commit|cancel|reconcile))?\Z")
 
+PREVIEW_KEYS = frozenset({"confirm"})
+COMMIT_KEYS = frozenset({"idempotency_key"})
+RECONCILE_KEYS = frozenset({
+    "decision", "reason", "idempotency_key", "evidence", "step_index",
+})
+AMBIGUOUS_NAME_THRESHOLD = 0.75
+NAME_MATCH_MIN = 0.50
+REASON_MIN_LEN = 8
+
 _cb: dict[str, Any] = {}
 _guard = threading.Lock()
 
@@ -108,15 +117,101 @@ def _audit(
     )
 
 
+def _reject_unknown_fields(data: dict, allowed: frozenset[str]) -> None:
+    extra = set(data) - allowed
+    if extra:
+        sample = ", ".join(sorted(extra)[:8])
+        raise InventoriaError(f"Champs inconnus ({sample})", code="validation_error")
+
+
 def _name_score(a: str, b: str) -> float:
     return SequenceMatcher(None, a.casefold(), b.casefold()).ratio()
 
 
-def _resolve_proposal(proposal: dict, inv: dict) -> dict:
-    """Fill resolved refs from inventory snapshot (deterministic)."""
+def _conf_for_score(score: float) -> str:
+    if score >= 0.92:
+        return "high"
+    if score >= AMBIGUOUS_NAME_THRESHOLD:
+        return "medium"
+    return "low"
+
+
+def _commit_preview_digest(
+    proposals: list[dict],
+    expected_inventory_rev: int,
+    item_rev_expectations: list[dict] | None,
+) -> str:
+    normalized: list[dict] = []
+    for p in proposals:
+        normalized.append({
+            "op": p["op"],
+            "refs": p.get("refs") or {},
+            "resolved": p.get("resolved") or {},
+            "payload": p.get("payload") or {},
+        })
+    blob = {
+        "proposals": normalized,
+        "expected_inventory_rev": int(expected_inventory_rev),
+        "item_rev_expectations": item_rev_expectations or [],
+    }
+    return hashlib.sha256(_safe_json(blob).encode("utf-8")).hexdigest()
+
+
+def _simulate_proposal(p: dict, inv: dict) -> list[dict]:
+    """Return simulation issues (bounds, existence) — read-only."""
+    issues: list[dict] = []
+    op = p["op"]
+    payload = p.get("payload") or {}
+    items = {i["id"]: i for i in inv.get("items") or []}
+    places = {pl["id"]: pl for pl in inv.get("places") or []}
+    from hq_inventory import QTY_MAX  # local import avoids cycle at module load
+
+    if op == "item.adjust":
+        iid = payload.get("id")
+        item = items.get(iid) if isinstance(iid, str) else None
+        if item is None:
+            issues.append({"op": op, "code": "not_found", "item_id": iid})
+            return issues
+        delta = payload.get("delta")
+        if not isinstance(delta, int) or isinstance(delta, bool) or delta == 0:
+            issues.append({"op": op, "code": "invalid_delta"})
+            return issues
+        new_qty = int(item["qty"]) + int(delta)
+        if new_qty < 0:
+            issues.append({"op": op, "code": "negative_qty", "would_be": new_qty})
+        elif new_qty > QTY_MAX:
+            issues.append({"op": op, "code": "qty_out_of_range", "would_be": new_qty})
+    elif op in ("item.update", "item.delete"):
+        iid = payload.get("id")
+        if iid not in items:
+            issues.append({"op": op, "code": "not_found", "item_id": iid})
+        elif op == "item.update" and "qty" in payload:
+            q = payload["qty"]
+            if isinstance(q, int) and not isinstance(q, bool) and (q < 0 or q > QTY_MAX):
+                issues.append({"op": op, "code": "qty_out_of_range"})
+    elif op == "item.move":
+        for iid in payload.get("ids") or []:
+            if iid not in items:
+                issues.append({"op": op, "code": "not_found", "item_id": iid})
+        dest = payload.get("place")
+        if dest not in (None, "") and dest not in places:
+            issues.append({"op": op, "code": "not_found", "place_id": dest})
+    elif op.startswith("place."):
+        pid = payload.get("id")
+        if op != "place.create" and pid not in places:
+            issues.append({"op": op, "code": "not_found", "place_id": pid})
+    conf = (p.get("resolved") or {}).get("confidence")
+    if conf in ("medium", "low"):
+        issues.append({"op": op, "code": "needs_confirmation", "confidence": conf})
+    return issues
+
+
+def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
+    """Fill resolved refs from inventory snapshot. Caller-supplied confidence is ignored."""
     out = dict(proposal)
     refs = dict(proposal.get("refs") or {})
-    resolved = dict(proposal.get("resolved") or {})
+    resolved: dict[str, Any] = {}
+    local_issues: list[dict] = []
     op = proposal["op"]
     items = inv.get("items") or []
     places = inv.get("places") or []
@@ -124,40 +219,49 @@ def _resolve_proposal(proposal: dict, inv: dict) -> dict:
     by_place = {p["id"]: p for p in places}
     by_code = {p["code"].upper(): p["id"] for p in places if isinstance(p.get("code"), str)}
 
-    def conf_for(score: float) -> str:
-        if score >= 0.92:
-            return "high"
-        if score >= 0.75:
-            return "medium"
-        return "low"
-
-    item_id = refs.get("item_id") or resolved.get("item_id")
-    if isinstance(item_id, str) and item_id in by_item:
-        resolved["item_id"] = item_id
-        resolved["confidence"] = "high"
+    explicit_iid = refs.get("item_id")
+    if isinstance(explicit_iid, str):
+        if explicit_iid not in by_item:
+            local_issues.append({"op": op, "code": "not_found", "item_id": explicit_iid})
+        else:
+            resolved["item_id"] = explicit_iid
+            resolved["confidence"] = "high"
     elif refs.get("name_hint"):
         hint = str(refs["name_hint"]).strip()
-        best, score = None, 0.0
-        for it in items:
-            s = _name_score(hint, it["name"])
-            if s > score:
-                score, best = s, it
-        if best is not None and score >= 0.5:
-            resolved["item_id"] = best["id"]
-            resolved["confidence"] = conf_for(score)
+        scored = [(it, _name_score(hint, it["name"])) for it in items]
+        strong = [(it, s) for it, s in scored if s >= AMBIGUOUS_NAME_THRESHOLD]
+        if len(strong) > 1:
+            local_issues.append({
+                "op": op,
+                "code": "ambiguous_name",
+                "candidates": [it["id"] for it, _ in strong[:5]],
+            })
+            resolved["confidence"] = "low"
         else:
-            resolved.setdefault("confidence", "low")
-    place_id = refs.get("place_id") or resolved.get("place_id")
-    if isinstance(place_id, str) and place_id in by_place:
-        resolved["place_id"] = place_id
-        if "confidence" not in resolved:
-            resolved["confidence"] = "high"
+            best = max(scored, key=lambda x: x[1], default=(None, 0.0))
+            it, score = best
+            if it is not None and score >= NAME_MATCH_MIN:
+                resolved["item_id"] = it["id"]
+                resolved["confidence"] = _conf_for_score(score)
+            else:
+                local_issues.append({"op": op, "code": "unresolved_reference"})
+                resolved["confidence"] = "low"
+
+    explicit_pid = refs.get("place_id")
+    if isinstance(explicit_pid, str):
+        if explicit_pid not in by_place:
+            local_issues.append({"op": op, "code": "not_found", "place_id": explicit_pid})
+        else:
+            resolved["place_id"] = explicit_pid
+            resolved.setdefault("confidence", "high")
     elif refs.get("place_code"):
         code = str(refs["place_code"]).upper()
         pid = by_code.get(code)
         if pid:
             resolved["place_id"] = pid
             resolved["confidence"] = "high"
+        else:
+            local_issues.append({"op": op, "code": "not_found", "place_code": code})
 
     payload = dict(proposal.get("payload") or {})
     if op.startswith("item.") and resolved.get("item_id") and "id" not in payload and op != "item.create":
@@ -165,11 +269,18 @@ def _resolve_proposal(proposal: dict, inv: dict) -> dict:
     if op.startswith("place.") and resolved.get("place_id") and "id" not in payload and op != "place.create":
         payload["id"] = resolved["place_id"]
 
+    if "confidence" not in resolved:
+        resolved["confidence"] = "low" if local_issues else "high"
     out["refs"] = refs
     out["resolved"] = resolved
     out["payload"] = payload
-    schemas.validate_inventoria_proposal(out)
-    return out
+    try:
+        schemas.validate_inventoria_proposal(out)
+    except schemas.SchemaError as exc:
+        local_issues.append({"op": op, "code": exc.code, "error": str(exc)})
+    sim = _simulate_proposal(out, inv)
+    local_issues.extend(sim)
+    return out, local_issues
 
 
 def _session_row_to_api(row: sqlite3.Row) -> dict:
@@ -336,32 +447,32 @@ def validate_operation(
     resolved: list[dict] = []
     issues: list[dict] = []
     for p in proposals:
-        try:
-            rp = _resolve_proposal(p, inv)
-            if rp["resolved"].get("confidence") == "low":
-                issues.append({"op": rp["op"], "code": "low_confidence"})
-            resolved.append(rp)
-        except schemas.SchemaError as exc:
-            issues.append({"op": p.get("op"), "error": str(exc), "code": exc.code})
-
-    if issues and not resolved:
-        raise InventoriaError("validation échouée", status=400, code="validation_error")
+        rp, local = _resolve_proposal(p, inv)
+        issues.extend(local)
+        resolved.append(rp)
 
     validation = {"ok": not issues, "issues": issues, "proposals": resolved}
     now = _now()
     prev = row["status"]
+    next_status = "validated" if validation["ok"] else "draft"
     conn.execute(
         "UPDATE inventoria_operations SET status = ?, proposals_json = ?, "
-        "validation_json = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
-        ("validated", _safe_json(resolved), _safe_json(validation), now, op_id),
+        "validation_json = ?, preview_json = NULL, preview_digest = NULL, "
+        "preview_confirmed = 0, expected_inventory_rev = NULL, "
+        "item_rev_expectations_json = NULL, updated_at = ?, rev = rev + 1 WHERE id = ?",
+        (next_status, _safe_json(resolved), _safe_json(validation), now, op_id),
     )
     _audit(conn, household_id=household_id, operation_id=op_id, action="validate",
-           prev_status=prev, next_status="validated")
+           prev_status=prev, next_status=next_status)
     api = _op_row_to_api(conn.execute("SELECT * FROM inventoria_operations WHERE id = ?", (op_id,)).fetchone())
     return {"ok": True, "operation": api, "validation": validation}
 
 
-def _preview_diff(proposals: list[dict], inv: dict) -> dict:
+def _preview_diff(
+    proposals: list[dict],
+    inv: dict,
+    item_expectations: list[dict],
+) -> dict:
     changes: list[dict] = []
     for p in proposals:
         op = p["op"]
@@ -371,8 +482,8 @@ def _preview_diff(proposals: list[dict], inv: dict) -> dict:
             iid = payload.get("id")
             item = next((i for i in inv["items"] if i["id"] == iid), None)
             if item:
-                entry["before"] = {"qty": item["qty"]}
-                entry["after"] = {"qty": item["qty"] + int(payload["delta"])}
+                entry["before"] = {"qty": item["qty"], "rev": item["rev"]}
+                entry["after"] = {"qty": item["qty"] + int(payload["delta"]), "rev": item["rev"] + 1}
         elif op == "item.update":
             iid = payload["id"]
             item = next((i for i in inv["items"] if i["id"] == iid), None)
@@ -382,11 +493,12 @@ def _preview_diff(proposals: list[dict], inv: dict) -> dict:
         elif op == "item.create":
             entry["after"] = {k: payload[k] for k in payload if k != "id"}
         changes.append(entry)
-    digest = hashlib.sha256(_safe_json(changes).encode("utf-8")).hexdigest()
+    digest = _commit_preview_digest(proposals, int(inv["rev"]), item_expectations)
     return {"changes": changes, "preview_digest": digest, "inventory_rev": inv["rev"]}
 
 
 def preview_operation(conn: sqlite3.Connection, household_id: str, op_id: str, data: dict) -> dict:
+    _reject_unknown_fields(data, PREVIEW_KEYS)
     row = conn.execute(
         "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
         (op_id, household_id),
@@ -395,29 +507,46 @@ def preview_operation(conn: sqlite3.Connection, household_id: str, op_id: str, d
         raise InventoriaError("opération introuvable", status=404, code="not_found")
     if row["status"] not in ("validated", "previewed"):
         raise InventoriaError("valider avant preview", status=409, code="conflict")
+    val = json.loads(row["validation_json"] or "{}")
+    if not val.get("ok"):
+        raise InventoriaError("validation incomplète", status=409, code="validation_error")
     proposals = json.loads(row["proposals_json"] or "[]")
     inv = inventory.snapshot()
-    preview = _preview_diff(proposals, inv)
-    item_expectations: list[dict] = []
+    issues: list[dict] = []
+    re_resolved: list[dict] = []
     for p in proposals:
-        if p["op"] in ("item.update", "item.delete"):
-            iid = p["payload"]["id"]
+        rp, local = _resolve_proposal(p, inv)
+        issues.extend(local)
+        re_resolved.append(rp)
+    if issues:
+        raise InventoriaError(
+            "preview refusé — références ou bornes",
+            status=409,
+            code="validation_error",
+        )
+    item_expectations: list[dict] = []
+    for p in re_resolved:
+        payload = p["payload"]
+        if p["op"] in ("item.update", "item.delete", "item.adjust"):
+            iid = payload.get("id")
             item = next((i for i in inv["items"] if i["id"] == iid), None)
             if item:
                 item_expectations.append({"item_id": iid, "rev": item["rev"]})
-
-    confirm = bool(data.get("confirm"))
+    preview = _preview_diff(re_resolved, inv, item_expectations)
+    confirm = schemas.require_bool(data.get("confirm", False), "confirm")
     now = _now()
     prev = row["status"]
+    confirmed_int = 1 if confirm else 0
     conn.execute(
-        "UPDATE inventoria_operations SET status = ?, preview_json = ?, preview_digest = ?, "
+        "UPDATE inventoria_operations SET status = ?, proposals_json = ?, "
+        "preview_json = ?, preview_digest = ?, "
         "expected_inventory_rev = ?, item_rev_expectations_json = ?, preview_confirmed = ?, "
         "updated_at = ?, rev = rev + 1 WHERE id = ?",
         (
-            "previewed", _safe_json(preview), preview["preview_digest"],
+            "previewed", _safe_json(re_resolved), _safe_json(preview), preview["preview_digest"],
             int(preview["inventory_rev"]),
             _safe_json(item_expectations) if item_expectations else None,
-            1 if confirm else 0, now, op_id,
+            confirmed_int, now, op_id,
         ),
     )
     _audit(conn, household_id=household_id, operation_id=op_id, action="preview",
@@ -431,14 +560,21 @@ def _idem_lookup(
     household_id: str,
     key: str,
     req_hash: str,
+    operation_id: str,
 ) -> dict | None:
     row = conn.execute(
-        "SELECT request_hash, response_json FROM inventoria_commit_idempotency "
+        "SELECT request_hash, response_json, operation_id FROM inventoria_commit_idempotency "
         "WHERE household_id = ? AND idempotency_key = ?",
         (household_id, key),
     ).fetchone()
     if row is None:
         return None
+    if row["operation_id"] != operation_id:
+        raise InventoriaError(
+            "clé idempotency liée à une autre opération",
+            status=409,
+            code="conflict",
+        )
     if row["request_hash"] != req_hash:
         raise InventoriaError("idempotency conflict", status=409, code="conflict")
     return json.loads(row["response_json"])
@@ -461,50 +597,65 @@ def _idem_store(
 
 
 def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, data: dict) -> dict:
+    _reject_unknown_fields(data, COMMIT_KEYS)
     row = conn.execute(
         "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
         (op_id, household_id),
     ).fetchone()
     if row is None:
         raise InventoriaError("opération introuvable", status=404, code="not_found")
+    if int(row["preview_confirmed"] or 0) != 1:
+        raise InventoriaError("preview non confirmé", status=409, code="conflict")
     try:
         schemas.require_idempotency_key(data.get("idempotency_key"))
     except schemas.SchemaError as exc:
         raise InventoriaError(str(exc), code=exc.code) from exc
 
     key = str(data["idempotency_key"])
+    if row["preview_digest"] is None or row["expected_inventory_rev"] is None:
+        raise InventoriaError("preview approuvé manquant", status=409, code="conflict")
+    item_exp = json.loads(row["item_rev_expectations_json"] or "[]") if row["item_rev_expectations_json"] else []
+    proposals = json.loads(row["proposals_json"] or "[]")
+    stored_digest = str(row["preview_digest"])
+    exp_rev = int(row["expected_inventory_rev"])
+    expected_digest = _commit_preview_digest(proposals, exp_rev, item_exp)
+    if expected_digest != stored_digest:
+        raise InventoriaError("preview obsolète", status=409, code="conflict")
+
     body_for_hash = {
+        "operation_id": op_id,
         "idempotency_key": key,
-        "expected_inventory_rev": data.get("expected_inventory_rev", row["expected_inventory_rev"]),
-        "item_rev_expectations": data.get("item_rev_expectations")
-        or json.loads(row["item_rev_expectations_json"] or "null"),
-        "preview_digest": data.get("preview_digest", row["preview_digest"]),
+        "preview_digest": stored_digest,
+        "expected_inventory_rev": exp_rev,
+        "item_rev_expectations": item_exp,
     }
     req_hash = _body_hash(body_for_hash)
-    cached = _idem_lookup(conn, household_id, key, req_hash)
+    cached = _idem_lookup(conn, household_id, key, req_hash, op_id)
     if cached is not None:
         return cached
 
-    if row["status"] != "previewed":
+    if row["status"] not in ("previewed", "committing", "needs_reconcile"):
         raise InventoriaError("preview requis avant commit", status=409, code="conflict")
 
-    digest = data.get("preview_digest") or row["preview_digest"]
-    if digest != row["preview_digest"]:
-        raise InventoriaError("preview_digest mismatch", status=409, code="conflict")
+    val = json.loads(row["validation_json"] or "{}")
+    if not val.get("ok"):
+        raise InventoriaError("validation invalide", status=409, code="validation_error")
 
-    exp_rev = data.get("expected_inventory_rev", row["expected_inventory_rev"])
-    if exp_rev is None:
-        raise InventoriaError("expected_inventory_rev requis", code="validation_error")
     inv = inventory.snapshot()
-    if int(exp_rev) != inv["rev"]:
-        raise InventoriaError("révision inventaire obsolète", status=409, code="conflict")
-
-    item_exp = data.get("item_rev_expectations")
-    if item_exp is None and row["item_rev_expectations_json"]:
-        item_exp = json.loads(row["item_rev_expectations_json"])
-    proposals = json.loads(row["proposals_json"] or "[]")
-
+    rev_before = int(inv["rev"])
     inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
+    resume = row["status"] in ("committing", "needs_reconcile") and row["cross_store_op_id"]
+    if resume:
+        xop = conn.execute(
+            "SELECT step_results_json FROM cross_store_ops WHERE id = ?",
+            (row["cross_store_op_id"],),
+        ).fetchone()
+        if xop and xop["step_results_json"]:
+            last = json.loads(xop["step_results_json"])[-1]
+            if isinstance(last, dict) and isinstance(last.get("inventory_rev"), int):
+                exp_rev = int(last["inventory_rev"])
+    if rev_before != exp_rev:
+        raise InventoriaError("révision inventaire obsolète", status=409, code="conflict")
     result = commit_mod.run_inventoria_commit(
         conn,
         household_id=household_id,
@@ -512,20 +663,22 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
         proposals=proposals,
         idempotency_key=key,
         request_hash=req_hash,
-        expected_inventory_rev=int(exp_rev),
-        item_rev_expectations=item_exp,
-        preview_digest=str(digest),
+        expected_inventory_rev=exp_rev,
+        item_rev_expectations=item_exp or None,
+        preview_digest=stored_digest,
         now=_now(),
+        resume=bool(resume),
     )
     if result.get("ok"):
         out = {"ok": True, "commit": result, "operation_id": op_id}
-        _idem_store(conn, household_id, key, op_id, req_hash, out)
+        if row["status"] != "committed":
+            _idem_store(conn, household_id, key, op_id, req_hash, out)
         _audit(conn, household_id=household_id, operation_id=op_id, action="commit",
-               prev_status="previewed", next_status="committed")
+               prev_status=row["status"], next_status="committed")
         return out
     if result.get("code") == "needs_reconcile":
         _audit(conn, household_id=household_id, operation_id=op_id, action="commit",
-               prev_status="previewed", next_status="needs_reconcile", detail=result)
+               prev_status=row["status"], next_status="needs_reconcile", detail=result)
         return {
             "ok": False,
             "code": "needs_reconcile",
@@ -575,6 +728,7 @@ def get_operation(conn: sqlite3.Connection, household_id: str, op_id: str) -> di
 
 
 def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str, data: dict) -> dict:
+    _reject_unknown_fields(data, RECONCILE_KEYS)
     row = conn.execute(
         "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
         (op_id, household_id),
@@ -586,8 +740,18 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
     decision = str(data.get("decision") or "")
     if decision not in ("inspect", "confirm_already_applied", "confirm_not_applied", "abort_compensate"):
         raise InventoriaError("decision invalide", code="validation_error")
-    reason = str(data.get("reason") or "")
+    reason = str(data.get("reason") or "").strip()
+    if decision != "inspect" and len(reason) < REASON_MIN_LEN:
+        raise InventoriaError(
+            f"reason requis (min {REASON_MIN_LEN} caractères)",
+            code="validation_error",
+        )
     sub_key = data.get("idempotency_key")
+    evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else None
+    step_index = data.get("step_index")
+    if step_index is not None and not isinstance(step_index, int):
+        raise InventoriaError("step_index invalide", code="validation_error")
+    inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
     try:
         out = commit_mod.reconcile_cross_store(
             conn,
@@ -596,6 +760,8 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
             decision=decision,
             reason=reason,
             idempotency_key=str(sub_key) if sub_key else None,
+            evidence=evidence,
+            step_index=step_index,
             now=_now(),
         )
     except KeyError:
@@ -627,6 +793,8 @@ def _err(exc: BaseException) -> tuple[int, dict]:
         return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code}
     if isinstance(exc, InventoriaError):
         return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code}
+    if isinstance(exc, inventory.InventoryError):
+        return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code, **exc.extra}
     return 500, {"ok": False, "error": "erreur interne", "code": "internal"}
 
 
@@ -648,7 +816,7 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
             raise InventoriaError("Route inconnue", status=404, code="not_found")
         finally:
             st.close()
-    except (InventoriaError, schemas.SchemaError, hstore.HouseholdStoreError, finances.FinanceError) as exc:
+    except (InventoriaError, schemas.SchemaError, hstore.HouseholdStoreError, finances.FinanceError, inventory.InventoryError) as exc:
         return _err(exc)
     except sqlite3.Error:
         return 503, {"ok": False, "error": "stockage indisponible", "code": "storage_error"}
@@ -702,10 +870,12 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             raise InventoriaError("Route inconnue", status=404, code="not_found")
         finally:
             st.close()
-    except (InventoriaError, schemas.SchemaError, hstore.HouseholdStoreError, finances.FinanceError) as exc:
+    except (InventoriaError, schemas.SchemaError, hstore.HouseholdStoreError, finances.FinanceError, inventory.InventoryError) as exc:
         return _err(exc)
     except sqlite3.Error:
         return 503, {"ok": False, "error": "stockage indisponible", "code": "storage_error"}
+    except Exception:
+        return 500, {"ok": False, "error": "erreur interne", "code": "internal"}
 
 
 set_test_hook = commit_mod.set_test_hook

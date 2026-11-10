@@ -94,6 +94,28 @@ def _safe_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+def _commit_preview_digest(
+    proposals: list[dict],
+    expected_inventory_rev: int,
+    item_rev_expectations: list[dict] | None,
+) -> str:
+    normalized = [
+        {
+            "op": p["op"],
+            "refs": p.get("refs") or {},
+            "resolved": p.get("resolved") or {},
+            "payload": p.get("payload") or {},
+        }
+        for p in proposals
+    ]
+    blob = {
+        "proposals": normalized,
+        "expected_inventory_rev": int(expected_inventory_rev),
+        "item_rev_expectations": item_rev_expectations or [],
+    }
+    return hashlib.sha256(_safe_json(blob).encode("utf-8")).hexdigest()
+
+
 def _new_xop_id() -> str:
     return f"xop-{secrets.token_hex(8)}"
 
@@ -105,6 +127,43 @@ def _item_rev_filter(
     if not expectations or not item_id:
         return None
     return [e for e in expectations if e.get("item_id") == item_id]
+
+
+def _all_inventory_steps_acknowledged(steps: list[dict]) -> bool:
+    for st in steps:
+        if st.get("store") == "inventory" and st.get("attempt_phase") != "acknowledged":
+            return False
+    return True
+
+
+def finalize_commit_if_ready(
+    conn: sqlite3.Connection,
+    *,
+    household_id: str,
+    operation_id: str,
+    xop_id: str,
+    steps: list[dict],
+    step_results: list[dict],
+    cur_expected_rev: int,
+    now: float,
+) -> dict[str, Any]:
+    """F6 only — no inventory apply."""
+    conn.execute(
+        "UPDATE cross_store_ops SET status = ?, step_index = ?, "
+        "inventory_rev_after = ?, closed_at = ?, updated_at = ? WHERE id = ?",
+        ("committed", len(steps), cur_expected_rev, now, now, xop_id),
+    )
+    commit_result = {
+        "ok": True,
+        "cross_store_op_id": xop_id,
+        "inventory_rev_after": cur_expected_rev,
+        "steps_applied": len(step_results),
+    }
+    conn.execute(
+        "UPDATE inventoria_operations SET status = ?, commit_result_json = ?, updated_at = ? WHERE id = ?",
+        ("committed", _safe_json(commit_result), now, operation_id),
+    )
+    return commit_result
 
 
 def run_inventoria_commit(
@@ -135,6 +194,21 @@ def run_inventoria_commit(
         ).fetchone()
         if xop is None:
             raise KeyError("cross_store_missing")
+        steps = json.loads(xop["planned_steps_json"])
+        if _all_inventory_steps_acknowledged(steps) and xop["status"] != "committed":
+            step_results = json.loads(xop["step_results_json"] or "[]")
+            cur = int(xop["inventory_rev_after"] or expected_inventory_rev)
+            _invoke_test_hook("F6")
+            return finalize_commit_if_ready(
+                conn,
+                household_id=household_id,
+                operation_id=operation_id,
+                xop_id=xop_id,
+                steps=steps,
+                step_results=step_results,
+                cur_expected_rev=cur,
+                now=now,
+            )
     else:
         xop_id = _new_xop_id()
         steps = build_planned_steps(proposals)
@@ -306,35 +380,41 @@ def run_inventoria_commit(
             "step_index = ?, inventory_rev_after = ?, updated_at = ? WHERE id = ?",
             (_safe_json(steps), _safe_json(step_results), step_index, cur_expected_rev, now, xop_id),
         )
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
 
-    try:
-        _invoke_test_hook("F6")
-    except CommitAbort:
-        conn.execute(
-            "UPDATE cross_store_ops SET status = ?, uncertain_inventory = 1, updated_at = ? WHERE id = ?",
-            ("needs_reconcile", now, xop_id),
+    if _all_inventory_steps_acknowledged(steps):
+        try:
+            _invoke_test_hook("F6")
+        except CommitAbort:
+            conn.execute(
+                "UPDATE cross_store_ops SET status = ?, uncertain_inventory = 1, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", now, xop_id),
+            )
+            conn.execute(
+                "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", now, operation_id),
+            )
+            return {"ok": False, "code": "needs_reconcile", "cross_store_op_id": xop_id}
+        return finalize_commit_if_ready(
+            conn,
+            household_id=household_id,
+            operation_id=operation_id,
+            xop_id=xop_id,
+            steps=steps,
+            step_results=step_results,
+            cur_expected_rev=cur_expected_rev,
+            now=now,
         )
-        conn.execute(
-            "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
-            ("needs_reconcile", now, operation_id),
-        )
-        return {"ok": False, "code": "needs_reconcile", "cross_store_op_id": xop_id}
-
     conn.execute(
-        "UPDATE cross_store_ops SET status = ?, step_index = ?, closed_at = ?, updated_at = ? WHERE id = ?",
-        ("committed", len(steps), now, now, xop_id),
+        "UPDATE cross_store_ops SET status = ?, uncertain_inventory = 1, updated_at = ? WHERE id = ?",
+        ("needs_reconcile", now, xop_id),
     )
-    commit_result = {
-        "ok": True,
-        "cross_store_op_id": xop_id,
-        "inventory_rev_after": cur_expected_rev,
-        "steps_applied": len(steps),
-    }
     conn.execute(
-        "UPDATE inventoria_operations SET status = ?, commit_result_json = ?, updated_at = ? WHERE id = ?",
-        ("committed", _safe_json(commit_result), now, operation_id),
+        "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
+        ("needs_reconcile", now, operation_id),
     )
-    return commit_result
+    return {"ok": False, "code": "needs_reconcile", "cross_store_op_id": xop_id}
 
 
 def reconcile_cross_store(
@@ -345,6 +425,8 @@ def reconcile_cross_store(
     decision: str,
     reason: str,
     idempotency_key: str | None,
+    evidence: dict | None = None,
+    step_index: int | None = None,
     now: float,
 ) -> dict[str, Any]:
     row = conn.execute(
@@ -375,62 +457,153 @@ def reconcile_cross_store(
         }
 
     if decision == "confirm_already_applied":
-        conn.execute(
-            "UPDATE cross_store_ops SET uncertain_inventory = 0, status = ?, updated_at = ? WHERE id = ?",
-            ("finalizing", now, xop_id),
-        )
+        if not isinstance(evidence, dict):
+            raise ValueError("evidence requis pour confirm_already_applied")
+        idx = step_index if isinstance(step_index, int) else int(xop["step_index"])
         steps = json.loads(xop["planned_steps_json"])
-        for i, st in enumerate(steps):
-            if st.get("store") == "inventory" and st.get("attempt_phase") == "in_flight":
-                st["attempt_phase"] = "acknowledged"
-                steps[i] = st
+        if idx < 0 or idx >= len(steps):
+            raise ValueError("step_index hors bornes")
+        st = steps[idx]
+        if st.get("attempt_phase") != "in_flight":
+            raise ValueError("seule une étape in_flight peut être acquittée manuellement")
+        inv_rev = evidence.get("inventory_rev")
+        if not isinstance(inv_rev, int):
+            raise ValueError("evidence.inventory_rev requis (entier)")
+        st["attempt_phase"] = "acknowledged"
+        steps[idx] = st
+        step_results = json.loads(xop["step_results_json"] or "[]")
+        step_results.append({
+            "step_index": idx,
+            "action": st.get("action"),
+            "inventory_rev": inv_rev,
+            "result": {"operator_evidence": evidence, "manual_ack": True},
+        })
         conn.execute(
-            "UPDATE cross_store_ops SET planned_steps_json = ?, status = ?, step_index = ?, "
-            "closed_at = ?, updated_at = ? WHERE id = ?",
-            (_safe_json(steps), "committed", len(steps), now, now, xop_id),
+            "UPDATE cross_store_ops SET planned_steps_json = ?, step_results_json = ?, "
+            "uncertain_inventory = 0, inventory_rev_after = ?, step_index = ?, "
+            "status = ?, updated_at = ? WHERE id = ?",
+            (
+                _safe_json(steps),
+                _safe_json(step_results),
+                inv_rev,
+                idx + 1,
+                "applying_inventory" if not _all_inventory_steps_acknowledged(steps) else "finalizing",
+                now,
+                xop_id,
+            ),
         )
-        conn.execute(
-            "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
-            ("committed", now, operation_id),
-        )
-        return {"ok": True, "decision": decision}
+        if _all_inventory_steps_acknowledged(steps):
+            finalize_commit_if_ready(
+                conn,
+                household_id=household_id,
+                operation_id=operation_id,
+                xop_id=xop_id,
+                steps=steps,
+                step_results=step_results,
+                cur_expected_rev=inv_rev,
+                now=now,
+            )
+            conn.execute(
+                "UPDATE inventoria_operations SET preview_confirmed = 1, updated_at = ? WHERE id = ?",
+                (now, operation_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", now, operation_id),
+            )
+        return {"ok": True, "decision": decision, "step_index": idx}
 
     if decision == "confirm_not_applied":
         if not idempotency_key:
             raise ValueError("idempotency_key required")
-        sub_key = f"{idempotency_key}|not-applied"
+        sub_key = f"{operation_id}|{idempotency_key}|confirm_not_applied"
         prev = conn.execute(
-            "SELECT 1 FROM inventoria_commit_idempotency WHERE household_id = ? AND idempotency_key = ?",
-            (household_id, sub_key),
+            "SELECT response_json FROM inventoria_commit_idempotency "
+            "WHERE household_id = ? AND idempotency_key = ? AND operation_id = ?",
+            (household_id, sub_key, operation_id),
         ).fetchone()
         if prev:
-            return {"ok": True, "decision": decision, "already_recorded": True}
+            return json.loads(prev["response_json"])
+        idx = step_index if isinstance(step_index, int) else int(xop["step_index"])
         steps = json.loads(xop["planned_steps_json"])
-        idx = int(xop["step_index"])
-        if idx < len(steps):
-            steps[idx]["attempt_phase"] = "not_started"
+        if idx >= len(steps):
+            raise ValueError("step_index invalide")
+        if steps[idx].get("attempt_phase") != "in_flight":
+            raise ValueError("confirm_not_applied cible une étape in_flight uniquement")
+        steps[idx]["attempt_phase"] = "not_started"
+        cur_rev = int(inventory.snapshot()["rev"])
         conn.execute(
             "UPDATE cross_store_ops SET planned_steps_json = ?, uncertain_inventory = 0, "
             "status = ?, updated_at = ? WHERE id = ?",
             (_safe_json(steps), "applying_inventory", now, xop_id),
         )
+        row = conn.execute(
+            "SELECT * FROM inventoria_operations WHERE id = ?", (operation_id,),
+        ).fetchone()
+        proposals = json.loads(row["proposals_json"])
+        item_exp: list[dict] = []
+        for p in proposals:
+            payload = p.get("payload") or {}
+            if p["op"] in ("item.update", "item.delete", "item.adjust"):
+                iid = payload.get("id")
+                if isinstance(iid, str):
+                    it = next((i for i in inventory.snapshot()["items"] if i["id"] == iid), None)
+                    if it:
+                        item_exp.append({"item_id": iid, "rev": it["rev"]})
+        digest = _commit_preview_digest(proposals, cur_rev, item_exp)
+        conn.execute(
+            "UPDATE inventoria_operations SET status = ?, expected_inventory_rev = ?, "
+            "preview_digest = ?, item_rev_expectations_json = ?, "
+            "preview_confirmed = 1, updated_at = ? WHERE id = ?",
+            (
+                "previewed",
+                cur_rev,
+                digest,
+                _safe_json(item_exp) if item_exp else None,
+                now,
+                operation_id,
+            ),
+        )
+        req_hash = hashlib.sha256(
+            json.dumps({"sub_key": sub_key, "reason": reason}, sort_keys=True).encode(),
+        ).hexdigest()
+        result = run_inventoria_commit(
+            conn,
+            household_id=household_id,
+            operation_id=operation_id,
+            proposals=proposals,
+            idempotency_key=sub_key,
+            request_hash=req_hash,
+            expected_inventory_rev=cur_rev,
+            item_rev_expectations=item_exp,
+            preview_digest=str(digest),
+            now=now,
+            resume=True,
+        )
+        wrapped = {"ok": True, "decision": decision, "commit": result}
         conn.execute(
             "INSERT INTO inventoria_commit_idempotency("
             "household_id, idempotency_key, operation_id, request_hash, response_json, created_at"
             ") VALUES (?, ?, ?, ?, ?, ?)",
-            (household_id, sub_key, operation_id, hashlib.sha256(reason.encode()).hexdigest(), "{}", now),
+            (household_id, sub_key, operation_id, req_hash, _safe_json(wrapped), now),
         )
-        return {"ok": True, "decision": decision, "may_retry": True}
+        return wrapped
 
     if decision == "abort_compensate":
         conn.execute(
-            "UPDATE cross_store_ops SET status = ?, error_code = ?, closed_at = ?, updated_at = ? WHERE id = ?",
-            ("failed", "aborted", now, now, xop_id),
+            "UPDATE cross_store_ops SET status = ?, error_code = ?, uncertain_inventory = 1, "
+            "closed_at = ?, updated_at = ? WHERE id = ?",
+            ("failed", "aborted_uncertain", now, now, xop_id),
         )
         conn.execute(
             "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
             ("failed", now, operation_id),
         )
-        return {"ok": True, "decision": decision}
+        return {
+            "ok": True,
+            "decision": decision,
+            "warning": "aucune compensation inventaire appliquée",
+        }
 
     raise ValueError(f"decision inconnue: {decision}")

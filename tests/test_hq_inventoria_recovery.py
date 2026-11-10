@@ -59,12 +59,8 @@ class InventoriaRecoveryTests(unittest.TestCase):
         c4, out4 = ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
         return op_id, out4["preview"]
 
-    def _commit_body(self, preview: dict, key: str) -> dict:
-        return {
-            "idempotency_key": key,
-            "expected_inventory_rev": preview["inventory_rev"],
-            "preview_digest": preview["preview_digest"],
-        }
+    def _commit_body(self, _preview: dict, key: str) -> dict:
+        return {"idempotency_key": key}
 
     def test_CS01_double_post_same_key_hash(self) -> None:
         op_id, prev = self._prepare_op()
@@ -81,11 +77,15 @@ class InventoriaRecoveryTests(unittest.TestCase):
         op_id, prev = self._prepare_op()
         b1 = self._commit_body(prev, "cs02-key")
         ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", b1)
-        b2 = dict(b1)
-        b2["expected_inventory_rev"] = int(b1["expected_inventory_rev"]) + 99
-        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", b2)
-        self.assertEqual(c, 409, out)
-        self.assertEqual(out.get("code"), "conflict")
+        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", b1)
+        self.assertEqual(c, 200, out)
+        qty = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
+        self.assertEqual(qty, 9)
+        c2, out2 = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "cs02-key", "expected_inventory_rev": 9999},
+        )
+        self.assertEqual(c2, 400, out2)
 
     def test_CS03_crash_not_started_may_retry(self) -> None:
         op_id, prev = self._prepare_op()
@@ -97,7 +97,18 @@ class InventoriaRecoveryTests(unittest.TestCase):
                     "SELECT * FROM inventoria_operations WHERE id = ?", (op_id,),
                 ).fetchone()
                 proposals = json.loads(row["proposals_json"])
-                req_hash = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+                req_hash = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "operation_id": op_id,
+                            "idempotency_key": body["idempotency_key"],
+                            "preview_digest": prev["preview_digest"],
+                            "expected_inventory_rev": prev["inventory_rev"],
+                            "item_rev_expectations": [],
+                        },
+                        sort_keys=True,
+                    ).encode(),
+                ).hexdigest()
                 out = icommit.run_inventoria_commit(
                     st.conn,
                     household_id=row["household_id"],
@@ -105,9 +116,9 @@ class InventoriaRecoveryTests(unittest.TestCase):
                     proposals=proposals,
                     idempotency_key=body["idempotency_key"],
                     request_hash=req_hash,
-                    expected_inventory_rev=int(body["expected_inventory_rev"]),
+                    expected_inventory_rev=int(prev["inventory_rev"]),
                     item_rev_expectations=None,
-                    preview_digest=body["preview_digest"],
+                    preview_digest=prev["preview_digest"],
                     now=200.0,
                     resume=True,
                 )
@@ -133,10 +144,7 @@ class InventoriaRecoveryTests(unittest.TestCase):
         op_id, prev = self._prepare_op()
         body = self._commit_body(prev, "cs05-key")
 
-        seen: list[str] = []
-
         def hook(phase: str) -> None:
-            seen.append(phase)
             if phase == "F6":
                 raise icommit.CommitAbort("F6")
 
@@ -146,15 +154,30 @@ class InventoriaRecoveryTests(unittest.TestCase):
         qty = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
         self.assertEqual(qty, 9)
         with store.open_store(self.root, readonly=True) as st:
-            xop = st.conn.execute("SELECT status FROM cross_store_ops LIMIT 1").fetchone()
-            self.assertIn(xop[0], ("needs_reconcile", "applying_inventory", "committed"))
+            xop = st.conn.execute(
+                "SELECT status, planned_steps_json, step_results_json FROM cross_store_ops LIMIT 1",
+            ).fetchone()
+            steps = json.loads(xop[1])
+            self.assertEqual(steps[0]["attempt_phase"], "acknowledged")
+            self.assertTrue(json.loads(xop[2] or "[]"))
+        icommit.set_test_hook(None)
+        c6, out6 = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", body)
+        self.assertEqual(c6, 200, out6)
+        with store.open_store(self.root, readonly=True) as st:
+            xop2 = st.conn.execute("SELECT status FROM cross_store_ops LIMIT 1").fetchone()
+            self.assertEqual(xop2[0], "committed")
 
     def test_CS06_rev_conflict_mid_batch(self) -> None:
         op_id, prev = self._prepare_op()
+        rev = inv.snapshot()["rev"]
+        inv.apply({"action": "item.create", "name": "intruder", "qty": 1})
+        self.assertNotEqual(inv.snapshot()["rev"], rev)
         body = self._commit_body(prev, "cs06-key")
-        body["expected_inventory_rev"] = int(body["expected_inventory_rev"]) - 1
+        qty_before = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
         c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", body)
         self.assertEqual(c, 409, out)
+        qty_after = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
+        self.assertEqual(qty_before, qty_after)
 
     def test_CS07_two_keys_parallel_distinct_journals(self) -> None:
         inv.apply({"action": "item.create", "name": "Y", "qty": 5})
@@ -185,6 +208,7 @@ class InventoriaRecoveryTests(unittest.TestCase):
     def test_CS08_confirm_not_applied_retry(self) -> None:
         op_id, prev = self._prepare_op()
         body = self._commit_body(prev, "cs08-key")
+        qty0 = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
 
         def _crash_f4(phase: str) -> None:
             if phase == "F4":
@@ -192,12 +216,30 @@ class InventoriaRecoveryTests(unittest.TestCase):
 
         icommit.set_test_hook(_crash_f4)
         ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", body)
+        self.assertEqual(
+            next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"],
+            qty0,
+        )
+        icommit.set_test_hook(None)
         c2, out2 = ivo.http_post(
             f"/api/inventoria/ops/{op_id}/reconcile",
-            {"decision": "confirm_not_applied", "reason": "retry", "idempotency_key": "sub8"},
+            {
+                "decision": "confirm_not_applied",
+                "reason": "operator confirms no apply occurred",
+                "idempotency_key": "sub8",
+                "step_index": 0,
+            },
         )
         self.assertEqual(c2, 200, out2)
-        self.assertTrue(out2.get("may_retry"))
+        qty1 = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
+        self.assertEqual(qty1, qty0 - 1)
+        with store.open_store(self.root, readonly=True) as st:
+            steps = json.loads(
+                st.conn.execute(
+                    "SELECT planned_steps_json FROM cross_store_ops LIMIT 1",
+                ).fetchone()[0],
+            )
+            self.assertEqual(steps[0]["attempt_phase"], "acknowledged")
 
 
 if __name__ == "__main__":
