@@ -19,7 +19,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "assets" / "companion"
-SRC = OUT / "else-chip@2x.jpg"
+SRC = OUT / "else-chip@2x.webp"
 DEFAULT_FORGE = "http://127.0.0.1:7860"
 
 BASE_PROMPT = (
@@ -124,9 +124,9 @@ def bake_pose(
 def save_pair(mood: str, img: Image.Image, size1: tuple[int, int], size2: tuple[int, int]) -> None:
     a = img.resize(size1, Image.Resampling.LANCZOS)
     b = img.resize(size2, Image.Resampling.LANCZOS)
-    a.save(OUT / f"else-chip-{mood}.jpg", quality=90, optimize=True)
-    b.save(OUT / f"else-chip-{mood}@2x.jpg", quality=90, optimize=True)
-    print(f"  wrote else-chip-{mood}.jpg + @2x ({a.size} / {b.size})")
+    a.save(OUT / f"else-chip-{mood}.webp", "WEBP", quality=88, method=6)
+    b.save(OUT / f"else-chip-{mood}@2x.webp", "WEBP", quality=88, method=6)
+    print(f"  wrote else-chip-{mood}.webp + @2x ({a.size} / {b.size})")
 
 
 def main() -> int:
@@ -150,7 +150,7 @@ def main() -> int:
         print("Forge unreachable:", exc, file=sys.stderr)
         return 1
 
-    base = Image.open(OUT / "else-chip.jpg").convert("RGB")
+    base = Image.open(OUT / "else-chip.webp").convert("RGB")
     base2 = Image.open(SRC).convert("RGB")
     w, h = base2.size
     side = 1024 if max(w, h) >= 1024 else 768

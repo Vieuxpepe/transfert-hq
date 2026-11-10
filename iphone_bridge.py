@@ -7468,7 +7468,9 @@ def render_app() -> bytes:
 {reaction_hot_preload_link_tags()}
 <script src="/assets/hq-sister.js"></script>
 <script src="/assets/hq-companion.js"></script>
+<script src="/assets/hq-image-chip-scale.js"></script>
 <script src="/assets/hq-else-chip.js"></script>
+<script src="/assets/hq-inventoria-chip.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 {debug_js_tag}
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">

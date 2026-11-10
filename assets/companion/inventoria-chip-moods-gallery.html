@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Inventoria — humeurs pastille</title>
+  <style>
+    :root{color-scheme:dark;--teal:#14b8a6;--bg:#12141a;--text:#e6fffa}
+    body{margin:0;padding:20px 16px 32px;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}
+    h1{font-size:1.25rem;margin:0 0 6px}
+    p.meta{margin:0 0 20px;opacity:.75;max-width:52rem}
+    .grid{display:grid;gap:18px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));max-width:960px}
+    figure{margin:0;padding:12px;border-radius:14px;background:#1a2524;border:1px solid color-mix(in srgb,var(--teal) 35%,#3d6b66)}
+    figcaption{margin-top:10px;font-weight:700}
+    figcaption a{color:var(--teal);text-decoration:none}
+    figcaption a:hover{text-decoration:underline}
+    .sub{display:block;margin-top:4px;font-size:12px;font-weight:500;opacity:.7;word-break:break-all}
+    img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:50%;border:2px solid color-mix(in srgb,var(--teal) 45%,#3d6b66);background:#0a1a18}
+    .top a{color:var(--teal)}
+  </style>
+</head>
+<body>
+  <h1>Inventoria — humeurs pastille</h1>
+  <p class="meta top">Recadrage chip 640px · WebP · <a href="/assets/companion/inventoria-chip-preview.html">aperçu chip live</a></p>
+  <div class="grid" id="grid"></div>
+  <script>
+    const MOODS = [
+      { id: "idle", label: "idle", note: "v16-shorter-h1536" },
+      { id: "listening", label: "listening", note: "v19d-short-squat-txt" },
+      { id: "speaking", label: "speaking", note: "v19d-short-wave-txt" },
+      { id: "proactive", label: "proactive", note: "v19d-short-lean-txt" },
+      { id: "busy", label: "busy", note: "v19-sheet-hands-hips" },
+      { id: "sister", label: "sister", note: "v19-sheet-sit-dangle" },
+    ];
+    const grid = document.getElementById("grid");
+    MOODS.forEach((m) => {
+      const base = m.id === "idle" ? "inventoria-chip" : "inventoria-chip-" + m.id;
+      const href = "/assets/companion/" + base + ".webp";
+      const fig = document.createElement("figure");
+      const a = document.createElement("a");
+      a.href = href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      const img = document.createElement("img");
+      img.src = href;
+      img.alt = "Inventoria " + m.label;
+      img.loading = "lazy";
+      a.appendChild(img);
+      const cap = document.createElement("figcaption");
+      cap.innerHTML = '<a href="' + href + '" target="_blank" rel="noopener">' + m.label + '</a><span class="sub">' + m.note + " · " + href + "</span>";
+      fig.append(a, cap);
+      grid.appendChild(fig);
+    });
+  </script>
+</body>
+</html>

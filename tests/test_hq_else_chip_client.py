@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHIP_JS = ROOT / "assets" / "hq-else-chip.js"
+SCALE_JS = ROOT / "assets" / "hq-image-chip-scale.js"
 SISTER_JS = ROOT / "assets" / "hq-sister.js"
 CSS = ROOT / "assets" / "hq-companion.css"
 PORTRAITS = ROOT / "assets" / "companion"
@@ -15,14 +16,15 @@ class ElseChipClientContracts(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.js = CHIP_JS.read_text(encoding="utf-8")
+        cls.scale_js = SCALE_JS.read_text(encoding="utf-8")
         cls.sister = SISTER_JS.read_text(encoding="utf-8")
         cls.css = CSS.read_text(encoding="utf-8")
 
     def test_mood_portrait_assets_exist(self) -> None:
         for mood in ("listening", "speaking", "proactive", "sister", "busy"):
-            self.assertTrue((PORTRAITS / f"else-chip-{mood}.jpg").is_file(), mood)
-            self.assertTrue((PORTRAITS / f"else-chip-{mood}@2x.jpg").is_file(), mood)
-            self.assertIn(f"else-chip-{mood}.jpg", self.js)
+            self.assertTrue((PORTRAITS / f"else-chip-{mood}.webp").is_file(), mood)
+            self.assertTrue((PORTRAITS / f"else-chip-{mood}@2x.webp").is_file(), mood)
+            self.assertIn(f"else-chip-{mood}.webp", self.js)
 
     def test_else_chip_bust_layers(self) -> None:
         self.assertTrue((PORTRAITS / "else-chip-breast-left.png").is_file())
@@ -72,6 +74,23 @@ class ElseChipClientContracts(unittest.TestCase):
         self.assertIn("__lastEvent", self.sister)
         self.assertIn("hq-else-sister-event", self.css)
         self.assertIn("hq-companion-sister-event", self.css)
+
+    def test_sfw_portrait_assets_exist(self) -> None:
+        for mood in ("", "-listening", "-speaking", "-proactive", "-sister", "-busy"):
+            base = "else-chip" + mood + "-sfw.webp"
+            self.assertTrue((PORTRAITS / base).is_file(), base)
+            self.assertIn("-sfw.webp", self.js)
+
+    def test_chip_scale_hooks(self) -> None:
+        self.assertIn("bindPortraitMode", self.scale_js)
+        self.assertIn("PORTRAIT_SFW_BY_MOOD", self.js)
+        self.assertTrue(SCALE_JS.is_file())
+        self.assertIn("hq_else_chip_scale_v1", self.js)
+        self.assertIn("HqImageChipScale", self.js)
+        self.assertIn("setChipScale", self.js)
+        self.assertIn("--image-chip-user-scale", self.css)
+        self.assertIn("data-action", self.js)
+        self.assertIn('"bigger"', self.js)
 
     def test_motion_tier_hooks(self) -> None:
         self.assertIn("hq:motion-mode", self.js)

@@ -1516,6 +1516,11 @@
     }
     S.win.hqCompanionNsfwAllowed = S.nsfwAllowed;
     S.win.hqCompanionNsfwOn = () => S.nsfwAllowed && readNsfw(S.win);
+    try {
+      S.win.dispatchEvent(new CustomEvent("hq:companion-nsfw", {
+        detail: { on: S.nsfwOn, allowed: S.nsfwAllowed },
+      }));
+    } catch (_) {}
     if (S.escalateBtn) {
       const show = S.nsfwAllowed && S.nsfwOn;
       S.escalateBtn.hidden = !show;

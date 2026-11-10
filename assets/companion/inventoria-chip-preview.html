@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Inventoria chip preview</title>
+  <link rel="stylesheet" href="/assets/hq-companion.css"/>
+  <style>
+    body{margin:0;min-height:100vh;background:radial-gradient(1200px 600px at 30% 80%,#134e4a22,transparent),#12141a;color:#e6fffa;font:14px system-ui,sans-serif}
+    .demo-note{position:fixed;top:12px;left:12px;opacity:.75;max-width:320px;z-index:5}
+    .demo-note a{color:#2dd4bf}
+    .mood-bar{position:fixed;left:12px;top:88px;z-index:5;display:flex;flex-wrap:wrap;gap:6px;max-width:min(360px,calc(100vw - 24px))}
+    .mood-bar button{border:1px solid color-mix(in srgb,#14b8a6 45%,#3d6b66);background:#1a2524;color:#e6fffa;border-radius:999px;padding:6px 10px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+    .mood-bar button:hover{background:color-mix(in srgb,#14b8a6 18%,#1a2524)}
+  </style>
+</head>
+<body class="hq-motion-lite" data-view="accueil">
+  <p class="demo-note">Pastille Inventoria (même JS que HQ). <a href="/assets/companion/inventoria-chip-moods-gallery.html">Galerie</a> · <a href="/assets/companion/else-chip-preview.html">Else</a></p>
+  <div class="mode-bar" id="mode-bar" style="position:fixed;left:12px;top:52px;z-index:5;display:flex;gap:6px">
+    <button type="button" id="btn-sfw" style="border:1px solid #3d6b66;background:#1a2524;color:#e6fffa;border-radius:999px;padding:5px 10px;font:inherit;font-size:11px;font-weight:700;cursor:pointer">SFW</button>
+    <button type="button" id="btn-adult" style="border:1px solid #3d6b66;background:#1a2524;color:#e6fffa;border-radius:999px;padding:5px 10px;font:inherit;font-size:11px;font-weight:700;cursor:pointer">Adulte</button>
+  </div>
+  <div class="mood-bar" id="mood-bar" hidden></div>
+  <script src="/assets/hq-image-chip-scale.js"></script>
+  <script src="/assets/hq-inventoria-chip.js"></script>
+  <script>
+    window.hqSessionIsAdmin = function () { return true; };
+    window.hqCompanionNsfwAllowed = true;
+    function setPortraitMode(adult) {
+      window.hqCompanionNsfwOn = function () { return !!adult; };
+      window.dispatchEvent(new CustomEvent("hq:companion-nsfw", { detail: { on: !!adult } }));
+      document.getElementById("btn-sfw").style.borderColor = adult ? "#3d6b66" : "#2dd4bf";
+      document.getElementById("btn-adult").style.borderColor = adult ? "#2dd4bf" : "#3d6b66";
+    }
+    window.hqCompanionNsfwOn = function () { return false; };
+    document.getElementById("btn-sfw").addEventListener("click", function () { setPortraitMode(false); });
+    document.getElementById("btn-adult").addEventListener("click", function () { setPortraitMode(true); });
+    setPortraitMode(false);
+    window.addEventListener("DOMContentLoaded", function () {
+      const bar = document.getElementById("mood-bar");
+      const inv = window.HqInventoria;
+      if (!bar || !inv || !inv.moods) return;
+      bar.hidden = false;
+      inv.moods().forEach(function (m) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = m;
+        b.addEventListener("click", function () { inv.setMood(m, m === "listening" ? 0 : 5000); });
+        bar.appendChild(b);
+      });
+    });
+  </script>
+</body>
+</html>

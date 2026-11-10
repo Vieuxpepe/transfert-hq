@@ -2,8 +2,8 @@
 (function () {
   "use strict";
 
-  const PORTRAIT = "/assets/companion/else-chip.jpg";
-  const PORTRAIT_2X = "/assets/companion/else-chip@2x.jpg";
+  const PORTRAIT = "/assets/companion/else-chip.webp";
+  const PORTRAIT_2X = "/assets/companion/else-chip@2x.webp";
   // Chip renders at 120–136 CSS px: 208 px covers 1x–1.5x, 416 px covers 2x–3x.
   // The 1280 px masters (else-chip-body.jpg, else-chip-breast-*.png) are sources only.
   const PORTRAIT_BODY = "/assets/companion/else-chip-body@1x.jpg";
@@ -16,24 +16,50 @@
     // Idle uses underpainted body + live bust layers.
     idle: { src: PORTRAIT_BODY, srcset: PORTRAIT_BODY + " 1x, " + PORTRAIT_BODY_2X + " 2x", bust: true },
     listening: {
-      src: "/assets/companion/else-chip-listening.jpg",
-      srcset: "/assets/companion/else-chip-listening.jpg 1x, /assets/companion/else-chip-listening@2x.jpg 2x",
+      src: "/assets/companion/else-chip-listening.webp",
+      srcset: "/assets/companion/else-chip-listening.webp 1x, /assets/companion/else-chip-listening@2x.webp 2x",
     },
     speaking: {
-      src: "/assets/companion/else-chip-speaking.jpg",
-      srcset: "/assets/companion/else-chip-speaking.jpg 1x, /assets/companion/else-chip-speaking@2x.jpg 2x",
+      src: "/assets/companion/else-chip-speaking.webp",
+      srcset: "/assets/companion/else-chip-speaking.webp 1x, /assets/companion/else-chip-speaking@2x.webp 2x",
     },
     proactive: {
-      src: "/assets/companion/else-chip-proactive.jpg",
-      srcset: "/assets/companion/else-chip-proactive.jpg 1x, /assets/companion/else-chip-proactive@2x.jpg 2x",
+      src: "/assets/companion/else-chip-proactive.webp",
+      srcset: "/assets/companion/else-chip-proactive.webp 1x, /assets/companion/else-chip-proactive@2x.webp 2x",
     },
     sister: {
-      src: "/assets/companion/else-chip-sister.jpg",
-      srcset: "/assets/companion/else-chip-sister.jpg 1x, /assets/companion/else-chip-sister@2x.jpg 2x",
+      src: "/assets/companion/else-chip-sister.webp",
+      srcset: "/assets/companion/else-chip-sister.webp 1x, /assets/companion/else-chip-sister@2x.webp 2x",
     },
     busy: {
-      src: "/assets/companion/else-chip-busy.jpg",
-      srcset: "/assets/companion/else-chip-busy.jpg 1x, /assets/companion/else-chip-busy@2x.jpg 2x",
+      src: "/assets/companion/else-chip-busy.webp",
+      srcset: "/assets/companion/else-chip-busy.webp 1x, /assets/companion/else-chip-busy@2x.webp 2x",
+    },
+  };
+  const PORTRAIT_SFW_BY_MOOD = {
+    idle: {
+      src: "/assets/companion/else-chip-sfw.webp",
+      srcset: "/assets/companion/else-chip-sfw.webp 1x, /assets/companion/else-chip-sfw@2x.webp 2x",
+    },
+    listening: {
+      src: "/assets/companion/else-chip-listening-sfw.webp",
+      srcset: "/assets/companion/else-chip-listening-sfw.webp 1x, /assets/companion/else-chip-listening-sfw@2x.webp 2x",
+    },
+    speaking: {
+      src: "/assets/companion/else-chip-speaking-sfw.webp",
+      srcset: "/assets/companion/else-chip-speaking-sfw.webp 1x, /assets/companion/else-chip-speaking-sfw@2x.webp 2x",
+    },
+    proactive: {
+      src: "/assets/companion/else-chip-proactive-sfw.webp",
+      srcset: "/assets/companion/else-chip-proactive-sfw.webp 1x, /assets/companion/else-chip-proactive-sfw@2x.webp 2x",
+    },
+    sister: {
+      src: "/assets/companion/else-chip-sister-sfw.webp",
+      srcset: "/assets/companion/else-chip-sister-sfw.webp 1x, /assets/companion/else-chip-sister-sfw@2x.webp 2x",
+    },
+    busy: {
+      src: "/assets/companion/else-chip-busy-sfw.webp",
+      srcset: "/assets/companion/else-chip-busy-sfw.webp 1x, /assets/companion/else-chip-busy-sfw@2x.webp 2x",
     },
   };
   const LS_OPEN = "hq_else_chip_open_v1";
@@ -41,6 +67,7 @@
   const LS_FLOAT = "hq_else_chip_float_v1";
   const LS_VISIBLE = "hq_else_chip_visible_v1";
   const LS_TOGGLE_FLOAT = "hq_else_toggle_float_v1";
+  const LS_CHIP_SCALE = "hq_else_chip_scale_v1";
   const LS_PROACTIVE = "hq_else_proactive_v1";
   const LS_VOICE = "hq_else_voice_v1";
   const LS_CADENCE = "hq_else_cadence_v1";
@@ -143,6 +170,7 @@
     el.addEventListener("pointerdown", (ev) => {
       if (ev.button && ev.button !== 0) return;
       if (drag) return;
+      if (typeof opts.isBlocked === "function" && opts.isBlocked()) return;
       if (typeof opts.canStart === "function" && opts.canStart(ev) === false) return;
       drag = {
         id: ev.pointerId,
@@ -207,9 +235,19 @@
     el.addEventListener("pointerup", endPointer);
     el.addEventListener("pointercancel", endPointer);
 
+    function cancelActiveDrag() {
+      if (drag && drag.longTimer) {
+        win.clearTimeout(drag.longTimer);
+        drag.longTimer = null;
+      }
+      drag = null;
+      host.classList.remove(draggingClass);
+    }
+
     return {
       apply,
       reset,
+      cancelActiveDrag,
       getPos: () => ({ x: pos.x, y: pos.y }),
       consumeClickSuppressed: () => {
         if (!suppressClick) return false;
@@ -468,6 +506,9 @@
     chipMenu.setAttribute("role", "menu");
     const menuItems = [
       { id: "hide", label: "Masquer" },
+      { id: "bigger", label: "Agrandir" },
+      { id: "smaller", label: "Réduire" },
+      { id: "scale_reset", label: "Taille normale" },
       { id: "nudge", label: "Nudge sœur" },
       { id: "reset", label: "Reset position" },
       { id: "memory", label: "Mémoire" },
@@ -485,7 +526,7 @@
     const chip = doc.createElement("button");
     chip.type = "button";
     chip.className = "hq-else-chip";
-    chip.title = "Else — glisser · appui long = menu · double-tap = nudge";
+    chip.title = "Else — glisser · pincement ou Ctrl+molette = taille · appui long = menu";
     chip.setAttribute("aria-label", "Else — glisser, menu, ou ouvrir");
     const ring = doc.createElement("span");
     ring.className = "hq-else-chip-ring";
@@ -740,14 +781,26 @@
       sisterStrip.scrollTop = sisterStrip.scrollHeight;
     }
 
+    function portraitPath(url) {
+      try {
+        return new URL(String(url || ""), win.location.origin).pathname;
+      } catch (_) {
+        return String(url || "");
+      }
+    }
+
     function applyPortrait(mood) {
-      const pack = PORTRAIT_BY_MOOD[mood] || PORTRAIT_BY_MOOD.idle;
-      const bustOn = !!pack.bust;
+      const adult = win.HqImageChipScale && win.HqImageChipScale.adultChipPortraits
+        ? win.HqImageChipScale.adultChipPortraits(win)
+        : false;
+      const table = adult ? PORTRAIT_BY_MOOD : PORTRAIT_SFW_BY_MOOD;
+      const pack = table[mood] || table.idle;
+      const bustOn = adult && !!(pack && pack.bust);
       root.classList.toggle("is-bust", bustOn);
       bustL.hidden = !bustOn;
       bustR.hidden = !bustOn;
       if (!bustOn) resetBustPose();
-      if (img.src.indexOf(pack.src) >= 0) return;
+      if (portraitPath(img.src) === pack.src) return;
       img.src = pack.src;
       img.srcset = pack.srcset;
     }
@@ -1471,6 +1524,18 @@
         toggleFloat.reset();
         return;
       }
+      if (action === "bigger" && chipScale) {
+        chipScale.bump(chipScale.menuStep || 0.08);
+        return;
+      }
+      if (action === "smaller" && chipScale) {
+        chipScale.bump(-(chipScale.menuStep || 0.08));
+        return;
+      }
+      if (action === "scale_reset" && chipScale) {
+        chipScale.resetScale();
+        return;
+      }
       if (action === "nudge") {
         if (sis && typeof sis.runNudge === "function" && !sisterBusy()) {
           setMood("sister", 1400);
@@ -1725,14 +1790,26 @@
     }
 
     let lastChipTap = 0;
+    let chipPinchBlock = false;
+    let chipScale = null;
     const chipFloat = bindFloatDrag(win, {
       el: chip,
       host: root,
       storageKey: LS_FLOAT,
       minVisible: 72,
+      isBlocked: () => chipPinchBlock,
       onLongPress: () => openChipMenu(true),
       onMove: (dx, dy) => nudgeBust(dx, dy),
     });
+    if (win.HqImageChipScale && typeof win.HqImageChipScale.bind === "function") {
+      chipScale = win.HqImageChipScale.bind(win, {
+        root,
+        chip,
+        storageKey: LS_CHIP_SCALE,
+        setBlocked: (on) => { chipPinchBlock = !!on; },
+        cancelDrag: () => chipFloat.cancelActiveDrag(),
+      });
+    }
     const toggleFloat = bindFloatDrag(win, {
       el: toggle,
       host: toggle,
@@ -2040,6 +2117,9 @@
       react: (trigger, speaker) => (sis ? sis.runReact(trigger, speaker) : Promise.resolve({ ok: false })),
       resetFloat: (opts) => chipFloat.reset(opts || {}),
       resetToggleFloat: (opts) => toggleFloat.reset(opts || {}),
+      setChipScale: (s) => (chipScale ? chipScale.setScale(s) : 1),
+      chipScale: () => (chipScale ? chipScale.getScale() : 1),
+      resetChipScale: () => (chipScale ? chipScale.resetScale() : 1),
       getFloat: () => chipFloat.getPos(),
       getToggleFloat: () => toggleFloat.getPos(),
       setVisible: (on) => setChipVisible(on !== false),
@@ -2063,6 +2143,12 @@
     } catch (_) {}
     syncPrefToggles();
     syncPrefsPanel();
+    if (win.HqImageChipScale && typeof win.HqImageChipScale.bindPortraitMode === "function") {
+      win.HqImageChipScale.bindPortraitMode(win, {
+        root,
+        onRefresh: () => applyPortrait(currentMood),
+      });
+    }
     setMood("idle");
     syncContextMood();
     syncMotionPerf();

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Chip portraits SFW (adulte off)</title>
+  <style>
+    :root{color-scheme:dark;--teal:#14b8a6;--violet:#a855f7;--bg:#12141a;--text:#f6eff9}
+    body{margin:0;padding:20px 16px 32px;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}
+    h1{font-size:1.25rem;margin:0 0 4px}
+  h2{font-size:1rem;margin:28px 0 10px;color:var(--teal)}
+  h2.else{color:var(--violet)}
+    p.meta{margin:0 0 16px;opacity:.75;max-width:52rem}
+    .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));max-width:1000px}
+    figure{margin:0;padding:10px;border-radius:12px;background:#1a2028;border:1px solid #3d3d4a}
+    figure img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:50%;background:#0c0e14}
+    figcaption{margin-top:8px;font-size:12px;font-weight:700}
+    figcaption a{color:inherit}
+    .sub{display:block;margin-top:3px;font-weight:500;opacity:.65;word-break:break-all;font-size:11px}
+    a.bar{color:var(--teal)}
+    h2.else + .grid figure{border-color:color-mix(in srgb,var(--violet) 35%,#3d3d4a)}
+  </style>
+</head>
+<body>
+  <h1>Chip portraits SFW</h1>
+  <p class="meta">Mode adulte <strong>off</strong> — icônes monogramme (même visuel par personnage ; l’anneau chip garde l’humeur). Forge : <a class="bar" href="/assets/companion/inventoria-chip-moods-gallery.html">Inventoria moods</a></p>
+  <h2 class="else">Else</h2>
+  <div class="grid" id="else-grid"></div>
+  <h2>Inventoria</h2>
+  <div class="grid" id="inv-grid"></div>
+  <script>
+    const MOODS = ["idle", "listening", "speaking", "proactive", "sister", "busy"];
+    function file(prefix, mood, sfw) {
+      const mid = mood === "idle" ? "" : "-" + mood;
+      const tail = sfw ? "-sfw" : "";
+      return prefix + mid + tail + ".webp";
+    }
+    function addGrid(el, prefix) {
+      MOODS.forEach((m) => {
+        const href = "/assets/companion/" + file(prefix, m, true);
+        const fig = document.createElement("figure");
+        const link = document.createElement("a");
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener";
+        const img = document.createElement("img");
+        img.src = href;
+        img.alt = prefix + " " + m + " sfw";
+        img.loading = "lazy";
+        link.appendChild(img);
+        const cap = document.createElement("figcaption");
+        cap.innerHTML = '<a href="' + href + '" target="_blank" rel="noopener">' + m + '</a><span class="sub">' + href + "</span>";
+        fig.append(link, cap);
+        el.appendChild(fig);
+      });
+    }
+    addGrid(document.getElementById("else-grid"), "else-chip");
+    addGrid(document.getElementById("inv-grid"), "inventoria-chip");
+  </script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Else chip preview</title>
+  <link rel="stylesheet" href="/assets/hq-companion.css"/>
+  <style>
+    body{margin:0;min-height:100vh;background:radial-gradient(900px 500px at 70% 80%,#3b2a4d33,transparent),#12141a;color:#f6eff9;font:14px system-ui,sans-serif}
+    .demo-note{position:fixed;top:12px;right:12px;opacity:.75;max-width:320px;z-index:5;text-align:right}
+    .demo-note a{color:#c4b5fd}
+    .mood-bar{position:fixed;right:12px;top:88px;z-index:5;display:flex;flex-wrap:wrap;gap:6px;max-width:min(360px,calc(100vw - 24px));justify-content:flex-end}
+    .mood-bar button{border:1px solid color-mix(in srgb,#a855f7 45%,#67546b);background:#211c28;color:#f6eff9;border-radius:999px;padding:6px 10px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+    .mood-bar button:hover{background:color-mix(in srgb,#a855f7 18%,#211c28)}
+    .mode-bar{position:fixed;right:12px;top:52px;z-index:5;display:flex;gap:6px}
+    .mode-bar button{border:1px solid #67546b;background:#211c28;color:#f6eff9;border-radius:999px;padding:5px 10px;font:inherit;font-size:11px;font-weight:700;cursor:pointer}
+    .mode-bar button.is-on{border-color:#a855f7;background:color-mix(in srgb,#a855f7 22%,#211c28)}
+  </style>
+</head>
+<body class="hq-motion-lite" data-view="accueil">
+  <p class="demo-note">Pastille Else (même JS que HQ). <a href="/assets/companion/chip-sfw-gallery.html">Icônes SFW</a> · <a href="/assets/companion/inventoria-chip-preview.html">Inventoria</a></p>
+  <div class="mode-bar" id="mode-bar">
+    <button type="button" id="btn-sfw" class="is-on">SFW</button>
+    <button type="button" id="btn-adult">Adulte</button>
+  </div>
+  <div class="mood-bar" id="mood-bar" hidden></div>
+  <script src="/assets/hq-image-chip-scale.js"></script>
+  <script src="/assets/hq-else-chip.js"></script>
+  <script>
+    window.hqCompanionNsfwOn = function () { return false; };
+    window.hqCompanionNsfwAllowed = true;
+
+    function setPortraitMode(adult) {
+      window.hqCompanionNsfwOn = function () { return !!adult; };
+      window.dispatchEvent(new CustomEvent("hq:companion-nsfw", { detail: { on: !!adult } }));
+      document.getElementById("btn-sfw").classList.toggle("is-on", !adult);
+      document.getElementById("btn-adult").classList.toggle("is-on", !!adult);
+    }
+
+    document.getElementById("btn-sfw").addEventListener("click", function () { setPortraitMode(false); });
+    document.getElementById("btn-adult").addEventListener("click", function () { setPortraitMode(true); });
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const bar = document.getElementById("mood-bar");
+      const els = window.HqElse;
+      if (!bar || !els || !els.setMood) return;
+      bar.hidden = false;
+      ["idle", "listening", "speaking", "proactive", "sister", "busy"].forEach(function (m) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = m;
+        b.addEventListener("click", function () { els.setMood(m, 5000); });
+        bar.appendChild(b);
+      });
+    });
+  </script>
+</body>
+</html>
