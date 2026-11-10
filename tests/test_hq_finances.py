@@ -734,6 +734,115 @@ class FinanceDomainTests(unittest.TestCase):
             self.assertEqual(code, 400, body)
             self.assertEqual(fin._ledger_counts(st.conn), before)
 
+    def test_envelope_partial_update_keeps_usd_in_cad_household(self) -> None:
+        cat = self._cat("expense")
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                env = fin.upsert_envelope(
+                    st.conn,
+                    self.hid,
+                    {
+                        "category_id": cat,
+                        "period_start": "2026-08-01",
+                        "period_end": "2026-08-31",
+                        "allocated_cents": 40_000,
+                        "currency": "USD",
+                    },
+                )
+            updated = fin.upsert_envelope(
+                st.conn,
+                self.hid,
+                {
+                    "id": env["id"],
+                    "rev": env["rev"],
+                    "category_id": cat,
+                    "period_start": "2026-08-01",
+                    "period_end": "2026-08-31",
+                    "allocated_cents": 45_000,
+                },
+            )
+            self.assertEqual(updated["currency"], "USD")
+
+    def test_invalid_currency_rejected_without_persist(self) -> None:
+        cat = self._cat("expense")
+        acct = self._account()
+        with store.open_store(self.root) as st:
+            before_env = int(st.conn.execute("SELECT COUNT(*) FROM budget_envelopes").fetchone()[0])
+            before_aud = int(st.conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0])
+            for bad in ({"currency": ["USD"]}, {"currency": {"code": "USD"}}, {"currency": "GBP"}, {"currency": 1}):
+                with self.subTest(bad=bad):
+                    payload = {
+                        "category_id": cat,
+                        "period_start": "2026-08-02",
+                        "period_end": "2026-08-31",
+                        "allocated_cents": 1000,
+                        **bad,
+                    }
+                    with self.assertRaises(fin.FinanceError):
+                        with st.transaction():
+                            fin.upsert_envelope(st.conn, self.hid, payload)
+                    self.assertEqual(
+                        int(st.conn.execute("SELECT COUNT(*) FROM budget_envelopes").fetchone()[0]),
+                        before_env,
+                    )
+            before_acct = int(st.conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0])
+            for bad in ({"currency": ["CAD"]}, {"currency": "CHF"}):
+                with self.subTest(account=bad):
+                    with self.assertRaises(fin.FinanceError):
+                        with st.transaction():
+                            fin.create_account(
+                                st.conn,
+                                self.hid,
+                                {"name": "X", "kind": "checking", "opening_balance_cents": 0, **bad},
+                            )
+                    self.assertEqual(
+                        int(st.conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]),
+                        before_acct,
+                    )
+            before_rec = int(st.conn.execute("SELECT COUNT(*) FROM recurring_payments").fetchone()[0])
+            for bad in ({"currency": {"x": 1}}, {"currency": "JPY"}, {"currency": ["EUR"]}):
+                with self.subTest(recurring=bad):
+                    with self.assertRaises(fin.FinanceError):
+                        with st.transaction():
+                            fin.upsert_recurring(
+                                st.conn,
+                                self.hid,
+                                {
+                                    "account_id": acct,
+                                    "category_id": cat,
+                                    "amount_cents": -500,
+                                    "cadence": "monthly",
+                                    "next_on": "2026-08-05",
+                                    **bad,
+                                },
+                            )
+                    self.assertEqual(
+                        int(st.conn.execute("SELECT COUNT(*) FROM recurring_payments").fetchone()[0]),
+                        before_rec,
+                    )
+            self.assertEqual(int(st.conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0]), before_aud)
+
+    def test_recurring_currency_must_match_account(self) -> None:
+        cat = self._cat("expense")
+        usd = self._account_currency(0, "USD", "usd-only")
+        with store.open_store(self.root) as st:
+            before = fin._finance_counts(st.conn)
+            with self.assertRaises(fin.FinanceError):
+                with st.transaction():
+                    fin.upsert_recurring(
+                        st.conn,
+                        self.hid,
+                        {
+                            "account_id": usd,
+                            "category_id": cat,
+                            "amount_cents": -100,
+                            "cadence": "monthly",
+                            "next_on": "2026-08-06",
+                            "currency": "CAD",
+                        },
+                    )
+            self.assertEqual(fin._finance_counts(st.conn), before)
+
 
 if __name__ == "__main__":
     unittest.main()

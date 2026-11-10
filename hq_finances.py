@@ -186,6 +186,31 @@ def _ledger_counts(conn: sqlite3.Connection) -> tuple[int, int]:
     return tx, aud
 
 
+def _finance_counts(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+    tx, aud = _ledger_counts(conn)
+    env = int(conn.execute("SELECT COUNT(*) FROM budget_envelopes").fetchone()[0])
+    rec = int(conn.execute("SELECT COUNT(*) FROM recurring_payments").fetchone()[0])
+    return tx, aud, env, rec
+
+
+def _require_currency_code(value: Any, field: str = "currency") -> str:
+    if isinstance(value, (dict, list, tuple, set)):
+        raise FinanceError(f"{field} invalide", code="validation_error")
+    if not isinstance(value, str):
+        raise FinanceError(f"{field} invalide", code="validation_error")
+    cur = value.strip()
+    if cur not in HOUSEHOLD_CURRENCIES:
+        raise FinanceError(f"{field} invalide", code="validation_error")
+    return cur
+
+
+def _account_currency(conn: sqlite3.Connection, account_id: str) -> str:
+    row = conn.execute("SELECT currency FROM accounts WHERE id = ?", (account_id,)).fetchone()
+    if row is None:
+        raise FinanceError("compte introuvable", status=404, code="not_found")
+    return str(row["currency"])
+
+
 def redact_for_logs(payload: Any) -> dict:
     """Strip cent amounts and payees before bridge / diag logs."""
     if not isinstance(payload, dict):
@@ -425,9 +450,8 @@ def create_account(conn: sqlite3.Connection, household_id: str, data: dict) -> d
     if kind not in ("cash", "checking", "credit", "savings", "other"):
         raise FinanceError("kind invalide")
     opening = require_finance_cents(data.get("opening_balance_cents"), "opening_balance_cents")
-    currency = data.get("currency") or "CAD"
-    if currency not in ("CAD", "USD", "EUR"):
-        raise FinanceError("currency invalide")
+    raw_cur = data.get("currency")
+    currency = "CAD" if raw_cur is None else _require_currency_code(raw_cur, "currency")
     now = _now()
     aid = _new_id("account")
     conn.execute(
@@ -916,8 +940,7 @@ def envelope_spent_cents(
     end: str,
     currency: str,
 ) -> int:
-    if currency not in HOUSEHOLD_CURRENCIES:
-        raise FinanceError("devise enveloppe invalide", code="validation_error")
+    _require_currency_code(currency, "currency")
     row = conn.execute(
         "SELECT COALESCE(SUM(-t.amount_cents), 0) FROM transactions t "
         "JOIN budget_categories c ON c.id = t.category_id "
@@ -930,12 +953,24 @@ def envelope_spent_cents(
     return max(0, int(row[0] or 0))
 
 
-def _envelope_currency(conn: sqlite3.Connection, household_id: str, data: dict) -> str:
-    cur = data.get("currency")
-    if cur is not None:
-        if cur not in HOUSEHOLD_CURRENCIES:
-            raise FinanceError("currency enveloppe invalide", code="validation_error")
-        return str(cur)
+def _envelope_currency(
+    conn: sqlite3.Connection,
+    household_id: str,
+    data: dict,
+    *,
+    envelope_id: str | None = None,
+) -> str:
+    if "currency" in data:
+        return _require_currency_code(data["currency"], "currency")
+    if envelope_id is not None:
+        row = conn.execute(
+            "SELECT currency FROM budget_envelopes WHERE id = ? AND household_id = ?",
+            (envelope_id, household_id),
+        ).fetchone()
+        if row is not None:
+            stored = row["currency"]
+            if stored is not None and str(stored) != "":
+                return str(stored)
     row = conn.execute("SELECT currency FROM households WHERE id = ?", (household_id,)).fetchone()
     return str(row[0]) if row is not None else "CAD"
 
@@ -978,9 +1013,9 @@ def upsert_envelope(conn: sqlite3.Connection, household_id: str, data: dict) -> 
     alloc = require_finance_cents(data.get("allocated_cents"), min_value=0)
     schemas.require_id(data.get("category_id"), "category", "category_id")
     eid = data.get("id")
-    currency = _envelope_currency(conn, household_id, data)
     now = _now()
     if eid is None:
+        currency = _envelope_currency(conn, household_id, data)
         eid = _new_id("envelope")
         conn.execute(
             "INSERT INTO budget_envelopes("
@@ -999,6 +1034,7 @@ def upsert_envelope(conn: sqlite3.Connection, household_id: str, data: dict) -> 
             raise FinanceError("enveloppe introuvable", status=404, code="not_found")
         if int(row[0]) != rev:
             raise FinanceError("rev obsolète", status=409, code="conflict")
+        currency = _envelope_currency(conn, household_id, data, envelope_id=eid)
         conn.execute(
             "UPDATE budget_envelopes SET category_id = ?, period_start = ?, period_end = ?, "
             "allocated_cents = ?, currency = ?, updated_at = ?, rev = ? WHERE id = ?",
@@ -1059,6 +1095,28 @@ def list_recurring(conn: sqlite3.Connection, household_id: str) -> list[dict]:
     return [recurring_to_api(r) for r in rows]
 
 
+def _recurring_currency(
+    conn: sqlite3.Connection,
+    data: dict,
+    *,
+    recurring_id: str | None,
+    account_id: str,
+) -> str:
+    account_cur = _account_currency(conn, account_id)
+    if "currency" in data:
+        currency = _require_currency_code(data["currency"], "currency")
+    elif recurring_id is not None:
+        row = conn.execute("SELECT currency FROM recurring_payments WHERE id = ?", (recurring_id,)).fetchone()
+        if row is None:
+            raise FinanceError("récurrence introuvable", status=404, code="not_found")
+        currency = str(row["currency"])
+    else:
+        currency = account_cur
+    if currency != account_cur:
+        raise FinanceError("currency incompatible avec le compte", code="validation_error")
+    return currency
+
+
 def upsert_recurring(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
     amount = require_finance_cents(data.get("amount_cents"))
     cadence = data.get("cadence")
@@ -1069,9 +1127,9 @@ def upsert_recurring(conn: sqlite3.Connection, household_id: str, data: dict) ->
     schemas.require_id(data.get("category_id"), "category", "category_id")
     auto_post = data.get("auto_post", False)
     auto_post = schemas.require_bool(auto_post, "auto_post")
-    currency = data.get("currency") or "CAD"
     now = _now()
     rid = data.get("id")
+    currency = _recurring_currency(conn, data, recurring_id=rid, account_id=data["account_id"])
     if rid is None:
         rid = _new_id("recurring")
         conn.execute(

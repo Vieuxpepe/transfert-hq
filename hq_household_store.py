@@ -560,27 +560,67 @@ def _apply_v2(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 2")
 
 
-def _apply_v3(conn: sqlite3.Connection) -> None:
-    """Envelope reference currency (no cross-currency spend rollups)."""
-    info = {str(r[1]) for r in conn.execute("PRAGMA table_info(budget_envelopes)")}
-    if "currency" not in info:
-        _exec_sql(
-            conn,
-            "ALTER TABLE budget_envelopes ADD COLUMN currency TEXT NOT NULL DEFAULT 'CAD'",
-        )
+def _backfill_envelope_currency_from_households(conn: sqlite3.Connection) -> None:
+    """v2 envelopes had no currency — inherit household reference at migration."""
     conn.execute(
         """
         UPDATE budget_envelopes
         SET currency = (
-            SELECT currency FROM households h WHERE h.id = budget_envelopes.household_id
+            SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
         )
-        WHERE currency IS NULL OR currency = ''
         """
     )
+    bad = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM budget_envelopes "
+            "WHERE currency IS NULL OR currency = '' "
+            "OR currency NOT IN ('CAD', 'USD', 'EUR')"
+        ).fetchone()[0]
+    )
+    if bad:
+        raise HouseholdStoreError(
+            "Backfill devise enveloppe incomplet",
+            code="schema_error",
+        )
+
+
+def _repair_v3_envelope_currency_misbackfill(conn: sqlite3.Connection) -> None:
+    """One-shot fix for v3 migrates that only applied SQLite DEFAULT 'CAD'."""
+    row = conn.execute(
+        "SELECT note FROM schema_migrations WHERE version = ?", (3,)
+    ).fetchone()
+    if row is None or row[0] != "envelope currency v3":
+        return
+    conn.execute(
+        """
+        UPDATE budget_envelopes
+        SET currency = (
+            SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
+        )
+        WHERE budget_envelopes.currency = 'CAD'
+          AND (
+              SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
+          ) IN ('USD', 'EUR')
+        """
+    )
+    conn.execute(
+        "UPDATE schema_migrations SET note = ? WHERE version = ?",
+        ("envelope currency v3 household backfill", 3),
+    )
+
+
+def _apply_v3(conn: sqlite3.Connection) -> None:
+    """Envelope reference currency (no cross-currency spend rollups)."""
+    info = {str(r[1]) for r in conn.execute("PRAGMA table_info(budget_envelopes)")}
+    if "currency" not in info:
+        _exec_sql(conn, "ALTER TABLE budget_envelopes ADD COLUMN currency TEXT")
+        _backfill_envelope_currency_from_households(conn)
+    else:
+        _repair_v3_envelope_currency_misbackfill(conn)
     now = time.time()
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
-        (3, now, "envelope currency v3"),
+        (3, now, "envelope currency v3 household backfill"),
     )
     conn.execute("PRAGMA user_version = 3")
 
@@ -986,6 +1026,17 @@ def open_store(
             current = get_schema_version(conn)
         if current == SCHEMA_VERSION:
             _validate_schema_for_version(conn, current)
+            if current >= 3:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    _repair_v3_envelope_currency_misbackfill(conn)
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
         _enable_wal(conn)
         meta = None
         try:
