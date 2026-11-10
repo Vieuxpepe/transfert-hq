@@ -63,6 +63,11 @@
     let pxPerScreen = 1;
     let ctx = null;
     let veinCtx = null;
+    // perf17: the visible vein canvas is GPU-backed (a CPU-backed canvas cost ~5-8 s of main-thread Paint per
+    // 4 s of dragging at 6x slowdown). The full-tier warp needs getImageData, so only then the overlay is
+    // painted into this CPU-backed scratch canvas, warped there, and copied onto the visible one.
+    let veinWork = null;
+    let veinWorkCtx = null;
     let danglePaintArmed = false;
     let danglePaintOn = false;
     let danglePaintFrame = false;
@@ -344,6 +349,7 @@
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, bufW, bufH);
       ctx.drawImage(img, 0, 0, texW, texH, padX, padY, cw, ch);
+      showGL(false);
       dirty = false;
     }
 
@@ -398,6 +404,7 @@
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, bufW, bufH);
       ctx.drawImage(memberBake, 0, 0);
+      showGL(false);
       dirty = false;
     }
 
@@ -538,7 +545,8 @@
       swellNx = blurVec(blurVec(swellNx, 3), 2);
       swellNy = blurVec(blurVec(swellNy, 3), 2);
       swellImg = ctx.createImageData(cw, ch);
-      swellPaintKey = "";
+      skinVer += 1;
+      swellPaintKey = ""; swellGeomKey = "";
       return true;
     }
 
@@ -818,17 +826,36 @@
       warpMapKey = key;
     }
 
-    function warpVeinOverlay(pulseRaw) {
-      if (!veinCtx || !swellDx || !cw || !ch) return;
+    function warpActive() {
+      if (!veinCtx || !swellDx || !cw || !ch) return false;
       const motion = win.HqMotion;
-      if (motion && motion.tier && motion.tier() === "lite") return;
+      return !(motion && motion.tier && motion.tier() === "lite");
+    }
+
+    function ensureVeinWork() {
+      if (!veinWork) {
+        veinWork = doc.createElement("canvas");
+        veinWorkCtx = veinWork.getContext("2d", { alpha: true, willReadFrequently: true });
+        if (veinWorkCtx) veinWorkCtx.imageSmoothingEnabled = true;
+      }
+      if (!veinWorkCtx) return null;
+      if (veinWork.width !== veinCanvas.width || veinWork.height !== veinCanvas.height) {
+        veinWork.width = veinCanvas.width;
+        veinWork.height = veinCanvas.height;
+      }
+      return veinWorkCtx;
+    }
+
+    // wctx: the CPU-backed scratch canvas the overlay was just painted into.
+    function warpVeinOverlay(pulseRaw, wctx) {
+      if (!wctx || !warpActive()) return;
       const pulse = Math.round(pulseRaw * SWELL_PULSE_STEPS) / SWELL_PULSE_STEPS;
       const coarse = !veinRenderHot() || swellInMotion();
       const stride = coarse ? 2 : 1;
       const steps = coarse ? 1 : (veinSwellMode === "extreme" ? 3 : 2);
       ensureWarpMap(pulse, stride, steps);
-      const src = veinCtx.getImageData(padX, padY, cw, ch);
-      if (!warpDst || warpDst.width !== cw || warpDst.height !== ch) warpDst = veinCtx.createImageData(cw, ch);
+      const src = wctx.getImageData(padX, padY, cw, ch);
+      if (!warpDst || warpDst.width !== cw || warpDst.height !== ch) warpDst = wctx.createImageData(cw, ch);
       const sd = src.data;
       const d = warpDst.data;
       const inv = 1 / (steps * steps);
@@ -884,7 +911,7 @@
           }
         }
       }
-      veinCtx.putImageData(warpDst, padX, padY);
+      wctx.putImageData(warpDst, padX, padY);
     }
 
     function swellRenderScale() {
@@ -945,7 +972,7 @@
         swellHiCtx.drawImage(img, 0, 0, texW, texH, 0, 0, w, h);
         swellHiPx = swellHiCtx.getImageData(0, 0, w, h).data;
         swellHiImg = swellHiCtx.createImageData(w, h);
-        swellPaintKey = "";
+        swellPaintKey = ""; swellGeomKey = "";
       }
       return !!swellHiPx && !!swellHiImg;
     }
@@ -1067,10 +1094,22 @@
         swellPulseChangedAt = nowSw;
       }
       const stride = veinRenderHot() && !swellInMotion() && nowSw - swellPulseChangedAt > 220 ? 1 : 2;
-      const paintKey = swellKey + ":" + hw + "x" + hh + ":" + stride + ":" + pulse;
+      const geomKey = swellKey + ":" + hw + "x" + hh;
+      const paintKey = geomKey + ":" + stride + ":" + pulse;
       if (paintKey !== swellPaintKey) {
-        computeVeinSwell(pulse, scale, hw, hh, stride);
-        swellPaintKey = paintKey;
+        // perf17 swell budget: while the member is moving, redo the per-pixel relief on every third paint
+        // (SWELL_MOTION_SKIP reuses in between; counted in paints, not ms, so slow frames still skip).
+        // The pulse changes by sub-pixel amounts and motion hides it. A geometry change or the first raster always computes; once
+        // the member settles the key still differs, so the exact raster is computed right away.
+        const stale = swellGeomKey === geomKey && swellInMotion() && swellSkipped < SWELL_MOTION_SKIP;
+        if (stale) {
+          swellSkipped += 1;
+        } else {
+          computeVeinSwell(pulse, scale, hw, hh, stride);
+          swellPaintKey = paintKey;
+          swellGeomKey = geomKey;
+          swellSkipped = 0;
+        }
       }
       if (blit !== false) {
         ctx.imageSmoothingEnabled = true;
@@ -1155,6 +1194,7 @@
           dst[di + 3] = a / area;
         }
       }
+      skinVer += 1;
     }
 
     function bodyIsFlat() {
@@ -1241,6 +1281,219 @@
       depositTap(x0 + 1, y0 + 1, w11, r, g, b, a);
     }
 
+    // perf17: GPU bend renderer. The CPU path below scatters every opaque source pixel onto the output
+    // buffer (bilinear splat, ~160k deposits per frame). The same surface is a strip of quads, one row of
+    // the member per pair of vertices, so the GPU draws it from the same spine table: position =
+    // spine + normal * bulge * (column - half width), texture = the same skin (swell-shaded) image.
+    // It draws into its own WebGL canvas that sits exactly over the 2D one (shown instead of it while
+    // curved, never copied: a GL->2D drawImage stalls on the GPU). The 2D canvas stays laid out but
+    // hidden, so every geometry read and the vein overlay are untouched. Any failure falls back to the
+    // CPU path.
+    // Kill switch: localStorage "hq-dangle-gl" = "0".
+    const GL_BEND_ON = (() => {
+      try {
+        return win.localStorage.getItem("hq-dangle-gl") !== "0";
+      } catch (_) {
+        return true;
+      }
+    })();
+    let gl = null;
+    let glCanvas = null;
+    let glProg = null;
+    let glBuf = null;
+    let glTex = null;
+    let glLoc = null;
+    let glFailed = !GL_BEND_ON;
+    let glVerts = null;
+    let glPremul = null;
+    let glTexKey = "";
+    let skinVer = 0;
+    let glShown = false;
+
+    // Show the GL canvas (curved member) or the 2D canvas (flat / baked / CPU-rendered member).
+    function showGL(on) {
+      if (glShown === on || !glCanvas) return;
+      glShown = on;
+      glCanvas.style.display = on ? "block" : "none";
+      canvas.style.visibility = on ? "hidden" : "";
+    }
+
+    function glDisable() {
+      glFailed = true;
+      if (glShown && glCanvas) {
+        glCanvas.style.display = "none";
+        canvas.style.visibility = "";
+        glShown = false;
+      }
+      gl = null;
+      glCanvas = null;
+      glProg = null;
+      glBuf = null;
+      glTex = null;
+      glTexKey = "";
+      dirty = true;
+    }
+
+    function glSetup() {
+      if (glFailed) return false;
+      if (gl && !gl.isContextLost()) return true;
+      try {
+        glCanvas = doc.createElement("canvas");
+        glCanvas.className = "hq-dangling-member-canvas";
+        glCanvas.setAttribute("aria-hidden", "true");
+        glCanvas.style.display = "none";
+        glCanvas.style.position = "absolute";
+        glCanvas.style.margin = "0";
+        glCanvas.style.zIndex = "0";
+        glCanvas.width = bufW;
+        glCanvas.height = bufH;
+        gl = glCanvas.getContext("webgl", {
+          alpha: true,
+          premultipliedAlpha: true,
+          antialias: false,
+          depth: false,
+          stencil: false,
+          preserveDrawingBuffer: false,
+        });
+        if (!gl) throw new Error("no webgl");
+        glCanvas.addEventListener("webglcontextlost", (e) => {
+          e.preventDefault();
+          glDisable();
+        });
+        const sh = (type, src) => {
+          const s = gl.createShader(type);
+          gl.shaderSource(s, src);
+          gl.compileShader(s);
+          if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error("shader");
+          return s;
+        };
+        const vs = sh(
+          gl.VERTEX_SHADER,
+          "attribute vec2 aPos;attribute vec3 aUvRow;uniform vec2 uBuf;varying vec2 vUv;varying float vRow;" +
+            "void main(){vUv=aUvRow.xy;vRow=aUvRow.z;gl_Position=vec4(aPos.x/uBuf.x*2.0-1.0,1.0-aPos.y/uBuf.y*2.0,0.0,1.0);}"
+        );
+        const fs = sh(
+          gl.FRAGMENT_SHADER,
+          "precision mediump float;uniform sampler2D uTex;uniform float uChinMax;uniform float uRowMin;uniform float uBufH;" +
+            "varying vec2 vUv;varying float vRow;" +
+            "void main(){if(uChinMax>0.0&&vRow>=uRowMin&&(uBufH-gl_FragCoord.y)>uChinMax)discard;gl_FragColor=texture2D(uTex,vUv);}"
+        );
+        glProg = gl.createProgram();
+        gl.attachShader(glProg, vs);
+        gl.attachShader(glProg, fs);
+        gl.linkProgram(glProg);
+        if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) throw new Error("link");
+        glLoc = {
+          pos: gl.getAttribLocation(glProg, "aPos"),
+          uvRow: gl.getAttribLocation(glProg, "aUvRow"),
+          buf: gl.getUniformLocation(glProg, "uBuf"),
+          tex: gl.getUniformLocation(glProg, "uTex"),
+          chin: gl.getUniformLocation(glProg, "uChinMax"),
+          rowMin: gl.getUniformLocation(glProg, "uRowMin"),
+          bufH: gl.getUniformLocation(glProg, "uBufH"),
+        };
+        swing.insertBefore(glCanvas, veinCanvas);
+        veinBoxKey = "";
+        veinBoxAt = 0;
+        glBuf = gl.createBuffer();
+        glTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, glTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.disable(gl.BLEND);
+        glTexKey = "";
+        return true;
+      } catch (_) {
+        glDisable();
+        return false;
+      }
+    }
+
+    // Draws rows 0..lastRow of the member from the spine table; returns false to use the CPU path.
+    function drawCurveGL(skin, skinKey, lastRow) {
+      if (!glSetup()) return false;
+      try {
+        if (glCanvas.width !== bufW || glCanvas.height !== bufH) {
+          glCanvas.width = bufW;
+          glCanvas.height = bufH;
+        }
+        const texKey = cw + "x" + ch + ":" + skinKey;
+        gl.bindTexture(gl.TEXTURE_2D, glTex);
+        if (glTexKey !== texKey) {
+          const n = cw * ch * 4;
+          if (!glPremul || glPremul.length !== n) glPremul = new Uint8Array(n);
+          for (let i = 0; i < n; i += 4) {
+            const a = skin[i + 3];
+            if (a < 8) {
+              glPremul[i] = 0;
+              glPremul[i + 1] = 0;
+              glPremul[i + 2] = 0;
+              glPremul[i + 3] = 0;
+            } else {
+              const k = a / 255;
+              glPremul[i] = skin[i] * k + 0.5;
+              glPremul[i + 1] = skin[i + 1] * k + 0.5;
+              glPremul[i + 2] = skin[i + 2] * k + 0.5;
+              glPremul[i + 3] = a;
+            }
+          }
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cw, ch, 0, gl.RGBA, gl.UNSIGNED_BYTE, glPremul);
+          glTexKey = texKey;
+        }
+        const rows = lastRow + 1;
+        if (!glVerts || glVerts.length < ch * 10) glVerts = new Float32Array(ch * 10);
+        const mid = padX + cw * 0.5;
+        const halfCw = cw * 0.5;
+        // +0.5: the CPU splat puts pixel i at coordinate i, GL puts its centre at i + 0.5.
+        let o = 0;
+        for (let s = 0; s < rows; s += 1) {
+          const bx = mid + spineX[s] + 0.5;
+          const by = spineY[s] + 0.5;
+          const k = spineBulge[s] * halfCw;
+          const nx = spineNx[s] * k;
+          const ny = spineNy[s] * k;
+          const v = (s + 0.5) / ch;
+          glVerts[o] = bx - nx;
+          glVerts[o + 1] = by - ny;
+          glVerts[o + 2] = 0;
+          glVerts[o + 3] = v;
+          glVerts[o + 4] = s;
+          glVerts[o + 5] = bx + nx;
+          glVerts[o + 6] = by + ny;
+          glVerts[o + 7] = 1;
+          glVerts[o + 8] = v;
+          glVerts[o + 9] = s;
+          o += 10;
+        }
+        gl.viewport(0, 0, bufW, bufH);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.useProgram(glProg);
+        gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, glVerts.subarray(0, rows * 10), gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(glLoc.pos);
+        gl.vertexAttribPointer(glLoc.pos, 2, gl.FLOAT, false, 20, 0);
+        gl.enableVertexAttribArray(glLoc.uvRow);
+        gl.vertexAttribPointer(glLoc.uvRow, 3, gl.FLOAT, false, 20, 8);
+        gl.uniform2f(glLoc.buf, bufW, bufH);
+        gl.uniform1i(glLoc.tex, 0);
+        const clip = oralEngaged && oralChinMaxY > 0;
+        gl.uniform1f(glLoc.chin, clip ? oralChinMaxY : 0);
+        gl.uniform1f(glLoc.rowMin, clip ? oralLipRow - 10 : 0);
+        gl.uniform1f(glLoc.bufH, bufH);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, rows * 2);
+        showGL(true);
+        return true;
+      } catch (_) {
+        glDisable();
+        return false;
+      }
+    }
+
     function renderCurve() {
       if (!ctx || !srcPx || !dstImg || !acc || dstImg.width !== bufW || dstImg.height !== bufH) {
         renderFlat();
@@ -1269,6 +1522,7 @@
         spineBulge = new Float32Array(ch);
       }
       const mid = padX + cw * 0.5;
+      const useGL = !glFailed && glSetup() && syncVeinOverlayBox();
       let x = 0;
       let y = padY;
       let prevAng = 0;
@@ -1322,6 +1576,7 @@
         if (oralEngaged && oralLipT > 0 && s > Math.round(oralLipT * ch) + ORAL_TUBE_DEPTH + 10) {
           continue;
         }
+        if (useGL) continue;
         for (let u = left; u <= right; u += 1) {
           const si = (row + u) * 4;
           const al = skin[si + 3];
@@ -1334,6 +1589,19 @@
           }
           deposit(depX, depY, skin[si], skin[si + 1], skin[si + 2], al);
         }
+      }
+      if (useGL) {
+        const lastRow =
+          oralEngaged && oralLipT > 0 ? Math.min(ch - 1, Math.round(oralLipT * ch) + ORAL_TUBE_DEPTH + 10) : ch - 1;
+        const skinKey = (skin === srcPx ? "src" : "swell") + skinVer;
+        if (drawCurveGL(skin, skinKey, lastRow)) {
+          spineTableValid = true;
+          dirty = false;
+          return;
+        }
+        // GL failed mid-frame: redo this frame on the CPU path.
+        renderCurve();
+        return;
       }
       const dst = dstImg.data;
       let minX = boxL;
@@ -1365,55 +1633,8 @@
       spineTableValid = true;
       ctx.clearRect(0, 0, bufW, bufH);
       ctx.putImageData(dstImg, 0, 0, minX, minY, maxX - minX + 1, maxY - minY + 1);
+      showGL(false);
       dirty = false;
-    }
-
-    function paintGlisten(t) {
-      if (!ctx || !cw || !ch || !rowL) return;
-      const time = (t || win.performance.now()) * 0.001;
-      const spots = [0.2, 0.4, 0.62, 0.82];
-      const spotItems = [];
-      for (let g = 0; g < spots.length; g += 1) {
-        const u = clamp(spots[g] + Math.sin(time * 0.4 + g * 1.3) * 0.03, 0.06, 0.94);
-        const n = Math.max(1, Math.round(ch * u));
-        spotItems.push({ g, u, n });
-      }
-      spotItems.sort((a, b) => a.n - b.n);
-      ctx.save();
-      ctx.globalCompositeOperation = "screen";
-      let x = padX + cw * 0.5;
-      let y = padY;
-      let ang = 0;
-      let curS = 1;
-      for (let idx = 0; idx < spotItems.length; idx += 1) {
-        const { g, u, n } = spotItems[idx];
-        for (; curS <= n; curS += 1) {
-          const uu = (curS - 0.5) / ch;
-          ang = dir(uu);
-          const len = stepLen(uu);
-          x += Math.sin(ang) * len;
-          y += Math.cos(ang) * len;
-        }
-        const row = clamp(Math.round(u * (ch - 1)), 0, ch - 1);
-        const half = Math.max(5, (rowR[row] - rowL[row]) * 0.5);
-        const inset = half * 0.28;
-        const pulse = 0.62 + 0.38 * Math.sin(time * 0.85 + g * 1.6);
-        ctx.save();
-        ctx.translate(x + Math.cos(ang) * inset, y - Math.sin(ang) * inset);
-        ctx.rotate(Math.atan2(Math.cos(ang), Math.sin(ang)));
-        ctx.scale(2.1, 0.38);
-        const rad = half * 0.62;
-        const shine = ctx.createRadialGradient(0, 0, rad * 0.08, 0, 0, rad);
-        shine.addColorStop(0, "rgba(255,255,252," + (0.72 * pulse * (1 + warmth * 0.9)).toFixed(3) + ")");
-        shine.addColorStop(0.4, "rgba(255,240,226," + (0.28 * pulse * (1 + warmth * 0.9)).toFixed(3) + ")");
-        shine.addColorStop(1, "rgba(255,240,226,0)");
-        ctx.fillStyle = shine;
-        ctx.beginPath();
-        ctx.arc(0, 0, rad, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
-      }
-      ctx.restore();
     }
 
     function pulseEnv(elapsed) {
@@ -1495,7 +1716,6 @@
       if (!ctx || !cw) return;
       if (!restName && !oralEngaged && throbNow < 0.01 && nodNow < 0.01 && jiggle < 0.02 && !dragging && Math.abs(angle) < 0.012 && Math.abs(vel) < 0.04 && Math.abs(tip) < 0.02 && Math.abs(ripple) < 0.015 && slack < 0.012 && stretch < 0.01) renderFlat();
       else renderCurve();
-      paintGlisten(t);
     }
 
     function alive() {
@@ -1583,6 +1803,9 @@
     let swellPulseSeen = -1;
     let swellPulseChangedAt = 0;
     const SWELL_PULSE_STEPS = 50;
+    const SWELL_MOTION_SKIP = 2;
+    let swellGeomKey = "";
+    let swellSkipped = 0;
     let swellBlur = null;
     let inkPx = null;
     let restAngle = 0;
@@ -3172,6 +3395,12 @@
         veinCanvas.style.width = w + "px";
         veinCanvas.style.height = h + "px";
         veinCanvas.style.zIndex = "2";
+        if (glCanvas) {
+          glCanvas.style.left = left + "px";
+          glCanvas.style.top = top + "px";
+          glCanvas.style.width = w + "px";
+          glCanvas.style.height = h + "px";
+        }
       }
       return true;
     }
@@ -3374,7 +3603,7 @@
     }
 
     function veinDrawIsOverlay(vctx) {
-      return !!(vctx && veinCtx && vctx === veinCtx);
+      return !!(vctx && ((veinCtx && vctx === veinCtx) || (veinWorkCtx && vctx === veinWorkCtx)));
     }
 
     function strokeVeinPulsePath(pts, tier, pulseA, vctx) {
@@ -3991,20 +4220,25 @@
             renderFlat();
             if (ensureVeinSwellField()) paintVeinSwell(t);
           } else blitMemberBake(t);
-          paintGlisten(t);
         } else {
           blitMemberBake(t);
-          paintGlisten(t);
         }
         paintVeinPulse(t, ctx);
         paintVeinHighlight(ctx);
         return;
       }
-      veinCtx.setTransform(1, 0, 0, 1, 0, 0);
-      veinCtx.clearRect(0, 0, veinCanvas.width, veinCanvas.height);
-      paintVeinPulse(t, veinCtx);
-      paintVeinHighlight(veinCtx);
-      if (hot && ensureVeinSwellField()) warpVeinOverlay(veinPulseStrength(t));
+      const wctx = hot && ensureVeinSwellField() && warpActive() ? ensureVeinWork() : null;
+      const target = wctx || veinCtx;
+      target.setTransform(1, 0, 0, 1, 0, 0);
+      target.clearRect(0, 0, veinCanvas.width, veinCanvas.height);
+      paintVeinPulse(t, target);
+      paintVeinHighlight(target);
+      if (wctx) {
+        warpVeinOverlay(veinPulseStrength(t), wctx);
+        veinCtx.setTransform(1, 0, 0, 1, 0, 0);
+        veinCtx.clearRect(0, 0, veinCanvas.width, veinCanvas.height);
+        veinCtx.drawImage(veinWork, 0, 0);
+      }
     }
 
     function danglePaintLoop(t) {
@@ -4057,20 +4291,16 @@
           if (hot) {
             renderFlat();
             if (ensureVeinSwellField()) paintVeinSwell(t);
-            paintGlisten(t);
             rebuildMemberBake(t, true);
           } else {
             rebuildMemberBake(t, false);
             blitMemberBake(t);
-            paintGlisten(t);
           }
         } else {
           blitMemberBake(t);
-          paintGlisten(t);
         }
       } else {
         paintFlatOrCurve(t);
-        paintGlisten(t);
       }
 
       paintVeinOverlayFrame(t, hot, paintRaster);
@@ -4182,7 +4412,7 @@
         if (ctx) ctx.imageSmoothingEnabled = true;
       }
       if (!veinCtx) {
-        veinCtx = veinCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
+        veinCtx = veinCanvas.getContext("2d", { alpha: true });
         if (veinCtx) veinCtx.imageSmoothingEnabled = true;
       }
       if (!danglePaintArmed) {
@@ -4197,7 +4427,6 @@
       dirty = true;
       if (!running) {
         renderFlat();
-        if (!motionReduced) paintGlisten(win.performance.now());
       }
       if (motionReduced) return;
       if (simBusy()) startGlisten();
