@@ -823,6 +823,10 @@ _V6_STATEMENTS = (
       ON actual_purchases(household_id, fingerprint)
     """,
     """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_actual_purchases_idempotency
+      ON actual_purchases(household_id, idempotency_key)
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_actual_purchases_household_date
       ON actual_purchases(household_id, purchased_on, id)
     """,
@@ -1119,6 +1123,14 @@ def validate_schema_v6(conn: sqlite3.Connection) -> None:
     _validate_schema_tables(conn, _V6_REQUIRED, label="v6")
 
 
+def _repair_additive_v6_indexes(conn: sqlite3.Connection) -> None:
+    """Idempotent index for DBs created before idempotency uniqueness was added to v6."""
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_actual_purchases_idempotency "
+        "ON actual_purchases(household_id, idempotency_key)"
+    )
+
+
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
     validate_schema_v1(conn)
     if version >= 2:
@@ -1297,6 +1309,8 @@ def open_store(
             if check != "ok":
                 raise HouseholdStoreError(f"intégrité échec: {check}", code="corrupt")
             ver = get_schema_version(conn)
+            if ver >= 6:
+                _repair_additive_v6_indexes(conn)
             _validate_schema_for_version(conn, ver)
             _enable_wal(conn)
         except Exception:
@@ -1357,6 +1371,8 @@ def open_store(
             if check2 != "ok":
                 raise HouseholdStoreError("intégrité post-migration échec", code="corrupt")
             current = get_schema_version(conn)
+        if current >= 6:
+            _repair_additive_v6_indexes(conn)
         if current == SCHEMA_VERSION:
             _validate_schema_for_version(conn, current)
         _enable_wal(conn)

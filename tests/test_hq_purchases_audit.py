@@ -117,13 +117,17 @@ class PurchasesAuditTests(unittest.TestCase):
             account_id=acct_b,
             category_id=cat_a,
         )
-        with store.open_store(self.root) as st:
-            with st.transaction():
-                with self.assertRaises(pur.PurchasesError) as ctx:
-                    pur.post_actual_purchase(st.conn, self.hid, body)
-                self.assertEqual(ctx.exception.status, 404)
         with store.open_store(self.root, readonly=True) as st:
-            self.assertEqual(_counts(st.conn)["actual_purchases"], 0)
+            before = _counts(st.conn)
+        try:
+            with store.open_store(self.root) as st:
+                with st.transaction():
+                    pur.post_actual_purchase(st.conn, self.hid, body)
+            self.fail("expected PurchasesError")
+        except pur.PurchasesError as exc:
+            self.assertEqual(exc.status, 404)
+        with store.open_store(self.root, readonly=True) as st:
+            self.assertEqual(_counts(st.conn), before)
 
     def test_cross_household_category_rejected(self) -> None:
         _, _acct_b, cat_b = self._second_household_finance()
@@ -134,11 +138,17 @@ class PurchasesAuditTests(unittest.TestCase):
                     {"name": "A", "kind": "cash", "opening_balance_cents": 0, "currency": "CAD"},
                 )["id"]
         body = self._body(post_finance=True, create_lot=False, account_id=acct_a, category_id=cat_b)
-        with store.open_store(self.root) as st:
-            with st.transaction():
-                with self.assertRaises(pur.PurchasesError) as ctx:
+        with store.open_store(self.root, readonly=True) as st:
+            before = _counts(st.conn)
+        try:
+            with store.open_store(self.root) as st:
+                with st.transaction():
                     pur.post_actual_purchase(st.conn, self.hid, body)
-                self.assertEqual(ctx.exception.status, 404)
+            self.fail("expected PurchasesError")
+        except pur.PurchasesError as exc:
+            self.assertEqual(exc.status, 404)
+        with store.open_store(self.root, readonly=True) as st:
+            self.assertEqual(_counts(st.conn), before)
 
     def test_usd_account_on_cad_household_rejected(self) -> None:
         with store.open_store(self.root) as st:
@@ -281,6 +291,60 @@ class PurchasesAuditTests(unittest.TestCase):
             c = _counts(st.conn)
             self.assertEqual(c["actual_purchases"], 0)
             self.assertEqual(c["purchase_idempotency"], 0)
+
+    def test_finance_idem_key_boundary_lengths_post_finance(self) -> None:
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                acct = fin.create_account(
+                    st.conn, self.hid,
+                    {"name": "A", "kind": "cash", "opening_balance_cents": 50_000, "currency": "CAD"},
+                )["id"]
+                cat = fin.upsert_category(st.conn, self.hid, {"name": "G", "kind": "expense"})["id"]
+        for length in (8, 128):
+            idem = "k" * length
+            fp = f"idem-boundary-{length}"
+            body = self._body(
+                idempotency_key=idem,
+                fingerprint=fp,
+                post_finance=True,
+                create_lot=False,
+                account_id=acct,
+                category_id=cat,
+            )
+            expected_tx_key = pur.finance_idempotency_key_for_purchase(self.hid, idem)
+            self.assertEqual(len(expected_tx_key), 64)
+            code, out = pur.http_post("/api/grocery/purchases/actual", body)
+            self.assertEqual(code, 200, out)
+            code2, out2 = pur.http_post("/api/grocery/purchases/actual", body)
+            self.assertEqual(code2, 200, out2)
+            self.assertEqual(out2["purchase"]["id"], out["purchase"]["id"])
+            with store.open_store(self.root, readonly=True) as st:
+                tx = st.conn.execute(
+                    "SELECT idempotency_key FROM transactions WHERE id = ?",
+                    (out["transaction_id"],),
+                ).fetchone()
+                self.assertEqual(str(tx[0]), expected_tx_key)
+
+    def test_idempotency_key_blocked_after_cache_purge(self) -> None:
+        idem = "persist-" + secrets.token_hex(20)
+        body = self._body(idempotency_key=idem, fingerprint="fp-persist-1")
+        code, out = pur.http_post("/api/grocery/purchases/actual", body)
+        self.assertEqual(code, 200, out)
+        pid = out["purchase"]["id"]
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                st.conn.execute(
+                    "DELETE FROM purchase_idempotency WHERE household_id = ? AND idempotency_key = ?",
+                    (self.hid, idem),
+                )
+        body2 = self._body(idempotency_key=idem, fingerprint="fp-persist-2")
+        code2, out2 = pur.http_post("/api/grocery/purchases/actual", body2)
+        self.assertEqual(code2, 409, out2)
+        with store.open_store(self.root, readonly=True) as st:
+            self.assertEqual(
+                int(st.conn.execute("SELECT COUNT(*) FROM actual_purchases WHERE id = ?", (pid,)).fetchone()[0]),
+                1,
+            )
 
     def test_concurrent_same_idempotency_single_row(self) -> None:
         body = self._body(idempotency_key="concurrent-idem-key", fingerprint="conc-fp-unique")

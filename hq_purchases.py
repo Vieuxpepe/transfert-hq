@@ -116,6 +116,14 @@ def _body_hash(payload: dict) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def finance_idempotency_key_for_purchase(household_id: str, purchase_idempotency_key: str) -> str:
+    """Deterministic finance idempotency key, always 64 chars (within 8–128 schema bound)."""
+    digest = hashlib.sha256(
+        f"grocery-tx|v1|{household_id}|{purchase_idempotency_key}".encode("utf-8"),
+    ).hexdigest()
+    return digest
+
+
 def _safe_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
@@ -509,6 +517,17 @@ def post_actual_purchase(conn: sqlite3.Connection, household_id: str, data: dict
                 code="validation_error",
             )
 
+    dup_idem = conn.execute(
+        "SELECT id FROM actual_purchases WHERE household_id = ? AND idempotency_key = ?",
+        (household_id, key),
+    ).fetchone()
+    if dup_idem is not None:
+        raise PurchasesError(
+            "idempotency_key déjà utilisée pour un achat",
+            status=409,
+            code="conflict",
+        )
+
     dup = conn.execute(
         "SELECT id FROM actual_purchases WHERE household_id = ? AND fingerprint = ?",
         (household_id, norm["fingerprint"]),
@@ -560,13 +579,22 @@ def post_actual_purchase(conn: sqlite3.Connection, household_id: str, data: dict
             ),
         )
     except sqlite3.IntegrityError:
+        if conn.execute(
+            "SELECT 1 FROM actual_purchases WHERE household_id = ? AND idempotency_key = ?",
+            (household_id, key),
+        ).fetchone():
+            raise PurchasesError(
+                "idempotency_key déjà utilisée pour un achat",
+                status=409,
+                code="conflict",
+            )
         raise PurchasesError("fingerprint déjà enregistré", status=409, code="conflict")
 
     if norm["post_finance"]:
         mch = conn.execute("SELECT name FROM merchants WHERE id = ?", (data["merchant_id"],)).fetchone()
         payee = norm["payee"] or (mch["name"] if mch else "")
         memo = norm["memo"]
-        tx_key = f"{key}:grocery-tx"
+        tx_key = finance_idempotency_key_for_purchase(household_id, key)
         tx = finances.insert_transaction(
             conn,
             household_id,
