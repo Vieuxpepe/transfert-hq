@@ -36,12 +36,12 @@ class StoreLifecycleTests(unittest.TestCase):
 
     def test_init_blank_root(self):
         with store.open_store(self.root) as st:
-            self.assertEqual(st.schema_version, 2)
+            self.assertEqual(st.schema_version, 3)
             self.assertEqual(store.integrity_check(st.conn), "ok")
             st.set_meta("sentinel", "alpha")
             self.assertEqual(st.get_meta("sentinel"), "alpha")
         meta = json.loads(store.meta_path(self.root).read_text(encoding="utf-8"))
-        self.assertEqual(meta["schema_version"], 2)
+        self.assertEqual(meta["schema_version"], 3)
 
     def test_reopen_valid(self):
         with store.open_store(self.root) as st:
@@ -144,7 +144,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 2)
+        self.assertEqual(healed["schema_version"], 3)
 
     def test_meta_schema_version_array_healed_without_typeerror(self):
         with store.open_store(self.root) as st:
@@ -157,7 +157,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 2)
+        self.assertEqual(healed["schema_version"], 3)
 
     def test_v1_snapshot_migrates_to_v2_with_backup(self):
         base = store.prepare_household_dirs(self.root)
@@ -170,7 +170,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 1)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 2)
+            self.assertEqual(st.schema_version, 3)
             st.set_meta("post-v2", "ok")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)

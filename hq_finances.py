@@ -15,8 +15,16 @@ Budget envelopes (spent):
 - Correction rows attribute spend to the **correction's** ``booked_on`` period, not the original.
 - Overlapping envelope periods: a transaction counts toward every envelope whose date range
   contains its ``booked_on``.
+- Each envelope carries a **reference currency** (``budget_envelopes.currency``). Spent is summed
+  only from posted expense rows whose **account currency matches** the envelope — never CAD+USD+EUR
+  in one total.
+- Foreign-currency account activity on a shared category does not inflate a CAD envelope (and vice
+  versa). Align totals with ``balances_by_currency`` per currency.
 
 Summary balances are **never** summed across currencies — use ``balances_by_currency`` only.
+
+Corrections (v1): simple reversal on the same account and category only. Transfer-leg corrections,
+reclassifications, and transfer-pair fixes are **out of scope** — use dedicated future ops.
 """
 
 from __future__ import annotations
@@ -45,6 +53,25 @@ IDEM_WAIT_SEC = 5.0
 
 GENERIC_TX_SOURCES = frozenset({"manual"})
 RESERVED_GENERIC_TX_FIELDS = frozenset({"transfer_pair_id", "correction_of", "external_fingerprint"})
+
+PAYEE_MAX = 160
+MEMO_MAX = 2000
+CORRECT_REASON_MAX = 500
+HOUSEHOLD_CURRENCIES = frozenset({"CAD", "USD", "EUR"})
+
+POST_TX_KEYS = frozenset({
+    "account_id", "category_id", "booked_on", "amount_cents", "payee", "memo", "status", "idempotency_key",
+})
+POST_CORRECT_KEYS = frozenset({
+    "correction_of", "amount_cents", "booked_on", "payee", "memo", "reason", "idempotency_key",
+})
+POST_TRANSFER_KEYS = frozenset({
+    "from_account_id", "source_account_id", "to_account_id", "dest_account_id",
+    "amount_cents", "category_id", "booked_on", "payee", "memo", "idempotency_key",
+})
+POST_ENVELOPE_KEYS = frozenset({
+    "id", "rev", "category_id", "period_start", "period_end", "allocated_cents", "currency",
+})
 
 TX_CURSOR_RE = re.compile(r"^(?P<d>\d{4}-\d{2}-\d{2})~(?P<id>tx-[0-9a-f]{16})$")
 AUDIT_CURSOR_RE = re.compile(r"^(?P<t>-?\d+(?:\.\d+)?)\|(?P<id>aud-[0-9a-f]{16})$")
@@ -132,6 +159,31 @@ def _body_hash(payload: dict) -> str:
 
 def _safe_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _reject_unknown_fields(data: dict, allowed: frozenset[str]) -> None:
+    extra = set(data) - allowed
+    if extra:
+        sample = ", ".join(sorted(extra)[:8])
+        raise FinanceError(f"Champs inconnus ({sample})", code="validation_error")
+
+
+def _text_field(v: Any, field: str, max_len: int, *, default: str = "") -> str:
+    if v is None:
+        return default
+    if isinstance(v, (dict, list, tuple, set)):
+        raise FinanceError(f"{field} doit être une chaîne", code="validation_error")
+    if not isinstance(v, str):
+        raise FinanceError(f"{field} doit être une chaîne", code="validation_error")
+    if len(v) > max_len:
+        raise FinanceError(f"{field} trop long (max {max_len})", code="validation_error")
+    return v
+
+
+def _ledger_counts(conn: sqlite3.Connection) -> tuple[int, int]:
+    tx = int(conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0])
+    aud = int(conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0])
+    return tx, aud
 
 
 def redact_for_logs(payload: Any) -> dict:
@@ -529,6 +581,7 @@ def transaction_to_api(row: sqlite3.Row) -> dict:
 
 
 def _assert_generic_tx_body(data: dict) -> None:
+    _reject_unknown_fields(data, POST_TX_KEYS)
     for field in RESERVED_GENERIC_TX_FIELDS:
         if data.get(field) not in (None, ""):
             raise FinanceError(f"{field} réservé — utiliser l'endpoint dédié", code="validation_error")
@@ -546,10 +599,15 @@ def _validate_tx_payload(
 ) -> dict:
     doc = dict(data)
     doc["household_id"] = household_id
-    doc.setdefault("payee", "")
-    doc.setdefault("memo", "")
+    doc["payee"] = _text_field(doc.get("payee"), "payee", PAYEE_MAX)
+    doc["memo"] = _text_field(doc.get("memo"), "memo", MEMO_MAX)
     if via == "generic":
-        _assert_generic_tx_body(doc)
+        for field in RESERVED_GENERIC_TX_FIELDS:
+            if doc.get(field) not in (None, ""):
+                raise FinanceError(f"{field} réservé — utiliser l'endpoint dédié", code="validation_error")
+        src = doc.get("source", "manual")
+        if src not in GENERIC_TX_SOURCES:
+            raise FinanceError("source réservée pour l'API générique", code="validation_error")
     elif via == "transfer":
         if doc.get("correction_of"):
             raise FinanceError("correction_of interdit sur un transfert", code="validation_error")
@@ -589,9 +647,16 @@ def insert_transaction(
     acc = conn.execute("SELECT currency FROM accounts WHERE id = ?", (doc["account_id"],)).fetchone()
     if acc is None:
         raise FinanceError("compte introuvable", status=404, code="not_found")
-    cat = conn.execute("SELECT id FROM budget_categories WHERE id = ?", (doc["category_id"],)).fetchone()
+    cat = conn.execute(
+        "SELECT id, kind FROM budget_categories WHERE id = ?", (doc["category_id"],)
+    ).fetchone()
     if cat is None:
         raise FinanceError("catégorie introuvable", status=404, code="not_found")
+    if via == "generic" and str(cat[1]) == "transfer":
+        raise FinanceError(
+            "catégorie transfer réservée — utiliser POST /api/finances/transfers",
+            code="validation_error",
+        )
     now = _now()
     conn.execute(
         "INSERT INTO transactions(id, household_id, account_id, booked_on, amount_cents, category_id, payee, memo, "
@@ -698,10 +763,12 @@ def post_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
 
 def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
     body = dict(data)
+    _reject_unknown_fields(body, POST_CORRECT_KEYS)
     key = body.get("idempotency_key")
     op = "transaction.correct"
     orig_id = body.get("correction_of")
     schemas.require_id(orig_id, "transaction", "correction_of")
+    reason = _text_field(body.get("reason"), "reason", CORRECT_REASON_MAX)
     with st.transaction():
         conn = st.conn
         household_id = ensure_default_household(conn)
@@ -713,6 +780,15 @@ def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
             raise FinanceError("transaction source introuvable", status=404, code="not_found")
         if str(orig["status"]) != "posted":
             raise FinanceError("seules les transactions postées sont corrigeables")
+        if orig["transfer_pair_id"]:
+            raise FinanceError(
+                "correction d'une jambe de transfert interdite en v1",
+                code="validation_error",
+            )
+        if body.get("account_id") is not None and body.get("account_id") != orig["account_id"]:
+            raise FinanceError("changement de compte interdit en correction v1", code="validation_error")
+        if body.get("category_id") is not None and body.get("category_id") != orig["category_id"]:
+            raise FinanceError("reclassement catégorie interdit en correction v1", code="validation_error")
         delta = body.get("amount_cents")
         amount = (
             require_finance_cents(delta)
@@ -727,8 +803,8 @@ def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
             "status": "posted",
             "source": "correction",
             "correction_of": orig_id,
-            "payee": body.get("payee") or orig["payee"] or "",
-            "memo": body.get("memo") or orig["memo"] or "",
+            "payee": _text_field(body.get("payee"), "payee", PAYEE_MAX, default=orig["payee"] or ""),
+            "memo": _text_field(body.get("memo"), "memo", MEMO_MAX, default=orig["memo"] or ""),
             "idempotency_key": key,
         }
         tx = insert_transaction(conn, household_id, corr, pin_idem=True, via="correction")
@@ -738,7 +814,7 @@ def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
             entity_type="transaction", entity_id=tx["id"], response=resp,
         )
         write_audit(conn, action="transaction.correct", entity_type="transaction", entity_id=tx["id"],
-                    reason=body.get("reason"), ref=orig_id)
+                    reason=reason or None, ref=orig_id)
         return resp
 
 
@@ -746,6 +822,7 @@ def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
 
 def post_transfer(st: hstore.HouseholdStore, data: dict) -> dict:
     body = dict(data)
+    _reject_unknown_fields(body, POST_TRANSFER_KEYS)
     op = "transfer.post"
     key = schemas.require_idempotency_key(body.get("idempotency_key"))
     amount = require_finance_cents(body.get("amount_cents"), min_value=1)
@@ -781,6 +858,9 @@ def post_transfer(st: hstore.HouseholdStore, data: dict) -> dict:
             category = crow[0]
         else:
             schemas.require_id(category, "category", "category_id")
+        ck = conn.execute("SELECT kind FROM budget_categories WHERE id = ?", (category,)).fetchone()
+        if ck is None or str(ck[0]) != "transfer":
+            raise FinanceError("category_id doit être de kind transfer", code="validation_error")
         pair = _new_id("transaction")
         legs = [
             {
@@ -829,19 +909,42 @@ def post_transfer(st: hstore.HouseholdStore, data: dict) -> dict:
 
 # ---------------------------------------------------------------- envelopes / spent
 
-def envelope_spent_cents(conn: sqlite3.Connection, category_id: str, start: str, end: str) -> int:
+def envelope_spent_cents(
+    conn: sqlite3.Connection,
+    category_id: str,
+    start: str,
+    end: str,
+    currency: str,
+) -> int:
+    if currency not in HOUSEHOLD_CURRENCIES:
+        raise FinanceError("devise enveloppe invalide", code="validation_error")
     row = conn.execute(
         "SELECT COALESCE(SUM(-t.amount_cents), 0) FROM transactions t "
         "JOIN budget_categories c ON c.id = t.category_id "
+        "JOIN accounts a ON a.id = t.account_id "
         "WHERE t.category_id = ? AND c.kind = 'expense' AND t.status = 'posted' "
-        "AND t.booked_on >= ? AND t.booked_on <= ? AND t.transfer_pair_id IS NULL",
-        (category_id, start, end),
+        "AND t.booked_on >= ? AND t.booked_on <= ? AND t.transfer_pair_id IS NULL "
+        "AND a.currency = ?",
+        (category_id, start, end, currency),
     ).fetchone()
     return max(0, int(row[0] or 0))
 
 
+def _envelope_currency(conn: sqlite3.Connection, household_id: str, data: dict) -> str:
+    cur = data.get("currency")
+    if cur is not None:
+        if cur not in HOUSEHOLD_CURRENCIES:
+            raise FinanceError("currency enveloppe invalide", code="validation_error")
+        return str(cur)
+    row = conn.execute("SELECT currency FROM households WHERE id = ?", (household_id,)).fetchone()
+    return str(row[0]) if row is not None else "CAD"
+
+
 def envelope_to_api(row: sqlite3.Row, conn: sqlite3.Connection) -> dict:
-    spent = envelope_spent_cents(conn, str(row["category_id"]), str(row["period_start"]), str(row["period_end"]))
+    currency = str(row["currency"]) if "currency" in row.keys() else "CAD"
+    spent = envelope_spent_cents(
+        conn, str(row["category_id"]), str(row["period_start"]), str(row["period_end"]), currency,
+    )
     alloc = int(row["allocated_cents"])
     used_pct = (spent * 100) // alloc if alloc > 0 else 0
     return {
@@ -849,6 +952,7 @@ def envelope_to_api(row: sqlite3.Row, conn: sqlite3.Connection) -> dict:
         "category_id": row["category_id"],
         "period_start": row["period_start"],
         "period_end": row["period_end"],
+        "currency": currency,
         "allocated_cents": alloc,
         "spent_cents": spent,
         "used_pct": used_pct,
@@ -866,6 +970,7 @@ def list_envelopes(conn: sqlite3.Connection, household_id: str, qs: dict) -> lis
 
 
 def upsert_envelope(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
+    _reject_unknown_fields(data, POST_ENVELOPE_KEYS)
     schemas.require_iso_date(data.get("period_start"), "period_start")
     schemas.require_iso_date(data.get("period_end"), "period_end")
     if data["period_start"] > data["period_end"]:
@@ -873,13 +978,16 @@ def upsert_envelope(conn: sqlite3.Connection, household_id: str, data: dict) -> 
     alloc = require_finance_cents(data.get("allocated_cents"), min_value=0)
     schemas.require_id(data.get("category_id"), "category", "category_id")
     eid = data.get("id")
+    currency = _envelope_currency(conn, household_id, data)
     now = _now()
     if eid is None:
         eid = _new_id("envelope")
         conn.execute(
-            "INSERT INTO budget_envelopes(id, household_id, category_id, period_start, period_end, allocated_cents, created_at, updated_at, rev) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
-            (eid, household_id, data["category_id"], data["period_start"], data["period_end"], alloc, now, now),
+            "INSERT INTO budget_envelopes("
+            "id, household_id, category_id, period_start, period_end, allocated_cents, currency, "
+            "created_at, updated_at, rev) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+            (eid, household_id, data["category_id"], data["period_start"], data["period_end"], alloc, currency, now, now),
         )
     else:
         schemas.require_id(eid, "envelope")
@@ -892,9 +1000,9 @@ def upsert_envelope(conn: sqlite3.Connection, household_id: str, data: dict) -> 
         if int(row[0]) != rev:
             raise FinanceError("rev obsolète", status=409, code="conflict")
         conn.execute(
-            "UPDATE budget_envelopes SET category_id = ?, period_start = ?, period_end = ?, allocated_cents = ?, updated_at = ?, rev = ? "
-            "WHERE id = ?",
-            (data["category_id"], data["period_start"], data["period_end"], alloc, now, rev + 1, eid),
+            "UPDATE budget_envelopes SET category_id = ?, period_start = ?, period_end = ?, "
+            "allocated_cents = ?, currency = ?, updated_at = ?, rev = ? WHERE id = ?",
+            (data["category_id"], data["period_start"], data["period_end"], alloc, currency, now, rev + 1, eid),
         )
     row = conn.execute("SELECT * FROM budget_envelopes WHERE id = ?", (eid,)).fetchone()
     out = envelope_to_api(row, conn)
@@ -1171,12 +1279,16 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
             st.close()
     except (FinanceError, schemas.SchemaError, hstore.HouseholdStoreError) as exc:
         return _err(exc)
+    except sqlite3.Error:
+        return 503, {"ok": False, "error": "stockage indisponible", "code": "storage_error"}
 
 
 def http_post(path: str, data: Any) -> tuple[int, dict]:
     try:
+        if isinstance(data, list):
+            raise FinanceError("JSON objet requis", code="validation_error")
         if not isinstance(data, dict):
-            raise FinanceError("JSON objet requis")
+            raise FinanceError("JSON objet requis", code="validation_error")
         if len(json.dumps(data, ensure_ascii=False)) > BODY_MAX:
             raise FinanceError("corps trop volumineux", status=413, code="validation_error")
         st = _open_store(readonly=False)
@@ -1218,3 +1330,5 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             st.close()
     except (FinanceError, schemas.SchemaError, hstore.HouseholdStoreError) as exc:
         return _err(exc)
+    except sqlite3.Error:
+        return 503, {"ok": False, "error": "stockage indisponible", "code": "storage_error"}

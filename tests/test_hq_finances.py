@@ -384,7 +384,7 @@ class FinanceDomainTests(unittest.TestCase):
                 },
             )
         with store.open_store(self.root) as st:
-            spent = fin.envelope_spent_cents(st.conn, cat, "2026-03-01", "2026-03-31")
+            spent = fin.envelope_spent_cents(st.conn, cat, "2026-03-01", "2026-03-31", "CAD")
         self.assertEqual(spent, 6_000)
 
     def test_correction_out_of_period_and_overlap(self) -> None:
@@ -432,8 +432,8 @@ class FinanceDomainTests(unittest.TestCase):
                 },
             )
         with store.open_store(self.root) as st:
-            april1 = fin.envelope_spent_cents(st.conn, cat, "2026-04-01", "2026-04-15")
-            april2 = fin.envelope_spent_cents(st.conn, cat, "2026-04-10", "2026-04-30")
+            april1 = fin.envelope_spent_cents(st.conn, cat, "2026-04-01", "2026-04-15", "CAD")
+            april2 = fin.envelope_spent_cents(st.conn, cat, "2026-04-10", "2026-04-30", "CAD")
         self.assertEqual(april1, 2_000)
         self.assertEqual(april2, 1_500)
 
@@ -559,6 +559,180 @@ class FinanceDomainTests(unittest.TestCase):
             self.assertIsNotNone(page1["next_cursor"])
             page2 = fin.list_transactions(st.conn, self.hid, {"limit": "1", "cursor": page1["next_cursor"]})
             self.assertEqual(page2["items"][0]["booked_on"], "2026-06-01")
+
+    def test_envelope_currency_isolated_for_shared_category(self) -> None:
+        cat = self._cat("expense")
+        cad_acct = self._account_currency(0, "CAD", "CAD")
+        usd_acct = self._account_currency(0, "USD", "USD")
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                fin.upsert_envelope(
+                    st.conn,
+                    self.hid,
+                    {
+                        "category_id": cat,
+                        "period_start": "2026-07-01",
+                        "period_end": "2026-07-31",
+                        "allocated_cents": 50_000,
+                        "currency": "CAD",
+                    },
+                )
+                fin.upsert_envelope(
+                    st.conn,
+                    self.hid,
+                    {
+                        "category_id": cat,
+                        "period_start": "2026-07-01",
+                        "period_end": "2026-07-31",
+                        "allocated_cents": 30_000,
+                        "currency": "USD",
+                    },
+                )
+            fin.post_transaction(
+                st,
+                {
+                    "account_id": cad_acct,
+                    "category_id": cat,
+                    "amount_cents": -10_000,
+                    "booked_on": "2026-07-10",
+                    "idempotency_key": "cad-spend-key",
+                },
+            )
+            fin.post_transaction(
+                st,
+                {
+                    "account_id": usd_acct,
+                    "category_id": cat,
+                    "amount_cents": -20_000,
+                    "booked_on": "2026-07-11",
+                    "idempotency_key": "usd-spend-key",
+                },
+            )
+            summary = fin.finances_summary(st)
+            envs = fin.list_envelopes(st.conn, self.hid, {})
+        by_cur = {e["currency"]: e for e in envs if e["period_start"] == "2026-07-01"}
+        self.assertEqual(by_cur["CAD"]["spent_cents"], 10_000)
+        self.assertEqual(by_cur["USD"]["spent_cents"], 20_000)
+        self.assertEqual(summary["balances_by_currency"]["CAD"], -10_000)
+        self.assertEqual(summary["balances_by_currency"]["USD"], -20_000)
+
+    def test_correct_transfer_leg_refused(self) -> None:
+        a1 = self._account(5_000)
+        a2 = self._account(0)
+        xcat = self._cat("transfer")
+        with store.open_store(self.root) as st:
+            xfer = fin.post_transfer(
+                st,
+                {
+                    "from_account_id": a1,
+                    "to_account_id": a2,
+                    "amount_cents": 1_000,
+                    "category_id": xcat,
+                    "booked_on": "2026-07-12",
+                    "idempotency_key": "xfer-corr-key",
+                },
+            )
+            leg_id = xfer["transactions"][0]["id"]
+            with self.assertRaises(fin.FinanceError) as ctx:
+                fin.correct_transaction(
+                    st,
+                    {"correction_of": leg_id, "idempotency_key": "corr-leg-key"},
+                )
+            self.assertEqual(ctx.exception.code, "validation_error")
+
+    def test_correct_reclassify_refused(self) -> None:
+        acct = self._account()
+        acct2 = self._account()
+        cat = self._cat()
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                cat2 = fin.upsert_category(st.conn, self.hid, {"name": "Alt", "kind": "expense"})["id"]
+            orig = fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -50,
+                    "booked_on": "2026-07-13",
+                    "idempotency_key": "reclass-orig",
+                },
+            )["transaction"]["id"]
+            with self.assertRaises(fin.FinanceError):
+                fin.correct_transaction(
+                    st,
+                    {
+                        "correction_of": orig,
+                        "account_id": acct2,
+                        "idempotency_key": "reclass-acct",
+                    },
+                )
+            with self.assertRaises(fin.FinanceError):
+                fin.correct_transaction(
+                    st,
+                    {
+                        "correction_of": orig,
+                        "category_id": cat2,
+                        "idempotency_key": "reclass-cat",
+                    },
+                )
+
+    def test_transfer_requires_transfer_category(self) -> None:
+        a1 = self._account(100)
+        a2 = self._account(0)
+        expense = self._cat("expense")
+        with store.open_store(self.root) as st:
+            tx0 = int(st.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0])
+            with self.assertRaises(fin.FinanceError) as ctx:
+                fin.post_transfer(
+                    st,
+                    {
+                        "from_account_id": a1,
+                        "to_account_id": a2,
+                        "amount_cents": 10,
+                        "category_id": expense,
+                        "booked_on": "2026-07-14",
+                        "idempotency_key": "bad-xfer-cat",
+                    },
+                )
+            self.assertEqual(ctx.exception.code, "validation_error")
+            self.assertEqual(int(st.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]), tx0)
+
+    def test_generic_post_rejects_transfer_category(self) -> None:
+        acct = self._account()
+        xcat = self._cat("transfer")
+        with store.open_store(self.root) as st:
+            before = fin._ledger_counts(st.conn)
+            with self.assertRaises(fin.FinanceError):
+                fin.post_transaction(
+                    st,
+                    {
+                        "account_id": acct,
+                        "category_id": xcat,
+                        "amount_cents": -10,
+                        "booked_on": "2026-07-15",
+                        "idempotency_key": "lonely-leg-key",
+                    },
+                )
+            self.assertEqual(fin._ledger_counts(st.conn), before)
+
+    def test_invalid_payee_type_rejected_without_persist(self) -> None:
+        acct = self._account()
+        cat = self._cat()
+        with store.open_store(self.root) as st:
+            before = fin._ledger_counts(st.conn)
+            code, body = fin.http_post(
+                "/api/finances/transactions",
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -10,
+                    "booked_on": "2026-07-16",
+                    "payee": ["array"],
+                    "idempotency_key": "bad-payee-key",
+                },
+            )
+            self.assertEqual(code, 400, body)
+            self.assertEqual(fin._ledger_counts(st.conn), before)
 
 
 if __name__ == "__main__":

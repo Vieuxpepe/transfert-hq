@@ -29,9 +29,9 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5_000
-APP_REV = "household-finances-v2"
+APP_REV = "household-finances-v3"
 
 SYSTEM_SID = "S-1-5-18"
 # Broad identities that must not remain on a sealed household path.
@@ -560,9 +560,35 @@ def _apply_v2(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 2")
 
 
+def _apply_v3(conn: sqlite3.Connection) -> None:
+    """Envelope reference currency (no cross-currency spend rollups)."""
+    info = {str(r[1]) for r in conn.execute("PRAGMA table_info(budget_envelopes)")}
+    if "currency" not in info:
+        _exec_sql(
+            conn,
+            "ALTER TABLE budget_envelopes ADD COLUMN currency TEXT NOT NULL DEFAULT 'CAD'",
+        )
+    conn.execute(
+        """
+        UPDATE budget_envelopes
+        SET currency = (
+            SELECT currency FROM households h WHERE h.id = budget_envelopes.household_id
+        )
+        WHERE currency IS NULL OR currency = ''
+        """
+    )
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (3, now, "envelope currency v3"),
+    )
+    conn.execute("PRAGMA user_version = 3")
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _apply_v1,
     2: _apply_v2,
+    3: _apply_v3,
 }
 
 
@@ -709,10 +735,29 @@ def validate_schema_v2(conn: sqlite3.Connection) -> None:
     _validate_schema_tables(conn, _V2_REQUIRED, label="v2")
 
 
+_V3_EXTRA_COLS: dict[str, tuple[str, ...]] = {
+    "budget_envelopes": ("currency",),
+}
+
+
+def validate_schema_v3(conn: sqlite3.Connection) -> None:
+    validate_schema_v2(conn)
+    for table, cols in _V3_EXTRA_COLS.items():
+        info = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})")}
+        missing = set(cols) - info
+        if missing:
+            raise HouseholdStoreError(
+                f"Schéma v3 incomplet — colonnes manquantes ({table})",
+                code="schema_error",
+            )
+
+
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
     validate_schema_v1(conn)
     if version >= 2:
         validate_schema_v2(conn)
+    if version >= 3:
+        validate_schema_v3(conn)
 
 
 # ---------------------------------------------------------------- open / migrate
