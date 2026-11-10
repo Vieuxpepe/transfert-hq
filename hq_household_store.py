@@ -29,9 +29,9 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_MS = 5_000
-APP_REV = "household-grocery-v4"
+APP_REV = "household-meals-v5"
 
 SYSTEM_SID = "S-1-5-18"
 # Broad identities that must not remain on a sealed household path.
@@ -710,11 +710,94 @@ def _apply_v4(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 4")
 
 
+_V5_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS recipes (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      servings INTEGER NOT NULL CHECK(servings >= 1 AND servings <= 100),
+      ingredients_json TEXT NOT NULL,
+      steps_json TEXT NOT NULL,
+      leftover_policy TEXT NOT NULL CHECK(leftover_policy IN ('none','freeze','plan_next')),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_recipes_household_title ON recipes(household_id, title, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meal_plans (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      slots_json TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_meal_plans_household_period ON meal_plans(household_id, period_start, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS grocery_lists (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      meal_plan_id TEXT,
+      status TEXT NOT NULL CHECK(status IN ('open','shopping','closed')),
+      lines_json TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (meal_plan_id) REFERENCES meal_plans(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_grocery_lists_household_status ON grocery_lists(household_id, status, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS grocery_list_build_idempotency (
+      household_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      preview_digest TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      PRIMARY KEY (household_id, idempotency_key),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+)
+
+
+def _apply_v5(conn: sqlite3.Connection) -> None:
+    """Meals recipes, plans, grocery lists (v5)."""
+    for stmt in _V5_STATEMENTS:
+        _exec_sql(conn, stmt)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (5, now, "household meals core v5"),
+    )
+    conn.execute("PRAGMA user_version = 5")
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _apply_v1,
     2: _apply_v2,
     3: _apply_v3,
     4: _apply_v4,
+    5: _apply_v5,
 }
 
 
@@ -898,6 +981,31 @@ def validate_schema_v4(conn: sqlite3.Connection) -> None:
     _validate_schema_tables(conn, _V4_REQUIRED, label="v4")
 
 
+_V5_REQUIRED: dict[str, tuple[str, ...]] = {
+    "recipes": (
+        "id", "household_id", "title", "servings", "ingredients_json", "steps_json",
+        "leftover_policy", "created_at", "updated_at", "rev",
+    ),
+    "meal_plans": (
+        "id", "household_id", "period_start", "period_end", "slots_json",
+        "created_at", "updated_at", "rev",
+    ),
+    "grocery_lists": (
+        "id", "household_id", "status", "lines_json",
+        "created_at", "updated_at", "rev",
+    ),
+    "grocery_list_build_idempotency": (
+        "household_id", "idempotency_key", "operation", "request_hash", "preview_digest",
+        "entity_type", "entity_id", "response_json", "created_at",
+    ),
+}
+
+
+def validate_schema_v5(conn: sqlite3.Connection) -> None:
+    validate_schema_v4(conn)
+    _validate_schema_tables(conn, _V5_REQUIRED, label="v5")
+
+
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
     validate_schema_v1(conn)
     if version >= 2:
@@ -906,6 +1014,8 @@ def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None
         validate_schema_v3(conn)
     if version >= 4:
         validate_schema_v4(conn)
+    if version >= 5:
+        validate_schema_v5(conn)
 
 
 # ---------------------------------------------------------------- open / migrate

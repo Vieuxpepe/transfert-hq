@@ -36,12 +36,12 @@ class StoreLifecycleTests(unittest.TestCase):
 
     def test_init_blank_root(self):
         with store.open_store(self.root) as st:
-            self.assertEqual(st.schema_version, 4)
+            self.assertEqual(st.schema_version, 5)
             self.assertEqual(store.integrity_check(st.conn), "ok")
             st.set_meta("sentinel", "alpha")
             self.assertEqual(st.get_meta("sentinel"), "alpha")
         meta = json.loads(store.meta_path(self.root).read_text(encoding="utf-8"))
-        self.assertEqual(meta["schema_version"], 4)
+        self.assertEqual(meta["schema_version"], 5)
 
     def test_reopen_valid(self):
         with store.open_store(self.root) as st:
@@ -144,7 +144,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 4)
+        self.assertEqual(healed["schema_version"], 5)
 
     def test_meta_schema_version_array_healed_without_typeerror(self):
         with store.open_store(self.root) as st:
@@ -157,7 +157,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 4)
+        self.assertEqual(healed["schema_version"], 5)
 
     def test_v1_snapshot_migrates_to_v2_with_backup(self):
         base = store.prepare_household_dirs(self.root)
@@ -170,7 +170,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 1)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 4)
+            self.assertEqual(st.schema_version, 5)
             st.set_meta("post-v2", "ok")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)
@@ -210,7 +210,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 2)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 4)
+            self.assertEqual(st.schema_version, 5)
             row = st.conn.execute("SELECT currency FROM budget_envelopes WHERE id = ?", (env,)).fetchone()
             self.assertEqual(row[0], "USD")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
@@ -289,14 +289,70 @@ class StoreLifecycleTests(unittest.TestCase):
             conn_v3.close()
 
         with store.open_store(self.root, create=False) as st2:
-            self.assertEqual(st2.schema_version, 4)
+            self.assertEqual(st2.schema_version, 5)
             self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]), tx_count)
             self.assertGreaterEqual(int(st2.conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0]), audit_count)
             names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("products", names)
+            self.assertIn("recipes", names)
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)
         fin.reset_for_tests()
+
+    def test_v4_grocery_survives_v5_migration(self):
+        import hq_finances as fin
+        import hq_grocery as gr
+
+        store.set_acl_for_tests(False)
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0)
+        gr.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0, inventory_snapshot=lambda: {"version": 1, "rev": 1, "items": [], "places": []})
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            for fn in (store._apply_v1, store._apply_v2, store._apply_v3, store._apply_v4):
+                fn(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                hid = fin.ensure_default_household(st.conn)
+                gr.create_product(st.conn, hid, {"name": "Rice", "canonical_unit": "g", "default_qty_milli": 1000})
+        prod_n = int(sqlite3.connect(str(path)).execute("SELECT COUNT(*) FROM products").fetchone()[0])
+        with store.open_store(self.root, create=False) as st2:
+            self.assertEqual(st2.schema_version, 5)
+            self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]), prod_n)
+            names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("recipes", names)
+            self.assertIn("grocery_lists", names)
+        gr.reset_for_tests()
+        fin.reset_for_tests()
+
+    def test_migration_v5_failure_preserves_v4(self):
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            for fn in (store._apply_v1, store._apply_v2, store._apply_v3, store._apply_v4):
+                fn(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        def boom(conn):
+            store._exec_sql(conn, store._V5_STATEMENTS[0])
+            raise RuntimeError("inject-v5")
+
+        with mock.patch.dict(store._MIGRATIONS, {5: boom}):
+            with self.assertRaises(RuntimeError):
+                store.open_store(self.root, create=False)
+        conn = sqlite3.connect(str(path))
+        try:
+            self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 4)
+            self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='recipes'").fetchone())
+        finally:
+            conn.close()
 
     def test_migration_v4_failure_preserves_v3(self):
         base = store.prepare_household_dirs(self.root)

@@ -354,6 +354,71 @@ def validate_recipe(doc: Any) -> dict:
     return doc
 
 
+MEAL_SLOT_KINDS = frozenset({"breakfast", "lunch", "dinner", "snack"})
+GROCERY_LIST_STATUS = frozenset({"open", "shopping", "closed"})
+
+
+def validate_meal_plan(doc: Any) -> dict:
+    if not isinstance(doc, dict):
+        raise SchemaError("meal_plan invalide")
+    require_id(doc.get("id"), "meal_plan")
+    ps = require_iso_date(doc.get("period_start"), "period_start")
+    pe = require_iso_date(doc.get("period_end"), "period_end")
+    if ps > pe:
+        raise SchemaError("period_start ne peut pas être après period_end")
+    slots = doc.get("slots")
+    if not isinstance(slots, list) or len(slots) > 400:
+        raise SchemaError("slots invalides")
+    for i, slot in enumerate(slots):
+        if not isinstance(slot, dict):
+            raise SchemaError(f"slots[{i}] invalide")
+        sd = require_iso_date(slot.get("date"), f"slots[{i}].date")
+        if sd < ps or sd > pe:
+            raise SchemaError(f"slots[{i}].date hors période")
+        if slot.get("meal") not in MEAL_SLOT_KINDS:
+            raise SchemaError(f"slots[{i}].meal invalide")
+        if slot.get("recipe_id") is not None:
+            require_id(slot["recipe_id"], "recipe", f"slots[{i}].recipe_id")
+        notes = slot.get("notes")
+        if notes is not None:
+            if not isinstance(notes, str) or len(notes) > 500:
+                raise SchemaError(f"slots[{i}].notes invalide")
+    if not _is_int(doc.get("rev")) or doc["rev"] < 1:
+        raise SchemaError("rev meal_plan invalide")
+    return doc
+
+
+def validate_grocery_list(doc: Any) -> dict:
+    if not isinstance(doc, dict):
+        raise SchemaError("grocery_list invalide")
+    require_id(doc.get("id"), "grocery_list")
+    if doc.get("meal_plan_id") is not None:
+        require_id(doc["meal_plan_id"], "meal_plan", "meal_plan_id")
+    if doc.get("status") not in GROCERY_LIST_STATUS:
+        raise SchemaError("status grocery_list invalide")
+    lines = doc.get("lines")
+    if not isinstance(lines, list) or len(lines) > 500:
+        raise SchemaError("lines invalides")
+    for i, line in enumerate(lines):
+        if not isinstance(line, dict):
+            raise SchemaError(f"lines[{i}] invalide")
+        if not isinstance(line.get("name"), str) or not (0 < len(line["name"]) <= 160):
+            raise SchemaError(f"lines[{i}].name invalide")
+        require_qty_milli(line.get("qty_milli"), f"lines[{i}].qty_milli")
+        require_unit(line.get("unit"), f"lines[{i}].unit")
+        if line.get("product_id") is not None:
+            require_id(line["product_id"], "product", f"lines[{i}].product_id")
+        if line.get("merchant_id") is not None:
+            require_id(line["merchant_id"], "merchant", f"lines[{i}].merchant_id")
+        if line.get("estimated_cents") is not None:
+            require_cents(line["estimated_cents"], f"lines[{i}].estimated_cents", min_value=0)
+        if "checked" in line:
+            require_bool(line["checked"], f"lines[{i}].checked")
+    if not _is_int(doc.get("rev")) or doc["rev"] < 1:
+        raise SchemaError("rev grocery_list invalide")
+    return doc
+
+
 def _reject_extra(payload: dict, allowed: frozenset[str], op: str) -> None:
     extra = set(payload) - allowed
     if extra:

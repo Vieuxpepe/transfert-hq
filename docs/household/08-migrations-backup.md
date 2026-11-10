@@ -22,6 +22,16 @@
 
 Tables ``products``, ``food_lots``, ``merchants`` ; aucune mutation Inventoria ni ledger automatique (PR #33).
 
+### SQLite v5 — repas et listes d'épicerie (PR #34)
+
+Tables ``recipes``, ``meal_plans``, ``grocery_lists``, ``grocery_list_build_idempotency``.
+Ingrédients, étapes, créneaux de plan et lignes de liste sont stockés en colonnes JSON
+(``ingredients_json``, ``steps_json``, ``slots_json``, ``lines_json``) avec validation Python
+à l'écriture (contrats ``meals.v1`` / ``grocery.v1``). Choix : une ligne parente + JSON pour
+révisions atomiques (CAS sur ``rev``) et listes bornées (≤100 ingrédients, ≤400 créneaux, ≤500 lignes)
+sans explosion de tables relationnelles en v1. Aucune écriture Inventoria ni ledger ; le build-list
+preview ne persiste rien ; commit idempotent via ``grocery_list_build_idempotency``.
+
 ### SQLite v3 — colonne ``budget_envelopes.currency``
 
 - **Contrat API** : ``schemas/household/finances.v1`` (entité ``budget_envelope.currency``) — distinct de ``PRAGMA user_version`` 3.
