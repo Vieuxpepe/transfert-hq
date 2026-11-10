@@ -29,9 +29,9 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_MS = 5_000
-APP_REV = "household-shell-v1"
+APP_REV = "household-finances-v3"
 
 SYSTEM_SID = "S-1-5-18"
 # Broad identities that must not remain on a sealed household path.
@@ -369,11 +369,266 @@ def _apply_v1(conn: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
         (1, now, "household shell v1"),
     )
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.execute("PRAGMA user_version = 1")
+
+
+_V2_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS households (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      currency TEXT NOT NULL CHECK(currency IN ('CAD','USD','EUR')),
+      locale TEXT NOT NULL DEFAULT 'fr-CA',
+      timezone TEXT NOT NULL DEFAULT 'America/Toronto',
+      week_starts TEXT NOT NULL DEFAULT 'mon' CHECK(week_starts IN ('mon','sun')),
+      prefs_json TEXT NOT NULL DEFAULT '{}',
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL DEFAULT 1 CHECK(rev >= 1)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('cash','checking','credit','savings','other')),
+      opening_balance_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL CHECK(currency IN ('CAD','USD','EUR')),
+      archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_accounts_household ON accounts(household_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS budget_categories (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('income','expense','transfer')),
+      parent_id TEXT,
+      archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (parent_id) REFERENCES budget_categories(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_categories_household ON budget_categories(household_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS transactions (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      booked_on TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      category_id TEXT NOT NULL,
+      payee TEXT NOT NULL DEFAULT '',
+      memo TEXT NOT NULL DEFAULT '',
+      transfer_pair_id TEXT,
+      status TEXT NOT NULL CHECK(status IN ('posted','pending','void')),
+      source TEXT NOT NULL CHECK(source IN ('manual','import','grocery_purchase','inventoria','correction')),
+      external_fingerprint TEXT,
+      correction_of TEXT,
+      idempotency_key TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (account_id) REFERENCES accounts(id),
+      FOREIGN KEY (category_id) REFERENCES budget_categories(id),
+      FOREIGN KEY (correction_of) REFERENCES transactions(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tx_account_status ON transactions(account_id, status, booked_on)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tx_household_booked ON transactions(household_id, booked_on, id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_tx_category_booked ON transactions(category_id, booked_on, status)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS budget_envelopes (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      allocated_cents INTEGER NOT NULL CHECK(allocated_cents >= 0),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (category_id) REFERENCES budget_categories(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_envelopes_category_period ON budget_envelopes(category_id, period_start, period_end)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS recurring_payments (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      category_id TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL CHECK(currency IN ('CAD','USD','EUR')),
+      cadence TEXT NOT NULL CHECK(cadence IN ('weekly','biweekly','monthly','yearly')),
+      next_on TEXT NOT NULL,
+      auto_post INTEGER NOT NULL DEFAULT 0 CHECK(auto_post IN (0,1)),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (account_id) REFERENCES accounts(id),
+      FOREIGN KEY (category_id) REFERENCES budget_categories(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_recurring_household ON recurring_payments(household_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      target_cents INTEGER NOT NULL CHECK(target_cents >= 0),
+      saved_cents INTEGER NOT NULL DEFAULT 0 CHECK(saved_cents >= 0),
+      due_on TEXT,
+      account_id TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (account_id) REFERENCES accounts(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_goals_household ON goals(household_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ledger_audit (
+      id TEXT PRIMARY KEY NOT NULL,
+      at REAL NOT NULL,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      before_json TEXT,
+      after_json TEXT,
+      reason TEXT,
+      ref TEXT
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_ledger_audit_entity ON ledger_audit(entity_type, entity_id, at)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS finance_idempotency (
+      idempotency_key TEXT PRIMARY KEY NOT NULL,
+      operation TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1))
+    )
+    """,
+)
+
+
+def _apply_v2(conn: sqlite3.Connection) -> None:
+    """Finances domain tables (v2). Each migration sets its own user_version."""
+    for stmt in _V2_STATEMENTS:
+        _exec_sql(conn, stmt)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (2, now, "household finances core v2"),
+    )
+    conn.execute("PRAGMA user_version = 2")
+
+
+def _backfill_envelope_currency_from_households(conn: sqlite3.Connection) -> None:
+    """v2 envelopes had no currency — inherit household reference at migration."""
+    conn.execute(
+        """
+        UPDATE budget_envelopes
+        SET currency = (
+            SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
+        )
+        """
+    )
+    bad = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM budget_envelopes "
+            "WHERE currency IS NULL OR currency = '' "
+            "OR currency NOT IN ('CAD', 'USD', 'EUR')"
+        ).fetchone()[0]
+    )
+    if bad:
+        raise HouseholdStoreError(
+            "Backfill devise enveloppe incomplet",
+            code="schema_error",
+        )
+
+
+def _backfill_envelope_currency_nulls_only(conn: sqlite3.Connection) -> None:
+    """Set currency only when absent — never overwrite an explicit envelope currency."""
+    conn.execute(
+        """
+        UPDATE budget_envelopes
+        SET currency = (
+            SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
+        )
+        WHERE currency IS NULL OR currency = ''
+        """
+    )
+    bad = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM budget_envelopes "
+            "WHERE currency IS NULL OR currency = '' "
+            "OR currency NOT IN ('CAD', 'USD', 'EUR')"
+        ).fetchone()[0]
+    )
+    if bad:
+        raise HouseholdStoreError(
+            "Backfill devise enveloppe incomplet",
+            code="schema_error",
+        )
+
+
+def _apply_v3(conn: sqlite3.Connection) -> None:
+    """Envelope reference currency (no cross-currency spend rollups)."""
+    info = {str(r[1]) for r in conn.execute("PRAGMA table_info(budget_envelopes)")}
+    if "currency" not in info:
+        _exec_sql(conn, "ALTER TABLE budget_envelopes ADD COLUMN currency TEXT")
+        _backfill_envelope_currency_from_households(conn)
+    else:
+        _backfill_envelope_currency_nulls_only(conn)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (3, now, "envelope currency v3 household backfill"),
+    )
+    conn.execute("PRAGMA user_version = 3")
 
 
 _MIGRATIONS: dict[int, Any] = {
     1: _apply_v1,
+    2: _apply_v2,
+    3: _apply_v3,
 }
 
 
@@ -477,26 +732,72 @@ _V1_REQUIRED: dict[str, tuple[str, ...]] = {
 }
 
 
-def validate_schema_v1(conn: sqlite3.Connection) -> None:
-    """Fail closed when user_version claims v1 but essential structures are missing."""
-    for table, cols in _V1_REQUIRED.items():
+_V2_REQUIRED: dict[str, tuple[str, ...]] = {
+    "households": ("id", "name", "currency", "locale", "timezone", "week_starts", "prefs_json", "created_at", "updated_at", "rev"),
+    "accounts": ("id", "household_id", "name", "kind", "opening_balance_cents", "currency", "archived", "created_at", "updated_at", "rev"),
+    "budget_categories": ("id", "household_id", "name", "kind", "parent_id", "archived", "created_at", "updated_at", "rev"),
+    "transactions": ("id", "household_id", "account_id", "booked_on", "amount_cents", "category_id", "payee", "memo", "transfer_pair_id", "status", "source", "correction_of", "rev"),
+    "budget_envelopes": ("id", "household_id", "category_id", "period_start", "period_end", "allocated_cents", "created_at", "updated_at", "rev"),
+    "recurring_payments": ("id", "household_id", "account_id", "category_id", "amount_cents", "currency", "cadence", "next_on", "auto_post", "created_at", "updated_at", "rev"),
+    "goals": ("id", "household_id", "name", "target_cents", "saved_cents", "due_on", "account_id", "created_at", "updated_at", "rev"),
+    "ledger_audit": ("id", "at", "actor", "action", "entity_type", "entity_id", "before_json", "after_json", "reason", "ref"),
+    "finance_idempotency": ("idempotency_key", "operation", "request_hash", "entity_type", "entity_id", "response_json", "created_at", "pinned"),
+}
+
+
+def _validate_schema_tables(conn: sqlite3.Connection, required: dict[str, tuple[str, ...]], *, label: str) -> None:
+    for table, cols in required.items():
         row = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
             (table,),
         ).fetchone()
         if row is None:
             raise HouseholdStoreError(
-                f"Schéma v1 incomplet — table {table} absente",
+                f"Schéma {label} incomplet — table {table} absente",
                 code="schema_error",
             )
-        # table name is from our constant map, not user input
         info = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})")}
         missing = set(cols) - info
         if missing:
             raise HouseholdStoreError(
-                f"Schéma v1 incomplet — colonnes manquantes ({table})",
+                f"Schéma {label} incomplet — colonnes manquantes ({table})",
                 code="schema_error",
             )
+
+
+def validate_schema_v1(conn: sqlite3.Connection) -> None:
+    """Fail closed when user_version claims v1 but essential structures are missing."""
+    _validate_schema_tables(conn, _V1_REQUIRED, label="v1")
+
+
+def validate_schema_v2(conn: sqlite3.Connection) -> None:
+    """Fail closed when user_version claims v2 but finance tables are missing."""
+    _validate_schema_tables(conn, _V2_REQUIRED, label="v2")
+
+
+_V3_EXTRA_COLS: dict[str, tuple[str, ...]] = {
+    "budget_envelopes": ("currency",),
+}
+
+
+def validate_schema_v3(conn: sqlite3.Connection) -> None:
+    validate_schema_v2(conn)
+    for table, cols in _V3_EXTRA_COLS.items():
+        info = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})")}
+        missing = set(cols) - info
+        if missing:
+            raise HouseholdStoreError(
+                f"Schéma v3 incomplet — colonnes manquantes ({table})",
+                code="schema_error",
+            )
+
+
+def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
+    validate_schema_v1(conn)
+    if version >= 2:
+        validate_schema_v2(conn)
+    if version >= 3:
+        validate_schema_v3(conn)
 
 
 # ---------------------------------------------------------------- open / migrate
@@ -642,7 +943,7 @@ def open_store(
                     status=503,
                 )
             if current == SCHEMA_VERSION:
-                validate_schema_v1(conn)
+                _validate_schema_for_version(conn, current)
             return HouseholdStore(root, conn, schema_version=current, readonly=True)
         except Exception:
             conn.close()
@@ -663,7 +964,7 @@ def open_store(
             if check != "ok":
                 raise HouseholdStoreError(f"intégrité échec: {check}", code="corrupt")
             ver = get_schema_version(conn)
-            validate_schema_v1(conn)
+            _validate_schema_for_version(conn, ver)
             _enable_wal(conn)
         except Exception:
             conn.close()
@@ -710,6 +1011,8 @@ def open_store(
                 status=500,
             )
         if current < SCHEMA_VERSION:
+            if current >= 1:
+                validate_schema_v1(conn)
             snap = backup(root, label="pre-migrate", conn=conn)
             if not snap.get("ok"):
                 raise HouseholdStoreError(
@@ -722,7 +1025,7 @@ def open_store(
                 raise HouseholdStoreError("intégrité post-migration échec", code="corrupt")
             current = get_schema_version(conn)
         if current == SCHEMA_VERSION:
-            validate_schema_v1(conn)
+            _validate_schema_for_version(conn, current)
         _enable_wal(conn)
         meta = None
         try:

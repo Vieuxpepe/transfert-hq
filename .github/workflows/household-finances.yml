@@ -1,0 +1,40 @@
+name: Household finances core
+
+on:
+  push:
+    paths:
+      - "hq_finances.py"
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "iphone_bridge.py"
+      - "schemas/household/**"
+      - "tests/test_hq_finances.py"
+      - "tests/test_hq_finances_security.py"
+      - "tests/test_household_store.py"
+      - "tests/test_household_schemas.py"
+      - ".github/workflows/household-finances.yml"
+  pull_request:
+    paths:
+      - "hq_finances.py"
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "iphone_bridge.py"
+      - "schemas/household/**"
+      - "tests/test_hq_finances.py"
+      - "tests/test_hq_finances_security.py"
+      - "tests/test_household_store.py"
+      - "tests/test_household_schemas.py"
+      - ".github/workflows/household-finances.yml"
+
+jobs:
+  household-finances:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Household store + schemas (regression)
+        run: python -m unittest tests.test_household_store tests.test_household_schemas -v
+      - name: Finances domain + security
+        run: python -m unittest tests.test_hq_finances tests.test_hq_finances_security -v
