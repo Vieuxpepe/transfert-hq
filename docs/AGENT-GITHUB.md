@@ -197,7 +197,9 @@ Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
 
 ## Current focus (update on push)
 
-**Draft PR #30 (architecture only):** branch `feat/household-foundations` — Household Intelligence foundations. Entry: `docs/household/README.md`. Audit fixes: inventory attempt phases (`not_started|in_flight|acknowledged`), exact `unit_price_ratio`, hardened validators, CI `.github/workflows/household-foundations.yml`. `*.v1.json` = custom contract descriptors (not JSON Schema). Tests: `python -m unittest tests.test_household_schemas -v`.
+**Draft PR #31 (SQLite shell, not production-activated):** branch `feat/household-sqlite-shell` — `hq_household_store.py` under `.hq-household/`. ACL/modes, migrations, backup/restore. Entry: `docs/household/16-sqlite-shell.md`. Tests: `python -m unittest tests.test_household_store tests.test_household_schemas -v`. No bridge routes.
+
+**Merged PR #30:** Household architecture contracts on `main` (`docs/household/`, validators).
 
 **Branch note:** integration remains **`main`**. Do not treat household docs as shipped runtime.
 

@@ -1,0 +1,45 @@
+name: Household SQLite shell
+
+on:
+  push:
+    paths:
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "schemas/household/**"
+      - "tests/test_household_store.py"
+      - "tests/test_household_schemas.py"
+      - "docs/household/**"
+      - ".github/workflows/household-store.yml"
+      - ".github/workflows/household-foundations.yml"
+  pull_request:
+    paths:
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "schemas/household/**"
+      - "tests/test_household_store.py"
+      - "tests/test_household_schemas.py"
+      - "docs/household/**"
+      - ".github/workflows/household-store.yml"
+      - ".github/workflows/household-foundations.yml"
+
+jobs:
+  household-store:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Store + schema unit tests
+        run: |
+          python -m unittest tests.test_household_store tests.test_household_schemas -v
+      - name: Import has no filesystem side effects
+        run: |
+          python - <<'PY'
+          import tempfile
+          from pathlib import Path
+          import hq_household_store as S
+          root = Path(tempfile.mkdtemp()) / "never"
+          assert not S.household_dir(root).exists()
+          print("import_side_effect_ok")
+          PY
