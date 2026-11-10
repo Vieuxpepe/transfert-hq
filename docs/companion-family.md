@@ -35,8 +35,11 @@ is owned by `hq_sister.py`, stored under `.hq-ai/sister_dialogue/`, and may leav
 light episode note in each sister's own memory file. Prompt cross-awareness uses a
 read-only `sister_awareness_block` (last log lines) — never a merged memory store.
 Else stays image-only (chip + bubble + mood portrait grades); Transferania keeps
-Live2D. Client stage director: `assets/hq-sister.js` (`window.HqSister`) queues
-exchange/ambient/react, syncs prefs from `status().sister`, and owns the bus.
+Live2D. Chip presence: sticky mood holds (speech / typing / sister / busy),
+micro-reactions (blink / blush / glance / think), idle breathe, TTS lip pulse,
+and Carnet/Forge CSS context tints (no pinned busy hold). Client stage director: `assets/hq-sister.js`
+(`window.HqSister`) queues exchange/ambient/react, syncs prefs from
+`status().sister`, and owns the bus.
 Events: `hq-sister-line`, `hq-sister-open`, `hq-sister-peek`, `hq-sister-event`,
 `hq-sister-nudge`, `hq-sister-meter`, `hq-transferania-line`, `hq-else-line`,
 `hq-sister-busy`, `hq-sister-prefs`, `hq-sister-history`. Ambient banter peeks

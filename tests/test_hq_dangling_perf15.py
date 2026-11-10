@@ -8,7 +8,7 @@ JS = Path(__file__).resolve().parents[1] / "assets" / "hq-dangling-member.js"
 def _render_curve():
     src = JS.read_text(encoding="utf-8")
     start = src.index("function renderCurve()")
-    return src[start:src.index("function paintGlisten(", start)]
+    return src[start:src.index("function pulseEnv(", start)]
 
 
 def test_bulge_hoisted_out_of_pixel_loop():
@@ -33,7 +33,7 @@ def test_unified_paint_scheduler():
     assert "function danglePaintLoop(" in src and "function tick(" in src
     assert "const GLISTEN_IDLE_MS = 60;" in src
     assert "const VEIN_IDLE_MS = 80;" in src
-    assert "if (hot && ensureVeinSwellField()) warpVeinOverlay" in src
+    assert "hot && ensureVeinSwellField() && warpActive()" in src and "warpVeinOverlay(veinPulseStrength(t), wctx)" in src
     assert "veinRenderHot() || !veinSwellBaked" in src
     assert "function paintVeinPulseCold(" in src
     assert "function strokeVeinPulseMaroon(" in src

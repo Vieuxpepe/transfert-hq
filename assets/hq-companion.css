@@ -2302,6 +2302,16 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   visibility:hidden;
   pointer-events:none;
 }
+/* Custom AI-generated bras: show bra-{style}-base.webp on garment-surface behind moving lobes
+   so the center gore, underband, harness straps, and draped gold chest chains render seamlessly! */
+.hq-companion.has-layered-portrait.is-nsfw.has-custom-bra .hq-companion-rig-garment-surface{
+  visibility:visible;
+  z-index:1;
+  transform:none;
+  translate:0 calc(var(--rig-body-bob,0px) + var(--rig-bust-heave,0px) * 0.94);
+  scale:1;
+  rotate:0deg;
+}
 /* Layered: solid torso at idle (same as pull). Cup holes only on background during pull. */
 
 /* Knock out torso underpainting face under the moving face layer (SFW layered). */
@@ -2558,7 +2568,6 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   will-change:transform,opacity;
   -webkit-backface-visibility:hidden;
   backface-visibility:hidden;
-  transform:translate3d(calc(var(--rig-sheen-lobe-x, 0px) * 0.22), calc(0.8px + var(--pull-tension, 0) * 1.6px), 0);
 }
 .hq-companion-rig-bust-lace{
   position:absolute;
@@ -2566,6 +2575,16 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   z-index:4;
   pointer-events:none;
   will-change:transform;
+}
+.hq-companion-rig-bust-stack-left .hq-companion-rig-bust-lace-shadow,
+.hq-companion-rig-bust-stack-left .hq-companion-rig-bust-lace{
+  transform-origin:38% 50%;
+  transform:scale3d(calc(1 + var(--rig-bust-disp-scale, 0) * 0.0029 + var(--cursor-support-left,0) * .09), calc(1 + var(--rig-bust-disp-scale, 0) * 0.0035 - var(--cursor-support-left,0) * .105), 1) translate(-10%,6%) rotate(calc(var(--rig-bust-left-twist,0deg) * 0.84)) skewX(calc((var(--rig-bust-left-bend,0deg) + var(--rig-posture-left-bend,0deg)) * 0.84)) scale(calc((1 + (var(--rig-bust-left-vsx,1) - 1) * 0.84) * var(--rig-posture-left-sx,1)),calc((1 + (var(--rig-bust-left-vsy,1) - 1) * 0.84) * var(--rig-posture-left-sy,1))) translate(10%,-6%) translate3d(var(--rig-lace-slip-l-x,0px),var(--rig-lace-slip-l-y,0px),0);
+}
+.hq-companion-rig-bust-stack-right .hq-companion-rig-bust-lace-shadow,
+.hq-companion-rig-bust-stack-right .hq-companion-rig-bust-lace{
+  transform-origin:62% 50%;
+  transform:scale3d(calc(1 + var(--rig-bust-disp-scale, 0) * 0.0029 + var(--cursor-support-right,0) * .09), calc(1 + var(--rig-bust-disp-scale, 0) * 0.0035 - var(--cursor-support-right,0) * .105), 1) translate(2%,6%) rotate(calc(var(--rig-bust-right-twist,0deg) * 0.84)) skewX(calc((var(--rig-bust-right-bend,0deg) + var(--rig-posture-right-bend,0deg)) * 0.84)) scale(calc((1 + (var(--rig-bust-right-vsx,1) - 1) * 0.84) * var(--rig-posture-right-sx,1)),calc((1 + (var(--rig-bust-right-vsy,1) - 1) * 0.84) * var(--rig-posture-right-sy,1))) translate(-2%,-6%) translate3d(var(--rig-lace-slip-r-x,0px),var(--rig-lace-slip-r-y,0px),0);
 }
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-bust-lace-shadow,
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-bust-lace{
@@ -2722,61 +2741,104 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   -webkit-mask-image:linear-gradient(to bottom,#000 0 38%,transparent 46%);
   mask-image:linear-gradient(to bottom,#000 0 38%,transparent 46%);
 }
-.hq-companion-rig-hair-base{z-index:4;clip-path:circle(50% at 50% 50%);-webkit-mask-image:linear-gradient(to bottom,#000 0 15%,transparent 29%);mask-image:linear-gradient(to bottom,#000 0 15%,transparent 29%);translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
-.hq-companion-rig-hair-wrap{position:absolute;inset:0;z-index:5;clip-path:circle(50% at 50% 50%);-webkit-mask-image:linear-gradient(to bottom,transparent 0 15%,#000 29%);mask-image:linear-gradient(to bottom,transparent 0 15%,#000 29%);pointer-events:none;translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
-.hq-companion-rig-hair-left{-webkit-mask-image:linear-gradient(to right,#000 0 47%,transparent 53%),linear-gradient(to bottom,#000 0 42%,transparent 66%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,#000 0 47%,transparent 53%),linear-gradient(to bottom,#000 0 42%,transparent 66%);mask-composite:intersect;transform-origin:50% 16%;transform:translate3d(var(--rig-hair-left-x,0px),var(--rig-hair-left-y,0px),0) rotate(var(--rig-hair-left-rot,0deg));will-change:transform}
-.hq-companion-rig-hair-right{-webkit-mask-image:linear-gradient(to right,transparent 47%,#000 53%),linear-gradient(to bottom,#000 0 42%,transparent 66%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,transparent 47%,#000 53%),linear-gradient(to bottom,#000 0 42%,transparent 66%);mask-composite:intersect;transform-origin:50% 16%;transform:translate3d(var(--rig-hair-right-x,0px),var(--rig-hair-right-y,0px),0) rotate(var(--rig-hair-right-rot,0deg));will-change:transform}
+.hq-companion-rig-hair-base{z-index:4;clip-path:circle(50% at 50% 50%);-webkit-mask-image:linear-gradient(to bottom,#000 0 38%,transparent 48%);mask-image:linear-gradient(to bottom,#000 0 38%,transparent 48%);translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
+.hq-companion-rig-hair-wrap{position:absolute;inset:0;z-index:5;clip-path:circle(50% at 50% 50%);-webkit-mask-image:linear-gradient(to bottom,transparent 0 28%,#000 34%);mask-image:linear-gradient(to bottom,transparent 0 28%,#000 34%);pointer-events:none;translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
+.hq-companion-rig-hair-left{-webkit-mask-image:linear-gradient(to right,#000 0 52%,transparent 56%),linear-gradient(to bottom,#000 0 52%,transparent 62%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,#000 0 52%,transparent 56%),linear-gradient(to bottom,#000 0 52%,transparent 62%);mask-composite:intersect;transform-origin:42% 20%;transform:translate3d(var(--rig-hair-left-x,0px),var(--rig-hair-left-y,0px),0) rotate(var(--rig-hair-left-rot,0deg)) scaleY(var(--rig-hair-left-sy,1)) skewX(var(--rig-hair-left-skew,0deg));will-change:transform}
+.hq-companion-rig-hair-right{-webkit-mask-image:linear-gradient(to right,transparent 44%,#000 48%),linear-gradient(to bottom,#000 0 52%,transparent 62%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,transparent 44%,#000 48%),linear-gradient(to bottom,#000 0 52%,transparent 62%);mask-composite:intersect;transform-origin:58% 20%;transform:translate3d(var(--rig-hair-right-x,0px),var(--rig-hair-right-y,0px),0) rotate(var(--rig-hair-right-rot,0deg)) scaleY(var(--rig-hair-right-sy,1)) skewX(var(--rig-hair-right-skew,0deg));will-change:transform}
 .hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip{pointer-events:none;object-fit:fill;will-change:transform}
-.hq-companion-rig-hair-left-tip{-webkit-mask-image:linear-gradient(to right,#000 0 47%,transparent 53%),linear-gradient(to bottom,transparent 30%,#000 56%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,#000 0 47%,transparent 53%),linear-gradient(to bottom,transparent 30%,#000 56%);mask-composite:intersect;transform:translate3d(var(--rig-hair-left-tip-x,0px),var(--rig-hair-left-tip-y,0px),0) rotate(var(--rig-hair-left-tip-rot,0deg))}
-.hq-companion-rig-hair-right-tip{-webkit-mask-image:linear-gradient(to right,transparent 47%,#000 53%),linear-gradient(to bottom,transparent 30%,#000 56%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,transparent 47%,#000 53%),linear-gradient(to bottom,transparent 30%,#000 56%);mask-composite:intersect;transform:translate3d(var(--rig-hair-right-tip-x,0px),var(--rig-hair-right-tip-y,0px),0) rotate(var(--rig-hair-right-tip-rot,0deg))}
+.hq-companion-rig-hair-left-tip{-webkit-mask-image:linear-gradient(to right,#000 0 52%,transparent 56%),linear-gradient(to bottom,transparent 42%,#000 50%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,#000 0 52%,transparent 56%),linear-gradient(to bottom,transparent 42%,#000 50%);mask-composite:intersect;transform-origin:34% 46%;transform:translate3d(var(--rig-hair-left-tip-x,0px),var(--rig-hair-left-tip-y,0px),0) rotate(var(--rig-hair-left-tip-rot,0deg)) scaleY(var(--rig-hair-left-tip-sy,1)) skewX(var(--rig-hair-left-tip-skew,0deg))}
+.hq-companion-rig-hair-right-tip{-webkit-mask-image:linear-gradient(to right,transparent 44%,#000 48%),linear-gradient(to bottom,transparent 42%,#000 50%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,transparent 44%,#000 48%),linear-gradient(to bottom,transparent 42%,#000 50%);mask-composite:intersect;transform-origin:66% 46%;transform:translate3d(var(--rig-hair-right-tip-x,0px),var(--rig-hair-right-tip-y,0px),0) rotate(var(--rig-hair-right-tip-rot,0deg)) scaleY(var(--rig-hair-right-tip-sy,1)) skewX(var(--rig-hair-right-tip-skew,0deg))}
 /* Baked hair option (a): 1254x1354 with 100px above rig y=0. Only images
-   grow; wraps retain rig coordinates, physics, and their 15%/29% masks.
+   grow; wraps retain rig coordinates, physics, and their 28%/34% masks.
    Remap the base mask and all image pivots to keep the same rig-space points. */
 .hq-companion-rig-layer:is(.hq-companion-rig-hair-base,.hq-companion-rig-hair-left,.hq-companion-rig-hair-right,.hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip){
-  left:5%;width:90%;top:-7.5390625%;bottom:auto;height:88.538867%;
+  top:-7.97448166%;bottom:auto;height:107.97448166%;
   filter:none!important;
 }
+.hq-companion.has-clean-torso .hq-companion-rig-face-wrap{
+  translate:calc(var(--rig-face-par-x,0px) + var(--rig-saccade-x,0px)) calc(var(--rig-body-bob,0px) + var(--rig-face-par-y,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px) + 1.953125%);
+  -webkit-mask-image:linear-gradient(to bottom,#000 0 42.5%,transparent 46%);
+  mask-image:linear-gradient(to bottom,#000 0 42.5%,transparent 46%);
+}
+.hq-companion.has-clean-torso .hq-companion-rig-neck{
+  display:none!important;
+}
+.hq-companion.has-clean-torso .hq-companion-rig-eyelids{
+  translate:0 calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + 1.953125%);
+}
+.hq-companion.has-clean-torso .hq-companion-rig-mouth-open{
+  translate:0 calc(var(--rig-body-bob,0px) + 1.953125%);
+}
+.hq-companion.has-clean-torso:not(.has-variant-hair) .hq-companion-rig-layer:is(.hq-companion-rig-hair-base,.hq-companion-rig-hair-left,.hq-companion-rig-hair-right,.hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip){
+  top:-6.02135666%;
+}
+/* Variant hair accessories (hair-*-1354.png) are authored in the 1254x1254 face.png
+   coordinate space (left:5%, width:90%, top:-1%, height:82%) with 100px headroom,
+   shifted down by +1.953125% (+10px/512) to match the natural neck height of source.jpg. */
+.hq-companion.has-variant-hair .hq-companion-rig-layer:is(.hq-companion-rig-hair-base,.hq-companion-rig-hair-left,.hq-companion-rig-hair-right,.hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip){
+  left:5%;width:90%;top:-5.5859375%;bottom:auto;height:88.538867%;
+}
 .hq-companion-rig-hair-base{
-  -webkit-mask-image:linear-gradient(to bottom,#000 0 21.27769572%,transparent 34.24372230%);
-  mask-image:linear-gradient(to bottom,#000 0 21.27769572%,transparent 34.24372230%);
+  -webkit-mask-image:linear-gradient(to bottom,#000 0 46%,transparent 54%);
+  mask-image:linear-gradient(to bottom,#000 0 46%,transparent 54%);
   transform-origin:54.5% 46.28360414%;
   clip-path:ellipse(50% 46.30723781% at 50% 53.69276219%);
 }
-.hq-companion-rig-hair-left,.hq-companion-rig-hair-right,.hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip{transform-origin:50% 22.20384047%}
+.hq-companion.has-variant-hair .hq-companion-rig-hair-base{
+  clip-path:ellipse(55.55555556% 56.47224127% at 50% 54.82233503%);
+}
+.hq-companion-rig-hair-left{transform-origin:42% 22.20384047%}
+.hq-companion-rig-hair-right{transform-origin:58% 22.20384047%}
+.hq-companion-rig-hair-left-tip{transform-origin:34% 46%}
+.hq-companion-rig-hair-right-tip{transform-origin:66% 46%}
 /* accessories-v1 layers */
-/* Necklace shares the 1254x1354 placement; above face/neck, below hair. */
+/* Necklace shares the 1254x1354 face-stack placement; above face/neck, below hair. */
 .hq-companion-rig-necklace{
   z-index:3;
   left:5%;width:90%;top:-7.5390625%;bottom:auto;height:88.538867%;
-  translate:0 calc(var(--rig-body-bob,0px) + var(--rig-neck-lift,0px));
+  translate:0 calc(var(--rig-body-bob,0px) + var(--rig-neck-lift,0px) + var(--rig-necklace-y,0px));
   pointer-events:none;
   filter:none!important;
 }
+.hq-companion.has-clean-torso .hq-companion-rig-necklace{
+  top:-5.5859375%;
+}
 .hq-companion-rig-necklace[hidden]{display:none!important}
-/* Earrings follow the head; sit above face, below hair. */
+/* Earrings follow the head and dangle on secondary pendulum springs; sit above face, below hair. */
 .hq-companion-rig-earrings{
   position:absolute;inset:0;z-index:3;pointer-events:none;
   translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));
   transform-origin:54.5% 42%;
   transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1));
 }
+.hq-companion.has-clean-torso .hq-companion-rig-earrings{
+  translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px) + 1.953125%);
+}
 .hq-companion-rig-earrings[hidden]{display:none!important}
-.hq-companion-rig-earring{position:absolute;pointer-events:none;user-select:none;object-fit:fill;max-width:none}
-/* Original gold pair: top-left coords on the 1254 face canvas. */
+.hq-companion-rig-earring{position:absolute;pointer-events:none;user-select:none;object-fit:fill;max-width:none;transform-origin:50% 6%;will-change:transform}
+.hq-companion-rig-earring-left{
+  transform:rotate(var(--rig-earring-left-rot,0deg)) translateY(var(--rig-earring-left-y,0px));
+}
+.hq-companion-rig-earring-right{
+  transform:rotate(var(--rig-earring-right-rot,0deg)) translateY(var(--rig-earring-right-y,0px));
+}
+/* Original gold pair: top-left coords on the 1254 rig canvas (after removing 100px headroom). */
 .hq-companion-rig-earrings.is-origine .hq-companion-rig-earring-left{
-  left:37.71929825%;top:45.13556619%;width:5.02392344%;height:7.25677831%;
+  left:37.71929825%;top:37.16108453%;width:5.02392344%;height:7.25677831%;
+  transform-origin:50% 10%;
 }
 .hq-companion-rig-earrings.is-origine .hq-companion-rig-earring-right{
-  left:63.63636364%;top:41.06858054%;width:4.46570973%;height:7.33652313%;
+  left:63.63636364%;top:33.09409888%;width:4.46570973%;height:7.33652313%;
+  transform-origin:50% 10%;
 }
-/* Shape pair (48x74): pivot top-center at (503,569) / (825,518). */
+/* Shape pair (48x74): pivot top-center at (503,469) / (825,418) on the 1254 rig canvas. */
 .hq-companion-rig-earrings.is-shape .hq-companion-rig-earring-left{
-  left:38.19776714%;top:45.37480064%;width:3.8277512%;height:5.90111643%;
-  transform-origin:50% 0%;
+  left:38.19776714%;top:37.40031898%;width:3.8277512%;height:5.90111643%;
+  transform-origin:50% 4%;
 }
 .hq-companion-rig-earrings.is-shape .hq-companion-rig-earring-right{
-  left:63.87559809%;top:41.30781499%;width:3.8277512%;height:5.90111643%;
-  transform-origin:50% 0%;
+  left:63.87559809%;top:33.33333333%;width:3.8277512%;height:5.90111643%;
+  transform-origin:50% 4%;
 }
 /* Keep hair (incl. variants) above the ring; do not clip accessory overhang. */
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-necklace,
@@ -2803,6 +2865,25 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   color:inherit;padding:2px 6px;
 }
 .hq-companion-accessories-row select:disabled{opacity:.45}
+.hq-companion-accessories-actions{
+  display:flex;align-items:center;justify-content:space-between;gap:6px;
+  margin-top:4px;padding-top:6px;
+  border-top:1px dashed color-mix(in srgb,#c44b7a 28%,transparent);
+  font-size:11px;color:var(--text,#eee8ef);
+}
+.hq-companion-accessories-auto{
+  display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;
+}
+.hq-companion-accessories-shuffle{
+  padding:3px 8px;border-radius:7px;font-size:11px;font-weight:650;cursor:pointer;
+  border:1px solid color-mix(in srgb,#c44b7a 42%,transparent);
+  background:color-mix(in srgb,#c44b7a 22%,var(--panel,#161018));
+  color:inherit;transition:background .15s ease,transform .15s ease;
+}
+.hq-companion-accessories-shuffle:hover{
+  background:color-mix(in srgb,#c44b7a 36%,var(--panel,#161018));
+  transform:translateY(-1px);
+}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-portrait-rig{display:block}
 .hq-companion.has-layered-portrait.is-bust-pull.is-nsfw .hq-companion-avatar,
 .hq-companion.has-layered-portrait.is-bust-pull .hq-companion-portrait-rig{
@@ -3720,15 +3801,121 @@ html[data-hq-motion-tier="lite"] .hq-dangling-member-mount:not(.is-wobbling) .hq
 .hq-else.is-motion-lite.is-mood-speaking .hq-else-chip-ring{
   animation:hq-else-chip-spin 1.4s linear infinite;opacity:.9;
 }
-.hq-else-chip-avatar{
-  display:block;width:100%;height:100%;border-radius:50%;object-fit:cover;object-position:center 42%;
+.hq-else-chip-bust{
+  position:absolute;inset:0;border-radius:50%;overflow:hidden;z-index:1;
   border:2px solid color-mix(in srgb,var(--else-accent) 48%,var(--line,#67546b));
   box-shadow:
     0 10px 28px rgba(0,0,0,.38),
     0 0 0 1px color-mix(in srgb,var(--else-accent) 22%,transparent),
     0 0 22px color-mix(in srgb,#a855f7 22%,transparent);
   background:#120c20;
-  transition:transform .45s cubic-bezier(.2,1.1,.3,1),object-position .45s ease,box-shadow .35s ease;
+  transition:box-shadow .35s ease,filter .25s ease;
+}
+.hq-else-chip-avatar{
+  display:block;width:100%;height:100%;border-radius:0;object-fit:cover;object-position:center 42%;
+  border:0;box-shadow:none;background:transparent;
+  transition:transform .45s cubic-bezier(.2,1.1,.3,1),object-position .45s ease,filter .25s ease;
+}
+.hq-else-bust{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 42%;
+  pointer-events:none;will-change:transform;transform:translate3d(0,0,0);
+}
+.hq-else:not(.is-bust) .hq-else-bust{display:none}
+.hq-else.is-bust .hq-else-chip-avatar{/* body underpaint plate */}
+.hq-else.is-motion-lite .hq-else-bust{will-change:auto}
+/* Idle breathing runs on the compositor via `translate`; JS only drives `transform` while a
+   drag impulse decays (stepBust), so there is no permanent rAF loop. */
+@keyframes hq-else-bust-breathe-l{0%,100%{translate:-.4px .6px}50%{translate:.4px 1.6px}}
+@keyframes hq-else-bust-breathe-r{0%,100%{translate:.4px .6px}50%{translate:-.4px 1.6px}}
+.hq-else.is-bust .hq-else-bust-left{animation:hq-else-bust-breathe-l 5.8s ease-in-out infinite}
+.hq-else.is-bust .hq-else-bust-right{animation:hq-else-bust-breathe-r 5.8s ease-in-out infinite}
+.hq-else.is-anim-paused .hq-else-bust,
+.hq-else.is-motion-lite .hq-else-bust{animation:none}
+.hq-else-chip-fx{
+  position:absolute;inset:0;border-radius:50%;pointer-events:none;overflow:hidden;z-index:2;
+}
+.hq-else-fx-blink{
+  position:absolute;left:18%;right:18%;top:34%;height:0;border-radius:40%;
+  background:color-mix(in srgb,#1a1024 82%,#000);opacity:0;transform:scaleY(0);
+}
+.hq-else-fx-blush{
+  position:absolute;left:14%;right:14%;top:48%;height:22%;border-radius:50%;
+  background:radial-gradient(ellipse at center,rgba(236,72,153,.42),transparent 70%);
+  opacity:0;transform:scale(.92);
+}
+.hq-else.is-fx-blink .hq-else-fx-blink{
+  animation:hq-else-fx-blink .16s ease-out;
+}
+.hq-else.is-fx-blush .hq-else-fx-blush{
+  animation:hq-else-fx-blush .65s ease-out;
+}
+.hq-else.is-fx-glance .hq-else-chip-avatar{
+  object-position:58% 42%;
+  transition:object-position .28s ease;
+}
+.hq-else.is-fx-think .hq-else-chip-avatar{
+  object-position:46% 48%;
+  filter:saturate(.92) brightness(.97);
+}
+/* Lip pulse via CSS only — no JS setInterval class thrash while speaking. */
+@keyframes hq-else-lip-pulse{
+  0%,100%{opacity:.85;transform:scale(1);border-color:color-mix(in srgb,#c084fc 55%,transparent)}
+  50%{opacity:1;transform:scale(1.06);border-color:color-mix(in srgb,#f0abfc 80%,transparent);box-shadow:0 0 16px color-mix(in srgb,#e879f9 42%,transparent)}
+}
+.hq-else.is-lip-pulse .hq-else-chip-ring{
+  animation:hq-else-lip-pulse .28s ease-in-out infinite;
+}
+.hq-else.is-motion-lite.is-lip-pulse .hq-else-chip-ring{
+  animation:hq-else-lip-pulse .55s ease-in-out infinite;
+}
+.hq-else.is-lip-open .hq-else-chip-ring,
+.hq-else.is-lip-pulse.is-lip-open .hq-else-chip-ring{
+  opacity:1;transform:scale(1.06);
+  border-color:color-mix(in srgb,#f0abfc 75%,transparent);
+  box-shadow:0 0 16px color-mix(in srgb,#e879f9 45%,transparent);
+}
+.hq-else.is-lip-open .hq-else-chip-avatar{
+  object-position:52% 39%;
+}
+.hq-else.is-mood-idle:not(.is-bust) .hq-else-chip-avatar{
+  animation:hq-else-breathe 4.4s ease-in-out infinite;
+}
+.hq-else.is-anim-paused .hq-else-chip-avatar,
+.hq-else.is-motion-lite.is-mood-idle .hq-else-chip-avatar{
+  animation:none;
+}
+.hq-else.is-ctx-carnet .hq-else-chip-avatar{
+  filter:saturate(.84) hue-rotate(-8deg) brightness(.97);
+}
+.hq-else.is-ctx-carnet.is-mood-busy .hq-else-chip-avatar,
+.hq-else.is-ctx-carnet.is-mood-idle .hq-else-chip-avatar{
+  object-position:48% 50%;
+}
+.hq-else.is-ctx-forge .hq-else-chip-ring{
+  opacity:1;border-color:color-mix(in srgb,#f0abfc 55%,transparent);
+  box-shadow:0 0 18px color-mix(in srgb,#a855f7 35%,transparent);
+  animation:hq-else-chip-spin .7s linear infinite;
+}
+.hq-else.is-ctx-forge .hq-else-chip-avatar{
+  filter:saturate(1.18) brightness(1.04);
+}
+.hq-else.is-favor-spike .hq-else-chip-ring{
+  opacity:1;border-color:color-mix(in srgb,#f9a8d4 70%,transparent);
+  animation:hq-else-chip-spin .75s linear infinite;
+}
+@keyframes hq-else-breathe{
+  0%,100%{transform:scale(1) translateY(0)}
+  50%{transform:scale(1.028) translateY(-1px)}
+}
+@keyframes hq-else-fx-blink{
+  0%{opacity:0;transform:scaleY(0);height:0}
+  35%{opacity:.92;transform:scaleY(1);height:12%}
+  100%{opacity:0;transform:scaleY(0);height:0}
+}
+@keyframes hq-else-fx-blush{
+  0%{opacity:0;transform:scale(.9)}
+  40%{opacity:.9;transform:scale(1)}
+  100%{opacity:0;transform:scale(1.04)}
 }
 @keyframes hq-else-chip-spin{to{transform:rotate(360deg)}}
 @keyframes hq-else-pop{from{opacity:0;transform:translateY(8px) scale(.96)}to{opacity:1;transform:none}}
@@ -3738,7 +3925,9 @@ html[data-hq-motion-tier="lite"] .hq-dangling-member-mount:not(.is-wobbling) .hq
   .hq-else.is-busy .hq-else-chip-ring{animation:hq-else-chip-spin 1.2s linear infinite}
   .hq-else.is-open .hq-else-bubble{animation:none}
   .hq-else.is-typing .hq-else-line::after{animation:none}
-  .hq-else-chip-avatar{transition:none}
+  .hq-else-chip-avatar{transition:none;animation:none!important}
+  .hq-else-bust{animation:none!important}
+  .hq-else-fx-blink,.hq-else-fx-blush{animation:none!important;opacity:0}
 }
 
 .hq-else-sister-btn{font-size:11px;font-weight:800;letter-spacing:.03em;opacity:.9!important;border:1px solid color-mix(in srgb,#a855f7 40%,var(--line))!important;border-radius:999px;padding:2px 8px!important;background:color-mix(in srgb,#a855f7 14%,transparent)}
@@ -3881,51 +4070,57 @@ html[data-hq-motion-tier="lite"] .hq-dangling-member-mount:not(.is-wobbling) .hq
   0%,100%{transform:translate3d(0,1px,0) rotate(2deg) scale(1);filter:saturate(.92)}
   50%{transform:translate3d(-1px,3px,0) rotate(3deg) scale(1.01);filter:saturate(.88) brightness(.96)}
 }
-@keyframes hq-else-mood-glow{
-  0%,100%{box-shadow:0 0 0 2px color-mix(in srgb,var(--else-mood-glow,#c084fc) 45%,transparent),0 8px 22px rgba(0,0,0,.3),0 0 18px color-mix(in srgb,var(--else-mood-glow,#c084fc) 28%,transparent)}
-  50%{box-shadow:0 0 0 3px color-mix(in srgb,var(--else-mood-glow,#c084fc) 70%,transparent),0 10px 28px rgba(0,0,0,.34),0 0 28px color-mix(in srgb,var(--else-mood-glow,#c084fc) 48%,transparent)}
-}
 .hq-else.is-mood-listening .hq-else-chip-ring{
   opacity:1;border-color:color-mix(in srgb,#60a5fa 55%,transparent);border-top-color:color-mix(in srgb,#93c5fd 85%,transparent);
 }
+.hq-else.is-mood-listening .hq-else-chip-bust{
+  box-shadow:0 10px 28px rgba(0,0,0,.38),0 0 0 2px color-mix(in srgb,#60a5fa 45%,transparent),0 0 18px color-mix(in srgb,#60a5fa 28%,transparent);
+}
 .hq-else.is-mood-listening .hq-else-chip-avatar{
-  --else-mood-glow:#60a5fa;
   object-position:47% 43%;
-  animation:hq-else-mood-listen 2.8s ease-in-out infinite,hq-else-mood-glow 2.8s ease-in-out infinite;
+  animation:hq-else-mood-listen 2.8s ease-in-out infinite;
 }
 .hq-else.is-mood-speaking .hq-else-chip-ring{
   opacity:1;border-color:color-mix(in srgb,#a855f7 65%,transparent);border-top-color:color-mix(in srgb,#f0abfc 90%,transparent);
   animation:hq-else-chip-spin 1.2s linear infinite;
 }
+.hq-else.is-mood-speaking .hq-else-chip-bust{
+  box-shadow:0 10px 28px rgba(0,0,0,.38),0 0 0 2px color-mix(in srgb,#e879f9 45%,transparent),0 0 18px color-mix(in srgb,#e879f9 28%,transparent);
+}
 .hq-else.is-mood-speaking .hq-else-chip-avatar{
-  --else-mood-glow:#e879f9;
   object-position:52% 38%;
-  animation:hq-else-mood-speak 1.15s ease-in-out infinite,hq-else-mood-glow 1.15s ease-in-out infinite;
+  animation:hq-else-mood-speak 1.15s ease-in-out infinite;
 }
 .hq-else.is-mood-proactive .hq-else-chip-ring{
   opacity:1;border-color:color-mix(in srgb,#c084fc 60%,transparent);border-top-color:color-mix(in srgb,#f0abfc 88%,transparent);
   animation:hq-else-chip-spin 1.6s linear infinite;
 }
+.hq-else.is-mood-proactive .hq-else-chip-bust{
+  box-shadow:0 10px 28px rgba(0,0,0,.38),0 0 0 2px color-mix(in srgb,#c084fc 50%,transparent),0 0 18px color-mix(in srgb,#c084fc 28%,transparent);
+}
 .hq-else.is-mood-proactive .hq-else-chip-avatar{
-  --else-mood-glow:#c084fc;
   object-position:55% 40%;
-  animation:hq-else-mood-proactive 2.1s ease-in-out infinite,hq-else-mood-glow 2.1s ease-in-out infinite;
+  animation:hq-else-mood-proactive 2.1s ease-in-out infinite;
 }
 .hq-else.is-mood-sister .hq-else-chip-ring{
   opacity:1;border-color:color-mix(in srgb,#ec4899 55%,transparent);border-top-color:color-mix(in srgb,#f9a8d4 85%,transparent);
 }
+.hq-else.is-mood-sister .hq-else-chip-bust{
+  box-shadow:0 10px 28px rgba(0,0,0,.38),0 0 0 2px color-mix(in srgb,#f472b6 45%,transparent),0 0 18px color-mix(in srgb,#f472b6 28%,transparent);
+}
 .hq-else.is-mood-sister .hq-else-chip-avatar{
-  --else-mood-glow:#f472b6;
   object-position:50% 40%;
-  animation:hq-else-mood-sister 2.4s ease-in-out infinite,hq-else-mood-glow 2.4s ease-in-out infinite;
+  animation:hq-else-mood-sister 2.4s ease-in-out infinite;
 }
 .hq-else.is-mood-busy .hq-else-chip-ring{
   opacity:1;animation:hq-else-chip-spin .85s linear infinite;border-top-color:transparent;
 }
+.hq-else.is-mood-busy .hq-else-chip-bust{
+  box-shadow:0 10px 28px rgba(0,0,0,.38),0 0 0 2px color-mix(in srgb,#7c3aed 40%,transparent);
+}
 .hq-else.is-mood-busy .hq-else-chip-avatar{
-  --else-mood-glow:#7c3aed;
   object-position:46% 52%;
-  animation:hq-else-mood-busy 1.8s ease-in-out infinite,hq-else-mood-glow 1.8s ease-in-out infinite;
+  animation:hq-else-mood-busy 1.8s ease-in-out infinite;
 }
 .hq-else.is-motion-lite.is-mood-listening .hq-else-chip-avatar,
 .hq-else.is-motion-lite.is-mood-speaking .hq-else-chip-avatar,

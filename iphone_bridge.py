@@ -253,6 +253,8 @@ def asset_gzip(path: Path, st: os.stat_result) -> bytes | None:
 # version still matches the file, so a repeat load makes no request at all. Un-versioned URLs (JS loaders, tests) keep
 # no-cache + ETag. Any edit changes the URL on the next page render (stat cached _ASSET_VER_TTL seconds at most).
 ASSET_IMMUTABLE_CC = "public, max-age=31536000, immutable"
+ASSET_TAGGED_IMAGE_CC = "public, max-age=86400"
+ASSET_TAGGED_IMAGE_EXT = {".webp", ".png", ".jpg", ".jpeg", ".svg"}
 _ASSET_VER_TTL = 5.0
 _ASSET_VER_CACHE: dict[str, tuple[float, str | None]] = {}
 _ASSET_VER_LOCK = threading.Lock()
@@ -5975,7 +5977,10 @@ def render_app() -> bytes:
       <div class="brand">Transfert</div>
       <span class="hq-pill">HQ</span>
     </div>
-    <button type="button" class="status-chip" id="status-chip" data-help="État du pont. Ouvre Système pour l'espace, l'hôte et le rôle.">● …</button>
+    <div class="topbar-actions">
+      <button type="button" class="hq-dangling-toggle" id="hq-dangling-toggle" aria-pressed="false" title="Afficher / masquer le membre (Zip)"><span class="hq-dangling-toggle-dot" aria-hidden="true"></span><span>Zip</span></button>
+      <button type="button" class="status-chip" id="status-chip" data-help="État du pont. Ouvre Système pour l'espace, l'hôte et le rôle.">● …</button>
+    </div>
   </header>
   <div class="view-bar">
     <p class="view-label" id="view-label">Accueil</p>
@@ -7903,6 +7908,9 @@ class Handler(BaseHTTPRequestHandler):
         want = (parse_qs(urlparse(self.path).query).get("v") or [""])[0]
         if reaction_fingerprinted_ogg_asset(path) or (want and want == asset_version(st)):
             cache = ASSET_IMMUTABLE_CC
+        elif want and path.suffix.lower() in ASSET_TAGGED_IMAGE_EXT:
+            # Hand-bumped ?v= tags on images (the repo convention when a picture changes): reuse for a day, no revalidation.
+            cache = ASSET_TAGGED_IMAGE_CC
         else:
             cache = "no-cache"
         common = [("ETag", etag), ("Cache-Control", cache), ("Vary", "Accept-Encoding")]

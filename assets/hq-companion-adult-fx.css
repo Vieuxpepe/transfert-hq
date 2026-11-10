@@ -3357,8 +3357,8 @@
 }
 .hq-bust-spec > i::before{background-position:var(--spec-a,50% 50%);opacity:calc(1 - var(--spec-w,0))}
 .hq-bust-spec > i::after{background-position:var(--spec-b,50% 50%);opacity:var(--spec-w,0)}
-.hq-bust-spec.is-left > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-left-gloss-sweep.png?v=oil2")}
-.hq-bust-spec.is-right > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-right-gloss-sweep.png?v=oil2")}
+.hq-bust-spec.is-left > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-left-gloss-sweep.webp?v=oil2")}
+.hq-bust-spec.is-right > i{--spec-atlas:url("/assets/companion/rig-neutral-v1/breast-right-gloss-sweep.webp?v=oil2")}
 /* Inner-edge gloss on the cleavage side: thin arcs just inside the outline. */
 .hq-bust-spec.is-left::before{background:
   radial-gradient(ellipse 0.30% 0.30% at 42.65% 64.83%,rgba(255,247,242,0.11) 0,rgba(255,247,242,0.09) 50%,rgba(255,247,242,0) 100%),
@@ -3827,6 +3827,7 @@
 .hq-companion-rig-hair-sheen{
   pointer-events:none;z-index:5;opacity:1;
   --hair-rim-direction:1;
+  --hair-mask-url:url('/assets/companion/rig-neutral-v1/hair-new-baked.webp');
   -webkit-mask-size:100% 100%;mask-size:100% 100%;
   -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
   -webkit-mask-composite:source-in,source-in;mask-composite:intersect,intersect;
@@ -3837,8 +3838,8 @@
 .hq-companion-rig-hair-sheen::before,
 .hq-companion-rig-hair-sheen::after{
   content:"";position:absolute;inset:0;pointer-events:none;
-  -webkit-mask-image:url('/assets/companion/rig-neutral-v1/hair-new-baked.png'),url('/assets/companion/rig-neutral-v1/hair-new-baked.png');
-  mask-image:url('/assets/companion/rig-neutral-v1/hair-new-baked.png'),url('/assets/companion/rig-neutral-v1/hair-new-baked.png');
+  -webkit-mask-image:var(--hair-mask-url),var(--hair-mask-url);
+  mask-image:var(--hair-mask-url),var(--hair-mask-url);
   -webkit-mask-size:100% 100%;mask-size:100% 100%;
   -webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;
   -webkit-mask-position:0 0,calc(var(--hair-rim-direction) * var(--hair-rim-width)) 0;
@@ -3859,12 +3860,14 @@
   .hq-companion-rig-hair-sheen::before{animation:none;will-change:auto;opacity:.95}
 }
 .hq-companion-rig-hair-sheen.is-crown-left{
-  -webkit-mask-image:url('/assets/companion/rig-neutral-v1/hair-new-baked.png'),linear-gradient(to right,#000 0 38%,transparent 44%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
-  mask-image:url('/assets/companion/rig-neutral-v1/hair-new-baked.png'),linear-gradient(to right,#000 0 38%,transparent 44%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
+  -webkit-mask-image:var(--hair-mask-url),linear-gradient(to right,#000 0 38%,transparent 44%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
+  mask-image:var(--hair-mask-url),linear-gradient(to right,#000 0 38%,transparent 44%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
+  transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1)) translate3d(var(--rig-crown-sheen-x,0px),var(--rig-crown-sheen-y,0px),0);
 }
 .hq-companion-rig-hair-sheen.is-crown-right{
-  -webkit-mask-image:url('/assets/companion/rig-neutral-v1/hair-new-baked.png'),linear-gradient(to right,transparent 60%,#000 66%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
-  mask-image:url('/assets/companion/rig-neutral-v1/hair-new-baked.png'),linear-gradient(to right,transparent 60%,#000 66%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
+  -webkit-mask-image:var(--hair-mask-url),linear-gradient(to right,transparent 60%,#000 66%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
+  mask-image:var(--hair-mask-url),linear-gradient(to right,transparent 60%,#000 66%),linear-gradient(to bottom,transparent 0 13%,#000 17% 29%,transparent 35%);
+  transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1)) translate3d(calc(var(--rig-crown-sheen-x,0px) * -0.85),var(--rig-crown-sheen-y,0px),0);
 }
 
 /* Rotation values are local to their consumers; they need not invalidate the

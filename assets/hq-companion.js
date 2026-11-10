@@ -27,13 +27,42 @@
   const LS_LAST_PORTRAIT_HREF = "hq_companion_last_portrait_href";
   const LS_LAYERED_PORTRAIT = "hq_companion_layered_portrait";
   const LS_ACCESSORIES = "hq_companion_accessories_v1";
+  const LS_ACCESSORIES_AUTO = "hq_companion_accessories_auto_v1";
   const ACCESSORIES_BASE = "/assets/companion/rig-neutral-v1/accessories/";
-  const ACCESSORIES_DEFAULT = Object.freeze({ hair: "default", necklace: "none", earring: "baked", earringColor: "or" });
+  const ACCESSORIES_DEFAULT = Object.freeze({ hair: "default", necklace: "none", earring: "baked", earringColor: "or", bra: "noir" });
+  const ACCESSORIES_CURATED_LOOKS = Object.freeze([
+    { hair: "default", necklace: "none", earring: "baked", earringColor: "or", bra: "noir" },
+    { hair: "glamour", necklace: "perles", earring: "goutte", earringColor: "or-rose", bra: "rose" },
+    { hair: "tresses", necklace: "ambre", earring: "creole", earringColor: "or", bra: "or" },
+    { hair: "carre", necklace: "etincelle", earring: "etincelle", earringColor: "argent", bra: "harnais" },
+    { hair: "queue", necklace: "etoile", earring: "lune", earringColor: "saphir", bra: "saphir" },
+    { hair: "chignons", necklace: "fraise", earring: "perle", earringColor: "rubis", bra: "rubis" },
+    { hair: "frange", necklace: "chat", earring: "creole", earringColor: "or-rose", bra: "violet" },
+    { hair: "wolf", necklace: "circuit", earring: "etincelle", earringColor: "emeraude", bra: "emeraude" },
+    { hair: "matin", necklace: "flanelle", earring: "origine", earringColor: "or", bra: "noir" },
+    { hair: "pro", necklace: "minerai", earring: "goutte", earringColor: "argent", bra: "harnais" },
+    { hair: "caverne", necklace: "erable", earring: "lune", earringColor: "or", bra: "rubis" },
+    { hair: "glamour", necklace: "etincelle", earring: "lune", earringColor: "or", bra: "violet" },
+    { hair: "frange", necklace: "perles", earring: "perle", earringColor: "or", bra: "rose" }
+  ]);
   const ACCESSORIES_HAIR = [
     ["default", "Classique"], ["tresses", "Tresses"], ["carre", "Carré"], ["queue", "Queue"],
     ["chignons", "Chignons"], ["frange", "Frange"], ["wolf", "Wolf"], ["glamour", "Glamour"],
     ["matin", "Matin"], ["pro", "Pro"], ["caverne", "Caverne"],
   ];
+  const HAIR_PHYSICS_PROFILES = Object.freeze({
+    default:  { swing: 1.25, tipGain: 1.48, kMul: 0.72, dampMul: 0.78, breezeMul: 1.32, bustCouple: 0.42 },
+    glamour:  { swing: 1.35, tipGain: 1.56, kMul: 0.68, dampMul: 0.75, breezeMul: 1.42, bustCouple: 0.48 },
+    frange:   { swing: 1.32, tipGain: 1.52, kMul: 0.70, dampMul: 0.76, breezeMul: 1.38, bustCouple: 0.45 },
+    queue:    { swing: 1.38, tipGain: 1.58, kMul: 0.66, dampMul: 0.74, breezeMul: 1.45, bustCouple: 0.38 },
+    caverne:  { swing: 1.28, tipGain: 1.46, kMul: 0.72, dampMul: 0.78, breezeMul: 1.35, bustCouple: 0.40 },
+    wolf:     { swing: 1.18, tipGain: 1.38, kMul: 0.82, dampMul: 0.82, breezeMul: 1.25, bustCouple: 0.34 },
+    tresses:  { swing: 1.16, tipGain: 1.42, kMul: 0.78, dampMul: 0.80, breezeMul: 1.20, bustCouple: 0.44 },
+    carre:    { swing: 1.14, tipGain: 1.32, kMul: 0.88, dampMul: 0.84, breezeMul: 1.18, bustCouple: 0.26 },
+    matin:    { swing: 0.92, tipGain: 1.24, kMul: 0.96, dampMul: 0.88, breezeMul: 1.08, bustCouple: 0.18 },
+    chignons: { swing: 0.88, tipGain: 1.20, kMul: 1.00, dampMul: 0.90, breezeMul: 1.05, bustCouple: 0.16 },
+    pro:      { swing: 0.90, tipGain: 1.22, kMul: 0.98, dampMul: 0.88, breezeMul: 1.06, bustCouple: 0.18 },
+  });
   const ACCESSORIES_NECKLACES = [
     ["none", "Aucun"], ["etincelle", "Étincelle"], ["ambre", "Ambre"], ["perles", "Perles"],
     ["minerai", "Minerai"], ["circuit", "Circuit"], ["flanelle", "Flanelle"], ["erable", "Érable"],
@@ -56,6 +85,37 @@
     rubis: "hue-rotate(-35deg) saturate(1.7) brightness(1.02)",
     saphir: "hue-rotate(195deg) saturate(1.45) brightness(0.98)",
   });
+  const ACCESSORIES_BRAS = [
+    // Classiques
+    ["noir", "Dentelle noire (Origine)"],
+    ["rubis", "Balconnet satin rubis"],
+    ["harnais", "Harnais cuir & anneaux"],
+    ["rose", "Triangle soie rose"],
+    ["violet", "Corset velours violet"],
+    ["emeraude", "Bralette tulle émeraude"],
+    ["saphir", "Cyber-néon saphir"],
+    ["or", "Bijoux d'or impérial"],
+    // 🌶️ Très Épicé
+    ["cupless", "🌶️ Bonnets ouverts (Cupless)"],
+    ["micro_fil", "🌶️ Micro-ficelle rouge"],
+    ["sheer_mesh", "🌶️ Voile blanc transparent"],
+    ["chaine_bijou", "🌶️ Pasties d'or & chaînes"],
+    ["bondage_vinyle", "🌶️ Vinyle fendu & harnais"],
+    ["ruban_soie", "🌶️ Ruban cadeau dénoué"],
+  ];
+
+  function rigBustTextureSrc(side, braId) {
+    const s = side === "right" ? "right" : "left";
+    const b = String(braId || "noir");
+    if (!b || b === "noir") return rigNeutralLayerSrc("breast-" + s);
+    return ACCESSORIES_BASE + "bras/bra-" + b + "-" + s + ".webp";
+  }
+
+  function rigBraBaseTextureSrc(braId) {
+    const b = String(braId || "noir");
+    if (!b || b === "noir") return rigNeutralLayerSrc("garment-front");
+    return ACCESSORIES_BASE + "bras/bra-" + b + "-base.webp";
+  }
   /* accessories-v1 integrated */
   const TREAT_FORGE_KEYS = { "☕": "coffee", "🍓": "strawberry", "🌹": "rose", "💋": "kiss" };
   const LS_COLLAPSED = "hq_companion_collapsed";
@@ -93,12 +153,15 @@
 
   function rigNeutralLayerSrc(asset) {
     const id = String(asset || "");
-    if (id === "hair") return RIG_NEUTRAL_BASE + "hair-new-baked.png";
+    // Hair/necklace textures ship as WebP (lossless alpha, ~10x smaller); the .png files are the sources.
+    if (id === "hair") return RIG_NEUTRAL_BASE + "hair-new-baked.webp?v=webp1";
     if (id === "breast-left" || id === "breast-right") return RIG_NEUTRAL_BASE + id + "-user.svg";
     // Cups come from breast PNGs; garment-front is the same JPEG and must not paint twice.
     if (id === "garment-front") {
       return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     }
+    // Full-size background/face were base64 PNG inside an SVG wrapper; same pixels as lossless WebP.
+    if (id === "background" || id === "face") return RIG_NEUTRAL_BASE + id + ".webp?v=px1";
     return RIG_NEUTRAL_BASE + id + ".svg?v=eyesv3d_b76";
   }
 
@@ -111,11 +174,13 @@
       const neckIds = new Set(ACCESSORIES_NECKLACES.map((x) => x[0]));
       const earIds = new Set(ACCESSORIES_EARRING_MODES.map((x) => x[0]));
       const colIds = new Set(ACCESSORIES_EARRING_COLORS.map((x) => x[0]));
+      const braIds = new Set(ACCESSORIES_BRAS.map((x) => x[0]));
       return {
         hair: hairIds.has(parsed.hair) ? parsed.hair : "default",
         necklace: neckIds.has(parsed.necklace) ? parsed.necklace : "none",
         earring: earIds.has(parsed.earring) ? parsed.earring : "baked",
         earringColor: colIds.has(parsed.earringColor) ? parsed.earringColor : "or",
+        bra: braIds.has(parsed.bra) ? parsed.bra : "noir",
       };
     } catch (_) {
       return Object.assign({}, ACCESSORIES_DEFAULT);
@@ -133,19 +198,100 @@
     const bareEars = a.earring !== "baked";
     if (!a.hair || a.hair === "default") {
       return bareEars
-        ? ACCESSORIES_BASE + "earrings/hair-no-earrings.png"
-        : RIG_NEUTRAL_BASE + "hair-new-baked.png";
+        ? ACCESSORIES_BASE + "earrings/hair-no-earrings.webp?v=webp1"
+        : RIG_NEUTRAL_BASE + "hair-new-baked.webp?v=webp1";
     }
-    return ACCESSORIES_BASE + "hair/hair-" + a.hair + "-1354.png";
+    return ACCESSORIES_BASE + "hair/hair-" + a.hair + "-1354.webp?v=webp1";
   }
 
   function rigNecklaceSrc(id) {
     if (!id || id === "none") return "";
-    return ACCESSORIES_BASE + "necklaces/collier-" + id + "-1354.png";
+    return ACCESSORIES_BASE + "necklaces/collier-" + id + "-1354.webp?v=webp1";
   }
 
   function rigEarringFilter(colorId) {
     return EARRING_COLOR_FILTER[colorId] || EARRING_COLOR_FILTER.or;
+  }
+
+  function readAccessoriesAuto(win) {
+    try {
+      const v = win && win.localStorage && win.localStorage.getItem(LS_ACCESSORIES_AUTO);
+      if (v === "0") return false;
+      if (v === "1") return true;
+    } catch (_) {}
+    return true;
+  }
+
+  function writeAccessoriesAuto(win, on) {
+    try {
+      win.localStorage.setItem(LS_ACCESSORIES_AUTO, on ? "1" : "0");
+    } catch (_) {}
+    return !!on;
+  }
+
+  function pickRandomLook(win, opts) {
+    const current = readAccessories(win);
+    const view = (win && win.document && win.document.body && win.document.body.dataset.view) || "accueil";
+    const h = new Date().getHours();
+    const useCurated = Math.random() < 0.68;
+    if (useCurated) {
+      let pool = ACCESSORIES_CURATED_LOOKS.filter(
+        (l) => l.hair !== current.hair || l.necklace !== current.necklace || l.earring !== current.earring
+      );
+      if (!pool.length) pool = ACCESSORIES_CURATED_LOOKS.slice();
+      if ((h >= 5 && h < 10) && Math.random() < 0.45) {
+        const morning = pool.find((l) => l.hair === "matin");
+        if (morning) return Object.assign({}, morning);
+      }
+      if ((h >= 22 || h < 4) && Math.random() < 0.45) {
+        const night = pool.find((l) => l.hair === "glamour" || l.earring === "lune");
+        if (night) return Object.assign({}, night);
+      }
+      if ((view === "ops" || view === "forge") && Math.random() < 0.4) {
+        const tech = pool.find((l) => l.necklace === "circuit" || l.hair === "wolf" || l.hair === "pro");
+        if (tech) return Object.assign({}, tech);
+      }
+      return Object.assign({}, pool[Math.floor(Math.random() * pool.length)]);
+    }
+    const hairs = ACCESSORIES_HAIR.map((x) => x[0]).filter((id) => id !== current.hair);
+    const hair = hairs[Math.floor(Math.random() * hairs.length)] || "default";
+    const playfulNecklaces = new Set(["dealwithit", "doge", "canards", "poutine"]);
+    const neckPool = ACCESSORIES_NECKLACES.map((x) => x[0]).filter(
+      (id) => !playfulNecklaces.has(id) || Math.random() < 0.18
+    );
+    const necklace = Math.random() < 0.22 ? "none" : neckPool[Math.floor(Math.random() * neckPool.length)];
+    let earring = "baked";
+    let earringColor = "or";
+    if (hair !== "default" || Math.random() < 0.72) {
+      const earModes = ["origine", "creole", "goutte", "etincelle", "lune", "perle", "none"];
+      earring = earModes[Math.floor(Math.random() * earModes.length)];
+      const colors = ACCESSORIES_EARRING_COLORS.map((x) => x[0]);
+      earringColor = colors[Math.floor(Math.random() * colors.length)];
+    }
+    const isSpicyMood = !!(S.intimeMode || (S.el && (S.el.classList.contains("is-fever-climax") || S.el.classList.contains("is-lewd-heat"))));
+    const spicyBras = ["cupless", "micro_fil", "sheer_mesh", "chaine_bijou", "bondage_vinyle", "ruban_soie"];
+    let bra;
+    if (isSpicyMood && Math.random() < 0.75) {
+      bra = spicyBras[Math.floor(Math.random() * spicyBras.length)];
+    } else {
+      const bras = ACCESSORIES_BRAS.map((x) => x[0]);
+      bra = Math.random() < 0.25 ? "noir" : bras[Math.floor(Math.random() * bras.length)];
+    }
+    return { hair, necklace, earring, earringColor, bra };
+  }
+
+  function describeLookLabel(look) {
+    if (!look) return "";
+    const hPair = ACCESSORIES_HAIR.find((x) => x[0] === look.hair);
+    const nPair = ACCESSORIES_NECKLACES.find((x) => x[0] === look.necklace);
+    const ePair = ACCESSORIES_EARRING_MODES.find((x) => x[0] === look.earring);
+    const bPair = ACCESSORIES_BRAS.find((x) => x[0] === look.bra);
+    const parts = [];
+    if (hPair) parts.push("coiffure " + hPair[1]);
+    if (bPair && look.bra && look.bra !== "noir") parts.push("lingerie " + bPair[1]);
+    if (nPair && look.necklace !== "none") parts.push("collier " + nPair[1]);
+    if (ePair && look.earring !== "baked" && look.earring !== "none") parts.push("boucles " + ePair[1]);
+    return parts.join(" · ");
   }
 
   const ADULT_BOOTY_POSES = { "all-fours": "/assets/companion/chat/all-fours.jpg", "all-fours-side": "/assets/companion/chat/all-fours-side.jpg", "all-fours-broom": "/assets/companion/chat/all-fours-broom.jpg", "bed-prone": "/assets/companion/chat/bed-prone.jpg", "booty-arch-mirror": "/assets/companion/chat/booty-arch-mirror.jpg", "doggystyle-lookback": "/assets/companion/chat/doggystyle-lookback.jpg" };
@@ -476,8 +622,9 @@
   }
   function clothTensionTarget(input = {}) {
     const n = (key) => Number.isFinite(input[key]) ? input[key] : 0;
-    return clampNum(Math.hypot(n('x')*.035,n('y')*.025) + Math.abs((Number.isFinite(input.sy)?input.sy:1)-1)*2.2 +
-      Math.abs(n('bend'))*.018 + Math.min(.3,Math.max(0,n('speed'))*.006) + clampNum(n('support'),0,1)*.25 + clampNum(n('pull'),0,1)*.72,0,1);
+    return clampNum(Math.hypot(n('x')*.042,n('y')*.032) + Math.abs((Number.isFinite(input.sy)?input.sy:1)-1)*2.6 +
+      Math.abs(n('bend'))*.022 + Math.min(.38,Math.max(0,n('speed'))*.009) + clampNum(n('support'),0,1)*.28 +
+      clampNum(n('squeeze'),0,1)*.32 + clampNum(n('pull'),0,1)*.75,0,1);
   }
   function stepClothTension(previous, target, dt, reduced = false) {
     const p = clampNum(Number(previous)||0,0,1), t = clampNum(Number(target)||0,0,1);
@@ -501,7 +648,7 @@
     return `translate(${x} ${y}) skewX(${shear.toFixed(2)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)}) translate(${-x} ${-y})`;
   }
 
-  const pure = { rigPostureGoal, stepRigPosture, rigPostureGravity, clothTensionTarget, stepClothTension, rigClothCurves, rigClothTextureTransform, supportMapPixel, sampleLateralSwipe, cursorSupportContact, cursorSupportSpring, lateralImpact, grabWeights, releaseFeel, digest, seedForView, VIEW_LABEL, COMPANION_NAME, DEFAULT_PREFS, getDeviceId, navOnly, decide, paceWords, glance, orbVars, pickVoice, speechDelivery, speechSegments, expressionPose, DWELL_MS, bustPullResponse, bustPullSpring, bustPullSettle, bustPullGravity, bustPullFollow, rigSecondaryMotion, rigHairMotion, readLayeredPortrait, anchoredPullFrame, readAccessories, writeAccessories, rigHairTextureSrc, rigNecklaceSrc, ACCESSORIES_DEFAULT };
+  const pure = { rigPostureGoal, stepRigPosture, rigPostureGravity, clothTensionTarget, stepClothTension, rigClothCurves, rigClothTextureTransform, supportMapPixel, sampleLateralSwipe, cursorSupportContact, cursorSupportSpring, lateralImpact, grabWeights, releaseFeel, digest, seedForView, VIEW_LABEL, COMPANION_NAME, DEFAULT_PREFS, getDeviceId, navOnly, decide, paceWords, glance, orbVars, pickVoice, speechDelivery, speechSegments, expressionPose, DWELL_MS, bustPullResponse, bustPullSpring, bustPullSettle, bustPullGravity, bustPullFollow, rigSecondaryMotion, rigHairMotion, readLayeredPortrait, anchoredPullFrame, readAccessories, writeAccessories, rigHairTextureSrc, rigNecklaceSrc, rigBustTextureSrc, rigBraBaseTextureSrc, ACCESSORIES_DEFAULT, ACCESSORIES_BRAS };
 
   const S = {
     win: null,
@@ -1375,8 +1522,16 @@
     }
     syncAdultPortrait();
     if (S.nsfwOn) {
-      preloadAdultPortraits(S.win);
-      preloadAdultLoops(S.win);
+      // ~1.5 MB of alternate portraits/loops: warm them after startup settles, not alongside first paint.
+      // Timer (not requestIdleCallback) so Safari behaves the same; the neutral portrait is already on screen.
+      if (!S.adultPreloadT && !(S.preloadedPortraits && S.preloadedLoops)) {
+        S.adultPreloadT = S.win.setTimeout(() => {
+          S.adultPreloadT = 0;
+          if (!S.nsfwOn) return;
+          preloadAdultPortraits(S.win);
+          preloadAdultLoops(S.win);
+        }, 6000);
+      }
       startLive2DLoop(S.win);
       scheduleAdultIdleFx(S.win);
     } else {
@@ -1394,11 +1549,35 @@
     }
   }
 
-  function muteHours(win, h) {
+  function unmuteCompanion(win) {
+    const w = win || S.win;
+    if (!w) return;
+    if (S.unmuteTimer) {
+      w.clearTimeout(S.unmuteTimer);
+      S.unmuteTimer = null;
+    }
     try {
-      win.localStorage.setItem(LS_MUTE, String(Date.now() + h * 3600000));
+      w.localStorage.removeItem(LS_MUTE);
     } catch (_) {}
+    syncVisibility();
+    refresh(true);
+    if (typeof w.hqToast === "function") w.hqToast("Transferania réveillée");
+  }
+
+  function muteHours(win, h) {
+    const ms = Math.max(1000, Number(h || 1) * 3600000);
+    try {
+      win.localStorage.setItem(LS_MUTE, String(Date.now() + ms));
+    } catch (_) {}
+    if (S.unmuteTimer) win.clearTimeout(S.unmuteTimer);
+    S.unmuteTimer = win.setTimeout(() => {
+      S.unmuteTimer = null;
+      syncVisibility();
+      refresh(true);
+    }, ms + 50);
+    syncVisibility();
     refresh();
+    if (typeof win.hqToast === "function") win.hqToast("Transferania en pause (1 h) — bouton 🌙 en bas à droite pour la réveiller");
   }
 
   async function fetchJson(win, url, body, opts) {
@@ -2303,6 +2482,7 @@
       interactions: Array.isArray(S.recentInteractions) ? S.recentInteractions.slice(-4) : [],
       user_looking: !!S.userLookingAtCompanion,
       attention: typeof S.attentionScore === "number" ? Math.round(S.attentionScore * 100) / 100 : 0,
+      look: readAccessories(win),
     };
     S.pendingCelebrate = false;
     S.pendingCelebrateMsg = "";
@@ -4004,8 +4184,29 @@
     tick();
   }
 
+  function syncWakePill() {
+    if (!S.wakePill || !S.win) return;
+    const persona = readPersona(S.win);
+    const isMutedNow = !S.blocked && readOn(S.win) && persona !== "off" && muted(S.win);
+    S.wakePill.hidden = !isMutedNow;
+    if (isMutedNow && !S.unmuteTimer) {
+      let remMs = 0;
+      try {
+        remMs = Math.max(500, Number(S.win.localStorage.getItem(LS_MUTE) || 0) - Date.now());
+      } catch (_) {}
+      if (remMs > 0) {
+        S.unmuteTimer = S.win.setTimeout(() => {
+          S.unmuteTimer = null;
+          syncVisibility();
+          refresh(true);
+        }, remMs + 50);
+      }
+    }
+  }
+
   function syncVisibility() {
     if (!S.el) return;
+    syncWakePill();
     const view = S.win.document.body.dataset.view || "accueil";
     if (view === "intime") {
       if (!S.sessionAdmin) {
@@ -8686,7 +8887,7 @@
 
       const lace = doc.createElement("img");
       lace.className = "hq-companion-rig-layer hq-companion-rig-bust-lace hq-companion-rig-bust-lace-" + side;
-      lace.src = RIG_NEUTRAL_BASE + "breast-" + side + "-lace.png";
+      lace.src = RIG_NEUTRAL_BASE + "breast-" + side + "-lace.webp";
       lace.alt = "";
       lace.draggable = false;
       lace.decoding = "async";
@@ -8888,7 +9089,7 @@
 
           const lace = doc.createElement("img");
           lace.className = "hq-companion-rig-layer hq-companion-rig-bust-lace hq-companion-rig-bust-lace-" + side;
-          lace.src = RIG_NEUTRAL_BASE + "breast-" + side + "-lace.png";
+          lace.src = RIG_NEUTRAL_BASE + "breast-" + side + "-lace.webp";
           lace.alt = "";
           lace.draggable = false;
           lace.decoding = "async";
@@ -8944,11 +9145,13 @@
         if (part === "hair-base") {
           // The ring illuminates the two sides of the crown, not the lower curls.
           // Share the crown's existing head transform and pull-freeze rules.
+          S.hairSheenEls = [];
           for (const side of ["left", "right"]) {
             const glint = doc.createElement("span");
             glint.className = "hq-companion-rig-layer hq-companion-rig-hair-base hq-companion-rig-hair-sheen is-crown-" + side;
             glint.setAttribute("aria-hidden", "true");
             body.appendChild(glint);
+            S.hairSheenEls.push(glint);
           }
         }
       }
@@ -8983,6 +9186,10 @@
       earringLeft,
       earringRight,
       hairImgs: images.filter((img) => (img.dataset.rigAsset || "") === "hair"),
+      torsoImg: images.find((img) => (img.dataset.rigAsset || "") === "torso") || null,
+      garmentSurfaceImg: images.find((img) => (img.dataset.rigAsset || "") === "garment-front") || null,
+      bustLeftImg: images.find((img) => (img.dataset.rigAsset || "") === "breast-left") || null,
+      bustRightImg: images.find((img) => (img.dataset.rigAsset || "") === "breast-right") || null,
     };
 
     const sheen = doc.createElement("span");
@@ -9028,7 +9235,12 @@
         image.onload = resolve;
         image.onerror = reject;
         const asset = image.dataset.rigAsset;
-        image.src = asset === "hair" ? rigHairTextureSrc(acc) : rigNeutralLayerSrc(asset);
+        image.src = asset === "hair" ? rigHairTextureSrc(acc)
+          : (asset === "breast-left" || asset === "breast-right")
+            ? rigBustTextureSrc(asset === "breast-right" ? "right" : "left", acc.bra)
+            : asset === "garment-front"
+              ? rigBraBaseTextureSrc(acc.bra)
+              : rigNeutralLayerSrc(asset);
       }))).then(() => {
         ready = true;
         applyAccessories(win);
@@ -9050,12 +9262,99 @@
 
   function applyAccessories(win) {
     if (!S.accessoryLayers) return;
-    const acc = readAccessories(win || S.win);
-    const { necklace, earringWrap, earringLeft, earringRight, hairImgs } = S.accessoryLayers;
+    const w = win || S.win;
+    const acc = readAccessories(w);
+    const prevKey = S.lastAppliedLookKey || "";
+    const nextKey = [acc.hair, acc.necklace, acc.earring, acc.earringColor, acc.bra].join(":");
+    const isLookChange = !!(prevKey && prevKey !== nextKey);
+    S.lastAppliedLookKey = nextKey;
+    S.hairPhysicsProfile = HAIR_PHYSICS_PROFILES[acc.hair] || HAIR_PHYSICS_PROFILES.default;
+    const { necklace, earringWrap, earringLeft, earringRight, hairImgs, torsoImg, garmentSurfaceImg, bustLeftImg, bustRightImg } = S.accessoryLayers;
+    const isCustomBra = !!(acc.bra && acc.bra !== "noir");
+    if (S.el) S.el.classList.toggle("has-custom-bra", isCustomBra);
+    const wantBraBase = rigBraBaseTextureSrc(acc.bra);
+    const wantBustLeft = rigBustTextureSrc("left", acc.bra);
+    const wantBustRight = rigBustTextureSrc("right", acc.bra);
+    const applyBustTex = () => {
+      if (garmentSurfaceImg && garmentSurfaceImg.getAttribute("src") !== wantBraBase) garmentSurfaceImg.src = wantBraBase;
+      if (bustLeftImg && bustLeftImg.getAttribute("src") !== wantBustLeft) bustLeftImg.src = wantBustLeft;
+      if (bustRightImg && bustRightImg.getAttribute("src") !== wantBustRight) bustRightImg.src = wantBustRight;
+      if (S.clothLayers) {
+        if (S.clothLayers.left && S.clothLayers.left.texture) {
+          S.clothLayers.left.texture.setAttribute("href", wantBustLeft);
+        }
+        if (S.clothLayers.right && S.clothLayers.right.texture) {
+          S.clothLayers.right.texture.setAttribute("href", wantBustRight);
+        }
+      }
+      if (S.el) {
+        S.el.querySelectorAll(".hq-companion-rig-bust-lace").forEach((el) => {
+          el.style.opacity = isCustomBra ? "0" : "";
+        });
+      }
+    };
+    if (isLookChange && w && w.Image && isCustomBra) {
+      const preB = new w.Image();
+      const preL = new w.Image();
+      const preR = new w.Image();
+      preB.decoding = "async";
+      preL.decoding = "async";
+      preR.decoding = "async";
+      preB.src = wantBraBase;
+      preL.src = wantBustLeft;
+      preR.src = wantBustRight;
+      Promise.all([
+        typeof preB.decode === "function" ? preB.decode().catch(() => {}) : Promise.resolve(),
+        typeof preL.decode === "function" ? preL.decode().catch(() => {}) : Promise.resolve(),
+        typeof preR.decode === "function" ? preR.decode().catch(() => {}) : Promise.resolve(),
+      ]).then(applyBustTex);
+    } else {
+      applyBustTex();
+    }
+    const isVariantHair = !!(acc.hair && acc.hair !== "default");
+    if (S.el) S.el.classList.toggle("has-variant-hair", isVariantHair);
+    if (torsoImg) {
+      const needCleanTorso = isVariantHair || (acc.earring && acc.earring !== "baked");
+      if (S.el) S.el.classList.toggle("has-clean-torso", !!needCleanTorso);
+      const wantTorso = needCleanTorso ? RIG_NEUTRAL_BASE + "torso-clean.svg?v=clean13" : rigNeutralLayerSrc("torso");
+      if (torsoImg.getAttribute("src") !== wantTorso) torsoImg.src = wantTorso;
+    }
     const hairSrc = rigHairTextureSrc(acc);
-    (hairImgs || []).forEach((img) => {
-      if (img && img.getAttribute("src") !== hairSrc) img.src = hairSrc;
-    });
+    const applyHairTex = () => {
+      (hairImgs || []).forEach((img) => {
+        if (img && img.getAttribute("src") !== hairSrc) img.src = hairSrc;
+      });
+      if (S.hairSheenEls && S.hairSheenEls.length) {
+        const maskVal = "url('" + hairSrc + "')";
+        S.hairSheenEls.forEach((el) => {
+          if (el) el.style.setProperty("--hair-mask-url", maskVal);
+        });
+      }
+    };
+    if (isLookChange && w && w.Image) {
+      const pre = new w.Image();
+      pre.decoding = "async";
+      pre.src = hairSrc;
+      if (typeof pre.decode === "function") {
+        pre.decode().then(applyHairTex, applyHairTex);
+      } else {
+        pre.onload = applyHairTex;
+        pre.onerror = applyHairTex;
+      }
+      // Subtle head-tilt + hair-toss physics impulse on look change
+      if (S.nsfwOn && !calm(w)) {
+        const st = ensureLive2DState();
+        const dir = Math.random() > 0.5 ? 1 : -1;
+        st.head.vsway = clampNum((st.head.vsway || 0) + dir * 9.5, -52, 52);
+        st.hair.vx = clampNum((st.hair.vx || 0) + dir * 48, -145, 145);
+        st.hair.vy = clampNum((st.hair.vy || 0) - 22, -110, 110);
+        st.hair.vrot = clampNum((st.hair.vrot || 0) + dir * 42, -125, 125);
+        startLive2DLoop(w);
+      }
+    } else {
+      applyHairTex();
+    }
+    if (S.syncAccessoriesSelects) S.syncAccessoriesSelects(acc);
     const neckSrc = rigNecklaceSrc(acc.necklace);
     if (!neckSrc) {
       necklace.hidden = true;
@@ -9165,10 +9464,26 @@
     return v !== undefined ? v : S.el ? S.el.style.getPropertyValue(key) : "";
   }
 
+  // perf16: the idle rig rewrote ~1,400 custom properties a second, ~80% of them by amounts no one can
+  // see (--rig-body-bob spans 0.57 px in total yet was written every frame). Each write restyles its
+  // element and everything below it, so a change smaller than 0.04 px / 0.04 deg (0.0005 for plain
+  // numbers) relative to the LAST WRITTEN value is skipped; slow drifts still accumulate past the
+  // threshold and get written, so the displayed value is never more than that far from the true one.
+  const L2D_NUM_RE = /^(-?\d*\.?\d+)(px|deg)?$/;
+  function live2dWriteInvisible(prev, next) {
+    const a = L2D_NUM_RE.exec(prev);
+    if (!a) return false;
+    const b = L2D_NUM_RE.exec(next);
+    if (!b || a[2] !== b[2]) return false;
+    return Math.abs(parseFloat(a[1]) - parseFloat(b[1])) < (a[2] ? 0.04 : 0.0005);
+  }
+
   function setLive2dStyleVar(stEl, key, value) {
     const st = ensureLive2DState();
     if (!st.styleCache) st.styleCache = Object.create(null);
-    if (st.styleCache[key] === value) return;
+    const prev = st.styleCache[key];
+    if (prev === value) return;
+    if (prev !== undefined && live2dWriteInvisible(prev, value)) return;
     st.styleCache[key] = value;
     const scope = S.el && stEl === S.el.style ? live2dVarScope(key) : null;
     if (scope === L2D_NO_READER) return;
@@ -9177,6 +9492,9 @@
   }
 
   function clearLive2dStyleVar(stEl, key) {
+    // The cache must forget a cleared variable, or a later write close to the old value would be skipped.
+    const stc = ensureLive2DState();
+    if (stc.styleCache) delete stc.styleCache[key];
     stEl.removeProperty(key);
     const scope = S.l2dVarScopes && S.l2dVarScopes.get(key);
     [].concat(scope || []).forEach((el) => el && el.style && el.style.removeProperty(key));
@@ -10043,9 +10361,13 @@
   }
 
   function rigHairMotion(x, y, rotation, breathWave, breezeWave = 0) {
-    return { x: clampNum(x * 0.62 + breathWave * 0.35 + breezeWave * 1.6, -4.5, 4.5),
-      y: clampNum(y * 0.58 + breathWave * 0.8 + breezeWave * 0.22, -2.8, 2.8),
-      rotation: clampNum(rotation * 0.38 + breathWave * 0.4 + breezeWave * 0.95, -2.8, 2.8) };
+    const hp = S.hairPhysicsProfile || HAIR_PHYSICS_PROFILES.default;
+    const sw = hp.swing || 1.25;
+    const bm = hp.breezeMul || 1.3;
+    const rx = clampNum((x * 0.82 + breathWave * 0.48 + breezeWave * 2.15 * bm) * sw, -6.8, 6.8);
+    const ry = clampNum((y * 0.76 + breathWave * 1.05 + Math.abs(breezeWave) * 0.38 * bm) * sw, -4.4, 4.4);
+    const rrot = clampNum((rotation * 0.64 + breathWave * 0.62 + breezeWave * 1.48 * bm) * sw, -5.2, 5.2);
+    return { x: rx, y: ry, rotation: rrot };
   }
 
   function bustPullFollow(current, target, dt, reduced = false, tauSec) {
@@ -11443,25 +11765,30 @@
     return a / 1.94;
   }
 
-  // Tip of one side of hair. The root image keeps the current motion exactly;
-  // this spring follows it with lag and a slightly wider swing.
-  function tickHairTip(st, side, root, dt, frozen) {
+  // Tip of one side of hair. The root image keeps the current motion;
+  // this spring follows it with phase lag, breeze wave delay, and a wider whip swing.
+  function tickHairTip(st, side, root, dt, frozen, tipBreeze = 0, bustVelY = 0) {
     if (!st.hairTip) st.hairTip = {};
     let b = st.hairTip[side];
     if (!b) b = st.hairTip[side] = { x: root.x, y: root.y, r: root.rotation, vx: 0, vy: 0, vr: 0 };
+    const hp = S.hairPhysicsProfile || HAIR_PHYSICS_PROFILES.default;
     const frame = clampNum(dt, 0.004, 0.032);
     const steps = Math.min(8, Math.max(1, Math.ceil(frame / 0.005)));
     const h = frame / steps;
-    const gain = frozen ? 1 : 1.16;
-    const k = frozen ? 92 : 36;
-    const c = frozen ? 19 : 6.2;
+    const gain = frozen ? 1 : (hp.tipGain || 1.48);
+    const k = frozen ? 92 : 25 * (hp.kMul || 0.72);
+    const c = frozen ? 19 : 4.2 * (hp.dampMul || 0.78);
+    const sideSign = side === "left" ? -1 : 1;
+    const targetX = root.x * gain + tipBreeze * 1.65;
+    const targetY = root.y * gain + bustVelY * (hp.bustCouple || 0.4) * 0.045 + Math.abs(tipBreeze) * 0.42;
+    const targetR = root.rotation * gain + tipBreeze * 1.85 + sideSign * Math.max(0, -bustVelY) * 0.018;
     for (let i = 0; i < steps; i += 1) {
-      b.vx += ((root.x * gain - b.x) * k - b.vx * c) * h;
-      b.vy += ((root.y * gain - b.y) * k - b.vy * c) * h;
-      b.vr += ((root.rotation * gain - b.r) * k - b.vr * c) * h;
-      b.x = clampNum(b.x + b.vx * h, -6, 6);
-      b.y = clampNum(b.y + b.vy * h, -4, 4);
-      b.r = clampNum(b.r + b.vr * h, -4.2, 4.2);
+      b.vx += ((targetX - b.x) * k - b.vx * c) * h;
+      b.vy += ((targetY - b.y) * k - b.vy * c) * h;
+      b.vr += ((targetR - b.r) * k - b.vr * c) * h;
+      b.x = clampNum(b.x + b.vx * h, -8.5, 8.5);
+      b.y = clampNum(b.y + b.vy * h, -5.8, 5.8);
+      b.r = clampNum(b.r + b.vr * h, -7.8, 7.8);
     }
     return b;
   }
@@ -12109,19 +12436,21 @@
       const bustSY = clampNum(1.04 - st.bust.y * 0.0145 + Math.abs(st.bust.x) * 0.0035 + breathWave * 0.016, 0.88, 1.21);
       const bustBright = clampNum(1.02 + Math.max(0, -st.bust.y) * 0.014 + wNorm * 0.04, 0.98, 1.14);
 
-      // 4. Upper Hair / Bangs Pendulum Spring
-      const kHair = 96;
-      const cHair = 7.4 * circ.damp * (floatDragging ? 0.62 : 1);
-      const axHair = -kHair * st.hair.x - cHair * st.hair.vx - axHead * 1.18 - avatarAX * 12 - bubbleAX * 4 - dragAX * 22;
-      const ayHair = -kHair * st.hair.y - cHair * st.hair.vy - ayHead * 0.65 - avatarAY * 10 - bubbleAY * 3 - dragAY * 20;
-      const arotHair = -110 * st.hair.rot - 7.0 * st.hair.vrot - axHead * 0.75 - avatarAX * 6 - bubbleAX * 2 - dragAX * 14;
+      // 4. Upper Hair / Bangs Pendulum Spring (coupled to head + bust bounce + hairstyle profile)
+      const hp = S.hairPhysicsProfile || HAIR_PHYSICS_PROFILES.default;
+      const kHair = 62 * (hp.kMul || 0.72);
+      const cHair = 5.4 * (hp.dampMul || 0.78) * circ.damp * (floatDragging ? 0.62 : 1);
+      const bustCouple = hp.bustCouple || 0.4;
+      const axHair = -kHair * st.hair.x - cHair * st.hair.vx - axHead * 1.38 - st.bust.vx * bustCouple * 0.28 - avatarAX * 14 - bubbleAX * 4.5 - dragAX * 24;
+      const ayHair = -kHair * st.hair.y - cHair * st.hair.vy - ayHead * 0.85 - st.bust.vy * bustCouple * 0.42 - avatarAY * 12 - bubbleAY * 3.5 - dragAY * 22;
+      const arotHair = -74 * (hp.kMul || 0.72) * st.hair.rot - 5.2 * (hp.dampMul || 0.78) * st.hair.vrot - axHead * 0.96 - st.bust.vx * bustCouple * 0.22 - avatarAX * 7.5 - bubbleAX * 2.5 - dragAX * 16;
 
-      st.hair.vx = clampNum(st.hair.vx + axHair * dt, -130, 130);
-      st.hair.vy = clampNum(st.hair.vy + ayHair * dt, -95, 95);
-      st.hair.vrot = clampNum(st.hair.vrot + arotHair * dt, -110, 110);
-      st.hair.x = clampNum(st.hair.x + st.hair.vx * dt, -6.5, 6.5);
-      st.hair.y = clampNum(st.hair.y + st.hair.vy * dt, -4.5, 4.5);
-      st.hair.rot = clampNum(st.hair.rot + st.hair.vrot * dt, -5.5, 5.5);
+      st.hair.vx = clampNum(st.hair.vx + axHair * dt, -145, 145);
+      st.hair.vy = clampNum(st.hair.vy + ayHair * dt, -110, 110);
+      st.hair.vrot = clampNum(st.hair.vrot + arotHair * dt, -125, 125);
+      st.hair.x = clampNum(st.hair.x + st.hair.vx * dt, -7.5, 7.5);
+      st.hair.y = clampNum(st.hair.y + st.hair.vy * dt, -5.2, 5.2);
+      st.hair.rot = clampNum(st.hair.rot + st.hair.vrot * dt, -6.5, 6.5);
 
       // 5. Commit CSS Custom Properties to S.el
       const stEl = S.el.style;
@@ -12578,9 +12907,13 @@
         }
       }
       syncRigClothing(st,dt,{
-        left:{x:leftX,y:leftY,sy:softOut.left.sy,bend:softOut.left.bend,speed:Math.hypot(left.vx||0,left.vy||0),support:st.cursorSupport?.left?.p||0,pull:pulling?(S.pullMotion?.tension || 0):0},
-        right:{x:rightX,y:rightY,sy:softOut.right.sy,bend:softOut.right.bend,speed:Math.hypot(right.vx||0,right.vy||0),support:st.cursorSupport?.right?.p||0,pull:pulling?(S.pullMotion?.tension || 0):0}
+        left:{x:leftX,y:leftY,sy:softOut.left.sy,bend:softOut.left.bend,speed:Math.hypot(left.vx||0,left.vy||0)+(Math.hypot(left.sloshVx||0,left.sloshVy||0)*0.45),support:st.cursorSupport?.left?.p||0,squeeze:(st.cleavageContact||0)+(st.squeezeAmt||0),pull:pulling?(S.pullMotion?.tension || 0):0},
+        right:{x:rightX,y:rightY,sy:softOut.right.sy,bend:softOut.right.bend,speed:Math.hypot(right.vx||0,right.vy||0)+(Math.hypot(right.sloshVx||0,right.sloshVy||0)*0.45),support:st.cursorSupport?.right?.p||0,squeeze:(st.cleavageContact||0)+(st.squeezeAmt||0),pull:pulling?(S.pullMotion?.tension || 0):0}
       },reducedMotion);
+      setLive2dStyleVar(stEl, "--rig-lace-slip-l-x", clampNum(-(left.sloshX || 0) * 0.14 - leftX * 0.08, -1.8, 1.8).toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-lace-slip-l-y", clampNum(-(left.sloshY || 0) * 0.18 + Math.max(0, -leftY) * 0.12, -2.2, 2.2).toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-lace-slip-r-x", clampNum(-(right.sloshX || 0) * 0.14 - rightX * 0.08, -1.8, 1.8).toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-lace-slip-r-y", clampNum(-(right.sloshY || 0) * 0.18 + Math.max(0, -rightY) * 0.12, -2.2, 2.2).toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-bust-left-x", leftX.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-bust-right-x", rightX.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-bust-left-y", leftY.toFixed(2) + "px");
@@ -12670,34 +13003,68 @@
       setLive2dStyleVar(stEl, "--l2d-hair-rot", st.hair.rot.toFixed(2) + "deg");
       let gust = 0;
       if (!reducedMotion && !compact && S.gust) {
-        const gustU = (nowMs - S.gust.t0) / 380;
-        if (gustU >= 0 && gustU < 1) gust = S.gust.dir * S.gust.mag * Math.sin(gustU * Math.PI) * (1 - gustU * 0.35);
+        const gustU = (nowMs - S.gust.t0) / 480;
+        if (gustU >= 0 && gustU < 1) gust = S.gust.dir * S.gust.mag * Math.sin(gustU * Math.PI) * (1 - gustU * 0.3);
       }
-      const breezeWave = Math.sin(nowMs * 0.0011) * 0.75 + Math.sin(nowMs * 0.0017 + 1.4) * 0.25 + gust;
+      // Ambient organic breeze swell + multi-harmonic traveling wave down the hair chain
+      const swellEnv = 0.55 + 0.45 * Math.sin(nowMs * 0.00038 + 0.7);
+      const breezeWave = (Math.sin(nowMs * 0.00125) * 0.68 + Math.sin(nowMs * 0.0021 + 1.4) * 0.28 + Math.sin(nowMs * 0.0034 + 2.7) * 0.14) * swellEnv + gust;
       const pullHairFreeze = !!(S.el && S.el.classList.contains("is-bust-pull") && layeredLobeDisp);
       const hairVis = floatDragging ? 1.48 : 1;
       const hairPullDamp = pullHairFreeze ? 0.06 : 1;
       const leftHair = rigHairMotion(st.hair.x * hairVis * hairPullDamp, st.hair.y * hairVis * hairPullDamp,
         st.hair.rot * hairVis * hairPullDamp, pullHairFreeze ? 0 : breathWave, pullHairFreeze ? 0 : breezeWave);
-      const rightBreeze = Math.sin(nowMs * 0.0011 - 0.55) * 0.75 + Math.sin(nowMs * 0.0017 + 0.85) * 0.25 + gust;
-      const rightHair = rigHairMotion(st.hair.x * 0.82 * hairVis * hairPullDamp, st.hair.y * 0.9 * hairVis * hairPullDamp,
-        st.hair.rot * 0.82 * hairVis * hairPullDamp,
-        pullHairFreeze ? 0 : Math.sin(st.phase - 0.18), pullHairFreeze ? 0 : rightBreeze);
+      const rightBreeze = (Math.sin(nowMs * 0.00125 - 0.65) * 0.68 + Math.sin(nowMs * 0.0021 + 0.75) * 0.28 + Math.sin(nowMs * 0.0034 + 1.9) * 0.14) * swellEnv + gust * 0.92;
+      const rightHair = rigHairMotion(st.hair.x * 0.86 * hairVis * hairPullDamp, st.hair.y * 0.92 * hairVis * hairPullDamp,
+        st.hair.rot * 0.86 * hairVis * hairPullDamp,
+        pullHairFreeze ? 0 : Math.sin(st.phase - 0.22), pullHairFreeze ? 0 : rightBreeze);
       setLive2dStyleVar(stEl, "--rig-hair-left-x", leftHair.x.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-hair-left-y", leftHair.y.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-hair-left-rot", leftHair.rotation.toFixed(2) + "deg");
+      setLive2dStyleVar(stEl, "--rig-hair-left-sy", (1 + clampNum(leftHair.y * 0.0055, -0.03, 0.035)).toFixed(4));
+      setLive2dStyleVar(stEl, "--rig-hair-left-skew", (-leftHair.rotation * 0.22).toFixed(2) + "deg");
       setLive2dStyleVar(stEl, "--rig-hair-right-x", rightHair.x.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-hair-right-y", rightHair.y.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-hair-right-rot", rightHair.rotation.toFixed(2) + "deg");
-      const leftTip = tickHairTip(st, "left", leftHair, dt, pullHairFreeze);
-      const rightTip = tickHairTip(st, "right", rightHair, dt, pullHairFreeze);
+      setLive2dStyleVar(stEl, "--rig-hair-right-sy", (1 + clampNum(rightHair.y * 0.0055, -0.03, 0.035)).toFixed(4));
+      setLive2dStyleVar(stEl, "--rig-hair-right-skew", (-rightHair.rotation * 0.22).toFixed(2) + "deg");
+      // Traveling wave phase delay (-0.95 rad) for lower tips + bust vertical bounce coupling
+      const leftTipBreeze = pullHairFreeze ? 0 : (Math.sin(nowMs * 0.00125 - 0.95) * 0.72 + Math.sin(nowMs * 0.0021 + 0.45) * 0.34) * swellEnv + gust * 1.18;
+      const rightTipBreeze = pullHairFreeze ? 0 : (Math.sin(nowMs * 0.00125 - 1.55) * 0.72 + Math.sin(nowMs * 0.0021 - 0.2) * 0.34) * swellEnv + gust * 1.12;
+      const leftTip = tickHairTip(st, "left", leftHair, dt, pullHairFreeze, leftTipBreeze, st.bust.vy);
+      const rightTip = tickHairTip(st, "right", rightHair, dt, pullHairFreeze, rightTipBreeze, st.bust.vy);
+      // Tip springs integrate every frame; their style writes (and the jewelry that follows them)
+      // share the decor cadence so Accueil / perf-pressure throttling still applies.
       if (publishDecor) {
-        setLive2dStyleVar(stEl, "--rig-hair-left-tip-x", leftTip.x.toFixed(2) + "px");
-        setLive2dStyleVar(stEl, "--rig-hair-left-tip-y", leftTip.y.toFixed(2) + "px");
-        setLive2dStyleVar(stEl, "--rig-hair-left-tip-rot", leftTip.r.toFixed(2) + "deg");
-        setLive2dStyleVar(stEl, "--rig-hair-right-tip-x", rightTip.x.toFixed(2) + "px");
-        setLive2dStyleVar(stEl, "--rig-hair-right-tip-y", rightTip.y.toFixed(2) + "px");
-        setLive2dStyleVar(stEl, "--rig-hair-right-tip-rot", rightTip.r.toFixed(2) + "deg");
+      setLive2dStyleVar(stEl, "--rig-hair-left-tip-x", leftTip.x.toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-hair-left-tip-y", leftTip.y.toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-hair-left-tip-rot", leftTip.r.toFixed(2) + "deg");
+      setLive2dStyleVar(stEl, "--rig-hair-left-tip-sy", (1 + clampNum(leftTip.y * 0.0075, -0.04, 0.048)).toFixed(4));
+      setLive2dStyleVar(stEl, "--rig-hair-left-tip-skew", (-leftTip.r * 0.28).toFixed(2) + "deg");
+      setLive2dStyleVar(stEl, "--rig-hair-right-tip-x", rightTip.x.toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-hair-right-tip-y", rightTip.y.toFixed(2) + "px");
+      setLive2dStyleVar(stEl, "--rig-hair-right-tip-rot", rightTip.r.toFixed(2) + "deg");
+      setLive2dStyleVar(stEl, "--rig-hair-right-tip-sy", (1 + clampNum(rightTip.y * 0.0075, -0.04, 0.048)).toFixed(4));
+      setLive2dStyleVar(stEl, "--rig-hair-right-tip-skew", (-rightTip.r * 0.28).toFixed(2) + "deg");
+      // Secondary jewelry motion (earring dangle from earlobe pin + necklace collarbone breath)
+      if (S.accessoryLayers) {
+        if (S.accessoryLayers.earringWrap && !S.accessoryLayers.earringWrap.hidden) {
+          const earLRot = clampNum(leftTip.r * 1.45 - st.head.sway * 0.65, -14, 14);
+          const earRRot = clampNum(rightTip.r * 1.45 - st.head.sway * 0.65, -14, 14);
+          const earLY = clampNum(leftTip.y * 0.32, -1.8, 1.8);
+          const earRY = clampNum(rightTip.y * 0.32, -1.8, 1.8);
+          setLive2dStyleVar(stEl, "--rig-earring-left-rot", earLRot.toFixed(2) + "deg");
+          setLive2dStyleVar(stEl, "--rig-earring-right-rot", earRRot.toFixed(2) + "deg");
+          setLive2dStyleVar(stEl, "--rig-earring-left-y", earLY.toFixed(2) + "px");
+          setLive2dStyleVar(stEl, "--rig-earring-right-y", earRY.toFixed(2) + "px");
+        }
+        if (S.accessoryLayers.necklace && !S.accessoryLayers.necklace.hidden) {
+          const neckY = clampNum(breathWave * 0.65 + st.bust.y * 0.16, -2.2, 2.2);
+          setLive2dStyleVar(stEl, "--rig-necklace-y", neckY.toFixed(2) + "px");
+        }
+      }
+        setLive2dStyleVar(stEl, "--rig-crown-sheen-x", clampNum(leftHair.x * 0.48 + st.head.sway * 0.85, -3.2, 3.2).toFixed(2) + "px");
+        setLive2dStyleVar(stEl, "--rig-crown-sheen-y", clampNum(breathWave * 0.45 + leftHair.y * 0.25, -1.8, 1.8).toFixed(2) + "px");
         setLive2dStyleVar(stEl, "--l2d-sheen-x", (st.head.x * 3.2 + st.bust.x * 1.8).toFixed(1) + "%");
         setLive2dStyleVar(stEl, "--l2d-sheen-y", (st.head.y * 2.5 + st.bust.y * 2.2).toFixed(1) + "%");
         setLive2dStyleVar(stEl, "--rig-sheen-x", (st.bust.x * 0.35 + depthX * 0.6).toFixed(2) + "px");
@@ -14130,14 +14497,46 @@
             if (speed >= 36 && curDist > avRad * 1.08 && curDist < avRad * 2.35 && Math.random() < 0.35) {
               triggerCursorPounce(win, av, last.clientX, last.clientY);
             }
-            if (!isCompactUI(win) && speed >= 34 && curDist < avRad * 1.5) {
+            if (!isCompactUI(win) && speed >= 14 && curDist < avRad * 1.45) {
               const gustNow = win.performance.now();
-              if (!S.gustAt || gustNow - S.gustAt > 320) {
+              const cvx = last.clientX - prevX;
+              const cvy = last.clientY - prevY;
+              // Direct hair brush-through impulse when sweeping across the upper half / side locks
+              if (dy < avRad * 0.45 && curDist < avRad * 1.08 && S.nsfwOn) {
+                const stBrush = ensureLive2DState();
+                const brushStrength = clampNum(speed / 48, 0.25, 1.35);
+                stBrush.hair.vx = clampNum(stBrush.hair.vx + cvx * 0.28 * brushStrength, -145, 145);
+                stBrush.hair.vy = clampNum(stBrush.hair.vy + cvy * 0.22 * brushStrength, -110, 110);
+                stBrush.hair.vrot = clampNum(stBrush.hair.vrot + cvx * 0.24 * brushStrength, -125, 125);
+                if (stBrush.hairTip) {
+                  const sideKey = dx < 0 ? "left" : "right";
+                  const tipSt = stBrush.hairTip[sideKey];
+                  if (tipSt) {
+                    tipSt.vx = clampNum(tipSt.vx + cvx * 0.35 * brushStrength, -28, 28);
+                    tipSt.vr = clampNum(tipSt.vr + cvx * 0.32 * brushStrength, -24, 24);
+                  }
+                }
+              }
+              // Interactive bra strap / scalloped cup-edge snap impulse when flicking across the bust cups
+              if (dy >= 0 && dy < avRad * 0.88 && curDist < avRad * 0.96 && speed >= 22 && S.nsfwOn) {
+                const stCup = ensureLive2DState();
+                const snapKey = dx < 0 ? "left" : "right";
+                const lobe = stCup.bustSides && stCup.bustSides[snapKey];
+                const snapMag = clampNum(speed / 55, 0.25, 1.25);
+                if (lobe) {
+                  lobe.sloshVx = clampNum((lobe.sloshVx || 0) + cvx * 0.24 * snapMag, -85, 85);
+                  lobe.sloshVy = clampNum((lobe.sloshVy || 0) + (cvy * 0.22 - 4.5) * snapMag, -85, 85);
+                }
+                if (stCup.cloth) {
+                  stCup.cloth[snapKey] = clampNum((stCup.cloth[snapKey] || 0) + 0.32 * snapMag, 0, 1);
+                }
+              }
+              if (speed >= 26 && (!S.gustAt || gustNow - S.gustAt > 260)) {
                 S.gustAt = gustNow;
                 S.gust = {
-                  dir: Math.sign(last.clientX - prevX) || 1,
+                  dir: Math.sign(cvx) || 1,
                   t0: gustNow,
-                  mag: clampNum(speed / 70, 0.35, 1.35)
+                  mag: clampNum(speed / 58, 0.38, 1.48)
                 };
               }
             }
@@ -17196,6 +17595,9 @@
     const colorSel = doc.createElement("select");
     colorSel.setAttribute("aria-label", "Couleur des boucles");
     fillSelect(colorSel, ACCESSORIES_EARRING_COLORS, accNow.earringColor);
+    const braSel = doc.createElement("select");
+    braSel.setAttribute("aria-label", "Lingerie");
+    fillSelect(braSel, ACCESSORIES_BRAS, accNow.bra || "noir");
     const syncColorEnabled = () => {
       const on = earSel.value !== "baked" && earSel.value !== "none";
       colorSel.disabled = !on;
@@ -17207,6 +17609,7 @@
         necklace: neckSel.value,
         earring: earSel.value,
         earringColor: colorSel.value,
+        bra: braSel.value,
       });
       syncColorEnabled();
       if (typeof S.applyAccessories === "function") S.applyAccessories();
@@ -17216,11 +17619,48 @@
     neckSel.addEventListener("change", onAccChange);
     earSel.addEventListener("change", onAccChange);
     colorSel.addEventListener("change", onAccChange);
+    braSel.addEventListener("change", onAccChange);
+    S.syncAccessoriesSelects = (accObj) => {
+      const a = accObj || readAccessories(win);
+      if (hairSel.value !== a.hair) hairSel.value = a.hair;
+      if (neckSel.value !== a.necklace) neckSel.value = a.necklace;
+      if (earSel.value !== a.earring) earSel.value = a.earring;
+      if (colorSel.value !== a.earringColor) colorSel.value = a.earringColor;
+      if (braSel.value !== (a.bra || "noir")) braSel.value = a.bra || "noir";
+      syncColorEnabled();
+    };
+    const accActionsRow = doc.createElement("div");
+    accActionsRow.className = "hq-companion-accessories-actions";
+    const autoLabel = doc.createElement("label");
+    autoLabel.className = "hq-companion-accessories-auto";
+    autoLabel.title = "Changer parfois de coiffure et de bijoux automatiquement";
+    const autoCheck = doc.createElement("input");
+    autoCheck.type = "checkbox";
+    autoCheck.checked = readAccessoriesAuto(win);
+    autoCheck.addEventListener("change", () => {
+      writeAccessoriesAuto(win, autoCheck.checked);
+    });
+    const autoSpan = doc.createElement("span");
+    autoSpan.textContent = "Varier auto";
+    autoLabel.append(autoCheck, autoSpan);
+    const shuffleBtn = doc.createElement("button");
+    shuffleBtn.type = "button";
+    shuffleBtn.className = "hq-companion-accessories-shuffle";
+    shuffleBtn.textContent = "🎲 Surprise";
+    shuffleBtn.title = "Essayer un nouveau look maintenant";
+    shuffleBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      cycleCompanionLook(win, { manual: true });
+    });
+    accActionsRow.append(autoLabel, shuffleBtn);
     fxAccPanel.append(
       mkAccRow("Coiffure", hairSel),
+      mkAccRow("Lingerie", braSel),
       mkAccRow("Collier", neckSel),
       mkAccRow("Boucles", earSel),
-      mkAccRow("Couleur", colorSel)
+      mkAccRow("Couleur", colorSel),
+      accActionsRow
     );
     fxAccessories.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -18052,6 +18492,27 @@
     wrap.append(bubble, avRow);
     doc.body.appendChild(wrap);
     S.el = wrap;
+    let wakePill = doc.getElementById("hq-companion-wake");
+    if (!wakePill) {
+      wakePill = doc.createElement("button");
+      wakePill.type = "button";
+      wakePill.id = "hq-companion-wake";
+      wakePill.className = "hq-companion-wake-pill";
+      wakePill.hidden = true;
+      wakePill.setAttribute("aria-label", "Réveiller Transferania (en pause)");
+      wakePill.setAttribute("title", "Transferania est en pause (1 h) — cliquer pour la faire réapparaître");
+      const moonIco = doc.createElement("span");
+      moonIco.className = "hq-companion-wake-ico";
+      moonIco.setAttribute("aria-hidden", "true");
+      moonIco.textContent = "🌙";
+      const wakeLbl = doc.createElement("span");
+      wakeLbl.className = "hq-companion-wake-label";
+      wakeLbl.textContent = "Réveiller Transferania";
+      wakePill.append(moonIco, wakeLbl);
+      wakePill.addEventListener("click", () => unmuteCompanion(win));
+      doc.body.appendChild(wakePill);
+    }
+    S.wakePill = wakePill;
     S.companionFloat = readCompanionFloat(win);
     S.companionFloat = clampCompanionFloat(win, S.companionFloat.x, S.companionFloat.y);
     S.companionAvatarScale = readCompanionAvatarScale(win);
@@ -18080,6 +18541,7 @@
       onBox.addEventListener("change", () => {
         try {
           win.localStorage.setItem(LS_ON, onBox.checked ? "1" : "0");
+          if (onBox.checked) win.localStorage.removeItem(LS_MUTE);
         } catch (_) {}
         syncVisibility();
         refresh(true);
@@ -18097,6 +18559,7 @@
             if (onBox) onBox.checked = false;
           } else {
             win.localStorage.setItem(LS_ON, "1");
+            win.localStorage.removeItem(LS_MUTE);
             if (onBox) onBox.checked = true;
           }
         } catch (_) {}
@@ -18170,6 +18633,87 @@
     sync();
   }
 
+  function cycleCompanionLook(win, opts) {
+    const w = win || S.win;
+    if (!w) return null;
+    const nextLook = pickRandomLook(w, opts);
+    const next = writeAccessories(w, nextLook);
+    S.lastLookChangeAt = Date.now();
+    const finishApply = () => {
+      if (typeof S.applyAccessories === "function") S.applyAccessories();
+      if (S.el && !S.el.hidden && S.nsfwOn && !calm(w)) {
+        S.el.classList.remove("is-idle-hair-tuck");
+        void S.el.offsetWidth;
+        S.el.classList.add("is-idle-hair-tuck");
+        w.setTimeout(() => S.el && S.el.classList.remove("is-idle-hair-tuck"), 1050);
+      }
+      if (opts && opts.manual && typeof w.hqToast === "function") {
+        const desc = describeLookLabel(next);
+        if (desc) w.hqToast("✨ " + desc);
+      }
+    };
+    const preloadUrls = [rigHairTextureSrc(next)];
+    const nUrl = rigNecklaceSrc(next.necklace);
+    if (nUrl) preloadUrls.push(nUrl);
+    Promise.all(
+      preloadUrls.map(
+        (u) =>
+          new Promise((res) => {
+            if (!w.Image) return res();
+            const im = new w.Image();
+            im.onload = im.onerror = () => res();
+            im.src = u;
+          })
+      )
+    ).then(() => {
+      if (S.ensureLayeredPortrait) {
+        S.ensureLayeredPortrait().then(finishApply).catch(finishApply);
+      } else {
+        finishApply();
+      }
+    });
+    return next;
+  }
+
+  function scheduleAccessoryRotation(win) {
+    if (!win) return;
+    S.lastLookChangeAt = Date.now();
+    // On boot, if auto-rotation is enabled, 45% chance to start the session with a fresh look
+    if (readAccessoriesAuto(win) && Math.random() < 0.45) {
+      // Wait until startup has settled, then take an idle slot: the texture fetch and decode
+      // must not compete with first paint and the boot polls.
+      win.setTimeout(() => {
+        const go = () => {
+          if (!win.document.hidden && readAccessoriesAuto(win) && !S.bustPull) {
+            cycleCompanionLook(win, { reason: "boot" });
+          }
+        };
+        if (typeof win.requestIdleCallback === "function") win.requestIdleCallback(go, { timeout: 4000 });
+        else go();
+      }, 12000);
+    }
+    const armNext = () => {
+      win.clearTimeout(S.accessoryRotateTimer);
+      // Every 6 to 11 minutes of active session
+      const delayMs = 360000 + Math.floor(Math.random() * 300000);
+      S.accessoryRotateTimer = win.setTimeout(() => {
+        if (
+          !win.document.hidden &&
+          S.el &&
+          !S.el.hidden &&
+          S.nsfwOn &&
+          readAccessoriesAuto(win) &&
+          !S.bustPull &&
+          !S.chatBusy
+        ) {
+          cycleCompanionLook(win, { reason: "timer" });
+        }
+        armNext();
+      }, delayMs);
+    };
+    armNext();
+  }
+
   function start(win) {
     S.win = win;
     bootstrapCompanionAudio(win);
@@ -18187,6 +18731,7 @@
       if ((win.document.body.dataset.view || "accueil") === "intime") syncIntimeView(win, "intime");
       scheduleIdleAmbientJiggle(win);
       scheduleIdleAnimRoulette(win);
+      scheduleAccessoryRotation(win);
       watchIdleExtras(win);
       let lastView = win.document.body.dataset.view || "accueil";
       S.lastView = lastView;
@@ -18204,6 +18749,15 @@
           }
         }
         if (v !== "intime") viewNudge(win, prev, v);
+        if (
+          readAccessoriesAuto(win) &&
+          S.nsfwOn &&
+          !S.bustPull &&
+          Date.now() - (S.lastLookChangeAt || 0) > 240000 &&
+          Math.random() < 0.25
+        ) {
+          cycleCompanionLook(win, { reason: "view" });
+        }
         if (v !== "intime") glanceViewPanel(win, v);
         syncViewAccent(win, v);
         noteActivity(win, "nav");

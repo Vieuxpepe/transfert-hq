@@ -159,14 +159,18 @@
         hp.frequency.value = 65;
         const lp = ctx.createBiquadFilter();
         lp.type = "lowpass";
-        lp.frequency.value = 3100;
+        lp.frequency.value = 2200 + str * 1800;
         src.connect(hp);
         hp.connect(lp);
         lp.connect(g);
         if (sfxBus) sfxBus.connectVoice(g);
         else if (audioCtx) g.connect(audioCtx.destination);
       } else {
-        src.connect(g);
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.value = 1800 + str * 4400;
+        src.connect(lp);
+        lp.connect(g);
         connectImpact(g);
       }
       src.start(now);

@@ -4,8 +4,17 @@
 
   const PORTRAIT = "/assets/companion/else-chip.jpg";
   const PORTRAIT_2X = "/assets/companion/else-chip@2x.jpg";
+  // Chip renders at 120–136 CSS px: 208 px covers 1x–1.5x, 416 px covers 2x–3x.
+  // The 1280 px masters (else-chip-body.jpg, else-chip-breast-*.png) are sources only.
+  const PORTRAIT_BODY = "/assets/companion/else-chip-body@1x.jpg";
+  const PORTRAIT_BODY_2X = "/assets/companion/else-chip-body@2x.jpg";
+  const BUST_LEFT = "/assets/companion/else-chip-breast-left@1x.png";
+  const BUST_LEFT_2X = "/assets/companion/else-chip-breast-left@2x.png";
+  const BUST_RIGHT = "/assets/companion/else-chip-breast-right@1x.png";
+  const BUST_RIGHT_2X = "/assets/companion/else-chip-breast-right@2x.png";
   const PORTRAIT_BY_MOOD = {
-    idle: { src: PORTRAIT, srcset: PORTRAIT + " 1x, " + PORTRAIT_2X + " 2x" },
+    // Idle uses underpainted body + live bust layers.
+    idle: { src: PORTRAIT_BODY, srcset: PORTRAIT_BODY + " 1x, " + PORTRAIT_BODY_2X + " 2x", bust: true },
     listening: {
       src: "/assets/companion/else-chip-listening.jpg",
       srcset: "/assets/companion/else-chip-listening.jpg 1x, /assets/companion/else-chip-listening@2x.jpg 2x",
@@ -168,9 +177,14 @@
           drag.longTimer = null;
         }
       }
+      const prevX = pos.x;
+      const prevY = pos.y;
       pos.x = drag.origX + dx;
       pos.y = drag.origY + dy;
       apply();
+      if (typeof opts.onMove === "function") {
+        opts.onMove(pos.x - prevX, pos.y - prevY, pos);
+      }
       if (ev.cancelable) ev.preventDefault();
     });
 
@@ -476,15 +490,41 @@
     const ring = doc.createElement("span");
     ring.className = "hq-else-chip-ring";
     ring.setAttribute("aria-hidden", "true");
+    const bustStage = doc.createElement("span");
+    bustStage.className = "hq-else-chip-bust";
+    bustStage.setAttribute("aria-hidden", "true");
     const img = doc.createElement("img");
     img.className = "hq-else-chip-avatar";
-    img.src = PORTRAIT;
-    img.srcset = PORTRAIT + " 1x, " + PORTRAIT_2X + " 2x";
+    img.src = PORTRAIT_BODY;
+    img.srcset = PORTRAIT_BODY + " 1x, " + PORTRAIT_BODY_2X + " 2x";
     img.alt = "Else";
     img.decoding = "async";
     img.loading = "lazy";
     img.draggable = false;
-    chip.append(ring, img);
+    const bustL = doc.createElement("img");
+    bustL.className = "hq-else-bust hq-else-bust-left";
+    bustL.src = BUST_LEFT;
+    bustL.srcset = BUST_LEFT + " 1x, " + BUST_LEFT_2X + " 2x";
+    bustL.alt = "";
+    bustL.decoding = "async";
+    bustL.draggable = false;
+    const bustR = doc.createElement("img");
+    bustR.className = "hq-else-bust hq-else-bust-right";
+    bustR.src = BUST_RIGHT;
+    bustR.srcset = BUST_RIGHT + " 1x, " + BUST_RIGHT_2X + " 2x";
+    bustR.alt = "";
+    bustR.decoding = "async";
+    bustR.draggable = false;
+    bustStage.append(img, bustL, bustR);
+    const fx = doc.createElement("span");
+    fx.className = "hq-else-chip-fx";
+    fx.setAttribute("aria-hidden", "true");
+    const fxBlink = doc.createElement("span");
+    fxBlink.className = "hq-else-fx-blink";
+    const fxBlush = doc.createElement("span");
+    fxBlush.className = "hq-else-fx-blush";
+    fx.append(fxBlink, fxBlush);
+    chip.append(ring, bustStage, fx);
 
     root.append(bubble, chip, chipMenu);
     doc.body.appendChild(root);
@@ -528,10 +568,25 @@
     let currentMood = "idle";
     let memoryRows = [];
     let sisterFavor = "tie";
+    let prevSisterFavor = "tie";
+    let favorPrimed = false;
     let muteUntil = 0;
     let lastSisterEvent = null;
     let speechAudio = null;
     let speechRequest = 0;
+    let lipTimer = null;
+    let aliveTimer = null;
+    let microTimer = null;
+    let speechActive = false;
+    const moodHolds = {
+      busy: null,
+      speech: null,
+      typing: null,
+      sister: null,
+      context: null,
+      flash: null,
+    };
+    const HOLD_ORDER = ["busy", "speech", "typing", "sister", "context", "flash"];
 
     try {
       if (win.localStorage.getItem(LS_PROACTIVE) === "0") proactiveOn = false;
@@ -548,8 +603,13 @@
     function syncChromeBusy(on) {
       const busy = !!on || sisterBusy() || chatBusy;
       root.classList.toggle("is-busy", busy);
-      if (busy) setMood("busy");
-      else if (currentMood === "busy") setMood("idle");
+      if (busy) {
+        setHold("busy", "busy", null);
+        clearHold("typing");
+      } else {
+        clearHold("busy");
+      }
+      paintMood();
       send.disabled = busy;
       input.disabled = busy;
       sisterGo.disabled = busy;
@@ -593,8 +653,10 @@
       voiceOn = on === true;
       try { win.localStorage.setItem(LS_VOICE, voiceOn ? "1" : "0"); } catch (_) {}
       if (!voiceOn) {
+        speechRequest += 1;
         try { if (win.speechSynthesis) win.speechSynthesis.cancel(); } catch (_) {}
         try { if (speechAudio) { speechAudio.pause(); speechAudio = null; } } catch (_) {}
+        endSpeakingVisual();
       }
       syncPrefsPanel();
       queueElsePrefs({ else_voice: voiceOn });
@@ -680,20 +742,311 @@
 
     function applyPortrait(mood) {
       const pack = PORTRAIT_BY_MOOD[mood] || PORTRAIT_BY_MOOD.idle;
+      const bustOn = !!pack.bust;
+      root.classList.toggle("is-bust", bustOn);
+      bustL.hidden = !bustOn;
+      bustR.hidden = !bustOn;
+      if (!bustOn) resetBustPose();
       if (img.src.indexOf(pack.src) >= 0) return;
       img.src = pack.src;
       img.srcset = pack.srcset;
     }
 
-    function setMood(mood, ms) {
+    const bustPhys = {
+      l: { x: 0, y: 0, vx: 0, vy: 0 },
+      r: { x: 0, y: 0, vx: 0, vy: 0 },
+      raf: 0,
+      lastT: 0,
+      impulseX: 0,
+      impulseY: 0,
+    };
+
+    function resetBustPose() {
+      bustPhys.l.x = bustPhys.l.y = bustPhys.l.vx = bustPhys.l.vy = 0;
+      bustPhys.r.x = bustPhys.r.y = bustPhys.r.vx = bustPhys.r.vy = 0;
+      bustL.style.transform = "";
+      bustR.style.transform = "";
+    }
+
+    function bustAmp() {
+      if (!root.classList.contains("is-bust")) return 0;
+      if (!motionAllowsFx()) return 0;
+      return root.classList.contains("is-motion-lite") ? 0.45 : 1;
+    }
+
+    function paintBust() {
+      const a = bustAmp();
+      if (!a) {
+        bustL.style.transform = "";
+        bustR.style.transform = "";
+        return;
+      }
+      const l = bustPhys.l;
+      const r = bustPhys.r;
+      bustL.style.transform = "translate3d(" + (l.x * a).toFixed(2) + "px," + (l.y * a).toFixed(2) + "px,0) rotate(" + (l.x * 0.35 * a).toFixed(2) + "deg)";
+      bustR.style.transform = "translate3d(" + (r.x * a).toFixed(2) + "px," + (r.y * a).toFixed(2) + "px,0) rotate(" + (r.x * 0.35 * a).toFixed(2) + "deg)";
+    }
+
+    function stepBustSide(side, mirror, ix, iy, dt) {
+      const targetX = ix * (0.55 + 0.12 * mirror);
+      const targetY = iy * 0.7;
+      const ax = (targetX - side.x) * 58 - side.vx * 9.5;
+      const ay = (targetY - side.y) * 58 - side.vy * 9.5;
+      side.vx += ax * dt;
+      side.vy += ay * dt;
+      side.x = Math.max(-7, Math.min(7, side.x + side.vx * dt));
+      side.y = Math.max(-5, Math.min(8, side.y + side.vy * dt));
+    }
+
+    function bustSideAtRest(side) {
+      return Math.abs(side.x) < 0.03 && Math.abs(side.y) < 0.03
+        && Math.abs(side.vx) < 0.4 && Math.abs(side.vy) < 0.4;
+    }
+
+    function bustHasEnergy() {
+      return Math.abs(bustPhys.impulseX) > 0.02 || Math.abs(bustPhys.impulseY) > 0.02
+        || !bustSideAtRest(bustPhys.l) || !bustSideAtRest(bustPhys.r);
+    }
+
+    // Idle breathing is a CSS keyframe on `translate` (see .hq-else-bust). This loop only runs
+    // while a drag impulse is decaying, then stops itself — no permanent per-frame work.
+    function stepBust(now) {
+      const dt = Math.min(0.033, Math.max(0.008, (now - (bustPhys.lastT || now)) / 1000));
+      bustPhys.lastT = now;
+      if (!bustAmp()) {
+        bustPhys.raf = 0;
+        bustPhys.impulseX = bustPhys.impulseY = 0;
+        resetBustPose();
+        return;
+      }
+      // Drag impulse decays into both lobes with slight phase lag.
+      const ix = bustPhys.impulseX;
+      const iy = bustPhys.impulseY;
+      const decay = Math.pow(0.12, dt);
+      bustPhys.impulseX *= decay;
+      bustPhys.impulseY *= decay;
+      stepBustSide(bustPhys.l, 1, ix, iy, dt);
+      stepBustSide(bustPhys.r, -1, ix, iy, dt);
+      if (!bustHasEnergy()) {
+        bustPhys.raf = 0;
+        bustPhys.impulseX = bustPhys.impulseY = 0;
+        resetBustPose();
+        return;
+      }
+      paintBust();
+      bustPhys.raf = win.requestAnimationFrame(stepBust);
+    }
+
+    function ensureBustLoop() {
+      if (bustPhys.raf) return;
+      if (!bustAmp() || !bustHasEnergy()) return;
+      bustPhys.lastT = 0;
+      bustPhys.raf = win.requestAnimationFrame(stepBust);
+    }
+
+    function nudgeBust(dx, dy) {
+      if (!bustAmp()) return;
+      bustPhys.impulseX += Math.max(-14, Math.min(14, dx * 0.08));
+      bustPhys.impulseY += Math.max(-10, Math.min(12, dy * 0.06));
+      ensureBustLoop();
+    }
+
+    function clearHold(key) {
+      if (Object.prototype.hasOwnProperty.call(moodHolds, key)) moodHolds[key] = null;
+    }
+
+    function setHold(key, mood, until) {
+      if (!Object.prototype.hasOwnProperty.call(moodHolds, key)) return;
       const next = MOODS.indexOf(mood) >= 0 ? mood : "idle";
+      moodHolds[key] = { mood: next, until: until == null ? null : Number(until) };
+    }
+
+    function resolveMood() {
+      const now = Date.now();
+      for (let i = 0; i < HOLD_ORDER.length; i++) {
+        const key = HOLD_ORDER[i];
+        const h = moodHolds[key];
+        if (!h) continue;
+        if (h.until != null && now >= h.until) {
+          moodHolds[key] = null;
+          continue;
+        }
+        return h.mood;
+      }
+      return "idle";
+    }
+
+    function armMoodExpiry() {
+      if (moodTimer) win.clearTimeout(moodTimer);
+      moodTimer = null;
+      let soonest = 0;
+      const now = Date.now();
+      HOLD_ORDER.forEach((key) => {
+        const h = moodHolds[key];
+        if (h && h.until != null && h.until > now) {
+          if (!soonest || h.until < soonest) soonest = h.until;
+        }
+      });
+      if (soonest) {
+        moodTimer = win.setTimeout(() => {
+          moodTimer = null;
+          paintMood();
+        }, Math.max(80, soonest - Date.now()));
+      }
+    }
+
+    function paintMood() {
+      const next = resolveMood();
+      if (next === currentMood) {
+        armMoodExpiry();
+        return;
+      }
       MOODS.forEach((m) => root.classList.toggle("is-mood-" + m, m === next));
       currentMood = next;
       applyPortrait(next);
-      if (moodTimer) win.clearTimeout(moodTimer);
-      if (next !== "idle" && next !== "busy") {
-        moodTimer = win.setTimeout(() => setMood(chatBusy || sisterBusy() ? "busy" : "idle"), Math.max(900, Number(ms) || 1800));
+      armMoodExpiry();
+    }
+
+    function setMood(mood, ms) {
+      const next = MOODS.indexOf(mood) >= 0 ? mood : "idle";
+      if (next === "idle") {
+        clearHold("flash");
+        paintMood();
+        return;
       }
+      // Sticky busy is owned by syncChromeBusy — setMood only flashes.
+      if (next === "busy") {
+        const dur = Math.max(900, Number(ms) || 1800);
+        setHold("flash", "busy", Date.now() + dur);
+        paintMood();
+        return;
+      }
+      if (next === "sister") {
+        holdSister(ms);
+        return;
+      }
+      const dur = Math.max(900, Number(ms) || 1800);
+      setHold("flash", next, Date.now() + dur);
+      paintMood();
+    }
+
+    function holdSister(ms) {
+      const dur = Math.max(2800, Number(ms) || 4500);
+      setHold("sister", "sister", Date.now() + dur);
+      paintMood();
+      fireMicro("blush");
+    }
+
+    function motionAllowsFx() {
+      if (doc.hidden || !chipVisible) return false;
+      if (root.classList.contains("is-anim-paused")) return false;
+      return motionTier() !== "parked";
+    }
+
+    function fireMicro(kind) {
+      if (!motionAllowsFx()) return;
+      if (root.classList.contains("is-motion-lite") && kind !== "blink") return;
+      const k = String(kind || "");
+      if (!k) return;
+      const cls = "is-fx-" + k;
+      ["blink", "blush", "glance", "think"].forEach((n) => root.classList.remove("is-fx-" + n));
+      // Restart CSS without sync layout flush (offsetWidth).
+      win.requestAnimationFrame(() => {
+        root.classList.add(cls);
+      });
+      if (microTimer) win.clearTimeout(microTimer);
+      const ms = k === "blink" ? 170 : (k === "think" ? 900 : 650);
+      microTimer = win.setTimeout(() => {
+        root.classList.remove(cls);
+        microTimer = null;
+      }, ms);
+    }
+
+    function scheduleAliveIdle() {
+      if (aliveTimer) win.clearTimeout(aliveTimer);
+      const arm = () => {
+        const paused = !motionAllowsFx();
+        // Parked/hidden: wake rarely. Full: soft presence cadence.
+        const delay = paused
+          ? 20000 + Math.floor(Math.random() * 20000)
+          : 4800 + Math.floor(Math.random() * 8000);
+        aliveTimer = win.setTimeout(() => {
+          aliveTimer = null;
+          if (currentMood === "idle" && motionAllowsFx()) {
+            const roll = Math.random();
+            if (roll < 0.62) fireMicro("blink");
+            else if (root.classList.contains("is-motion-lite")) fireMicro("blink");
+            else if (roll < 0.80) fireMicro("glance");
+            else if (roll < 0.93) fireMicro("think");
+            else fireMicro("blush");
+          }
+          arm();
+        }, delay);
+      };
+      arm();
+    }
+
+    function stopLipSync() {
+      if (lipTimer) {
+        win.clearTimeout(lipTimer);
+        lipTimer = null;
+      }
+      root.classList.remove("is-lip-open", "is-lip-pulse");
+    }
+
+    function startLipSync(mode) {
+      stopLipSync();
+      const tier = motionTier();
+      if (tier === "parked" || doc.hidden) return;
+      root.classList.add("is-speaking");
+      if (mode !== "pulse") return;
+      // CSS pulse — no setInterval class thrash. Lite: ring only, no avatar work.
+      root.classList.add("is-lip-pulse");
+      if (tier === "lite") root.classList.add("is-motion-lite");
+    }
+
+    function beginSpeakingVisual() {
+      speechActive = true;
+      setHold("speech", "speaking", null);
+      root.classList.add("is-speaking");
+      paintMood();
+    }
+
+    function endSpeakingVisual() {
+      speechActive = false;
+      stopLipSync();
+      clearHold("speech");
+      root.classList.remove("is-speaking");
+      paintMood();
+    }
+
+    function bindSpeechAudio(audio, req) {
+      const onDone = () => {
+        if (req !== speechRequest) return;
+        if (speechAudio === audio) speechAudio = null;
+        endSpeakingVisual();
+      };
+      audio.addEventListener("play", () => {
+        if (req !== speechRequest) return;
+        beginSpeakingVisual();
+        startLipSync("pulse");
+      });
+      audio.addEventListener("ended", onDone);
+      audio.addEventListener("pause", () => {
+        if (req !== speechRequest) return;
+        // Treat intentional pause/stop as end; mid-swap is guarded by speechRequest bump.
+        onDone();
+      });
+      audio.addEventListener("error", onDone);
+    }
+
+    function syncContextMood() {
+      const view = (doc.body && doc.body.dataset.view) || "accueil";
+      root.classList.toggle("is-ctx-carnet", view === "carnet");
+      root.classList.toggle("is-ctx-forge", view === "forge");
+      // CSS-only context tint — do not pin busy hold (keeps idle breathe alive).
+      clearHold("context");
+      paintMood();
     }
 
     let cachedFrVoice = null;
@@ -722,7 +1075,10 @@
 
     function fallbackBrowserSpeech(t) {
       try {
-        if (!win.speechSynthesis) return;
+        if (!win.speechSynthesis) {
+          endSpeakingVisual();
+          return;
+        }
         win.speechSynthesis.cancel();
         const u = new win.SpeechSynthesisUtterance(t.slice(0, 280));
         u.lang = "fr-FR";
@@ -731,8 +1087,21 @@
         u.volume = 0.42;
         const fr = pickElseVoice();
         if (fr) u.voice = fr;
+        u.onstart = () => {
+          beginSpeakingVisual();
+          startLipSync("pulse");
+        };
+        u.onboundary = (ev) => {
+          if (ev && ev.name === "word") root.classList.toggle("is-lip-open");
+        };
+        u.onend = () => endSpeakingVisual();
+        u.onerror = () => endSpeakingVisual();
+        beginSpeakingVisual();
+        startLipSync("pulse");
         win.speechSynthesis.speak(u);
-      } catch (_) {}
+      } catch (_) {
+        endSpeakingVisual();
+      }
     }
 
     function speakElseQuiet(text) {
@@ -740,7 +1109,8 @@
       const t = String(text || "").replace(/[♥✨🔥💋]/g, "").trim();
       if (!t || doc.hidden) return;
       const req = ++speechRequest;
-      setMood("speaking", Math.min(8000, 900 + t.length * 45));
+      beginSpeakingVisual();
+      startLipSync("pulse");
       try { if (speechAudio) { speechAudio.pause(); speechAudio = null; } } catch (_) {}
       try { if (win.speechSynthesis) win.speechSynthesis.cancel(); } catch (_) {}
       fetchJson(win, "/api/ai", withDevice(win, {
@@ -749,12 +1119,16 @@
         text: t.slice(0, 400),
         style: "thoughtful",
       })).then((data) => {
-        if (req !== speechRequest || !voiceOn || doc.hidden) return;
+        if (req !== speechRequest || !voiceOn || doc.hidden) {
+          if (req === speechRequest) endSpeakingVisual();
+          return;
+        }
         if (data && data.ok && data.audio_url) {
           try {
             const audio = new win.Audio(data.audio_url);
             speechAudio = audio;
             audio.volume = 0.55;
+            bindSpeechAudio(audio, req);
             audio.play().catch(() => {
               if (req === speechRequest) fallbackBrowserSpeech(t);
             });
@@ -764,6 +1138,7 @@
         fallbackBrowserSpeech(t);
       }).catch(() => {
         if (req === speechRequest && voiceOn && !doc.hidden) fallbackBrowserSpeech(t);
+        else if (req === speechRequest) endSpeakingVisual();
       });
     }
 
@@ -774,6 +1149,7 @@
       return "full";
     }
 
+    let motionPerfTimer = null;
     function syncMotionPerf() {
       const tier = motionTier();
       const parked = tier === "parked" || !!doc.hidden || !chipVisible
@@ -783,6 +1159,23 @@
       root.classList.toggle("is-motion-lite", lite);
       toggle.classList.toggle("is-anim-paused", parked);
       toggle.classList.toggle("is-motion-lite", lite);
+      if (parked) {
+        stopLipSync();
+        if (bustPhys.raf) {
+          win.cancelAnimationFrame(bustPhys.raf);
+          bustPhys.raf = 0;
+        }
+        paintBust();
+      } else {
+        ensureBustLoop();
+      }
+    }
+    function scheduleSyncMotionPerf() {
+      if (motionPerfTimer) return;
+      motionPerfTimer = win.setTimeout(() => {
+        motionPerfTimer = null;
+        syncMotionPerf();
+      }, 48);
     }
 
     function pulseToggle(ms, preview) {
@@ -859,19 +1252,36 @@
 
     function markSpeaking(on) {
       root.classList.toggle("is-speaking", !!on);
-      if (on) setMood("speaking", 1600);
       try {
         doc.documentElement.classList.toggle("hq-sister-speaking", !!on);
       } catch (_) {}
+      if (on) {
+        setHold("speech", "speaking", null);
+        paintMood();
+      } else if (!speechActive) {
+        clearHold("speech");
+        paintMood();
+      }
     }
 
-    function setLine(text, animate) {
+    function setLine(text, animate, opts) {
       const t = String(text || "").trim() || IDLE_LINE;
+      const o = opts || {};
+      // speakVisual: typewriter / voice path only — ambient peeks must not steal speaking hold.
+      const speakVisual = o.speakVisual != null ? !!o.speakVisual : !!animate;
       root.classList.add("is-typing");
-      markSpeaking(true);
+      if (speakVisual) {
+        markSpeaking(true);
+        startLipSync(animate ? "pulse" : null);
+      }
       const finish = () => {
         root.classList.remove("is-typing");
-        win.setTimeout(() => markSpeaking(false), 400);
+        if (!speakVisual) return;
+        win.setTimeout(() => {
+          if (speechActive) return;
+          stopLipSync();
+          markSpeaking(false);
+        }, voiceOn ? 120 : 400);
       };
       if (animate) typewriter(win, line, t, finish);
       else {
@@ -1024,6 +1434,13 @@
       sisterMeter.classList.toggle("is-else", sisterFavor === "else");
       sisterMeter.classList.toggle("is-transferania", sisterFavor === "transferania");
       sisterMeter.classList.toggle("is-tie", sisterFavor === "tie");
+      if (favorPrimed && sisterFavor !== prevSisterFavor && sisterFavor !== "tie") {
+        holdSister(5200);
+        root.classList.add("is-favor-spike");
+        win.setTimeout(() => root.classList.remove("is-favor-spike"), 1600);
+      }
+      prevSisterFavor = sisterFavor;
+      favorPrimed = true;
       if (!tease || (!expanded && sisterBar.hidden)) {
         sisterMeter.hidden = true;
         return;
@@ -1314,6 +1731,7 @@
       storageKey: LS_FLOAT,
       minVisible: 72,
       onLongPress: () => openChipMenu(true),
+      onMove: (dx, dy) => nudgeBust(dx, dy),
     });
     const toggleFloat = bindFloatDrag(win, {
       el: toggle,
@@ -1458,6 +1876,39 @@
     });
     form.addEventListener("submit", sendChat);
 
+    let typingHoldTimer = null;
+    function refreshTypingHold(immediate) {
+      const run = () => {
+        typingHoldTimer = null;
+        if (doc.activeElement === input || (input.value || "").trim()) {
+          setHold("typing", "listening", Date.now() + 5000);
+        } else {
+          clearHold("typing");
+        }
+        paintMood();
+      };
+      if (immediate) {
+        if (typingHoldTimer) win.clearTimeout(typingHoldTimer);
+        typingHoldTimer = null;
+        run();
+        return;
+      }
+      if (typingHoldTimer) return;
+      typingHoldTimer = win.setTimeout(run, 120);
+    }
+    input.addEventListener("focus", () => {
+      setHold("typing", "listening", null);
+      paintMood();
+      fireMicro("think");
+    });
+    input.addEventListener("blur", () => {
+      refreshTypingHold(true);
+    });
+    input.addEventListener("input", () => {
+      refreshTypingHold(false);
+      if ((input.value || "").trim().length === 1) fireMicro("glance");
+    });
+
     if (!win.__hqElseBusBound) {
       win.__hqElseBusBound = true;
       win.addEventListener("hq-sister-open", (ev) => {
@@ -1477,18 +1928,23 @@
             // Ambient/react: keep bubble closed; chip peek carries presence.
             if (detail.ambient) {
               showPeek(String(detail.text));
-              if (chipVisible) setLine(String(detail.text), false);
+              if (chipVisible) setLine(String(detail.text), false, { speakVisual: false });
             } else {
               ensureChipVisible();
               setOpen(true);
-              setLine(String(detail.text), true);
+              setLine(String(detail.text), true, { speakVisual: true });
               speakElseQuiet(detail.text);
             }
           } else if (chipVisible) {
-            setLine(String(detail.text), !detail.ambient);
-            if (!detail.ambient) speakElseQuiet(detail.text);
+            if (detail.ambient) {
+              setLine(String(detail.text), false, { speakVisual: false });
+            } else {
+              setLine(String(detail.text), true, { speakVisual: true });
+              speakElseQuiet(detail.text);
+            }
           }
-          setMood(detail.ambient ? "proactive" : "speaking", detail.ambient ? 1800 : 2200);
+          // Speech hold already owns speaking; ambient must land as proactive flash.
+          if (detail.ambient) setMood("proactive", 2200);
         } else if (detail.speaker === "transferania") {
           setMood("sister", 1400);
         }
@@ -1608,13 +2064,32 @@
     syncPrefToggles();
     syncPrefsPanel();
     setMood("idle");
+    syncContextMood();
     syncMotionPerf();
-    win.addEventListener("hq:motion-mode", syncMotionPerf);
-    doc.addEventListener("visibilitychange", syncMotionPerf);
+    ensureBustLoop();
+    scheduleAliveIdle();
+    win.addEventListener("hq:motion-mode", scheduleSyncMotionPerf);
+    doc.addEventListener("visibilitychange", () => {
+      syncMotionPerf();
+      if (doc.hidden) {
+        stopLipSync();
+        if (!speechActive) clearHold("speech");
+      }
+    });
     try {
-      new win.MutationObserver(syncMotionPerf).observe(doc.body, {
+      new win.MutationObserver((muts) => {
+        let view = false;
+        let cls = false;
+        for (let i = 0; i < muts.length; i++) {
+          const a = muts[i] && muts[i].attributeName;
+          if (a === "data-view") view = true;
+          else if (a === "class") cls = true;
+        }
+        if (cls) scheduleSyncMotionPerf();
+        if (view) syncContextMood();
+      }).observe(doc.body, {
         attributes: true,
-        attributeFilter: ["class"],
+        attributeFilter: ["class", "data-view"],
       });
     } catch (_) {}
     loadServerPrefs();

@@ -1,5 +1,5 @@
 {
-  "name": "Transferania accessories (hair, necklaces, earrings)",
+  "name": "Transferania accessories (hair, necklaces, earrings, bras)",
   "canvas": [1254, 1354],
   "face_canvas": [1254, 1254],
   "placement": {
@@ -10,7 +10,8 @@
     "hair": "default",
     "necklace": "none",
     "earring": "baked",
-    "earringColor": "or"
+    "earringColor": "or",
+    "bra": "noir"
   },
   "hair": [
     { "id": "default", "label": "Classique", "file": null, "note": "assets/companion/rig-neutral-v1/hair-new-baked.png (baked earrings)" },
@@ -70,6 +71,22 @@
     ],
     "pivots_px": { "left": [503, 569], "right": [825, 518] }
   },
-  "stack": ["face/neck", "necklace", "earrings", "hair"],
+  "bras": [
+    { "id": "noir", "label": "Dentelle noire (Origine)", "category": "classique", "base": null, "left": null, "right": null },
+    { "id": "rubis", "label": "Balconnet satin rubis", "category": "classique", "base": "bras/bra-rubis-base.webp", "left": "bras/bra-rubis-left.webp", "right": "bras/bra-rubis-right.webp" },
+    { "id": "harnais", "label": "Harnais cuir & anneaux", "category": "classique", "base": "bras/bra-harnais-base.webp", "left": "bras/bra-harnais-left.webp", "right": "bras/bra-harnais-right.webp" },
+    { "id": "rose", "label": "Triangle soie rose", "category": "classique", "base": "bras/bra-rose-base.webp", "left": "bras/bra-rose-left.webp", "right": "bras/bra-rose-right.webp" },
+    { "id": "violet", "label": "Corset velours violet", "category": "classique", "base": "bras/bra-violet-base.webp", "left": "bras/bra-violet-left.webp", "right": "bras/bra-violet-right.webp" },
+    { "id": "emeraude", "label": "Bralette tulle émeraude", "category": "classique", "base": "bras/bra-emeraude-base.webp", "left": "bras/bra-emeraude-left.webp", "right": "bras/bra-emeraude-right.webp" },
+    { "id": "saphir", "label": "Cyber-néon saphir", "category": "classique", "base": "bras/bra-saphir-base.webp", "left": "bras/bra-saphir-left.webp", "right": "bras/bra-saphir-right.webp" },
+    { "id": "or", "label": "Bijoux d'or impérial", "category": "classique", "base": "bras/bra-or-base.webp", "left": "bras/bra-or-left.webp", "right": "bras/bra-or-right.webp" },
+    { "id": "cupless", "label": "🌶️ Bonnets ouverts (Cupless)", "category": "spicy", "base": "bras/bra-cupless-base.webp", "left": "bras/bra-cupless-left.webp", "right": "bras/bra-cupless-right.webp" },
+    { "id": "micro_fil", "label": "🌶️ Micro-ficelle rouge", "category": "spicy", "base": "bras/bra-micro_fil-base.webp", "left": "bras/bra-micro_fil-left.webp", "right": "bras/bra-micro_fil-right.webp" },
+    { "id": "sheer_mesh", "label": "🌶️ Voile blanc transparent", "category": "spicy", "base": "bras/bra-sheer_mesh-base.webp", "left": "bras/bra-sheer_mesh-left.webp", "right": "bras/bra-sheer_mesh-right.webp" },
+    { "id": "chaine_bijou", "label": "🌶️ Pasties d'or & chaînes", "category": "spicy", "base": "bras/bra-chaine_bijou-base.webp", "left": "bras/bra-chaine_bijou-left.webp", "right": "bras/bra-chaine_bijou-right.webp" },
+    { "id": "bondage_vinyle", "label": "🌶️ Vinyle fendu & harnais", "category": "spicy", "base": "bras/bra-bondage_vinyle-base.webp", "left": "bras/bra-bondage_vinyle-left.webp", "right": "bras/bra-bondage_vinyle-right.webp" },
+    { "id": "ruban_soie", "label": "🌶️ Ruban cadeau dénoué", "category": "spicy", "base": "bras/bra-ruban_soie-base.webp", "left": "bras/bra-ruban_soie-left.webp", "right": "bras/bra-ruban_soie-right.webp" }
+  ],
+  "stack": ["face/neck", "necklace", "earrings", "hair", "bra-base", "bra-left/right"],
   "ui": "Outils > Accessoires (à côté de Calques)"
 }
