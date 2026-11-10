@@ -34,6 +34,28 @@ révisions atomiques (CAS sur ``rev``) et listes bornées (≤100 ingrédients, 
 sans explosion de tables relationnelles en v1. Aucune écriture Inventoria ni ledger ; le build-list
 preview ne persiste rien ; commit idempotent via ``grocery_list_build_idempotency``.
 
+### SQLite v6 — achats réels (PR #35 core)
+
+Tables ``actual_purchases`` (unicité ``fingerprint`` par foyer), ``purchase_idempotency``,
+``cross_store_ops`` (journal **préparatoire** uniquement). ``POST /api/grocery/purchases/actual``
+peut écrire achat + transaction ``grocery_purchase`` + lot dans **une** transaction SQLite
+(**SQLite-only fonctionnel** pour cette PR).
+
+- ``adjust_inventory`` renvoie **501** — aucun ``hq_inventory.apply()``, aucun ``item.adjust``
+  best-effort, **aucune synchronisation Inventoria**.
+- Le critère de réconciliation SQLite↔Inventoria **n'est pas satisfait** ; ne pas présenter
+  cette livraison comme une réconciliation cross-store complète.
+- Montants d'achat en centimes : devise implicite = ``households.currency`` ; compte financier
+  doit avoir la même devise (pas de conversion FX).
+- Isolation foyer : ``account_id`` / ``category_id`` validés côté achats **et**
+  ``insert_transaction(..., via="grocery_purchase")`` (pas de confiance FK seule).
+- Unicité durable : index ``idx_actual_purchases_idempotency`` UNIQUE non-partiel
+  ``(household_id, idempotency_key)`` — validé via ``PRAGMA index_list`` (``unique=1``, ``partial=0``)
+  et ``PRAGMA index_xinfo`` (exactement deux colonnes ``key=1``, pas d'expression) ;
+  réparation writable = sauvegarde ``pre-v6-idem-index`` + transaction DDL (refus si doublons).
+- Clé finance dérivée = SHA-256 64 hex (bornes 8–128 sur la clé achat).
+- Pas de table ``planned_purchases``.
+
 ### SQLite v3 — colonne ``budget_envelopes.currency``
 
 - **Contrat API** : ``schemas/household/finances.v1`` (entité ``budget_envelope.currency``) — distinct de ``PRAGMA user_version`` 3.

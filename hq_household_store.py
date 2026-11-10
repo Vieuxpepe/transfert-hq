@@ -29,9 +29,9 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 BUSY_TIMEOUT_MS = 5_000
-APP_REV = "household-meals-v5"
+APP_REV = "household-purchases-v6"
 
 SYSTEM_SID = "S-1-5-18"
 # Broad identities that must not remain on a sealed household path.
@@ -792,12 +792,107 @@ def _apply_v5(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 5")
 
 
+_V6_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS actual_purchases (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      planned_id TEXT,
+      product_id TEXT,
+      merchant_id TEXT NOT NULL,
+      qty_milli INTEGER NOT NULL CHECK(qty_milli >= 1),
+      unit TEXT NOT NULL,
+      paid_cents INTEGER NOT NULL CHECK(paid_cents >= 0),
+      taxed_cents INTEGER NOT NULL DEFAULT 0 CHECK(taxed_cents >= 0),
+      deposit_cents INTEGER NOT NULL DEFAULT 0 CHECK(deposit_cents >= 0),
+      purchased_on TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      finance_tx_id TEXT,
+      food_lot_id TEXT,
+      idempotency_key TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (merchant_id) REFERENCES merchants(id),
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_actual_purchases_fingerprint
+      ON actual_purchases(household_id, fingerprint)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_actual_purchases_idempotency
+      ON actual_purchases(household_id, idempotency_key)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_actual_purchases_household_date
+      ON actual_purchases(household_id, purchased_on, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS purchase_idempotency (
+      household_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      PRIMARY KEY (household_id, idempotency_key),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cross_store_ops (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      planned_steps_json TEXT NOT NULL,
+      step_index INTEGER NOT NULL CHECK(step_index >= 0),
+      step_results_json TEXT NOT NULL DEFAULT '[]',
+      inventory_rev_before INTEGER,
+      inventory_rev_after INTEGER,
+      uncertain_inventory INTEGER NOT NULL DEFAULT 0 CHECK(uncertain_inventory IN (0, 1)),
+      reconcile_plan_json TEXT,
+      error_code TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      closed_at REAL,
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      UNIQUE (household_id, idempotency_key)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_cross_store_ops_household_status
+      ON cross_store_ops(household_id, status, id)
+    """,
+)
+
+
+def _apply_v6(conn: sqlite3.Connection) -> None:
+    """Actual purchases, purchase idempotency, cross-store journal (v6)."""
+    for stmt in _V6_STATEMENTS:
+        _exec_sql(conn, stmt)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (6, now, "household actual purchases core v6"),
+    )
+    conn.execute("PRAGMA user_version = 6")
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _apply_v1,
     2: _apply_v2,
     3: _apply_v3,
     4: _apply_v4,
     5: _apply_v5,
+    6: _apply_v6,
 }
 
 
@@ -1006,6 +1101,154 @@ def validate_schema_v5(conn: sqlite3.Connection) -> None:
     _validate_schema_tables(conn, _V5_REQUIRED, label="v5")
 
 
+_V6_REQUIRED: dict[str, tuple[str, ...]] = {
+    "actual_purchases": (
+        "id", "household_id", "merchant_id", "qty_milli", "unit", "paid_cents",
+        "purchased_on", "fingerprint", "idempotency_key", "created_at", "updated_at", "rev",
+    ),
+    "purchase_idempotency": (
+        "household_id", "idempotency_key", "operation", "request_hash",
+        "entity_type", "entity_id", "response_json", "created_at",
+    ),
+    "cross_store_ops": (
+        "id", "household_id", "kind", "idempotency_key", "status", "request_hash",
+        "planned_steps_json", "step_index", "step_results_json", "uncertain_inventory",
+        "created_at", "updated_at",
+    ),
+}
+
+
+_ACTUAL_PURCHASES_IDEM_INDEX = "idx_actual_purchases_idempotency"
+_ACTUAL_PURCHASES_IDEM_COLS = ("household_id", "idempotency_key")
+
+
+def _pragma_index_list_row(conn: sqlite3.Connection, table: str, index_name: str) -> sqlite3.Row | None:
+    for row in conn.execute(f"PRAGMA index_list({table!r})").fetchall():
+        iname = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        if str(iname) == index_name:
+            return row
+    return None
+
+
+def _pragma_index_key_column_names(conn: sqlite3.Connection, index_name: str) -> tuple[str, ...] | None:
+    """Key parts only (index_xinfo.key=1); None if PRAGMA unavailable."""
+    try:
+        rows = conn.execute(f"PRAGMA index_xinfo({index_name!r})").fetchall()
+    except sqlite3.Error:
+        return None
+    names: list[str] = []
+    for row in rows:
+        is_key = int(row["key"] if isinstance(row, sqlite3.Row) else row[5])
+        if is_key != 1:
+            continue
+        cid = int(row["cid"] if isinstance(row, sqlite3.Row) else row[1])
+        name = row["name"] if isinstance(row, sqlite3.Row) else row[2]
+        if cid < 0 or name is None or str(name).strip() == "":
+            return None
+        names.append(str(name))
+    return tuple(names)
+
+
+def is_actual_purchases_idempotency_index_valid(conn: sqlite3.Connection) -> bool:
+    """True only if idx… is non-partial UNIQUE on exactly (household_id, idempotency_key)."""
+    row = _pragma_index_list_row(conn, "actual_purchases", _ACTUAL_PURCHASES_IDEM_INDEX)
+    if row is None:
+        return False
+    unique = int(row["unique"] if isinstance(row, sqlite3.Row) else row[2])
+    if unique != 1:
+        return False
+    partial = 0
+    if isinstance(row, sqlite3.Row) and "partial" in row.keys():
+        partial = int(row["partial"])
+    elif not isinstance(row, sqlite3.Row) and len(row) > 4:
+        partial = int(row[4])
+    if partial != 0:
+        return False
+    key_cols = _pragma_index_key_column_names(conn, _ACTUAL_PURCHASES_IDEM_INDEX)
+    if key_cols is None:
+        return False
+    return key_cols == _ACTUAL_PURCHASES_IDEM_COLS
+
+
+def _actual_purchases_idempotency_has_duplicates(conn: sqlite3.Connection) -> bool:
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_purchases'",
+    ).fetchone() is None:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM actual_purchases "
+        "GROUP BY household_id, idempotency_key HAVING COUNT(*) > 1 LIMIT 1",
+    ).fetchone() is not None
+
+
+def ensure_actual_purchases_idempotency_index(
+    conn: sqlite3.Connection,
+    root: Path | str,
+) -> None:
+    """Writable repair only: verified backup + DDL transaction when the index is missing or invalid."""
+    if is_actual_purchases_idempotency_index_valid(conn):
+        return
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_purchases'",
+    ).fetchone() is None:
+        return
+    if _actual_purchases_idempotency_has_duplicates(conn):
+        raise HouseholdStoreError(
+            "Doublons (household_id, idempotency_key) sur actual_purchases — "
+            "réparation index refusée (aucune fusion automatique)",
+            code="schema_error",
+            status=500,
+        )
+    snap = backup(root, label="pre-v6-idem-index", conn=conn)
+    if not snap.get("ok"):
+        raise HouseholdStoreError(
+            "Sauvegarde pré-réparation index idempotency échouée",
+            code="backup_error",
+        )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(f"DROP INDEX IF EXISTS {_ACTUAL_PURCHASES_IDEM_INDEX}")
+        conn.execute(
+            f"CREATE UNIQUE INDEX {_ACTUAL_PURCHASES_IDEM_INDEX} "
+            "ON actual_purchases(household_id, idempotency_key)"
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise HouseholdStoreError(
+            "Création index idempotency refusée (données en conflit)",
+            code="schema_error",
+            status=500,
+        ) from exc
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    if not is_actual_purchases_idempotency_index_valid(conn):
+        raise HouseholdStoreError(
+            "Index idempotency actual_purchases invalide après réparation",
+            code="schema_error",
+            status=500,
+        )
+
+
+def validate_schema_v6(conn: sqlite3.Connection) -> None:
+    validate_schema_v5(conn)
+    _validate_schema_tables(conn, _V6_REQUIRED, label="v6")
+    if not is_actual_purchases_idempotency_index_valid(conn):
+        raise HouseholdStoreError(
+            "Index UNIQUE idx_actual_purchases_idempotency "
+            "(household_id, idempotency_key) manquant ou invalide",
+            code="schema_error",
+            status=500,
+        )
+
+
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
     validate_schema_v1(conn)
     if version >= 2:
@@ -1016,6 +1259,8 @@ def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None
         validate_schema_v4(conn)
     if version >= 5:
         validate_schema_v5(conn)
+    if version >= 6:
+        validate_schema_v6(conn)
 
 
 # ---------------------------------------------------------------- open / migrate
@@ -1182,6 +1427,8 @@ def open_store(
             if check != "ok":
                 raise HouseholdStoreError(f"intégrité échec: {check}", code="corrupt")
             ver = get_schema_version(conn)
+            if ver >= 6:
+                ensure_actual_purchases_idempotency_index(conn, root)
             _validate_schema_for_version(conn, ver)
             _enable_wal(conn)
         except Exception:
@@ -1242,6 +1489,8 @@ def open_store(
             if check2 != "ok":
                 raise HouseholdStoreError("intégrité post-migration échec", code="corrupt")
             current = get_schema_version(conn)
+        if current >= 6:
+            ensure_actual_purchases_idempotency_index(conn, root)
         if current == SCHEMA_VERSION:
             _validate_schema_for_version(conn, current)
         _enable_wal(conn)
