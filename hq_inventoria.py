@@ -298,7 +298,49 @@ def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
                 "refs_place_id": ref_place,
                 "payload_place": payload.get("place"),
             })
-    if op.startswith("item.") and resolved.get("item_id") and "id" not in payload and op != "item.create":
+    resolved_item = resolved.get("item_id")
+    if isinstance(resolved_item, str):
+        if op in ("item.adjust", "item.update", "item.delete") and payload.get("id") != resolved_item:
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "resolved_item_id": resolved_item,
+                "payload_id": payload.get("id"),
+            })
+        elif op == "item.move":
+            ids = payload.get("ids")
+            if not isinstance(ids, list) or resolved_item not in ids:
+                local_issues.append({
+                    "op": op,
+                    "code": "ref_payload_mismatch",
+                    "resolved_item_id": resolved_item,
+                    "payload_ids": ids if isinstance(ids, list) else None,
+                })
+    resolved_place = resolved.get("place_id")
+    if isinstance(resolved_place, str):
+        if op.startswith("place.") and op != "place.create" and payload.get("id") != resolved_place:
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "resolved_place_id": resolved_place,
+                "payload_id": payload.get("id"),
+            })
+        elif op == "item.move" and payload.get("place") != resolved_place:
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "resolved_place_id": resolved_place,
+                "payload_place": payload.get("place"),
+            })
+        elif op == "item.update" and "place" in payload and payload.get("place") not in ("", None):
+            if payload.get("place") != resolved_place:
+                local_issues.append({
+                    "op": op,
+                    "code": "ref_payload_mismatch",
+                    "resolved_place_id": resolved_place,
+                    "payload_place": payload.get("place"),
+                })
+    if op in ("item.adjust", "item.update", "item.delete") and resolved.get("item_id") and "id" not in payload:
         payload["id"] = resolved["item_id"]
     if op.startswith("place.") and resolved.get("place_id") and "id" not in payload and op != "place.create":
         payload["id"] = resolved["place_id"]
@@ -319,7 +361,7 @@ def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
 
 def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
     """Simulate ordered inventory effects — reject interdependent batches before any write."""
-    from hq_inventory import QTY_MAX
+    from hq_inventory import DEPTH_MAX, QTY_MAX
 
     qty: dict[str, int] = {i["id"]: int(i["qty"]) for i in inv.get("items") or []}
     item_rev: dict[str, int] = {i["id"]: int(i["rev"]) for i in inv.get("items") or []}
@@ -347,6 +389,24 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
             issues.append({"step": step, "code": "batch_place_unavailable", "op": op, "place_id": pid})
             return True
         return False
+
+    def _place_depth(start: str) -> int | None:
+        depth = 0
+        seen_d: set[str] = set()
+        cur_d: str | None = start
+        while cur_d is not None:
+            if cur_d in seen_d or depth >= DEPTH_MAX:
+                return None
+            seen_d.add(cur_d)
+            depth += 1
+            cur_d = place_parent.get(cur_d)
+        return depth
+
+    def _subtree_height(node: str, moving: str) -> int:
+        child_ids = [k for k, par in place_parent.items() if par == node and k != moving]
+        if not child_ids:
+            return 1
+        return 1 + max(_subtree_height(k, moving) for k in child_ids)
 
     for step, p in enumerate(proposals):
         op = p["op"]
@@ -382,8 +442,15 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
             if want_rev != item_rev.get(iid):
                 issues.append({"step": step, "code": "stale_item_rev", "op": op})
                 continue
-            if "place" in payload and _dead_place(payload.get("place"), step, op):
-                continue
+            new_place = item_place.get(iid)
+            if "place" in payload:
+                raw_place = payload.get("place")
+                if raw_place in ("", None):
+                    new_place = None
+                elif _dead_place(raw_place, step, op):
+                    continue
+                else:
+                    new_place = raw_place
             if "qty" in payload:
                 q = payload["qty"]
                 if isinstance(q, int) and not isinstance(q, bool):
@@ -391,6 +458,7 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
                         issues.append({"step": step, "code": "batch_bounds", "op": op})
                         continue
                     qty[iid] = q
+            item_place[iid] = new_place
             item_rev[iid] += 1
         elif op == "item.delete":
             if not isinstance(iid, str):
@@ -453,7 +521,13 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
                 if cycle:
                     issues.append({"step": step, "code": "batch_place_cycle", "op": op, "place_id": pid})
                     continue
-                place_parent[pid] = parent if isinstance(parent, str) else None
+                parent_norm = parent if isinstance(parent, str) else None
+                if parent_norm is not None:
+                    depth = _place_depth(parent_norm)
+                    if depth is None or depth + _subtree_height(pid, pid) > DEPTH_MAX:
+                        issues.append({"step": step, "code": "batch_place_too_deep", "op": op, "place_id": pid})
+                        continue
+                place_parent[pid] = parent_norm
             place_rev[pid] = int(place_rev.get(pid, 1)) + 1
         elif op == "place.delete":
             pid = payload.get("id")
@@ -684,16 +758,24 @@ def _preview_diff(
         entry: dict[str, Any] = {"op": op, "label_fr": p.get("label_fr", ""), "refs": p.get("resolved", {})}
         if op == "item.adjust":
             iid = payload.get("id")
+            entry["item_id"] = iid
             item = next((i for i in inv["items"] if i["id"] == iid), None)
             if item:
                 entry["before"] = {"qty": item["qty"], "rev": item["rev"]}
                 entry["after"] = {"qty": item["qty"] + int(payload["delta"]), "rev": item["rev"] + 1}
         elif op == "item.update":
             iid = payload["id"]
+            entry["item_id"] = iid
             item = next((i for i in inv["items"] if i["id"] == iid), None)
             if item:
                 entry["before"] = {k: item.get(k) for k in payload if k not in ("id", "rev")}
                 entry["after"] = {k: payload[k] for k in payload if k not in ("id", "rev")}
+            if "place" in payload:
+                dest = payload.get("place")
+                if dest in ("",):
+                    dest = None
+                place = next((pl for pl in inv.get("places") or [] if pl["id"] == dest), None) if dest else None
+                entry["destination"] = {"id": dest, "name": place.get("name") if place else None}
         elif op == "item.create":
             entry["after"] = {k: payload[k] for k in payload if k != "id"}
         elif op == "item.move":

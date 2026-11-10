@@ -491,6 +491,214 @@ class InventoriaHardeningTests(unittest.TestCase):
         self.assertEqual(out2.get("code"), "needs_reconcile")
         self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
 
+    def test_update_into_place_then_delete_rejected(self) -> None:
+        place_rev = next(p["rev"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        codes = self._codes([
+            {
+                "op": "item.update",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev, "place": self.place_id},
+                "label_fr": "in",
+            },
+            {
+                "op": "place.delete",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev},
+                "label_fr": "pdel",
+            },
+        ])
+        self.assertIn("batch_place_not_empty", codes)
+        snap = inv.snapshot()
+        self.assertIsNone(snap["items"][0]["place"])
+        self.assertEqual(snap["items"][0]["qty"], 3)
+        self.assertTrue(any(p["id"] == self.place_id for p in snap["places"]))
+
+    def test_update_out_then_delete_allowed(self) -> None:
+        moved = inv.apply({
+            "action": "item.update",
+            "id": self.item_id,
+            "rev": self.item_rev,
+            "place": self.place_id,
+        })["item"]
+        place_rev = next(p["rev"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        op_id = self._session_op([
+            {
+                "op": "item.update",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": moved["rev"], "place": None},
+                "label_fr": "out",
+            },
+            {
+                "op": "place.delete",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev},
+                "label_fr": "pdel",
+            },
+        ])
+        _, val = ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        self.assertTrue(val["validation"]["ok"], val)
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": "wx-clear-del"})
+        self.assertEqual(c, 200, out)
+        snap = inv.snapshot()
+        self.assertIsNone(next(i for i in snap["items"] if i["id"] == self.item_id)["place"])
+        self.assertFalse(any(p["id"] == self.place_id for p in snap["places"]))
+
+    def test_moves_then_delete_uses_simulated_occupancy(self) -> None:
+        other = inv.apply({"action": "item.create", "name": "Beta", "qty": 1})["item"]["id"]
+        place_rev = next(p["rev"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        codes = self._codes([
+            {
+                "op": "item.move",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"ids": [self.item_id, other], "place": self.place_id},
+                "label_fr": "in",
+            },
+            {
+                "op": "item.move",
+                "refs": {},
+                "resolved": {"confidence": "high"},
+                "payload": {"ids": [self.item_id], "place": None},
+                "label_fr": "out",
+            },
+            {
+                "op": "place.delete",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev},
+                "label_fr": "pdel",
+            },
+        ])
+        self.assertIn("batch_place_not_empty", codes)
+        self.assertIsNone(inv.snapshot()["items"][0]["place"])
+
+    def test_stale_update_does_not_clear_occupancy(self) -> None:
+        inv.apply({
+            "action": "item.update",
+            "id": self.item_id,
+            "rev": self.item_rev,
+            "place": self.place_id,
+        })
+        place_rev = next(p["rev"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        codes = self._codes([
+            {
+                "op": "item.update",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev, "place": None, "qty": 1},
+                "label_fr": "stale",
+            },
+            {
+                "op": "place.delete",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev},
+                "label_fr": "pdel",
+            },
+        ])
+        self.assertIn("stale_item_rev", codes)
+        self.assertIn("batch_place_not_empty", codes)
+        item = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)
+        self.assertEqual(item["place"], self.place_id)
+        self.assertEqual(item["qty"], 3)
+
+    def test_place_parent_respects_depth_limit(self) -> None:
+        parent = None
+        chain: list[str] = []
+        for i in range(inv.DEPTH_MAX):
+            body: dict = {"action": "place.create", "name": f"L{i}", "kind": "shelf"}
+            if parent:
+                body["parent"] = parent
+            parent = inv.apply(body)["place"]["id"]
+            chain.append(parent)
+        extra = inv.apply({"action": "place.create", "name": "Extra", "kind": "box"})["place"]
+        codes = self._codes([{
+            "op": "place.update",
+            "refs": {"place_id": extra["id"]},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": extra["id"], "rev": extra["rev"], "parent": chain[-1]},
+            "label_fr": "deep",
+        }])
+        self.assertIn("batch_place_too_deep", codes)
+        self.assertIsNone(next(p for p in inv.snapshot()["places"] if p["id"] == extra["id"])["parent"])
+        shallow = self._codes([{
+            "op": "place.update",
+            "refs": {"place_id": extra["id"]},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": extra["id"], "rev": extra["rev"], "parent": chain[0]},
+            "label_fr": "ok",
+        }])
+        self.assertFalse(shallow)
+
+    def test_name_hint_adjust_payload_mismatch(self) -> None:
+        other = inv.apply({"action": "item.create", "name": "Beta", "qty": 1})["item"]["id"]
+        codes = self._codes([{
+            "op": "item.adjust",
+            "refs": {"name_hint": "Alpha"},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": other, "delta": -1},
+            "label_fr": "adj",
+        }])
+        self.assertIn("ref_payload_mismatch", codes)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+
+    def test_name_hint_move_payload_mismatch(self) -> None:
+        other = inv.apply({"action": "item.create", "name": "Beta", "qty": 1})["item"]["id"]
+        codes = self._codes([{
+            "op": "item.move",
+            "refs": {"name_hint": "Alpha"},
+            "resolved": {"confidence": "high"},
+            "payload": {"ids": [other], "place": self.place_id},
+            "label_fr": "mv",
+        }])
+        self.assertIn("ref_payload_mismatch", codes)
+
+    def test_place_code_move_destination_mismatch(self) -> None:
+        code = next(p["code"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        other = inv.apply({"action": "place.create", "name": "Bin", "kind": "box"})["place"]["id"]
+        codes = self._codes([{
+            "op": "item.move",
+            "refs": {"place_code": code},
+            "resolved": {"confidence": "high"},
+            "payload": {"ids": [self.item_id], "place": other},
+            "label_fr": "mv",
+        }])
+        self.assertIn("ref_payload_mismatch", codes)
+        self.assertIsNone(inv.snapshot()["items"][0]["place"])
+
+    def test_name_and_code_resolution_preview_matches_payload(self) -> None:
+        code = next(p["code"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        op_id = self._session_op([
+            {
+                "op": "item.adjust",
+                "refs": {"name_hint": "Alpha"},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "delta": -1},
+                "label_fr": "adj",
+            },
+            {
+                "op": "item.move",
+                "refs": {"name_hint": "Alpha", "place_code": code},
+                "resolved": {"confidence": "high"},
+                "payload": {"ids": [self.item_id], "place": self.place_id},
+                "label_fr": "mv",
+            },
+        ])
+        _, val = ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        self.assertTrue(val["validation"]["ok"], val)
+        _, prev = ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        adjust, move = prev["preview"]["changes"]
+        self.assertEqual(adjust["item_id"], self.item_id)
+        self.assertEqual(adjust["refs"]["item_id"], self.item_id)
+        self.assertEqual([i["id"] for i in move["items"]], [self.item_id])
+        self.assertEqual(move["destination"]["id"], self.place_id)
+        self.assertEqual(move["refs"]["place_id"], self.place_id)
+
 
 if __name__ == "__main__":
     unittest.main()
