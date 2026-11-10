@@ -42,6 +42,57 @@ POST_MERCHANT_KEYS = frozenset({
 })
 
 PRODUCT_CURSOR_SEP = "|"
+LOT_CURSOR_SEP = "|"
+
+_LOT_SORT_BUCKET = "CASE WHEN expires_on IS NULL OR expires_on = '' THEN 1 ELSE 0 END"
+
+
+def _parse_name_id_cursor(cursor: str) -> tuple[str, str]:
+    if PRODUCT_CURSOR_SEP not in cursor:
+        raise GroceryError("cursor invalide", code="validation_error")
+    cname, cid = cursor.rsplit(PRODUCT_CURSOR_SEP, 1)
+    if not cname or not cid:
+        raise GroceryError("cursor invalide", code="validation_error")
+    return cname, cid
+
+
+def _encode_name_id_cursor(name: str, eid: str) -> str:
+    return f"{name}{PRODUCT_CURSOR_SEP}{eid}"
+
+
+def _lot_sort_bucket(expires_on: str | None) -> int:
+    return 1 if not expires_on else 0
+
+
+def _encode_lot_cursor(expires_on: str | None, lot_id: str) -> str:
+    bucket = _lot_sort_bucket(expires_on)
+    return f"{bucket}:{expires_on or ''}{LOT_CURSOR_SEP}{lot_id}"
+
+
+def _parse_lot_cursor(cursor: str) -> tuple[int, str, str]:
+    if LOT_CURSOR_SEP not in cursor:
+        raise GroceryError("cursor invalide", code="validation_error")
+    head, lid = cursor.rsplit(LOT_CURSOR_SEP, 1)
+    if ":" not in head or not lid:
+        raise GroceryError("cursor invalide", code="validation_error")
+    bucket_s, _, exp = head.partition(":")
+    try:
+        bucket = int(bucket_s)
+    except ValueError:
+        raise GroceryError("cursor invalide", code="validation_error") from None
+    if bucket not in (0, 1):
+        raise GroceryError("cursor invalide", code="validation_error")
+    return bucket, exp, lid
+
+
+def _lot_cursor_where(bucket: int, expires_on: str, lot_id: str) -> tuple[str, list[Any]]:
+    sql = (
+        f"(({_LOT_SORT_BUCKET} > ?) OR "
+        f"({_LOT_SORT_BUCKET} = ? AND COALESCE(expires_on, '') > ?) OR "
+        f"({_LOT_SORT_BUCKET} = ? AND COALESCE(expires_on, '') = ? AND id > ?))"
+    )
+    return sql, [bucket, bucket, expires_on, bucket, expires_on, lot_id]
+
 
 ID_PREFIX = {
     "product": "prd",
@@ -385,7 +436,13 @@ def update_product(conn: sqlite3.Connection, household_id: str, data: dict) -> d
         barcode = _normalize_barcode(data.get("barcode"))
     unit = row["canonical_unit"]
     if "canonical_unit" in data:
-        unit = _require_unit(data.get("canonical_unit"))
+        new_unit = _require_unit(data.get("canonical_unit"))
+        if lot_count > 0 and new_unit != row["canonical_unit"]:
+            raise GroceryError(
+                "canonical_unit verrouillée lorsque des lots existent",
+                code="validation_error",
+            )
+        unit = new_unit
     default_qty = int(row["default_qty_milli"])
     if "default_qty_milli" in data:
         default_qty = _require_qty_milli(data.get("default_qty_milli"), min_value=0)
@@ -402,19 +459,21 @@ def update_product(conn: sqlite3.Connection, household_id: str, data: dict) -> d
         archived = schemas.require_bool(data["archived"], "archived")
     now = _now()
     try:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE products SET name = ?, brand = ?, barcode = ?, canonical_unit = ?, "
             "default_qty_milli = ?, category_tags_json = ?, inventory_item_id = ?, archived = ?, "
-            "updated_at = ?, rev = ? WHERE id = ?",
+            "updated_at = ?, rev = ? WHERE id = ? AND household_id = ? AND rev = ?",
             (
                 name, brand, barcode, unit, default_qty, tags_json, inv_item,
-                1 if archived else 0, now, rev + 1, data["id"],
+                1 if archived else 0, now, rev + 1, data["id"], household_id, rev,
             ),
         )
     except sqlite3.IntegrityError as exc:
         if barcode:
             raise GroceryError("barcode déjà utilisé", status=409, code="conflict") from exc
         raise GroceryError("produit invalide", code="validation_error") from exc
+    if cur.rowcount != 1:
+        raise GroceryError("rev obsolète", status=409, code="conflict")
     row2 = conn.execute("SELECT * FROM products WHERE id = ?", (data["id"],)).fetchone()
     return _product_row_to_api(row2)
 
@@ -443,10 +502,7 @@ def list_products(conn: sqlite3.Connection, household_id: str, qs: dict | None) 
         like = f"%{q}%"
         params.extend([like, like])
     if cursor:
-        parts = cursor.split(PRODUCT_CURSOR_SEP, 1)
-        if len(parts) != 2:
-            raise GroceryError("cursor invalide", code="validation_error")
-        cname, cid = parts[0], parts[1]
+        cname, cid = _parse_name_id_cursor(cursor)
         clauses.append("(name > ? OR (name = ? AND id > ?))")
         params.extend([cname, cname, cid])
     sql = "SELECT * FROM products WHERE " + " AND ".join(clauses)
@@ -462,14 +518,16 @@ def list_products(conn: sqlite3.Connection, household_id: str, qs: dict | None) 
     next_cursor = None
     if len(items) == limit:
         last = items[-1]
-        next_cursor = f"{last['name']}{PRODUCT_CURSOR_SEP}{last['id']}"
+        next_cursor = _encode_name_id_cursor(last["name"], last["id"])
     return {"ok": True, "items": items, "next_cursor": next_cursor}
 
 
-def sum_usable_qty_milli(conn: sqlite3.Connection, product_id: str) -> int:
+def sum_usable_qty_milli(conn: sqlite3.Connection, household_id: str, product_id: str) -> int:
+    _assert_household_row(conn, "products", product_id, household_id)
     row = conn.execute(
-        "SELECT COALESCE(SUM(usable_qty_milli), 0) FROM food_lots WHERE product_id = ?",
-        (product_id,),
+        "SELECT COALESCE(SUM(usable_qty_milli), 0) FROM food_lots "
+        "WHERE product_id = ? AND household_id = ?",
+        (product_id, household_id),
     ).fetchone()
     return int(row[0] or 0)
 
@@ -538,8 +596,11 @@ def update_lot(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
     usable = int(row["usable_qty_milli"])
     if "usable_qty_milli" in data:
         usable = _require_qty_milli(data.get("usable_qty_milli"), min_value=0)
-    elif "qty_milli" in data and "usable_qty_milli" not in data:
-        usable = min(usable, qty)
+    elif "qty_milli" in data and qty < usable:
+        raise GroceryError(
+            "qty_milli inférieure à usable_qty_milli — fournir usable_qty_milli",
+            code="validation_error",
+        )
     if usable > qty:
         raise GroceryError("usable_qty_milli > qty_milli", code="validation_error")
     unit = row["canonical_unit"]
@@ -571,15 +632,18 @@ def update_lot(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
             except schemas.SchemaError as exc:
                 raise GroceryError(str(exc), code=exc.code) from exc
     now = _now()
-    conn.execute(
+    cur = conn.execute(
         "UPDATE food_lots SET product_id = ?, item_id = ?, place_id = ?, qty_milli = ?, "
         "usable_qty_milli = ?, canonical_unit = ?, expires_on = ?, opened_on = ?, "
-        "source_purchase_id = ?, updated_at = ?, rev = ? WHERE id = ?",
+        "source_purchase_id = ?, updated_at = ?, rev = ? "
+        "WHERE id = ? AND household_id = ? AND rev = ?",
         (
             product_id, item_id, place_id, qty, usable, unit, expires, opened,
-            source_purchase, now, rev + 1, data["id"],
+            source_purchase, now, rev + 1, data["id"], household_id, rev,
         ),
     )
+    if cur.rowcount != 1:
+        raise GroceryError("rev obsolète", status=409, code="conflict")
     row2 = conn.execute("SELECT * FROM food_lots WHERE id = ?", (data["id"],)).fetchone()
     return _lot_row_to_api(row2)
 
@@ -592,6 +656,7 @@ def upsert_lot(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
 
 def list_lots(conn: sqlite3.Connection, household_id: str, qs: dict | None) -> dict:
     limit = _page_limit(qs)
+    cursor = _qs_first(qs, "cursor")
     product_id = _qs_first(qs, "product_id")
     clauses = ["household_id = ?"]
     params: list[Any] = [household_id]
@@ -600,10 +665,16 @@ def list_lots(conn: sqlite3.Connection, household_id: str, qs: dict | None) -> d
             schemas.require_id(product_id, "product", "product_id")
         except schemas.SchemaError as exc:
             raise GroceryError(str(exc), code=exc.code) from exc
+        _assert_household_row(conn, "products", product_id, household_id)
         clauses.append("product_id = ?")
         params.append(product_id)
+    if cursor:
+        bucket, exp, lid = _parse_lot_cursor(cursor)
+        lot_sql, lot_params = _lot_cursor_where(bucket, exp, lid)
+        clauses.append(lot_sql)
+        params.extend(lot_params)
     sql = "SELECT * FROM food_lots WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY CASE WHEN expires_on IS NULL OR expires_on = '' THEN 1 ELSE 0 END, expires_on ASC, id ASC LIMIT ?"
+    sql += f" ORDER BY {_LOT_SORT_BUCKET}, expires_on ASC, id ASC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     snap: dict | None = None
@@ -612,8 +683,12 @@ def list_lots(conn: sqlite3.Connection, household_id: str, qs: dict | None) -> d
     except GroceryError:
         snap = None
     items = [_lot_row_to_api(r, snap) for r in rows]
-    total_usable = sum_usable_qty_milli(conn, product_id) if product_id else None
-    out: dict[str, Any] = {"ok": True, "items": items}
+    next_cursor = None
+    if len(items) == limit:
+        last = items[-1]
+        next_cursor = _encode_lot_cursor(last.get("expires_on"), last["id"])
+    total_usable = sum_usable_qty_milli(conn, household_id, product_id) if product_id else None
+    out: dict[str, Any] = {"ok": True, "items": items, "next_cursor": next_cursor}
     if product_id and total_usable is not None:
         out["total_usable_qty_milli"] = total_usable
     return out
@@ -658,10 +733,13 @@ def update_merchant(conn: sqlite3.Connection, household_id: str, data: dict) -> 
     if "provider_id" in data:
         provider = _optional_text(data.get("provider_id"), "provider_id", 64)
     now = _now()
-    conn.execute(
-        "UPDATE merchants SET name = ?, location_label = ?, provider_id = ?, updated_at = ?, rev = ? WHERE id = ?",
-        (name, location, provider, now, rev + 1, data["id"]),
+    cur = conn.execute(
+        "UPDATE merchants SET name = ?, location_label = ?, provider_id = ?, updated_at = ?, rev = ? "
+        "WHERE id = ? AND household_id = ? AND rev = ?",
+        (name, location, provider, now, rev + 1, data["id"], household_id, rev),
     )
+    if cur.rowcount != 1:
+        raise GroceryError("rev obsolète", status=409, code="conflict")
     row2 = conn.execute("SELECT * FROM merchants WHERE id = ?", (data["id"],)).fetchone()
     return _merchant_row_to_api(row2)
 
@@ -674,18 +752,27 @@ def upsert_merchant(conn: sqlite3.Connection, household_id: str, data: dict) -> 
 
 def list_merchants(conn: sqlite3.Connection, household_id: str, qs: dict | None) -> dict:
     limit = _page_limit(qs)
+    cursor = _qs_first(qs, "cursor")
     q = _qs_first(qs, "q").strip()
     clauses = ["household_id = ?"]
     params: list[Any] = [household_id]
     if q:
         clauses.append("name LIKE ?")
         params.append(f"%{q}%")
+    if cursor:
+        cname, cid = _parse_name_id_cursor(cursor)
+        clauses.append("(name > ? OR (name = ? AND id > ?))")
+        params.extend([cname, cname, cid])
     sql = "SELECT * FROM merchants WHERE " + " AND ".join(clauses)
     sql += " ORDER BY name ASC, id ASC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     items = [_merchant_row_to_api(r) for r in rows]
-    return {"ok": True, "items": items}
+    next_cursor = None
+    if len(items) == limit:
+        last = items[-1]
+        next_cursor = _encode_name_id_cursor(last["name"], last["id"])
+    return {"ok": True, "items": items, "next_cursor": next_cursor}
 
 
 def redact_for_logs(payload: Any) -> dict:

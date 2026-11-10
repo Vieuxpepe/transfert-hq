@@ -257,30 +257,45 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        with store.open_store(self.root, create=False) as st:
-            with st.transaction():
-                hid = fin.ensure_default_household(st.conn)
+
+        conn_v3 = sqlite3.connect(str(path))
+        conn_v3.row_factory = sqlite3.Row
+        try:
+            st_v3 = store.HouseholdStore(self.root, conn_v3, schema_version=3)
+            with st_v3.transaction():
+                hid = fin.ensure_default_household(st_v3.conn)
                 acct = fin.create_account(
-                    st.conn, hid, {"name": "A", "kind": "cash", "opening_balance_cents": 100, "currency": "CAD"},
+                    st_v3.conn, hid, {"name": "A", "kind": "cash", "opening_balance_cents": 100, "currency": "CAD"},
                 )["id"]
-                cat = fin.upsert_category(st.conn, hid, {"name": "x", "kind": "expense"})["id"]
-            fin.post_transaction(
-                st,
-                {
-                    "account_id": acct,
-                    "category_id": cat,
-                    "amount_cents": -10,
-                    "booked_on": "2026-09-01",
-                    "idempotency_key": "v4-preserve-tx",
-                },
-            )
-            tx_count = int(st.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0])
+                cat = fin.upsert_category(st_v3.conn, hid, {"name": "x", "kind": "expense"})["id"]
+                fin.insert_transaction(
+                    st_v3.conn,
+                    hid,
+                    {
+                        "account_id": acct,
+                        "category_id": cat,
+                        "amount_cents": -10,
+                        "booked_on": "2026-09-01",
+                        "idempotency_key": "v4-preserve-tx",
+                    },
+                    pin_idem=True,
+                )
+            tx_count = int(st_v3.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0])
+            audit_count = int(st_v3.conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0])
             self.assertEqual(tx_count, 1)
+            self.assertGreaterEqual(audit_count, 1)
+            self.assertEqual(int(st_v3.conn.execute("PRAGMA user_version").fetchone()[0]), 3)
+        finally:
+            conn_v3.close()
+
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.schema_version, 4)
             self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]), tx_count)
+            self.assertGreaterEqual(int(st2.conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0]), audit_count)
             names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("products", names)
+        backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
+        self.assertTrue(backups)
         fin.reset_for_tests()
 
     def test_migration_v4_failure_preserves_v3(self):
