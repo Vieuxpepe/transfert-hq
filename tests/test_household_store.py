@@ -36,12 +36,12 @@ class StoreLifecycleTests(unittest.TestCase):
 
     def test_init_blank_root(self):
         with store.open_store(self.root) as st:
-            self.assertEqual(st.schema_version, 3)
+            self.assertEqual(st.schema_version, 4)
             self.assertEqual(store.integrity_check(st.conn), "ok")
             st.set_meta("sentinel", "alpha")
             self.assertEqual(st.get_meta("sentinel"), "alpha")
         meta = json.loads(store.meta_path(self.root).read_text(encoding="utf-8"))
-        self.assertEqual(meta["schema_version"], 3)
+        self.assertEqual(meta["schema_version"], 4)
 
     def test_reopen_valid(self):
         with store.open_store(self.root) as st:
@@ -144,7 +144,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 3)
+        self.assertEqual(healed["schema_version"], 4)
 
     def test_meta_schema_version_array_healed_without_typeerror(self):
         with store.open_store(self.root) as st:
@@ -157,7 +157,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 3)
+        self.assertEqual(healed["schema_version"], 4)
 
     def test_v1_snapshot_migrates_to_v2_with_backup(self):
         base = store.prepare_household_dirs(self.root)
@@ -170,7 +170,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 1)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 3)
+            self.assertEqual(st.schema_version, 4)
             st.set_meta("post-v2", "ok")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)
@@ -210,7 +210,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 2)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 3)
+            self.assertEqual(st.schema_version, 4)
             row = st.conn.execute("SELECT currency FROM budget_envelopes WHERE id = ?", (env,)).fetchone()
             self.assertEqual(row[0], "USD")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
@@ -239,6 +239,73 @@ class StoreLifecycleTests(unittest.TestCase):
             self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 2)
             info = {r[1] for r in conn.execute("PRAGMA table_info(budget_envelopes)")}
             self.assertNotIn("currency", info)
+        finally:
+            conn.close()
+
+    def test_v3_finance_tx_survives_v4_migration(self):
+        import hq_finances as fin
+
+        store.set_acl_for_tests(False)
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0)
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            store._apply_v1(conn)
+            store._apply_v2(conn)
+            store._apply_v3(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        with store.open_store(self.root, create=False) as st:
+            with st.transaction():
+                hid = fin.ensure_default_household(st.conn)
+                acct = fin.create_account(
+                    st.conn, hid, {"name": "A", "kind": "cash", "opening_balance_cents": 100, "currency": "CAD"},
+                )["id"]
+                cat = fin.upsert_category(st.conn, hid, {"name": "x", "kind": "expense"})["id"]
+            fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -10,
+                    "booked_on": "2026-09-01",
+                    "idempotency_key": "v4-preserve-tx",
+                },
+            )
+            tx_count = int(st.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0])
+            self.assertEqual(tx_count, 1)
+        with store.open_store(self.root, create=False) as st2:
+            self.assertEqual(st2.schema_version, 4)
+            self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]), tx_count)
+            names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("products", names)
+        fin.reset_for_tests()
+
+    def test_migration_v4_failure_preserves_v3(self):
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            store._apply_v1(conn)
+            store._apply_v2(conn)
+            store._apply_v3(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        def boom(conn):
+            store._exec_sql(conn, store._V4_STATEMENTS[0])
+            raise RuntimeError("inject-v4")
+
+        with mock.patch.dict(store._MIGRATIONS, {4: boom}):
+            with self.assertRaises(RuntimeError):
+                store.open_store(self.root, create=False)
+        conn = sqlite3.connect(str(path))
+        try:
+            self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 3)
+            self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='products'").fetchone())
         finally:
             conn.close()
 

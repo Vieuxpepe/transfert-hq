@@ -49,6 +49,7 @@ import hq_inventory
 import hq_projects
 import mini_quests
 import hq_finances
+import hq_grocery
 import hq_companion
 import hq_planner
 import hq_devices
@@ -2841,6 +2842,7 @@ def bind_hq() -> None:
     )
     mini_quests.bind(root=ROOT)  # Mini-Quêtes: simulated playground only (no shell / hardware)
     hq_finances.bind(root=ROOT, actor=lambda: "admin")  # Finances: admin-only; CSRF enforced on POST below
+    hq_grocery.bind(root=ROOT, actor=lambda: "admin")  # Grocery: admin-only; CSRF enforced on POST below
     hq_carnet.bind(
         root=ROOT,
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
@@ -9006,6 +9008,10 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_finances.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, hq_finances.redact_for_logs(payload) if code >= 400 else payload)
             return True
+        if raw.startswith("/api/grocery/"):  # Grocery (admin: not in the upload allowlist)
+            code, payload = hq_grocery.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, hq_grocery.redact_for_logs(payload) if code >= 400 else payload)
+            return True
         if raw == "/api/mini-quests" or raw.startswith("/api/mini-quests/"):  # Mini-Quêtes (admin: not in the upload allowlist)
             code, payload = mini_quests.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
@@ -9463,6 +9469,25 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_finances.http_post(raw, data)
             self._json(code, hq_finances.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/grocery/"):  # Grocery (CSRF checked before routing)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > hq_grocery.BODY_MAX:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_grocery.http_post(raw, data)
+            self._json(code, hq_grocery.redact_for_logs(payload) if code >= 400 else payload)
             return True
         if raw == "/api/mini-quests" or raw.startswith("/api/mini-quests/"):  # Mini-Quêtes (CSRF checked before routing)
             try:

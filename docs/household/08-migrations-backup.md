@@ -18,6 +18,10 @@
 | Backup avant migrate | Snapshot SQLite + copie `inventory.json` si op cross-store |
 | Pas de réparation silencieuse | Never auto-rewrite envelope ``currency`` on ``open_store`` (ambiguous vs intentional CAD in a USD household) |
 
+### SQLite v4 — épicerie (produits, lots, commerçants)
+
+Tables ``products``, ``food_lots``, ``merchants`` ; aucune mutation Inventoria ni ledger automatique (PR #33).
+
 ### SQLite v3 — colonne ``budget_envelopes.currency``
 
 - **Contrat API** : ``schemas/household/finances.v1`` (entité ``budget_envelope.currency``) — distinct de ``PRAGMA user_version`` 3.
