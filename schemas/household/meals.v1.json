@@ -1,0 +1,42 @@
+{
+  "$id": "transfert-hq/household/meals.v1",
+  "schema_version": 1,
+  "entities": {
+    "diet_profile": {
+      "required": ["id", "household_id", "label", "rev"],
+      "properties": {
+        "allergens": {"type": "string_list", "maxItems": 32},
+        "dislikes": {"type": "string_list", "maxItems": 32},
+        "calorie_target": {"type": "integer", "min": 0, "nullable": true},
+        "prefs": {"type": "object"}
+      }
+    },
+    "recipe": {
+      "required": ["id", "title", "servings", "ingredients", "steps", "leftover_policy", "rev"],
+      "properties": {
+        "title": {"type": "string", "maxLength": 160},
+        "servings": {"type": "integer", "min": 1, "max": 100},
+        "ingredients": {"type": "array", "maxItems": 100},
+        "steps": {"type": "string_list", "maxItems": 80, "maxLength": 2000},
+        "leftover_policy": {"enum": ["none", "freeze", "plan_next"]}
+      }
+    },
+    "meal_plan": {
+      "required": ["id", "period_start", "period_end", "slots", "rev"],
+      "properties": {
+        "period_start": {"type": "iso_date"},
+        "period_end": {"type": "iso_date"},
+        "slots": {"type": "array", "maxItems": 400}
+      }
+    },
+    "meal_slot": {
+      "required": ["date", "meal"],
+      "properties": {
+        "date": {"type": "iso_date"},
+        "meal": {"enum": ["breakfast", "lunch", "dinner", "snack"]},
+        "recipe_id": {"pattern": "recipe", "nullable": true},
+        "notes": {"type": "string", "maxLength": 500, "nullable": true}
+      }
+    }
+  }
+}

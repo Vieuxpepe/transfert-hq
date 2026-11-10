@@ -84,6 +84,16 @@ Verify scripts (recommended):
 
 ---
 
+## Household Intelligence
+
+| If you changed… | Run |
+|-----------------|-----|
+| `hq_household_schemas.py`, `schemas/household/*`, docs contracts | `python -m unittest tests.test_household_schemas -v` |
+
+Architecture index: [household/README.md](household/README.md). Runtime routes/UI not live in PR #30.
+
+---
+
 ## Companion
 
 | If you changed… | Run |

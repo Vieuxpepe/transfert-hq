@@ -197,18 +197,11 @@ Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
 
 ## Current focus (update on push)
 
-**Branch note:** use **`main`** at the latest SHA. Older docs may mention `transferania-persona`; that branch should match `main` after integration merges.
+**Draft PR (architecture only):** branch `feat/household-foundations` — Household Intelligence foundations (Finances / Repas & Épicerie / Inventoria). Entry: `docs/household/README.md`. No live routes, nav, persona, or scraping. Review A/B/C: cross-store journal, financial security + LLM allowlist, Inventoria FAB UX. Schema tests: `python -m unittest tests.test_household_schemas -v`.
 
-**Doc accuracy (Level 4 finding):** Adult UI + `nsfw_enabled` bind are documented above under *Adult register*; remote code may lag until bridge/companion assets are committed.
+**Branch note:** integration remains **`main`**. Do not treat household docs as shipped runtime.
 
-**Oral + dangling member (local / unpushed until committed):**
-
-- Jitter at mouth gate: suspected dual control (depth from projection vs assist, mount `place()` vs pointer carry).
-- Entry feel: tube axis + lip constriction + z-index stack (cock 360, head 375).
-- Flick vs oral timing: `flickBusyUntil`, `tipNearOralMouth()`, `canUseOral()`.
-- Lip squeeze: `findOralLipT` smoothing (`oralLipTSm`, `oralBulgeK`).
-
-**Ask external agents for:** state diagrams, single-authority depth, reduced feedback loops, PR-sized patches — not explicit narrative or asset regeneration briefs.
+**Ask external agents for:** architecture audit of `docs/household/*` + `hq_household_schemas.py` — gaps in SQLite↔JSON reconciliation, cents safety, Inventoria coexistence — not implementation PRs unless the operator asks.
 
 ---
 

@@ -1,0 +1,34 @@
+{
+  "$id": "transfert-hq/household/cross_store_op.v1",
+  "schema_version": 1,
+  "title": "SQLite ↔ inventory.json operation journal",
+  "statuses": [
+    "accepted",
+    "preparing",
+    "applying_sqlite",
+    "applying_inventory",
+    "finalizing",
+    "committed",
+    "needs_reconcile",
+    "failed",
+    "cancelled"
+  ],
+  "terminal": ["committed", "needs_reconcile", "failed", "cancelled"],
+  "kinds": ["inventoria_commit", "grocery_purchase", "lot_consume"],
+  "required": [
+    "id",
+    "kind",
+    "status",
+    "idempotency_key",
+    "request_hash",
+    "planned_steps",
+    "step_index",
+    "uncertain_inventory"
+  ],
+  "rules": [
+    "Never auto-replay item.adjust when uncertain_inventory is set",
+    "Same idempotency_key + request_hash returns prior result",
+    "Same idempotency_key + different request_hash → conflict",
+    "Crash recovery documented per write frontier F0–F6 in docs/household/12-cross-store-journal.md"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "$id": "transfert-hq/household/grocery.v1",
+  "schema_version": 1,
+  "entities": {
+    "product": {
+      "required": ["id", "name", "canonical_unit", "default_qty_milli", "rev"],
+      "properties": {
+        "brand": {"type": "string", "maxLength": 120, "nullable": true},
+        "barcode": {"type": "string", "maxLength": 32, "nullable": true},
+        "canonical_unit": {"enum": ["g", "ml", "each", "serving"]},
+        "default_qty_milli": {"type": "qty_milli"},
+        "inventory_item_id": {"pattern": "inventory_item", "nullable": true},
+        "category_tags": {"type": "string_list", "maxItems": 12, "maxLength": 32}
+      }
+    },
+    "food_lot": {
+      "required": ["id", "product_id", "qty_milli", "canonical_unit", "usable_qty_milli", "rev"],
+      "properties": {
+        "item_id": {"pattern": "inventory_item", "nullable": true},
+        "place_id": {"pattern": "inventory_place", "nullable": true},
+        "qty_milli": {"type": "qty_milli"},
+        "usable_qty_milli": {"type": "qty_milli"},
+        "expires_on": {"type": "iso_date", "nullable": true},
+        "invariant": "usable_qty_milli <= qty_milli"
+      }
+    },
+    "merchant": {
+      "required": ["id", "name", "rev"],
+      "properties": {
+        "location_label": {"type": "string", "maxLength": 200, "nullable": true},
+        "provider_id": {"type": "string", "maxLength": 64, "nullable": true}
+      }
+    },
+    "grocery_list": {
+      "required": ["id", "status", "lines", "rev"],
+      "properties": {
+        "meal_plan_id": {"pattern": "meal_plan", "nullable": true},
+        "status": {"enum": ["open", "shopping", "closed"]},
+        "lines": {"type": "array", "maxItems": 500}
+      }
+    },
+    "actual_purchase": {
+      "required": ["id", "merchant_id", "qty_milli", "unit", "paid_cents", "purchased_on", "fingerprint", "idempotency_key", "rev"],
+      "properties": {
+        "planned_id": {"pattern": "purchase", "nullable": true},
+        "product_id": {"pattern": "product", "nullable": true},
+        "paid_cents": {"type": "integer_cents", "min": 0},
+        "taxed_cents": {"type": "integer_cents", "min": 0},
+        "deposit_cents": {"type": "integer_cents", "min": 0},
+        "finance_tx_id": {"pattern": "transaction", "nullable": true},
+        "food_lot_id": {"pattern": "lot", "nullable": true}
+      }
+    }
+  }
+}

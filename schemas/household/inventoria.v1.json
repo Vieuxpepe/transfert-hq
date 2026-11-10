@@ -1,0 +1,60 @@
+{
+  "$id": "transfert-hq/household/inventoria.v1",
+  "schema_version": 1,
+  "pipeline": ["propose", "validate", "preview", "commit", "audit"],
+  "forbidden": [
+    "direct_inventory_write_from_llm",
+    "shared_thread_with_transferania_or_else",
+    "auto_budget_mutation"
+  ],
+  "entities": {
+    "session": {
+      "required": ["id", "device_id", "owner", "status", "messages", "created_at", "updated_at"],
+      "properties": {
+        "id": {"pattern": "inventoria_session"},
+        "status": {"enum": ["open", "closed"]},
+        "messages": {"type": "array", "maxItems": 100}
+      }
+    },
+    "operation": {
+      "required": ["id", "session_id", "status", "proposals", "idempotency_key", "created_at", "updated_at"],
+      "properties": {
+        "id": {"pattern": "inventoria_op"},
+        "status": {
+          "enum": [
+            "draft",
+            "validated",
+            "previewed",
+            "committing",
+            "committed",
+            "needs_reconcile",
+            "cancelled",
+            "failed"
+          ]
+        },
+        "proposals": {"type": "array", "maxItems": 20},
+        "idempotency_key": {"type": "idempotency_key"},
+        "expected_inventory_rev": {"type": "integer", "min": 0, "nullable": true},
+        "item_rev_expectations": {"type": "array", "maxItems": 100}
+      }
+    },
+    "proposal": {
+      "required": ["op", "refs", "resolved", "payload", "label_fr"],
+      "properties": {
+        "op": {
+          "enum": [
+            "item.adjust",
+            "item.create",
+            "item.update",
+            "item.move",
+            "item.delete",
+            "place.create",
+            "place.update",
+            "place.delete"
+          ]
+        },
+        "resolved.confidence": {"enum": ["high", "medium", "low"]}
+      }
+    }
+  }
+}
