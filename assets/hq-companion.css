@@ -2251,22 +2251,22 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   transform:translate3d(var(--rig-brow-x,0px),calc(var(--rig-brow-y,0px) + var(--rig-brow-blink-dip,0px)),0) rotate(var(--rig-brow-rot,0deg));
 }
 .hq-companion-rig-face-brow-left{
-  clip-path:inset(16% 52% 81% 22%);
-  -webkit-mask-image:linear-gradient(to bottom,#000 0 52%,transparent 96%);
-  mask-image:linear-gradient(to bottom,#000 0 52%,transparent 96%);
+  clip-path:inset(15.4% 52.0% 79.7% 35.3%);
+  -webkit-mask-image:linear-gradient(to bottom,#000 0 19.2%,transparent 20.3%);
+  mask-image:linear-gradient(to bottom,#000 0 19.2%,transparent 20.3%);
   --rig-brow-x:0px;
   --rig-brow-y:var(--rig-brow-left-y,0px);
   --rig-brow-rot:var(--rig-brow-left-rot,0deg);
-  transform-origin:62% 96%;
+  transform-origin:41.7% 19.9%;
 }
 .hq-companion-rig-face-brow-right{
-  clip-path:inset(16% 22% 81% 52%);
-  -webkit-mask-image:linear-gradient(to bottom,#000 0 52%,transparent 96%);
-  mask-image:linear-gradient(to bottom,#000 0 52%,transparent 96%);
+  clip-path:inset(12.3% 36.6% 82.6% 50.7%);
+  -webkit-mask-image:linear-gradient(to bottom,#000 0 16.4%,transparent 17.4%);
+  mask-image:linear-gradient(to bottom,#000 0 16.4%,transparent 17.4%);
   --rig-brow-x:0px;
   --rig-brow-y:var(--rig-brow-right-y,0px);
   --rig-brow-rot:var(--rig-brow-right-rot,0deg);
-  transform-origin:38% 96%;
+  transform-origin:57.0% 15.6%;
 }
 .hq-companion-rig-face{z-index:2;translate:0 var(--rig-body-bob,0px);-webkit-mask-image:linear-gradient(to bottom,#000 0 46%,transparent 52%);mask-image:linear-gradient(to bottom,#000 0 46%,transparent 52%);transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1));will-change:transform,translate}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-face:not(.hq-companion-rig-face-lower){display:none}

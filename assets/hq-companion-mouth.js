@@ -497,7 +497,7 @@
       jaw.setAttribute("aria-hidden", "true");
       jaw.dataset.rigAsset = "face";
       const syncJawSrc = () => {
-        const src = face.getAttribute("src") || "/assets/companion/rig-neutral-v1/face.webp?v=px1";
+        const src = face.getAttribute("src") || "/assets/companion/rig-neutral-v1/face.webp?v=px3";
         if (jaw.getAttribute("src") !== src) jaw.src = src;
       };
       syncJawSrc();

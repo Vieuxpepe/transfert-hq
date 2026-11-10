@@ -161,7 +161,9 @@
       return "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     }
     // Full-size background/face were base64 PNG inside an SVG wrapper; same pixels as lossless WebP.
-    if (id === "background" || id === "face") return RIG_NEUTRAL_BASE + id + ".webp?v=px1";
+    if (id === "background" || id === "face") return RIG_NEUTRAL_BASE + id + ".webp?v=px3";
+    // Base body under the animated breast layers: natural chest, jacket off the shoulders.
+    if (id === "torso") return RIG_NEUTRAL_BASE + "torso-composite.jpg?v=base1";
     return RIG_NEUTRAL_BASE + id + ".svg?v=eyesv3d_b76";
   }
 
@@ -9321,7 +9323,7 @@
     if (torsoImg) {
       const needCleanTorso = isVariantHair || (acc.earring && acc.earring !== "baked");
       if (S.el) S.el.classList.toggle("has-clean-torso", !!needCleanTorso);
-      const wantTorso = needCleanTorso ? RIG_NEUTRAL_BASE + "torso-clean.svg?v=clean13" : rigNeutralLayerSrc("torso");
+      const wantTorso = needCleanTorso ? RIG_NEUTRAL_BASE + "torso-composite-clean.webp?v=base1" : rigNeutralLayerSrc("torso");
       if (torsoImg.getAttribute("src") !== wantTorso) torsoImg.src = wantTorso;
     }
     const hairSrc = rigHairTextureSrc(acc);
