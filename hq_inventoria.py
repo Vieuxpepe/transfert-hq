@@ -264,6 +264,22 @@ def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
             local_issues.append({"op": op, "code": "not_found", "place_code": code})
 
     payload = dict(proposal.get("payload") or {})
+    if isinstance(refs.get("item_id"), str) and isinstance(payload.get("id"), str):
+        if payload["id"] != refs["item_id"]:
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "refs_item_id": refs["item_id"],
+                "payload_id": payload["id"],
+            })
+    if isinstance(refs.get("place_id"), str) and isinstance(payload.get("id"), str) and op.startswith("place."):
+        if payload["id"] != refs["place_id"]:
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "refs_place_id": refs["place_id"],
+                "payload_id": payload["id"],
+            })
     if op.startswith("item.") and resolved.get("item_id") and "id" not in payload and op != "item.create":
         payload["id"] = resolved["item_id"]
     if op.startswith("place.") and resolved.get("place_id") and "id" not in payload and op != "place.create":
@@ -281,6 +297,50 @@ def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
     sim = _simulate_proposal(out, inv)
     local_issues.extend(sim)
     return out, local_issues
+
+
+def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
+    """Simulate ordered inventory effects — reject interdependent batches before any write."""
+    from hq_inventory import QTY_MAX
+
+    qty: dict[str, int] = {i["id"]: int(i["qty"]) for i in inv.get("items") or []}
+    item_rev: dict[str, int] = {i["id"]: int(i["rev"]) for i in inv.get("items") or []}
+    issues: list[dict] = []
+    for step, p in enumerate(proposals):
+        op = p["op"]
+        payload = p.get("payload") or {}
+        iid = payload.get("id")
+        if op == "item.adjust":
+            if not isinstance(iid, str) or iid not in qty:
+                issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            delta = payload.get("delta")
+            if not isinstance(delta, int) or isinstance(delta, bool) or delta == 0:
+                issues.append({"step": step, "code": "invalid_delta", "op": op})
+                continue
+            new_q = qty[iid] + delta
+            if new_q < 0 or new_q > QTY_MAX:
+                issues.append({"step": step, "code": "batch_bounds", "op": op, "would_be": new_q})
+                continue
+            qty[iid] = new_q
+            item_rev[iid] += 1
+        elif op == "item.update":
+            if not isinstance(iid, str) or iid not in qty:
+                issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            want_rev = payload.get("rev")
+            if want_rev != item_rev.get(iid):
+                issues.append({"step": step, "code": "stale_item_rev", "op": op})
+                continue
+            if "qty" in payload:
+                q = payload["qty"]
+                if isinstance(q, int) and not isinstance(q, bool):
+                    if q < 0 or q > QTY_MAX:
+                        issues.append({"step": step, "code": "batch_bounds", "op": op})
+                        continue
+                    qty[iid] = q
+            item_rev[iid] += 1
+    return issues
 
 
 def _session_row_to_api(row: sqlite3.Row) -> dict:
@@ -451,6 +511,8 @@ def validate_operation(
         issues.extend(local)
         resolved.append(rp)
 
+    if not issues:
+        issues.extend(_simulate_batch_sequential(resolved, inv))
     validation = {"ok": not issues, "issues": issues, "proposals": resolved}
     now = _now()
     prev = row["status"]
@@ -521,6 +583,13 @@ def preview_operation(conn: sqlite3.Connection, household_id: str, op_id: str, d
     if issues:
         raise InventoriaError(
             "preview refusé — références ou bornes",
+            status=409,
+            code="validation_error",
+        )
+    batch_issues = _simulate_batch_sequential(re_resolved, inv)
+    if batch_issues:
+        raise InventoriaError(
+            "preview refusé — lot incompatible",
             status=409,
             code="validation_error",
         )
@@ -645,6 +714,9 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
     rev_before = int(inv["rev"])
     inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
     resume = row["status"] in ("committing", "needs_reconcile") and row["cross_store_op_id"]
+    finalize_only = False
+    if row["cross_store_op_id"]:
+        finalize_only = commit_mod.journal_ready_to_finalize(conn, row["cross_store_op_id"])
     if resume:
         xop = conn.execute(
             "SELECT step_results_json FROM cross_store_ops WHERE id = ?",
@@ -654,8 +726,16 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
             last = json.loads(xop["step_results_json"])[-1]
             if isinstance(last, dict) and isinstance(last.get("inventory_rev"), int):
                 exp_rev = int(last["inventory_rev"])
-    if rev_before != exp_rev:
-        raise InventoriaError("révision inventaire obsolète", status=409, code="conflict")
+    if not finalize_only:
+        if rev_before != exp_rev:
+            raise InventoriaError("révision inventaire obsolète", status=409, code="conflict")
+        batch_issues = _simulate_batch_sequential(proposals, inv)
+        if batch_issues:
+            raise InventoriaError(
+                "commit refusé — lot incompatible",
+                status=409,
+                code="validation_error",
+            )
     result = commit_mod.run_inventoria_commit(
         conn,
         household_id=household_id,
@@ -688,6 +768,11 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
     raise InventoriaError(result.get("error", "échec commit"), status=409, code=result.get("code", "conflict"))
 
 
+_NON_CANCELLABLE = frozenset({
+    "committed", "committing", "needs_reconcile", "failed",
+})
+
+
 def cancel_operation(conn: sqlite3.Connection, household_id: str, op_id: str) -> dict:
     row = conn.execute(
         "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
@@ -695,8 +780,27 @@ def cancel_operation(conn: sqlite3.Connection, household_id: str, op_id: str) ->
     ).fetchone()
     if row is None:
         raise InventoriaError("opération introuvable", status=404, code="not_found")
-    if row["status"] in ("committed", "committing"):
-        raise InventoriaError("commit déjà lancé", status=409, code="conflict")
+    if row["status"] in _NON_CANCELLABLE:
+        raise InventoriaError("annulation interdite pour cet état", status=409, code="conflict")
+    if row["cross_store_op_id"]:
+        xop = conn.execute(
+            "SELECT status, planned_steps_json, uncertain_inventory FROM cross_store_ops WHERE id = ?",
+            (row["cross_store_op_id"],),
+        ).fetchone()
+        if xop:
+            steps = json.loads(xop["planned_steps_json"] or "[]")
+            if any(st.get("attempt_phase") == "in_flight" for st in steps):
+                raise InventoriaError(
+                    "journal cross-store incertain — annulation refusée",
+                    status=409,
+                    code="conflict",
+                )
+            if int(xop["uncertain_inventory"]) == 1 or xop["status"] == "needs_reconcile":
+                raise InventoriaError(
+                    "réconciliation requise — annulation refusée",
+                    status=409,
+                    code="conflict",
+                )
     now = _now()
     prev = row["status"]
     conn.execute(
@@ -767,7 +871,10 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
     except KeyError:
         raise InventoriaError("journal cross-store absent", status=404, code="not_found") from None
     except ValueError as exc:
-        raise InventoriaError(str(exc), code="validation_error") from exc
+        msg = str(exc)
+        if "idempotency conflict" in msg:
+            raise InventoriaError(msg, status=409, code="conflict") from exc
+        raise InventoriaError(msg, code="validation_error") from exc
     _audit(conn, household_id=household_id, operation_id=op_id, action="reconcile",
            prev_status="needs_reconcile", next_status=row["status"], detail=out)
     return out

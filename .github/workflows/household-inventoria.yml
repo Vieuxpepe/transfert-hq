@@ -14,6 +14,7 @@ on:
       - "tests/test_hq_inventoria_security.py"
       - "tests/test_hq_inventoria_recovery.py"
       - "tests/test_hq_inventoria_audit.py"
+      - "tests/test_hq_inventoria_batch.py"
       - "tests/test_household_cross_store.py"
       - "tests/test_household_store.py"
       - ".github/workflows/household-inventoria.yml"
@@ -30,6 +31,7 @@ on:
       - "tests/test_hq_inventoria_security.py"
       - "tests/test_hq_inventoria_recovery.py"
       - "tests/test_hq_inventoria_audit.py"
+      - "tests/test_hq_inventoria_batch.py"
       - "tests/test_household_cross_store.py"
       - "tests/test_household_store.py"
       - ".github/workflows/household-inventoria.yml"
@@ -45,6 +47,6 @@ jobs:
       - name: Household store v7 regression
         run: python -m unittest tests.test_household_store tests.test_household_cross_store -v
       - name: Inventoria pipeline
-        run: python -m unittest tests.test_hq_inventoria tests.test_hq_inventoria_security tests.test_hq_inventoria_recovery tests.test_hq_inventoria_audit -v
+        run: python -m unittest tests.test_hq_inventoria tests.test_hq_inventoria_security tests.test_hq_inventoria_recovery tests.test_hq_inventoria_audit tests.test_hq_inventoria_batch -v
       - name: Purchases regression (adjust_inventory still 501)
         run: python -m unittest tests.test_hq_purchases tests.test_household_cross_store.CrossStorePurchasesTests.test_adjust_inventory_does_not_create_journal_row -v

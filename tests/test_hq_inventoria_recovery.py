@@ -137,8 +137,28 @@ class InventoriaRecoveryTests(unittest.TestCase):
         self.assertEqual(c, 409, out)
         self.assertEqual(out.get("code"), "needs_reconcile")
 
-    def test_CS04_inject_apply_without_ack(self) -> None:
-        self.test_CS03b_crash_in_flight_needs_reconcile()
+    def test_CS04_apply_succeeded_before_ack_persisted(self) -> None:
+        op_id, prev = self._prepare_op()
+        body = self._commit_body(prev, "cs04-key")
+        qty0 = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
+
+        def hook(phase: str) -> None:
+            if phase == "F4b":
+                raise icommit.CommitAbort(phase)
+
+        icommit.set_test_hook(hook)
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", body)
+        icommit.set_test_hook(None)
+        qty1 = next(i for i in inv.snapshot()["items"] if i["id"] == self.item_id)["qty"]
+        self.assertEqual(qty1, qty0 - 1)
+        with store.open_store(self.root, readonly=True) as st:
+            xop = st.conn.execute(
+                "SELECT planned_steps_json, step_results_json, status FROM cross_store_ops LIMIT 1",
+            ).fetchone()
+            steps = json.loads(xop[0])
+            self.assertEqual(steps[0]["attempt_phase"], "in_flight")
+            self.assertEqual(json.loads(xop[1] or "[]"), [])
+            self.assertEqual(xop[2], "needs_reconcile")
 
     def test_CS05_ack_ok_crash_before_finalize(self) -> None:
         op_id, prev = self._prepare_op()
@@ -164,8 +184,11 @@ class InventoriaRecoveryTests(unittest.TestCase):
         c6, out6 = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", body)
         self.assertEqual(c6, 200, out6)
         with store.open_store(self.root, readonly=True) as st:
-            xop2 = st.conn.execute("SELECT status FROM cross_store_ops LIMIT 1").fetchone()
+            xop2 = st.conn.execute(
+                "SELECT status, uncertain_inventory FROM cross_store_ops LIMIT 1",
+            ).fetchone()
             self.assertEqual(xop2[0], "committed")
+            self.assertEqual(int(xop2[1]), 0)
 
     def test_CS06_rev_conflict_mid_batch(self) -> None:
         op_id, prev = self._prepare_op()
@@ -226,7 +249,7 @@ class InventoriaRecoveryTests(unittest.TestCase):
             {
                 "decision": "confirm_not_applied",
                 "reason": "operator confirms no apply occurred",
-                "idempotency_key": "sub8",
+                "idempotency_key": "sub8-retry",
                 "step_index": 0,
             },
         )
