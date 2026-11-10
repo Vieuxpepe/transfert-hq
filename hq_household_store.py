@@ -29,9 +29,9 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_MS = 5_000
-APP_REV = "household-finances-v3"
+APP_REV = "household-grocery-v4"
 
 SYSTEM_SID = "S-1-5-18"
 # Broad identities that must not remain on a sealed household path.
@@ -625,10 +625,96 @@ def _apply_v3(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 3")
 
 
+_V4_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS products (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      brand TEXT,
+      barcode TEXT,
+      canonical_unit TEXT NOT NULL CHECK(canonical_unit IN ('g','ml','each','serving')),
+      default_qty_milli INTEGER NOT NULL CHECK(default_qty_milli >= 0),
+      category_tags_json TEXT NOT NULL DEFAULT '[]',
+      inventory_item_id TEXT,
+      archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_household_barcode
+      ON products(household_id, barcode)
+      WHERE barcode IS NOT NULL AND barcode != ''
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_products_household_name ON products(household_id, name, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS food_lots (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      item_id TEXT,
+      place_id TEXT,
+      qty_milli INTEGER NOT NULL CHECK(qty_milli >= 0),
+      usable_qty_milli INTEGER NOT NULL CHECK(usable_qty_milli >= 0),
+      canonical_unit TEXT NOT NULL CHECK(canonical_unit IN ('g','ml','each','serving')),
+      expires_on TEXT,
+      opened_on TEXT,
+      source_purchase_id TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (product_id) REFERENCES products(id),
+      CHECK (usable_qty_milli <= qty_milli)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_food_lots_product ON food_lots(product_id, expires_on, id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_food_lots_household ON food_lots(household_id, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS merchants (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      location_label TEXT,
+      provider_id TEXT,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_merchants_household_name ON merchants(household_id, name, id)
+    """,
+)
+
+
+def _apply_v4(conn: sqlite3.Connection) -> None:
+    """Grocery catalogue, food lots, merchants (v4)."""
+    for stmt in _V4_STATEMENTS:
+        _exec_sql(conn, stmt)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (4, now, "household grocery core v4"),
+    )
+    conn.execute("PRAGMA user_version = 4")
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _apply_v1,
     2: _apply_v2,
     3: _apply_v3,
+    4: _apply_v4,
 }
 
 
@@ -792,12 +878,34 @@ def validate_schema_v3(conn: sqlite3.Connection) -> None:
             )
 
 
+_V4_REQUIRED: dict[str, tuple[str, ...]] = {
+    "products": (
+        "id", "household_id", "name", "canonical_unit", "default_qty_milli",
+        "category_tags_json", "archived", "created_at", "updated_at", "rev",
+    ),
+    "food_lots": (
+        "id", "household_id", "product_id", "qty_milli", "usable_qty_milli",
+        "canonical_unit", "created_at", "updated_at", "rev",
+    ),
+    "merchants": (
+        "id", "household_id", "name", "created_at", "updated_at", "rev",
+    ),
+}
+
+
+def validate_schema_v4(conn: sqlite3.Connection) -> None:
+    validate_schema_v3(conn)
+    _validate_schema_tables(conn, _V4_REQUIRED, label="v4")
+
+
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
     validate_schema_v1(conn)
     if version >= 2:
         validate_schema_v2(conn)
     if version >= 3:
         validate_schema_v3(conn)
+    if version >= 4:
+        validate_schema_v4(conn)
 
 
 # ---------------------------------------------------------------- open / migrate

@@ -23,6 +23,8 @@
         "qty_milli": {"type": "qty_milli"},
         "usable_qty_milli": {"type": "qty_milli"},
         "expires_on": {"type": "iso_date", "nullable": true},
+        "opened_on": {"type": "iso_date", "nullable": true},
+        "source_purchase_id": {"pattern": "purchase", "nullable": true},
         "invariant": "usable_qty_milli <= qty_milli"
       }
     },
