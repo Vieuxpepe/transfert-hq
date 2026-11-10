@@ -49,8 +49,10 @@ peut écrire achat + transaction ``grocery_purchase`` + lot dans **une** transac
   doit avoir la même devise (pas de conversion FX).
 - Isolation foyer : ``account_id`` / ``category_id`` validés côté achats **et**
   ``insert_transaction(..., via="grocery_purchase")`` (pas de confiance FK seule).
-- Unicité durable : index ``UNIQUE(household_id, idempotency_key)`` sur ``actual_purchases``
-  (indépendant du ``fingerprint``). Clé finance dérivée = SHA-256 64 hex (bornes 8–128 sur la clé achat).
+- Unicité durable : index ``idx_actual_purchases_idempotency`` UNIQUE
+  ``(household_id, idempotency_key)`` — validé via ``PRAGMA index_list`` / ``index_info`` ;
+  réparation writable = sauvegarde ``pre-v6-idem-index`` + transaction DDL (refus si doublons).
+- Clé finance dérivée = SHA-256 64 hex (bornes 8–128 sur la clé achat).
 - Pas de table ``planned_purchases``.
 
 ### SQLite v3 — colonne ``budget_envelopes.currency``

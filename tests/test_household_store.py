@@ -451,6 +451,7 @@ class StoreLifecycleTests(unittest.TestCase):
             self.assertIn("actual_purchases", names)
             self.assertIn("cross_store_ops", names)
             store.validate_schema_v6(st2.conn)
+            self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st2.conn))
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)
         meals.reset_for_tests()
@@ -913,6 +914,95 @@ class WindowsAclTests(unittest.TestCase):
             "S-1-5-18" in facts["text"] or "SYSTEM" in facts["text"].upper(),
             facts["text"],
         )
+
+
+class V6IdempotencyIndexIntegrityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="hq-v6-idx-")
+        self.root = Path(self.tmp.name)
+        store.set_acl_for_tests(False)
+
+    def tearDown(self) -> None:
+        store.set_acl_for_tests(True)
+        self.tmp.cleanup()
+
+    def _idem_backups(self) -> list[Path]:
+        return list(store.backups_dir(self.root).glob("household-pre-v6-idem-index-*.sqlite"))
+
+    def test_fresh_v6_index_valid_via_pragma(self) -> None:
+        with store.open_store(self.root) as st:
+            self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st.conn))
+
+    def test_repair_missing_index_backup_and_transaction(self) -> None:
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            st.conn.commit()
+        before = len(self._idem_backups())
+        with store.open_store(self.root, create=False) as st:
+            self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st.conn))
+        self.assertEqual(len(self._idem_backups()), before + 1)
+
+    def test_repair_non_unique_same_name(self) -> None:
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            st.conn.execute(
+                f"CREATE INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX} "
+                "ON actual_purchases(household_id, idempotency_key)",
+            )
+            st.conn.commit()
+            self.assertFalse(store.is_actual_purchases_idempotency_index_valid(st.conn))
+        before = len(self._idem_backups())
+        with store.open_store(self.root, create=False) as st:
+            self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st.conn))
+        self.assertEqual(len(self._idem_backups()), before + 1)
+
+    def test_duplicates_refuse_writable_open(self) -> None:
+        import hq_finances as fin
+        import hq_grocery as gr
+
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0)
+        gr.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0, inventory_snapshot=lambda: {"version": 1, "rev": 1, "items": [], "places": []})
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            hid = fin.ensure_default_household(st.conn)
+            mch = gr.create_merchant(st.conn, hid, {"name": "M"})["id"]
+            now = 1.0
+            for pid in ("pur-1111111111111111", "pur-2222222222222222"):
+                st.conn.execute(
+                    "INSERT INTO actual_purchases("
+                    "id, household_id, planned_id, product_id, merchant_id, qty_milli, unit, "
+                    "paid_cents, taxed_cents, deposit_cents, purchased_on, fingerprint, "
+                    "finance_tx_id, food_lot_id, idempotency_key, created_at, updated_at, rev"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        pid, hid, None, None, mch, 1000, "g", 10, 0, 0, "2026-11-10",
+                        f"fp-{pid}", None, None, "dup-key", now, now, 1,
+                    ),
+                )
+            st.conn.commit()
+        with self.assertRaises(store.HouseholdStoreError) as ctx:
+            store.open_store(self.root, create=False)
+        self.assertEqual(ctx.exception.code, "schema_error")
+        fin.reset_for_tests()
+        gr.reset_for_tests()
+
+    def test_readonly_no_repair_no_backup(self) -> None:
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            st.conn.commit()
+        bcount = len(self._idem_backups())
+        with self.assertRaises(store.HouseholdStoreError):
+            store.open_store(self.root, create=False, readonly=True)
+        self.assertEqual(len(self._idem_backups()), bcount)
+
+    def test_repeat_open_no_extra_repair_backups(self) -> None:
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            st.conn.commit()
+        store.open_store(self.root, create=False).close()
+        n = len(self._idem_backups())
+        store.open_store(self.root, create=False).close()
+        self.assertEqual(len(self._idem_backups()), n)
 
 
 class SchemaUnexpectedTypeTests(unittest.TestCase):

@@ -1118,17 +1118,119 @@ _V6_REQUIRED: dict[str, tuple[str, ...]] = {
 }
 
 
+_ACTUAL_PURCHASES_IDEM_INDEX = "idx_actual_purchases_idempotency"
+_ACTUAL_PURCHASES_IDEM_COLS = ("household_id", "idempotency_key")
+
+
+def _pragma_index_columns(conn: sqlite3.Connection, index_name: str) -> tuple[str, ...]:
+    try:
+        rows = conn.execute(f"PRAGMA index_info({index_name!r})").fetchall()
+    except sqlite3.Error:
+        return ()
+    cols: list[str] = []
+    for row in rows:
+        name = row["name"] if isinstance(row, sqlite3.Row) else row[2]
+        if name:
+            cols.append(str(name))
+    return tuple(cols)
+
+
+def _pragma_index_list_row(conn: sqlite3.Connection, table: str, index_name: str) -> sqlite3.Row | None:
+    for row in conn.execute(f"PRAGMA index_list({table!r})").fetchall():
+        iname = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        if str(iname) == index_name:
+            return row
+    return None
+
+
+def is_actual_purchases_idempotency_index_valid(conn: sqlite3.Connection) -> bool:
+    """True only if idx… is UNIQUE and covers (household_id, idempotency_key) in order."""
+    row = _pragma_index_list_row(conn, "actual_purchases", _ACTUAL_PURCHASES_IDEM_INDEX)
+    if row is None:
+        return False
+    unique = int(row["unique"] if isinstance(row, sqlite3.Row) else row[2])
+    if unique == 0:
+        return False
+    return _pragma_index_columns(conn, _ACTUAL_PURCHASES_IDEM_INDEX) == _ACTUAL_PURCHASES_IDEM_COLS
+
+
+def _actual_purchases_idempotency_has_duplicates(conn: sqlite3.Connection) -> bool:
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_purchases'",
+    ).fetchone() is None:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM actual_purchases "
+        "GROUP BY household_id, idempotency_key HAVING COUNT(*) > 1 LIMIT 1",
+    ).fetchone() is not None
+
+
+def ensure_actual_purchases_idempotency_index(
+    conn: sqlite3.Connection,
+    root: Path | str,
+) -> None:
+    """Writable repair only: verified backup + DDL transaction when the index is missing or invalid."""
+    if is_actual_purchases_idempotency_index_valid(conn):
+        return
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_purchases'",
+    ).fetchone() is None:
+        return
+    if _actual_purchases_idempotency_has_duplicates(conn):
+        raise HouseholdStoreError(
+            "Doublons (household_id, idempotency_key) sur actual_purchases — "
+            "réparation index refusée (aucune fusion automatique)",
+            code="schema_error",
+            status=500,
+        )
+    snap = backup(root, label="pre-v6-idem-index", conn=conn)
+    if not snap.get("ok"):
+        raise HouseholdStoreError(
+            "Sauvegarde pré-réparation index idempotency échouée",
+            code="backup_error",
+        )
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(f"DROP INDEX IF EXISTS {_ACTUAL_PURCHASES_IDEM_INDEX}")
+        conn.execute(
+            f"CREATE UNIQUE INDEX {_ACTUAL_PURCHASES_IDEM_INDEX} "
+            "ON actual_purchases(household_id, idempotency_key)"
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise HouseholdStoreError(
+            "Création index idempotency refusée (données en conflit)",
+            code="schema_error",
+            status=500,
+        ) from exc
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise
+    if not is_actual_purchases_idempotency_index_valid(conn):
+        raise HouseholdStoreError(
+            "Index idempotency actual_purchases invalide après réparation",
+            code="schema_error",
+            status=500,
+        )
+
+
 def validate_schema_v6(conn: sqlite3.Connection) -> None:
     validate_schema_v5(conn)
     _validate_schema_tables(conn, _V6_REQUIRED, label="v6")
-
-
-def _repair_additive_v6_indexes(conn: sqlite3.Connection) -> None:
-    """Idempotent index for DBs created before idempotency uniqueness was added to v6."""
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_actual_purchases_idempotency "
-        "ON actual_purchases(household_id, idempotency_key)"
-    )
+    if not is_actual_purchases_idempotency_index_valid(conn):
+        raise HouseholdStoreError(
+            "Index UNIQUE idx_actual_purchases_idempotency "
+            "(household_id, idempotency_key) manquant ou invalide",
+            code="schema_error",
+            status=500,
+        )
 
 
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
@@ -1310,7 +1412,7 @@ def open_store(
                 raise HouseholdStoreError(f"intégrité échec: {check}", code="corrupt")
             ver = get_schema_version(conn)
             if ver >= 6:
-                _repair_additive_v6_indexes(conn)
+                ensure_actual_purchases_idempotency_index(conn, root)
             _validate_schema_for_version(conn, ver)
             _enable_wal(conn)
         except Exception:
@@ -1372,7 +1474,7 @@ def open_store(
                 raise HouseholdStoreError("intégrité post-migration échec", code="corrupt")
             current = get_schema_version(conn)
         if current >= 6:
-            _repair_additive_v6_indexes(conn)
+            ensure_actual_purchases_idempotency_index(conn, root)
         if current == SCHEMA_VERSION:
             _validate_schema_for_version(conn, current)
         _enable_wal(conn)
