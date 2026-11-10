@@ -115,17 +115,28 @@ Frontend: **`assets/hq-companion.js`**, view **`intime`**.
 
 ---
 
-## Household Intelligence (planned — not live on this branch)
+## Household Intelligence
 
-Architecture only in PR #30: see [household/README.md](household/README.md).
-**Do not** expect these routes in `iphone_bridge.py` until a later activation PR.
-
-| Prefix (future) | Mod (future) | Notes |
-|-----------------|--------------|-------|
+| Prefix | Mod | Notes |
+|--------|-----|-------|
 | `/api/finances/*` | `hq_finances` | Admin + CSRF; integer cents |
 | `/api/grocery/*` | `hq_grocery` | Products, lots, offers, purchases |
 | `/api/meals/*` | `hq_meals` | Profiles, recipes, plans |
 | `/api/inventoria/*` | `hq_inventoria` | propose→validate→preview→commit→audit |
+
+Inventoria routes (live in `iphone_bridge.py`):
+
+| Method | Path |
+|--------|------|
+| POST | `/api/inventoria/sessions` |
+| GET | `/api/inventoria/sessions/{id}` |
+| POST | `/api/inventoria/sessions/{id}/message` |
+| POST | `/api/inventoria/ops/{id}/validate` |
+| POST | `/api/inventoria/ops/{id}/preview` |
+| POST | `/api/inventoria/ops/{id}/commit` |
+| POST | `/api/inventoria/ops/{id}/cancel` |
+| GET | `/api/inventoria/ops/{id}` |
+| POST | `/api/inventoria/ops/{id}/reconcile` |
 
 ---
 

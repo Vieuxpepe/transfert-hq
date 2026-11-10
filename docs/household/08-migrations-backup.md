@@ -34,6 +34,14 @@ révisions atomiques (CAS sur ``rev``) et listes bornées (≤100 ingrédients, 
 sans explosion de tables relationnelles en v1. Aucune écriture Inventoria ni ledger ; le build-list
 preview ne persiste rien ; commit idempotent via ``grocery_list_build_idempotency``.
 
+### SQLite v7 — moteur Inventoria (PR #37 core)
+
+Tables ``inventoria_sessions``, ``inventoria_operations``, ``inventoria_operation_audit``,
+``inventoria_commit_idempotency``. Pipeline **propose → validate → preview → commit**
+sans écriture inventaire avant ``commit`` ; commit cross-store via journal
+``cross_store_ops`` (``kind=inventoria_commit``) et ``hq_inventory.apply_guarded``.
+``adjust_inventory`` sur achats reste **501** (inchangé v6).
+
 ### SQLite v6 — achats réels (PR #35 core)
 
 Tables ``actual_purchases`` (unicité ``fingerprint`` par foyer), ``purchase_idempotency``,

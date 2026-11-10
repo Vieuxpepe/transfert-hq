@@ -29,9 +29,9 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 BUSY_TIMEOUT_MS = 5_000
-APP_REV = "household-purchases-v6"
+APP_REV = "household-inventoria-v7"
 
 SYSTEM_SID = "S-1-5-18"
 # Broad identities that must not remain on a sealed household path.
@@ -886,6 +886,103 @@ def _apply_v6(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA user_version = 6")
 
 
+_V7_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS inventoria_sessions (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('open','closed')),
+      messages_json TEXT NOT NULL DEFAULT '[]',
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_inventoria_sessions_household
+      ON inventoria_sessions(household_id, status, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS inventoria_operations (
+      id TEXT PRIMARY KEY NOT NULL,
+      household_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN (
+        'draft','validated','previewed','committing','committed',
+        'needs_reconcile','cancelled','failed'
+      )),
+      proposals_json TEXT NOT NULL DEFAULT '[]',
+      validation_json TEXT,
+      preview_json TEXT,
+      expected_inventory_rev INTEGER,
+      item_rev_expectations_json TEXT,
+      preview_digest TEXT,
+      preview_confirmed INTEGER NOT NULL DEFAULT 0 CHECK(preview_confirmed IN (0, 1)),
+      commit_idempotency_key TEXT,
+      request_hash TEXT,
+      commit_result_json TEXT,
+      cross_store_op_id TEXT,
+      rev INTEGER NOT NULL CHECK(rev >= 1),
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (session_id) REFERENCES inventoria_sessions(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_inventoria_ops_household_status
+      ON inventoria_operations(household_id, status, id)
+    """,
+    """
+  CREATE TABLE IF NOT EXISTS inventoria_operation_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      operation_id TEXT NOT NULL,
+      household_id TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      prev_status TEXT,
+      next_status TEXT,
+      detail_json TEXT,
+      created_at REAL NOT NULL,
+      FOREIGN KEY (operation_id) REFERENCES inventoria_operations(id),
+      FOREIGN KEY (household_id) REFERENCES households(id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_inventoria_audit_operation
+      ON inventoria_operation_audit(operation_id, id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS inventoria_commit_idempotency (
+      household_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      operation_id TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at REAL NOT NULL,
+      PRIMARY KEY (household_id, idempotency_key),
+      FOREIGN KEY (household_id) REFERENCES households(id),
+      FOREIGN KEY (operation_id) REFERENCES inventoria_operations(id)
+    )
+    """,
+)
+
+
+def _apply_v7(conn: sqlite3.Connection) -> None:
+    """Inventoria sessions, operations, audit, commit idempotency (v7)."""
+    for stmt in _V7_STATEMENTS:
+        _exec_sql(conn, stmt)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
+        (7, now, "household inventoria engine v7"),
+    )
+    conn.execute("PRAGMA user_version = 7")
+
+
 _MIGRATIONS: dict[int, Any] = {
     1: _apply_v1,
     2: _apply_v2,
@@ -893,6 +990,7 @@ _MIGRATIONS: dict[int, Any] = {
     4: _apply_v4,
     5: _apply_v5,
     6: _apply_v6,
+    7: _apply_v7,
 }
 
 
@@ -1249,6 +1347,34 @@ def validate_schema_v6(conn: sqlite3.Connection) -> None:
         )
 
 
+_V7_REQUIRED: dict[str, tuple[str, ...]] = {
+    "inventoria_sessions": (
+        "id", "household_id", "device_id", "owner", "status",
+        "messages_json", "rev", "created_at", "updated_at",
+    ),
+    "inventoria_operations": (
+        "id", "household_id", "session_id", "status", "proposals_json",
+        "validation_json", "preview_json", "expected_inventory_rev",
+        "item_rev_expectations_json", "preview_digest", "preview_confirmed",
+        "commit_idempotency_key", "request_hash", "commit_result_json",
+        "cross_store_op_id", "rev", "created_at", "updated_at",
+    ),
+    "inventoria_operation_audit": (
+        "id", "operation_id", "household_id", "actor", "action",
+        "prev_status", "next_status", "detail_json", "created_at",
+    ),
+    "inventoria_commit_idempotency": (
+        "household_id", "idempotency_key", "operation_id",
+        "request_hash", "response_json", "created_at",
+    ),
+}
+
+
+def validate_schema_v7(conn: sqlite3.Connection) -> None:
+    validate_schema_v6(conn)
+    _validate_schema_tables(conn, _V7_REQUIRED, label="v7")
+
+
 def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None:
     validate_schema_v1(conn)
     if version >= 2:
@@ -1261,6 +1387,8 @@ def _validate_schema_for_version(conn: sqlite3.Connection, version: int) -> None
         validate_schema_v5(conn)
     if version >= 6:
         validate_schema_v6(conn)
+    if version >= 7:
+        validate_schema_v7(conn)
 
 
 # ---------------------------------------------------------------- open / migrate

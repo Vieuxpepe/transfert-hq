@@ -1,0 +1,48 @@
+name: Household inventoria core
+
+on:
+  push:
+    paths:
+      - "hq_inventoria.py"
+      - "hq_inventoria_commit.py"
+      - "hq_inventory.py"
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "iphone_bridge.py"
+      - "schemas/household/**"
+      - "tests/test_hq_inventoria.py"
+      - "tests/test_hq_inventoria_security.py"
+      - "tests/test_hq_inventoria_recovery.py"
+      - "tests/test_household_cross_store.py"
+      - "tests/test_household_store.py"
+      - ".github/workflows/household-inventoria.yml"
+  pull_request:
+    paths:
+      - "hq_inventoria.py"
+      - "hq_inventoria_commit.py"
+      - "hq_inventory.py"
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "iphone_bridge.py"
+      - "schemas/household/**"
+      - "tests/test_hq_inventoria.py"
+      - "tests/test_hq_inventoria_security.py"
+      - "tests/test_hq_inventoria_recovery.py"
+      - "tests/test_household_cross_store.py"
+      - "tests/test_household_store.py"
+      - ".github/workflows/household-inventoria.yml"
+
+jobs:
+  household-inventoria:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Household store v7 regression
+        run: python -m unittest tests.test_household_store tests.test_household_cross_store -v
+      - name: Inventoria pipeline
+        run: python -m unittest tests.test_hq_inventoria tests.test_hq_inventoria_security tests.test_hq_inventoria_recovery -v
+      - name: Purchases regression (adjust_inventory still 501)
+        run: python -m unittest tests.test_hq_purchases tests.test_household_cross_store.CrossStorePurchasesTests.test_adjust_inventory_does_not_create_journal_row -v

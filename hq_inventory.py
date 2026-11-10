@@ -417,179 +417,262 @@ _PLACE_FIELDS = ("parent", "name", "kind", "note", "photos")
 _ITEM_FIELDS = ("place", "name", "qty", "unit", "min", "tags", "note", "photos")
 
 
+def _assert_guarded_revs(
+    doc: dict,
+    *,
+    expected_inventory_rev: int | None,
+    item_rev_expectations: list[dict] | None,
+    action: Any,
+    strict_adjust: bool,
+) -> None:
+    if strict_adjust and action == "item.adjust" and expected_inventory_rev is None:
+        raise InventoryError(
+            "expected_inventory_rev requis pour item.adjust (mode strict)",
+            400,
+            "validation_error",
+        )
+    if expected_inventory_rev is not None and doc["rev"] != expected_inventory_rev:
+        raise InventoryError(
+            "Révision inventaire obsolète",
+            409,
+            "conflict",
+            {"rev": doc["rev"]},
+        )
+    if item_rev_expectations:
+        by_id = {i["id"]: i for i in doc["items"]}
+        for exp in item_rev_expectations:
+            if not isinstance(exp, dict):
+                raise InventoryError("item_rev_expectations invalide")
+            iid = exp.get("item_id")
+            want = exp.get("rev")
+            if not isinstance(iid, str) or not isinstance(want, int):
+                raise InventoryError("item_rev_expectations invalide")
+            rec = by_id.get(iid)
+            if rec is None:
+                raise InventoryError("Objet introuvable", 404, "not_found")
+            if rec["rev"] != want:
+                raise InventoryError(
+                    "Révision objet obsolète",
+                    409,
+                    "conflict",
+                    {"item_id": iid, "rev": rec["rev"]},
+                )
+
+
+def _apply_mutate(
+    path: Path,
+    doc: dict,
+    data: dict,
+    *,
+    strict_adjust: bool = False,
+) -> dict:
+    """Mutate ``doc`` and save. Caller holds ``_lock`` and loaded ``doc``."""
+    if not isinstance(data, dict):
+        raise InventoryError("Requête invalide")
+    action = data.get("action")
+    places = {p["id"]: p for p in doc["places"]}
+    now = _now()
+    out: dict[str, Any] = {}
+
+    if action in ("place.create", "place.restore"):
+        if len(doc["places"]) >= PLACES_MAX:
+            raise InventoryError(f"Limite d'emplacements atteinte ({PLACES_MAX})", 507, "quota")
+        keep = None
+        if action == "place.restore":
+            src = data.get("place")
+            if not isinstance(src, dict) or not isinstance(src.get("id"), str) or not PLACE_RE.match(src["id"]):
+                raise InventoryError("Emplacement à rétablir invalide")
+            if src["id"] in places:
+                raise InventoryError("Cet emplacement existe déjà", 409, "exists")
+            keep = {"id": src["id"], "code": src.get("code"), "created_at": src["created_at"] if _is_num(src.get("created_at")) else now}
+            fields = dict(src)
+            if fields.get("parent") not in places:
+                fields["parent"] = None  # its parent is gone: back to the top level, never lost
+        else:
+            fields = data
+        rec = _place_from(fields, places, {p["code"] for p in doc["places"]}, now, keep=keep)
+        doc["places"].append(rec)
+        out["place"] = rec
+
+    elif action == "place.update":
+        rec = places.get(data.get("id"))
+        if rec is None:
+            raise InventoryError("Emplacement introuvable", 404, "not_found")
+        _need_rev(rec, data.get("rev"), "Emplacement")
+        if "parent" in data:
+            rec["parent"] = _check_parent(places, rec["id"], data.get("parent"), moving_height=_subtree_height(places, rec["id"]))
+        if "name" in data:
+            rec["name"] = _line(data["name"], "Nom", NAME_MAX, required=True)
+        if "kind" in data:
+            rec["kind"] = _kind(data["kind"])
+        if "note" in data:
+            rec["note"] = _text(data["note"], "Note", NOTE_MAX)
+        if "photos" in data:
+            rec["photos"] = _photos(data["photos"])
+        rec["updated_at"] = now
+        rec["rev"] += 1
+        out["place"] = rec
+
+    elif action == "place.delete":
+        rec = places.get(data.get("id"))
+        if rec is None:
+            raise InventoryError("Emplacement introuvable", 404, "not_found")
+        _need_rev(rec, data.get("rev"), "Emplacement")
+        kids = [p for p in doc["places"] if p["parent"] == rec["id"]]
+        items = [i for i in doc["items"] if i["place"] == rec["id"]]
+        if (kids or items) and data.get("contents") != "parent":
+            raise InventoryError("Cet emplacement n'est pas vide", 409, "not_empty", {"places": len(kids), "items": len(items)})
+        for k in kids:  # contents go up one level; depth only shrinks
+            k["parent"] = rec["parent"]
+            k["updated_at"] = now
+            k["rev"] += 1
+        for i in items:
+            i["place"] = rec["parent"]
+            i["updated_at"] = now
+            i["rev"] += 1
+        doc["places"] = [p for p in doc["places"] if p["id"] != rec["id"]]
+        out["deleted"] = rec
+        out["moved"] = {"places": [k["id"] for k in kids], "items": [i["id"] for i in items], "to": rec["parent"]}
+
+    elif action in ("item.create", "item.restore"):
+        if len(doc["items"]) >= ITEMS_MAX:
+            raise InventoryError(f"Limite d'objets atteinte ({ITEMS_MAX})", 507, "quota")
+        keep = None
+        fields = data
+        if action == "item.restore":
+            src = data.get("item")
+            if not isinstance(src, dict) or not isinstance(src.get("id"), str) or not ITEM_RE.match(src["id"]):
+                raise InventoryError("Objet à rétablir invalide")
+            if _find(doc["items"], src["id"]) is not None:
+                raise InventoryError("Cet objet existe déjà", 409, "exists")
+            keep = {"id": src["id"], "created_at": src["created_at"] if _is_num(src.get("created_at")) else now}
+            fields = dict(src)
+            if fields.get("place") not in places:
+                fields["place"] = None  # its place is gone: back to « Sans emplacement », never lost
+        rec = _item_from(fields, places, now, keep=keep)
+        doc["items"].append(rec)
+        out["item"] = rec
+
+    elif action == "item.update":
+        rec = _find(doc["items"], data.get("id"))
+        if rec is None:
+            raise InventoryError("Objet introuvable", 404, "not_found")
+        _need_rev(rec, data.get("rev"), "Objet")
+        if "place" in data:
+            p = data["place"]
+            if p in ("", None):
+                rec["place"] = None
+            elif isinstance(p, str) and p in places:
+                rec["place"] = p
+            else:
+                raise InventoryError("Emplacement introuvable", 404, "not_found")
+        if "name" in data:
+            rec["name"] = _line(data["name"], "Nom", NAME_MAX, required=True)
+        if "qty" in data:
+            rec["qty"] = _qty(data["qty"])
+        if "unit" in data:
+            rec["unit"] = _line(data["unit"], "Unité", UNIT_MAX)
+        if "min" in data:
+            rec["min"] = _qty(data["min"], "Seuil", allow_none=True)
+        if "tags" in data:
+            rec["tags"] = _tags(data["tags"])
+        if "note" in data:
+            rec["note"] = _text(data["note"], "Note", NOTE_MAX)
+        if "photos" in data:
+            rec["photos"] = _photos(data["photos"])
+        rec["updated_at"] = now
+        rec["rev"] += 1
+        out["item"] = rec
+
+    elif action == "item.adjust":
+        rec = _find(doc["items"], data.get("id"))
+        if rec is None:
+            raise InventoryError("Objet introuvable", 404, "not_found")
+        delta = data.get("delta")
+        if not _is_int(delta) or delta == 0 or abs(delta) > QTY_MAX:
+            raise InventoryError("Variation invalide")
+        new_qty = rec["qty"] + delta
+        if strict_adjust:
+            if new_qty < 0 or new_qty > QTY_MAX:
+                raise InventoryError("Variation hors bornes", 409, "conflict")
+            rec["qty"] = new_qty
+        else:
+            rec["qty"] = max(0, min(QTY_MAX, new_qty))
+        rec["updated_at"] = now
+        rec["rev"] += 1
+        out["item"] = rec
+
+    elif action == "item.delete":
+        rec = _find(doc["items"], data.get("id"))
+        if rec is None:
+            raise InventoryError("Objet introuvable", 404, "not_found")
+        _need_rev(rec, data.get("rev"), "Objet")
+        doc["items"] = [i for i in doc["items"] if i["id"] != rec["id"]]
+        out["deleted"] = rec
+
+    elif action == "item.move":
+        ids = data.get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > BULK_MAX or not all(isinstance(x, str) for x in ids):
+            raise InventoryError(f"Sélection invalide (1 à {BULK_MAX} objets)")
+        dest = data.get("place")
+        if dest in ("", None):
+            dest = None
+        elif not isinstance(dest, str) or dest not in places:
+            raise InventoryError("Emplacement introuvable", 404, "not_found")
+        byid = {i["id"]: i for i in doc["items"]}
+        missing = [x for x in ids if x not in byid]
+        if missing:
+            raise InventoryError("Objet introuvable", 404, "not_found")
+        moved = []
+        for x in dict.fromkeys(ids):
+            rec = byid[x]
+            if rec["place"] != dest:
+                rec["place"] = dest
+                rec["updated_at"] = now
+                rec["rev"] += 1
+            moved.append(rec)
+        out["items"] = moved
+
+    else:
+        raise InventoryError("Action inconnue")
+
+    doc["rev"] += 1
+    _save(path, doc)
+    out["ok"] = True
+    out["rev"] = doc["rev"]
+    return out
+
+
 def apply(data: dict) -> dict:
     """One write. Returns the response payload (always carrying the new store ``rev``)."""
+    with _lock:
+        path = _path()
+        doc = _load(path)
+        return _apply_mutate(path, doc, data, strict_adjust=False)
+
+
+def apply_guarded(
+    data: dict,
+    *,
+    expected_inventory_rev: int | None = None,
+    item_rev_expectations: list[dict] | None = None,
+    strict_adjust: bool = False,
+) -> dict:
+    """Revision-aware apply for cross-store / Inventoria commits."""
     if not isinstance(data, dict):
         raise InventoryError("Requête invalide")
     action = data.get("action")
     with _lock:
         path = _path()
         doc = _load(path)
-        places = {p["id"]: p for p in doc["places"]}
-        now = _now()
-        out: dict[str, Any] = {}
-
-        if action in ("place.create", "place.restore"):
-            if len(doc["places"]) >= PLACES_MAX:
-                raise InventoryError(f"Limite d'emplacements atteinte ({PLACES_MAX})", 507, "quota")
-            keep = None
-            if action == "place.restore":
-                src = data.get("place")
-                if not isinstance(src, dict) or not isinstance(src.get("id"), str) or not PLACE_RE.match(src["id"]):
-                    raise InventoryError("Emplacement à rétablir invalide")
-                if src["id"] in places:
-                    raise InventoryError("Cet emplacement existe déjà", 409, "exists")
-                keep = {"id": src["id"], "code": src.get("code"), "created_at": src["created_at"] if _is_num(src.get("created_at")) else now}
-                fields = dict(src)
-                if fields.get("parent") not in places:
-                    fields["parent"] = None  # its parent is gone: back to the top level, never lost
-            else:
-                fields = data
-            rec = _place_from(fields, places, {p["code"] for p in doc["places"]}, now, keep=keep)
-            doc["places"].append(rec)
-            out["place"] = rec
-
-        elif action == "place.update":
-            rec = places.get(data.get("id"))
-            if rec is None:
-                raise InventoryError("Emplacement introuvable", 404, "not_found")
-            _need_rev(rec, data.get("rev"), "Emplacement")
-            if "parent" in data:
-                rec["parent"] = _check_parent(places, rec["id"], data.get("parent"), moving_height=_subtree_height(places, rec["id"]))
-            if "name" in data:
-                rec["name"] = _line(data["name"], "Nom", NAME_MAX, required=True)
-            if "kind" in data:
-                rec["kind"] = _kind(data["kind"])
-            if "note" in data:
-                rec["note"] = _text(data["note"], "Note", NOTE_MAX)
-            if "photos" in data:
-                rec["photos"] = _photos(data["photos"])
-            rec["updated_at"] = now
-            rec["rev"] += 1
-            out["place"] = rec
-
-        elif action == "place.delete":
-            rec = places.get(data.get("id"))
-            if rec is None:
-                raise InventoryError("Emplacement introuvable", 404, "not_found")
-            _need_rev(rec, data.get("rev"), "Emplacement")
-            kids = [p for p in doc["places"] if p["parent"] == rec["id"]]
-            items = [i for i in doc["items"] if i["place"] == rec["id"]]
-            if (kids or items) and data.get("contents") != "parent":
-                raise InventoryError("Cet emplacement n'est pas vide", 409, "not_empty", {"places": len(kids), "items": len(items)})
-            for k in kids:  # contents go up one level; depth only shrinks
-                k["parent"] = rec["parent"]
-                k["updated_at"] = now
-                k["rev"] += 1
-            for i in items:
-                i["place"] = rec["parent"]
-                i["updated_at"] = now
-                i["rev"] += 1
-            doc["places"] = [p for p in doc["places"] if p["id"] != rec["id"]]
-            out["deleted"] = rec
-            out["moved"] = {"places": [k["id"] for k in kids], "items": [i["id"] for i in items], "to": rec["parent"]}
-
-        elif action in ("item.create", "item.restore"):
-            if len(doc["items"]) >= ITEMS_MAX:
-                raise InventoryError(f"Limite d'objets atteinte ({ITEMS_MAX})", 507, "quota")
-            keep = None
-            fields = data
-            if action == "item.restore":
-                src = data.get("item")
-                if not isinstance(src, dict) or not isinstance(src.get("id"), str) or not ITEM_RE.match(src["id"]):
-                    raise InventoryError("Objet à rétablir invalide")
-                if _find(doc["items"], src["id"]) is not None:
-                    raise InventoryError("Cet objet existe déjà", 409, "exists")
-                keep = {"id": src["id"], "created_at": src["created_at"] if _is_num(src.get("created_at")) else now}
-                fields = dict(src)
-                if fields.get("place") not in places:
-                    fields["place"] = None  # its place is gone: back to « Sans emplacement », never lost
-            rec = _item_from(fields, places, now, keep=keep)
-            doc["items"].append(rec)
-            out["item"] = rec
-
-        elif action == "item.update":
-            rec = _find(doc["items"], data.get("id"))
-            if rec is None:
-                raise InventoryError("Objet introuvable", 404, "not_found")
-            _need_rev(rec, data.get("rev"), "Objet")
-            if "place" in data:
-                p = data["place"]
-                if p in ("", None):
-                    rec["place"] = None
-                elif isinstance(p, str) and p in places:
-                    rec["place"] = p
-                else:
-                    raise InventoryError("Emplacement introuvable", 404, "not_found")
-            if "name" in data:
-                rec["name"] = _line(data["name"], "Nom", NAME_MAX, required=True)
-            if "qty" in data:
-                rec["qty"] = _qty(data["qty"])
-            if "unit" in data:
-                rec["unit"] = _line(data["unit"], "Unité", UNIT_MAX)
-            if "min" in data:
-                rec["min"] = _qty(data["min"], "Seuil", allow_none=True)
-            if "tags" in data:
-                rec["tags"] = _tags(data["tags"])
-            if "note" in data:
-                rec["note"] = _text(data["note"], "Note", NOTE_MAX)
-            if "photos" in data:
-                rec["photos"] = _photos(data["photos"])
-            rec["updated_at"] = now
-            rec["rev"] += 1
-            out["item"] = rec
-
-        elif action == "item.adjust":
-            rec = _find(doc["items"], data.get("id"))
-            if rec is None:
-                raise InventoryError("Objet introuvable", 404, "not_found")
-            delta = data.get("delta")
-            if not _is_int(delta) or delta == 0 or abs(delta) > QTY_MAX:
-                raise InventoryError("Variation invalide")
-            rec["qty"] = max(0, min(QTY_MAX, rec["qty"] + delta))
-            rec["updated_at"] = now
-            rec["rev"] += 1
-            out["item"] = rec
-
-        elif action == "item.delete":
-            rec = _find(doc["items"], data.get("id"))
-            if rec is None:
-                raise InventoryError("Objet introuvable", 404, "not_found")
-            _need_rev(rec, data.get("rev"), "Objet")
-            doc["items"] = [i for i in doc["items"] if i["id"] != rec["id"]]
-            out["deleted"] = rec
-
-        elif action == "item.move":
-            ids = data.get("ids")
-            if not isinstance(ids, list) or not ids or len(ids) > BULK_MAX or not all(isinstance(x, str) for x in ids):
-                raise InventoryError(f"Sélection invalide (1 à {BULK_MAX} objets)")
-            dest = data.get("place")
-            if dest in ("", None):
-                dest = None
-            elif not isinstance(dest, str) or dest not in places:
-                raise InventoryError("Emplacement introuvable", 404, "not_found")
-            byid = {i["id"]: i for i in doc["items"]}
-            missing = [x for x in ids if x not in byid]
-            if missing:
-                raise InventoryError("Objet introuvable", 404, "not_found")
-            moved = []
-            for x in dict.fromkeys(ids):
-                rec = byid[x]
-                if rec["place"] != dest:
-                    rec["place"] = dest
-                    rec["updated_at"] = now
-                    rec["rev"] += 1
-                moved.append(rec)
-            out["items"] = moved
-
-        else:
-            raise InventoryError("Action inconnue")
-
-        doc["rev"] += 1
-        _save(path, doc)
-        out["ok"] = True
-        out["rev"] = doc["rev"]
-        return out
+        _assert_guarded_revs(
+            doc,
+            expected_inventory_rev=expected_inventory_rev,
+            item_rev_expectations=item_rev_expectations,
+            action=action,
+            strict_adjust=strict_adjust,
+        )
+        return _apply_mutate(path, doc, data, strict_adjust=strict_adjust)
 
 
 # ---------------------------------------------------------------- pure queries (also used by tests)

@@ -32,8 +32,20 @@ class CrossStorePurchasesTests(unittest.TestCase):
         )
         pur.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0)
         with store.open_store(self.root) as st:
-            store.validate_schema_v6(st.conn)
-            self.assertEqual(st.schema_version, 6)
+            store.validate_schema_v7(st.conn)
+            self.assertEqual(st.schema_version, 7)
+            for tbl in (
+                "inventoria_sessions",
+                "inventoria_operations",
+                "inventoria_operation_audit",
+                "inventoria_commit_idempotency",
+            ):
+                self.assertIsNotNone(
+                    st.conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (tbl,),
+                    ).fetchone(),
+                )
 
     def tearDown(self) -> None:
         pur.reset_for_tests()
