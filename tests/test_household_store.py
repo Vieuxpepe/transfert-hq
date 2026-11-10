@@ -315,17 +315,56 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
-        with store.open_store(self.root) as st:
-            with st.transaction():
-                hid = fin.ensure_default_household(st.conn)
-                gr.create_product(st.conn, hid, {"name": "Rice", "canonical_unit": "g", "default_qty_milli": 1000})
-        prod_n = int(sqlite3.connect(str(path)).execute("SELECT COUNT(*) FROM products").fetchone()[0])
+
+        conn_v4 = sqlite3.connect(str(path))
+        conn_v4.row_factory = sqlite3.Row
+        prod_id = mch_id = lot_id = acct = None
+        try:
+            st_v4 = store.HouseholdStore(self.root, conn_v4, schema_version=4)
+            with st_v4.transaction():
+                hid = fin.ensure_default_household(st_v4.conn)
+                prod = gr.create_product(
+                    st_v4.conn, hid, {"name": "Rice", "canonical_unit": "g", "default_qty_milli": 1000},
+                )
+                prod_id = prod["id"]
+                lot = gr.create_lot(
+                    st_v4.conn, hid,
+                    {"product_id": prod_id, "qty_milli": 500_000, "usable_qty_milli": 400_000, "canonical_unit": "g"},
+                )
+                lot_id = lot["id"]
+                mch = gr.create_merchant(st_v4.conn, hid, {"name": "Metro"})
+                mch_id = mch["id"]
+                acct = fin.create_account(
+                    st_v4.conn, hid, {"name": "A", "kind": "cash", "opening_balance_cents": 100, "currency": "CAD"},
+                )["id"]
+                cat = fin.upsert_category(st_v4.conn, hid, {"name": "x", "kind": "expense"})["id"]
+                fin.insert_transaction(
+                    st_v4.conn,
+                    hid,
+                    {
+                        "account_id": acct,
+                        "category_id": cat,
+                        "amount_cents": -10,
+                        "booked_on": "2026-09-01",
+                        "idempotency_key": "v5-preserve-tx",
+                    },
+                    pin_idem=True,
+                )
+            self.assertEqual(int(st_v4.conn.execute("PRAGMA user_version").fetchone()[0]), 4)
+        finally:
+            conn_v4.close()
+
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.schema_version, 5)
-            self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]), prod_n)
+            self.assertEqual(st2.conn.execute("SELECT id FROM products WHERE id = ?", (prod_id,)).fetchone()[0], prod_id)
+            self.assertEqual(st2.conn.execute("SELECT id FROM food_lots WHERE id = ?", (lot_id,)).fetchone()[0], lot_id)
+            self.assertEqual(st2.conn.execute("SELECT id FROM merchants WHERE id = ?", (mch_id,)).fetchone()[0], mch_id)
+            self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]), 1)
             names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("recipes", names)
             self.assertIn("grocery_lists", names)
+        backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
+        self.assertTrue(backups)
         gr.reset_for_tests()
         fin.reset_for_tests()
 

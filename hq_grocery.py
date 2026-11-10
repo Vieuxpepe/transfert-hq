@@ -43,6 +43,9 @@ POST_MERCHANT_KEYS = frozenset({
 POST_LIST_KEYS = frozenset({
     "id", "rev", "meal_plan_id", "status", "lines",
 })
+GROCERY_LINE_KEYS = frozenset({
+    "product_id", "name", "qty_milli", "unit", "merchant_id", "estimated_cents", "checked",
+})
 
 PRODUCT_CURSOR_SEP = "|"
 LOT_CURSOR_SEP = "|"
@@ -803,6 +806,9 @@ def _parse_grocery_lines(
     for i, line in enumerate(raw):
         if not isinstance(line, dict):
             raise GroceryError(f"lines[{i}] invalide", code="validation_error")
+        extra = set(line) - GROCERY_LINE_KEYS
+        if extra:
+            raise GroceryError(f"lines[{i}] champs interdits", code="validation_error")
         name = _optional_text(line.get("name"), f"lines[{i}].name", 160)
         if not name:
             raise GroceryError(f"lines[{i}].name invalide", code="validation_error")

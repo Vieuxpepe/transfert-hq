@@ -126,3 +126,41 @@ class MealsSecurity(unittest.TestCase):
             origin=False,
         )
         self.assertEqual(st, 403, body)
+
+    def test_csrf_build_list_and_grocery_list(self) -> None:
+        st, body = self.admin.j(
+            "/api/meals/plans/mpl-0000000000000001/build-list",
+            "POST",
+            {"mode": "preview"},
+            origin=False,
+        )
+        self.assertEqual(st, 403, body)
+        st2, body2 = self.admin.j(
+            "/api/grocery/lists",
+            "POST",
+            {"status": "open", "lines": [{"name": "X", "qty_milli": 1, "unit": "g"}]},
+            origin=False,
+        )
+        self.assertEqual(st2, 403, body2)
+
+    def test_upload_forbidden_plans_and_lists(self) -> None:
+        self.assertEqual(self.upload.j("/api/meals/plans")[0], 403)
+        self.assertEqual(self.upload.j("/api/grocery/lists")[0], 403)
+        self.assertEqual(
+            self.upload.j(
+                "/api/meals/plans",
+                "POST",
+                {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": []},
+            )[0],
+            403,
+        )
+
+    def test_malformed_json_meals_routes(self) -> None:
+        raw = b"not-json"
+        st, _h, raw_resp = self.admin.req(
+            "/api/meals/recipes",
+            "POST",
+            raw,
+            {"Content-Type": "application/json"},
+        )
+        self.assertEqual(st, 400)

@@ -27,7 +27,9 @@ Tables ``products``, ``food_lots``, ``merchants`` ; aucune mutation Inventoria n
 Tables ``recipes``, ``meal_plans``, ``grocery_lists``, ``grocery_list_build_idempotency``.
 Ingrédients, étapes, créneaux de plan et lignes de liste sont stockés en colonnes JSON
 (``ingredients_json``, ``steps_json``, ``slots_json``, ``lines_json``) avec validation Python
-à l'écriture (contrats ``meals.v1`` / ``grocery.v1``). Choix : une ligne parente + JSON pour
+à l'écriture (contrats ``meals.v1`` / ``grocery.v1``). Les ``substitutes[]`` des recettes
+sont des suggestions documentées (``product_id`` ou ``name``) — jamais appliqués automatiquement.
+Choix : une ligne parente + JSON pour
 révisions atomiques (CAS sur ``rev``) et listes bornées (≤100 ingrédients, ≤400 créneaux, ≤500 lignes)
 sans explosion de tables relationnelles en v1. Aucune écriture Inventoria ni ledger ; le build-list
 preview ne persiste rien ; commit idempotent via ``grocery_list_build_idempotency``.

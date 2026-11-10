@@ -36,6 +36,12 @@ POST_PLAN_KEYS = frozenset({"id", "rev", "period_start", "period_end", "slots"})
 BUILD_LIST_KEYS = frozenset({
     "mode", "subtract_available_stock", "preview_digest", "idempotency_key",
 })
+INGREDIENT_KEYS = frozenset({
+    "product_id", "name", "qty_milli", "unit", "optional", "substitutes",
+})
+SUBSTITUTE_KEYS = frozenset({"product_id", "name"})
+SLOT_KEYS = frozenset({"date", "meal", "recipe_id", "notes"})
+STOCK_LOT_FP_LIMIT = 500
 
 RECIPE_CURSOR_SEP = "|"
 PLAN_CURSOR_SEP = "|"
@@ -89,8 +95,10 @@ def _new_id(kind: str) -> str:
     return f"{pre}-{secrets.token_hex(8)}"
 
 
-def _open_store(*, readonly: bool = False) -> hstore.HouseholdStore:
-    return hstore.open_store(_root(), create=True, readonly=readonly)
+def _open_store(*, readonly: bool = False, create: bool | None = None) -> hstore.HouseholdStore:
+    if create is None:
+        create = not readonly
+    return hstore.open_store(_root(), create=create, readonly=readonly)
 
 
 def _reject_unknown_fields(data: dict, allowed: frozenset[str]) -> None:
@@ -179,6 +187,49 @@ def _page_limit(qs: dict | None) -> int:
         return 50
 
 
+def _parse_substitutes(raw: Any, *, field_prefix: str) -> list[dict]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 20:
+        raise MealsError(f"{field_prefix}.substitutes invalide", code="validation_error")
+    out: list[dict] = []
+    for j, sub in enumerate(raw):
+        if not isinstance(sub, dict):
+            raise MealsError(f"{field_prefix}.substitutes[{j}] invalide", code="validation_error")
+        extra = set(sub) - SUBSTITUTE_KEYS
+        if extra:
+            raise MealsError(f"{field_prefix}.substitutes[{j}] champs interdits", code="validation_error")
+        pid = sub.get("product_id")
+        if pid is not None:
+            try:
+                schemas.require_id(pid, "product", f"{field_prefix}.substitutes[{j}].product_id")
+            except schemas.SchemaError as exc:
+                raise MealsError(str(exc), code=exc.code) from exc
+        name = sub.get("name")
+        if name is not None:
+            name = _optional_text(name, f"{field_prefix}.substitutes[{j}].name", 160)
+        if pid is None and not name:
+            raise MealsError(f"{field_prefix}.substitutes[{j}] vide", code="validation_error")
+        out.append({"product_id": pid, "name": name})
+    return out
+
+
+def _add_qty_milli(prev: int, qty: int) -> int:
+    nxt = prev + qty
+    if nxt > SQLITE_INT_MAX:
+        raise MealsError("dépassement capacité INTEGER", code="validation_error")
+    return nxt
+
+
+def _parse_subtract_flag(data: dict) -> bool:
+    if "subtract_available_stock" not in data:
+        return False
+    try:
+        return schemas.require_bool(data["subtract_available_stock"], "subtract_available_stock")
+    except schemas.SchemaError as exc:
+        raise MealsError(str(exc), code=exc.code) from exc
+
+
 def _parse_ingredients(
     conn: sqlite3.Connection,
     household_id: str,
@@ -190,6 +241,9 @@ def _parse_ingredients(
     for i, ing in enumerate(raw):
         if not isinstance(ing, dict):
             raise MealsError("ingredient invalide", code="validation_error")
+        extra = set(ing) - INGREDIENT_KEYS
+        if extra:
+            raise MealsError(f"ingredients[{i}] champs interdits", code="validation_error")
         name = ing.get("name")
         if not isinstance(name, str) or not name.strip():
             raise MealsError(f"ingredients[{i}].name invalide", code="validation_error")
@@ -217,11 +271,7 @@ def _parse_ingredients(
         optional = False
         if "optional" in ing:
             optional = schemas.require_bool(ing["optional"], f"ingredients[{i}].optional")
-        subs = ing.get("substitutes")
-        if subs is None:
-            subs = []
-        if not isinstance(subs, list) or len(subs) > 20:
-            raise MealsError(f"ingredients[{i}].substitutes invalide", code="validation_error")
+        subs = _parse_substitutes(ing.get("substitutes"), field_prefix=f"ingredients[{i}]")
         out.append({
             "product_id": product_id,
             "name": name,
@@ -428,6 +478,9 @@ def _parse_slots(
     for i, slot in enumerate(raw):
         if not isinstance(slot, dict):
             raise MealsError(f"slots[{i}] invalide", code="validation_error")
+        extra = set(slot) - SLOT_KEYS
+        if extra:
+            raise MealsError(f"slots[{i}] champs interdits", code="validation_error")
         try:
             sd = schemas.require_iso_date(slot.get("date"), f"slots[{i}].date")
         except schemas.SchemaError as exc:
@@ -589,6 +642,33 @@ def _usable_stock_milli(
     return int(row[0] or 0)
 
 
+def _stock_lots_snapshot(
+    conn: sqlite3.Connection,
+    household_id: str,
+    product_id: str,
+    unit: str,
+    *,
+    as_of_day: str,
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, rev, usable_qty_milli, canonical_unit, expires_on FROM food_lots "
+        "WHERE household_id = ? AND product_id = ? AND canonical_unit = ? "
+        "AND (expires_on IS NULL OR expires_on = '' OR expires_on >= ?) "
+        f"ORDER BY id ASC LIMIT {STOCK_LOT_FP_LIMIT}",
+        (household_id, product_id, unit, as_of_day),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "rev": int(r["rev"]),
+            "usable_qty_milli": int(r["usable_qty_milli"]),
+            "canonical_unit": r["canonical_unit"],
+            "expires_on": r["expires_on"] or None,
+        }
+        for r in rows
+    ]
+
+
 def _aggregate_lines(
     conn: sqlite3.Connection,
     household_id: str,
@@ -601,16 +681,18 @@ def _aggregate_lines(
         recipe_id = slot.get("recipe_id")
         if not recipe_id:
             continue
-        try:
-            recipe = get_recipe(conn, household_id, recipe_id)
-        except MealsError:
-            warnings.append(f"recipe {recipe_id} introuvable")
-            continue
+        recipe = get_recipe(conn, household_id, recipe_id)
         for ing in recipe.get("ingredients") or []:
             pid = ing.get("product_id")
             unit = ing["unit"]
             qty = int(ing["qty_milli"])
             if pid:
+                prow = _assert_household_row(conn, "products", pid, household_id)
+                if unit != prow["canonical_unit"]:
+                    raise MealsError(
+                        f"produit {pid} — unité incompatible avec la recette",
+                        code="validation_error",
+                    )
                 key = ("p", pid, unit)
             else:
                 key = ("n", _normalize_name_key(ing["name"]), unit)
@@ -625,12 +707,8 @@ def _aggregate_lines(
                     "checked": False,
                     "required_milli": 0,
                 }
-            prev = agg[key]["qty_milli"]
-            nxt = prev + qty
-            if nxt < prev:
-                raise MealsError("dépassement capacité INTEGER", code="validation_error")
-            agg[key]["qty_milli"] = nxt
-            agg[key]["required_milli"] = nxt
+            agg[key]["qty_milli"] = _add_qty_milli(int(agg[key]["qty_milli"]), qty)
+            agg[key]["required_milli"] = agg[key]["qty_milli"]
     lines = sorted(
         agg.values(),
         key=lambda x: (
@@ -685,9 +763,22 @@ def _source_fingerprint(
         s["recipe_id"] for s in (plan.get("slots") or []) if s.get("recipe_id")
     })
     recipes_meta: list[dict] = []
+    product_ids: set[str] = set()
     for rid in recipe_ids:
         row = _assert_household_row(conn, "recipes", rid, household_id)
         recipes_meta.append({"id": rid, "rev": int(row["rev"])})
+        recipe = get_recipe(conn, household_id, rid)
+        for ing in recipe.get("ingredients") or []:
+            if ing.get("product_id"):
+                product_ids.add(ing["product_id"])
+    products_meta: list[dict] = []
+    for pid in sorted(product_ids):
+        prow = _assert_household_row(conn, "products", pid, household_id)
+        products_meta.append({
+            "id": pid,
+            "rev": int(prow["rev"]),
+            "canonical_unit": prow["canonical_unit"],
+        })
     stock: list[dict] = []
     if subtract_available_stock:
         today = _household_today(conn, household_id)
@@ -704,7 +795,7 @@ def _source_fingerprint(
             stock.append({
                 "product_id": pid,
                 "unit": u,
-                "usable_milli": _usable_stock_milli(conn, household_id, pid, u, as_of_day=today),
+                "lots": _stock_lots_snapshot(conn, household_id, pid, u, as_of_day=today),
             })
         stock.sort(key=lambda x: (x["product_id"], x["unit"]))
     norm_lines = [
@@ -720,6 +811,7 @@ def _source_fingerprint(
         "meal_plan_id": plan["id"],
         "meal_plan_rev": int(plan["rev"]),
         "recipes": recipes_meta,
+        "products": products_meta,
         "subtract_available_stock": bool(subtract_available_stock),
         "stock": stock,
         "lines": norm_lines,
@@ -865,7 +957,7 @@ def build_list_commit(
     preview_digest = data.get("preview_digest")
     if not isinstance(preview_digest, str) or schemas.SHA256_HEX.match(preview_digest) is None:
         raise MealsError("preview_digest invalide", code="validation_error")
-    subtract = bool(data.get("subtract_available_stock"))
+    subtract = _parse_subtract_flag(data)
     key = data.get("idempotency_key")
     if not key:
         raise MealsError("idempotency_key requis", code="validation_error")
@@ -920,7 +1012,9 @@ def build_list(
 ) -> dict:
     _reject_unknown_fields(data, BUILD_LIST_KEYS)
     mode = data.get("mode", "preview")
-    subtract = bool(data.get("subtract_available_stock"))
+    if mode not in ("preview", "commit"):
+        raise MealsError("mode invalide", code="validation_error")
+    subtract = _parse_subtract_flag(data)
     if mode == "preview":
         return build_list_preview(conn, household_id, plan_id, subtract_available_stock=subtract)
     if mode == "commit":
@@ -953,7 +1047,7 @@ def _err(exc: BaseException) -> tuple[int, dict]:
 
 def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
     try:
-        st = _open_store(readonly=True)
+        st = _open_store(readonly=True, create=False)
         try:
             conn = st.conn
             household_id = finances.ensure_default_household(conn, create=False)
@@ -981,7 +1075,18 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
         import re as _re
 
         build_m = _re.fullmatch(r"/api/meals/plans/([^/]+)/build-list", path)
-        st = _open_store(readonly=False)
+        if build_m and data.get("mode", "preview") == "preview":
+            plan_id = build_m.group(1)
+            st = _open_store(readonly=True, create=False)
+            try:
+                conn = st.conn
+                household_id = finances.ensure_default_household(conn, create=False)
+                out = build_list(conn, household_id, plan_id, data)
+            finally:
+                st.close()
+            return 200, out
+
+        st = _open_store(readonly=False, create=True)
         try:
             conn = st.conn
             household_id = finances.ensure_default_household(conn, create=True)
@@ -995,17 +1100,6 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                 return 200, {"ok": True, "meal_plan": out}
             if build_m:
                 plan_id = build_m.group(1)
-                mode = data.get("mode", "preview")
-                if mode == "preview":
-                    st.close()
-                    st_prev = _open_store(readonly=True)
-                    try:
-                        conn_p = st_prev.conn
-                        hid_p = finances.ensure_default_household(conn_p, create=False)
-                        out = build_list(conn_p, hid_p, plan_id, data)
-                    finally:
-                        st_prev.close()
-                    return 200, out
                 with st.transaction():
                     out = build_list_commit(conn, household_id, plan_id, data)
                 return 200, out
