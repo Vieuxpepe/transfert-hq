@@ -53,6 +53,7 @@ Verify scripts (recommended):
 | If you changed… | Run |
 |-----------------|-----|
 | `iphone_bridge.py` routing, CSRF, access log | `python scripts/verify_bridge_smoke.py` |
+| Mini-Quêtes (`mini_quests.py`, `/api/mini-quests/*`) | `python -m unittest tests.test_mini_quests -v` (CI: `.github/workflows/mini-quests.yml`) |
 | Refusal / body drain | `python -m unittest tests.test_hq_refusal_drain -v` |
 | Phase 15 pins (regression guards) | `python tests/test_phase15_pins.py` (heavier) |
 | Bounded read-route latency + Unicode file headers | `python -m unittest tests.test_hq_backend_latency tests.test_hq_startup_perf10.ForgeStatusCache.test_http_get_does_not_block_on_forge_probe tests.test_media_viewer.MediaRouteTests.test_files_header_supports_unicode_filename -v` |
@@ -80,6 +81,17 @@ Verify scripts (recommended):
 |-----------------|-----|
 | Vault / HTTP | `python -m unittest tests.test_hq_forge_vault tests.test_hq_forge_http -v` |
 | Jobs / transport | `python -m unittest tests.test_hq_forge_jobs tests.test_hq_forge_transport_http -v` |
+
+---
+
+## Household Intelligence
+
+| If you changed… | Run |
+|-----------------|-----|
+| `hq_household_schemas.py`, `schemas/household/*`, docs contracts | `python -m unittest tests.test_household_schemas -v` (CI: `.github/workflows/household-foundations.yml`) |
+| `hq_household_store.py` SQLite shell | `python -m unittest tests.test_household_store tests.test_household_schemas -v` (CI: `.github/workflows/household-store.yml`) |
+
+Architecture index: [household/README.md](household/README.md). `*.v1.json` = custom contract descriptors (not JSON Schema Draft). Store shell is **not** wired to the bridge (PR #31).
 
 ---
 

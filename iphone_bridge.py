@@ -47,6 +47,10 @@ import hq_files
 import hq_folder_backups
 import hq_inventory
 import hq_projects
+import mini_quests
+import hq_finances
+import hq_grocery
+import hq_meals
 import hq_companion
 import hq_planner
 import hq_devices
@@ -2839,6 +2843,10 @@ def bind_hq() -> None:
         asset_exists=lambda a: hq_carnet.media.asset_exists(a),
         inventory_adjust=lambda item, delta: hq_inventory.apply({"action": "item.adjust", "id": item, "delta": delta})["item"],
     )
+    mini_quests.bind(root=ROOT)  # Mini-Quêtes: simulated playground only (no shell / hardware)
+    hq_finances.bind(root=ROOT, actor=lambda: "admin")  # Finances: admin-only; CSRF enforced on POST below
+    hq_grocery.bind(root=ROOT, actor=lambda: "admin")  # Grocery: admin-only; CSRF enforced on POST below
+    hq_meals.bind(root=ROOT, actor=lambda: "admin")  # Meals: admin-only; CSRF enforced on POST below
     hq_carnet.bind(
         root=ROOT,
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
@@ -5923,6 +5931,7 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-carnet.css"/>
 <link rel="stylesheet" href="/assets/hq-inventory.css"/>
 <link rel="stylesheet" href="/assets/hq-projects.css"/>
+<link rel="stylesheet" href="/assets/hq-mini-quests.css"/>
 <link rel="stylesheet" href="/assets/hq-files.css"/>
 <link rel="stylesheet" href="/assets/hq-forge.css"/>
 <link rel="stylesheet" href="/assets/hq-home.css"/>
@@ -7215,6 +7224,7 @@ def render_app() -> bytes:
       <button type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
       <button type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
       <button type="button" data-jump="system-journal">Journal</button>
+      <button type="button" data-jump="system-mini-quests">Mini-Quêtes</button>
       <button type="button" data-jump="system-alerts">Alertes</button>
       <button type="button" data-jump="system-info">Infos</button>
     </nav>
@@ -7330,6 +7340,16 @@ def render_app() -> bytes:
       <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
     </details>
 
+    <section class="hq" id="system-mini-quests" aria-labelledby="mini-quests-title">
+      <div class="sec-head">
+        <h2 id="mini-quests-title">Mini-Quêtes</h2>
+        <p class="sec-hint">Terrain de jeu simulé — pas de terminal, pas de matériel, pas de capteur</p>
+      </div>
+      <div id="hq-mini-quests" class="mq-root" data-mq-state="available" aria-live="polite">
+        <p class="hint">Chargement…</p>
+      </div>
+    </section>
+
     <details class="hq" id="system-alerts">
       <summary>
         <div class="sec-head">
@@ -7422,6 +7442,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-calendar.js"></script>
 <script src="/assets/hq-inventory.js"></script>
 <script src="/assets/hq-projects.js"></script>
+<script src="/assets/hq-mini-quests.js"></script>
 <script src="/assets/hq-files.js"></script>
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-home.js"></script>
@@ -8993,6 +9014,22 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_inventory.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw == "/api/finances/summary" or raw.startswith("/api/finances/"):  # Finances (admin: not in the upload allowlist)
+            code, payload = hq_finances.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, hq_finances.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/grocery/"):  # Grocery (admin: not in the upload allowlist)
+            code, payload = hq_grocery.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, hq_grocery.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/meals/"):  # Meals (admin: not in the upload allowlist)
+            code, payload = hq_meals.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, hq_meals.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw == "/api/mini-quests" or raw.startswith("/api/mini-quests/"):  # Mini-Quêtes (admin: not in the upload allowlist)
+            code, payload = mini_quests.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         if raw == "/api/carnet/stickies":  # Phase 16D: sticky notes on a page (admin: not in the upload allowlist)
             code, payload = hq_carnet.stickies.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
@@ -9426,6 +9463,82 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
             code, payload = hq_inventory.http_post(data)
+            self._json(code, payload)
+            return True
+        if raw.startswith("/api/finances/"):  # Finances (CSRF checked before routing)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > hq_finances.BODY_MAX:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_finances.http_post(raw, data)
+            self._json(code, hq_finances.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/grocery/"):  # Grocery (CSRF checked before routing)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > hq_grocery.BODY_MAX:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_grocery.http_post(raw, data)
+            self._json(code, hq_grocery.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/meals/"):  # Meals (CSRF checked before routing)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > hq_meals.BODY_MAX:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_meals.http_post(raw, data)
+            self._json(code, hq_meals.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw == "/api/mini-quests" or raw.startswith("/api/mini-quests/"):  # Mini-Quêtes (CSRF checked before routing)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > mini_quests.BODY_MAX:
+                self.close_connection = True  # unread oversize body must not poison the next request
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = mini_quests.http_post(raw, data)
             self._json(code, payload)
             return True
         if raw == "/api/carnet/stickies":  # Phase 16D (CSRF is checked for every POST before routing)

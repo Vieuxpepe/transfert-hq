@@ -48,6 +48,7 @@ Read **`AGENTS.md`** first. This file is the **global** contract; domain docs ar
 | [test-index.md](test-index.md) | What to run after a change |
 | [agent-animation-pipeline.md](agent-animation-pipeline.md) | Reproduce → fix → verify animation/motion perf |
 | [carnet-agent-anchors.md](carnet-agent-anchors.md) | Carnet grep anchors (not full file read) |
+| [household/README.md](household/README.md) | Finances / Repas / Inventoria foundations (PR #30+) |
 
 ---
 

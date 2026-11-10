@@ -1,0 +1,48 @@
+name: Household foundations
+
+on:
+  push:
+    paths:
+      - "hq_household_schemas.py"
+      - "schemas/household/**"
+      - "tests/test_household_schemas.py"
+      - "docs/household/**"
+      - "docs/hq-api-route-index.md"
+      - "docs/frontend-view-index.md"
+      - "docs/test-index.md"
+      - "docs/AGENT-GITHUB.md"
+      - ".github/workflows/household-foundations.yml"
+  pull_request:
+    paths:
+      - "hq_household_schemas.py"
+      - "schemas/household/**"
+      - "tests/test_household_schemas.py"
+      - "docs/household/**"
+      - "docs/hq-api-route-index.md"
+      - "docs/frontend-view-index.md"
+      - "docs/test-index.md"
+      - "docs/AGENT-GITHUB.md"
+      - ".github/workflows/household-foundations.yml"
+
+jobs:
+  household-schemas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Schema validators + concordance
+        run: python -m unittest tests.test_household_schemas -v
+      - name: Load seven contract descriptors
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hq_household_schemas as H
+          docs = H.load_contract_descriptors(Path("."))
+          assert len(docs) == 7, sorted(docs)
+          for name, doc in docs.items():
+              assert doc.get("contract_format") == "hq-custom-descriptor", name
+              assert doc.get("not_json_schema") is True, name
+          print("contract_descriptors_ok", sorted(docs))
+          PY

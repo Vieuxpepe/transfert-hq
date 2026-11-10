@@ -1,0 +1,674 @@
+"""Meals — recipes, plans, build-list preview/commit."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import hq_finances as fin
+import hq_grocery as gr
+import hq_household_store as store
+import hq_meals as meals
+
+
+def _setup(root: Path) -> None:
+    store.set_acl_for_tests(False)
+    fin.bind(root=root, actor=lambda: "tester", now=lambda: 1_900_000_100.0)
+    gr.bind(root=root, actor=lambda: "tester", now=lambda: 1_900_000_100.0, inventory_snapshot=lambda: {"version": 1, "rev": 1, "items": [], "places": []})
+    meals.bind(root=root, actor=lambda: "tester", now=lambda: 1_900_000_100.0)
+
+
+class MealsDomainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="hq-meals-")
+        self.root = Path(self.tmp.name)
+        _setup(self.root)
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                self.hid = fin.ensure_default_household(st.conn)
+
+    def tearDown(self) -> None:
+        meals.reset_for_tests()
+        gr.reset_for_tests()
+        fin.reset_for_tests()
+        store.set_acl_for_tests(True)
+        self.tmp.cleanup()
+
+    def _product(self, **kw) -> dict:
+        code, out = gr.http_post("/api/grocery/products", {"name": "Rice", "canonical_unit": "g", "default_qty_milli": 1000, **kw})
+        self.assertEqual(code, 200, out)
+        return out["product"]
+
+    def _recipe(self, **kw) -> dict:
+        body = {
+            "title": "Rice bowl",
+            "servings": 2,
+            "ingredients": [{"name": "Rice", "qty_milli": 200_000, "unit": "g"}],
+            "steps": ["Cook rice"],
+            "leftover_policy": "none",
+            **kw,
+        }
+        code, out = meals.http_post("/api/meals/recipes", body)
+        self.assertEqual(code, 200, out)
+        return out["recipe"]
+
+    def test_recipe_crud_and_list(self) -> None:
+        r = self._recipe()
+        code, page = meals.http_get("/api/meals/recipes", {"id": r["id"]})
+        self.assertEqual(code, 200)
+        self.assertEqual(page["items"][0]["id"], r["id"])
+        code, out = meals.http_post("/api/meals/recipes", {"id": r["id"], "rev": r["rev"], "title": "Rice bowl v2"})
+        self.assertEqual(code, 200)
+        self.assertEqual(out["recipe"]["title"], "Rice bowl v2")
+        self.assertEqual(out["recipe"]["rev"], 2)
+
+    def test_recipe_linked_product_unit_mismatch(self) -> None:
+        p = self._product()
+        code, body = meals.http_post(
+            "/api/meals/recipes",
+            {
+                "title": "Bad",
+                "servings": 1,
+                "ingredients": [{"product_id": p["id"], "name": "Rice", "qty_milli": 1, "unit": "ml"}],
+                "steps": ["x"],
+                "leftover_policy": "none",
+            },
+        )
+        self.assertEqual(code, 400, body)
+
+    def test_recipe_rev_conflict(self) -> None:
+        r = self._recipe()
+        code, body = meals.http_post("/api/meals/recipes", {"id": r["id"], "rev": 99, "title": "Stale"})
+        self.assertEqual(code, 409, body)
+        self.assertEqual(body["code"], "conflict")
+
+    def test_plan_week_aggregate_build(self) -> None:
+        r = self._recipe(ingredients=[{"name": "Rice", "qty_milli": 200_000, "unit": "g"}])
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {
+                "period_start": "2026-11-16",
+                "period_end": "2026-11-18",
+                "slots": [
+                    {"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]},
+                    {"date": "2026-11-17", "meal": "dinner", "recipe_id": r["id"]},
+                    {"date": "2026-11-18", "meal": "lunch", "recipe_id": r["id"]},
+                ],
+            },
+        )
+        self.assertEqual(code, 200, out)
+        plan = out["meal_plan"]
+        with store.open_store(self.root, readonly=True) as st:
+            before = int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0])
+        code, prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        self.assertEqual(code, 200, prev)
+        self.assertTrue(prev.get("preview"))
+        self.assertEqual(len(prev["lines"]), 1)
+        self.assertEqual(prev["lines"][0]["qty_milli"], 600_000)
+        with store.open_store(self.root, readonly=True) as st:
+            after = int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0])
+        self.assertEqual(before, after)
+
+    def test_unlinked_merge_by_normalized_name(self) -> None:
+        r1 = self._recipe(
+            title="A",
+            ingredients=[{"name": "  Brown   Rice ", "qty_milli": 100_000, "unit": "g"}],
+        )
+        r2 = self._recipe(
+            title="B",
+            ingredients=[{"name": "brown rice", "qty_milli": 150_000, "unit": "g"}],
+        )
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {
+                "period_start": "2026-11-16",
+                "period_end": "2026-11-16",
+                "slots": [
+                    {"date": "2026-11-16", "meal": "lunch", "recipe_id": r1["id"]},
+                    {"date": "2026-11-16", "meal": "dinner", "recipe_id": r2["id"]},
+                ],
+            },
+        )
+        plan = out["meal_plan"]
+        code, prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        self.assertEqual(code, 200)
+        self.assertEqual(prev["lines"][0]["qty_milli"], 250_000)
+
+    def test_distinct_products_not_merged_by_name(self) -> None:
+        p1 = self._product(name="Rice A")
+        p2 = self._product(name="Rice B")
+        r = self._recipe(
+            ingredients=[
+                {"product_id": p1["id"], "name": "Rice A", "qty_milli": 100_000, "unit": "g"},
+                {"product_id": p2["id"], "name": "Rice B", "qty_milli": 100_000, "unit": "g"},
+            ],
+        )
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )
+        plan = out["meal_plan"]
+        code, prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        self.assertEqual(len(prev["lines"]), 2)
+
+    def test_stock_subtract_once(self) -> None:
+        p = self._product()
+        r = self._recipe(ingredients=[{"product_id": p["id"], "name": "Rice", "qty_milli": 300_000, "unit": "g"}])
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                gr.create_lot(st.conn, self.hid, {"product_id": p["id"], "qty_milli": 500_000, "usable_qty_milli": 500_000, "canonical_unit": "g"})
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {
+                "period_start": "2026-11-16",
+                "period_end": "2026-11-17",
+                "slots": [
+                    {"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]},
+                    {"date": "2026-11-17", "meal": "dinner", "recipe_id": r["id"]},
+                ],
+            },
+        )
+        plan = out["meal_plan"]
+        code, prev = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "preview", "subtract_available_stock": True},
+        )
+        self.assertEqual(code, 200)
+        self.assertEqual(prev["lines"][0]["qty_milli"], 100_000)
+
+    def test_expired_lot_excluded_from_stock(self) -> None:
+        p = self._product()
+        r = self._recipe(ingredients=[{"product_id": p["id"], "name": "Rice", "qty_milli": 200_000, "unit": "g"}])
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                gr.create_lot(
+                    st.conn, self.hid,
+                    {"product_id": p["id"], "qty_milli": 500_000, "usable_qty_milli": 500_000, "canonical_unit": "g", "expires_on": "2020-01-01"},
+                )
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )
+        plan = out["meal_plan"]
+        code, prev = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "preview", "subtract_available_stock": True},
+        )
+        self.assertEqual(prev["lines"][0]["qty_milli"], 200_000)
+
+    def test_commit_idempotent(self) -> None:
+        r = self._recipe()
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )
+        plan = out["meal_plan"]
+        code, prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        digest = prev["preview_digest"]
+        body = {"mode": "commit", "preview_digest": digest, "idempotency_key": "build-rice-001"}
+        code, c1 = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", body)
+        self.assertEqual(code, 200, c1)
+        code, c2 = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", body)
+        self.assertEqual(code, 200, c2)
+        self.assertEqual(c1["grocery_list"]["id"], c2["grocery_list"]["id"])
+        with store.open_store(self.root, readonly=True) as st:
+            n = int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0])
+        self.assertEqual(n, 1)
+
+    def test_commit_stale_digest(self) -> None:
+        r = self._recipe()
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )
+        plan = out["meal_plan"]
+        code, prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        digest = prev["preview_digest"]
+        meals.http_post("/api/meals/recipes", {"id": r["id"], "rev": r["rev"], "title": "Changed"})
+        code, body = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "commit", "preview_digest": digest, "idempotency_key": "build-stale-001"},
+        )
+        self.assertEqual(code, 409, body)
+
+    def test_committed_list_unchanged_when_recipe_edited(self) -> None:
+        r = self._recipe(ingredients=[{"name": "Rice", "qty_milli": 100_000, "unit": "g"}])
+        code, out = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )
+        plan = out["meal_plan"]
+        prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]
+        commit = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "commit", "preview_digest": prev["preview_digest"], "idempotency_key": "snap-001"},
+        )[1]
+        lid = commit["grocery_list"]["id"]
+        meals.http_post(
+            "/api/meals/recipes",
+            {"id": r["id"], "rev": r["rev"], "ingredients": [{"name": "Rice", "qty_milli": 9_999_000, "unit": "g"}]},
+        )
+        page = gr.http_get("/api/grocery/lists", {"id": lid})[1]
+        self.assertEqual(page["items"][0]["lines"][0]["qty_milli"], 100_000)
+
+    def test_build_product_unit_change_after_recipe_no_lots(self) -> None:
+        p = self._product()
+        r = self._recipe(ingredients=[{"product_id": p["id"], "name": "Rice", "qty_milli": 100_000, "unit": "g"}])
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                gr.update_product(
+                    st.conn, self.hid,
+                    {"id": p["id"], "rev": p["rev"], "canonical_unit": "ml"},
+                )
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        code, body = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        self.assertEqual(code, 400, body)
+
+    def test_aggregate_integer_overflow(self) -> None:
+        big = meals.SQLITE_INT_MAX
+        r = self._recipe(
+            ingredients=[
+                {"name": "Rice", "qty_milli": big // 2 + 1, "unit": "g"},
+                {"name": "rice", "qty_milli": big // 2 + 1, "unit": "g"},
+            ],
+        )
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        code, body = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        self.assertEqual(code, 400, body)
+
+    def test_stock_lot_change_same_total_stale_commit(self) -> None:
+        p = self._product()
+        r = self._recipe(ingredients=[{"product_id": p["id"], "name": "Rice", "qty_milli": 300_000, "unit": "g"}])
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                a = gr.create_lot(st.conn, self.hid, {"product_id": p["id"], "qty_milli": 200_000, "usable_qty_milli": 200_000, "canonical_unit": "g"})
+            lot_a = a["id"]
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        digest = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "preview", "subtract_available_stock": True},
+        )[1]["preview_digest"]
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                row = gr.create_lot(st.conn, self.hid, {"product_id": p["id"], "qty_milli": 200_000, "usable_qty_milli": 200_000, "canonical_unit": "g"})
+                gr.update_lot(
+                    st.conn, self.hid,
+                    {"id": lot_a, "rev": a["rev"], "qty_milli": 0, "usable_qty_milli": 0, "canonical_unit": "g"},
+                )
+                lot_b = row["id"]
+        code, body = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "commit", "preview_digest": digest, "subtract_available_stock": True, "idempotency_key": "lot-shift-001"},
+        )
+        self.assertEqual(code, 409, body)
+
+    def test_preview_no_db_on_empty_root(self) -> None:
+        empty = Path(self.tmp.name) / "empty-preview"
+        empty.mkdir()
+        meals.bind(root=empty, actor=lambda: "t", now=lambda: 1.9e9)
+        fin.bind(root=empty, actor=lambda: "t", now=lambda: 1.0)
+        code, body = meals.http_post("/api/meals/plans/mpl-0000000000000001/build-list", {"mode": "preview"})
+        self.assertIn(code, (404, 503), body)
+        self.assertFalse(store.household_dir(empty).exists())
+        _setup(self.root)
+
+    def test_preview_refuses_v4_without_migrating(self) -> None:
+        sub = Path(self.tmp.name) / "v4-only"
+        sub.mkdir()
+        store.set_acl_for_tests(False)
+        fin.bind(root=sub, actor=lambda: "t", now=lambda: 1.0)
+        meals.bind(root=sub, actor=lambda: "t", now=lambda: 1.9e9)
+        base = store.prepare_household_dirs(sub)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            for fn in (store._apply_v1, store._apply_v2, store._apply_v3, store._apply_v4):
+                fn(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        ver_before = int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0])
+        code, _body = meals.http_post("/api/meals/plans/mpl-0000000000000001/build-list", {"mode": "preview"})
+        self.assertNotEqual(code, 200)
+        ver_after = int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0])
+        self.assertEqual(ver_before, ver_after)
+        self.assertEqual(ver_before, 4)
+        _setup(self.root)
+
+    def test_idempotency_same_key_different_body(self) -> None:
+        r = self._recipe()
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        d1 = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]["preview_digest"]
+        meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "commit", "preview_digest": d1, "idempotency_key": "idem-body-a"},
+        )
+        d2 = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]["preview_digest"]
+        code, body = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "commit", "preview_digest": d2, "idempotency_key": "idem-body-a", "subtract_available_stock": True},
+        )
+        self.assertEqual(code, 409, body)
+
+    def test_commit_replay_after_recipe_change_returns_original(self) -> None:
+        r = self._recipe()
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        digest = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]["preview_digest"]
+        body = {"mode": "commit", "preview_digest": digest, "idempotency_key": "replay-after-src"}
+        first = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", body)[1]
+        meals.http_post("/api/meals/recipes", {"id": r["id"], "rev": r["rev"], "title": "Mutated"})
+        second = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", body)[1]
+        self.assertEqual(first["grocery_list"]["id"], second["grocery_list"]["id"])
+
+    def test_commit_injected_failure_no_partial_list(self) -> None:
+        r = self._recipe()
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        digest = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]["preview_digest"]
+        with store.open_store(self.root, readonly=True) as st:
+            before = int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0])
+            before_idem = int(st.conn.execute("SELECT COUNT(*) FROM grocery_list_build_idempotency").fetchone()[0])
+        with mock.patch("hq_grocery.create_grocery_list", side_effect=RuntimeError("inject")):
+            with store.open_store(self.root) as st:
+                with self.assertRaises(RuntimeError):
+                    with st.transaction():
+                        meals.build_list_commit(
+                            st.conn, self.hid, plan["id"],
+                            {"mode": "commit", "preview_digest": digest, "idempotency_key": "inject-fail"},
+                        )
+        with store.open_store(self.root, readonly=True) as st:
+            self.assertEqual(int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0]), before)
+            self.assertEqual(int(st.conn.execute("SELECT COUNT(*) FROM grocery_list_build_idempotency").fetchone()[0]), before_idem)
+
+    def test_unknown_ingredient_field(self) -> None:
+        code, body = meals.http_post(
+            "/api/meals/recipes",
+            {
+                "title": "x",
+                "servings": 1,
+                "ingredients": [{"name": "a", "qty_milli": 1, "unit": "g", "extra": 1}],
+                "steps": ["s"],
+                "leftover_policy": "none",
+            },
+        )
+        self.assertEqual(code, 400, body)
+
+    def test_subtract_bool_rejects_string(self) -> None:
+        r = self._recipe()
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        code, body = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "preview", "subtract_available_stock": "yes"},
+        )
+        self.assertEqual(code, 400, body)
+
+    def test_recipes_pagination_over_200_no_duplicates(self) -> None:
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                for i in range(201):
+                    meals.create_recipe(
+                        st.conn, self.hid,
+                        {
+                            "title": f"Recipe-{i:03d}",
+                            "servings": 1,
+                            "ingredients": [{"name": "a", "qty_milli": 1, "unit": "g"}],
+                            "steps": ["s"],
+                            "leftover_policy": "none",
+                        },
+                    )
+        seen: list[str] = []
+        cursor = None
+        while True:
+            qs = {"limit": "50"}
+            if cursor:
+                qs["cursor"] = cursor
+            page = meals.http_get("/api/meals/recipes", qs)[1]
+            seen.extend(x["id"] for x in page["items"])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        self.assertEqual(len(seen), 201)
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_grocery_list_rev_conflict(self) -> None:
+        lst = gr.http_post(
+            "/api/grocery/lists",
+            {"status": "open", "lines": [{"name": "Salt", "qty_milli": 1, "unit": "g"}]},
+        )[1]["grocery_list"]
+        code, body = gr.http_post("/api/grocery/lists", {"id": lst["id"], "rev": 99, "status": "open", "lines": lst["lines"]})
+        self.assertEqual(code, 409, body)
+
+    def test_502_lots_change_beyond_500_stale_digest(self) -> None:
+        p = self._product()
+        r = self._recipe(ingredients=[{"product_id": p["id"], "name": "R", "qty_milli": 1000, "unit": "g"}])
+        lot_rows: list[dict] = []
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                for _ in range(502):
+                    lot_rows.append(
+                        gr.create_lot(
+                            st.conn, self.hid,
+                            {"product_id": p["id"], "qty_milli": 1, "usable_qty_milli": 1, "canonical_unit": "g"},
+                        )
+                    )
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        digest = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "preview", "subtract_available_stock": True},
+        )[1]["preview_digest"]
+        a, b = lot_rows[500], lot_rows[501]
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                gr.update_lot(st.conn, self.hid, {"id": a["id"], "rev": a["rev"], "qty_milli": 2, "usable_qty_milli": 2, "canonical_unit": "g"})
+                gr.update_lot(st.conn, self.hid, {"id": b["id"], "rev": b["rev"], "qty_milli": 0, "usable_qty_milli": 0, "canonical_unit": "g"})
+        code, body = meals.http_post(
+            f"/api/meals/plans/{plan['id']}/build-list",
+            {"mode": "commit", "preview_digest": digest, "subtract_available_stock": True, "idempotency_key": "lots-502-cap"},
+        )
+        self.assertEqual(code, 409, body)
+
+    def test_preview_rejects_over_500_lines(self) -> None:
+        recipes = []
+        for n in range(6):
+            ings = [{"name": f"ing-{n}-{i}", "qty_milli": 1, "unit": "g"} for i in range(100)]
+            recipes.append(self._recipe(title=f"Big-{n}", ingredients=ings))
+        slots = [
+            {"date": f"2026-11-{16 + i}", "meal": "dinner", "recipe_id": recipes[i]["id"]}
+            for i in range(6)
+        ]
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-21", "slots": slots},
+        )[1]["meal_plan"]
+        code, body = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})
+        self.assertEqual(code, 400, body)
+        self.assertEqual(body.get("code"), "validation_error")
+        with store.open_store(self.root, readonly=True) as st:
+            self.assertEqual(int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0]), 0)
+
+    def test_substitute_unknown_and_foreign_product(self) -> None:
+        code, body = meals.http_post(
+            "/api/meals/recipes",
+            {
+                "title": "x",
+                "servings": 1,
+                "ingredients": [{
+                    "name": "a", "qty_milli": 1, "unit": "g",
+                    "substitutes": [{"product_id": "prd-0000000000000001"}],
+                }],
+                "steps": ["s"],
+                "leftover_policy": "none",
+            },
+        )
+        self.assertEqual(code, 404, body)
+        other = Path(self.tmp.name) / "foreign"
+        other.mkdir()
+        gr.bind(root=other, actor=lambda: "x", now=lambda: 1.0, inventory_snapshot=lambda: {"version": 1, "rev": 1, "items": [], "places": []})
+        fin.bind(root=other, actor=lambda: "x", now=lambda: 1.0)
+        with store.open_store(other) as st:
+            with st.transaction():
+                oh = fin.ensure_default_household(st.conn)
+                remote = gr.create_product(st.conn, oh, {"name": "R", "canonical_unit": "g", "default_qty_milli": 1})
+        _setup(self.root)
+        code2, body2 = meals.http_post(
+            "/api/meals/recipes",
+            {
+                "title": "y",
+                "servings": 1,
+                "ingredients": [{
+                    "name": "a", "qty_milli": 1, "unit": "g",
+                    "substitutes": [{"product_id": remote["id"]}],
+                }],
+                "steps": ["s"],
+                "leftover_policy": "none",
+            },
+        )
+        self.assertEqual(code2, 404, body2)
+
+    def test_concurrent_commit_same_idempotency_key(self) -> None:
+        r = self._recipe()
+        plan = meals.http_post(
+            "/api/meals/plans",
+            {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+        )[1]["meal_plan"]
+        digest = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]["preview_digest"]
+        body = {"mode": "commit", "preview_digest": digest, "idempotency_key": "concurrent-idem-001"}
+        path = store.db_path(self.root)
+        holders: list[dict] = [{}, {}]
+
+        def worker(slot: int) -> None:
+            c = sqlite3.connect(str(path))
+            c.row_factory = sqlite3.Row
+            try:
+                c.execute(f"PRAGMA busy_timeout = {store.BUSY_TIMEOUT_MS}")
+                c.execute("BEGIN")
+                holders[slot]["out"] = meals.build_list_commit(c, self.hid, plan["id"], body)
+                c.commit()
+            except (meals.MealsError, sqlite3.OperationalError, sqlite3.Error) as exc:
+                holders[slot]["err"] = exc
+                try:
+                    c.rollback()
+                except sqlite3.Error:
+                    pass
+            finally:
+                c.close()
+
+        t1 = threading.Thread(target=worker, args=(0,))
+        t2 = threading.Thread(target=worker, args=(1,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+        outs = [h.get("out") for h in holders if h.get("out")]
+        errs = [h.get("err") for h in holders if h.get("err")]
+        self.assertTrue(outs or errs)
+        if len(outs) == 1 and errs:
+            retry = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", body)
+            self.assertEqual(retry[0], 200)
+            outs.append(retry[1])
+        self.assertGreaterEqual(len(outs), 1)
+        list_ids = {o["grocery_list"]["id"] for o in outs}
+        self.assertEqual(len(list_ids), 1)
+        with store.open_store(self.root, readonly=True) as st:
+            self.assertEqual(int(st.conn.execute("SELECT COUNT(*) FROM grocery_lists").fetchone()[0]), 1)
+            row = st.conn.execute(
+                "SELECT entity_id, response_json FROM grocery_list_build_idempotency WHERE idempotency_key = ?",
+                ("concurrent-idem-001",),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertNotEqual(str(row["entity_id"]), "_pending")
+
+    def test_meal_plans_pagination_over_200(self) -> None:
+        r = self._recipe()
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                for i in range(201):
+                    meals.create_meal_plan(
+                        st.conn, self.hid,
+                        {
+                            "period_start": f"2026-12-{(i % 28) + 1:02d}",
+                            "period_end": f"2026-12-{(i % 28) + 1:02d}",
+                            "slots": [{"date": f"2026-12-{(i % 28) + 1:02d}", "meal": "dinner", "recipe_id": r["id"]}],
+                        },
+                    )
+        seen: list[str] = []
+        cursor = None
+        while True:
+            qs: dict = {"limit": "50"}
+            if cursor:
+                qs["cursor"] = cursor
+            page = meals.http_get("/api/meals/plans", qs)[1]
+            seen.extend(x["id"] for x in page["items"])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        self.assertEqual(len(seen), 201)
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_grocery_lists_pagination_over_200(self) -> None:
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                for i in range(201):
+                    gr.create_grocery_list(
+                        st.conn, self.hid,
+                        {"status": "open", "lines": [{"name": f"L-{i}", "qty_milli": 1, "unit": "g"}]},
+                    )
+        seen: list[str] = []
+        cursor = None
+        while True:
+            qs: dict = {"limit": "50"}
+            if cursor:
+                qs["cursor"] = cursor
+            page = gr.http_get("/api/grocery/lists", qs)[1]
+            seen.extend(x["id"] for x in page["items"])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        self.assertEqual(len(seen), 201)
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_no_inventory_apply_on_build(self) -> None:
+        with mock.patch("hq_inventory.apply") as m_apply:
+            r = self._recipe()
+            plan = meals.http_post(
+                "/api/meals/plans",
+                {"period_start": "2026-11-16", "period_end": "2026-11-16", "slots": [{"date": "2026-11-16", "meal": "dinner", "recipe_id": r["id"]}]},
+            )[1]["meal_plan"]
+            prev = meals.http_post(f"/api/meals/plans/{plan['id']}/build-list", {"mode": "preview"})[1]
+            meals.http_post(
+                f"/api/meals/plans/{plan['id']}/build-list",
+                {"mode": "commit", "preview_digest": prev["preview_digest"], "idempotency_key": "no-inv-001"},
+            )
+            m_apply.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

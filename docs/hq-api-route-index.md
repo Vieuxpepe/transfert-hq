@@ -107,10 +107,25 @@ Frontend: **`assets/hq-companion.js`**, view **`intime`**.
 | `/api/calendar`, `/api/calendar/run` | `hq_calendar` | Calendrier |
 | `/api/projects` | `hq_projects` | Projets |
 | `/api/inventory` | `hq_inventory` | Inventaire |
+| `/api/mini-quests`, `/api/mini-quests/*` | `mini_quests` | Simulated Mini-Quêtes (admin; see `MINI_QUESTS.md`) |
 | `/api/drawings`, `/api/drawings/*` | `hq_drawings` | Dessiner |
 | `/api/ai` | `hq_ai` (+ `hq_sister` for sister ops) | Assistant / companions. POST `action`: `ask`, `ambient`, `transferania`, `else`, `sister`, … — sister ops: `exchange`, `ambient`, `react`, `history`, `prefs`, `clear`. Ambient may return `sister_cue`. GET `?else=1` / `?transferania=1` history. Status includes `else` + `sister`. |
 | `/api/agent` | `hq_agent` | Agent automation |
 | `/api/backups`, `/api/backups/folders` | backup helpers | Backups |
+
+---
+
+## Household Intelligence (planned — not live on this branch)
+
+Architecture only in PR #30: see [household/README.md](household/README.md).
+**Do not** expect these routes in `iphone_bridge.py` until a later activation PR.
+
+| Prefix (future) | Mod (future) | Notes |
+|-----------------|--------------|-------|
+| `/api/finances/*` | `hq_finances` | Admin + CSRF; integer cents |
+| `/api/grocery/*` | `hq_grocery` | Products, lots, offers, purchases |
+| `/api/meals/*` | `hq_meals` | Profiles, recipes, plans |
+| `/api/inventoria/*` | `hq_inventoria` | propose→validate→preview→commit→audit |
 
 ---
 

@@ -1,0 +1,46 @@
+{
+  "$id": "transfert-hq/household/common.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
+  "title": "Household common contracts v1",
+  "schema_version": 1,
+  "id_patterns": {
+    "household": "^hhold-[0-9a-f]{16}$",
+    "account": "^acct-[0-9a-f]{16}$",
+    "category": "^cat-[0-9a-f]{16}$",
+    "transaction": "^tx-[0-9a-f]{16}$",
+    "envelope": "^env-[0-9a-f]{16}$",
+    "goal": "^goal-[0-9a-f]{16}$",
+    "product": "^prd-[0-9a-f]{16}$",
+    "lot": "^lot-[0-9a-f]{16}$",
+    "merchant": "^mch-[0-9a-f]{16}$",
+    "offer": "^off-[0-9a-f]{16}$",
+    "recipe": "^rcp-[0-9a-f]{16}$",
+    "meal_plan": "^mpl-[0-9a-f]{16}$",
+    "grocery_list": "^glst-[0-9a-f]{16}$",
+    "purchase": "^pur-[0-9a-f]{16}$",
+    "inventoria_session": "^ivo-[0-9a-f]{16}$",
+    "inventoria_op": "^iop-[0-9a-f]{16}$",
+    "cross_store_op": "^xop-[0-9a-f]{16}$",
+    "inventory_item": "^itm-[0-9a-f]{16}$",
+    "inventory_place": "^plc-[0-9a-f]{16}$"
+  },
+  "canonical_units": ["g", "ml", "each", "serving"],
+  "money": {
+    "field": "*_cents",
+    "type": "integer",
+    "forbid": ["number_float", "bool"],
+    "note": "All money is integer cents. Never use floats for balances."
+  },
+  "quantity": {
+    "field": "qty_milli",
+    "type": "integer",
+    "min": 0,
+    "note": "Physical quantities as non-negative milli-units of a canonical unit."
+  },
+  "idempotency_key": {
+    "type": "string",
+    "minLength": 8,
+    "maxLength": 128
+  }
+}

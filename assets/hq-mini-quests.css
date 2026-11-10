@@ -1,0 +1,26 @@
+/* Mini-Quêtes — Plus / Système section. Keep light: no cards in the hero sense, reuse HQ tokens. */
+
+.mq-root{display:flex;flex-direction:column;gap:12px;min-width:0}
+.mq-banner{margin:0;font-size:var(--text-sm,.82rem);color:var(--muted);line-height:1.35}
+.mq-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.mq-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.mq-item:first-child{border-top:0;padding-top:0}
+.mq-copy{min-width:0}
+.mq-copy strong{display:block;font-size:1rem;font-weight:800;letter-spacing:-.01em;color:var(--text)}
+.mq-copy p{margin:2px 0 0;font-size:var(--text-sm,.82rem);color:var(--muted);line-height:1.35}
+.mq-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+.mq-actions button{min-height:44px}
+.mq-status{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-sm,.82rem);font-weight:700}
+.mq-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.mq-root[data-mq-state="available"] .mq-dot{background:var(--ok,#3dbe7a)}
+.mq-root[data-mq-state="running"] .mq-dot{background:var(--warn,#e6b450)}
+.mq-root[data-mq-state="done"] .mq-dot{background:var(--ok,#3dbe7a)}
+.mq-root[data-mq-state="refused"] .mq-dot,
+.mq-root[data-mq-state="error"] .mq-dot{background:var(--danger,#e85d4c)}
+.mq-result{margin:0;padding:8px 0 0;font-size:var(--text-sm,.82rem);color:var(--text);white-space:pre-wrap;word-break:break-word}
+.mq-result[hidden]{display:none}
+@media (max-width:520px){
+  .mq-item{grid-template-columns:1fr;align-items:start}
+  .mq-actions{justify-content:stretch}
+  .mq-actions button{flex:1 1 auto}
+}

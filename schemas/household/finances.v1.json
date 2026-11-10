@@ -1,0 +1,87 @@
+{
+  "$id": "transfert-hq/household/finances.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
+  "schema_version": 1,
+  "entities": {
+    "household": {
+      "required": ["id", "name", "currency", "locale", "timezone", "schema_version"],
+      "properties": {
+        "id": {"pattern": "household"},
+        "name": {"type": "string", "maxLength": 120},
+        "currency": {"type": "string", "enum": ["CAD", "USD", "EUR"]},
+        "locale": {"type": "string", "maxLength": 16},
+        "timezone": {"type": "string", "maxLength": 64},
+        "week_starts": {"enum": ["mon", "sun"]},
+        "prefs": {
+          "type": "object",
+          "properties": {
+            "soft_budget_warn_pct": {"type": "integer", "min": 1, "max": 100},
+            "hard_block_overspend": {"type": "boolean"}
+          }
+        },
+        "schema_version": {"const": 1}
+      }
+    },
+    "account": {
+      "required": ["id", "household_id", "name", "kind", "opening_balance_cents", "currency", "rev"],
+      "properties": {
+        "kind": {"enum": ["cash", "checking", "credit", "savings", "other"]},
+        "opening_balance_cents": {"type": "integer_cents"},
+        "archived": {"type": "boolean"},
+        "rev": {"type": "integer", "min": 1}
+      }
+    },
+    "budget_category": {
+      "required": ["id", "household_id", "name", "kind", "rev"],
+      "properties": {
+        "kind": {"enum": ["income", "expense", "transfer"]},
+        "parent_id": {"pattern": "category", "nullable": true},
+        "archived": {"type": "boolean"}
+      }
+    },
+    "transaction": {
+      "required": ["id", "household_id", "account_id", "booked_on", "amount_cents", "category_id", "status", "source", "rev"],
+      "properties": {
+        "amount_cents": {"type": "integer_cents"},
+        "booked_on": {"type": "iso_date"},
+        "payee": {"type": "string", "maxLength": 160},
+        "memo": {"type": "string", "maxLength": 2000},
+        "transfer_pair_id": {"pattern": "transaction", "nullable": true},
+        "status": {"enum": ["posted", "pending", "void"]},
+        "source": {"enum": ["manual", "import", "grocery_purchase", "inventoria", "correction"]},
+        "external_fingerprint": {"type": "string", "maxLength": 200, "nullable": true},
+        "correction_of": {"pattern": "transaction", "nullable": true},
+        "idempotency_key": {"type": "idempotency_key", "nullable": true}
+      }
+    },
+    "budget_envelope": {
+      "required": ["id", "category_id", "period_start", "period_end", "allocated_cents", "currency", "rev"],
+      "properties": {
+        "allocated_cents": {"type": "integer_cents", "min": 0},
+        "period_start": {"type": "iso_date"},
+        "period_end": {"type": "iso_date"},
+        "currency": {
+          "type": "string",
+          "enum": ["CAD", "USD", "EUR"],
+          "description": "Reference currency for spent rollups; may differ from household.currency"
+        }
+      }
+    },
+    "goal": {
+      "required": ["id", "name", "target_cents", "saved_cents", "rev"],
+      "properties": {
+        "target_cents": {"type": "integer_cents", "min": 0},
+        "saved_cents": {"type": "integer_cents", "min": 0}
+      }
+    },
+    "recurring_payment": {
+      "required": ["id", "account_id", "category_id", "amount_cents", "cadence", "next_on", "auto_post", "rev"],
+      "properties": {
+        "amount_cents": {"type": "integer_cents"},
+        "cadence": {"enum": ["weekly", "biweekly", "monthly", "yearly"]},
+        "auto_post": {"type": "boolean", "default": false}
+      }
+    }
+  }
+}

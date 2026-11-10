@@ -1,0 +1,49 @@
+{
+  "$id": "transfert-hq/household/cross_store_op.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
+  "schema_version": 1,
+  "title": "SQLite ↔ inventory.json operation journal",
+  "id_pattern": "^xop-[0-9a-f]{16}$",
+  "request_hash": "^[0-9a-f]{64}$",
+  "statuses": [
+    "accepted",
+    "preparing",
+    "applying_sqlite",
+    "applying_inventory",
+    "finalizing",
+    "committed",
+    "needs_reconcile",
+    "failed",
+    "cancelled"
+  ],
+  "terminal": ["committed", "needs_reconcile", "failed", "cancelled"],
+  "kinds": ["inventoria_commit", "grocery_purchase", "lot_consume"],
+  "inventory_attempt_phases": ["not_started", "in_flight", "acknowledged"],
+  "planned_step": {
+    "required": ["store", "action"],
+    "store": ["sqlite", "inventory"],
+    "inventory_required": ["attempt_phase", "payload"],
+    "inventory_attempt_phase_explicit": true,
+    "committed_requires_inventory_acknowledged": true,
+    "note": "Inventory steps require explicit attempt_phase + typed payload. Persist in_flight BEFORE apply; acknowledged only after durable step_result. committed forbids non-acknowledged inventory steps. Never auto-replay in_flight adjust; never infer success from global inventory rev alone."
+  },
+  "required": [
+    "id",
+    "kind",
+    "status",
+    "idempotency_key",
+    "request_hash",
+    "planned_steps",
+    "step_index",
+    "uncertain_inventory"
+  ],
+  "step_index": "integer 0..len(planned_steps) inclusive",
+  "uncertain_inventory": "strict integer 0|1 (not bool)",
+  "rules": [
+    "Never auto-replay item.adjust when attempt_phase is in_flight or uncertain_inventory=1",
+    "Same idempotency_key + request_hash returns prior result",
+    "Same idempotency_key + different request_hash → conflict",
+    "Crash recovery documented per write frontier in docs/household/12-cross-store-journal.md"
+  ]
+}
