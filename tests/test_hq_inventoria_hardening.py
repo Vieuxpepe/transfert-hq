@@ -46,6 +46,105 @@ class InventoriaHardeningTests(unittest.TestCase):
         )
         return o2["operation"]["id"]
 
+    def test_delete_then_update_rejected_at_validate(self) -> None:
+        op_id = self._session_op([
+            {
+                "op": "item.delete",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev},
+                "label_fr": "del",
+            },
+            {
+                "op": "item.update",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev, "name": "Beta"},
+                "label_fr": "upd",
+            },
+        ])
+        _, val = ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        codes = {i.get("code") for i in val["validation"]["issues"]}
+        self.assertIn("batch_use_after_delete", codes)
+
+    def test_double_delete_rejected_at_validate(self) -> None:
+        op_id = self._session_op([
+            {
+                "op": "item.delete",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev},
+                "label_fr": "del1",
+            },
+            {
+                "op": "item.delete",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev + 1},
+                "label_fr": "del2",
+            },
+        ])
+        _, val = ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        codes = {i.get("code") for i in val["validation"]["issues"]}
+        self.assertIn("batch_duplicate_delete", codes)
+
+    def test_place_delete_then_move_rejected_at_validate(self) -> None:
+        inv.apply({
+            "action": "item.update",
+            "id": self.item_id,
+            "rev": self.item_rev,
+            "place": self.place_id,
+        })
+        place_rev = next(p for p in inv.snapshot()["places"] if p["id"] == self.place_id)["rev"]
+        op_id = self._session_op([
+            {
+                "op": "place.delete",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev},
+                "label_fr": "pdel",
+            },
+            {
+                "op": "item.move",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"ids": [self.item_id], "place": self.place_id},
+                "label_fr": "mv",
+            },
+        ])
+        _, val = ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        codes = {i.get("code") for i in val["validation"]["issues"]}
+        self.assertIn("batch_place_unavailable", codes)
+
+    def test_reconcile_rejects_bool_inventory_rev(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+
+        def crash_f4(phase: str) -> None:
+            if phase == "F4":
+                raise icommit.CommitAbort(phase)
+
+        icommit.set_test_hook(crash_f4)
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": "bool-rev"})
+        icommit.set_test_hook(None)
+        c, _ = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/reconcile",
+            {
+                "decision": "confirm_already_applied",
+                "reason": "operator evidence with bad rev type",
+                "evidence": {"inventory_rev": True},
+                "step_index": 0,
+            },
+        )
+        self.assertEqual(c, 400)
+
     def test_delete_then_adjust_rejected_at_validate(self) -> None:
         op_id = self._session_op([
             {
