@@ -6,6 +6,17 @@ session + CSRF. No bank feeds, no auto-post workers, no inventoria writes.
 
 Goals: ``saved_cents`` is a virtual progress tally (manual / UI allocation), not an
 automatic mirror of account balances — avoids double-counting when ``account_id`` is set.
+
+Budget envelopes (spent):
+- Net spend = Σ(-amount_cents) for **posted** expense-category rows with ``transfer_pair_id``
+  absent (internal transfers never count as spend).
+- Refunds and corrective entries reduce net spend (positive ``amount_cents`` on an expense
+  category lowers the total).
+- Correction rows attribute spend to the **correction's** ``booked_on`` period, not the original.
+- Overlapping envelope periods: a transaction counts toward every envelope whose date range
+  contains its ``booked_on``.
+
+Summary balances are **never** summed across currencies — use ``balances_by_currency`` only.
 """
 
 from __future__ import annotations
@@ -28,6 +39,15 @@ import hq_household_store as hstore
 BODY_MAX = 1_048_576
 PAGE_MAX = 200
 TX_LIST_MAX = 2000
+SQLITE_INT_MIN = -(2**63)
+SQLITE_INT_MAX = 2**63 - 1
+IDEM_WAIT_SEC = 5.0
+
+GENERIC_TX_SOURCES = frozenset({"manual"})
+RESERVED_GENERIC_TX_FIELDS = frozenset({"transfer_pair_id", "correction_of", "external_fingerprint"})
+
+TX_CURSOR_RE = re.compile(r"^(?P<d>\d{4}-\d{2}-\d{2})~(?P<id>tx-[0-9a-f]{16})$")
+AUDIT_CURSOR_RE = re.compile(r"^(?P<t>-?\d+(?:\.\d+)?)\|(?P<id>aud-[0-9a-f]{16})$")
 
 ID_PREFIX = {
     "household": "hhold",
@@ -76,8 +96,16 @@ def _actor() -> str:
 
 
 def _now() -> float:
+    """Business timestamps (ledger, audit, created_at) — injectable in tests."""
     fn = _cb.get("now")
     return float(fn()) if callable(fn) else time.time()
+
+
+def require_finance_cents(v: Any, field: str = "amount_cents", *, min_value: int | None = None) -> int:
+    cents = schemas.require_cents(v, field, min_value=min_value)
+    if cents < SQLITE_INT_MIN or cents > SQLITE_INT_MAX:
+        raise FinanceError(f"{field} hors plage SQLite INTEGER", code="validation_error")
+    return cents
 
 
 def _new_id(kind: str) -> str:
@@ -155,6 +183,14 @@ def account_balance_cents(conn: sqlite3.Connection, account_id: str) -> int:
 
 # ---------------------------------------------------------------- idempotency
 
+def _idempotency_row(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT operation, request_hash, response_json, entity_id, pinned "
+        "FROM finance_idempotency WHERE idempotency_key = ?",
+        (key,),
+    ).fetchone()
+
+
 def idempotency_lookup(
     conn: sqlite3.Connection,
     *,
@@ -162,19 +198,21 @@ def idempotency_lookup(
     operation: str,
     request_hash: str,
 ) -> dict | None:
-    row = conn.execute(
-        "SELECT request_hash, response_json, entity_id, pinned FROM finance_idempotency "
-        "WHERE idempotency_key = ? AND operation = ?",
-        (key, operation),
-    ).fetchone()
+    row = _idempotency_row(conn, key)
     if row is None:
         return None
-    if str(row[2]) == "_pending" and int(row[3]) == 0:
+    if str(row[0]) != operation:
+        raise FinanceError(
+            "idempotency_key réservée pour une autre opération",
+            status=409,
+            code="conflict",
+        )
+    if str(row[3]) == "_pending" and int(row[4]) == 0:
         return None
-    if str(row[0]) != request_hash:
+    if str(row[1]) != request_hash:
         raise FinanceError("idempotency_key déjà utilisée avec un autre corps", status=409, code="conflict")
     try:
-        return json.loads(str(row[1]))
+        return json.loads(str(row[2]))
     except json.JSONDecodeError:
         raise FinanceError("idempotence corrompue", status=503, code="storage_error")
 
@@ -209,8 +247,15 @@ def idempotency_claim(
         return None
     schemas.require_idempotency_key(key)
     h = _body_hash(body)
-    deadline = _now() + 5.0
-    while _now() < deadline:
+    deadline = time.monotonic() + IDEM_WAIT_SEC
+    while time.monotonic() < deadline:
+        existing = _idempotency_row(conn, key)
+        if existing is not None and str(existing[0]) != operation:
+            raise FinanceError(
+                "idempotency_key réservée pour une autre opération",
+                status=409,
+                code="conflict",
+            )
         cached = idempotency_lookup(conn, key=key, operation=operation, request_hash=h)
         if cached is not None:
             return cached
@@ -227,11 +272,16 @@ def idempotency_claim(
             )
             return None
         except sqlite3.IntegrityError:
-            row = conn.execute(
-                "SELECT request_hash FROM finance_idempotency WHERE idempotency_key = ? AND operation = ?",
-                (key, operation),
-            ).fetchone()
-            if row and str(row[0]) != h:
+            row = _idempotency_row(conn, key)
+            if row is None:
+                continue
+            if str(row[0]) != operation:
+                raise FinanceError(
+                    "idempotency_key réservée pour une autre opération",
+                    status=409,
+                    code="conflict",
+                )
+            if str(row[1]) != h:
                 raise FinanceError("idempotency_key déjà utilisée avec un autre corps", status=409, code="conflict")
         time.sleep(0.01)
     raise FinanceError("idempotency occupée — réessayez", status=409, code="conflict")
@@ -251,9 +301,10 @@ def idempotency_finalize(
         return
     h = _body_hash(body)
     conn.execute(
-        "UPDATE finance_idempotency SET entity_type = ?, entity_id = ?, response_json = ?, pinned = 1 "
-        "WHERE idempotency_key = ? AND operation = ? AND request_hash = ?",
-        (entity_type, entity_id, _safe_json(response), key, operation, h),
+        "UPDATE finance_idempotency SET operation = ?, entity_type = ?, entity_id = ?, "
+        "response_json = ?, request_hash = ?, pinned = 1 "
+        "WHERE idempotency_key = ?",
+        (operation, entity_type, entity_id, _safe_json(response), h, key),
     )
 
 
@@ -321,7 +372,7 @@ def create_account(conn: sqlite3.Connection, household_id: str, data: dict) -> d
     kind = data.get("kind")
     if kind not in ("cash", "checking", "credit", "savings", "other"):
         raise FinanceError("kind invalide")
-    opening = schemas.require_cents(data.get("opening_balance_cents"), "opening_balance_cents")
+    opening = require_finance_cents(data.get("opening_balance_cents"), "opening_balance_cents")
     currency = data.get("currency") or "CAD"
     if currency not in ("CAD", "USD", "EUR"):
         raise FinanceError("currency invalide")
@@ -477,11 +528,38 @@ def transaction_to_api(row: sqlite3.Row) -> dict:
     }
 
 
-def _validate_tx_payload(data: dict, household_id: str, *, require_key: bool) -> dict:
+def _assert_generic_tx_body(data: dict) -> None:
+    for field in RESERVED_GENERIC_TX_FIELDS:
+        if data.get(field) not in (None, ""):
+            raise FinanceError(f"{field} réservé — utiliser l'endpoint dédié", code="validation_error")
+    src = data.get("source", "manual")
+    if src not in GENERIC_TX_SOURCES:
+        raise FinanceError("source réservée pour l'API générique", code="validation_error")
+
+
+def _validate_tx_payload(
+    data: dict,
+    household_id: str,
+    *,
+    require_key: bool,
+    via: str,
+) -> dict:
     doc = dict(data)
     doc["household_id"] = household_id
     doc.setdefault("payee", "")
     doc.setdefault("memo", "")
+    if via == "generic":
+        _assert_generic_tx_body(doc)
+    elif via == "transfer":
+        if doc.get("correction_of"):
+            raise FinanceError("correction_of interdit sur un transfert", code="validation_error")
+        doc.setdefault("source", "manual")
+    elif via == "correction":
+        schemas.require_id(doc.get("correction_of"), "transaction", "correction_of")
+        doc["source"] = "correction"
+        doc.pop("transfer_pair_id", None)
+    else:
+        raise FinanceError("mode transaction invalide", code="validation_error")
     if require_key:
         doc["idempotency_key"] = schemas.require_idempotency_key(data.get("idempotency_key"))
     elif data.get("idempotency_key") is not None:
@@ -492,14 +570,22 @@ def _validate_tx_payload(data: dict, household_id: str, *, require_key: bool) ->
         doc["rev"] = 1
     if doc.get("status") is None:
         doc["status"] = "posted"
-    if doc.get("source") is None:
-        doc["source"] = "manual"
+    if via == "generic":
+        doc.setdefault("source", "manual")
+    require_finance_cents(doc.get("amount_cents"))
     schemas.validate_transaction(doc)
     return doc
 
 
-def insert_transaction(conn: sqlite3.Connection, household_id: str, data: dict, *, pin_idem: bool) -> dict:
-    doc = _validate_tx_payload(data, household_id, require_key=pin_idem)
+def insert_transaction(
+    conn: sqlite3.Connection,
+    household_id: str,
+    data: dict,
+    *,
+    pin_idem: bool,
+    via: str = "generic",
+) -> dict:
+    doc = _validate_tx_payload(data, household_id, require_key=pin_idem, via=via)
     acc = conn.execute("SELECT currency FROM accounts WHERE id = ?", (doc["account_id"],)).fetchone()
     if acc is None:
         raise FinanceError("compte introuvable", status=404, code="not_found")
@@ -540,44 +626,53 @@ def insert_transaction(conn: sqlite3.Connection, household_id: str, data: dict, 
 def list_transactions(conn: sqlite3.Connection, household_id: str, qs: dict) -> dict:
     clauses = ["household_id = ?"]
     params: list[Any] = [household_id]
-    account = (qs.get("account") or qs.get("account_id") or [""])[0]
+    account = _qs_first(qs, "account") or _qs_first(qs, "account_id")
     if account:
         schemas.require_id(account, "account", "account_id")
         clauses.append("account_id = ?")
         params.append(account)
-    category = (qs.get("category") or qs.get("category_id") or [""])[0]
+    category = _qs_first(qs, "category") or _qs_first(qs, "category_id")
     if category:
         schemas.require_id(category, "category", "category_id")
         clauses.append("category_id = ?")
         params.append(category)
-    fr = (qs.get("from") or [""])[0]
+    fr = _qs_first(qs, "from")
     if fr:
         schemas.require_iso_date(fr, "from")
         clauses.append("booked_on >= ?")
         params.append(fr)
-    to = (qs.get("to") or [""])[0]
+    to = _qs_first(qs, "to")
     if to:
         schemas.require_iso_date(to, "to")
         clauses.append("booked_on <= ?")
         params.append(to)
     try:
-        limit = min(PAGE_MAX, max(1, int((qs.get("limit") or ["50"])[0])))
+        limit = min(PAGE_MAX, max(1, int(_qs_first(qs, "limit", "50"))))
     except (TypeError, ValueError):
         limit = 50
-    cursor = (qs.get("cursor") or [""])[0]
+    cursor = _qs_first(qs, "cursor")
     if cursor:
-        clauses.append("id > ?")
-        params.append(cursor)
-    sql = "SELECT * FROM transactions WHERE " + " AND ".join(clauses) + " ORDER BY id LIMIT ?"
+        m = TX_CURSOR_RE.match(cursor)
+        if not m:
+            raise FinanceError("cursor transactions invalide", code="validation_error")
+        bo, tid = m.group("d"), m.group("id")
+        schemas.require_id(tid, "transaction", "cursor")
+        clauses.append("(booked_on < ? OR (booked_on = ? AND id < ?))")
+        params.extend([bo, bo, tid])
+    sql = "SELECT * FROM transactions WHERE " + " AND ".join(clauses) + " ORDER BY booked_on DESC, id DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     items = [transaction_to_api(r) for r in rows]
-    next_cursor = items[-1]["id"] if len(items) == limit else None
+    next_cursor = None
+    if len(items) == limit:
+        last = items[-1]
+        next_cursor = f"{last['booked_on']}~{last['id']}"
     return {"ok": True, "items": items, "next_cursor": next_cursor, "limit": limit}
 
 
 def post_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
     body = dict(data)
+    _assert_generic_tx_body(body)
     key = body.get("idempotency_key")
     op = "transaction.post"
     with st.transaction():
@@ -587,7 +682,7 @@ def post_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
         if cached is not None:
             return cached
         require_key = body.get("status", "posted") == "posted"
-        tx = insert_transaction(conn, household_id, body, pin_idem=require_key)
+        tx = insert_transaction(conn, household_id, body, pin_idem=require_key, via="generic")
         resp = {"ok": True, "transaction": tx}
         idempotency_finalize(
             conn,
@@ -619,7 +714,11 @@ def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
         if str(orig["status"]) != "posted":
             raise FinanceError("seules les transactions postées sont corrigeables")
         delta = body.get("amount_cents")
-        amount = schemas.require_cents(delta) if delta is not None else -int(orig["amount_cents"])
+        amount = (
+            require_finance_cents(delta)
+            if delta is not None
+            else require_finance_cents(-int(orig["amount_cents"]))
+        )
         corr = {
             "account_id": body.get("account_id") or orig["account_id"],
             "category_id": body.get("category_id") or orig["category_id"],
@@ -632,7 +731,7 @@ def correct_transaction(st: hstore.HouseholdStore, data: dict) -> dict:
             "memo": body.get("memo") or orig["memo"] or "",
             "idempotency_key": key,
         }
-        tx = insert_transaction(conn, household_id, corr, pin_idem=True)
+        tx = insert_transaction(conn, household_id, corr, pin_idem=True, via="correction")
         resp = {"ok": True, "transaction": tx, "original_id": orig_id}
         idempotency_finalize(
             conn, key=key, operation=op, body=body,
@@ -649,7 +748,7 @@ def post_transfer(st: hstore.HouseholdStore, data: dict) -> dict:
     body = dict(data)
     op = "transfer.post"
     key = schemas.require_idempotency_key(body.get("idempotency_key"))
-    amount = schemas.require_cents(body.get("amount_cents"), min_value=1)
+    amount = require_finance_cents(body.get("amount_cents"), min_value=1)
     src = body.get("from_account_id") or body.get("source_account_id")
     dst = body.get("to_account_id") or body.get("dest_account_id")
     schemas.require_id(src, "account", "from_account_id")
@@ -712,6 +811,7 @@ def post_transfer(st: hstore.HouseholdStore, data: dict) -> dict:
                         "idempotency_key": key,
                     },
                     pin_idem=True,
+                    via="transfer",
                 )
                 txs.append(tx)
         except Exception:
@@ -731,8 +831,10 @@ def post_transfer(st: hstore.HouseholdStore, data: dict) -> dict:
 
 def envelope_spent_cents(conn: sqlite3.Connection, category_id: str, start: str, end: str) -> int:
     row = conn.execute(
-        "SELECT COALESCE(SUM(-amount_cents), 0) FROM transactions "
-        "WHERE category_id = ? AND status = 'posted' AND booked_on >= ? AND booked_on <= ? AND amount_cents < 0",
+        "SELECT COALESCE(SUM(-t.amount_cents), 0) FROM transactions t "
+        "JOIN budget_categories c ON c.id = t.category_id "
+        "WHERE t.category_id = ? AND c.kind = 'expense' AND t.status = 'posted' "
+        "AND t.booked_on >= ? AND t.booked_on <= ? AND t.transfer_pair_id IS NULL",
         (category_id, start, end),
     ).fetchone()
     return max(0, int(row[0] or 0))
@@ -768,7 +870,7 @@ def upsert_envelope(conn: sqlite3.Connection, household_id: str, data: dict) -> 
     schemas.require_iso_date(data.get("period_end"), "period_end")
     if data["period_start"] > data["period_end"]:
         raise FinanceError("période invalide")
-    alloc = schemas.require_cents(data.get("allocated_cents"), min_value=0)
+    alloc = require_finance_cents(data.get("allocated_cents"), min_value=0)
     schemas.require_id(data.get("category_id"), "category", "category_id")
     eid = data.get("id")
     now = _now()
@@ -850,7 +952,7 @@ def list_recurring(conn: sqlite3.Connection, household_id: str) -> list[dict]:
 
 
 def upsert_recurring(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
-    amount = schemas.require_cents(data.get("amount_cents"))
+    amount = require_finance_cents(data.get("amount_cents"))
     cadence = data.get("cadence")
     if cadence not in ("weekly", "biweekly", "monthly", "yearly"):
         raise FinanceError("cadence invalide")
@@ -910,8 +1012,8 @@ def list_goals(conn: sqlite3.Connection, household_id: str) -> list[dict]:
 
 
 def upsert_goal(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
-    target = schemas.require_cents(data.get("target_cents"), min_value=0)
-    saved = schemas.require_cents(data.get("saved_cents", 0), min_value=0)
+    target = require_finance_cents(data.get("target_cents"), min_value=0)
+    saved = require_finance_cents(data.get("saved_cents", 0), min_value=0)
     name = data.get("name")
     if not isinstance(name, str) or not (0 < len(name) <= 120):
         raise FinanceError("name invalide")
@@ -957,28 +1059,44 @@ def finances_summary(st: hstore.HouseholdStore) -> dict:
     household_id = ensure_default_household(conn, create=not st.readonly)
     accounts = list_accounts(conn, household_id)
     envelopes = list_envelopes(conn, household_id, {})
-    total = sum(a["balance_cents"] for a in accounts if not a["archived"])
+    by_currency: dict[str, int] = {}
+    for acct in accounts:
+        if acct["archived"]:
+            continue
+        cur = acct["currency"]
+        by_currency[cur] = by_currency.get(cur, 0) + acct["balance_cents"]
+    hrow = conn.execute("SELECT currency FROM households WHERE id = ?", (household_id,)).fetchone()
+    household_currency = str(hrow[0]) if hrow else "CAD"
     return {
         "ok": True,
         "household_id": household_id,
+        "household_currency": household_currency,
         "accounts": accounts,
         "envelopes": envelopes,
-        "total_balance_cents": total,
+        "balances_by_currency": by_currency,
     }
 
 
 def list_audit(conn: sqlite3.Connection, qs: dict) -> dict:
     try:
-        limit = min(PAGE_MAX, max(1, int((qs.get("limit") or ["50"])[0])))
+        limit = min(PAGE_MAX, max(1, int(_qs_first(qs, "limit", "50"))))
     except (TypeError, ValueError):
         limit = 50
-    cursor = (qs.get("cursor") or [""])[0]
+    cursor = _qs_first(qs, "cursor")
     params: list[Any] = []
-    sql = "SELECT id, at, actor, action, entity_type, entity_id, reason, ref FROM ledger_audit"
+    clauses: list[str] = []
     if cursor:
-        sql += " WHERE id > ?"
-        params.append(cursor)
-    sql += " ORDER BY id LIMIT ?"
+        m = AUDIT_CURSOR_RE.match(cursor)
+        if not m:
+            raise FinanceError("cursor audit invalide", code="validation_error")
+        at_cut = float(m.group("t"))
+        aid = m.group("id")
+        clauses.append("(at < ? OR (at = ? AND id < ?))")
+        params.extend([at_cut, at_cut, aid])
+    sql = "SELECT id, at, actor, action, entity_type, entity_id, reason, ref FROM ledger_audit"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY at DESC, id DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     items = [
@@ -994,7 +1112,11 @@ def list_audit(conn: sqlite3.Connection, qs: dict) -> dict:
         }
         for r in rows
     ]
-    return {"ok": True, "items": items, "next_cursor": items[-1]["id"] if len(items) == limit else None}
+    next_cursor = None
+    if len(items) == limit:
+        last = items[-1]
+        next_cursor = f"{float(last['at'])}|{last['id']}"
+    return {"ok": True, "items": items, "next_cursor": next_cursor}
 
 
 # ---------------------------------------------------------------- HTTP
@@ -1011,6 +1133,15 @@ def _qs_list(qs: dict | None, key: str, default: str = "") -> list[str]:
     if not qs:
         return [default]
     return qs.get(key) or [default]
+
+
+def _qs_first(qs: dict | None, key: str, default: str = "") -> str:
+    if not qs:
+        return default
+    raw = qs.get(key, default)
+    if isinstance(raw, list):
+        return str(raw[0]) if raw else default
+    return str(raw) if raw is not None else default
 
 
 def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:

@@ -294,6 +294,272 @@ class FinanceDomainTests(unittest.TestCase):
             envs = fin.list_envelopes(st.conn, self.hid, {})
         self.assertEqual(envs[0]["spent_cents"], 1000)
 
+    def _account_currency(self, opening: int, currency: str, name: str) -> str:
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                return fin.create_account(
+                    st.conn,
+                    self.hid,
+                    {
+                        "name": name,
+                        "kind": "checking",
+                        "opening_balance_cents": opening,
+                        "currency": currency,
+                    },
+                )["id"]
+
+    def test_summary_separate_balances_by_currency(self) -> None:
+        self._account_currency(100_00, "CAD", "CAD")
+        self._account_currency(200_00, "USD", "USD")
+        with store.open_store(self.root) as st:
+            summary = fin.finances_summary(st)
+        self.assertNotIn("total_balance_cents", summary)
+        self.assertEqual(summary["balances_by_currency"], {"CAD": 100_00, "USD": 200_00})
+
+    def test_envelope_net_spend_refunds_corrections_transfers(self) -> None:
+        acct = self._account(50_000)
+        cat = self._cat("expense")
+        xfer_cat = self._cat("transfer")
+        acct2 = self._account(0)
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                fin.upsert_envelope(
+                    st.conn,
+                    self.hid,
+                    {
+                        "category_id": cat,
+                        "period_start": "2026-03-01",
+                        "period_end": "2026-03-31",
+                        "allocated_cents": 20_000,
+                    },
+                )
+            fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -10_000,
+                    "booked_on": "2026-03-10",
+                    "idempotency_key": "spend-a-key",
+                },
+            )
+            fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": 4_000,
+                    "booked_on": "2026-03-11",
+                    "idempotency_key": "refund-a-key",
+                },
+            )
+            fin.post_transfer(
+                st,
+                {
+                    "from_account_id": acct,
+                    "to_account_id": acct2,
+                    "amount_cents": 2_000,
+                    "category_id": xfer_cat,
+                    "booked_on": "2026-03-12",
+                    "idempotency_key": "xfer-env-key",
+                },
+            )
+            orig = fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -1_000,
+                    "booked_on": "2026-03-15",
+                    "idempotency_key": "to-correct",
+                },
+            )["transaction"]["id"]
+            fin.correct_transaction(
+                st,
+                {
+                    "correction_of": orig,
+                    "amount_cents": 1_000,
+                    "booked_on": "2026-03-16",
+                    "idempotency_key": "corr-full-key",
+                },
+            )
+        with store.open_store(self.root) as st:
+            spent = fin.envelope_spent_cents(st.conn, cat, "2026-03-01", "2026-03-31")
+        self.assertEqual(spent, 6_000)
+
+    def test_correction_out_of_period_and_overlap(self) -> None:
+        acct = self._account(10_000)
+        cat = self._cat()
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                fin.upsert_envelope(
+                    st.conn,
+                    self.hid,
+                    {
+                        "category_id": cat,
+                        "period_start": "2026-04-01",
+                        "period_end": "2026-04-15",
+                        "allocated_cents": 5_000,
+                    },
+                )
+                fin.upsert_envelope(
+                    st.conn,
+                    self.hid,
+                    {
+                        "category_id": cat,
+                        "period_start": "2026-04-10",
+                        "period_end": "2026-04-30",
+                        "allocated_cents": 5_000,
+                    },
+                )
+            orig = fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -2_000,
+                    "booked_on": "2026-04-12",
+                    "idempotency_key": "overlap-tx",
+                },
+            )["transaction"]["id"]
+            fin.correct_transaction(
+                st,
+                {
+                    "correction_of": orig,
+                    "amount_cents": 500,
+                    "booked_on": "2026-04-20",
+                    "idempotency_key": "overlap-corr",
+                },
+            )
+        with store.open_store(self.root) as st:
+            april1 = fin.envelope_spent_cents(st.conn, cat, "2026-04-01", "2026-04-15")
+            april2 = fin.envelope_spent_cents(st.conn, cat, "2026-04-10", "2026-04-30")
+        self.assertEqual(april1, 2_000)
+        self.assertEqual(april2, 1_500)
+
+    def test_generic_post_rejects_reserved_fields(self) -> None:
+        acct = self._account()
+        cat = self._cat()
+        base = {
+            "account_id": acct,
+            "category_id": cat,
+            "amount_cents": -100,
+            "booked_on": "2026-05-01",
+            "idempotency_key": "generic-reserved",
+        }
+        cases = (
+            ({"transfer_pair_id": "tx-0123456789abcdef"}, "xfer-pair-key"),
+            ({"correction_of": "tx-0123456789abcdef"}, "corr-of-key"),
+            ({"source": "correction"}, "src-corr-key"),
+            ({"source": "import"}, "src-imp-key"),
+        )
+        for extra, ikey in cases:
+            with self.subTest(extra=extra):
+                with store.open_store(self.root) as st:
+                    with self.assertRaises(fin.FinanceError) as ctx:
+                        fin.post_transaction(st, {**base, **extra, "idempotency_key": ikey})
+                    self.assertEqual(ctx.exception.code, "validation_error")
+
+    def test_idempotency_cross_operation_conflict(self) -> None:
+        acct = self._account(1_000)
+        cat = self._cat()
+        xfer = self._cat("transfer")
+        acct2 = self._account(0)
+        key = "shared-idem-key"
+        with store.open_store(self.root) as st:
+            fin.post_transaction(
+                st,
+                {
+                    "account_id": acct,
+                    "category_id": cat,
+                    "amount_cents": -10,
+                    "booked_on": "2026-05-02",
+                    "idempotency_key": key,
+                },
+            )
+            with self.assertRaises(fin.FinanceError) as ctx:
+                fin.post_transfer(
+                    st,
+                    {
+                        "from_account_id": acct,
+                        "to_account_id": acct2,
+                        "amount_cents": 10,
+                        "category_id": xfer,
+                        "booked_on": "2026-05-03",
+                        "idempotency_key": key,
+                    },
+                )
+            self.assertEqual(ctx.exception.code, "conflict")
+
+    def test_idempotency_wait_uses_monotonic_not_business_clock(self) -> None:
+        acct = self._account(100)
+        cat = self._cat()
+        mono = {"t": 0.0}
+
+        def fake_mono():
+            return mono["t"]
+
+        fin.bind(root=self.root, actor=lambda: "tester", now=lambda: 1_800_000_000.0)
+        body = {
+            "account_id": acct,
+            "category_id": cat,
+            "amount_cents": -1,
+            "booked_on": "2026-05-04",
+            "idempotency_key": "mono-clock-key",
+        }
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                fin.idempotency_store(
+                    st.conn,
+                    key="mono-clock-key",
+                    operation="transaction.post",
+                    request_hash=fin._body_hash(body),
+                    entity_type="_pending",
+                    entity_id="_pending",
+                    response={"ok": True, "pending": True},
+                    pin=False,
+                )
+            slept: list[float] = []
+            mono["t"] = 0.0
+
+            def tick(s: float) -> None:
+                slept.append(s)
+                mono["t"] += s
+
+            with mock.patch.object(fin.time, "monotonic", side_effect=fake_mono):
+                with mock.patch.object(fin.time, "sleep", side_effect=tick):
+                    with self.assertRaises(fin.FinanceError):
+                        fin.idempotency_claim(st.conn, key="mono-clock-key", operation="transaction.post", body=body)
+            self.assertTrue(slept)
+
+    def test_sqlite_integer_amount_rejected(self) -> None:
+        with self.assertRaises(fin.FinanceError):
+            fin.require_finance_cents(fin.SQLITE_INT_MAX + 1)
+        with self.assertRaises(fin.FinanceError):
+            fin.require_finance_cents(fin.SQLITE_INT_MIN - 1)
+
+    def test_transaction_cursor_chronological(self) -> None:
+        acct = self._account()
+        cat = self._cat()
+        with store.open_store(self.root) as st:
+            for day, key in (("2026-06-01", "cur-a-key"), ("2026-06-03", "cur-b-key")):
+                fin.post_transaction(
+                    st,
+                    {
+                        "account_id": acct,
+                        "category_id": cat,
+                        "amount_cents": -10,
+                        "booked_on": day,
+                        "idempotency_key": key,
+                    },
+                )
+        with store.open_store(self.root, readonly=True) as st:
+            page1 = fin.list_transactions(st.conn, self.hid, {"limit": "1"})
+            self.assertEqual(page1["items"][0]["booked_on"], "2026-06-03")
+            self.assertIsNotNone(page1["next_cursor"])
+            page2 = fin.list_transactions(st.conn, self.hid, {"limit": "1", "cursor": page1["next_cursor"]})
+            self.assertEqual(page2["items"][0]["booked_on"], "2026-06-01")
+
 
 if __name__ == "__main__":
     unittest.main()
