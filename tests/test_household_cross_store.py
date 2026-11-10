@@ -1,4 +1,8 @@
-"""Cross-store journal — disabled inventory path for purchases v6."""
+"""Cross-store journal — preparatory only; no Inventoria sync in PR #36.
+
+SQLite-only purchases work; ``cross_store_ops`` accepts manual rows but purchase flow
+does not commit cross-store steps. Reconciliation SQLite↔Inventoria is **not** met.
+"""
 
 from __future__ import annotations
 

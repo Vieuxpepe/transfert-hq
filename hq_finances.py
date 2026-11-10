@@ -683,22 +683,41 @@ def insert_transaction(
     via: str = "generic",
 ) -> dict:
     doc = _validate_tx_payload(data, household_id, require_key=pin_idem, via=via)
-    acc = conn.execute("SELECT currency FROM accounts WHERE id = ?", (doc["account_id"],)).fetchone()
+    acc = conn.execute(
+        "SELECT currency, household_id, archived FROM accounts WHERE id = ?", (doc["account_id"],),
+    ).fetchone()
     if acc is None:
         raise FinanceError("compte introuvable", status=404, code="not_found")
     cat = conn.execute(
-        "SELECT id, kind FROM budget_categories WHERE id = ?", (doc["category_id"],)
+        "SELECT id, kind, household_id, archived FROM budget_categories WHERE id = ?", (doc["category_id"],),
     ).fetchone()
     if cat is None:
         raise FinanceError("catégorie introuvable", status=404, code="not_found")
-    if via == "generic" and str(cat[1]) == "transfer":
+    if via == "grocery_purchase":
+        if str(acc["household_id"]) != household_id:
+            raise FinanceError("compte introuvable", status=404, code="not_found")
+        if str(cat["household_id"]) != household_id:
+            raise FinanceError("catégorie introuvable", status=404, code="not_found")
+        if int(acc["archived"]):
+            raise FinanceError("compte archivé", code="validation_error")
+        if int(cat["archived"]):
+            raise FinanceError("catégorie archivée", code="validation_error")
+        if str(cat["kind"]) != "expense":
+            raise FinanceError(
+                "catégorie expense requise pour un achat épicerie",
+                code="validation_error",
+            )
+        href = conn.execute("SELECT currency FROM households WHERE id = ?", (household_id,)).fetchone()
+        if href is None:
+            raise FinanceError("foyer introuvable", status=404, code="not_found")
+        if str(acc["currency"]) != str(href["currency"]):
+            raise FinanceError(
+                "devise du compte incompatible avec la devise de référence du foyer",
+                code="validation_error",
+            )
+    elif via == "generic" and str(cat["kind"]) == "transfer":
         raise FinanceError(
             "catégorie transfer réservée — utiliser POST /api/finances/transfers",
-            code="validation_error",
-        )
-    if via == "grocery_purchase" and str(cat[1]) != "expense":
-        raise FinanceError(
-            "catégorie expense requise pour un achat épicerie",
             code="validation_error",
         )
     now = _now()

@@ -37,9 +37,19 @@ preview ne persiste rien ; commit idempotent via ``grocery_list_build_idempotenc
 ### SQLite v6 — achats réels (PR #35 core)
 
 Tables ``actual_purchases`` (unicité ``fingerprint`` par foyer), ``purchase_idempotency``,
-``cross_store_ops`` (journal futur SQLite↔Inventoria). ``POST /api/grocery/purchases/actual``
-peut écrire achat + transaction ``grocery_purchase`` + lot dans une transaction SQLite ;
-``adjust_inventory`` renvoie **501** (aucun ``hq_inventory.apply``). Pas de table ``planned_purchases``.
+``cross_store_ops`` (journal **préparatoire** uniquement). ``POST /api/grocery/purchases/actual``
+peut écrire achat + transaction ``grocery_purchase`` + lot dans **une** transaction SQLite
+(**SQLite-only fonctionnel** pour cette PR).
+
+- ``adjust_inventory`` renvoie **501** — aucun ``hq_inventory.apply()``, aucun ``item.adjust``
+  best-effort, **aucune synchronisation Inventoria**.
+- Le critère de réconciliation SQLite↔Inventoria **n'est pas satisfait** ; ne pas présenter
+  cette livraison comme une réconciliation cross-store complète.
+- Montants d'achat en centimes : devise implicite = ``households.currency`` ; compte financier
+  doit avoir la même devise (pas de conversion FX).
+- Isolation foyer : ``account_id`` / ``category_id`` validés côté achats **et**
+  ``insert_transaction(..., via="grocery_purchase")`` (pas de confiance FK seule).
+- Pas de table ``planned_purchases``.
 
 ### SQLite v3 — colonne ``budget_envelopes.currency``
 

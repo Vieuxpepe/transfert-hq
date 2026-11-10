@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Transfert HQ — Actual grocery purchases (PR #35 core).
+"""Transfert HQ — Actual grocery purchases (PR #36).
 
-SQLite-only posting: optional finance tx + food lot in one transaction.
-``adjust_inventory`` and cross-store commit are **disabled** (501) — no
-``hq_inventory.apply()``.
+SQLite-only posting: optional finance transaction + food lot in one SQLite
+transaction. Reference currency for purchase amounts is the **household** currency
+(``households.currency``); when ``post_finance`` is true the account must use the
+same currency (no implicit FX).
+
+**Inventoria / cross-store:** ``adjust_inventory`` returns **501** — no
+``hq_inventory.apply()``, no ``item.adjust`` best-effort. Table ``cross_store_ops``
+is preparatory only; SQLite↔Inventoria reconciliation criteria are **not** met
+and no Inventoria sync runs in this delivery.
 
 API: ``POST/GET /api/grocery/purchases/actual``.
 """
@@ -29,6 +35,9 @@ PAGE_MAX = 200
 SQLITE_INT_MIN = -(2**63)
 SQLITE_INT_MAX = 2**63 - 1
 IDEM_WAIT_SEC = 2.0
+
+FINANCE_OPTIONAL_KEYS = frozenset({"account_id", "category_id", "payee", "memo"})
+LOT_OPTIONAL_KEYS = frozenset({"link_item_id", "place_id", "opened_on", "expires_on"})
 
 POST_ACTUAL_KEYS = frozenset({
     "id", "rev", "planned_id", "product_id", "merchant_id", "qty_milli", "unit",
@@ -148,9 +157,85 @@ def _require_unit(v: Any) -> str:
 
 def _require_cents(v: Any, field: str, *, min_value: int = 0) -> int:
     try:
-        return schemas.require_cents(v, field, min_value=min_value)
+        cents = schemas.require_cents(v, field, min_value=min_value)
     except schemas.SchemaError as exc:
         raise PurchasesError(str(exc), code=exc.code) from exc
+    if cents < SQLITE_INT_MIN or cents > SQLITE_INT_MAX:
+        raise PurchasesError(f"{field} hors plage SQLite INTEGER", code="validation_error")
+    return cents
+
+
+def _optional_bool(data: dict, field: str) -> bool:
+    if field not in data:
+        return False
+    try:
+        return schemas.require_bool(data[field], field)
+    except schemas.SchemaError as exc:
+        raise PurchasesError(str(exc), code=exc.code) from exc
+
+
+def _require_payee_memo(v: Any, field: str, *, max_len: int = 200) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list, tuple, set)):
+        raise PurchasesError(f"{field} doit être une chaîne", code="validation_error")
+    if not isinstance(v, str):
+        raise PurchasesError(f"{field} doit être une chaîne", code="validation_error")
+    if len(v) > max_len:
+        raise PurchasesError(f"{field} trop long (max {max_len})", code="validation_error")
+    return v
+
+
+def _assert_purchase_cents_sum(paid: int, taxed: int, deposit: int) -> None:
+    try:
+        need = taxed + deposit
+    except OverflowError:
+        raise PurchasesError("taxed_cents + deposit_cents déborde", code="validation_error") from None
+    if need < SQLITE_INT_MIN or need > SQLITE_INT_MAX:
+        raise PurchasesError("taxed_cents + deposit_cents hors plage SQLite INTEGER", code="validation_error")
+    if paid < need:
+        raise PurchasesError(
+            "paid_cents doit couvrir taxed_cents + deposit_cents",
+            code="validation_error",
+        )
+
+
+def _household_reference_currency(conn: sqlite3.Connection, household_id: str) -> str:
+    row = conn.execute("SELECT currency FROM households WHERE id = ?", (household_id,)).fetchone()
+    if row is None:
+        raise PurchasesError("foyer introuvable", status=404, code="not_found")
+    return str(row["currency"])
+
+
+def _assert_finance_refs(
+    conn: sqlite3.Connection,
+    household_id: str,
+    *,
+    account_id: str,
+    category_id: str,
+) -> None:
+    acc = conn.execute(
+        "SELECT household_id, currency, archived FROM accounts WHERE id = ?", (account_id,),
+    ).fetchone()
+    if acc is None or str(acc["household_id"]) != household_id:
+        raise PurchasesError("compte introuvable", status=404, code="not_found")
+    if int(acc["archived"]):
+        raise PurchasesError("compte archivé", code="validation_error")
+    cat = conn.execute(
+        "SELECT household_id, kind, archived FROM budget_categories WHERE id = ?", (category_id,),
+    ).fetchone()
+    if cat is None or str(cat["household_id"]) != household_id:
+        raise PurchasesError("catégorie introuvable", status=404, code="not_found")
+    if int(cat["archived"]):
+        raise PurchasesError("catégorie archivée", code="validation_error")
+    if str(cat["kind"]) != "expense":
+        raise PurchasesError("catégorie expense requise", code="validation_error")
+    ref = _household_reference_currency(conn, household_id)
+    if str(acc["currency"]) != ref:
+        raise PurchasesError(
+            "devise du compte incompatible avec la devise de référence du foyer",
+            code="validation_error",
+        )
 
 
 def _assert_household_row(conn: sqlite3.Connection, table: str, eid: str, household_id: str) -> sqlite3.Row:
@@ -271,9 +356,10 @@ def _purchase_idem_finalize(
     )
 
 
-def _validate_post_body(data: dict) -> dict:
+def validate_post_body_static(data: dict) -> dict:
+    """Fail-closed validation — no DB, safe before opening a writable store."""
     _reject_unknown_fields(data, POST_ACTUAL_KEYS)
-    if data.get("adjust_inventory") is True:
+    if _optional_bool(data, "adjust_inventory"):
         raise PurchasesError(
             "adjust_inventory non implémenté — Inventoria reste hors chemin (aucun apply)",
             status=501,
@@ -285,8 +371,16 @@ def _validate_post_body(data: dict) -> dict:
             "planned_id non supporté — table planned absente en v6",
             code="validation_error",
         )
-    post_finance = bool(data.get("post_finance"))
-    create_lot = bool(data.get("create_lot"))
+    post_finance = _optional_bool(data, "post_finance")
+    create_lot = _optional_bool(data, "create_lot")
+    if not post_finance:
+        bad = FINANCE_OPTIONAL_KEYS & set(data)
+        if bad:
+            sample = ", ".join(sorted(bad)[:6])
+            raise PurchasesError(
+                f"paramètres finances interdits quand post_finance=false ({sample})",
+                code="validation_error",
+            )
     if post_finance:
         for fld in ("account_id", "category_id"):
             if not data.get(fld):
@@ -295,6 +389,16 @@ def _validate_post_body(data: dict) -> dict:
                 schemas.require_id(data[fld], fld.replace("_id", ""), fld)
             except schemas.SchemaError as exc:
                 raise PurchasesError(str(exc), code=exc.code) from exc
+        _require_payee_memo(data.get("payee"), "payee", max_len=finances.PAYEE_MAX)
+        _require_payee_memo(data.get("memo"), "memo", max_len=finances.MEMO_MAX)
+    if not create_lot:
+        bad_lot = LOT_OPTIONAL_KEYS & set(data)
+        if bad_lot:
+            sample = ", ".join(sorted(bad_lot)[:6])
+            raise PurchasesError(
+                f"paramètres lot interdits quand create_lot=false ({sample})",
+                code="validation_error",
+            )
     if create_lot and not data.get("product_id"):
         raise PurchasesError("product_id requis quand create_lot", code="validation_error")
     qty = _require_qty_milli(data.get("qty_milli"))
@@ -302,11 +406,7 @@ def _validate_post_body(data: dict) -> dict:
     paid = _require_cents(data.get("paid_cents"), "paid_cents")
     taxed = _require_cents(data.get("taxed_cents", 0), "taxed_cents")
     deposit = _require_cents(data.get("deposit_cents", 0), "deposit_cents")
-    if paid < taxed + deposit:
-        raise PurchasesError(
-            "paid_cents doit couvrir taxed_cents + deposit_cents",
-            code="validation_error",
-        )
+    _assert_purchase_cents_sum(paid, taxed, deposit)
     try:
         schemas.require_iso_date(data.get("purchased_on"), "purchased_on")
     except schemas.SchemaError as exc:
@@ -347,7 +447,13 @@ def _validate_post_body(data: dict) -> dict:
         "post_finance": post_finance,
         "create_lot": create_lot,
         "rev": rev,
+        "payee": _require_payee_memo(data.get("payee"), "payee", max_len=finances.PAYEE_MAX) if post_finance else "",
+        "memo": _require_payee_memo(data.get("memo"), "memo", max_len=finances.MEMO_MAX) if post_finance else "",
     }
+
+
+def _validate_post_body(data: dict) -> dict:
+    return validate_post_body_static(data)
 
 
 def list_actual_purchases(conn: sqlite3.Connection, household_id: str, qs: dict | None) -> dict:
@@ -411,13 +517,11 @@ def post_actual_purchase(conn: sqlite3.Connection, household_id: str, data: dict
         raise PurchasesError("fingerprint déjà enregistré", status=409, code="conflict")
 
     if norm["post_finance"]:
-        cat = conn.execute(
-            "SELECT kind FROM budget_categories WHERE id = ?", (data["category_id"],),
-        ).fetchone()
-        if cat is None:
-            raise PurchasesError("catégorie introuvable", status=404, code="not_found")
-        if str(cat[0]) != "expense":
-            raise PurchasesError("catégorie expense requise", code="validation_error")
+        _assert_finance_refs(
+            conn, household_id,
+            account_id=str(data["account_id"]),
+            category_id=str(data["category_id"]),
+        )
 
     pid = data.get("id") or _new_id("purchase")
     now = _now()
@@ -460,8 +564,8 @@ def post_actual_purchase(conn: sqlite3.Connection, household_id: str, data: dict
 
     if norm["post_finance"]:
         mch = conn.execute("SELECT name FROM merchants WHERE id = ?", (data["merchant_id"],)).fetchone()
-        payee = data.get("payee") or (mch["name"] if mch else "")
-        memo = data.get("memo") or ""
+        payee = norm["payee"] or (mch["name"] if mch else "")
+        memo = norm["memo"]
         tx_key = f"{key}:grocery-tx"
         tx = finances.insert_transaction(
             conn,
@@ -471,8 +575,8 @@ def post_actual_purchase(conn: sqlite3.Connection, household_id: str, data: dict
                 "category_id": data["category_id"],
                 "booked_on": data["purchased_on"],
                 "amount_cents": -norm["paid_cents"],
-                "payee": payee if isinstance(payee, str) else "",
-                "memo": memo if isinstance(memo, str) else "",
+                "payee": payee,
+                "memo": memo,
                 "idempotency_key": tx_key,
                 "external_fingerprint": norm["fingerprint"],
                 "source": "grocery_purchase",
@@ -573,6 +677,8 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             raise PurchasesError("JSON objet requis", code="validation_error")
         if len(json.dumps(data, ensure_ascii=False)) > BODY_MAX:
             raise PurchasesError("corps trop volumineux", status=413, code="validation_error")
+        if path == "/api/grocery/purchases/actual":
+            validate_post_body_static(data)
         st = _open_store(readonly=False)
         try:
             conn = st.conn

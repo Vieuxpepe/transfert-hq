@@ -12,6 +12,7 @@ on:
       - "iphone_bridge.py"
       - "schemas/household/**"
       - "tests/test_hq_purchases.py"
+      - "tests/test_hq_purchases_audit.py"
       - "tests/test_hq_purchases_security.py"
       - "tests/test_household_cross_store.py"
       - "tests/test_hq_grocery.py"
@@ -34,6 +35,7 @@ on:
       - "iphone_bridge.py"
       - "schemas/household/**"
       - "tests/test_hq_purchases.py"
+      - "tests/test_hq_purchases_audit.py"
       - "tests/test_hq_purchases_security.py"
       - "tests/test_household_cross_store.py"
       - "tests/test_hq_grocery.py"
@@ -63,4 +65,4 @@ jobs:
       - name: Meals regression
         run: python -m unittest tests.test_hq_meals tests.test_hq_meals_security -v
       - name: Purchases + cross-store
-        run: python -m unittest tests.test_hq_purchases tests.test_hq_purchases_security tests.test_household_cross_store -v
+        run: python -m unittest tests.test_hq_purchases tests.test_hq_purchases_audit tests.test_hq_purchases_security tests.test_household_cross_store -v
