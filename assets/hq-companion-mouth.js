@@ -450,7 +450,7 @@
       <linearGradient id="${id}-lid" gradientUnits="userSpaceOnUse" x1="0" y1="-23" x2="0" y2="-10"><stop stop-color="#cf8d7b" stop-opacity="0"/><stop offset=".14" stop-color="#d39783" stop-opacity=".04"/><stop offset=".33" stop-color="#d79b87" stop-opacity=".32"/><stop offset=".52" stop-color="#dba08a" stop-opacity=".88"/><stop offset=".65" stop-color="#dea28c"/><stop offset="1" stop-color="#e1a58e"/></linearGradient>
       <filter id="${id}-lid-soft" x="-15%" y="-25%" width="130%" height="150%"><feGaussianBlur stdDeviation="1.15"/></filter>
       <filter id="${id}-hair-black"><feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0"/></filter>
-      <mask id="${id}-eye-hair" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512" style="mask-type:luminance"><rect width="512" height="512" fill="white"/><image href="/assets/companion/rig-neutral-v1/hair.png" width="512" height="512" filter="url(#${id}-hair-black)"/></mask>
+      <mask id="${id}-eye-hair" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512" style="mask-type:luminance"><rect width="512" height="512" fill="white"/><image href="/assets/companion/rig-neutral-v1/hair.webp" width="512" height="512" filter="url(#${id}-hair-black)"/></mask>
       </defs>
       <g mask="url(#${id}-eye-hair)">
       <g data-eye="left" transform="translate(215 126) rotate(-13)" opacity="0">
@@ -497,7 +497,7 @@
       jaw.setAttribute("aria-hidden", "true");
       jaw.dataset.rigAsset = "face";
       const syncJawSrc = () => {
-        const src = face.getAttribute("src") || "/assets/companion/rig-neutral-v1/face.svg?v=mouthrest1";
+        const src = face.getAttribute("src") || "/assets/companion/rig-neutral-v1/face.webp?v=px1";
         if (jaw.getAttribute("src") !== src) jaw.src = src;
       };
       syncJawSrc();
@@ -600,6 +600,7 @@
       const g = geometry(current.open, current.smile, current.round, current.extend, current.curl, current.sway, current.bite, current.asym, current.press);
       for (const name of ["cavity", "upper", "lower", "teeth", "tongue", "highlight", "tongueOut", "tongueFold", "tongueShine"]) parts[name].setAttribute("d", g[name]);
       parts.clip.setAttribute("d", g.cavity);
+      const isWet = (win.performance?.now?.() || 0) < wetGlossUntil;
       if (parts.saliva && g.saliva) {
         parts.saliva.setAttribute("d", g.saliva);
         // Viscous saliva tethers appear when lips part slightly (open between 0.03 and 0.14)
@@ -614,7 +615,6 @@
       if (parts.cornerRight) parts.cornerRight.style.opacity = String(creaseOp * (current.asym > 0.1 ? 0.35 : 1));
       const hShift = (current.headTilt * 5 + current.shift * 2.5).toFixed(2);
       parts.highlight.setAttribute("transform", "translate(" + hShift + " 0)");
-      const isWet = (win.performance?.now?.() || 0) < wetGlossUntil;
       parts.highlight.style.opacity = isWet ? "0.95" : ".65";
       parts.highlight.setAttribute("stroke-width", isWet ? "1.5" : "1.2");
             // Rest-safe interior: idle smile must NOT reveal teeth/cavity. Gate on open only

@@ -70,11 +70,10 @@
     let danglePaintLast = 0;
     let srcPx = null;
     let dstImg = null;
-    let accR = null;
-    let accG = null;
-    let accB = null;
-    let accA = null;
-    let accW = null;
+    let bakedGeomKey = "";
+    // perf16: r,g,b,a,w of one destination pixel are interleaved (stride 5) so a tap touches one
+    // cache line instead of five separate arrays. Arithmetic is unchanged.
+    let acc = null;
     let stamp = null;
     let touched = null;
     let touchN = 0;
@@ -146,7 +145,6 @@
     };
 
     function place(left, top) {
-      const box = mount.getBoundingClientRect();
       const w = mountRectW || 68;
       const anchorH = 48;
       const maxL = Math.max(0, win.innerWidth - w);
@@ -275,7 +273,8 @@
           const acc = err * 12 - vel * 2.05;
           vel = clamp(vel + acc * dt, -8, 8);
           angle = clamp(angle + vel * dt, -MAX_ANGLE, MAX_ANGLE);
-          tipVel += (angle * 1.38 - tip) * 7.2 * dt - tipVel * 2.05 * dt;
+          const whipImp = -vel * 0.06;
+          tipVel += (angle * 1.38 + whipImp - tip) * 7.2 * dt - tipVel * 2.05 * dt;
           tip += tipVel * dt;
           const slackTarget = dropping * 0.32;
           slackVel += (slackTarget - slack) * 16 * dt - slackVel * 3.4 * dt;
@@ -302,7 +301,8 @@
         vel += acc * dt;
         angle += vel * dt;
         angle = clamp(angle, -MAX_ANGLE, MAX_ANGLE);
-        tipVel += (angle * 1.62 - tip) * 6.2 * dt - tipVel * 1.45 * dt;
+        const whipImp = -vel * 0.08;
+        tipVel += (angle * 1.62 + whipImp - tip) * 6.2 * dt - tipVel * 1.45 * dt;
         tip += tipVel * dt;
         slackVel += -slack * 16 * dt - slackVel * 3.4 * dt;
         slack += slackVel * dt;
@@ -335,6 +335,7 @@
       phase += dt * 8.5;
       tickVeinTrace(dt);
       stepVeinPulse(dt);
+      spineTableValid = false;
       dirty = true;
     }
 
@@ -368,8 +369,10 @@
         memberBakeCtx = memberBake.getContext("2d", { alpha: true });
       }
       if (!memberBakeCtx) return false;
-      memberBake.width = bufW;
-      memberBake.height = bufH;
+      if (memberBake.width !== bufW || memberBake.height !== bufH) {
+        memberBake.width = bufW;
+        memberBake.height = bufH;
+      }
       drawFlatTo(memberBakeCtx);
       if (withSwell && ensureVeinSwellField()) {
         const saved = ctx;
@@ -535,6 +538,7 @@
       swellNx = blurVec(blurVec(swellNx, 3), 2);
       swellNy = blurVec(blurVec(swellNy, 3), 2);
       swellImg = ctx.createImageData(cw, ch);
+      swellPaintKey = "";
       return true;
     }
 
@@ -621,6 +625,18 @@
       ];
     }
 
+    // perf16: the swell helpers run once per supersampled pixel. They write into these reused
+    // scratch buffers (same double math as before) instead of allocating an array per call;
+    // every caller reads the result before calling the same helper again.
+    const swellFieldOut = new Float64Array(3);
+    const swellAtOut = new Float64Array(2);
+    const swellPixOut = new Float64Array(4);
+    const swellShadeOut = new Float64Array(3);
+    const swellTintOut = new Float64Array(3);
+    const swellCells = new Int32Array(4);
+    const SWELL_TUNE_EXTREME = { ampExcited: 4.4, cap: 0.4, radScale: 0.24, radMin: 13, soft: 0.62, fat: 4.73, fadePow: 1.12 };
+    const SWELL_TUNE_EPIC = { ampExcited: 4.4, cap: 0.4, radScale: 0.14, radMin: 8, soft: 0.62, fat: 0, fadePow: 2 };
+
     function veinFieldAt(x, y) {
       const x0 = x <= 0 ? 0 : x >= cw - 1 ? cw - 1 : x | 0;
       const y0 = y <= 0 ? 0 : y >= ch - 1 ? ch - 1 : y | 0;
@@ -636,18 +652,14 @@
       const w10 = fx * (1 - fy);
       const w01 = (1 - fx) * fy;
       const w11 = fx * fy;
-      return [
-        swellDx[i00] * w00 + swellDx[i10] * w10 + swellDx[i01] * w01 + swellDx[i11] * w11,
-        swellDy[i00] * w00 + swellDy[i10] * w10 + swellDy[i01] * w01 + swellDy[i11] * w11,
-        swellDist[i00] * w00 + swellDist[i10] * w10 + swellDist[i01] * w01 + swellDist[i11] * w11
-      ];
+      swellFieldOut[0] = swellDx[i00] * w00 + swellDx[i10] * w10 + swellDx[i01] * w01 + swellDx[i11] * w11;
+      swellFieldOut[1] = swellDy[i00] * w00 + swellDy[i10] * w10 + swellDy[i01] * w01 + swellDy[i11] * w11;
+      swellFieldOut[2] = swellDist[i00] * w00 + swellDist[i10] * w10 + swellDist[i01] * w01 + swellDist[i11] * w11;
+      return swellFieldOut;
     }
 
     function veinSwellTune() {
-      if (veinSwellMode === "extreme") {
-        return { ampExcited: 4.4, cap: 0.4, radScale: 0.24, radMin: 13, soft: 0.62, fat: 4.73, fadePow: 1.12 };
-      }
-      return { ampExcited: 4.4, cap: 0.4, radScale: 0.14, radMin: 8, soft: 0.62, fat: 0, fadePow: 2 };
+      return veinSwellMode === "extreme" ? SWELL_TUNE_EXTREME : SWELL_TUNE_EPIC;
     }
 
     function setVeinSwellMode(mode) {
@@ -671,7 +683,11 @@
       let nx = 0;
       let ny = 0;
       let tier = 1;
-      const cells = [y0 * cw + x0, y0 * cw + x1, y1 * cw + x0, y1 * cw + x1];
+      const cells = swellCells;
+      cells[0] = y0 * cw + x0;
+      cells[1] = y0 * cw + x1;
+      cells[2] = y1 * cw + x0;
+      cells[3] = y1 * cw + x1;
       for (let c = 0; c < 4; c += 1) {
         const i = cells[c];
         const d = swellDist[i];
@@ -682,13 +698,15 @@
           tier = swellTier[i] || 1;
         }
       }
-      if (!(dist > 0.2) || !swellRad) return [x, y];
+      swellAtOut[0] = x;
+      swellAtOut[1] = y;
+      if (!(dist > 0.2) || !swellRad) return swellAtOut;
       const mag = Math.hypot(nx, ny);
-      if (mag < 0.22) return [x, y];
+      if (mag < 0.22) return swellAtOut;
       nx /= mag;
       ny /= mag;
       const u = dist / swellRad;
-      if (u >= 1) return [x, y];
+      if (u >= 1) return swellAtOut;
       const excited = clamp((pulse - 0.55) / 0.25, 0, 1);
       let agree = 1;
       for (let c = 0; c < 4; c += 1) {
@@ -707,7 +725,9 @@
       const floor = dist * 0.2;
       if (srcDist < floor) srcDist = floor;
       const push = dist - srcDist;
-      return [x - nx * push, y - ny * push];
+      swellAtOut[0] = x - nx * push;
+      swellAtOut[1] = y - ny * push;
+      return swellAtOut;
     }
 
     function veinSwellSample(x, y, pulse) {
@@ -716,7 +736,11 @@
       const dx = field[0];
       const dy = field[1];
       const len = Math.hypot(dx, dy);
-      if (!(len > 0.04)) return [x, y];
+      if (!(len > 0.04)) {
+        swellAtOut[0] = x;
+        swellAtOut[1] = y;
+        return swellAtOut;
+      }
       const excited = clamp((pulse - 0.55) / 0.25, 0, 1);
       const tune = veinSwellTune();
       const amp = 0.25 + pulse * 0.12 + excited * tune.ampExcited;
@@ -726,7 +750,9 @@
         const cap = dist * tune.cap;
         push = cap * (1 - Math.exp(-push / (cap * tune.soft)));
       }
-      return [x - (dx / len) * push, y - (dy / len) * push];
+      swellAtOut[0] = x - (dx / len) * push;
+      swellAtOut[1] = y - (dy / len) * push;
+      return swellAtOut;
     }
 
     function sampleRaster(data, w, h, sx, sy) {
@@ -748,59 +774,117 @@
       const w10 = fx * (1 - fy);
       const w01 = (1 - fx) * fy;
       const w11 = fx * fy;
-      return [
-        data[i00] * w00 + data[i10] * w10 + data[i01] * w01 + data[i11] * w11,
-        data[i00 + 1] * w00 + data[i10 + 1] * w10 + data[i01 + 1] * w01 + data[i11 + 1] * w11,
-        data[i00 + 2] * w00 + data[i10 + 2] * w10 + data[i01 + 2] * w01 + data[i11 + 2] * w11,
-        data[i00 + 3] * w00 + data[i10 + 3] * w10 + data[i01 + 3] * w01 + data[i11 + 3] * w11
-      ];
+      swellPixOut[0] = data[i00] * w00 + data[i10] * w10 + data[i01] * w01 + data[i11] * w11;
+      swellPixOut[1] = data[i00 + 1] * w00 + data[i10 + 1] * w10 + data[i01 + 1] * w01 + data[i11 + 1] * w11;
+      swellPixOut[2] = data[i00 + 2] * w00 + data[i10 + 2] * w10 + data[i01 + 2] * w01 + data[i11 + 2] * w11;
+      swellPixOut[3] = data[i00 + 3] * w00 + data[i10 + 3] * w10 + data[i01 + 3] * w01 + data[i11 + 3] * w11;
+      return swellPixOut;
     }
 
-    function warpVeinOverlay(pulse) {
+    // perf16: warpVeinOverlay runs every hot frame in the full motion tier. The displacement it applies
+    // depends only on the (quantised) pulse and the static vein field, so the per-sample source
+    // coordinates are cached and each frame is a plain gather. The destination ImageData is reused
+    // (it used to be allocated per call, plus a closure per pixel), and the overlay canvas is
+    // CPU-backed so getImageData is not a GPU readback. While the member is moving it uses the same
+    // coarse sampling as the idle pass.
+    let warpMapX = null;
+    let warpMapY = null;
+    let warpMapKey = "";
+    let warpDst = null;
+
+    function ensureWarpMap(pulse, stride, steps) {
+      const key = swellKey + ":" + cw + "x" + ch + ":" + stride + ":" + steps + ":" + pulse;
+      if (warpMapX && warpMapKey === key) return;
+      const wS = Math.ceil(cw / stride);
+      const hS = Math.ceil(ch / stride);
+      const n = wS * hS * steps * steps;
+      if (!warpMapX || warpMapX.length !== n) {
+        warpMapX = new Float32Array(n);
+        warpMapY = new Float32Array(n);
+      }
+      let k = 0;
+      for (let y = 0; y < ch; y += stride) {
+        for (let x = 0; x < cw; x += stride) {
+          for (let oy = 0; oy < steps; oy += 1) {
+            for (let ox = 0; ox < steps; ox += 1) {
+              const at = veinSwellSample(x + ox / steps, y + oy / steps, pulse);
+              warpMapX[k] = at[0];
+              warpMapY[k] = at[1];
+              k += 1;
+            }
+          }
+        }
+      }
+      warpMapKey = key;
+    }
+
+    function warpVeinOverlay(pulseRaw) {
       if (!veinCtx || !swellDx || !cw || !ch) return;
-      const src = veinCtx.getImageData(padX, padY, cw, ch);
-      const dst = veinCtx.createImageData(cw, ch);
-      const d = dst.data;
-      const coarse = !veinRenderHot();
+      const motion = win.HqMotion;
+      if (motion && motion.tier && motion.tier() === "lite") return;
+      const pulse = Math.round(pulseRaw * SWELL_PULSE_STEPS) / SWELL_PULSE_STEPS;
+      const coarse = !veinRenderHot() || swellInMotion();
       const stride = coarse ? 2 : 1;
+      const steps = coarse ? 1 : (veinSwellMode === "extreme" ? 3 : 2);
+      ensureWarpMap(pulse, stride, steps);
+      const src = veinCtx.getImageData(padX, padY, cw, ch);
+      if (!warpDst || warpDst.width !== cw || warpDst.height !== ch) warpDst = veinCtx.createImageData(cw, ch);
+      const sd = src.data;
+      const d = warpDst.data;
+      const inv = 1 / (steps * steps);
+      const nS = steps * steps;
+      let k = 0;
       for (let y = 0; y < ch; y += stride) {
         for (let x = 0; x < cw; x += stride) {
           let r = 0;
           let g = 0;
           let b = 0;
           let a = 0;
-          const steps = coarse ? 1 : (veinSwellMode === "extreme" ? 3 : 2);
-          const inv = 1 / (steps * steps);
-          for (let oy = 0; oy < steps; oy += 1) {
-            for (let ox = 0; ox < steps; ox += 1) {
-              const at = veinSwellSample(x + ox / steps, y + oy / steps, pulse);
-              const pix = sampleRaster(src.data, cw, ch, at[0], at[1]);
-              r += pix[0];
-              g += pix[1];
-              b += pix[2];
-              a += pix[3];
-            }
+          for (let s = 0; s < nS; s += 1) {
+            const pix = sampleRaster(sd, cw, ch, warpMapX[k], warpMapY[k]);
+            k += 1;
+            r += pix[0];
+            g += pix[1];
+            b += pix[2];
+            a += pix[3];
           }
           const rv = r * inv;
           const gv = g * inv;
           const bv = b * inv;
           const av = a * inv;
-          const write = (px, py) => {
-            const di = (py * cw + px) * 4;
-            d[di] = rv;
-            d[di + 1] = gv;
-            d[di + 2] = bv;
-            d[di + 3] = av;
-          };
-          write(x, y);
+          let di = (y * cw + x) * 4;
+          d[di] = rv;
+          d[di + 1] = gv;
+          d[di + 2] = bv;
+          d[di + 3] = av;
           if (stride === 2) {
-            if (x + 1 < cw) write(x + 1, y);
-            if (y + 1 < ch) write(x, y + 1);
-            if (x + 1 < cw && y + 1 < ch) write(x + 1, y + 1);
+            const hasX = x + 1 < cw;
+            const hasY = y + 1 < ch;
+            if (hasX) {
+              di += 4;
+              d[di] = rv;
+              d[di + 1] = gv;
+              d[di + 2] = bv;
+              d[di + 3] = av;
+              di -= 4;
+            }
+            if (hasY) {
+              const dj = ((y + 1) * cw + x) * 4;
+              d[dj] = rv;
+              d[dj + 1] = gv;
+              d[dj + 2] = bv;
+              d[dj + 3] = av;
+              if (hasX) {
+                d[dj + 4] = rv;
+                d[dj + 5] = gv;
+                d[dj + 6] = bv;
+                d[dj + 7] = av;
+              }
+            }
           }
         }
       }
-      veinCtx.putImageData(dst, padX, padY);
+      veinCtx.putImageData(warpDst, padX, padY);
     }
 
     function swellRenderScale() {
@@ -861,6 +945,7 @@
         swellHiCtx.drawImage(img, 0, 0, texW, texH, 0, 0, w, h);
         swellHiPx = swellHiCtx.getImageData(0, 0, w, h).data;
         swellHiImg = swellHiCtx.createImageData(w, h);
+        swellPaintKey = "";
       }
       return !!swellHiPx && !!swellHiImg;
     }
@@ -873,14 +958,17 @@
     }
 
     function shadeVeinRelief(r, g, b, x, y, pulse) {
-      if (!swellDist || !swellRad) return [r, g, b];
+      swellShadeOut[0] = r;
+      swellShadeOut[1] = g;
+      swellShadeOut[2] = b;
+      if (!swellDist || !swellRad) return swellShadeOut;
       const ix = x <= 0 ? 0 : x >= cw - 1 ? cw - 1 : x | 0;
       const iy = y <= 0 ? 0 : y >= ch - 1 ? ch - 1 : y | 0;
       const idx = iy * cw + ix;
       const dist = swellDist[idx];
-      if (!(dist > 0.3)) return [r, g, b];
+      if (!(dist > 0.3)) return swellShadeOut;
       const u = dist / swellRad;
-      if (u >= 1) return [r, g, b];
+      if (u >= 1) return swellShadeOut;
       let nx0 = swellNx[idx];
       let ny0 = swellNy[idx];
       if (swellNxRaw && swellNyRaw) {
@@ -892,7 +980,7 @@
         }
       }
       const mag = Math.hypot(nx0, ny0);
-      if (mag < 0.2) return [r, g, b];
+      if (mag < 0.2) return swellShadeOut;
       const nx = nx0 / mag;
       const ny = ny0 / mag;
       const ndot = nx * -0.62 + ny * -0.78;
@@ -932,38 +1020,73 @@
         }
       }
       const mul = Math.max(0.72, 1 - crease - valley - cast - under);
-      return [
-        clamp(r * mul + lift, 0, 255),
-        clamp(g * mul + lift * 0.9, 0, 255),
-        clamp(b * mul + lift * 0.8, 0, 255)
-      ];
+      swellShadeOut[0] = clamp(r * mul + lift, 0, 255);
+      swellShadeOut[1] = clamp(g * mul + lift * 0.9, 0, 255);
+      swellShadeOut[2] = clamp(b * mul + lift * 0.8, 0, 255);
+      return swellShadeOut;
     }
 
     function tintSwellPurple(r, g, b, a, pulse, x, y) {
-      if (a < 8) return [r, g, b];
+      swellTintOut[0] = r;
+      swellTintOut[1] = g;
+      swellTintOut[2] = b;
+      if (a < 8) return swellTintOut;
       const k = clamp((pulse - 0.4) / 0.6, 0, 1);
       const along = y / Math.max(1, ch - 1);
       const head = clamp((along - 0.28) / 0.52, 0, 1);
       const side = cw > 1 ? x / cw : 0.5;
       const under = clamp((side - 0.42) / 0.46, 0, 1);
       const lift = k * (12 + head * 40 + under * 18);
-      return [
-        clamp(r + lift * 0.1, 0, 255),
-        clamp(g - lift * 0.5, 0, 255),
-        clamp(b + lift * (0.85 + head * 0.35), 0, 255)
-      ];
+      swellTintOut[0] = clamp(r + lift * 0.1, 0, 255);
+      swellTintOut[1] = clamp(g - lift * 0.5, 0, 255);
+      swellTintOut[2] = clamp(b + lift * (0.85 + head * 0.35), 0, 255);
+      return swellTintOut;
     }
 
     function paintVeinSwell(nowMs, blit) {
       if (!ctx || !srcPx || !cw || !ch) return;
       if (!ensureVeinSwellField() || !ensureSwellHi()) return;
-      const pulse = veinPulseStrength(nowMs || win.performance.now());
+      // perf16: the swell raster depends only on the static vein field and the pulse scalar.
+      // Quantise the pulse (1/50 is at most ~0.35 px of push) and recompute the raster only when
+      // that level, the sampling stride or the field changes; otherwise reuse the last result.
+      // Holding or dragging used to redo this full per-pixel pass on every frame.
+      const pulse =
+        Math.round(veinPulseStrength(nowMs || win.performance.now()) * SWELL_PULSE_STEPS) / SWELL_PULSE_STEPS;
       const scale = swellRenderScale();
       const hw = cw * scale;
       const hh = ch * scale;
+      // Full-resolution sampling only while hot AND holding still. While the member is actually
+      // moving, use the same half-resolution sampling as the idle bake: motion hides the
+      // difference and it is a quarter of the per-pixel work. It sharpens again once it stops.
+      // The pulse ramps up for ~1 s after a grab, changing the raster every frame; computing it at
+      // full resolution each time cost ~45 ms per recompute. Use the half-resolution pass while it is
+      // still changing and refine once it has been steady for 220 ms.
+      const nowSw = win.performance.now();
+      if (pulse !== swellPulseSeen) {
+        swellPulseSeen = pulse;
+        swellPulseChangedAt = nowSw;
+      }
+      const stride = veinRenderHot() && !swellInMotion() && nowSw - swellPulseChangedAt > 220 ? 1 : 2;
+      const paintKey = swellKey + ":" + hw + "x" + hh + ":" + stride + ":" + pulse;
+      if (paintKey !== swellPaintKey) {
+        computeVeinSwell(pulse, scale, hw, hh, stride);
+        swellPaintKey = paintKey;
+      }
+      if (blit !== false) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(swellHi, padX, padY, cw, ch);
+      }
+    }
+
+    function swellInMotion() {
+      if (Math.abs(vel) > 0.35 || Math.abs(tipVel) > 0.6) return true;
+      return ptr.active && win.performance.now() - ptr.lastT < 140;
+    }
+
+    function computeVeinSwell(pulse, scale, hw, hh, stride) {
       const hd = swellHiImg.data;
       const step = 1 / scale;
-      const stride = veinRenderHot() ? 1 : 2;
       for (let y = 0; y < hh; y += stride) {
         const ly = y * step;
         for (let x = 0; x < hw; x += stride) {
@@ -1032,11 +1155,6 @@
           dst[di + 3] = a / area;
         }
       }
-      if (blit !== false) {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(swellHi, padX, padY, cw, ch);
-      }
     }
 
     function bodyIsFlat() {
@@ -1060,13 +1178,10 @@
       if (!bctx) return;
       bctx.drawImage(img, 0, 0, texW, texH, 0, 0, cw, ch);
       srcPx = bctx.getImageData(0, 0, cw, ch).data;
+      bakedGeomKey = cw + "x" + ch + "x" + bufW + "x" + bufH;
       dstImg = ctx.createImageData(bufW, bufH);
       const n = bufW * bufH;
-      accR = new Float32Array(n);
-      accG = new Float32Array(n);
-      accB = new Float32Array(n);
-      accA = new Float32Array(n);
-      accW = new Float32Array(n);
+      acc = new Float32Array(n * 5);
       stamp = new Uint16Array(n);
       touched = new Int32Array(n);
       touchN = 0;
@@ -1084,6 +1199,33 @@
       }
     }
 
+    function depositTap(x, y, w, r, g, b, a) {
+      if (w < 0.02 || x < 0 || y < 0 || x >= bufW || y >= bufH) return;
+      const sw = w * w * (3 - 2 * w);
+      const i = y * bufW + x;
+      const k = i * 5;
+      if (stamp[i] !== frameId) {
+        stamp[i] = frameId;
+        acc[k] = 0;
+        acc[k + 1] = 0;
+        acc[k + 2] = 0;
+        acc[k + 3] = 0;
+        acc[k + 4] = 0;
+        touched[touchN] = i;
+        touchN += 1;
+        if (x < boxL) boxL = x;
+        if (y < boxT) boxT = y;
+        if (x > boxR) boxR = x;
+        if (y > boxB) boxB = y;
+      }
+      const na = a * sw;
+      acc[k] += r * na;
+      acc[k + 1] += g * na;
+      acc[k + 2] += b * na;
+      acc[k + 3] += na;
+      acc[k + 4] += sw;
+    }
+
     function deposit(dx, dy, r, g, b, a) {
       const x0 = dx | 0;
       const y0 = dy | 0;
@@ -1093,38 +1235,14 @@
       const w10 = fx * (1 - fy);
       const w01 = (1 - fx) * fy;
       const w11 = fx * fy;
-      const add = (x, y, w) => {
-        if (w < 0.02 || x < 0 || y < 0 || x >= bufW || y >= bufH) return;
-        const i = y * bufW + x;
-        if (stamp[i] !== frameId) {
-          stamp[i] = frameId;
-          accR[i] = 0;
-          accG[i] = 0;
-          accB[i] = 0;
-          accA[i] = 0;
-          accW[i] = 0;
-          touched[touchN] = i;
-          touchN += 1;
-          if (x < boxL) boxL = x;
-          if (y < boxT) boxT = y;
-          if (x > boxR) boxR = x;
-          if (y > boxB) boxB = y;
-        }
-        const na = a * w;
-        accR[i] += r * na;
-        accG[i] += g * na;
-        accB[i] += b * na;
-        accA[i] += na;
-        accW[i] += w;
-      };
-      add(x0, y0, w00);
-      add(x0 + 1, y0, w10);
-      add(x0, y0 + 1, w01);
-      add(x0 + 1, y0 + 1, w11);
+      depositTap(x0, y0, w00, r, g, b, a);
+      depositTap(x0 + 1, y0, w10, r, g, b, a);
+      depositTap(x0, y0 + 1, w01, r, g, b, a);
+      depositTap(x0 + 1, y0 + 1, w11, r, g, b, a);
     }
 
     function renderCurve() {
-      if (!ctx || !srcPx || !dstImg || !accR || dstImg.width !== bufW || dstImg.height !== bufH) {
+      if (!ctx || !srcPx || !dstImg || !acc || dstImg.width !== bufW || dstImg.height !== bufH) {
         renderFlat();
         return;
       }
@@ -1143,20 +1261,36 @@
         veinSwellBaked = true;
       }
       const skin = swellImg && swellImg.data.length === srcPx.length ? swellImg.data : srcPx;
+      if (spineX.length < ch) {
+        spineX = new Float32Array(ch);
+        spineY = new Float32Array(ch);
+        spineNx = new Float32Array(ch);
+        spineNy = new Float32Array(ch);
+        spineBulge = new Float32Array(ch);
+      }
       const mid = padX + cw * 0.5;
       let x = 0;
       let y = padY;
+      let prevAng = 0;
       for (let s = 0; s < ch; s += 1) {
         const left = rowL[s];
         const right = rowR[s];
         if (left > right) {
           if (s > 0) {
-            const ap = dir((s - 0.5) / ch);
+            const ap = prevAng;
             const along = s / Math.max(1, ch - 1);
             const stepLenNow = stepLen(along);
             x += Math.sin(ap) * stepLenNow;
             y += Math.cos(ap) * stepLenNow;
           }
+          const tEmpty = (s + 0.5) / ch;
+          const angEmpty = dir(tEmpty > 1 ? 1 : tEmpty);
+          prevAng = angEmpty;
+          spineX[s] = x;
+          spineY[s] = y;
+          spineNx[s] = Math.cos(angEmpty);
+          spineNy[s] = -Math.sin(angEmpty);
+          spineBulge[s] = 1;
           continue;
         }
         const t = (s + 0.5) / ch;
@@ -1166,10 +1300,11 @@
         const along = s / Math.max(1, ch - 1);
         const stepNow = stepLen(along);
         if (s > 0) {
-          const ap = dir((s - 0.5) / ch);
+          const ap = prevAng;
           x += Math.sin(ap) * stepNow;
           y += Math.cos(ap) * stepNow;
         }
+        prevAng = ang;
         const row = s * cw;
         // perf15: bulge depends only on the row (s); computed once per row with
         // the exact same expression, so every deposit is bit-identical.
@@ -1178,6 +1313,11 @@
           throbBump(along) * 0.18 * (0.62 + 0.38 * Math.sin(along * Math.PI)) +
           jiggle * Math.sin(jigglePhase * 1.15) * 0.07 * Math.sin(along * Math.PI);
         const bulge = bulgeBase * oralBulgeScale(t);
+        spineX[s] = x;
+        spineY[s] = y;
+        spineNx[s] = nx;
+        spineNy[s] = ny;
+        spineBulge[s] = bulge;
         const halfCw = cw * 0.5;
         if (oralEngaged && oralLipT > 0 && s > Math.round(oralLipT * ch) + ORAL_TUBE_DEPTH + 10) {
           continue;
@@ -1214,13 +1354,15 @@
       for (let n = 0; n < touchN; n += 1) {
         const i = touched[n];
         const di = i * 4;
-        const aw = accA[i];
+        const k = i * 5;
+        const aw = acc[k + 3];
         const inv = 1 / aw;
-        dst[di] = accR[i] * inv;
-        dst[di + 1] = accG[i] * inv;
-        dst[di + 2] = accB[i] * inv;
-        dst[di + 3] = Math.min(255, aw / Math.max(0.001, accW[i]));
+        dst[di] = acc[k] * inv;
+        dst[di + 1] = acc[k + 1] * inv;
+        dst[di + 2] = acc[k + 2] * inv;
+        dst[di + 3] = Math.min(255, aw / Math.max(0.001, acc[k + 4]));
       }
+      spineTableValid = true;
       ctx.clearRect(0, 0, bufW, bufH);
       ctx.putImageData(dstImg, 0, 0, minX, minY, maxX - minX + 1, maxY - minY + 1);
       dirty = false;
@@ -1230,16 +1372,23 @@
       if (!ctx || !cw || !ch || !rowL) return;
       const time = (t || win.performance.now()) * 0.001;
       const spots = [0.2, 0.4, 0.62, 0.82];
-      ctx.save();
-      ctx.globalCompositeOperation = "screen";
+      const spotItems = [];
       for (let g = 0; g < spots.length; g += 1) {
         const u = clamp(spots[g] + Math.sin(time * 0.4 + g * 1.3) * 0.03, 0.06, 0.94);
-        let x = padX + cw * 0.5;
-        let y = padY;
-        let ang = 0;
         const n = Math.max(1, Math.round(ch * u));
-        for (let s = 1; s <= n; s += 1) {
-          const uu = (s - 0.5) / ch;
+        spotItems.push({ g, u, n });
+      }
+      spotItems.sort((a, b) => a.n - b.n);
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      let x = padX + cw * 0.5;
+      let y = padY;
+      let ang = 0;
+      let curS = 1;
+      for (let idx = 0; idx < spotItems.length; idx += 1) {
+        const { g, u, n } = spotItems[idx];
+        for (; curS <= n; curS += 1) {
+          const uu = (curS - 0.5) / ch;
           ang = dir(uu);
           const len = stepLen(uu);
           x += Math.sin(ang) * len;
@@ -1338,6 +1487,7 @@
           nodNow = 0;
         } else nodNow = Math.sin(u * Math.PI) * nodAmp;
       }
+      if (throbNow > 0.005 || nodNow > 0.005) spineTableValid = false;
     }
 
     function render(t) {
@@ -1429,6 +1579,10 @@
     let swellHiPx = null;
     let swellHiImg = null;
     let swellHiKey = "";
+    let swellPaintKey = "";
+    let swellPulseSeen = -1;
+    let swellPulseChangedAt = 0;
+    const SWELL_PULSE_STEPS = 50;
     let swellBlur = null;
     let inkPx = null;
     let restAngle = 0;
@@ -1452,11 +1606,27 @@
     let oralChinMaxY = 0;
     let oralLipRow = 0;
 
-    function tipClient() {
-      return shaftClient(0.96);
+    let cachedAvatarEl = null;
+    let cachedCompEl = null;
+    let cockLayerActive = null;
+
+    function getAvatarEl() {
+      if (cachedAvatarEl && cachedAvatarEl.isConnected) return cachedAvatarEl;
+      cachedAvatarEl = doc.querySelector(".hq-companion-avatar");
+      cachedCompEl = cachedAvatarEl && (cachedAvatarEl.closest(".hq-companion") || cachedAvatarEl);
+      return cachedAvatarEl;
     }
 
-    function shaftClient(t01) {
+    function getCompanionEl() {
+      getAvatarEl();
+      return cachedCompEl;
+    }
+
+    function tipClient(optRect) {
+      return shaftClient(0.96, optRect);
+    }
+
+    function shaftClient(t01, optRect) {
       if (!canvas || !cw || !ch || !bufW || !bufH) return null;
       let x = padX + cw * 0.5;
       let y = padY;
@@ -1467,7 +1637,7 @@
         x += Math.sin(ang) * stepLen(u);
         y += Math.cos(ang) * stepLen(u);
       }
-      const rect = canvas.getBoundingClientRect();
+      const rect = optRect || canvas.getBoundingClientRect();
       if (rect.width < 2 || rect.height < 2) return null;
       return {
         x: rect.left + (x / bufW) * rect.width,
@@ -1476,7 +1646,7 @@
     }
 
     function avatarZones() {
-      const av = doc.querySelector(".hq-companion-avatar");
+      const av = getAvatarEl();
       if (!av) return null;
       const r = av.getBoundingClientRect();
       if (r.width < 8 || r.height < 8) return null;
@@ -1501,7 +1671,7 @@
     }
 
     function aimAtPoint(x, y) {
-      const box = mount.getBoundingClientRect();
+      const box = readMount();
       const dx = x - (box.left + box.width * 0.5);
       const dy = Math.max(28, y - box.top);
       return clamp(Math.atan2(dx, dy), -MAX_ANGLE, MAX_ANGLE);
@@ -1515,12 +1685,13 @@
       const pack = avatarZones();
       if (!pack) return null;
       const ts = [0.22, 0.36, 0.5, 0.64, 0.78, 0.92];
-      const span = mount.getBoundingClientRect();
-      const pad = Math.max(20, span.width * 0.46);
-      const scores = pack.zones.map(() => 0);
-      const touch = pack.zones.map(() => null);
+      const pad = Math.max(20, (mountRectW || 68) * 0.46);
+      const scores = [0, 0, 0, 0];
+      const touch = [null, null, null, null];
+      const cRect = canvas ? canvas.getBoundingClientRect() : null;
+      if (!cRect || cRect.width < 2 || cRect.height < 2) return null;
       for (let i = 0; i < ts.length; i += 1) {
-        const p = shaftClient(ts[i]);
+        const p = shaftClient(ts[i], cRect);
         if (!p) continue;
         const weight = ts[i] < 0.9 ? 1.6 : 1;
         for (let z = 0; z < pack.zones.length; z += 1) {
@@ -1534,14 +1705,16 @@
       let best = -1;
       for (let z = 0; z < scores.length; z += 1) if (scores[z] > (best < 0 ? 0 : scores[best])) best = z;
       if (best < 0) return null;
-      return { pack: pack, zone: pack.zones[best], at: touch[best] };
+      return { pack: pack, zone: pack.zones[best], at: touch[best], cRect: cRect };
     }
 
-    function shaftDepth(pack) {
+    function shaftDepth(pack, optRect) {
       const ts = [0.22, 0.38, 0.54, 0.7, 0.86, 0.96];
       let worst = 0;
+      const cRect = optRect || (canvas ? canvas.getBoundingClientRect() : null);
+      if (!cRect || cRect.width < 2 || cRect.height < 2) return 0;
       for (let i = 0; i < ts.length; i += 1) {
-        const p = shaftClient(ts[i]);
+        const p = shaftClient(ts[i], cRect);
         if (!p) continue;
         for (let z = 0; z < pack.zones.length; z += 1) {
           const zone = pack.zones[z];
@@ -1554,7 +1727,10 @@
     }
 
     function setCockLayer(on) {
-      mount.style.zIndex = on ? "360" : "";
+      const next = !!on;
+      if (cockLayerActive === next) return;
+      cockLayerActive = next;
+      mount.style.zIndex = next ? "360" : "";
     }
 
     const ORAL_HEAD_SRC = "/assets/transferina-head-open-profile-mouth.png?v=2";
@@ -1584,7 +1760,7 @@
     let oralMouthCache = null;
 
     function oralMouthAnchorFresh() {
-      const av = doc.querySelector(".hq-companion-avatar");
+      const av = getAvatarEl();
       if (!av) return null;
       const r = av.getBoundingClientRect();
       if (r.width < 8) return null;
@@ -2277,19 +2453,18 @@
       if (dangleAudio) dangleAudio.clearOralAudio({ release: false });
       oralLastGirth = -1;
       oralLastDepth = -1;
-      const av = doc.querySelector(".hq-companion-avatar");
-      const comp = av && (av.closest(".hq-companion") || av);
+      const comp = getCompanionEl();
       if (comp) comp.classList.remove("is-oral-session");
     }
 
     function ensureOralPortraitCalm() {
       if (oralPortraitCalm) return;
-      const av = doc.querySelector(".hq-companion-avatar");
-      const comp = av && (av.closest(".hq-companion") || av);
+      const comp = getCompanionEl();
       if (!comp) return;
       comp.classList.add("is-oral-session");
       comp.classList.remove("is-cock-on-tit", "is-cock-on-face", "is-flick-jiggle");
-      comp.style.setProperty("--cock-give", "0");
+      const avCalm = getAvatarEl();
+      if (avCalm) avCalm.style.setProperty("--cock-give", "0");
       oralPortraitCalm = true;
     }
 
@@ -2305,6 +2480,7 @@
       return (tip.x - mouth.x) * oralTubeUx + (tip.y - mouth.y) * oralTubeUy;
     }
 
+    const oralLensBuf = new Float32Array(65);
     function findOralLipT() {
       if (!oralEngaged || !canvas || !ch) {
         oralLipT = -1;
@@ -2314,7 +2490,7 @@
       }
       const mouth = oralMouthAnchor();
       if (!mouth) return;
-      const box = mount.getBoundingClientRect();
+      const box = readMount();
       const px = box.left + box.width * 0.5;
       const py = box.top;
       const dx = mouth.x - px;
@@ -2336,7 +2512,8 @@
       const p2y = dy - h1 * Math.cos(throatAngle);
 
       const M = 64;
-      const lens = new Float32Array(M + 1);
+      const lens = oralLensBuf;
+      lens[0] = 0;
       let totalL = 0;
       let prevX = p0x;
       let prevY = p0y;
@@ -2495,8 +2672,10 @@
       let pushU = 0;
       let pushD = 0;
       const limit = Math.hypot(ptr.smVx, ptr.smVy) > 280 ? 4 : 14;
+      const cRect = canvas ? canvas.getBoundingClientRect() : null;
+      if (!cRect || cRect.width < 2 || cRect.height < 2) return;
       for (let i = 0; i < ts.length; i += 1) {
-        const p = shaftClient(ts[i]);
+        const p = shaftClient(ts[i], cRect);
         if (!p) continue;
         for (let z = 0; z < pack.zones.length; z += 1) {
           const zone = pack.zones[z];
@@ -2520,7 +2699,7 @@
         const box = mount.getBoundingClientRect();
         place(box.left + corrX, box.top + corrY);
       }
-      setCockLayer(shaftDepth(pack) > 0 || !!restName || (oralPhase === "active" && oralDepth > 0.5));
+      setCockLayer(shaftDepth(pack, cRect) > 0 || !!restName || (oralPhase === "active" && oralDepth > 0.5));
     }
     function beginRest(hit) {
       restName = hit.zone.name;
@@ -2529,7 +2708,7 @@
       hangLean = restAngle;
       setCockLayer(true);
       const av = hit.pack.el.getBoundingClientRect();
-      const here = mount.getBoundingClientRect();
+      const here = readMount();
       restAnchor = { dx: here.left - av.left, dy: here.top - av.top };
       hit.pack.el.classList.add("is-cock-bump");
       if (pokeClear) win.clearTimeout(pokeClear);
@@ -2546,12 +2725,12 @@
 
     function followRest() {
       if (!restName || ptr.moving || !restAnchor) return;
-      const av = doc.querySelector(".hq-companion-avatar");
+      const av = getAvatarEl();
       if (!av) return;
       const r = av.getBoundingClientRect();
       const left = r.left + restAnchor.dx;
       const top = r.top + restAnchor.dy;
-      const box = mount.getBoundingClientRect();
+      const box = readMount();
       if (Math.abs(box.left - left) < 0.4 && Math.abs(box.top - top) < 0.4) return;
       place(left, top);
     }
@@ -2566,13 +2745,13 @@
       give = clamp(give, -0.4, 1);
       if (touching && name) giveName = name;
       if (!touching && give < 0.04 && Math.abs(giveVel) < 0.2) giveName = "";
-      const av = doc.querySelector(".hq-companion-avatar");
-      const comp = av && (av.closest(".hq-companion") || av);
-      if (!comp) return;
+      const comp = getCompanionEl();
+      const avEl = getAvatarEl();
+      if (!comp || !avEl) return;
       const giveStr = give.toFixed(3);
       const turnStr = (contactSide * 2.6).toFixed(2) + "deg";
-      if (comp.style.getPropertyValue("--cock-give") !== giveStr) comp.style.setProperty("--cock-give", giveStr);
-      if (comp.style.getPropertyValue("--cock-turn") !== turnStr) comp.style.setProperty("--cock-turn", turnStr);
+      if (avEl.style.getPropertyValue("--cock-give") !== giveStr) avEl.style.setProperty("--cock-give", giveStr);
+      if (avEl.style.getPropertyValue("--cock-turn") !== turnStr) avEl.style.setProperty("--cock-turn", turnStr);
       const onTit = giveName === "tit";
       const onFace = giveName === "face" || giveName === "head";
       if (comp.classList.contains("is-cock-on-tit") !== onTit) comp.classList.toggle("is-cock-on-tit", onTit);
@@ -2590,7 +2769,7 @@
         return;
       }
       let hit = findContact();
-      const depth = hit ? shaftDepth(hit.pack) : 0;
+      const depth = hit ? shaftDepth(hit.pack, hit.cRect) : 0;
       if (hit && hit.at) contactSide = hit.at.x < hit.zone.cx ? -1 : 1;
       contactAim = !(hit && ptr.moving && hit.at) ? null : aimAtPoint(hit.at.x, hit.at.y);
       const name = hit ? hit.zone.name : "";
@@ -2645,9 +2824,9 @@
     }
 
     function companionFaceClient() {
-      const av = doc.querySelector(".hq-companion-avatar");
+      const av = getAvatarEl();
       if (!av) return null;
-      const comp = av.closest(".hq-companion");
+      const comp = getCompanionEl();
       if (!comp || !comp.classList.contains("is-nsfw")) return null;
       const r = av.getBoundingClientRect();
       if (r.width < 8) return null;
@@ -2665,8 +2844,10 @@
       let bestD = 1e9;
       let bestP = null;
       let bestT = 0.5;
+      const cRect = canvas ? canvas.getBoundingClientRect() : null;
+      if (!cRect || cRect.width < 2 || cRect.height < 2) return null;
       for (let i = 0; i < ts.length; i += 1) {
-        const p = shaftClient(ts[i]);
+        const p = shaftClient(ts[i], cRect);
         if (!p) continue;
         const d = Math.hypot(p.x - face.x, p.y - face.mouthY);
         if (d < bestD) {
@@ -2681,15 +2862,17 @@
     }
 
     function cockNearAvatar() {
-      const av = doc.querySelector(".hq-companion-avatar");
+      const av = getAvatarEl();
       if (!av) return null;
       const r = av.getBoundingClientRect();
       if (r.width < 8) return null;
       const ts = [0.45, 0.62, 0.78, 0.92];
       let best = null;
       let bestD = 1e9;
+      const cRect = canvas ? canvas.getBoundingClientRect() : null;
+      if (!cRect || cRect.width < 2 || cRect.height < 2) return null;
       for (let i = 0; i < ts.length; i += 1) {
-        const p = shaftClient(ts[i]);
+        const p = shaftClient(ts[i], cRect);
         if (!p) continue;
         const x = clamp(p.x, r.left, r.right);
         const y = clamp(p.y, r.top, r.bottom);
@@ -2700,7 +2883,7 @@
         }
       }
       if (!best || bestD > 28) return null;
-      const hit = shaftClient(0.58) || best;
+      const hit = shaftClient(0.58, cRect) || best;
       return { at: hit, near: best };
     }
 
@@ -2966,7 +3149,14 @@
     }
 
     let veinBoxKey = "";
+    let veinBoxAt = 0;
     function syncVeinOverlayBox() {
+      // perf16: these offset reads force a synchronous layout when called right after the
+      // per-frame style writes. The box only changes on resize (which clears veinBoxKey), so
+      // trust the last good read for a short while instead of re-measuring every frame.
+      const nowBox = win.performance.now();
+      if (veinBoxKey && nowBox - veinBoxAt < 400) return true;
+      veinBoxAt = nowBox;
       const w = canvas.offsetWidth;
       const h = canvas.offsetHeight;
       if (w < 2 || h < 2) return false;
@@ -2986,10 +3176,22 @@
       return true;
     }
 
+    let veinCssScale = 0;
+    let veinCssScaleAt = 0;
+    let veinCssScaleBufW = 0;
     function veinBufPerCss() {
+      // perf16: called per vein path per paint; clientWidth forces a layout each time. The ratio
+      // only changes on resize (which clears veinBoxKey), so reuse it briefly like the overlay box.
+      const nowS = win.performance.now();
+      if (veinCssScale && veinBoxKey && veinCssScaleBufW === bufW && nowS - veinCssScaleAt < 400) {
+        return veinCssScale;
+      }
       const cssW = canvas.clientWidth;
       if (cssW < 2 || !bufW) return cw > 0 && mountRectW > 0 ? cw / mountRectW : 1;
-      return bufW / cssW;
+      veinCssScale = bufW / cssW;
+      veinCssScaleAt = nowS;
+      veinCssScaleBufW = bufW;
+      return veinCssScale;
     }
 
     function ensureVeinBufPaths() {
@@ -3016,6 +3218,99 @@
         veinBufPaths.push({ id: rec.id, tier: rec.tier || "primary", pts: shapeVeinPts(pts, rec.id) });
       }
       return veinBufPaths;
+    }
+
+    let spineX = new Float32Array(512);
+    let spineY = new Float32Array(512);
+    let spineNx = new Float32Array(512);
+    let spineNy = new Float32Array(512);
+    let spineBulge = new Float32Array(512);
+    let spineTableValid = false;
+    let curvedVeinPaths = null;
+
+    function updateSpineTable() {
+      if (!cw || !ch) return;
+      if (spineTableValid && spineX.length >= ch) return;
+      if (spineX.length < ch) {
+        spineX = new Float32Array(ch);
+        spineY = new Float32Array(ch);
+        spineNx = new Float32Array(ch);
+        spineNy = new Float32Array(ch);
+        spineBulge = new Float32Array(ch);
+      }
+      let x = 0;
+      let y = padY;
+      for (let s = 0; s < ch; s += 1) {
+        const t = (s + 0.5) / ch;
+        const ang = dir(t > 1 ? 1 : t);
+        const nx = Math.cos(ang);
+        const ny = -Math.sin(ang);
+        const along = s / Math.max(1, ch - 1);
+        const stepNow = stepLen(along);
+        if (s > 0) {
+          const ap = dir((s - 0.5) / ch);
+          x += Math.sin(ap) * stepNow;
+          y += Math.cos(ap) * stepNow;
+        }
+        const bulgeBase =
+          1 +
+          throbBump(along) * 0.18 * (0.62 + 0.38 * Math.sin(along * Math.PI)) +
+          jiggle * Math.sin(jigglePhase * 1.15) * 0.07 * Math.sin(along * Math.PI);
+        const bulge = bulgeBase * oralBulgeScale(t);
+        spineX[s] = x;
+        spineY[s] = y;
+        spineNx[s] = nx;
+        spineNy[s] = ny;
+        spineBulge[s] = bulge;
+      }
+      spineTableValid = true;
+    }
+
+    function ensureCurvedVeinPaths(basePaths) {
+      if (curvedVeinPaths && curvedVeinPaths.length === basePaths.length) {
+        let same = true;
+        for (let i = 0; i < basePaths.length; i += 1) {
+          if (curvedVeinPaths[i].pts.length !== basePaths[i].pts.length) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+      curvedVeinPaths = [];
+      for (let i = 0; i < basePaths.length; i += 1) {
+        const pts = [];
+        for (let j = 0; j < basePaths[i].pts.length; j += 1) {
+          pts.push({ x: 0, y: 0 });
+        }
+        curvedVeinPaths.push({
+          id: basePaths[i].id,
+          tier: basePaths[i].tier,
+          pts: pts
+        });
+      }
+    }
+
+    function getActiveVeinPaths() {
+      const basePaths = ensureVeinBufPaths();
+      if (!basePaths.length || bodyIsFlat()) return basePaths;
+      updateSpineTable();
+      ensureCurvedVeinPaths(basePaths);
+      const mid = padX + cw * 0.5;
+      const halfCw = cw * 0.5;
+      for (let i = 0; i < basePaths.length; i += 1) {
+        const srcPts = basePaths[i].pts;
+        const dstPts = curvedVeinPaths[i].pts;
+        for (let j = 0; j < srcPts.length; j += 1) {
+          const p = srcPts[j];
+          const s = clamp(Math.round(p.y - padY), 0, ch - 1);
+          const u = p.x - padX;
+          const ox = (u - halfCw + 0.5) * spineBulge[s];
+          dstPts[j].x = mid + spineX[s] + spineNx[s] * ox;
+          dstPts[j].y = spineY[s] + spineNy[s] * ox;
+        }
+      }
+      return curvedVeinPaths;
     }
 
     function shapeVeinPts(pts, id) {
@@ -3065,7 +3360,8 @@
     function veinPulseStrokeWidths(tier, pulseA) {
       const scale = veinBufPerCss();
       const boost = pulseA >= 0.75 ? 1.16 : 1;
-      const swell = (0.9 + 0.26 * clamp(pulseA, 0, 1)) * boost;
+      const stimDilation = 1 + clamp(warmth * 0.24 + (oralDepthSm / 40) * 0.18, 0, 0.35);
+      const swell = (0.9 + 0.26 * clamp(pulseA, 0, 1)) * boost * stimDilation;
       const css = (tier === "secondary" ? 1.6 : 2.2) * swell;
       const diam = Math.max(1.5, css * scale);
       const blur = Math.max(1.6, 2.35 * scale);
@@ -3097,19 +3393,22 @@
           return x - Math.floor(x);
         };
         const step = Math.max(3, Math.round(pts.length / 9));
+        const wavePhase =
+          throbNow > 0.02 ? throbPhase * Math.PI * 2 : (win.performance.now() * 0.001) * 4.15;
         for (let i = 0; i < pts.length - 1; i += step) {
           const end = Math.min(pts.length - 1, i + step + 1);
-          const slice = pts.slice(Math.max(0, i - 1), end + 1);
-          if (slice.length < 2) continue;
+          const from = Math.max(0, i - 1);
+          if (end - from < 1) continue;
           const u = i / Math.max(1, pts.length - 1);
-          const bulge = 0.3 + grain(i + 3) * 1.15;
+          const peristaltic = 0.82 + 0.18 * Math.sin(wavePhase - u * 2.2);
+          const bulge = (0.3 + grain(i + 3) * 1.15) * (0.92 + 0.08 * peristaltic);
           const taper = 0.55 + 0.45 * Math.sin(Math.PI * u);
-          const fade = 0.55 + grain(i + 9) * 0.5;
+          const fade = (0.55 + grain(i + 9) * 0.5) * peristaltic;
           const g = Math.round(clamp(alpha * fade, 0, 1) * 255);
           const ink = "rgb(" + g + "," + g + "," + g + ")";
           draw.beginPath();
-          draw.moveTo(slice[0].x, slice[0].y);
-          for (let k = 1; k < slice.length; k += 1) draw.lineTo(slice[k].x, slice[k].y);
+          draw.moveTo(pts[from].x, pts[from].y);
+          for (let k = from + 1; k <= end; k += 1) draw.lineTo(pts[k].x, pts[k].y);
           draw.lineWidth = width * bulge * taper;
           draw.strokeStyle = ink;
           draw.stroke();
@@ -3129,30 +3428,34 @@
       const secondary = tier === "secondary";
       const featherA = ((secondary ? 0.26 : 0.32) + a * (secondary ? 0.06 : 0.08)) * 0.55;
       const coreA = ((secondary ? 0.7 : 0.84) + a * (secondary ? 0.08 : 0.1)) * 0.72;
-      const blurPx = Math.max(1.4, veinBufPerCss() * 1.35);
       vdraw.save();
       vdraw.lineJoin = "round";
       vdraw.lineCap = "round";
-      vdraw.shadowBlur = blurPx;
-      vdraw.shadowColor = "rgba(148,46,58,0.45)";
+      // perf16: this used to add a blurred shadow (shadowBlur ~1.4-2 px). Canvas shadows are rasterised
+      // on the CPU every frame and, in the full motion tier, were about half of the remaining
+      // per-frame cost (they surface as the getImageData flush in warpVeinOverlay). The feather pass
+      // below already gives the soft edge; veins are marginally crisper without the extra halo.
       const run = (width, alpha) => {
         const grain = (i) => {
           const x = Math.sin(i * 12.9898 + pts.length * 78.233) * 43758.5453;
           return x - Math.floor(x);
         };
         const step = Math.max(3, Math.round(pts.length / 9));
+        const wavePhase =
+          throbNow > 0.02 ? throbPhase * Math.PI * 2 : (win.performance.now() * 0.001) * 4.15;
         for (let i = 0; i < pts.length - 1; i += step) {
           const end = Math.min(pts.length - 1, i + step + 1);
-          const slice = pts.slice(Math.max(0, i - 1), end + 1);
-          if (slice.length < 2) continue;
+          const from = Math.max(0, i - 1);
+          if (end - from < 1) continue;
           const u = i / Math.max(1, pts.length - 1);
-          const bulge = 0.3 + grain(i + 3) * 1.15;
+          const peristaltic = 0.82 + 0.18 * Math.sin(wavePhase - u * 2.2);
+          const bulge = (0.3 + grain(i + 3) * 1.15) * (0.92 + 0.08 * peristaltic);
           const taper = 0.55 + 0.45 * Math.sin(Math.PI * u);
-          const fade = 0.55 + grain(i + 9) * 0.5;
+          const fade = (0.55 + grain(i + 9) * 0.5) * peristaltic;
           const inkA = clamp(alpha * fade, 0, 1);
           vdraw.beginPath();
-          vdraw.moveTo(slice[0].x, slice[0].y);
-          for (let k = 1; k < slice.length; k += 1) vdraw.lineTo(slice[k].x, slice[k].y);
+          vdraw.moveTo(pts[from].x, pts[from].y);
+          for (let k = from + 1; k <= end; k += 1) vdraw.lineTo(pts[k].x, pts[k].y);
           vdraw.lineWidth = width * bulge * taper;
           vdraw.strokeStyle = "rgba(148,46,58," + inkA.toFixed(3) + ")";
           vdraw.stroke();
@@ -3160,14 +3463,14 @@
       };
       run(w.feather, featherA);
       run(w.core, coreA);
-      vdraw.shadowBlur = 0;
       vdraw.restore();
     }
 
-    function paintVeinPulseCold(nowMs, vctx, strength) {
+    function paintVeinPulseCold(nowMs, vctx, strength, activePaths) {
       const draw = vctx || veinCtx;
       if (!draw || !cw) return;
-      const paths = ensureVeinBufPaths();
+      // Callers that already curved the paths this frame pass them in; avoid re-curving.
+      const paths = activePaths || getActiveVeinPaths();
       if (!paths.length) return;
       const syncPhase =
         throbNow > 0.02 ? throbPhase * Math.PI * 2 : (nowMs * 0.001) * 4.15;
@@ -3202,10 +3505,15 @@
       return !!veinStampImg;
     }
 
+    const veinAlphaLut = new Uint8Array(256);
+    for (let c = 8; c < 256; c += 1) {
+      veinAlphaLut[c] = Math.min(196, Math.round(255 * Math.pow(c / 255, 1.35)));
+    }
+
     function paintVeinPulse(nowMs, vctx) {
       const draw = vctx || veinCtx;
       if (!draw || !cw) return;
-      const paths = ensureVeinBufPaths();
+      const paths = getActiveVeinPaths();
       mount.dataset.veinOverlay = String(paths.length);
       if (!paths.length) return;
       const strength = veinPulseStrength(nowMs);
@@ -3220,7 +3528,12 @@
           return;
         }
         veinPulseLastStrength = strength;
-        paintVeinPulseCold(nowMs, draw, strength);
+        paintVeinPulseCold(nowMs, draw, strength, paths);
+        return;
+      }
+      if (veinSwellMode !== "extreme") {
+        veinPulseLastStrength = strength;
+        paintVeinPulseCold(nowMs, draw, strength, paths);
         return;
       }
       if (!ensureVeinMerge()) return;
@@ -3248,7 +3561,7 @@
       const dst = veinStampImg.data;
       for (let i = 0; i < src.length; i += 4) {
         const cov = src[i];
-        const alpha = cov < 8 ? 0 : Math.min(196, Math.round(255 * Math.pow(cov / 255, 1.35)));
+        const alpha = veinAlphaLut[cov];
         dst[i] = 148;
         dst[i + 1] = 46;
         dst[i + 2] = 58;
@@ -3401,8 +3714,7 @@
     }
 
     function jiggleTransferina() {
-      const av = doc.querySelector(".hq-companion-avatar");
-      const comp = av && (av.closest(".hq-companion") || av);
+      const comp = getCompanionEl();
       if (!comp) return;
       comp.classList.remove("is-flick-jiggle", "is-palm-soft-jiggle");
       void comp.offsetWidth;
@@ -3415,8 +3727,7 @@
     }
 
     function jiggleTransferinaSoft() {
-      const av = doc.querySelector(".hq-companion-avatar");
-      const comp = av && (av.closest(".hq-companion") || av);
+      const comp = getCompanionEl();
       if (!comp) return;
       comp.classList.remove("is-flick-jiggle", "is-palm-soft-jiggle");
       void comp.offsetWidth;
@@ -3511,7 +3822,7 @@
       if (oralEngaged) return;
       const near = cockNearAvatar();
       if (!near) return;
-      const av = doc.querySelector(".hq-companion-avatar");
+      const av = getAvatarEl();
       if (!av) return;
       const r = av.getBoundingClientRect();
       const cx = r.left + r.width * 0.5;
@@ -3840,33 +4151,38 @@
         resizePending = false;
         return;
       }
+      // perf16: same geometry as the last pass (canvases already sized, field/paths/bake keyed to it)
+      // means nothing needs rebuilding. This is what lets prewarmDangle() do the setup ahead of time.
+      const sameGeometry = !!(ctx && veinCtx && nextCw === cw && nextCh === ch && canvas.width === bufW && canvas.height === bufH);
       cw = nextCw;
       ch = nextCh;
       pxPerScreen = cw / mountRectW;
       applyLayout();
-      veinBufKey = "";
-      veinBufPaths = null;
-      veinBoxKey = "";
-      swellKey = "";
-      invalidateMemberBake();
-      canvas.width = bufW;
-      canvas.height = bufH;
-      veinCanvas.width = bufW;
-      veinCanvas.height = bufH;
-      canvas.style.setProperty("--dangle-cw", String(cw));
-      canvas.style.setProperty("--dangle-pad", String(padX));
-      canvas.style.setProperty("--dangle-pad-y", String(padY));
-      canvas.style.setProperty("--dangle-buf-w", String(bufW));
-      veinCanvas.style.setProperty("--dangle-cw", String(cw));
-      veinCanvas.style.setProperty("--dangle-pad", String(padX));
-      veinCanvas.style.setProperty("--dangle-pad-y", String(padY));
-      veinCanvas.style.setProperty("--dangle-buf-w", String(bufW));
+      if (!sameGeometry) {
+        veinBufKey = "";
+        veinBufPaths = null;
+        veinBoxKey = "";
+        swellKey = "";
+        invalidateMemberBake();
+        canvas.width = bufW;
+        canvas.height = bufH;
+        veinCanvas.width = bufW;
+        veinCanvas.height = bufH;
+        canvas.style.setProperty("--dangle-cw", String(cw));
+        canvas.style.setProperty("--dangle-pad", String(padX));
+        canvas.style.setProperty("--dangle-pad-y", String(padY));
+        canvas.style.setProperty("--dangle-buf-w", String(bufW));
+        veinCanvas.style.setProperty("--dangle-cw", String(cw));
+        veinCanvas.style.setProperty("--dangle-pad", String(padX));
+        veinCanvas.style.setProperty("--dangle-pad-y", String(padY));
+        veinCanvas.style.setProperty("--dangle-buf-w", String(bufW));
+      }
       if (!ctx) {
         ctx = canvas.getContext("2d", { alpha: true });
         if (ctx) ctx.imageSmoothingEnabled = true;
       }
       if (!veinCtx) {
-        veinCtx = veinCanvas.getContext("2d", { alpha: true });
+        veinCtx = veinCanvas.getContext("2d", { alpha: true, willReadFrequently: true });
         if (veinCtx) veinCtx.imageSmoothingEnabled = true;
       }
       if (!danglePaintArmed) {
@@ -3876,7 +4192,7 @@
         return;
       }
       mount.classList.add("is-softbody");
-      bakeSource();
+      if (bakedGeomKey !== cw + "x" + ch + "x" + bufW + "x" + bufH) bakeSource();
       resizePending = false;
       dirty = true;
       if (!running) {
@@ -4191,7 +4507,37 @@
       place(box.left, box.top);
     });
 
-    const toggleBtn = doc.getElementById("hq-dangling-toggle");
+    let toggleBtn = doc.getElementById("hq-dangling-toggle");
+    if (!toggleBtn && doc.createElement) {
+      const topbar = doc.querySelector && doc.querySelector(".topbar");
+      if (topbar) {
+        let actionsWrap = topbar.querySelector && topbar.querySelector(".topbar-actions");
+        const statusChip = doc.getElementById("status-chip");
+        if (!actionsWrap && statusChip && statusChip.parentNode === topbar) {
+          actionsWrap = doc.createElement("div");
+          actionsWrap.className = "topbar-actions";
+          topbar.insertBefore(actionsWrap, statusChip);
+          actionsWrap.appendChild(statusChip);
+        }
+        toggleBtn = doc.createElement("button");
+        toggleBtn.type = "button";
+        toggleBtn.id = "hq-dangling-toggle";
+        toggleBtn.className = "hq-dangling-toggle";
+        toggleBtn.setAttribute("aria-pressed", "false");
+        toggleBtn.setAttribute("title", "Afficher / masquer le membre (Zip)");
+        const dot = doc.createElement("span");
+        dot.className = "hq-dangling-toggle-dot";
+        dot.setAttribute("aria-hidden", "true");
+        const lbl = doc.createElement("span");
+        lbl.textContent = "Zip";
+        toggleBtn.append(dot, lbl);
+        if (actionsWrap) {
+          actionsWrap.insertBefore(toggleBtn, actionsWrap.firstChild || null);
+        } else {
+          topbar.appendChild(toggleBtn);
+        }
+      }
+    }
     const LS_DANGLE_VIS = "hq_dangle_visible";
 
     function triggerZipperAnimation() {
@@ -4267,17 +4613,64 @@
       }
     }
 
+    // perf16: the first grab used to build everything at once (~300 ms stall): canvas bake, the vein
+    // swell field (~125 ms), the hi-res swell canvas and a cold first swell pass. Do that ahead of
+    // time in small idle steps. It only allocates and fills caches: the member is not armed, no
+    // paint loop starts and nothing visible changes. Safari has no requestIdleCallback, so timers.
+    let prewarmStage = 0;
+    let prewarmTimer = 0;
+    let prewarmTries = 0;
+    function schedulePrewarm(delay) {
+      if (prewarmTimer || prewarmStage >= 4 || motionReduced) return;
+      prewarmTimer = win.setTimeout(prewarmStep, delay);
+    }
+    function prewarmStep() {
+      prewarmTimer = 0;
+      if (danglePaintArmed || ptr.active || running) return;
+      if (doc.hidden || mount.hasAttribute("hidden") || !doc.body.classList.contains("hq-dangle-enabled")) return;
+      let again = true;
+      try {
+        if (prewarmStage === 0) {
+          if (img.complete && img.naturalWidth) {
+            resizeCanvas();
+            if (cw && ctx) prewarmStage = 1;
+          }
+        } else if (prewarmStage === 1) {
+          if (bakedGeomKey !== cw + "x" + ch + "x" + bufW + "x" + bufH) bakeSource();
+          prewarmStage = 2;
+        } else if (prewarmStage === 2) {
+          // The vein artwork loads as its own script; wait for it (bounded).
+          if (global.DanglingVeinPaths && rowL) {
+            if (ensureVeinSwellField() && ensureSwellHi()) prewarmStage = 3;
+            else prewarmTries += 6;
+          } else prewarmTries += 1;
+          if (prewarmTries > 30) prewarmStage = 99;
+        } else if (prewarmStage === 3) {
+          // One cold swell pass at half resolution warms the JIT; its result is not marked reusable.
+          const scale = swellRenderScale();
+          computeVeinSwell(0.5, scale, cw * scale, ch * scale, 2);
+          prewarmStage = 4;
+        }
+      } catch (_) {
+        prewarmStage = 99;
+      }
+      if (prewarmStage >= 4) again = false;
+      if (again) schedulePrewarm(prewarmStage === 3 ? 600 : 350);
+    }
+
     let initialVisible = false;
     try {
       initialVisible = win.localStorage.getItem(LS_DANGLE_VIS) === "1";
     } catch (_) {}
     applyDangleVisibility(initialVisible, false, false);
+    if (initialVisible) schedulePrewarm(2500);
 
     if (toggleBtn && !toggleBtn.__hqDangleBound) {
       toggleBtn.__hqDangleBound = true;
       toggleBtn.addEventListener("click", () => {
         const isHidden = mount.hasAttribute("hidden") || !doc.body.classList.contains("hq-dangle-enabled");
         applyDangleVisibility(isHidden, true, isHidden);
+        if (isHidden) schedulePrewarm(2200);
       });
     }
   }

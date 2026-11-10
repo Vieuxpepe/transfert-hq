@@ -44,6 +44,11 @@
   .hq-dangling-member-swing{animation:none}
 }
 
+/* perf16: --cock-give / --cock-turn change every frame while the member touches the avatar and are
+   read only by .hq-companion-avatar itself. Registered as non-inheriting and set on that element
+   (not on .hq-companion), so a change restyles one element instead of the whole layered rig. */
+@property --cock-give{syntax:"<number>";inherits:false;initial-value:0}
+@property --cock-turn{syntax:"<angle>";inherits:false;initial-value:2.4deg}
 .hq-companion-avatar.is-cock-bump{filter:brightness(1.12)}
 .hq-companion.is-cock-on-tit .hq-companion-avatar{
   animation:none!important;
@@ -457,4 +462,38 @@ body.hq-dangle-enabled[data-view] .view-bar{padding-right:84px}
 }
 @media (prefers-reduced-motion:reduce){
   .hq-oral-head{display:none}
+}
+.hq-companion-wake-pill{
+  position:fixed;
+  z-index:320;
+  right:max(12px,env(safe-area-inset-right));
+  bottom:calc(var(--nav-h,56px) + 12px + env(safe-area-inset-bottom));
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:7px 12px;
+  min-height:34px;
+  border-radius:999px;
+  border:1px solid color-mix(in srgb,#c44b7a 55%,var(--line));
+  background:color-mix(in srgb,#c44b7a 18%,var(--panel-2,#18181b));
+  color:var(--text,#fff);
+  font-family:var(--font-sans,system-ui,sans-serif);
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.01em;
+  cursor:pointer;
+  box-shadow:0 6px 18px rgba(0,0,0,.28),0 0 12px rgba(196,75,122,.2);
+  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;
+}
+.hq-companion-wake-pill[hidden]{
+  display:none !important;
+}
+.hq-companion-wake-pill:hover{
+  transform:translateY(-1px);
+  border-color:color-mix(in srgb,#ff7cb2 75%,var(--line));
+  box-shadow:0 8px 22px rgba(0,0,0,.34),0 0 16px rgba(255,107,168,.32);
+}
+.hq-companion-wake-ico{
+  font-size:13px;
+  line-height:1;
 }
