@@ -475,23 +475,58 @@ def run_inventoria_commit(
             _validate_xop_row(conn, xop_id)
             return {"ok": False, "code": "needs_reconcile", "cross_store_op_id": xop_id}
 
-        _invoke_test_hook("F5")
+        def _uncertain_after_apply(exc: BaseException) -> dict[str, Any]:
+            """Apply succeeded but F5 ack is not durable — stay in_flight, never replay."""
+            conn.execute(
+                "UPDATE cross_store_ops SET status = ?, uncertain_inventory = 1, "
+                "error_code = ?, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", "ack_uncertain", now, xop_id),
+            )
+            conn.execute(
+                "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", now, operation_id),
+            )
+            conn.commit()
+            _validate_xop_row(conn, xop_id)
+            http = exc.status if isinstance(exc, inventory.InventoryError) else 409
+            return {
+                "ok": False,
+                "code": "needs_reconcile",
+                "error": str(exc),
+                "http_status": http,
+                "cross_store_op_id": xop_id,
+            }
+
+        try:
+            _invoke_test_hook("F5")
+        except Exception as exc:
+            return _uncertain_after_apply(exc)
         step["attempt_phase"] = "acknowledged"
         steps[step_index] = step
-        step_results.append({
+        ack_results = step_results + [{
             "step_index": step_index,
             "action": action,
             "inventory_rev": result.get("rev"),
             "result": {k: v for k, v in result.items() if k in ("item", "place", "items", "deleted", "moved")},
-        })
-        cur_expected_rev = int(result["rev"])
-        step_index += 1
-        conn.execute(
-            "UPDATE cross_store_ops SET planned_steps_json = ?, step_results_json = ?, "
-            "step_index = ?, inventory_rev_after = ?, updated_at = ? WHERE id = ?",
-            (_safe_json(steps), _safe_json(step_results), step_index, cur_expected_rev, now, xop_id),
-        )
-        conn.commit()
+        }]
+        next_rev = int(result["rev"])
+        next_index = step_index + 1
+        try:
+            conn.execute(
+                "UPDATE cross_store_ops SET planned_steps_json = ?, step_results_json = ?, "
+                "step_index = ?, inventory_rev_after = ?, updated_at = ? WHERE id = ?",
+                (_safe_json(steps), _safe_json(ack_results), next_index, next_rev, now, xop_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            return _uncertain_after_apply(exc)
+        step_results = ack_results
+        cur_expected_rev = next_rev
+        step_index = next_index
         _validate_xop_row(conn, xop_id)
 
     xop = conn.execute("SELECT * FROM cross_store_ops WHERE id = ?", (xop_id,)).fetchone()

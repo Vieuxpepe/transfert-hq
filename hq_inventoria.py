@@ -280,6 +280,24 @@ def _resolve_proposal(proposal: dict, inv: dict) -> tuple[dict, list[dict]]:
                 "refs_place_id": refs["place_id"],
                 "payload_id": payload["id"],
             })
+    if op == "item.move":
+        ids = payload.get("ids")
+        ref_item = refs.get("item_id")
+        if isinstance(ref_item, str) and (not isinstance(ids, list) or ref_item not in ids):
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "refs_item_id": ref_item,
+                "payload_ids": ids if isinstance(ids, list) else None,
+            })
+        ref_place = refs.get("place_id")
+        if isinstance(ref_place, str) and payload.get("place") != ref_place:
+            local_issues.append({
+                "op": op,
+                "code": "ref_payload_mismatch",
+                "refs_place_id": ref_place,
+                "payload_place": payload.get("place"),
+            })
     if op.startswith("item.") and resolved.get("item_id") and "id" not in payload and op != "item.create":
         payload["id"] = resolved["item_id"]
     if op.startswith("place.") and resolved.get("place_id") and "id" not in payload and op != "place.create":
@@ -307,6 +325,8 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
     item_rev: dict[str, int] = {i["id"]: int(i["rev"]) for i in inv.get("items") or []}
     item_place: dict[str, str | None] = {i["id"]: i.get("place") for i in inv.get("items") or []}
     places: set[str] = {p["id"] for p in inv.get("places") or []}
+    place_rev: dict[str, int] = {p["id"]: int(p["rev"]) for p in inv.get("places") or []}
+    place_parent: dict[str, str | None] = {p["id"]: p.get("parent") for p in inv.get("places") or []}
     deleted_items: set[str] = set()
     deleted_places: set[str] = set()
     issues: list[dict] = []
@@ -399,9 +419,11 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
                 if _dead_item(mid, step, op):
                     break
             else:
+                dest_norm = dest if dest not in (None, "") else None
                 for mid in dict.fromkeys(ids):
-                    item_place[mid] = dest if dest not in (None, "") else None
-                    item_rev[mid] = item_rev.get(mid, 1) + 1
+                    if item_place.get(mid) != dest_norm:
+                        item_place[mid] = dest_norm
+                        item_rev[mid] = item_rev.get(mid, 1) + 1
         elif op == "place.update":
             pid = payload.get("id")
             if _dead_place(pid, step, op):
@@ -409,9 +431,30 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
             if pid not in places:
                 issues.append({"step": step, "code": "not_found", "op": op})
                 continue
-            parent = payload.get("parent")
-            if parent is not None and _dead_place(parent, step, op):
+            want_rev = payload.get("rev")
+            if want_rev != place_rev.get(pid):
+                issues.append({"step": step, "code": "stale_place_rev", "op": op, "place_id": pid})
                 continue
+            if "parent" in payload:
+                parent = payload.get("parent")
+                if parent in ("",):
+                    parent = None
+                if parent is not None and _dead_place(parent, step, op):
+                    continue
+                cur = parent if isinstance(parent, str) else None
+                seen: set[str] = set()
+                cycle = False
+                while isinstance(cur, str):
+                    if cur == pid or cur in seen:
+                        cycle = True
+                        break
+                    seen.add(cur)
+                    cur = place_parent.get(cur)
+                if cycle:
+                    issues.append({"step": step, "code": "batch_place_cycle", "op": op, "place_id": pid})
+                    continue
+                place_parent[pid] = parent if isinstance(parent, str) else None
+            place_rev[pid] = int(place_rev.get(pid, 1)) + 1
         elif op == "place.delete":
             pid = payload.get("id")
             if not isinstance(pid, str) or pid in deleted_places:
@@ -423,11 +466,20 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
             if pid not in places:
                 issues.append({"step": step, "code": "not_found", "op": op})
                 continue
+            want_rev = payload.get("rev")
+            if want_rev != place_rev.get(pid):
+                issues.append({"step": step, "code": "stale_place_rev", "op": op, "place_id": pid})
+                continue
+            occupied = any(pl == pid for pl in item_place.values()) or any(
+                par == pid for par in place_parent.values()
+            )
+            if occupied:
+                issues.append({"step": step, "code": "batch_place_not_empty", "op": op, "place_id": pid})
+                continue
             deleted_places.add(pid)
             places.discard(pid)
-            for iid2, pl in list(item_place.items()):
-                if pl == pid:
-                    item_place[iid2] = None
+            place_rev.pop(pid, None)
+            place_parent.pop(pid, None)
         else:
             issues.append({"step": step, "code": "batch_op_unsupported", "op": op})
     return issues
@@ -644,6 +696,21 @@ def _preview_diff(
                 entry["after"] = {k: payload[k] for k in payload if k not in ("id", "rev")}
         elif op == "item.create":
             entry["after"] = {k: payload[k] for k in payload if k != "id"}
+        elif op == "item.move":
+            ids = [i for i in (payload.get("ids") or []) if isinstance(i, str)]
+            entry["items"] = [
+                {
+                    "id": iid,
+                    "name": next((i.get("name") for i in inv["items"] if i["id"] == iid), None),
+                }
+                for iid in ids
+            ]
+            dest = payload.get("place")
+            place = next((p for p in inv.get("places") or [] if p["id"] == dest), None) if dest else None
+            entry["destination"] = {
+                "id": dest if dest not in ("",) else None,
+                "name": place.get("name") if place else None,
+            }
         changes.append(entry)
     digest = _commit_preview_digest(proposals, int(inv["rev"]), item_expectations)
     return {"changes": changes, "preview_digest": digest, "inventory_rev": inv["rev"]}
@@ -805,18 +872,29 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
     inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
     resume = row["status"] in ("committing", "needs_reconcile") and row["cross_store_op_id"]
     finalize_only = False
+    uncertain_resume = False
     if row["cross_store_op_id"]:
         finalize_only = commit_mod.journal_ready_to_finalize(conn, row["cross_store_op_id"])
+        xstat = conn.execute(
+            "SELECT status, uncertain_inventory FROM cross_store_ops WHERE id = ?",
+            (row["cross_store_op_id"],),
+        ).fetchone()
+        if xstat is not None and (
+            int(xstat["uncertain_inventory"]) == 1 or xstat["status"] == "needs_reconcile"
+        ):
+            uncertain_resume = True
     if resume:
         xop = conn.execute(
             "SELECT step_results_json FROM cross_store_ops WHERE id = ?",
             (row["cross_store_op_id"],),
         ).fetchone()
         if xop and xop["step_results_json"]:
-            last = json.loads(xop["step_results_json"])[-1]
-            if isinstance(last, dict) and isinstance(last.get("inventory_rev"), int):
-                exp_rev = int(last["inventory_rev"])
-    if not finalize_only:
+            parsed = json.loads(xop["step_results_json"])
+            if parsed:
+                last = parsed[-1]
+                if isinstance(last, dict) and isinstance(last.get("inventory_rev"), int):
+                    exp_rev = int(last["inventory_rev"])
+    if not finalize_only and not uncertain_resume:
         if rev_before != exp_rev:
             raise InventoriaError("révision inventaire obsolète", status=409, code="conflict")
         batch_issues = _simulate_batch_sequential(proposals, inv)
@@ -849,12 +927,17 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
     if result.get("code") == "needs_reconcile":
         _audit(conn, household_id=household_id, operation_id=op_id, action="commit",
                prev_status=row["status"], next_status="needs_reconcile", detail=result)
-        return {
+        failed = {
             "ok": False,
             "code": "needs_reconcile",
             "operation_id": op_id,
             "cross_store_op_id": result.get("cross_store_op_id"),
         }
+        if result.get("error"):
+            failed["error"] = result["error"]
+        if result.get("http_status"):
+            failed["http_status"] = int(result["http_status"])
+        return failed
     if result.get("cross_store_op_id"):
         _audit(conn, household_id=household_id, operation_id=op_id, action="commit",
                prev_status=row["status"], next_status="needs_reconcile", detail=result)
