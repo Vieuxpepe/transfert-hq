@@ -1,5 +1,7 @@
 {
   "$id": "transfert-hq/household/common.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
   "title": "Household common contracts v1",
   "schema_version": 1,
   "id_patterns": {
@@ -19,6 +21,7 @@
     "purchase": "^pur-[0-9a-f]{16}$",
     "inventoria_session": "^ivo-[0-9a-f]{16}$",
     "inventoria_op": "^iop-[0-9a-f]{16}$",
+    "cross_store_op": "^xop-[0-9a-f]{16}$",
     "inventory_item": "^itm-[0-9a-f]{16}$",
     "inventory_place": "^plc-[0-9a-f]{16}$"
   },

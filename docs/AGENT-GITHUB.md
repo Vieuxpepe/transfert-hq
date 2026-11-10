@@ -197,7 +197,7 @@ Playwright/check scripts under `tests/check_hq_companion_*.mjs` for UI behavior.
 
 ## Current focus (update on push)
 
-**Draft PR (architecture only):** branch `feat/household-foundations` — Household Intelligence foundations (Finances / Repas & Épicerie / Inventoria). Entry: `docs/household/README.md`. No live routes, nav, persona, or scraping. Review A/B/C: cross-store journal, financial security + LLM allowlist, Inventoria FAB UX. Schema tests: `python -m unittest tests.test_household_schemas -v`.
+**Draft PR #30 (architecture only):** branch `feat/household-foundations` — Household Intelligence foundations. Entry: `docs/household/README.md`. Audit fixes: inventory attempt phases (`not_started|in_flight|acknowledged`), exact `unit_price_ratio`, hardened validators, CI `.github/workflows/household-foundations.yml`. `*.v1.json` = custom contract descriptors (not JSON Schema). Tests: `python -m unittest tests.test_household_schemas -v`.
 
 **Branch note:** integration remains **`main`**. Do not treat household docs as shipped runtime.
 

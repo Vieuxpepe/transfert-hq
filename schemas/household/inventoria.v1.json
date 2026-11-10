@@ -1,5 +1,7 @@
 {
   "$id": "transfert-hq/household/inventoria.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
   "schema_version": 1,
   "pipeline": ["propose", "validate", "preview", "commit", "audit"],
   "forbidden": [
@@ -53,7 +55,10 @@
             "place.delete"
           ]
         },
-        "resolved.confidence": {"enum": ["high", "medium", "low"]}
+        "resolved.confidence": {"enum": ["high", "medium", "low"]},
+        "payload": {
+          "note": "Structured per-op validation in hq_household_schemas._validate_inventoria_payload. Arbitrary LLM JSON is never apply-ready."
+        }
       }
     }
   }

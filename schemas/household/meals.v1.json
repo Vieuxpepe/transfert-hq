@@ -1,5 +1,7 @@
 {
   "$id": "transfert-hq/household/meals.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
   "schema_version": 1,
   "entities": {
     "diet_profile": {

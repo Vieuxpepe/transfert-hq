@@ -19,10 +19,12 @@ Index des livrables d'architecture pour **Finances**, **Repas & Épicerie** et
 | [12-cross-store-journal.md](12-cross-store-journal.md) | **A** — Journal SQLite↔JSON, idempotence, crash, reconcile |
 | [13-financial-security.md](13-financial-security.md) | **B** — ACL fichiers, backups, allowlist Inventoria→LLM |
 | [14-inventoria-ux.md](14-inventoria-ux.md) | **C** — FAB bas-gauche, safe areas, focus/clavier (sans nav #30) |
+| [15-contract-format.md](15-contract-format.md) | Descripteurs `*.v1.json` ≠ JSON Schema Draft |
 
-**Schémas versionnés :** [`schemas/household/`](../../schemas/household/)  
-**Validateurs stdlib :** [`hq_household_schemas.py`](../../hq_household_schemas.py)  
-**Tests :** `python -m unittest tests.test_household_schemas -v`
+**Contrats versionnés :** [`schemas/household/`](../../schemas/household/) — **descripteurs de contrat HQ personnalisés**, **pas** des documents JSON Schema Draft.  
+La vérité exécutable = [`hq_household_schemas.py`](../../hq_household_schemas.py).  
+**Tests :** `python -m unittest tests.test_household_schemas -v`  
+**CI :** `.github/workflows/household-foundations.yml`
 
 Branche de travail : `feat/household-foundations` (depuis `main` post-PR #29).  
 Hors scope : fusion, déploiement, navigation live, persona déployée, collecte auto de circulaires.

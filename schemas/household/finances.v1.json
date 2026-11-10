@@ -1,5 +1,7 @@
 {
   "$id": "transfert-hq/household/finances.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
   "schema_version": 1,
   "entities": {
     "household": {

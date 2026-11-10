@@ -8,7 +8,9 @@ Convention IDs : préfixe + 16 hex (`fin-`, `env-`, `tx-`, `prd-`, `lot-`, `rcp-
 
 Argent : `*_cents: int` (CAD centimes par défaut ; `currency` ISO 4217).  
 Quantités : jamais de float monétaire ; qty physiques = entiers en milli-unités
-canoniques (`qty_milli`) **ou** entier + `unit` déjà canonique.
+canoniques (`qty_milli`) **ou** entier + `unit` déjà canonique.  
+Prix unitaires offres : `unit_price_ratio {cents_num, qty_milli_den}` (exact) —
+pas de `unit_price_cents_per_canonical` (troncature).
 
 ---
 

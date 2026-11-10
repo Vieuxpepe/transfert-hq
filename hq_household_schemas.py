@@ -3,17 +3,37 @@
 Stdlib-only contracts for Finances / Grocery / Meals / Inventoria / price offers.
 No persistence, no bridge routes, no LLM calls. Money is integer cents; quantities
 use non-negative milli-units of an explicit canonical unit.
+
+The JSON files under ``schemas/household/*.v1.json`` are **custom contract
+descriptors** (HQ-shaped docs), **not** JSON Schema Draft-07/2020-12 documents.
+Python validators in this module are the enforceable source of truth.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
 
+# Custom contract descriptor filenames (not JSON Schema). Keep in sync with CI.
+CONTRACT_DESCRIPTOR_FILES = (
+    "common.v1.json",
+    "cross_store_op.v1.json",
+    "finances.v1.json",
+    "grocery.v1.json",
+    "inventoria.v1.json",
+    "meals.v1.json",
+    "price_offer.v1.json",
+)
+
 CANONICAL_UNITS = frozenset({"g", "ml", "each", "serving"})
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}\Z")
+SHA256_HEX = re.compile(r"^[0-9a-f]{64}\Z")
+XOP_RE = re.compile(r"^xop-[0-9a-f]{16}\Z")
 ID_RES = {
     "household": re.compile(r"^hhold-[0-9a-f]{16}\Z"),
     "account": re.compile(r"^acct-[0-9a-f]{16}\Z"),
@@ -33,6 +53,7 @@ ID_RES = {
     "inventoria_op": re.compile(r"^iop-[0-9a-f]{16}\Z"),
     "inventory_item": re.compile(r"^itm-[0-9a-f]{16}\Z"),
     "inventory_place": re.compile(r"^plc-[0-9a-f]{16}\Z"),
+    "cross_store_op": XOP_RE,
 }
 
 INVENTORIA_OP_STATUS = frozenset({
@@ -62,8 +83,12 @@ CROSS_STORE_KINDS = frozenset({
     "grocery_purchase",
     "lot_consume",
 })
-# item.adjust must never be auto-replayed when uncertain_inventory is set.
+CROSS_STORE_STORES = frozenset({"sqlite", "inventory"})
+INVENTORY_ATTEMPT_PHASES = frozenset({"not_started", "in_flight", "acknowledged"})
+# item.adjust must never be auto-replayed when uncertain or mid-flight.
 NO_AUTO_REPLAY_INVENTORY_ACTIONS = frozenset({"item.adjust"})
+
+PLACE_KINDS = frozenset({"room", "furniture", "shelf", "drawer", "box", "bag", "other"})
 
 
 class SchemaError(ValueError):
@@ -76,6 +101,12 @@ class SchemaError(ValueError):
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def require_bool(v: Any, field: str) -> bool:
+    if v is not True and v is not False:
+        raise SchemaError(f"{field} doit être un booléen strict (True/False)")
+    return v
 
 
 def require_cents(v: Any, field: str = "amount_cents", *, min_value: int | None = None) -> int:
@@ -105,8 +136,13 @@ def require_id(v: Any, kind: str, field: str = "id") -> str:
 
 
 def require_iso_date(v: Any, field: str) -> str:
+    """Require AAAA-MM-JJ that is a real calendar date (rejects 2026-02-30)."""
     if not isinstance(v, str) or ISO_DATE.match(v) is None:
         raise SchemaError(f"{field} doit être AAAA-MM-JJ")
+    try:
+        date.fromisoformat(v)
+    except ValueError as exc:
+        raise SchemaError(f"{field} n'est pas une date calendaire valide") from exc
     return v
 
 
@@ -122,12 +158,67 @@ def require_idempotency_key(v: Any, field: str = "idempotency_key") -> str:
     return v
 
 
-def unit_price_cents(price_cents: int, qty_milli: int) -> int:
-    """Integer unit price: cents per canonical unit (floor division)."""
-    if qty_milli <= 0:
-        raise SchemaError("qty_milli doit être > 0 pour un prix unitaire")
-    return (price_cents * 1000) // qty_milli
+def require_sha256_hex(v: Any, field: str = "request_hash") -> str:
+    if not isinstance(v, str) or SHA256_HEX.match(v) is None:
+        raise SchemaError(f"{field} doit être un SHA-256 hex (64 caractères)")
+    return v
 
+
+# ---------------------------------------------------------------- unit price (exact ratio)
+
+def unit_price_ratio(price_cents: int, qty_milli: int) -> dict[str, int]:
+    """Exact rational unit price: price_cents / qty_milli (no float, no early truncate).
+
+    Comparisons must use ``compare_unit_price_ratios`` (cross-multiply).
+    Display uses ``format_unit_price_display`` ($/kg, $/L, or $/unité).
+    """
+    if not _is_int(price_cents) or price_cents < 0:
+        raise SchemaError("price_cents invalide pour ratio")
+    if not _is_int(qty_milli) or qty_milli <= 0:
+        raise SchemaError("qty_milli doit être > 0 pour un prix unitaire")
+    return {"cents_num": price_cents, "qty_milli_den": qty_milli}
+
+
+def compare_unit_price_ratios(a: dict, b: dict) -> int:
+    """Return -1, 0, 1 like cmp using exact integer cross-multiply."""
+    an, ad = a["cents_num"], a["qty_milli_den"]
+    bn, bd = b["cents_num"], b["qty_milli_den"]
+    left, right = an * bd, bn * ad
+    return (left > right) - (left < right)
+
+
+def format_unit_price_display(price_cents: int, qty_milli: int, unit: str) -> dict[str, Any]:
+    """Normalized display cents for UI only — not a source of truth for comparisons.
+
+    - g  → cents per kg  (×1e6 / qty_milli)
+    - ml → cents per L   (×1e6 / qty_milli)
+    - each|serving → cents per unit (×1000 / qty_milli)
+    """
+    require_unit(unit)
+    ratio = unit_price_ratio(price_cents, qty_milli)
+    if unit in ("g", "ml"):
+        display_unit = "kg" if unit == "g" else "L"
+        # floor for display labels only
+        display_cents = (price_cents * 1_000_000) // qty_milli
+    else:
+        display_unit = "unité"
+        display_cents = (price_cents * 1000) // qty_milli
+    return {
+        "ratio": ratio,
+        "display_cents": display_cents,
+        "display_per": display_unit,
+        "note": "display_cents is floored for labels; comparisons use ratio",
+    }
+
+
+# Deprecated name kept as explicit failure so call sites migrate.
+def unit_price_cents(price_cents: int, qty_milli: int) -> int:
+    raise SchemaError(
+        "unit_price_cents est retiré — utiliser unit_price_ratio + format_unit_price_display"
+    )
+
+
+# ---------------------------------------------------------------- domain validators
 
 def validate_household(doc: Any) -> dict:
     if not isinstance(doc, dict):
@@ -143,6 +234,17 @@ def validate_household(doc: Any) -> dict:
 
 
 def validate_transaction(doc: Any) -> dict:
+    """Financial write contract.
+
+    Idempotence: ``idempotency_key`` scopes **one client submission**. Same key +
+    same normalized body → same tx id. Same key + different body → conflict.
+    A missing key is allowed only for interactive admin POSTs that the server
+    then stamps; import/grocery paths must supply a key.
+
+    Legitimate repeated purchases (buy milk twice) are **new** transactions with
+    new keys; ``actual_purchase.fingerprint`` blocks duplicate *receipt lines*,
+    not intentional second trips (fingerprints must include a line discriminator).
+    """
     if not isinstance(doc, dict):
         raise SchemaError("transaction invalide")
     require_id(doc.get("id"), "transaction")
@@ -157,7 +259,9 @@ def validate_transaction(doc: Any) -> dict:
         raise SchemaError("source transaction invalide")
     if not _is_int(doc.get("rev")) or doc["rev"] < 1:
         raise SchemaError("rev transaction invalide")
-    if doc.get("idempotency_key") is not None:
+    if doc.get("source") in ("import", "grocery_purchase"):
+        require_idempotency_key(doc.get("idempotency_key"))
+    elif doc.get("idempotency_key") is not None:
         require_idempotency_key(doc["idempotency_key"])
     return doc
 
@@ -184,6 +288,13 @@ def validate_food_lot(doc: Any) -> dict:
 
 
 def validate_actual_purchase(doc: Any) -> dict:
+    """Purchase posting.
+
+    ``fingerprint`` must uniquely identify a receipt line (include merchant,
+    product/barcode, day, paid_cents, qty, and a line index or receipt id).
+    Buying the same SKU on two trips → two fingerprints. Replaying the same
+    receipt line → 409 via fingerprint uniqueness + idempotency_key.
+    """
     if not isinstance(doc, dict):
         raise SchemaError("actual_purchase invalide")
     require_id(doc.get("id"), "purchase")
@@ -228,6 +339,88 @@ def validate_recipe(doc: Any) -> dict:
     return doc
 
 
+def _validate_inventoria_payload(op: str, payload: dict) -> None:
+    """Structured payload per op — arbitrary LLM JSON is never apply-ready."""
+    if op == "item.adjust":
+        require_id(payload.get("id"), "inventory_item", "payload.id")
+        delta = payload.get("delta")
+        if not _is_int(delta) or delta == 0 or abs(delta) > 1_000_000:
+            raise SchemaError("payload.delta invalide pour item.adjust")
+        extra = set(payload) - {"id", "delta"}
+        if extra:
+            raise SchemaError(f"payload item.adjust champs interdits: {sorted(extra)}")
+        return
+    if op == "item.create":
+        if not isinstance(payload.get("name"), str) or not (0 < len(payload["name"]) <= 120):
+            raise SchemaError("payload.name requis pour item.create")
+        require_qty_milli(payload.get("qty", 1), "payload.qty", min_value=0)
+        if "unit" in payload and payload["unit"] is not None:
+            if not isinstance(payload["unit"], str) or len(payload["unit"]) > 16:
+                raise SchemaError("payload.unit invalide")
+        if "place" in payload and payload["place"] is not None:
+            require_id(payload["place"], "inventory_place", "payload.place")
+        return
+    if op == "item.update":
+        require_id(payload.get("id"), "inventory_item", "payload.id")
+        if not _is_int(payload.get("rev")) or payload["rev"] < 1:
+            raise SchemaError("payload.rev requis pour item.update")
+        return
+    if op == "item.delete":
+        require_id(payload.get("id"), "inventory_item", "payload.id")
+        if not _is_int(payload.get("rev")) or payload["rev"] < 1:
+            raise SchemaError("payload.rev requis pour item.delete")
+        return
+    if op == "item.move":
+        ids = payload.get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 500:
+            raise SchemaError("payload.ids invalide pour item.move")
+        for i, iid in enumerate(ids):
+            require_id(iid, "inventory_item", f"payload.ids[{i}]")
+        place = payload.get("place")
+        if place is not None:
+            require_id(place, "inventory_place", "payload.place")
+        return
+    if op == "place.create":
+        if not isinstance(payload.get("name"), str) or not (0 < len(payload["name"]) <= 120):
+            raise SchemaError("payload.name requis pour place.create")
+        if "kind" in payload and payload["kind"] not in PLACE_KINDS:
+            raise SchemaError("payload.kind invalide")
+        if payload.get("parent") is not None:
+            require_id(payload["parent"], "inventory_place", "payload.parent")
+        return
+    if op == "place.update":
+        require_id(payload.get("id"), "inventory_place", "payload.id")
+        if not _is_int(payload.get("rev")) or payload["rev"] < 1:
+            raise SchemaError("payload.rev requis pour place.update")
+        return
+    if op == "place.delete":
+        require_id(payload.get("id"), "inventory_place", "payload.id")
+        if not _is_int(payload.get("rev")) or payload["rev"] < 1:
+            raise SchemaError("payload.rev requis pour place.delete")
+        return
+    raise SchemaError("op inventoria inconnue")
+
+
+def validate_inventoria_proposal(doc: Any) -> dict:
+    if not isinstance(doc, dict):
+        raise SchemaError("proposal invalide")
+    op = doc.get("op")
+    if op not in INVENTORIA_PROPOSAL_OPS:
+        raise SchemaError("op proposal inconnue")
+    if not isinstance(doc.get("refs"), dict) or not isinstance(doc.get("resolved"), dict):
+        raise SchemaError("refs/resolved requis")
+    conf = doc["resolved"].get("confidence")
+    if conf not in ("high", "medium", "low"):
+        raise SchemaError("resolved.confidence invalide")
+    payload = doc.get("payload")
+    if not isinstance(payload, dict):
+        raise SchemaError("payload proposal requis")
+    _validate_inventoria_payload(op, payload)
+    if not isinstance(doc.get("label_fr"), str) or not doc["label_fr"].strip():
+        raise SchemaError("label_fr requis")
+    return doc
+
+
 def validate_inventoria_operation(doc: Any) -> dict:
     if not isinstance(doc, dict):
         raise SchemaError("inventoria operation invalide")
@@ -242,26 +435,8 @@ def validate_inventoria_operation(doc: Any) -> dict:
     for p in proposals:
         validate_inventoria_proposal(p)
     if doc["status"] in ("committing", "committed") and doc.get("expected_inventory_rev") is None:
-        # recommended; soft check — still allow if item_rev_expectations present
         if not doc.get("item_rev_expectations"):
             raise SchemaError("commit inventoria exige expected_inventory_rev ou item_rev_expectations")
-    return doc
-
-
-def validate_inventoria_proposal(doc: Any) -> dict:
-    if not isinstance(doc, dict):
-        raise SchemaError("proposal invalide")
-    if doc.get("op") not in INVENTORIA_PROPOSAL_OPS:
-        raise SchemaError("op proposal inconnue")
-    if not isinstance(doc.get("refs"), dict) or not isinstance(doc.get("resolved"), dict):
-        raise SchemaError("refs/resolved requis")
-    conf = doc["resolved"].get("confidence")
-    if conf not in ("high", "medium", "low"):
-        raise SchemaError("resolved.confidence invalide")
-    if not isinstance(doc.get("payload"), dict):
-        raise SchemaError("payload proposal requis")
-    if not isinstance(doc.get("label_fr"), str) or not doc["label_fr"].strip():
-        raise SchemaError("label_fr requis")
     return doc
 
 
@@ -278,85 +453,193 @@ def validate_price_offer(doc: Any) -> dict:
         raise SchemaError("product_name requis")
     price = require_cents(doc.get("price_cents"), "price_cents", min_value=0)
     qty = require_qty_milli(doc.get("qty_milli"), min_value=1)
-    require_unit(doc.get("unit"))
-    expected = unit_price_cents(price, qty)
-    got = require_cents(doc.get("unit_price_cents_per_canonical"), "unit_price_cents_per_canonical", min_value=0)
-    if got != expected:
+    unit = require_unit(doc.get("unit"))
+    ratio = doc.get("unit_price_ratio")
+    expected = unit_price_ratio(price, qty)
+    if not isinstance(ratio, dict):
+        raise SchemaError("unit_price_ratio requis {cents_num, qty_milli_den}")
+    if ratio.get("cents_num") != expected["cents_num"] or ratio.get("qty_milli_den") != expected["qty_milli_den"]:
         raise SchemaError(
-            f"unit_price_cents_per_canonical incohérent (attendu {expected}, reçu {got})"
+            f"unit_price_ratio incohérent (attendu {expected}, reçu {ratio})"
         )
     promo = doc.get("promo")
     if not isinstance(promo, dict) or promo.get("kind") not in ("none", "percent", "bogo", "multi", "other"):
         raise SchemaError("promo invalide")
-    if doc.get("tax_included") not in (True, False):
-        raise SchemaError("tax_included invalide")
+    require_bool(doc.get("tax_included"), "tax_included")
     require_cents(doc.get("deposit_cents"), "deposit_cents", min_value=0)
     if not isinstance(doc.get("collected_at"), (int, float)) or isinstance(doc.get("collected_at"), bool):
         raise SchemaError("collected_at invalide")
+    require_iso_date(doc.get("collected_on"), "collected_on")
+    if doc.get("valid_from") is not None:
+        require_iso_date(doc["valid_from"], "valid_from")
+    if doc.get("valid_to") is not None:
+        require_iso_date(doc["valid_to"], "valid_to")
     prov = doc.get("provenance")
     if not isinstance(prov, dict) or prov.get("kind") not in ("manual", "file_import", "provider"):
         raise SchemaError("provenance invalide")
     if not isinstance(prov.get("provider_id"), str) or not prov["provider_id"]:
         raise SchemaError("provenance.provider_id requis")
-    if prov.get("verifiable") not in (True, False):
-        raise SchemaError("provenance.verifiable invalide")
+    require_bool(prov.get("verifiable"), "provenance.verifiable")
     if not _is_int(doc.get("reliability")) or not (0 <= doc["reliability"] <= 100):
         raise SchemaError("reliability invalide")
     if not _is_int(doc.get("stale_after_days")) or not (1 <= doc["stale_after_days"] <= 365):
         raise SchemaError("stale_after_days invalide")
     if not _is_int(doc.get("rev")) or doc["rev"] < 1:
         raise SchemaError("rev price_offer invalide")
+    # touch display helper so contract stays wired
+    format_unit_price_display(price, qty, unit)
     return doc
+
+
+def validate_planned_step(step: Any, *, index: int) -> dict:
+    if not isinstance(step, dict):
+        raise SchemaError(f"planned_steps[{index}] invalide")
+    store = step.get("store")
+    if store not in CROSS_STORE_STORES:
+        raise SchemaError(f"planned_steps[{index}].store invalide")
+    action = step.get("action")
+    if not isinstance(action, str) or not action.strip() or len(action) > 64:
+        raise SchemaError(f"planned_steps[{index}].action invalide")
+    if store == "inventory":
+        if action not in INVENTORIA_PROPOSAL_OPS:
+            raise SchemaError(f"planned_steps[{index}].action inventaire inconnue")
+        phase = step.get("attempt_phase", "not_started")
+        if phase not in INVENTORY_ATTEMPT_PHASES:
+            raise SchemaError(f"planned_steps[{index}].attempt_phase invalide")
+        if "payload" in step and step["payload"] is not None:
+            if not isinstance(step["payload"], dict):
+                raise SchemaError(f"planned_steps[{index}].payload invalide")
+            _validate_inventoria_payload(action, step["payload"])
+    else:
+        # sqlite domain steps: action free-form within bounds; payload object if present
+        if "payload" in step and step["payload"] is not None and not isinstance(step["payload"], dict):
+            raise SchemaError(f"planned_steps[{index}].payload invalide")
+        if "attempt_phase" in step and step["attempt_phase"] is not None:
+            raise SchemaError(f"planned_steps[{index}].attempt_phase réservé à inventory")
+    return step
 
 
 def validate_cross_store_op(doc: Any) -> dict:
     """Journal row for SQLite↔inventory JSON coordination (foundations contract)."""
     if not isinstance(doc, dict):
         raise SchemaError("cross_store_op invalide")
-    if not isinstance(doc.get("id"), str) or not doc["id"].startswith("xop-"):
-        # allow full hex check loosely via length
-        if not (isinstance(doc.get("id"), str) and len(doc["id"]) >= 8):
-            raise SchemaError("id cross_store_op invalide")
+    require_id(doc.get("id"), "cross_store_op")
     if doc.get("kind") not in CROSS_STORE_KINDS:
         raise SchemaError("kind cross_store_op invalide")
-    if doc.get("status") not in CROSS_STORE_STATUSES:
+    status = doc.get("status")
+    if status not in CROSS_STORE_STATUSES:
         raise SchemaError("status cross_store_op invalide")
     require_idempotency_key(doc.get("idempotency_key"))
-    if not isinstance(doc.get("request_hash"), str) or len(doc["request_hash"]) < 32:
-        raise SchemaError("request_hash requis")
-    if not isinstance(doc.get("planned_steps"), list):
-        raise SchemaError("planned_steps requis")
-    if not _is_int(doc.get("step_index")) or doc["step_index"] < 0:
-        raise SchemaError("step_index invalide")
-    uncertain = doc.get("uncertain_inventory", 0)
-    if uncertain not in (0, 1, False, True):
-        raise SchemaError("uncertain_inventory invalide")
-    uncertain_flag = 1 if uncertain in (1, True) else 0
-    if uncertain_flag and doc.get("status") not in ("needs_reconcile", "applying_inventory", "finalizing"):
-        # once uncertain, only reconcile-oriented statuses (or still mid-flight before mark)
-        if doc.get("status") in CROSS_STORE_TERMINAL - {"needs_reconcile"}:
-            raise SchemaError("uncertain_inventory incompatible avec status terminal non-reconcile")
-    if uncertain_flag and doc.get("status") == "committed":
+    require_sha256_hex(doc.get("request_hash"))
+    steps = doc.get("planned_steps")
+    if not isinstance(steps, list) or len(steps) > 50:
+        raise SchemaError("planned_steps requis (liste ≤ 50)")
+    for i, step in enumerate(steps):
+        validate_planned_step(step, index=i)
+    step_index = doc.get("step_index")
+    if not _is_int(step_index) or step_index < 0 or step_index > len(steps):
+        raise SchemaError("step_index hors bornes (0..len(planned_steps))")
+    uncertain = doc.get("uncertain_inventory")
+    if not _is_int(uncertain) or uncertain not in (0, 1):
+        raise SchemaError("uncertain_inventory doit être 0 ou 1 (entier strict)")
+    # State invariants
+    if uncertain == 1 and status == "committed":
         raise SchemaError("committed interdit si uncertain_inventory")
+    if uncertain == 1 and status in ("failed", "cancelled"):
+        raise SchemaError("uncertain_inventory incompatible avec failed/cancelled — utiliser needs_reconcile")
+    if status == "committed" and step_index != len(steps):
+        raise SchemaError("committed exige step_index == len(planned_steps)")
+    if status == "applying_inventory":
+        if not any(s.get("store") == "inventory" for s in steps):
+            raise SchemaError("applying_inventory sans étape inventory")
+    # Mid-flight adjust without ack ⇒ must not look "safe"
+    for i, step in enumerate(steps):
+        if step.get("store") != "inventory":
+            continue
+        phase = step.get("attempt_phase", "not_started")
+        if phase == "in_flight" and step.get("action") in NO_AUTO_REPLAY_INVENTORY_ACTIONS:
+            if status == "committed":
+                raise SchemaError("adjust in_flight incompatible avec committed")
+            if uncertain != 1 and status not in ("applying_inventory", "needs_reconcile", "finalizing"):
+                raise SchemaError("adjust in_flight exige uncertain_inventory=1 ou status reconcile/applying")
     return doc
 
 
-def may_auto_replay_inventory_step(*, action: str, uncertain_inventory: bool) -> bool:
-    """False when replaying would risk double-applying an inventory delta."""
-    if uncertain_inventory and action in NO_AUTO_REPLAY_INVENTORY_ACTIONS:
+def may_auto_replay_inventory_step(
+    *,
+    action: str,
+    uncertain_inventory: bool | int,
+    attempt_phase: str,
+) -> bool:
+    """True only when it is safe to call hq_inventory.apply for this step on resume.
+
+    Rules:
+    - ``not_started`` + not uncertain → may start once.
+    - ``in_flight`` → never auto-replay (especially ``item.adjust``); go reconcile.
+    - ``acknowledged`` → never replay.
+    - Global inventory ``rev`` alone must never decide this (caller must not pass rev).
+    """
+    if attempt_phase not in INVENTORY_ATTEMPT_PHASES:
         return False
-    if uncertain_inventory:
+    if attempt_phase in ("in_flight", "acknowledged"):
+        return False
+    if uncertain_inventory in (1, True):
+        return False
+    if attempt_phase != "not_started":
         return False
     return True
 
 
+def recovery_for_inventory_step(
+    *,
+    action: str,
+    attempt_phase: str,
+    uncertain_inventory: bool | int = 0,
+) -> str:
+    """Boot recovery decision for one inventory step. Never uses store rev."""
+    if attempt_phase == "acknowledged":
+        return "skip_already_acknowledged"
+    if attempt_phase == "in_flight":
+        return "needs_reconcile"
+    if attempt_phase == "not_started":
+        if uncertain_inventory in (1, True):
+            return "needs_reconcile"
+        if may_auto_replay_inventory_step(
+            action=action,
+            uncertain_inventory=False,
+            attempt_phase="not_started",
+        ):
+            return "may_start_once"
+        return "needs_reconcile"
+    return "needs_reconcile"
+
+
 def offer_freshness(offer: dict, *, now_day: str) -> str:
-    """Return fresh|stale|expired for a validated offer (date-only)."""
+    """Return fresh|stale|expired using calendar dates only."""
     validate_price_offer(offer)
-    require_iso_date(now_day, "now_day")
+    today = date.fromisoformat(require_iso_date(now_day, "now_day"))
     valid_to = offer.get("valid_to")
-    if isinstance(valid_to, str) and valid_to < now_day:
+    if isinstance(valid_to, str) and date.fromisoformat(valid_to) < today:
         return "expired"
-    # Age vs stale_after_days is caller-supplied via collected_at in runtime;
-    # foundations expose the hook only — treat missing valid_to as fresh here.
+    collected = date.fromisoformat(offer["collected_on"])
+    age_days = (today - collected).days
+    if age_days > int(offer["stale_after_days"]):
+        return "stale"
     return "fresh"
+
+
+def load_contract_descriptors(root: Path | None = None) -> dict[str, Any]:
+    """Read the seven custom contract descriptor JSON files (not JSON Schema)."""
+    base = (root or Path(__file__).resolve().parent) / "schemas" / "household"
+    out: dict[str, Any] = {}
+    for name in CONTRACT_DESCRIPTOR_FILES:
+        path = base / name
+        raw = path.read_text(encoding="utf-8")
+        out[name] = json.loads(raw)
+    if len(out) != 7:
+        raise SchemaError("attendu exactement 7 descripteurs de contrat")
+    return out
+
+
+def utc_today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()

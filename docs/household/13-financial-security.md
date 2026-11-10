@@ -94,16 +94,24 @@ Chaîne obligatoire côté serveur avant `generate()` :
 | Schéma | `hq_household_schemas` / validateurs domaine (centimes int, dates, ids) |
 | Métier | Soldes dérivés ; corrections append-only ; `auto_post` récurrences défaut `false` |
 | Inventoria | **Interdit** d'appeler `hq_finances` write — matrice permissions |
-| Idempotence | Requise sur `POST /api/finances/transactions` et achats→ledger |
-| Double soumission | Même clé → même tx id ; pas de 2ᵉ ligne |
+| Idempotence | Voir §5.1 |
+| Double soumission | Même clé + même body → même tx id ; clé + body ≠ → 409 |
 
 Toute écriture ledger passe par un handler finances qui :
 
 1. Vérifie rôle + CSRF.
-2. Valide payload (refus float/bool).
-3. Vérifie idempotency.
+2. Valide payload (refus float/bool ; dates calendaires réelles).
+3. Vérifie idempotency (§5.1).
 4. Persiste + audit.
 5. Retourne entité — **jamais** « le modèle a dit OK ».
+
+### 5.1 Idempotence finances vs achats répétés légitimes
+
+| Mécanisme | Portée | Comportement |
+|-----------|--------|--------------|
+| `idempotency_key` | Une **soumission client** (POST) | Même clé + même body normalisé → même `tx` / `purchase`. Même clé + body différent → **409**. Sources `import` / `grocery_purchase` : clé **obligatoire**. |
+| `external_fingerprint` (tx) / `fingerprint` (purchase) | Une **ligne de relevé / ticket** | Bloque le double-comptage du même reçu. Doit inclure un discriminateur de ligne (index, `receipt_id`, …). |
+| Achats répétés légitimes | Deux courses, même SKU | **Deux** fingerprints distincts + **deux** clés d'idempotence. Ce n'est pas un conflit. |
 
 ---
 

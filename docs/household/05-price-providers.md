@@ -30,7 +30,8 @@ PriceProvider (interface)
   "price_cents": 349,
   "qty_milli": 1000000,
   "unit": "g",
-  "unit_price_cents_per_canonical": 349,
+  "unit_price_ratio": {"cents_num": 349, "qty_milli_den": 1000000},
+  "collected_on": "2026-11-09",
   "promo": {
     "kind": "none|percent|bogo|multi|other",
     "label": "string",
@@ -57,9 +58,13 @@ PriceProvider (interface)
 `reliability` : 0–100 (manuel confirmé = 80 ; import non vérifié = 40 ;
 provider automatisé futur = selon score).
 
-`unit_price_cents_per_canonical` : entier calculé en arithmétique entière
-(`price_cents * 1000 / qty_milli` avec règles d'arrondi documentées) — **pas**
-de float stocké comme source de vérité.
+`unit_price_ratio` : rationnel exact `{cents_num: price_cents, qty_milli_den: qty_milli}`.
+Comparaisons = produit croisé entier (`compare_unit_price_ratios`).  
+Affichage seulement : `format_unit_price_display` → cents floored en **$/kg**,
+**$/L** ou **$/unité**.  
+**Retiré :** `unit_price_cents_per_canonical` (tronquait à 0 de nombreux prix au g/ml).
+
+`collected_on` : date calendaire de collecte (pour `fresh` / `stale` / `expired`).
 
 ---
 
@@ -79,11 +84,17 @@ jamais de fallback scraping silencieux.
 
 ## Fraîcheur
 
+Ordre d'évaluation (`offer_freshness`) :
+
+1. Si `valid_to` présent et `now_day > valid_to` → **`expired`**
+2. Sinon si `(now_day - collected_on).days > stale_after_days` → **`stale`**
+3. Sinon → **`fresh`**
+
 | État | Règle |
 |------|-------|
-| `fresh` | `now < valid_to` (si présent) et âge < `stale_after_days` |
-| `stale` | Au-delà de `stale_after_days` mais encore affichable avec badge |
-| `expired` | `now > valid_to` → exclu des suggestions d'achat auto |
+| `fresh` | Non expiré et âge ≤ `stale_after_days` |
+| `stale` | Non expiré mais âge > `stale_after_days` (badge UI) |
+| `expired` | `now_day > valid_to` → exclu des suggestions auto |
 
 Les listes d'épicerie peuvent figer `estimate_cents` au moment du plan pour
 ne pas « bouger » sous les pieds du Master pendant les courses.

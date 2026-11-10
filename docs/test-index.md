@@ -88,9 +88,9 @@ Verify scripts (recommended):
 
 | If you changed… | Run |
 |-----------------|-----|
-| `hq_household_schemas.py`, `schemas/household/*`, docs contracts | `python -m unittest tests.test_household_schemas -v` |
+| `hq_household_schemas.py`, `schemas/household/*`, docs contracts | `python -m unittest tests.test_household_schemas -v` (CI: `.github/workflows/household-foundations.yml`) |
 
-Architecture index: [household/README.md](household/README.md). Runtime routes/UI not live in PR #30.
+Architecture index: [household/README.md](household/README.md). `*.v1.json` = custom contract descriptors (not JSON Schema Draft). Runtime routes/UI not live in PR #30.
 
 ---
 
