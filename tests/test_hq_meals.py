@@ -426,6 +426,34 @@ class MealsDomainTests(unittest.TestCase):
         )
         self.assertEqual(code, 400, body)
 
+    def test_recipes_pagination_over_200_no_duplicates(self) -> None:
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                for i in range(201):
+                    meals.create_recipe(
+                        st.conn, self.hid,
+                        {
+                            "title": f"Recipe-{i:03d}",
+                            "servings": 1,
+                            "ingredients": [{"name": "a", "qty_milli": 1, "unit": "g"}],
+                            "steps": ["s"],
+                            "leftover_policy": "none",
+                        },
+                    )
+        seen: list[str] = []
+        cursor = None
+        while True:
+            qs = {"limit": "50"}
+            if cursor:
+                qs["cursor"] = cursor
+            page = meals.http_get("/api/meals/recipes", qs)[1]
+            seen.extend(x["id"] for x in page["items"])
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+        self.assertEqual(len(seen), 201)
+        self.assertEqual(len(seen), len(set(seen)))
+
     def test_grocery_list_rev_conflict(self) -> None:
         lst = gr.http_post(
             "/api/grocery/lists",
