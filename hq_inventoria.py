@@ -305,32 +305,64 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
 
     qty: dict[str, int] = {i["id"]: int(i["qty"]) for i in inv.get("items") or []}
     item_rev: dict[str, int] = {i["id"]: int(i["rev"]) for i in inv.get("items") or []}
+    item_place: dict[str, str | None] = {i["id"]: i.get("place") for i in inv.get("items") or []}
+    places: set[str] = {p["id"] for p in inv.get("places") or []}
+    deleted_items: set[str] = set()
+    deleted_places: set[str] = set()
     issues: list[dict] = []
+
+    def _dead_item(iid: str | None, step: int, op: str) -> bool:
+        if not isinstance(iid, str):
+            issues.append({"step": step, "code": "not_found", "op": op})
+            return True
+        if iid in deleted_items or iid not in qty:
+            issues.append({"step": step, "code": "batch_use_after_delete", "op": op, "item_id": iid})
+            return True
+        return False
+
+    def _dead_place(pid: str | None, step: int, op: str) -> bool:
+        if pid in (None, ""):
+            return False
+        if not isinstance(pid, str) or pid in deleted_places or pid not in places:
+            issues.append({"step": step, "code": "batch_place_unavailable", "op": op, "place_id": pid})
+            return True
+        return False
+
     for step, p in enumerate(proposals):
         op = p["op"]
         payload = p.get("payload") or {}
         iid = payload.get("id")
+        if op == "item.create":
+            if step < len(proposals) - 1:
+                issues.append({"step": step, "code": "batch_unsupported_create", "op": op})
+            elif _dead_place(payload.get("place"), step, op):
+                pass
+            continue
+        if op == "place.create":
+            if step < len(proposals) - 1:
+                issues.append({"step": step, "code": "batch_unsupported_create", "op": op})
+            continue
         if op == "item.adjust":
-            if not isinstance(iid, str) or iid not in qty:
-                issues.append({"step": step, "code": "not_found", "op": op})
+            if _dead_item(iid, step, op):
                 continue
             delta = payload.get("delta")
             if not isinstance(delta, int) or isinstance(delta, bool) or delta == 0:
                 issues.append({"step": step, "code": "invalid_delta", "op": op})
                 continue
-            new_q = qty[iid] + delta
+            new_q = int(qty[iid]) + int(delta)
             if new_q < 0 or new_q > QTY_MAX:
                 issues.append({"step": step, "code": "batch_bounds", "op": op, "would_be": new_q})
                 continue
             qty[iid] = new_q
             item_rev[iid] += 1
         elif op == "item.update":
-            if not isinstance(iid, str) or iid not in qty:
-                issues.append({"step": step, "code": "not_found", "op": op})
+            if _dead_item(iid, step, op):
                 continue
             want_rev = payload.get("rev")
             if want_rev != item_rev.get(iid):
                 issues.append({"step": step, "code": "stale_item_rev", "op": op})
+                continue
+            if "place" in payload and _dead_place(payload.get("place"), step, op):
                 continue
             if "qty" in payload:
                 q = payload["qty"]
@@ -340,6 +372,64 @@ def _simulate_batch_sequential(proposals: list[dict], inv: dict) -> list[dict]:
                         continue
                     qty[iid] = q
             item_rev[iid] += 1
+        elif op == "item.delete":
+            if not isinstance(iid, str):
+                issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            if iid in deleted_items:
+                issues.append({"step": step, "code": "batch_duplicate_delete", "op": op, "item_id": iid})
+                continue
+            if iid not in qty:
+                issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            want_rev = payload.get("rev")
+            if want_rev != item_rev.get(iid):
+                issues.append({"step": step, "code": "stale_item_rev", "op": op})
+                continue
+            deleted_items.add(iid)
+            qty.pop(iid, None)
+            item_rev.pop(iid, None)
+            item_place.pop(iid, None)
+        elif op == "item.move":
+            ids = payload.get("ids") or []
+            dest = payload.get("place")
+            if _dead_place(dest, step, op):
+                continue
+            for mid in ids:
+                if _dead_item(mid, step, op):
+                    break
+            else:
+                for mid in dict.fromkeys(ids):
+                    item_place[mid] = dest if dest not in (None, "") else None
+                    item_rev[mid] = item_rev.get(mid, 1) + 1
+        elif op == "place.update":
+            pid = payload.get("id")
+            if _dead_place(pid, step, op):
+                continue
+            if pid not in places:
+                issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            parent = payload.get("parent")
+            if parent is not None and _dead_place(parent, step, op):
+                continue
+        elif op == "place.delete":
+            pid = payload.get("id")
+            if not isinstance(pid, str) or pid in deleted_places:
+                if pid in deleted_places:
+                    issues.append({"step": step, "code": "batch_duplicate_delete", "op": op})
+                else:
+                    issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            if pid not in places:
+                issues.append({"step": step, "code": "not_found", "op": op})
+                continue
+            deleted_places.add(pid)
+            places.discard(pid)
+            for iid2, pl in list(item_place.items()):
+                if pl == pid:
+                    item_place[iid2] = None
+        else:
+            issues.append({"step": step, "code": "batch_op_unsupported", "op": op})
     return issues
 
 
@@ -765,6 +855,17 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
             "operation_id": op_id,
             "cross_store_op_id": result.get("cross_store_op_id"),
         }
+    if result.get("cross_store_op_id"):
+        _audit(conn, household_id=household_id, operation_id=op_id, action="commit",
+               prev_status=row["status"], next_status="needs_reconcile", detail=result)
+        return {
+            "ok": False,
+            "code": result.get("code", "needs_reconcile"),
+            "error": result.get("error"),
+            "operation_id": op_id,
+            "cross_store_op_id": result.get("cross_store_op_id"),
+            "http_status": result.get("http_status", 409),
+        }
     raise InventoriaError(result.get("error", "échec commit"), status=409, code=result.get("code", "conflict"))
 
 
@@ -853,7 +954,7 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
     sub_key = data.get("idempotency_key")
     evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else None
     step_index = data.get("step_index")
-    if step_index is not None and not isinstance(step_index, int):
+    if step_index is not None and (isinstance(step_index, bool) or type(step_index) is not int):
         raise InventoriaError("step_index invalide", code="validation_error")
     inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
     try:
@@ -875,8 +976,11 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
         if "idempotency conflict" in msg:
             raise InventoriaError(msg, status=409, code="conflict") from exc
         raise InventoriaError(msg, code="validation_error") from exc
+    next_status = conn.execute(
+        "SELECT status FROM inventoria_operations WHERE id = ?", (op_id,),
+    ).fetchone()["status"]
     _audit(conn, household_id=household_id, operation_id=op_id, action="reconcile",
-           prev_status="needs_reconcile", next_status=row["status"], detail=out)
+           prev_status=row["status"], next_status=next_status, detail=out)
     return out
 
 
@@ -965,15 +1069,21 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             if action == "commit":
                 with st.transaction():
                     out = commit_operation(conn, household_id, op_id, data)
-                    if out.get("ok") is False and out.get("code") == "needs_reconcile":
-                        return 409, out
+                    if not out.get("ok"):
+                        return int(out.get("http_status", 409)), out
                     return 200, out
             if action == "cancel":
                 with st.transaction():
                     return 200, cancel_operation(conn, household_id, op_id)
             if action == "reconcile":
                 with st.transaction():
-                    return 200, reconcile_operation(conn, household_id, op_id, data)
+                    out = reconcile_operation(conn, household_id, op_id, data)
+                    if not out.get("ok"):
+                        return 409, out
+                    inner = out.get("commit")
+                    if isinstance(inner, dict) and not inner.get("ok"):
+                        return 409, out
+                    return 200, out
             raise InventoriaError("Route inconnue", status=404, code="not_found")
         finally:
             st.close()

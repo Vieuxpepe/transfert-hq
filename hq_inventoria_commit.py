@@ -143,15 +143,43 @@ def _cross_store_doc_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _finalize_preconditions(
+    xop: sqlite3.Row,
+    steps: list[dict],
+    step_results: list[dict],
+) -> bool:
+    if int(xop["uncertain_inventory"]) != 0:
+        return False
+    if xop["status"] in ("needs_reconcile", "failed", "cancelled"):
+        return False
+    if not _all_inventory_steps_acknowledged(steps):
+        return False
+    ack_count = sum(1 for s in steps if s.get("attempt_phase") == "acknowledged")
+    if len(step_results) < ack_count:
+        return False
+    for res in step_results:
+        if not isinstance(res, dict) or "step_index" not in res:
+            return False
+        idx = int(res["step_index"])
+        if idx < 0 or idx >= len(steps):
+            return False
+        if steps[idx].get("attempt_phase") != "acknowledged":
+            return False
+    return True
+
+
 def journal_ready_to_finalize(conn: sqlite3.Connection, xop_id: str) -> bool:
     row = conn.execute(
-        "SELECT status, planned_steps_json FROM cross_store_ops WHERE id = ?",
+        "SELECT * FROM cross_store_ops WHERE id = ?",
         (xop_id,),
     ).fetchone()
     if row is None:
         return False
+    if row["status"] == "committed":
+        return False
     steps = json.loads(row["planned_steps_json"])
-    return _all_inventory_steps_acknowledged(steps) and row["status"] != "committed"
+    step_results = json.loads(row["step_results_json"] or "[]")
+    return _finalize_preconditions(row, steps, step_results)
 
 
 def _validate_xop_row(conn: sqlite3.Connection, xop_id: str) -> None:
@@ -201,6 +229,14 @@ def finalize_commit_if_ready(
     now: float,
 ) -> dict[str, Any]:
     """F6 only — no inventory apply."""
+    xop = conn.execute("SELECT * FROM cross_store_ops WHERE id = ?", (xop_id,)).fetchone()
+    if xop is None or not _finalize_preconditions(xop, steps, step_results):
+        return {
+            "ok": False,
+            "code": "needs_reconcile",
+            "cross_store_op_id": xop_id,
+            "error": "finalisation refusée — journal incertain ou incomplet",
+        }
     conn.execute(
         "UPDATE cross_store_ops SET status = ?, step_index = ?, uncertain_inventory = 0, "
         "inventory_rev_after = ?, closed_at = ?, updated_at = ? WHERE id = ?",
@@ -249,8 +285,8 @@ def run_inventoria_commit(
         if xop is None:
             raise KeyError("cross_store_missing")
         steps = json.loads(xop["planned_steps_json"])
-        if _all_inventory_steps_acknowledged(steps) and xop["status"] != "committed":
-            step_results = json.loads(xop["step_results_json"] or "[]")
+        step_results = json.loads(xop["step_results_json"] or "[]")
+        if _finalize_preconditions(xop, steps, step_results) and xop["status"] != "committed":
             cur = int(xop["inventory_rev_after"] or expected_inventory_rev)
             conn.execute(
                 "UPDATE cross_store_ops SET uncertain_inventory = 0, status = ?, updated_at = ? WHERE id = ?",
@@ -382,7 +418,6 @@ def run_inventoria_commit(
             (_safe_json(steps), step_index, now, xop_id),
         )
         conn.commit()
-        conn.execute("BEGIN IMMEDIATE")
 
         try:
             apply_body = proposal_to_inventory_action({"op": action, "payload": step["payload"]})
@@ -406,10 +441,12 @@ def run_inventoria_commit(
                 "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
                 ("needs_reconcile", now, operation_id),
             )
+            _validate_xop_row(conn, xop_id)
             return {
                 "ok": False,
-                "code": "needs_reconcile" if exc.status == 409 else exc.code,
+                "code": "needs_reconcile",
                 "error": str(exc),
+                "http_status": exc.status,
                 "cross_store_op_id": xop_id,
             }
         except CommitAbort:
@@ -455,10 +492,10 @@ def run_inventoria_commit(
             (_safe_json(steps), _safe_json(step_results), step_index, cur_expected_rev, now, xop_id),
         )
         conn.commit()
-        conn.execute("BEGIN IMMEDIATE")
         _validate_xop_row(conn, xop_id)
 
-    if _all_inventory_steps_acknowledged(steps):
+    xop = conn.execute("SELECT * FROM cross_store_ops WHERE id = ?", (xop_id,)).fetchone()
+    if _finalize_preconditions(xop, steps, step_results):
         try:
             conn.execute(
                 "UPDATE cross_store_ops SET uncertain_inventory = 0, status = ?, updated_at = ? WHERE id = ?",
@@ -547,8 +584,8 @@ def reconcile_cross_store(
         if st.get("attempt_phase") != "in_flight":
             raise ValueError("seule une étape in_flight peut être acquittée manuellement")
         inv_rev = evidence.get("inventory_rev")
-        if not isinstance(inv_rev, int):
-            raise ValueError("evidence.inventory_rev requis (entier)")
+        if isinstance(inv_rev, bool) or type(inv_rev) is not int:
+            raise ValueError("evidence.inventory_rev requis (entier strict)")
         st["attempt_phase"] = "acknowledged"
         steps[idx] = st
         step_results = json.loads(xop["step_results_json"] or "[]")
