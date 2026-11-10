@@ -258,6 +258,192 @@ class GroceryDomainTests(unittest.TestCase):
         self.assertEqual(body["product"]["name"], "2% Milk")
         self.assertEqual(body["product"]["rev"], p["rev"] + 1)
 
+    def test_concurrent_product_rev_only_one_wins(self) -> None:
+        p = self._product()
+        path = store.db_path(self.root)
+        c1 = sqlite3.connect(str(path))
+        c2 = sqlite3.connect(str(path))
+        c1.row_factory = sqlite3.Row
+        c2.row_factory = sqlite3.Row
+        try:
+            for c in (c1, c2):
+                c.execute(f"PRAGMA busy_timeout = {store.BUSY_TIMEOUT_MS}")
+            c1.execute("BEGIN")
+            c2.execute("BEGIN")
+            out1 = gr.update_product(c1, self.hid, {"id": p["id"], "rev": p["rev"], "name": "A"})
+            c1.commit()
+            with self.assertRaises(gr.GroceryError) as ctx:
+                gr.update_product(c2, self.hid, {"id": p["id"], "rev": p["rev"], "name": "B"})
+            self.assertEqual(ctx.exception.code, "conflict")
+            c2.commit()
+            row = c1.execute("SELECT name, rev FROM products WHERE id = ?", (p["id"],)).fetchone()
+            self.assertEqual(row["name"], out1["name"])
+            self.assertEqual(int(row["rev"]), p["rev"] + 1)
+        finally:
+            c1.close()
+            c2.close()
+
+    def test_product_update_cas_two_connections_same_rev(self) -> None:
+        p = self._product()
+        path = store.db_path(self.root)
+        c1 = sqlite3.connect(str(path))
+        c2 = sqlite3.connect(str(path))
+        try:
+            for c in (c1, c2):
+                c.execute(f"PRAGMA busy_timeout = {store.BUSY_TIMEOUT_MS}")
+            rev = p["rev"]
+            pid, hid = p["id"], self.hid
+            c1.execute("BEGIN")
+            cur1 = c1.execute(
+                "UPDATE products SET name = ?, rev = ? WHERE id = ? AND household_id = ? AND rev = ?",
+                ("A", rev + 1, pid, hid, rev),
+            )
+            self.assertEqual(cur1.rowcount, 1)
+            c1.commit()
+            c2.execute("BEGIN")
+            cur2 = c2.execute(
+                "UPDATE products SET name = ?, rev = ? WHERE id = ? AND household_id = ? AND rev = ?",
+                ("B", rev + 1, pid, hid, rev),
+            )
+            self.assertEqual(cur2.rowcount, 0)
+            c2.commit()
+            name = c1.execute("SELECT name FROM products WHERE id = ?", (pid,)).fetchone()[0]
+            self.assertEqual(name, "A")
+        finally:
+            c1.close()
+            c2.close()
+
+    def test_canonical_unit_locked_when_lots_exist(self) -> None:
+        prod = self._product()
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                gr.create_lot(
+                    st.conn, self.hid,
+                    {"product_id": prod["id"], "qty_milli": 100, "canonical_unit": "ml"},
+                )
+            before = st.conn.execute(
+                "SELECT canonical_unit FROM products WHERE id = ?", (prod["id"],),
+            ).fetchone()[0]
+            with self.assertRaises(gr.GroceryError):
+                with st.transaction():
+                    gr.update_product(
+                        st.conn, self.hid,
+                        {"id": prod["id"], "rev": prod["rev"], "canonical_unit": "g"},
+                    )
+            after = st.conn.execute(
+                "SELECT canonical_unit FROM products WHERE id = ?", (prod["id"],),
+            ).fetchone()[0]
+            self.assertEqual(before, after)
+            lot_unit = st.conn.execute(
+                "SELECT canonical_unit FROM food_lots WHERE product_id = ? LIMIT 1", (prod["id"],),
+            ).fetchone()[0]
+            self.assertEqual(lot_unit, "ml")
+
+    def test_lot_qty_shrink_without_usable_refused(self) -> None:
+        prod = self._product()
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                lot = gr.create_lot(
+                    st.conn, self.hid,
+                    {"product_id": prod["id"], "qty_milli": 1000, "usable_qty_milli": 800, "canonical_unit": "ml"},
+                )
+            lid, rev = lot["id"], lot["rev"]
+        with store.open_store(self.root) as st:
+            before = dict(st.conn.execute("SELECT qty_milli, usable_qty_milli FROM food_lots WHERE id = ?", (lid,)).fetchone())
+            with self.assertRaises(gr.GroceryError):
+                with st.transaction():
+                    gr.update_lot(
+                        st.conn, self.hid,
+                        {"id": lid, "rev": rev, "qty_milli": 500, "canonical_unit": "ml"},
+                    )
+            after = dict(st.conn.execute("SELECT qty_milli, usable_qty_milli FROM food_lots WHERE id = ?", (lid,)).fetchone())
+            self.assertEqual(before, after)
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                updated = gr.update_lot(
+                    st.conn, self.hid,
+                    {
+                        "id": lid, "rev": rev, "qty_milli": 500, "usable_qty_milli": 400,
+                        "canonical_unit": "ml",
+                    },
+                )
+            self.assertEqual(updated["qty_milli"], 500)
+            self.assertEqual(updated["usable_qty_milli"], 400)
+
+    def test_product_name_with_pipe_cursor_pagination(self) -> None:
+        names = ["A|1", "A|2", "B"]
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                for nm in names:
+                    gr.create_product(st.conn, self.hid, {"name": nm, "canonical_unit": "g", "default_qty_milli": 1})
+            seen: list[str] = []
+            cursor = None
+            while True:
+                page = gr.list_products(st.conn, self.hid, {"limit": "1", **({"cursor": cursor} if cursor else {})})
+                if not page["items"]:
+                    break
+                self.assertEqual(len(page["items"]), 1)
+                seen.append(page["items"][0]["name"])
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+            self.assertEqual(seen, names)
+
+    def test_pagination_201_no_duplicates(self) -> None:
+        with store.open_store(self.root) as st:
+            with st.transaction():
+                prod = gr.create_product(
+                    st.conn, self.hid, {"name": "P", "canonical_unit": "ml", "default_qty_milli": 1},
+                )
+                for i in range(201):
+                    day = f"2026-01-{(i % 28) + 1:02d}"
+                    gr.create_lot(
+                        st.conn, self.hid,
+                        {"product_id": prod["id"], "qty_milli": 1, "canonical_unit": "ml", "expires_on": day},
+                    )
+                for i in range(201):
+                    gr.create_merchant(st.conn, self.hid, {"name": f"Shop-{i:03d}"})
+            lot_ids: list[str] = []
+            cursor = None
+            while True:
+                page = gr.list_lots(
+                    st.conn, self.hid, {"limit": "50", "product_id": prod["id"], **({"cursor": cursor} if cursor else {})},
+                )
+                lot_ids.extend(x["id"] for x in page["items"])
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+            self.assertEqual(len(lot_ids), 201)
+            self.assertEqual(len(lot_ids), len(set(lot_ids)))
+            merch_ids: list[str] = []
+            cursor = None
+            while True:
+                page = gr.list_merchants(st.conn, self.hid, {"limit": "50", **({"cursor": cursor} if cursor else {})})
+                merch_ids.extend(x["id"] for x in page["items"])
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+            self.assertEqual(len(merch_ids), 201)
+            self.assertEqual(len(merch_ids), len(set(merch_ids)))
+
+    def test_foreign_product_id_for_lot_list_refused(self) -> None:
+        other = Path(self.tmp.name) / "other2"
+        other.mkdir()
+        fin.bind(root=other, actor=lambda: "x", now=lambda: 1.0)
+        gr.bind(root=other, actor=lambda: "x", now=lambda: 1.0, inventory_snapshot=lambda: self.SNAPSHOT)
+        with store.open_store(other) as st:
+            with st.transaction():
+                oh = fin.ensure_default_household(st.conn)
+                remote = gr.create_product(
+                    st.conn, oh, {"name": "Remote", "canonical_unit": "g", "default_qty_milli": 1},
+                )
+        with store.open_store(self.root) as st:
+            with self.assertRaises(gr.GroceryError):
+                gr.list_lots(st.conn, self.hid, {"product_id": remote["id"]})
+        gr.bind(root=self.root, actor=lambda: "tester", now=lambda: 1_900_000_000.0,
+                inventory_snapshot=lambda: dict(self.SNAPSHOT))
+        fin.bind(root=self.root, actor=lambda: "tester", now=lambda: 1_900_000_000.0)
+
 
 if __name__ == "__main__":
     unittest.main()
