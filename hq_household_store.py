@@ -13,8 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
-import stat
 import subprocess
 import threading
 import time
@@ -29,13 +29,22 @@ META_NAME = "schema_meta.json"
 BACKUPS_DIR = "backups"
 IMPORTS_DIR = "imports"
 
-# Durable authority — bump only with a migration step + backup.
 SCHEMA_VERSION = 1
 BUSY_TIMEOUT_MS = 5_000
 APP_REV = "household-shell-v1"
 
+SYSTEM_SID = "S-1-5-18"
+# Broad identities that must not remain on a sealed household path.
+_FORBIDDEN_SIDS = frozenset({
+    "S-1-1-0",       # Everyone
+    "S-1-5-11",      # Authenticated Users
+    "S-1-5-32-545",  # Users
+    "S-1-5-32-546",  # Guests
+})
+
 _APPLY_ACL = True
 _guard = threading.Lock()
+_WHOAMI_SID = re.compile(r"(S-1(?:-\d+)+)")
 
 
 class HouseholdStoreError(RuntimeError):
@@ -70,6 +79,10 @@ def backups_dir(root: Path | str) -> Path:
     return household_dir(root) / BACKUPS_DIR
 
 
+def imports_dir(root: Path | str) -> Path:
+    return household_dir(root) / IMPORTS_DIR
+
+
 # ---------------------------------------------------------------- confinement
 
 def _is_link(path: Path | str) -> bool:
@@ -83,30 +96,56 @@ def _same(a: str, b: str) -> bool:
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
+def _refuse_redirected(path: Path, expected: str, *, what: str) -> None:
+    if not os.path.lexists(path):
+        return
+    if _is_link(path) or not _same(os.path.realpath(path), expected):
+        raise HouseholdStoreError(
+            f"{what} redirigé — refusé, fichiers conservés",
+            code="storage_error",
+        )
+
+
 def confined_household_dir(root: Path | str) -> Path:
-    """Refuse symlink/junction redirection of the household folder or DB siblings."""
+    """Refuse symlink/junction redirection of household tree (incl. backups/imports)."""
     base = household_dir(root)
     parent = base.parent
     try:
         real_parent = os.path.realpath(parent)
-        expected = os.path.join(real_parent, DIR_NAME)
-        if os.path.lexists(base) and (_is_link(base) or not _same(os.path.realpath(base), expected)):
-            raise HouseholdStoreError(
-                "Emplacement household redirigé — refusé, fichiers conservés",
-                code="storage_error",
+        expected_base = os.path.join(real_parent, DIR_NAME)
+        _refuse_redirected(base, expected_base, what="Emplacement household")
+        for name in (
+            DB_NAME,
+            DB_NAME + "-wal",
+            DB_NAME + "-shm",
+            META_NAME,
+            DB_NAME + ".tmp",
+            BACKUPS_DIR,
+            IMPORTS_DIR,
+        ):
+            _refuse_redirected(
+                base / name,
+                os.path.join(expected_base, name),
+                what=f"Chemin household ({name})",
             )
-        for name in (DB_NAME, DB_NAME + "-wal", DB_NAME + "-shm", META_NAME, DB_NAME + ".tmp"):
-            item = base / name
-            if os.path.lexists(item) and (
-                _is_link(item) or not _same(os.path.realpath(item), os.path.join(expected, name))
-            ):
-                raise HouseholdStoreError(
-                    "Fichier household redirigé — refusé, octets conservés",
-                    code="storage_error",
-                )
     except OSError as exc:
         raise HouseholdStoreError("Household inaccessible", code="storage_error") from exc
     return base
+
+
+def _confined_file(path: Path, *, label: str) -> Path:
+    """Refuse redirected files used as backup/restore/manifest inputs or outputs."""
+    if _is_link(path):
+        raise HouseholdStoreError(f"{label} redirigé — refusé", code="storage_error")
+    if path.exists() and not path.is_file():
+        raise HouseholdStoreError(f"{label} n'est pas un fichier", code="storage_error")
+    if path.exists():
+        try:
+            if not _same(os.path.realpath(path), str(path.resolve())):
+                raise HouseholdStoreError(f"{label} redirigé — refusé", code="storage_error")
+        except OSError as exc:
+            raise HouseholdStoreError(f"{label} inaccessible", code="storage_error") from exc
+    return path
 
 
 # ---------------------------------------------------------------- ACL / modes
@@ -116,46 +155,102 @@ def _posix_secure(path: Path, *, directory: bool) -> None:
     os.chmod(path, mode)
 
 
-def _windows_restrict(path: Path) -> str:
-    """Owner + SYSTEM only; inheritance removed. Fail-closed on unverified."""
-    if not _APPLY_ACL or os.name != "nt":
-        return "skipped"
-    user = os.environ.get("USERNAME") or ""
-    if not user or any(ch in user for ch in '\\"/&|<>'):
-        raise HouseholdStoreError(
-            "ACL household impossible — USERNAME invalide, ouverture refusée",
-            code="acl_error",
-            status=503,
-        )
-    # Directory ACEs must propagate; files need explicit (F).
-    if path.is_dir():
-        grants = [f"{user}:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F"]
-    else:
-        grants = [f"{user}:(F)", "*S-1-5-18:(F)"]
+def _current_user_sid() -> str:
     try:
-        inherit = subprocess.run(
-            ["icacls", str(path), "/inheritance:r"],
+        result = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
             capture_output=True,
-            timeout=20,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
             check=False,
         )
-        if inherit.returncode != 0:
-            raise HouseholdStoreError(
-                "ACL household : héritage non retiré — ouverture refusée",
-                code="acl_error",
-            )
-        for grant in grants:
-            granted = subprocess.run(
-                ["icacls", str(path), "/grant:r", grant],
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-            if granted.returncode != 0:
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HouseholdStoreError("SID utilisateur indisponible", code="acl_error") from exc
+    if result.returncode != 0:
+        raise HouseholdStoreError("SID utilisateur indisponible", code="acl_error")
+    match = _WHOAMI_SID.search(result.stdout or "")
+    if not match:
+        raise HouseholdStoreError("SID utilisateur illisible", code="acl_error")
+    return match.group(1)
+
+
+def _icacls(path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["icacls", str(path), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+        check=False,
+    )
+
+
+def describe_path_acl(path: Path) -> dict[str, Any]:
+    """Parse ``icacls`` listing into SID-ish tokens (best-effort, for verification)."""
+    listed = _icacls(path, [])
+    text = listed.stdout or ""
+    lower = text.lower()
+    sids = set(_WHOAMI_SID.findall(text))
+    broad_names = []
+    for token in ("Everyone", "Authenticated Users", "BUILTIN\\Users", "Guests"):
+        if token.lower() in lower:
+            broad_names.append(token)
+    has_system = SYSTEM_SID in sids or "nt authority\\system" in lower or "(system)" in lower
+    # After /grant:r *SID, icacls may print the SID or the resolved account name.
+    return {
+        "ok": listed.returncode == 0,
+        "text": text,
+        "sids": sorted(sids),
+        "broad_names": broad_names,
+        "has_system": has_system,
+        "acceptable": listed.returncode == 0
+        and not broad_names
+        and not (sids & _FORBIDDEN_SIDS)
+        and has_system,
+    }
+
+
+def _windows_restrict(path: Path) -> str:
+    """Replace DACL with bridge-user SID + SYSTEM only. Fail-closed if unverifiable."""
+    if not _APPLY_ACL or os.name != "nt":
+        return "skipped"
+    user_sid = _current_user_sid()
+    if path.is_dir():
+        user_grant = f"*{user_sid}:(OI)(CI)F"
+        system_grant = f"*{SYSTEM_SID}:(OI)(CI)F"
+    else:
+        user_grant = f"*{user_sid}:(F)"
+        system_grant = f"*{SYSTEM_SID}:(F)"
+    # Strip inheritance, then reset explicit ACEs so we do not layer on Everyone/Users.
+    steps = [
+        ["/inheritance:r"],
+        ["/reset"],
+        ["/inheritance:r"],
+        ["/grant:r", user_grant, system_grant],
+    ]
+    # Explicitly remove leftover broad SIDs if reset left anything odd on the parent chain.
+    remove = ["/remove:g", *[f"*{sid}" for sid in sorted(_FORBIDDEN_SIDS)]]
+    try:
+        for args in steps:
+            result = _icacls(path, args)
+            if result.returncode != 0:
                 raise HouseholdStoreError(
-                    "ACL household : grant échoué — ouverture refusée",
+                    "ACL household : scellement échoué — ouverture refusée",
                     code="acl_error",
                 )
+        _icacls(path, remove)  # best-effort; verified below
+        facts = describe_path_acl(path)
+        user_ok = user_sid in facts["sids"] or (os.environ.get("USERNAME") or "").lower() in facts["text"].lower()
+        if not facts["acceptable"] or not user_ok:
+            raise HouseholdStoreError(
+                "ACL household : DACL effective non conforme — ouverture refusée",
+                code="acl_error",
+            )
+    except HouseholdStoreError:
+        raise
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise HouseholdStoreError(
             "ACL household indisponible — ouverture refusée",
@@ -183,37 +278,50 @@ def prepare_household_dirs(root: Path | str) -> Path:
     base = confined_household_dir(root)
     if not base.exists():
         base.mkdir(parents=True, exist_ok=False)
-    elif not base.is_dir():
-        raise HouseholdStoreError("Chemin household n'est pas un dossier", code="storage_error")
+    elif not base.is_dir() or _is_link(base):
+        raise HouseholdStoreError("Chemin household n'est pas un dossier sûr", code="storage_error")
     _secure_path(base, directory=True)
     for sub in (BACKUPS_DIR, IMPORTS_DIR):
         d = base / sub
-        if not d.exists():
+        expected = os.path.join(os.path.realpath(base), sub)
+        if d.exists():
+            _refuse_redirected(d, expected, what=f"Dossier {sub}")
+            if not d.is_dir():
+                raise HouseholdStoreError(f"{sub} n'est pas un dossier", code="storage_error")
+        else:
             d.mkdir(parents=True, exist_ok=False)
         _secure_path(d, directory=True)
     return base
 
 
-# ---------------------------------------------------------------- schema SQL
+# ---------------------------------------------------------------- schema SQL (no executescript)
 
-_V1_DDL = """
-CREATE TABLE IF NOT EXISTS household_meta (
-  key TEXT PRIMARY KEY NOT NULL,
-  value TEXT NOT NULL,
-  updated_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INTEGER PRIMARY KEY NOT NULL,
-  applied_at REAL NOT NULL,
-  note TEXT NOT NULL
-);
--- Domain tables (finances / grocery / meals / inventoria / cross_store_ops)
--- arrive in later PRs. This shell only owns versioning + meta.
-"""
+_V1_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS household_meta (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL,
+      updated_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version INTEGER PRIMARY KEY NOT NULL,
+      applied_at REAL NOT NULL,
+      note TEXT NOT NULL
+    )
+    """,
+)
+
+
+def _exec_sql(conn: sqlite3.Connection, sql: str) -> None:
+    conn.execute(sql)
 
 
 def _apply_v1(conn: sqlite3.Connection) -> None:
-    conn.executescript(_V1_DDL)
+    """Apply v1 DDL/DML/user_version with plain execute (transaction-safe)."""
+    for stmt in _V1_STATEMENTS:
+        _exec_sql(conn, stmt)
     now = time.time()
     conn.execute(
         "INSERT OR REPLACE INTO household_meta(key, value, updated_at) VALUES (?, ?, ?)",
@@ -253,6 +361,7 @@ def _read_meta(path: Path) -> dict | None:
 
 
 def _write_meta(path: Path, *, schema_version: int) -> None:
+    _confined_file(path, label="schema_meta") if path.exists() else None
     payload = {
         "schema_version": schema_version,
         "applied_at": _utc_iso(),
@@ -277,21 +386,7 @@ def _write_meta(path: Path, *, schema_version: int) -> None:
             "Écriture schema_meta.json impossible — SQLite reste l'autorité",
             code="meta_error",
         ) from exc
-    try:
-        _secure_path(path, directory=False)
-    except HouseholdStoreError:
-        # Meta written; ACL failure still fail-closed for subsequent opens.
-        raise
-
-
-def _heal_meta(root: Path | str, schema_version: int) -> None:
-    """Rewrite mirror from SQLite authority without changing the DB."""
-    path = meta_path(root)
-    try:
-        _write_meta(path, schema_version=schema_version)
-    except HouseholdStoreError:
-        # Opening remains allowed: SQLite is authority. Caller may surface warning via return.
-        raise
+    _secure_path(path, directory=False)
 
 
 # ---------------------------------------------------------------- connection
@@ -304,11 +399,11 @@ def _connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
         conn = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_MS / 1000.0)
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    try:
-        conn.execute("PRAGMA journal_mode = WAL")
-    except sqlite3.Error:
-        # Some filesystems reject WAL — continue with default journal.
-        pass
+    if not readonly:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            pass
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -325,16 +420,8 @@ def integrity_check(conn: sqlite3.Connection) -> str:
 
 # ---------------------------------------------------------------- open / migrate
 
-def _db_bytes_unchanged(path: Path, before: bytes | None) -> bool:
-    if before is None:
-        return not path.exists()
-    if not path.exists():
-        return False
-    return path.read_bytes() == before
-
-
 def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> int:
-    """Apply migrations inside a transaction. On failure, rollback; DB untouched."""
+    """Apply migrations inside one IMMEDIATE transaction (no executescript)."""
     current = get_schema_version(conn)
     if current > target:
         raise HouseholdStoreError(
@@ -352,10 +439,7 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> int:
             nxt = current + 1
             fn = _MIGRATIONS.get(nxt)
             if fn is None:
-                raise HouseholdStoreError(
-                    f"Migration {nxt} absente",
-                    code="schema_error",
-                )
+                raise HouseholdStoreError(f"Migration {nxt} absente", code="schema_error")
             fn(conn)
             current = get_schema_version(conn)
             if current != nxt:
@@ -376,11 +460,19 @@ def migrate(conn: sqlite3.Connection, *, target: int = SCHEMA_VERSION) -> int:
 class HouseholdStore:
     """Opened household store handle (explicit close)."""
 
-    def __init__(self, root: Path | str, conn: sqlite3.Connection, *, schema_version: int):
+    def __init__(
+        self,
+        root: Path | str,
+        conn: sqlite3.Connection,
+        *,
+        schema_version: int,
+        readonly: bool = False,
+    ):
         self.root = Path(os.path.abspath(os.fspath(root)))
         self.conn = conn
         self.schema_version = schema_version
         self.path = db_path(self.root)
+        self.readonly = readonly
 
     def close(self) -> None:
         try:
@@ -396,6 +488,8 @@ class HouseholdStore:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        if self.readonly:
+            raise HouseholdStoreError("transaction refusée en lecture seule", code="readonly", status=400)
         try:
             yield self.conn
             self.conn.commit()
@@ -404,6 +498,8 @@ class HouseholdStore:
             raise
 
     def set_meta(self, key: str, value: str) -> None:
+        if self.readonly:
+            raise HouseholdStoreError("écriture refusée en lecture seule", code="readonly", status=400)
         if not isinstance(key, str) or not key or len(key) > 128:
             raise HouseholdStoreError("clé meta invalide", code="validation_error", status=400)
         if not isinstance(value, str) or len(value) > 4000:
@@ -430,13 +526,51 @@ def open_store(
     """Open or initialize the household SQLite DB. Never called on import."""
     if readonly and create:
         create = False
+
+    if readonly:
+        # No mkdir / ACL rewrite / meta heal on readonly opens.
+        base = confined_household_dir(root)
+        path = base / DB_NAME
+        if not path.is_file() or _is_link(path):
+            raise HouseholdStoreError("Base household absente", code="not_found", status=404)
+        try:
+            conn = _connect(path, readonly=True)
+        except sqlite3.Error as exc:
+            raise HouseholdStoreError("Base household illisible — octets conservés", code="corrupt") from exc
+        try:
+            try:
+                check = integrity_check(conn)
+            except sqlite3.Error as exc:
+                raise HouseholdStoreError(
+                    "Base household corrompue — octets conservés",
+                    code="corrupt",
+                ) from exc
+            if check != "ok":
+                raise HouseholdStoreError("Base household corrompue — octets conservés", code="corrupt")
+            current = get_schema_version(conn)
+            if current > SCHEMA_VERSION:
+                raise HouseholdStoreError(
+                    f"Downgrade refusé (db={current} > code={SCHEMA_VERSION})",
+                    code="downgrade_refused",
+                    status=500,
+                )
+            if current < SCHEMA_VERSION:
+                raise HouseholdStoreError(
+                    "Migration requise — ouverture lecture seule refusée",
+                    code="migrate_required",
+                    status=503,
+                )
+            return HouseholdStore(root, conn, schema_version=current, readonly=True)
+        except Exception:
+            conn.close()
+            raise
+
     base = prepare_household_dirs(root) if create or household_dir(root).exists() else confined_household_dir(root)
     path = base / DB_NAME
     existed = path.is_file()
-    before = path.read_bytes() if existed else None
 
     if not existed:
-        if not create or readonly:
+        if not create:
             raise HouseholdStoreError("Base household absente", code="not_found", status=404)
         conn = _connect(path, readonly=False)
         try:
@@ -447,27 +581,28 @@ def open_store(
             ver = get_schema_version(conn)
         except Exception:
             conn.close()
-            # New file — remove only if we created a broken empty DB
-            if path.is_file() and (before is None):
+            if path.is_file():
                 try:
                     path.unlink()
+                except OSError:
+                    pass
+            for side in (path.with_name(DB_NAME + "-wal"), path.with_name(DB_NAME + "-shm")):
+                try:
+                    if side.is_file():
+                        side.unlink()
                 except OSError:
                     pass
             raise
         try:
             _write_meta(meta_path(root), schema_version=ver)
         except HouseholdStoreError:
-            # SQLite is valid; leave store open but surface by healing attempt logged via exception
-            # Re-raise: caller must know meta failed — yet we keep DB. Policy: fail-closed on first create
-            # if meta cannot be written (no half-initialized install).
             conn.close()
             raise
         _secure_sqlite_sidecars(base)
-        return HouseholdStore(root, conn, schema_version=ver)
+        return HouseholdStore(root, conn, schema_version=ver, readonly=False)
 
-    # Existing DB
     try:
-        conn = _connect(path, readonly=readonly)
+        conn = _connect(path, readonly=False)
     except sqlite3.Error as exc:
         raise HouseholdStoreError("Base household illisible — octets conservés", code="corrupt") from exc
     try:
@@ -479,10 +614,7 @@ def open_store(
                 code="corrupt",
             ) from exc
         if check != "ok":
-            raise HouseholdStoreError(
-                "Base household corrompue — octets conservés",
-                code="corrupt",
-            )
+            raise HouseholdStoreError("Base household corrompue — octets conservés", code="corrupt")
         current = get_schema_version(conn)
         if current > SCHEMA_VERSION:
             raise HouseholdStoreError(
@@ -491,13 +623,6 @@ def open_store(
                 status=500,
             )
         if current < SCHEMA_VERSION:
-            if readonly:
-                raise HouseholdStoreError(
-                    "Migration requise — ouverture lecture seule refusée",
-                    code="migrate_required",
-                    status=503,
-                )
-            # Backup before migrating an existing DB
             snap = backup(root, label="pre-migrate", conn=conn)
             if not snap.get("ok"):
                 raise HouseholdStoreError(
@@ -509,7 +634,6 @@ def open_store(
             if check2 != "ok":
                 raise HouseholdStoreError("intégrité post-migration échec", code="corrupt")
             current = get_schema_version(conn)
-        # Heal / reconcile mirror — SQLite wins
         meta = None
         try:
             meta = _read_meta(meta_path(root))
@@ -519,16 +643,11 @@ def open_store(
             try:
                 _write_meta(meta_path(root), schema_version=current)
             except HouseholdStoreError:
-                # DB is valid; allow open if mirror temporarily unwritable after heal attempt
                 pass
-        if not readonly:
-            _secure_sqlite_sidecars(base)
-        return HouseholdStore(root, conn, schema_version=current)
+        _secure_sqlite_sidecars(base)
+        return HouseholdStore(root, conn, schema_version=current, readonly=False)
     except Exception:
         conn.close()
-        if existed and before is not None and not _db_bytes_unchanged(path, before):
-            # Should not happen on fail-closed paths; leave diagnostics
-            pass
         raise
 
 
@@ -542,6 +661,24 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _load_manifest(man: Path) -> dict[str, Any]:
+    _confined_file(man, label="manifeste")
+    if not man.is_file():
+        raise HouseholdStoreError("Manifeste SHA-256 requis", code="manifest_error", status=400)
+    try:
+        meta = json.loads(man.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HouseholdStoreError("Manifeste malformé", code="manifest_error", status=400) from exc
+    if not isinstance(meta, dict):
+        raise HouseholdStoreError("Manifeste malformé", code="manifest_error", status=400)
+    digest = meta.get("sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise HouseholdStoreError("Manifeste sans SHA-256 valide", code="manifest_error", status=400)
+    if "schema_version" not in meta or not isinstance(meta["schema_version"], int):
+        raise HouseholdStoreError("Manifeste sans schema_version", code="manifest_error", status=400)
+    return meta
+
+
 def backup(
     root: Path | str,
     *,
@@ -551,12 +688,16 @@ def backup(
     """Coherent SQLite snapshot via Connection.backup() into private backups/."""
     base = confined_household_dir(root)
     bdir = base / BACKUPS_DIR
+    expected_bdir = os.path.join(os.path.realpath(base), BACKUPS_DIR)
+    if bdir.exists():
+        _refuse_redirected(bdir, expected_bdir, what="Dossier backups")
     if not bdir.is_dir():
         prepare_household_dirs(root)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     safe_label = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in label)[:40] or "snap"
     snap_name = f"household-{safe_label}-{stamp}.sqlite"
     dest = bdir / snap_name
+    man_path = dest.with_suffix(dest.suffix + ".manifest.json")
     own = False
     src = conn
     if src is None:
@@ -565,8 +706,7 @@ def backup(
         src = _connect(base / DB_NAME, readonly=False)
         own = True
     try:
-        # Ensure destination does not follow a link
-        if dest.exists() or _is_link(dest):
+        if dest.exists() or _is_link(dest) or man_path.exists() or _is_link(man_path):
             raise HouseholdStoreError("Cible de sauvegarde invalide", code="backup_error")
         dest_conn = sqlite3.connect(str(dest))
         try:
@@ -596,7 +736,6 @@ def backup(
             "bytes": dest.stat().st_size,
             "ok": True,
         }
-        man_path = dest.with_suffix(dest.suffix + ".manifest.json")
         man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         _secure_path(dest, directory=False)
         _secure_path(man_path, directory=False)
@@ -604,11 +743,12 @@ def backup(
     except HouseholdStoreError:
         raise
     except (OSError, sqlite3.Error) as exc:
-        if dest.exists():
-            try:
-                dest.unlink()
-            except OSError:
-                pass
+        for p in (dest, man_path):
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
         raise HouseholdStoreError(
             "Sauvegarde échouée — original intact",
             code="backup_error",
@@ -623,10 +763,15 @@ def restore_to_temp(
     *,
     dest_root: Path | str,
 ) -> HouseholdStore:
-    """Restore a verified snapshot into an isolated ROOT (never the live prod root auto)."""
-    snap = Path(snapshot)
-    if not snap.is_file() or _is_link(snap):
+    """Restore a verified snapshot + mandatory manifest into an isolated ROOT."""
+    snap = _confined_file(Path(snapshot), label="Snapshot")
+    if not snap.is_file():
         raise HouseholdStoreError("Snapshot introuvable", code="not_found", status=404)
+    man = _confined_file(snap.with_suffix(snap.suffix + ".manifest.json"), label="Manifeste")
+    meta = _load_manifest(man)
+    digest = _sha256_file(snap)
+    if digest != meta["sha256"]:
+        raise HouseholdStoreError("Checksum snapshot invalide", code="corrupt")
     check = sqlite3.connect(str(snap))
     try:
         if integrity_check(check) != "ok":
@@ -634,33 +779,31 @@ def restore_to_temp(
         ver = get_schema_version(check)
     finally:
         check.close()
-    man = snap.with_suffix(snap.suffix + ".manifest.json")
-    if man.is_file():
-        meta = json.loads(man.read_text(encoding="utf-8"))
-        if meta.get("sha256") and meta["sha256"] != _sha256_file(snap):
-            raise HouseholdStoreError("Checksum snapshot invalide", code="corrupt")
-        if int(meta.get("schema_version", ver)) != ver:
-            raise HouseholdStoreError("Manifeste / snapshot incohérents", code="corrupt")
+    if int(meta["schema_version"]) != ver:
+        raise HouseholdStoreError("Manifeste / snapshot incohérents", code="corrupt")
+
     dest = Path(os.path.abspath(os.fspath(dest_root)))
-    if dest.exists() and any(dest.iterdir()):
-        # Only allow empty or missing household
-        hh = dest / DIR_NAME
-        if hh.exists():
-            raise HouseholdStoreError(
-                "ROOT temporaire déjà peuplé — restauration refusée",
-                code="restore_error",
-            )
+    hh = dest / DIR_NAME
+    if hh.exists():
+        raise HouseholdStoreError(
+            "ROOT temporaire déjà peuplé — restauration refusée",
+            code="restore_error",
+        )
     prepare_household_dirs(dest)
     target = db_path(dest)
-    if target.exists():
+    if target.exists() or _is_link(target):
         raise HouseholdStoreError("Cible DB existe déjà", code="restore_error")
-    # Copy via backup API from snapshot into new file
+
     src = sqlite3.connect(str(snap))
     try:
         dst = sqlite3.connect(str(target))
         try:
             _sqlite_backup(src, dst)
             dst.commit()
+            if integrity_check(dst) != "ok":
+                raise HouseholdStoreError("Destination restaurée corrompue", code="corrupt")
+            if get_schema_version(dst) != ver:
+                raise HouseholdStoreError("Destination restaurée incohérente", code="corrupt")
         finally:
             dst.close()
     finally:

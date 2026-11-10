@@ -21,6 +21,14 @@ Fondation opérationnelle **non branchée** au bridge :
 3. Panne entre commit SQLite et miroir → prochaine ouverture **réécrit** le miroir ; pas de re-migration si `user_version` déjà à jour.
 4. `user_version` > code → refus de downgrade.
 
+## Garde-fous audit
+
+- Migrations : **pas** d'`executescript` après `BEGIN IMMEDIATE` — DDL/DML/`user_version` via `execute` + rollback.
+- ACL Windows : DACL remplacée (reset) pour SID bridge + SYSTEM ; vérification effective ; refus si Everyone/Users restent.
+- Confinement : `.hq-household`, DB, `backups/`, `imports/`, snapshots et manifestes.
+- Restore : manifeste SHA-256 **obligatoire** ; refuse cible déjà peuplée ; intégrité destination vérifiée.
+- `readonly=True` : aucune écriture (meta/ACL/mkdir/WAL) ; `open_store` ne lit plus le fichier DB en entier.
+
 ## API
 
 - `open_store(root, create=True, readonly=False)`
