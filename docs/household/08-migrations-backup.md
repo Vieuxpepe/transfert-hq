@@ -16,6 +16,13 @@
 | Fail-closed | Migration échouée → refuse démarrage module ; fichier DB intact |
 | Pas d'auto-migrate inventaire JSON | `hq_inventory` reste v1 ; liens `item_id` seulement |
 | Backup avant migrate | Snapshot SQLite + copie `inventory.json` si op cross-store |
+| Pas de réparation silencieuse | Never auto-rewrite envelope ``currency`` on ``open_store`` (ambiguous vs intentional CAD in a USD household) |
+
+### SQLite v3 — colonne ``budget_envelopes.currency``
+
+- **Contrat API** : ``schemas/household/finances.v1`` (entité ``budget_envelope.currency``) — distinct de ``PRAGMA user_version`` 3.
+- Migration v2→v3 : backfill depuis ``households`` pour les lignes **sans** devise (colonne nouvelle).
+- Bases v3 déjà déployées avec l’ancien ``DEFAULT 'CAD'`` : **pas** de réparation automatique à l’ouverture ; cas ambigus → sauvegarde manuelle, analyse, réconciliation opérateur (SQL ou outil dédié futur).
 
 Algorithme d'ouverture (futur module) :
 

@@ -242,51 +242,50 @@ class StoreLifecycleTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_v3_repair_corrects_misbackfilled_usd_envelope(self):
+    def test_open_store_preserves_intentional_cad_envelope_in_usd_household(self):
         base = store.prepare_household_dirs(self.root)
         path = base / store.DB_NAME
         conn = sqlite3.connect(str(path))
-        now = 1_700_000_100.0
-        hid = "hhold-repair"
-        cat = "cat-r"
-        env = "env-repair"
+        now = 1_700_000_200.0
+        hid = "hhold-usd-cad"
+        cat = "cat-cad-intent"
+        env = "env-cad-intent"
         try:
             store._apply_v1(conn)
             store._apply_v2(conn)
+            store._apply_v3(conn)
             conn.execute(
                 "INSERT INTO households("
                 "id, name, currency, locale, timezone, week_starts, prefs_json, created_at, updated_at, rev"
-                ") VALUES (?, ?, 'USD', 'en-US', 'America/New_York', 'sun', '{}', ?, ?, 1)",
-                (hid, "USD", now, now),
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (hid, "USD home", "USD", "en-US", "America/New_York", "sun", "{}", now, now, 1),
             )
             conn.execute(
                 "INSERT INTO budget_categories("
                 "id, household_id, name, kind, parent_id, archived, created_at, updated_at, rev"
-                ") VALUES (?, ?, 'Food', 'expense', NULL, 0, ?, ?, 1)",
+                ") VALUES (?, ?, 'Travel CAD', 'expense', NULL, 0, ?, ?, 1)",
                 (cat, hid, now, now),
-            )
-            store._exec_sql(
-                conn,
-                "ALTER TABLE budget_envelopes ADD COLUMN currency TEXT NOT NULL DEFAULT 'CAD'",
             )
             conn.execute(
                 "INSERT INTO budget_envelopes("
-                "id, household_id, category_id, period_start, period_end, allocated_cents, "
+                "id, household_id, category_id, period_start, period_end, allocated_cents, currency, "
                 "created_at, updated_at, rev"
-                ") VALUES (?, ?, ?, '2026-04-01', '2026-04-30', 1000, ?, ?, 1)",
+                ") VALUES (?, ?, ?, '2026-05-01', '2026-05-31', 5000, 'CAD', ?, ?, 1)",
                 (env, hid, cat, now, now),
             )
-            conn.execute("PRAGMA user_version = 3")
             conn.execute(
-                "INSERT INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
-                (3, now, "envelope currency v3"),
+                "UPDATE schema_migrations SET note = ? WHERE version = 3",
+                ("envelope currency v3",),
             )
             conn.commit()
         finally:
             conn.close()
         with store.open_store(self.root, create=False) as st:
             row = st.conn.execute("SELECT currency FROM budget_envelopes WHERE id = ?", (env,)).fetchone()
-            self.assertEqual(row[0], "USD")
+            self.assertEqual(row[0], "CAD")
+        with store.open_store(self.root, create=False) as st2:
+            row2 = st2.conn.execute("SELECT currency FROM budget_envelopes WHERE id = ?", (env,)).fetchone()
+            self.assertEqual(row2[0], "CAD")
 
     def test_migration_v2_failure_preserves_v1(self):
         base = store.prepare_household_dirs(self.root)

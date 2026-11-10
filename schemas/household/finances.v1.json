@@ -56,11 +56,16 @@
       }
     },
     "budget_envelope": {
-      "required": ["id", "category_id", "period_start", "period_end", "allocated_cents", "rev"],
+      "required": ["id", "category_id", "period_start", "period_end", "allocated_cents", "currency", "rev"],
       "properties": {
         "allocated_cents": {"type": "integer_cents", "min": 0},
         "period_start": {"type": "iso_date"},
-        "period_end": {"type": "iso_date"}
+        "period_end": {"type": "iso_date"},
+        "currency": {
+          "type": "string",
+          "enum": ["CAD", "USD", "EUR"],
+          "description": "Reference currency for spent rollups; may differ from household.currency"
+        }
       }
     },
     "goal": {

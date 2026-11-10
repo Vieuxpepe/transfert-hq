@@ -584,29 +584,29 @@ def _backfill_envelope_currency_from_households(conn: sqlite3.Connection) -> Non
         )
 
 
-def _repair_v3_envelope_currency_misbackfill(conn: sqlite3.Connection) -> None:
-    """One-shot fix for v3 migrates that only applied SQLite DEFAULT 'CAD'."""
-    row = conn.execute(
-        "SELECT note FROM schema_migrations WHERE version = ?", (3,)
-    ).fetchone()
-    if row is None or row[0] != "envelope currency v3":
-        return
+def _backfill_envelope_currency_nulls_only(conn: sqlite3.Connection) -> None:
+    """Set currency only when absent — never overwrite an explicit envelope currency."""
     conn.execute(
         """
         UPDATE budget_envelopes
         SET currency = (
             SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
         )
-        WHERE budget_envelopes.currency = 'CAD'
-          AND (
-              SELECT h.currency FROM households h WHERE h.id = budget_envelopes.household_id
-          ) IN ('USD', 'EUR')
+        WHERE currency IS NULL OR currency = ''
         """
     )
-    conn.execute(
-        "UPDATE schema_migrations SET note = ? WHERE version = ?",
-        ("envelope currency v3 household backfill", 3),
+    bad = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM budget_envelopes "
+            "WHERE currency IS NULL OR currency = '' "
+            "OR currency NOT IN ('CAD', 'USD', 'EUR')"
+        ).fetchone()[0]
     )
+    if bad:
+        raise HouseholdStoreError(
+            "Backfill devise enveloppe incomplet",
+            code="schema_error",
+        )
 
 
 def _apply_v3(conn: sqlite3.Connection) -> None:
@@ -616,7 +616,7 @@ def _apply_v3(conn: sqlite3.Connection) -> None:
         _exec_sql(conn, "ALTER TABLE budget_envelopes ADD COLUMN currency TEXT")
         _backfill_envelope_currency_from_households(conn)
     else:
-        _repair_v3_envelope_currency_misbackfill(conn)
+        _backfill_envelope_currency_nulls_only(conn)
     now = time.time()
     conn.execute(
         "INSERT OR IGNORE INTO schema_migrations(version, applied_at, note) VALUES (?, ?, ?)",
@@ -1026,17 +1026,6 @@ def open_store(
             current = get_schema_version(conn)
         if current == SCHEMA_VERSION:
             _validate_schema_for_version(conn, current)
-            if current >= 3:
-                try:
-                    conn.execute("BEGIN IMMEDIATE")
-                    _repair_v3_envelope_currency_misbackfill(conn)
-                    conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except sqlite3.Error:
-                        pass
-                    raise
         _enable_wal(conn)
         meta = None
         try:

@@ -7,6 +7,11 @@ session + CSRF. No bank feeds, no auto-post workers, no inventoria writes.
 Goals: ``saved_cents`` is a virtual progress tally (manual / UI allocation), not an
 automatic mirror of account balances — avoids double-counting when ``account_id`` is set.
 
+API contract ``schemas/household/finances.v1.json`` (``schema_version``: **1**) describes envelope
+payloads including ``currency`` (``CAD`` | ``USD`` | ``EUR``). SQLite ``PRAGMA user_version`` **3**
+adds the ``budget_envelopes.currency`` column at migration time only — it is not a bump of the
+finances JSON contract version.
+
 Budget envelopes (spent):
 - Net spend = Σ(-amount_cents) for **posted** expense-category rows with ``transfer_pair_id``
   absent (internal transfers never count as spend).
