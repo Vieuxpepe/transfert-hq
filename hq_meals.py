@@ -41,7 +41,7 @@ INGREDIENT_KEYS = frozenset({
 })
 SUBSTITUTE_KEYS = frozenset({"product_id", "name"})
 SLOT_KEYS = frozenset({"date", "meal", "recipe_id", "notes"})
-STOCK_LOT_FP_LIMIT = 500
+GROCERY_LIST_LINES_MAX = 500
 
 RECIPE_CURSOR_SEP = "|"
 PLAN_CURSOR_SEP = "|"
@@ -187,7 +187,13 @@ def _page_limit(qs: dict | None) -> int:
         return 50
 
 
-def _parse_substitutes(raw: Any, *, field_prefix: str) -> list[dict]:
+def _parse_substitutes(
+    conn: sqlite3.Connection,
+    household_id: str,
+    raw: Any,
+    *,
+    field_prefix: str,
+) -> list[dict]:
     if raw is None:
         return []
     if not isinstance(raw, list) or len(raw) > 20:
@@ -205,6 +211,7 @@ def _parse_substitutes(raw: Any, *, field_prefix: str) -> list[dict]:
                 schemas.require_id(pid, "product", f"{field_prefix}.substitutes[{j}].product_id")
             except schemas.SchemaError as exc:
                 raise MealsError(str(exc), code=exc.code) from exc
+            _assert_household_row(conn, "products", pid, household_id)
         name = sub.get("name")
         if name is not None:
             name = _optional_text(name, f"{field_prefix}.substitutes[{j}].name", 160)
@@ -271,7 +278,7 @@ def _parse_ingredients(
         optional = False
         if "optional" in ing:
             optional = schemas.require_bool(ing["optional"], f"ingredients[{i}].optional")
-        subs = _parse_substitutes(ing.get("substitutes"), field_prefix=f"ingredients[{i}]")
+        subs = _parse_substitutes(conn, household_id, ing.get("substitutes"), field_prefix=f"ingredients[{i}]")
         out.append({
             "product_id": product_id,
             "name": name,
@@ -642,31 +649,47 @@ def _usable_stock_milli(
     return int(row[0] or 0)
 
 
-def _stock_lots_snapshot(
+def _stock_lots_digest(
     conn: sqlite3.Connection,
     household_id: str,
     product_id: str,
     unit: str,
     *,
     as_of_day: str,
-) -> list[dict]:
-    rows = conn.execute(
+) -> str:
+    """Incremental SHA-256 over all relevant lots (stable ORDER BY id, no truncation)."""
+    h = hashlib.sha256()
+    cur = conn.execute(
         "SELECT id, rev, usable_qty_milli, canonical_unit, expires_on FROM food_lots "
         "WHERE household_id = ? AND product_id = ? AND canonical_unit = ? "
         "AND (expires_on IS NULL OR expires_on = '' OR expires_on >= ?) "
-        f"ORDER BY id ASC LIMIT {STOCK_LOT_FP_LIMIT}",
+        "ORDER BY id ASC",
         (household_id, product_id, unit, as_of_day),
-    ).fetchall()
-    return [
-        {
-            "id": r["id"],
-            "rev": int(r["rev"]),
-            "usable_qty_milli": int(r["usable_qty_milli"]),
-            "canonical_unit": r["canonical_unit"],
-            "expires_on": r["expires_on"] or None,
-        }
-        for r in rows
-    ]
+    )
+    for r in cur:
+        piece = json.dumps(
+            {
+                "id": r["id"],
+                "rev": int(r["rev"]),
+                "usable_qty_milli": int(r["usable_qty_milli"]),
+                "canonical_unit": r["canonical_unit"],
+                "expires_on": r["expires_on"] or None,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        h.update(piece.encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _enforce_grocery_line_cap(lines: list[dict]) -> None:
+    if len(lines) > GROCERY_LIST_LINES_MAX:
+        raise MealsError(
+            f"aperçu produit {len(lines)} lignes — maximum {GROCERY_LIST_LINES_MAX}",
+            code="validation_error",
+        )
 
 
 def _aggregate_lines(
@@ -795,7 +818,7 @@ def _source_fingerprint(
             stock.append({
                 "product_id": pid,
                 "unit": u,
-                "lots": _stock_lots_snapshot(conn, household_id, pid, u, as_of_day=today),
+                "lots_digest": _stock_lots_digest(conn, household_id, pid, u, as_of_day=today),
             })
         stock.sort(key=lambda x: (x["product_id"], x["unit"]))
     norm_lines = [
@@ -835,6 +858,7 @@ def build_list_preview(
     if subtract_available_stock:
         today = _household_today(conn, household_id)
         lines = _apply_stock_subtraction(conn, household_id, lines, as_of_day=today)
+    _enforce_grocery_line_cap(lines)
     fp = _source_fingerprint(
         conn, household_id, plan,
         subtract_available_stock=subtract_available_stock,
@@ -978,6 +1002,7 @@ def build_list_commit(
     if subtract:
         today = _household_today(conn, household_id)
         lines = _apply_stock_subtraction(conn, household_id, lines, as_of_day=today)
+    _enforce_grocery_line_cap(lines)
     fp = _source_fingerprint(
         conn, household_id, plan,
         subtract_available_stock=subtract,
