@@ -80,6 +80,85 @@ class StoreLifecycleTests(unittest.TestCase):
             store.open_store(self.root, create=False)
         self.assertEqual(ctx.exception.code, "downgrade_refused")
 
+    def test_newer_version_refused_without_wal_or_byte_change(self):
+        """Version gate must run before journal_mode=WAL (no secondary files / byte edits)."""
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("PRAGMA user_version = 99")
+            conn.commit()
+        finally:
+            conn.close()
+        before = path.read_bytes()
+        wal = path.with_name(store.DB_NAME + "-wal")
+        shm = path.with_name(store.DB_NAME + "-shm")
+        self.assertFalse(wal.exists())
+        self.assertFalse(shm.exists())
+        with self.assertRaises(store.HouseholdStoreError) as ctx:
+            store.open_store(self.root, create=False)
+        self.assertEqual(ctx.exception.code, "downgrade_refused")
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(wal.exists())
+        self.assertFalse(shm.exists())
+
+    def test_user_version_1_without_tables_refused(self):
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(store.HouseholdStoreError) as ctx:
+            store.open_store(self.root, create=False)
+        self.assertEqual(ctx.exception.code, "schema_error")
+
+    def test_user_version_1_missing_columns_refused(self):
+        base = store.prepare_household_dirs(self.root)
+        path = base / store.DB_NAME
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.execute("CREATE TABLE household_meta (key TEXT PRIMARY KEY NOT NULL)")
+            conn.execute(
+                "CREATE TABLE schema_migrations ("
+                "version INTEGER PRIMARY KEY NOT NULL, applied_at REAL NOT NULL, note TEXT NOT NULL)"
+            )
+            conn.execute("PRAGMA user_version = 1")
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(store.HouseholdStoreError) as ctx:
+            store.open_store(self.root, create=False)
+        self.assertEqual(ctx.exception.code, "schema_error")
+
+    def test_meta_schema_version_object_healed_without_typeerror(self):
+        with store.open_store(self.root) as st:
+            st.set_meta("alive", "1")
+        meta = store.meta_path(self.root)
+        meta.write_text(
+            json.dumps({"schema_version": {"nested": True}, "app_rev": "x"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with store.open_store(self.root, create=False) as st2:
+            self.assertEqual(st2.get_meta("alive"), "1")
+        healed = json.loads(meta.read_text(encoding="utf-8"))
+        self.assertEqual(healed["schema_version"], 1)
+
+    def test_meta_schema_version_array_healed_without_typeerror(self):
+        with store.open_store(self.root) as st:
+            st.set_meta("alive", "1")
+        meta = store.meta_path(self.root)
+        meta.write_text(
+            json.dumps({"schema_version": [1], "app_rev": "x"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        with store.open_store(self.root, create=False) as st2:
+            self.assertEqual(st2.get_meta("alive"), "1")
+        healed = json.loads(meta.read_text(encoding="utf-8"))
+        self.assertEqual(healed["schema_version"], 1)
+
     def test_corrupt_db_preserved(self):
         with store.open_store(self.root) as st:
             path = st.path
@@ -324,6 +403,23 @@ class ConfinementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as dest:
             with self.assertRaises(store.HouseholdStoreError):
                 store.restore_to_temp(snap, dest_root=dest)
+
+    def test_confined_file_refuses_symlink_parent(self):
+        """realpath/resolve equality misses intermediate parent redirects — walk components."""
+        real = Path(self.tmp.name) / "real-dir"
+        real.mkdir()
+        payload = real / "snap.sqlite"
+        payload.write_bytes(b"not-used-for-open")
+        via = Path(self.tmp.name) / "via-parent"
+        if not self._symlink(via, real, directory=True):
+            self.skipTest("symlink privilege unavailable")
+        sneaky = via / "snap.sqlite"
+        with self.assertRaises(store.HouseholdStoreError) as ctx:
+            store._confined_file(sneaky, label="Snapshot")
+        self.assertEqual(ctx.exception.code, "storage_error")
+        # Direct (non-redirected) path remains acceptable for the confinement helper.
+        ok = store._confined_file(payload, label="Snapshot")
+        self.assertEqual(ok, Path(os.path.abspath(payload)))
 
 
 @unittest.skipUnless(os.name == "nt", "Windows ACL checks")

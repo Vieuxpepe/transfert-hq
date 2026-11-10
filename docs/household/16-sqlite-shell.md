@@ -25,14 +25,17 @@ Fondation opérationnelle **non branchée** au bridge :
 
 - Migrations : **pas** d'`executescript` après `BEGIN IMMEDIATE` — DDL/DML/`user_version` via `execute` + rollback.
 - ACL Windows : DACL remplacée (reset) pour SID bridge + SYSTEM ; vérification effective ; refus si Everyone/Users restent.
-- Confinement : `.hq-household`, DB, `backups/`, `imports/`, snapshots et manifestes.
+- Confinement : `.hq-household`, DB, `backups/`, `imports/`, snapshots et manifestes ; `_confined_file` refuse aussi les parents redirigés.
 - Restore : manifeste SHA-256 **obligatoire** ; refuse cible déjà peuplée ; intégrité destination vérifiée.
+- `user_version=1` sans tables Household → refus (`validate_schema_v1` après `integrity_check`).
+- `PRAGMA journal_mode=WAL` **après** gates version/compatibilité (pas de `-wal`/`-shm` sur refus de downgrade).
+- Miroir `schema_meta.json` : `schema_version` non-entier (objet/tableau/bool) → soigné, pas de `TypeError`.
 - `readonly=True` : aucune écriture (meta/ACL/mkdir/WAL) ; `open_store` ne lit plus le fichier DB en entier.
 
 ## API
 
 - `open_store(root, create=True, readonly=False)`
-- `get_schema_version(conn)` / `migrate(conn)` / `integrity_check(conn)`
+- `get_schema_version(conn)` / `migrate(conn)` / `integrity_check(conn)` / `validate_schema_v1(conn)`
 - `backup(root, label=…)` → manifeste SHA-256
 - `restore_to_temp(snapshot, dest_root=…)` → ROOT jetable uniquement
 - `set_acl_for_tests(bool)` — tests seulement

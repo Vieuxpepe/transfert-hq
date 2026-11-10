@@ -133,19 +133,57 @@ def confined_household_dir(root: Path | str) -> Path:
     return base
 
 
-def _confined_file(path: Path, *, label: str) -> Path:
-    """Refuse redirected files used as backup/restore/manifest inputs or outputs."""
-    if _is_link(path):
-        raise HouseholdStoreError(f"{label} redirigé — refusé", code="storage_error")
-    if path.exists() and not path.is_file():
-        raise HouseholdStoreError(f"{label} n'est pas un fichier", code="storage_error")
-    if path.exists():
-        try:
-            if not _same(os.path.realpath(path), str(path.resolve())):
+def _iter_path_prefixes(path: Path) -> list[Path]:
+    """Absolute path prefixes from filesystem root down to ``path`` (inclusive)."""
+    cur = Path(os.path.abspath(os.fspath(path)))
+    chain: list[Path] = []
+    while True:
+        chain.append(cur)
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    chain.reverse()
+    return chain
+
+
+def _refuse_link_components(path: Path, *, label: str) -> None:
+    """Refuse if ``path`` or any existing ancestor is a symlink/junction."""
+    try:
+        for node in _iter_path_prefixes(path):
+            if os.path.lexists(node) and _is_link(node):
                 raise HouseholdStoreError(f"{label} redirigé — refusé", code="storage_error")
+    except OSError as exc:
+        raise HouseholdStoreError(f"{label} inaccessible", code="storage_error") from exc
+
+
+def _confined_file(path: Path, *, label: str, under: Path | str | None = None) -> Path:
+    """Refuse redirected files (self or parent components) used as I/O paths.
+
+    ``realpath`` vs ``resolve`` alone misses intermediate parent symlinks because
+    both APIs follow them. Walk lexically and optionally require anchoring under
+    an expected root directory.
+    """
+    abs_path = Path(os.path.abspath(os.fspath(path)))
+    _refuse_link_components(abs_path, label=label)
+    if abs_path.exists() and not abs_path.is_file():
+        raise HouseholdStoreError(f"{label} n'est pas un fichier", code="storage_error")
+    if under is not None:
+        abs_under = Path(os.path.abspath(os.fspath(under)))
+        _refuse_link_components(abs_under, label=f"{label} (racine)")
+        try:
+            real_file = os.path.realpath(abs_path) if os.path.lexists(abs_path) else str(abs_path)
+            real_under = os.path.realpath(abs_under)
         except OSError as exc:
             raise HouseholdStoreError(f"{label} inaccessible", code="storage_error") from exc
-    return path
+        try:
+            Path(real_file).relative_to(Path(real_under))
+        except ValueError as exc:
+            raise HouseholdStoreError(
+                f"{label} hors racine attendue — refusé",
+                code="storage_error",
+            ) from exc
+    return abs_path
 
 
 # ---------------------------------------------------------------- ACL / modes
@@ -345,6 +383,14 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _meta_schema_version(meta: dict) -> int | None:
+    """Return mirror schema_version only when it is a real int (not bool/list/object)."""
+    raw = meta.get("schema_version", None)
+    if type(raw) is not int:  # bool is int subclass — reject it too
+        return None
+    return raw
+
+
 def _read_meta(path: Path) -> dict | None:
     if not path.is_file():
         return None
@@ -361,7 +407,8 @@ def _read_meta(path: Path) -> dict | None:
 
 
 def _write_meta(path: Path, *, schema_version: int) -> None:
-    _confined_file(path, label="schema_meta") if path.exists() else None
+    if path.exists():
+        _confined_file(path, label="schema_meta", under=path.parent)
     payload = {
         "schema_version": schema_version,
         "applied_at": _utc_iso(),
@@ -391,7 +438,8 @@ def _write_meta(path: Path, *, schema_version: int) -> None:
 
 # ---------------------------------------------------------------- connection
 
-def _connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
+def _connect(path: Path, *, readonly: bool = False, wal: bool | None = None) -> sqlite3.Connection:
+    """Open SQLite. WAL is opt-in so version gates can run without side files."""
     if readonly:
         uri = path.resolve().as_uri() + "?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=BUSY_TIMEOUT_MS / 1000.0)
@@ -399,13 +447,18 @@ def _connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
         conn = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_MS / 1000.0)
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    if not readonly:
-        try:
-            conn.execute("PRAGMA journal_mode = WAL")
-        except sqlite3.Error:
-            pass
+    use_wal = (not readonly) if wal is None else bool(wal)
+    if use_wal:
+        _enable_wal(conn)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.Error:
+        pass
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int:
@@ -416,6 +469,34 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
 def integrity_check(conn: sqlite3.Connection) -> str:
     row = conn.execute("PRAGMA integrity_check").fetchone()
     return str(row[0])
+
+
+_V1_REQUIRED: dict[str, tuple[str, ...]] = {
+    "household_meta": ("key", "value", "updated_at"),
+    "schema_migrations": ("version", "applied_at", "note"),
+}
+
+
+def validate_schema_v1(conn: sqlite3.Connection) -> None:
+    """Fail closed when user_version claims v1 but essential structures are missing."""
+    for table, cols in _V1_REQUIRED.items():
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if row is None:
+            raise HouseholdStoreError(
+                f"Schéma v1 incomplet — table {table} absente",
+                code="schema_error",
+            )
+        # table name is from our constant map, not user input
+        info = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})")}
+        missing = set(cols) - info
+        if missing:
+            raise HouseholdStoreError(
+                f"Schéma v1 incomplet — colonnes manquantes ({table})",
+                code="schema_error",
+            )
 
 
 # ---------------------------------------------------------------- open / migrate
@@ -560,6 +641,8 @@ def open_store(
                     code="migrate_required",
                     status=503,
                 )
+            if current == SCHEMA_VERSION:
+                validate_schema_v1(conn)
             return HouseholdStore(root, conn, schema_version=current, readonly=True)
         except Exception:
             conn.close()
@@ -572,13 +655,16 @@ def open_store(
     if not existed:
         if not create:
             raise HouseholdStoreError("Base household absente", code="not_found", status=404)
-        conn = _connect(path, readonly=False)
+        # New DB: WAL only after a successful migrate + schema gate.
+        conn = _connect(path, readonly=False, wal=False)
         try:
             migrate(conn, target=SCHEMA_VERSION)
             check = integrity_check(conn)
             if check != "ok":
                 raise HouseholdStoreError(f"intégrité échec: {check}", code="corrupt")
             ver = get_schema_version(conn)
+            validate_schema_v1(conn)
+            _enable_wal(conn)
         except Exception:
             conn.close()
             if path.is_file():
@@ -601,8 +687,9 @@ def open_store(
         _secure_sqlite_sidecars(base)
         return HouseholdStore(root, conn, schema_version=ver, readonly=False)
 
+    # Existing DB: never flip WAL before version / compatibility gates.
     try:
-        conn = _connect(path, readonly=False)
+        conn = _connect(path, readonly=False, wal=False)
     except sqlite3.Error as exc:
         raise HouseholdStoreError("Base household illisible — octets conservés", code="corrupt") from exc
     try:
@@ -634,12 +721,16 @@ def open_store(
             if check2 != "ok":
                 raise HouseholdStoreError("intégrité post-migration échec", code="corrupt")
             current = get_schema_version(conn)
+        if current == SCHEMA_VERSION:
+            validate_schema_v1(conn)
+        _enable_wal(conn)
         meta = None
         try:
             meta = _read_meta(meta_path(root))
         except HouseholdStoreError:
             meta = None
-        if meta is None or int(meta.get("schema_version") or -1) != current:
+        mirror_ver = None if meta is None else _meta_schema_version(meta)
+        if mirror_ver != current:
             try:
                 _write_meta(meta_path(root), schema_version=current)
             except HouseholdStoreError:
