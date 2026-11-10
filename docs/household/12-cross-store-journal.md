@@ -41,8 +41,11 @@ Chaque étape :
 }
 ```
 
-`attempt_phase` est **obligatoire** pour `store=inventory` (défaut logique
-`not_started` à la planification).
+Pour `store=inventory` : **`attempt_phase` explicite** (pas de défaut silencieux)
+**et** `payload` valide typé (même contrat qu'Inventoria). Absent → `validation_error`.
+
+Invariant **`committed`** : toute étape `inventory` doit être `attempt_phase=acknowledged`.
+Une op `committed` avec étape `not_started` / `in_flight` est **invalide**.
 
 | Phase | Sens | Persistée quand |
 |-------|------|-----------------|

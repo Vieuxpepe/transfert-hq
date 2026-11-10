@@ -220,10 +220,14 @@ operation {
   op: item.adjust|item.create|item.update|item.move|item.delete|place.create|…,
   refs: { item_id?, place_id?, name_hint? },
   resolved: { item_id?, place_id?, confidence: high|medium|low },
-  payload: { … mirrors hq_inventory.apply fields … },
+  payload: { … allowlist typée par op — voir inventoria.v1.json … },
   label_fr: str
 }
 ```
+
+`item.update` / `place.update` : `id` + `rev` + **au moins un** champ mutable
+aligné sur `hq_inventory` (`place|name|qty|unit|min|tags|note|photos` /
+`parent|name|kind|note|photos`). Champs hors allowlist → refus.
 
 Résolution des références : matching déterministe sur ids / codes place / score
 nom ; `confidence: low` → exige confirmation UI avant preview.

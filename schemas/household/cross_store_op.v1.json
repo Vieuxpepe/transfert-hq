@@ -23,8 +23,10 @@
   "planned_step": {
     "required": ["store", "action"],
     "store": ["sqlite", "inventory"],
-    "inventory_extra": ["attempt_phase", "payload"],
-    "note": "Persist attempt_phase=in_flight BEFORE hq_inventory.apply; acknowledged only after durable step_result. in_flight adjust ⇒ needs_reconcile on reboot; never auto-replay; never infer success from global inventory rev alone."
+    "inventory_required": ["attempt_phase", "payload"],
+    "inventory_attempt_phase_explicit": true,
+    "committed_requires_inventory_acknowledged": true,
+    "note": "Inventory steps require explicit attempt_phase + typed payload. Persist in_flight BEFORE apply; acknowledged only after durable step_result. committed forbids non-acknowledged inventory steps. Never auto-replay in_flight adjust; never infer success from global inventory rev alone."
   },
   "required": [
     "id",

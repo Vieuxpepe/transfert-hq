@@ -202,13 +202,41 @@ class InventoriaTests(unittest.TestCase):
         with self.assertRaises(H.SchemaError):
             H.validate_inventoria_proposal(self._proposal(op="item.update", payload={"id": "itm-" + _hex16(3)}))
 
-    def test_item_update_payload_requires_rev(self):
+    def test_item_update_payload_requires_rev_and_mutable(self):
         p = self._proposal(
             op="item.update",
             payload={"id": "itm-" + _hex16(3), "rev": 2, "name": "Lait"},
             label_fr="Maj lait",
         )
         self.assertEqual(H.validate_inventoria_proposal(p)["op"], "item.update")
+        with self.assertRaises(H.SchemaError):
+            H.validate_inventoria_proposal(self._proposal(
+                op="item.update",
+                payload={"id": "itm-" + _hex16(3), "rev": 2},
+                label_fr="sans champ",
+            ))
+        with self.assertRaises(H.SchemaError):
+            H.validate_inventoria_proposal(self._proposal(
+                op="item.update",
+                payload={"id": "itm-" + _hex16(3), "rev": 2, "name": "Lait", "hack": 1},
+                label_fr="extra",
+            ))
+
+    def test_place_update_allowlist(self):
+        p = self._proposal(
+            op="place.update",
+            payload={"id": "plc-" + _hex16(4), "rev": 1, "kind": "shelf"},
+            label_fr="Maj place",
+            resolved={"place_id": "plc-" + _hex16(4), "confidence": "high"},
+        )
+        self.assertEqual(H.validate_inventoria_proposal(p)["op"], "place.update")
+        with self.assertRaises(H.SchemaError):
+            H.validate_inventoria_proposal(self._proposal(
+                op="place.update",
+                payload={"id": "plc-" + _hex16(4), "rev": 1},
+                label_fr="vide",
+                resolved={"confidence": "high"},
+            ))
 
 
 class CrossStoreJournalTests(unittest.TestCase):
@@ -250,9 +278,74 @@ class CrossStoreJournalTests(unittest.TestCase):
         ])
         self.assertEqual(H.validate_cross_store_op(ok)["step_index"], 1)
 
+    def test_inventory_requires_explicit_phase_and_payload(self):
+        with self.assertRaises(H.SchemaError):
+            H.validate_cross_store_op(self._op(planned_steps=[
+                {"store": "inventory", "action": "item.adjust", "payload": {"id": "itm-" + _hex16(3), "delta": -1}},
+            ]))
+        with self.assertRaises(H.SchemaError):
+            H.validate_cross_store_op(self._op(planned_steps=[
+                {"store": "inventory", "action": "item.adjust", "attempt_phase": "not_started"},
+            ]))
+        with self.assertRaises(H.SchemaError):
+            H.validate_cross_store_op(self._op(planned_steps=[
+                {
+                    "store": "inventory",
+                    "action": "item.adjust",
+                    "attempt_phase": "not_started",
+                    "payload": {"id": "itm-" + _hex16(3), "delta": -1, "extra": True},
+                },
+            ]))
+
+    def test_committed_rejects_non_acknowledged_inventory(self):
+        with self.assertRaises(H.SchemaError):
+            H.validate_cross_store_op(self._op(
+                status="committed",
+                step_index=1,
+                planned_steps=[{
+                    "store": "inventory",
+                    "action": "item.adjust",
+                    "attempt_phase": "not_started",
+                    "payload": {"id": "itm-" + _hex16(3), "delta": -1},
+                }],
+            ))
+        with self.assertRaises(H.SchemaError):
+            H.validate_cross_store_op(self._op(
+                status="committed",
+                step_index=1,
+                planned_steps=[{
+                    "store": "inventory",
+                    "action": "item.adjust",
+                    "attempt_phase": "in_flight",
+                    "payload": {"id": "itm-" + _hex16(3), "delta": -1},
+                }],
+                uncertain_inventory=1,
+            ))
+        ok = self._op(
+            status="committed",
+            step_index=1,
+            planned_steps=[{
+                "store": "inventory",
+                "action": "item.adjust",
+                "attempt_phase": "acknowledged",
+                "payload": {"id": "itm-" + _hex16(3), "delta": -1},
+            }],
+        )
+        self.assertEqual(H.validate_cross_store_op(ok)["status"], "committed")
+
     def test_committed_with_uncertain_forbidden(self):
         with self.assertRaises(H.SchemaError):
-            H.validate_cross_store_op(self._op(status="committed", step_index=1, uncertain_inventory=1))
+            H.validate_cross_store_op(self._op(
+                status="committed",
+                step_index=1,
+                uncertain_inventory=1,
+                planned_steps=[{
+                    "store": "inventory",
+                    "action": "item.adjust",
+                    "attempt_phase": "acknowledged",
+                    "payload": {"id": "itm-" + _hex16(3), "delta": -1},
+                }],
+            ))
 
     def test_uncertain_rejects_bool(self):
         with self.assertRaises(H.SchemaError):
@@ -364,6 +457,12 @@ class PriceOfferTests(unittest.TestCase):
         self.assertEqual(H.offer_freshness(self._offer(valid_to=None), now_day="2026-11-20"), "stale")
         self.assertEqual(H.offer_freshness(self._offer(), now_day="2026-11-05"), "fresh")
 
+    def test_freshness_scheduled_future_promo(self):
+        offer = self._offer(valid_from="2026-11-15", valid_to="2026-11-22", collected_on="2026-11-09")
+        self.assertEqual(H.offer_freshness(offer, now_day="2026-11-10"), "scheduled")
+        self.assertEqual(H.offer_freshness(offer, now_day="2026-11-15"), "fresh")
+        self.assertEqual(set(H.OFFER_FRESHNESS_STATES), {"scheduled", "fresh", "stale", "expired"})
+
 
 class ContractDescriptorTests(unittest.TestCase):
     def test_seven_descriptors_load(self):
@@ -386,8 +485,15 @@ class ContractDescriptorTests(unittest.TestCase):
         price = json.loads((SCHEMAS / "price_offer.v1.json").read_text(encoding="utf-8"))
         self.assertIn("unit_price_ratio", price["required"])
         self.assertNotIn("unit_price_cents_per_canonical", price["required"])
+        self.assertEqual(set(price["properties"]["freshness_states"]), H.OFFER_FRESHNESS_STATES)
         inv = json.loads((SCHEMAS / "inventoria.v1.json").read_text(encoding="utf-8"))
         self.assertEqual(tuple(inv["pipeline"]), H.PIPELINE)
+        allow = inv["entities"]["proposal"]["properties"]["payload"]["allowlists"]
+        self.assertEqual(set(allow["item.update"]), H.ITEM_UPDATE_REQUIRED | H.ITEM_UPDATE_FIELDS)
+        self.assertEqual(set(allow["place.update"]), H.PLACE_UPDATE_REQUIRED | H.PLACE_UPDATE_FIELDS)
+        cross = json.loads((SCHEMAS / "cross_store_op.v1.json").read_text(encoding="utf-8"))
+        self.assertTrue(cross["planned_step"]["committed_requires_inventory_acknowledged"])
+        self.assertTrue(cross["planned_step"]["inventory_attempt_phase_explicit"])
 
 
 if __name__ == "__main__":

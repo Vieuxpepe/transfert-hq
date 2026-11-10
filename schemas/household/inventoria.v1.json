@@ -57,7 +57,21 @@
         },
         "resolved.confidence": {"enum": ["high", "medium", "low"]},
         "payload": {
-          "note": "Structured per-op validation in hq_household_schemas._validate_inventoria_payload. Arbitrary LLM JSON is never apply-ready."
+          "note": "Structured per-op validation in hq_household_schemas._validate_inventoria_payload. Arbitrary LLM JSON is never apply-ready.",
+          "allowlists": {
+            "item.adjust": ["id", "delta"],
+            "item.create": ["name", "qty", "unit", "place", "min", "tags", "note", "photos"],
+            "item.update": ["id", "rev", "place", "name", "qty", "unit", "min", "tags", "note", "photos"],
+            "item.delete": ["id", "rev"],
+            "item.move": ["ids", "place"],
+            "place.create": ["name", "kind", "parent", "note", "photos"],
+            "place.update": ["id", "rev", "parent", "name", "kind", "note", "photos"],
+            "place.delete": ["id", "rev"]
+          },
+          "update_rules": {
+            "item.update": "id+rev required; at least one mutable field from hq_inventory _ITEM_FIELDS",
+            "place.update": "id+rev required; at least one mutable field from hq_inventory _PLACE_FIELDS"
+          }
         }
       }
     }

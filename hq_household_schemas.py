@@ -89,6 +89,21 @@ INVENTORY_ATTEMPT_PHASES = frozenset({"not_started", "in_flight", "acknowledged"
 NO_AUTO_REPLAY_INVENTORY_ACTIONS = frozenset({"item.adjust"})
 
 PLACE_KINDS = frozenset({"room", "furniture", "shelf", "drawer", "box", "bag", "other"})
+ASSET_RE = re.compile(r"^asset-[0-9a-f]{24}\Z")
+
+# Allowlists mirror hq_inventory mutation fields (id/rev added where required).
+ITEM_UPDATE_FIELDS = frozenset({"place", "name", "qty", "unit", "min", "tags", "note", "photos"})
+PLACE_UPDATE_FIELDS = frozenset({"parent", "name", "kind", "note", "photos"})
+ITEM_CREATE_FIELDS = frozenset({"name", "qty", "unit", "place", "min", "tags", "note", "photos"})
+PLACE_CREATE_FIELDS = frozenset({"name", "kind", "parent", "note", "photos"})
+ITEM_ADJUST_FIELDS = frozenset({"id", "delta"})
+ITEM_DELETE_FIELDS = frozenset({"id", "rev"})
+PLACE_DELETE_FIELDS = frozenset({"id", "rev"})
+ITEM_MOVE_FIELDS = frozenset({"ids", "place"})
+ITEM_UPDATE_REQUIRED = frozenset({"id", "rev"})
+PLACE_UPDATE_REQUIRED = frozenset({"id", "rev"})
+
+OFFER_FRESHNESS_STATES = frozenset({"scheduled", "fresh", "stale", "expired"})
 
 
 class SchemaError(ValueError):
@@ -339,61 +354,172 @@ def validate_recipe(doc: Any) -> dict:
     return doc
 
 
+def _reject_extra(payload: dict, allowed: frozenset[str], op: str) -> None:
+    extra = set(payload) - allowed
+    if extra:
+        raise SchemaError(f"payload {op} champs interdits: {sorted(extra)}")
+
+
+def _validate_optional_name(v: Any, field: str = "payload.name") -> str:
+    if not isinstance(v, str) or not (0 < len(v) <= 120):
+        raise SchemaError(f"{field} invalide")
+    return v
+
+
+def _validate_optional_unit(v: Any) -> None:
+    if v is None:
+        return
+    if not isinstance(v, str) or len(v) > 16:
+        raise SchemaError("payload.unit invalide")
+
+
+def _validate_optional_note(v: Any) -> None:
+    if v is None:
+        return
+    if not isinstance(v, str) or len(v) > 2000:
+        raise SchemaError("payload.note invalide")
+
+
+def _validate_optional_tags(v: Any) -> None:
+    if v is None:
+        return
+    if not isinstance(v, list) or len(v) > 12:
+        raise SchemaError("payload.tags invalide")
+    for t in v:
+        if not isinstance(t, str) or not (0 < len(t) <= 32):
+            raise SchemaError("payload.tags élément invalide")
+
+
+def _validate_optional_photos(v: Any) -> None:
+    if v is None:
+        return
+    if not isinstance(v, list) or len(v) > 6:
+        raise SchemaError("payload.photos invalide")
+    for p in v:
+        if not isinstance(p, str) or ASSET_RE.match(p) is None:
+            raise SchemaError("payload.photos id asset invalide")
+
+
+def _validate_optional_place_ref(v: Any, field: str) -> None:
+    if v is None:
+        return
+    require_id(v, "inventory_place", field)
+
+
+def _validate_optional_min(v: Any) -> None:
+    if v is None:
+        return
+    require_qty_milli(v, "payload.min", min_value=0)
+
+
+def _validate_item_mutable_fields(payload: dict, *, require_any: bool) -> None:
+    if "name" in payload:
+        _validate_optional_name(payload["name"])
+    if "unit" in payload:
+        _validate_optional_unit(payload["unit"])
+    if "note" in payload:
+        _validate_optional_note(payload["note"])
+    if "tags" in payload:
+        _validate_optional_tags(payload["tags"])
+    if "photos" in payload:
+        _validate_optional_photos(payload["photos"])
+    if "place" in payload:
+        _validate_optional_place_ref(payload["place"], "payload.place")
+    if "qty" in payload:
+        require_qty_milli(payload["qty"], "payload.qty", min_value=0)
+    if "min" in payload:
+        _validate_optional_min(payload["min"])
+    if require_any and not (set(payload) & ITEM_UPDATE_FIELDS):
+        raise SchemaError("payload item.update exige au moins un champ mutable")
+
+
+def _validate_place_mutable_fields(payload: dict, *, require_any: bool) -> None:
+    if "name" in payload:
+        _validate_optional_name(payload["name"])
+    if "kind" in payload:
+        if payload["kind"] not in PLACE_KINDS:
+            raise SchemaError("payload.kind invalide")
+    if "note" in payload:
+        _validate_optional_note(payload["note"])
+    if "photos" in payload:
+        _validate_optional_photos(payload["photos"])
+    if "parent" in payload:
+        _validate_optional_place_ref(payload["parent"], "payload.parent")
+    if require_any and not (set(payload) & PLACE_UPDATE_FIELDS):
+        raise SchemaError("payload place.update exige au moins un champ mutable")
+
+
 def _validate_inventoria_payload(op: str, payload: dict) -> None:
     """Structured payload per op — arbitrary LLM JSON is never apply-ready."""
     if op == "item.adjust":
+        _reject_extra(payload, ITEM_ADJUST_FIELDS, op)
         require_id(payload.get("id"), "inventory_item", "payload.id")
         delta = payload.get("delta")
         if not _is_int(delta) or delta == 0 or abs(delta) > 1_000_000:
             raise SchemaError("payload.delta invalide pour item.adjust")
-        extra = set(payload) - {"id", "delta"}
-        if extra:
-            raise SchemaError(f"payload item.adjust champs interdits: {sorted(extra)}")
         return
     if op == "item.create":
-        if not isinstance(payload.get("name"), str) or not (0 < len(payload["name"]) <= 120):
-            raise SchemaError("payload.name requis pour item.create")
+        _reject_extra(payload, ITEM_CREATE_FIELDS, op)
+        _validate_optional_name(payload.get("name"))
         require_qty_milli(payload.get("qty", 1), "payload.qty", min_value=0)
-        if "unit" in payload and payload["unit"] is not None:
-            if not isinstance(payload["unit"], str) or len(payload["unit"]) > 16:
-                raise SchemaError("payload.unit invalide")
-        if "place" in payload and payload["place"] is not None:
-            require_id(payload["place"], "inventory_place", "payload.place")
+        if "unit" in payload:
+            _validate_optional_unit(payload["unit"])
+        if "place" in payload:
+            _validate_optional_place_ref(payload["place"], "payload.place")
+        if "min" in payload:
+            _validate_optional_min(payload["min"])
+        if "tags" in payload:
+            _validate_optional_tags(payload["tags"])
+        if "note" in payload:
+            _validate_optional_note(payload["note"])
+        if "photos" in payload:
+            _validate_optional_photos(payload["photos"])
         return
     if op == "item.update":
+        _reject_extra(payload, ITEM_UPDATE_REQUIRED | ITEM_UPDATE_FIELDS, op)
         require_id(payload.get("id"), "inventory_item", "payload.id")
         if not _is_int(payload.get("rev")) or payload["rev"] < 1:
             raise SchemaError("payload.rev requis pour item.update")
+        _validate_item_mutable_fields(payload, require_any=True)
         return
     if op == "item.delete":
+        _reject_extra(payload, ITEM_DELETE_FIELDS, op)
         require_id(payload.get("id"), "inventory_item", "payload.id")
         if not _is_int(payload.get("rev")) or payload["rev"] < 1:
             raise SchemaError("payload.rev requis pour item.delete")
         return
     if op == "item.move":
+        _reject_extra(payload, ITEM_MOVE_FIELDS, op)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids or len(ids) > 500:
             raise SchemaError("payload.ids invalide pour item.move")
         for i, iid in enumerate(ids):
             require_id(iid, "inventory_item", f"payload.ids[{i}]")
-        place = payload.get("place")
-        if place is not None:
-            require_id(place, "inventory_place", "payload.place")
+        if "place" not in payload:
+            raise SchemaError("payload.place requis pour item.move (null = sans emplacement)")
+        _validate_optional_place_ref(payload["place"], "payload.place")
         return
     if op == "place.create":
-        if not isinstance(payload.get("name"), str) or not (0 < len(payload["name"]) <= 120):
-            raise SchemaError("payload.name requis pour place.create")
+        _reject_extra(payload, PLACE_CREATE_FIELDS, op)
+        _validate_optional_name(payload.get("name"))
         if "kind" in payload and payload["kind"] not in PLACE_KINDS:
             raise SchemaError("payload.kind invalide")
-        if payload.get("parent") is not None:
-            require_id(payload["parent"], "inventory_place", "payload.parent")
+        if "parent" in payload:
+            _validate_optional_place_ref(payload["parent"], "payload.parent")
+        if "note" in payload:
+            _validate_optional_note(payload["note"])
+        if "photos" in payload:
+            _validate_optional_photos(payload["photos"])
         return
     if op == "place.update":
+        _reject_extra(payload, PLACE_UPDATE_REQUIRED | PLACE_UPDATE_FIELDS, op)
         require_id(payload.get("id"), "inventory_place", "payload.id")
         if not _is_int(payload.get("rev")) or payload["rev"] < 1:
             raise SchemaError("payload.rev requis pour place.update")
+        _validate_place_mutable_fields(payload, require_any=True)
         return
     if op == "place.delete":
+        _reject_extra(payload, PLACE_DELETE_FIELDS, op)
         require_id(payload.get("id"), "inventory_place", "payload.id")
         if not _is_int(payload.get("rev")) or payload["rev"] < 1:
             raise SchemaError("payload.rev requis pour place.delete")
@@ -474,6 +600,9 @@ def validate_price_offer(doc: Any) -> dict:
         require_iso_date(doc["valid_from"], "valid_from")
     if doc.get("valid_to") is not None:
         require_iso_date(doc["valid_to"], "valid_to")
+    if doc.get("valid_from") is not None and doc.get("valid_to") is not None:
+        if doc["valid_from"] > doc["valid_to"]:
+            raise SchemaError("valid_from ne peut pas être après valid_to")
     prov = doc.get("provenance")
     if not isinstance(prov, dict) or prov.get("kind") not in ("manual", "file_import", "provider"):
         raise SchemaError("provenance invalide")
@@ -503,13 +632,14 @@ def validate_planned_step(step: Any, *, index: int) -> dict:
     if store == "inventory":
         if action not in INVENTORIA_PROPOSAL_OPS:
             raise SchemaError(f"planned_steps[{index}].action inventaire inconnue")
-        phase = step.get("attempt_phase", "not_started")
+        if "attempt_phase" not in step:
+            raise SchemaError(f"planned_steps[{index}].attempt_phase explicite requis")
+        phase = step.get("attempt_phase")
         if phase not in INVENTORY_ATTEMPT_PHASES:
             raise SchemaError(f"planned_steps[{index}].attempt_phase invalide")
-        if "payload" in step and step["payload"] is not None:
-            if not isinstance(step["payload"], dict):
-                raise SchemaError(f"planned_steps[{index}].payload invalide")
-            _validate_inventoria_payload(action, step["payload"])
+        if "payload" not in step or not isinstance(step.get("payload"), dict):
+            raise SchemaError(f"planned_steps[{index}].payload valide requis")
+        _validate_inventoria_payload(action, step["payload"])
     else:
         # sqlite domain steps: action free-form within bounds; payload object if present
         if "payload" in step and step["payload"] is not None and not isinstance(step["payload"], dict):
@@ -549,6 +679,12 @@ def validate_cross_store_op(doc: Any) -> dict:
         raise SchemaError("uncertain_inventory incompatible avec failed/cancelled — utiliser needs_reconcile")
     if status == "committed" and step_index != len(steps):
         raise SchemaError("committed exige step_index == len(planned_steps)")
+    if status == "committed":
+        for i, step in enumerate(steps):
+            if step.get("store") == "inventory" and step.get("attempt_phase") != "acknowledged":
+                raise SchemaError(
+                    f"committed exige planned_steps[{i}].attempt_phase=acknowledged"
+                )
     if status == "applying_inventory":
         if not any(s.get("store") == "inventory" for s in steps):
             raise SchemaError("applying_inventory sans étape inventory")
@@ -556,7 +692,7 @@ def validate_cross_store_op(doc: Any) -> dict:
     for i, step in enumerate(steps):
         if step.get("store") != "inventory":
             continue
-        phase = step.get("attempt_phase", "not_started")
+        phase = step["attempt_phase"]
         if phase == "in_flight" and step.get("action") in NO_AUTO_REPLAY_INVENTORY_ACTIONS:
             if status == "committed":
                 raise SchemaError("adjust in_flight incompatible avec committed")
@@ -615,9 +751,20 @@ def recovery_for_inventory_step(
 
 
 def offer_freshness(offer: dict, *, now_day: str) -> str:
-    """Return fresh|stale|expired using calendar dates only."""
+    """Return scheduled|fresh|stale|expired using calendar dates only.
+
+    Order:
+    1. ``valid_from`` present and ``now_day < valid_from`` → ``scheduled``
+       (promotion not yet started — not eligible for auto suggestions).
+    2. ``valid_to`` present and ``now_day > valid_to`` → ``expired``.
+    3. age from ``collected_on`` > ``stale_after_days`` → ``stale``.
+    4. else ``fresh``.
+    """
     validate_price_offer(offer)
     today = date.fromisoformat(require_iso_date(now_day, "now_day"))
+    valid_from = offer.get("valid_from")
+    if isinstance(valid_from, str) and today < date.fromisoformat(valid_from):
+        return "scheduled"
     valid_to = offer.get("valid_to")
     if isinstance(valid_to, str) and date.fromisoformat(valid_to) < today:
         return "expired"

@@ -86,15 +86,20 @@ jamais de fallback scraping silencieux.
 
 Ordre d'évaluation (`offer_freshness`) :
 
-1. Si `valid_to` présent et `now_day > valid_to` → **`expired`**
-2. Sinon si `(now_day - collected_on).days > stale_after_days` → **`stale`**
-3. Sinon → **`fresh`**
+1. Si `valid_from` présent et `now_day < valid_from` → **`scheduled`**
+   (promo pas encore commencée — exclue des suggestions auto)
+2. Sinon si `valid_to` présent et `now_day > valid_to` → **`expired`**
+3. Sinon si `(now_day - collected_on).days > stale_after_days` → **`stale`**
+4. Sinon → **`fresh`**
 
 | État | Règle |
 |------|-------|
-| `fresh` | Non expiré et âge ≤ `stale_after_days` |
-| `stale` | Non expiré mais âge > `stale_after_days` (badge UI) |
-| `expired` | `now_day > valid_to` → exclu des suggestions auto |
+| `scheduled` | Avant `valid_from` — pas encore active |
+| `fresh` | Dans la fenêtre de validité et âge ≤ `stale_after_days` |
+| `stale` | Active mais âge > `stale_after_days` (badge UI) |
+| `expired` | Après `valid_to` → exclu des suggestions auto |
+
+Si les deux dates sont présentes : `valid_from ≤ valid_to` (sinon validation refuse).
 
 Les listes d'épicerie peuvent figer `estimate_cents` au moment du plan pour
 ne pas « bouger » sous les pieds du Master pendant les courses.
