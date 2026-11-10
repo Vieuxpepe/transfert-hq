@@ -929,6 +929,42 @@ class V6IdempotencyIndexIntegrityTests(unittest.TestCase):
     def _idem_backups(self) -> list[Path]:
         return list(store.backups_dir(self.root).glob("household-pre-v6-idem-index-*.sqlite"))
 
+    def _merchant_household(self, st: store.HouseholdStore) -> tuple[str, str]:
+        import hq_finances as fin
+        import hq_grocery as gr
+
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 1.0)
+        gr.bind(
+            root=self.root, actor=lambda: "t", now=lambda: 1.0,
+            inventory_snapshot=lambda: {"version": 1, "rev": 1, "items": [], "places": []},
+        )
+        hid = fin.ensure_default_household(st.conn)
+        mch = gr.create_merchant(st.conn, hid, {"name": "M"})["id"]
+        return hid, mch
+
+    def _insert_purchase_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        hid: str,
+        mch: str,
+        pid: str,
+        idem_key: str,
+        fingerprint: str,
+    ) -> None:
+        now = 1.0
+        conn.execute(
+            "INSERT INTO actual_purchases("
+            "id, household_id, planned_id, product_id, merchant_id, qty_milli, unit, "
+            "paid_cents, taxed_cents, deposit_cents, purchased_on, fingerprint, "
+            "finance_tx_id, food_lot_id, idempotency_key, created_at, updated_at, rev"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                pid, hid, None, None, mch, 1000, "g", 10, 0, 0, "2026-11-10",
+                fingerprint, None, None, idem_key, now, now, 1,
+            ),
+        )
+
     def test_fresh_v6_index_valid_via_pragma(self) -> None:
         with store.open_store(self.root) as st:
             self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st.conn))
@@ -1003,6 +1039,68 @@ class V6IdempotencyIndexIntegrityTests(unittest.TestCase):
         n = len(self._idem_backups())
         store.open_store(self.root, create=False).close()
         self.assertEqual(len(self._idem_backups()), n)
+
+    def test_reject_partial_unique_index_repair_enforces_uniqueness(self) -> None:
+        import hq_finances as fin
+        import hq_grocery as gr
+
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            st.conn.execute(
+                f"CREATE UNIQUE INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX} "
+                "ON actual_purchases(household_id, idempotency_key) WHERE paid_cents >= 0",
+            )
+            st.conn.commit()
+            self.assertFalse(store.is_actual_purchases_idempotency_index_valid(st.conn))
+        bcount = len(self._idem_backups())
+        with self.assertRaises(store.HouseholdStoreError):
+            store.open_store(self.root, create=False, readonly=True)
+        self.assertEqual(len(self._idem_backups()), bcount)
+        before = len(self._idem_backups())
+        with store.open_store(self.root, create=False) as st:
+            self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st.conn))
+            hid, mch = self._merchant_household(st)
+            self._insert_purchase_row(
+                st.conn, hid=hid, mch=mch, pid="pur-aaaaaaaaaaaaaaaa", idem_key="idem-x", fingerprint="fp-a",
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                self._insert_purchase_row(
+                    st.conn, hid=hid, mch=mch, pid="pur-bbbbbbbbbbbbbbbb", idem_key="idem-x", fingerprint="fp-b",
+                )
+        self.assertEqual(len(self._idem_backups()), before + 1)
+        fin.reset_for_tests()
+        gr.reset_for_tests()
+
+    def test_reject_extra_expression_key_repair_enforces_uniqueness(self) -> None:
+        import hq_finances as fin
+        import hq_grocery as gr
+
+        with store.open_store(self.root) as st:
+            st.conn.execute(f"DROP INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX}")
+            st.conn.execute(
+                f"CREATE UNIQUE INDEX {store._ACTUAL_PURCHASES_IDEM_INDEX} "
+                "ON actual_purchases(household_id, idempotency_key, (NULL))",
+            )
+            st.conn.commit()
+            self.assertFalse(store.is_actual_purchases_idempotency_index_valid(st.conn))
+        bcount = len(self._idem_backups())
+        with self.assertRaises(store.HouseholdStoreError):
+            store.open_store(self.root, create=False, readonly=True)
+        self.assertEqual(len(self._idem_backups()), bcount)
+        before = len(self._idem_backups())
+        with store.open_store(self.root, create=False) as st:
+            self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st.conn))
+            hid, mch = self._merchant_household(st)
+            self._insert_purchase_row(
+                st.conn, hid=hid, mch=mch, pid="pur-cccccccccccccccc", idem_key="idem-y", fingerprint="fp-c",
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                self._insert_purchase_row(
+                    st.conn, hid=hid, mch=mch, pid="pur-dddddddddddddddd", idem_key="idem-y", fingerprint="fp-d",
+                )
+        self.assertEqual(len(self._idem_backups()), before + 1)
+        fin.reset_for_tests()
+        gr.reset_for_tests()
 
 
 class SchemaUnexpectedTypeTests(unittest.TestCase):

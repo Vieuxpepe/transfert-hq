@@ -1122,19 +1122,6 @@ _ACTUAL_PURCHASES_IDEM_INDEX = "idx_actual_purchases_idempotency"
 _ACTUAL_PURCHASES_IDEM_COLS = ("household_id", "idempotency_key")
 
 
-def _pragma_index_columns(conn: sqlite3.Connection, index_name: str) -> tuple[str, ...]:
-    try:
-        rows = conn.execute(f"PRAGMA index_info({index_name!r})").fetchall()
-    except sqlite3.Error:
-        return ()
-    cols: list[str] = []
-    for row in rows:
-        name = row["name"] if isinstance(row, sqlite3.Row) else row[2]
-        if name:
-            cols.append(str(name))
-    return tuple(cols)
-
-
 def _pragma_index_list_row(conn: sqlite3.Connection, table: str, index_name: str) -> sqlite3.Row | None:
     for row in conn.execute(f"PRAGMA index_list({table!r})").fetchall():
         iname = row["name"] if isinstance(row, sqlite3.Row) else row[1]
@@ -1143,15 +1130,44 @@ def _pragma_index_list_row(conn: sqlite3.Connection, table: str, index_name: str
     return None
 
 
+def _pragma_index_key_column_names(conn: sqlite3.Connection, index_name: str) -> tuple[str, ...] | None:
+    """Key parts only (index_xinfo.key=1); None if PRAGMA unavailable."""
+    try:
+        rows = conn.execute(f"PRAGMA index_xinfo({index_name!r})").fetchall()
+    except sqlite3.Error:
+        return None
+    names: list[str] = []
+    for row in rows:
+        is_key = int(row["key"] if isinstance(row, sqlite3.Row) else row[5])
+        if is_key != 1:
+            continue
+        cid = int(row["cid"] if isinstance(row, sqlite3.Row) else row[1])
+        name = row["name"] if isinstance(row, sqlite3.Row) else row[2]
+        if cid < 0 or name is None or str(name).strip() == "":
+            return None
+        names.append(str(name))
+    return tuple(names)
+
+
 def is_actual_purchases_idempotency_index_valid(conn: sqlite3.Connection) -> bool:
-    """True only if idx… is UNIQUE and covers (household_id, idempotency_key) in order."""
+    """True only if idx… is non-partial UNIQUE on exactly (household_id, idempotency_key)."""
     row = _pragma_index_list_row(conn, "actual_purchases", _ACTUAL_PURCHASES_IDEM_INDEX)
     if row is None:
         return False
     unique = int(row["unique"] if isinstance(row, sqlite3.Row) else row[2])
-    if unique == 0:
+    if unique != 1:
         return False
-    return _pragma_index_columns(conn, _ACTUAL_PURCHASES_IDEM_INDEX) == _ACTUAL_PURCHASES_IDEM_COLS
+    partial = 0
+    if isinstance(row, sqlite3.Row) and "partial" in row.keys():
+        partial = int(row["partial"])
+    elif not isinstance(row, sqlite3.Row) and len(row) > 4:
+        partial = int(row[4])
+    if partial != 0:
+        return False
+    key_cols = _pragma_index_key_column_names(conn, _ACTUAL_PURCHASES_IDEM_INDEX)
+    if key_cols is None:
+        return False
+    return key_cols == _ACTUAL_PURCHASES_IDEM_COLS
 
 
 def _actual_purchases_idempotency_has_duplicates(conn: sqlite3.Connection) -> bool:
