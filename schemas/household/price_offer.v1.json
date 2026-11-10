@@ -1,0 +1,81 @@
+{
+  "$id": "transfert-hq/household/price_offer.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
+  "schema_version": 1,
+  "required": [
+    "schema_version",
+    "id",
+    "merchant_id",
+    "merchant_name",
+    "product_name",
+    "price_cents",
+    "qty_milli",
+    "unit",
+    "unit_price_ratio",
+    "promo",
+    "tax_included",
+    "deposit_cents",
+    "collected_at",
+    "collected_on",
+    "provenance",
+    "reliability",
+    "stale_after_days",
+    "rev"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"pattern": "offer"},
+    "merchant_id": {"pattern": "merchant"},
+    "location_label": {"type": "string", "nullable": true},
+    "product_id": {"pattern": "product", "nullable": true},
+    "barcode": {"type": "string", "nullable": true},
+    "price_cents": {"type": "integer_cents", "min": 0},
+    "qty_milli": {"type": "qty_milli", "min": 1},
+    "unit": {"enum": ["g", "ml", "each", "serving"]},
+    "unit_price_ratio": {
+      "type": "object",
+      "required": ["cents_num", "qty_milli_den"],
+      "properties": {
+        "cents_num": {"type": "integer", "min": 0},
+        "qty_milli_den": {"type": "integer", "min": 1}
+      },
+      "note": "Exact rational price_cents/qty_milli. Compare via cross-multiply. Display via $/kg, $/L, or $/unité (floored labels only)."
+    },
+    "removed": {
+      "unit_price_cents_per_canonical": "Removed — truncated to 0 for many per-gram/ml prices."
+    },
+    "promo": {
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["none", "percent", "bogo", "multi", "other"]},
+        "label": {"type": "string", "maxLength": 160},
+        "conditions": {"type": "string", "maxLength": 500}
+      }
+    },
+    "tax_included": {"type": "boolean_strict"},
+    "deposit_cents": {"type": "integer_cents", "min": 0},
+    "collected_on": {"type": "iso_calendar_date"},
+    "valid_from": {"type": "iso_calendar_date", "nullable": true},
+    "valid_to": {"type": "iso_calendar_date", "nullable": true},
+    "provenance": {
+      "required": ["kind", "provider_id", "source_label", "verifiable"],
+      "properties": {
+        "kind": {"enum": ["manual", "file_import", "provider"]},
+        "provider_id": {"type": "string", "maxLength": 64},
+        "verifiable": {"type": "boolean_strict"},
+        "raw_ref": {"type": "string", "nullable": true}
+      }
+    },
+    "reliability": {"type": "integer", "min": 0, "max": 100},
+    "stale_after_days": {"type": "integer", "min": 1, "max": 365},
+    "freshness_states": ["scheduled", "fresh", "stale", "expired"],
+    "freshness_order": [
+      "valid_from > now_day → scheduled",
+      "valid_to < now_day → expired",
+      "age(collected_on) > stale_after_days → stale",
+      "else fresh"
+    ],
+    "note": "Automated flyer scraping is not assumed; providers must be explicit and permitted."
+  }
+}

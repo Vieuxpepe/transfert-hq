@@ -1,0 +1,79 @@
+{
+  "$id": "transfert-hq/household/inventoria.v1",
+  "contract_format": "hq-custom-descriptor",
+  "not_json_schema": true,
+  "schema_version": 1,
+  "pipeline": ["propose", "validate", "preview", "commit", "audit"],
+  "forbidden": [
+    "direct_inventory_write_from_llm",
+    "shared_thread_with_transferania_or_else",
+    "auto_budget_mutation"
+  ],
+  "entities": {
+    "session": {
+      "required": ["id", "device_id", "owner", "status", "messages", "created_at", "updated_at"],
+      "properties": {
+        "id": {"pattern": "inventoria_session"},
+        "status": {"enum": ["open", "closed"]},
+        "messages": {"type": "array", "maxItems": 100}
+      }
+    },
+    "operation": {
+      "required": ["id", "session_id", "status", "proposals", "idempotency_key", "created_at", "updated_at"],
+      "properties": {
+        "id": {"pattern": "inventoria_op"},
+        "status": {
+          "enum": [
+            "draft",
+            "validated",
+            "previewed",
+            "committing",
+            "committed",
+            "needs_reconcile",
+            "cancelled",
+            "failed"
+          ]
+        },
+        "proposals": {"type": "array", "maxItems": 20},
+        "idempotency_key": {"type": "idempotency_key"},
+        "expected_inventory_rev": {"type": "integer", "min": 0, "nullable": true},
+        "item_rev_expectations": {"type": "array", "maxItems": 100}
+      }
+    },
+    "proposal": {
+      "required": ["op", "refs", "resolved", "payload", "label_fr"],
+      "properties": {
+        "op": {
+          "enum": [
+            "item.adjust",
+            "item.create",
+            "item.update",
+            "item.move",
+            "item.delete",
+            "place.create",
+            "place.update",
+            "place.delete"
+          ]
+        },
+        "resolved.confidence": {"enum": ["high", "medium", "low"]},
+        "payload": {
+          "note": "Structured per-op validation in hq_household_schemas._validate_inventoria_payload. Arbitrary LLM JSON is never apply-ready.",
+          "allowlists": {
+            "item.adjust": ["id", "delta"],
+            "item.create": ["name", "qty", "unit", "place", "min", "tags", "note", "photos"],
+            "item.update": ["id", "rev", "place", "name", "qty", "unit", "min", "tags", "note", "photos"],
+            "item.delete": ["id", "rev"],
+            "item.move": ["ids", "place"],
+            "place.create": ["name", "kind", "parent", "note", "photos"],
+            "place.update": ["id", "rev", "parent", "name", "kind", "note", "photos"],
+            "place.delete": ["id", "rev"]
+          },
+          "update_rules": {
+            "item.update": "id+rev required; at least one mutable field from hq_inventory _ITEM_FIELDS",
+            "place.update": "id+rev required; at least one mutable field from hq_inventory _PLACE_FIELDS"
+          }
+        }
+      }
+    }
+  }
+}

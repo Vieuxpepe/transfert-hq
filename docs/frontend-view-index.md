@@ -44,6 +44,14 @@ Use this table before opening large JS files.
 | `intime` | Tête-à-tête | companion bundle with page | **`HqCompanion`**, admin only | **`assets/hq-companion.js`** | `companion live2d-frame` |
 | `plus` | Plus / Système | — | status / settings chrome; Mini-Quêtes section `#system-mini-quests` | inline + `hq-mini-quests.js` | — |
 
+### Planned views (PR #30 foundations — not wired)
+
+| View (future) | Nav | Notes |
+|---------------|-----|-------|
+| `finances` | Finances | Sous-vues: générale, transactions, budgets, factures, objectifs, analyses — [household/07-ui-architecture.md](household/07-ui-architecture.md) |
+| `repas` | Repas & Épicerie | Planificateur, circulaires, recettes, liste, garde-manger, historique prix |
+| Inventoria FAB | global | Bas-gauche ; ne masque pas Transferania / Else |
+
 ---
 
 ## Navigation instrumentation
