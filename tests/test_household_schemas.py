@@ -154,6 +154,29 @@ class MealsTests(unittest.TestCase):
         }
         self.assertEqual(H.validate_recipe(rcp)["servings"], 2)
 
+    def test_meal_plan_ok(self):
+        mpl = {
+            "id": "mpl-" + _hex16(2),
+            "period_start": "2026-11-10",
+            "period_end": "2026-11-16",
+            "slots": [
+                {"date": "2026-11-10", "meal": "dinner", "recipe_id": "rcp-" + _hex16(1)},
+            ],
+            "rev": 1,
+        }
+        self.assertEqual(H.validate_meal_plan(mpl)["period_start"], "2026-11-10")
+
+    def test_grocery_list_ok(self):
+        gl = {
+            "id": "glst-" + _hex16(3),
+            "status": "open",
+            "lines": [
+                {"name": "Riz", "qty_milli": 500000, "unit": "g", "checked": False},
+            ],
+            "rev": 1,
+        }
+        self.assertEqual(H.validate_grocery_list(gl)["status"], "open")
+
 
 class InventoriaTests(unittest.TestCase):
     def _proposal(self, **over):

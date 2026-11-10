@@ -40,6 +40,12 @@ POST_LOT_KEYS = frozenset({
 POST_MERCHANT_KEYS = frozenset({
     "id", "rev", "name", "location_label", "provider_id",
 })
+POST_LIST_KEYS = frozenset({
+    "id", "rev", "meal_plan_id", "status", "lines",
+})
+GROCERY_LINE_KEYS = frozenset({
+    "product_id", "name", "qty_milli", "unit", "merchant_id", "estimated_cents", "checked",
+})
 
 PRODUCT_CURSOR_SEP = "|"
 LOT_CURSOR_SEP = "|"
@@ -98,6 +104,7 @@ ID_PREFIX = {
     "product": "prd",
     "lot": "lot",
     "merchant": "mch",
+    "grocery_list": "glst",
 }
 
 _cb: dict[str, Any] = {}
@@ -775,6 +782,183 @@ def list_merchants(conn: sqlite3.Connection, household_id: str, qs: dict | None)
     return {"ok": True, "items": items, "next_cursor": next_cursor}
 
 
+def _grocery_list_row_to_api(row: sqlite3.Row) -> dict:
+    lines = json.loads(row["lines_json"] or "[]")
+    return {
+        "id": row["id"],
+        "household_id": row["household_id"],
+        "meal_plan_id": row["meal_plan_id"],
+        "status": row["status"],
+        "lines": lines if isinstance(lines, list) else [],
+        "rev": int(row["rev"]),
+        "schema_version": 1,
+    }
+
+
+def _parse_grocery_lines(
+    conn: sqlite3.Connection,
+    household_id: str,
+    raw: Any,
+) -> list[dict]:
+    if not isinstance(raw, list) or len(raw) > 500:
+        raise GroceryError("lines invalides", code="validation_error")
+    out: list[dict] = []
+    for i, line in enumerate(raw):
+        if not isinstance(line, dict):
+            raise GroceryError(f"lines[{i}] invalide", code="validation_error")
+        extra = set(line) - GROCERY_LINE_KEYS
+        if extra:
+            raise GroceryError(f"lines[{i}] champs interdits", code="validation_error")
+        name = _optional_text(line.get("name"), f"lines[{i}].name", 160)
+        if not name:
+            raise GroceryError(f"lines[{i}].name invalide", code="validation_error")
+        qty = _require_qty_milli(line.get("qty_milli"), f"lines[{i}].qty_milli")
+        unit = _require_unit(line.get("unit"), f"lines[{i}].unit")
+        product_id = line.get("product_id")
+        if product_id is not None:
+            schemas.require_id(product_id, "product", f"lines[{i}].product_id")
+            _assert_household_row(conn, "products", product_id, household_id)
+        merchant_id = line.get("merchant_id")
+        if merchant_id is not None:
+            schemas.require_id(merchant_id, "merchant", f"lines[{i}].merchant_id")
+            _assert_household_row(conn, "merchants", merchant_id, household_id)
+        estimated_cents = line.get("estimated_cents")
+        if estimated_cents is not None:
+            try:
+                estimated_cents = schemas.require_cents(estimated_cents, f"lines[{i}].estimated_cents", min_value=0)
+            except schemas.SchemaError as exc:
+                raise GroceryError(str(exc), code=exc.code) from exc
+        checked = False
+        if "checked" in line:
+            checked = schemas.require_bool(line["checked"], f"lines[{i}].checked")
+        out.append({
+            "product_id": product_id,
+            "name": name,
+            "qty_milli": qty,
+            "unit": unit,
+            "merchant_id": merchant_id,
+            "estimated_cents": estimated_cents,
+            "checked": checked,
+        })
+    return out
+
+
+def create_grocery_list(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
+    _reject_unknown_fields(data, POST_LIST_KEYS)
+    meal_plan_id = data.get("meal_plan_id")
+    if meal_plan_id is not None:
+        try:
+            schemas.require_id(meal_plan_id, "meal_plan", "meal_plan_id")
+        except schemas.SchemaError as exc:
+            raise GroceryError(str(exc), code=exc.code) from exc
+        row = conn.execute(
+            "SELECT household_id FROM meal_plans WHERE id = ?", (meal_plan_id,),
+        ).fetchone()
+        if row is None or str(row["household_id"]) != household_id:
+            raise GroceryError("meal_plan introuvable", status=404, code="not_found")
+    status = data.get("status", "open")
+    if status not in schemas.GROCERY_LIST_STATUS:
+        raise GroceryError("status invalide", code="validation_error")
+    lines = _parse_grocery_lines(conn, household_id, data.get("lines"))
+    gid = _new_id("grocery_list")
+    doc = {"id": gid, "status": status, "lines": lines, "rev": 1}
+    if meal_plan_id:
+        doc["meal_plan_id"] = meal_plan_id
+    schemas.validate_grocery_list(doc)
+    now = _now()
+    conn.execute(
+        "INSERT INTO grocery_lists(id, household_id, meal_plan_id, status, lines_json, created_at, updated_at, rev) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+        (gid, household_id, meal_plan_id, status, json.dumps(lines, ensure_ascii=False), now, now),
+    )
+    row = conn.execute("SELECT * FROM grocery_lists WHERE id = ?", (gid,)).fetchone()
+    return _grocery_list_row_to_api(row)
+
+
+def update_grocery_list(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
+    _reject_unknown_fields(data, POST_LIST_KEYS)
+    schemas.require_id(data.get("id"), "grocery_list")
+    rev = data.get("rev")
+    if not isinstance(rev, int) or isinstance(rev, bool) or rev < 1:
+        raise GroceryError("rev invalide")
+    row = _assert_household_row(conn, "grocery_lists", data["id"], household_id)
+    if int(row["rev"]) != rev:
+        raise GroceryError("rev obsolète", status=409, code="conflict")
+    meal_plan_id = row["meal_plan_id"]
+    if "meal_plan_id" in data:
+        meal_plan_id = data.get("meal_plan_id")
+        if meal_plan_id is not None:
+            schemas.require_id(meal_plan_id, "meal_plan", "meal_plan_id")
+            mrow = conn.execute(
+                "SELECT household_id FROM meal_plans WHERE id = ?", (meal_plan_id,),
+            ).fetchone()
+            if mrow is None or str(mrow["household_id"]) != household_id:
+                raise GroceryError("meal_plan introuvable", status=404, code="not_found")
+    status = row["status"]
+    if "status" in data:
+        status = data["status"]
+        if status not in schemas.GROCERY_LIST_STATUS:
+            raise GroceryError("status invalide", code="validation_error")
+    lines = json.loads(row["lines_json"] or "[]")
+    if "lines" in data:
+        lines = _parse_grocery_lines(conn, household_id, data.get("lines"))
+    doc = {"id": data["id"], "status": status, "lines": lines, "rev": rev + 1}
+    if meal_plan_id:
+        doc["meal_plan_id"] = meal_plan_id
+    schemas.validate_grocery_list(doc)
+    now = _now()
+    cur = conn.execute(
+        "UPDATE grocery_lists SET meal_plan_id = ?, status = ?, lines_json = ?, updated_at = ?, rev = ? "
+        "WHERE id = ? AND household_id = ? AND rev = ?",
+        (meal_plan_id, status, json.dumps(lines, ensure_ascii=False), now, rev + 1, data["id"], household_id, rev),
+    )
+    if cur.rowcount != 1:
+        raise GroceryError("rev obsolète", status=409, code="conflict")
+    row2 = conn.execute("SELECT * FROM grocery_lists WHERE id = ?", (data["id"],)).fetchone()
+    return _grocery_list_row_to_api(row2)
+
+
+def upsert_grocery_list(conn: sqlite3.Connection, household_id: str, data: dict) -> dict:
+    if data.get("id"):
+        return update_grocery_list(conn, household_id, data)
+    return create_grocery_list(conn, household_id, data)
+
+
+def list_grocery_lists(conn: sqlite3.Connection, household_id: str, qs: dict | None) -> dict:
+    limit = _page_limit(qs)
+    cursor = _qs_first(qs, "cursor")
+    lid = _qs_first(qs, "id")
+    if lid:
+        try:
+            schemas.require_id(lid, "grocery_list")
+        except schemas.SchemaError as exc:
+            raise GroceryError(str(exc), code=exc.code) from exc
+        row = _assert_household_row(conn, "grocery_lists", lid, household_id)
+        return {"ok": True, "items": [_grocery_list_row_to_api(row)], "next_cursor": None}
+    clauses = ["household_id = ?"]
+    params: list[Any] = [household_id]
+    status = _qs_first(qs, "status")
+    if status:
+        if status not in schemas.GROCERY_LIST_STATUS:
+            raise GroceryError("status invalide", code="validation_error")
+        clauses.append("status = ?")
+        params.append(status)
+    if cursor:
+        cname, cid = _parse_name_id_cursor(cursor)
+        clauses.append("(status > ? OR (status = ? AND id > ?))")
+        params.extend([cname, cname, cid])
+    sql = "SELECT * FROM grocery_lists WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY status ASC, id ASC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    items = [_grocery_list_row_to_api(r) for r in rows]
+    next_cursor = None
+    if len(items) == limit:
+        last = items[-1]
+        next_cursor = _encode_name_id_cursor(last["status"], last["id"])
+    return {"ok": True, "items": items, "next_cursor": next_cursor}
+
+
 def redact_for_logs(payload: Any) -> dict:
     if not isinstance(payload, dict):
         return {"redacted": True}
@@ -808,6 +992,8 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
                 return 200, list_lots(conn, household_id, qs or {})
             if path == "/api/grocery/merchants":
                 return 200, list_merchants(conn, household_id, qs or {})
+            if path == "/api/grocery/lists":
+                return 200, list_grocery_lists(conn, household_id, qs or {})
             raise GroceryError("Route inconnue", status=404, code="not_found")
         finally:
             st.close()
@@ -841,6 +1027,10 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                 with st.transaction():
                     out = upsert_merchant(conn, household_id, data)
                 return 200, {"ok": True, "merchant": out}
+            if path == "/api/grocery/lists":
+                with st.transaction():
+                    out = upsert_grocery_list(conn, household_id, data)
+                return 200, {"ok": True, "grocery_list": out}
             raise GroceryError("Route inconnue", status=404, code="not_found")
         finally:
             st.close()
