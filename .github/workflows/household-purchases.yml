@@ -1,0 +1,66 @@
+name: Household purchases core
+
+on:
+  push:
+    paths:
+      - "hq_purchases.py"
+      - "hq_grocery.py"
+      - "hq_finances.py"
+      - "hq_meals.py"
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "iphone_bridge.py"
+      - "schemas/household/**"
+      - "tests/test_hq_purchases.py"
+      - "tests/test_hq_purchases_security.py"
+      - "tests/test_household_cross_store.py"
+      - "tests/test_hq_grocery.py"
+      - "tests/test_hq_grocery_security.py"
+      - "tests/test_hq_finances.py"
+      - "tests/test_hq_finances_security.py"
+      - "tests/test_hq_meals.py"
+      - "tests/test_hq_meals_security.py"
+      - "tests/test_household_store.py"
+      - "tests/test_household_schemas.py"
+      - ".github/workflows/household-purchases.yml"
+  pull_request:
+    paths:
+      - "hq_purchases.py"
+      - "hq_grocery.py"
+      - "hq_finances.py"
+      - "hq_meals.py"
+      - "hq_household_store.py"
+      - "hq_household_schemas.py"
+      - "iphone_bridge.py"
+      - "schemas/household/**"
+      - "tests/test_hq_purchases.py"
+      - "tests/test_hq_purchases_security.py"
+      - "tests/test_household_cross_store.py"
+      - "tests/test_hq_grocery.py"
+      - "tests/test_hq_grocery_security.py"
+      - "tests/test_hq_finances.py"
+      - "tests/test_hq_finances_security.py"
+      - "tests/test_hq_meals.py"
+      - "tests/test_hq_meals_security.py"
+      - "tests/test_household_store.py"
+      - "tests/test_household_schemas.py"
+      - ".github/workflows/household-purchases.yml"
+
+jobs:
+  household-purchases:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Household store + schemas (regression)
+        run: python -m unittest tests.test_household_store tests.test_household_schemas -v
+      - name: Finances regression
+        run: python -m unittest tests.test_hq_finances tests.test_hq_finances_security -v
+      - name: Grocery regression
+        run: python -m unittest tests.test_hq_grocery tests.test_hq_grocery_security -v
+      - name: Meals regression
+        run: python -m unittest tests.test_hq_meals tests.test_hq_meals_security -v
+      - name: Purchases + cross-store
+        run: python -m unittest tests.test_hq_purchases tests.test_hq_purchases_security tests.test_household_cross_store -v

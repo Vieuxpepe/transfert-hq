@@ -34,6 +34,13 @@ révisions atomiques (CAS sur ``rev``) et listes bornées (≤100 ingrédients, 
 sans explosion de tables relationnelles en v1. Aucune écriture Inventoria ni ledger ; le build-list
 preview ne persiste rien ; commit idempotent via ``grocery_list_build_idempotency``.
 
+### SQLite v6 — achats réels (PR #35 core)
+
+Tables ``actual_purchases`` (unicité ``fingerprint`` par foyer), ``purchase_idempotency``,
+``cross_store_ops`` (journal futur SQLite↔Inventoria). ``POST /api/grocery/purchases/actual``
+peut écrire achat + transaction ``grocery_purchase`` + lot dans une transaction SQLite ;
+``adjust_inventory`` renvoie **501** (aucun ``hq_inventory.apply``). Pas de table ``planned_purchases``.
+
 ### SQLite v3 — colonne ``budget_envelopes.currency``
 
 - **Contrat API** : ``schemas/household/finances.v1`` (entité ``budget_envelope.currency``) — distinct de ``PRAGMA user_version`` 3.

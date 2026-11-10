@@ -645,6 +645,16 @@ def _validate_tx_payload(
         schemas.require_id(doc.get("correction_of"), "transaction", "correction_of")
         doc["source"] = "correction"
         doc.pop("transfer_pair_id", None)
+    elif via == "grocery_purchase":
+        if doc.get("correction_of"):
+            raise FinanceError("correction_of interdit sur un achat épicerie", code="validation_error")
+        if doc.get("transfer_pair_id"):
+            raise FinanceError("transfer_pair_id interdit sur un achat épicerie", code="validation_error")
+        doc["source"] = "grocery_purchase"
+        fp = doc.get("external_fingerprint")
+        if not isinstance(fp, str) or not (1 <= len(fp.strip()) <= 200):
+            raise FinanceError("external_fingerprint requis", code="validation_error")
+        doc["external_fingerprint"] = fp.strip()
     else:
         raise FinanceError("mode transaction invalide", code="validation_error")
     if require_key:
@@ -684,6 +694,11 @@ def insert_transaction(
     if via == "generic" and str(cat[1]) == "transfer":
         raise FinanceError(
             "catégorie transfer réservée — utiliser POST /api/finances/transfers",
+            code="validation_error",
+        )
+    if via == "grocery_purchase" and str(cat[1]) != "expense":
+        raise FinanceError(
+            "catégorie expense requise pour un achat épicerie",
             code="validation_error",
         )
     now = _now()
