@@ -67,6 +67,7 @@
     // 4 s of dragging at 6x slowdown). The full-tier warp needs getImageData, so only then the overlay is
     // painted into this CPU-backed scratch canvas, warped there, and copied onto the visible one.
     let veinWork = null;
+    let veinWarpSkip = 0;
     let veinWorkCtx = null;
     let danglePaintArmed = false;
     let danglePaintOn = false;
@@ -546,6 +547,7 @@
       swellNy = blurVec(blurVec(swellNy, 3), 2);
       swellImg = ctx.createImageData(cw, ch);
       skinVer += 1;
+      swellFieldVer += 1;
       swellPaintKey = ""; swellGeomKey = "";
       return true;
     }
@@ -1411,8 +1413,308 @@
       }
     }
 
+    // perf17: GPU swell relief ("epic" mode). computeVeinSwell samples the hi-res skin through the vein
+    // push, shades it with the relief model and tints it, per pixel on the CPU, then box-downsamples to
+    // the skin image the bend renderer reads. This renders exactly that into a texture inside the bend
+    // renderer's own WebGL context, so the bend samples it directly (no CPU compute, premultiply or
+    // upload). The shader is a line-for-line port of veinSwellSample / shadeVeinRelief / tintSwellPurple
+    // with the scale*scale supersample + box average. "extreme" mode and any failure use the CPU path.
+    let reliefProg = null;
+    let reliefLoc = null;
+    let reliefFbo = null;
+    let reliefTex = null;
+    let reliefBuf = null;
+    let reliefFailed = false;
+    let reliefActive = false;
+    let reliefKey = "";
+    let reliefSized = "";
+    let reliefFieldKey = "";
+    let reliefHiRef = null;
+    let reliefHiTex = null;
+    let reliefFieldTex = null;
+    let reliefData = null;
+
+    const RELIEF_VERT =
+      "attribute vec2 aPos;uniform vec2 uBuf;varying vec2 vPx;" +
+      "void main(){vPx=aPos;gl_Position=vec4(aPos.x/uBuf.x*2.0-1.0,aPos.y/uBuf.y*2.0-1.0,0.0,1.0);}";
+    const RELIEF_FRAG = [
+      "precision highp float;",
+      "uniform sampler2D uHi;uniform sampler2D uT0;uniform sampler2D uT1;uniform sampler2D uT2;uniform sampler2D uT3;",
+      "uniform vec2 uRegion;uniform vec2 uHiSize;uniform float uScale;uniform float uPulse;uniform float uRad;uniform float uHasRaw;",
+      "varying vec2 vPx;",
+      "vec2 cell(vec2 p){",
+      "  float ix=p.x<=0.0?0.0:(p.x>=uRegion.x-1.0?uRegion.x-1.0:floor(p.x));",
+      "  float iy=p.y<=0.0?0.0:(p.y>=uRegion.y-1.0?uRegion.y-1.0:floor(p.y));",
+      "  return (vec2(ix,iy)+0.5)/uRegion;",
+      "}",
+      "vec3 fieldAt(vec2 p){",
+      "  float x0=p.x<=0.0?0.0:(p.x>=uRegion.x-1.0?uRegion.x-1.0:floor(p.x));",
+      "  float y0=p.y<=0.0?0.0:(p.y>=uRegion.y-1.0?uRegion.y-1.0:floor(p.y));",
+      "  float x1=x0+1.0<uRegion.x?x0+1.0:x0;",
+      "  float y1=y0+1.0<uRegion.y?y0+1.0:y0;",
+      "  float fx=p.x<=x0?0.0:(p.x>=x1?1.0:p.x-x0);",
+      "  float fy=p.y<=y0?0.0:(p.y>=y1?1.0:p.y-y0);",
+      "  vec3 a=texture2D(uT0,(vec2(x0,y0)+0.5)/uRegion).xyz;",
+      "  vec3 b=texture2D(uT0,(vec2(x1,y0)+0.5)/uRegion).xyz;",
+      "  vec3 c=texture2D(uT0,(vec2(x0,y1)+0.5)/uRegion).xyz;",
+      "  vec3 d=texture2D(uT0,(vec2(x1,y1)+0.5)/uRegion).xyz;",
+      "  return mix(mix(a,b,fx),mix(c,d,fx),fy);",
+      "}",
+      "vec2 displace(vec2 p){",
+      "  vec3 f=fieldAt(p);float len=length(f.xy);",
+      "  if(!(len>0.04))return p;",
+      "  float excited=clamp((uPulse-0.55)/0.25,0.0,1.0);",
+      "  float amp=0.25+uPulse*0.12+excited*4.4;",
+      "  float push=min(1.0,len)*amp;",
+      "  if(f.z>0.4){float cap=f.z*0.4;push=cap*(1.0-exp(-push/(cap*0.62)));}",
+      "  return p-(f.xy/len)*push;",
+      "}",
+      "float distAt(vec2 p){return texture2D(uT0,cell(p)).z;}",
+      // shadeVeinRelief (colour in 0..255)
+      "vec3 shade(vec3 col,vec2 p){",
+      "  if(!(uRad>0.0))return col;",
+      "  vec2 uvI=cell(p);",
+      "  float dist=texture2D(uT0,uvI).z;",
+      "  if(!(dist>0.3))return col;",
+      "  float u=dist/uRad;if(u>=1.0)return col;",
+      "  vec4 nn=texture2D(uT1,uvI);",
+      "  vec2 n0=nn.xy;",
+      "  if(uHasRaw>0.5&&dot(nn.zw,nn.zw)>0.04)n0=nn.zw;",
+      "  float mag=length(n0);if(mag<0.2)return col;",
+      "  vec2 n=n0/mag;",
+      "  float ndot=n.x*-0.62+n.y*-0.78;",
+      "  float excited=clamp((uPulse-0.55)/0.25,0.0,1.0);",
+      "  float lit=0.55+excited*0.4;",
+      "  float crestBand=clamp(1.0-u/0.2,0.0,1.0);",
+      "  float crestFace=clamp((ndot-0.18)/0.62,0.0,1.0);",
+      "  float lift=crestBand*crestBand*crestFace*lit*14.0;",
+      "  float rimIn=clamp((u-0.4)/0.22,0.0,1.0);",
+      "  float rimOut=clamp((1.02-u)/0.3,0.0,1.0);",
+      "  float underside=0.45+clamp(-ndot,0.0,1.0)*0.55;",
+      "  float crease=rimIn*rimOut*underside*(0.07+excited*0.09);",
+      "  float valley=clamp((u-0.74)/0.26,0.0,1.0)*(0.035+excited*0.03);",
+      "  float castAt=distAt(p-vec2(2.2+excited*1.1,2.8+excited*1.4));",
+      "  float castSh=0.0;",
+      "  if(castAt>0.3){float cu=castAt/uRad;if(cu<0.4&&u>0.3){float near=1.0-cu/0.4;float offVein=clamp((u-0.3)/0.34,0.0,1.0);castSh=near*offVein*(0.07+excited*0.06);}}",
+      "  float under=0.0;",
+      "  vec4 t2=texture2D(uT2,uvI);float tx2=texture2D(uT3,uvI).x;",
+      "  float reach=uRad*0.3;",
+      "  if(t2.x>0.0&&t2.y>0.0&&t2.x!=t2.y&&t2.z>0.0&&t2.z<reach&&u<0.38){",
+      "    float front=abs(t2.w)>=abs(tx2)?t2.x:t2.y;",
+      "    if(t2.x!=front){float pinch=(1.0-u/0.38)*(1.0-t2.z/reach);under=pinch*(0.18+excited*0.08);}",
+      "  }",
+      "  float mul=max(0.72,1.0-crease-valley-castSh-under);",
+      "  return clamp(col*mul+vec3(lift,lift*0.9,lift*0.8),0.0,255.0);",
+      "}",
+      // tintSwellPurple
+      "vec3 tint(vec3 c,float a,vec2 p){",
+      "  if(a<8.0)return c;",
+      "  float k=clamp((uPulse-0.4)/0.6,0.0,1.0);",
+      "  float along=p.y/max(1.0,uRegion.y-1.0);",
+      "  float head=clamp((along-0.28)/0.52,0.0,1.0);",
+      "  float side=uRegion.x>1.0?p.x/uRegion.x:0.5;",
+      "  float under=clamp((side-0.42)/0.46,0.0,1.0);",
+      "  float lift=k*(12.0+head*40.0+under*18.0);",
+      "  return clamp(vec3(c.r+lift*0.1,c.g-lift*0.5,c.b+lift*(0.85+head*0.35)),0.0,255.0);",
+      "}",
+      "void main(){",
+      "  vec2 px=floor(vPx);",
+      "  vec4 acc=vec4(0.0);",
+      "  for(int oy=0;oy<3;oy++){",
+      "    if(float(oy)>=uScale)break;",
+      "    for(int ox=0;ox<3;ox++){",
+      "      if(float(ox)>=uScale)break;",
+      "      vec2 p=px+vec2(float(ox),float(oy))/uScale;",
+      "      vec2 at=displace(p)*uScale;",
+      "      at=clamp(at,vec2(0.0),uHiSize-1.001);",
+      "      vec4 pix=texture2D(uHi,(at+0.5)/uHiSize)*255.0;",
+      "      vec3 sh=shade(pix.rgb,p);",
+      "      acc+=vec4(tint(sh,pix.a,p),pix.a);",
+      "    }",
+      "  }",
+      "  acc/=uScale*uScale;",
+      // premultiplied for the bend strip (texels under alpha 8 are dropped, as on the CPU path)
+      "  float a=acc.a/255.0;",
+      "  if(acc.a<8.0){gl_FragColor=vec4(0.0);return;}",
+      "  gl_FragColor=vec4(acc.rgb/255.0*a,a);",
+      "}",
+    ].join("\n");
+
+    function reliefSetup() {
+      if (reliefFailed || !glSetup()) return false;
+      if (reliefProg) return true;
+      try {
+        if (!gl.getExtension("OES_texture_float")) throw new Error("float");
+        const sh = (type, src) => {
+          const s = gl.createShader(type);
+          gl.shaderSource(s, src);
+          gl.compileShader(s);
+          if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error("shader");
+          return s;
+        };
+        reliefProg = gl.createProgram();
+        gl.attachShader(reliefProg, sh(gl.VERTEX_SHADER, RELIEF_VERT));
+        gl.attachShader(reliefProg, sh(gl.FRAGMENT_SHADER, RELIEF_FRAG));
+        gl.linkProgram(reliefProg);
+        if (!gl.getProgramParameter(reliefProg, gl.LINK_STATUS)) throw new Error("link");
+        const u = (n) => gl.getUniformLocation(reliefProg, n);
+        reliefLoc = {
+          pos: gl.getAttribLocation(reliefProg, "aPos"),
+          hi: u("uHi"),
+          t0: u("uT0"),
+          t1: u("uT1"),
+          t2: u("uT2"),
+          t3: u("uT3"),
+          buf: u("uBuf"),
+          region: u("uRegion"),
+          hiSize: u("uHiSize"),
+          scale: u("uScale"),
+          pulse: u("uPulse"),
+          rad: u("uRad"),
+          hasRaw: u("uHasRaw"),
+        };
+        const mkTex = (filter) => {
+          const t = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, t);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          return t;
+        };
+        reliefHiTex = mkTex(gl.LINEAR);
+        reliefFieldTex = [mkTex(gl.NEAREST), mkTex(gl.NEAREST), mkTex(gl.NEAREST), mkTex(gl.NEAREST)];
+        reliefTex = mkTex(gl.LINEAR);
+        reliefFbo = gl.createFramebuffer();
+        reliefBuf = gl.createBuffer();
+        reliefSized = "";
+        reliefFieldKey = "";
+        reliefHiRef = null;
+        return true;
+      } catch (_) {
+        reliefFailed = true;
+        reliefProg = null;
+        return false;
+      }
+    }
+
+    // Renders the relief for the current (quantised) pulse into reliefTex when anything changed.
+    // Returns true when reliefTex holds a valid, current relief for the bend renderer.
+    function reliefGL(nowMs) {
+      reliefActive = false;
+      if (veinSwellMode !== "epic" || !GL_BEND_ON || !reliefSetup()) return false;
+      if (!ensureVeinSwellField() || !ensureSwellHi() || !swellHiPx || !swellDist) return false;
+      try {
+        const scale = swellRenderScale();
+        const hw = cw * scale;
+        const hh = ch * scale;
+        const n = cw * ch;
+        gl.activeTexture(gl.TEXTURE0);
+        if (reliefHiRef !== swellHiPx) {
+          gl.bindTexture(gl.TEXTURE_2D, reliefHiTex);
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+          gl.texImage2D(
+            gl.TEXTURE_2D, 0, gl.RGBA, hw, hh, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+            new Uint8Array(swellHiPx.buffer, swellHiPx.byteOffset, hw * hh * 4)
+          );
+          reliefHiRef = swellHiPx;
+          reliefKey = "";
+        }
+        const fieldKey = swellFieldVer + ":" + cw + "x" + ch;
+        if (reliefFieldKey !== fieldKey) {
+          if (!reliefData || reliefData.length !== n * 4) reliefData = new Float32Array(n * 4);
+          const hasRaw = !!(swellNxRaw && swellNyRaw);
+          const planes = [
+            (i, d) => {
+              d[0] = swellDx[i]; d[1] = swellDy[i]; d[2] = swellDist[i]; d[3] = 0;
+            },
+            (i, d) => {
+              d[0] = swellNx[i]; d[1] = swellNy[i];
+              d[2] = hasRaw ? swellNxRaw[i] : 0; d[3] = hasRaw ? swellNyRaw[i] : 0;
+            },
+            (i, d) => {
+              d[0] = swellPath[i]; d[1] = swellPath2[i]; d[2] = swellDist2[i]; d[3] = swellTx[i];
+            },
+            (i, d) => {
+              d[0] = swellTx2[i]; d[1] = 0; d[2] = 0; d[3] = 0;
+            },
+          ];
+          const tmp = new Float32Array(4);
+          for (let t = 0; t < 4; t += 1) {
+            for (let i = 0; i < n; i += 1) {
+              planes[t](i, tmp);
+              const o = i * 4;
+              reliefData[o] = tmp[0]; reliefData[o + 1] = tmp[1]; reliefData[o + 2] = tmp[2]; reliefData[o + 3] = tmp[3];
+            }
+            gl.activeTexture(gl.TEXTURE1 + t);
+            gl.bindTexture(gl.TEXTURE_2D, reliefFieldTex[t]);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cw, ch, 0, gl.RGBA, gl.FLOAT, reliefData);
+          }
+          reliefFieldKey = fieldKey;
+          reliefKey = "";
+        }
+        const size = cw + "x" + ch;
+        if (reliefSized !== size) {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, reliefTex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cw, ch, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, reliefFbo);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, reliefTex, 0);
+          if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("fbo");
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          reliefSized = size;
+          reliefKey = "";
+        }
+        const pulse = Math.round(veinPulseStrength(nowMs || win.performance.now()) * SWELL_PULSE_STEPS) / SWELL_PULSE_STEPS;
+        const key = reliefFieldKey + ":" + pulse;
+        if (key !== reliefKey) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, reliefFbo);
+          gl.viewport(0, 0, cw, ch);
+          gl.disable(gl.BLEND);
+          gl.useProgram(reliefProg);
+          gl.bindBuffer(gl.ARRAY_BUFFER, reliefBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, cw, 0, 0, ch, cw, ch]), gl.DYNAMIC_DRAW);
+          gl.enableVertexAttribArray(reliefLoc.pos);
+          gl.vertexAttribPointer(reliefLoc.pos, 2, gl.FLOAT, false, 0, 0);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, reliefHiTex);
+          for (let t = 0; t < 4; t += 1) {
+            gl.activeTexture(gl.TEXTURE1 + t);
+            gl.bindTexture(gl.TEXTURE_2D, reliefFieldTex[t]);
+          }
+          gl.uniform1i(reliefLoc.hi, 0);
+          gl.uniform1i(reliefLoc.t0, 1);
+          gl.uniform1i(reliefLoc.t1, 2);
+          gl.uniform1i(reliefLoc.t2, 3);
+          gl.uniform1i(reliefLoc.t3, 4);
+          gl.uniform2f(reliefLoc.buf, cw, ch);
+          gl.uniform2f(reliefLoc.region, cw, ch);
+          gl.uniform2f(reliefLoc.hiSize, hw, hh);
+          gl.uniform1f(reliefLoc.scale, scale);
+          gl.uniform1f(reliefLoc.pulse, pulse);
+          gl.uniform1f(reliefLoc.rad, swellRad);
+          gl.uniform1f(reliefLoc.hasRaw, swellNxRaw && swellNyRaw ? 1 : 0);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.activeTexture(gl.TEXTURE0);
+          reliefKey = key;
+          reliefLastPulse = pulse;
+        }
+        reliefActive = true;
+        return true;
+      } catch (_) {
+        reliefFailed = true;
+        reliefActive = false;
+        return false;
+      }
+    }
+    let reliefLastPulse = 0;
+
     // Draws rows 0..lastRow of the member from the spine table; returns false to use the CPU path.
-    function drawCurveGL(skin, skinKey, lastRow) {
+    function drawCurveGL(skin, skinKey, lastRow, gpuSkin) {
       if (!glSetup()) return false;
       try {
         if (glCanvas.width !== bufW || glCanvas.height !== bufH) {
@@ -1420,8 +1722,9 @@
           glCanvas.height = bufH;
         }
         const texKey = cw + "x" + ch + ":" + skinKey;
-        gl.bindTexture(gl.TEXTURE_2D, glTex);
-        if (glTexKey !== texKey) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, gpuSkin ? reliefTex : glTex);
+        if (!gpuSkin && glTexKey !== texKey) {
           const n = cw * ch * 4;
           if (!glPremul || glPremul.length !== n) glPremul = new Uint8Array(n);
           for (let i = 0; i < n; i += 4) {
@@ -1494,6 +1797,230 @@
       }
     }
 
+    // perf17: GPU vein warp (full motion tier, "epic" swell mode). The CPU warp painted the veins on a
+    // CPU-backed canvas, read every pixel back with getImageData, remapped them and wrote them back;
+    // the readback also forced all the stroke rasterisation to happen there (~10 s of a 4 s drag at 6x
+    // slowdown). Here the overlay stays on its GPU-backed canvas, is uploaded as a texture, and a
+    // fragment shader does the same remap from the static swell field (dx, dy, dist per pixel) and the
+    // quantised pulse. The result is shown on its own canvas over the overlay canvas. Anything missing
+    // (WebGL, float textures, "extreme" mode) keeps the CPU warp.
+    let vgl = null;
+    let vglCanvas = null;
+    let vglProg = null;
+    let vglBuf = null;
+    let vglSrcTex = null;
+    let vglFieldTex = null;
+    let vglLoc = null;
+    let vglFailed = !GL_BEND_ON;
+    let vglFieldKey = "";
+    let vglFieldData = null;
+    let vglShown = false;
+
+    function showVeinGL(on) {
+      if (vglShown === on || !vglCanvas) return;
+      vglShown = on;
+      vglCanvas.style.display = on ? "block" : "none";
+      veinCanvas.style.visibility = on ? "hidden" : "";
+    }
+
+    function vglDisable() {
+      if (vglShown && vglCanvas) {
+        vglCanvas.style.display = "none";
+        veinCanvas.style.visibility = "";
+        vglShown = false;
+      }
+      vglFailed = true;
+      vgl = null;
+      vglProg = null;
+      vglBuf = null;
+      vglSrcTex = null;
+      vglFieldTex = null;
+      vglFieldKey = "";
+    }
+
+    const VGL_VERT =
+      "attribute vec2 aPos;uniform vec2 uBuf;varying vec2 vPx;" +
+      "void main(){vPx=aPos;gl_Position=vec4(aPos.x/uBuf.x*2.0-1.0,1.0-aPos.y/uBuf.y*2.0,0.0,1.0);}";
+    const VGL_FRAG = [
+      "precision highp float;",
+      "uniform sampler2D uSrc;uniform sampler2D uField;",
+      "uniform vec2 uBuf;uniform vec2 uPad;uniform vec2 uRegion;",
+      "uniform float uPulse;uniform float uStride;uniform float uSteps;",
+      "varying vec2 vPx;",
+      // veinFieldAt: bilinear of (dx, dy, dist) with the same edge clamping
+      "vec3 fieldAt(vec2 p){",
+      "  float x0=p.x<=0.0?0.0:(p.x>=uRegion.x-1.0?uRegion.x-1.0:floor(p.x));",
+      "  float y0=p.y<=0.0?0.0:(p.y>=uRegion.y-1.0?uRegion.y-1.0:floor(p.y));",
+      "  float x1=x0+1.0<uRegion.x?x0+1.0:x0;",
+      "  float y1=y0+1.0<uRegion.y?y0+1.0:y0;",
+      "  float fx=p.x<=x0?0.0:(p.x>=x1?1.0:p.x-x0);",
+      "  float fy=p.y<=y0?0.0:(p.y>=y1?1.0:p.y-y0);",
+      "  vec3 a=texture2D(uField,(vec2(x0,y0)+0.5)/uRegion).xyz;",
+      "  vec3 b=texture2D(uField,(vec2(x1,y0)+0.5)/uRegion).xyz;",
+      "  vec3 c=texture2D(uField,(vec2(x0,y1)+0.5)/uRegion).xyz;",
+      "  vec3 d=texture2D(uField,(vec2(x1,y1)+0.5)/uRegion).xyz;",
+      "  return mix(mix(a,b,fx),mix(c,d,fx),fy);",
+      "}",
+      // veinSwellSample (epic tune): where this pixel reads the un-swollen overlay from
+      "vec2 displace(vec2 p){",
+      "  vec3 f=fieldAt(p);",
+      "  float len=length(f.xy);",
+      "  if(!(len>0.04))return p;",
+      "  float excited=clamp((uPulse-0.55)/0.25,0.0,1.0);",
+      "  float amp=0.25+uPulse*0.12+excited*4.4;",
+      "  float push=min(1.0,len)*amp;",
+      "  if(f.z>0.4){float cap=f.z*0.4;push=cap*(1.0-exp(-push/(cap*0.62)));}",
+      "  return p-(f.xy/len)*push;",
+      "}",
+      "void main(){",
+      "  vec2 reg=vPx-uPad;",
+      "  if(reg.x<0.0||reg.y<0.0||reg.x>=uRegion.x||reg.y>=uRegion.y){gl_FragColor=texture2D(uSrc,vPx/uBuf);return;}",
+      "  vec2 base=floor(floor(reg)/uStride)*uStride;",
+      "  vec4 acc=vec4(0.0);",
+      "  for(int oy=0;oy<3;oy++){",
+      "    if(float(oy)>=uSteps)break;",
+      "    for(int ox=0;ox<3;ox++){",
+      "      if(float(ox)>=uSteps)break;",
+      "      vec2 at=displace(base+vec2(float(ox),float(oy))/uSteps);",
+      "      at=clamp(at,vec2(0.0),uRegion-1.001);",
+      "      acc+=texture2D(uSrc,(at+uPad+0.5)/uBuf);",
+      "    }",
+      "  }",
+      "  gl_FragColor=acc/(uSteps*uSteps);",
+      "}",
+    ].join("\n");
+
+    function vglSetup() {
+      if (vglFailed) return false;
+      if (vgl && !vgl.isContextLost()) return true;
+      try {
+        vglCanvas = doc.createElement("canvas");
+        vglCanvas.className = "hq-dangling-member-vein-canvas";
+        vglCanvas.setAttribute("aria-hidden", "true");
+        vglCanvas.style.display = "none";
+        vglCanvas.style.position = "absolute";
+        vglCanvas.style.margin = "0";
+        vglCanvas.style.zIndex = "2";
+        vglCanvas.width = veinCanvas.width;
+        vglCanvas.height = veinCanvas.height;
+        vgl = vglCanvas.getContext("webgl", {
+          alpha: true,
+          premultipliedAlpha: true,
+          antialias: false,
+          depth: false,
+          stencil: false,
+          preserveDrawingBuffer: false,
+        });
+        if (!vgl || !vgl.getExtension("OES_texture_float")) throw new Error("no webgl/float");
+        vglCanvas.addEventListener("webglcontextlost", (e) => {
+          e.preventDefault();
+          vglDisable();
+        });
+        const sh = (type, src) => {
+          const s = vgl.createShader(type);
+          vgl.shaderSource(s, src);
+          vgl.compileShader(s);
+          if (!vgl.getShaderParameter(s, vgl.COMPILE_STATUS)) throw new Error("shader");
+          return s;
+        };
+        vglProg = vgl.createProgram();
+        vgl.attachShader(vglProg, sh(vgl.VERTEX_SHADER, VGL_VERT));
+        vgl.attachShader(vglProg, sh(vgl.FRAGMENT_SHADER, VGL_FRAG));
+        vgl.linkProgram(vglProg);
+        if (!vgl.getProgramParameter(vglProg, vgl.LINK_STATUS)) throw new Error("link");
+        const u = (n) => vgl.getUniformLocation(vglProg, n);
+        vglLoc = {
+          pos: vgl.getAttribLocation(vglProg, "aPos"),
+          src: u("uSrc"),
+          field: u("uField"),
+          buf: u("uBuf"),
+          pad: u("uPad"),
+          region: u("uRegion"),
+          pulse: u("uPulse"),
+          stride: u("uStride"),
+          steps: u("uSteps"),
+        };
+        vglBuf = vgl.createBuffer();
+        vglSrcTex = vgl.createTexture();
+        vgl.bindTexture(vgl.TEXTURE_2D, vglSrcTex);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_MIN_FILTER, vgl.LINEAR);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_MAG_FILTER, vgl.LINEAR);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_WRAP_S, vgl.CLAMP_TO_EDGE);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_WRAP_T, vgl.CLAMP_TO_EDGE);
+        vglFieldTex = vgl.createTexture();
+        vgl.bindTexture(vgl.TEXTURE_2D, vglFieldTex);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_MIN_FILTER, vgl.NEAREST);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_MAG_FILTER, vgl.NEAREST);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_WRAP_S, vgl.CLAMP_TO_EDGE);
+        vgl.texParameteri(vgl.TEXTURE_2D, vgl.TEXTURE_WRAP_T, vgl.CLAMP_TO_EDGE);
+        vgl.bindBuffer(vgl.ARRAY_BUFFER, vglBuf);
+        vgl.bufferData(vgl.ARRAY_BUFFER, new Float32Array(8), vgl.DYNAMIC_DRAW);
+        swing.appendChild(vglCanvas);
+        veinBoxKey = "";
+        veinBoxAt = 0;
+        vglFieldKey = "";
+        return true;
+      } catch (_) {
+        vglDisable();
+        return false;
+      }
+    }
+
+    // pulse: quantised like the CPU path. Returns true when the warped overlay is on screen.
+    function warpVeinGL(pulseRaw) {
+      if (veinSwellMode !== "epic" || !vglSetup()) return false;
+      try {
+        if (vglCanvas.width !== veinCanvas.width || vglCanvas.height !== veinCanvas.height) {
+          vglCanvas.width = veinCanvas.width;
+          vglCanvas.height = veinCanvas.height;
+        }
+        const W = vglCanvas.width;
+        const H = vglCanvas.height;
+        const fieldKey = swellFieldVer + ":" + cw + "x" + ch;
+        if (vglFieldKey !== fieldKey) {
+          const n = cw * ch;
+          if (!vglFieldData || vglFieldData.length !== n * 4) vglFieldData = new Float32Array(n * 4);
+          for (let i = 0; i < n; i += 1) {
+            vglFieldData[i * 4] = swellDx[i];
+            vglFieldData[i * 4 + 1] = swellDy[i];
+            vglFieldData[i * 4 + 2] = swellDist[i];
+          }
+          vgl.activeTexture(vgl.TEXTURE1);
+          vgl.bindTexture(vgl.TEXTURE_2D, vglFieldTex);
+          vgl.pixelStorei(vgl.UNPACK_ALIGNMENT, 1);
+          vgl.pixelStorei(vgl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+          vgl.texImage2D(vgl.TEXTURE_2D, 0, vgl.RGBA, cw, ch, 0, vgl.RGBA, vgl.FLOAT, vglFieldData);
+          vglFieldKey = fieldKey;
+        }
+        const pulse = Math.round(pulseRaw * SWELL_PULSE_STEPS) / SWELL_PULSE_STEPS;
+        const coarse = !veinRenderHot() || swellInMotion();
+        vgl.activeTexture(vgl.TEXTURE0);
+        vgl.bindTexture(vgl.TEXTURE_2D, vglSrcTex);
+        vgl.pixelStorei(vgl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        vgl.texImage2D(vgl.TEXTURE_2D, 0, vgl.RGBA, vgl.RGBA, vgl.UNSIGNED_BYTE, veinCanvas);
+        vgl.viewport(0, 0, W, H);
+        vgl.useProgram(vglProg);
+        vgl.bindBuffer(vgl.ARRAY_BUFFER, vglBuf);
+        vgl.bufferData(vgl.ARRAY_BUFFER, new Float32Array([0, 0, W, 0, 0, H, W, H]), vgl.DYNAMIC_DRAW);
+        vgl.enableVertexAttribArray(vglLoc.pos);
+        vgl.vertexAttribPointer(vglLoc.pos, 2, vgl.FLOAT, false, 0, 0);
+        vgl.uniform1i(vglLoc.src, 0);
+        vgl.uniform1i(vglLoc.field, 1);
+        vgl.uniform2f(vglLoc.buf, W, H);
+        vgl.uniform2f(vglLoc.pad, padX, padY);
+        vgl.uniform2f(vglLoc.region, cw, ch);
+        vgl.uniform1f(vglLoc.pulse, pulse);
+        vgl.uniform1f(vglLoc.stride, coarse ? 2 : 1);
+        vgl.uniform1f(vglLoc.steps, coarse ? 1 : 2);
+        vgl.drawArrays(vgl.TRIANGLE_STRIP, 0, 4);
+        showVeinGL(true);
+        return true;
+      } catch (_) {
+        vglDisable();
+        return false;
+      }
+    }
+
     function renderCurve() {
       if (!ctx || !srcPx || !dstImg || !acc || dstImg.width !== bufW || dstImg.height !== bufH) {
         renderFlat();
@@ -1509,8 +2036,11 @@
       boxR = 0;
       boxB = 0;
       findOralLipT();
+      let gpuSkin = reliefActive && !glFailed;
       if (veinRenderHot() || !veinSwellBaked) {
-        paintVeinSwell(win.performance.now(), false);
+        const nowR = win.performance.now();
+        gpuSkin = !glFailed && reliefGL(nowR);
+        if (!gpuSkin) paintVeinSwell(nowR, false);
         veinSwellBaked = true;
       }
       const skin = swellImg && swellImg.data.length === srcPx.length ? swellImg.data : srcPx;
@@ -1594,7 +2124,7 @@
         const lastRow =
           oralEngaged && oralLipT > 0 ? Math.min(ch - 1, Math.round(oralLipT * ch) + ORAL_TUBE_DEPTH + 10) : ch - 1;
         const skinKey = (skin === srcPx ? "src" : "swell") + skinVer;
-        if (drawCurveGL(skin, skinKey, lastRow)) {
+        if (drawCurveGL(skin, skinKey, lastRow, gpuSkin && reliefActive)) {
           spineTableValid = true;
           dirty = false;
           return;
@@ -1794,6 +2324,7 @@
     let swellTier = null;
     let swellRad = 0;
     let swellImg = null;
+    let swellFieldVer = 0;
     let swellHi = null;
     let swellHiCtx = null;
     let swellHiPx = null;
@@ -3378,7 +3909,7 @@
       // per-frame style writes. The box only changes on resize (which clears veinBoxKey), so
       // trust the last good read for a short while instead of re-measuring every frame.
       const nowBox = win.performance.now();
-      if (veinBoxKey && nowBox - veinBoxAt < 400) return true;
+      if (veinBoxKey && nowBox - veinBoxAt < VEIN_BOX_TTL_MS) return true;
       veinBoxAt = nowBox;
       const w = canvas.offsetWidth;
       const h = canvas.offsetHeight;
@@ -3395,6 +3926,12 @@
         veinCanvas.style.width = w + "px";
         veinCanvas.style.height = h + "px";
         veinCanvas.style.zIndex = "2";
+        if (vglCanvas) {
+          vglCanvas.style.left = left + "px";
+          vglCanvas.style.top = top + "px";
+          vglCanvas.style.width = w + "px";
+          vglCanvas.style.height = h + "px";
+        }
         if (glCanvas) {
           glCanvas.style.left = left + "px";
           glCanvas.style.top = top + "px";
@@ -3408,11 +3945,21 @@
     let veinCssScale = 0;
     let veinCssScaleAt = 0;
     let veinCssScaleBufW = 0;
+    // perf17: the overlay box and the buffer/css ratio only change when the canvas is resized (which
+    // also clears veinBoxKey in resizeCanvas). A ResizeObserver invalidates the cache; the long TTL is
+    // only a safety net, replacing the 400 ms re-measure that forced a layout twice a second.
+    const VEIN_BOX_TTL_MS = 4000;
+    if (win.ResizeObserver) {
+      new win.ResizeObserver(() => {
+        veinBoxAt = 0;
+        veinCssScaleAt = 0;
+      }).observe(canvas);
+    }
     function veinBufPerCss() {
       // perf16: called per vein path per paint; clientWidth forces a layout each time. The ratio
       // only changes on resize (which clears veinBoxKey), so reuse it briefly like the overlay box.
       const nowS = win.performance.now();
-      if (veinCssScale && veinBoxKey && veinCssScaleBufW === bufW && nowS - veinCssScaleAt < 400) {
+      if (veinCssScale && veinBoxKey && veinCssScaleBufW === bufW && nowS - veinCssScaleAt < VEIN_BOX_TTL_MS) {
         return veinCssScale;
       }
       const cssW = canvas.clientWidth;
@@ -4227,12 +4774,23 @@
         paintVeinHighlight(ctx);
         return;
       }
-      const wctx = hot && ensureVeinSwellField() && warpActive() ? ensureVeinWork() : null;
+      const warp = hot && ensureVeinSwellField() && warpActive();
+      const gpuWarp = warp && !vglFailed && veinSwellMode === "epic";
+      const wctx = warp && !gpuWarp ? ensureVeinWork() : null;
+      // CPU warp fallback only: while the member moves, redo the (expensive) warp every other paint and
+      // leave the previous overlay up in between. The GPU warp is cheap and runs every paint.
+      if (wctx && swellInMotion()) {
+        veinWarpSkip += 1;
+        if (veinWarpSkip % 2 === 0) return;
+      }
       const target = wctx || veinCtx;
       target.setTransform(1, 0, 0, 1, 0, 0);
       target.clearRect(0, 0, veinCanvas.width, veinCanvas.height);
       paintVeinPulse(t, target);
       paintVeinHighlight(target);
+      // If the GPU warp fails it disables itself and this frame shows the unwarped overlay; the CPU warp takes over.
+      if (gpuWarp && warpVeinGL(veinPulseStrength(t))) return;
+      showVeinGL(false);
       if (wctx) {
         warpVeinOverlay(veinPulseStrength(t), wctx);
         veinCtx.setTransform(1, 0, 0, 1, 0, 0);
