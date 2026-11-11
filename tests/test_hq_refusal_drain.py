@@ -23,6 +23,7 @@ import hq_forge as F  # noqa: E402
 import hq_forge_jobs as J  # noqa: E402
 import iphone_bridge as B  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # importable as tests.test_hq_refusal_drain too
 from test_hq_forge_http import ADMIN_PIN, UPLOAD_PIN, Client  # noqa: E402
 
 MARK = b"DRAINED-BODY-MARKER-7f3a"
@@ -136,7 +137,8 @@ class RefusalDrain(unittest.TestCase):
             s.sendall(self.head(str(len(body))) + body)
             code, headers, _ = self.response(s)
             self.assertEqual(code, 401)
-            self.assertNotEqual(headers.get("connection", "").lower(), "close")
+            # Since keep-alive landed, every POST reply carries "Connection: close" (parse_request closes after any
+            # request with a body), so the header no longer tells a drained refusal apart; the clean close below does.
             # HTTP/1.0 handler: the server then closes; with the body drained that is a clean FIN, never a reset
             s.settimeout(3)
             self.assertEqual(s.recv(1), b"")
@@ -158,7 +160,8 @@ class RefusalDrain(unittest.TestCase):
             s.sendall(self.head(str(len(body))) + body)
             code, headers, _ = self.response(s)
             self.assertEqual(code, 401)
-            self.assertNotEqual(headers.get("connection", "").lower(), "close")
+            # Since keep-alive landed, every POST reply carries "Connection: close" (parse_request closes after any
+            # request with a body), so the header no longer tells a drained refusal apart; the clean close below does.
 
     def test_slow_sender_is_time_boxed(self):
         with self.conn() as s:

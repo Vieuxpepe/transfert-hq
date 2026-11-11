@@ -901,6 +901,10 @@ class ErrorLog:
 
 ERRORS = ErrorLog()
 
+import hq_security
+
+SECURITY_LOG = hq_security.SECURITY_LOG
+
 
 class ClientBrowserLog:
     """Bounded JSONL log of scrubbed browser console / window errors under ``.hq-carnet/diagnostics``. Never stores cookies,
