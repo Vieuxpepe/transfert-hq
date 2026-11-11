@@ -203,6 +203,21 @@ class SessionReloadTests(unittest.TestCase):
             self.assertEqual(bridge.session_role(name), "", name)
         for label, exp in (("nan", float("nan")), ("posinf", float("inf")), ("neginf", float("-inf"))):
             self.assertIsNone(bridge._session_from_stored({"exp": exp, "user": "a", "role": "admin", "gen": 1}), label)
+        huge = 10 ** 10000
+        stored_huge = 10 ** 4000
+        self.assertIsNone(bridge._stored_expiration(huge))
+        self.assertIsNone(bridge._session_from_stored({"exp": huge, "user": "a", "role": "admin", "gen": 1}))
+        self.path.write_text(json.dumps({"huge": {"exp": stored_huge, "user": "a", "role": "admin", "gen": 1}}), encoding="utf-8")
+        self._reload()
+        self.assertNotIn("huge", bridge._SESSIONS)
+        self.assertEqual(bridge.session_role("huge"), "")
+        with bridge._SESSIONS_LOCK:
+            bridge._SESSIONS["huge"] = {"exp": huge, "user": "a", "role": "admin", "gen": 1}
+            bridge._SESSIONS["broken"] = {"exp": huge, "user": "a", "role": "operator", "gen": "nope"}
+        self.assertEqual(bridge.session_role("huge"), "")
+        self.assertEqual(bridge.session_role("broken"), "")
+        self.assertNotIn("huge", bridge._SESSIONS)
+        self.assertNotIn("broken", bridge._SESSIONS)
         with bridge._SESSIONS_LOCK:
             bridge._SESSIONS["planted"] = {"exp": future, "user": "op", "role": "operator", "gen": 1}
         self.assertEqual(bridge.session_role("planted"), "")

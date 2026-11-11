@@ -1414,10 +1414,13 @@ def _stored_generation(value: object) -> int | None:
 
 
 def _stored_expiration(value: object) -> float | None:
-    """A finite expiration. Booleans, text, NaN, and infinities do not count."""
+    """A finite expiration. Booleans, text, NaN, infinities, and overflows do not count."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    exp = float(value)
+    try:
+        exp = float(value)
+    except OverflowError:
+        return None
     if not math.isfinite(exp):
         return None
     return exp
