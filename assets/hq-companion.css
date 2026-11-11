@@ -2302,10 +2302,9 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
   visibility:hidden;
   pointer-events:none;
 }
-/* Custom AI-generated bras: show bra-{style}-base.webp on garment-surface behind moving lobes
-   so the center gore, underband, harness straps, and draped gold chest chains render seamlessly! */
+/* All bra styles use the common torso underneath their moving breast layers. */
 .hq-companion.has-layered-portrait.is-nsfw.has-custom-bra .hq-companion-rig-garment-surface{
-  visibility:visible;
+  visibility:hidden;
   z-index:1;
   transform:none;
   translate:0 calc(var(--rig-body-bob,0px) + var(--rig-bust-heave,0px) * 0.94);
@@ -2743,6 +2742,8 @@ body.hq-intime-active #hq-companion.is-intime-mode.is-minimal{
 }
 .hq-companion-rig-hair-base{z-index:4;clip-path:circle(50% at 50% 50%);-webkit-mask-image:linear-gradient(to bottom,#000 0 38%,transparent 48%);mask-image:linear-gradient(to bottom,#000 0 38%,transparent 48%);translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
 .hq-companion-rig-hair-wrap{position:absolute;inset:0;z-index:5;clip-path:circle(50% at 50% 50%);-webkit-mask-image:linear-gradient(to bottom,transparent 0 28%,#000 34%);mask-image:linear-gradient(to bottom,transparent 0 28%,#000 34%);pointer-events:none;translate:var(--rig-saccade-x,0px) calc(var(--rig-body-bob,0px) + var(--rig-head-steady-y,0px) + var(--rig-saccade-y,0px));transform-origin:54.5% 42%;transform:rotate(var(--rig-head-sway,0deg)) scaleY(var(--rig-head-nod,1))}
+/* Side locks fall in front of the moving breast stacks (garment z-index 6). */
+.hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-hair-wrap{z-index:7}
 .hq-companion-rig-hair-left{-webkit-mask-image:linear-gradient(to right,#000 0 52%,transparent 56%),linear-gradient(to bottom,#000 0 52%,transparent 62%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,#000 0 52%,transparent 56%),linear-gradient(to bottom,#000 0 52%,transparent 62%);mask-composite:intersect;transform-origin:42% 20%;transform:translate3d(var(--rig-hair-left-x,0px),var(--rig-hair-left-y,0px),0) rotate(var(--rig-hair-left-rot,0deg)) scaleY(var(--rig-hair-left-sy,1)) skewX(var(--rig-hair-left-skew,0deg));will-change:transform}
 .hq-companion-rig-hair-right{-webkit-mask-image:linear-gradient(to right,transparent 44%,#000 48%),linear-gradient(to bottom,#000 0 52%,transparent 62%);-webkit-mask-composite:source-in;mask-image:linear-gradient(to right,transparent 44%,#000 48%),linear-gradient(to bottom,#000 0 52%,transparent 62%);mask-composite:intersect;transform-origin:58% 20%;transform:translate3d(var(--rig-hair-right-x,0px),var(--rig-hair-right-y,0px),0) rotate(var(--rig-hair-right-rot,0deg)) scaleY(var(--rig-hair-right-sy,1)) skewX(var(--rig-hair-right-skew,0deg));will-change:transform}
 .hq-companion-rig-hair-left-tip,.hq-companion-rig-hair-right-tip{pointer-events:none;object-fit:fill;will-change:transform}

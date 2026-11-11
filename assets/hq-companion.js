@@ -112,9 +112,7 @@
   }
 
   function rigBraBaseTextureSrc(braId) {
-    const b = String(braId || "noir");
-    if (!b || b === "noir") return rigNeutralLayerSrc("garment-front");
-    return ACCESSORIES_BASE + "bras/bra-" + b + "-base.webp";
+    return rigNeutralLayerSrc("garment-front");
   }
   /* accessories-v1 integrated */
   const TREAT_FORGE_KEYS = { "☕": "coffee", "🍓": "strawberry", "🌹": "rose", "💋": "kiss" };
@@ -9323,7 +9321,7 @@
     if (torsoImg) {
       const needCleanTorso = isVariantHair || (acc.earring && acc.earring !== "baked");
       if (S.el) S.el.classList.toggle("has-clean-torso", !!needCleanTorso);
-      const wantTorso = needCleanTorso ? RIG_NEUTRAL_BASE + "torso-composite-clean.webp?v=base1" : rigNeutralLayerSrc("torso");
+      const wantTorso = RIG_NEUTRAL_BASE + "torso-composite.jpg";
       if (torsoImg.getAttribute("src") !== wantTorso) torsoImg.src = wantTorso;
     }
     const hairSrc = rigHairTextureSrc(acc);
@@ -13040,9 +13038,8 @@
       const rightTipBreeze = pullHairFreeze ? 0 : (Math.sin(nowMs * 0.00125 - 1.55) * 0.72 + Math.sin(nowMs * 0.0021 - 0.2) * 0.34) * swellEnv + gust * 1.12;
       const leftTip = tickHairTip(st, "left", leftHair, dt, pullHairFreeze, leftTipBreeze, st.bust.vy);
       const rightTip = tickHairTip(st, "right", rightHair, dt, pullHairFreeze, rightTipBreeze, st.bust.vy);
-      // Tip springs integrate every frame; their style writes (and the jewelry that follows them)
-      // share the decor cadence so Accueil / perf-pressure throttling still applies.
-      if (publishDecor) {
+      // Publish hair tips each physics step so they stay in sync with the roots;
+      // jewelry and other decorative effects retain the reduced cadence.
       setLive2dStyleVar(stEl, "--rig-hair-left-tip-x", leftTip.x.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-hair-left-tip-y", leftTip.y.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-hair-left-tip-rot", leftTip.r.toFixed(2) + "deg");
@@ -13053,6 +13050,7 @@
       setLive2dStyleVar(stEl, "--rig-hair-right-tip-rot", rightTip.r.toFixed(2) + "deg");
       setLive2dStyleVar(stEl, "--rig-hair-right-tip-sy", (1 + clampNum(rightTip.y * 0.0075, -0.04, 0.048)).toFixed(4));
       setLive2dStyleVar(stEl, "--rig-hair-right-tip-skew", (-rightTip.r * 0.28).toFixed(2) + "deg");
+      if (publishDecor) {
       // Secondary jewelry motion (earring dangle from earlobe pin + necklace collarbone breath)
       if (S.accessoryLayers) {
         if (S.accessoryLayers.earringWrap && !S.accessoryLayers.earringWrap.hidden) {
