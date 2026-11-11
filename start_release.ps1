@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ReleaseDir,
     [Parameter(Mandatory = $true)][string]$StateRoot,
     [Parameter(Mandatory = $true)][int]$Port,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$ProductionOwner
 )
 $ErrorActionPreference = 'Stop'
 $live = [System.IO.Path]::GetFullPath('C:\Transfert')
@@ -78,7 +79,7 @@ if (Test-Nested $stateFull $releaseFull -or Test-Nested $releaseFull $stateFull)
     throw "Release directory and state root must not contain each other"
 }
 if ($Port -lt 1024 -or $Port -gt 65535) { throw "HTTP port is outside 1024-65535" }
-if ($productionPorts -contains $Port) { throw "A side-by-side release must not bind 8765 or 8766" }
+if (-not $ProductionOwner -and $productionPorts -contains $Port) { throw "A side-by-side release must not bind 8765 or 8766" }
 
 $bridge = Join-Path $releaseFull 'iphone_bridge.py'
 $assets = Join-Path $releaseFull 'assets'
@@ -94,7 +95,7 @@ if (-not (Test-Path -LiteralPath $config -PathType Leaf) -or (Test-ReparsePoint 
 }
 
 $planner = Get-ConfiguredPlannerPort $config (Get-ReleasePlannerDefault $releaseFull)
-if ($productionPorts -contains $planner) { throw "A side-by-side release must not bind planner port 8765 or 8766" }
+if (-not $ProductionOwner -and $productionPorts -contains $planner) { throw "A side-by-side release must not bind planner port 8765 or 8766" }
 if ($planner -eq $Port) { throw "Bridge port and planner port must be different" }
 
 $lock = Join-Path $stateFull 'bridge.lock'
@@ -116,6 +117,8 @@ if ($ValidateOnly) {
 }
 $env:HQ_STATE_ROOT = $stateFull
 $env:HQ_PORT = "$Port"
+if (Test-Path Env:HQ_PRODUCTION_OWNER) { Remove-Item Env:HQ_PRODUCTION_OWNER }
+if ($ProductionOwner) { $env:HQ_PRODUCTION_OWNER = '1' }
 # Stay attached to this Python process. A native failure must not be swallowed
 # as success, and it must not be turned into a PowerShell error that hides the
 # real exit code.

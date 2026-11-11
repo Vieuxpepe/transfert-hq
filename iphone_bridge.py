@@ -1229,7 +1229,10 @@ def configure_layout() -> None:
             raise SystemExit("FATAL: HQ_PORT is outside 1024-65535")
         PORT = chosen
     raw_state = os.environ.get("HQ_STATE_ROOT", "").strip()
+    owner = production_owner_mode()
     if not raw_state:
+        if owner:
+            raise SystemExit("FATAL: production-owner mode requires an explicit state root")
         return
     state = Path(raw_state).expanduser()
     if not state.is_absolute():
@@ -1245,9 +1248,10 @@ def configure_layout() -> None:
     config = resolved / "bridge_config.json"
     if not config.is_file() or _is_reparse_point(config):
         raise SystemExit("FATAL: HQ_STATE_ROOT has no bridge_config.json; refusing to create one")
-    if STATE_ROOT_EXPLICIT or raw_state:
-        if PORT in (8765, 8766):
-            raise SystemExit("FATAL: a side-by-side release must not bind 8765 or 8766")
+    # The lock taken below does not prove the legacy production process is gone.
+    # Production ports stay refused unless this process was explicitly authorized.
+    if PORT in PRODUCTION_PORTS and not owner:
+        raise SystemExit("FATAL: a side-by-side release must not bind 8765 or 8766")
     ROOT = resolved
     STATE_ROOT_EXPLICIT = True
     CONFIG_PATH = ROOT / "bridge_config.json"
@@ -1328,9 +1332,26 @@ def effective_planner_port(config: dict | None = None) -> int:
     return raw
 
 
-def side_by_side_ports_ok(bridge_port: int, planner_port: int) -> None:
+def production_owner_mode() -> bool:
+    """True only for the explicit value ``1``. Unset stays in side-by-side mode.
+
+    Any other value fails closed. The launcher may set this, and the bridge
+    checks it again. Holding the state lock is not authorization to bind 8765.
+    """
+    raw = os.environ.get("HQ_PRODUCTION_OWNER")
+    if raw is None or not str(raw).strip():
+        return False
+    if str(raw).strip() == "1":
+        return True
+    raise SystemExit("FATAL: HQ_PRODUCTION_OWNER must be 1 when set")
+
+
+def side_by_side_ports_ok(bridge_port: int, planner_port: int, *, production_owner: bool | None = None) -> None:
+    owner = production_owner_mode() if production_owner is None else production_owner
     if bridge_port == planner_port:
         raise SystemExit("FATAL: bridge port and planner port must be different")
+    if owner:
+        return
     if bridge_port in PRODUCTION_PORTS or planner_port in PRODUCTION_PORTS:
         raise SystemExit("FATAL: a side-by-side release must not bind 8765 or 8766")
 
@@ -1338,7 +1359,8 @@ def side_by_side_ports_ok(bridge_port: int, planner_port: int) -> None:
 configure_layout()
 
 try:
-    CONFIG = load_config()
+    # Production-owner mode persists config only after both ports bind.
+    CONFIG = load_config(write=not production_owner_mode())
 except SystemExit as _fatal:  # Phase 15: a malformed config otherwise dies in a hidden console and nobody sees why
     hq_diagnostics.record_startup_fatal(ROOT, _fatal.code if isinstance(_fatal.code, str) else "startup aborted")
     raise
@@ -2945,6 +2967,21 @@ class HQServer(ThreadingHTTPServer):
 
     request_queue_size = 128
     daemon_threads = True
+
+    def server_bind(self) -> None:
+        # HTTPServer turns on SO_REUSEADDR, which on Windows lets a second
+        # process bind the same port. Exclusive use rejects that collision.
+        # The state lock does not cover the legacy production listener.
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None) if os.name == "nt" else None
+        if exclusive is None:
+            super().server_bind()
+            return
+        self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        self.socket.bind(self.server_address)
+        self.server_address = self.socket.getsockname()
+        host, port = self.server_address[:2]
+        self.server_name = socket.getfqdn(host)
+        self.server_port = port
 
 
 def bind_hq() -> None:
@@ -11081,8 +11118,163 @@ def already_running() -> bool:
         return False
 
 
+def _main_production_owner() -> None:
+    """Bind both ports before this mode persists configuration or session files.
+
+    The state lock is necessary and is not treated as proof that the legacy
+    production process has exited. A failed bind releases the lock and does
+    not stop the process that already owns the port.
+    """
+    global CONFIG, LOOPBACK_ONLY, BIND_HOST
+    CONFIG = load_config(write=False)
+    load_sessions()
+    if already_running():
+        release_state_lock()
+        raise SystemExit(f"FATAL: Cannot bind {configured_bind_host()}:{PORT}: address already in use")
+    if not pin_enabled():
+        release_state_lock()
+        raise SystemExit(
+            "FATAL: PIN required. Set pin (or users[].pin) in bridge_config.json.\n"
+            "Refusing to start without authentication (Tailscale Serve/Funnel safety)."
+        )
+    LOOPBACK_ONLY = False
+    BIND_HOST = configured_bind_host()
+    try:
+        planner_port = effective_planner_port()
+        side_by_side_ports_ok(PORT, planner_port)
+    except SystemExit:
+        release_state_lock()
+        raise
+    try:
+        server = HQServer((BIND_HOST, PORT), Handler)
+    except OSError as exc:
+        release_state_lock()
+        raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {exc}") from exc
+    server.timeout = 30
+    try:
+        planner_httpd = hq_planner.start(ROOT, port=planner_port)
+    except (RuntimeError, OSError) as exc:
+        server.server_close()
+        release_state_lock()
+        raise SystemExit(f"FATAL: planner loopback refused ({exc})") from exc
+    try:
+        CONFIG = load_config(write=True)
+        load_sessions()
+        ensure_folders_and_migrate()
+        bind_cc_ext()
+        bind_hq()
+        hq_forge_fleet.bind(ROOT)
+        _seed = cc_ext.seed_last_backup_from_index()
+        cleanup_stale_uploads()
+        write_pid()
+        lan = lan_ipv4()
+        ts = tailscale_ipv4()
+        try:
+            mtime = datetime.fromtimestamp(Path(__file__).stat().st_mtime).isoformat(timespec="seconds")
+            print(f" Loaded : {__file__} (mtime {mtime})")
+            print(f" Code   : {CODE_ROOT}")
+            print(f" State  : {ROOT}")
+            print(f" Sessions loaded: {len(_SESSIONS)}")
+        except OSError:
+            pass
+        if pin_enabled():
+            notify_discord(
+                "Transfert HQ en ligne",
+                f"PC `{socket.gethostname()}`\nLAN: `http://{lan}:{PORT}/`"
+                + (f"\nTailscale: `http://{ts}:{PORT}/`" if ts else ""),
+            )
+        cc_ext.log_activity("boot", f"Bridge démarré (bind {BIND_HOST}, pin={'on' if pin_enabled() else 'off'})")
+    except BaseException:
+        server.server_close()
+        try:
+            planner_httpd.shutdown()
+            planner_httpd.server_close()
+        except Exception:
+            pass
+        try:
+            PID_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        release_state_lock()
+        raise
+
+    def _hq_background() -> None:
+        try:
+            cc_ext.queue_process()
+        except Exception as exc:
+            sys.stderr.write(f"queue: {exc}\n")
+        try:
+            hq_automation.tick()
+        except Exception as exc:
+            sys.stderr.write(f"hq tick: {exc}\n")
+        try:
+            hq_calendar.tick()
+        except Exception as exc:
+            sys.stderr.write(f"calendar tick: {exc}\n")
+        try:
+            hq_folder_backups.tick()
+        except Exception as exc:
+            sys.stderr.write(f"folder backups tick: {exc}\n")
+
+    cc_ext.start_monitor(
+        get_devices=lambda: presence_list(),
+        process_queue=_hq_background,
+        probe_disks=probe_remote_disks_now,
+        harvest_shots=harvest_screenshots_now,
+    )
+    threading.Thread(target=probe_remote_disks_now, daemon=True).start()
+    threading.Thread(target=harvest_screenshots_now, daemon=True).start()
+    cc_ext.queue_process()
+    print("=" * 56)
+    print(" Transfert HQ v7.0 — Mission Control")
+    print("=" * 56)
+    print(f" Folder : {ROOT}")
+    print(f" Bind   : {BIND_HOST}:{PORT}")
+    if BIND_HOST == "127.0.0.1":
+        print(f" Local  : http://127.0.0.1:{PORT}/")
+    else:
+        print(f" LAN    : http://{lan}:{PORT}/")
+        print(f" Wallboard: http://{lan}:{PORT}/wallboard")
+        print(f" Tailscale: http://{ts}:{PORT}/" if ts else " Tailscale: (not installed)")
+    print(f" PIN    : required (on)")
+    print(f" Planner: http://127.0.0.1:{planner_httpd.server_address[1]}/ (loopback only, not Tailscale)")
+    print(f" Max up : {human_size(max_upload_bytes())}")
+    print(f" Backup : every {CONFIG.get('backup_every_hours')}h -> {CONFIG.get('backup_dir')}")
+    _bk = cc_ext.backup_target_status()
+    if _bk.get("auto_paused"):
+        print(" Backup : PAUSE (backup_auto_paused) — aucun backup automatique ; manuel via POST /api/backup")
+    if not _bk.get("ok"):
+        print(f" Backup : ATTENTION {_bk.get('error')}")
+    _ret = _bk.get("retention") or {}
+    if _ret.get("enabled"):
+        print(f" Backup : rétention {_ret.get('keep_days')} j, {_ret.get('keep_min')} plus récents toujours gardés (purge après chaque backup réussi)")
+    else:
+        print(" Backup : rétention désactivée (backup_keep_days <= 0) — aucune purge")
+    if _seed.get("seeded"):
+        print(f" Backup : dernier backup {datetime.fromtimestamp(_seed['at']).strftime('%Y-%m-%d %H:%M')} — pas de backup au démarrage avant {CONFIG.get('backup_every_hours')}h")
+    else:
+        print(f" Backup : backup automatique au démarrage ({_seed.get('reason')})")
+    print(" Ctrl+C to stop")
+    print("=" * 56)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        planner_httpd.shutdown()
+        planner_httpd.server_close()
+        try:
+            PID_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        release_state_lock()
+
+
 def main() -> None:
     global CONFIG, LOOPBACK_ONLY, BIND_HOST
+    if production_owner_mode():
+        _main_production_owner()
+        return
     CONFIG = load_config()
     load_sessions()
     ensure_folders_and_migrate()
