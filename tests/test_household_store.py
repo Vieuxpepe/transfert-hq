@@ -36,12 +36,12 @@ class StoreLifecycleTests(unittest.TestCase):
 
     def test_init_blank_root(self):
         with store.open_store(self.root) as st:
-            self.assertEqual(st.schema_version, 6)
+            self.assertEqual(st.schema_version, 7)
             self.assertEqual(store.integrity_check(st.conn), "ok")
             st.set_meta("sentinel", "alpha")
             self.assertEqual(st.get_meta("sentinel"), "alpha")
         meta = json.loads(store.meta_path(self.root).read_text(encoding="utf-8"))
-        self.assertEqual(meta["schema_version"], 6)
+        self.assertEqual(meta["schema_version"], 7)
 
     def test_reopen_valid(self):
         with store.open_store(self.root) as st:
@@ -144,7 +144,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 6)
+        self.assertEqual(healed["schema_version"], 7)
 
     def test_meta_schema_version_array_healed_without_typeerror(self):
         with store.open_store(self.root) as st:
@@ -157,7 +157,7 @@ class StoreLifecycleTests(unittest.TestCase):
         with store.open_store(self.root, create=False) as st2:
             self.assertEqual(st2.get_meta("alive"), "1")
         healed = json.loads(meta.read_text(encoding="utf-8"))
-        self.assertEqual(healed["schema_version"], 6)
+        self.assertEqual(healed["schema_version"], 7)
 
     def test_v1_snapshot_migrates_to_v2_with_backup(self):
         base = store.prepare_household_dirs(self.root)
@@ -170,7 +170,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 1)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 6)
+            self.assertEqual(st.schema_version, 7)
             st.set_meta("post-v2", "ok")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)
@@ -210,7 +210,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn.close()
         self.assertEqual(int(sqlite3.connect(str(path)).execute("PRAGMA user_version").fetchone()[0]), 2)
         with store.open_store(self.root, create=False) as st:
-            self.assertEqual(st.schema_version, 6)
+            self.assertEqual(st.schema_version, 7)
             row = st.conn.execute("SELECT currency FROM budget_envelopes WHERE id = ?", (env,)).fetchone()
             self.assertEqual(row[0], "USD")
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
@@ -289,7 +289,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn_v3.close()
 
         with store.open_store(self.root, create=False) as st2:
-            self.assertEqual(st2.schema_version, 6)
+            self.assertEqual(st2.schema_version, 7)
             self.assertEqual(int(st2.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]), tx_count)
             self.assertGreaterEqual(int(st2.conn.execute("SELECT COUNT(*) FROM ledger_audit").fetchone()[0]), audit_count)
             names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -355,7 +355,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn_v4.close()
 
         with store.open_store(self.root, create=False) as st2:
-            self.assertEqual(st2.schema_version, 6)
+            self.assertEqual(st2.schema_version, 7)
             self.assertEqual(st2.conn.execute("SELECT id FROM products WHERE id = ?", (prod_id,)).fetchone()[0], prod_id)
             self.assertEqual(st2.conn.execute("SELECT id FROM food_lots WHERE id = ?", (lot_id,)).fetchone()[0], lot_id)
             self.assertEqual(st2.conn.execute("SELECT id FROM merchants WHERE id = ?", (mch_id,)).fetchone()[0], mch_id)
@@ -442,7 +442,7 @@ class StoreLifecycleTests(unittest.TestCase):
             conn_v5.close()
 
         with store.open_store(self.root, create=False) as st2:
-            self.assertEqual(st2.schema_version, 6)
+            self.assertEqual(st2.schema_version, 7)
             self.assertEqual(st2.conn.execute("SELECT id FROM products WHERE id = ?", (prod_id,)).fetchone()[0], prod_id)
             self.assertEqual(st2.conn.execute("SELECT id FROM recipes WHERE id = ?", (recipe_id,)).fetchone()[0], recipe_id)
             self.assertEqual(st2.conn.execute("SELECT id FROM meal_plans WHERE id = ?", (plan_id,)).fetchone()[0], plan_id)
@@ -450,8 +450,10 @@ class StoreLifecycleTests(unittest.TestCase):
             names = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("actual_purchases", names)
             self.assertIn("cross_store_ops", names)
-            store.validate_schema_v6(st2.conn)
+            store.validate_schema_v7(st2.conn)
             self.assertTrue(store.is_actual_purchases_idempotency_index_valid(st2.conn))
+            names_v7 = {r[0] for r in st2.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("inventoria_operations", names_v7)
         backups = list(store.backups_dir(self.root).glob("household-pre-migrate-*.sqlite"))
         self.assertTrue(backups)
         meals.reset_for_tests()
