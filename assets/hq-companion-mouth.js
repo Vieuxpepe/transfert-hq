@@ -98,6 +98,43 @@
     return pose;
   }
 
+  // Face-image names the reply morph can request. Keys are reply primaries; values
+  // are the filename slug in face-<slug>-v1.webp. Primaries omitted here, including
+  // "pleased", stay on the procedural mouth and do not request an image.
+  const EXPRESSION_FACE_BY_PRIMARY = {
+    delighted: "delighted", pride: "proud", playful: "teasing", curiosity: "curious",
+    reassurance: "attentive", thoughtful: "thoughtful", concentration: "thoughtful", surprised: "surprised",
+    concerned: "concerned", amused: "amused", affectionate: "affectionate", flirty: "flirty", coy: "coy",
+    mischievous: "mischievous", adoring: "adoring", bashful: "bashful", excited: "excited", pouty: "pouty", sleepy: "sleepy",
+    contented: "contented", savoring: "savoring", pleasant_surprise: "pleasant-surprise", disgust: "disgust", shock: "shock", cute: "cute"
+  };
+
+  function expressionFaceKind(primary, options = {}) {
+    const quiet = options.quiet !== false;
+    const replyActive = options.replyActive !== false;
+    const mode = options.mode === undefined ? "auto" : options.mode;
+    if (!primary || !replyActive || !quiet || options.reduced || options.pull || mode !== "auto") return null;
+    return EXPRESSION_FACE_BY_PRIMARY[primary] || null;
+  }
+
+  function expressionFacePath(kind) {
+    return kind ? "/assets/companion/rig-neutral-v1/face-" + kind + "-v1.webp?v=2" : null;
+  }
+
+  // A failed or unfinished image load keeps the morph canvas hidden, so the
+  // neutral portrait and the procedural mouth stay visible.
+  function expressionMorphState({ kind, neutralReady, targetReady, seal }) {
+    const ready = !!(kind && neutralReady && targetReady);
+    const blend = ready ? smooth(0, 1, seal) : 0;
+    const frame = Math.round(blend * 30);
+    return {
+      ready,
+      frame,
+      opacity: frame > 0 ? String(Math.min(1, blend * 8)) : "0",
+      requestsImage: !!kind
+    };
+  }
+
   // Reply expressions share the same seven-second envelope as the head/brow pose.
   function replyFace(primary, elapsed) {
     const kind = { pride: "smile", playful: "smile", delighted: "smile", amused: "smile", affectionate: "smile",
@@ -539,7 +576,7 @@
       if (!kind) return null;
       if (!expressionFaces[kind]) {
         const img = new win.Image();
-        img.src = "/assets/companion/rig-neutral-v1/face-" + kind + "-v1.webp?v=2";
+        img.src = expressionFacePath(kind);
         expressionFaces[kind] = img;
       }
       return expressionFaces[kind];
@@ -559,24 +596,25 @@
         replyFace(replyExpression.primary, time - replyExpression.at);
       const quiet = !host.classList.contains("is-speaking") && !host.classList.contains("is-voice-lipsync") &&
         !host.classList.contains("is-speech-articulating") && !textBeat && !host.classList.contains("is-user-typing");
-      const kind = reply && quiet ? ({ delighted: "delighted", pride: "proud", playful: "teasing", curiosity: "curious",
-        reassurance: "attentive", thoughtful: "thoughtful", concentration: "thoughtful", surprised: "surprised",
-        concerned: "concerned", amused: "amused", affectionate: "affectionate", flirty: "flirty", coy: "coy",
-        mischievous: "mischievous", adoring: "adoring", bashful: "bashful", excited: "excited", pouty: "pouty", sleepy: "sleepy",
-        contented: "contented", savoring: "savoring", pleasant_surprise: "pleasant-surprise", disgust: "disgust", shock: "shock", cute: "cute" }[replyExpression.primary]) : null;
+      const kind = expressionFaceKind(replyExpression && replyExpression.primary, {
+        quiet, reduced: reduced(), pull, mode, replyActive: !!reply });
       const targetFace = expressionFace(kind);
-      const ready = morphContext && neutralFace.complete && neutralFace.naturalWidth && targetFace?.complete && targetFace.naturalWidth;
-      const blend = kind && ready ? smooth(0, 1, reply.seal) : 0;
-      const frame = Math.round(blend * 30);
+      const morph = expressionMorphState({
+        kind,
+        neutralReady: !!(morphContext && neutralFace.complete && neutralFace.naturalWidth),
+        targetReady: !!(targetFace && targetFace.complete && targetFace.naturalWidth),
+        seal: reply ? reply.seal : 0
+      });
+      const frame = morph.frame;
       const morphKey = kind + ":" + frame;
       if (frame > 0 && morphKey !== lastMorph) {
         drawDelightMorph(morphContext, neutralFace, targetFace, frame / 30, kind);
         lastMorph = morphKey;
         morphCanvas.dataset.expression = kind;
       }
-      if (!ready && kind && morphCanvas.dataset.expression !== kind) morphCanvas.style.transition = "none";
+      if (!morph.ready && kind && morphCanvas.dataset.expression !== kind) morphCanvas.style.transition = "none";
       else morphCanvas.style.transition = "";
-      morphCanvas.style.opacity = frame > 0 ? String(Math.min(1, blend * 8)) : "0";
+      morphCanvas.style.opacity = morph.opacity;
       const attentive = reply && ["reassurance", "thoughtful", "concentration", "pleased"].includes(replyExpression.primary) ? .25 * reply.seal : 0;
       const look = Math.max(attentive, clamp(parseFloat(eyeSvg.style.getPropertyValue("--rig-lid-down")) || 0, 0, 0.45));
       const amounts = eyeGroups.map((_, i) => {
@@ -986,5 +1024,5 @@
     rig.syncInteraction();
     return rig;
   }
-  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, replyFace, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
+  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, replyFace, expressionFaceKind, expressionFacePath, expressionMorphState, EXPRESSION_FACE_BY_PRIMARY, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
 });
