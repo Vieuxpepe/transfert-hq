@@ -80,24 +80,43 @@ Algorithme d'ouverture (futur module) :
 
 ## Sauvegardes cohérentes
 
-Bundle household (script futur `scripts/backup_household.py`) :
+### API store (locale)
 
-1. `PRAGMA wal_checkpoint(FULL)` / ou `VACUUM INTO` snapshot.
-2. Copier `household.sqlite` (+ `-wal/-shm` si besoin selon méthode).
-3. Copier `schema_meta.json`.
-4. Optionnel : inclure `hq_inventory.snapshot_bytes()` dans le même dossier tampon
-   avec manifeste `{inventory_rev, household_schema, taken_at}`.
-5. Vérifier tailles + hash manifeste.
+- `hq_household_store.backup(root, label=…)` → snapshot privé sous
+  `.hq-household/backups/` + manifeste SHA-256 (via `Connection.backup()`,
+  WAL inclus dans le fichier unique).
+- `hq_household_store.restore_to_temp(snapshot, dest_root=…)` → ROOT **jetable**
+  uniquement ; refuse une cible déjà peuplée ; jamais de remplacement silencieux
+  de la DB active.
+
+### Intégration backup HQ (`cc_ext.run_backup`)
+
+Même cadence / `backup_dir` / rétention que les dossiers + Carnet — **pas** de
+second scheduler.
+
+1. `hq_household_store.snapshot_to(root, dest/Household)` :
+   - store **absent** → `{status:"absent"}` — **aucune** création sous le ROOT live ;
+   - store présent → `Connection.backup()` vers un staging, `integrity_check`,
+     manifeste SHA-256, publication **atomique** (`os.replace` du dossier) ;
+   - DB corrompue → `{status:"invalid", valid:false}` **sans** publier le dossier.
+2. Entrée catalogue `hq_backup_index.json` : clé `household` (status/ok/included/valid/schema_version).
+3. Rétention : si snapshot Household échoué ou invalid → **purge suspendue**
+   (`household_snapshot_failed` / `household_invalid`), comme pour Carnet.
+4. Contenu publié : `household.sqlite`, `household.sqlite.manifest.json`,
+   optionnellement `schema_meta.json`. **Pas** de sessions, PIN, `bridge_config`,
+   ni copie brute `-wal`/`-shm`, ni `inventory.json` (Inventoria JSON reste hors
+   de ce paquet).
+
+Rétention globale inchangée : `backup_keep_days` / `backup_keep_min` via
+`purge_old_backups` après un backup réussi et non bloqué.
 
 Restauration testable :
 
-1. Restaurer dans un ROOT jetable.
-2. Ouvrir modules en lecture.
-3. `validate` schémas + compteurs smoke.
-4. Seulement alors promouvoir.
-
-Intégration backup HQ existant (`backup_dir`) : ajouter le dossier
-`.hq-household/` à l'ensemble sauvegardé **quand** le runtime existera — hors #30.
+1. Prendre `…/<stamp>/Household/household.sqlite` (+ manifeste).
+2. `restore_to_temp` dans un ROOT jetable.
+3. Ouvrir en lecture : `integrity_check`, `schema_version`, smoke API.
+4. Promotion manuelle seulement après validation — jamais d’overwrite automatique
+   de `.hq-household/` live.
 
 ## Imports
 

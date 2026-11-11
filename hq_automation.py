@@ -1263,6 +1263,18 @@ def _note_backup_locked(bid: str, info: dict) -> dict:
         }
         if "valid" in carnet:
             entry["carnet"]["valid"] = carnet.get("valid") is True
+    household = info.get("household")
+    if isinstance(household, dict):
+        # Separate Household SQLite status; never folded into legacy `folders`.
+        entry["household"] = {
+            "status": str(household.get("status") or "")[:20],
+            "ok": household.get("ok") is True,
+            "included": household.get("included") is True,
+        }
+        if "valid" in household:
+            entry["household"]["valid"] = household.get("valid") is True
+        if "schema_version" in household and isinstance(household.get("schema_version"), int):
+            entry["household"]["schema_version"] = int(household["schema_version"])
     items = [b for b in (data.get("backups") or []) if isinstance(b, dict) and b.get("id") != bid]
     items.insert(0, entry)
     data["version"] = 1
