@@ -418,7 +418,19 @@ def run_inventoria_commit(
             (_safe_json(steps), step_index, now, xop_id),
         )
         conn.commit()
-        _invoke_test_hook("F3c")
+        try:
+            _invoke_test_hook("F3c")
+        except CommitAbort:
+            conn.execute(
+                "UPDATE cross_store_ops SET status = ?, uncertain_inventory = 1, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", now, xop_id),
+            )
+            conn.execute(
+                "UPDATE inventoria_operations SET status = ?, updated_at = ? WHERE id = ?",
+                ("needs_reconcile", now, operation_id),
+            )
+            _validate_xop_row(conn, xop_id)
+            return {"ok": False, "code": "needs_reconcile", "cross_store_op_id": xop_id}
 
         try:
             apply_body = proposal_to_inventory_action({"op": action, "payload": step["payload"]})

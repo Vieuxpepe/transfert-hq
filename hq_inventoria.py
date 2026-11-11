@@ -38,7 +38,8 @@ REASON_MIN_LEN = 8
 
 _cb: dict[str, Any] = {}
 _guard = threading.Lock()
-# Single-process commit ownership. Not a cross-process lock.
+# Single-process ownership for commit and state-changing reconcile.
+# A second OS process is not covered.
 _commit_owners_guard = threading.Lock()
 _commit_owners: set[str] = set()
 
@@ -1263,6 +1264,39 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
     step_index = data.get("step_index")
     if step_index is not None and (isinstance(step_index, bool) or type(step_index) is not int):
         raise InventoriaError("step_index invalide", code="validation_error")
+    state_change = decision != "inspect"
+    if state_change and not _claim_commit(op_id):
+        return {
+            "ok": False,
+            "code": "commit_in_progress",
+            "operation_id": op_id,
+            "http_status": 409,
+        }
+    try:
+        return _reconcile_owned(
+            conn, household_id, op_id, decision, reason, sub_key, evidence, step_index,
+        )
+    finally:
+        if state_change:
+            _release_commit(op_id)
+
+
+def _reconcile_owned(
+    conn: sqlite3.Connection,
+    household_id: str,
+    op_id: str,
+    decision: str,
+    reason: str,
+    sub_key: Any,
+    evidence: dict | None,
+    step_index: int | None,
+) -> dict:
+    row = conn.execute(
+        "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
+        (op_id, household_id),
+    ).fetchone()
+    if row["status"] not in ("needs_reconcile", "committing"):
+        raise InventoriaError("reconcile non requis", status=409, code="conflict")
     inventory.bind(root=_root(), asset_exists=_cb.get("asset_exists"))
     try:
         out = commit_mod.reconcile_cross_store(

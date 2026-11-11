@@ -955,6 +955,126 @@ class InventoriaHardeningTests(unittest.TestCase):
             self.assertEqual(json.loads(raw), [])
         self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
 
+    def test_reconcile_blocked_while_commit_owns_operation(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        durable = threading.Event()
+        release = threading.Event()
+        holder: dict = {}
+
+        def pause(phase: str) -> None:
+            if phase == "F3c":
+                durable.set()
+                self.assertTrue(release.wait(5))
+
+        def run_a() -> None:
+            fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+            ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+            inv.bind(root=self.root, now=lambda: 600.0)
+            icommit.set_test_hook(pause)
+            holder["a"] = ivo.http_post(
+                f"/api/inventoria/ops/{op_id}/commit",
+                {"idempotency_key": "own-vs-reconcile"},
+            )
+            icommit.set_test_hook(None)
+
+        worker = threading.Thread(target=run_a)
+        worker.start()
+        self.assertTrue(durable.wait(5))
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+        ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+        inv.bind(root=self.root, now=lambda: 600.0)
+        with store.open_store(self.root, readonly=True) as st:
+            before = st.conn.execute(
+                "SELECT status, uncertain_inventory, planned_steps_json, step_results_json FROM cross_store_ops",
+            ).fetchone()
+        c_ins, inspect = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/reconcile",
+            {"decision": "inspect"},
+        )
+        self.assertEqual(c_ins, 200, inspect)
+        self.assertEqual(inspect["cross_store"]["planned_steps"][0]["attempt_phase"], "in_flight")
+        for decision, extra in (
+            ("confirm_already_applied", {"evidence": {"inventory_rev": 1}, "step_index": 0}),
+            ("confirm_not_applied", {"idempotency_key": "sub-while-owned", "step_index": 0}),
+            ("abort_compensate", {}),
+        ):
+            body = {"decision": decision, "reason": "must wait for the owner", **extra}
+            code, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/reconcile", body)
+            self.assertEqual(code, 409, out)
+            self.assertEqual(out.get("code"), "commit_in_progress")
+        with store.open_store(self.root, readonly=True) as st:
+            after = st.conn.execute(
+                "SELECT status, uncertain_inventory, planned_steps_json, step_results_json FROM cross_store_ops",
+            ).fetchone()
+            self.assertEqual(tuple(after), tuple(before))
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+        release.set()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(holder["a"][0], 200, holder["a"])
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+        with store.open_store(self.root, readonly=True) as st:
+            xop = st.conn.execute(
+                "SELECT status, planned_steps_json, step_results_json FROM cross_store_ops",
+            ).fetchone()
+            self.assertEqual(xop[0], "committed")
+            steps = json.loads(xop[1])
+            results = json.loads(xop[2])
+            self.assertEqual(steps[0]["attempt_phase"], "acknowledged")
+            self.assertNotIn("manual_ack", json.dumps(results))
+        c1, replay = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "own-vs-reconcile"},
+        )
+        self.assertEqual(c1, 200, replay)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+
+    def test_crash_without_owner_reconcile_does_not_replay(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        self._crash_commit(op_id, "crash-owner-gone", "F3c")
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+        with store.open_store(self.root, readonly=True) as st:
+            xop = st.conn.execute(
+                "SELECT status, uncertain_inventory, planned_steps_json FROM cross_store_ops",
+            ).fetchone()
+            self.assertEqual(xop[0], "needs_reconcile")
+            self.assertEqual(int(xop[1]), 1)
+            self.assertEqual(json.loads(xop[2])[0]["attempt_phase"], "in_flight")
+        c_retry, out_retry = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "crash-owner-gone"},
+        )
+        self.assertEqual(c_retry, 409, out_retry)
+        self.assertEqual(out_retry.get("code"), "needs_reconcile")
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+        c_ab, out_ab = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/reconcile",
+            {"decision": "abort_compensate", "reason": "owner gone after crash"},
+        )
+        self.assertEqual(c_ab, 200, out_ab)
+        with store.open_store(self.root, readonly=True) as st:
+            phase = json.loads(st.conn.execute(
+                "SELECT planned_steps_json FROM cross_store_ops",
+            ).fetchone()[0])[0]["attempt_phase"]
+            self.assertEqual(phase, "in_flight")
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
