@@ -46,18 +46,69 @@ assert.equal(budget.parseCadToCents("-0,05"), -5);
 assert.equal(budget.parseCadToCents("12.345"), null);
 assert.equal(budget.parseCadToCents("1e2"), null);
 
-const totals = budget.monthTotals([
-  { status: "posted", booked_on: "2026-11-02", amount_cents: 250000, category_id: "income", transfer_pair_id: null },
-  { status: "posted", booked_on: "2026-11-03", amount_cents: -1800, category_id: "food", transfer_pair_id: null },
-  { status: "posted", booked_on: "2026-11-04", amount_cents: -500, category_id: "move", transfer_pair_id: "pair" },
-  { status: "pending", booked_on: "2026-11-05", amount_cents: -999, category_id: "food", transfer_pair_id: null },
-  { status: "posted", booked_on: "2026-12-01", amount_cents: -100, category_id: "food", transfer_pair_id: null },
-], [
+const accounts = [
+  { id: "acct-cad", currency: "CAD" },
+  { id: "acct-usd", currency: "USD" },
+];
+const categories = [
   { id: "income", kind: "income" },
   { id: "food", kind: "expense" },
   { id: "move", kind: "transfer" },
-], "2026-11-01", "2026-11-30");
-assert.equal(JSON.stringify(totals), JSON.stringify({ incomeCents: 250000, expenseCents: -1800, remainingCents: 248200 }));
+];
+const totals = budget.monthTotals([
+  { status: "posted", booked_on: "2026-11-02", amount_cents: 250000, category_id: "income", account_id: "acct-cad", transfer_pair_id: null },
+  { status: "posted", booked_on: "2026-11-03", amount_cents: -1800, category_id: "food", account_id: "acct-cad", transfer_pair_id: null },
+  { status: "posted", booked_on: "2026-11-04", amount_cents: -500, category_id: "move", account_id: "acct-cad", transfer_pair_id: "pair" },
+  { status: "pending", booked_on: "2026-11-05", amount_cents: -999, category_id: "food", account_id: "acct-cad", transfer_pair_id: null },
+  { status: "posted", booked_on: "2026-12-01", amount_cents: -100, category_id: "food", account_id: "acct-cad", transfer_pair_id: null },
+  { status: "posted", booked_on: "2026-11-06", amount_cents: -5000, category_id: "food", account_id: "acct-usd", transfer_pair_id: null },
+  { status: "posted", booked_on: "2026-11-07", amount_cents: -700, category_id: "food", account_id: "missing", transfer_pair_id: null },
+], categories, accounts, "2026-11-01", "2026-11-30");
+assert.equal(totals.incomeCents, 250000);
+assert.equal(totals.expenseCents, -1800);
+assert.equal(totals.remainingCents, 248200);
+assert.equal(totals.unknownCount, 1);
+assert.equal(totals.other.USD.expenseCents, -5000);
+assert.equal(totals.other.USD.remainingCents, -5000);
+assert.equal(budget.accountCurrency(accounts, "missing"), null);
+assert.equal(budget.accountCurrency(accounts, "acct-usd"), "USD");
+assert.equal(budget.formatMoney(-5000, "USD"), "−50,00\u00a0USD");
+assert.equal(budget.formatMoney(-5000, null), "devise inconnue");
+
+function tx(index) {
+  return {
+    id: "tx-" + index.toString(16).padStart(16, "0"),
+    status: "posted",
+    booked_on: "2026-11-02",
+    amount_cents: -1,
+    category_id: "food",
+    account_id: "acct-cad",
+    transfer_pair_id: null,
+  };
+}
+const first = Array.from({ length: 200 }, function (_, index) { return tx(index + 1); });
+const cursor = "2026-11-02~tx-" + (200).toString(16).padStart(16, "0");
+const folded = budget.foldTransactionPages([
+  { status: 200, body: { items: first, next_cursor: cursor } },
+  { status: 200, body: { items: [tx(201)], next_cursor: null } },
+]);
+assert.equal(folded.complete, true);
+assert.equal(folded.items.length, 201);
+const paged = budget.monthTotals(folded.items, categories, accounts, "2026-11-01", "2026-11-30");
+assert.equal(paged.expenseCents, -201);
+const repeated = budget.foldTransactionPages([
+  { status: 200, body: { items: first, next_cursor: cursor } },
+  { status: 200, body: { items: [tx(201)], next_cursor: cursor } },
+]);
+assert.equal(repeated.complete, false);
+assert.equal(repeated.items.length, 0);
+assert.equal(repeated.error, "repeated");
+const failed = budget.foldTransactionPages([
+  { status: 200, body: { items: first, next_cursor: cursor } },
+  { status: 503, body: { error: "stockage" } },
+]);
+assert.equal(failed.complete, false);
+assert.equal(failed.items.length, 0);
 assert.equal(budget.envelopeRemaining({ allocated_cents: 10000, spent_cents: 1800 }), 8200);
 assert.equal(budget.cadBalance({ balances_by_currency: { CAD: 400, USD: 25 } }), 400);
 assert.equal(JSON.stringify(budget.otherCurrencies({ balances_by_currency: { USD: 25, EUR: 10, CAD: 1 } })), JSON.stringify(["EUR", "USD"]));

@@ -28,7 +28,10 @@ def main() -> None:
                 assert "<img src=x onerror=alert(1)>" in page.locator("#repas").inner_text()
                 assert "restrictions alimentaires" in page.locator("#repas").inner_text()
                 assert "2\u00a0482,00\u00a0$" in page.locator("#budget").inner_text()
-                assert "USD" in page.locator("#budget").inner_text()
+                assert "2\u00a0432,00\u00a0$" not in page.locator("#budget").inner_text()
+                assert "50,00\u00a0USD" in page.locator("#budget").inner_text()
+                assert "25,00\u00a0USD" in page.locator("#budget").inner_text()
+                assert page.locator("#budget").get_attribute("data-totals") == "complete"
                 assert "non additionné" in page.locator("#budget").inner_text()
                 assert page.locator("#hq-budget-correct").is_hidden()
                 page.locator("#repas [aria-label='Semaine suivante']").focus()

@@ -69,19 +69,99 @@
     return match[1] ? -cents : cents;
   }
 
-  function monthTotals(transactions, categories, start, end) {
+  const TX_PAGE_LIMIT = 25;
+
+  function accountCurrency(accounts, accountId) {
+    if (!accountId) return null;
+    const account = (accounts || []).find(function (item) { return item && item.id === accountId; });
+    if (!account || typeof account.currency !== "string" || !/^[A-Z]{3}$/.test(account.currency)) return null;
+    return account.currency;
+  }
+
+  function formatMoney(cents, currency) {
+    if (!Number.isSafeInteger(cents)) return "";
+    if (currency === "CAD") return formatCadCents(cents);
+    if (!currency) return "devise inconnue";
+    const sign = cents < 0 ? "−" : "";
+    const abs = Math.abs(cents);
+    const whole = Math.floor(abs / 100);
+    const frac = String(abs % 100).padStart(2, "0");
+    const grouped = String(whole).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
+    return sign + grouped + "," + frac + "\u00a0" + currency;
+  }
+
+  function monthTotals(transactions, categories, accounts, start, end) {
     const kinds = new Map((categories || []).map(function (category) { return [category.id, category.kind]; }));
     let income = 0;
     let expense = 0;
+    let unknownCount = 0;
+    const other = {};
     (transactions || []).forEach(function (tx) {
       if (!tx || tx.status !== "posted" || tx.transfer_pair_id) return;
       if (tx.booked_on < start || tx.booked_on > end) return;
       if (!Number.isSafeInteger(tx.amount_cents)) return;
+      const currency = accountCurrency(accounts, tx.account_id);
+      if (!currency) {
+        unknownCount += 1;
+        return;
+      }
       const kind = kinds.get(tx.category_id);
-      if (kind === "income" && tx.amount_cents > 0) income += tx.amount_cents;
-      else if (kind === "expense" && tx.amount_cents < 0) expense += tx.amount_cents;
+      let bucketIncome = 0;
+      let bucketExpense = 0;
+      if (kind === "income" && tx.amount_cents > 0) bucketIncome = tx.amount_cents;
+      else if (kind === "expense" && tx.amount_cents < 0) bucketExpense = tx.amount_cents;
+      else return;
+      if (currency === "CAD") {
+        income += bucketIncome;
+        expense += bucketExpense;
+        return;
+      }
+      if (!other[currency]) other[currency] = { incomeCents: 0, expenseCents: 0 };
+      other[currency].incomeCents += bucketIncome;
+      other[currency].expenseCents += bucketExpense;
     });
-    return { incomeCents: income, expenseCents: expense, remainingCents: income + expense };
+    Object.keys(other).forEach(function (code) {
+      other[code].remainingCents = other[code].incomeCents + other[code].expenseCents;
+    });
+    return {
+      incomeCents: income,
+      expenseCents: expense,
+      remainingCents: income + expense,
+      unknownCount: unknownCount,
+      other: other,
+    };
+  }
+
+  function transactionPath(start, end, cursor) {
+    let path = "/api/finances/transactions?from=" + encodeURIComponent(start) + "&to=" + encodeURIComponent(end) + "&limit=200";
+    if (cursor) path += "&cursor=" + encodeURIComponent(cursor);
+    return path;
+  }
+
+  function takeTransactionPage(state, body, status) {
+    if (state.complete || state.error) return state;
+    if (status !== 200 || !body || !Array.isArray(body.items)) {
+      return { items: [], cursor: state.cursor, seen: state.seen, complete: false, error: "request" };
+    }
+    const next = typeof body.next_cursor === "string" ? body.next_cursor : "";
+    if (next && (state.seen.indexOf(next) !== -1 || next === state.cursor)) {
+      return { items: [], cursor: next, seen: state.seen, complete: false, error: "repeated" };
+    }
+    const items = state.items.concat(body.items);
+    if (!next) return { items: items, cursor: "", seen: state.seen, complete: true, error: null };
+    if (state.seen.length + 1 >= TX_PAGE_LIMIT) {
+      return { items: [], cursor: next, seen: state.seen.concat(next), complete: false, error: "bounded" };
+    }
+    return { items: items, cursor: next, seen: state.seen.concat(next), complete: false, error: null };
+  }
+
+  function foldTransactionPages(pages) {
+    let state = { items: [], cursor: "", seen: [], complete: false, error: null };
+    (pages || []).forEach(function (page) {
+      state = takeTransactionPage(state, page.body, page.status);
+    });
+    if (!state.complete) return { items: [], cursor: state.cursor, seen: state.seen, complete: false, error: state.error || "incomplete" };
+    return state;
   }
 
   function envelopeRemaining(envelope) {
@@ -148,6 +228,7 @@
       summary: null,
       categories: [],
       transactions: [],
+      totals: null,
       recurring: [],
       goals: [],
       status: "loading",
@@ -187,12 +268,10 @@
     session.status = "loading";
     paint(container);
     const bounds = monthBounds(session.month);
-    const query = "/api/finances/transactions?from=" + bounds.start + "&to=" + bounds.end + "&limit=200";
     try {
       const results = await Promise.all([
         call(session, "GET", "/api/finances/summary"),
         call(session, "GET", "/api/finances/categories"),
-        call(session, "GET", query),
         call(session, "GET", "/api/finances/recurring"),
         call(session, "GET", "/api/finances/goals"),
       ]);
@@ -201,14 +280,40 @@
       if (failed) {
         session.status = "error";
         session.message = (failed.body && failed.body.error) || "Les finances ne répondent pas.";
+        session.transactions = [];
+        session.totals = null;
+        paint(container);
+        return;
+      }
+      let pages = { items: [], cursor: "", seen: [], complete: false, error: null };
+      for (let page = 0; page < TX_PAGE_LIMIT; page += 1) {
+        const result = await call(session, "GET", transactionPath(bounds.start, bounds.end, pages.cursor));
+        if (!session.alive) return;
+        pages = takeTransactionPage(pages, result.body, result.status);
+        if (pages.complete || pages.error) break;
+      }
+      if (!pages.complete) {
+        session.summary = results[0].body;
+        session.categories = results[1].body.items || [];
+        session.transactions = [];
+        session.totals = null;
+        session.recurring = results[2].body.items || [];
+        session.goals = results[3].body.items || [];
+        session.status = "incomplete";
+        session.message = pages.error === "repeated"
+          ? "Le curseur des écritures se répète. Les totaux du mois ne sont pas affichés."
+          : pages.error === "bounded"
+            ? "Le mois dépasse la limite de lecture. Les totaux du mois ne sont pas affichés."
+            : "Les écritures du mois n'ont pas pu être lues en entier. Les totaux ne sont pas affichés.";
         paint(container);
         return;
       }
       session.summary = results[0].body;
       session.categories = results[1].body.items || [];
-      session.transactions = results[2].body.items || [];
-      session.recurring = results[3].body.items || [];
-      session.goals = results[4].body.items || [];
+      session.transactions = pages.items;
+      session.recurring = results[2].body.items || [];
+      session.goals = results[3].body.items || [];
+      session.totals = monthTotals(pages.items, session.categories, session.summary.accounts || [], bounds.start, bounds.end);
       session.status = "ready";
       paint(container);
     } catch (err) {
@@ -241,22 +346,31 @@
       container.appendChild(el("p", { class: "hq-budget-status", role: "status" }, "Chargement du budget…"));
       return;
     }
-    if (session.status === "error") {
+    if (session.status === "error" || session.status === "incomplete") {
       container.appendChild(el("p", { class: "hq-budget-status", role: "alert" }, session.message));
       container.appendChild(el("button", { type: "button", "data-action": "retry" }, "Réessayer"));
+      container.setAttribute("data-totals", "incomplete");
       return;
     }
 
-    const totals = monthTotals(session.transactions, session.categories, bounds.start, bounds.end);
-    const cards = el("div", { class: "hq-budget-cards" });
-    cards.appendChild(metric("Revenus", formatCadCents(totals.incomeCents)));
-    cards.appendChild(metric("Dépenses", formatCadCents(totals.expenseCents)));
-    cards.appendChild(metric("Reste", formatCadCents(totals.remainingCents)));
+    const totals = session.totals || monthTotals(session.transactions, session.categories, (session.summary && session.summary.accounts) || [], bounds.start, bounds.end);
+    const cards = el("div", { class: "hq-budget-cards", "data-totals": totals.unknownCount ? "incomplete" : "complete" });
+    cards.appendChild(metric("Revenus CAD", formatCadCents(totals.incomeCents)));
+    cards.appendChild(metric("Dépenses CAD", formatCadCents(totals.expenseCents)));
+    cards.appendChild(metric("Reste CAD", formatCadCents(totals.remainingCents)));
     cards.appendChild(metric("Solde CAD", formatCadCents(cadBalance(session.summary))));
     container.appendChild(cards);
+    container.setAttribute("data-totals", totals.unknownCount ? "incomplete" : "complete");
+    if (totals.unknownCount) {
+      container.appendChild(el("p", { class: "hq-budget-status", role: "alert" }, totals.unknownCount + " écriture(s) exclue(s) : la devise du compte est inconnue. Les totaux CAD ne couvrent pas tout le mois."));
+    }
+    Object.keys(totals.other).sort().forEach(function (code) {
+      const bucket = totals.other[code];
+      container.appendChild(el("p", { class: "hq-budget-status" }, "Mouvements " + code + " : revenus " + formatMoney(bucket.incomeCents, code) + ", dépenses " + formatMoney(bucket.expenseCents, code) + ". Non additionné au CAD."));
+    });
     otherCurrencies(session.summary).forEach(function (code) {
       const cents = session.summary.balances_by_currency[code];
-      container.appendChild(el("p", { class: "hq-budget-status" }, code + " : " + formatCadCents(cents).replace("\u00a0$", "\u00a0" + code) + " — non additionné au CAD."));
+      container.appendChild(el("p", { class: "hq-budget-status" }, code + " : " + formatMoney(cents, code) + " — non additionné au CAD."));
     });
     if (session.message) container.appendChild(el("p", { class: "hq-budget-status", role: "status" }, session.message));
 
@@ -285,7 +399,7 @@
     session.transactions.forEach(function (tx) {
       const row = el("article", { class: "hq-budget-tx" });
       row.appendChild(el("p", {}, tx.booked_on + " · " + (tx.payee || categoryName(session, tx.category_id))));
-      row.appendChild(el("p", {}, formatCadCents(tx.amount_cents) + " · " + tx.status));
+      row.appendChild(el("p", {}, formatMoney(tx.amount_cents, accountCurrency(session.summary.accounts || [], tx.account_id)) + " · " + tx.status));
       if (!tx.transfer_pair_id && !tx.correction_of) {
         const correct = el("button", { type: "button", "data-action": "show-correct", "data-id": tx.id }, "Corriger");
         row.appendChild(correct);
@@ -300,7 +414,8 @@
     recurring.appendChild(el("h3", {}, "Récurrences"));
     if (!session.recurring.length) recurring.appendChild(el("p", {}, "Aucune récurrence."));
     session.recurring.forEach(function (item) {
-      recurring.appendChild(el("p", {}, categoryName(session, item.category_id) + " · " + formatCadCents(item.amount_cents) + " · " + item.cadence + (item.auto_post ? " · auto_post enregistré ailleurs" : "")));
+      const recurringCurrency = typeof item.currency === "string" && /^[A-Z]{3}$/.test(item.currency) ? item.currency : null;
+      recurring.appendChild(el("p", {}, categoryName(session, item.category_id) + " · " + formatMoney(item.amount_cents, recurringCurrency) + " · " + item.cadence + (item.auto_post ? " · auto_post enregistré ailleurs" : "")));
     });
     recurring.appendChild(recurringForm(session, bounds.start));
     recurring.appendChild(el("p", { class: "hq-budget-status" }, "Cette vue enregistre les récurrences avec auto_post désactivé. Elle ne poste rien toute seule."));
@@ -312,7 +427,10 @@
     session.goals.forEach(function (goal) {
       const row = el("div", { class: "hq-budget-limit" });
       row.appendChild(el("span", {}, goal.name));
-      row.appendChild(el("span", {}, formatCadCents(goal.saved_cents) + " / " + formatCadCents(goal.target_cents)));
+      const goalCurrency = typeof session.summary.household_currency === "string" && /^[A-Z]{3}$/.test(session.summary.household_currency)
+        ? session.summary.household_currency
+        : null;
+      row.appendChild(el("span", {}, formatMoney(goal.saved_cents, goalCurrency) + " / " + formatMoney(goal.target_cents, goalCurrency)));
       const meter = el("progress", { max: String(Math.max(goal.target_cents, 1)), value: String(Math.max(goal.saved_cents, 0)) });
       meter.setAttribute("aria-label", "Objectif " + goal.name);
       row.appendChild(meter);
@@ -522,8 +640,13 @@
       monthBounds: monthBounds,
       shiftMonth: shiftMonth,
       formatCadCents: formatCadCents,
+      formatMoney: formatMoney,
+      accountCurrency: accountCurrency,
       parseCadToCents: parseCadToCents,
       monthTotals: monthTotals,
+      transactionPath: transactionPath,
+      takeTransactionPage: takeTransactionPage,
+      foldTransactionPages: foldTransactionPages,
       envelopeRemaining: envelopeRemaining,
       cadBalance: cadBalance,
       otherCurrencies: otherCurrencies,
