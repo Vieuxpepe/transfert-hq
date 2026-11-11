@@ -105,9 +105,10 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertEqual(parsed["role"], "admin")
         self.assertEqual(parsed["gen"], 1)
 
-        # Legacy record missing idle_sec and last_active
+        # Legacy 7-day session created 10 minutes ago
+        legacy_created = now - 600.0
         raw_legacy = {
-            "exp": future,
+            "exp": legacy_created + sec.LEGACY_SESSION_TTL_SEC,
             "user": "bob",
             "role": "upload",
             "gen": 1,
@@ -116,7 +117,8 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertIsNotNone(parsed_leg)
         assert parsed_leg is not None
         self.assertEqual(parsed_leg["idle_sec"], 60 * 60.0)
-        self.assertEqual(parsed_leg["last_active"], now)
+        self.assertEqual(parsed_leg["last_active"], legacy_created)
+        self.assertEqual(parsed_leg["exp"], legacy_created + 24 * 3600.0)
 
         # Malformed entries must return None (fail closed)
         self.assertIsNone(sec.parse_stored_session({"exp": "not_a_float", "role": "admin", "gen": 1}, {}, now=now))
@@ -124,6 +126,46 @@ class SessionLifecycleTests(unittest.TestCase):
         self.assertIsNone(sec.parse_stored_session({"exp": future, "role": "admin", "gen": "1"}, {}, now=now))
         self.assertIsNone(sec.parse_stored_session({"exp": future, "role": "admin", "gen": True}, {}, now=now))
         self.assertIsNone(sec.parse_stored_session({"exp": now - 1.0, "role": "admin", "gen": 1}, {}, now=now))
+
+    def test_legacy_session_migration_exceeding_abs_ttl_rejected(self) -> None:
+        now = 1000000.0
+        # Created 5 days ago under 7-day policy: exp is still 2 days in the future,
+        # but 5 days exceeds newly configured 24h absolute lifetime!
+        created_5d_ago = now - (5 * 86400.0)
+        legacy_7d = {
+            "exp": created_5d_ago + sec.LEGACY_SESSION_TTL_SEC,
+            "user": "old_admin",
+            "role": "admin",
+            "gen": 1,
+        }
+        # Under default 24h policy, must fail closed
+        parsed = sec.parse_stored_session(legacy_7d, {}, now=now)
+        self.assertIsNone(parsed)
+
+    def test_legacy_session_migration_exceeding_idle_ttl_rejected(self) -> None:
+        now = 1000000.0
+        # Created 2 hours ago without last_active under 7-day policy.
+        # Under 45-minute admin idle timeout, it cannot claim an unearned fresh idle window!
+        created_2h_ago = now - 7200.0
+        legacy_2h = {
+            "exp": created_2h_ago + sec.LEGACY_SESSION_TTL_SEC,
+            "user": "idle_admin",
+            "role": "admin",
+            "gen": 1,
+        }
+        parsed = sec.parse_stored_session(legacy_2h, {}, now=now)
+        self.assertIsNone(parsed)
+
+    def test_legacy_session_migration_future_timestamp_rejected(self) -> None:
+        now = 1000000.0
+        future_rec = {
+            "exp": now + 100000.0,
+            "created_at": now + 3600.0,
+            "user": "future_user",
+            "role": "admin",
+            "gen": 1,
+        }
+        self.assertIsNone(sec.parse_stored_session(future_rec, {}, now=now))
 
 
 class RateLimiterTests(unittest.TestCase):
@@ -223,6 +265,53 @@ class RateLimiterTests(unittest.TestCase):
         blocked, _ = self.limiter.record_failure(client, now=t + 3.0)
         self.assertFalse(blocked)
 
+    def test_degraded_policy_on_corrupt_file(self) -> None:
+        self.state_file.write_text("{corrupt json", encoding="utf-8")
+        lim = sec.AuthRateLimiter(self.state_file, max_attempts=3)
+        st = lim.get_status()
+        self.assertTrue(st["degraded"])
+        self.assertIn("corrupt_state_file", str(st["degraded_reason"]))
+        self.assertGreaterEqual(st["corrupt_files_quarantined"], 1)
+
+    def test_degraded_policy_on_write_error(self) -> None:
+        lim = sec.AuthRateLimiter(self.state_file, max_attempts=3)
+        import unittest.mock as mock
+        with mock.patch("pathlib.Path.replace", side_effect=OSError("Disk write error")):
+            lim.record_failure("192.168.2.99")
+        st = lim.get_status()
+        self.assertTrue(st["degraded"])
+        self.assertGreaterEqual(st["dropped_persists"], 1)
+        self.assertIn("Disk write error", str(st["last_persist_error"]))
+
+    def test_concurrency_attempt_reservation(self) -> None:
+        lim = sec.AuthRateLimiter(self.state_file, max_attempts=3, window_sec=10.0)
+        client = "192.168.2.150"
+
+        # Three concurrent attempts acquire tickets successfully
+        ok1, _, _, t1 = lim.acquire_attempt(client)
+        ok2, _, _, t2 = lim.acquire_attempt(client)
+        ok3, _, _, t3 = lim.acquire_attempt(client)
+        self.assertTrue(ok1)
+        self.assertTrue(ok2)
+        self.assertTrue(ok3)
+
+        # 4th concurrent attempt is rejected before computation begins
+        ok4, reason4, retry4, t4 = lim.acquire_attempt(client)
+        self.assertFalse(ok4)
+        self.assertEqual(reason4, "rate_limited")
+        self.assertIsNone(t4)
+
+        # Release one attempt
+        lim.release_attempt(client, t1)
+
+        # Capacity is restored for another attempt
+        ok5, _, _, t5 = lim.acquire_attempt(client)
+        self.assertTrue(ok5)
+
+        # Consuming ticket with failure records failure
+        blocked, cd = lim.record_failure(client, ticket=t2)
+        self.assertFalse(blocked)
+
 
 class HostProxyCSRFValidatorTests(unittest.TestCase):
     def test_host_validation(self) -> None:
@@ -283,6 +372,39 @@ class HostProxyCSRFValidatorTests(unittest.TestCase):
             "X-Forwarded-Host": "evil.tailscale.net",
         }
         self.assertFalse(sec.HostProxyCSRFValidator.is_trusted_tailscale_proxy(("127.0.0.1", 54321), headers_bad_host, approved))
+
+    def test_build_approved_serve_hosts_excludes_loopback_and_lan(self) -> None:
+        serve_hosts = sec.HostProxyCSRFValidator.build_approved_serve_hosts(
+            public_base_urls=["https://vieuxpeepee.taila4d470.ts.net/"],
+            tailscale_domain="ts.net",
+        )
+        self.assertIn("vieuxpeepee.taila4d470.ts.net", serve_hosts)
+        self.assertIn("ts.net", serve_hosts)
+        self.assertNotIn("127.0.0.1", serve_hosts)
+        self.assertNotIn("localhost", serve_hosts)
+        self.assertNotIn("::1", serve_hosts)
+        self.assertNotIn("192.168.2.1", serve_hosts)
+
+    def test_trusted_proxy_secret_validation(self) -> None:
+        serve_hosts = {"vieuxpeepee.taila4d470.ts.net"}
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "vieuxpeepee.taila4d470.ts.net",
+        }
+        # When secret configured, missing secret fails
+        self.assertFalse(sec.HostProxyCSRFValidator.is_trusted_tailscale_proxy(
+            ("127.0.0.1", 54321), headers, serve_hosts, proxy_secret="expected-secret"
+        ))
+        # Wrong secret fails
+        headers_wrong = dict(headers, **{"X-HQ-Proxy-Secret": "wrong-secret"})
+        self.assertFalse(sec.HostProxyCSRFValidator.is_trusted_tailscale_proxy(
+            ("127.0.0.1", 54321), headers_wrong, serve_hosts, proxy_secret="expected-secret"
+        ))
+        # Correct secret passes
+        headers_ok = dict(headers, **{"X-HQ-Proxy-Secret": "expected-secret"})
+        self.assertTrue(sec.HostProxyCSRFValidator.is_trusted_tailscale_proxy(
+            ("127.0.0.1", 54321), headers_ok, serve_hosts, proxy_secret="expected-secret"
+        ))
 
     def test_strict_csrf_validation(self) -> None:
         origins = sec.HostProxyCSRFValidator.build_csrf_allowed_origins(
@@ -368,6 +490,19 @@ class SecurityLogTests(unittest.TestCase):
         tail = self.log.tail(20)
         self.assertEqual(len(tail), 5)
         self.assertEqual(tail[-1]["reason"], "attempt_9")
+
+
+    def test_privileged_action_lifecycle_results(self) -> None:
+        log = sec.SecurityLog(maxlen=10)
+        for res in ("attempted", "authorized", "success", "failed"):
+            log.record(
+                sec.SecurityLog.EVENT_PRIVILEGED_ACTION,
+                result=res,
+                action="/api/pc/lock",
+            )
+        tail = log.tail(10)
+        results = [e["result"] for e in tail]
+        self.assertEqual(results, ["attempted", "authorized", "success", "failed"])
 
 
 if __name__ == "__main__":

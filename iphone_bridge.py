@@ -8078,11 +8078,18 @@ class Handler(BaseHTTPRequestHandler):
                 )
         return True
 
+    def _approved_serve_hosts(self) -> set[str]:
+        return hq_security.HostProxyCSRFValidator.build_approved_serve_hosts(
+            CONFIG.get("public_base_urls"),
+            tailscale_domain=CONFIG.get("tailscale_domain"),
+        )
+
     def _is_trusted_proxy(self) -> bool:
         return hq_security.HostProxyCSRFValidator.is_trusted_tailscale_proxy(
             self.client_address,
             self.headers,
-            self._approved_hosts(),
+            self._approved_serve_hosts(),
+            proxy_secret=CONFIG.get("tailscale_proxy_secret"),
         )
 
     def _source_class(self) -> str:
@@ -8136,6 +8143,52 @@ class Handler(BaseHTTPRequestHandler):
             )
         except Exception:
             pass
+
+    def _start_privileged_audit(self, action: str):
+        """Lifecycle audit context for sensitive operations (attempted -> success / failed)."""
+        class _PrivilegedAudit:
+            def __init__(audit_self, handler, act: str) -> None:
+                audit_self.handler = handler
+                audit_self.action = act
+                audit_self.completed = False
+                handler._record_sec_event(
+                    hq_security.SecurityLog.EVENT_PRIVILEGED_ACTION,
+                    severity="info",
+                    result="attempted",
+                    actor_role=handler._role() or "admin",
+                    action=act,
+                    path_category=hq_diagnostics.path_category(act),
+                )
+
+            def success(audit_self, reason: str | None = None) -> None:
+                if audit_self.completed:
+                    return
+                audit_self.completed = True
+                audit_self.handler._record_sec_event(
+                    hq_security.SecurityLog.EVENT_PRIVILEGED_ACTION,
+                    severity="info",
+                    result="success",
+                    actor_role=audit_self.handler._role() or "admin",
+                    action=audit_self.action,
+                    reason=reason,
+                    path_category=hq_diagnostics.path_category(audit_self.action),
+                )
+
+            def failed(audit_self, reason: str | None = None) -> None:
+                if audit_self.completed:
+                    return
+                audit_self.completed = True
+                audit_self.handler._record_sec_event(
+                    hq_security.SecurityLog.EVENT_PRIVILEGED_ACTION,
+                    severity="warning",
+                    result="failed",
+                    actor_role=audit_self.handler._role() or "admin",
+                    action=audit_self.action,
+                    reason=reason,
+                    path_category=hq_diagnostics.path_category(audit_self.action),
+                )
+
+        return _PrivilegedAudit(self, action)
 
     def _record_privileged_action(self, action: str) -> None:
         self._record_sec_event(
@@ -8706,14 +8759,19 @@ class Handler(BaseHTTPRequestHandler):
         if raw != "/api/diag/write-probe":
             self._json(404, {"error": "Inconnu"})
             return True
+        audit = self._start_privileged_audit(raw)
         try:
             _diag_ensure()
             res = hq_diagnostics.write_probe(ROOT)
-            if res.get("status") != "ok":
+            if res.get("status") == "ok":
+                audit.success()
+            else:
+                audit.failed(reason="probe_failed")
                 hq_diagnostics.ERRORS.record("diagnostics.write_probe", message=f"write probe failed at {res.get('failed_step')}", path=raw)
             _DIAG_STATE["last_probe"] = res
             self._json(200 if res.get("status") == "ok" else 503, res)
         except Exception as e:
+            audit.failed(reason="probe_exception")
             rid = hq_diagnostics.ERRORS.record("diagnostics", exc=e, path=raw)
             self._json(500, {"error": "diagnostic_failed", "request_id": rid})
         return True
@@ -10469,7 +10527,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(413, render_login("Requête trop grande.", error=True))
                 return
             ident = self._client_identity()
-            allowed, reason, retry_after = AUTH_RATE_LIMITER.check_rate_limit(ident)
+            allowed, reason, retry_after, ticket = AUTH_RATE_LIMITER.acquire_attempt(ident)
             if not allowed:
                 self._record_sec_event(
                     hq_security.SecurityLog.EVENT_RATE_LIMITED,
@@ -10482,42 +10540,50 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(429, render_login(msg, error=True), headers=[("Retry-After", retry_s)])
                 return
 
-            body = self.rfile.read(length).decode("utf-8", errors="replace")
-            data = parse_qs(body, keep_blank_values=True)
-            pin = (data.get("pin", [""])[0] or "").strip()
-            auth = authenticate_pin(pin)
-            if pin_enabled() and not auth:
-                AUTH_RATE_LIMITER.record_failure(ident)
-                self._record_sec_event(
-                    hq_security.SecurityLog.EVENT_LOGIN_FAILURE,
-                    severity="warning",
-                    result="failed",
-                    reason="invalid_pin",
-                )
-                self._send(401, render_login("PIN incorrect.", error=True))
-                return
-            if not auth:
-                self._send(401, render_login("Authentification requise.", error=True))
-                return
+            try:
+                body = self.rfile.read(length).decode("utf-8", errors="replace")
+                data = parse_qs(body, keep_blank_values=True)
+                pin = (data.get("pin", [""])[0] or "").strip()
+                auth = authenticate_pin(pin)
+                if pin_enabled() and not auth:
+                    AUTH_RATE_LIMITER.record_failure(ident, ticket=ticket)
+                    ticket = None
+                    self._record_sec_event(
+                        hq_security.SecurityLog.EVENT_LOGIN_FAILURE,
+                        severity="warning",
+                        result="failed",
+                        reason="invalid_pin",
+                    )
+                    self._send(401, render_login("PIN incorrect.", error=True))
+                    return
+                if not auth:
+                    AUTH_RATE_LIMITER.release_attempt(ident, ticket=ticket)
+                    ticket = None
+                    self._send(401, render_login("Authentification requise.", error=True))
+                    return
 
-            AUTH_RATE_LIMITER.record_success(ident)
-            token = issue_session(auth["user"], auth["role"])
-            self._record_sec_event(
-                hq_security.SecurityLog.EVENT_LOGIN_SUCCESS,
-                severity="info",
-                result="success",
-                actor_role=auth["role"],
-            )
-            # 303 so the browser stores the cookie, then loads / with it.
-            # Returning the app HTML in the same Set-Cookie response races on Safari/iOS
-            # (fetch runs before the cookie sticks → 401 → logout loop).
-            self.send_response(303)
-            self.send_header("Location", "/")
-            self.send_header("Set-Cookie", self._session_cookie(token, role=auth["role"]))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+                AUTH_RATE_LIMITER.record_success(ident, ticket=ticket)
+                ticket = None
+                token = issue_session(auth["user"], auth["role"])
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_LOGIN_SUCCESS,
+                    severity="info",
+                    result="success",
+                    actor_role=auth["role"],
+                )
+                # 303 so the browser stores the cookie, then loads / with it.
+                # Returning the app HTML in the same Set-Cookie response races on Safari/iOS
+                # (fetch runs before the cookie sticks → 401 → logout loop).
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Set-Cookie", self._session_cookie(token, role=auth["role"]))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            finally:
+                if ticket:
+                    AUTH_RATE_LIMITER.release_attempt(ident, ticket)
 
         self._prebody_refusal = True
         try:
@@ -10538,9 +10604,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
         finally:
             self._prebody_refusal = False
-
-        if raw.startswith("/api/pc/"):
-            self._record_privileged_action(raw)
 
         if self._diag_post(raw):
             return
@@ -10698,11 +10761,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/clipboard/pc":
+            audit = self._start_privileged_audit(raw)
             data = self._read_json()
             text = str(data.get("text") if data.get("text") is not None else "")
             try:
                 write_pc_clipboard(text)
+                audit.success()
             except Exception as e:
+                audit.failed(reason="clipboard_write_failed")
                 self._json(500, {"error": str(e)})
                 return
             self._json(200, {"ok": True})
@@ -10711,9 +10777,12 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/pc/screenshot":
             if not self._require_admin():
                 return
+            audit = self._start_privileged_audit(raw)
             try:
                 info = pc_screenshot()
+                audit.success()
             except Exception as e:
+                audit.failed(reason="screenshot_failed")
                 self._json(500, {"error": str(e)})
                 return
             self._json(200, {"ok": True, **info})
@@ -10722,9 +10791,13 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/pc/restart-bridge":
             if not self._require_admin():
                 return
+            audit = self._start_privileged_audit(raw)
             code, out = request_restart()
             if code == 200:
+                audit.success()
                 cc_ext.log_activity("action", f"Redémarrage du pont demandé depuis {self.client_address[0]}")
+            else:
+                audit.failed(reason="restart_rejected")
             self._json(code, out)
             if code == 200:
                 def _go() -> None:
@@ -10739,9 +10812,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/pc/lock":
+            audit = self._start_privileged_audit(raw)
             try:
                 pc_lock()
+                audit.success()
             except Exception as e:
+                audit.failed(reason="lock_failed")
                 self._json(500, {"error": str(e)})
                 return
             notify_discord("PC verrouillé", f"Depuis `{self.client_address[0]}`")
@@ -10749,6 +10825,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/pc/sleep":
+            audit = self._start_privileged_audit(raw)
+            audit.success()
             self._json(200, {"ok": True, "message": "Mise en veille…"})
 
             def _do_sleep() -> None:
@@ -10761,24 +10839,30 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/pc/explore":
+            audit = self._start_privileged_audit(raw)
             data = self._read_json()
             target = str(data.get("path") or data.get("rel") or "").strip()
             if not target:
                 target = str(ROOT)
             try:
                 pc_explore(target)
+                audit.success()
             except Exception as e:
+                audit.failed(reason="explore_failed")
                 self._json(400, {"error": str(e)})
                 return
             self._json(200, {"ok": True})
             return
 
         if raw == "/api/pc/action":
+            audit = self._start_privileged_audit(raw)
             data = self._read_json()
             aid = str(data.get("id") or "").strip()
             try:
                 info = pc_run_action(aid)
+                audit.success()
             except Exception as e:
+                audit.failed(reason="action_failed")
                 self._json(400, {"error": str(e)})
                 return
             self._json(200, info)
@@ -10920,10 +11004,13 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/terminal":
             if not self._require_admin():
                 return
+            audit = self._start_privileged_audit(raw)
             data = self._read_json()
             try:
                 info = cc_ext.run_terminal(cmd_id=data.get("id"), raw=data.get("cmd"))
+                audit.success()
             except Exception as e:
+                audit.failed(reason="terminal_failed")
                 self._json(400, {"error": str(e)})
                 return
             self._json(200, info)
@@ -10932,8 +11019,10 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/shell":
             if not self._require_admin():
                 return
+            audit = self._start_privileged_audit(raw)
             data = self._read_json()
             if data.get("host"):
+                audit.failed(reason="unauthorized_host")
                 self._json(400, {"error": "Cible non autorisée — utilisez un id de shell_targets"})
                 return
             target_id = str(data.get("target") or "local")
@@ -10942,14 +11031,18 @@ class Handler(BaseHTTPRequestHandler):
             targets = {t["id"]: t for t in cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers)}
             target = targets.get(target_id)
             if not target:
+                audit.failed(reason="unknown_target")
                 self._json(400, {"error": "Cible inconnue"})
                 return
             try:
                 info = cc_ext.run_shell(target=target, shell=shell, command=command)
+                audit.success()
             except subprocess.TimeoutExpired:
+                audit.failed(reason="timeout")
                 self._json(400, {"error": "Délai dépassé"})
                 return
             except Exception as e:
+                audit.failed(reason="shell_failed")
                 self._json(400, {"error": str(e)})
                 return
             self._json(200, info)

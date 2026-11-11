@@ -36,6 +36,9 @@ SESSION_ABSOLUTE_MAX_SEC = 30 * 86400.0   # 30 days
 SESSION_IDLE_MIN_SEC = 30.0               # 30 seconds
 SESSION_IDLE_MAX_SEC = 7 * 86400.0        # 7 days
 
+# Legacy session duration constant (7 days) for migration policy
+LEGACY_SESSION_TTL_SEC = 7 * 86400.0
+
 # Idle persistence throttle (seconds) to prevent disk thrashing on every request
 IDLE_PERSIST_INTERVAL_SEC = 60.0
 
@@ -47,6 +50,9 @@ RATE_LIMIT_GLOBAL_WINDOW_SEC = 60.0
 RATE_LIMIT_GLOBAL_MAX = 60
 RATE_LIMIT_MAX_IDENTITIES = 256
 RATE_LIMIT_MAX_COOLDOWN_SEC = 900.0       # 15 minutes max progressive cooldown
+
+# In-flight attempt reservation TTL (seconds) to prevent concurrency bypass
+INFLIGHT_ATTEMPT_TTL_SEC = 30.0
 
 # Telemetry limits
 SECURITY_RING_MAX = 100
@@ -126,7 +132,31 @@ def create_session_record(user: str, role: str, gen: int, config: dict | None, n
 
 
 def parse_stored_session(raw: object, config: dict | None, now: float | None = None) -> dict | None:
-    """Validate and deserialize a stored session record. Fails closed on malformed entries."""
+    """Validate, deserialize, and safely migrate a stored session record.
+
+    Fail-Closed Migration Policy:
+    1. Structural Validation:
+       - The record must be a dict.
+       - 'exp' must be a valid, finite number strictly greater than current time.
+       - 'role' must be 'admin' or 'upload'.
+       - 'gen' must be an integer (rejecting bool).
+    2. Absolute Lifetime Enforcement (Legacy Migration):
+       - Legacy sessions created under the previous 7-day policy must NOT silently exceed
+         the newly configured absolute lifetime (abs_ttl).
+       - If 'created_at' is absent, it is inferred as `exp - legacy_session_ttl`.
+       - The session's expiration is clamped to `effective_exp = min(exp, created_at + abs_ttl)`.
+       - If `effective_exp <= t_now`, the session has already exceeded its newly configured
+         lifetime and is rejected (return None).
+    3. Idle Timeout Enforcement (No Unearned Windows):
+       - Missing 'last_active' timestamps in legacy records are NOT initialized to the current
+         loading time, preventing stale offline sessions from claiming fresh idle windows.
+       - If 'last_active' is absent, it defaults to 'created_at' (the only verifiable point of activity).
+       - If `t_now - last_active >= idle_sec`, the session is expired on idle and rejected (return None).
+       - If 'last_active' is present, it must be finite, >= created_at - 1.0, and <= t_now + 60.0.
+    4. Bounds and Integrity:
+       - 'created_at' must be finite, > 0.0, and <= t_now + 60.0 (allowing small clock skew).
+       - 'last_active' is capped at 'effective_exp'.
+    """
     if not isinstance(raw, dict):
         return None
 
@@ -158,6 +188,40 @@ def parse_stored_session(raw: object, config: dict | None, now: float | None = N
 
     abs_ttl, default_idle = get_session_policy(config, role)
 
+    # Legacy TTL resolution for creation inference
+    cfg = config or {}
+    legacy_ttl = LEGACY_SESSION_TTL_SEC
+    if "session_ttl_sec" in cfg:
+        try:
+            val = float(cfg["session_ttl_sec"])
+            if math.isfinite(val) and val > 0:
+                legacy_ttl = max(SESSION_ABSOLUTE_MIN_SEC, min(SESSION_ABSOLUTE_MAX_SEC, val))
+        except (TypeError, ValueError):
+            pass
+
+    # Creation timestamp validation & inference
+    created_val = raw.get("created_at")
+    if isinstance(created_val, bool):
+        return None
+    elif isinstance(created_val, (int, float)):
+        try:
+            created_at = float(created_val)
+        except (OverflowError, TypeError, ValueError):
+            return None
+    else:
+        # Legacy record without created_at: infer from legacy expiration
+        created_at = exp - legacy_ttl
+
+    if not math.isfinite(created_at) or created_at <= 0.0:
+        return None
+    if created_at > t_now + 60.0:
+        return None
+
+    # Absolute lifetime enforcement: clamp legacy expiration to newly configured abs_ttl
+    effective_exp = min(exp, created_at + abs_ttl)
+    if effective_exp <= t_now:
+        return None
+
     # Idle duration validation
     idle_val = raw.get("idle_sec")
     if isinstance(idle_val, bool) or not isinstance(idle_val, (int, float)):
@@ -170,38 +234,34 @@ def parse_stored_session(raw: object, config: dict | None, now: float | None = N
             idle_sec = default_idle
     idle_sec = min(idle_sec, abs_ttl)
 
-    # Last active validation
+    # Last active validation & migration
     act_val = raw.get("last_active")
-    if isinstance(act_val, bool) or not isinstance(act_val, (int, float)):
-        # Legacy record without last_active: conservative default is current load time
-        last_active = min(t_now, exp)
-    else:
+    if isinstance(act_val, bool):
+        return None
+    elif isinstance(act_val, (int, float)):
         try:
-            f_act = float(act_val)
-            last_active = f_act if math.isfinite(f_act) else min(t_now, exp)
+            last_active = float(act_val)
         except (OverflowError, TypeError, ValueError):
-            last_active = min(t_now, exp)
-
-    # If last active was recorded in the future beyond exp, cap it
-    last_active = min(last_active, exp)
+            return None
+        if not math.isfinite(last_active):
+            return None
+        if last_active < created_at - 1.0:
+            return None
+        if last_active > t_now + 60.0:
+            return None
+    else:
+        # Legacy record without last_active: conservative activity point is created_at
+        last_active = created_at
 
     # Check if idle expired while offline
-    if t_now - last_active > idle_sec:
+    if t_now - last_active >= idle_sec:
         return None
 
-    # Creation timestamp
-    created_val = raw.get("created_at")
-    if isinstance(created_val, bool) or not isinstance(created_val, (int, float)):
-        created_at = max(0.0, exp - abs_ttl)
-    else:
-        try:
-            f_cr = float(created_val)
-            created_at = f_cr if math.isfinite(f_cr) else max(0.0, exp - abs_ttl)
-        except (OverflowError, TypeError, ValueError):
-            created_at = max(0.0, exp - abs_ttl)
+    # Cap last active so it never exceeds effective expiration
+    last_active = min(last_active, effective_exp)
 
     return {
-        "exp": exp,
+        "exp": effective_exp,
         "idle_sec": idle_sec,
         "last_active": last_active,
         "created_at": created_at,
@@ -254,6 +314,8 @@ class AuthRateLimiter:
     """Sliding-window authentication rate limiter with progressive cooldowns and global failure budget.
 
     Persists failure state across restarts, bounds identity count, and prunes expired records.
+    Implements a degraded-security policy that never silently clears failure history on corruption,
+    and supports attempt reservation to prevent concurrent requests from defeating limits.
     """
 
     def __init__(
@@ -278,6 +340,15 @@ class AuthRateLimiter:
         self._lock = threading.Lock()
         self._identities: dict[str, dict] = {}
         self._global_fails: list[float] = []
+        self._global_inflight: dict[str, float] = {}
+
+        # Degraded-security policy metrics
+        self.degraded: bool = False
+        self.degraded_reason: str | None = None
+        self.corrupt_files_quarantined: int = 0
+        self.dropped_persists: int = 0
+        self.last_persist_error: str | None = None
+        self.last_persist_ok: float | None = None
 
         if self.state_path:
             self._load()
@@ -296,7 +367,7 @@ class AuthRateLimiter:
             raw = self.state_path.read_text(encoding="utf-8")
             data = json.loads(raw)
             if not isinstance(data, dict):
-                return
+                raise ValueError("Root JSON is not an object")
             identities = data.get("identities")
             if isinstance(identities, dict):
                 for ident, record in identities.items():
@@ -306,52 +377,83 @@ class AuthRateLimiter:
                     cooldown = float(record.get("cooldown_until", 0.0))
                     streak = int(record.get("streak", 0))
                     if fails or cooldown > 0:
-                        self._identities[ident[:64]] = {
-                            "fails": fails,
-                            "streak": max(0, min(10, streak)),
-                            "cooldown_until": cooldown,
-                        }
+                        rec = self._identities.setdefault(ident[:64], {"fails": [], "streak": 0, "cooldown_until": 0.0, "inflight": {}})
+                        merged_fails = sorted(list(set(rec.get("fails", []) + fails)))
+                        rec["fails"] = merged_fails
+                        rec["streak"] = max(int(rec.get("streak", 0)), max(0, min(10, streak)))
+                        rec["cooldown_until"] = max(float(rec.get("cooldown_until", 0.0)), cooldown)
             g_fails = data.get("global_fails")
             if isinstance(g_fails, list):
-                self._global_fails = [float(t) for t in g_fails if isinstance(t, (int, float))]
-        except Exception:
-            # Corrupted rate limit state must never crash authentication or deny all logins
-            self._identities.clear()
-            self._global_fails.clear()
+                loaded_g = [float(t) for t in g_fails if isinstance(t, (int, float))]
+                self._global_fails = sorted(list(set(self._global_fails + loaded_g)))
+        except Exception as exc:
+            # Degraded-security policy: NEVER wipe in-memory failure history!
+            self.degraded = True
+            self.degraded_reason = f"corrupt_state_file: {type(exc).__name__}: {str(exc)[:60]}"
+            # Quarantine the corrupt file so it does not poison subsequent reloads
+            try:
+                stamp = int(time.time())
+                bak = self.state_path.with_name(f"{self.state_path.name}.corrupt-{stamp}")
+                shutil.copy2(self.state_path, bak)
+                self.corrupt_files_quarantined += 1
+            except Exception:
+                pass
 
     def _persist_locked(self) -> None:
         if not self.state_path:
             return
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            cleaned_identities = {}
+            for ident, rec in self._identities.items():
+                cleaned_identities[ident] = {
+                    "fails": rec.get("fails", []),
+                    "streak": rec.get("streak", 0),
+                    "cooldown_until": rec.get("cooldown_until", 0.0),
+                }
             payload = {
                 "version": 1,
                 "saved_at": time.time(),
-                "identities": self._identities,
+                "identities": cleaned_identities,
                 "global_fails": self._global_fails,
             }
             tmp = self.state_path.with_name(f".{self.state_path.name}.tmp-{os.getpid()}-{threading.get_ident()}")
             tmp.write_text(json.dumps(payload), encoding="utf-8")
             tmp.replace(self.state_path)
-        except OSError:
-            pass
+            self.last_persist_ok = time.time()
+            self.last_persist_error = None
+            if self.degraded and self.degraded_reason and self.degraded_reason.startswith("persist_failure"):
+                self.degraded = False
+                self.degraded_reason = None
+        except OSError as exc:
+            self.dropped_persists += 1
+            self.degraded = True
+            self.last_persist_error = f"{type(exc).__name__}: {str(exc)[:80]}"
+            if not self.degraded_reason or self.degraded_reason.startswith("persist_failure"):
+                self.degraded_reason = f"persist_failure: {self.last_persist_error}"
 
     def _prune_locked(self, now: float) -> None:
         self._global_fails = [t for t in self._global_fails if now - t < self.global_window_sec]
+        self._global_inflight = {k: t for k, t in self._global_inflight.items() if now - t < INFLIGHT_ATTEMPT_TTL_SEC}
+
         dead: list[str] = []
         STREAK_RETENTION_SEC = 1800.0  # 30 minutes to remember penalty streak
         for ident, rec in self._identities.items():
             rec["fails"] = [t for t in rec.get("fails", []) if now - t < self.window_sec]
+            inflight = rec.get("inflight")
+            if isinstance(inflight, dict):
+                rec["inflight"] = {k: t for k, t in inflight.items() if now - t < INFLIGHT_ATTEMPT_TTL_SEC}
+            else:
+                rec["inflight"] = {}
             cooldown = float(rec.get("cooldown_until", 0.0))
             last_activity = max([cooldown] + rec.get("fails", []))
-            if not rec["fails"] and cooldown <= now and (now - last_activity > STREAK_RETENTION_SEC):
+            if not rec["fails"] and not rec["inflight"] and cooldown <= now and (now - last_activity > STREAK_RETENTION_SEC):
                 dead.append(ident)
         for k in dead:
             self._identities.pop(k, None)
 
         # Enforce bounded capacity
         if len(self._identities) > self.max_identities:
-            # Evict entries with earliest last activity
             sorted_items = sorted(
                 self._identities.items(),
                 key=lambda item: max(item[1].get("fails") or [0.0]),
@@ -361,7 +463,7 @@ class AuthRateLimiter:
                 self._identities.pop(k, None)
 
     def check_rate_limit(self, identity: str, now: float | None = None) -> tuple[bool, str | None, float]:
-        """Check if an attempt is permitted.
+        """Passive check if an attempt is permitted without reserving an attempt ticket.
 
         Returns (allowed, reason, retry_after_sec).
         """
@@ -374,7 +476,8 @@ class AuthRateLimiter:
             self._prune_locked(t_now)
 
             # 1. Global budget check
-            if len(self._global_fails) >= self.global_max:
+            active_global = len(self._global_fails) + len(self._global_inflight)
+            if active_global >= self.global_max:
                 earliest = min(self._global_fails) if self._global_fails else t_now
                 retry_after = max(1.0, self.global_window_sec - (t_now - earliest))
                 return False, "global_budget_exhausted", retry_after
@@ -388,17 +491,64 @@ class AuthRateLimiter:
             if t_now < cooldown_until:
                 return False, "cooldown_active", max(1.0, cooldown_until - t_now)
 
-            # 3. Sliding-window threshold check
+            # 3. Sliding-window threshold check (fails + inflight)
             fails = [t for t in rec.get("fails", []) if t_now - t < self.window_sec]
-            if len(fails) >= allowed_attempts:
-                earliest = min(fails)
+            inflight = rec.get("inflight", {})
+            total_active = len(fails) + len(inflight)
+            if total_active >= allowed_attempts:
+                earliest = min(fails) if fails else t_now
                 retry_after = max(1.0, self.window_sec - (t_now - earliest))
                 return False, "rate_limited", retry_after
 
             return True, None, 0.0
 
-    def record_failure(self, identity: str, now: float | None = None) -> tuple[bool, float]:
-        """Record an authentication failure.
+    def acquire_attempt(self, identity: str, now: float | None = None) -> tuple[bool, str | None, float, str | None]:
+        """Reserve an in-flight attempt ticket if within rate limits.
+
+        Prevents concurrent requests from defeating attempt limits by reserving
+        capacity before authentication computation begins.
+        Returns (allowed, reason, retry_after_sec, ticket).
+        """
+        t_now = time.time() if now is None else float(now)
+        ident = (identity or "unknown").strip()[:64]
+        is_proxy = ident.startswith("tailscale_") or ident == "proxy_shared"
+        allowed_attempts = self.proxy_max_attempts if is_proxy else self.max_attempts
+
+        with self._lock:
+            self._prune_locked(t_now)
+
+            # 1. Global budget check (fails + inflight)
+            active_global = len(self._global_fails) + len(self._global_inflight)
+            if active_global >= self.global_max:
+                earliest = min(self._global_fails) if self._global_fails else t_now
+                retry_after = max(1.0, self.global_window_sec - (t_now - earliest))
+                return False, "global_budget_exhausted", retry_after, None
+
+            rec = self._identities.setdefault(ident, {"fails": [], "streak": 0, "cooldown_until": 0.0, "inflight": {}})
+
+            # 2. Cooldown check
+            cooldown_until = float(rec.get("cooldown_until", 0.0))
+            if t_now < cooldown_until:
+                return False, "cooldown_active", max(1.0, cooldown_until - t_now), None
+
+            # 3. Sliding-window threshold check (fails + inflight)
+            fails = [t for t in rec.get("fails", []) if t_now - t < self.window_sec]
+            rec["fails"] = fails
+            inflight = rec.setdefault("inflight", {})
+            total_active = len(fails) + len(inflight)
+            if total_active >= allowed_attempts:
+                earliest = min(fails) if fails else t_now
+                retry_after = max(1.0, self.window_sec - (t_now - earliest))
+                return False, "rate_limited", retry_after, None
+
+            # Issue ticket and track in-flight
+            ticket = secrets.token_hex(8)
+            inflight[ticket] = t_now
+            self._global_inflight[ticket] = t_now
+            return True, None, 0.0, ticket
+
+    def record_failure(self, identity: str, ticket: str | None = None, now: float | None = None) -> tuple[bool, float]:
+        """Record an authentication failure and release any active reservation ticket.
 
         Returns (is_now_blocked, cooldown_sec).
         """
@@ -409,9 +559,14 @@ class AuthRateLimiter:
 
         with self._lock:
             self._prune_locked(t_now)
+            if ticket:
+                self._global_inflight.pop(ticket, None)
             self._global_fails.append(t_now)
 
-            rec = self._identities.setdefault(ident, {"fails": [], "streak": 0, "cooldown_until": 0.0})
+            rec = self._identities.setdefault(ident, {"fails": [], "streak": 0, "cooldown_until": 0.0, "inflight": {}})
+            if ticket and isinstance(rec.get("inflight"), dict):
+                rec["inflight"].pop(ticket, None)
+
             fails = [t for t in rec.get("fails", []) if t_now - t < self.window_sec]
             fails.append(t_now)
             rec["fails"] = fails
@@ -437,27 +592,62 @@ class AuthRateLimiter:
             self._persist_locked()
             return blocked, cooldown_sec
 
-    def record_success(self, identity: str) -> None:
-        """Reset failed attempts for a successfully authenticated identity."""
+    def record_success(self, identity: str, ticket: str | None = None) -> None:
+        """Reset failed attempts and clear in-flight reservation for a successfully authenticated identity."""
         ident = (identity or "unknown").strip()[:64]
         with self._lock:
+            if ticket:
+                self._global_inflight.pop(ticket, None)
             if ident in self._identities:
-                self._identities.pop(ident, None)
+                rec = self._identities.pop(ident, None)
+                if rec and ticket and isinstance(rec.get("inflight"), dict):
+                    rec["inflight"].pop(ticket, None)
                 self._persist_locked()
 
+    def release_attempt(self, identity: str, ticket: str | None) -> None:
+        """Release an in-flight attempt ticket without recording failure."""
+        if not ticket:
+            return
+        ident = (identity or "unknown").strip()[:64]
+        with self._lock:
+            self._global_inflight.pop(ticket, None)
+            rec = self._identities.get(ident)
+            if rec and isinstance(rec.get("inflight"), dict):
+                rec["inflight"].pop(ticket, None)
+
     def get_status(self) -> dict:
-        """Sanitized telemetry overview of the rate limiter."""
+        """Sanitized telemetry overview of the rate limiter including degraded policy metrics."""
         with self._lock:
             now = time.time()
             return {
                 "tracked_identities": len(self._identities),
                 "global_recent_failures": len([t for t in self._global_fails if now - t < self.global_window_sec]),
+                "global_inflight": len(self._global_inflight),
                 "active_cooldowns": sum(1 for r in self._identities.values() if r.get("cooldown_until", 0.0) > now),
+                "degraded": self.degraded,
+                "degraded_reason": self.degraded_reason,
+                "dropped_persists": self.dropped_persists,
+                "last_persist_error": self.last_persist_error,
+                "last_persist_ok": self.last_persist_ok,
+                "corrupt_files_quarantined": self.corrupt_files_quarantined,
             }
 
     def clear_for_tests(self) -> None:
         with self._lock:
             self._identities.clear()
+            self._global_fails.clear()
+            self._global_inflight.clear()
+            self.degraded = False
+            self.degraded_reason = None
+            self.corrupt_files_quarantined = 0
+            self.dropped_persists = 0
+            self.last_persist_error = None
+            self.last_persist_ok = None
+            if self.state_path and self.state_path.is_file():
+                try:
+                    self.state_path.unlink()
+                except OSError:
+                    pass
             self._global_fails.clear()
             if self.state_path and self.state_path.is_file():
                 try:
@@ -559,17 +749,63 @@ class HostProxyCSRFValidator:
         return False, "untrusted_host"
 
     @staticmethod
+    def build_approved_serve_hosts(
+        public_base_urls: list[str] | None = None,
+        tailscale_domain: str | None = None,
+    ) -> set[str]:
+        """Compile approved hostnames specifically for Tailscale Serve HTTPS reverse proxy.
+
+        Environmental Trust Model & Zero-Authorization Guarantee:
+        - Loopback TCP sockets in Python standard library on Windows cannot cryptographically
+          prove peer process identity without low-level OS hooks.
+        - Tailscale Serve runs on the host, terminates TLS, and proxies HTTP traffic to 127.0.0.1.
+        - Under our single-tenant environmental trust model, untrusted local users cannot run code.
+        - Zero-Authorization Guarantee: Classifying a connection as arriving via Tailscale Serve
+          confers ZERO authorization:
+          * It does NOT bypass PIN authentication.
+          * It does NOT grant admin or upload privileges.
+          * It does NOT bypass session tokens or generation checks.
+          * It does NOT bypass CSRF origin verification.
+          * It only:
+            1. Enables the 'Secure' cookie attribute for HTTPS delivery to the client.
+            2. Partitions rate-limiting into the shared tailnet proxy allowance.
+            3. Sets the telemetry source class to 'tailscale_serve'.
+        - To prevent proxy classification from matching local loopback requests, this allowlist
+          STRICTLY includes configured public_base_urls and Tailscale domains, and EXCLUDES
+          127.0.0.1, localhost, and LAN addresses.
+        """
+        approved: set[str] = set()
+        for u in (public_base_urls or []):
+            try:
+                p = urlparse(str(u).strip())
+                if p.hostname:
+                    approved.add(p.hostname.lower())
+                    if p.netloc:
+                        approved.add(p.netloc.lower())
+            except Exception:
+                pass
+
+        if tailscale_domain:
+            clean_ts = tailscale_domain.strip().lower()
+            if clean_ts:
+                approved.add(clean_ts)
+
+        return approved
+
+    @staticmethod
     def is_trusted_tailscale_proxy(
         client_address: tuple[str, int] | list[Any] | None,
         headers: Any,
-        approved_hosts: set[str],
+        approved_serve_hosts: set[str],
+        proxy_secret: str | None = None,
     ) -> bool:
-        """Verify whether the request is demonstrably arriving via local Tailscale Serve proxy.
+        """Verify whether the request arrives via local Tailscale Serve HTTPS proxy under our trust model.
 
         Requires:
-        1. Direct socket peer is loopback (127.0.0.1 or ::1).
-        2. X-Forwarded-Proto header is 'https'.
-        3. X-Forwarded-Host or Host matches an approved host.
+        1. Direct socket peer is loopback (127.0.0.1 or ::1). Non-loopback peers are NEVER trusted.
+        2. X-Forwarded-Proto header is strictly 'https'.
+        3. X-Forwarded-Host or Host matches an approved Tailscale Serve hostname.
+        4. If proxy_secret is configured, X-HQ-Proxy-Secret must match via constant-time comparison.
         """
         if not client_address:
             return False
@@ -586,8 +822,17 @@ class HostProxyCSRFValidator:
             return False
 
         clean_fwd = HostProxyCSRFValidator.sanitize_host_header(fwd_host)
-        if not clean_fwd or clean_fwd.lower() not in approved_hosts:
+        if not clean_fwd:
             return False
+
+        bare_host = clean_fwd.split(":", 1)[0].lower()
+        if clean_fwd.lower() not in approved_serve_hosts and bare_host not in approved_serve_hosts:
+            return False
+
+        if proxy_secret:
+            incoming_secret = (headers.get("X-HQ-Proxy-Secret") or "").strip()
+            if not secrets.compare_digest(incoming_secret, proxy_secret.strip()):
+                return False
 
         return True
 
@@ -724,6 +969,17 @@ class SecurityLog:
         EVENT_PRIVILEGED_ACTION,
     })
 
+    ALLOWED_RESULTS = frozenset({
+        "allowed",
+        "denied",
+        "throttled",
+        "revoked",
+        "success",
+        "failed",
+        "attempted",
+        "authorized",
+    })
+
     def __init__(self, maxlen: int = SECURITY_RING_MAX) -> None:
         self._ring: collections.deque[dict] = collections.deque(maxlen=maxlen)
         self._lock = threading.Lock()
@@ -781,7 +1037,7 @@ class SecurityLog:
         role = actor_role if actor_role in ("admin", "upload", "anonymous") else "unknown"
         s_class = source_class if source_class in ("localhost", "lan", "tailscale_serve", "unknown") else "unknown"
         sev = severity if severity in ("info", "warning", "error", "critical") else "info"
-        res = result if result in ("allowed", "denied", "throttled", "revoked", "success", "failed") else "denied"
+        res = result if result in self.ALLOWED_RESULTS else "denied"
 
         entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -796,9 +1052,9 @@ class SecurityLog:
         if reason:
             entry["reason"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(reason))[:60]
         if action:
-            entry["action"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(action))[:60]
+            entry["action"] = re.sub(r"[^A-Za-z0-9_./-]", "", str(action))[:60]
         if path_category:
-            entry["path_category"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(path_category))[:40]
+            entry["path_category"] = re.sub(r"[^A-Za-z0-9_./-]", "", str(path_category))[:40]
 
         with self._lock:
             self._seq += 1

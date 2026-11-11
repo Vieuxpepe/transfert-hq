@@ -357,3 +357,107 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
         self.assertNotIn(ADMIN_PIN, events_str)
         self.assertNotIn(UPLOAD_PIN, events_str)
         self.assertNotIn(admin_tok, events_str)
+
+    def test_concurrent_login_rate_limiting(self) -> None:
+        """Verify that concurrent login requests cannot defeat the attempt limit."""
+        client_origin = f"http://127.0.0.1:{self.port}"
+        statuses: list[int] = []
+        lock = threading.Lock()
+
+        def _attempt(i: int) -> None:
+            st, _, _ = _http_req(
+                self.port,
+                "/login",
+                method="POST",
+                body=urlencode({"pin": f"wrong-{i}"}),
+                headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": client_origin},
+            )
+            with lock:
+                statuses.append(st)
+
+        # Launch 20 threads simultaneously
+        threads = [threading.Thread(target=_attempt, args=(i,)) for i in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # At most 12 can be 401; remaining must be 429
+        unauth_count = statuses.count(401)
+        rate_limited_count = statuses.count(429)
+        self.assertEqual(len(statuses), 20)
+        self.assertLessEqual(unauth_count, 12)
+        self.assertGreaterEqual(rate_limited_count, 8)
+
+    def test_privileged_action_audit_lifecycle(self) -> None:
+        """Verify that privileged operations log attempted followed by success or failed."""
+        admin_tok = bridge.issue_session("admin_user", "admin")
+        client_origin = f"http://127.0.0.1:{self.port}"
+
+        # 1. Successful privileged action (/api/pc/lock)
+        import unittest.mock as mock
+        with mock.patch("iphone_bridge.pc_lock", return_value=None), mock.patch("iphone_bridge.notify_discord", return_value=None):
+            st, _, body = _http_req(
+                self.port,
+                "/api/pc/lock",
+                method="POST",
+                body=b"{}",
+                headers={
+                    "Cookie": f"transfert_session={admin_tok}",
+                    "Origin": client_origin,
+                    "Content-Type": "application/json",
+                },
+            )
+            self.assertEqual(st, 200)
+
+        # Verify attempted and success logged in order
+        tail = D.SECURITY_LOG.tail(10)
+        pc_events = [e for e in tail if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/lock"]
+        self.assertGreaterEqual(len(pc_events), 2)
+        results = [e.get("result") for e in pc_events]
+        self.assertIn("attempted", results)
+        self.assertIn("success", results)
+
+        # 2. Failing privileged action (/api/pc/action with invalid payload)
+        with mock.patch("iphone_bridge.pc_run_action", side_effect=ValueError("unknown action")):
+            st, _, body = _http_req(
+                self.port,
+                "/api/pc/action",
+                method="POST",
+                body=json.dumps({"id": "invalid_id"}),
+                headers={
+                    "Cookie": f"transfert_session={admin_tok}",
+                    "Origin": client_origin,
+                    "Content-Type": "application/json",
+                },
+            )
+            self.assertEqual(st, 400)
+
+        tail2 = D.SECURITY_LOG.tail(10)
+        action_events = [e for e in tail2 if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/action"]
+        self.assertGreaterEqual(len(action_events), 2)
+        action_results = [e.get("result") for e in action_events]
+        self.assertIn("attempted", action_results)
+        self.assertIn("failed", action_results)
+
+    def test_proxy_zero_authorization_guarantee(self) -> None:
+        """Verify that arriving via trusted proxy confers zero authorization without valid credentials."""
+        proxy_headers = {
+            "Host": "vieuxpeepee.taila4d470.ts.net",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "vieuxpeepee.taila4d470.ts.net",
+        }
+
+        # 1. Unauthenticated request to protected endpoint via proxy headers is rejected with 401
+        st, _, body = _http_req(self.port, "/api/pc/restart-bridge", headers=proxy_headers)
+        self.assertEqual(st, 401)
+
+        # 2. POST to protected endpoint without session cookie is 401
+        st_post, _, _ = _http_req(
+            self.port,
+            "/api/pc/lock",
+            method="POST",
+            body=b"{}",
+            headers=dict(proxy_headers, **{"Origin": "https://vieuxpeepee.taila4d470.ts.net", "Content-Type": "application/json"}),
+        )
+        self.assertEqual(st_post, 401)
