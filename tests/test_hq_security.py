@@ -167,6 +167,32 @@ class SessionLifecycleTests(unittest.TestCase):
         }
         self.assertIsNone(sec.parse_stored_session(future_rec, {}, now=now))
 
+    def test_session_policy_key_compatibility(self) -> None:
+        """Verify both primary (session_<role>_<kind>_sec) and alternate (<role>_session_<kind>_sec) keys work."""
+        # 1. Primary keys
+        cfg_primary = {
+            "session_admin_absolute_sec": 7200,
+            "session_admin_idle_sec": 1200,
+            "session_upload_absolute_sec": 3600,
+            "session_upload_idle_sec": 600,
+        }
+        a_abs, a_idle = sec.get_session_policy(cfg_primary, "admin")
+        u_abs, u_idle = sec.get_session_policy(cfg_primary, "upload")
+        self.assertEqual((a_abs, a_idle), (7200.0, 1200.0))
+        self.assertEqual((u_abs, u_idle), (3600.0, 600.0))
+
+        # 2. Alternate keys
+        cfg_alt = {
+            "admin_session_absolute_sec": 10800,
+            "admin_session_idle_sec": 1800,
+            "upload_session_absolute_sec": 5400,
+            "upload_session_idle_sec": 900,
+        }
+        a_abs2, a_idle2 = sec.get_session_policy(cfg_alt, "admin")
+        u_abs2, u_idle2 = sec.get_session_policy(cfg_alt, "upload")
+        self.assertEqual((a_abs2, a_idle2), (10800.0, 1800.0))
+        self.assertEqual((u_abs2, u_idle2), (5400.0, 900.0))
+
 
 class RateLimiterTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -282,6 +308,35 @@ class RateLimiterTests(unittest.TestCase):
         self.assertTrue(st["degraded"])
         self.assertGreaterEqual(st["dropped_persists"], 1)
         self.assertIn("Disk write error", str(st["last_persist_error"]))
+
+    def test_rate_limiter_recovery_behavior(self) -> None:
+        """Verify that when state is unreadable, historical failures are lost, degradation is observable,
+        and new failures are tracked and persisted normally going forward."""
+        # Create unreadable corrupt state
+        self.state_file.write_text('{"identities": {"corrupt_truncated": ', encoding="utf-8")
+        lim = sec.AuthRateLimiter(self.state_file, max_attempts=3)
+
+        # 1. Observable degradation: degraded is True, corrupt files quarantined
+        st = lim.get_status()
+        self.assertTrue(st["degraded"])
+        self.assertEqual(st["tracked_identities"], 0)  # Historical failure state cannot be preserved
+        self.assertGreaterEqual(st["corrupt_files_quarantined"], 1)
+
+        # 2. Subsequent failures are tracked and persisted
+        lim.record_failure("192.168.2.200")
+        st2 = lim.get_status()
+        self.assertEqual(st2["tracked_identities"], 1)
+
+        # Verify state file was repaired and contains valid JSON
+        repaired_text = self.state_file.read_text(encoding="utf-8")
+        repaired_data = json.loads(repaired_text)
+        self.assertIn("192.168.2.200", repaired_data["identities"])
+
+        # 3. New restart from the repaired file loads cleanly without degradation
+        lim_restarted = sec.AuthRateLimiter(self.state_file, max_attempts=3)
+        st3 = lim_restarted.get_status()
+        self.assertFalse(st3["degraded"])
+        self.assertEqual(st3["tracked_identities"], 1)
 
     def test_concurrency_attempt_reservation(self) -> None:
         lim = sec.AuthRateLimiter(self.state_file, max_attempts=3, window_sec=10.0)
@@ -494,7 +549,7 @@ class SecurityLogTests(unittest.TestCase):
 
     def test_privileged_action_lifecycle_results(self) -> None:
         log = sec.SecurityLog(maxlen=10)
-        for res in ("attempted", "authorized", "success", "failed"):
+        for res in ("attempted", "authorized", "scheduled", "accepted", "success", "failed"):
             log.record(
                 sec.SecurityLog.EVENT_PRIVILEGED_ACTION,
                 result=res,
@@ -502,7 +557,7 @@ class SecurityLogTests(unittest.TestCase):
             )
         tail = log.tail(10)
         results = [e["result"] for e in tail]
-        self.assertEqual(results, ["attempted", "authorized", "success", "failed"])
+        self.assertEqual(results, ["attempted", "authorized", "scheduled", "accepted", "success", "failed"])
 
 
 if __name__ == "__main__":

@@ -81,6 +81,10 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
             "pin": "",
             "auth_generation": 1,
             "session_ttl_sec": 86400,
+            "session_admin_absolute_sec": 86400,
+            "session_admin_idle_sec": 2700,
+            "session_upload_absolute_sec": 86400,
+            "session_upload_idle_sec": 3600,
             "admin_session_absolute_sec": 86400,
             "admin_session_idle_sec": 2700,
             "upload_session_absolute_sec": 86400,
@@ -390,12 +394,12 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(rate_limited_count, 8)
 
     def test_privileged_action_audit_lifecycle(self) -> None:
-        """Verify that privileged operations log attempted followed by success or failed."""
+        """Verify that privileged operations log attempted followed by success, scheduled, or failed."""
         admin_tok = bridge.issue_session("admin_user", "admin")
         client_origin = f"http://127.0.0.1:{self.port}"
-
-        # 1. Successful privileged action (/api/pc/lock)
         import unittest.mock as mock
+
+        # 1. Successful synchronous privileged action (/api/pc/lock)
         with mock.patch("iphone_bridge.pc_lock", return_value=None), mock.patch("iphone_bridge.notify_discord", return_value=None):
             st, _, body = _http_req(
                 self.port,
@@ -410,7 +414,6 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(st, 200)
 
-        # Verify attempted and success logged in order
         tail = D.SECURITY_LOG.tail(10)
         pc_events = [e for e in tail if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/lock"]
         self.assertGreaterEqual(len(pc_events), 2)
@@ -418,13 +421,79 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
         self.assertIn("attempted", results)
         self.assertIn("success", results)
 
-        # 2. Failing privileged action (/api/pc/action with invalid payload)
-        with mock.patch("iphone_bridge.pc_run_action", side_effect=ValueError("unknown action")):
+        # 2. Scheduled asynchronous actions (/api/pc/sleep and /api/pc/restart-bridge)
+        with mock.patch("iphone_bridge.pc_sleep", return_value=None):
+            st, _, _ = _http_req(
+                self.port,
+                "/api/pc/sleep",
+                method="POST",
+                body=b"{}",
+                headers={
+                    "Cookie": f"transfert_session={admin_tok}",
+                    "Origin": client_origin,
+                    "Content-Type": "application/json",
+                },
+            )
+            self.assertEqual(st, 200)
+
+        tail_sleep = D.SECURITY_LOG.tail(10)
+        sleep_events = [e for e in tail_sleep if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/sleep"]
+        self.assertGreaterEqual(len(sleep_events), 2)
+        sleep_results = [e.get("result") for e in sleep_events]
+        self.assertIn("attempted", sleep_results)
+        self.assertIn("scheduled", sleep_results)
+        self.assertNotIn("success", sleep_results)  # Never claimed as completed synchronously!
+
+        with mock.patch("iphone_bridge.request_restart", return_value=(200, {"ok": True})), mock.patch("iphone_bridge.restart_bridge_detached", return_value=None):
+            st, _, _ = _http_req(
+                self.port,
+                "/api/pc/restart-bridge",
+                method="POST",
+                body=b"{}",
+                headers={
+                    "Cookie": f"transfert_session={admin_tok}",
+                    "Origin": client_origin,
+                    "Content-Type": "application/json",
+                },
+            )
+            self.assertEqual(st, 200)
+
+        tail_restart = D.SECURITY_LOG.tail(10)
+        restart_events = [e for e in tail_restart if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/restart-bridge"]
+        self.assertGreaterEqual(len(restart_events), 2)
+        restart_results = [e.get("result") for e in restart_events]
+        self.assertIn("attempted", restart_results)
+        self.assertIn("scheduled", restart_results)
+        self.assertNotIn("success", restart_results)
+
+        # 3. Failing privileged action with validation error (/api/pc/action with missing id)
+        st, _, body = _http_req(
+            self.port,
+            "/api/pc/action",
+            method="POST",
+            body=json.dumps({}),
+            headers={
+                "Cookie": f"transfert_session={admin_tok}",
+                "Origin": client_origin,
+                "Content-Type": "application/json",
+            },
+        )
+        self.assertEqual(st, 400)
+
+        tail3 = D.SECURITY_LOG.tail(10)
+        action_events = [e for e in tail3 if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/action"]
+        self.assertGreaterEqual(len(action_events), 2)
+        action_results = [e.get("result") for e in action_events]
+        self.assertIn("attempted", action_results)
+        self.assertIn("failed", action_results)
+
+        # 4. Handled exception inside privileged operation (/api/terminal)
+        with mock.patch("cc_ext.run_terminal", side_effect=RuntimeError("terminal exploded")):
             st, _, body = _http_req(
                 self.port,
-                "/api/pc/action",
+                "/api/terminal",
                 method="POST",
-                body=json.dumps({"id": "invalid_id"}),
+                body=json.dumps({"id": "ipconfig"}),
                 headers={
                     "Cookie": f"transfert_session={admin_tok}",
                     "Origin": client_origin,
@@ -433,12 +502,12 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(st, 400)
 
-        tail2 = D.SECURITY_LOG.tail(10)
-        action_events = [e for e in tail2 if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/pc/action"]
-        self.assertGreaterEqual(len(action_events), 2)
-        action_results = [e.get("result") for e in action_events]
-        self.assertIn("attempted", action_results)
-        self.assertIn("failed", action_results)
+        tail4 = D.SECURITY_LOG.tail(10)
+        term_events = [e for e in tail4 if e.get("event") == SEC.SecurityLog.EVENT_PRIVILEGED_ACTION and e.get("action") == "/api/terminal"]
+        self.assertGreaterEqual(len(term_events), 2)
+        term_results = [e.get("result") for e in term_events]
+        self.assertIn("attempted", term_results)
+        self.assertIn("failed", term_results)
 
     def test_proxy_zero_authorization_guarantee(self) -> None:
         """Verify that arriving via trusted proxy confers zero authorization without valid credentials."""
@@ -461,3 +530,117 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
             headers=dict(proxy_headers, **{"Origin": "https://vieuxpeepee.taila4d470.ts.net", "Content-Type": "application/json"}),
         )
         self.assertEqual(st_post, 401)
+
+    def test_nondefault_session_policy_enforcement(self) -> None:
+        """Verify that custom non-default session lifetimes and idle timeouts are strictly enforced."""
+        custom_cfg = {
+            "session_admin_absolute_sec": 43200,   # 12 hours
+            "session_admin_idle_sec": 1800,        # 30 minutes
+            "session_upload_absolute_sec": 28800,  # 8 hours
+            "session_upload_idle_sec": 900,        # 15 minutes
+        }
+        adm_abs, adm_idle = SEC.get_session_policy(custom_cfg, "admin")
+        up_abs, up_idle = SEC.get_session_policy(custom_cfg, "upload")
+
+        self.assertEqual(adm_abs, 43200.0)
+        self.assertEqual(adm_idle, 1800.0)
+        self.assertEqual(up_abs, 28800.0)
+        self.assertEqual(up_idle, 900.0)
+
+        # Create records using custom config
+        t0 = 1000000.0
+        adm_rec = SEC.create_session_record("admin_custom", "admin", 1, custom_cfg, now=t0)
+        up_rec = SEC.create_session_record("upload_custom", "upload", 1, custom_cfg, now=t0)
+
+        self.assertEqual(adm_rec["exp"], t0 + 43200.0)
+        self.assertEqual(adm_rec["idle_sec"], 1800.0)
+        self.assertEqual(up_rec["exp"], t0 + 28800.0)
+        self.assertEqual(up_rec["idle_sec"], 900.0)
+
+        # Active evaluation after 20 minutes (1200s): admin valid, upload expired by idle
+        v_adm, _ = SEC.evaluate_session(adm_rec, 1, now=t0 + 1200.0, touch=False)
+        v_up, r_up = SEC.evaluate_session(up_rec, 1, now=t0 + 1200.0, touch=False)
+        self.assertTrue(v_adm)
+        self.assertFalse(v_up)
+        self.assertEqual(r_up, "idle_timeout")
+
+        # Active evaluation after 35 minutes (2100s): admin now expired by idle
+        v_adm2, r_adm2 = SEC.evaluate_session(adm_rec, 1, now=t0 + 2100.0, touch=False)
+        self.assertFalse(v_adm2)
+        self.assertEqual(r_adm2, "idle_timeout")
+
+    def test_tailscale_serve_compatibility(self) -> None:
+        """Test Host, proxy, and CSRF behaviors with default/empty, explicit, and real proxy headers."""
+        # 1. Default / empty public_base_urls:
+        hosts_empty = SEC.HostProxyCSRFValidator.build_approved_hosts(
+            8765,
+            lan_ip="192.168.2.98",
+            ts_ip="100.64.242.80",
+            public_base_urls=[],
+            tailscale_domain=None,
+        )
+        # External unknown host rejected
+        ok, reason = SEC.HostProxyCSRFValidator.validate_host("evil.attacker.com", hosts_empty)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "untrusted_host")
+
+        # 2. Configured or auto-detected tailscale_domain with empty public_base_urls:
+        hosts_ts = SEC.HostProxyCSRFValidator.build_approved_hosts(
+            8765,
+            lan_ip="192.168.2.98",
+            ts_ip="100.64.242.80",
+            public_base_urls=[],
+            tailscale_domain="vieuxpeepee.taila4d470.ts.net",
+        )
+        ok_ts, _ = SEC.HostProxyCSRFValidator.validate_host("vieuxpeepee.taila4d470.ts.net", hosts_ts)
+        self.assertTrue(ok_ts)
+
+        serve_hosts_ts = SEC.HostProxyCSRFValidator.build_approved_serve_hosts(
+            public_base_urls=[],
+            tailscale_domain="vieuxpeepee.taila4d470.ts.net",
+        )
+        self.assertIn("vieuxpeepee.taila4d470.ts.net", serve_hosts_ts)
+
+        # Real proxy header check (arriving from loopback with X-Forwarded headers)
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "vieuxpeepee.taila4d470.ts.net",
+        }
+        is_proxy = SEC.HostProxyCSRFValidator.is_trusted_tailscale_proxy(
+            ("127.0.0.1", 54321),
+            headers,
+            serve_hosts_ts,
+        )
+        self.assertTrue(is_proxy)
+
+        # CSRF allowlist contains https origin
+        csrf_origins = SEC.HostProxyCSRFValidator.build_csrf_allowed_origins(
+            8765,
+            public_base_urls=[],
+            tailscale_domain="vieuxpeepee.taila4d470.ts.net",
+        )
+        self.assertIn("https://vieuxpeepee.taila4d470.ts.net", csrf_origins)
+        valid_csrf, _ = SEC.HostProxyCSRFValidator.validate_csrf(
+            "/login",
+            "POST",
+            {"Origin": "https://vieuxpeepee.taila4d470.ts.net"},
+            csrf_origins,
+            has_session=False,
+        )
+        self.assertTrue(valid_csrf)
+
+        # 3. Explicitly configured HTTPS URLs:
+        hosts_explicit = SEC.HostProxyCSRFValidator.build_approved_hosts(
+            8765,
+            public_base_urls=["https://custom.tailscale.net/"],
+        )
+        self.assertIn("custom.tailscale.net", hosts_explicit)
+        serve_hosts_explicit = SEC.HostProxyCSRFValidator.build_approved_serve_hosts(
+            public_base_urls=["https://custom.tailscale.net/"],
+        )
+        self.assertIn("custom.tailscale.net", serve_hosts_explicit)
+        csrf_explicit = SEC.HostProxyCSRFValidator.build_csrf_allowed_origins(
+            8765,
+            public_base_urls=["https://custom.tailscale.net/"],
+        )
+        self.assertIn("https://custom.tailscale.net", csrf_explicit)

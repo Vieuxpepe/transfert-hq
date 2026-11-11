@@ -85,13 +85,13 @@ def get_session_policy(config: dict | None, role: str) -> tuple[float, float]:
     if role == "admin":
         default_abs = legacy_ttl if legacy_ttl is not None else DEFAULT_ADMIN_ABSOLUTE_SEC
         default_idle = DEFAULT_ADMIN_IDLE_SEC
-        raw_abs = cfg.get("session_admin_absolute_sec")
-        raw_idle = cfg.get("session_admin_idle_sec")
+        raw_abs = cfg.get("session_admin_absolute_sec") if cfg.get("session_admin_absolute_sec") is not None else cfg.get("admin_session_absolute_sec")
+        raw_idle = cfg.get("session_admin_idle_sec") if cfg.get("session_admin_idle_sec") is not None else cfg.get("admin_session_idle_sec")
     else:
         default_abs = legacy_ttl if legacy_ttl is not None else DEFAULT_UPLOAD_ABSOLUTE_SEC
         default_idle = DEFAULT_UPLOAD_IDLE_SEC
-        raw_abs = cfg.get("session_upload_absolute_sec")
-        raw_idle = cfg.get("session_upload_idle_sec")
+        raw_abs = cfg.get("session_upload_absolute_sec") if cfg.get("session_upload_absolute_sec") is not None else cfg.get("upload_session_absolute_sec")
+        raw_idle = cfg.get("session_upload_idle_sec") if cfg.get("session_upload_idle_sec") is not None else cfg.get("upload_session_idle_sec")
 
     try:
         abs_ttl = float(raw_abs) if raw_abs is not None else default_abs
@@ -314,8 +314,13 @@ class AuthRateLimiter:
     """Sliding-window authentication rate limiter with progressive cooldowns and global failure budget.
 
     Persists failure state across restarts, bounds identity count, and prunes expired records.
-    Implements a degraded-security policy that never silently clears failure history on corruption,
-    and supports attempt reservation to prevent concurrent requests from defeating limits.
+    Implements an observable degraded-security policy:
+    - If persisted state is corrupt or unreadable, historical failure records cannot be parsed and
+      are lost. Rather than pretending history is preserved or silently discarding the error, the
+      limiter quarantines the corrupt file, starts with a fresh tracking state, and explicitly marks
+      the system as degraded (`degraded=True`) in diagnostic status.
+    - Write and permission failures increment `dropped_persists` and record `last_persist_error`.
+    - Supports atomic attempt reservation to prevent concurrent requests from defeating limits.
     """
 
     def __init__(
@@ -387,7 +392,9 @@ class AuthRateLimiter:
                 loaded_g = [float(t) for t in g_fails if isinstance(t, (int, float))]
                 self._global_fails = sorted(list(set(self._global_fails + loaded_g)))
         except Exception as exc:
-            # Degraded-security policy: NEVER wipe in-memory failure history!
+            # Degraded-security policy: historical failure records in unreadable/corrupted files cannot
+            # be salvaged and are lost. Mark degraded state so operators and telemetry observe the failure,
+            # while preserving any existing in-memory state.
             self.degraded = True
             self.degraded_reason = f"corrupt_state_file: {type(exc).__name__}: {str(exc)[:60]}"
             # Quarantine the corrupt file so it does not poison subsequent reloads
@@ -688,6 +695,7 @@ class HostProxyCSRFValidator:
         ts_ip: str | None = None,
         public_base_urls: list[str] | None = None,
         trusted_hosts_config: list[str] | None = None,
+        tailscale_domain: str | None = None,
     ) -> set[str]:
         """Compile the complete set of approved Host values (host and host:port)."""
         approved: set[str] = set()
@@ -729,6 +737,12 @@ class HostProxyCSRFValidator:
                         approved.add(p.netloc.lower())
             except Exception:
                 pass
+
+        if tailscale_domain:
+            clean_ts = tailscale_domain.strip().lower().rstrip(".")
+            if clean_ts and "." in clean_ts:
+                add_entry(clean_ts, 443)
+                add_entry(clean_ts, None)
 
         for h in (trusted_hosts_config or []):
             add_entry(str(h), server_port)
@@ -786,9 +800,10 @@ class HostProxyCSRFValidator:
                 pass
 
         if tailscale_domain:
-            clean_ts = tailscale_domain.strip().lower()
-            if clean_ts:
+            clean_ts = tailscale_domain.strip().lower().rstrip(".")
+            if clean_ts and "." in clean_ts:
                 approved.add(clean_ts)
+                approved.add(f"{clean_ts}:443")
 
         return approved
 
@@ -843,6 +858,7 @@ class HostProxyCSRFValidator:
         ts_ip: str | None = None,
         public_base_urls: list[str] | None = None,
         trusted_hosts: list[str] | None = None,
+        tailscale_domain: str | None = None,
     ) -> set[str]:
         """Derive the strict server-controlled CSRF allowlist.
 
@@ -866,6 +882,12 @@ class HostProxyCSRFValidator:
                     origins.add(f"{p.scheme}://{p.netloc.lower()}")
             except Exception:
                 pass
+
+        if tailscale_domain:
+            clean_ts = tailscale_domain.strip().lower().rstrip(".")
+            if clean_ts and "." in clean_ts:
+                origins.add(f"https://{clean_ts}")
+                origins.add(f"https://{clean_ts}:443")
 
         for th in (trusted_hosts or []):
             try:
@@ -978,6 +1000,8 @@ class SecurityLog:
         "failed",
         "attempted",
         "authorized",
+        "scheduled",
+        "accepted",
     })
 
     def __init__(self, maxlen: int = SECURITY_RING_MAX) -> None:

@@ -1971,6 +1971,49 @@ def _tailscale_ipv4_uncached() -> str | None:
     return None
 
 
+_TS_DNS_LOCK = threading.Lock()
+_TS_DNS_CACHE: dict = {"at": None, "dns": None}
+TS_DNS_TTL_OK = 60.0
+TS_DNS_TTL_FAIL = 10.0
+
+
+def tailscale_dns_name() -> str | None:
+    """Cached wrapper around _tailscale_dns_name_uncached() (monotonic TTL, thread-safe)."""
+    now = time.monotonic()
+    with _TS_DNS_LOCK:
+        at = _TS_DNS_CACHE["at"]
+        dns = _TS_DNS_CACHE["dns"]
+        if at is not None and (now - at) < (TS_DNS_TTL_OK if dns else TS_DNS_TTL_FAIL):
+            return dns
+        dns = _tailscale_dns_name_uncached()
+        _TS_DNS_CACHE["at"] = time.monotonic()
+        _TS_DNS_CACHE["dns"] = dns
+        return dns
+
+
+def _tailscale_dns_name_uncached() -> str | None:
+    exe = tailscale_bin()
+    if not exe:
+        return None
+    try:
+        r = subprocess.run(
+            [exe, "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if r.returncode == 0 and r.stdout:
+            data = json.loads(r.stdout)
+            self_node = data.get("Self") or {}
+            raw_dns = (self_node.get("DNSName") or "").strip().rstrip(".")
+            if raw_dns and "." in raw_dns:
+                return raw_dns
+    except Exception:
+        pass
+    return None
+
+
 def notify_discord(title: str, description: str) -> None:
     url = str(CONFIG.get("discord_webhook_url") or "").strip()
     if not url:
@@ -2080,6 +2123,7 @@ def csrf_allowed_origins(request_host: str | None = None) -> set[str]:
         tailscale_ipv4(),
         CONFIG.get("public_base_urls"),
         CONFIG.get("trusted_hosts"),
+        tailscale_domain=CONFIG.get("tailscale_domain") or tailscale_dns_name(),
     )
 
 
@@ -8049,6 +8093,7 @@ class Handler(BaseHTTPRequestHandler):
             tailscale_ipv4(),
             CONFIG.get("public_base_urls"),
             CONFIG.get("trusted_hosts"),
+            tailscale_domain=CONFIG.get("tailscale_domain") or tailscale_dns_name(),
         )
 
     def _validate_host(self) -> bool:
@@ -8081,7 +8126,7 @@ class Handler(BaseHTTPRequestHandler):
     def _approved_serve_hosts(self) -> set[str]:
         return hq_security.HostProxyCSRFValidator.build_approved_serve_hosts(
             CONFIG.get("public_base_urls"),
-            tailscale_domain=CONFIG.get("tailscale_domain"),
+            tailscale_domain=CONFIG.get("tailscale_domain") or tailscale_dns_name(),
         )
 
     def _is_trusted_proxy(self) -> bool:
@@ -8145,7 +8190,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _start_privileged_audit(self, action: str):
-        """Lifecycle audit context for sensitive operations (attempted -> success / failed)."""
+        """Lifecycle audit context for sensitive operations (attempted -> success / scheduled / failed)."""
         class _PrivilegedAudit:
             def __init__(audit_self, handler, act: str) -> None:
                 audit_self.handler = handler
@@ -8174,6 +8219,23 @@ class Handler(BaseHTTPRequestHandler):
                     path_category=hq_diagnostics.path_category(audit_self.action),
                 )
 
+            def scheduled(audit_self, reason: str | None = None) -> None:
+                if audit_self.completed:
+                    return
+                audit_self.completed = True
+                audit_self.handler._record_sec_event(
+                    hq_security.SecurityLog.EVENT_PRIVILEGED_ACTION,
+                    severity="info",
+                    result="scheduled",
+                    actor_role=audit_self.handler._role() or "admin",
+                    action=audit_self.action,
+                    reason=reason,
+                    path_category=hq_diagnostics.path_category(audit_self.action),
+                )
+
+            def accepted(audit_self, reason: str | None = None) -> None:
+                audit_self.scheduled(reason=reason)
+
             def failed(audit_self, reason: str | None = None) -> None:
                 if audit_self.completed:
                     return
@@ -8187,6 +8249,17 @@ class Handler(BaseHTTPRequestHandler):
                     reason=reason,
                     path_category=hq_diagnostics.path_category(audit_self.action),
                 )
+
+            def __enter__(audit_self):
+                return audit_self
+
+            def __exit__(audit_self, exc_type, exc_val, exc_tb):
+                if not audit_self.completed:
+                    if exc_type is not None:
+                        audit_self.failed(reason="unhandled_exception")
+                    else:
+                        audit_self.failed(reason="uncompleted_operation")
+                return False
 
         return _PrivilegedAudit(self, action)
 
@@ -8271,6 +8344,7 @@ class Handler(BaseHTTPRequestHandler):
             tailscale_ipv4(),
             CONFIG.get("public_base_urls"),
             CONFIG.get("trusted_hosts"),
+            tailscale_domain=CONFIG.get("tailscale_domain") or tailscale_dns_name(),
         )
 
     def _check_csrf(self) -> bool:
@@ -8759,21 +8833,21 @@ class Handler(BaseHTTPRequestHandler):
         if raw != "/api/diag/write-probe":
             self._json(404, {"error": "Inconnu"})
             return True
-        audit = self._start_privileged_audit(raw)
-        try:
-            _diag_ensure()
-            res = hq_diagnostics.write_probe(ROOT)
-            if res.get("status") == "ok":
-                audit.success()
-            else:
-                audit.failed(reason="probe_failed")
-                hq_diagnostics.ERRORS.record("diagnostics.write_probe", message=f"write probe failed at {res.get('failed_step')}", path=raw)
-            _DIAG_STATE["last_probe"] = res
-            self._json(200 if res.get("status") == "ok" else 503, res)
-        except Exception as e:
-            audit.failed(reason="probe_exception")
-            rid = hq_diagnostics.ERRORS.record("diagnostics", exc=e, path=raw)
-            self._json(500, {"error": "diagnostic_failed", "request_id": rid})
+        with self._start_privileged_audit(raw) as audit:
+            try:
+                _diag_ensure()
+                res = hq_diagnostics.write_probe(ROOT)
+                if res.get("status") == "ok":
+                    audit.success()
+                else:
+                    audit.failed(reason="probe_failed")
+                    hq_diagnostics.ERRORS.record("diagnostics.write_probe", message=f"write probe failed at {res.get('failed_step')}", path=raw)
+                _DIAG_STATE["last_probe"] = res
+                self._json(200 if res.get("status") == "ok" else 503, res)
+            except Exception as e:
+                audit.failed(reason="probe_exception")
+                rid = hq_diagnostics.ERRORS.record("diagnostics", exc=e, path=raw)
+                self._json(500, {"error": "diagnostic_failed", "request_id": rid})
         return True
 
     def _guard_admin_path(self, raw: str) -> bool:
@@ -10761,112 +10835,116 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if raw == "/api/clipboard/pc":
-            audit = self._start_privileged_audit(raw)
-            data = self._read_json()
-            text = str(data.get("text") if data.get("text") is not None else "")
-            try:
-                write_pc_clipboard(text)
-                audit.success()
-            except Exception as e:
-                audit.failed(reason="clipboard_write_failed")
-                self._json(500, {"error": str(e)})
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                text = str(data.get("text") if data.get("text") is not None else "")
+                try:
+                    write_pc_clipboard(text)
+                    audit.success()
+                except Exception as e:
+                    audit.failed(reason="clipboard_write_failed")
+                    self._json(500, {"error": str(e)})
+                    return
+                self._json(200, {"ok": True})
                 return
-            self._json(200, {"ok": True})
-            return
 
         if raw == "/api/pc/screenshot":
             if not self._require_admin():
                 return
-            audit = self._start_privileged_audit(raw)
-            try:
-                info = pc_screenshot()
-                audit.success()
-            except Exception as e:
-                audit.failed(reason="screenshot_failed")
-                self._json(500, {"error": str(e)})
+            with self._start_privileged_audit(raw) as audit:
+                try:
+                    info = pc_screenshot()
+                    audit.success()
+                except Exception as e:
+                    audit.failed(reason="screenshot_failed")
+                    self._json(500, {"error": str(e)})
+                    return
+                self._json(200, {"ok": True, **info})
                 return
-            self._json(200, {"ok": True, **info})
-            return
 
         if raw == "/api/pc/restart-bridge":
             if not self._require_admin():
                 return
-            audit = self._start_privileged_audit(raw)
-            code, out = request_restart()
-            if code == 200:
-                audit.success()
-                cc_ext.log_activity("action", f"Redémarrage du pont demandé depuis {self.client_address[0]}")
-            else:
-                audit.failed(reason="restart_rejected")
-            self._json(code, out)
-            if code == 200:
-                def _go() -> None:
-                    try:
-                        restart_bridge_detached()
-                    except Exception as e:
-                        sys.stderr.write(f"restart failed: {e}\n")
-                        with _RESTART_LOCK:
-                            _RESTART["at"] = 0.0
+            with self._start_privileged_audit(raw) as audit:
+                code, out = request_restart()
+                if code == 200:
+                    audit.scheduled("bridge_restart_queued")
+                    cc_ext.log_activity("action", f"Redémarrage du pont demandé depuis {self.client_address[0]}")
+                else:
+                    audit.failed(reason="restart_rejected")
+                self._json(code, out)
+                if code == 200:
+                    def _go() -> None:
+                        try:
+                            restart_bridge_detached()
+                        except Exception as e:
+                            sys.stderr.write(f"restart failed: {e}\n")
+                            with _RESTART_LOCK:
+                                _RESTART["at"] = 0.0
 
-                threading.Timer(0.6, _go).start()
-            return
+                    threading.Timer(0.6, _go).start()
+                return
 
         if raw == "/api/pc/lock":
-            audit = self._start_privileged_audit(raw)
-            try:
-                pc_lock()
-                audit.success()
-            except Exception as e:
-                audit.failed(reason="lock_failed")
-                self._json(500, {"error": str(e)})
+            with self._start_privileged_audit(raw) as audit:
+                try:
+                    pc_lock()
+                    audit.success()
+                except Exception as e:
+                    audit.failed(reason="lock_failed")
+                    self._json(500, {"error": str(e)})
+                    return
+                notify_discord("PC verrouillé", f"Depuis `{self.client_address[0]}`")
+                self._json(200, {"ok": True})
                 return
-            notify_discord("PC verrouillé", f"Depuis `{self.client_address[0]}`")
-            self._json(200, {"ok": True})
-            return
 
         if raw == "/api/pc/sleep":
-            audit = self._start_privileged_audit(raw)
-            audit.success()
-            self._json(200, {"ok": True, "message": "Mise en veille…"})
+            with self._start_privileged_audit(raw) as audit:
+                audit.scheduled("pc_sleep_queued")
+                self._json(200, {"ok": True, "message": "Mise en veille…"})
 
-            def _do_sleep() -> None:
-                try:
-                    pc_sleep()
-                except Exception as e:
-                    sys.stderr.write(f"sleep failed: {e}\n")
+                def _do_sleep() -> None:
+                    try:
+                        pc_sleep()
+                    except Exception as e:
+                        sys.stderr.write(f"sleep failed: {e}\n")
 
-            threading.Timer(0.8, _do_sleep).start()
-            return
+                threading.Timer(0.8, _do_sleep).start()
+                return
 
         if raw == "/api/pc/explore":
-            audit = self._start_privileged_audit(raw)
-            data = self._read_json()
-            target = str(data.get("path") or data.get("rel") or "").strip()
-            if not target:
-                target = str(ROOT)
-            try:
-                pc_explore(target)
-                audit.success()
-            except Exception as e:
-                audit.failed(reason="explore_failed")
-                self._json(400, {"error": str(e)})
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                target = str(data.get("path") or data.get("rel") or "").strip()
+                if not target:
+                    target = str(ROOT)
+                try:
+                    pc_explore(target)
+                    audit.success()
+                except Exception as e:
+                    audit.failed(reason="explore_failed")
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(200, {"ok": True})
                 return
-            self._json(200, {"ok": True})
-            return
 
         if raw == "/api/pc/action":
-            audit = self._start_privileged_audit(raw)
-            data = self._read_json()
-            aid = str(data.get("id") or "").strip()
-            try:
-                info = pc_run_action(aid)
-                audit.success()
-            except Exception as e:
-                audit.failed(reason="action_failed")
-                self._json(400, {"error": str(e)})
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                aid = str(data.get("id") or "").strip()
+                if not aid:
+                    audit.failed(reason="missing_action_id")
+                    self._json(400, {"error": "Action manquante"})
+                    return
+                try:
+                    info = pc_run_action(aid)
+                    audit.success()
+                except Exception as e:
+                    audit.failed(reason="action_failed")
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(200, info)
                 return
-            self._json(200, info)
-            return
 
         if raw == "/api/print":
             data = self._read_json()
@@ -11004,49 +11082,49 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/terminal":
             if not self._require_admin():
                 return
-            audit = self._start_privileged_audit(raw)
-            data = self._read_json()
-            try:
-                info = cc_ext.run_terminal(cmd_id=data.get("id"), raw=data.get("cmd"))
-                audit.success()
-            except Exception as e:
-                audit.failed(reason="terminal_failed")
-                self._json(400, {"error": str(e)})
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                try:
+                    info = cc_ext.run_terminal(cmd_id=data.get("id"), raw=data.get("cmd"))
+                    audit.success()
+                except Exception as e:
+                    audit.failed(reason="terminal_failed")
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(200, info)
                 return
-            self._json(200, info)
-            return
 
         if raw == "/api/shell":
             if not self._require_admin():
                 return
-            audit = self._start_privileged_audit(raw)
-            data = self._read_json()
-            if data.get("host"):
-                audit.failed(reason="unauthorized_host")
-                self._json(400, {"error": "Cible non autorisée — utilisez un id de shell_targets"})
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                if data.get("host"):
+                    audit.failed(reason="unauthorized_host")
+                    self._json(400, {"error": "Cible non autorisée — utilisez un id de shell_targets"})
+                    return
+                target_id = str(data.get("target") or "local")
+                shell = str(data.get("shell") or "powershell")
+                command = str(data.get("cmd") or data.get("command") or "")
+                targets = {t["id"]: t for t in cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers)}
+                target = targets.get(target_id)
+                if not target:
+                    audit.failed(reason="unknown_target")
+                    self._json(400, {"error": "Cible inconnue"})
+                    return
+                try:
+                    info = cc_ext.run_shell(target=target, shell=shell, command=command)
+                    audit.success()
+                except subprocess.TimeoutExpired:
+                    audit.failed(reason="timeout")
+                    self._json(400, {"error": "Délai dépassé"})
+                    return
+                except Exception as e:
+                    audit.failed(reason="shell_failed")
+                    self._json(400, {"error": str(e)})
+                    return
+                self._json(200, info)
                 return
-            target_id = str(data.get("target") or "local")
-            shell = str(data.get("shell") or "powershell")
-            command = str(data.get("cmd") or data.get("command") or "")
-            targets = {t["id"]: t for t in cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers)}
-            target = targets.get(target_id)
-            if not target:
-                audit.failed(reason="unknown_target")
-                self._json(400, {"error": "Cible inconnue"})
-                return
-            try:
-                info = cc_ext.run_shell(target=target, shell=shell, command=command)
-                audit.success()
-            except subprocess.TimeoutExpired:
-                audit.failed(reason="timeout")
-                self._json(400, {"error": "Délai dépassé"})
-                return
-            except Exception as e:
-                audit.failed(reason="shell_failed")
-                self._json(400, {"error": str(e)})
-                return
-            self._json(200, info)
-            return
 
         if raw == "/api/note":
             data = self._read_json()
