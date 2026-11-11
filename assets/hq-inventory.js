@@ -932,14 +932,15 @@
     li.style.setProperty("--hue", String(hueOf(i.place)));
     const open = el("button", { type: "button", class: "inv-item-open", "aria-label": "Ouvrir " + i.name });
     open.addEventListener("click", () => editItem(i));
-    const food = (typeof globalThis !== "undefined" && globalThis.HqHouseholdIcons)
-      ? globalThis.HqHouseholdIcons.resolveIngredient(i.name)
+    const resolved = (typeof globalThis !== "undefined" && globalThis.HqHouseholdIcons)
+      ? (globalThis.HqHouseholdIcons.resolveItem || globalThis.HqHouseholdIcons.resolveIngredient)(i.name)
       : null;
     if (i.photos[0]) open.appendChild(el("img", { class: "inv-thumb", src: "/api/carnet/asset/" + i.photos[0], alt: "", loading: "lazy", decoding: "async" }));
-    else if (food && food.matched) {
-      li.setAttribute("data-hh-category", food.category);
+    else if (resolved && resolved.matched) {
+      li.setAttribute("data-hh-category", resolved.category);
+      if (resolved.domain) li.setAttribute("data-hh-domain", resolved.domain);
       const thumb = el("span", { class: "inv-thumb is-empty is-hh-icon", "aria-hidden": "true" });
-      const badge = globalThis.HqHouseholdIcons.badge(S.doc, food, "");
+      const badge = globalThis.HqHouseholdIcons.badge(S.doc, resolved, "");
       if (badge) thumb.appendChild(badge);
       open.appendChild(thumb);
     } else open.appendChild(el("span", { class: "inv-thumb is-empty" }, [el("span", { class: "inv-initial", text: (i.name.trim()[0] || "?").toUpperCase() })]));
@@ -1211,8 +1212,22 @@
     const note = el("textarea", { rows: "3", maxlength: "2000", placeholder: "Référence, fournisseur, prix, taille…" });
     note.value = cur.note;
     const photos = cur.photos.slice();
+    const iconPreview = el("div", { class: "inv-hh-preview", "aria-hidden": "true" });
+    function refreshIconPreview() {
+      while (iconPreview.firstChild) iconPreview.removeChild(iconPreview.firstChild);
+      if (photos.length) return;
+      const api = globalThis.HqHouseholdIcons;
+      if (!api) return;
+      const resolved = (api.resolveItem || api.resolveIngredient)(name.value);
+      if (!resolved || !resolved.matched) return;
+      const badge = api.badge(S.doc, resolved, "is-lg");
+      if (badge) iconPreview.appendChild(badge);
+    }
+    name.addEventListener("input", refreshIconPreview);
+    refreshIconPreview();
     const body = el("div", { class: "inv-form" }, [
       field("Nom", name),
+      iconPreview,
       el("div", { class: "inv-row" }, [
         el("div", { class: "inv-field inv-qty-field" }, [el("label", { text: "Quantité" }), el("div", { class: "inv-qty-edit" }, [qm, qty, qp])]),
         field("Unité", unit),
@@ -1224,7 +1239,7 @@
       field("Note", note),
       el("div", { class: "inv-field" }, [el("span", { class: "inv-flabel", text: "Photos" }), photoEditor(photos, (S.limits && S.limits.photos) || 6)]),
     ]);
-    if (!isNew) body.insertBefore(projectsPanel(i), body.children[4]); // right under « Emplacement »: where it is, then what it is for
+    if (!isNew) body.insertBefore(projectsPanel(i), body.children[5]); // right under « Emplacement »: where it is, then what it is for
     qty.setAttribute("aria-label", "Quantité");
     const save = btn(isNew ? "Ajouter" : "Enregistrer", { cls: "inv-primary inv-save", on: async () => {
       const q = parseInt(qty.value, 10);

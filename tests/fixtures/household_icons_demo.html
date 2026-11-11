@@ -68,10 +68,15 @@
       return Promise.resolve({ status: 404, body: { ok: false } });
     }
     HqHouseholdMeals.mount(document.getElementById("repas"), { request: request, today: "2026-11-11" });
-    const names = ["Tomates", "Lait", "Œufs", "Poulet", "Riz", "Café", "Vis M4×12", "Lessive"];
+    const names = [
+      "Tomates", "Lait", "Œufs", "Poulet", "Riz", "Café", "Lessive",
+      "Vis M4×12", "Boulon M8", "Écrou hexagonal", "Rondelle plate",
+      "Tournevis Phillips", "Foret 6 mm", "ESP32 DevKit", "Résistance 10 kΩ",
+      "Filament PLA", "M4×12", "Objet mystère"
+    ];
     const list = document.getElementById("inv-demo");
     names.forEach(function (name) {
-      const resolved = HqHouseholdIcons.resolveIngredient(name);
+      const resolved = (HqHouseholdIcons.resolveItem || HqHouseholdIcons.resolveIngredient)(name);
       const li = document.createElement("li");
       li.setAttribute("data-hh-category", resolved.category);
       const thumb = document.createElement("span");

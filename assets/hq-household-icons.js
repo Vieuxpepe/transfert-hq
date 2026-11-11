@@ -1,7 +1,8 @@
-/* Transfert HQ — Household food/grocery icon resolver.
+/* Transfert HQ — Household food + hardware icon resolver.
    Local SVG only. No network. Shared by Repas, grocery lists, and Inventoria.
 
-   HqHouseholdIcons.resolveIngredient(name)
+   HqHouseholdIcons.resolveItem(name)         // food + hardware
+   HqHouseholdIcons.resolveIngredient(name)  // same as resolveItem (compat)
    HqHouseholdIcons.resolveMeal(mealKey)
    HqHouseholdIcons.resolveRecipe(title, ingredients?)
    HqHouseholdIcons.normalize(label)
@@ -78,6 +79,44 @@
     recipe: "M7 3h8l2 2v16H7V3zM9 8h6M9 12h6M9 16h4",
 
     grocery: "M5 6h2l1.5 9h9L20 8H9M9 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM17 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
+
+    /* --- hardware / workshop / electronics (Inventoria) --- */
+    bolt: "M10 3h4v3l2 2v4l-2 2v7h-4v-7l-2-2V8l2-2V3zM9 9h6",
+    nut: "M12 3l7 4v5l-7 4-7-4V7l7-4zM12 8v7M8.5 10.5h7",
+    screw: "M12 2v4M10 6h4l-1 3H11L10 6zM11 9h2v12l-1-2-1 2V9z",
+    washer: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+    nail: "M12 2v18M10 20h4M11 4h2",
+    anchor: "M12 3v8M9 7h6M8 11c0 4 1.5 7 4 9 2.5-2 4-5 4-9M10 20h4",
+    bracket: "M5 5h6v4H9v10H5V5zM13 15h6v4h-6v-4z",
+    wrench: "M14 4a4 4 0 0 1 4 4c0 .6-.1 1.1-.4 1.6L12 15.2 8.8 12l5.6-5.6c.5-.3 1-.4 1.6-.4zM8.8 12 4 20l2.5.5L10 14",
+    screwdriver: "M12 2v8M10 10h4v2l-1 1v8h-2v-8l-1-1v-2zM9 4h6",
+    hammer: "M5 8h9l2-3h3v6h-3l-2-3H8v10H5V8z",
+    pliers: "M7 4 4 20M17 4l3 16M7 4c2 3 8 3 10 0M8 12h8",
+    saw: "M4 18V7l12-3v14M16 5l4 2v11M7 10h6M7 14h6",
+    drill: "M3 11h9v3H3zM12 10h5l3 2.5-3 2.5h-5V10zM4 14v4M8 14v3",
+    "drill-bit": "M12 2v6l2 2v12h-4V10l2-2V2zM10 8h4",
+    measure: "M3 8h18v8H3V8zM7 8v5M11 8v3M15 8v5M19 8v3",
+    clamp: "M8 4h8v4H8V4zM10 8v5H7l-2 7h14l-2-7h-3V8",
+    gear: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M4.2 6.5l2.1 2.1M17.7 15.4l2.1 2.1M2 12h3M19 12h3M4.2 17.5l2.1-2.1M17.7 8.6l2.1-2.1",
+    bearing: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM12 3v3M12 18v3",
+    spring: "M8 4c2 1 4 1 6 0M8 8c2 1 4 1 6 0M8 12c2 1 4 1 6 0M8 16c2 1 4 1 6 0M8 20c2 1 4 1 6 0",
+    hinge: "M6 4h5v16H6V4zM13 4h5v16h-5V4zM11 8h2M11 16h2",
+    cable: "M4 8c4 0 4 8 8 8s4-8 8-8M4 8v2M20 8v2",
+    connector: "M6 9h5v6H6V9zM11 11h4v2h-4zM15 9h3v6h-3z",
+    battery: "M8 7h8v12H8V7zM10 4h4v3h-4V4zM10 11h4M10 15h4",
+    "circuit-board": "M5 5h14v14H5V5zM9 9h2v2H9V9zM13 13h2v2h-2v-2zM9 13h2M13 9v2M8 5v2M16 17v2",
+    microcontroller: "M7 7h10v10H7V7zM9 4v3M12 4v3M15 4v3M9 17v3M12 17v3M15 17v3M4 9h3M4 12h3M4 15h3M17 9h3M17 12h3M17 15h3",
+    sensor: "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM12 13v5M8 21h8M6.5 8.5a7 7 0 0 1 11 0",
+    led: "M9 10h6l1 4H8l1-4zM10 14v5M14 14v5M12 3v5M9 5h6",
+    resistor: "M3 12h5l1.5-3 2 6 2-6 1.5 3H21",
+    capacitor: "M6 5v14M18 5v14M6 12h12M10 8v8M14 8v8",
+    filament: "M7 4h10v3l-2 2v9a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2V9L7 7V4zM9 7h6",
+    "printed-part": "M6 8h12v3l-2 2v6H8v-6L6 11V8zM9 5h6v3H9V5z",
+    wood: "M4 6h16v12H4V6zM4 10h16M4 14h16M9 6v12",
+    "metal-stock": "M3 8h18v8H3V8zM3 12h18M8 8v8",
+    adhesive: "M9 3h6v5l2 2v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9l2-2V3zM10 14h4",
+    supplies: "M5 7h14v12H5V7zM8 7V5h8v2M9 11h6M9 15h4",
+    hardware: "M7 7h4v4H7V7zM13 7h4v4h-4V7zM7 13h4v4H7v-4zM13 13h4v4h-4v-4z",
   };
 
   const CATEGORY_OF = {
@@ -95,6 +134,27 @@
     meat: "meat", spice: "spice", beverage: "beverage", bakery: "bakery",
     frozen: "frozen", canned: "canned", cleaning: "cleaning", other: "other",
     grocery: "other",
+    bolt: "fastener", nut: "fastener", screw: "fastener", washer: "fastener",
+    nail: "fastener", anchor: "fastener", bracket: "fastener",
+    wrench: "tool", screwdriver: "tool", hammer: "tool", pliers: "tool", saw: "tool",
+    drill: "tool", "drill-bit": "tool", measure: "tool", clamp: "tool",
+    gear: "mechanical", bearing: "mechanical", spring: "mechanical", hinge: "mechanical",
+    cable: "electrical", connector: "electrical", battery: "electrical", "circuit-board": "electrical",
+    microcontroller: "electronics", sensor: "electronics", led: "electronics",
+    resistor: "electronics", capacitor: "electronics",
+    filament: "fabrication", "printed-part": "fabrication",
+    wood: "material", "metal-stock": "material", adhesive: "material", supplies: "material",
+    hardware: "hardware",
+  };
+
+  const FOOD_CATEGORIES = {
+    vegetable: 1, fruit: 1, dairy: 1, grain: 1, meat: 1, fish: 1, spice: 1, oil: 1,
+    beverage: 1, bakery: 1, frozen: 1, canned: 1, cleaning: 1, recipe: 1, meal: 1,
+  };
+
+  const HARDWARE_CATEGORIES = {
+    fastener: 1, tool: 1, mechanical: 1, electrical: 1, electronics: 1,
+    fabrication: 1, material: 1, hardware: 1,
   };
 
   /* Folded alias -> icon key. FR + EN, common plurals as aliases. */
@@ -163,6 +223,53 @@
     epicerie: "grocery", grocery: "grocery",
     // cleaning / household (inventoria)
     savon: "cleaning", soap: "cleaning", detergent: "cleaning", lessive: "cleaning",
+    // fasteners
+    boulon: "bolt", boulons: "bolt", bolt: "bolt", bolts: "bolt",
+    ecrou: "nut", ecrous: "nut", nut: "nut", nuts: "nut", "ecrou hexagonal": "nut", "hex nut": "nut", "hex nuts": "nut",
+    vis: "screw", screw: "screw", screws: "screw", "vis a bois": "screw", "wood screw": "screw",
+    "vis a metaux": "screw", "machine screw": "screw",
+    rondelle: "washer", rondelles: "washer", washer: "washer", washers: "washer",
+    "rondelle plate": "washer", "flat washer": "washer", "lock washer": "washer",
+    clou: "nail", clous: "nail", nail: "nail", nails: "nail",
+    cheville: "anchor", chevilles: "anchor", anchor: "anchor", anchors: "anchor", "wall plug": "anchor",
+    equerre: "bracket", equerres: "bracket", bracket: "bracket", brackets: "bracket",
+    // tools
+    cle: "wrench", "cle plate": "wrench", "cle a molette": "wrench", wrench: "wrench", wrenches: "wrench", spanner: "wrench",
+    tournevis: "screwdriver", screwdriver: "screwdriver", screwdrivers: "screwdriver",
+    "tournevis phillips": "screwdriver", phillips: "screwdriver", "tournevis plat": "screwdriver",
+    marteau: "hammer", hammer: "hammer", hammers: "hammer",
+    pince: "pliers", pinces: "pliers", pliers: "pliers", "needle nose": "pliers",
+    scie: "saw", saw: "saw", saws: "saw", "scie sautee": "saw",
+    perceuse: "drill", drill: "drill", drills: "drill",
+    foret: "drill-bit", forets: "drill-bit", "drill bit": "drill-bit", "drill bits": "drill-bit", bit: "drill-bit", bits: "drill-bit",
+    metre: "measure", "metre ruban": "measure", "tape measure": "measure", caliper: "measure", "pied a coulisse": "measure", ruler: "measure",
+    "serre joint": "clamp", "serre-joint": "clamp", clamp: "clamp", clamps: "clamp", etau: "clamp",
+    // mechanical
+    engrenage: "gear", gear: "gear", gears: "gear", pignon: "gear",
+    roulement: "bearing", bearing: "bearing", bearings: "bearing",
+    ressort: "spring", ressorts: "spring", spring: "spring", springs: "spring",
+    charniere: "hinge", charnieres: "hinge", hinge: "hinge", hinges: "hinge",
+    // electrical / electronics
+    cable: "cable", cables: "cable", fil: "cable", fils: "cable", wire: "cable", wires: "cable",
+    connecteur: "connector", connecteurs: "connector", connector: "connector", connectors: "connector",
+    "dupont": "connector", "jst": "connector",
+    pile: "battery", piles: "battery", batterie: "battery", battery: "battery", batteries: "battery",
+    "circuit imprime": "circuit-board", pcb: "circuit-board", "circuit board": "circuit-board", "printed circuit": "circuit-board",
+    esp32: "microcontroller", esp8266: "microcontroller", arduino: "microcontroller",
+    microcontroller: "microcontroller", "microcontroleur": "microcontroller", mcu: "microcontroller",
+    "esp32 devkit": "microcontroller", "devkit": "microcontroller", raspberry: "microcontroller", pico: "microcontroller",
+    capteur: "sensor", capteurs: "sensor", sensor: "sensor", sensors: "sensor",
+    led: "led", leds: "led", "diode led": "led",
+    resistance: "resistor", resistances: "resistor", resistor: "resistor", resistors: "resistor",
+    condensateur: "capacitor", condensateurs: "capacitor", capacitor: "capacitor", capacitors: "capacitor",
+    // fabrication / materials
+    filament: "filament", "filament pla": "filament", pla: "filament", petg: "filament", abs: "filament",
+    "piece imprimee": "printed-part", "printed part": "printed-part", "printed parts": "printed-part",
+    bois: "wood", wood: "wood", plywood: "wood", "contre plaque": "wood",
+    metal: "metal-stock", "metal stock": "metal-stock", barre: "metal-stock", "barre filetee": "bolt",
+    tige: "metal-stock", "aluminium": "metal-stock", aluminum: "metal-stock",
+    colle: "adhesive", glue: "adhesive", adhesive: "adhesive", epoxy: "adhesive", scotch: "adhesive",
+    fournitures: "supplies", supplies: "supplies", quincaillerie: "hardware", hardware: "hardware", parts: "hardware",
   };
 
   const MEAL_KEYS = {
@@ -193,19 +300,86 @@
     [/smoothie|jus|juice/i, "beverage"],
   ];
 
+  const HARDWARE_HINTS = [
+    [/\b(boulon|bolt)s?\b/i, "bolt"],
+    [/\b(ecrou|nut)s?\b/i, "nut"],
+    [/\b(vis|screw)s?\b/i, "screw"],
+    [/\b(rondelle|washer)s?\b/i, "washer"],
+    [/\b(clou|nail)s?\b/i, "nail"],
+    [/\b(cheville|anchor)s?\b/i, "anchor"],
+    [/\b(equerre|bracket)s?\b/i, "bracket"],
+    [/\b(tournevis|screwdriver)s?\b/i, "screwdriver"],
+    [/\b(cle a molette|cle plate|wrench|spanner)s?\b/i, "wrench"],
+    [/\b(marteau|hammer)s?\b/i, "hammer"],
+    [/\b(pince|pliers)\b/i, "pliers"],
+    [/\b(scie|saw)s?\b/i, "saw"],
+    [/\b(perceuse|drill)s?\b/i, "drill"],
+    [/\b(foret|drill\s*bits?)\b/i, "drill-bit"],
+    [/\b(metre ruban|tape measure|pied a coulisse|caliper)\b/i, "measure"],
+    [/\b(serre[- ]?joint|clamp|etau)s?\b/i, "clamp"],
+    [/\b(engrenage|gear|pignon)s?\b/i, "gear"],
+    [/\b(roulement|bearing)s?\b/i, "bearing"],
+    [/\b(ressort|spring)s?\b/i, "spring"],
+    [/\b(charniere|hinge)s?\b/i, "hinge"],
+    [/\b(cable|wire)s?\b/i, "cable"],
+    [/\b(connecteur|connector)s?\b/i, "connector"],
+    [/\b(batterie|battery|piles?)\b/i, "battery"],
+    [/\b(circuit\s*board|circuit\s*imprime|pcb)\b/i, "circuit-board"],
+    [/\b(esp32|esp8266|arduino|microcontroleur|microcontroller|mcu|raspberry|pico)\b/i, "microcontroller"],
+    [/\b(capteur|sensor)s?\b/i, "sensor"],
+    [/\bleds?\b/i, "led"],
+    [/\b(resistance|resistor)s?\b/i, "resistor"],
+    [/\b(condensateur|capacitor)s?\b/i, "capacitor"],
+    [/\b(filament|pla|petg)\b/i, "filament"],
+    [/\b(piece\s*imprimee|printed\s*parts?)\b/i, "printed-part"],
+    [/\b(contre[- ]?plaque|plywood|bois)\b/i, "wood"],
+    [/\b(aluminium|aluminum|metal\s*stock)\b/i, "metal-stock"],
+    [/\b(colle|glue|epoxy|adhesive)\b/i, "adhesive"],
+  ];
+
   function fold(text) {
     return String(text == null ? "" : text)
       .replace(/Œ/g, "OE")
       .replace(/œ/g, "oe")
       .replace(/Æ/g, "AE")
       .replace(/æ/g, "ae")
+      .replace(/×/g, "x")
+      .replace(/Ω/g, "ohm")
+      .replace(/ω/g, "ohm")
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
       .toLowerCase()
       .replace(/['’]/g, " ")
-      .replace(/[^a-z0-9\s-]/g, " ")
+      .replace(/[^a-z0-9\s\-\/]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function stripSpecs(folded) {
+    return String(folded || "")
+      .replace(/\bm\d+(?:x\d+(?:\.\d+)?)?\b/g, " ")
+      .replace(/\b\d+(?:\.\d+)?\s*mm\b/g, " ")
+      .replace(/\b\d+\s*\/\s*\d+\b/g, " ")
+      .replace(/\b\d+(?:\.\d+)?\s*k?ohms?\b/g, " ")
+      .replace(/\b\d+(?:\.\d+)?\s*v\b/g, " ")
+      .replace(/\b\d+(?:\.\d+)?\s*awg\b/g, " ")
+      .replace(/\b\d+(?:\.\d+)?\s*%\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function looksLikeHardwareSpec(folded) {
+    if (!folded) return false;
+    if (/\bm\d+(?:x\d+)?\b/.test(folded)) return true;
+    if (/\b\d+(?:\.\d+)?\s*mm\b/.test(folded)) return true;
+    if (/\b(esp32|esp8266|arduino|pcb|pla|petg|awg)\b/.test(folded)) return true;
+    return false;
+  }
+
+  function domainOf(category) {
+    if (HARDWARE_CATEGORIES[category]) return "hardware";
+    if (FOOD_CATEGORIES[category]) return "food";
+    return "other";
   }
 
   function singularize(token) {
@@ -229,41 +403,71 @@
     return null;
   }
 
-  function resolveIngredient(name) {
+  function lookupFromPhrases(folded) {
+    if (!folded) return null;
+    let key = lookupAlias(folded);
+    if (key) return key;
+    const parts = folded.split(" ").filter(Boolean);
+    if (parts.length > 1) {
+      for (let len = parts.length; len >= 2 && !key; len -= 1) {
+        for (let i = 0; i <= parts.length - len && !key; i += 1) {
+          key = lookupAlias(parts.slice(i, i + len).join(" "));
+        }
+      }
+      if (key) return key;
+      const foodKeys = [];
+      const hardwareKeys = [];
+      for (let i = 0; i < parts.length; i += 1) {
+        const tokenKey = lookupAlias(parts[i]);
+        if (!tokenKey) continue;
+        const cat = CATEGORY_OF[tokenKey] || "other";
+        if (FOOD_CATEGORIES[cat]) foodKeys.push(tokenKey);
+        else if (HARDWARE_CATEGORIES[cat]) hardwareKeys.push(tokenKey);
+      }
+      if (foodKeys.length) return foodKeys[0];
+      if (hardwareKeys.length) return hardwareKeys[0];
+    }
+    return null;
+  }
+
+  function matchHints(list, raw, folded) {
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i][0].test(raw) || list[i][0].test(folded)) return list[i][1];
+    }
+    return null;
+  }
+
+  function resolveItem(name) {
     const raw = String(name == null ? "" : name).trim();
     const folded = fold(raw);
     if (!folded) {
-      return { key: "other", category: "other", matched: false, label: raw };
+      return { key: "other", category: "other", domain: "other", matched: false, label: raw };
     }
-    let key = lookupAlias(folded);
-    if (!key) {
-      const parts = folded.split(" ");
-      if (parts.length > 1) {
-        for (let i = 0; i < parts.length - 1 && !key; i += 1) {
-          key = lookupAlias(parts.slice(i).join(" "));
-        }
-        for (let i = parts.length - 1; i >= 0 && !key; i -= 1) {
-          key = lookupAlias(parts[i]);
-        }
-      }
+    const stripped = stripSpecs(folded);
+    let key = lookupFromPhrases(folded);
+    if (!key && stripped && stripped !== folded) key = lookupFromPhrases(stripped);
+    if (!key) key = matchHints(HARDWARE_HINTS, raw, folded) || matchHints(HARDWARE_HINTS, raw, stripped);
+    const hardwareHit = !!(key && HARDWARE_CATEGORIES[CATEGORY_OF[key] || ""]);
+    if (!key && !looksLikeHardwareSpec(folded)) {
+      key = matchHints(RECIPE_HINTS, raw, folded);
     }
-    if (!key) {
-      for (let i = 0; i < RECIPE_HINTS.length; i += 1) {
-        if (RECIPE_HINTS[i][0].test(raw) || RECIPE_HINTS[i][0].test(folded)) {
-          key = RECIPE_HINTS[i][1];
-          break;
-        }
-      }
-    }
+    if (!key && looksLikeHardwareSpec(folded)) key = "hardware";
     if (!key) key = "other";
     if (!PATHS[key]) key = "other";
     const category = CATEGORY_OF[key] || "other";
+    const domain = domainOf(category);
     return {
       key: key,
       category: category,
+      domain: domain,
       matched: key !== "other",
       label: raw,
+      hardware: domain === "hardware" || hardwareHit,
     };
+  }
+
+  function resolveIngredient(name) {
+    return resolveItem(name);
   }
 
   function resolveMeal(mealKey) {
@@ -289,10 +493,10 @@
     const counts = Object.create(null);
     list.forEach(function (ing) {
       const name = typeof ing === "string" ? ing : (ing && ing.name);
-      const resolved = resolveIngredient(name);
+      const resolved = resolveItem(name);
       if (!resolved.matched) return;
       const cat = resolved.category;
-      if (cat === "other" || cat === "meal" || cat === "recipe") return;
+      if (cat === "other" || cat === "meal" || cat === "recipe" || HARDWARE_CATEGORIES[cat]) return;
       counts[cat] = (counts[cat] || 0) + 1;
     });
     let best = null;
@@ -345,6 +549,7 @@
   }
 
   root.HqHouseholdIcons = {
+    resolveItem: resolveItem,
     resolveIngredient: resolveIngredient,
     resolveMeal: resolveMeal,
     resolveRecipe: resolveRecipe,
@@ -355,13 +560,19 @@
     keys: function () { return Object.keys(PATHS); },
     pure: {
       fold: fold,
+      stripSpecs: stripSpecs,
       singularize: singularize,
       lookupAlias: lookupAlias,
+      resolveItem: resolveItem,
       resolveIngredient: resolveIngredient,
       resolveMeal: resolveMeal,
       resolveRecipe: resolveRecipe,
+      looksLikeHardwareSpec: looksLikeHardwareSpec,
+      domainOf: domainOf,
       PATHS: PATHS,
       ALIASES: ALIASES,
+      HARDWARE_CATEGORIES: HARDWARE_CATEGORIES,
+      FOOD_CATEGORIES: FOOD_CATEGORIES,
     },
   };
 }(typeof globalThis !== "undefined" ? globalThis : this));

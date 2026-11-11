@@ -68,6 +68,38 @@
   color: var(--accent, #e7c27a);
 }
 
+.hq-hh-ico-badge[data-hh-category="fastener"],
+.hq-hh-ico-badge[data-hh-category="mechanical"],
+.hq-hh-ico-badge[data-hh-category="hardware"] {
+  background: color-mix(in srgb, #9aa7b8 16%, transparent);
+  color: #c5ced9;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #9aa7b8 35%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="tool"],
+.hq-hh-ico-badge[data-hh-category="material"],
+.hq-hh-ico-badge[data-hh-category="fabrication"] {
+  background: color-mix(in srgb, #d4a574 16%, transparent);
+  color: #e0b888;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #d4a574 35%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="electrical"],
+.hq-hh-ico-badge[data-hh-category="electronics"] {
+  background: color-mix(in srgb, #6ec8c0 16%, transparent);
+  color: #8edfd8;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #6ec8c0 35%, var(--line, #2a3544));
+}
+
+.inv-hh-preview {
+  display: flex;
+  align-items: center;
+  min-height: 0;
+  margin: -4px 0 4px;
+}
+
+.inv-hh-preview:empty { display: none; }
+
 .hq-hh-ico-badge.is-sm { --hh-ico-size: 22px; border-radius: 7px; }
 .hq-hh-ico-badge.is-lg { --hh-ico-size: 36px; border-radius: 11px; }
 
@@ -145,3 +177,19 @@
 .inv-item[data-hh-category="grain"] .inv-thumb.is-hh-icon,
 .inv-item[data-hh-category="spice"] .inv-thumb.is-hh-icon,
 .inv-item[data-hh-category="oil"] .inv-thumb.is-hh-icon { color: var(--warn); }
+
+.inv-item[data-hh-category="fastener"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="mechanical"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="hardware"] .inv-thumb.is-hh-icon { color: #c5ced9; }
+
+.inv-item[data-hh-category="tool"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="material"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="fabrication"] .inv-thumb.is-hh-icon { color: #e0b888; }
+
+.inv-item[data-hh-category="electrical"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="electronics"] .inv-thumb.is-hh-icon { color: #8edfd8; }
+
+@media (max-width: 430px) {
+  .hq-hh-ico-badge { --hh-ico-size: 30px; }
+  .inv-thumb.is-hh-icon .hq-hh-ico { width: 20px; height: 20px; }
+}
