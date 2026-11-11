@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -698,6 +699,261 @@ class InventoriaHardeningTests(unittest.TestCase):
         self.assertEqual([i["id"] for i in move["items"]], [self.item_id])
         self.assertEqual(move["destination"]["id"], self.place_id)
         self.assertEqual(move["refs"]["place_id"], self.place_id)
+
+    def test_concurrent_commit_does_not_poison_inflight(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        durable = threading.Event()
+        release = threading.Event()
+        holder: dict = {}
+
+        def pause(phase: str) -> None:
+            if phase == "F3c":
+                durable.set()
+                self.assertTrue(release.wait(5))
+
+        def run_a() -> None:
+            fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+            ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+            inv.bind(root=self.root, now=lambda: 600.0)
+            icommit.set_test_hook(pause)
+            holder["a"] = ivo.http_post(
+                f"/api/inventoria/ops/{op_id}/commit",
+                {"idempotency_key": "conc-owner-key"},
+            )
+            icommit.set_test_hook(None)
+
+        worker = threading.Thread(target=run_a)
+        worker.start()
+        self.assertTrue(durable.wait(5))
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+        ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+        inv.bind(root=self.root, now=lambda: 600.0)
+        c_b, out_b = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "conc-other-key"},
+        )
+        self.assertEqual(c_b, 409, out_b)
+        self.assertEqual(out_b.get("code"), "commit_in_progress")
+        with store.open_store(self.root, readonly=True) as st:
+            xop = st.conn.execute(
+                "SELECT status, uncertain_inventory, planned_steps_json FROM cross_store_ops",
+            ).fetchone()
+            self.assertNotEqual(xop[0], "needs_reconcile")
+            self.assertEqual(int(xop[1]), 0)
+            self.assertEqual(json.loads(xop[2])[0]["attempt_phase"], "in_flight")
+        release.set()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(holder["a"][0], 200, holder["a"])
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+        c1, again = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "conc-owner-key"},
+        )
+        c2, replay = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "conc-owner-key"},
+        )
+        self.assertEqual(c1, 200, again)
+        self.assertEqual(c2, 200, replay)
+        self.assertEqual(again, replay)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+
+    def _crash_commit(self, op_id: str, key: str, phase: str) -> None:
+        def boom(hit: str) -> None:
+            if hit == phase:
+                raise icommit.CommitAbort(hit)
+
+        icommit.set_test_hook(boom)
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": key})
+        icommit.set_test_hook(None)
+
+    def test_original_key_after_confirm_not_applied(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        key = "orig-not-applied"
+        self._crash_commit(op_id, key, "F4")
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+        c, out = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/reconcile",
+            {
+                "decision": "confirm_not_applied",
+                "reason": "operator confirms nothing applied",
+                "idempotency_key": "sub-not-applied",
+                "step_index": 0,
+            },
+        )
+        self.assertEqual(c, 200, out)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+        c1, a = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": key})
+        c2, b = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": key})
+        self.assertEqual(c1, 200, a)
+        self.assertEqual((c2, b), (c1, a))
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+        other = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{other}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{other}/preview", {"confirm": True})
+        c3, out3 = ivo.http_post(f"/api/inventoria/ops/{other}/commit", {"idempotency_key": key})
+        self.assertEqual(c3, 409, out3)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+
+    def test_original_key_after_confirm_already_applied(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        key = "orig-already-applied"
+        self._crash_commit(op_id, key, "F5")
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+        rev = inv.snapshot()["rev"]
+        c, out = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/reconcile",
+            {
+                "decision": "confirm_already_applied",
+                "reason": "operator saw the adjust",
+                "evidence": {"inventory_rev": rev},
+                "step_index": 0,
+            },
+        )
+        self.assertEqual(c, 200, out)
+        c1, a = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": key})
+        c2, b = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": key})
+        self.assertEqual(c1, 200, a)
+        self.assertEqual((c2, b), (c1, a))
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+
+    def test_uncertain_commit_is_not_cached_success(self) -> None:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        key = "orig-still-uncertain"
+        self._crash_commit(op_id, key, "F4")
+        c, out = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/reconcile",
+            {"decision": "abort_compensate", "reason": "leave this uncertain"},
+        )
+        self.assertEqual(c, 200, out)
+        with store.open_store(self.root, readonly=True) as st:
+            n = st.conn.execute(
+                "SELECT COUNT(*) FROM inventoria_commit_idempotency WHERE idempotency_key = ?",
+                (key,),
+            ).fetchone()[0]
+            self.assertEqual(int(n), 0)
+        c2, out2 = ivo.http_post(f"/api/inventoria/ops/{op_id}/commit", {"idempotency_key": key})
+        self.assertEqual(c2, 409, out2)
+        self.assertNotEqual(out2.get("ok"), True)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+
+    def test_destructive_preview_shows_real_identity(self) -> None:
+        place_rev = next(p["rev"] for p in inv.snapshot()["places"] if p["id"] == self.place_id)
+        op_id = self._session_op([
+            {
+                "op": "item.delete",
+                "refs": {"item_id": self.item_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.item_id, "rev": self.item_rev},
+                "label_fr": "modele-ignore",
+            },
+            {
+                "op": "place.delete",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev},
+                "label_fr": "modele-ignore",
+            },
+        ])
+        op_edit = self._session_op([
+            {
+                "op": "place.update",
+                "refs": {"place_id": self.place_id},
+                "resolved": {"confidence": "high"},
+                "payload": {"id": self.place_id, "rev": place_rev, "name": "Haut"},
+                "label_fr": "modele-ignore",
+            },
+            {
+                "op": "place.create",
+                "refs": {},
+                "resolved": {"confidence": "high"},
+                "payload": {"name": "Cave", "kind": "room", "parent": self.place_id},
+                "label_fr": "modele-ignore",
+            },
+        ])
+        rev_before = inv.snapshot()["rev"]
+        _, val = ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        self.assertTrue(val["validation"]["ok"], val)
+        _, prev = ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": False})
+        by_op = {c["op"]: c for c in prev["preview"]["changes"]}
+        self.assertEqual(by_op["item.delete"]["before"]["id"], self.item_id)
+        self.assertEqual(by_op["item.delete"]["before"]["name"], "Alpha")
+        self.assertEqual(by_op["item.delete"]["before"]["rev"], self.item_rev)
+        self.assertNotEqual(by_op["item.delete"]["before"]["name"], "modele-ignore")
+        self.assertTrue(by_op["item.delete"]["after"]["deleted"])
+        self.assertEqual(by_op["place.delete"]["before"]["name"], "Shelf")
+        self.assertEqual(by_op["place.delete"]["before"]["rev"], place_rev)
+        self.assertEqual(by_op["place.delete"]["occupancy"]["items"], 0)
+        _, val2 = ivo.http_post(f"/api/inventoria/ops/{op_edit}/validate", {})
+        self.assertTrue(val2["validation"]["ok"], val2)
+        _, prev2 = ivo.http_post(f"/api/inventoria/ops/{op_edit}/preview", {"confirm": False})
+        edited = {c["op"]: c for c in prev2["preview"]["changes"]}
+        self.assertEqual(edited["place.update"]["before"]["name"], "Shelf")
+        self.assertEqual(edited["place.update"]["after"]["name"], "Haut")
+        self.assertEqual(edited["place.create"]["after"]["name"], "Cave")
+        self.assertEqual(edited["place.create"]["parent"]["name"], "Shelf")
+        self.assertEqual(inv.snapshot()["rev"], rev_before)
+        self.assertEqual(inv.snapshot()["items"][0]["name"], "Alpha")
+
+    def test_adapter_over_limit_persists_nothing(self) -> None:
+        _, sess = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})
+        sid = sess["session"]["id"]
+
+        def adapter(text: str, session_id: str | None = None) -> dict:
+            return {"proposals": [{"op": "item.adjust"} for _ in range(21)]}
+
+        ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0, llm_adapter=adapter)
+        c, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "range tout"})
+        self.assertEqual(c, 400, out)
+        self.assertEqual(out.get("code"), "validation_error")
+        with store.open_store(self.root, readonly=True) as st:
+            ops = st.conn.execute("SELECT COUNT(*) FROM inventoria_operations").fetchone()[0]
+            raw = st.conn.execute(
+                "SELECT messages_json FROM inventoria_sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()[0]
+            self.assertEqual(int(ops), 0)
+            self.assertEqual(json.loads(raw), [])
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
 
 
 if __name__ == "__main__":

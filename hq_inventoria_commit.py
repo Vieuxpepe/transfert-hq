@@ -418,6 +418,7 @@ def run_inventoria_commit(
             (_safe_json(steps), step_index, now, xop_id),
         )
         conn.commit()
+        _invoke_test_hook("F3c")
 
         try:
             apply_body = proposal_to_inventory_action({"op": action, "payload": step["payload"]})

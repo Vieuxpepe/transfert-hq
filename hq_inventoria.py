@@ -22,6 +22,8 @@ import hq_inventory as inventory
 BODY_MAX = 1_048_576
 MESSAGES_MAX = 100
 PROPOSALS_MAX = 20
+TEXT_MAX = 8_000
+ADAPTER_OUTPUT_MAX = 64_000
 SESSION_RE = re.compile(r"^/api/inventoria/sessions(?:/(ivo-[0-9a-f]{16}))?(?:/message)?\Z")
 OPS_RE = re.compile(r"^/api/inventoria/ops/(iop-[0-9a-f]{16})(?:/(validate|preview|commit|cancel|reconcile))?\Z")
 
@@ -36,6 +38,9 @@ REASON_MIN_LEN = 8
 
 _cb: dict[str, Any] = {}
 _guard = threading.Lock()
+# Single-process commit ownership. Not a cross-process lock.
+_commit_owners_guard = threading.Lock()
+_commit_owners: set[str] = set()
 
 
 class InventoriaError(Exception):
@@ -55,7 +60,22 @@ def bind(**kwargs: Any) -> None:
 def reset_for_tests() -> None:
     with _guard:
         _cb.clear()
+    with _commit_owners_guard:
+        _commit_owners.clear()
     commit_mod.set_test_hook(None)
+
+
+def _claim_commit(op_id: str) -> bool:
+    with _commit_owners_guard:
+        if op_id in _commit_owners:
+            return False
+        _commit_owners.add(op_id)
+        return True
+
+
+def _release_commit(op_id: str) -> None:
+    with _commit_owners_guard:
+        _commit_owners.discard(op_id)
 
 
 def _root() -> Any:
@@ -654,18 +674,31 @@ def post_session_message(
         text = str(data["text"]).strip()
         if not text:
             raise InventoriaError("text requis", code="validation_error")
+        if len(text) > TEXT_MAX:
+            raise InventoriaError("text trop long", code="validation_error")
         messages.append({"role": "user", "text": text, "at": now})
         adapter = _cb.get("llm_adapter")
         if callable(adapter):
             try:
                 draft = adapter(text, session_id=session_id)
-                if isinstance(draft, dict) and isinstance(draft.get("proposals"), list):
-                    for p in draft["proposals"]:
-                        proposals.append(schemas.validate_inventoria_proposal(p))
             except InventoriaError:
                 raise
             except Exception as exc:
                 raise InventoriaError(str(exc)[:200], code="validation_error") from exc
+            raw_out = json.dumps(draft, ensure_ascii=False, default=str)
+            if len(raw_out) > ADAPTER_OUTPUT_MAX:
+                raise InventoriaError("réponse modèle trop volumineuse", code="validation_error")
+            if not isinstance(draft, dict):
+                raise InventoriaError("réponse modèle invalide", code="validation_error")
+            raw_props = draft.get("proposals")
+            if raw_props is not None:
+                if not isinstance(raw_props, list) or len(raw_props) > PROPOSALS_MAX:
+                    raise InventoriaError(
+                        f"proposals invalides (max {PROPOSALS_MAX})",
+                        code="validation_error",
+                    )
+                for p in raw_props:
+                    proposals.append(schemas.validate_inventoria_proposal(p))
         else:
             messages.append({
                 "role": "assistant",
@@ -777,7 +810,66 @@ def _preview_diff(
                 place = next((pl for pl in inv.get("places") or [] if pl["id"] == dest), None) if dest else None
                 entry["destination"] = {"id": dest, "name": place.get("name") if place else None}
         elif op == "item.create":
+            entry["effect"] = "create"
             entry["after"] = {k: payload[k] for k in payload if k != "id"}
+        elif op == "item.delete":
+            iid = payload.get("id")
+            item = next((i for i in inv["items"] if i["id"] == iid), None)
+            entry["item_id"] = iid
+            entry["effect"] = "delete"
+            if item:
+                entry["before"] = {
+                    "id": item["id"],
+                    "name": item.get("name"),
+                    "rev": item.get("rev"),
+                    "qty": item.get("qty"),
+                    "place": item.get("place"),
+                    "unit": item.get("unit"),
+                }
+            entry["after"] = {"deleted": True}
+        elif op == "place.create":
+            parent = payload.get("parent")
+            parent_row = next((pl for pl in inv.get("places") or [] if pl["id"] == parent), None) if parent else None
+            entry["effect"] = "create"
+            entry["after"] = {k: payload[k] for k in payload if k != "id"}
+            if parent:
+                entry["parent"] = {"id": parent, "name": parent_row.get("name") if parent_row else None}
+        elif op == "place.update":
+            pid = payload.get("id")
+            place = next((pl for pl in inv.get("places") or [] if pl["id"] == pid), None)
+            entry["place_id"] = pid
+            entry["effect"] = "update"
+            if place:
+                entry["before"] = {
+                    "id": place["id"],
+                    "name": place.get("name"),
+                    "rev": place.get("rev"),
+                    "parent": place.get("parent"),
+                    "kind": place.get("kind"),
+                }
+            entry["after"] = {k: payload[k] for k in payload if k not in ("id", "rev")}
+            if "parent" in payload:
+                dest = payload.get("parent")
+                dest_row = next((pl for pl in inv.get("places") or [] if pl["id"] == dest), None) if dest else None
+                entry["parent"] = {"id": dest, "name": dest_row.get("name") if dest_row else None}
+        elif op == "place.delete":
+            pid = payload.get("id")
+            place = next((pl for pl in inv.get("places") or [] if pl["id"] == pid), None)
+            entry["place_id"] = pid
+            entry["effect"] = "delete"
+            if place:
+                entry["before"] = {
+                    "id": place["id"],
+                    "name": place.get("name"),
+                    "rev": place.get("rev"),
+                    "parent": place.get("parent"),
+                    "kind": place.get("kind"),
+                }
+            entry["occupancy"] = {
+                "items": sum(1 for i in inv.get("items") or [] if i.get("place") == pid),
+                "child_places": sum(1 for pl in inv.get("places") or [] if pl.get("parent") == pid),
+            }
+            entry["after"] = {"deleted": True}
         elif op == "item.move":
             ids = [i for i in (payload.get("ids") or []) if isinstance(i, str)]
             entry["items"] = [
@@ -920,6 +1012,14 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
         raise InventoriaError(str(exc), code=exc.code) from exc
 
     key = str(data["idempotency_key"])
+    if (
+        row["status"] == "committed"
+        and row["commit_idempotency_key"] == key
+        and row["request_hash"]
+    ):
+        cached_final = _idem_lookup(conn, household_id, key, str(row["request_hash"]), op_id)
+        if cached_final is not None:
+            return cached_final
     if row["preview_digest"] is None or row["expected_inventory_rev"] is None:
         raise InventoriaError("preview approuvé manquant", status=409, code="conflict")
     item_exp = json.loads(row["item_rev_expectations_json"] or "[]") if row["item_rev_expectations_json"] else []
@@ -941,6 +1041,48 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
     cached = _idem_lookup(conn, household_id, key, req_hash, op_id)
     if cached is not None:
         return cached
+    if not _claim_commit(op_id):
+        return {
+            "ok": False,
+            "code": "commit_in_progress",
+            "operation_id": op_id,
+            "http_status": 409,
+        }
+    try:
+        return _commit_operation_owned(
+            conn, household_id, op_id, row, key, req_hash, proposals, stored_digest, exp_rev, item_exp,
+        )
+    finally:
+        _release_commit(op_id)
+
+
+def _commit_operation_owned(
+    conn: sqlite3.Connection,
+    household_id: str,
+    op_id: str,
+    row: sqlite3.Row,
+    key: str,
+    req_hash: str,
+    proposals: list[dict],
+    stored_digest: str,
+    exp_rev: int,
+    item_exp: list[dict],
+) -> dict:
+    row = conn.execute(
+        "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
+        (op_id, household_id),
+    ).fetchone()
+    cached = _idem_lookup(conn, household_id, key, req_hash, op_id)
+    if cached is not None:
+        return cached
+    if row["status"] == "committed":
+        if row["commit_idempotency_key"] not in (None, key):
+            raise InventoriaError("opération déjà engagée", status=409, code="conflict")
+        body = json.loads(row["commit_result_json"] or "{}")
+        out = {"ok": True, "commit": body, "operation_id": op_id}
+        if row["commit_idempotency_key"] == key and row["request_hash"] == req_hash:
+            _idem_store(conn, household_id, key, op_id, req_hash, out)
+        return out
 
     if row["status"] not in ("previewed", "committing", "needs_reconcile"):
         raise InventoriaError("preview requis avant commit", status=409, code="conflict")
@@ -1144,9 +1286,49 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
     next_status = conn.execute(
         "SELECT status FROM inventoria_operations WHERE id = ?", (op_id,),
     ).fetchone()["status"]
+    if next_status == "committed" and out.get("ok") and decision in (
+        "confirm_already_applied", "confirm_not_applied",
+    ):
+        _persist_original_commit(conn, household_id, op_id)
     _audit(conn, household_id=household_id, operation_id=op_id, action="reconcile",
            prev_status=row["status"], next_status=next_status, detail=out)
     return out
+
+
+def _persist_original_commit(conn: sqlite3.Connection, household_id: str, op_id: str) -> None:
+    """Cache the original commit key only after the operation is actually committed."""
+    row = conn.execute(
+        "SELECT commit_idempotency_key, request_hash, cross_store_op_id, commit_result_json "
+        "FROM inventoria_operations WHERE id = ?",
+        (op_id,),
+    ).fetchone()
+    if row is None:
+        return
+    key = row["commit_idempotency_key"]
+    req_hash = row["request_hash"]
+    if not isinstance(key, str) or not key or not isinstance(req_hash, str) or not req_hash:
+        return
+    existing = conn.execute(
+        "SELECT operation_id, request_hash FROM inventoria_commit_idempotency "
+        "WHERE household_id = ? AND idempotency_key = ?",
+        (household_id, key),
+    ).fetchone()
+    if existing is not None:
+        if existing["operation_id"] != op_id or existing["request_hash"] != req_hash:
+            raise InventoriaError(
+                "clé idempotency liée à une autre opération",
+                status=409,
+                code="conflict",
+            )
+        return
+    body = json.loads(row["commit_result_json"] or "{}")
+    if not isinstance(body, dict) or not body:
+        body = {"ok": True, "cross_store_op_id": row["cross_store_op_id"]}
+    _idem_store(conn, household_id, key, op_id, req_hash, {
+        "ok": True,
+        "operation_id": op_id,
+        "commit": body,
+    })
 
 
 def redact_for_logs(payload: Any) -> dict:
