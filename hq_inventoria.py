@@ -38,10 +38,10 @@ REASON_MIN_LEN = 8
 
 _cb: dict[str, Any] = {}
 _guard = threading.Lock()
-# Single-process ownership for commit and state-changing reconcile.
-# A second OS process is not covered.
+# Single-process ownership for commit, cancel, preview, and state-changing reconcile.
+# Held until the outer SQLite transaction commits or rolls back. Not multiprocess-safe.
 _commit_owners_guard = threading.Lock()
-_commit_owners: set[str] = set()
+_commit_owners: dict[str, tuple[int, int]] = {}
 
 
 class InventoriaError(Exception):
@@ -67,16 +67,40 @@ def reset_for_tests() -> None:
 
 
 def _claim_commit(op_id: str) -> bool:
+    """Claim op_id for this thread. Re-entrant so reconcile can call commit work."""
+    tid = threading.get_ident()
     with _commit_owners_guard:
-        if op_id in _commit_owners:
+        current = _commit_owners.get(op_id)
+        if current is None:
+            _commit_owners[op_id] = (tid, 1)
+            return True
+        owner, depth = current
+        if owner != tid:
             return False
-        _commit_owners.add(op_id)
+        _commit_owners[op_id] = (tid, depth + 1)
         return True
 
 
 def _release_commit(op_id: str) -> None:
+    tid = threading.get_ident()
     with _commit_owners_guard:
-        _commit_owners.discard(op_id)
+        current = _commit_owners.get(op_id)
+        if current is None or current[0] != tid:
+            return
+        _owner, depth = current
+        if depth <= 1:
+            _commit_owners.pop(op_id, None)
+        else:
+            _commit_owners[op_id] = (tid, depth - 1)
+
+
+def _commit_in_progress(op_id: str) -> dict:
+    return {
+        "ok": False,
+        "code": "commit_in_progress",
+        "operation_id": op_id,
+        "http_status": 409,
+    }
 
 
 def _root() -> Any:
@@ -1043,12 +1067,7 @@ def commit_operation(conn: sqlite3.Connection, household_id: str, op_id: str, da
     if cached is not None:
         return cached
     if not _claim_commit(op_id):
-        return {
-            "ok": False,
-            "code": "commit_in_progress",
-            "operation_id": op_id,
-            "http_status": 409,
-        }
+        return _commit_in_progress(op_id)
     try:
         return _commit_operation_owned(
             conn, household_id, op_id, row, key, req_hash, proposals, stored_digest, exp_rev, item_exp,
@@ -1076,6 +1095,15 @@ def _commit_operation_owned(
     cached = _idem_lookup(conn, household_id, key, req_hash, op_id)
     if cached is not None:
         return cached
+    if row["status"] == "cancelled":
+        raise InventoriaError("opération annulée", status=409, code="conflict")
+    if row["status"] == "previewed":
+        if int(row["preview_confirmed"] or 0) != 1:
+            raise InventoriaError("preview non confirmé", status=409, code="conflict")
+        fresh_digest = str(row["preview_digest"] or "")
+        fresh_rev = row["expected_inventory_rev"]
+        if fresh_digest != stored_digest or fresh_rev is None or int(fresh_rev) != exp_rev:
+            raise InventoriaError("preview obsolète", status=409, code="conflict")
     if row["status"] == "committed":
         if row["commit_idempotency_key"] not in (None, key):
             raise InventoriaError("opération déjà engagée", status=409, code="conflict")
@@ -1266,12 +1294,7 @@ def reconcile_operation(conn: sqlite3.Connection, household_id: str, op_id: str,
         raise InventoriaError("step_index invalide", code="validation_error")
     state_change = decision != "inspect"
     if state_change and not _claim_commit(op_id):
-        return {
-            "ok": False,
-            "code": "commit_in_progress",
-            "operation_id": op_id,
-            "http_status": 409,
-        }
+        return _commit_in_progress(op_id)
     try:
         return _reconcile_owned(
             conn, household_id, op_id, decision, reason, sub_key, evidence, step_index,
@@ -1445,26 +1468,49 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                 with st.transaction():
                     return 200, validate_operation(conn, household_id, op_id, data)
             if action == "preview":
-                with st.transaction():
-                    return 200, preview_operation(conn, household_id, op_id, data)
+                if not _claim_commit(op_id):
+                    return 409, _commit_in_progress(op_id)
+                try:
+                    with st.transaction():
+                        return 200, preview_operation(conn, household_id, op_id, data)
+                finally:
+                    _release_commit(op_id)
             if action == "commit":
-                with st.transaction():
-                    out = commit_operation(conn, household_id, op_id, data)
-                    if not out.get("ok"):
-                        return int(out.get("http_status", 409)), out
-                    return 200, out
+                if not _claim_commit(op_id):
+                    return 409, _commit_in_progress(op_id)
+                try:
+                    with st.transaction():
+                        out = commit_operation(conn, household_id, op_id, data)
+                        commit_mod._invoke_test_hook("F7")
+                        if not out.get("ok"):
+                            return int(out.get("http_status", 409)), out
+                        return 200, out
+                finally:
+                    _release_commit(op_id)
             if action == "cancel":
-                with st.transaction():
-                    return 200, cancel_operation(conn, household_id, op_id)
+                if not _claim_commit(op_id):
+                    return 409, _commit_in_progress(op_id)
+                try:
+                    with st.transaction():
+                        return 200, cancel_operation(conn, household_id, op_id)
+                finally:
+                    _release_commit(op_id)
             if action == "reconcile":
-                with st.transaction():
-                    out = reconcile_operation(conn, household_id, op_id, data)
-                    if not out.get("ok"):
-                        return 409, out
-                    inner = out.get("commit")
-                    if isinstance(inner, dict) and not inner.get("ok"):
-                        return 409, out
-                    return 200, out
+                state_change = str(data.get("decision") or "") != "inspect"
+                if state_change and not _claim_commit(op_id):
+                    return 409, _commit_in_progress(op_id)
+                try:
+                    with st.transaction():
+                        out = reconcile_operation(conn, household_id, op_id, data)
+                        if not out.get("ok"):
+                            return 409, out
+                        inner = out.get("commit")
+                        if isinstance(inner, dict) and not inner.get("ok"):
+                            return 409, out
+                        return 200, out
+                finally:
+                    if state_change:
+                        _release_commit(op_id)
             raise InventoriaError("Route inconnue", status=404, code="not_found")
         finally:
             st.close()

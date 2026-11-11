@@ -1075,6 +1075,130 @@ class InventoriaHardeningTests(unittest.TestCase):
             self.assertEqual(phase, "in_flight")
         self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
 
+    def _confirmed_adjust(self) -> str:
+        op_id = self._session_op([{
+            "op": "item.adjust",
+            "refs": {"item_id": self.item_id},
+            "resolved": {"confidence": "high"},
+            "payload": {"id": self.item_id, "delta": -1},
+            "label_fr": "adj",
+        }])
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": True})
+        return op_id
+
+    def _pause_commit(self, op_id: str, phase: str, key: str) -> tuple[threading.Thread, threading.Event, dict]:
+        durable = threading.Event()
+        release = threading.Event()
+        holder: dict = {}
+
+        def pause(hit: str) -> None:
+            if hit == phase:
+                durable.set()
+                self.assertTrue(release.wait(5))
+
+        def run_a() -> None:
+            fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+            ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+            inv.bind(root=self.root, now=lambda: 600.0)
+            icommit.set_test_hook(pause)
+            holder["a"] = ivo.http_post(
+                f"/api/inventoria/ops/{op_id}/commit",
+                {"idempotency_key": key},
+            )
+            icommit.set_test_hook(None)
+
+        worker = threading.Thread(target=run_a)
+        worker.start()
+        self.assertTrue(durable.wait(5))
+        fin.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+        ivo.bind(root=self.root, actor=lambda: "t", now=lambda: 600.0)
+        inv.bind(root=self.root, now=lambda: 600.0)
+        return worker, release, holder
+
+    def test_y1_cancel_blocked_during_commit(self) -> None:
+        op_id = self._confirmed_adjust()
+        worker, release, holder = self._pause_commit(op_id, "F0", "y1-commit-key")
+        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/cancel", {})
+        self.assertEqual(c, 409, out)
+        self.assertEqual(out.get("code"), "commit_in_progress")
+        with store.open_store(self.root, readonly=True) as st:
+            status = st.conn.execute(
+                "SELECT status FROM inventoria_operations WHERE id = ?", (op_id,),
+            ).fetchone()[0]
+            cancels = st.conn.execute(
+                "SELECT COUNT(*) FROM inventoria_operation_audit WHERE operation_id = ? AND action = 'cancel'",
+                (op_id,),
+            ).fetchone()[0]
+            self.assertEqual(status, "previewed")
+            self.assertEqual(int(cancels), 0)
+        release.set()
+        worker.join(5)
+        self.assertEqual(holder["a"][0], 200, holder["a"])
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+
+    def test_y2_preview_revoke_blocked_during_commit(self) -> None:
+        op_id = self._confirmed_adjust()
+        with store.open_store(self.root, readonly=True) as st:
+            before = st.conn.execute(
+                "SELECT preview_confirmed, preview_digest FROM inventoria_operations WHERE id = ?",
+                (op_id,),
+            ).fetchone()
+        worker, release, holder = self._pause_commit(op_id, "F0", "y2-commit-key")
+        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/preview", {"confirm": False})
+        self.assertEqual(c, 409, out)
+        self.assertEqual(out.get("code"), "commit_in_progress")
+        with store.open_store(self.root, readonly=True) as st:
+            after = st.conn.execute(
+                "SELECT preview_confirmed, preview_digest FROM inventoria_operations WHERE id = ?",
+                (op_id,),
+            ).fetchone()
+            self.assertEqual(tuple(after), tuple(before))
+            self.assertEqual(int(after[0]), 1)
+        release.set()
+        worker.join(5)
+        self.assertEqual(holder["a"][0], 200, holder["a"])
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+
+    def test_y3_cancel_then_commit_writes_nothing(self) -> None:
+        op_id = self._confirmed_adjust()
+        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/cancel", {})
+        self.assertEqual(c, 200, out)
+        c2, out2 = ivo.http_post(
+            f"/api/inventoria/ops/{op_id}/commit",
+            {"idempotency_key": "y3-after-cancel"},
+        )
+        self.assertEqual(c2, 409, out2)
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 3)
+        with store.open_store(self.root, readonly=True) as st:
+            n = st.conn.execute("SELECT COUNT(*) FROM cross_store_ops").fetchone()[0]
+            status = st.conn.execute(
+                "SELECT status FROM inventoria_operations WHERE id = ?", (op_id,),
+            ).fetchone()[0]
+            self.assertEqual(int(n), 0)
+            self.assertEqual(status, "cancelled")
+
+    def test_y4_ownership_held_until_sqlite_commit(self) -> None:
+        op_id = self._confirmed_adjust()
+        worker, release, holder = self._pause_commit(op_id, "F7", "y4-boundary")
+        c, out = ivo.http_post(f"/api/inventoria/ops/{op_id}/cancel", {})
+        self.assertEqual(c, 409, out)
+        self.assertEqual(out.get("code"), "commit_in_progress")
+        with store.open_store(self.root, readonly=True) as st:
+            status = st.conn.execute(
+                "SELECT status FROM inventoria_operations WHERE id = ?", (op_id,),
+            ).fetchone()[0]
+            self.assertNotEqual(status, "cancelled")
+        release.set()
+        worker.join(5)
+        self.assertEqual(holder["a"][0], 200, holder["a"])
+        self.assertEqual(inv.snapshot()["items"][0]["qty"], 2)
+        with store.open_store(self.root, readonly=True) as st:
+            status = st.conn.execute(
+                "SELECT status FROM inventoria_operations WHERE id = ?", (op_id,),
+            ).fetchone()[0]
+            self.assertEqual(status, "committed")
+
 
 if __name__ == "__main__":
     unittest.main()
