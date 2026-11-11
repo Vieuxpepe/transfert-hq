@@ -5255,7 +5255,11 @@ function setupHQ() {
     if (!confirm('Lancer un backup maintenant ?')) return;
     try {
       const d = await withBusy('Sauvegarde…', () => api('/api/backup', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }), 'backup-busy');
-      toast(d.path || 'Backup OK');
+      if (d && d.complete === false) {
+        toast('Backup partiel : ' + (d.incomplete_reason || 'composant manquant'), 'err');
+      } else {
+        toast(d.path || 'Backup OK');
+      }
     }
     catch (e) { toast(e.message, 'err'); }
   });

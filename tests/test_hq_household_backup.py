@@ -33,14 +33,18 @@ class HouseholdBackupTests(_retention.RetentionBase):
     def test_backup_absent_household_is_safe(self):
         info = cc_ext.run_backup(force=True)
         self.assertEqual(info["folders"], 1)
+        self.assertTrue(info["complete"])
+        self.assertNotIn("incomplete_reason", info)
         self.assertEqual(info["household"], {"ok": True, "included": False, "status": "absent"})
         self.assertFalse((Path(info["path"]) / "Household").exists())
         self.assertFalse(store.household_dir(self.root).exists())
         self.assertFalse((self.root / ".hq-inventory").exists())
+        entry = self._entry(info["id"])
         self.assertEqual(
-            self._entry(info["id"])["household"],
+            entry["household"],
             {"status": "absent", "ok": True, "included": False},
         )
+        self.assertTrue(entry["complete"])
 
     def test_backup_includes_household_sqlite(self):
         fin.bind(root=self.root, actor=lambda: "tester")
@@ -59,6 +63,7 @@ class HouseholdBackupTests(_retention.RetentionBase):
                 )
         info = cc_ext.run_backup(force=True)
         self.assertEqual(info["folders"], 1)
+        self.assertTrue(info["complete"])
         hh = info["household"]
         self.assertTrue(hh["ok"] and hh["included"] and hh["valid"])
         self.assertEqual(hh["schema_version"], 7)
@@ -68,10 +73,11 @@ class HouseholdBackupTests(_retention.RetentionBase):
         # no sessions / config leakage into Household package
         names = sorted(p.name for p in dest.iterdir())
         self.assertTrue(all(n.startswith("household") or n == "schema_meta.json" for n in names))
-        entry = self._entry(info["id"])["household"]
-        self.assertEqual(entry["status"], "included")
-        self.assertTrue(entry["ok"] and entry["included"] and entry["valid"])
-        self.assertEqual(entry["schema_version"], 7)
+        entry = self._entry(info["id"])
+        self.assertEqual(entry["household"]["status"], "included")
+        self.assertTrue(entry["household"]["ok"] and entry["household"]["included"] and entry["household"]["valid"])
+        self.assertEqual(entry["household"]["schema_version"], 7)
+        self.assertTrue(entry["complete"])
 
     def test_retention_runs_when_household_absent(self):
         old = [self.make_backup(_retention.stamp(d)) for d in (100, 200, 300, 400, 500)]
@@ -85,9 +91,13 @@ class HouseholdBackupTests(_retention.RetentionBase):
         old = [self.make_backup(_retention.stamp(d)) for d in (100, 200, 300, 400, 500)]
         with store.open_store(self.root) as st:
             st.set_meta("k", "v")
-        with mock.patch.object(store, "snapshot_to", side_effect=OSError("boom")):
+        alerts: list[tuple[str, str]] = []
+        with mock.patch.object(store, "snapshot_to", side_effect=OSError("boom")), \
+                mock.patch.object(cc_ext, "push_alert", side_effect=lambda t, b: alerts.append((t, b))):
             info = cc_ext.run_backup(force=True)
-        self.assertTrue(info["ok"])
+        self.assertTrue(info["ok"])  # legacy folders still succeeded
+        self.assertFalse(info["complete"])
+        self.assertEqual(info["incomplete_reason"], "household_snapshot_failed")
         self.assertEqual(info["household"]["status"], "failed")
         self.assertEqual(
             info["purge"],
@@ -95,6 +105,10 @@ class HouseholdBackupTests(_retention.RetentionBase):
         )
         self.assertTrue(all(p.is_dir() for p in old))
         self.assertFalse((Path(info["path"]) / "Household").exists())
+        self.assertEqual(alerts[0][0], "Backup incomplet")
+        entry = self._entry(info["id"])
+        self.assertFalse(entry["complete"])
+        self.assertEqual(entry["incomplete_reason"], "household_snapshot_failed")
 
     def test_invalid_household_skips_retention_without_publish(self):
         old = [self.make_backup(_retention.stamp(d)) for d in (100, 200, 300)]
@@ -102,6 +116,9 @@ class HouseholdBackupTests(_retention.RetentionBase):
             st.set_meta("k", "v")
         with mock.patch.object(store, "integrity_check", return_value="not ok"):
             info = cc_ext.run_backup(force=True)
+        self.assertTrue(info["ok"])
+        self.assertFalse(info["complete"])
+        self.assertEqual(info["incomplete_reason"], "household_invalid")
         self.assertEqual(info["household"]["status"], "invalid")
         self.assertFalse(info["household"]["valid"])
         self.assertFalse((Path(info["path"]) / "Household").exists())

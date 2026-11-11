@@ -42,8 +42,10 @@ Does **not** create:
 ## Backup timing
 
 1. **Before** first production init: rely on pre-Household checkpoint / existing folder backups.
-2. **Immediately after** first successful init: force `run_backup` (or call `backup()` + confirm `snapshot_to` via the next scheduled run).
+2. **Immediately after** first successful init: force `run_backup` and confirm the JSON has `complete:true` with `household.status:"included"`.
 3. Ongoing: same `backup_every_hours` / `backup_dir` as today; package appears as `<backup_dir>/<stamp>/Household/`.
+4. Operator signal: `ok` means legacy folders copied; **`complete`** means Carnet+Household are healthy or legitimately absent. Incomplete runs alert (`Backup incomplet`) and skip retention purge.
+5. If `backup_auto_paused` is true, automatic cadence will not run — clear the pause (or rely on manual `/api/backup`) after Gate B; do not leave Household uncovered.
 
 ## Restore a verified Household backup
 

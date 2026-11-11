@@ -1810,8 +1810,19 @@ def _household_purge_block(household: dict) -> str | None:
     return None
 
 
+def _backup_incomplete_reason(carnet: dict, household: dict) -> str | None:
+    """None when every optional component is healthy or legitimately absent."""
+    return _carnet_purge_block(carnet) or _household_purge_block(household)
+
+
 def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
-    """automatic=True for every unattended trigger; skipped (no target access) while paused."""
+    """automatic=True for every unattended trigger; skipped (no target access) while paused.
+
+    ``ok`` stays True when legacy folder copies succeed (Carnet/Household are
+    reported separately for compatibility). Operators must also read ``complete``:
+    False means a Carnet/Household snapshot failed or is invalid even though
+    folders were copied.
+    """
     global _last_backup, _backup_alerted
     if automatic and backup_auto_paused():
         return {"ok": True, "skipped": True, "paused": True, "reason": "Backups automatiques en pause (backup_auto_paused)"}
@@ -1842,13 +1853,37 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
     # Carnet + Household: separate status; never counted in legacy `folders`.
     carnet = _backup_carnet(dest)
     household = _backup_household(dest)
+    incomplete = _backup_incomplete_reason(carnet, household)
+    complete = incomplete is None
     _last_backup = now
-    _backup_alerted = False
+    # Only a fully complete backup clears the failure latch. Partial success must
+    # remain visible to monitoring (maybe_backup / Discord / activity).
+    if complete:
+        _backup_alerted = False
     # marker
     (dest / "README.txt").write_text(f"Transfert backup {stamp}\n", encoding="utf-8")
-    log_activity("backup", f"Backup → {dest}")
-    if notify_discord:
-        notify_discord("Backup Transfert", f"`{dest}` ({copied} dossiers)")
+    if complete:
+        log_activity("backup", f"Backup → {dest}")
+        if notify_discord:
+            notify_discord("Backup Transfert", f"`{dest}` ({copied} dossiers)")
+    else:
+        detail = str(incomplete)
+        log_activity(
+            "backup",
+            f"Backup partiel → {dest} ({detail})",
+            level="warning",
+        )
+        if notify_discord:
+            notify_discord(
+                "Backup Transfert incomplet",
+                f"`{dest}` ({copied} dossiers) — {detail}",
+            )
+        if not _backup_alerted:
+            _backup_alerted = True
+            try:
+                push_alert("Backup incomplet", f"{detail} — dossiers copiés, composant manquant")
+            except Exception:
+                pass
     try:
         import hq_automation
 
@@ -1860,6 +1895,8 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
                 "at": now,
                 "carnet": carnet,
                 "household": household,
+                "complete": complete,
+                "incomplete_reason": incomplete,
             })
     except Exception as e:
         try:
@@ -1868,14 +1905,18 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
             pass
     info = {
         "ok": True,
+        "complete": complete,
         "id": stamp,
         "path": str(dest),
         "folders": copied,
         "carnet": carnet,
         "household": household,
     }
+    if incomplete:
+        info["incomplete_reason"] = incomplete
     # Retention: only here, after a successful new backup (never on a failed/skipped one).
-    blocked = _carnet_purge_block(carnet) or _household_purge_block(household)
+    # Incomplete Carnet/Household blocks purge so the last known-good package is kept.
+    blocked = incomplete
     if blocked:
         info["purge"] = {"ok": True, "purge_skipped": True, "reason": blocked, "deleted": []}
         try:

@@ -1701,8 +1701,9 @@ def snapshot_to(root: Path | str, dest_dir: Path | str) -> dict[str, Any]:
     try:
         snap_path = staging / DB_NAME
         man_path = snap_path.with_suffix(snap_path.suffix + ".manifest.json")
-        # Do not flip journal_mode; backup() already folds WAL pages into the dest file.
-        src = _connect(db, readonly=False, wal=False)
+        # Read-only source: no journal_mode flip and no user-data writes on the live DB.
+        # Connection.backup() still folds WAL pages into a consistent destination file.
+        src = _connect(db, readonly=True, wal=False)
         try:
             dest_conn = sqlite3.connect(str(snap_path))
             try:

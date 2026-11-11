@@ -99,10 +99,15 @@ second scheduler.
    - store présent → `Connection.backup()` vers un staging, `integrity_check`,
      manifeste SHA-256, publication **atomique** (`os.replace` du dossier) ;
    - DB corrompue → `{status:"invalid", valid:false}` **sans** publier le dossier.
-2. Entrée catalogue `hq_backup_index.json` : clé `household` (status/ok/included/valid/schema_version).
-3. Rétention : si snapshot Household échoué ou invalid → **purge suspendue**
+2. Entrée catalogue `hq_backup_index.json` : clé `household` (status/ok/included/valid/schema_version)
+   + `complete` / `incomplete_reason` sur l'entrée globale.
+3. Sémantique opérateur : `ok:true` = dossiers legacy copiés (compatibilité) ;
+   **`complete:true`** = Carnet + Household sains ou légitimement absents.
+   Échec / invalid Household → `complete:false`, alerte `Backup incomplet`, Discord
+   « incomplet », purge suspendue (`household_snapshot_failed` / `household_invalid`).
+4. Rétention : si snapshot Household échoué ou invalid → **purge suspendue**
    (`household_snapshot_failed` / `household_invalid`), comme pour Carnet.
-4. Contenu publié : `household.sqlite`, `household.sqlite.manifest.json`,
+5. Contenu publié : `household.sqlite`, `household.sqlite.manifest.json`,
    optionnellement `schema_meta.json`. **Pas** de sessions, PIN, `bridge_config`,
    ni copie brute `-wal`/`-shm`, ni `inventory.json` (Inventoria JSON reste hors
    de ce paquet).
