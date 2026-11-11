@@ -69,14 +69,15 @@ class CompanionFaceAssets(unittest.TestCase):
             self.assertGreater(float(fade.group(1)), top, side)
 
     def test_base_body_is_the_composite_torso(self) -> None:
-        # The body under the animated breast layers is torso-composite.jpg (natural chest, jacket);
-        # hair-variant looks use its hair-free twin built by scripts/build_torso_composite_clean.py.
+        # The body under the animated breast layers is torso-composite-smooth.jpg (natural chest, jacket,
+        # neck join smoothed by scripts/smooth_torso_neck_seam.py); hair-variant looks use its hair-free
+        # twin built by scripts/build_torso_composite_clean.py.
         js = (ROOT / "assets" / "hq-companion.js").read_text(encoding="utf-8")
-        for name in ("torso-composite.jpg", "torso-composite-clean.webp"):
+        for name in ("torso-composite-smooth.jpg", "torso-composite-clean.webp"):
             self.assertTrue((face.RIG / name).is_file(), name)
             self.assertIn(name + "?v=", js)
         self.assertNotIn("torso-clean.svg", js)
-        with Image.open(face.RIG / "torso-composite.jpg") as base, Image.open(face.RIG / "torso-composite-clean.webp") as clean:
+        with Image.open(face.RIG / "torso-composite-smooth.jpg") as base, Image.open(face.RIG / "torso-composite-clean.webp") as clean:
             self.assertEqual(base.size, clean.size)
             # Same chest (centre, below the collarbone), different head (hair removed).
             chest = (236, 330, 276, 370)

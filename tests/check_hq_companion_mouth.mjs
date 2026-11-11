@@ -2,6 +2,28 @@ import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 const {geometry,target,browTarget,eyeGeometry,blinkClosure,textEnvelope,wordVisemes,visemeAt,textWordDuration,lifeGesture,speechJaw,VISEMES,MODES,BROW_MODES}=require('../assets/hq-companion-mouth.js');
+const {replyFace}=require('../assets/hq-companion-mouth.js');
+assert.equal(replyFace('pride', 0), null);
+assert.equal(replyFace('pride', 7000), null);
+assert.equal(replyFace('neutral', 1000), null);
+assert.ok(replyFace('pride', 1000).smile > replyFace('curiosity', 1000).smile);
+assert.ok(replyFace('curiosity', 1000).asym > 0);
+assert.ok(replyFace('reassurance', 1000).smile > 0);
+for (const expression of ['playful','thoughtful','surprised','pride','concerned','amused','affectionate','delighted']) {
+ assert.ok(replyFace(expression, 1000), expression + ' has a reply pose');
+}
+for (const expression of ['flirty','coy','mischievous','adoring','bashful','excited','pouty','sleepy']) {
+ assert.ok(replyFace(expression, 1000), expression + ' has a reply pose');
+}
+for (const expression of ['contented','savoring','pleasant_surprise','disgust','shock','cute']) {
+ assert.ok(replyFace(expression, 1000), expression + ' has a reply pose');
+}
+assert.ok(replyFace('pleased', 1500).bite > .5, 'pleased expression briefly bites the lip');
+assert.equal(replyFace('pleased', 4500).bite, 0, 'lip bite releases into a smile');
+assert.equal(replyFace('disgust', 2600), null, 'disgust releases promptly');
+assert.equal(replyFace('pleasant_surprise', 3000), null, 'pleasant surprise releases promptly');
+assert.equal(replyFace('shock', 2400), null, 'shock releases promptly');
+assert.equal(replyFace('surprised', 2400), null, 'surprise releases promptly');
 for(const mode of Object.keys(MODES)) for(const time of [0,100,900,5000]){
  const t=target(mode,{time,speaking:true,pull:.7,voice:.2});
  for(const k of ['open','smile','round'])assert.ok(t[k]>=0&&t[k]<=1);

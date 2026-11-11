@@ -98,6 +98,72 @@
     return pose;
   }
 
+  // Reply expressions share the same seven-second envelope as the head/brow pose.
+  function replyFace(primary, elapsed) {
+    const kind = { pride: "smile", playful: "smile", delighted: "smile", amused: "smile", affectionate: "smile",
+      surprised: "listen", concerned: "listen", curiosity: "listen", reassurance: "listen", thoughtful: "listen", concentration: "listen",
+      flirty: "smile", coy: "smile", mischievous: "smile", adoring: "smile", bashful: "smile", excited: "smile", pouty: "listen", sleepy: "listen",
+      contented: "smile", savoring: "smile", pleasant_surprise: "listen", disgust: "listen", shock: "listen", cute: "smile", pleased: "smile" }[primary];
+    const duration = primary === "surprised" || primary === "shock" ? 2400 : primary === "disgust" ? 2600 : primary === "pleasant_surprise" ? 3000 : 7000;
+    if (!kind || !Number.isFinite(elapsed) || elapsed <= 0 || elapsed >= duration) return null;
+    const attack = ["disgust", "shock"].includes(primary) ? 200 : 450;
+    const release = ["contented", "savoring", "pleased"].includes(primary) ? 1300 : 600;
+    const amount = Math.min(1, elapsed / attack, (duration - elapsed) / release);
+    const delighted = primary === "delighted" || primary === "amused" || primary === "excited";
+    const curious = primary === "curiosity";
+    const smile = (primary === "disgust" ? 0 : primary === "pleased" ? .42 : delighted ? 1 : curious ? .13 : .66) * amount;
+    const bite = primary === "pleased" ? .65 * smooth(450, 1000, elapsed) * (1 - smooth(2500, 3700, elapsed)) * amount : 0;
+    return { open: (delighted ? .28 : curious ? .13 : .035) * amount, smile,
+      round: (curious ? .52 : 0) * amount, seal: amount,
+      asym: (curious ? .7 : delighted ? .2 : primary === "pleased" ? .2 : 0) * amount, bite, press: 0, shift: 0, jaw: 0 };
+  }
+
+  // Warp matching points in both drawings toward a shared intermediate mesh.
+  // Coordinates are in the registered 512px face frame.
+  function delightOffset(x, y, kind = "delighted") {
+    const controls = kind === "curious" ? [[242,160,-2,-2,19],[291,155,3,-3,19],
+      [216,120,0,-2,20],[302,111,0,-4,20]] : kind === "attentive" ?
+      [[242,160,-2,-2,19],[291,155,2,-2,19],[216,120,0,-1,20],[302,111,0,-1,20]] :
+      [[242, 160, -5, -4, 19], [291, 155, 5, -4, 19],
+      [266, 166, 0, 4, 18], [216, 120, 0, -2, 20], [302, 111, 0, -2, 20]];
+    let dx = 0, dy = 0;
+    for (const [cx, cy, vx, vy, radius] of controls) {
+      const w = Math.exp(-((x-cx)**2 + (y-cy)**2) / (radius*radius));
+      dx += vx*w; dy += vy*w;
+    }
+    return [dx, dy];
+  }
+
+  function drawFaceTriangle(ctx, img, src, dst) {
+    const [a,b,c] = src, [p,q,r] = dst;
+    const den = a[0]*(b[1]-c[1])+b[0]*(c[1]-a[1])+c[0]*(a[1]-b[1]);
+    if (Math.abs(den) < .0001) return;
+    const transform = values => [
+      (values[0]*(b[1]-c[1])+values[1]*(c[1]-a[1])+values[2]*(a[1]-b[1]))/den,
+      (values[0]*(c[0]-b[0])+values[1]*(a[0]-c[0])+values[2]*(b[0]-a[0]))/den,
+      (values[0]*(b[0]*c[1]-c[0]*b[1])+values[1]*(c[0]*a[1]-a[0]*c[1])+values[2]*(a[0]*b[1]-b[0]*a[1]))/den];
+    const xx=transform([p[0],q[0],r[0]]), yy=transform([p[1],q[1],r[1]]);
+    ctx.save(); ctx.beginPath(); ctx.moveTo(...p); ctx.lineTo(...q); ctx.lineTo(...r); ctx.closePath(); ctx.clip();
+    ctx.setTransform(xx[0], yy[0], xx[1], yy[1], xx[2], yy[2]);
+    ctx.drawImage(img, 0, 0, 512, 512); ctx.restore();
+  }
+
+  function drawDelightMorph(ctx, neutral, delighted, t, kind = "delighted") {
+    ctx.clearRect(0, 0, 512, 512);
+    const n=16, step=512/n;
+    for (const [img, alpha, start] of [[neutral, 1, true], [delighted, t, false]]) {
+      if (alpha <= 0) continue;
+      ctx.globalAlpha=alpha;
+      const src=(x,y)=>{ const d=delightOffset(x,y,kind); return start ? [x,y] : [x+d[0],y+d[1]]; };
+      const dst=(x,y)=>{ const d=delightOffset(x,y,kind); return [x+d[0]*t,y+d[1]*t]; };
+      for(let j=0;j<n;j++) for(let i=0;i<n;i++) {
+        const x=i*step,y=j*step, pts=[[x,y],[x+step,y],[x,y+step],[x+step,y+step]];
+        for(const indices of [[0,1,2],[1,3,2]]) drawFaceTriangle(ctx,img,indices.map(k=>src(...pts[k])),indices.map(k=>dst(...pts[k])));
+      }
+    }
+    ctx.globalAlpha=1;
+  }
+
   function textWordDuration(word, duration, plan) {
     const base = clamp(duration, 40, 1600);
     if (!plan.length) return base;
@@ -252,7 +318,7 @@
       const baseRound = vShape === "round" ? clamp(open * 0.56 + 0.08, 0, 0.52) :
         vShape === "wide" ? open * 0.08 :
         open * (.18 + .16 * Math.sin(t * 4.3));
-      const baseSmile = input.smiling ? .40 : (vShape === "wide" ? .34 : vShape === "round" ? .05 : .10);
+      const baseSmile = Math.max(input.replySmile || 0, input.smiling ? .40 : (vShape === "wide" ? .34 : vShape === "round" ? .05 : .10));
       const round = tp ? clamp(baseRound * 0.55 + (tp.round || 0) * 0.45, 0, 0.72) : baseRound;
       const smile = tp ? clamp(baseSmile * 0.55 + (tp.smile || 0) * 0.45, 0, 0.75) : baseSmile;
       const bite = tp ? clamp((tp.bite || 0) * 0.65, 0, 0.45) : 0;
@@ -264,7 +330,7 @@
     }
     if (input.textPose) {
       const head = speechHeadMotion(input.textPose, input.textEnvelope || 0, input.reduced);
-      return { ...input.textPose, extend: 0, curl: 0, sway: 0,
+      return { ...input.textPose, smile: Math.max(input.textPose.smile || 0, input.replySmile || 0), extend: 0, curl: 0, sway: 0,
         jaw: input.reduced ? 0 : speechJaw(input.textPose, input.textEnvelope || 0),
         headTilt: head.headTilt, headNod: head.headNod };
     }
@@ -280,7 +346,7 @@
       const cadence = Math.pow(Math.abs(Math.sin(t * 5.2) * Math.cos(t * 2.3)), 1.35);
       const open = input.reduced ? .24 : clamp(Math.max(cadence * .58, input.voice || 0), 0, .72);
       const round = open * (.18 + .16 * Math.sin(t * 2.9));
-      const smile = input.smiling ? .40 : .10;
+      const smile = Math.max(input.replySmile || 0, input.smiling ? .40 : .10);
       const head = speechHeadMotion({ open, smile, round, seal: 1 }, cadence, input.reduced);
       return { open, smile, round,
         extend: 0, curl: 0, sway: 0,
@@ -466,11 +532,53 @@
         <path data-eye-part="lashes" fill="#19090f"/>
       </g></g>`;
     const eyeGroups = Array.from(eyeSvg.querySelectorAll("[data-eye]"));
+    const neutralFace = new win.Image();
+    neutralFace.src = "/assets/companion/rig-neutral-v1/face.webp?v=px3";
+    const expressionFaces = {};
+    const expressionFace = kind => {
+      if (!kind) return null;
+      if (!expressionFaces[kind]) {
+        const img = new win.Image();
+        img.src = "/assets/companion/rig-neutral-v1/face-" + kind + "-v1.webp?v=2";
+        expressionFaces[kind] = img;
+      }
+      return expressionFaces[kind];
+    };
+    const morphCanvas = doc.createElement("canvas");
+    morphCanvas.width = morphCanvas.height = 512;
+    morphCanvas.className = "hq-companion-delighted-face";
+    morphCanvas.setAttribute("aria-hidden", "true");
+    wrap.appendChild(morphCanvas);
+    const morphContext = morphCanvas.getContext("2d");
+    let lastMorph = "";
     let blinkAt = -Infinity, blinkDuration = 245, blinkAsym = false, eyeShape = "";
     const paintEyes = time => {
       const pull = host.classList.contains("is-bust-pull");
       const elapsed = time - blinkAt;
-      const look = clamp(parseFloat(eyeSvg.style.getPropertyValue("--rig-lid-down")) || 0, 0, 0.45);
+      const reply = replyExpression && !reduced() && !pull && mode === "auto" &&
+        replyFace(replyExpression.primary, time - replyExpression.at);
+      const quiet = !host.classList.contains("is-speaking") && !host.classList.contains("is-voice-lipsync") &&
+        !host.classList.contains("is-speech-articulating") && !textBeat && !host.classList.contains("is-user-typing");
+      const kind = reply && quiet ? ({ delighted: "delighted", pride: "proud", playful: "teasing", curiosity: "curious",
+        reassurance: "attentive", thoughtful: "thoughtful", concentration: "thoughtful", surprised: "surprised",
+        concerned: "concerned", amused: "amused", affectionate: "affectionate", flirty: "flirty", coy: "coy",
+        mischievous: "mischievous", adoring: "adoring", bashful: "bashful", excited: "excited", pouty: "pouty", sleepy: "sleepy",
+        contented: "contented", savoring: "savoring", pleasant_surprise: "pleasant-surprise", disgust: "disgust", shock: "shock", cute: "cute" }[replyExpression.primary]) : null;
+      const targetFace = expressionFace(kind);
+      const ready = morphContext && neutralFace.complete && neutralFace.naturalWidth && targetFace?.complete && targetFace.naturalWidth;
+      const blend = kind && ready ? smooth(0, 1, reply.seal) : 0;
+      const frame = Math.round(blend * 30);
+      const morphKey = kind + ":" + frame;
+      if (frame > 0 && morphKey !== lastMorph) {
+        drawDelightMorph(morphContext, neutralFace, targetFace, frame / 30, kind);
+        lastMorph = morphKey;
+        morphCanvas.dataset.expression = kind;
+      }
+      if (!ready && kind && morphCanvas.dataset.expression !== kind) morphCanvas.style.transition = "none";
+      else morphCanvas.style.transition = "";
+      morphCanvas.style.opacity = frame > 0 ? String(Math.min(1, blend * 8)) : "0";
+      const attentive = reply && ["reassurance", "thoughtful", "concentration", "pleased"].includes(replyExpression.primary) ? .25 * reply.seal : 0;
+      const look = Math.max(attentive, clamp(parseFloat(eyeSvg.style.getPropertyValue("--rig-lid-down")) || 0, 0, 0.45));
       const amounts = eyeGroups.map((_, i) => {
         const blinkAmt = pull ? 1 : elapsed < 0 || elapsed >= blinkDuration ? 0 :
           blinkClosure(elapsed / (blinkDuration * (blinkAsym && i === 1 ? .96 : 1)));
@@ -509,7 +617,7 @@
     const keys = ["open", "smile", "round", "extend", "curl", "sway", "jaw", "headTilt", "headNod", "bite", "seal", "asym", "press", "shift"];
     let mode = "auto", current = Object.fromEntries(keys.map(key => [key, 0])), lastPaint = -Infinity, lastShape = "", modeStart = 0;
     let browMode = "auto", browStart = 0, brows = { left: 0, right: 0 }, wasPulling = false;
-    let textBeat = null;
+    let textBeat = null, replyExpression = null;
     let gesture = null, anticipation = null, lifePose = null, nextSide = 1, lastWarm = false, lastPlayful = false;
     let thinkingCount = 0, nextLaughAt = 0, lastPreparedAt = -Infinity, wetGlossUntil = 0;
     let nextIdleAt = win.performance.now() + 9000 + Math.random() * 7000, nextListenAt = 0;
@@ -588,6 +696,12 @@
           }
         }
       }
+      // A reply outranks incidental idle gestures, but not speech or direct interactions.
+      if (mode === "auto" && !reduced() && !pulling && !voice && !textBeat && !thinking && !typing &&
+          !tickled && !host.classList.contains("is-idle-humming") && !host.classList.contains("is-idle-kiss-blow")) {
+        const replyPose = replyExpression && replyFace(replyExpression.primary, time - replyExpression.at);
+        if (replyPose) { clearGesture(); lifePose = replyPose; label = "reply-" + replyExpression.primary; }
+      }
       if (svg.getAttribute("data-mouth-gesture") !== label) svg.setAttribute("data-mouth-gesture", label);
     };
     const paint = () => {
@@ -632,6 +746,7 @@
     };
     const inputs = time => ({ time: mode === "lick" ? Math.max(0, time - modeStart) : time, reduced: reduced(),
       lifePose,
+      replySmile: mode === "auto" && !reduced() && replyExpression ? (replyFace(replyExpression.primary, time - replyExpression.at)?.smile || 0) : 0,
       textPose: textBeat ? visemeAt(textBeat.plan, time - textBeat.at, textBeat.duration, textBeat.word, textBeat.startPose) : null,
       pulling: host.classList.contains("is-bust-pull"),
       humming: host.classList.contains("is-idle-humming"),
@@ -649,6 +764,12 @@
       textEnvelope: textBeat && time >= textBeat.at && time < textBeat.at + textBeat.duration ?
         textEnvelope(textBeat.word, time - textBeat.at, textBeat.duration) : 0 });
     const rig = {
+      setReplyExpression(primary, at) {
+        replyExpression = { primary, at };
+        postponeIdle(at);
+        lastPaint = -Infinity;
+        if (wake) wake();
+      },
       get motion() {
         const now = win.performance.now();
         let env = 0;
@@ -829,7 +950,7 @@
     }
     host.classList.add("has-expressive-mouth");
     if (!doc.querySelector("link[data-hq-mouth-style]")) {
-      const css = doc.createElement("link"); css.rel = "stylesheet"; css.href = "/assets/hq-companion-mouth.css?v=jawfix4";
+      const css = doc.createElement("link"); css.rel = "stylesheet"; css.href = "/assets/hq-companion-mouth.css?v=replyface5";
       css.setAttribute("data-hq-mouth-style", ""); doc.head.appendChild(css);
     }
     const menu = host.querySelector(".hq-companion-fx-debug-opts") || host.querySelector(".hq-companion-fx-debug");
@@ -865,5 +986,5 @@
     rig.syncInteraction();
     return rig;
   }
-  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
+  return { attach, geometry, target, browTarget, eyeGeometry, blinkClosure, textEnvelope, wordVisemes, visemeAt, textWordDuration, lifeGesture, replyFace, speechJaw, speechHeadMotion, VISEMES, MODES, BROW_MODES };
 });
