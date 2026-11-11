@@ -1766,6 +1766,24 @@ def _backup_carnet(dest: Path) -> dict:
         return {"ok": False, "included": False, "status": "failed", "error": "Carnet non sauvegardé"}
 
 
+def _backup_household(dest: Path) -> dict:
+    """Publish a verified Household SQLite snapshot to ``<dest>/Household/``.
+
+    Absent store → status absent (no files created under the live root).
+    Never fails the legacy folder backup; outcome is reported separately.
+    """
+    try:
+        import hq_household_store as hstore
+
+        return hstore.snapshot_to(_root(), dest / "Household")
+    except Exception as e:
+        try:
+            log_activity("backup", f"Household non sauvegardé : {type(e).__name__}", level="warning")
+        except Exception:
+            pass
+        return {"ok": False, "included": False, "status": "failed", "error": "Household non sauvegardé"}
+
+
 def _carnet_purge_block(carnet: dict) -> str | None:
     """Reason to skip retention for this run, or None when purging is safe.
 
@@ -1780,8 +1798,31 @@ def _carnet_purge_block(carnet: dict) -> str | None:
     return None
 
 
+def _household_purge_block(household: dict) -> str | None:
+    """Skip retention when Household snapshot failed or is unusable.
+
+    Absent Household is normal (pre-Gate-B / not initialized) and does not block.
+    """
+    if not isinstance(household, dict) or household.get("ok") is not True:
+        return "household_snapshot_failed"
+    if household.get("included") and household.get("valid") is not True:
+        return "household_invalid"
+    return None
+
+
+def _backup_incomplete_reason(carnet: dict, household: dict) -> str | None:
+    """None when every optional component is healthy or legitimately absent."""
+    return _carnet_purge_block(carnet) or _household_purge_block(household)
+
+
 def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
-    """automatic=True for every unattended trigger; skipped (no target access) while paused."""
+    """automatic=True for every unattended trigger; skipped (no target access) while paused.
+
+    ``ok`` stays True when legacy folder copies succeed (Carnet/Household are
+    reported separately for compatibility). Operators must also read ``complete``:
+    False means a Carnet/Household snapshot failed or is invalid even though
+    folders were copied.
+    """
     global _last_backup, _backup_alerted
     if automatic and backup_auto_paused():
         return {"ok": True, "skipped": True, "paused": True, "reason": "Backups automatiques en pause (backup_auto_paused)"}
@@ -1809,32 +1850,78 @@ def run_backup(*, force: bool = False, automatic: bool = False) -> dict:
             copied += 1
         except OSError as e:
             raise RuntimeError(f"Backup {name}: {e}") from e
-    # Carnet: separate status; never counted in legacy `folders`.
+    # Carnet + Household: separate status; never counted in legacy `folders`.
     carnet = _backup_carnet(dest)
+    household = _backup_household(dest)
+    incomplete = _backup_incomplete_reason(carnet, household)
+    complete = incomplete is None
     _last_backup = now
-    _backup_alerted = False
+    # Only a fully complete backup clears the failure latch. Partial success must
+    # remain visible to monitoring (maybe_backup / Discord / activity).
+    if complete:
+        _backup_alerted = False
     # marker
     (dest / "README.txt").write_text(f"Transfert backup {stamp}\n", encoding="utf-8")
-    log_activity("backup", f"Backup → {dest}")
-    if notify_discord:
-        notify_discord("Backup Transfert", f"`{dest}` ({copied} dossiers)")
+    if complete:
+        log_activity("backup", f"Backup → {dest}")
+        if notify_discord:
+            notify_discord("Backup Transfert", f"`{dest}` ({copied} dossiers)")
+    else:
+        detail = str(incomplete)
+        log_activity(
+            "backup",
+            f"Backup partiel → {dest} ({detail})",
+            level="warning",
+        )
+        if notify_discord:
+            notify_discord(
+                "Backup Transfert incomplet",
+                f"`{dest}` ({copied} dossiers) — {detail}",
+            )
+        if not _backup_alerted:
+            _backup_alerted = True
+            try:
+                push_alert("Backup incomplet", f"{detail} — dossiers copiés, composant manquant")
+            except Exception:
+                pass
     try:
         import hq_automation
 
         if hq_automation.ready():
-            hq_automation.note_backup({"id": stamp, "path": str(dest), "folders": copied, "at": now, "carnet": carnet})
+            hq_automation.note_backup({
+                "id": stamp,
+                "path": str(dest),
+                "folders": copied,
+                "at": now,
+                "carnet": carnet,
+                "household": household,
+                "complete": complete,
+                "incomplete_reason": incomplete,
+            })
     except Exception as e:
         try:
             __import__("sys").stderr.write(f"backup catalog: {e}\n")
         except Exception:
             pass
-    info = {"ok": True, "id": stamp, "path": str(dest), "folders": copied, "carnet": carnet}
+    info = {
+        "ok": True,
+        "complete": complete,
+        "id": stamp,
+        "path": str(dest),
+        "folders": copied,
+        "carnet": carnet,
+        "household": household,
+    }
+    if incomplete:
+        info["incomplete_reason"] = incomplete
     # Retention: only here, after a successful new backup (never on a failed/skipped one).
-    blocked = _carnet_purge_block(carnet)
+    # Incomplete Carnet/Household blocks purge so the last known-good package is kept.
+    blocked = incomplete
     if blocked:
         info["purge"] = {"ok": True, "purge_skipped": True, "reason": blocked, "deleted": []}
         try:
-            log_activity("backup", "Purge des anciens backups suspendue : Carnet non sauvegardé", level="warning")
+            which = "Carnet" if str(blocked).startswith("carnet") else "Household"
+            log_activity("backup", f"Purge des anciens backups suspendue : {which} non sauvegardé", level="warning")
         except Exception:
             pass
         return info
