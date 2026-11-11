@@ -241,13 +241,15 @@ def _wait_up(proc: subprocess.Popen, port: str) -> None:
     while time.time() < deadline:
         if proc.poll() is not None:
             output = proc.stdout.read() if proc.stdout else ""
-            raise SystemExit(output or f"bridge on {port} exited")
+            extra = "".join(getattr(proc, "_hq_output", []))
+            raise SystemExit(output or extra or f"bridge on {port} exited")
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/assets/hq-household-budget.js", timeout=2).read()
             return
         except OSError:
             time.sleep(0.3)
-    raise SystemExit(f"bridge did not answer on {port}")
+    extra = "".join(getattr(proc, "_hq_output", []))[-1500:]
+    raise SystemExit(f"bridge did not answer on {port}\n{extra}")
 
 
 def test_same_state_rejects_second_writer() -> None:
@@ -291,7 +293,7 @@ def test_distinct_roots_and_port_collision() -> None:
         _wait_up(second, "18777")
         collided = _launch(other, "18775")
         output, _ = collided.communicate(timeout=40)
-        if collided.returncode == 0 or "Cannot bind" not in output:
+        if collided.returncode == 0 or "Cannot bind 127.0.0.1:18775" not in output:
             raise SystemExit(output or f"collision rc={collided.returncode}")
         urllib.request.urlopen("http://127.0.0.1:18775/assets/hq-companion.js", timeout=5).read()
         urllib.request.urlopen("http://127.0.0.1:18777/assets/hq-household-budget.js", timeout=5).read()
@@ -334,6 +336,263 @@ def test_validate_only_reads_planner_port() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _launch_script(state: Path, port: str, creationflags: int, *, production_owner: bool = False) -> subprocess.Popen:
+    command = ["powershell", "-NoProfile", "-NonInteractive", "-File", str(SOURCE / "start_release.ps1"),
+               "-ReleaseDir", str(SOURCE), "-StateRoot", str(state), "-Port", port]
+    if production_owner:
+        command.append("-ProductionOwner")
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=creationflags,
+    )
+    proc._hq_output = []
+
+    def _drain() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            proc._hq_output.append(line)
+
+    import threading
+    threading.Thread(target=_drain, daemon=True).start()
+    return proc
+
+
+def _request_console_stop(proc: subprocess.Popen) -> None:
+    """Ctrl+C on the launcher's own console, which the bridge handles as a normal stop."""
+    import ctypes
+    kernel = ctypes.windll.kernel32
+    kernel.FreeConsole()
+    if not kernel.AttachConsole(proc.pid):
+        raise SystemExit(f"could not attach to the launcher console ({ctypes.get_last_error()})")
+    kernel.SetConsoleCtrlHandler(None, True)
+    sent = bool(kernel.GenerateConsoleCtrlEvent(0, 0))
+    time.sleep(1)
+    kernel.FreeConsole()
+    kernel.SetConsoleCtrlHandler(None, False)
+    if not kernel.AttachConsole(0xFFFFFFFF):
+        kernel.AllocConsole()
+    if not sent:
+        raise SystemExit("could not signal the launcher")
+
+
+def test_launcher_propagates_exit_code() -> None:
+    root = Path(tempfile.mkdtemp(prefix="hq-launcher-exit-"))
+    live = root / "live"
+    other = root / "other"
+    first = collided = None
+    port = "18881"
+    try:
+        _write_state(live, 18882)
+        _write_state(other, 18884)
+        sessions = b'{"synthetic-rehearsal":{"exp":9999999999,"user":"admin","role":"admin","gen":0}}'
+        (live / "bridge_sessions.json").write_bytes(sessions)
+        (other / "bridge_sessions.json").write_bytes(sessions)
+        missing = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(SOURCE / "start_release.ps1"), "-ValidateOnly"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=20,
+        )
+        if missing.returncode == 0:
+            raise SystemExit(missing.stdout + missing.stderr)
+        valid = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(SOURCE / "start_release.ps1"),
+             "-ReleaseDir", str(SOURCE), "-StateRoot", str(live), "-Port", port, "-ValidateOnly"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        if valid.returncode != 0:
+            raise SystemExit(valid.stdout + valid.stderr)
+        first = _launch_script(live, port, subprocess.CREATE_NEW_CONSOLE)
+        _wait_up(first, port)
+        collided = _launch_script(other, port, subprocess.CREATE_NEW_PROCESS_GROUP)
+        try:
+            collided.wait(timeout=40)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("launcher collision did not exit")
+        output = "".join(collided._hq_output)
+        if collided.returncode != 1 or "Cannot bind 127.0.0.1:18881" not in output:
+            raise SystemExit(output or f"launcher collision rc={collided.returncode}")
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/assets/hq-household-budget.js", timeout=5).read()
+        if (live / "bridge_sessions.json").read_bytes() != sessions or (other / "bridge_sessions.json").read_bytes() != sessions:
+            raise SystemExit("failed launch changed session data")
+        for state in (live, other):
+            if (state / ".hq-household").exists() or (state / "inventory.json").exists():
+                raise SystemExit("failed launch created household storage")
+        _request_console_stop(first)
+        try:
+            first.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("controlled shutdown did not return")
+        if first.returncode != 0 or "Stopped." not in "".join(first._hq_output):
+            raise SystemExit(f"controlled shutdown rc={first.returncode}\n{''.join(first._hq_output)[-1500:]}")
+    finally:
+        _stop(collided)
+        _stop(first)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _lock_is_free(path: Path) -> bool:
+    import msvcrt
+    if not path.is_file():
+        return True
+    handle = path.open("r+b")
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return True
+    except OSError:
+        return False
+    finally:
+        handle.close()
+
+
+def test_production_owner_port_policy() -> None:
+    root = Path(tempfile.mkdtemp(prefix="hq-owner-policy-"))
+    state = root / "state"
+    try:
+        if str(root).lower().startswith("c:\\transfert\\"):
+            raise SystemExit("policy test is inside the live workspace")
+        _write_state(state, 18822)
+        before = (state / "bridge_config.json").read_bytes()
+        script = (
+            "import iphone_bridge as bridge\n"
+            "bridge.side_by_side_ports_ok(8765, 8766, production_owner=False)\n"
+        )
+        refused = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(SOURCE),
+            env={**os.environ, "HQ_STATE_ROOT": str(state), "HQ_PORT": "18821", "HQ_PRODUCTION_OWNER": ""},
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        # Import succeeds. The call raises SystemExit, which is a nonzero process only if uncaught.
+        # The snippet does not catch it, so refusal is a nonzero exit that never binds.
+        if refused.returncode == 0:
+            raise SystemExit(refused.stdout + refused.stderr)
+        allowed = subprocess.run(
+            [sys.executable, "-c",
+             "import iphone_bridge as bridge\n"
+             "bridge.side_by_side_ports_ok(8765, 8766, production_owner=True)\n"
+             "try:\n"
+             "    bridge.side_by_side_ports_ok(8765, 8765, production_owner=True)\n"
+             "except SystemExit:\n"
+             "    pass\n"
+             "else:\n"
+             "    raise SystemExit('equal ports were accepted')\n"
+             "import os\n"
+             "os.environ['HQ_PRODUCTION_OWNER'] = 'yes'\n"
+             "try:\n"
+             "    bridge.production_owner_mode()\n"
+             "except SystemExit as exc:\n"
+             "    if 'must be 1' not in str(exc):\n"
+             "        raise\n"
+             "else:\n"
+             "    raise SystemExit('invalid mode accepted')\n"
+             "print('policy ok')\n"],
+            cwd=str(SOURCE),
+            env={**os.environ, "HQ_STATE_ROOT": str(state), "HQ_PORT": "18821"},
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        if allowed.returncode != 0 or "policy ok" not in allowed.stdout:
+            raise SystemExit(allowed.stdout + allowed.stderr)
+        fresh = root / "invalid"
+        _write_state(fresh, 18824)
+        before = (fresh / "bridge_config.json").read_bytes()
+        invalid = subprocess.run(
+            [sys.executable, "-c", "import iphone_bridge"],
+            cwd=str(SOURCE),
+            env={**os.environ, "HQ_STATE_ROOT": str(fresh), "HQ_PORT": "18823", "HQ_PRODUCTION_OWNER": "yes"},
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        if invalid.returncode == 0 or "must be 1" not in (invalid.stdout + invalid.stderr):
+            raise SystemExit(invalid.stdout + invalid.stderr)
+        if (fresh / "bridge_config.json").read_bytes() != before:
+            raise SystemExit("invalid mode modified bridge_config.json")
+        if (fresh / ".hq-household").exists() or (fresh / ".hq-inventory").exists() or (fresh / "bridge.lock").exists():
+            raise SystemExit("invalid mode created runtime state")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_production_owner_launcher_and_collisions() -> None:
+    root = Path(tempfile.mkdtemp(prefix="hq-owner-collide-"))
+    live = root / "live"
+    other = root / "other"
+    third = root / "third"
+    first = http_hit = planner_hit = None
+    try:
+        if str(root).lower().startswith("c:\\transfert\\"):
+            raise SystemExit("collision test is inside the live workspace")
+        _write_state(live, 18942)
+        _write_state(other, 18944)
+        _write_state(third, 18942)
+        sessions = b'{"synthetic-owner":{"exp":9999999999,"user":"admin","role":"admin","gen":0}}'
+        for path in (live, other, third):
+            (path / "bridge_sessions.json").write_bytes(sessions)
+        other_config = (other / "bridge_config.json").read_bytes()
+        third_config = (third / "bridge_config.json").read_bytes()
+        ports = root / "ports"
+        _write_state(ports, 8766)
+        script = SOURCE / "start_release.ps1"
+        leaked = os.environ.copy()
+        leaked["HQ_PRODUCTION_OWNER"] = "1"
+        staging = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(script), "-ReleaseDir", str(SOURCE),
+             "-StateRoot", str(ports), "-Port", "8765", "-ValidateOnly"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30, env=leaked,
+        )
+        if staging.returncode == 0:
+            raise SystemExit(staging.stdout + staging.stderr)
+        owned = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(script), "-ReleaseDir", str(SOURCE),
+             "-StateRoot", str(ports), "-Port", "8765", "-ValidateOnly", "-ProductionOwner"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        if owned.returncode != 0:
+            raise SystemExit(owned.stdout + owned.stderr)
+        if (ports / "bridge.lock").exists() or (ports / ".hq-household").exists() or (ports / ".hq-inventory").exists():
+            raise SystemExit("production-owner validation created runtime state")
+        first = _launch_script(live, "18941", subprocess.CREATE_NEW_PROCESS_GROUP, production_owner=True)
+        _wait_up(first, "18941")
+        http_hit = _launch_script(other, "18941", subprocess.CREATE_NEW_PROCESS_GROUP, production_owner=True)
+        try:
+            http_hit.wait(timeout=40)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("http collision did not exit")
+        http_out = "".join(http_hit._hq_output)
+        if http_hit.returncode != 1 or "Cannot bind" not in http_out:
+            raise SystemExit(http_out or f"http collision rc={http_hit.returncode}")
+        urllib.request.urlopen("http://127.0.0.1:18941/assets/hq-household-budget.js", timeout=5).read()
+        if (other / "bridge_config.json").read_bytes() != other_config or (other / "bridge_sessions.json").read_bytes() != sessions:
+            raise SystemExit("http collision modified persistent state")
+        if not _lock_is_free(other / "bridge.lock"):
+            raise SystemExit("http collision kept the state lock")
+        planner_hit = _launch_script(third, "18943", subprocess.CREATE_NEW_PROCESS_GROUP, production_owner=True)
+        try:
+            planner_hit.wait(timeout=40)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("planner collision did not exit")
+        planner_out = "".join(planner_hit._hq_output)
+        if planner_hit.returncode == 0 or "planner" not in planner_out.lower():
+            raise SystemExit(planner_out or f"planner collision rc={planner_hit.returncode}")
+        urllib.request.urlopen("http://127.0.0.1:18941/assets/hq-companion.js", timeout=5).read()
+        if (third / "bridge_config.json").read_bytes() != third_config or (third / "bridge_sessions.json").read_bytes() != sessions:
+            raise SystemExit("planner collision modified persistent state")
+        if (third / ".hq-agent-state").exists() or (third / ".hq-household").exists() or (third / ".hq-inventory").exists():
+            raise SystemExit("planner collision created runtime storage")
+        if not _lock_is_free(third / "bridge.lock"):
+            raise SystemExit("planner collision kept the state lock")
+        if (live / "bridge_sessions.json").read_bytes() != sessions:
+            raise SystemExit("collisions changed the running session file")
+    finally:
+        _stop(planner_hit)
+        _stop(http_hit)
+        _stop(first)
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_launcher_refuses_live_workspace() -> None:
     script = SOURCE / "start_release.ps1"
     completed = subprocess.run(
@@ -351,6 +610,9 @@ def main() -> None:
     test_config_is_not_created()
     test_launcher_refuses_live_workspace()
     test_validate_only_reads_planner_port()
+    test_launcher_propagates_exit_code()
+    test_production_owner_port_policy()
+    test_production_owner_launcher_and_collisions()
     test_same_state_rejects_second_writer()
     test_distinct_roots_and_port_collision()
     test_live_split()

@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -167,6 +168,7 @@ def handle_planner(method: str, path: str, body: bytes, *, authorized: bool) -> 
 
 
 def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
+    holder = [token]
     class PlannerHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -202,7 +204,7 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
                 method,
                 path,
                 body,
-                authorized=token_matches(token, _bearer(self.headers.get("Authorization"))),
+                authorized=token_matches(holder[0], _bearer(self.headers.get("Authorization"))),
             )
             self._send(status, payload)
 
@@ -218,19 +220,45 @@ def _make_handler(token: str) -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             self._send(404, {"error": "Inconnu"})
 
+    PlannerHandler.token_holder = holder  # type: ignore[attr-defined]
     return PlannerHandler
 
 
+class _ExclusiveLoopbackServer(ThreadingHTTPServer):
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None) if os.name == "nt" else None
+        if exclusive is None:
+            super().server_bind()
+            return
+        self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        self.socket.bind(self.server_address)
+        self.server_address = self.socket.getsockname()
+
+
 def start(root: Path | str, *, port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
-    """Bind 127.0.0.1 only and serve until shutdown. Daemon thread."""
+    """Bind 127.0.0.1 only and serve until shutdown. Daemon thread.
+
+    The socket is claimed before the planner token is created, so a port
+    collision does not write ``hq_planner.json``.
+    """
     global _token
     if isinstance(port, bool) or not isinstance(port, int) or port < 0 or port > 65535:
         raise RuntimeError("port planificateur refusé")
-    _token = ensure_token(root)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), _make_handler(_token))
+    handler = _make_handler("")
+    try:
+        httpd = _ExclusiveLoopbackServer(("127.0.0.1", port), handler)
+    except OSError as exc:
+        raise RuntimeError(f"port planificateur occupé ({exc})") from exc
     bound_host = httpd.server_address[0]
     if bound_host not in ("127.0.0.1", "::1"):
         httpd.server_close()
         raise RuntimeError("écoute planificateur refusée")
+    try:
+        token = ensure_token(root)
+    except Exception:
+        httpd.server_close()
+        raise
+    _token = token
+    handler.token_holder[0] = token
     threading.Thread(target=httpd.serve_forever, name="hq-planner", daemon=True).start()
     return httpd
