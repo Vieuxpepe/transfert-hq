@@ -2,6 +2,50 @@ import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 const {geometry,target,browTarget,eyeGeometry,blinkClosure,textEnvelope,wordVisemes,visemeAt,textWordDuration,lifeGesture,speechJaw,VISEMES,MODES,BROW_MODES}=require('../assets/hq-companion-mouth.js');
+const {replyFace, expressionFaceKind, expressionFacePath, expressionMorphState, EXPRESSION_FACE_BY_PRIMARY}=require('../assets/hq-companion-mouth.js');
+assert.equal(replyFace('pride', 0), null);
+assert.equal(replyFace('pride', 7000), null);
+assert.equal(replyFace('neutral', 1000), null);
+assert.ok(replyFace('pride', 1000).smile > replyFace('curiosity', 1000).smile);
+assert.ok(replyFace('curiosity', 1000).asym > 0);
+assert.ok(replyFace('reassurance', 1000).smile > 0);
+for (const expression of ['playful','thoughtful','surprised','pride','concerned','amused','affectionate','delighted']) {
+ assert.ok(replyFace(expression, 1000), expression + ' has a reply pose');
+}
+for (const expression of ['flirty','coy','mischievous','adoring','bashful','excited','pouty','sleepy']) {
+ assert.ok(replyFace(expression, 1000), expression + ' has a reply pose');
+}
+for (const expression of ['contented','savoring','pleasant_surprise','disgust','shock','cute']) {
+ assert.ok(replyFace(expression, 1000), expression + ' has a reply pose');
+}
+assert.ok(replyFace('pleased', 1500).bite > .5, 'pleased expression briefly bites the lip');
+assert.equal(replyFace('pleased', 4500).bite, 0, 'lip bite releases into a smile');
+assert.equal(replyFace('disgust', 2600), null, 'disgust releases promptly');
+assert.equal(replyFace('pleasant_surprise', 3000), null, 'pleasant surprise releases promptly');
+assert.equal(replyFace('shock', 2400), null, 'shock releases promptly');
+assert.equal(replyFace('surprised', 2400), null, 'surprise releases promptly');
+const expressionSlugs = new Set(Object.values(EXPRESSION_FACE_BY_PRIMARY));
+assert.equal(expressionSlugs.size, 24, 'reply primaries that share a face still name one file each');
+assert.equal(expressionFaceKind('pleased', { replyActive: true }), null, 'pleased stays procedural and requests no face image');
+assert.equal(expressionFacePath(null), null);
+for (const [primary, slug] of Object.entries(EXPRESSION_FACE_BY_PRIMARY)) {
+  assert.equal(expressionFaceKind(primary), slug, primary);
+  assert.equal(expressionFacePath(slug), '/assets/companion/rig-neutral-v1/face-' + slug + '-v1.webp?v=2');
+  assert.equal(expressionFaceKind(primary, { reduced: true }), null, primary + ' skips the face image when motion is reduced');
+  assert.equal(expressionFaceKind(primary, { pull: true }), null);
+  assert.equal(expressionFaceKind(primary, { quiet: false }), null);
+  assert.equal(expressionFaceKind(primary, { replyActive: false }), null);
+}
+const hidden = expressionMorphState({ kind: 'delighted', neutralReady: true, targetReady: false, seal: 1 });
+assert.equal(hidden.ready, false);
+assert.equal(hidden.frame, 0);
+assert.equal(hidden.opacity, '0', 'a failed expression image leaves the neutral face visible');
+assert.equal(hidden.requestsImage, true);
+const shown = expressionMorphState({ kind: 'delighted', neutralReady: true, targetReady: true, seal: 1 });
+assert.equal(shown.frame, 30);
+assert.equal(shown.opacity, '1');
+assert.deepEqual(expressionMorphState({ kind: null, neutralReady: true, targetReady: true, seal: 1 }),
+  { ready: false, frame: 0, opacity: '0', requestsImage: false });
 for(const mode of Object.keys(MODES)) for(const time of [0,100,900,5000]){
  const t=target(mode,{time,speaking:true,pull:.7,voice:.2});
  for(const k of ['open','smile','round'])assert.ok(t[k]>=0&&t[k]<=1);

@@ -161,7 +161,7 @@
     // Full-size background/face were base64 PNG inside an SVG wrapper; same pixels as lossless WebP.
     if (id === "background" || id === "face") return RIG_NEUTRAL_BASE + id + ".webp?v=px3";
     // Base body under the animated breast layers: natural chest, jacket off the shoulders.
-    if (id === "torso") return RIG_NEUTRAL_BASE + "torso-composite.jpg?v=base1";
+    if (id === "torso") return RIG_NEUTRAL_BASE + "torso-composite-smooth.jpg?v=base2";
     return RIG_NEUTRAL_BASE + id + ".svg?v=eyesv3d_b76";
   }
 
@@ -201,7 +201,7 @@
         ? ACCESSORIES_BASE + "earrings/hair-no-earrings.webp?v=webp1"
         : RIG_NEUTRAL_BASE + "hair-new-baked.webp?v=webp1";
     }
-    return ACCESSORIES_BASE + "hair/hair-" + a.hair + "-1354.webp?v=webp1";
+    return ACCESSORIES_BASE + "hair/hair-" + a.hair + "-1354.webp?v=webp2";
   }
 
   function rigNecklaceSrc(id) {
@@ -564,15 +564,38 @@
     pride: [-.35, .2, .26, .003],
     thoughtful: [.45, .1, .28, -.004],
     playful: [-.5, .3, -.1, .001],
+    delighted: [-.35, .2, .26, .003],
+    surprised: [.25, .4, .4, -.002],
+    concerned: [.2, -.1, -.1, -.002],
+    amused: [-.3, .2, .1, .001],
+    affectionate: [.2, .1, .1, -.001],
+    flirty: [-.35, .25, -.05, .001],
+    coy: [.3, .15, -.05, -.002],
+    mischievous: [-.45, .3, -.1, .001],
+    adoring: [.2, .15, .15, -.001],
+    bashful: [.35, .1, .05, -.003],
+    excited: [-.25, .3, .3, .002],
+    pouty: [.2, -.1, -.1, -.001],
+    sleepy: [.15, 0, 0, -.002],
+    contented: [.2, .05, .05, -.001],
+    savoring: [.3, .08, .08, -.002],
+    pleasant_surprise: [.2, .35, .35, -.002],
+    disgust: [-.2, -.3, -.3, -.002],
+    shock: [.28, .4, .4, -.003],
+    cute: [.35, .2, .2, -.002],
+    pleased: [.25, .08, .12, -.002],
   };
   const NEUTRAL_CHARACTER_POSE = Object.freeze({tilt: 0, browLeft: 0, browRight: 0, nod: 0});
 
   function expressionPose(plan, elapsed, blocked) {
-    if (blocked || !plan || !Number.isFinite(elapsed) || elapsed <= 0 || elapsed >= 7000) return NEUTRAL_CHARACTER_POSE;
+    const duration = plan?.primary === "surprised" || plan?.primary === "shock" ? 2400 : plan?.primary === "disgust" ? 2600 : plan?.primary === "pleasant_surprise" ? 3000 : 7000;
+    if (blocked || !plan || !Number.isFinite(elapsed) || elapsed <= 0 || elapsed >= duration) return NEUTRAL_CHARACTER_POSE;
     const key = Object.prototype.hasOwnProperty.call(CHARACTER_POSES, plan.primary) ? plan.primary : "neutral";
     const pose = CHARACTER_POSES[key];
     const mix = plan.secondary === "cautious" ? .65 : 1;
-    const amount = Math.min(1, elapsed / 450, (7000 - elapsed) / 1800) * mix;
+    const attack = ["disgust", "shock"].includes(plan.primary) ? 200 : 450;
+    const release = ["contented", "savoring", "pleased"].includes(plan.primary) ? 1300 : 600;
+    const amount = Math.min(1, elapsed / attack, (duration - elapsed) / release) * mix;
     return {tilt: pose[0] * amount, browLeft: pose[1] * amount,
       browRight: pose[2] * amount, nod: pose[3] * amount};
   }
@@ -582,6 +605,7 @@
     // no new animation loop, root CSS variables, filters, or DOM lookups.
     const primary = plan && Object.prototype.hasOwnProperty.call(CHARACTER_POSES, plan.primary) ? plan.primary : "neutral";
     S.characterExpression = {primary, secondary: plan && plan.secondary, startedAt: win.performance.now()};
+    S.mouthRig?.setReplyExpression(primary, S.characterExpression.startedAt);
   }
 
   function pickVoice(voices) {
@@ -8853,7 +8877,7 @@
     let script = win.document.querySelector("script[data-hq-mouth-module]");
     if (!script) {
       script = win.document.createElement("script");
-      script.src = "/assets/hq-companion-mouth.js?v=jawfix4";
+      script.src = "/assets/hq-companion-mouth.js?v=replyface11";
       script.setAttribute("data-hq-mouth-module", "");
       script.addEventListener("load", install, { once: true });
       win.document.head.appendChild(script);
@@ -9321,7 +9345,9 @@
     if (torsoImg) {
       const needCleanTorso = isVariantHair || (acc.earring && acc.earring !== "baked");
       if (S.el) S.el.classList.toggle("has-clean-torso", !!needCleanTorso);
-      const wantTorso = RIG_NEUTRAL_BASE + "torso-composite.jpg";
+      const wantTorso = RIG_NEUTRAL_BASE + (needCleanTorso
+        ? "torso-composite-clean.webp?v=base2"
+        : "torso-composite-smooth.jpg?v=base2");
       if (torsoImg.getAttribute("src") !== wantTorso) torsoImg.src = wantTorso;
     }
     const hairSrc = rigHairTextureSrc(acc);
@@ -12468,7 +12494,7 @@
       const characterPose = expressionPose(S.characterExpression,
         nowMs - (S.characterExpression?.startedAt || 0),
         characterMotionQuery?.matches || floatDragging || S.el.classList.contains("is-bust-pull") ||
-        S.el.classList.contains("is-nsfw-fx-rhythm") || !!mouthMotion?.headTilt);
+        S.el.classList.contains("is-nsfw-fx-rhythm"));
       setLive2dStyleVar(stEl, "--rig-phone-x", phoneX.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-phone-y", phoneY.toFixed(2) + "px");
       setLive2dStyleVar(stEl, "--rig-phone-rot", clampNum(phoneX * (floatDragging ? 0.22 : 0.12), -6.5, 6.5).toFixed(2) + "deg");
@@ -12510,8 +12536,8 @@
         const browLift = (mouthMotion?.browLift || 0) * 0.85;
         const browRaise = (browAuto ? browIdle + browSpeak : 0) + pullTension * 0.82 + browLift;
         // Independent eyebrow expressions; mouth selection does not own them.
-        const targetLeftY = -browRaise * 0.78 - (mouthMotion?.browLeft || 0) * 1.65 - (browAuto ? characterPose.browLeft : 0);
-        const targetRightY = -browRaise * 0.74 - (mouthMotion?.browRight || 0) * 1.65 - (browAuto ? characterPose.browRight : 0);
+        const targetLeftY = -browRaise * 0.78 - (mouthMotion?.browLeft || 0) * 1.65 - (browAuto ? characterPose.browLeft * 3 : 0);
+        const targetRightY = -browRaise * 0.74 - (mouthMotion?.browRight || 0) * 1.65 - (browAuto ? characterPose.browRight * 3 : 0);
         const targetLeftRot = clampNum(
           (browAuto ? Math.sin(st.phase * 0.74) * 0.58 - browSpeak * 0.16 : 0) + pullTension * 0.44,
           -2.5, 2.5);

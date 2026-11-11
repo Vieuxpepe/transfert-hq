@@ -24,6 +24,21 @@ class CharacterTests(Base):
         self.assertEqual(presence.response_plan("hello", {"mode": "social", "repair_pending": True})["primary"], "thoughtful")
         self.assertEqual(presence.response_plan("hello", {"mode": "social"})["primary"], "neutral")
 
+    def test_explicit_expression_cues(self):
+        for text, expected in [("Surprise me", "surprised"), ("I am worried", "concerned"),
+                               ("That's funny", "amused"), ("I love you", "affectionate"),
+                               ("I am delighted", "delighted"), ("look flirty", "flirty"),
+                               ("look coy", "coy"), ("be mischievous", "mischievous"),
+                               ("look adoring", "adoring"), ("be bashful", "bashful"),
+                               ("look excited", "excited"), ("be pouty", "pouty"),
+                               ("look sleepy", "sleepy"), ("look contented", "contented"),
+                               ("look savoring", "savoring"), ("look pleasantly surprised", "pleasant_surprise"),
+                               ("look disgusted", "disgust"), ("look shocked", "shock"), ("look cute", "cute"),
+                               ("look pleased", "pleased")]:
+            plan = presence.response_plan(text, {"mode": "social"})
+            self.assertEqual(plan["primary"], expected)
+            self.assertTrue(presence.response_hint(plan))
+
     def test_voice_cadence_varies_without_another_history_or_catchphrase(self):
         short = presence.voice_hint("Oui.")
         long = presence.voice_hint("Une réponse déjà très développée. " * 8)

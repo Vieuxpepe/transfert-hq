@@ -183,6 +183,28 @@ def response_plan(text, decision):
     """How the character responds, not a diagnosis of the user's feelings."""
     normal = fold(text)
     mode = decision["mode"]
+    requested_expression = None
+    expression_cues = {
+        "flirty": r"(?:look|be|act|sois|air) (?:flirty|flirteuse)|flirte avec moi",
+        "coy": r"(?:look|be|act|sois|air) (?:coy|timide|coquine)",
+        "mischievous": r"(?:look|be|act|sois|air) (?:mischievous|malicieuse)",
+        "adoring": r"(?:look|be|act|sois|air) (?:adoring|admirative)",
+        "bashful": r"(?:look|be|act|sois|air) (?:bashful|genee)",
+        "excited": r"(?:look|be|act|sois|air) (?:excited|emballee)",
+        "pouty": r"(?:look|be|act|sois|air) (?:pouty|boudeuse)|fais la moue",
+        "sleepy": r"(?:look|be|act|sois|air) (?:sleepy|endormie)",
+        "contented": r"(?:look|be|act|sois|air) (?:contented|satisfaite)",
+        "pleased": r"(?:look|be|act|sois|air) (?:pleased|ravie)|mords.toi la levre",
+        "savoring": r"(?:look|be|act|sois|air) (?:savoring|savouring|comblee)|savoure ce moment",
+        "pleasant_surprise": r"(?:look|be|act|sois|air) (?:pleasantly surprised|agreablement surprise)",
+        "disgust": r"(?:look|be|act|sois|air) (?:disgusted|degoûtee|degoutee)",
+        "shock": r"(?:look|be|act|sois|air) (?:shocked|choquee)",
+        "cute": r"(?:look|be|act|sois|air) (?:cute|adorable|mignonne)",
+    }
+    for expression, pattern in expression_cues.items():
+        if re.search(pattern, normal):
+            requested_expression = expression
+            break
     if decision.get("repair_pending"):
         primary, secondary, voice = "thoughtful", "gentle", "neutral"
     elif mode == "comfort":
@@ -195,6 +217,18 @@ def response_plan(text, decision):
         primary, secondary, voice = "pride", "gentle", "warm"
     elif mode == "recall":
         primary, secondary, voice = "thoughtful", "attentive", "thoughtful"
+    elif requested_expression:
+        primary, secondary, voice = requested_expression, "gentle", "warm"
+    elif re.search(r"\b(?:surprise me|surprends.moi|what a surprise|quelle surprise)\b", normal):
+        primary, secondary, voice = "surprised", "attentive", "warm"
+    elif re.search(r"\b(?:i am worried|i'm worried|je suis inquiet|je suis inquiete|je m'inquiete)\b", normal):
+        primary, secondary, voice = "concerned", "attentive", "warm"
+    elif re.search(r"\b(?:that's funny|that is funny|c'est drole|tu me fais rire)\b", normal):
+        primary, secondary, voice = "amused", "gentle", "warm"
+    elif re.search(r"\b(?:i love you|je t'aime|je t'adore)\b", normal):
+        primary, secondary, voice = "affectionate", "gentle", "warm"
+    elif re.search(r"\b(?:i'm delighted|i am delighted|je suis ravi|je suis ravie)\b", normal):
+        primary, secondary, voice = "delighted", "gentle", "warm"
     elif re.search(r"\b(?:tease me|challenge me|taquine.moi|defie.moi|fais.moi rire)\b", normal):
         primary, secondary, voice = "playful", "gentle", "deadpan"
     elif re.search(r"\b(?:why|pourquoi|curious|curieux|curieuse|wonder|explore|explorer)\b", normal):
@@ -214,6 +248,26 @@ def response_hint(plan):
         "concentration": "Concentration chaleureuse : précision d'abord, personnalité dans un détail juste.",
         "thoughtful": "Prends position avec une raison, distingue incertitude et désaccord; reconnais une correction simplement.",
         "playful": "Un défi léger ou une pointe pince-sans-rire, sans rabaisser; laisse aussi la tendresse surprendre.",
+        "surprised": "Accueille la surprise brièvement avec curiosité.",
+        "concerned": "Écoute l'inquiétude avec tact et sans dramatiser.",
+        "amused": "Accueille l'humour avec légèreté.",
+        "affectionate": "Réponds avec une tendresse naturelle et mesurée.",
+        "delighted": "Partage la joie avec chaleur, sans inventer d'événement.",
+        "flirty": "Réponds avec une complicité légère et respectueuse du registre actif.",
+        "coy": "Adopte une réserve joueuse et chaleureuse.",
+        "mischievous": "Propose une malice légère sans rabaisser.",
+        "adoring": "Réponds avec une admiration douce et naturelle.",
+        "bashful": "Laisse paraître une timidité douce et ludique.",
+        "excited": "Montre un enthousiasme vif sans inventer de réussite.",
+        "pouty": "Joue une petite moue légère, sans reproche.",
+        "sleepy": "Prends un ton reposé et paisible.",
+        "contented": "Exprime un contentement calme et chaleureux.",
+        "pleased": "Exprime une satisfaction douce et chaleureuse.",
+        "savoring": "Savoure le moment doucement, sans inventer de sensation.",
+        "pleasant_surprise": "Accueille une agréable surprise avec un élan bref.",
+        "disgust": "Joue une réaction de dégoût brève, sans l'attribuer à une personne.",
+        "shock": "Joue une vive surprise brève, sans inventer d'événement.",
+        "cute": "Adopte une expression joyeuse et attachante.",
         "neutral": "Assume un élan vif et une tendresse directe; humour complice sans plaisanterie ni compliment forcés.",
     }
     return "NUANCE DE RÉPONSE (pas une humeur attribuée à l'utilisateur) : " + nuance[plan["primary"]]
