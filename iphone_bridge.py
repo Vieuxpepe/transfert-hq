@@ -75,8 +75,10 @@ import hq_today
 import hq_search
 
 PORT = 8765
-ROOT = Path(__file__).resolve().parent
-REACTION_MANIFEST_REVISION_PATH = ROOT / "assets/companion/chat/reactions/manifest.revision"
+CODE_ROOT = Path(__file__).resolve().parent
+ROOT = CODE_ROOT
+STATE_ROOT_EXPLICIT = False
+REACTION_MANIFEST_REVISION_PATH = CODE_ROOT / "assets/companion/chat/reactions/manifest.revision"
 
 
 def reaction_manifest_revision() -> str:
@@ -202,7 +204,7 @@ _REACTION_FP_OGG = re.compile(r"^/.+/reactions/elevenlabs_[0-9]+/[a-z0-9_-]+\.[0
 
 def reaction_fingerprinted_ogg_asset(path: Path) -> bool:
     try:
-        rel = path.relative_to(ROOT / "assets").as_posix()
+        rel = path.relative_to(CODE_ROOT / "assets").as_posix()
     except ValueError:
         return False
     return path.suffix.lower() == ".ogg" and _REACTION_FP_OGG.match("/assets/" + rel) is not None
@@ -276,7 +278,7 @@ def asset_version_for(rel: str) -> str | None:
         if hit and now - hit[0] < _ASSET_VER_TTL:
             return hit[1]
     try:
-        ver = asset_version((ROOT / "assets" / rel).stat())
+        ver = asset_version((CODE_ROOT / "assets" / rel).stat())
     except OSError:
         ver = None
     with _ASSET_VER_LOCK:
@@ -1197,6 +1199,66 @@ def load_config(*, write: bool = True) -> dict:
 
 
 
+def _is_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction and is_junction():
+        return True
+    if os.name != "nt" or not path.exists():
+        return False
+    attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+    return attrs != 0xFFFFFFFF and bool(attrs & 0x400)
+
+
+def configure_layout() -> None:
+    """Keep shipped code and persistent state apart when HQ_STATE_ROOT is set.
+
+    The variable must name an existing directory that already contains
+    bridge_config.json. A missing directory is not created. Links are refused.
+    With the variable unset, code and state stay in the directory of this file.
+    """
+    global ROOT, PORT, STATE_ROOT_EXPLICIT, CONFIG_PATH, CONFIG_BAK_PATH, PID_PATH, TMP_DIR, SESSIONS_PATH
+    raw_port = os.environ.get("HQ_PORT", "").strip()
+    if raw_port:
+        try:
+            chosen = int(raw_port)
+        except ValueError as exc:
+            raise SystemExit("FATAL: HQ_PORT must be an integer") from exc
+        if not 1024 <= chosen <= 65535:
+            raise SystemExit("FATAL: HQ_PORT is outside 1024-65535")
+        PORT = chosen
+    raw_state = os.environ.get("HQ_STATE_ROOT", "").strip()
+    if not raw_state:
+        return
+    state = Path(raw_state).expanduser()
+    if not state.is_absolute():
+        raise SystemExit("FATAL: HQ_STATE_ROOT must be an absolute path")
+    if _is_reparse_point(state):
+        raise SystemExit("FATAL: HQ_STATE_ROOT must not be a link or junction")
+    try:
+        resolved = state.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit("FATAL: HQ_STATE_ROOT does not exist and will not be created") from exc
+    if not resolved.is_dir() or _is_reparse_point(resolved):
+        raise SystemExit("FATAL: HQ_STATE_ROOT must be a real directory")
+    config = resolved / "bridge_config.json"
+    if not config.is_file() or _is_reparse_point(config):
+        raise SystemExit("FATAL: HQ_STATE_ROOT has no bridge_config.json; refusing to create one")
+    if STATE_ROOT_EXPLICIT or raw_state:
+        if PORT in (8765, 8766):
+            raise SystemExit("FATAL: a side-by-side release must not bind 8765 or 8766")
+    ROOT = resolved
+    STATE_ROOT_EXPLICIT = True
+    CONFIG_PATH = ROOT / "bridge_config.json"
+    CONFIG_BAK_PATH = CONFIG_PATH.with_name("." + CONFIG_PATH.name + ".bak")
+    PID_PATH = ROOT / "bridge.pid"
+    TMP_DIR = ROOT / ".tmp"
+    SESSIONS_PATH = ROOT / "bridge_sessions.json"
+
+
+configure_layout()
+
 try:
     CONFIG = load_config()
 except SystemExit as _fatal:  # Phase 15: a malformed config otherwise dies in a hidden console and nobody sees why
@@ -1243,7 +1305,10 @@ def ensure_folders_and_migrate() -> None:
     folders = list(CONFIG.get("folders") or DEFAULT_FOLDERS)
     for name in folders:
         (ROOT / name).mkdir(parents=True, exist_ok=True)
-    (ROOT / "assets").mkdir(parents=True, exist_ok=True)
+    if ROOT == CODE_ROOT:
+        (ROOT / "assets").mkdir(parents=True, exist_ok=True)
+    elif not (CODE_ROOT / "assets").is_dir():
+        raise SystemExit("FATAL: release assets directory is missing")
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Photos").mkdir(parents=True, exist_ok=True)
     (ROOT / "Inbox" / "Captures").mkdir(parents=True, exist_ok=True)
@@ -9001,7 +9066,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._drawings_get(raw, parsed):
             return True
         if raw == "/hq-sw.js":
-            path = ROOT / "assets" / "hq-sw.js"
+            path = CODE_ROOT / "assets" / "hq-sw.js"
             if not path.is_file():
                 self._send(404, b"missing", "text/plain; charset=utf-8")
                 return True
@@ -9847,7 +9912,7 @@ class Handler(BaseHTTPRequestHandler):
             if not rel or ".." in rel.replace("\\", "/"):
                 self._send(404, b"missing")
                 return
-            assets_root = (ROOT / "assets").resolve()
+            assets_root = (CODE_ROOT / "assets").resolve()
             path = (assets_root / rel).resolve()
             try:
                 path.relative_to(assets_root)
@@ -10969,6 +11034,8 @@ def main() -> None:
     try:
         mtime = datetime.fromtimestamp(Path(__file__).stat().st_mtime).isoformat(timespec="seconds")
         print(f" Loaded : {__file__} (mtime {mtime})")
+        print(f" Code   : {CODE_ROOT}")
+        print(f" State  : {ROOT}")
         print(f" Sessions loaded: {len(_SESSIONS)}")
     except OSError:
         pass
@@ -11016,6 +11083,8 @@ def main() -> None:
         planner_port = int(CONFIG.get("planner_port") or hq_planner.DEFAULT_PORT)
     except (TypeError, ValueError):
         planner_port = hq_planner.DEFAULT_PORT
+    if STATE_ROOT_EXPLICIT and planner_port in (8765, 8766):
+        raise SystemExit("FATAL: a side-by-side release must not bind planner port 8765 or 8766")
     planner_httpd = None
     try:
         planner_httpd = hq_planner.start(ROOT, port=planner_port)
