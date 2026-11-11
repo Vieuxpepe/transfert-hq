@@ -41,6 +41,7 @@ GET_EPS = (
     "/api/diag/client-log",
     "/api/diag/session-bundle",
     "/api/diag/agent-brief",
+    "/api/diag/security",
 )
 
 
