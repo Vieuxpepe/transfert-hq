@@ -116,4 +116,12 @@ if ($ValidateOnly) {
 }
 $env:HQ_STATE_ROOT = $stateFull
 $env:HQ_PORT = "$Port"
+# Stay attached to this Python process. A native failure must not be swallowed
+# as success, and it must not be turned into a PowerShell error that hides the
+# real exit code.
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 & py.exe -3 $bridge
+if ($null -eq $LASTEXITCODE) { exit 1 }
+exit $LASTEXITCODE

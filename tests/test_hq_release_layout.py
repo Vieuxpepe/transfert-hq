@@ -247,7 +247,8 @@ def _wait_up(proc: subprocess.Popen, port: str) -> None:
             return
         except OSError:
             time.sleep(0.3)
-    raise SystemExit(f"bridge did not answer on {port}")
+    extra = "".join(getattr(proc, "_hq_output", []))[-1500:]
+    raise SystemExit(f"bridge did not answer on {port}\n{extra}")
 
 
 def test_same_state_rejects_second_writer() -> None:
@@ -291,7 +292,7 @@ def test_distinct_roots_and_port_collision() -> None:
         _wait_up(second, "18777")
         collided = _launch(other, "18775")
         output, _ = collided.communicate(timeout=40)
-        if collided.returncode == 0 or "Cannot bind" not in output:
+        if collided.returncode == 0 or "Cannot bind 127.0.0.1:18775" not in output:
             raise SystemExit(output or f"collision rc={collided.returncode}")
         urllib.request.urlopen("http://127.0.0.1:18775/assets/hq-companion.js", timeout=5).read()
         urllib.request.urlopen("http://127.0.0.1:18777/assets/hq-household-budget.js", timeout=5).read()
@@ -334,6 +335,101 @@ def test_validate_only_reads_planner_port() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _launch_script(state: Path, port: str, creationflags: int) -> subprocess.Popen:
+    proc = subprocess.Popen(
+        ["powershell", "-NoProfile", "-NonInteractive", "-File", str(SOURCE / "start_release.ps1"),
+         "-ReleaseDir", str(SOURCE), "-StateRoot", str(state), "-Port", port],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=creationflags,
+    )
+    proc._hq_output = []
+
+    def _drain() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            proc._hq_output.append(line)
+
+    import threading
+    threading.Thread(target=_drain, daemon=True).start()
+    return proc
+
+
+def _request_console_stop(proc: subprocess.Popen) -> None:
+    """Ctrl+C on the launcher's own console, which the bridge handles as a normal stop."""
+    import ctypes
+    kernel = ctypes.windll.kernel32
+    kernel.FreeConsole()
+    if not kernel.AttachConsole(proc.pid):
+        raise SystemExit(f"could not attach to the launcher console ({ctypes.get_last_error()})")
+    kernel.SetConsoleCtrlHandler(None, True)
+    sent = bool(kernel.GenerateConsoleCtrlEvent(0, 0))
+    time.sleep(1)
+    kernel.FreeConsole()
+    kernel.SetConsoleCtrlHandler(None, False)
+    if not kernel.AttachConsole(0xFFFFFFFF):
+        kernel.AllocConsole()
+    if not sent:
+        raise SystemExit("could not signal the launcher")
+
+
+def test_launcher_propagates_exit_code() -> None:
+    root = Path(tempfile.mkdtemp(prefix="hq-launcher-exit-"))
+    live = root / "live"
+    other = root / "other"
+    first = collided = None
+    port = "18881"
+    try:
+        _write_state(live, 18882)
+        _write_state(other, 18884)
+        sessions = b'{"synthetic-rehearsal":{"exp":9999999999,"user":"admin","role":"admin","gen":0}}'
+        (live / "bridge_sessions.json").write_bytes(sessions)
+        (other / "bridge_sessions.json").write_bytes(sessions)
+        missing = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(SOURCE / "start_release.ps1"), "-ValidateOnly"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=20,
+        )
+        if missing.returncode == 0:
+            raise SystemExit(missing.stdout + missing.stderr)
+        valid = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(SOURCE / "start_release.ps1"),
+             "-ReleaseDir", str(SOURCE), "-StateRoot", str(live), "-Port", port, "-ValidateOnly"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        if valid.returncode != 0:
+            raise SystemExit(valid.stdout + valid.stderr)
+        first = _launch_script(live, port, subprocess.CREATE_NEW_CONSOLE)
+        _wait_up(first, port)
+        collided = _launch_script(other, port, subprocess.CREATE_NEW_PROCESS_GROUP)
+        try:
+            collided.wait(timeout=40)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("launcher collision did not exit")
+        output = "".join(collided._hq_output)
+        if collided.returncode != 1 or "Cannot bind 127.0.0.1:18881" not in output:
+            raise SystemExit(output or f"launcher collision rc={collided.returncode}")
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/assets/hq-household-budget.js", timeout=5).read()
+        if (live / "bridge_sessions.json").read_bytes() != sessions or (other / "bridge_sessions.json").read_bytes() != sessions:
+            raise SystemExit("failed launch changed session data")
+        for state in (live, other):
+            if (state / ".hq-household").exists() or (state / "inventory.json").exists():
+                raise SystemExit("failed launch created household storage")
+        _request_console_stop(first)
+        try:
+            first.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            raise SystemExit("controlled shutdown did not return")
+        if first.returncode != 0 or "Stopped." not in "".join(first._hq_output):
+            raise SystemExit(f"controlled shutdown rc={first.returncode}\n{''.join(first._hq_output)[-1500:]}")
+    finally:
+        _stop(collided)
+        _stop(first)
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_launcher_refuses_live_workspace() -> None:
     script = SOURCE / "start_release.ps1"
     completed = subprocess.run(
@@ -351,6 +447,7 @@ def main() -> None:
     test_config_is_not_created()
     test_launcher_refuses_live_workspace()
     test_validate_only_reads_planner_port()
+    test_launcher_propagates_exit_code()
     test_same_state_rejects_second_writer()
     test_distinct_roots_and_port_collision()
     test_live_split()

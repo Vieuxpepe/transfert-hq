@@ -1309,6 +1309,12 @@ def release_state_lock() -> None:
         _STATE_LOCK = None
 
 
+def configured_bind_host() -> str:
+    """The address main() will pass to the listening socket. The default stays 0.0.0.0."""
+    raw = CONFIG.get("bind_host") if isinstance(CONFIG, dict) else None
+    return str(raw or "0.0.0.0").strip() or "0.0.0.0"
+
+
 def effective_planner_port(config: dict | None = None) -> int:
     """The planner port this process would bind. Missing means the release default."""
     source = CONFIG if config is None else config
@@ -11090,7 +11096,7 @@ def main() -> None:
     if already_running():
         release_state_lock()
         if STATE_ROOT_EXPLICIT:
-            raise SystemExit(f"FATAL: Cannot bind {BIND_HOST}:{PORT}: address already in use")
+            raise SystemExit(f"FATAL: Cannot bind {configured_bind_host()}:{PORT}: address already in use")
         print(f"Transfert Bridge already running on port {PORT}")
         return
 
@@ -11102,7 +11108,7 @@ def main() -> None:
             "Refusing to start without authentication (Tailscale Serve/Funnel safety)."
         )
     LOOPBACK_ONLY = False
-    BIND_HOST = str(CONFIG.get("bind_host") or "0.0.0.0").strip() or "0.0.0.0"
+    BIND_HOST = configured_bind_host()
 
     write_pid()
     lan = lan_ipv4()
