@@ -46,6 +46,9 @@ def main() -> None:
                 page.locator("#repas").get_by_role("button", name="Préparer la liste").click()
                 page.get_by_text("0,25 g").wait_for()
                 assert page.locator("#repas").get_by_role("button", name="Enregistrer la liste d'épicerie").count() == 1
+                assert page.locator("#repas svg.hq-hh-ico").count() >= 4
+                assert page.locator('#repas [data-hh-icon="tomato"]').count() >= 1
+                assert page.locator('#repas [data-hh-icon="rice"]').count() >= 1
                 page.screenshot(path=str(SHOTS / f"household-views-{name}.png"), full_page=True)
                 page.close()
         finally:

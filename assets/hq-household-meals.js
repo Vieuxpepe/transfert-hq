@@ -121,6 +121,22 @@
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  function iconsApi() {
+    return root.HqHouseholdIcons || null;
+  }
+
+  function iconBadge(resolution, className) {
+    const api = iconsApi();
+    if (!api || !api.badge) return null;
+    return api.badge(document, resolution, className || "");
+  }
+
+  function appendLabeled(parent, resolution, text, nameClass) {
+    const badge = iconBadge(resolution, "is-sm");
+    if (badge) parent.appendChild(badge);
+    parent.appendChild(el("span", { class: nameClass || "hq-meals-line-name" }, text));
+  }
+
   const sessions = new WeakMap();
 
   function mount(container, options) {
@@ -228,20 +244,25 @@
     container.appendChild(note);
 
     if (session.status === "loading") {
-      container.appendChild(el("p", { class: "hq-meals-status", role: "status" }, "Chargement des repas…"));
+      container.appendChild(el("p", { class: "hq-meals-status is-loading", role: "status" }, "Chargement des repas…"));
       return;
     }
     if (session.status === "error") {
-      container.appendChild(el("p", { class: "hq-meals-status", role: "alert" }, session.message));
-      container.appendChild(el("button", { type: "button", "data-action": "retry" }, "Réessayer"));
+      const err = el("div", { class: "hq-meals-empty is-error", role: "alert" });
+      err.appendChild(el("p", { class: "hq-meals-status" }, session.message));
+      err.appendChild(el("button", { type: "button", class: "hq-meals-btn", "data-action": "retry" }, "Réessayer"));
+      container.appendChild(err);
       return;
     }
 
     if (!session.plan) {
-      container.appendChild(el("p", { class: "hq-meals-status" }, "Aucun plan pour cette semaine."));
-      container.appendChild(el("button", { type: "button", "data-action": "create-week" }, "Créer la semaine"));
+      const empty = el("div", { class: "hq-meals-empty" });
+      empty.appendChild(el("p", { class: "hq-meals-status" }, "Aucun plan pour cette semaine."));
+      empty.appendChild(el("button", { type: "button", class: "hq-meals-btn is-primary", "data-action": "create-week" }, "Créer la semaine"));
+      container.appendChild(empty);
     }
 
+    const scroller = el("div", { class: "hq-meals-grid-wrap" });
     const grid = el("div", { class: "hq-meals-grid", role: "grid", "aria-labelledby": "hq-meals-title" });
     grid.appendChild(el("div", { class: "hq-meals-corner" }, ""));
     session.week.days.forEach(function (day, index) {
@@ -249,48 +270,77 @@
     });
     const slots = slotMap(session.plan && session.plan.slots);
     MEALS.forEach(function (meal) {
-      grid.appendChild(el("div", { class: "hq-meals-meal", role: "rowheader" }, meal[1]));
+      const mealHeader = el("div", { class: "hq-meals-meal", role: "rowheader" });
+      const mealRes = iconsApi() ? iconsApi().resolveMeal(meal[0]) : null;
+      if (mealRes) {
+        const mealBadge = iconBadge(mealRes, "is-sm");
+        if (mealBadge) mealHeader.appendChild(mealBadge);
+      }
+      mealHeader.appendChild(el("span", {}, meal[1]));
+      grid.appendChild(mealHeader);
       session.week.days.forEach(function (day) {
         const key = day + "|" + meal[0];
         const slot = slots.get(key);
         const recipe = slot && slot.recipe_id ? recipeById(session, slot.recipe_id) : null;
         const label = recipe ? recipe.title : "Vide";
+        const selected = session.selected && session.selected.date === day && session.selected.meal === meal[0];
         const button = el("button", {
           type: "button",
-          class: "hq-meals-slot",
+          class: "hq-meals-slot" + (recipe ? " is-filled" : " is-empty") + (selected ? " is-selected" : ""),
           role: "gridcell",
           "data-action": "open-slot",
           "data-date": day,
           "data-meal": meal[0],
+          "aria-pressed": selected ? "true" : "false",
           "aria-label": meal[1] + " " + day + (recipe ? ", " + recipe.title : ", vide"),
-        }, label);
+        });
+        if (recipe && iconsApi()) {
+          const dish = iconsApi().resolveRecipe(recipe.title, recipe.ingredients);
+          const dishBadge = iconBadge(dish, "is-sm");
+          if (dishBadge) button.appendChild(dishBadge);
+        }
+        button.appendChild(el("span", { class: "hq-meals-slot-label" }, label));
         grid.appendChild(button);
       });
     });
-    container.appendChild(grid);
+    scroller.appendChild(grid);
+    container.appendChild(scroller);
 
     if (session.recipes.length === 0) {
-      container.appendChild(el("p", { class: "hq-meals-status" }, "Aucune recette enregistrée."));
+      container.appendChild(el("p", { class: "hq-meals-status is-empty" }, "Aucune recette enregistrée."));
     }
 
     const detail = el("section", { class: "hq-meals-detail", "aria-live": "polite" });
+    detail.appendChild(el("h3", { class: "hq-meals-section-title" }, "Recette"));
     if (session.selected) paintDetail(detail, session);
-    else detail.appendChild(el("p", {}, "Choisissez un repas pour voir la recette, les ingrédients et les portions."));
+    else detail.appendChild(el("p", { class: "hq-meals-hint" }, "Choisissez un repas pour voir la recette, les ingrédients et les portions."));
     container.appendChild(detail);
 
     const grocery = el("section", { class: "hq-meals-grocery" });
-    grocery.appendChild(el("h3", {}, "Liste d'épicerie"));
-    grocery.appendChild(el("p", {}, "La génération ne déduit pas l'inventaire et n'enregistre ni achat ni dépense."));
-    const preview = el("button", { type: "button", "data-action": "grocery-preview" }, "Préparer la liste");
+    grocery.appendChild(el("h3", { class: "hq-meals-section-title" }, "Liste d'épicerie"));
+    grocery.appendChild(el("p", { class: "hq-meals-hint" }, "La génération ne déduit pas l'inventaire et n'enregistre ni achat ni dépense."));
+    const actions = el("div", { class: "hq-meals-actions" });
+    const preview = el("button", { type: "button", class: "hq-meals-btn", "data-action": "grocery-preview" }, "Préparer la liste");
     if (!session.plan) preview.disabled = true;
-    grocery.appendChild(preview);
+    actions.appendChild(preview);
+    grocery.appendChild(actions);
     if (session.preview) {
+      const panel = el("div", { class: "hq-meals-preview", "data-mode": "preview" });
+      panel.appendChild(el("p", { class: "hq-meals-preview-badge" }, "Aperçu — pas encore enregistré"));
+      const list = el("ul", { class: "hq-meals-lines" });
       (session.preview.lines || []).forEach(function (line) {
-        grocery.appendChild(el("p", { class: "hq-meals-line" }, (line.name || "Ingrédient") + " — " + formatMilli(line.qty_milli, line.unit)));
+        const item = el("li", { class: "hq-meals-line" });
+        const name = line.name || "Ingrédient";
+        const resolved = iconsApi() ? iconsApi().resolveIngredient(name) : { key: "other", category: "other" };
+        appendLabeled(item, resolved, name, "hq-meals-line-name");
+        item.appendChild(el("span", { class: "hq-meals-line-qty" }, formatMilli(line.qty_milli, line.unit)));
+        list.appendChild(item);
       });
-      if ((session.preview.lines || []).length === 0) grocery.appendChild(el("p", {}, "Rien à acheter."));
-      grocery.appendChild(el("p", {}, "Le stock disponible a été soustrait. L'API ne renvoie pas le détail du stock, seulement la quantité à acheter."));
-      grocery.appendChild(el("button", { type: "button", "data-action": "grocery-commit" }, "Enregistrer la liste d'épicerie"));
+      panel.appendChild(list);
+      if ((session.preview.lines || []).length === 0) panel.appendChild(el("p", { class: "hq-meals-hint" }, "Rien à acheter."));
+      panel.appendChild(el("p", { class: "hq-meals-hint" }, "Le stock disponible a été soustrait. L'API ne renvoie pas le détail du stock, seulement la quantité à acheter."));
+      panel.appendChild(el("button", { type: "button", class: "hq-meals-btn is-primary", "data-action": "grocery-commit" }, "Enregistrer la liste d'épicerie"));
+      grocery.appendChild(panel);
     }
     if (session.message && session.status === "ready") grocery.appendChild(el("p", { class: "hq-meals-status", role: "status" }, session.message));
     container.appendChild(grocery);
@@ -298,30 +348,54 @@
 
   function paintDetail(detail, session) {
     const recipe = session.selected.recipe;
-    detail.appendChild(el("h3", {}, recipe ? recipe.title : "Créneau vide"));
-    detail.appendChild(el("p", {}, session.selected.date + " · " + (MEALS.find(function (meal) { return meal[0] === session.selected.meal; }) || ["", ""])[1]));
+    const card = el("article", { class: "hq-meals-recipe" + (recipe ? " is-filled" : " is-empty") });
+    const titleRow = el("div", { class: "hq-meals-recipe-title-row" });
+    if (recipe && iconsApi()) {
+      const dish = iconsApi().resolveRecipe(recipe.title, recipe.ingredients);
+      const dishBadge = iconBadge(dish, "is-lg");
+      if (dishBadge) titleRow.appendChild(dishBadge);
+    } else if (!recipe && iconsApi()) {
+      const mealRes = iconsApi().resolveMeal(session.selected.meal);
+      const mealBadge = iconBadge(mealRes, "is-lg");
+      if (mealBadge) titleRow.appendChild(mealBadge);
+    }
+    titleRow.appendChild(el("h4", { class: "hq-meals-recipe-title" }, recipe ? recipe.title : "Créneau vide"));
+    card.appendChild(titleRow);
+    card.appendChild(el("p", { class: "hq-meals-meta" }, session.selected.date + " · " + (MEALS.find(function (meal) { return meal[0] === session.selected.meal; }) || ["", ""])[1]));
     if (!recipe) {
-      detail.appendChild(el("p", {}, "Aucune recette dans ce créneau."));
+      card.appendChild(el("p", { class: "hq-meals-hint" }, "Aucune recette dans ce créneau."));
     } else {
-      detail.appendChild(el("p", {}, "Portions enregistrées : " + recipe.servings));
+      card.appendChild(el("p", { class: "hq-meals-servings-label" }, "Portions enregistrées : " + recipe.servings));
+      const ings = el("ul", { class: "hq-meals-ingredients" });
       (recipe.ingredients || []).forEach(function (ing) {
-        detail.appendChild(el("p", {}, (ing.name || "") + " — " + formatMilli(ing.qty_milli, ing.unit)));
+        const item = el("li", { class: "hq-meals-ingredient" });
+        const name = ing.name || "";
+        const resolved = iconsApi() ? iconsApi().resolveIngredient(name) : { key: "other", category: "other" };
+        appendLabeled(item, resolved, name, "hq-meals-line-name");
+        item.appendChild(el("span", { class: "hq-meals-line-qty" }, formatMilli(ing.qty_milli, ing.unit)));
+        ings.appendChild(item);
       });
-      (recipe.steps || []).forEach(function (step, index) {
-        detail.appendChild(el("p", {}, (index + 1) + ". " + step));
+      card.appendChild(ings);
+      const steps = el("ol", { class: "hq-meals-steps" });
+      (recipe.steps || []).forEach(function (step) {
+        steps.appendChild(el("li", {}, step));
       });
-      const form = el("form", { "data-action": "save-servings" });
+      card.appendChild(steps);
+      const form = el("form", { class: "hq-meals-servings", "data-action": "save-servings" });
+      const label = el("label", { class: "hq-meals-field" }, "Portions");
       const input = el("input", { type: "number", min: "1", max: "100", step: "1", name: "servings", "aria-label": "Portions", value: String(recipe.servings) });
-      form.appendChild(input);
-      form.appendChild(el("button", { type: "submit" }, "Enregistrer les portions"));
+      label.appendChild(input);
+      form.appendChild(label);
+      form.appendChild(el("button", { type: "submit", class: "hq-meals-btn is-primary" }, "Enregistrer les portions"));
       form.addEventListener("submit", function (event) {
         event.preventDefault();
         saveServings(session, recipe, input.value);
       });
-      detail.appendChild(form);
+      card.appendChild(form);
     }
+    detail.appendChild(card);
     if (session.recipes.length) {
-      const picker = el("label", {}, "Recette");
+      const picker = el("label", { class: "hq-meals-field hq-meals-picker" }, "Recette");
       const select = el("select", { "aria-label": "Choisir une recette" });
       select.appendChild(el("option", { value: "" }, "Aucune"));
       session.recipes.forEach(function (item) {

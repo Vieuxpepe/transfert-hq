@@ -6295,6 +6295,7 @@ def render_app() -> bytes:
 <style>{BASE_CSS}</style>
 <link rel="stylesheet" href="/assets/hq.css"/>
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
+<link rel="stylesheet" href="/assets/hq-household-icons.css"/>
 <link rel="stylesheet" href="/assets/hq-household-meals.css"/>
 <link rel="stylesheet" href="/assets/hq-household-budget.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
@@ -7826,6 +7827,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar-quick.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-household-icons.js"></script>
 <script src="/assets/hq-household-meals.js"></script>
 <script src="/assets/hq-household-budget.js"></script>
 <script src="/assets/hq-household-nav.js"></script>
