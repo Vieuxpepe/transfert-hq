@@ -16,6 +16,7 @@ stored in the session file.
 from __future__ import annotations
 
 import hashlib
+import math
 import hmac
 import json
 import re
@@ -243,9 +244,13 @@ def mint_csrf_for_session(sessions: Path, token: str, *, now: float | None = Non
     if type(generation) is not int or exp is _MISSING or type(exp) is bool or not isinstance(exp, (int, float)):
         return ""
     current = time.time() if now is None else now
-    if float(exp) <= current:
+    try:
+        expires = float(exp)
+    except (TypeError, ValueError, OverflowError):
         return ""
-    return mint_csrf(token, generation, float(exp), ensure_csrf_key(sessions), now=current)
+    if not math.isfinite(expires) or expires <= current:
+        return ""
+    return mint_csrf(token, generation, expires, ensure_csrf_key(sessions), now=current)
 
 
 def assess_csrf(
@@ -342,7 +347,11 @@ def classify_persisted_session(path: Path, token: str, expected_generation: int)
     exp = info.get("exp", _MISSING)
     if exp is _MISSING or type(exp) is bool or not isinstance(exp, (int, float)):
         return "anonymous"
-    if float(exp) <= time.time():
+    try:
+        expires = float(exp)
+    except (TypeError, ValueError, OverflowError):
+        return "anonymous"
+    if not math.isfinite(expires) or expires <= time.time():
         return "anonymous"
     role = info.get("role", _MISSING)
     if type(role) is not str or role != "admin":

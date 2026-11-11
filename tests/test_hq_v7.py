@@ -808,8 +808,8 @@ class SecurityRegressionTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_repo_docs_stay_at_root(self):
-        # ensure_folders_and_migrate() moves stray root files into Inbox at every start:
-        # shipped docs must be system names or the live git tree turns dirty.
+        # A root without readable Git metadata must not be migrated. Shipped docs,
+        # including tracked Markdown, also stay when Git can identify them.
         tmp = Path(tempfile.mkdtemp(prefix="hq-docs-"))
         repo = Path(__file__).resolve().parents[1]
         docs = [p.name for p in repo.iterdir() if p.is_file() and p.suffix.lower() in {".md", ".txt"}]

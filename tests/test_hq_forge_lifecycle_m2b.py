@@ -261,8 +261,8 @@ class Roles(unittest.TestCase):
         before = self.sessions.read_bytes()
         self.bridge.SESSIONS_PATH = self.sessions
         life.reload_persisted_sessions(self.bridge)
-        self.assertEqual(self.bridge.session_role("operator"), "admin")
-        self.assertEqual(self.bridge.session_role("missing"), "admin")
+        self.assertEqual(self.bridge.session_role("operator"), "")
+        self.assertEqual(self.bridge.session_role("missing"), "")
         self.assertEqual(self.sessions.read_bytes(), before)
         for name in cases:
             self.assertEqual(gate.classify_persisted_session(self.sessions, name, self.generation), "forbidden", name)
@@ -280,7 +280,18 @@ class Roles(unittest.TestCase):
         self.assertNotIn("transfert_session=", dumped)
         for name in cases:
             self.assertNotIn(name, dumped)
-        note("raw-role-table", refused=len(cases), legacy_operator_is_admin=True, file_preserved=True, production_pair_exercised=False)
+        note("raw-role-table", refused=len(cases), legacy_operator_is_admin=False, file_preserved=True, production_pair_exercised=False)
+
+    def test_overflow_expiration_stays_anonymous(self) -> None:
+        huge = 10 ** 4000
+        self.write_sessions({"huge": {"exp": huge, "user": "a", "role": "admin", "gen": self.generation}})
+        before = self.sessions.read_bytes()
+        self.assertEqual(gate.classify_persisted_session(self.sessions, "huge", self.generation), "anonymous")
+        self.assertEqual(gate.mint_csrf_for_session(self.sessions, "huge"), "")
+        self.bridge.SESSIONS_PATH = self.sessions
+        life.reload_persisted_sessions(self.bridge)
+        self.assertEqual(self.bridge.session_role("huge"), "")
+        self.assertEqual(self.sessions.read_bytes(), before)
 
     def test_exact_admin_revocation_generation_and_identity(self) -> None:
         token = self.bridge.issue_session("admin", "admin")

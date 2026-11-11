@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import mimetypes
 import os
 import re
@@ -1208,6 +1209,36 @@ def save_config() -> None:
         _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
 
 
+def _git_tracked_root_names(root: Path) -> set[str] | None:
+    """Tracked file names that sit directly in *root*.
+
+    None means Git metadata is missing or the tracking status cannot be read.
+    Callers must not move root files in that case.
+    """
+    if not (root / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached"],
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    names: set[str] = set()
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        text = os.fsdecode(raw)
+        if "/" in text or "\\" in text:
+            continue
+        names.add(text.casefold())
+    return names
+
+
 def ensure_folders_and_migrate() -> None:
     folders = list(CONFIG.get("folders") or DEFAULT_FOLDERS)
     for name in folders:
@@ -1233,18 +1264,39 @@ def ensure_folders_and_migrate() -> None:
                 p.rename(target)
             except OSError:
                 pass
-    inbox = ROOT / (CONFIG.get("default_folder") or "Inbox")
-    for p in ROOT.iterdir():
-        if not p.is_file():
+    # Confirmed hazard: this loop moved root Markdown, including tracked
+    # MINI_QUESTS.md, into Inbox and renamed a collision to "<stem>-migrated".
+    # The Gate A check is a separate observation: the root file was absent then,
+    # and no collision destination was present at that check. Unknown Git status
+    # fails closed and a destination that already exists is left untouched.
+    tracked = _git_tracked_root_names(ROOT)
+    if tracked is None:
+        return
+    try:
+        inbox = (ROOT / (CONFIG.get("default_folder") or "Inbox")).resolve()
+        inbox.relative_to(ROOT.resolve())
+    except (OSError, ValueError):
+        return
+    for p in list(ROOT.iterdir()):
+        if not p.is_file() or p.is_symlink():
             continue
         if p.name.startswith(".") or p.name.lower() in SYSTEM_NAMES:
+            continue
+        if p.name.casefold() in tracked:
             continue
         # never migrate bridge/code helpers
         if p.suffix.lower() in {".py", ".pyc", ".pyw", ".vbs", ".ps1", ".bat", ".cmd", ".json", ".log", ".pid"}:
             continue
-        dest = inbox / p.name
+        try:
+            if not p.resolve().is_relative_to(ROOT.resolve()):
+                continue
+            dest = inbox / p.name
+            if not dest.resolve().is_relative_to(inbox):
+                continue
+        except (OSError, ValueError):
+            continue
         if dest.exists():
-            dest = inbox / f"{p.stem}-migrated{p.suffix}"
+            continue
         try:
             p.rename(dest)
         except OSError:
@@ -1324,9 +1376,9 @@ def authenticate_pin(pin: str) -> dict | None:
     if users:
         for u in users:
             if hmac.compare_digest(pin_hash(str(u.get("pin") or "")), pin_hash(pin)):
-                role = str(u.get("role") or "admin").lower()
+                role = u.get("role")
                 if role not in ("admin", "upload"):
-                    role = "admin"
+                    return None
                 return {"user": str(u.get("name") or "user")[:40], "role": role}
         return None
     if not pin_enabled():
@@ -1354,27 +1406,71 @@ def _persist_sessions() -> None:
         sys.stderr.write(f"persist sessions: {e}\n")
 
 
+def _stored_generation(value: object) -> int | None:
+    """An explicit integer generation. Booleans and missing values are not generation 0."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _stored_expiration(value: object) -> float | None:
+    """A finite expiration. Booleans, text, NaN, infinities, and overflows do not count."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        exp = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(exp):
+        return None
+    return exp
+
+
+def _session_from_stored(info: object) -> dict | None:
+    """Reloadable session record, or None when the entry must not authenticate.
+
+    The role must be exactly admin or upload. Anything else, including a missing
+    role, is rejected rather than treated as admin. The expiration must be finite.
+    """
+    if not isinstance(info, dict):
+        return None
+    exp = _stored_expiration(info.get("exp"))
+    if exp is None:
+        return None
+    gen = _stored_generation(info.get("gen"))
+    if gen is None:
+        return None
+    role = info.get("role")
+    if role not in ("admin", "upload"):
+        return None
+    return {
+        "exp": exp,
+        "user": str(info.get("user") or "user")[:40],
+        "role": role,
+        "gen": gen,
+    }
+
+
 def load_sessions() -> None:
     if not SESSIONS_PATH.is_file():
         return
     try:
         data = json.loads(SESSIONS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return
-        now = time.time()
-        with _SESSIONS_LOCK:
-            for tok, info in data.items():
-                if not isinstance(tok, str) or not isinstance(info, dict):
-                    continue
-                if float(info.get("exp") or 0) <= now:
-                    continue
-                _SESSIONS[tok] = {
-                    "exp": float(info["exp"]),
-                    "user": str(info.get("user") or "admin")[:40],
-                    "role": str(info.get("role") or "admin"),
-                }
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        pass
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return
+    if not isinstance(data, dict):
+        return
+    now = time.time()
+    loaded: dict[str, dict] = {}
+    for tok, info in data.items():
+        if not isinstance(tok, str) or not tok:
+            continue
+        record = _session_from_stored(info)
+        if record is None or record["exp"] <= now:
+            continue
+        loaded[tok] = record
+    with _SESSIONS_LOCK:
+        _SESSIONS.update(loaded)
 
 
 def auth_generation() -> int:
@@ -1385,6 +1481,8 @@ def auth_generation() -> int:
 
 
 def issue_session(user: str = "admin", role: str = "admin") -> str:
+    if role not in ("admin", "upload"):
+        raise ValueError("invalid session role")
     token = secrets.token_urlsafe(24)
     with _SESSIONS_LOCK:
         _SESSIONS[token] = {
@@ -1408,14 +1506,10 @@ def session_info(token: str | None) -> dict | None:
     generation = auth_generation()
     with _SESSIONS_LOCK:
         for key, raw in list(_SESSIONS.items()):
-            if isinstance(raw, (int, float)):
-                if raw < now:
-                    _SESSIONS.pop(key, None)
-                    changed = True
-                else:
-                    _SESSIONS[key] = {"user": "admin", "role": "admin", "exp": raw, "gen": 0}
-                    changed = True
-            elif float(raw.get("exp") or 0) < now or int(raw.get("gen") or 0) != generation:
+            # Numeric legacy values used to be rewritten as admin. They have no
+            # generation, so they are removed instead of upgraded.
+            record = _session_from_stored(raw)
+            if record is None or record["exp"] <= now or record["gen"] != generation:
                 _SESSIONS.pop(key, None)
                 changed = True
         current = _SESSIONS.get(token)
@@ -1438,8 +1532,10 @@ def session_role(token: str | None) -> str:
     info = session_info(token)
     if not info:
         return ""
-    role = str(info.get("role") or "admin").lower()
-    return role if role in ("admin", "upload") else "admin"
+    role = info.get("role")
+    if role not in ("admin", "upload"):
+        return ""
+    return role
 
 
 def revoke_session(token: str | None) -> None:
