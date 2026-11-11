@@ -204,6 +204,136 @@ def _stop(proc: subprocess.Popen | None) -> None:
     subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
 
 
+def _write_state(path: Path, planner: int) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "bridge_config.json").write_text(json.dumps({
+        "pin": "424242",
+        "users": [{"name": "admin", "pin": "424242", "role": "admin"}],
+        "bind_host": "127.0.0.1",
+        "planner_port": planner,
+        "backup_auto_paused": True,
+        "automation_enabled": False,
+        "schedules_enabled": False,
+        "push_enabled": False,
+        "disk_probe_enabled": False,
+        "screenshot_ingest_enabled": False,
+        "folders": ["Inbox"],
+        "default_folder": "Inbox",
+    }), encoding="utf-8")
+
+
+def _launch(state: Path, port: str) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["HQ_STATE_ROOT"] = str(state)
+    env["HQ_PORT"] = port
+    return subprocess.Popen(
+        [sys.executable, str(BRIDGE)],
+        cwd=str(SOURCE),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
+def _wait_up(proc: subprocess.Popen, port: str) -> None:
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            output = proc.stdout.read() if proc.stdout else ""
+            raise SystemExit(output or f"bridge on {port} exited")
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/assets/hq-household-budget.js", timeout=2).read()
+            return
+        except OSError:
+            time.sleep(0.3)
+    raise SystemExit(f"bridge did not answer on {port}")
+
+
+def test_same_state_rejects_second_writer() -> None:
+    root = Path(tempfile.mkdtemp(prefix="hq-lock-"))
+    state = root / "state"
+    first = second = None
+    try:
+        _write_state(state, 18772)
+        first = _launch(state, "18771")
+        _wait_up(first, "18771")
+        sessions = (state / "bridge_sessions.json").read_bytes() if (state / "bridge_sessions.json").is_file() else b""
+        second = _launch(state, "18773")
+        output, _ = second.communicate(timeout=30)
+        if second.returncode == 0 or "already owned" not in output:
+            raise SystemExit(output or f"second rc={second.returncode}")
+        urllib.request.urlopen(f"http://127.0.0.1:18771/assets/hq-household-budget.js", timeout=5).read()
+        after = (state / "bridge_sessions.json").read_bytes() if (state / "bridge_sessions.json").is_file() else b""
+        if after != sessions:
+            raise SystemExit("second launch changed the session file")
+        if (state / ".hq-household").exists() or (state / "inventory.json").exists():
+            raise SystemExit("collision created household storage")
+    finally:
+        _stop(second)
+        _stop(first)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_distinct_roots_and_port_collision() -> None:
+    root = Path(tempfile.mkdtemp(prefix="hq-two-"))
+    left = root / "left"
+    right = root / "right"
+    other = root / "other"
+    first = second = collided = None
+    try:
+        _write_state(left, 18776)
+        _write_state(right, 18778)
+        _write_state(other, 18780)
+        first = _launch(left, "18775")
+        second = _launch(right, "18777")
+        _wait_up(first, "18775")
+        _wait_up(second, "18777")
+        collided = _launch(other, "18775")
+        output, _ = collided.communicate(timeout=40)
+        if collided.returncode == 0 or "Cannot bind" not in output:
+            raise SystemExit(output or f"collision rc={collided.returncode}")
+        urllib.request.urlopen("http://127.0.0.1:18775/assets/hq-companion.js", timeout=5).read()
+        urllib.request.urlopen("http://127.0.0.1:18777/assets/hq-household-budget.js", timeout=5).read()
+    finally:
+        _stop(collided)
+        _stop(second)
+        _stop(first)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_validate_only_reads_planner_port() -> None:
+    script = SOURCE / "start_release.ps1"
+    root = Path(tempfile.mkdtemp(prefix="hq-validate-"))
+    try:
+        state = root / "state"
+        _write_state(state, 8766)
+        bad = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(script), "-ReleaseDir", str(SOURCE), "-StateRoot", str(state), "-Port", "18765", "-ValidateOnly"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if bad.returncode == 0 or "8766" not in (bad.stdout + bad.stderr):
+            raise SystemExit(bad.stdout + bad.stderr)
+        _write_state(state, 18765)
+        same = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(script), "-ReleaseDir", str(SOURCE), "-StateRoot", str(state), "-Port", "18765", "-ValidateOnly"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if same.returncode == 0:
+            raise SystemExit(same.stdout + same.stderr)
+        _write_state(state, 18766)
+        good = subprocess.run(
+            ["powershell", "-NoProfile", "-File", str(script), "-ReleaseDir", str(SOURCE), "-StateRoot", str(state), "-Port", "18765", "-ValidateOnly"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if good.returncode != 0:
+            raise SystemExit(good.stdout + good.stderr)
+        if (state / "bridge.lock").exists() or (state / ".hq-household").exists():
+            raise SystemExit("validation created application state")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_launcher_refuses_live_workspace() -> None:
     script = SOURCE / "start_release.ps1"
     completed = subprocess.run(
@@ -220,6 +350,9 @@ def main() -> None:
     test_missing_state_is_not_created()
     test_config_is_not_created()
     test_launcher_refuses_live_workspace()
+    test_validate_only_reads_planner_port()
+    test_same_state_rejects_second_writer()
+    test_distinct_roots_and_port_collision()
     test_live_split()
     print("release layout ok")
 

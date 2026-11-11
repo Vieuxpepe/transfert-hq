@@ -1255,6 +1255,78 @@ def configure_layout() -> None:
     PID_PATH = ROOT / "bridge.pid"
     TMP_DIR = ROOT / ".tmp"
     SESSIONS_PATH = ROOT / "bridge_sessions.json"
+    acquire_state_lock()
+
+
+_STATE_LOCK = None
+PRODUCTION_PORTS = frozenset({8765, 8766})
+
+
+def acquire_state_lock() -> None:
+    """Hold an OS lock for this state root. A dead owner releases it.
+
+    The lock file may be created. Sessions, configuration, and Household data
+    are not modified. Another live owner is left running.
+    """
+    global _STATE_LOCK
+    path = ROOT / "bridge.lock"
+    if path.exists() and (_is_reparse_point(path) or not path.is_file()):
+        raise SystemExit("FATAL: bridge.lock must be a normal file")
+    handle = open(path, "a+b")
+    handle.seek(0)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise SystemExit("FATAL: state root is already owned by another bridge") from exc
+    _STATE_LOCK = handle
+
+
+def release_state_lock() -> None:
+    """Drop our ownership. The lock file stays so the next owner locks the same inode."""
+    global _STATE_LOCK
+    handle = _STATE_LOCK
+    if handle is None:
+        return
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        handle.close()
+    finally:
+        _STATE_LOCK = None
+
+
+def effective_planner_port(config: dict | None = None) -> int:
+    """The planner port this process would bind. Missing means the release default."""
+    source = CONFIG if config is None else config
+    raw = source.get("planner_port") if isinstance(source, dict) else None
+    if raw is None or raw == "":
+        return int(hq_planner.DEFAULT_PORT)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise SystemExit("FATAL: planner_port must be an integer")
+    if not 1024 <= raw <= 65535:
+        raise SystemExit("FATAL: planner_port is outside 1024-65535")
+    return raw
+
+
+def side_by_side_ports_ok(bridge_port: int, planner_port: int) -> None:
+    if bridge_port == planner_port:
+        raise SystemExit("FATAL: bridge port and planner port must be different")
+    if bridge_port in PRODUCTION_PORTS or planner_port in PRODUCTION_PORTS:
+        raise SystemExit("FATAL: a side-by-side release must not bind 8765 or 8766")
 
 
 configure_layout()
@@ -11016,11 +11088,15 @@ def main() -> None:
     _seed = cc_ext.seed_last_backup_from_index()
     cleanup_stale_uploads()
     if already_running():
+        release_state_lock()
+        if STATE_ROOT_EXPLICIT:
+            raise SystemExit(f"FATAL: Cannot bind {BIND_HOST}:{PORT}: address already in use")
         print(f"Transfert Bridge already running on port {PORT}")
         return
 
     # Fail closed: PIN is mandatory. No-PIN + Tailscale Serve/Funnel must never yield unauthenticated admin.
     if not pin_enabled():
+        release_state_lock()
         raise SystemExit(
             "FATAL: PIN required. Set pin (or users[].pin) in bridge_config.json.\n"
             "Refusing to start without authentication (Tailscale Serve/Funnel safety)."
@@ -11074,22 +11150,29 @@ def main() -> None:
     threading.Thread(target=harvest_screenshots_now, daemon=True).start()
     cc_ext.queue_process()
     try:
+        planner_port = effective_planner_port()
+    except SystemExit:
+        release_state_lock()
+        raise
+    if STATE_ROOT_EXPLICIT:
+        try:
+            side_by_side_ports_ok(PORT, planner_port)
+        except SystemExit:
+            release_state_lock()
+            raise
+    try:
         server = HQServer((BIND_HOST, PORT), Handler)
     except OSError as e:
+        release_state_lock()
         raise SystemExit(f"Cannot bind {BIND_HOST}:{PORT}: {e}") from e
     # Mild DoS mitigation for stdlib server
     server.timeout = 30
-    try:
-        planner_port = int(CONFIG.get("planner_port") or hq_planner.DEFAULT_PORT)
-    except (TypeError, ValueError):
-        planner_port = hq_planner.DEFAULT_PORT
-    if STATE_ROOT_EXPLICIT and planner_port in (8765, 8766):
-        raise SystemExit("FATAL: a side-by-side release must not bind planner port 8765 or 8766")
     planner_httpd = None
     try:
         planner_httpd = hq_planner.start(ROOT, port=planner_port)
     except (RuntimeError, OSError) as exc:
         server.server_close()
+        release_state_lock()
         raise SystemExit(f"FATAL: planner loopback refused ({exc})") from exc
     print("=" * 56)
     print(" Transfert HQ v7.0 — Mission Control")
@@ -11134,6 +11217,7 @@ def main() -> None:
             PID_PATH.unlink(missing_ok=True)
         except OSError:
             pass
+        release_state_lock()
 
 
 if __name__ == "__main__":
