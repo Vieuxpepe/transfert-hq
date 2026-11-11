@@ -125,7 +125,8 @@ class SessionReloadTests(unittest.TestCase):
         self.assertEqual(bridge.session_role(upload), "upload")
         self.assertEqual(bridge._SESSIONS[upload]["role"], "upload")
         self.assertNotIn("blank", bridge._SESSIONS)
-        self.assertEqual(bridge._SESSIONS["operator"]["role"], "operator")
+        self.assertNotIn("operator", bridge._SESSIONS)
+        self.assertEqual(bridge.session_role("operator"), "")
 
     def test_valid_reload_is_not_removed_by_authenticated_get(self) -> None:
         token = bridge.issue_session("keeper", "admin")
@@ -176,6 +177,71 @@ class SessionReloadTests(unittest.TestCase):
         self.assertIn(valid, saved)
         self.assertNotIn("old", saved)
         self.assertNotIn("old", bridge._SESSIONS)
+
+    def test_roles_and_expirations_fail_closed(self) -> None:
+        admin = bridge.issue_session("keeper", "admin")
+        upload = bridge.issue_session("phone", "upload")
+        self._reload()
+        self.assertEqual(bridge.session_role(admin), "admin")
+        self.assertEqual(bridge.session_role(upload), "upload")
+        future = time.time() + 600
+        base = {"exp": future, "user": "a", "gen": 1}
+        self.path.write_text(json.dumps({
+            "missing": dict(base),
+            "empty": {**base, "role": ""},
+            "unknown": {**base, "role": "operator"},
+            "padded": {**base, "role": "admin "},
+            "cased": {**base, "role": "Admin"},
+            "number": {**base, "role": 1},
+            "flag": {**base, "role": True},
+            "text": {**base, "role": "admin", "exp": "9999999999"},
+            "bool-exp": {**base, "role": "admin", "exp": True},
+        }), encoding="utf-8")
+        self._reload()
+        for name in ("missing", "empty", "unknown", "padded", "cased", "number", "flag", "text", "bool-exp"):
+            self.assertNotIn(name, bridge._SESSIONS, name)
+            self.assertEqual(bridge.session_role(name), "", name)
+        for label, exp in (("nan", float("nan")), ("posinf", float("inf")), ("neginf", float("-inf"))):
+            self.assertIsNone(bridge._session_from_stored({"exp": exp, "user": "a", "role": "admin", "gen": 1}), label)
+        with bridge._SESSIONS_LOCK:
+            bridge._SESSIONS["planted"] = {"exp": future, "user": "op", "role": "operator", "gen": 1}
+        self.assertEqual(bridge.session_role("planted"), "")
+        self.assertNotIn("planted", bridge._SESSIONS)
+
+    def test_route_authorization_keeps_admin_and_upload(self) -> None:
+        admin = bridge.issue_session("keeper", "admin")
+        upload = bridge.issue_session("phone", "upload")
+        self._reload()
+        root = self.tmp / "root"
+        root.mkdir()
+        saved_root = bridge.ROOT
+        saved_cc_root = bridge.cc_ext.ROOT
+        bridge.ROOT = root
+        bridge.bind_cc_ext()
+        bridge.bind_hq()
+
+        class Quiet(bridge.Handler):
+            def log_message(self, *_args):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(_http(port, "/api/health", f"transfert_session={admin}")[0], 200)
+            self.assertEqual(_http(port, "/api/automation", f"transfert_session={admin}")[0], 200)
+            self.assertEqual(_http(port, "/api/automation", f"transfert_session={upload}")[0], 403)
+            self.assertEqual(_http(port, "/api/automation", "transfert_session=operator")[0], 401)
+            self.assertEqual(bridge.session_role(admin), "admin")
+            self.assertEqual(bridge.session_role(upload), "upload")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            bridge.ROOT = saved_root
+            if saved_cc_root is not None:
+                bridge.cc_ext.bind(ROOT=saved_cc_root)
+                bridge.cc_ext.load_activity()
 
     def test_concurrent_access_does_not_corrupt_saved_state(self) -> None:
         errors: list[BaseException] = []

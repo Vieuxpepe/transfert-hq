@@ -464,7 +464,7 @@ class Boundaries(unittest.TestCase):
             before = sessions.read_bytes()
             self.assertEqual(gate.classify_persisted_session(sessions, "operator", generation), "forbidden")
             life.reload_persisted_sessions(self.bridge)
-            self.assertEqual(self.bridge.session_role("operator"), "admin")
+            self.assertEqual(self.bridge.session_role("operator"), "")
             self.assertEqual(sessions.read_bytes(), before)
             creation = life.process_creation(os.getpid())
             listener = gate.LifecycleListener(

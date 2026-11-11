@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import mimetypes
 import os
 import re
@@ -1375,9 +1376,9 @@ def authenticate_pin(pin: str) -> dict | None:
     if users:
         for u in users:
             if hmac.compare_digest(pin_hash(str(u.get("pin") or "")), pin_hash(pin)):
-                role = str(u.get("role") or "admin").lower()
+                role = u.get("role")
                 if role not in ("admin", "upload"):
-                    role = "admin"
+                    return None
                 return {"user": str(u.get("name") or "user")[:40], "role": role}
         return None
     if not pin_enabled():
@@ -1412,29 +1413,33 @@ def _stored_generation(value: object) -> int | None:
     return value
 
 
+def _stored_expiration(value: object) -> float | None:
+    """A finite expiration. Booleans, text, NaN, and infinities do not count."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    exp = float(value)
+    if not math.isfinite(exp):
+        return None
+    return exp
+
+
 def _session_from_stored(info: object) -> dict | None:
     """Reloadable session record, or None when the entry must not authenticate.
 
-    Missing and malformed generations fail closed. A missing role is not invented
-    as admin. An explicit role is kept, so reload cannot turn upload into admin.
+    The role must be exactly admin or upload. Anything else, including a missing
+    role, is rejected rather than treated as admin. The expiration must be finite.
     """
     if not isinstance(info, dict):
         return None
-    if isinstance(info.get("exp"), bool):
-        return None
-    try:
-        exp = float(info["exp"])
-    except (KeyError, TypeError, ValueError):
+    exp = _stored_expiration(info.get("exp"))
+    if exp is None:
         return None
     gen = _stored_generation(info.get("gen"))
     if gen is None:
         return None
-    role_value = info.get("role")
-    if not isinstance(role_value, str) or not role_value.strip():
+    role = info.get("role")
+    if role not in ("admin", "upload"):
         return None
-    role = role_value.strip()
-    if role.lower() in ("admin", "upload"):
-        role = role.lower()
     return {
         "exp": exp,
         "user": str(info.get("user") or "user")[:40],
@@ -1473,6 +1478,8 @@ def auth_generation() -> int:
 
 
 def issue_session(user: str = "admin", role: str = "admin") -> str:
+    if role not in ("admin", "upload"):
+        raise ValueError("invalid session role")
     token = secrets.token_urlsafe(24)
     with _SESSIONS_LOCK:
         _SESSIONS[token] = {
@@ -1522,8 +1529,10 @@ def session_role(token: str | None) -> str:
     info = session_info(token)
     if not info:
         return ""
-    role = str(info.get("role") or "admin").lower()
-    return role if role in ("admin", "upload") else "admin"
+    role = info.get("role")
+    if role not in ("admin", "upload"):
+        return ""
+    return role
 
 
 def revoke_session(token: str | None) -> None:

@@ -261,8 +261,8 @@ class Roles(unittest.TestCase):
         before = self.sessions.read_bytes()
         self.bridge.SESSIONS_PATH = self.sessions
         life.reload_persisted_sessions(self.bridge)
-        self.assertEqual(self.bridge.session_role("operator"), "admin")
-        self.assertEqual(self.bridge.session_role("missing"), "admin")
+        self.assertEqual(self.bridge.session_role("operator"), "")
+        self.assertEqual(self.bridge.session_role("missing"), "")
         self.assertEqual(self.sessions.read_bytes(), before)
         for name in cases:
             self.assertEqual(gate.classify_persisted_session(self.sessions, name, self.generation), "forbidden", name)
@@ -280,7 +280,7 @@ class Roles(unittest.TestCase):
         self.assertNotIn("transfert_session=", dumped)
         for name in cases:
             self.assertNotIn(name, dumped)
-        note("raw-role-table", refused=len(cases), legacy_operator_is_admin=True, file_preserved=True, production_pair_exercised=False)
+        note("raw-role-table", refused=len(cases), legacy_operator_is_admin=False, file_preserved=True, production_pair_exercised=False)
 
     def test_exact_admin_revocation_generation_and_identity(self) -> None:
         token = self.bridge.issue_session("admin", "admin")

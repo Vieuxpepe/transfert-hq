@@ -903,19 +903,10 @@ def reload_persisted_sessions(bridge) -> None:
     for tok, info in data.items():
         if not isinstance(tok, str) or not isinstance(info, dict):
             continue
-        try:
-            exp = float(info.get("exp") or 0)
-            generation = int(info.get("gen") or 0)
-        except (TypeError, ValueError):
+        record = bridge._session_from_stored(info)
+        if record is None or record["exp"] <= now:
             continue
-        if exp <= now:
-            continue
-        fresh[tok] = {
-            "exp": exp,
-            "user": str(info.get("user") or "admin")[:40],
-            "role": str(info.get("role") or "admin"),
-            "gen": generation,
-        }
+        fresh[tok] = record
     with bridge._SESSIONS_LOCK:
         bridge._SESSIONS.clear()
         bridge._SESSIONS.update(fresh)
