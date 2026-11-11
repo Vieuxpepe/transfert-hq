@@ -3275,7 +3275,11 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(hide, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+function hqHashView() {
+  const name = (location.hash || '').replace(/^#/, '').split('/')[0];
+  return Object.prototype.hasOwnProperty.call(VIEW_LABELS, name) ? name : '';
+}
 function hqSessionIsAdmin() {
   return document.body.classList.contains('session-admin');
 }
@@ -3284,14 +3288,18 @@ function hqApplySessionRole(me) {
   document.body.classList.toggle('session-admin', admin);
   const navIntime = document.getElementById('nav-intime');
   if (navIntime) navIntime.hidden = !admin;
+  ['nav-repas', 'nav-budget'].forEach((id) => {
+    const button = document.getElementById(id);
+    if (button) button.hidden = !admin;
+  });
   const openIntime = document.getElementById('hq-intime-open');
   if (openIntime) openIntime.hidden = !admin;
   if (admin) {
     try {
-      const want = localStorage.getItem('tf_hq_view') || '';
-      if (want === 'intime' && document.body.dataset.view !== 'intime') setView('intime');
+      const want = hqHashView() || localStorage.getItem('tf_hq_view') || '';
+      if ((want === 'intime' || want === 'repas' || want === 'budget') && document.body.dataset.view !== want) setView(want);
     } catch (_) {}
-  } else if (document.body.dataset.view === 'intime') setView('accueil');
+  } else if (document.body.dataset.view === 'intime' || document.body.dataset.view === 'repas' || document.body.dataset.view === 'budget') setView('accueil');
   return admin;
 }
 function viewTitle(view) {
@@ -3565,6 +3573,7 @@ function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
+  if ((view === 'repas' || view === 'budget') && !hqSessionIsAdmin()) view = 'accueil';
   const viewT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const commit = () => {
   const prevView = document.body.dataset.view;
@@ -3615,6 +3624,12 @@ function setView(name) {
   if (view === 'inventaire' && window.hqInventoryShow) {
     hqDeferViewRender(view, viewTicket, () => { try { window.hqInventoryShow(); } catch (e) { console.error(e); } });
   }
+  if (window.hqHouseholdSync) {
+    try { window.hqHouseholdSync(view); } catch (e) { console.error(e); }
+  }
+  if (window.hqHouseholdNoteNavigation) {
+    try { window.hqHouseholdNoteNavigation(view, prevView); } catch (e) { console.error(e); }
+  }
   if (view === 'forge') {
     // Forge modules load on first visit (not with the page); the view may change again before they arrive.
     hqForgeLoad().then(() => {
@@ -3658,6 +3673,7 @@ function setupModeToggle() {
 }
 function setupNav() {
   $$('.bottom-nav [data-nav]').forEach(b => b.addEventListener('click', () => setView(b.dataset.nav)));
+  if (window.hqHouseholdInstallHistory) window.hqHouseholdInstallHistory(setView);
   $('#status-chip')?.addEventListener('click', () => setView('plus'));
   $('#hq-intime-open')?.addEventListener('click', () => { if (hqSessionIsAdmin()) setView('intime'); else toast('Réservé admin', 'err'); });
   $('#hq-intime-focus-chat')?.addEventListener('click', () => {
@@ -3670,8 +3686,8 @@ function setupNav() {
     if (window.HqCompanion && typeof window.HqCompanion.resetFloatHome === 'function') window.HqCompanion.resetFloatHome();
   });
   let saved = 'accueil';
-  try { saved = localStorage.getItem('tf_hq_view') || 'accueil'; } catch (_) {}
-  if (saved === 'intime' && !hqSessionIsAdmin()) saved = 'accueil';
+  try { saved = hqHashView() || localStorage.getItem('tf_hq_view') || 'accueil'; } catch (_) { saved = hqHashView() || 'accueil'; }
+  if ((saved === 'intime' || saved === 'repas' || saved === 'budget') && !hqSessionIsAdmin()) saved = 'accueil';
   setView(saved);
   const wide = window.matchMedia('(min-width: 900px)');
   if (wide.addEventListener) wide.addEventListener('change', () => {
@@ -5518,6 +5534,8 @@ h1{font-size:1.7rem;margin:4px 0 6px;letter-spacing:-.02em}
 body[data-view="accueil"] [data-panel="accueil"],
 body[data-view="carnet"] [data-panel="carnet"],
 body[data-view="calendrier"] [data-panel="calendrier"],
+body[data-view="repas"] [data-panel="repas"],
+body[data-view="budget"] [data-panel="budget"],
 body[data-view="dessiner"] [data-panel="dessiner"],
 body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="projets"] [data-panel="projets"],
@@ -5527,7 +5545,9 @@ body[data-view="lecteur"] [data-panel="lecteur"],
 body[data-view="forge"] [data-panel="forge"],
 body[data-view="intime"] [data-panel="intime"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
-body:not(.session-admin) .bottom-nav [data-nav="intime"]{display:none!important}
+body:not(.session-admin) .bottom-nav [data-nav="intime"],
+body:not(.session-admin) .bottom-nav [data-nav="repas"],
+body:not(.session-admin) .bottom-nav [data-nav="budget"]{display:none!important}
 body[data-view="intime"] .hq-intime-panel{
   position:relative;
   display:flex;
@@ -6031,6 +6051,8 @@ def render_app() -> bytes:
 <style>{BASE_CSS}</style>
 <link rel="stylesheet" href="/assets/hq.css"/>
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
+<link rel="stylesheet" href="/assets/hq-household-meals.css"/>
+<link rel="stylesheet" href="/assets/hq-household-budget.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
 <link rel="stylesheet" href="/assets/hq-carnet.css"/>
 <link rel="stylesheet" href="/assets/hq-inventory.css"/>
@@ -6066,6 +6088,8 @@ def render_app() -> bytes:
   <button type="button" id="nav-intime" data-nav="intime" hidden data-help="Espace rien qu'à vous deux — visible seulement avec une session admin (PIN admin)."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 20.5s-6.5-4.2-6.5-9.4a4.9 4.9 0 0 1 9.3-2.1A4.9 4.9 0 0 1 18.5 11c0 5.2-6.5 9.5-6.5 9.5z"/></svg></span><span class="nav-label">Intime</span></button>
   <button type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
   <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
+  <button type="button" id="nav-repas" data-nav="repas" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 10h14v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="nav-label">Repas</span></button>
+  <button type="button" id="nav-budget" data-nav="budget" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3.5 10h17"/></svg></span><span class="nav-label">Budget</span></button>
   <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
   <button type="button" data-nav="forge"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 16l4.2-3.2 2.6 2.2L15 11l5 4"/></svg></span><span class="nav-label">Forge</span></button>
   <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
@@ -6242,6 +6266,20 @@ def render_app() -> bytes:
         <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
       </div>
       <div id="hq-cal-app"><p class="hint">Chargement…</p></div>
+    </section>
+  </div>
+
+  <div data-panel="repas">
+    <section class="hq hq-repas" aria-labelledby="repas-title">
+      <h2 id="repas-title" class="visually-hidden">Repas</h2>
+      <div id="hq-repas-app"></div>
+    </section>
+  </div>
+
+  <div data-panel="budget">
+    <section class="hq hq-budget-panel" aria-labelledby="budget-title">
+      <h2 id="budget-title" class="visually-hidden">Budget</h2>
+      <div id="hq-budget-app"></div>
     </section>
   </div>
 
@@ -7544,6 +7582,9 @@ def render_app() -> bytes:
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar-quick.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-household-meals.js"></script>
+<script src="/assets/hq-household-budget.js"></script>
+<script src="/assets/hq-household-nav.js"></script>
 <script src="/assets/hq-inventory.js"></script>
 <script src="/assets/hq-projects.js"></script>
 <script src="/assets/hq-mini-quests.js"></script>

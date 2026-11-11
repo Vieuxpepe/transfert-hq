@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Navigation Repas et Budget</title>
+  <link rel="stylesheet" href="../../assets/hq-household-meals.css">
+  <link rel="stylesheet" href="../../assets/hq-household-budget.css">
+  <style>
+    body { margin: 0; background: #111; color: #f4f1ea; font: 16px/1.4 system-ui, sans-serif; }
+    [data-panel] { display: none; }
+    body[data-view="repas"] [data-panel="repas"],
+    body[data-view="budget"] [data-panel="budget"],
+    body[data-view="forge"] [data-panel="forge"],
+    body[data-view="accueil"] [data-panel="accueil"] { display: block; }
+    .bottom-nav { display: flex; gap: 4px; position: sticky; bottom: 0; background: #1b1b1b; padding: 6px; }
+    .bottom-nav button { min-height: 44px; min-width: 44px; }
+    .bottom-nav button.active { outline: 2px solid #e7c27a; }
+    @media (max-width: 720px) { .bottom-nav { overflow-x: auto; } }
+  </style>
+</head>
+<body class="session-admin" data-view="accueil">
+  <nav class="bottom-nav" aria-label="Navigation HQ">
+    <button type="button" data-nav="accueil">Accueil</button>
+    <button type="button" id="nav-repas" data-nav="repas">Repas</button>
+    <button type="button" id="nav-budget" data-nav="budget">Budget</button>
+    <button type="button" data-nav="forge">Forge</button>
+  </nav>
+  <main>
+    <div data-panel="accueil"><p id="accueil-copy">Accueil</p></div>
+    <div data-panel="repas"><div id="hq-repas-app"></div></div>
+    <div data-panel="budget"><div id="hq-budget-app"></div></div>
+    <div data-panel="forge"><p id="forge-copy">Forge</p></div>
+  </main>
+  <script src="../../assets/hq-household-meals.js"></script>
+  <script src="../../assets/hq-household-budget.js"></script>
+  <script src="../../assets/hq-household-nav.js"></script>
+  <script>
+    window.hqForgeShows = 0;
+    window.hqForgeHides = 0;
+    window.hqHouseholdPosts = 0;
+    window.hqHouseholdGets = 0;
+    const params = new URLSearchParams(location.search);
+    const missing = params.get("household") === "missing";
+    window.fetch = async function (url, opts) {
+      const method = ((opts && opts.method) || "GET").toUpperCase();
+      if (method === "POST") window.hqHouseholdPosts += 1;
+      else window.hqHouseholdGets += 1;
+      if (opts && opts.credentials !== "same-origin") throw new Error("credentials");
+      const status = missing ? 404 : 200;
+      const body = missing
+        ? { ok: false, code: "not_found", error: "Base household absente" }
+        : String(url).indexOf("/api/finances/summary") >= 0
+          ? { ok: true, household_currency: "CAD", accounts: [], envelopes: [], balances_by_currency: { CAD: 0 } }
+          : String(url).indexOf("/api/finances/") >= 0
+            ? { ok: true, items: [] }
+            : { ok: true, items: [] };
+      return { status: status, ok: status === 200, json: async function () { return body; } };
+    };
+    function setView(name) {
+      const labels = { accueil: 1, repas: 1, budget: 1, forge: 1 };
+      let view = labels[name] ? name : "accueil";
+      const prev = document.body.dataset.view;
+      document.body.dataset.view = view;
+      document.querySelectorAll(".bottom-nav [data-nav]").forEach(function (button) {
+        const on = button.getAttribute("data-nav") === view;
+        button.classList.toggle("active", on);
+        if (on) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      });
+      if (view === "forge") window.hqForgeShows += 1;
+      else window.hqForgeHides += 1;
+      window.hqHouseholdSync(view);
+      window.hqHouseholdNoteNavigation(view, prev);
+    }
+    document.querySelectorAll(".bottom-nav [data-nav]").forEach(function (button) {
+      button.addEventListener("click", function () { setView(button.getAttribute("data-nav")); });
+    });
+    window.hqHouseholdInstallHistory(setView);
+    const hashed = (location.hash || "").replace(/^#/, "").split("/")[0];
+    setView(labelsHas(hashed) ? hashed : "accueil");
+    function labelsHas(name) { return name === "accueil" || name === "repas" || name === "budget" || name === "forge"; }
+  </script>
+</body>
+</html>
