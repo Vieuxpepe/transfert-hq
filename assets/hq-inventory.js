@@ -932,8 +932,17 @@
     li.style.setProperty("--hue", String(hueOf(i.place)));
     const open = el("button", { type: "button", class: "inv-item-open", "aria-label": "Ouvrir " + i.name });
     open.addEventListener("click", () => editItem(i));
+    const food = (typeof globalThis !== "undefined" && globalThis.HqHouseholdIcons)
+      ? globalThis.HqHouseholdIcons.resolveIngredient(i.name)
+      : null;
     if (i.photos[0]) open.appendChild(el("img", { class: "inv-thumb", src: "/api/carnet/asset/" + i.photos[0], alt: "", loading: "lazy", decoding: "async" }));
-    else open.appendChild(el("span", { class: "inv-thumb is-empty" }, [el("span", { class: "inv-initial", text: (i.name.trim()[0] || "?").toUpperCase() })]));
+    else if (food && food.matched) {
+      li.setAttribute("data-hh-category", food.category);
+      const thumb = el("span", { class: "inv-thumb is-empty is-hh-icon", "aria-hidden": "true" });
+      const badge = globalThis.HqHouseholdIcons.badge(S.doc, food, "");
+      if (badge) thumb.appendChild(badge);
+      open.appendChild(thumb);
+    } else open.appendChild(el("span", { class: "inv-thumb is-empty" }, [el("span", { class: "inv-initial", text: (i.name.trim()[0] || "?").toUpperCase() })]));
     const q = S.q.trim();
     const text = el("span", { class: "inv-item-text" }, [q ? marked(i.name, "inv-item-name") : el("span", { class: "inv-item-name", text: i.name })]);
     if (withPath) text.appendChild(q ? marked(pathText(S.ix, i.place), "inv-item-path") : el("span", { class: "inv-item-path", text: pathText(S.ix, i.place) }));

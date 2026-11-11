@@ -121,6 +121,22 @@
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  function iconsApi() {
+    return root.HqHouseholdIcons || null;
+  }
+
+  function iconBadge(resolution, className) {
+    const api = iconsApi();
+    if (!api || !api.badge) return null;
+    return api.badge(document, resolution, className || "");
+  }
+
+  function appendLabeled(parent, resolution, text, nameClass) {
+    const badge = iconBadge(resolution, "is-sm");
+    if (badge) parent.appendChild(badge);
+    parent.appendChild(el("span", { class: nameClass || "hq-meals-line-name" }, text));
+  }
+
   const sessions = new WeakMap();
 
   function mount(container, options) {
@@ -254,7 +270,14 @@
     });
     const slots = slotMap(session.plan && session.plan.slots);
     MEALS.forEach(function (meal) {
-      grid.appendChild(el("div", { class: "hq-meals-meal", role: "rowheader" }, meal[1]));
+      const mealHeader = el("div", { class: "hq-meals-meal", role: "rowheader" });
+      const mealRes = iconsApi() ? iconsApi().resolveMeal(meal[0]) : null;
+      if (mealRes) {
+        const mealBadge = iconBadge(mealRes, "is-sm");
+        if (mealBadge) mealHeader.appendChild(mealBadge);
+      }
+      mealHeader.appendChild(el("span", {}, meal[1]));
+      grid.appendChild(mealHeader);
       session.week.days.forEach(function (day) {
         const key = day + "|" + meal[0];
         const slot = slots.get(key);
@@ -270,7 +293,13 @@
           "data-meal": meal[0],
           "aria-pressed": selected ? "true" : "false",
           "aria-label": meal[1] + " " + day + (recipe ? ", " + recipe.title : ", vide"),
-        }, label);
+        });
+        if (recipe && iconsApi()) {
+          const dish = iconsApi().resolveRecipe(recipe.title, recipe.ingredients);
+          const dishBadge = iconBadge(dish, "is-sm");
+          if (dishBadge) button.appendChild(dishBadge);
+        }
+        button.appendChild(el("span", { class: "hq-meals-slot-label" }, label));
         grid.appendChild(button);
       });
     });
@@ -301,7 +330,9 @@
       const list = el("ul", { class: "hq-meals-lines" });
       (session.preview.lines || []).forEach(function (line) {
         const item = el("li", { class: "hq-meals-line" });
-        item.appendChild(el("span", { class: "hq-meals-line-name" }, line.name || "Ingrédient"));
+        const name = line.name || "Ingrédient";
+        const resolved = iconsApi() ? iconsApi().resolveIngredient(name) : { key: "other", category: "other" };
+        appendLabeled(item, resolved, name, "hq-meals-line-name");
         item.appendChild(el("span", { class: "hq-meals-line-qty" }, formatMilli(line.qty_milli, line.unit)));
         list.appendChild(item);
       });
@@ -318,7 +349,18 @@
   function paintDetail(detail, session) {
     const recipe = session.selected.recipe;
     const card = el("article", { class: "hq-meals-recipe" + (recipe ? " is-filled" : " is-empty") });
-    card.appendChild(el("h4", { class: "hq-meals-recipe-title" }, recipe ? recipe.title : "Créneau vide"));
+    const titleRow = el("div", { class: "hq-meals-recipe-title-row" });
+    if (recipe && iconsApi()) {
+      const dish = iconsApi().resolveRecipe(recipe.title, recipe.ingredients);
+      const dishBadge = iconBadge(dish, "is-lg");
+      if (dishBadge) titleRow.appendChild(dishBadge);
+    } else if (!recipe && iconsApi()) {
+      const mealRes = iconsApi().resolveMeal(session.selected.meal);
+      const mealBadge = iconBadge(mealRes, "is-lg");
+      if (mealBadge) titleRow.appendChild(mealBadge);
+    }
+    titleRow.appendChild(el("h4", { class: "hq-meals-recipe-title" }, recipe ? recipe.title : "Créneau vide"));
+    card.appendChild(titleRow);
     card.appendChild(el("p", { class: "hq-meals-meta" }, session.selected.date + " · " + (MEALS.find(function (meal) { return meal[0] === session.selected.meal; }) || ["", ""])[1]));
     if (!recipe) {
       card.appendChild(el("p", { class: "hq-meals-hint" }, "Aucune recette dans ce créneau."));
@@ -327,7 +369,9 @@
       const ings = el("ul", { class: "hq-meals-ingredients" });
       (recipe.ingredients || []).forEach(function (ing) {
         const item = el("li", { class: "hq-meals-ingredient" });
-        item.appendChild(el("span", { class: "hq-meals-line-name" }, ing.name || ""));
+        const name = ing.name || "";
+        const resolved = iconsApi() ? iconsApi().resolveIngredient(name) : { key: "other", category: "other" };
+        appendLabeled(item, resolved, name, "hq-meals-line-name");
         item.appendChild(el("span", { class: "hq-meals-line-qty" }, formatMilli(ing.qty_milli, ing.unit)));
         ings.appendChild(item);
       });

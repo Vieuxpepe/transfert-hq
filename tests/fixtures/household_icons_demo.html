@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Household icons demo</title>
+  <link rel="stylesheet" href="../../assets/hq-household-icons.css">
+  <link rel="stylesheet" href="../../assets/hq-household-meals.css">
+  <link rel="stylesheet" href="../../assets/hq-inventory.css">
+  <style>
+    :root { --bg:#111; --text:#f3f6fa; --muted:#9aa7b8; --panel:#161d27; --panel-2:#1c2530; --line:#2a3544; --accent:#e7c27a; --ok:#3dbe7a; --warn:#e6b450; --danger:#e85d4c; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui,sans-serif; }
+    main { display:grid; gap:20px; padding:16px; max-width:960px; margin:0 auto; }
+    h1 { margin:0; font-size:1.2rem; }
+    .inv-demo { list-style:none; margin:0; padding:0; display:grid; gap:8px; }
+    .inv-demo li { display:flex; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:14px; background:var(--panel); }
+    .inv-demo .inv-thumb { width:52px; height:52px; border-radius:12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Repas + Inventoria iconography</h1>
+    <section id="repas" aria-label="Repas"></section>
+    <section aria-label="Inventoria">
+      <h2 style="font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">Inventoria (sans photo)</h2>
+      <ul class="inv-demo" id="inv-demo"></ul>
+    </section>
+  </main>
+  <script src="../../assets/hq-household-icons.js"></script>
+  <script src="../../assets/hq-household-meals.js"></script>
+  <script>
+    function request(call) {
+      if (call.path.startsWith("/api/meals/recipes")) {
+        return Promise.resolve({ status: 200, body: { ok: true, items: [{
+          id: "rcp-1", rev: 1, title: "Poulet riz tomate", servings: 4,
+          ingredients: [
+            { name: "Poulet", qty_milli: 500000, unit: "g" },
+            { name: "Riz", qty_milli: 300000, unit: "g" },
+            { name: "Tomates", qty_milli: 200000, unit: "g" },
+            { name: "Huile d'olive", qty_milli: 20000, unit: "ml" },
+            { name: "Œufs", qty_milli: 2000, unit: "pc" }
+          ],
+          steps: ["Cuire"], leftover_policy: "none"
+        }, {
+          id: "rcp-2", rev: 1, title: "Soupe à l'oignon", servings: 2,
+          ingredients: [{ name: "Oignons", qty_milli: 400000, unit: "g" }, { name: "Beurre", qty_milli: 30000, unit: "g" }],
+          steps: ["Mijoter"], leftover_policy: "none"
+        }] } });
+      }
+      if (call.path.startsWith("/api/meals/plans") && call.method === "GET") {
+        return Promise.resolve({ status: 200, body: { ok: true, items: [{
+          id: "mpl-1", rev: 1, period_start: "2026-11-09", period_end: "2026-11-15",
+          slots: [
+            { date: "2026-11-11", meal: "dinner", recipe_id: "rcp-1", notes: null },
+            { date: "2026-11-12", meal: "lunch", recipe_id: "rcp-2", notes: null }
+          ]
+        }] } });
+      }
+      if (call.path.indexOf("/build-list") !== -1) {
+        return Promise.resolve({ status: 200, body: { ok: true, preview: true, preview_digest: "ab".repeat(32), lines: [
+          { name: "Poulet", qty_milli: 500000, unit: "g" },
+          { name: "Riz", qty_milli: 250000, unit: "g" },
+          { name: "Lait", qty_milli: 1000000, unit: "ml" },
+          { name: "Vis M4", qty_milli: 1000, unit: "pc" }
+        ], warnings: [] } });
+      }
+      if (call.method === "POST") return Promise.resolve({ status: 200, body: { ok: true } });
+      return Promise.resolve({ status: 404, body: { ok: false } });
+    }
+    HqHouseholdMeals.mount(document.getElementById("repas"), { request: request, today: "2026-11-11" });
+    const names = ["Tomates", "Lait", "Œufs", "Poulet", "Riz", "Café", "Vis M4×12", "Lessive"];
+    const list = document.getElementById("inv-demo");
+    names.forEach(function (name) {
+      const resolved = HqHouseholdIcons.resolveIngredient(name);
+      const li = document.createElement("li");
+      li.setAttribute("data-hh-category", resolved.category);
+      const thumb = document.createElement("span");
+      thumb.className = "inv-thumb is-empty" + (resolved.matched ? " is-hh-icon" : "");
+      if (resolved.matched) thumb.appendChild(HqHouseholdIcons.badge(document, resolved));
+      else {
+        const initial = document.createElement("span");
+        initial.className = "inv-initial";
+        initial.textContent = name.trim()[0].toUpperCase();
+        thumb.appendChild(initial);
+      }
+      const label = document.createElement("span");
+      label.textContent = name + (resolved.matched ? " · " + resolved.key : " · lettre");
+      li.append(thumb, label);
+      list.appendChild(li);
+    });
+    const repas = document.getElementById("repas");
+    const waitReady = new MutationObserver(function () {
+      if (repas.getAttribute("data-state") !== "ready") return;
+      waitReady.disconnect();
+      const dinner = repas.querySelector('[data-date="2026-11-11"][data-meal="dinner"]');
+      if (dinner) dinner.click();
+      const preview = repas.querySelector('[data-action="grocery-preview"]');
+      if (preview) preview.click();
+    });
+    waitReady.observe(repas, { attributes: true, attributeFilter: ["data-state"] });
+  </script>
+</body>
+</html>

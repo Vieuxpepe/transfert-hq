@@ -273,9 +273,9 @@
 .hq-meals-ingredient,
 .hq-meals-line {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
   margin: 0;
   padding: 8px 10px;
   border-radius: 10px;
@@ -285,12 +285,14 @@
 
 .hq-meals-line-name {
   min-width: 0;
+  flex: 1 1 auto;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 
 .hq-meals-line-qty {
   flex: 0 0 auto;
+  margin-left: auto;
   color: var(--hq-meals-accent);
   font-weight: 700;
   white-space: nowrap;
