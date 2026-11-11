@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Repas et Budget</title>
+  <link rel="stylesheet" href="../../assets/hq-household-meals.css">
+  <link rel="stylesheet" href="../../assets/hq-household-budget.css">
+</head>
+<body style="margin:0;background:#111;color:#f4f1ea">
+  <main style="display:grid;gap:24px;padding:16px">
+    <section id="repas" aria-label="Repas"></section>
+    <section id="budget" aria-label="Budget"></section>
+  </main>
+  <script src="../../assets/hq-household-meals.js"></script>
+  <script src="../../assets/hq-household-budget.js"></script>
+  <script>
+    const calls = [];
+    window.hqHouseholdCalls = calls;
+    const evil = "<img src=x onerror=alert(1)>";
+    function request(call) {
+      calls.push(call);
+      if (call.path.startsWith("/api/meals/recipes")) {
+        return Promise.resolve({ status: 200, body: { ok: true, items: [{
+          id: "rcp-0000000000000001", rev: 1, title: evil, servings: 4,
+          ingredients: [{ name: "Riz", qty_milli: 1250, unit: "g" }],
+          steps: ["Rincer"], leftover_policy: "none"
+        }] } });
+      }
+      if (call.path.startsWith("/api/meals/plans") && call.method === "GET") {
+        return Promise.resolve({ status: 200, body: { ok: true, items: [{
+          id: "mpl-0000000000000001", rev: 2, period_start: "2026-11-09", period_end: "2026-11-15",
+          slots: [{ date: "2026-11-11", meal: "dinner", recipe_id: "rcp-0000000000000001", notes: null }]
+        }] } });
+      }
+      if (call.path.indexOf("/build-list") !== -1 && call.body && call.body.mode === "preview") {
+        return Promise.resolve({ status: 200, body: { ok: true, preview: true, preview_digest: "ab".repeat(32), lines: [
+          { name: "Riz", qty_milli: 250, unit: "g" }
+        ], warnings: [] } });
+      }
+      if (call.method === "POST") return Promise.resolve({ status: 403, body: { ok: false, error: "refusé", code: "csrf" } });
+      if (call.path.startsWith("/api/finances/summary")) {
+        return Promise.resolve({ status: 200, body: { ok: true, household_currency: "CAD", accounts: [
+          { id: "acct-0000000000000001", name: "Chèques", currency: "CAD", archived: false, balance_cents: 40000 }
+        ], envelopes: [
+          { id: "env-1", category_id: "cat-food", currency: "CAD", period_start: "2026-11-01", period_end: "2026-11-30", allocated_cents: 20000, spent_cents: 1800, rev: 1 }
+        ], balances_by_currency: { CAD: 40000, USD: 2500 } } });
+      }
+      if (call.path.startsWith("/api/finances/categories")) {
+        return Promise.resolve({ status: 200, body: { ok: true, items: [
+          { id: "cat-pay", name: "Salaire", kind: "income", archived: false },
+          { id: "cat-food", name: "Épicerie", kind: "expense", archived: false }
+        ] } });
+      }
+      if (call.path.startsWith("/api/finances/transactions")) {
+        return Promise.resolve({ status: 200, body: { ok: true, items: [
+          { id: "tx-0000000000000001", booked_on: "2026-11-02", amount_cents: 250000, category_id: "cat-pay", payee: "Employeur", status: "posted", transfer_pair_id: null, correction_of: null },
+          { id: "tx-0000000000000002", booked_on: "2026-11-03", amount_cents: -1800, category_id: "cat-food", payee: "Marché", status: "posted", transfer_pair_id: null, correction_of: null }
+        ] } });
+      }
+      if (call.path.startsWith("/api/finances/recurring")) return Promise.resolve({ status: 200, body: { ok: true, items: [] } });
+      if (call.path.startsWith("/api/finances/goals")) return Promise.resolve({ status: 200, body: { ok: true, items: [
+        { id: "goal-1", name: "Coussin", target_cents: 100000, saved_cents: 25000, due_on: null, account_id: null, rev: 1 }
+      ] } });
+      return Promise.resolve({ status: 404, body: { ok: false, error: "route inconnue" } });
+    }
+    HqHouseholdMeals.mount(document.getElementById("repas"), { request: request, today: "2026-11-11" });
+    HqHouseholdBudget.mount(document.getElementById("budget"), { request: request, today: "2026-11-11" });
+  </script>
+</body>
+</html>

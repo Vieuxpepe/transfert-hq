@@ -1,0 +1,72 @@
+/* Meal Planner. Scoped to .hq-meals so it does not restyle shared navigation. */
+
+.hq-meals {
+  --hq-meals-line: var(--line, #3a3a3a);
+  --hq-meals-text: var(--text, #f4f1ea);
+  --hq-meals-muted: var(--muted, #b7b1a6);
+  --hq-meals-panel: var(--panel, #1c1c1c);
+  --hq-meals-accent: var(--accent, #e7c27a);
+  color: var(--hq-meals-text);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font: 16px/1.4 system-ui, sans-serif;
+}
+.hq-meals button,
+.hq-meals input,
+.hq-meals select {
+  font: inherit;
+  color: inherit;
+  min-height: 44px;
+}
+.hq-meals input,
+.hq-meals select {
+  background: #111;
+  border: 1px solid var(--hq-meals-line);
+  border-radius: 8px;
+  padding: 8px;
+}
+.hq-meals [hidden] { display: none; }
+.hq-meals-bar { display: flex; align-items: center; gap: 8px; }
+.hq-meals-title { flex: 1; margin: 0; text-align: center; font-size: 1.05rem; }
+.hq-meals-step {
+  width: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--hq-meals-line);
+  background: transparent;
+}
+.hq-meals-note, .hq-meals-status { margin: 0; color: var(--hq-meals-muted); }
+.hq-meals-grid {
+  display: grid;
+  grid-template-columns: 6.5rem repeat(7, minmax(4.5rem, 1fr));
+  gap: 4px;
+  overflow-x: auto;
+}
+.hq-meals-dow, .hq-meals-meal { font-size: 0.82rem; color: var(--hq-meals-muted); align-self: end; }
+.hq-meals-slot {
+  text-align: left;
+  border: 1px solid var(--hq-meals-line);
+  border-radius: 10px;
+  background: var(--hq-meals-panel);
+  padding: 6px;
+  overflow: hidden;
+}
+.hq-meals-slot:focus-visible,
+.hq-meals button:focus-visible,
+.hq-meals input:focus-visible,
+.hq-meals select:focus-visible {
+  outline: 2px solid var(--hq-meals-accent);
+  outline-offset: 2px;
+}
+.hq-meals-detail, .hq-meals-grocery {
+  border-top: 1px solid var(--hq-meals-line);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hq-meals-line { margin: 0; }
+@media (max-width: 720px) {
+  .hq-meals-grid { grid-template-columns: 5.2rem repeat(7, minmax(3.4rem, 1fr)); }
+  .hq-meals-slot { font-size: 0.78rem; }
+}
