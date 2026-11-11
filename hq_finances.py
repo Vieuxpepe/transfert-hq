@@ -235,7 +235,7 @@ def ensure_default_household(conn: sqlite3.Connection, *, create: bool = True) -
     if row is not None:
         return str(row[0])
     if not create:
-        raise FinanceError("foyer non initialisé", status=404, code="not_found")
+        raise FinanceError("foyer non initialisé", status=404, code="store_absent")
     now = _now()
     hid = _new_id("household")
     conn.execute(

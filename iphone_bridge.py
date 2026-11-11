@@ -5470,9 +5470,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupQR();
   // Warm session, but NEVER leave the UI stuck on "Chargement…"
   let ready = false;
+  let sessionMe = null;
   for (let i = 0; i < 4; i++) {
     try {
-      await api('/api/me', { timeoutMs: 8000 });
+      sessionMe = await api('/api/me', { timeoutMs: 8000 });
       ready = true;
       break;
     } catch (e) {
@@ -5480,6 +5481,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await new Promise(r => setTimeout(r, 200));
     }
   }
+  if (sessionMe) hqApplySessionRole(sessionMe);
   setupHQ();
   if (window.hqPerfMark) {
     const bootMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - hqBootT0);

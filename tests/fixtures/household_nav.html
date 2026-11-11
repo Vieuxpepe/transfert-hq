@@ -50,7 +50,7 @@
       const missingRecipe = params.get("household") === "recipe" && String(url).indexOf("rcp-0000000000000001") >= 0;
       const status = missing || missingRecipe ? 404 : 200;
       const body = missing
-        ? { ok: false, code: "not_found", error: "Base household absente" }
+        ? { ok: false, code: "store_absent", error: "Base household absente" }
         : missingRecipe
           ? { ok: false, code: "not_found", error: "introuvable" }
         : String(url).indexOf("/api/finances/summary") >= 0

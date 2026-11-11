@@ -13,7 +13,9 @@
   var historyInstalled = false;
 
   function isStoreAbsent(status, body) {
-    return status === 404 && !!body && body.code === "not_found" && STORE_ABSENT[body.error] === true;
+    if (!body || status !== 404) return false;
+    if (body.code === "store_absent") return true;
+    return body.code === "not_found" && STORE_ABSENT[body.error] === true;
   }
 
   function isHouseholdRead(path, method) {

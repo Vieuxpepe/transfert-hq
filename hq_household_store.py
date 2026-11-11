@@ -1505,7 +1505,7 @@ def open_store(
         base = confined_household_dir(root)
         path = base / DB_NAME
         if not path.is_file() or _is_link(path):
-            raise HouseholdStoreError("Base household absente", code="not_found", status=404)
+            raise HouseholdStoreError("Base household absente", code="store_absent", status=404)
         try:
             conn = _connect(path, readonly=True)
         except sqlite3.Error as exc:
@@ -1546,7 +1546,7 @@ def open_store(
 
     if not existed:
         if not create:
-            raise HouseholdStoreError("Base household absente", code="not_found", status=404)
+            raise HouseholdStoreError("Base household absente", code="store_absent", status=404)
         # New DB: WAL only after a successful migrate + schema gate.
         conn = _connect(path, readonly=False, wal=False)
         try:
