@@ -113,6 +113,14 @@ assert.equal(budget.envelopeRemaining({ allocated_cents: 10000, spent_cents: 180
 assert.equal(budget.cadBalance({ balances_by_currency: { CAD: 400, USD: 25 } }), 400);
 assert.equal(JSON.stringify(budget.otherCurrencies({ balances_by_currency: { USD: 25, EUR: 10, CAD: 1 } })), JSON.stringify(["EUR", "USD"]));
 
+const nav = load("hq-household-nav.js");
+assert.equal(nav.hqHouseholdIsStoreAbsent(404, { code: "not_found", error: "Base household absente" }), true);
+assert.equal(nav.hqHouseholdIsStoreAbsent(404, { code: "not_found", error: "foyer non initialisé" }), true);
+assert.equal(nav.hqHouseholdIsStoreAbsent(404, { code: "not_found", error: "introuvable" }), false);
+assert.equal(nav.hqHouseholdIsStoreAbsent(404, { code: "not_found", error: "compte introuvable" }), false);
+assert.equal(nav.hqHouseholdIsStoreAbsent(404, { code: "not_found", error: "Route inconnue" }), false);
+assert.equal(nav.hqHouseholdIsStoreAbsent(200, { code: "not_found", error: "Base household absente" }), false);
+
 const mealsSource = fs.readFileSync(path.join(root, "assets", "hq-household-meals.js"), "utf8");
 const budgetSource = fs.readFileSync(path.join(root, "assets", "hq-household-budget.js"), "utf8");
 assert.match(mealsSource, /HqHouseholdMeals\.mount/);

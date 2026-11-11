@@ -49,8 +49,28 @@ class HouseholdNavSourceTests(unittest.TestCase):
             self.assertEqual(meal_body["code"], "not_found")
             self.assertEqual(money_code, 404)
             self.assertEqual(money_body["code"], "not_found")
+            self.assertEqual(meal_body["error"], "Base household absente")
             self.assertFalse((root / ".hq-household").exists())
             self.assertFalse((root / "inventory.json").exists())
+
+    def test_missing_recipe_is_not_a_missing_store(self) -> None:
+        import hq_household_store as store
+
+        with tempfile.TemporaryDirectory(prefix="hq-nav-recipe-") as tmp:
+            root = Path(tmp)
+            store.set_acl_for_tests(False)
+            meals.bind(root=root, actor=lambda: "tester", now=lambda: 1.0)
+            finances.bind(root=root, actor=lambda: "tester", now=lambda: 1.0)
+            try:
+                with store.open_store(root) as opened:
+                    with opened.transaction():
+                        finances.ensure_default_household(opened.conn)
+                code, body = meals.http_get("/api/meals/recipes", {"id": "rcp-0000000000000001"})
+            finally:
+                meals.reset_for_tests()
+                finances.reset_for_tests()
+                store.set_acl_for_tests(True)
+            self.assertEqual((code, body["code"], body["error"]), (404, "not_found", "introuvable"))
 
 
 if __name__ == "__main__":

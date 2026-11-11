@@ -52,6 +52,20 @@ def main() -> None:
             ready.wait_for_timeout(50)
             assert ready.evaluate("hqHouseholdPosts") == 1
             ready.close()
+
+            partial = browser.new_page(viewport={"width": 1100, "height": 800})
+            partial.goto(PAGE.as_uri() + "?household=recipe#repas")
+            partial.locator("#hq-repas-app[data-state='empty']").wait_for()
+            partial.evaluate("hqHouseholdRequest({method:'GET', path:'/api/meals/recipes?id=rcp-0000000000000001'})")
+            partial.locator("#hq-repas-app").get_by_role("button", name="Créer la semaine").click()
+            partial.wait_for_timeout(50)
+            assert partial.evaluate("hqHouseholdPosts") == 1
+            partial.locator("[data-nav='budget']").click()
+            partial.locator("#hq-budget-app[data-state='ready']").wait_for()
+            partial.locator("[data-nav='repas']").click()
+            partial.locator("#hq-repas-app").wait_for()
+            assert partial.evaluate("document.getElementById('hq-budget-app').childElementCount") == 0
+            partial.close()
         finally:
             browser.close()
     print("household navigation rendered")

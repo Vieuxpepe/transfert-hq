@@ -6,10 +6,20 @@
   "use strict";
 
   var UNAVAILABLE = "Le foyer n'est pas activé. Aucune donnée n'a été créée.";
+  var STORE_ABSENT = { "Base household absente": true, "foyer non initialisé": true };
   var VIEWS = { repas: "HqHouseholdMeals", budget: "HqHouseholdBudget" };
   var HOSTS = { repas: "hq-repas-app", budget: "hq-budget-app" };
   var unavailable = false;
   var historyInstalled = false;
+
+  function isStoreAbsent(status, body) {
+    return status === 404 && !!body && body.code === "not_found" && STORE_ABSENT[body.error] === true;
+  }
+
+  function isHouseholdRead(path, method) {
+    var value = String(path || "");
+    return method === "GET" && (value.indexOf("/api/meals/") === 0 || value.indexOf("/api/finances/") === 0);
+  }
 
   function host(name) {
     return document.getElementById(HOSTS[name]);
@@ -30,10 +40,10 @@
     });
     var body = {};
     try { body = await response.json(); } catch (_err) { body = {}; }
-    if (response.status === 404 && body && body.code === "not_found") {
+    if (isStoreAbsent(response.status, body)) {
       unavailable = true;
       body = { ok: false, code: "not_found", error: UNAVAILABLE };
-    } else if (response.ok && method === "GET") {
+    } else if (response.ok && isHouseholdRead(call.path, method)) {
       unavailable = false;
     }
     return { status: response.status, body: body };
@@ -78,4 +88,5 @@
   root.hqHouseholdNoteNavigation = noteNavigation;
   root.hqHouseholdInstallHistory = installHistory;
   root.hqHouseholdUnavailableMessage = UNAVAILABLE;
+  root.hqHouseholdIsStoreAbsent = isStoreAbsent;
 }(typeof globalThis !== "undefined" ? globalThis : this));
