@@ -67,6 +67,11 @@ Draft tool (prepares changes for the Master to review; NOTHING is applied):
     {"op": "move", "item_ids": ["<id>", ...], "place_id": "<id or null>"}
   Use real ids from tool results. Only propose a change when the Master asked for one or clearly agreed to it.
   Deleting is not available: if asked, say the Master can delete it in the panel.
+Memory tools (lasting household preferences, NOT stock):
+- remember {"note": "<one short durable fact or preference>"}
+- forget {"id": "<mem id>"}
+  Use remember only for lasting preferences or rules the Master states (pack sizes, where things belong, favourite shops,
+  allergies, how they like lists). Never for secrets, one-off requests or stock counts. Say plainly when you saved or forgot something.
 After propose_changes succeeds, tell the Master plainly that a DRAFT is ready to review and apply in the panel (preview, then confirm).
 Never say a change has been applied: you cannot apply anything."""
 
@@ -138,8 +143,18 @@ def inventory_context(query: str, inv: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+def _memory_block() -> str:
+    try:
+        import hq_inventoria
+        import hq_inventoria_memory as mem
+        return mem.prompt_block(hq_inventoria._root())
+    except Exception:
+        return ""
+
+
 def build_system(query: str, inv: dict | None = None) -> str:
     return (PERSONA + "\n\n" + _language_block()
+            + "\n\n" + (_memory_block() or "WHAT YOU REMEMBER ABOUT THE MASTER (data): nothing saved yet.")
             + "\n\nINVENTORY SUMMARY (data, read-only; use tools for anything not listed):\n"
             + inventory_context(query, inv))
 
@@ -402,7 +417,23 @@ class Toolbox:
         return {"results": results, "drafts_total": len(self.proposals),
                 "note": "Drafts only. Nothing is applied until the Master reviews and confirms in the panel."}
 
-    TOOLS = ("search_items", "get_item", "list_places", "list_place", "list_low_stock", "propose_changes")
+    # --- memory tools (notes about the Master; never touch stock)
+    def remember(self, args: dict) -> dict:
+        import hq_inventoria
+        import hq_inventoria_memory as mem
+        try:
+            res = mem.add(hq_inventoria._root(), args.get("note"))
+        except mem.MemoryError_ as exc:
+            return {"saved": False, "error": str(exc)}
+        return {"saved": True, "id": res["id"], "already_known": res["duplicate"]}
+
+    def forget(self, args: dict) -> dict:
+        import hq_inventoria
+        import hq_inventoria_memory as mem
+        return {"forgotten": mem.forget(hq_inventoria._root(), args.get("id"))}
+
+    TOOLS = ("search_items", "get_item", "list_places", "list_place", "list_low_stock", "propose_changes",
+             "remember", "forget")
 
     def run(self, name: str, args: dict) -> dict:
         self.calls += 1
@@ -465,3 +496,44 @@ def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     if proposals:
         out["proposals"] = proposals
     return out
+
+
+# ---------------------------------------------------------------- greeting (no model call)
+
+GREETING = {
+    "en": {
+        "empty": "No items yet. Tell me what you keep, and where, and I'll help you build the list.",
+        "ok": "Everything is above its minimum. Ask me anything about the stock.",
+        "low": "{n} item(s) below minimum; {first} is the lowest ({qty} of {mn}). Shall I prepare a restock draft?",
+    },
+    "fr": {
+        "empty": "Aucun article pour l'instant. Dis-moi ce que tu gardes et où, et je t'aide à monter la liste.",
+        "ok": "Tout est au-dessus du minimum. Demande-moi ce que tu veux sur le stock.",
+        "low": "{n} article(s) sous le minimum; {first} est le plus bas ({qty} sur {mn}). Je prépare un brouillon de réapprovisionnement ?",
+    },
+}
+
+
+def language() -> str:
+    try:
+        import hq_voice_phonon
+        return "en" if hq_voice_phonon.reply_language("inventoria") == "en" else "fr"
+    except Exception:
+        return "fr"
+
+
+def greeting(inv: dict | None = None) -> dict[str, Any]:
+    """Deterministic, context-aware opening line for the chip. Costs no model call."""
+    inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
+    lang = language()
+    t = GREETING[lang]
+    items = [i for i in inv.get("items", []) if isinstance(i, dict)]
+    low = hq_inventory.low_stock(inv)
+    if not items:
+        return {"line": t["empty"], "mood": "idle", "low_count": 0, "language": lang}
+    if not low:
+        return {"line": t["ok"], "mood": "idle", "low_count": 0, "language": lang}
+    low = sorted(low, key=lambda i: (i["qty"] / i["min"]) if i.get("min") else 1)
+    first = low[0]
+    return {"line": t["low"].format(n=len(low), first=first.get("name", "?"), qty=first.get("qty"), mn=first.get("min")),
+            "mood": "proactive", "low_count": len(low), "language": lang}

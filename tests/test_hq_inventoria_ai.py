@@ -242,3 +242,75 @@ class PlaceNameTests(_Base):
         self.assertEqual(reply, "Only the Atelier exists.")
         echoed = self.calls[1][1][-2]["parts"][0]["text"]
         self.assertNotIn("flour", echoed)
+
+
+class CompanionParityTests(_Base):
+    def test_memory_notes_persist_dedupe_cap_and_refuse_secrets(self) -> None:
+        import hq_inventoria_memory as mem
+        r = mem.add(self.root, "Prefers screws in packs of 100")
+        self.assertFalse(r["duplicate"])
+        self.assertTrue(mem.add(self.root, "prefers SCREWS in packs of 100")["duplicate"])
+        with self.assertRaises(mem.MemoryError_):
+            mem.add(self.root, "my wifi password is hunter2")
+        with self.assertRaises(mem.MemoryError_):
+            mem.add(self.root, "x")
+        for i in range(mem.MAX_NOTES + 5):
+            mem.add(self.root, f"note number {i} about shelves")
+        notes = mem.list_notes(self.root)
+        self.assertEqual(len(notes), mem.MAX_NOTES)
+        self.assertNotIn("packs of 100", " ".join(n["text"] for n in notes))   # oldest fell off
+        self.assertTrue(mem.forget(self.root, notes[0]["id"]))
+        self.assertFalse(mem.forget(self.root, "../../etc"))
+        self.assertEqual(mem.clean("a\nb\x00<b>c</b>"), "a b c")
+
+    def test_remember_tool_feeds_the_next_prompt_and_forget_removes_it(self) -> None:
+        script = [_j("", [{"name": "remember", "args": {"note": "Buys duct tape only from the hardware store"}}]),
+                  _j("Noted, I'll remember that.")]
+        with self.fake_generate(script):
+            reply, props = iai.respond("remember I only buy duct tape at the hardware store", [], None)
+        self.assertEqual(props, [])
+        with mock.patch("hq_voice_phonon.language_directive", return_value=""):
+            system = iai.build_system("tape")
+        self.assertIn("Buys duct tape only from the hardware store", system)
+        mem_id = system.split("[mem-")[1].split("]")[0]
+        out = iai.Toolbox().run("forget", {"id": "mem-" + mem_id})
+        self.assertTrue(out["forgotten"])
+        self.assertIn("nothing saved yet", iai.build_system("tape"))
+
+    def test_status_route_reports_greeting_memory_and_voice(self) -> None:
+        code, out = ivo.http_get("/api/inventoria/status")
+        self.assertEqual(code, 200)
+        g = out["greeting"]
+        self.assertEqual((g["low_count"], g["mood"]), (1, "proactive"))
+        self.assertIn("Vis M3", g["line"])
+        self.assertEqual(out["memory"], [])
+        self.assertIn(out["language"], ("fr", "en"))
+
+    def test_greeting_variants_and_language(self) -> None:
+        with mock.patch.object(iai, "language", return_value="en"):
+            self.assertIn("below minimum", iai.greeting()["line"])
+            ok = iai.greeting({"places": [], "items": [{"id": "a", "name": "x", "qty": 5, "min": 2, "rev": 1}]})
+            self.assertEqual((ok["low_count"], ok["mood"]), (0, "idle"))
+            self.assertIn("No items yet", iai.greeting({"places": [], "items": []})["line"])
+        with mock.patch.object(iai, "language", return_value="fr"):
+            self.assertIn("sous le minimum", iai.greeting()["line"])
+
+    def test_memory_route_add_forget_and_validation(self) -> None:
+        code, out = ivo.http_post("/api/inventoria/memory", {"action": "add", "text": "Likes labels in capitals"})
+        self.assertEqual(code, 200)
+        nid = out["memory"][0]["id"]
+        self.assertEqual(ivo.http_post("/api/inventoria/memory", {"action": "add", "text": "my pin is 1234 token"})[0], 400)
+        self.assertEqual(ivo.http_post("/api/inventoria/memory", {"action": "nope"})[0], 400)
+        self.assertEqual(ivo.http_post("/api/inventoria/memory", {"action": "forget", "id": "mem-00000000"})[0], 404)
+        code, out = ivo.http_post("/api/inventoria/memory", {"action": "forget", "id": nid})
+        self.assertEqual((code, out["memory"]), (200, []))
+
+    def test_long_conversations_trim_the_transcript_instead_of_failing(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(['{"reply": "ok", "tools": []}'] * 80):
+            for i in range(ivo.MESSAGES_MAX // 2 + 6):
+                code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": f"message {i}"})
+                self.assertEqual(code, 200, (i, out))
+        msgs = ivo.http_get(f"/api/inventoria/sessions/{sid}")[1]["session"]["messages"]
+        self.assertLessEqual(len(msgs), ivo.MESSAGES_MAX)
+        self.assertIn(f"message {ivo.MESSAGES_MAX // 2 + 5}", msgs[-2]["text"])   # newest kept

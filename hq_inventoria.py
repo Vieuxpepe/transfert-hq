@@ -740,6 +740,8 @@ def post_session_message(
     else:
         raise InventoriaError("text ou proposals requis", code="validation_error")
 
+    if len(messages) > MESSAGES_MAX and "text" in data and callable(_cb.get("llm_adapter")):
+        messages = messages[-(MESSAGES_MAX - 10):]  # chat transcript: keep the newest, never block a conversation
     if len(messages) > MESSAGES_MAX:
         raise InventoriaError(f"messages max {MESSAGES_MAX}", code="validation_error")
 
@@ -1421,6 +1423,11 @@ def _err(exc: BaseException) -> tuple[int, dict]:
 
 
 def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
+    if path == "/api/inventoria/status":  # no database needed
+        try:
+            return 200, status()
+        except InventoriaError as exc:
+            return _err(exc)
     try:
         st = _open_store(readonly=True)
         try:
@@ -1474,6 +1481,36 @@ def speak(data: dict) -> tuple[int, dict]:
     return 200, {"ok": True, "audio_url": url, "visemes": res.get("visemes") or [], "engine": res.get("engine")}
 
 
+def status() -> dict:
+    """Chip status: deterministic greeting, her saved notes, voice and model readiness. No model call."""
+    import hq_inventoria_ai as ai
+    import hq_inventoria_memory as mem
+    voice: dict = {}
+    try:
+        import hq_voice_phonon
+        prof = hq_voice_phonon.load_profiles().get("inventoria") or {}
+        voice = {"engine": prof.get("engine"), "voice": prof.get("voice"), "selected": bool(prof.get("selected"))}
+    except Exception:
+        pass
+    return {"ok": True, "greeting": ai.greeting(), "memory": mem.list_notes(_root()),
+            "voice": voice, "max_notes": mem.MAX_NOTES, "language": ai.language()}
+
+
+def memory_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_memory as mem
+    action = data.get("action")
+    if action == "forget":
+        ok = mem.forget(_root(), data.get("id"))
+        return (200, {"ok": True, "memory": mem.list_notes(_root())}) if ok else (404, {"ok": False, "error": "note introuvable", "code": "not_found"})
+    if action == "add":
+        try:
+            mem.add(_root(), data.get("text"))
+        except mem.MemoryError_ as exc:
+            raise InventoriaError(str(exc), code="validation_error") from exc
+        return 200, {"ok": True, "memory": mem.list_notes(_root())}
+    raise InventoriaError("action inconnue (add|forget)", code="validation_error")
+
+
 def http_post(path: str, data: Any) -> tuple[int, dict]:
     try:
         if not isinstance(data, dict):
@@ -1483,6 +1520,8 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
 
         if path == "/api/inventoria/voice":  # speech only; touches no household data
             return speak(data)
+        if path == "/api/inventoria/memory":  # her own notes; touches no household data
+            return memory_post(data)
 
         st = _open_store(readonly=False)
         try:

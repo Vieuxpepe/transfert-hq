@@ -14,6 +14,9 @@ fallback chain as the other companions).
 - **Nothing is applied from the chat.** The chip shows a review card (validate, then an unconfirmed preview with
   before/after numbers; *Appliquer* = confirmed preview + commit with an idempotency key; *Annuler* cancels). The
   existing pipeline guards every commit.
+- **Memory:** `remember` / `forget` tools and `/api/inventoria/memory`; notes live in `.hq-inventoria/memory.json` (30 max, secrets
+  refused), are sent to the model as data, and are listed with delete buttons in the chip. See `docs/inventoria-persona.md`.
+- **Greeting / status:** `GET /api/inventoria/status` builds a deterministic opening line from the live inventory (no model call).
 - Ids are stripped from replies; model replies are untrusted text (HTML/markdown removed, 900 characters max).
 - Tests: `tests/test_hq_inventoria_ai.py` (tool validation, loop bounds, draft to real preview/commit, history,
   failure modes).
