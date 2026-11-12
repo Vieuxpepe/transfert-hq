@@ -318,3 +318,148 @@
 .hq-inventoria-det-tag.is-unseen{background:color-mix(in srgb,var(--inv-danger) 25%,transparent);color:#fecaca}
 .hq-inventoria-photoset label{display:flex;align-items:center;gap:6px;margin:5px 0}
 .hq-inventoria-photoset .hq-inventoria-copy-note{display:block;margin:6px 0}
+
+/* ======================================================================================================================
+   Legibility + polish pass.  Later rules on purpose: they refine the blocks above without touching their structure.
+   ====================================================================================================================== */
+.hq-inventoria{
+  --inv-muted:color-mix(in srgb,var(--inv-text) 74%,transparent);
+  --inv-line:color-mix(in srgb,var(--inv-accent) 24%,rgba(127,127,127,.30));
+  --inv-surface:color-mix(in srgb,var(--inv-text) 7%,transparent);
+  --inv-surface-2:color-mix(in srgb,var(--inv-text) 12%,transparent);
+  --inv-ok:#34d399;
+}
+
+/* shell: a little wider, calmer shadow, softly lit header */
+.hq-inventoria .hq-inventoria-bubble{
+  width:min(432px,calc(100vw - 24px));
+  border-radius:20px 20px 20px 8px;
+  box-shadow:0 18px 48px rgba(0,0,0,.34),0 2px 6px rgba(0,0,0,.2),inset 0 1px 0 color-mix(in srgb,#fff 10%,transparent);
+  overflow:hidden;
+}
+.hq-inventoria-head{
+  padding:12px 14px 6px;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--inv-accent) 14%,transparent),transparent);
+}
+.hq-inventoria .hq-inventoria-title{font-size:15px;font-weight:800;letter-spacing:.01em}
+.hq-inventoria .hq-inventoria-line{padding:0 14px 10px;font-size:13.5px;line-height:1.5}
+
+/* tabs: segmented control */
+.hq-inventoria-tabs{
+  gap:4px;margin:0 12px 2px;padding:3px;border:1px solid var(--inv-line);border-radius:999px;background:var(--inv-surface);
+}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab{
+  min-height:34px;border:0;border-radius:999px;font-size:13px;font-weight:700;
+  transition:background .18s ease,color .18s ease,box-shadow .18s ease;
+}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab[aria-selected="true"]{
+  background:var(--inv-accent);color:var(--inv-on-accent);box-shadow:0 2px 8px color-mix(in srgb,var(--inv-accent) 45%,transparent);
+}
+.hq-inventoria-pane{padding:12px 14px 16px}
+
+/* buttons: comfortable targets, clear primary */
+.hq-inventoria .hq-inventoria-bubble button:not(.hq-inventoria-head-btn):not(.hq-inventoria-tab){
+  min-height:34px;padding:7px 14px;font-size:13px;font-weight:600;
+  transition:background .15s ease,transform .1s ease,box-shadow .15s ease,border-color .15s ease;
+}
+.hq-inventoria .hq-inventoria-bubble button:not(.hq-inventoria-head-btn):not(.hq-inventoria-tab):hover:not(:disabled){border-color:var(--inv-accent)}
+.hq-inventoria .hq-inventoria-bubble button.is-primary,
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-chat-send,
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-draft-apply{box-shadow:0 2px 8px color-mix(in srgb,var(--inv-accent) 35%,transparent)}
+.hq-inventoria-bubble input[type="text"],.hq-inventoria-bubble input[type="number"],.hq-inventoria-bubble select,.hq-inventoria-bubble textarea{
+  font-size:14px;border-radius:12px;padding:8px 11px;transition:border-color .15s ease,box-shadow .15s ease;
+}
+.hq-inventoria-bubble input:focus,.hq-inventoria-bubble select:focus,.hq-inventoria-bubble textarea:focus{
+  border-color:var(--inv-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--inv-accent) 25%,transparent);outline:none;
+}
+
+/* chat bubbles */
+.hq-inventoria .hq-inventoria-thread-log{gap:8px;scroll-behavior:smooth}
+.hq-inventoria .hq-inventoria-msg{padding:9px 13px;font-size:14px;line-height:1.5;border-radius:16px}
+.hq-inventoria .hq-inventoria-msg.is-assistant{
+  background:var(--inv-surface-2);border:1px solid color-mix(in srgb,var(--inv-text) 8%,transparent);border-bottom-left-radius:5px;
+}
+.hq-inventoria .hq-inventoria-msg.is-user{
+  background:linear-gradient(145deg,color-mix(in srgb,var(--inv-accent) 46%,transparent),color-mix(in srgb,var(--inv-accent) 30%,transparent));
+  border:1px solid color-mix(in srgb,var(--inv-accent) 45%,transparent);border-bottom-right-radius:5px;
+}
+.hq-inventoria-avatar{width:30px;height:30px;box-shadow:0 0 0 3px color-mix(in srgb,var(--inv-accent) 18%,transparent)}
+.hq-inventoria-empty{font-size:13.5px;line-height:1.55;padding:14px 10px}
+.hq-inventoria-empty-ico{width:2.6em;height:2.6em}
+
+/* quick actions + composer */
+.hq-inventoria-quick{gap:6px}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-quick-btn{min-height:32px;padding:5px 12px;font-size:12.5px;background:var(--inv-surface)}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-quick-btn:hover:not(:disabled){transform:translateY(-1px)}
+.hq-inventoria .hq-inventoria-chat{padding-top:6px;border-top:1px solid color-mix(in srgb,var(--inv-line) 60%,transparent)}
+.hq-inventoria .hq-inventoria-chat-input{padding:9px 14px;font-size:14px}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-chat-mic,
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-chat-photo{min-width:38px;min-height:38px;padding:6px 10px}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-chat-send{min-height:38px;padding:7px 16px}
+
+/* review / draft / grocery cards: solid, elevated, easy to scan */
+.hq-inventoria .hq-inventoria-draft{
+  padding:12px 14px;border-radius:14px;font-size:13.5px;max-height:240px;
+  background:color-mix(in srgb,var(--panel,#1a2524) 86%,var(--inv-accent) 14%);
+  border:1px solid color-mix(in srgb,var(--inv-accent) 55%,transparent);
+  box-shadow:0 6px 18px rgba(0,0,0,.18);
+}
+.hq-inventoria .hq-inventoria-grocery{background:color-mix(in srgb,var(--panel,#1a2524) 88%,var(--inv-warn) 12%)}
+.hq-inventoria-draft-title{margin:0 0 8px;font-size:14px;font-weight:800}
+.hq-inventoria-draft-list li,.hq-inventoria-draft-li{padding:5px 0;border-top:1px solid color-mix(in srgb,var(--inv-text) 8%,transparent);line-height:1.4}
+.hq-inventoria-draft-list li:first-child,.hq-inventoria-draft-li:first-child{border-top:0}
+.hq-inventoria-draft-actions{gap:8px;padding-top:4px}
+.hq-inventoria-draft-note{font-size:12.5px;color:var(--inv-muted)}
+
+/* multi-item review rows */
+.hq-inventoria .hq-inventoria-detect{max-height:300px}
+.hq-inventoria-det-row{padding:7px 6px;border-top:1px solid color-mix(in srgb,var(--inv-text) 8%,transparent);border-radius:10px}
+.hq-inventoria-det-row:first-child{border-top:0}
+.hq-inventoria-det-hint{font-size:12.5px;line-height:1.45}
+.hq-inventoria-det-info{font-size:12.5px}
+.hq-inventoria-det-flag,.hq-inventoria-det-new,.hq-inventoria-det-tag{padding:2px 9px;font-size:11.5px;line-height:1.35}
+.hq-inventoria-det-num{min-width:22px;height:22px}
+.hq-inventoria-seg button{font-size:12.5px}
+/* tags must stay readable on light AND dark panels: tint the background, keep text at full theme contrast */
+.hq-inventoria-det-tag.is-ok{background:color-mix(in srgb,var(--inv-ok) 24%,transparent);color:var(--inv-text);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--inv-ok) 55%,transparent)}
+.hq-inventoria-det-tag.is-mismatch{background:color-mix(in srgb,var(--inv-warn) 26%,transparent);color:var(--inv-text);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--inv-warn) 60%,transparent)}
+.hq-inventoria-det-tag.is-unseen{background:color-mix(in srgb,var(--inv-danger) 22%,transparent);color:var(--inv-text);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--inv-danger) 55%,transparent)}
+.hq-inventoria-photo-warn{font-size:12.5px;padding:8px 10px;border-radius:10px}
+.hq-inventoria-photo-sheet{padding:12px;border-radius:14px}
+.hq-inventoria-photo-ask{font-size:13.5px}
+
+/* alerts: roomy cards with a colour strip */
+.hq-inventoria .hq-inventoria-alert{padding:9px 12px;border-radius:12px;font-size:13.5px;line-height:1.4}
+.hq-inventoria-alerts{gap:8px}
+.hq-inventoria-check-title{font-size:13.5px;margin:14px 0 6px}
+.hq-inventoria-checks li{padding:6px 8px;font-size:13.5px}
+.hq-inventoria-copy-text{font-size:13.5px}
+.hq-inventoria .hq-inventoria-copy{padding:10px 12px;border-radius:14px}
+.hq-inventoria-copy-note,.hq-inventoria-copy-soon{font-size:12.5px}
+
+/* settings */
+.hq-inventoria-bubble details{padding:8px 0;font-size:13.5px}
+.hq-inventoria-bubble details>summary{padding:6px 0;font-size:14px}
+.hq-inventoria-notify label,.hq-inventoria-memory label,.hq-inventoria-photoset label{margin:7px 0;line-height:1.4}
+.hq-inventoria-bubble input[type="checkbox"]{width:16px;height:16px}
+
+/* notices */
+.hq-inventoria .hq-inventoria-notice{font-size:13.5px}
+
+/* phones: 16px fields (no iOS zoom), big touch targets */
+@media (max-width:560px){
+  .hq-inventoria .hq-inventoria-bubble{width:calc(100vw - 16px);border-radius:18px 18px 18px 8px}
+  .hq-inventoria-bubble input[type="text"],.hq-inventoria-bubble input[type="number"],.hq-inventoria-bubble select,.hq-inventoria-bubble textarea,
+  .hq-inventoria .hq-inventoria-chat-input{font-size:16px}
+  .hq-inventoria .hq-inventoria-msg{font-size:14.5px}
+  .hq-inventoria .hq-inventoria-bubble button:not(.hq-inventoria-head-btn):not(.hq-inventoria-tab){min-height:40px}
+  .hq-inventoria .hq-inventoria-bubble button.hq-inventoria-quick-btn{min-height:36px}
+  .hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab{min-height:38px;font-size:12.5px}
+  .hq-inventoria-tabs{margin:0 8px 2px}
+  .hq-inventoria-pane{padding:10px 10px 14px}
+}
+@media (prefers-contrast:more){
+  .hq-inventoria{--inv-line:color-mix(in srgb,var(--inv-text) 55%,transparent);--inv-muted:var(--inv-text)}
+}
+.hq-inventoria-badge{background:#dc2626;color:#fff;box-shadow:0 0 0 2px color-mix(in srgb,var(--panel,#1a2524) 90%,transparent)}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-head-btn{min-width:32px;min-height:32px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%}
