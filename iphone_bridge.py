@@ -10472,6 +10472,31 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # Spotify OAuth return is a top-level browser redirect from accounts.spotify.com.
+        # The HQ session cookie is often absent here (host mismatch 127.0.0.1 vs Serve name,
+        # or cross-site navigation). Authorize via one-time OAuth state, not PIN cookie.
+        if raw == "/api/spotify/callback":
+            ensure_hq()
+            code, payload = hq_spotify.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            if code == 200 and payload.get("connected"):
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify connecté</title>"
+                    "<p>Spotify connecté. Redirection…</p>"
+                    "<script>location.replace('/#musique');</script>"
+                )
+                self._send(200, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            else:
+                err = html.escape(str((payload or {}).get("error") or "oauth_failed"))
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify</title>"
+                    f"<p>Connexion Spotify échouée : {err}</p>"
+                    "<p><a href='/'>Retour HQ</a> · <a href='/#musique'>Musique</a></p>"
+                )
+                self._send(code if code >= 400 else 400, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            return
+
         if not self._auth():
             if raw == "/api/carnet/reader-pdf":
                 self._carnet_reader_pdf_refusal(401, {"error": "PIN requis"})  # frame-readable: the Reader shows the access state
