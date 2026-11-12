@@ -34,6 +34,8 @@
     const voiceSel = el("select", { ariaLabel: "Voix" });
     const rate = el("input", { type: "range", min: "-0.4", max: "0.4", step: "0.05", value: "0", ariaLabel: "Débit" });
     const rateOut = el("output", { textContent: "0" });
+    const pitch = el("input", { type: "range", min: "-6", max: "6", step: "0.5", value: "0", ariaLabel: "Hauteur (demi-tons)" });
+    const pitchOut = el("output", { textContent: "0" });
     const text = el("textarea", { maxLength: 400, ariaLabel: "Texte à écouter" });
     const hint = el("p", { className: "hq-voice-studio-hint" });
     const playBtn = el("button", { type: "button", textContent: "Écouter" });
@@ -60,12 +62,14 @@
       const labels = { xtts: "Coqui XTTS-v2", phonon: "Phonon", browser: "Navigateur" };
       fill(engSel, engines.map((e) => [e, labels[e]]), engines.indexOf(prof.engine) >= 0 ? prof.engine : engines[0]);
       const cand = d.candidates[c] || [];
-      const all = d.voices.fr.map((v) => v.name);
+      const all = d.voices.fr.map((v) => v.name).concat((d.voices.en || []).map((v) => v.name));
       const ordered = cand.filter((n) => all.indexOf(n) >= 0).concat(all.filter((n) => cand.indexOf(n) < 0));
       const desc = {}; d.voices.fr.forEach((v) => { desc[v.name] = v.description; });
-      fill(voiceSel, ordered.map((n) => [n, (cand.indexOf(n) >= 0 ? "★ " : "") + n]), prof.voice || prof.preview_voice || ordered[0]);
+      const isEn = {}; (d.voices.en || []).forEach((v) => { isEn[v.name] = true; });
+      fill(voiceSel, ordered.map((n) => [n, (cand.indexOf(n) >= 0 ? "★ " : "") + (isEn[n] ? "EN · " : "") + n]), prof.voice || prof.preview_voice || ordered[0]);
       voiceSel.disabled = engSel.value !== "phonon";
       rate.value = String(prof.rate || 0); rateOut.value = rate.value;
+      pitch.value = String(prof.pitch || 0); pitchOut.value = pitch.value;
       text.value = SAMPLE[c] || "";
       const st = d.status;
       const frOk = st.models && st.models.fr;
@@ -77,6 +81,7 @@
     charSel.addEventListener("change", () => { stop(); refreshVoices(); });
     engSel.addEventListener("change", () => { stop(); voiceSel.disabled = engSel.value !== "phonon"; });
     rate.addEventListener("input", () => { rateOut.value = rate.value; });
+    pitch.addEventListener("input", () => { pitchOut.value = pitch.value; });
 
     playBtn.addEventListener("click", () => {
       if (!text.value.trim()) return;
@@ -92,7 +97,7 @@
       playBtn.disabled = true;
       status.textContent = "Préparation locale…";
       post({ op: "voice_preview", character: charSel.value, engine: engSel.value, voice: voiceSel.value,
-             rate: Number(rate.value), text: text.value, language: "fr" })
+             rate: Number(rate.value), pitch: Number(pitch.value), text: text.value, language: "fr" })
         .then((res) => {
           if (my !== state.seq || state.destroyed) return;
           playBtn.disabled = false;
@@ -108,7 +113,7 @@
     });
     stopBtn.addEventListener("click", () => { stop(); try { doc.defaultView.speechSynthesis.cancel(); } catch (e) {} status.textContent = "Arrêté."; });
     saveBtn.addEventListener("click", () => {
-      post({ op: "voice_save", character: charSel.value, engine: engSel.value, voice: voiceSel.value, rate: Number(rate.value) })
+      post({ op: "voice_save", character: charSel.value, engine: engSel.value, voice: voiceSel.value, rate: Number(rate.value), pitch: Number(pitch.value) })
         .then((res) => { status.textContent = res.ok ? "Voix enregistrée." : (res.error || "Échec"); if (res.ok) { state.data.profiles[charSel.value] = res.profile; refreshVoices(); } });
     });
     resetBtn.addEventListener("click", () => {
@@ -118,7 +123,7 @@
 
     container.replaceChildren(
       el("label", {}, "Personnage", charSel), el("label", {}, "Moteur", engSel), el("label", {}, "Voix", voiceSel),
-      el("label", {}, "Débit ", rate, rateOut), el("label", {}, "Texte", text), hint,
+      el("label", {}, "Débit ", rate, rateOut), el("label", {}, "Hauteur ", pitch, pitchOut), el("label", {}, "Texte", text), hint,
       el("div", {}, playBtn, stopBtn, saveBtn, resetBtn), status);
     status.textContent = "Chargement…";
     post({ op: "voice_profiles" }).then((d) => {

@@ -59,6 +59,7 @@ CANDIDATES = {
 STYLE_DELTA = {"neutral": 0.0, "warm": 0.05, "thoughtful": 0.08, "deadpan": 0.03,
                "playful": -0.08, "expressive": 0.0}
 RATE_LIMITS = (-0.4, 0.4)
+PITCH_LIMITS = (-6.0, 6.0)  # semitones, applied after synthesis (needs ffmpeg)
 
 _cfg_lock = threading.Lock()
 _daemon_lock = threading.Lock()
@@ -75,8 +76,8 @@ def _fold(s: str) -> str:
 
 def default_profile(char: str) -> dict[str, Any]:
     if char == "else":
-        return {"engine": "xtts", "voice": None, "rate": 0.0, "selected": True, "fallback": ["browser"]}
-    return {"engine": "phonon", "voice": None, "rate": 0.0, "selected": False,
+        return {"engine": "xtts", "voice": None, "rate": 0.0, "pitch": 0.0, "selected": True, "fallback": ["browser"]}
+    return {"engine": "phonon", "voice": None, "rate": 0.0, "pitch": 0.0, "selected": False,
             "fallback": ["browser"], "preview_voice": (CANDIDATES.get(char) or [None])[0]}
 
 
@@ -97,25 +98,31 @@ def load_profiles() -> dict[str, dict[str, Any]]:
                 p["voice"] = s["voice"][:40]
             if isinstance(s.get("rate"), (int, float)):
                 p["rate"] = max(RATE_LIMITS[0], min(RATE_LIMITS[1], float(s["rate"])))
+            if isinstance(s.get("pitch"), (int, float)):
+                p["pitch"] = max(PITCH_LIMITS[0], min(PITCH_LIMITS[1], float(s["pitch"])))
             p["selected"] = bool(p["voice"]) or c == "else" or p["engine"] == "browser"
         out[c] = p
     return out
 
 
-def save_profile(char: str, engine: str, voice: Optional[str], rate: float) -> dict[str, Any]:
+def save_profile(char: str, engine: str, voice: Optional[str], rate: float, pitch: float = 0.0) -> dict[str, Any]:
     c = character_key(char)
     if c is None or engine not in ENGINES:
         raise ValueError("personnage ou moteur inconnu")
     if c != "else" and engine == "xtts":
         raise ValueError("XTTS est réservé à Else (voix de référence)")
-    if engine == "phonon" and (not voice or not valid_voice(voice)):
-        raise ValueError("voix inconnue")
+    if engine == "phonon":
+        found = voice and (resolve_voice(voice, "fr") or resolve_voice(voice, "en"))
+        if not found:
+            raise ValueError("voix inconnue")
+        voice = found
     rate = max(RATE_LIMITS[0], min(RATE_LIMITS[1], float(rate or 0)))
+    pitch = max(PITCH_LIMITS[0], min(PITCH_LIMITS[1], float(pitch or 0)))
     with _cfg_lock:
         profiles = load_profiles()
         profiles[c].update(engine=engine, voice=voice if engine == "phonon" else None,
-                           rate=rate, selected=True)
-        keep = {k: {f: v[f] for f in ("engine", "voice", "rate")} for k, v in profiles.items()}
+                           rate=rate, pitch=pitch, selected=True)
+        keep = {k: {f: v[f] for f in ("engine", "voice", "rate", "pitch")} for k, v in profiles.items()}
         hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": keep})
         return profiles[c]
 
@@ -128,7 +135,7 @@ def reset_profile(char: str) -> dict[str, Any]:
     with _cfg_lock:
         profiles = load_profiles()
         profiles[c] = default_profile(c)
-        keep = {k: {f: v[f] for f in ("engine", "voice", "rate")} for k, v in profiles.items()}
+        keep = {k: {f: v[f] for f in ("engine", "voice", "rate", "pitch")} for k, v in profiles.items()}
         hq_state.write_json_atomic(PROFILES_FILE, {"version": 1, "profiles": keep})
         return profiles[c]
 
@@ -204,8 +211,7 @@ def start_daemon(wait_sec: float = 0.0) -> bool:
     try:
         if _proc is None or _proc.poll() is not None:
             PHONON_LOG.parent.mkdir(parents=True, exist_ok=True)
-            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1",
-                       HF_HOME=str(PHONON_ROOT / "hf_cache"))
+            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
             args = [str(PHONON_PYTHON), "-I", str(PHONON_DAEMON_SCRIPT), "--host", PHONON_HOST,
                     "--port", str(PHONON_PORT)]
             for lang, repo in MODELS.items():
@@ -256,14 +262,14 @@ def wav_ok(path: Path) -> bool:
         return False
 
 
-def cache_key(text: str, lang: str, voice: str, style: str, delta: float, model: str) -> str:
-    raw = "|".join(["phonon", model, voice, lang, style, f"{delta:.3f}", MASTER_REV, text.strip()])
+def cache_key(text: str, lang: str, voice: str, style: str, delta: float, model: str, pitch: float = 0.0) -> str:
+    raw = "|".join(["phonon", model, voice, lang, style, f"{delta:.3f}", f"p{pitch:.2f}", MASTER_REV, text.strip()])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def synthesize(text: str, *, character: str, language: str = "fr", style: str = "neutral",
-               voice: Optional[str] = None, rate: Optional[float] = None, master: bool = True,
-               timeout_sec: float = 60.0) -> dict[str, Any]:
+               voice: Optional[str] = None, rate: Optional[float] = None, pitch: Optional[float] = None,
+               master: bool = True, timeout_sec: float = 60.0) -> dict[str, Any]:
     """Standard hq_voice result dict. Never substitutes another engine's voice."""
     from hq_voice_prosody import normalize_style
     from hq_voice import compute_viseme_envelope
@@ -275,13 +281,20 @@ def synthesize(text: str, *, character: str, language: str = "fr", style: str = 
     if not chosen:
         return {"ok": False, "engine": "phonon", "code": "no_voice", "error": "Aucune voix Phonon choisie"}
     voice_name = resolve_voice(chosen, lang)
+    if not voice_name:  # a voice's native language wins (e.g. English-only Lottie)
+        other = "en" if lang == "fr" else "fr"
+        if resolve_voice(chosen, other) and (voice is None or voice == prof.get("voice")):
+            lang, voice_name = other, resolve_voice(chosen, other)
     if not voice_name:
         return {"ok": False, "engine": "phonon", "code": "bad_voice",
                 "error": "Voix Phonon inconnue pour cette langue"}
     delta = STYLE_DELTA.get(style, 0.0) + (prof.get("rate", 0.0) if rate is None else float(rate))
     delta = max(-0.6, min(0.6, delta))
     model = MODELS[lang]
-    name = f"voice_ph{cache_key(text, lang, voice_name, style, delta, model)}.wav"
+    semis = max(PITCH_LIMITS[0], min(PITCH_LIMITS[1], float(prof.get("pitch", 0.0) if pitch is None else pitch)))
+    if not (master and os.path.exists(FFMPEG_BIN)):
+        semis = 0.0  # pitch shifting needs the ffmpeg pass
+    name = f"voice_ph{cache_key(text, lang, voice_name, style, delta, model, semis)}.wav"
     final = CACHE_DIR / name
     url = f"/assets/companion/chat/voice_cache/{name}"
     meta = {"engine": "phonon", "model": model, "voice": voice_name, "language": lang,
@@ -302,7 +315,13 @@ def synthesize(text: str, *, character: str, language: str = "fr", style: str = 
                           else "Synthèse Phonon indisponible")}
     try:
         if master and os.path.exists(FFMPEG_BIN):
-            subprocess.run([FFMPEG_BIN, "-y", "-i", str(raw), "-af", MASTER_FILTER,
+            chain = MASTER_FILTER
+            if semis:
+                with wave.open(str(raw), "rb") as rw:
+                    sr = rw.getframerate()
+                f = 2 ** (semis / 12)  # raises pitch and formants, tempo restored
+                chain = f"asetrate={sr}*{f:.5f},aresample=48000,atempo={1 / f:.5f}," + MASTER_FILTER
+            subprocess.run([FFMPEG_BIN, "-y", "-i", str(raw), "-af", chain,
                             "-c:a", "pcm_s16le", str(final)],
                            capture_output=True, check=True, timeout=30)
             raw.unlink(missing_ok=True)
@@ -351,9 +370,13 @@ def studio(op: str, data: dict, *, admin: bool) -> dict[str, Any]:
         rate = float(data.get("rate") or 0.0)
     except (TypeError, ValueError):
         rate = 0.0
+    try:
+        pitch = float(data.get("pitch") or 0.0)
+    except (TypeError, ValueError):
+        pitch = 0.0
     if op == "voice_save":
         try:
-            return {"ok": True, "profile": save_profile(c, engine, data.get("voice"), rate)}
+            return {"ok": True, "profile": save_profile(c, engine, data.get("voice"), rate, pitch)}
         except ValueError as e:
             return {"ok": False, "error": str(e), "code": "validation"}
     # voice_preview: never persists anything
@@ -366,7 +389,7 @@ def studio(op: str, data: dict, *, admin: bool) -> dict[str, Any]:
         res = hq_voice._synthesize_xtts(text, language=lang, style=style)
     elif engine == "phonon":
         res = synthesize(hq_voice.clean_text_for_speech(text), character=c, language=lang,
-                         style=style, voice=data.get("voice"), rate=rate)
+                         style=style, voice=data.get("voice"), rate=rate, pitch=pitch)
     else:
         return {"ok": False, "error": "Aperçu navigateur côté client", "code": "browser_only"}
     return res or {"ok": False, "error": "Texte vide"}

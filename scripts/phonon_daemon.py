@@ -82,8 +82,12 @@ class H(BaseHTTPRequestHandler):
             if req.get("voice"):
                 kw["voice"] = str(req["voice"])
             dd = req.get("duration_delta")
+            # ptts 0.7: conditions are model state (synth() has no conditions kwarg). Always set,
+            # so a previous request's speed never leaks into this one (we hold the lock).
             if isinstance(dd, (int, float)) and dd != 0:
-                kw["conditions"] = {"duration_delta": max(-0.6, min(0.6, float(dd)))}
+                m["tts"].set_conditions({"duration_delta": max(-0.6, min(0.6, float(dd)))})
+            else:
+                m["tts"].set_conditions({})
             t0 = time.time()
             pcm = m["tts"].synth(text, **kw)
             rate = m["tts"].sample_rate

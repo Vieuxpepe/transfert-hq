@@ -162,3 +162,29 @@ def test_real_daemon_synthesis_english():
     assert ph.wav_ok(path)
     with wave.open(str(path)) as w:
         assert w.getnframes() / w.getframerate() > 1.0
+
+
+def test_real_daemon_speed_control_changes_duration():
+    if not ph.daemon_ready("en"):
+        pytest.skip("Phonon daemon not running")
+    voice = ph.voices("en")[0]["name"]
+    d = {}
+    for delta in (-0.3, 0.3):
+        r = ph.synthesize("Hello there, this is a test of the speed control.", character="inventoria",
+                          language="en", voice=voice, rate=delta, master=False)
+        assert r["ok"], r
+        with wave.open(str(ph.CACHE_DIR / Path(r["audio_url"]).name)) as w:
+            d[delta] = w.getnframes() / w.getframerate()
+    assert d[0.3] > d[-0.3] * 1.15
+
+
+def test_pitch_is_saved_clamped_and_part_of_cache_key(stub):
+    ph.save_profile("musica", "phonon", "Noémie", 0.1, 99)
+    assert ph.load_profiles()["musica"]["pitch"] == 6.0
+    assert ph.cache_key("t", "fr", "v", "neutral", 0.0, "m", 0.0) != ph.cache_key("t", "fr", "v", "neutral", 0.0, "m", 3.0)
+
+
+def test_english_only_voice_in_profile_selects_english_model(stub):
+    ph.save_profile("inventoria", "phonon", "Zoey", 0.0, 0)
+    r = hq_voice.synthesize("Bonjour tout le monde", character="inventoria", language="fr")
+    assert r["ok"] and r["voice"] == "Zoey" and r["language"] == "en"
