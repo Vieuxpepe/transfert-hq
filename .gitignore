@@ -57,6 +57,7 @@ iphone_bridge.py.bak*
 Thumbs.db
 
 .hq-ai/
+.hq-music/
 .hq-restart.log
 
 # Local-only workspace (not part of the shipped repo)

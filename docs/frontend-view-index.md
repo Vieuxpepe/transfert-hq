@@ -38,6 +38,7 @@ Use this table before opening large JS files.
 | `forge` | Forge Studio | **`hqForgeLoad()`** | **`hqForgeShow()`** after load | `hq-forge*.js` | `forge script-load`, `forge-show`, `nav setView-lazy` |
 | `fichiers` | Fichiers | — | **`refreshFiles()`** on enter | inline + `/api/list` | `fichiers list` |
 | `lecteur` | Lecteur | — | **`hqPlayerView`** | player JS inline | — |
+| `musique` | Musique | **`hqMusicLoad()`** | **`hqMusicEnsureMounted()`** + **`hqMusicShow()`** (admin) | `assets/hq-music.js`, `hq-music.css` | `nav setView-lazy` |
 | `projets` | Projets | — | **`hqProjectsShow()`** | projects module | — |
 | `inventaire` | Inventaire | — | **`hqInventoryShow()`** | inventory module | — |
 | `ops` | Terminal | — | ops tools | `ops` UI (hidden in simple mode) | — |

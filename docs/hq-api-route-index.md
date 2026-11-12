@@ -140,6 +140,34 @@ Inventoria routes (live in `iphone_bridge.py`):
 
 ---
 
+## Musique / Spotify (admin; CSRF on POST; not in upload allowlist)
+
+| Route | Mod | Notes |
+|-------|-----|--------|
+| `GET/POST /api/music/profile` | `hq_music` | Preferences (`preferred_genres`, `favorite_artists`, `musical_patterns`) |
+| `GET/POST /api/music/discoveries` | `hq_music` | Discovery store (verified imports only) |
+| `POST /api/music/discovery-status` | `hq_music` | `new` / `saved` / `dismissed` |
+| `POST /api/music/feedback` | `hq_music` | like / dislike / save / dismiss |
+| `GET /api/music/discovery-query` | `hq_music` | Suggested research query (no auto-search) |
+| `GET /api/music/now-playing` | `hq_music` + `hq_music_smtc` | Optional Windows SMTC (read-only) |
+| `GET/POST /api/music/presets` | `hq_music` | Listening presets |
+| `GET/POST /api/music/favorites` | `hq_music` | Local favorites |
+| `GET /api/music/session` | `hq_music` | Last generated mixer session |
+| `POST /api/music/session/generate` | `hq_music` + `hq_music_mixer` | Weighted DJ session |
+| `GET /api/spotify/status` | `hq_spotify` | Connection / config status (no tokens) |
+| `GET /api/spotify/connect` | `hq_spotify` | Begin PKCE OAuth |
+| `GET /api/spotify/callback` | `hq_spotify` | OAuth return (HTML redirect to `/#musique`) |
+| `POST /api/spotify/disconnect` | `hq_spotify` | Drop local tokens |
+| `GET/POST /api/spotify/player` | `hq_spotify` | Now playing + controls |
+| `GET /api/spotify/devices` | `hq_spotify` | Connect devices |
+| `GET /api/spotify/queue` | `hq_spotify` | Queue read (no free reorder) |
+| `GET/POST /api/spotify/playlists…` | `hq_spotify` | Library + track ops |
+| `GET/POST /api/spotify/search` | `hq_spotify` | Catalog search |
+
+Setup: [musique-spotify.md](musique-spotify.md). Tokens live under `.hq-music/` (gitignored), never in frontend or profile JSON.
+
+---
+
 ## Static / app shell
 
 | Route | Notes |

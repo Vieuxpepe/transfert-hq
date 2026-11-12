@@ -1,0 +1,263 @@
+/* Transfert HQ — Musique (Spotify). Separate from Lecteur. */
+#hq-music-app {
+  display: grid;
+  gap: 1rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0 0 1.5rem;
+}
+#hq-music-app .hqm-header {
+  display: grid;
+  gap: .35rem;
+}
+#hq-music-app .hqm-header h2 {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.4vw, 1.85rem);
+  letter-spacing: -.02em;
+}
+#hq-music-app .hqm-header p,
+#hq-music-app .hqm-muted {
+  margin: 0;
+  color: var(--muted, #9aa3b2);
+}
+#hq-music-app .hqm-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: .35rem 0;
+  background: color-mix(in srgb, var(--bg, #12141a) 88%, transparent);
+  backdrop-filter: blur(8px);
+}
+#hq-music-app .hqm-tab {
+  min-height: 40px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text, #f4f6fb);
+  padding: .45rem .95rem;
+  cursor: pointer;
+  font: inherit;
+}
+#hq-music-app .hqm-tab[aria-selected="true"] {
+  background: color-mix(in srgb, var(--accent, #7c6cf0) 28%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #7c6cf0) 55%, transparent);
+}
+#hq-music-app .hqm-tab:focus-visible,
+#hq-music-app .hqm-btn:focus-visible,
+#hq-music-app .hqm-icon-btn:focus-visible,
+#hq-music-app input:focus-visible,
+#hq-music-app select:focus-visible,
+#hq-music-app textarea:focus-visible {
+  outline: 2px solid var(--accent, #7c6cf0);
+  outline-offset: 2px;
+}
+#hq-music-app .hqm-panel {
+  display: none;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+#hq-music-app .hqm-panel.is-active {
+  display: grid;
+}
+#hq-music-app .hqm-card {
+  background: color-mix(in srgb, var(--panel, #1b2030) 92%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 16px;
+  padding: 1rem 1.1rem;
+  display: grid;
+  gap: .75rem;
+}
+#hq-music-app .hqm-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+#hq-music-app .hqm-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .55rem;
+  align-items: center;
+}
+#hq-music-app .hqm-btn {
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent, #7c6cf0);
+  color: #fff;
+  padding: .5rem .9rem;
+  cursor: pointer;
+  font: inherit;
+}
+#hq-music-app .hqm-btn.secondary {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  color: var(--text, #f4f6fb);
+}
+#hq-music-app .hqm-btn:disabled {
+  opacity: .55;
+  cursor: default;
+}
+#hq-music-app .hqm-icon-btn {
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+#hq-music-app .hqm-now {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: .9rem;
+  align-items: center;
+}
+#hq-music-app .hqm-art {
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+#hq-music-app .hqm-progress {
+  width: 100%;
+  accent-color: var(--accent, #7c6cf0);
+}
+#hq-music-app .hqm-field {
+  display: grid;
+  gap: .3rem;
+}
+#hq-music-app .hqm-field label,
+#hq-music-app .hqm-label {
+  font-size: .86rem;
+  color: var(--muted, #9aa3b2);
+}
+#hq-music-app input[type="text"],
+#hq-music-app input[type="search"],
+#hq-music-app input[type="number"],
+#hq-music-app input[type="range"],
+#hq-music-app select,
+#hq-music-app textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  background: color-mix(in srgb, var(--bg, #12141a) 80%, transparent);
+  color: var(--text, #f4f6fb);
+  padding: .45rem .7rem;
+  font: inherit;
+}
+#hq-music-app textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+#hq-music-app .hqm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: .35rem;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+#hq-music-app .hqm-list li,
+#hq-music-app .hqm-track {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .55rem;
+  align-items: center;
+  padding: .55rem .45rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+#hq-music-app .hqm-list li:hover,
+#hq-music-app .hqm-track:hover {
+  border-color: color-mix(in srgb, currentColor 12%, transparent);
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+#hq-music-app .hqm-track-meta {
+  display: grid;
+  gap: .15rem;
+  min-width: 0;
+}
+#hq-music-app .hqm-track-meta strong,
+#hq-music-app .hqm-track-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#hq-music-app .hqm-track-meta span {
+  color: var(--muted, #9aa3b2);
+  font-size: .9rem;
+}
+#hq-music-app .hqm-status {
+  min-height: 1.25em;
+  margin: 0;
+  color: var(--muted, #9aa3b2);
+}
+#hq-music-app .hqm-status.is-error {
+  color: #df7777;
+}
+#hq-music-app .hqm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  border-radius: 999px;
+  padding: .2rem .55rem;
+  font-size: .8rem;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+#hq-music-app .hqm-badge.ok {
+  background: color-mix(in srgb, #3d9a6a 28%, transparent);
+}
+#hq-music-app .hqm-badge.warn {
+  background: color-mix(in srgb, #c4932a 28%, transparent);
+}
+#hq-music-app .hqm-grid-2 {
+  display: grid;
+  gap: 1rem;
+}
+#hq-music-app .hqm-source {
+  display: grid;
+  grid-template-columns: 1fr 110px auto;
+  gap: .5rem;
+  align-items: end;
+}
+#hq-music-app .hqm-reason {
+  font-size: .82rem;
+  color: var(--muted, #9aa3b2);
+}
+@media (min-width: 900px) {
+  #hq-music-app .hqm-grid-2 {
+    grid-template-columns: 1.1fr .9fr;
+  }
+  #hq-music-app .hqm-now {
+    grid-template-columns: 120px 1fr;
+  }
+  #hq-music-app .hqm-art {
+    width: 120px;
+    height: 120px;
+  }
+}
+@media (max-width: 640px) {
+  #hq-music-app .hqm-source {
+    grid-template-columns: 1fr;
+  }
+  #hq-music-app .hqm-now {
+    grid-template-columns: 72px 1fr;
+  }
+  #hq-music-app .hqm-art {
+    width: 72px;
+    height: 72px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #hq-music-app * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

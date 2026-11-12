@@ -48,6 +48,20 @@ Verify scripts (recommended):
 
 ---
 
+## Musique / Spotify
+
+| If you changed… | Run |
+|-----------------|-----|
+| `hq_music.py`, discoveries/presets | `python -m unittest tests.test_hq_music -v` |
+| `hq_music_mixer.py` | `python -m unittest tests.test_hq_music_mixer -v` |
+| `hq_spotify.py` (mocked) | `python -m unittest tests.test_hq_spotify -v` |
+| Musique nav / lazy-load wiring | `python -m unittest tests.test_hq_music_ui -v` |
+| All Musique unit | `python -m unittest tests.test_hq_music tests.test_hq_music_mixer tests.test_hq_spotify tests.test_hq_music_ui -v` |
+
+Setup notes: [musique-spotify.md](musique-spotify.md). Live Spotify OAuth/playback is **not** covered by CI mocks.
+
+---
+
 ## Bridge / HTTP core
 
 | If you changed… | Run |

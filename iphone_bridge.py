@@ -74,6 +74,8 @@ import hq_forge_style
 import hq_forge_vault
 import hq_today
 import hq_search
+import hq_music
+import hq_spotify
 
 PORT = 8765
 CODE_ROOT = Path(__file__).resolve().parent
@@ -3189,6 +3191,8 @@ def bind_hq() -> None:
         actor=lambda: "admin",
         asset_exists=lambda a: hq_carnet.media.asset_exists(a),
     )  # Inventoria: admin-only; CSRF on POST below
+    hq_music.bind(root=ROOT)  # Musique preferences / discoveries / presets (admin + CSRF on POST)
+    hq_spotify.bind(root=ROOT, config_getter=lambda: CONFIG)  # Spotify OAuth + Web API (tokens under .hq-music/)
     hq_carnet.bind(
         root=ROOT,
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
@@ -3513,7 +3517,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(hide, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', musique: 'Musique', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
 function hqHashView() {
   const name = (location.hash || '').replace(/^#/, '').split('/')[0];
   return Object.prototype.hasOwnProperty.call(VIEW_LABELS, name) ? name : '';
@@ -3526,7 +3530,7 @@ function hqApplySessionRole(me) {
   document.body.classList.toggle('session-admin', admin);
   const navIntime = document.getElementById('nav-intime');
   if (navIntime) navIntime.hidden = !admin;
-  ['nav-repas', 'nav-budget'].forEach((id) => {
+  ['nav-repas', 'nav-budget', 'nav-musique'].forEach((id) => {
     const button = document.getElementById(id);
     if (button) button.hidden = !admin;
   });
@@ -3535,9 +3539,9 @@ function hqApplySessionRole(me) {
   if (admin) {
     try {
       const want = hqHashView() || localStorage.getItem('tf_hq_view') || '';
-      if ((want === 'intime' || want === 'repas' || want === 'budget') && document.body.dataset.view !== want) setView(want);
+      if ((want === 'intime' || want === 'repas' || want === 'budget' || want === 'musique') && document.body.dataset.view !== want) setView(want);
     } catch (_) {}
-  } else if (document.body.dataset.view === 'intime' || document.body.dataset.view === 'repas' || document.body.dataset.view === 'budget') setView('accueil');
+  } else if (document.body.dataset.view === 'intime' || document.body.dataset.view === 'repas' || document.body.dataset.view === 'budget' || document.body.dataset.view === 'musique') setView('accueil');
   return admin;
 }
 function viewTitle(view) {
@@ -3574,6 +3578,54 @@ function hqForgeLoad() {
   return hqForgeLoading;
 }
 window.hqForgeLoad = hqForgeLoad;
+let hqMusicLoading = null;
+function hqMusicLoad() {
+  if (window.HqMusic) return Promise.resolve();
+  if (hqMusicLoading) return hqMusicLoading;
+  hqMusicLoading = new Promise((resolve) => {
+    const cssId = 'hq-music-css';
+    if (!document.getElementById(cssId)) {
+      const link = document.createElement('link');
+      link.id = cssId;
+      link.rel = 'stylesheet';
+      link.href = '/assets/hq-music.css';
+      document.head.appendChild(link);
+    }
+    const el = document.createElement('script');
+    el.src = '/assets/hq-music.js';
+    el.async = false;
+    el.onload = () => resolve(true);
+    el.onerror = () => { el.remove(); hqMusicLoading = null; resolve(false); };
+    document.body.appendChild(el);
+  });
+  return hqMusicLoading;
+}
+window.hqMusicLoad = hqMusicLoad;
+function hqMusicEnsureMounted() {
+  const host = document.getElementById('hq-music-app');
+  if (!host || !window.HqMusic) return;
+  if (host.dataset.hqmMounted === '1') return;
+  window.HqMusic.mount(host, {
+    request: async ({ path, method, body }) => {
+      const verb = (method || 'GET').toUpperCase();
+      const opts = { method: verb };
+      if (verb !== 'GET') {
+        opts.headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+        opts.body = JSON.stringify(body || {});
+      }
+      try {
+        const data = await api(path, opts);
+        return { status: 200, body: data };
+      } catch (err) {
+        const message = (err && err.message) || 'Music API error';
+        const code = (err && err.data && err.data.code) || (err && err.code) || 'request_failed';
+        return { status: (err && err.status) || 500, body: { ok: false, error: message, code } };
+      }
+    }
+  });
+  host.dataset.hqmMounted = '1';
+}
+window.hqMusicEnsureMounted = hqMusicEnsureMounted;
 // Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
 // when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
 // the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
@@ -3811,7 +3863,7 @@ function setView(name) {
   let view = VIEW_LABELS[name] ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
-  if ((view === 'repas' || view === 'budget') && !hqSessionIsAdmin()) view = 'accueil';
+  if ((view === 'repas' || view === 'budget' || view === 'musique') && !hqSessionIsAdmin()) view = 'accueil';
   const viewT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const commit = () => {
   const prevView = document.body.dataset.view;
@@ -3879,6 +3931,17 @@ function setView(name) {
     }).catch((e) => console.error(e));
   } else if (window.hqForgeHide) {
     try { window.hqForgeHide(); } catch (e) { console.error(e); }
+  }
+  if (view === 'musique') {
+    hqMusicLoad().then(() => {
+      const lazyMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
+      if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-lazy', target: 'musique', ms: lazyMs, ok: !!(window.HqMusic) }, { force: lazyMs > 400 });
+      if (document.body.dataset.view === 'musique') {
+        try { hqMusicEnsureMounted(); if (window.hqMusicShow) window.hqMusicShow(); } catch (e) { console.error(e); }
+      }
+    }).catch((e) => console.error(e));
+  } else if (window.hqMusicHide) {
+    try { window.hqMusicHide(); } catch (e) { console.error(e); }
   }
   const viewMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
   if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-commit', ms: viewMs, from: prevView, to: view }, { force: viewMs > 120 });
@@ -5786,12 +5849,14 @@ body[data-view="projets"] [data-panel="projets"],
 body[data-view="inventaire"] [data-panel="inventaire"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="lecteur"] [data-panel="lecteur"],
+body[data-view="musique"] [data-panel="musique"],
 body[data-view="forge"] [data-panel="forge"],
 body[data-view="intime"] [data-panel="intime"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
 body:not(.session-admin) .bottom-nav [data-nav="intime"],
 body:not(.session-admin) .bottom-nav [data-nav="repas"],
-body:not(.session-admin) .bottom-nav [data-nav="budget"]{display:none!important}
+body:not(.session-admin) .bottom-nav [data-nav="budget"],
+body:not(.session-admin) .bottom-nav [data-nav="musique"]{display:none!important}
 body[data-view="intime"] .hq-intime-panel{
   position:relative;
   display:flex;
@@ -6341,6 +6406,7 @@ def render_app() -> bytes:
   <button type="button" data-nav="projets"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3M16 20h4"/></svg></span><span class="nav-label">Projets</span></button>
   <button type="button" data-nav="inventaire"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5l8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9"/></svg></span><span class="nav-label">Inventaire</span></button>
   <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
+  <button type="button" id="nav-musique" data-nav="musique" hidden data-help="Spotify natif : lecture, playlists, mixer DJ et découvertes. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 18V6l12-2v12"/><circle cx="7" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Musique</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
@@ -6604,6 +6670,12 @@ def render_app() -> bytes:
       </div>
       <div class="media-strip" id="hq-media"></div>
     </section>
+  </div>
+
+  <div data-panel="musique">
+    <div id="hq-music-app" aria-live="polite">
+      <p class="hint">Chargement de Musique…</p>
+    </div>
   </div>
 
   <div data-panel="lecteur">
@@ -9628,6 +9700,35 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_inventory.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if raw == "/api/music" or raw.startswith("/api/music/"):  # Musique intelligence (admin: not in upload allowlist)
+            code, payload = hq_music.http_get(raw)
+            self._json(code, payload)
+            return True
+        if raw == "/api/spotify/callback":
+            # Browser OAuth return — complete token exchange then bounce into the Musique tab.
+            code, payload = hq_spotify.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            if code == 200 and payload.get("ok") is not False and payload.get("connected"):
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify connecté</title>"
+                    "<p>Spotify connecté. Redirection…</p>"
+                    "<script>location.replace('/#musique');</script>"
+                )
+                self._send(200, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            else:
+                err = html.escape(str((payload or {}).get("error") or "oauth_failed"))
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify</title>"
+                    f"<p>Connexion Spotify échouée : {err}</p>"
+                    "<p><a href='/#musique'>Retour Musique</a></p>"
+                )
+                self._send(code if code >= 400 else 400, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            return True
+        if raw == "/api/spotify" or raw.startswith("/api/spotify/"):  # Spotify Web API proxy (admin)
+            code, payload = hq_spotify.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         if raw == "/api/finances/summary" or raw.startswith("/api/finances/"):  # Finances (admin: not in the upload allowlist)
             code, payload = hq_finances.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, hq_finances.redact_for_logs(payload) if code >= 400 else payload)
@@ -10085,6 +10186,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
             code, payload = hq_inventory.http_post(data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/music" or raw.startswith("/api/music/"):  # Musique (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_music.http_post(raw, data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/spotify" or raw.startswith("/api/spotify/"):  # Spotify mutations (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_spotify.http_post(raw, data)
             self._json(code, payload)
             return True
         if raw.startswith("/api/finances/"):  # Finances (CSRF checked before routing)
