@@ -646,6 +646,33 @@ def _playlist_id(value: str) -> str:
     return pid
 
 
+def _playlist_total(data: dict[str, Any]) -> int | None:
+    for key in ("items", "tracks"):
+        block = data.get(key)
+        if isinstance(block, dict) and block.get("total") is not None:
+            try:
+                return int(block["total"])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _row_track_object(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Support legacy PlaylistTrackObject.track and Feb-2026 items.items.item shapes."""
+    legacy = row.get("track")
+    if isinstance(legacy, dict):
+        return legacy
+    item = row.get("item")
+    if isinstance(item, dict):
+        nested = item.get("track")
+        if isinstance(nested, dict):
+            return nested
+        # Development-mode schema: track metadata lives on `item`, with track=true flag.
+        if nested is True or item.get("type") == "track" or str(item.get("uri") or "").startswith("spotify:track:"):
+            return item
+    return None
+
+
 def get_playlist(playlist_id: str) -> dict[str, Any]:
     pid = _playlist_id(playlist_id)
     data = api_request("GET", f"/playlists/{pid}")
@@ -659,7 +686,7 @@ def get_playlist(playlist_id: str) -> dict[str, Any]:
             "description": data.get("description") or "",
             "uri": data.get("uri"),
             "image": image,
-            "tracks_total": (data.get("tracks") or {}).get("total") if isinstance(data.get("tracks"), dict) else None,
+            "tracks_total": _playlist_total(data) if isinstance(data, dict) else None,
             "owner": (data.get("owner") or {}).get("display_name"),
             "public": data.get("public"),
             "collaborative": data.get("collaborative"),
@@ -669,15 +696,34 @@ def get_playlist(playlist_id: str) -> dict[str, Any]:
 
 
 def get_playlist_tracks(playlist_id: str, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Fetch playlist contents via /items (legacy /tracks is removed for new apps)."""
     pid = _playlist_id(playlist_id)
     limit = max(1, min(50, int(limit)))
     offset = max(0, int(offset))
-    data = api_request("GET", f"/playlists/{pid}/tracks", query={"limit": limit, "offset": offset})
+    query = {"limit": limit, "offset": offset, "additional_types": "track"}
+    try:
+        data = api_request("GET", f"/playlists/{pid}/items", query=query)
+    except SpotifyError as exc:
+        # Older extended-quota apps may still only expose /tracks.
+        if exc.status in (404, 405) or exc.code in {"spotify_not_found", "spotify_api_error"}:
+            try:
+                data = api_request("GET", f"/playlists/{pid}/tracks", query={"limit": limit, "offset": offset})
+            except SpotifyError:
+                raise exc from None
+        elif exc.code == "spotify_forbidden":
+            raise SpotifyError(
+                "Playlist inaccessible — Spotify n'autorise le contenu que pour tes playlists "
+                "(propriétaire ou collaborateur), pas les playlists publiques tierces.",
+                403,
+                "spotify_forbidden",
+            ) from exc
+        else:
+            raise
     items = []
     for row in (data.get("items") if isinstance(data, dict) else []) or []:
         if not isinstance(row, dict):
             continue
-        track = row.get("track")
+        track = _row_track_object(row)
         if not isinstance(track, dict) or track.get("is_local"):
             continue
         if track.get("type") and track.get("type") != "track":
@@ -710,15 +756,16 @@ def get_playlist_tracks(playlist_id: str, *, limit: int = 50, offset: int = 0) -
 def create_playlist(name: str, *, description: str = "", public: bool = False) -> dict[str, Any]:
     if not isinstance(name, str) or not (1 <= len(name.strip()) <= 120):
         raise SpotifyError("Nom de playlist invalide")
-    me = api_request("GET", "/me")
-    user_id = me.get("id")
-    if not user_id:
-        raise SpotifyError("Profil Spotify indisponible", 502, "spotify_api_error")
-    data = api_request(
-        "POST",
-        f"/users/{quote(str(user_id))}/playlists",
-        body={"name": name.strip(), "description": str(description or "")[:300], "public": bool(public)},
-    )
+    body = {"name": name.strip(), "description": str(description or "")[:300], "public": bool(public)}
+    try:
+        data = api_request("POST", "/me/playlists", body=body)
+    except SpotifyError:
+        # Fallback for older apps still on /users/{id}/playlists.
+        me = api_request("GET", "/me")
+        user_id = me.get("id")
+        if not user_id:
+            raise SpotifyError("Profil Spotify indisponible", 502, "spotify_api_error")
+        data = api_request("POST", f"/users/{quote(str(user_id))}/playlists", body=body)
     return {"ok": True, "playlist": {"id": data.get("id"), "uri": data.get("uri"), "name": data.get("name")}}
 
 
@@ -739,8 +786,18 @@ def update_playlist(playlist_id: str, *, name: str | None = None, description: s
     return {"ok": True, "playlist_id": pid}
 
 
-def add_tracks(playlist_id: str, uris: list[str], *, position: int | None = None) -> dict[str, Any]:
+def _playlist_mutate(method: str, playlist_id: str, *, body: dict[str, Any], legacy_body: dict[str, Any] | None = None) -> Any:
+    """Prefer /items (current), fall back to /tracks for older Spotify apps."""
     pid = _playlist_id(playlist_id)
+    try:
+        return api_request(method, f"/playlists/{pid}/items", body=body)
+    except SpotifyError as exc:
+        if exc.status in (404, 405) or exc.code in {"spotify_not_found", "spotify_api_error"}:
+            return api_request(method, f"/playlists/{pid}/tracks", body=legacy_body or body)
+        raise
+
+
+def add_tracks(playlist_id: str, uris: list[str], *, position: int | None = None) -> dict[str, Any]:
     if not isinstance(uris, list) or not uris:
         raise SpotifyError("URIs requis")
     clean = [u for u in uris if isinstance(u, str) and u.startswith("spotify:track:")][:100]
@@ -749,12 +806,11 @@ def add_tracks(playlist_id: str, uris: list[str], *, position: int | None = None
     body: dict[str, Any] = {"uris": clean}
     if position is not None:
         body["position"] = int(position)
-    data = api_request("POST", f"/playlists/{pid}/tracks", body=body)
+    data = _playlist_mutate("POST", playlist_id, body=body)
     return {"ok": True, "snapshot_id": data.get("snapshot_id") if isinstance(data, dict) else None, "added": len(clean)}
 
 
 def remove_tracks(playlist_id: str, tracks: list[dict[str, Any]]) -> dict[str, Any]:
-    pid = _playlist_id(playlist_id)
     if not isinstance(tracks, list) or not tracks:
         raise SpotifyError("Pistes à retirer requises")
     payload = []
@@ -769,15 +825,19 @@ def remove_tracks(playlist_id: str, tracks: list[dict[str, Any]]) -> dict[str, A
             payload.append(entry)
     if not payload:
         raise SpotifyError("Aucune piste valide à retirer")
-    data = api_request("DELETE", f"/playlists/{pid}/tracks", body={"tracks": payload})
+    data = _playlist_mutate(
+        "DELETE",
+        playlist_id,
+        body={"tracks": payload},
+        legacy_body={"tracks": payload},
+    )
     return {"ok": True, "snapshot_id": data.get("snapshot_id") if isinstance(data, dict) else None}
 
 
 def reorder_tracks(playlist_id: str, *, range_start: int, insert_before: int, range_length: int = 1) -> dict[str, Any]:
-    pid = _playlist_id(playlist_id)
-    data = api_request(
+    data = _playlist_mutate(
         "PUT",
-        f"/playlists/{pid}/tracks",
+        playlist_id,
         body={
             "range_start": int(range_start),
             "insert_before": int(insert_before),
