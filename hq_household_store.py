@@ -1668,6 +1668,123 @@ def _load_manifest(man: Path) -> dict[str, Any]:
     return meta
 
 
+def snapshot_to(root: Path | str, dest_dir: Path | str) -> dict[str, Any]:
+    """Publish a verified Household SQLite snapshot into ``dest_dir`` for HQ backups.
+
+    Uses ``sqlite3.Connection.backup()`` so WAL contents are folded into a consistent
+    single-file snapshot. Never creates ``.hq-household`` when the store is absent.
+    Never copies sessions, PINs, ``bridge_config``, or ``inventory.json``.
+
+    Return shape mirrors Carnet's backup status::
+
+        absent   → {ok:True, included:False, status:"absent"}
+        success  → {ok:True, included:True, status:"included", valid:True, ...}
+        corrupt  → {ok:True, included:True, status:"invalid", valid:False}
+                   (nothing published under dest_dir)
+    """
+    dest = Path(os.path.abspath(os.fspath(dest_dir)))
+    if dest.exists() or _is_link(dest):
+        raise FileExistsError(str(dest))
+
+    base = confined_household_dir(root)
+    db = base / DB_NAME
+    if not db.is_file() or _is_link(db):
+        return {"ok": True, "included": False, "status": "absent"}
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    staging = dest.with_name(f"{dest.name}.staging-{os.getpid()}-{stamp}")
+    if staging.exists() or _is_link(staging):
+        raise HouseholdStoreError("Cible de sauvegarde invalide", code="backup_error")
+
+    staging.mkdir(parents=True, exist_ok=False)
+    published = False
+    try:
+        snap_path = staging / DB_NAME
+        man_path = snap_path.with_suffix(snap_path.suffix + ".manifest.json")
+        # Read-only source: no journal_mode flip and no user-data writes on the live DB.
+        # Connection.backup() still folds WAL pages into a consistent destination file.
+        src = _connect(db, readonly=True, wal=False)
+        try:
+            dest_conn = sqlite3.connect(str(snap_path))
+            try:
+                _sqlite_backup(src, dest_conn)
+                dest_conn.commit()
+            finally:
+                dest_conn.close()
+        finally:
+            src.close()
+
+        check_conn = sqlite3.connect(str(snap_path))
+        try:
+            check = integrity_check(check_conn)
+            ver = get_schema_version(check_conn)
+        finally:
+            check_conn.close()
+
+        if check != "ok":
+            # Present but unusable — block retention callers via valid=False; do not publish.
+            return {
+                "ok": True,
+                "included": True,
+                "status": "invalid",
+                "valid": False,
+                "schema_version": ver,
+                "error": "intégrité échec",
+            }
+
+        digest = _sha256_file(snap_path)
+        manifest = {
+            "schema_version": ver,
+            "sha256": digest,
+            "taken_at": _utc_iso(),
+            "label": "hq-backup",
+            "file": DB_NAME,
+            "bytes": snap_path.stat().st_size,
+            "ok": True,
+        }
+        man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        meta_src = meta_path(root)
+        if meta_src.is_file() and not _is_link(meta_src):
+            # Healable mirror only — SQLite user_version remains authority.
+            (staging / META_NAME).write_bytes(meta_src.read_bytes())
+
+        os.replace(staging, dest)
+        published = True
+        out: dict[str, Any] = {
+            "ok": True,
+            "included": True,
+            "status": "included",
+            "valid": True,
+            "schema_version": ver,
+            "sha256": digest,
+            "bytes": manifest["bytes"],
+            "file": DB_NAME,
+        }
+        return out
+    except HouseholdStoreError:
+        raise
+    except FileExistsError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise HouseholdStoreError(
+            "Sauvegarde household échouée — original intact",
+            code="backup_error",
+        ) from exc
+    finally:
+        if not published and staging.exists():
+            try:
+                for child in staging.rglob("*"):
+                    if child.is_file():
+                        child.unlink()
+                for child in sorted(staging.rglob("*"), reverse=True):
+                    if child.is_dir():
+                        child.rmdir()
+                staging.rmdir()
+            except OSError:
+                pass
+
+
 def backup(
     root: Path | str,
     *,

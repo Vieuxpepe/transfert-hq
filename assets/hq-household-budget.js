@@ -343,94 +343,129 @@
     container.appendChild(bar);
 
     if (session.status === "loading") {
-      container.appendChild(el("p", { class: "hq-budget-status", role: "status" }, "Chargement du budget…"));
+      container.appendChild(el("p", { class: "hq-budget-status is-loading", role: "status" }, "Chargement du budget…"));
       return;
     }
     if (session.status === "error" || session.status === "incomplete") {
-      container.appendChild(el("p", { class: "hq-budget-status", role: "alert" }, session.message));
-      container.appendChild(el("button", { type: "button", "data-action": "retry" }, "Réessayer"));
+      const err = el("div", { class: "hq-budget-empty is-error", role: "alert" });
+      err.appendChild(el("p", { class: "hq-budget-status" }, session.message));
+      err.appendChild(el("button", { type: "button", class: "hq-budget-btn", "data-action": "retry" }, "Réessayer"));
+      container.appendChild(err);
       container.setAttribute("data-totals", "incomplete");
       return;
     }
 
     const totals = session.totals || monthTotals(session.transactions, session.categories, (session.summary && session.summary.accounts) || [], bounds.start, bounds.end);
     const cards = el("div", { class: "hq-budget-cards", "data-totals": totals.unknownCount ? "incomplete" : "complete" });
-    cards.appendChild(metric("Revenus CAD", formatCadCents(totals.incomeCents)));
-    cards.appendChild(metric("Dépenses CAD", formatCadCents(totals.expenseCents)));
-    cards.appendChild(metric("Reste CAD", formatCadCents(totals.remainingCents)));
-    cards.appendChild(metric("Solde CAD", formatCadCents(cadBalance(session.summary))));
+    cards.appendChild(metric("Revenus CAD", formatCadCents(totals.incomeCents), "income"));
+    cards.appendChild(metric("Dépenses CAD", formatCadCents(totals.expenseCents), "expense"));
+    cards.appendChild(metric("Reste CAD", formatCadCents(totals.remainingCents), "remain"));
+    cards.appendChild(metric("Solde CAD", formatCadCents(cadBalance(session.summary)), "balance"));
     container.appendChild(cards);
     container.setAttribute("data-totals", totals.unknownCount ? "incomplete" : "complete");
+
+    const accounts = el("section", { class: "hq-budget-section", "aria-labelledby": "hq-budget-accounts" });
+    accounts.appendChild(el("h3", { id: "hq-budget-accounts", class: "hq-budget-section-title" }, "Comptes"));
+    const accountList = el("div", { class: "hq-budget-accounts" });
+    const accountItems = ((session.summary && session.summary.accounts) || []).filter(function (account) { return account && !account.archived; });
+    if (!accountItems.length) accountList.appendChild(el("p", { class: "hq-budget-hint" }, "Aucun compte."));
+    accountItems.forEach(function (account) {
+      const card = el("article", { class: "hq-budget-account", "data-currency": account.currency || "" });
+      const head = el("div", { class: "hq-budget-account-head" });
+      head.appendChild(el("h4", { class: "hq-budget-account-name" }, account.name || account.id));
+      head.appendChild(el("span", { class: "hq-budget-fx" }, account.currency || "?"));
+      card.appendChild(head);
+      card.appendChild(el("p", { class: "hq-budget-account-bal" }, formatMoney(account.balance_cents, account.currency)));
+      if (account.currency && account.currency !== "CAD") {
+        card.appendChild(el("p", { class: "hq-budget-hint" }, "Non additionné au CAD."));
+      }
+      accountList.appendChild(card);
+    });
+    accounts.appendChild(accountList);
+    container.appendChild(accounts);
+
     if (totals.unknownCount) {
-      container.appendChild(el("p", { class: "hq-budget-status", role: "alert" }, totals.unknownCount + " écriture(s) exclue(s) : la devise du compte est inconnue. Les totaux CAD ne couvrent pas tout le mois."));
+      container.appendChild(el("p", { class: "hq-budget-status is-warn", role: "alert" }, totals.unknownCount + " écriture(s) exclue(s) : la devise du compte est inconnue. Les totaux CAD ne couvrent pas tout le mois."));
     }
     Object.keys(totals.other).sort().forEach(function (code) {
       const bucket = totals.other[code];
-      container.appendChild(el("p", { class: "hq-budget-status" }, "Mouvements " + code + " : revenus " + formatMoney(bucket.incomeCents, code) + ", dépenses " + formatMoney(bucket.expenseCents, code) + ". Non additionné au CAD."));
+      container.appendChild(el("p", { class: "hq-budget-fx-note" }, "Mouvements " + code + " : revenus " + formatMoney(bucket.incomeCents, code) + ", dépenses " + formatMoney(bucket.expenseCents, code) + ". Non additionné au CAD."));
     });
     otherCurrencies(session.summary).forEach(function (code) {
       const cents = session.summary.balances_by_currency[code];
-      container.appendChild(el("p", { class: "hq-budget-status" }, code + " : " + formatMoney(cents, code) + " — non additionné au CAD."));
+      container.appendChild(el("p", { class: "hq-budget-fx-note" }, code + " : " + formatMoney(cents, code) + " — non additionné au CAD."));
     });
     if (session.message) container.appendChild(el("p", { class: "hq-budget-status", role: "status" }, session.message));
 
     const limits = el("section", { class: "hq-budget-section", "aria-labelledby": "hq-budget-limits" });
-    limits.appendChild(el("h3", { id: "hq-budget-limits" }, "Plafonds"));
+    limits.appendChild(el("h3", { id: "hq-budget-limits", class: "hq-budget-section-title" }, "Plafonds"));
     const envelopes = ((session.summary && session.summary.envelopes) || []).filter(function (envelope) {
       return envelope.currency === "CAD" && envelope.period_start <= bounds.end && envelope.period_end >= bounds.start;
     });
-    if (!envelopes.length) limits.appendChild(el("p", {}, "Aucun plafond CAD pour ce mois."));
+    if (!envelopes.length) limits.appendChild(el("p", { class: "hq-budget-hint" }, "Aucun plafond CAD pour ce mois."));
     envelopes.forEach(function (envelope) {
       const row = el("div", { class: "hq-budget-limit" });
       const remaining = envelopeRemaining(envelope);
-      row.appendChild(el("span", {}, categoryName(session, envelope.category_id)));
-      row.appendChild(el("span", {}, formatCadCents(envelope.spent_cents) + " / " + formatCadCents(envelope.allocated_cents)));
+      row.appendChild(el("span", { class: "hq-budget-limit-name" }, categoryName(session, envelope.category_id)));
+      row.appendChild(el("span", { class: "hq-budget-limit-amt" }, formatCadCents(envelope.spent_cents) + " / " + formatCadCents(envelope.allocated_cents)));
       const meter = el("progress", { max: String(Math.max(envelope.allocated_cents, 1)), value: String(Math.max(envelope.spent_cents, 0)) });
       meter.setAttribute("aria-label", "Dépense " + categoryName(session, envelope.category_id));
       row.appendChild(meter);
-      row.appendChild(el("span", {}, "Reste " + formatCadCents(remaining)));
+      row.appendChild(el("span", { class: "hq-budget-limit-remain" }, "Reste " + formatCadCents(remaining)));
       limits.appendChild(row);
     });
     container.appendChild(limits);
 
     const history = el("section", { class: "hq-budget-section" });
-    history.appendChild(el("h3", {}, "Écritures"));
-    if (!session.transactions.length) history.appendChild(el("p", {}, "Aucune écriture ce mois-ci."));
+    history.appendChild(el("h3", { class: "hq-budget-section-title" }, "Écritures"));
+    if (!session.transactions.length) history.appendChild(el("p", { class: "hq-budget-hint" }, "Aucune écriture ce mois-ci."));
+    const txList = el("div", { class: "hq-budget-tx-list" });
     session.transactions.forEach(function (tx) {
-      const row = el("article", { class: "hq-budget-tx" });
-      row.appendChild(el("p", {}, tx.booked_on + " · " + (tx.payee || categoryName(session, tx.category_id))));
-      row.appendChild(el("p", {}, formatMoney(tx.amount_cents, accountCurrency(session.summary.accounts || [], tx.account_id)) + " · " + tx.status));
+      const currency = accountCurrency(session.summary.accounts || [], tx.account_id);
+      const kind = Number.isSafeInteger(tx.amount_cents) && tx.amount_cents < 0 ? "expense" : "income";
+      const row = el("article", { class: "hq-budget-tx", "data-kind": kind, "data-currency": currency || "" });
+      const top = el("div", { class: "hq-budget-tx-top" });
+      top.appendChild(el("p", { class: "hq-budget-tx-title" }, tx.payee || categoryName(session, tx.category_id)));
+      top.appendChild(el("p", { class: "hq-budget-tx-amt" }, formatMoney(tx.amount_cents, currency)));
+      row.appendChild(top);
+      const meta = el("p", { class: "hq-budget-tx-meta" }, tx.booked_on + " · " + tx.status + (currency && currency !== "CAD" ? " · " + currency : ""));
+      row.appendChild(meta);
       if (!tx.transfer_pair_id && !tx.correction_of) {
-        const correct = el("button", { type: "button", "data-action": "show-correct", "data-id": tx.id }, "Corriger");
-        row.appendChild(correct);
+        row.appendChild(el("button", { type: "button", class: "hq-budget-btn is-ghost", "data-action": "show-correct", "data-id": tx.id }, "Corriger"));
       }
-      history.appendChild(row);
+      txList.appendChild(row);
     });
+    history.appendChild(txList);
     history.appendChild(transactionForm(session, bounds.start));
-    history.appendChild(el("p", { class: "hq-budget-status" }, "Une écriture existante ne se modifie pas sur place. La correction crée une nouvelle écriture, seulement si vous la confirmez."));
+    history.appendChild(el("p", { class: "hq-budget-hint" }, "Une écriture existante ne se modifie pas sur place. La correction crée une nouvelle écriture, seulement si vous la confirmez."));
     container.appendChild(history);
 
     const recurring = el("section", { class: "hq-budget-section" });
-    recurring.appendChild(el("h3", {}, "Récurrences"));
-    if (!session.recurring.length) recurring.appendChild(el("p", {}, "Aucune récurrence."));
+    recurring.appendChild(el("h3", { class: "hq-budget-section-title" }, "Récurrences"));
+    if (!session.recurring.length) recurring.appendChild(el("p", { class: "hq-budget-hint" }, "Aucune récurrence."));
     session.recurring.forEach(function (item) {
       const recurringCurrency = typeof item.currency === "string" && /^[A-Z]{3}$/.test(item.currency) ? item.currency : null;
-      recurring.appendChild(el("p", {}, categoryName(session, item.category_id) + " · " + formatMoney(item.amount_cents, recurringCurrency) + " · " + item.cadence + (item.auto_post ? " · auto_post enregistré ailleurs" : "")));
+      const row = el("div", { class: "hq-budget-recur" });
+      row.appendChild(el("span", { class: "hq-budget-recur-name" }, categoryName(session, item.category_id)));
+      row.appendChild(el("span", { class: "hq-budget-recur-amt" }, formatMoney(item.amount_cents, recurringCurrency)));
+      row.appendChild(el("span", { class: "hq-budget-hint" }, item.cadence + (item.auto_post ? " · auto_post enregistré ailleurs" : "")));
+      if (recurringCurrency && recurringCurrency !== "CAD") row.appendChild(el("span", { class: "hq-budget-fx" }, recurringCurrency));
+      recurring.appendChild(row);
     });
     recurring.appendChild(recurringForm(session, bounds.start));
-    recurring.appendChild(el("p", { class: "hq-budget-status" }, "Cette vue enregistre les récurrences avec auto_post désactivé. Elle ne poste rien toute seule."));
+    recurring.appendChild(el("p", { class: "hq-budget-hint" }, "Cette vue enregistre les récurrences avec auto_post désactivé. Elle ne poste rien toute seule."));
     container.appendChild(recurring);
 
     const goals = el("section", { class: "hq-budget-section" });
-    goals.appendChild(el("h3", {}, "Objectifs"));
-    if (!session.goals.length) goals.appendChild(el("p", {}, "Aucun objectif."));
+    goals.appendChild(el("h3", { class: "hq-budget-section-title" }, "Objectifs"));
+    if (!session.goals.length) goals.appendChild(el("p", { class: "hq-budget-hint" }, "Aucun objectif."));
     session.goals.forEach(function (goal) {
       const row = el("div", { class: "hq-budget-limit" });
-      row.appendChild(el("span", {}, goal.name));
+      row.appendChild(el("span", { class: "hq-budget-limit-name" }, goal.name));
       const goalCurrency = typeof session.summary.household_currency === "string" && /^[A-Z]{3}$/.test(session.summary.household_currency)
         ? session.summary.household_currency
         : null;
-      row.appendChild(el("span", {}, formatMoney(goal.saved_cents, goalCurrency) + " / " + formatMoney(goal.target_cents, goalCurrency)));
+      row.appendChild(el("span", { class: "hq-budget-limit-amt" }, formatMoney(goal.saved_cents, goalCurrency) + " / " + formatMoney(goal.target_cents, goalCurrency)));
       const meter = el("progress", { max: String(Math.max(goal.target_cents, 1)), value: String(Math.max(goal.saved_cents, 0)) });
       meter.setAttribute("aria-label", "Objectif " + goal.name);
       row.appendChild(meter);
@@ -439,59 +474,65 @@
     goals.appendChild(goalForm());
     container.appendChild(goals);
 
-    const correct = el("section", { class: "hq-budget-section", id: "hq-budget-correct", hidden: "hidden" });
-    correct.appendChild(el("h3", {}, "Correction"));
-    const form = el("form", { "data-form": "correct" });
+    const correct = el("section", { class: "hq-budget-section is-correct", id: "hq-budget-correct", hidden: "hidden" });
+    correct.appendChild(el("h3", { class: "hq-budget-section-title" }, "Correction"));
+    const form = el("form", { class: "hq-budget-form", "data-form": "correct" });
     form.appendChild(el("input", { name: "correction_of", type: "hidden" }));
-    form.appendChild(el("label", {}, "Montant corrigé (CAD)"));
-    form.appendChild(el("input", { name: "amount", "aria-label": "Montant corrigé", required: "required", inputmode: "decimal" }));
-    form.appendChild(el("label", {}, "Raison"));
-    form.appendChild(el("input", { name: "reason", "aria-label": "Raison de la correction", required: "required" }));
-    form.appendChild(el("button", { type: "submit" }, "Enregistrer la correction"));
+    form.appendChild(field("Montant corrigé (CAD)", el("input", { name: "amount", "aria-label": "Montant corrigé", required: "required", inputmode: "decimal" })));
+    form.appendChild(field("Raison", el("input", { name: "reason", "aria-label": "Raison de la correction", required: "required" })));
+    form.appendChild(el("button", { type: "submit", class: "hq-budget-btn is-primary" }, "Enregistrer la correction"));
     correct.appendChild(form);
     container.appendChild(correct);
   }
 
-  function metric(label, value) {
-    const card = el("article", { class: "hq-budget-card" });
+  function metric(label, value, kind) {
+    const card = el("article", { class: "hq-budget-card", "data-kind": kind || "" });
     card.appendChild(el("h3", {}, label));
     card.appendChild(el("p", {}, value));
     return card;
   }
 
+  function field(labelText, control) {
+    const wrap = el("label", { class: "hq-budget-field" }, labelText);
+    wrap.appendChild(control);
+    return wrap;
+  }
+
   function transactionForm(session, bookedOn) {
-    const form = el("form", { "data-form": "transaction" });
-    form.appendChild(el("h3", {}, "Ajouter une écriture"));
-    form.appendChild(selectAccounts(session));
-    form.appendChild(selectCategories(session));
-    form.appendChild(el("input", { name: "booked_on", type: "date", value: bookedOn, "aria-label": "Date", required: "required" }));
-    form.appendChild(el("input", { name: "amount", "aria-label": "Montant en dollars canadiens", required: "required", inputmode: "decimal" }));
-    form.appendChild(el("input", { name: "payee", "aria-label": "Bénéficiaire", maxlength: "160" }));
-    form.appendChild(el("button", { type: "submit" }, "Ajouter l'écriture"));
+    const form = el("form", { class: "hq-budget-form", "data-form": "transaction" });
+    form.appendChild(el("h3", { class: "hq-budget-form-title" }, "Ajouter une écriture"));
+    form.appendChild(field("Compte", selectAccounts(session)));
+    form.appendChild(field("Catégorie", selectCategories(session)));
+    form.appendChild(field("Date", el("input", { name: "booked_on", type: "date", value: bookedOn, "aria-label": "Date", required: "required" })));
+    form.appendChild(field("Montant (CAD)", el("input", { name: "amount", "aria-label": "Montant en dollars canadiens", required: "required", inputmode: "decimal" })));
+    form.appendChild(field("Bénéficiaire", el("input", { name: "payee", "aria-label": "Bénéficiaire", maxlength: "160" })));
+    form.appendChild(el("button", { type: "submit", class: "hq-budget-btn is-primary" }, "Ajouter l'écriture"));
     return form;
   }
 
   function recurringForm(session, nextOn) {
-    const form = el("form", { "data-form": "recurring" });
-    form.appendChild(selectAccounts(session));
-    form.appendChild(selectCategories(session));
-    form.appendChild(el("input", { name: "amount", "aria-label": "Montant récurrent", required: "required", inputmode: "decimal" }));
+    const form = el("form", { class: "hq-budget-form", "data-form": "recurring" });
+    form.appendChild(el("h3", { class: "hq-budget-form-title" }, "Ajouter une récurrence"));
+    form.appendChild(field("Compte", selectAccounts(session)));
+    form.appendChild(field("Catégorie", selectCategories(session)));
+    form.appendChild(field("Montant", el("input", { name: "amount", "aria-label": "Montant récurrent", required: "required", inputmode: "decimal" })));
     const cadence = el("select", { name: "cadence", "aria-label": "Cadence" });
     ["weekly", "biweekly", "monthly", "yearly"].forEach(function (value) {
       cadence.appendChild(el("option", { value: value }, value));
     });
-    form.appendChild(cadence);
-    form.appendChild(el("input", { name: "next_on", type: "date", value: nextOn, "aria-label": "Prochaine date", required: "required" }));
-    form.appendChild(el("button", { type: "submit" }, "Ajouter la récurrence"));
+    form.appendChild(field("Cadence", cadence));
+    form.appendChild(field("Prochaine date", el("input", { name: "next_on", type: "date", value: nextOn, "aria-label": "Prochaine date", required: "required" })));
+    form.appendChild(el("button", { type: "submit", class: "hq-budget-btn is-primary" }, "Ajouter la récurrence"));
     return form;
   }
 
   function goalForm() {
-    const form = el("form", { "data-form": "goal" });
-    form.appendChild(el("input", { name: "name", "aria-label": "Nom de l'objectif", required: "required", maxlength: "120" }));
-    form.appendChild(el("input", { name: "target", "aria-label": "Cible", required: "required", inputmode: "decimal" }));
-    form.appendChild(el("input", { name: "saved", "aria-label": "Déjà épargné", value: "0", inputmode: "decimal" }));
-    form.appendChild(el("button", { type: "submit" }, "Ajouter l'objectif"));
+    const form = el("form", { class: "hq-budget-form", "data-form": "goal" });
+    form.appendChild(el("h3", { class: "hq-budget-form-title" }, "Ajouter un objectif"));
+    form.appendChild(field("Nom", el("input", { name: "name", "aria-label": "Nom de l'objectif", required: "required", maxlength: "120" })));
+    form.appendChild(field("Cible", el("input", { name: "target", "aria-label": "Cible", required: "required", inputmode: "decimal" })));
+    form.appendChild(field("Déjà épargné", el("input", { name: "saved", "aria-label": "Déjà épargné", value: "0", inputmode: "decimal" })));
+    form.appendChild(el("button", { type: "submit", class: "hq-budget-btn is-primary" }, "Ajouter l'objectif"));
     return form;
   }
 

@@ -1,0 +1,195 @@
+/* Household food icons — scoped helpers for Repas + Inventoria. */
+
+.hq-hh-ico {
+  width: 1.15em;
+  height: 1.15em;
+  flex: 0 0 auto;
+  display: block;
+  color: currentColor;
+  overflow: visible;
+}
+
+.hq-hh-ico-badge {
+  --hh-ico-size: 28px;
+  display: inline-grid;
+  place-items: center;
+  width: var(--hh-ico-size);
+  height: var(--hh-ico-size);
+  flex: 0 0 auto;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent, #e7c27a) 14%, transparent);
+  color: var(--accent, #e7c27a);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #e7c27a) 28%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge .hq-hh-ico {
+  width: calc(var(--hh-ico-size) * 0.58);
+  height: calc(var(--hh-ico-size) * 0.58);
+}
+
+.hq-hh-ico-badge[data-hh-category="vegetable"],
+.hq-hh-ico-badge[data-hh-category="fruit"] {
+  background: color-mix(in srgb, var(--ok, #3dbe7a) 16%, transparent);
+  color: var(--ok, #3dbe7a);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ok, #3dbe7a) 30%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="meat"],
+.hq-hh-ico-badge[data-hh-category="fish"] {
+  background: color-mix(in srgb, var(--danger, #e85d4c) 14%, transparent);
+  color: color-mix(in srgb, var(--danger, #e85d4c) 85%, #fff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger, #e85d4c) 32%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="dairy"],
+.hq-hh-ico-badge[data-hh-category="bakery"] {
+  background: color-mix(in srgb, #8ec5ff 16%, transparent);
+  color: #9fd0ff;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #8ec5ff 32%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="grain"],
+.hq-hh-ico-badge[data-hh-category="spice"],
+.hq-hh-ico-badge[data-hh-category="oil"] {
+  background: color-mix(in srgb, var(--warn, #e6b450) 16%, transparent);
+  color: var(--warn, #e6b450);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn, #e6b450) 32%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="beverage"] {
+  background: color-mix(in srgb, #7aa2ff 16%, transparent);
+  color: #9bb8ff;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #7aa2ff 32%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="meal"],
+.hq-hh-ico-badge[data-hh-category="recipe"] {
+  background: color-mix(in srgb, var(--accent, #e7c27a) 18%, transparent);
+  color: var(--accent, #e7c27a);
+}
+
+.hq-hh-ico-badge[data-hh-category="fastener"],
+.hq-hh-ico-badge[data-hh-category="mechanical"],
+.hq-hh-ico-badge[data-hh-category="hardware"] {
+  background: color-mix(in srgb, #9aa7b8 16%, transparent);
+  color: #c5ced9;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #9aa7b8 35%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="tool"],
+.hq-hh-ico-badge[data-hh-category="material"],
+.hq-hh-ico-badge[data-hh-category="fabrication"] {
+  background: color-mix(in srgb, #d4a574 16%, transparent);
+  color: #e0b888;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #d4a574 35%, var(--line, #2a3544));
+}
+
+.hq-hh-ico-badge[data-hh-category="electrical"],
+.hq-hh-ico-badge[data-hh-category="electronics"] {
+  background: color-mix(in srgb, #6ec8c0 16%, transparent);
+  color: #8edfd8;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #6ec8c0 35%, var(--line, #2a3544));
+}
+
+.inv-hh-preview {
+  display: flex;
+  align-items: center;
+  min-height: 0;
+  margin: -4px 0 4px;
+}
+
+.inv-hh-preview:empty { display: none; }
+
+.hq-hh-ico-badge.is-sm { --hh-ico-size: 22px; border-radius: 7px; }
+.hq-hh-ico-badge.is-lg { --hh-ico-size: 36px; border-radius: 11px; }
+
+.hq-meals-meal {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hq-meals-meal .hq-hh-ico-badge { --hh-ico-size: 22px; }
+
+.hq-meals-slot.is-filled {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: unset;
+}
+
+.hq-meals-slot-label {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.25;
+}
+
+.hq-meals-ingredient,
+.hq-meals-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hq-meals-ingredient .hq-meals-line-name,
+.hq-meals-line .hq-meals-line-name { flex: 1; }
+
+.hq-meals-recipe-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hq-meals-recipe-title-row .hq-meals-recipe-title {
+  margin: 0;
+  min-width: 0;
+}
+
+.inv-thumb.is-hh-icon {
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
+  color: var(--accent);
+}
+
+.inv-thumb.is-hh-icon .hq-hh-ico-badge {
+  --hh-ico-size: 36px;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+}
+
+.inv-thumb.is-hh-icon .hq-hh-ico {
+  width: 22px;
+  height: 22px;
+}
+
+.inv-item[data-hh-category="vegetable"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="fruit"] .inv-thumb.is-hh-icon { color: var(--ok); }
+.inv-item[data-hh-category="meat"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="fish"] .inv-thumb.is-hh-icon { color: var(--danger); }
+.inv-item[data-hh-category="dairy"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="bakery"] .inv-thumb.is-hh-icon { color: #9fd0ff; }
+.inv-item[data-hh-category="grain"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="spice"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="oil"] .inv-thumb.is-hh-icon { color: var(--warn); }
+
+.inv-item[data-hh-category="fastener"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="mechanical"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="hardware"] .inv-thumb.is-hh-icon { color: #c5ced9; }
+
+.inv-item[data-hh-category="tool"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="material"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="fabrication"] .inv-thumb.is-hh-icon { color: #e0b888; }
+
+.inv-item[data-hh-category="electrical"] .inv-thumb.is-hh-icon,
+.inv-item[data-hh-category="electronics"] .inv-thumb.is-hh-icon { color: #8edfd8; }
+
+@media (max-width: 430px) {
+  .hq-hh-ico-badge { --hh-ico-size: 30px; }
+  .inv-thumb.is-hh-icon .hq-hh-ico { width: 20px; height: 20px; }
+}

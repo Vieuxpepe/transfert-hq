@@ -237,8 +237,41 @@ def get_audio_hash(text: str, speaker: str = "default", lang: str = "fr", style:
     raw = f"{text.strip().lower()}|{speaker}|{lang}|{style}"
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
-@_single_synthesis
 def synthesize(
+    text: str,
+    *,
+    language: str = "fr",
+    style: str = "expressive",
+    speaker_wavs: Optional[Sequence[Path]] = None,
+    timeout_sec: int = 180,
+    character: Optional[str] = None,
+    voice: Optional[str] = None,
+    rate: Optional[float] = None,
+) -> Optional[dict[str, Any]]:
+    """Engine dispatcher. No ``character`` (legacy callers) or an XTTS character -> XTTS.
+
+    A Phonon character never falls back to XTTS (Else's voice); on failure it returns
+    ok=False with engine="phonon" so the client uses browser speech.
+    """
+    if character is not None:
+        import hq_voice_phonon
+        engine = hq_voice_phonon.route(character)
+        if engine == "phonon":
+            clean = clean_text_for_speech(text)
+            if len(clean) < 2:
+                return None
+            return hq_voice_phonon.synthesize(clean, character=character, language=language,
+                                              style=style, voice=voice, rate=rate,
+                                              timeout_sec=min(timeout_sec, 60))
+        if engine == "browser":
+            return {"ok": False, "engine": "browser", "code": "browser_only",
+                    "error": "Voix navigateur sélectionnée"}
+    return _synthesize_xtts(text, language=language, style=style, speaker_wavs=speaker_wavs,
+                            timeout_sec=timeout_sec)
+
+
+@_single_synthesis
+def _synthesize_xtts(
     text: str,
     *,
     language: str = "fr",

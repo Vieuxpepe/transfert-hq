@@ -3896,7 +3896,12 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         def _prewarm_voice() -> None:
             try:
                 import hq_voice
-                if hq_voice.daemon_ready(timeout=0.15):
+                import hq_voice_phonon
+                if hq_voice_phonon.route("transferania") == "phonon":
+                    if hq_voice_phonon.daemon_ready("fr", timeout=0.15):
+                        for seg in prewarm_segs:
+                            hq_voice.synthesize(seg, language="fr", style=voice_style, character="transferania")
+                elif hq_voice.daemon_ready(timeout=0.15):
                     for seg in prewarm_segs:
                         hq_voice.synthesize(seg, language="fr", style=voice_style)
             except Exception:
@@ -4457,16 +4462,21 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
         return transferania_clear(device_id=did)
     if op in ("history", "get", "load"):
         return transferania_history(device_id=did, client_ip=client_ip, role=role)
+    if op in ("voice_profiles", "voice_preview", "voice_save", "voice_reset", "voice_start"):
+        import hq_voice_phonon
+        return {**hq_voice_phonon.studio(op, data, admin=role in (None, "admin")), "device_id": did}
     if op in ("voice", "speak", "tts"):
         import hq_voice
         text = str(data.get("text") or data.get("message") or "")
         preset = data.get("preset")
         if preset and preset in hq_voice.SOUND_BANK_PRESETS:
             text = hq_voice.SOUND_BANK_PRESETS[preset]
-        res = hq_voice.synthesize(text, language=data.get("language", "fr"), style=data.get("style", "neutral"))
+        res = hq_voice.synthesize(text, language=data.get("language", "fr"), style=data.get("style", "neutral"),
+                                  character="transferania")
         if res and res.get("ok"):
             return {"ok": True, "device_id": did, **res}
-        return {"ok": False, "error": (res.get("error") if res else "Synthèse vocale indisponible"), "device_id": did}
+        return {"ok": False, "error": (res.get("error") if res else "Synthèse vocale indisponible"), "device_id": did,
+                **({"engine": res["engine"]} if res and res.get("engine") else {})}
     if op == "prefs":
         if data.get("save") is True or isinstance(data.get("prefs"), dict):
             payload = data.get("prefs") if isinstance(data.get("prefs"), dict) else {k: data.get(k) for k in ("nickname", "address", "qc_dial", "intensity", "topics_off", "celebrate", "nudge") if k in data}
