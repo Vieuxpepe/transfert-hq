@@ -1997,6 +1997,13 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
     if ch == "chat" and nsfw:
         system += companion_chat_media_prompt(list_companion_chat_photo_ids(), list_companion_loop_ids())
     system += "\n" + (PRIORITE_NSFW if nsfw else PRIORITE)
+    try:
+        import hq_voice_phonon
+        _lang = hq_voice_phonon.language_directive("transferania")
+    except Exception:
+        _lang = ""
+    if _lang:
+        system += "\n\n" + _lang
     return system
 
 

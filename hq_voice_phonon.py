@@ -453,3 +453,30 @@ def bridge_stop() -> None:
         stop_daemon()
     except Exception:
         pass
+
+
+ENGLISH_DIRECTIVE = (
+    "LANGUAGE OVERRIDE (highest priority): your voice is English-only. Write every reply in natural, "
+    "fluent English, even though the instructions above and earlier turns may be in French. Keep your "
+    "personality, tone, memory and how you address the user; do not mix French sentences into the reply."
+)
+
+
+def reply_language(character: Any) -> Optional[str]:
+    """'en' when the character's saved Phonon voice is English-only (so written replies must be
+    English too, or the voice would mispronounce them); otherwise None = leave the prompt alone."""
+    c = character_key(character)
+    if not c:
+        return None
+    try:
+        prof = load_profiles().get(c) or {}
+        v = prof.get("voice")
+        if prof.get("engine") == "phonon" and v and resolve_voice(v, "en") and not resolve_voice(v, "fr"):
+            return "en"
+    except Exception:
+        pass
+    return None
+
+
+def language_directive(character: Any) -> str:
+    return ENGLISH_DIRECTIVE if reply_language(character) == "en" else ""

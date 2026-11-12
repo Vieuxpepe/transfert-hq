@@ -226,6 +226,7 @@ def test_bridge_start_respects_opt_out_and_profiles(stub, monkeypatch):
     started = []
     monkeypatch.setattr(ph, "start_daemon", lambda *a, **k: started.append(1))
     monkeypatch.setattr(ph, "PHONON_PYTHON", Path(__file__))  # exists
+    monkeypatch.setattr(ph, "_atexit_registered", True)  # never register the real stop hook from a test
     monkeypatch.setenv("HQ_PHONON_AUTOSTART", "0")
     assert ph.bridge_start() is False
     monkeypatch.delenv("HQ_PHONON_AUTOSTART")
@@ -247,3 +248,13 @@ def test_inventoria_speak_route_uses_her_voice_and_validates(stub):
     stub.mode = "busy"
     code, body = hq_inventoria.http_post("/api/inventoria/voice", {"text": "Une autre ligne assez longue."})
     assert code == 503 and body["ok"] is False
+
+
+def test_reply_language_only_for_english_only_phonon_voices(stub):
+    assert ph.reply_language("else") is None
+    assert ph.reply_language("musica") is None  # no voice saved yet
+    ph.save_profile("musica", "phonon", "Zoey", 0, 0)
+    assert ph.reply_language("musica") == "en" and "English" in ph.language_directive("musica")
+    ph.save_profile("musica", "phonon", "Coralie", 0, 0)
+    assert ph.reply_language("musica") is None  # French voice -> prompts untouched
+    assert ph.language_directive("musica") == ""
