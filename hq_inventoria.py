@@ -704,18 +704,25 @@ def post_session_message(
         messages.append({"role": "user", "text": text, "at": now})
         adapter = _cb.get("llm_adapter")
         if callable(adapter):
+            _ctx.history = [m for m in messages[:-1] if isinstance(m, dict)]
             try:
                 draft = adapter(text, session_id=session_id)
             except InventoriaError:
                 raise
             except Exception as exc:
                 raise InventoriaError(str(exc)[:200], code="validation_error") from exc
+            finally:
+                _ctx.history = None
             raw_out = json.dumps(draft, ensure_ascii=False, default=str)
             if len(raw_out) > ADAPTER_OUTPUT_MAX:
                 raise InventoriaError("réponse modèle trop volumineuse", code="validation_error")
             if not isinstance(draft, dict):
                 raise InventoriaError("réponse modèle invalide", code="validation_error")
             raw_props = draft.get("proposals")
+            reply_text = draft.get("reply")
+            has_reply = isinstance(reply_text, str) and bool(reply_text.strip())
+            if has_reply:
+                messages.append({"role": "assistant", "text": reply_text.strip()[:REPLY_TEXT_MAX], "at": now})
             if raw_props is not None:
                 if not isinstance(raw_props, list) or len(raw_props) > PROPOSALS_MAX:
                     raise InventoriaError(
@@ -1438,6 +1445,13 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
 
 
 MAX_SPEAK_CHARS = 600
+REPLY_TEXT_MAX = 1_500
+_ctx = threading.local()
+
+
+def current_history() -> list[dict]:
+    """Earlier messages of the session whose message is being answered (empty outside an adapter call)."""
+    return list(getattr(_ctx, "history", None) or [])
 
 
 def speak(data: dict) -> tuple[int, dict]:
