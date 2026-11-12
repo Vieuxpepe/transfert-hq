@@ -95,6 +95,7 @@ Meal tool (read-only):
 Draft tool (prepares changes for the Master to review; NOTHING is applied):
 - propose_changes {"photo_kind": "receipt" | "list" (only when a photo is attached), "changes": [ ... ]} with each change one of:
     {"op": "adjust", "item_id": "<id>", "item_name": "<its name>", "delta": <non-zero integer, negative to remove>}   (ONE adjust per item: add up the amounts)
+    or, for quantities WITH DECIMALS (0.85 kg, 1.5 L): {"op": "adjust", ..., "amount": 0.85, "unit": "kg"} (I convert to the item's unit or round, and say so)
     {"op": "create", "name": "...", "qty": <integer>, "unit": "...", "place_id": "<optional>", "min": <optional integer>}
     {"op": "update", "item_id": "<id>", "item_name": "<its name>", "fields": {"name"|"unit"|"min"|"qty"|"note"|"place_id": value}}
     {"op": "move", "item_ids": ["<id>", ...], "place_id": "<id or null>"}
@@ -446,6 +447,65 @@ def resolve_item(inv: dict, item_id: Any = None, item_name: Any = None) -> dict:
     raise ValueError("unknown item_id; call match_items or search_items to get a real id")
 
 
+_UNIT_ALIASES = {
+    "kilogramme": "kg", "kilogrammes": "kg", "kilo": "kg", "kilos": "kg", "kgs": "kg", "kilogram": "kg", "kilograms": "kg",
+    "gramme": "g", "grammes": "g", "gr": "g", "gram": "g", "grams": "g", "gs": "g",
+    "litre": "l", "litres": "l", "liter": "l", "liters": "l", "lt": "l", "ltr": "l",
+    "millilitre": "ml", "millilitres": "ml", "milliliter": "ml", "milliliters": "ml",
+    "centilitre": "cl", "centilitres": "cl", "decilitre": "dl", "decilitres": "dl",
+}
+_MASS = {"g": 1.0, "kg": 1000.0}
+_VOLUME = {"ml": 1.0, "cl": 10.0, "dl": 100.0, "l": 1000.0}
+
+
+def norm_unit(u: Any) -> str:
+    t = str(u or "").strip().lower().rstrip(".")
+    return _UNIT_ALIASES.get(t, t)
+
+
+def _family(u: str) -> str | None:
+    return "mass" if u in _MASS else "volume" if u in _VOLUME else None
+
+
+def _factor(u: str) -> float:
+    return _MASS.get(u) or _VOLUME.get(u) or 1.0
+
+
+def to_qty(v: Any, field: str = "qty") -> float:
+    """A positive number that may have decimals (0.85 kg). Raises ValueError otherwise."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+        raise ValueError(f"{field} must be a number")
+    if v <= 0:
+        raise ValueError(f"{field} must be greater than zero")
+    if v > 1_000_000:
+        raise ValueError(f"{field} too large")
+    return float(v)
+
+
+def whole_amount(value: float, unit: Any = "", target_unit: Any = None) -> tuple[int, str, str | None]:
+    """(whole quantity, unit to store, note). Inventory quantities are whole numbers, so decimals are converted or rounded and SAID.
+
+    - existing item (target_unit given): convert between mass/volume units (0.85 kg -> 850 g when the item counts in g), then round to
+      the nearest whole number (at least 1);
+    - new item counted in kg / l etc. with decimals: switch to the next smaller base unit (0.85 kg -> 850 g, 0.3 l -> 300 ml);
+    - anything else with decimals: round to the nearest whole number (at least 1)."""
+    u, t = norm_unit(unit), norm_unit(target_unit)
+    shown = f"{value:g} {u}".strip()
+    note: str | None = None
+    out_unit = t or str(unit or "").strip()
+    if t and u and _family(u) and _family(u) == _family(t) and u != t:
+        value = value * _factor(u) / _factor(t)
+        note = f"{shown} → {value:g} {t}"
+    if abs(value - round(value)) < 1e-9:
+        return max(1, int(round(value))), out_unit, note
+    if not t and u in ("kg", "l", "dl", "cl") and _family(u):
+        base = "g" if _family(u) == "mass" else "ml"
+        whole = max(1, int(round(value * _factor(u) / _factor(base))))
+        return whole, base, f"{shown} = {whole} {base}"
+    whole = max(1, int(math.floor(value + 0.5)))
+    return whole, out_unit, f"{shown if note is None else f'{value:g} {t}'} → {whole}"
+
+
 BOX_MAX = 12   # boxes kept per detected item
 
 
@@ -474,6 +534,7 @@ class Toolbox:
         self.detections: list[dict] = []     # items recognised in a photo of physical things (reviewed and edited by the Master)
         self.detection_mode: str | None = None
         self.match_called = False            # report_detections needs the catalog translation step first
+        self.detect_dropped = 0              # detections beyond DETECT_MAX that could not be listed
         self.has_image = False               # a photo is attached to the message being answered
         self.side_effects = 0              # successful remember / watch / set_store ... (not drafts, but real actions)
         self.calls = 0
@@ -556,24 +617,41 @@ class Toolbox:
 
         if op == "adjust":
             it = item(ch.get("item_id"), ch.get("item_name"))
-            delta = _to_int(ch.get("delta"), "delta", allow_zero=False)
+            note = None
+            if ch.get("delta") is None and ch.get("amount") is not None:        # decimals (0.85 kg): converted / rounded and said
+                raw = ch["amount"]
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw == 0:
+                    raise ValueError("amount must be a non-zero number")
+                whole, _u, note = whole_amount(to_qty(abs(raw), "amount"), ch.get("unit"), it.get("unit") or None)
+                delta = whole if raw > 0 else -whole
+            else:
+                delta = _to_int(ch.get("delta"), "delta", allow_zero=False)
             return {"op": "item.adjust", "refs": {"item_id": it["id"]}, "resolved": {"confidence": "high"},
                     "payload": {"id": it["id"], "delta": delta},
-                    "label_fr": f"Ajuster {it.get('name')} de {delta:+d}"}
+                    "label_fr": f"Ajuster {it.get('name')} de {delta:+d}" + (f" ({note})" if note else "")}
         if op == "create":
             name = str(ch.get("name") or "").strip()
             if not name:
                 raise ValueError("name required")
-            payload: dict[str, Any] = {"name": name, "qty": _to_int(ch.get("qty", 1), "qty", min_value=0)}
-            if ch.get("unit"):
-                payload["unit"] = str(ch["unit"])
+            qty_in = ch.get("qty", 1)
+            note = None
+            if isinstance(qty_in, (int, float)) and not isinstance(qty_in, bool) and qty_in > 0 and qty_in != int(qty_in):
+                qty_w, unit_w, note = whole_amount(to_qty(qty_in), ch.get("unit"), None)
+                payload: dict[str, Any] = {"name": name, "qty": qty_w}
+                if unit_w:
+                    payload["unit"] = str(unit_w)[:20]
+            else:
+                payload = {"name": name, "qty": _to_int(qty_in, "qty", min_value=0)}
+                if ch.get("unit"):
+                    payload["unit"] = str(ch["unit"])
             if ch.get("place_id"):
                 payload["place"] = place(ch["place_id"])
             if ch.get("min") is not None:
                 payload["min"] = _to_int(ch["min"], "min", min_value=0)
             where = by_place[payload["place"]].get("name") if payload.get("place") else None
             return {"op": "item.create", "refs": {}, "resolved": {"confidence": "high"}, "payload": payload,
-                    "label_fr": f"Créer {name} (×{payload['qty']})" + (f" dans {where}" if where else " (sans emplacement)")}
+                    "label_fr": f"Créer {name} (×{payload['qty']}{(' ' + payload['unit']) if note and payload.get('unit') else ''})"
+                                + (f" dans {where}" if where else " (sans emplacement)") + (f" ({note})" if note else "")}
         if op == "update":
             it = item(ch.get("item_id"), ch.get("item_name"))
             fields = ch.get("fields")
@@ -623,6 +701,8 @@ class Toolbox:
             return {"error": "changes must be a non-empty list"}
         inv = self.inv()
         results, accepted = [], []
+        overflow = [{"index": i, "queued": False, "error": f"too many changes in one message (max {MAX_PROPOSALS}); send the rest separately"}
+                    for i in range(MAX_PROPOSALS, len(changes))]
         for i, ch in enumerate(changes[:MAX_PROPOSALS]):
             if len(self.proposals) + len(accepted) >= MAX_PROPOSALS:
                 results.append({"index": i, "queued": False, "error": "draft limit reached"})
@@ -648,6 +728,7 @@ class Toolbox:
             except (ValueError, schemas.SchemaError) as exc:
                 results.append({"index": i, "queued": False, "error": str(exc)[:200]})
         self.proposals.extend(accepted)
+        results.extend(overflow)
         return {"results": results, "drafts_total": len(self.proposals),
                 "note": "Drafts only. Nothing is applied until the Master reviews and confirms in the panel."}
 
@@ -664,6 +745,7 @@ class Toolbox:
         places = _place_names(inv)
         items = [i for i in inv.get("items", []) if isinstance(i, dict)]
         out = []
+        skipped = max(0, len(names) - 40)
         for n in names[:40]:
             n = str(n)
             scored = sorted(((match_score(n, i.get("name", "")), i) for i in items), key=lambda x: -x[0])
@@ -673,6 +755,8 @@ class Toolbox:
                 for sc, i in scored[:3] if sc >= 0.6]})
         self.match_called = True
         res: dict[str, Any] = {"results": out}
+        if skipped:
+            res["warning"] = f"Only the first 40 names were matched; {skipped} were NOT looked up. Call match_items again with the rest."
         if len(items) <= CATALOG_MAX:
             res["catalog"] = [f"{i.get('name')} [{i['id']}] ({i.get('unit') or 'no unit'}; {places.get(i.get('place'), 'no place')})"
                               for i in items]
@@ -755,6 +839,7 @@ class Toolbox:
         places = _place_names(inv)
         by_key: dict[str, dict] = {}
         results = []
+        self.detect_dropped = max(0, len(items) - DETECT_MAX)
         for i, d in enumerate(items[:DETECT_MAX]):
             try:
                 if not isinstance(d, dict):
@@ -762,11 +847,14 @@ class Toolbox:
                 name = " ".join(str(d.get("name") or "").split())[:160]
                 if not name:
                     raise ValueError("name required")
-                qty = _to_int(d.get("qty", 1), "qty", min_value=1)
-                if qty > 100000:
-                    raise ValueError("qty too large")
+                qty_raw = to_qty(d.get("qty", 1))
                 conf = d.get("confidence") if d.get("confidence") in ("high", "medium", "low") else "medium"
                 match, score = self._best_match(inv, name)
+                qty, unit_out, qnote = whole_amount(qty_raw, d.get("unit"), match.get("unit") if match else None)
+                if qty > 100000:
+                    raise ValueError("qty too large")
+                if qnote and conf == "high":
+                    conf = "medium"
                 place_id = resolve_place(inv, d.get("place")) if d.get("place") else None
                 if not place_id and match is None:
                     near, sc = None, 0.0
@@ -778,9 +866,12 @@ class Toolbox:
                         place_id = near["place"]
                 if match is not None and not place_id:
                     place_id = match.get("place")
+                note = " ".join(str(d.get("note") or "").split())[:120]
+                if qnote:
+                    note = (note + " · " if note else "") + qnote
                 row = {"name": match.get("name") if match else name, "seen_as": name, "qty": qty,
-                       "unit": (match.get("unit") if match else "") or " ".join(str(d.get("unit") or "").split())[:20],
-                       "confidence": conf, "note": " ".join(str(d.get("note") or "").split())[:120],
+                       "unit": ((match.get("unit") if match else "") or unit_out or "")[:20],
+                       "confidence": conf, "note": note[:160],
                        "item_id": match["id"] if match else None, "qty_now": match.get("qty") if match else None,
                        "place_id": place_id, "place": places.get(place_id, "") if place_id else "",
                        "boxes": clean_boxes(d.get("boxes") if d.get("boxes") is not None else d.get("box"))}
@@ -798,9 +889,14 @@ class Toolbox:
             except ValueError as exc:
                 results.append({"index": i, "queued": False, "error": str(exc)[:160]})
         self.detections = list(by_key.values())
-        return {"results": results, "rows": len(self.detections), "existing": sum(1 for r in self.detections if r["item_id"]),
-                "new": sum(1 for r in self.detections if not r["item_id"]),
-                "note": "Not applied. The Master reviews, edits counts and places, and confirms in the panel."}
+        out = {"results": results, "rows": len(self.detections), "existing": sum(1 for r in self.detections if r["item_id"]),
+               "new": sum(1 for r in self.detections if not r["item_id"]),
+               "note": "Not applied. The Master reviews, edits counts and places, and confirms in the panel."}
+        if self.detect_dropped:
+            out["dropped"] = self.detect_dropped
+            out["warning"] = (f"Only the first {DETECT_MAX} items were kept; {self.detect_dropped} more were NOT listed. Tell the Master to "
+                              "take a second photo of the rest.")
+        return out
 
     def propose_grocery(self, args: dict) -> dict:
         """Queue items the Master NEEDS to buy. Nothing is written: the chip shows them and the Master adds them to the grocery list."""
@@ -809,6 +905,8 @@ class Toolbox:
             return {"error": "lines must be a non-empty list"}
         known = {_norm(l["name"]): l for l in self.grocery}
         results = []
+        overflow = [{"index": i, "queued": False, "error": f"too many lines (max {GROCERY_MAX}); send the rest separately"}
+                    for i in range(GROCERY_MAX, len(lines))]
         for i, ln in enumerate(lines[:GROCERY_MAX]):
             try:
                 if not isinstance(ln, dict):
@@ -833,6 +931,7 @@ class Toolbox:
                 results.append({"index": i, "queued": True})
             except ValueError as exc:
                 results.append({"index": i, "queued": False, "error": str(exc)[:160]})
+        results.extend(overflow)
         return {"results": results, "grocery_total": len(self.grocery),
                 "note": "Not added yet. The Master confirms in the panel before anything reaches the grocery list."}
 
@@ -930,7 +1029,8 @@ question instead of guessing, and say in your reply which part went to the stock
   items; do not list the shelf, bag or furniture themselves. Do not also call propose_changes for the same items. In your reply say how many kinds of
   items you saw, that counts from a photo are estimates, and that the Master should check the list.
 - If you cannot read something, say which part and leave it out; never invent items to fill gaps."""
-VISION_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")   # image input needs the Gemini models
+VISION_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.6-flash")   # image input needs the Gemini models
+RETRY_DELAY = 2.5            # seconds before the single automatic retry after a transient model failure
 INTENT_RULES = {
     "count": "The Master says this photo shows what is IN STOCK right now: report it with report_detections in mode \"count\" (a stock-taking). Do not use propose_grocery.",
     "stock": "The Master says this photo shows things they now HAVE (just bought or received): update the STOCK (receipt -> INTAKE drafts; physical items -> report_detections in mode \"add\"). Do not use propose_grocery.",
@@ -987,7 +1087,8 @@ LOCATE_SYSTEM = (
     "You locate items in a photo. Return ONLY JSON: an array of objects {\"index\": <number from the list>, \"box_2d\": [ymin, xmin, ymax, xmax]}. "
     "Coordinates are integers from 0 to 1000 relative to the WHOLE image, origin at the top-left. Give one entry per visible instance "
     "(identical items side by side get one entry each; a big pile gets one box around it) and make each box tight around the item. "
-    "Skip items you cannot see. No text outside the JSON.")
+    "Do not assume how many there are: give an entry only for each instance you can actually see. Skip items you cannot see. "
+    "No text outside the JSON.")
 
 
 def locate_items(image: dict, rows: list[dict]) -> None:
@@ -996,7 +1097,7 @@ def locate_items(image: dict, rows: list[dict]) -> None:
     import hq_ai
     if not image or not rows:
         return
-    listing = "\n".join(f"{i + 1}. {r.get('seen_as') or r['name']} (about {r['qty']})" for i, r in enumerate(rows))
+    listing = "\n".join(f"{i + 1}. {r.get('seen_as') or r['name']}" for i, r in enumerate(rows))   # no counts: the box count must be independent
     contents = [{"role": "user", "parts": [{"text": "Items to locate:\n" + listing}, {"inlineData": image}]}]
     try:
         raw, _ = hq_ai.generate(VISION_CHAIN, LOCATE_SYSTEM, contents, json_out=True, temperature=0.1, max_tokens=2500)
@@ -1017,12 +1118,50 @@ def locate_items(image: dict, rows: list[dict]) -> None:
             rows[idx]["boxes"] = (rows[idx].get("boxes", []) + box)[:BOX_MAX]
 
 
+def verify_counts(rows: list[dict]) -> None:
+    """Cross-check each row's count with the number of boxes found independently. Sets ``verify``: ok | mismatch | grouped | unchecked |
+    unseen | unavailable (no boxes at all), and ``seen_count``; a mismatch lowers the confidence to low."""
+    any_boxes = any(r.get("boxes") for r in rows)
+    for r in rows:
+        n, q = len(r.get("boxes") or []), int(r.get("qty") or 0)
+        r["seen_count"] = n
+        if not any_boxes:
+            r["verify"] = "unavailable"
+        elif n == 0:
+            r["verify"] = "unseen"
+        elif q > BOX_MAX:
+            r["verify"] = "unchecked"
+        elif n == q:
+            r["verify"] = "ok"
+        elif n == 1 and q > 1:
+            r["verify"] = "grouped"
+        else:
+            r["verify"] = "mismatch"
+            r["confidence"] = "low"
+
+
+def is_transient(exc: BaseException) -> bool:
+    """A model failure worth retrying: busy, overloaded, quota spike or a 5xx."""
+    status = getattr(exc, "status", 0) or 0
+    return status in (429, 500, 502, 503, 504) or getattr(exc, "code", "") in ("busy", "model_error", "ambient_quota")
+
+
 def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     """``llm_adapter`` for hq_inventoria.bind: {"reply": ..., "proposals": [...] (drafts only)}."""
     import hq_inventoria
-    tb = Toolbox()
-    reply, proposals = respond(text, hq_inventoria.current_history(), toolbox=tb, image=hq_inventoria.current_image(),
-                               intent=hq_inventoria.current_intent())
+    import time as _time
+    import hq_ai
+    for attempt in (1, 2):
+        tb = Toolbox()
+        try:
+            reply, proposals = respond(text, hq_inventoria.current_history(), toolbox=tb, image=hq_inventoria.current_image(),
+                                       intent=hq_inventoria.current_intent())
+            break
+        except hq_ai.AiError as exc:
+            if attempt == 1 and is_transient(exc):
+                _time.sleep(RETRY_DELAY)             # a short wait often clears a "high demand" spike
+                continue
+            raise
     if tb.detections and proposals:
         # A photo of physical items is reviewed through the editable list. Drop any stock draft that touches the same items,
         # so the Master never sees (or applies) the same change twice.
@@ -1044,8 +1183,9 @@ def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
         image = hq_inventoria.current_image()
         if image and any(not r.get("boxes") for r in tb.detections):
             locate_items(image, tb.detections)
+        verify_counts(tb.detections)
         forced = {"count": "count", "stock": "add"}.get(hq_inventoria.current_intent())
-        out["detections"] = {"mode": forced or tb.detection_mode or "add", "rows": tb.detections}
+        out["detections"] = {"mode": forced or tb.detection_mode or "add", "rows": tb.detections, "truncated": tb.detect_dropped}
     return out
 
 

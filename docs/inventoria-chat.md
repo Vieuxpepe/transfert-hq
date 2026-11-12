@@ -36,3 +36,23 @@ fallback chain as the other companions).
   `photo_kind: "receipt" | "list"` when a photo is attached.
 - **Boxes on the photo:** after `report_detections`, `locate_items` (one extra vision call, best effort) fills `rows[].boxes` with `[ymin, xmin, ymax, xmax]`
   integers 0-1000 (top-left origin, one per visible instance, max 12). The chip draws them over the photo; they are never posted back to `/detections`.
+
+## Photo pipeline hardening
+
+- **Resize / quality (chip):** tall or thin shots (receipts, aspect >= 1.7) keep a 2600 px long side (3.2 MP); others 1800 px (2.6 MP). EXIF is
+  stripped by the re-encode. Blurry, dark, washed-out or low-resolution photos show a warning with a *Retake* button (never blocking).
+- **Counts are cross-checked:** `locate_items` runs without being told the counts, so its box count is an independent count. Each row gets
+  `verify` (`ok | mismatch | grouped | unchecked | unseen | unavailable`) and `seen_count`; a mismatch lowers confidence to `low`. The review card shows
+  "N seen" / "not located" tags. Per-photo accuracy on real pictures is measured with `scripts/vision_bench.py` (add `--stress` for degraded variants).
+- **Weights and decimals:** `report_detections` accepts decimals; `whole_amount()` converts to whole numbers in a smaller unit (0.85 kg -> 850 g) for new
+  items and rounds with a note for existing ones. `propose_changes` adjust accepts `amount` + `unit`.
+- **No silent truncation:** over 60 detected kinds, 20 proposals or 40 grocery lines the overflow is reported (`truncated`, per-index errors, a banner).
+- **Same photo twice:** a SHA-256 fingerprint (never the image) is kept 30 days in `.hq-inventoria/photos.json`. A repeat returns
+  `duplicate_photo: {at, applied}` without calling the model; resend with `force: true` to analyse anyway.
+- **Resilience:** vision chain `gemini-3.1-flash-lite -> gemini-3.5-flash-lite -> gemini-3.6-flash`, one automatic retry on transient errors
+  (429/5xx/busy), friendly `model_busy` (503, `retryable: true`) / `model_error` (502) replies that never echo provider text. The chip has a Cancel
+  button on the typing row and a "Try again" notice.
+- **Reviews survive a reload:** assistant messages keep `meta` (detections with places, grocery lines) and `GET /sessions/{id}` returns
+  `pending_operations` (draft/validated/previewed, max 10). The photo itself is not kept.
+- **Privacy:** photos go to Google (Gemini) for analysis. The chip shows a first-use notice, Settings has an "allow photos" toggle (hides the photo
+  button), photo payloads are limited to ~2 MB (`PHOTO_B64_MAX`), and receipts should be cropped so card digits are not visible.

@@ -46,10 +46,11 @@ _commit_owners: dict[str, tuple[int, int]] = {}
 
 
 class InventoriaError(Exception):
-    def __init__(self, msg: str, *, status: int = 400, code: str = "validation_error"):
+    def __init__(self, msg: str, *, status: int = 400, code: str = "validation_error", retryable: bool = False):
         super().__init__(msg)
         self.status = status
         self.code = code
+        self.retryable = retryable
 
 
 def bind(**kwargs: Any) -> None:
@@ -669,7 +670,10 @@ def get_session(conn: sqlite3.Connection, household_id: str, session_id: str) ->
     ).fetchone()
     if row is None:
         raise InventoriaError("session introuvable", status=404, code="not_found")
-    return {"ok": True, "session": _session_row_to_api(row)}
+    pending = conn.execute(
+        "SELECT * FROM inventoria_operations WHERE session_id = ? AND status IN ('draft', 'validated', 'previewed') "
+        "ORDER BY created_at DESC LIMIT 10", (session_id,)).fetchall()
+    return {"ok": True, "session": _session_row_to_api(row), "pending_operations": [_op_row_to_api(r) for r in reversed(pending)]}
 
 
 CREATE_OPS = ("item.create", "place.create")
@@ -704,6 +708,7 @@ def post_session_message(
     messages = json.loads(row["messages_json"] or "[]")
     now = _now()
     proposals: list[dict] = []
+    image: dict | None = None
     split_ok = False  # only model-drafted lists are re-grouped into valid commit batches
     grocery_lines: list[dict] = []
     detections: dict | None = None
@@ -717,13 +722,20 @@ def post_session_message(
         split_ok = bool(split)      # server-built lists (photo review) are grouped into valid commit batches
     elif "text" in data or "image" in data:
         text = str(data.get("text") or "").strip()
-        image = None
         if data.get("image") is not None:
-            import hq_ai
-            image = hq_ai.parse_chat_image(data.get("image"))
+            image = parse_photo(data.get("image"))
             if image is None:
-                raise InventoriaError("photo invalide (png, jpeg ou webp, 1,5 Mo max)", code="validation_error")
+                raise InventoriaError("photo invalide (png, jpeg ou webp, 2 Mo max)", code="validation_error")
             text = text or "(photo)"
+            import hq_inventoria_photos as photos
+            fp = photos.fingerprint(image)
+            prior = None if data.get("force") is True else photos.seen(_root(), fp, _now())
+            if prior is not None:
+                # The same picture was analysed before: ask before spending a model call (and risking a doubled stock update).
+                applied = conn.execute(
+                    "SELECT COUNT(*) FROM inventoria_operations WHERE session_id = ? AND status = 'committed' AND created_at >= ?",
+                    (prior.get("session"), float(prior.get("at", 0)) - 1.0)).fetchone()[0]
+                return {"ok": True, "messages": messages, "duplicate_photo": {"at": prior.get("at"), "applied": bool(applied)}}
         if not text:
             raise InventoriaError("text requis", code="validation_error")
         if len(text) > TEXT_MAX:
@@ -740,6 +752,11 @@ def post_session_message(
             except InventoriaError:
                 raise
             except Exception as exc:
+                import hq_ai
+                if isinstance(exc, hq_ai.AiError):
+                    msg, retry = _friendly_model_error(exc)
+                    raise InventoriaError(msg, status=503 if retry else 502, code="model_busy" if retry else "model_error",
+                                          retryable=retry) from exc
                 raise InventoriaError(str(exc)[:200], code="validation_error") from exc
             finally:
                 _ctx.history = None
@@ -756,7 +773,8 @@ def post_session_message(
             raw_detect = draft.get("detections")
             if isinstance(raw_detect, dict) and isinstance(raw_detect.get("rows"), list):
                 detections = {"mode": "count" if raw_detect.get("mode") == "count" else "add",
-                              "rows": [r for r in raw_detect["rows"][:60] if isinstance(r, dict)]}
+                              "rows": [r for r in raw_detect["rows"][:60] if isinstance(r, dict)],
+                              "truncated": int(raw_detect.get("truncated") or 0)}
             if isinstance(raw_grocery, list):
                 grocery_lines = [g for g in raw_grocery[:40] if isinstance(g, dict) and isinstance(g.get("name"), str)]
             reply_text = draft.get("reply")
@@ -781,6 +799,24 @@ def post_session_message(
     else:
         raise InventoriaError("text ou proposals requis", code="validation_error")
 
+    if image is not None:
+        try:
+            import hq_inventoria_photos as photos
+            photos.record(_root(), photos.fingerprint(image), session_id, now)
+        except Exception:
+            pass
+    # Reviews she is waiting on (photo rows, grocery lines) are kept with her message so they survive a reload.
+    if (detections and detections["rows"]) or grocery_lines:
+        last = messages[-1] if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant" else None
+        if detections and detections["rows"]:
+            inv_now = inventory.snapshot()
+            detections["places"] = [{"id": p["id"], "name": p.get("name")} for p in inv_now.get("places", [])][:80]
+        if last is not None:
+            meta = last.setdefault("meta", {})
+            if detections and detections["rows"]:
+                meta["detections"] = detections
+            if grocery_lines:
+                meta["grocery"] = grocery_lines
     if len(messages) > MESSAGES_MAX and "text" in data and callable(_cb.get("llm_adapter")):
         messages = messages[-(MESSAGES_MAX - 10):]  # chat transcript: keep the newest, never block a conversation
     if len(messages) > MESSAGES_MAX:
@@ -808,8 +844,6 @@ def post_session_message(
     )
     out: dict[str, Any] = {"ok": True, "messages": messages}
     if detections and detections["rows"]:
-        inv_now = inventory.snapshot()
-        detections["places"] = [{"id": p["id"], "name": p.get("name")} for p in inv_now.get("places", [])][:80]
         out["detections"] = detections      # editable review card in the chip; drafts are built only after the Master confirms
     if grocery_lines:
         out["grocery"] = {"lines": grocery_lines}    # needed items: the chip asks the Master before they reach the grocery list
@@ -1512,7 +1546,7 @@ def _err(exc: BaseException) -> tuple[int, dict]:
     if isinstance(exc, finances.FinanceError):
         return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code}
     if isinstance(exc, InventoriaError):
-        return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code}
+        return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code, **({"retryable": True} if exc.retryable else {})}
     if isinstance(exc, inventory.InventoryError):
         return exc.status, {"ok": False, "error": str(exc)[:200], "code": exc.code, **exc.extra}
     return 500, {"ok": False, "error": "erreur interne", "code": "internal"}
@@ -1550,6 +1584,35 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
 MAX_SPEAK_CHARS = 600
 REPLY_TEXT_MAX = 1_500
 _ctx = threading.local()
+
+
+_PHOTO_RE = re.compile(r"^data:(image/(?:png|jpeg|jpg|webp));base64,([A-Za-z0-9+/=\s]+)$", re.I)
+PHOTO_B64_MAX = 2_700_000    # about 2 MB of image data: room for a high-resolution receipt
+
+
+def parse_photo(raw: Any) -> dict | None:
+    """data URL -> Gemini inlineData, or None when it is not a png / jpeg / webp image within the size limit."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    m = _PHOTO_RE.match(raw.strip())
+    if not m:
+        return None
+    mime = "image/jpeg" if m.group(1).lower() == "image/jpg" else m.group(1).lower()
+    b64 = re.sub(r"\s+", "", m.group(2))
+    if not b64 or len(b64) > PHOTO_B64_MAX:
+        return None
+    return {"mimeType": mime, "data": b64}
+
+
+def _friendly_model_error(exc: BaseException) -> tuple[str, bool]:
+    """(message for the Master, retryable). Never echoes the provider's raw text."""
+    import hq_inventoria_ai as ai
+    transient = ai.is_transient(exc)
+    en = ai.language() == "en"
+    if transient:
+        return ("The AI model is very busy right now. Please try again in a moment." if en
+                else "Le modèle d'IA est très sollicité en ce moment. Réessaie dans un instant."), True
+    return ("The AI model could not handle this request." if en else "Le modèle d'IA n'a pas pu traiter cette demande."), False
 
 
 def current_image() -> dict | None:

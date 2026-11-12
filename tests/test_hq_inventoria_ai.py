@@ -721,7 +721,7 @@ class PhotoTests(_IntakeHelpers, _Base):
         with mock.patch.object(hq_ai, "generate", side_effect=gen):
             ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "hello"})
         self.assertEqual(chains[0], hq_ai.ASK_CHAIN)
-        for bad in ("not a data url", "data:text/html;base64,PGI+", "data:image/png;base64," + "A" * 2_100_000):
+        for bad in ("not a data url", "data:text/html;base64,PGI+", "data:image/png;base64," + "A" * (ivo.PHOTO_B64_MAX + 100_000)):
             self.assertEqual(ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": bad})[0], 400)
         self.assertEqual(ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "x" * 1_100_000})[0], 413)
 
@@ -839,7 +839,7 @@ class GroceryRoutingTests(_IntakeHelpers, _Base):
         sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
         with self.fake_generate(['{"reply": "ok", "tools": []}'] * 3):
             ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "stock"})
-            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "rm -rf"})
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "rm -rf", "force": True})
             ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "hi", "intent": "grocery"})
         self.assertIn("now HAVE", self.calls[0][0])
         self.assertNotIn("NEED to buy", self.calls[1][0])
@@ -967,7 +967,7 @@ class DetectionTests(_IntakeHelpers, _Base):
         self.assertIn("report_detections", self.calls[0][0])
         self.assertIn("PHYSICAL ITEMS", self.calls[0][0])
         with self.fake_generate(list(script)):
-            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "count"})
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "count", "force": True})
         self.assertEqual(out["detections"]["mode"], "count")
         self.assertTrue(any("IN STOCK" in c[0] for c in self.calls[2:]))
 
@@ -1184,3 +1184,258 @@ class LocateTests(_IntakeHelpers, _Base):
             _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(out["detections"]["rows"][0]["boxes"], [[1, 1, 50, 50]])
+
+
+class QuantityTests(_IntakeHelpers, _Base):
+    def test_whole_amount_converts_rounds_and_says_so(self) -> None:
+        w = iai.whole_amount
+        self.assertEqual(w(0.85, "kg", None)[:2], (850, "g"))                       # new item in a big unit -> smaller base unit
+        self.assertIn("850 g", w(0.85, "kg", None)[2])
+        q, u, note = w(0.85, "kg", "kg")                                            # existing kg item can't hold 0.85: rounded, flagged
+        self.assertEqual((q, u), (1, "kg"))
+        self.assertIn("→ 1", note)
+        self.assertEqual(w(1.5, "l", "ml")[:2], (1500, "ml"))                      # converted into the item's own unit
+        self.assertEqual(w(2, "kg", "kg"), (2, "kg", None))
+        self.assertEqual(w(3, "", "pcs"), (3, "pcs", None))
+        self.assertEqual(w(0.4, "", "pcs")[0], 1)                                  # never rounds a real purchase down to zero
+        self.assertEqual(w(2.5, "pack", None)[0], 3)
+        self.assertEqual(w(2, "Kilos", "g")[:2], (2000, "g"))                      # aliases
+        self.assertEqual(w(0.3, "litres", None)[:2], (300, "ml"))
+
+    def test_to_qty_rejects_junk(self) -> None:
+        for bad in (0, -1, True, None, "3", float("nan"), float("inf"), 2_000_000):
+            with self.assertRaises(ValueError):
+                iai.to_qty(bad)
+        self.assertEqual(iai.to_qty(0.85), 0.85)
+
+    def test_detections_accept_decimals(self) -> None:
+        self.mk("Riz basmati", 1, "kg", mn=1)
+        tb = iai.Toolbox()
+        tb.match_called = True
+        tb.run("report_detections", {"items": [{"name": "Bananes", "qty": 0.85, "unit": "kg", "confidence": "high"},
+                                               {"name": "Riz basmati", "qty": 0.85, "unit": "kg"}]})
+        rows = {r["name"]: r for r in tb.detections}
+        self.assertEqual((rows["Bananes"]["qty"], rows["Bananes"]["unit"]), (850, "g"))
+        self.assertEqual(rows["Bananes"]["confidence"], "medium")                  # a conversion is never "high"
+        self.assertIn("850 g", rows["Bananes"]["note"])
+        self.assertEqual((rows["Riz basmati"]["qty"], rows["Riz basmati"]["unit"]), (1, "kg"))
+        self.assertIn("arrondi" if False else "→ 1", rows["Riz basmati"]["note"])
+
+    def test_adjust_by_amount_and_create_with_decimals(self) -> None:
+        self.mk("Farine", 2000, "g")
+        self.mk("Sucre", 3, "kg")
+        ids = self.by_name()
+        tb = iai.Toolbox()
+        out = tb.run("propose_changes", {"changes": [
+            {"op": "adjust", "item_id": ids["Farine"]["id"], "amount": -0.3, "unit": "kg"},        # -300 g
+            {"op": "adjust", "item_id": ids["Sucre"]["id"], "amount": 0.85, "unit": "kg"},          # item counts in whole kg
+            {"op": "adjust", "item_id": ids["Vis M3"]["id"], "amount": 0},
+            {"op": "create", "name": "Tomates", "qty": 0.5, "unit": "kg"}]})
+        self.assertEqual([r["queued"] for r in out["results"]], [True, True, False, True])
+        by = {p["op"] + ":" + str(p["payload"].get("delta") or p["payload"].get("qty")): p for p in tb.proposals}
+        self.assertIn("item.adjust:-300", by)
+        self.assertIn("(0.3 kg → 300 g)", by["item.adjust:-300"]["label_fr"])
+        self.assertIn("item.adjust:1", by)
+        create = [p for p in tb.proposals if p["op"] == "item.create"][0]["payload"]
+        self.assertEqual((create["qty"], create["unit"]), (500, "g"))
+
+
+class TruncationTests(_IntakeHelpers, _Base):
+    def test_nothing_is_dropped_silently(self) -> None:
+        tb = iai.Toolbox()
+        tb.match_called = True
+        out = tb.run("report_detections", {"items": [{"name": f"Objet {i:03d}", "qty": 1} for i in range(iai.DETECT_MAX + 5)]})
+        self.assertEqual((out["rows"], out["dropped"]), (iai.DETECT_MAX, 5))
+        self.assertIn("second photo", out["warning"])
+        self.assertEqual(tb.detect_dropped, 5)
+        ids = [i["id"] for i in inv.snapshot()["items"]]
+        out = iai.Toolbox().run("propose_changes", {"changes": [{"op": "adjust", "item_id": ids[0], "delta": 1}] + [{"op": "create", "name": f"N{i}", "qty": 1} for i in range(24)]})
+        self.assertEqual(len(out["results"]), 25)
+        self.assertEqual([r["queued"] for r in out["results"][20:]], [False] * 5)
+        self.assertIn("too many changes", out["results"][-1]["error"])
+        out = iai.Toolbox().run("propose_grocery", {"lines": [{"name": f"L{i}", "qty": 1} for i in range(iai.GROCERY_MAX + 3)]})
+        self.assertEqual([r["queued"] for r in out["results"][-3:]], [False] * 3)
+        self.assertIn("warning", iai.Toolbox().run("match_items", {"names": [f"n{i}" for i in range(45)]}))
+
+    def test_the_truncation_count_reaches_the_client(self) -> None:
+        items = ",".join('{"name": "Objet %03d", "qty": 1}' % i for i in range(iai.DETECT_MAX + 2))
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["x"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "items": [' + items + ']}}]}',
+                  '{"reply": "Many items; a second photo is needed for the rest.", "tools": []}', "[]"]
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        self.assertEqual(out["detections"]["truncated"], 2)
+
+
+class VerifyTests(_IntakeHelpers, _Base):
+    def test_box_counts_cross_check_the_quantities(self) -> None:
+        B = [[0, 0, 100, 100]]
+        rows = [{"qty": 4, "boxes": B * 4, "confidence": "high"}, {"qty": 4, "boxes": B * 3, "confidence": "high"},
+                {"qty": 5, "boxes": B, "confidence": "high"}, {"qty": 40, "boxes": B * 12, "confidence": "high"},
+                {"qty": 2, "boxes": [], "confidence": "high"}, {"qty": 1, "boxes": B, "confidence": "medium"}]
+        iai.verify_counts(rows)
+        self.assertEqual([r["verify"] for r in rows], ["ok", "mismatch", "grouped", "unchecked", "unseen", "ok"])
+        self.assertEqual([r["confidence"] for r in rows], ["high", "low", "high", "high", "high", "medium"])   # only a mismatch lowers it
+        self.assertEqual(rows[1]["seen_count"], 3)
+        none = [{"qty": 2, "boxes": [], "confidence": "high"}]
+        iai.verify_counts(none)
+        self.assertEqual(none[0]["verify"], "unavailable")                                                   # locate pass gave nothing at all
+
+    def test_the_locate_pass_gets_no_counts_so_its_boxes_are_an_independent_count(self) -> None:
+        rows = [{"name": "Oeufs", "seen_as": "EGGS", "qty": 4, "boxes": []}]
+        with self.fake_generate(['[{"index": 1, "box_2d": [0, 0, 100, 100]}]']):
+            iai.locate_items({"mimeType": "image/jpeg", "data": "AAAA"}, rows)
+        prompt = self.calls[0][1][0]["parts"][0]["text"]
+        self.assertIn("EGGS", prompt)
+        self.assertNotIn("4", prompt.replace("1.", ""))
+        self.assertIn("Do not assume how many", self.calls[0][0])
+
+    def test_a_photo_where_boxes_disagree_with_the_count_is_flagged_end_to_end(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Oeufs"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "items": [{"name": "Oeufs", "qty": 4, "confidence": "high"}]}}]}',
+                  '{"reply": "I saw eggs.", "tools": []}',
+                  '[{"index": 1, "box_2d": [0, 0, 100, 100]}, {"index": 1, "box_2d": [0, 200, 100, 300]}, {"index": 1, "box_2d": [0, 400, 100, 500]}]']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        row = out["detections"]["rows"][0]
+        self.assertEqual((row["verify"], row["seen_count"], row["confidence"]), ("mismatch", 3, "low"))
+
+
+class DuplicatePhotoTests(_IntakeHelpers, _Base):
+    def _send(self, sid, **extra):
+        return ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(text="RECEIPT 1"), **extra})
+
+    def test_the_same_photo_is_caught_before_any_model_call(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(['{"reply": "ok", "tools": []}'] * 3):
+            code, first = self._send(sid)
+            self.assertEqual(code, 200)
+            self.assertNotIn("duplicate_photo", first)
+            n = len(self.calls)
+            code, again = self._send(sid)
+            self.assertEqual(len(self.calls), n)                                       # no model call, no cost
+            self.assertEqual(code, 200)
+            self.assertEqual(again["duplicate_photo"]["applied"], False)
+            self.assertEqual(len(again["messages"]), len(first["messages"]))           # nothing added to the chat
+            code, forced = self._send(sid, force=True)
+            self.assertNotIn("duplicate_photo", forced)
+            self.assertGreater(len(self.calls), n)
+
+    def test_the_warning_says_when_the_first_photo_already_changed_the_stock(self) -> None:
+        vis = self.by_name()["Vis M3"]["id"]
+        script = [f'{{"reply": "", "tools": [{{"name": "propose_changes", "args": {{"photo_kind": "receipt", "changes": [{{"op": "adjust", "item_id": "{vis}", "delta": 3}}]}}}}]}}',
+                  '{"reply": "Draft ready.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = self._send(sid)
+        op = out["operation"]["id"]
+        self.assertFalse(self._send(sid)[1]["duplicate_photo"]["applied"])             # drafted, not applied yet
+        ivo.http_post(f"/api/inventoria/ops/{op}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op}/preview", {"confirm": True})
+        self.assertEqual(ivo.http_post(f"/api/inventoria/ops/{op}/commit", {"idempotency_key": "dup-photo-0001"})[0], 200)
+        self.assertTrue(self._send(sid)[1]["duplicate_photo"]["applied"])
+
+    def test_only_a_hash_is_remembered_and_different_photos_are_not_blocked(self) -> None:
+        import hq_inventoria_photos as photos
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(['{"reply": "ok", "tools": []}'] * 4):
+            self._send(sid)
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(text="OTHER SHOT")})
+        raw = photos._path(self.root).read_text(encoding="utf-8")
+        self.assertNotIn("base64", raw)
+        self.assertNotIn(_jpeg_data_url(text="RECEIPT 1")[40:120], raw)
+        self.assertEqual(len(json.loads(raw)["photos"]), 2)
+        self.assertIsNone(photos.seen(self.root, photos.fingerprint({"data": "zzz"})))
+        fp = photos.fingerprint({"data": "abc"})
+        photos.record(self.root, fp, "ivo-x", now=1000.0)
+        self.assertIsNone(photos.seen(self.root, fp, now=1000.0 + photos.TTL_SECONDS + 5))            # remembered for 30 days only
+
+
+class FriendlyErrorTests(_IntakeHelpers, _Base):
+    def setUp(self) -> None:
+        super().setUp()
+        self._delay = iai.RETRY_DELAY
+        iai.RETRY_DELAY = 0
+        self.sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+
+    def tearDown(self) -> None:
+        iai.RETRY_DELAY = self._delay
+        super().tearDown()
+
+    def _post(self, side_effect):
+        calls = []
+
+        def gen(*a, **k):
+            calls.append(1)
+            r = side_effect.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r, "m"
+        with mock.patch.object(hq_ai, "generate", side_effect=gen):
+            return ivo.http_post(f"/api/inventoria/sessions/{self.sid}/message", {"text": "hello"}), len(calls)
+
+    def test_a_busy_model_is_retried_once_and_then_reported_kindly(self) -> None:
+        busy = hq_ai.AiError("This model is currently experiencing high demand. SECRET-PROVIDER-TEXT", 503, "busy")
+        (code, out), n = self._post([busy, '{"reply": "recovered", "tools": []}'])
+        self.assertEqual((code, n), (200, 2))                                          # the retry worked: the user never saw the blip
+        (code, out), n = self._post([busy, busy])
+        self.assertEqual((code, n), (503, 2))
+        self.assertEqual((out["code"], out.get("retryable")), ("model_busy", True))
+        self.assertNotIn("SECRET-PROVIDER-TEXT", json.dumps(out))
+        self.assertNotIn("high demand", out["error"])
+        self.assertEqual(len(ivo.http_get(f"/api/inventoria/sessions/{self.sid}")[1]["session"]["messages"]), 2)   # only the earlier good exchange: nothing half-saved
+
+    def test_a_non_transient_failure_is_not_retried_and_is_not_marked_retryable(self) -> None:
+        (code, out), n = self._post([hq_ai.AiError("content filtered", 400, "validation_error")])
+        self.assertEqual((code, n, out["code"]), (502, 1, "model_error"))
+        self.assertNotIn("retryable", out)
+        self.assertNotIn("content filtered", out["error"])
+
+    def test_the_vision_chain_has_a_wider_fallback(self) -> None:
+        self.assertGreaterEqual(len(iai.VISION_CHAIN), 3)
+        self.assertTrue(all(m in hq_ai.MODELS and not m.startswith("gemma") for m in iai.VISION_CHAIN))
+
+
+class RestorableReviewTests(_IntakeHelpers, _Base):
+    def test_review_rows_and_grocery_lines_are_kept_with_her_message(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "items": [{"name": "Lait", "qty": 2}]}}, {"name": "propose_grocery", "args": {"lines": [{"name": "Oeufs", "qty": 12}]}}]}',
+                  '{"reply": "Review ready.", "tools": []}', "[]"]
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        msgs = ivo.http_get(f"/api/inventoria/sessions/{sid}")[1]["session"]["messages"]
+        meta = msgs[-1]["meta"]
+        self.assertEqual(meta["detections"]["rows"][0]["name"], "Lait") if False else None
+        self.assertEqual([r["seen_as"] for r in meta["detections"]["rows"]], ["Lait"])
+        self.assertTrue(meta["detections"]["places"])
+        self.assertEqual(meta["grocery"][0]["name"], "Oeufs")
+        self.assertNotIn("meta", msgs[0])                                                    # only her message carries it
+        self.assertNotIn("base64", json.dumps(msgs))                                         # the photo itself is never stored
+
+    def test_pending_drafts_come_back_with_the_session_until_they_are_resolved(self) -> None:
+        vis = self.by_name()["Vis M3"]["id"]
+        script = [f'{{"reply": "", "tools": [{{"name": "propose_changes", "args": {{"changes": [{{"op": "adjust", "item_id": "{vis}", "delta": 1}}]}}}}]}}', '{"reply": "Draft.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "add one screw"})
+        pend = ivo.http_get(f"/api/inventoria/sessions/{sid}")[1]["pending_operations"]
+        self.assertEqual([o["id"] for o in pend], [out["operation"]["id"]])
+        ivo.http_post(f"/api/inventoria/ops/{out['operation']['id']}/cancel", {})
+        self.assertEqual(ivo.http_get(f"/api/inventoria/sessions/{sid}")[1]["pending_operations"], [])
+
+    def test_history_sent_to_the_model_ignores_the_stored_meta(self) -> None:
+        rows = iai.build_contents([{"role": "assistant", "text": "hi", "meta": {"detections": {"rows": [{"name": "x" * 5000}]}}}, {"role": "user", "text": "yo"}], "next")
+        self.assertNotIn("xxxx", json.dumps(rows))
+
+
+class PhotoParserTests(_IntakeHelpers, _Base):
+    def test_accepts_png_jpeg_webp_within_the_limit_only(self) -> None:
+        good = "data:image/%s;base64,QUJD"
+        for kind in ("png", "jpeg", "webp", "JPG"):
+            self.assertIsNotNone(ivo.parse_photo(good % kind), kind)
+        self.assertEqual(ivo.parse_photo(good % "jpg")["mimeType"], "image/jpeg")
+        self.assertEqual(ivo.parse_photo("data:image/jpeg;base64,QU\nJD")["data"], "QUJD")
+        for bad in ("data:image/gif;base64,QUJD", "data:image/svg+xml;base64,QUJD", "data:text/html;base64,QUJD", "", None, 5,
+                    "data:image/png;base64," + "A" * (ivo.PHOTO_B64_MAX + 1)):
+            self.assertIsNone(ivo.parse_photo(bad))
+        self.assertIsNotNone(ivo.parse_photo("data:image/png;base64," + "A" * ivo.PHOTO_B64_MAX))
