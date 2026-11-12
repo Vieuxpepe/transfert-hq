@@ -25,7 +25,10 @@ class EngineWiringTests(unittest.TestCase):
     def test_routes_use_the_engine_module(self):
         self.assertIn("import hq_engine", BRIDGE)
         self.assertRegex(BRIDGE, r'raw\.startswith\("/api/engine/"\)[^\n]*\n\s+code, payload = hq_engine\.http_get')
-        self.assertRegex(BRIDGE, r'raw\.startswith\("/api/engine/"\)[^\n]*\n\s+code, payload = hq_engine\.http_post')
+        self.assertRegex(BRIDGE, r'raw\.startswith\("/api/engine/"\)[^\n]*\n(?:[^\n]*\n){1,25}?\s+code, payload = hq_engine\.http_post\(raw, data\)')
+        self.assertIn("/engine-agent/v1/", BRIDGE)
+        self.assertIn("hq_engine_fleet.handle_agent", BRIDGE)
+        self.assertIn("hq_engine.bind(ROOT)", BRIDGE)
 
     def test_post_route_comes_after_the_csrf_gate(self):
         """The POST route must sit in the block that runs after the bridge's CSRF check."""

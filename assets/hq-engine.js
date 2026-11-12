@@ -21,12 +21,20 @@
     empty: "Aucun moteur déclaré.", noLog: "Pas encore de journal.", events: "Dernières actions",
     noEvents: "Aucune action depuis le démarrage du serveur.", offline: "Statut indisponible. Nouvelle tentative…",
     foreignNote: "Un autre programme occupe ce port : HQ ne l'arrêtera pas.",
-    observe: "Géré ailleurs", self: "Ce serveur", failed: "Échec", done: "Fait", working: "En cours…"
+    observe: "Géré ailleurs", self: "Ce serveur", failed: "Échec", done: "Fait", working: "En cours…",
+    cpu: "Processeur", ram: "Mémoire", gpu: "GPU", disk: "Disque", thisPc: "Cet ordinateur", others: "Autres ordinateurs",
+    othersHint: "Les autres PC qui font tourner l'agent Engine envoient ici leur état toutes les 10 secondes.",
+    addPc: "Ajouter un ordinateur", online: "En ligne", offlineM: "Hors ligne", never: "Jamais vu", seen: function (a) { return "vu il y a " + a; },
+    rename: "Renommer", remove: "Retirer", save: "Enregistrer", cancel: "Annuler", noMachines: "Aucun autre ordinateur pour l'instant.",
+    codeTitle: "Code d'appairage (valable 10 min, usage unique)", codeHelp: "Sur l'autre PC, copie hq_engine.py, hq_forge_worker.py et scripts\\engine_agent.py, puis :",
+    codeRun: "Ensuite, laisse tourner :", codeFail: "Impossible de créer un code.", copy: "Copier", copied: "Copié",
+    noDaemons: "Aucun moteur signalé.", temp: "Température", cores: "cœurs"
   };
   var GROUP = { core: "Serveur", voice: "Voix", music: "Musique", apps: "Comptes et services", image: "Images", service: "Services" };
   var ORDER = ["core", "voice", "music", "apps", "image", "service"];
 
-  var state = { data: null, timer: null, active: false, openLogs: {}, logText: {}, busy: {}, armed: {}, err: "", inflight: false };
+  var state = { data: null, timer: null, active: false, openLogs: {}, logText: {}, busy: {}, armed: {}, err: "", inflight: false,
+                pair: null, renaming: {} };
 
   function el(tag, cls, text) {
     var n = doc.createElement(tag);
@@ -53,11 +61,93 @@
       return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; });
     });
   }
-  function jpost(url) {
-    return win.fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: "{}" })
+  function jpost(url, body) {
+    return win.fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; }); });
   }
   function panel() { return doc.getElementById(PANEL_ID); }
+
+  /* ---------------- usage widgets ---------------- */
+  function pctOf(used, total) { return total > 0 && used != null ? Math.max(0, Math.min(100, (used / total) * 100)) : null; }
+  function level(p) { return p == null ? "" : (p >= 90 ? " is-hot" : (p >= 70 ? " is-warm" : "")); }
+
+  function meter(label, pct, text) {
+    var m = el("div", "hq-eng-meter" + level(pct));
+    var top = el("div", "hq-eng-meter-top");
+    top.appendChild(el("span", "hq-eng-meter-label", label));
+    top.appendChild(el("span", "hq-eng-meter-val", text));
+    m.appendChild(top);
+    var bar = el("div", "hq-eng-bar");
+    var fill = el("div", "hq-eng-fill");
+    fill.style.width = (pct == null ? 0 : Math.max(pct > 0 ? 2 : 0, pct)).toFixed(1) + "%";
+    bar.appendChild(fill);
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", label + " " + text);
+    m.appendChild(bar);
+    return m;
+  }
+
+  function spark(values, max) {
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = doc.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 100 24");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("class", "hq-eng-spark");
+    svg.setAttribute("aria-hidden", "true");
+    if (!values || values.length < 2) return svg;
+    var top = max || Math.max.apply(null, values.concat([1]));
+    var pts = values.map(function (v, i) {
+      return (i / (values.length - 1) * 100).toFixed(1) + "," + (23 - Math.max(0, Math.min(1, v / top)) * 22).toFixed(1);
+    }).join(" ");
+    var area = doc.createElementNS(NS, "polygon");
+    area.setAttribute("points", "0,24 " + pts + " 100,24");
+    area.setAttribute("class", "hq-eng-spark-area");
+    var line = doc.createElementNS(NS, "polyline");
+    line.setAttribute("points", pts);
+    line.setAttribute("class", "hq-eng-spark-line");
+    svg.appendChild(area);
+    svg.appendChild(line);
+    return svg;
+  }
+
+  /* Meters for one computer's totals (this PC or a paired one). */
+  function systemMeters(sys) {
+    var box = el("div", "hq-eng-meters");
+    if (!sys) return box;
+    if (sys.cpu_pct != null) box.appendChild(meter(T.cpu, sys.cpu_pct, Math.round(sys.cpu_pct) + " %" + (sys.cpu_count ? " · " + sys.cpu_count + " " + T.cores : "")));
+    if (sys.ram_total_mb) box.appendChild(meter(T.ram, pctOf(sys.ram_used_mb, sys.ram_total_mb), fmtMem(sys.ram_used_mb) + " / " + fmtMem(sys.ram_total_mb)));
+    (sys.gpus || []).slice(0, 2).forEach(function (g) {
+      if (g.util_pct != null) box.appendChild(meter(T.gpu + (g.name ? " · " + g.name.replace(/^NVIDIA\s+(GeForce\s+)?/i, "") : ""), g.util_pct,
+        g.util_pct + " %" + (g.temp_c != null ? " · " + g.temp_c + " °C" : "")));
+      if (g.vram_total_mb) box.appendChild(meter(T.vram, pctOf(g.vram_used_mb, g.vram_total_mb), fmtMem(g.vram_used_mb) + " / " + fmtMem(g.vram_total_mb)));
+    });
+    if (sys.disk_total_gb) box.appendChild(meter(T.disk, pctOf(sys.disk_total_gb - sys.disk_free_gb, sys.disk_total_gb), sys.disk_free_gb + " Go libres"));
+    return box;
+  }
+
+  /* What one daemon consumes: CPU, memory and VRAM against the machine's totals, plus a short history. */
+  function usageBlock(d, sys) {
+    var has = d.cpu_pct != null || d.rss_mb != null || d.vram_mb != null;
+    if (!has) return null;
+    var box = el("div", "hq-eng-usage");
+    var meters = el("div", "hq-eng-meters is-compact");
+    if (d.cpu_pct != null) meters.appendChild(meter(T.cpu, d.cpu_pct, d.cpu_pct.toFixed(d.cpu_pct < 10 ? 1 : 0) + " %"));
+    if (d.rss_mb != null) meters.appendChild(meter(T.mem, pctOf(d.rss_mb, sys && sys.ram_total_mb), fmtMem(d.rss_mb)));
+    if (d.vram_mb != null) {
+      var total = sys && sys.gpus && sys.gpus[0] && sys.gpus[0].vram_total_mb;
+      meters.appendChild(meter(T.vram, pctOf(d.vram_mb, total), fmtMem(d.vram_mb)));
+    }
+    box.appendChild(meters);
+    var h = d.history;
+    if (h && h.cpu && h.cpu.length > 2) {
+      var sp = el("div", "hq-eng-spark-wrap");
+      sp.title = T.cpu + " / " + T.mem;
+      sp.appendChild(spark(h.mem, sys && sys.ram_total_mb ? sys.ram_total_mb : null));
+      sp.appendChild(spark(h.cpu, 100));
+      box.appendChild(sp);
+    }
+    return box;
+  }
 
   /* ---------------- rendering ---------------- */
   function fact(label, value) {
@@ -106,8 +196,6 @@
     var facts = el("dl", "hq-eng-facts");
     if (d.port) facts.appendChild(fact(T.port, d.port));
     if (d.pid) facts.appendChild(fact(T.pid, d.pid));
-    if (d.rss_mb != null) facts.appendChild(fact(T.mem, fmtMem(d.rss_mb)));
-    if (d.vram_mb != null) facts.appendChild(fact(T.vram, fmtMem(d.vram_mb)));
     if (d.uptime_s != null) facts.appendChild(fact(T.up, fmtUp(d.uptime_s)));
     var det = d.details || {};
     Object.keys(det).forEach(function (k) {
@@ -116,6 +204,8 @@
       if (det[k] != null && det[k] !== "") facts.appendChild(fact(label, det[k]));
     });
     if (facts.childNodes.length) c.appendChild(facts);
+    var usage = usageBlock(d, state.data && state.data.system);
+    if (usage) c.appendChild(usage);
 
     if (det.errors) {
       var ul = el("ul", "hq-eng-errors");
@@ -178,6 +268,171 @@
     return c;
   }
 
+  function systemPanel(sys) {
+    var sec = el("section", "hq-eng-sys");
+    var head = el("div", "hq-eng-sys-head");
+    head.appendChild(el("h3", "hq-eng-group-title", T.thisPc + (sys.host ? " · " + sys.host : "")));
+    sec.appendChild(head);
+    var body = el("div", "hq-eng-sys-body");
+    body.appendChild(systemMeters(sys));
+    var h = sys.history;
+    if (h && h.cpu && h.cpu.length > 2) {
+      var sp = el("div", "hq-eng-spark-wrap is-big");
+      sp.title = T.cpu + " / " + T.ram;
+      sp.appendChild(spark(h.mem, sys.ram_total_mb || null));
+      sp.appendChild(spark(h.cpu, 100));
+      body.appendChild(sp);
+    }
+    sec.appendChild(body);
+    return sec;
+  }
+
+  function codeBox() {
+    var p = state.pair;
+    var box = el("div", "hq-eng-pair");
+    box.appendChild(el("h4", null, T.codeTitle));
+    if (p.error) { box.appendChild(el("p", "hq-eng-note", p.error)); return box; }
+    box.appendChild(el("p", "hq-eng-code", p.code));
+    box.appendChild(el("p", "hq-eng-rtext", T.codeHelp));
+    var origin = win.location.origin;
+    var pairCmd = 'py -3 scripts\\engine_agent.py pair --hq ' + origin + ' --name "NOM DU PC"';
+    var runCmd = "py -3 scripts\\engine_agent.py run";
+    [pairCmd, runCmd].forEach(function (cmd, i) {
+      if (i === 1) box.appendChild(el("p", "hq-eng-rtext", T.codeRun));
+      var row = el("div", "hq-eng-cmd");
+      row.appendChild(el("code", null, cmd));
+      var b = el("button", "hq-eng-btn is-ghost", T.copy);
+      b.type = "button";
+      b.addEventListener("click", function () {
+        var done = function () { b.textContent = T.copied; setTimeout(function () { b.textContent = T.copy; }, 1500); };
+        if (win.navigator.clipboard && win.navigator.clipboard.writeText) win.navigator.clipboard.writeText(cmd).then(done, function () {});
+      });
+      row.appendChild(b);
+      box.appendChild(row);
+    });
+    return box;
+  }
+
+  function machineCard(m) {
+    var c = el("article", "hq-eng-card hq-eng-machine is-" + (m.online ? "ready" : "down"));
+    c.dataset.machine = m.id;
+    var head = el("header", "hq-eng-card-head");
+    head.appendChild(el("span", "hq-eng-dot"));
+    var titles = el("div", "hq-eng-titles");
+    if (state.renaming[m.id] != null) {
+      var inp = el("input", "hq-eng-input");
+      inp.type = "text"; inp.maxLength = 40; inp.value = state.renaming[m.id];
+      inp.setAttribute("aria-label", T.rename);
+      inp.addEventListener("input", function () { state.renaming[m.id] = inp.value; });
+      inp.addEventListener("keydown", function (e) { if (e.key === "Enter") saveName(m.id); if (e.key === "Escape") { delete state.renaming[m.id]; render(); } });
+      titles.appendChild(inp);
+      win.setTimeout(function () { inp.focus(); inp.select(); }, 0);
+    } else {
+      titles.appendChild(el("h3", "hq-eng-name", m.name));
+    }
+    var sub = [m.host && m.host !== m.name ? m.host : null, m.os].filter(Boolean).join(" · ");
+    if (sub) titles.appendChild(el("p", "hq-eng-desc", sub));
+    head.appendChild(titles);
+    head.appendChild(el("span", "hq-eng-state", m.online ? T.online : T.offlineM));
+    c.appendChild(head);
+    if (!m.online) c.appendChild(el("p", "hq-eng-note", m.seen_ago == null ? T.never : T.offlineM + " · " + T.seen(fmtUp(m.seen_ago))));
+
+    if (m.online) {
+      c.appendChild(systemMeters(m.system));
+      var h = m.history;
+      if (h && h.cpu && h.cpu.length > 2) {
+        var sp = el("div", "hq-eng-spark-wrap");
+        sp.appendChild(spark(h.ram, 100));
+        sp.appendChild(spark(h.cpu, 100));
+        c.appendChild(sp);
+      }
+      var list = el("ul", "hq-eng-mdaemons");
+      (m.daemons || []).forEach(function (d) {
+        var li = el("li", "is-" + d.state);
+        li.appendChild(el("span", "hq-eng-rdot"));
+        li.appendChild(el("strong", null, d.label));
+        li.appendChild(el("span", "hq-eng-mstate", T[d.state] || d.state));
+        var bits = [];
+        if (d.port) bits.push(":" + d.port);
+        if (d.cpu_pct != null) bits.push(d.cpu_pct + " %");
+        if (d.rss_mb != null) bits.push(fmtMem(d.rss_mb));
+        if (d.vram_mb != null) bits.push(T.vram + " " + fmtMem(d.vram_mb));
+        if (bits.length) li.appendChild(el("span", "hq-eng-rtext", bits.join(" · ")));
+        list.appendChild(li);
+      });
+      if (!(m.daemons || []).length) list.appendChild(el("li", "is-empty", T.noDaemons));
+      c.appendChild(list);
+    }
+
+    var bar = el("div", "hq-eng-actions");
+    if (state.renaming[m.id] != null) {
+      var sv = el("button", "hq-eng-btn is-primary", T.save);
+      sv.type = "button";
+      sv.addEventListener("click", function () { saveName(m.id); });
+      var cn = el("button", "hq-eng-btn is-ghost", T.cancel);
+      cn.type = "button";
+      cn.addEventListener("click", function () { delete state.renaming[m.id]; render(); });
+      bar.appendChild(sv); bar.appendChild(cn);
+    } else {
+      var rn = el("button", "hq-eng-btn is-ghost", T.rename);
+      rn.type = "button";
+      rn.addEventListener("click", function () { state.renaming[m.id] = m.name; render(); });
+      bar.appendChild(rn);
+      var key = m.id + ":remove";
+      var rm = el("button", "hq-eng-btn is-danger" + (state.armed[key] ? " is-armed" : ""), state.armed[key] ? T.confirm : T.remove);
+      rm.type = "button";
+      rm.addEventListener("click", function () {
+        if (!state.armed[key]) {
+          state.armed[key] = true; render();
+          setTimeout(function () { if (state.armed[key]) { delete state.armed[key]; render(); } }, 3500);
+          return;
+        }
+        delete state.armed[key];
+        jpost("/api/engine/machines/" + encodeURIComponent(m.id) + "/remove").then(function () { refresh(); });
+      });
+      bar.appendChild(rm);
+    }
+    c.appendChild(bar);
+    return c;
+  }
+
+  function saveName(id) {
+    var name = (state.renaming[id] || "").trim();
+    if (!name) return;
+    jpost("/api/engine/machines/" + encodeURIComponent(id) + "/rename", { name: name }).then(function () {
+      delete state.renaming[id];
+      refresh();
+    });
+  }
+
+  function newCode() {
+    jpost("/api/engine/machines/code").then(function (r) {
+      state.pair = r.ok && r.data && r.data.code ? { code: r.data.code } : { error: T.codeFail };
+      render();
+    }).catch(function () { state.pair = { error: T.codeFail }; render(); });
+  }
+
+  function machinesSection(d) {
+    var g = el("section", "hq-eng-group hq-eng-machines");
+    var head = el("div", "hq-eng-group-head");
+    head.appendChild(el("h3", "hq-eng-group-title", T.others));
+    if (d.fleet) {
+      var add = el("button", "hq-eng-btn is-ghost", T.addPc);
+      add.type = "button";
+      add.addEventListener("click", newCode);
+      head.appendChild(add);
+    }
+    g.appendChild(head);
+    g.appendChild(el("p", "hq-eng-rtext", T.othersHint));
+    if (state.pair) g.appendChild(codeBox());
+    var list = d.machines || [];
+    if (!list.length) { g.appendChild(el("p", "hq-eng-empty", T.noMachines)); return g; }
+    var grid = el("div", "hq-eng-grid");
+    list.forEach(function (m) { grid.appendChild(machineCard(m)); });
+    g.appendChild(grid);
+    return g;
+  }
+
   function render() {
     var root = panel();
     if (!root) return;
@@ -198,6 +453,7 @@
     sec.appendChild(head);
     sec.appendChild(el("p", "hq-eng-hint", T.hint));
     if (state.err) sec.appendChild(el("p", "hq-eng-offline", state.err));
+    if (d && d.system) sec.appendChild(systemPanel(d.system));
 
     if (d && d.daemons && d.daemons.length) {
       ORDER.forEach(function (kind) {
@@ -210,6 +466,7 @@
         g.appendChild(grid);
         sec.appendChild(g);
       });
+      sec.appendChild(machinesSection(d));
       var ev = el("section", "hq-eng-events");
       ev.appendChild(el("h3", "hq-eng-group-title", T.events));
       var list = el("ul", "hq-eng-event-list");

@@ -50,4 +50,37 @@ running right now), `busy` and `warn`. `idle` and `busy` count as healthy in the
 Process lookups use psutil when installed, otherwise one PowerShell/CIM query (about 2 s, cached 10 s), so memory and worker detection
 also work in a Python without psutil (the live bridge runs Python 3.13 without it; `pip install psutil` there makes it faster).
 
-Not built yet: the Pistonia assistant (chat + propose-only actions) and idle auto-stop.
+## Resource use
+`GET /api/engine/status` also returns `system` (this PC) and, per daemon, `cpu_pct`, `rss_mb`, `vram_mb`, `uptime_s` and a `history`
+(last 90 samples, one per status call).
+
+* **This PC**: CPU % (GetSystemTimes delta), RAM (GlobalMemoryStatusEx), disk free, GPU name / load / VRAM / temperature (`nvidia-smi`).
+* **Per daemon** (the whole process tree, so a venv launcher plus its worker count together): CPU % is the CPU-time delta since the previous
+  sample, as a share of the whole machine; memory is committed (private) bytes, because Windows trims an idle daemon's working set;
+  VRAM is read from the Windows "GPU Process Memory" counter because `nvidia-smi` prints `[N/A]` per process on WDDM. That counter takes
+  about 3 s, so it refreshes in the background (and so does the PowerShell process list on a Python without psutil): a status request never
+  waits for it, and VRAM shows from the second poll on.
+* The tab draws bars (amber from 70 %, red from 90 %) and a two-line sparkline per daemon (memory, CPU).
+
+## Other computers
+Each extra PC runs `scripts/engine_agent.py`, which **pushes** a status report to HQ every 10 s. HQ never dials out and the browser never
+supplies a host, same trust model as the Forge workers.
+
+1. Engine tab > "Autres ordinateurs" > **Ajouter un ordinateur**: shows a one-time code (10 min, stored hashed) and the two commands.
+2. On the PC (files needed: `scripts/engine_agent.py`, `hq_engine.py`, `hq_forge_worker.py`):
+   `py -3 scripts\engine_agent.py pair --hq https://<your-hq-tailscale-name> --name "PC salon"` (code asked), then `py -3 scripts\engine_agent.py run`
+   (a scheduled task at logon keeps it running). Credentials are saved in `%LOCALAPPDATA%\TransfertHQ\engine-agent.json` with a protected ACL.
+3. The PC appears with its totals, its daemons, "En ligne" (a report in the last 35 s) or "Hors ligne · vu il y a ...". Rename / Retirer in the card.
+
+Which daemons an agent watches: `%LOCALAPPDATA%\TransfertHQ\engine-agent-daemons.json` (`{"daemons": [{"id","label","kind","port","health_path","process_hint"}]}`),
+default Forge 7860, Phonon 8058, XTTS 8057. Agent-side daemons are observe-only: HQ cannot start or stop anything on another PC.
+
+Security (`hq_engine_fleet.py`): HMAC-SHA256 over method, path, timestamp, nonce and body hash (the `hq_forge_worker` wire format, a different
+path prefix `/engine-agent/v1`), 90 s clock window, nonce replay cache, secrets wrapped with DPAPI (no plaintext fallback), enrollment
+limited to 10 tries per IP / 30 global per 10 min, at most 16 PCs, reports capped at 64 KB. Every report field is type- and range-checked,
+clipped and bounded (24 daemons, 4 GPUs); it is displayed as text only, never as markup, and never causes an action.
+HTTPS is required (Tailscale); `--dev` allows http only for a loopback HQ in tests.
+
+Admin routes: `POST /api/engine/machines/code`, `POST /api/engine/machines/<pc_id>/rename|remove`. Agent routes: `POST /engine-agent/v1/enroll|report`.
+
+Not built yet: the Pistonia assistant (chat + propose-only actions), idle auto-stop, starting/stopping daemons on other PCs.

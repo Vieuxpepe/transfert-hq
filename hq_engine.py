@@ -19,9 +19,11 @@ Routes (see :func:`http_get` / :func:`http_post`):
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import threading
@@ -132,12 +134,7 @@ _ps_cache: dict[str, Any] = {"at": 0.0, "rows": []}
 PS_TTL = 10.0                 # the PowerShell fallback costs ~2 s per refresh, so refresh it less often
 
 
-def _proc_table() -> list[dict]:
-    """Every process as {pid, ppid, name, cmdline, private_mb, started}. psutil when present, else one PowerShell/CIM
-    query (cached 3 s): the bridge may run a Python without psutil and must still report memory and find workers."""
-    now = time.time()
-    if now - _ps_cache["at"] < (PS_TTL if psutil is None else 3.0):
-        return _ps_cache["rows"]
+def _proc_table_build() -> list[dict]:
     rows: list[dict] = []
     if psutil is not None:
         try:
@@ -162,7 +159,34 @@ def _proc_table() -> list[dict]:
                              "started": r.get("s")})
         except Exception:
             rows = []
-    _ps_cache.update(at=now, rows=rows)
+    return rows
+
+
+_ps_busy = threading.Event()
+
+
+def _proc_table_refresh() -> None:
+    rows = _proc_table_build()
+    _ps_cache.update(at=time.time(), rows=rows)
+    _ps_busy.clear()
+
+
+def _proc_table() -> list[dict]:
+    """Every process as {pid, ppid, name, cmdline, private_mb, started}. psutil when present, else one PowerShell/CIM
+    query (~2 s). Stale-while-revalidate: once there is data, an expired table is returned at once and refreshed in the
+    background, so a status request never waits for it. Callers that need the truth now (stop/start) reset the cache
+    time to 0, which forces a synchronous rebuild."""
+    now = time.time()
+    ttl = PS_TTL if psutil is None else 3.0
+    if now - _ps_cache["at"] < ttl:
+        return _ps_cache["rows"]
+    if _ps_cache["at"] > 0 and _ps_cache["rows"]:
+        if not _ps_busy.is_set():
+            _ps_busy.set()
+            threading.Thread(target=_proc_table_refresh, daemon=True).start()
+        return _ps_cache["rows"]
+    rows = _proc_table_build()
+    _ps_cache.update(at=time.time(), rows=rows)
     return rows
 
 
@@ -293,26 +317,242 @@ def _proc_info(pid: Optional[int]) -> dict:
         return {"pid": pid}
 
 
-def _gpu() -> Optional[dict]:
-    """{pid: used_mb} from nvidia-smi, or None when there is no NVIDIA driver. Sampled at most every GPU_TTL s."""
-    now = time.time()
-    if now - _gpu_cache["at"] < GPU_TTL:
-        return _gpu_cache["value"]
-    value: Optional[dict] = None
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=4,
-                             creationflags=0x08000000 if os.name == "nt" else 0)
-        if out.returncode == 0:
+_gpu_lock = threading.Lock()
+_gpu_proc_cache: dict[str, Any] = {"at": 0.0, "value": {}}
+GPU_PROC_TTL = 8.0
+_gpu_proc_busy = threading.Event()
+
+
+def _num(text: str) -> Optional[float]:
+    t = text.strip()
+    return float(t) if re.fullmatch(r"\d+(\.\d+)?", t) else None
+
+
+def _gpu_proc_mem_refresh() -> None:
+    value: dict[int, int] = {}
+    if os.name == "nt":
+        script = ("(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage' -ErrorAction Stop).CounterSamples | "
+                  "Where-Object { $_.CookedValue -gt 20MB } | ForEach-Object { '{0} {1}' -f $_.InstanceName, [int]($_.CookedValue/1MB) }")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                                 text=True, timeout=12, creationflags=0x08000000).stdout
+            for line in out.splitlines():
+                m = re.match(r"pid_(\d+)_\S+\s+(\d+)$", line.strip())
+                if m:
+                    value[int(m.group(1))] = value.get(int(m.group(1)), 0) + int(m.group(2))
+        except Exception:
             value = {}
-            for line in out.stdout.splitlines():
-                bits = [b.strip() for b in line.split(",")]
-                if len(bits) == 2 and bits[0].isdigit() and bits[1].replace(".", "", 1).isdigit():
-                    value[int(bits[0])] = int(float(bits[1]))
+    _gpu_proc_cache.update(at=time.time(), value=value)
+    _gpu_proc_busy.clear()
+
+
+def _gpu_proc_mem() -> dict:
+    """{pid: dedicated VRAM MB} from the Windows 'GPU Process Memory' counter. nvidia-smi prints [N/A] per process on
+    WDDM, so this is the only per-process VRAM source there. The PowerShell call takes ~3 s, so it runs in the background
+    and callers get the last answer (empty before the first one finishes): a status request never waits for it."""
+    if time.time() - _gpu_proc_cache["at"] >= GPU_PROC_TTL and not _gpu_proc_busy.is_set():
+        _gpu_proc_busy.set()
+        threading.Thread(target=_gpu_proc_mem_refresh, daemon=True).start()
+    return _gpu_proc_cache["value"]
+
+
+def _gpu_sample() -> Optional[dict]:
+    """{"gpus": [...], "apps": {pid: used_mb}} or None without an NVIDIA driver. Cached GPU_TTL seconds."""
+    now = time.time()
+    with _gpu_lock:
+        if now - _gpu_cache["at"] < GPU_TTL:
+            return _gpu_cache["value"]
+        value: Optional[dict] = None
+        flags = 0x08000000 if os.name == "nt" else 0
+        try:
+            q = subprocess.run(["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                                "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=4, creationflags=flags)
+            if q.returncode == 0:
+                gpus = []
+                for line in q.stdout.splitlines():
+                    bits = [b.strip() for b in line.split(",")]
+                    if len(bits) >= 5:
+                        util, used, total, temp = (_num(bits[1]), _num(bits[2]), _num(bits[3]), _num(bits[4]))
+                        gpus.append({"name": bits[0][:60], "util_pct": None if util is None else round(util),
+                                     "vram_used_mb": None if used is None else round(used),
+                                     "vram_total_mb": None if total is None else round(total),
+                                     "temp_c": None if temp is None else round(temp)})
+                apps: dict[int, int] = {}
+                a = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                                   capture_output=True, text=True, timeout=4, creationflags=flags)
+                for line in (a.stdout if a.returncode == 0 else "").splitlines():
+                    bits = [b.strip() for b in line.split(",")]
+                    if len(bits) == 2 and bits[0].isdigit() and _num(bits[1]) is not None:
+                        apps[int(bits[0])] = int(float(bits[1]))
+                value = {"gpus": gpus, "apps": apps}
+        except Exception:
+            value = None
+        _gpu_cache.update(at=now, value=value)
+        return value
+
+
+def _gpu() -> Optional[dict]:
+    """{pid: used_mb} (per-process VRAM) or None when there is no NVIDIA driver."""
+    sample = _gpu_sample()
+    if sample is None:
+        return None
+    if sample["apps"]:
+        return sample["apps"]
+    return _gpu_proc_mem()
+
+
+# ---- machine totals + per-process CPU (stdlib ctypes on Windows, psutil elsewhere) -------------------------------
+
+class _FT(ctypes.Structure):
+    _fields_ = [("lo", ctypes.c_uint32), ("hi", ctypes.c_uint32)]
+
+
+class _MEMSTATUS(ctypes.Structure):
+    _fields_ = [("length", ctypes.c_uint32), ("load", ctypes.c_uint32), ("total", ctypes.c_uint64), ("avail", ctypes.c_uint64),
+                ("tpage", ctypes.c_uint64), ("apage", ctypes.c_uint64), ("tvirt", ctypes.c_uint64), ("avirt", ctypes.c_uint64),
+                ("ext", ctypes.c_uint64)]
+
+
+def _ft(v: _FT) -> int:
+    return (v.hi << 32) | v.lo
+
+
+_cpu_prev: dict[str, Any] = {"sys": None, "proc": {}}
+_cpu_lock = threading.Lock()
+
+
+def _sys_cpu_pct() -> Optional[float]:
+    """Whole-machine CPU load since the previous call (first call: None)."""
+    with _cpu_lock:
+        if os.name == "nt":
+            try:
+                idle, kern, user = _FT(), _FT(), _FT()
+                if not ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kern), ctypes.byref(user)):
+                    return None
+                cur = (_ft(idle), _ft(kern) + _ft(user))
+            except Exception:
+                return None
+            prev, _cpu_prev["sys"] = _cpu_prev["sys"], cur
+            if not prev or cur[1] <= prev[1]:
+                return None
+            busy = (cur[1] - prev[1]) - (cur[0] - prev[0])
+            return max(0.0, min(100.0, round(100.0 * busy / (cur[1] - prev[1]), 1)))
+        if psutil is not None:
+            try:
+                return psutil.cpu_percent(interval=None)
+            except Exception:
+                return None
+    return None
+
+
+def _sys_mem() -> Optional[dict]:
+    try:
+        if os.name == "nt":
+            m = _MEMSTATUS()
+            m.length = ctypes.sizeof(_MEMSTATUS)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+                return None
+            total, avail = m.total, m.avail
+        elif psutil is not None:
+            vm = psutil.virtual_memory()
+            total, avail = vm.total, vm.available
+        else:
+            return None
+        return {"ram_total_mb": round(total / 1048576), "ram_used_mb": round((total - avail) / 1048576)}
     except Exception:
-        value = None
-    _gpu_cache.update(at=now, value=value)
-    return value
+        return None
+
+
+def _proc_cpu_seconds(pid: int) -> Optional[float]:
+    """Total CPU time (user+kernel) a process has used, in seconds."""
+    if os.name == "nt":
+        try:
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, int(pid))           # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                c, e, kern, user = _FT(), _FT(), _FT(), _FT()
+                if not k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kern), ctypes.byref(user)):
+                    return None
+                return (_ft(kern) + _ft(user)) / 1e7
+            finally:
+                k.CloseHandle(h)
+        except Exception:
+            return None
+    if psutil is not None:
+        try:
+            t = psutil.Process(pid).cpu_times()
+            return t.user + t.system
+        except Exception:
+            return None
+    return None
+
+
+def _cpu_pct_tree(key: str, pids: list[int]) -> Optional[float]:
+    """CPU use of a process tree as % of the whole machine, from the CPU-time delta since the previous sample."""
+    total, seen = 0.0, 0
+    for x in pids:
+        v = _proc_cpu_seconds(x)
+        if v is not None:
+            total += v
+            seen += 1
+    if not seen:
+        return None
+    now = time.time()
+    with _cpu_lock:
+        prev = _cpu_prev["proc"].get(key)
+        _cpu_prev["proc"][key] = (now, total, tuple(sorted(pids)))
+    if not prev or now - prev[0] < 0.4 or prev[2] != tuple(sorted(pids)):
+        return None
+    return max(0.0, round(100.0 * (total - prev[1]) / (now - prev[0]) / (os.cpu_count() or 1), 1))
+
+
+def system() -> dict:
+    """This computer's totals: CPU, RAM, disk, GPU. Fields that cannot be read are simply absent."""
+    out: dict[str, Any] = {"host": socket.gethostname()[:40]}
+    cpu = _sys_cpu_pct()
+    if cpu is not None:
+        out["cpu_pct"] = cpu
+    out["cpu_count"] = os.cpu_count()
+    out.update(_sys_mem() or {})
+    try:
+        du = shutil.disk_usage(PROJECT_ROOT)
+        out["disk_free_gb"], out["disk_total_gb"] = round(du.free / 1e9), round(du.total / 1e9)
+    except OSError:
+        pass
+    sample = _gpu_sample()
+    if sample and sample["gpus"]:
+        out["gpus"] = sample["gpus"]
+    return out
+
+
+_hist: dict[str, deque] = {}
+HIST_MAX = 90
+
+
+def _record(key: str, cpu: Optional[float], mem_mb: Optional[float], vram_mb: Optional[float] = None) -> dict:
+    h = _hist.setdefault(key, deque(maxlen=HIST_MAX))
+    h.append((cpu or 0.0, mem_mb or 0.0, vram_mb or 0.0))
+    return {"cpu": [round(x[0], 1) for x in h], "mem": [round(x[1]) for x in h], "vram": [round(x[2]) for x in h]}
+
+
+def _attach_usage(out: dict, pid: int, info: dict) -> None:
+    """Fill pid, memory, uptime, VRAM and CPU for a process tree onto a status card."""
+    pids = info.get("pids") or [pid]
+    out["pid"] = pid
+    if info.get("rss_mb") is not None:
+        out["rss_mb"] = info["rss_mb"]
+    if info.get("started"):
+        out["uptime_s"] = max(0, int(time.time() - info["started"]))
+    gpu = _gpu()
+    if gpu is not None:
+        used = [gpu[x] for x in pids if x in gpu]
+        if used:
+            out["vram_mb"] = sum(used)
+    cpu = _cpu_pct_tree(out["id"], pids)
+    if cpu is not None:
+        out["cpu_pct"] = cpu
 
 
 def probe(d: Daemon) -> dict:
@@ -334,21 +574,15 @@ def probe(d: Daemon) -> dict:
         out["details"] = dict(res.get("facts") or {})
         pid = res.get("pid")
         if pid:
-            info = _proc_info(int(pid))
-            out["pid"] = int(pid)
-            if info.get("rss_mb") is not None:
-                out["rss_mb"] = info["rss_mb"]
-            if info.get("started"):
-                out["uptime_s"] = max(0, int(time.time() - info["started"]))
-            gpu = _gpu()
-            if gpu is not None:
-                used = [gpu[x] for x in info.get("pids", [int(pid)]) if x in gpu]
-                if used:
-                    out["vram_mb"] = sum(used)
+            _attach_usage(out, int(pid), _proc_info(int(pid)))
+        if pid or d.id in _hist:
+            out["history"] = _record(d.id, out.get("cpu_pct"), out.get("rss_mb"), out.get("vram_mb"))
         return out
     if d.self_process:
         info = _proc_info(os.getpid())
-        out.update(state="ready", pid=os.getpid(), rss_mb=info.get("rss_mb"), uptime_s=int(time.time() - _boot_time))
+        _attach_usage(out, os.getpid(), info)
+        out.update(state="ready", uptime_s=int(time.time() - _boot_time))
+        out["history"] = _record(d.id, out.get("cpu_pct"), out.get("rss_mb"), out.get("vram_mb"))
         return out
 
     health = _health(d)
@@ -384,16 +618,9 @@ def probe(d: Daemon) -> dict:
                 out["state"] = "loading"                                    # process exists, port not open yet
         info = _proc_info(pid)
     if pid:
-        out["pid"] = pid
-        if info.get("rss_mb") is not None:
-            out["rss_mb"] = info["rss_mb"]
-        if info.get("started"):
-            out["uptime_s"] = max(0, int(time.time() - info["started"]))
-        gpu = _gpu()
-        if gpu is not None:
-            used = [gpu[x] for x in info.get("pids", [pid]) if x in gpu]
-            if used:
-                out["vram_mb"] = sum(used)
+        _attach_usage(out, pid, info)
+    if pid or d.id in _hist:
+        out["history"] = _record(d.id, out.get("cpu_pct"), out.get("rss_mb"), out.get("vram_mb"))
     return out
 
 
@@ -415,7 +642,16 @@ def status() -> dict:
     for t in threads:
         t.join(timeout=8)
     daemons = [c for c in cards if c]
-    return {"ok": True, "now": time.time(), "daemons": daemons, "events": list(_events), "gpu": _gpu() is not None,
+    sysinfo = system()
+    sysinfo["history"] = _record("__system__", sysinfo.get("cpu_pct"), sysinfo.get("ram_used_mb"),
+                                 (sysinfo.get("gpus") or [{}])[0].get("vram_used_mb"))
+    try:
+        import hq_engine_fleet as fleet
+        machines, fleet_on = fleet.machines_view(), fleet._root is not None
+    except Exception:
+        machines, fleet_on = [], False
+    return {"ok": True, "now": time.time(), "daemons": daemons, "events": list(_events), "gpu": _gpu_sample() is not None,
+            "system": sysinfo, "machines": machines, "fleet": fleet_on,
             "summary": {"ready": sum(1 for c in daemons if c["state"] in HEALTHY_STATES),
                         "total": len(daemons), "problems": sum(1 for c in daemons if c["state"] in PROBLEM_STATES)}}
 
@@ -558,6 +794,7 @@ def tail_log(daemon_id: str, lines: int = 80) -> tuple[int, dict]:
 
 _LOGS_RE = re.compile(r"^/api/engine/logs/([a-z0-9][a-z0-9_-]{0,31})\Z")
 _ACT_RE = re.compile(r"^/api/engine/daemons/([a-z0-9][a-z0-9_-]{0,31})/(start|stop|restart)\Z")
+_MACHINE_RE = re.compile(r"^/api/engine/machines/(pc_[0-9a-f]{16})/(rename|remove)\Z")
 
 
 def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
@@ -578,6 +815,19 @@ def http_post(path: str, data: Optional[dict] = None) -> tuple[int, dict]:
     m = _ACT_RE.match(path)
     if m:
         return act(m.group(1), m.group(2))
+    try:
+        import hq_engine_fleet as fleet
+    except Exception:
+        return 404, {"error": "not found", "code": "not_found"}
+    if path == "/api/engine/machines/code":
+        if fleet._root is None:
+            return 503, {"error": "fleet unavailable", "code": "unavailable"}
+        return 200, fleet.create_code()
+    m = _MACHINE_RE.match(path)
+    if m:
+        if m.group(2) == "rename":
+            return fleet.rename(m.group(1), (data or {}).get("name"))
+        return fleet.remove(m.group(1))
     return 404, {"error": "not found", "code": "not_found"}
 
 
@@ -814,6 +1064,12 @@ def music_check() -> dict:
 
 
 # ---- default registry --------------------------------------------------------------------------------------------
+
+def bind(root: Any) -> None:
+    """Called once by the bridge: enables pairing other computers (state under <root>/.hq-engine)."""
+    import hq_engine_fleet
+    hq_engine_fleet.bind(root)
+
 
 def register_defaults() -> None:
     """XTTS, Phonon, Forge (observe-only) and the bridge itself. Imports are local so a missing optional engine
