@@ -671,6 +671,19 @@ def get_session(conn: sqlite3.Connection, household_id: str, session_id: str) ->
     return {"ok": True, "session": _session_row_to_api(row)}
 
 
+CREATE_OPS = ("item.create", "place.create")
+
+
+def split_commit_batches(proposals: list[dict]) -> list[list[dict]]:
+    """A commit batch may hold only ONE create and only as its LAST step (a later step cannot reference an id that does not
+    exist yet). Group a drafted list accordingly: every non-create first plus the first create, then one batch per extra create."""
+    creates = [p for p in proposals if p.get("op") in CREATE_OPS]
+    if not creates:
+        return [proposals]
+    base = [p for p in proposals if p.get("op") not in CREATE_OPS]
+    return [base + [creates[0]]] + [[c] for c in creates[1:]]
+
+
 def post_session_message(
     conn: sqlite3.Connection,
     household_id: str,
@@ -688,6 +701,7 @@ def post_session_message(
     messages = json.loads(row["messages_json"] or "[]")
     now = _now()
     proposals: list[dict] = []
+    split_ok = False  # only model-drafted lists are re-grouped into valid commit batches
 
     if "proposals" in data:
         raw = data["proposals"]
@@ -731,6 +745,7 @@ def post_session_message(
                     )
                 for p in raw_props:
                     proposals.append(schemas.validate_inventoria_proposal(p))
+                split_ok = True
         else:
             messages.append({
                 "role": "assistant",
@@ -745,21 +760,21 @@ def post_session_message(
     if len(messages) > MESSAGES_MAX:
         raise InventoriaError(f"messages max {MESSAGES_MAX}", code="validation_error")
 
-    op_id = None
-    operation = None
-    if proposals:
+    operations: list[dict] = []
+    for batch in (split_commit_batches(proposals) if (proposals and split_ok) else ([proposals] if proposals else [])):
         op_id = _new_id("op")
         conn.execute(
             "INSERT INTO inventoria_operations("
             "id, household_id, session_id, status, proposals_json, rev, created_at, updated_at"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (op_id, household_id, session_id, "draft", _safe_json(proposals), 1, now, now),
+            (op_id, household_id, session_id, "draft", _safe_json(batch), 1, now, now),
         )
         _audit(conn, household_id=household_id, operation_id=op_id, action="propose",
-               prev_status=None, next_status="draft", detail={"count": len(proposals)})
-        operation = _op_row_to_api(conn.execute(
+               prev_status=None, next_status="draft", detail={"count": len(batch)})
+        operations.append(_op_row_to_api(conn.execute(
             "SELECT * FROM inventoria_operations WHERE id = ?", (op_id,),
-        ).fetchone())
+        ).fetchone()))
+    operation = operations[0] if operations else None
 
     conn.execute(
         "UPDATE inventoria_sessions SET messages_json = ?, updated_at = ?, rev = rev + 1 WHERE id = ?",
@@ -768,6 +783,8 @@ def post_session_message(
     out: dict[str, Any] = {"ok": True, "messages": messages}
     if operation:
         out["operation"] = operation
+        if len(operations) > 1:
+            out["operations"] = operations  # applied in order by the client; each is previewed and committed on its own
     return out
 
 
@@ -1492,8 +1509,33 @@ def status() -> dict:
         voice = {"engine": prof.get("engine"), "voice": prof.get("voice"), "selected": bool(prof.get("selected"))}
     except Exception:
         pass
-    return {"ok": True, "greeting": ai.greeting(), "memory": mem.list_notes(_root()),
+    import hq_inventory
+    import hq_inventoria_watch as watch
+    inv = hq_inventory.snapshot()
+    return {"ok": True, "greeting": ai.greeting(inv), "alerts": ai.alerts(inv)[:12],
+            "watches": watch.list_watches(_root(), inv.get("items", [])), "memory": mem.list_notes(_root()),
             "voice": voice, "max_notes": mem.MAX_NOTES, "language": ai.language()}
+
+
+def watch_post(data: dict) -> tuple[int, dict]:
+    import hq_inventory
+    import hq_inventoria_watch as watch
+    action = data.get("action")
+    if action == "remove":
+        ok = watch.remove_watch(_root(), data.get("item_id"))
+        if not ok:
+            return 404, {"ok": False, "error": "surveillance introuvable", "code": "not_found"}
+    elif action == "set":
+        it = next((i for i in hq_inventory.snapshot()["items"] if i["id"] == data.get("item_id")), None)
+        if it is None:
+            raise InventoriaError("article introuvable", status=404, code="not_found")
+        try:
+            watch.set_watch(_root(), it["id"], data.get("warn_at"), name=str(it.get("name") or ""))
+        except watch.WatchError as exc:
+            raise InventoriaError(str(exc), code="validation_error") from exc
+    else:
+        raise InventoriaError("action inconnue (set|remove)", code="validation_error")
+    return 200, {"ok": True, "watches": watch.list_watches(_root(), hq_inventory.snapshot()["items"])}
 
 
 def memory_post(data: dict) -> tuple[int, dict]:
@@ -1522,6 +1564,8 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             return speak(data)
         if path == "/api/inventoria/memory":  # her own notes; touches no household data
             return memory_post(data)
+        if path == "/api/inventoria/watch":  # alert thresholds only; never changes stock
+            return watch_post(data)
 
         st = _open_store(readonly=False)
         try:

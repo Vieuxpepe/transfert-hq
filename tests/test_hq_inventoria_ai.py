@@ -288,12 +288,12 @@ class CompanionParityTests(_Base):
 
     def test_greeting_variants_and_language(self) -> None:
         with mock.patch.object(iai, "language", return_value="en"):
-            self.assertIn("below minimum", iai.greeting()["line"])
+            self.assertIn("below its minimum", iai.greeting()["line"])
             ok = iai.greeting({"places": [], "items": [{"id": "a", "name": "x", "qty": 5, "min": 2, "rev": 1}]})
             self.assertEqual((ok["low_count"], ok["mood"]), (0, "idle"))
             self.assertIn("No items yet", iai.greeting({"places": [], "items": []})["line"])
         with mock.patch.object(iai, "language", return_value="fr"):
-            self.assertIn("sous le minimum", iai.greeting()["line"])
+            self.assertIn("sous son minimum", iai.greeting()["line"])
 
     def test_memory_route_add_forget_and_validation(self) -> None:
         code, out = ivo.http_post("/api/inventoria/memory", {"action": "add", "text": "Likes labels in capitals"})
@@ -314,3 +314,148 @@ class CompanionParityTests(_Base):
         msgs = ivo.http_get(f"/api/inventoria/sessions/{sid}")[1]["session"]["messages"]
         self.assertLessEqual(len(msgs), ivo.MESSAGES_MAX)
         self.assertIn(f"message {ivo.MESSAGES_MAX // 2 + 5}", msgs[-2]["text"])   # newest kept
+
+
+class _IntakeHelpers:
+    def mk(self, name, qty, unit="", mn=None, place=None):
+        inv.apply({"action": "item.create", "name": name, "qty": qty, "unit": unit, **({"min": mn} if mn is not None else {}),
+                   **({"place": place} if place else {})})
+
+    def by_name(self):
+        return {i["name"]: i for i in inv.snapshot()["items"]}
+
+
+class AlertsAndIntakeTests(_IntakeHelpers, _Base):
+    def test_alert_levels_and_getting_low_band(self) -> None:
+        f = iai.alert_level
+        self.assertEqual(f({"qty": 0, "min": 5}), "out")
+        self.assertIsNone(f({"qty": 0}))                       # untracked zero is not an alarm
+        self.assertEqual(f({"qty": 5, "min": 5}), "low")
+        self.assertEqual(f({"qty": 25, "min": 20}), "soon")     # within 25% above the minimum
+        self.assertIsNone(f({"qty": 26, "min": 20}))
+        self.assertEqual(f({"qty": 30, "min": 20}, warn_at=30), "soon")   # a watch widens the band
+        self.assertIsNone(f({"qty": 31}, warn_at=30))
+        self.assertEqual(f({"qty": 0}, warn_at=3), "out")
+
+    def test_watch_tool_creates_an_alert_and_changes_no_stock(self) -> None:
+        self.mk("Piles AA", 40, "pcs")
+        aa = self.by_name()["Piles AA"]
+        rev = inv.snapshot()["rev"]
+        tb = iai.Toolbox()
+        self.assertEqual([a["name"] for a in iai.alerts()], ["Vis M3"])
+        out = tb.run("watch", {"item_id": aa["id"], "warn_at": 45})
+        self.assertTrue(out["saved"])
+        rows = iai.alerts()
+        self.assertEqual([(a["name"], a["level"], a["watched"]) for a in rows], [("Vis M3", "low", False), ("Piles AA", "soon", True)])
+        self.assertEqual(inv.snapshot()["rev"], rev)
+        self.assertFalse(tb.run("watch", {"item_id": aa["id"], "warn_at": -1})["saved"])
+        self.assertFalse(tb.run("watch", {"item_id": "itm-0000000000000000", "warn_at": 3})["saved"])
+        self.assertTrue(tb.run("unwatch", {"item_id": aa["id"]})["removed"])
+        self.assertEqual([a["name"] for a in iai.alerts()], ["Vis M3"])
+
+    def test_status_and_watch_routes_expose_and_edit_alerts(self) -> None:
+        self.mk("Piles AA", 40, "pcs")
+        aa = self.by_name()["Piles AA"]["id"]
+        self.assertEqual(ivo.http_post("/api/inventoria/watch", {"action": "set", "item_id": aa, "warn_at": 50})[0], 200)
+        _, st = ivo.http_get("/api/inventoria/status")
+        self.assertEqual([a["name"] for a in st["alerts"]], ["Vis M3", "Piles AA"])
+        self.assertEqual(st["watches"][0]["warn_at"], 50)
+        self.assertEqual(ivo.http_post("/api/inventoria/watch", {"action": "set", "item_id": aa, "warn_at": "x"})[0], 400)
+        self.assertEqual(ivo.http_post("/api/inventoria/watch", {"action": "remove", "item_id": aa})[0], 200)
+        self.assertEqual(ivo.http_post("/api/inventoria/watch", {"action": "remove", "item_id": aa})[0], 404)
+
+    def test_match_items_finds_plurals_accents_and_gives_a_catalog(self) -> None:
+        self.mk("Scie à main", 2, "pcs")
+        self.mk("Lait demi-écrémé", 1, "L")
+        res = iai.Toolbox().run("match_items", {"names": ["saws", "scies", "cartons de lait", "green apples"]})
+        got = {r["name"]: [m["name"] for m in r["matches"]] for r in res["results"]}
+        self.assertIn("Scie à main", got["scies"])
+        self.assertIn("Lait demi-écrémé", got["cartons de lait"])
+        self.assertEqual(got["green apples"], [])
+        self.assertTrue(any("Scie à main" in c for c in res["catalog"]))      # lets the model map "saws" itself
+        self.assertGreater(iai.match_score("pommes", "Pomme verte"), 0.7)
+
+    def test_intake_message_becomes_one_reviewable_draft_and_commits_correctly(self) -> None:
+        inv.apply({"action": "place.create", "name": "Garde-manger", "kind": "shelf"})
+        pantry = {p["name"]: p["id"] for p in inv.snapshot()["places"]}["Garde-manger"]
+        self.mk("Scie à main", 2, "pcs", place=inv.snapshot()["places"][0]["id"])
+        self.mk("Lait", 1, "cartons", place=pantry)
+        ids = self.by_name()
+        script = [
+            _j("", [{"name": "match_items", "args": {"names": ["saws", "green apples", "cartons de lait"]}},
+                    {"name": "list_places", "args": {}}]),
+            _j("", [{"name": "propose_changes", "args": {"changes": [
+                {"op": "adjust", "item_id": ids["Scie à main"]["id"], "delta": 10},
+                {"op": "create", "name": "Pommes vertes", "qty": 3, "unit": "pcs", "place_id": "Garde-manger"},
+                {"op": "adjust", "item_id": ids["Lait"]["id"], "delta": 3}]}}]),
+            _j("Done: 2 updated, 1 new (Pommes vertes in Garde-manger). Review the draft."),
+        ]
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        before = {i["name"]: i["qty"] for i in inv.snapshot()["items"]}
+        with self.fake_generate(script):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message",
+                                      {"text": "bought 10 saws, 3 green apples, 3 cartons de lait"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(self.calls[0][0].count("INTAKE"), 1)                  # workflow is in the prompt
+        feedback = json.dumps(self.calls[1][1])
+        self.assertIn("catalog", feedback)
+        self.assertIn("holds", feedback)                                       # place contents help choose where things go
+        self.assertEqual(len(out["operation"]["proposals"]), 3)
+        self.assertEqual({i["name"]: i["qty"] for i in inv.snapshot()["items"]}, before)   # nothing applied yet
+        labels = [p["label_fr"] for p in out["operation"]["proposals"]]
+        self.assertIn("Créer Pommes vertes (×3) dans Garde-manger", labels)
+        op = out["operation"]["id"]
+        self.assertTrue(ivo.http_post(f"/api/inventoria/ops/{op}/validate", {})[1]["validation"]["ok"])
+        ivo.http_post(f"/api/inventoria/ops/{op}/preview", {"confirm": True})
+        code, res = ivo.http_post(f"/api/inventoria/ops/{op}/commit", {"idempotency_key": "intake-test-0001"})
+        self.assertEqual(code, 200, res)
+        after = self.by_name()
+        self.assertEqual((after["Scie à main"]["qty"], after["Lait"]["qty"]), (12, 4))
+        self.assertEqual((after["Pommes vertes"]["qty"], after["Pommes vertes"]["place"]), (3, pantry))
+
+    def test_large_batches_are_queued_up_to_the_limit(self) -> None:
+        for i in range(25):
+            self.mk(f"Article {i:02d}", 1, "pcs")
+        ids = [i["id"] for i in inv.snapshot()["items"] if i["name"].startswith("Article")]
+        out = iai.Toolbox().run("propose_changes", {"changes": [{"op": "adjust", "item_id": x, "delta": 1} for x in ids]})
+        self.assertEqual(sum(r["queued"] for r in out["results"]), iai.MAX_PROPOSALS)
+
+
+class MultiCreateTests(_IntakeHelpers, _Base):
+    def test_several_new_items_become_ordered_operations_that_all_commit(self) -> None:
+        inv.apply({"action": "place.create", "name": "Garde-manger", "kind": "shelf"})
+        self.mk("Lait", 1, "cartons")
+        ids = self.by_name()
+        script = [_j("", [{"name": "propose_changes", "args": {"changes": [
+                    {"op": "create", "name": "Pommes vertes", "qty": 3, "place_id": "Garde-manger"},
+                    {"op": "adjust", "item_id": ids["Lait"]["id"], "delta": 3},
+                    {"op": "create", "name": "Scies", "qty": 10},
+                    {"op": "create", "name": "Riz", "qty": 2, "unit": "kg", "place_id": "Garde-manger"}]}}]),
+                  _j("Three new items and one update; review the drafts.")]
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "bought stuff"})
+        self.assertEqual(code, 200, out)
+        ops = out["operations"]
+        self.assertEqual([len(o["proposals"]) for o in ops], [2, 1, 1])
+        self.assertEqual([p["op"] for p in ops[0]["proposals"]], ["item.adjust", "item.create"])   # create always last
+        for n, o in enumerate(ops):
+            self.assertTrue(ivo.http_post(f"/api/inventoria/ops/{o['id']}/validate", {})[1]["validation"]["ok"], n)
+            ivo.http_post(f"/api/inventoria/ops/{o['id']}/preview", {"confirm": True})
+            code, res = ivo.http_post(f"/api/inventoria/ops/{o['id']}/commit", {"idempotency_key": f"multi-create-{n:04d}"})
+            self.assertEqual(code, 200, res)
+        after = self.by_name()
+        self.assertEqual((after["Lait"]["qty"], after["Pommes vertes"]["qty"], after["Scies"]["qty"], after["Riz"]["qty"]), (4, 3, 10, 2))
+        self.assertIsNone(after["Scies"]["place"])
+
+
+class DuplicateGuardTests(_IntakeHelpers, _Base):
+    def test_repeated_adjusts_and_creates_are_refused_not_doubled(self) -> None:
+        vis = self.by_name()["Vis M3"]["id"]
+        out = iai.Toolbox().run("propose_changes", {"changes": [
+            {"op": "adjust", "item_id": vis, "delta": 5},
+            {"op": "adjust", "item_id": vis, "delta": 5},
+            {"op": "create", "name": "Colle", "qty": 1},
+            {"op": "create", "name": "colle", "qty": 2}]})
+        self.assertEqual([r["queued"] for r in out["results"]], [True, False, True, False])
+        self.assertIn("duplicate", out["results"][1]["error"])

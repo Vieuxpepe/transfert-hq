@@ -31,6 +31,17 @@ bottom-left of HQ, keeps her own conversation and her own memory, and prepares c
 - Memory tools: `remember` / `forget` — short durable household preferences (pack sizes, shops, where things belong).
   At most 30 notes of 200 characters in `.hq-inventoria/memory.json`; visible in the chip under *Ce qu'elle retient*,
   each with a delete button. Secret-looking notes are refused.
+- **Low-stock warnings:** every item gets a level - *out* (zero), *low* (at or below its minimum) or *getting low* (within 25%
+  above the minimum, or at/below a **watch**). "Warn me when the screws get down to 35" sets a watch (`watch` tool, stored in
+  `.hq-inventoria/watches.json`, listed under *Surveillances* with delete buttons; it never changes stock or the item's minimum).
+  The chip lists alerts with a *Restock?* button, re-checks every 5 minutes (no model call), and when an item crosses into a worse
+  level it shows a warning, turns *proactive* and fires `hq:inventoria-alert`.
+- **Intake of a message:** "bought 10 saws, 3 green apples, 3 cartons de lait, ..." is parsed into quantities and units; names are
+  matched across languages and plural forms against the whole catalog (`match_items`), existing items get an *adjust*, new ones a
+  *create* in the place that fits best (new items are named in the inventory's language), and everything arrives as ONE reviewable
+  draft. Bought/received add stock; used/ate/threw away subtract. Ambiguous or unit-mismatched items are left out and asked about.
+  A commit batch can hold only one create (as its last step), so several new items are stored as several ordered operations that the
+  chip applies one after the other (partial progress is reported).
 - Greeting: when the panel opens she shows a context-aware line (items below minimum, the lowest one) with **no model
   call**, and the chip turns *proactive* when something needs attention. It refreshes after a draft is applied.
 - Conversation: kept in a session; the chip restores it after a reload (*Conversation (n)*). Very long chats drop the oldest

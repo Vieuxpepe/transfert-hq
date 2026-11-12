@@ -14,6 +14,9 @@ fallback chain as the other companions).
 - **Nothing is applied from the chat.** The chip shows a review card (validate, then an unconfirmed preview with
   before/after numbers; *Appliquer* = confirmed preview + commit with an idempotency key; *Annuler* cancels). The
   existing pipeline guards every commit.
+- **More tools:** `list_alerts`, `match_items` (batch fuzzy matcher + catalog for translations), `watch` / `unwatch`. Drafts allow up to 20
+  changes; duplicate adjusts/creates inside one draft are refused. `POST /api/inventoria/watch` (set/remove) and the `alerts` and
+  `watches` fields of `GET /api/inventoria/status` feed the chip.
 - **Memory:** `remember` / `forget` tools and `/api/inventoria/memory`; notes live in `.hq-inventoria/memory.json` (30 max, secrets
   refused), are sent to the model as data, and are listed with delete buttons in the chip. See `docs/inventoria-persona.md`.
 - **Greeting / status:** `GET /api/inventoria/status` builds a deterministic opening line from the live inventory (no model call).
