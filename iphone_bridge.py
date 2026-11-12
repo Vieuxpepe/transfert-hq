@@ -55,6 +55,8 @@ import hq_grocery
 import hq_meals
 import hq_purchases
 import hq_inventoria
+import hq_inventoria_ai
+import hq_engine
 import hq_companion
 import hq_planner
 import hq_devices
@@ -67,13 +69,19 @@ import hq_forge_jobs
 import hq_forge_lab
 import hq_forge_night
 import hq_forge_inpaint
+import hq_forge_sketch
 import hq_forge_presets
 import hq_forge_bricks
 import hq_forge_lineage
 import hq_forge_style
 import hq_forge_vault
 import hq_today
+import hq_timeline
+import hq_desk
 import hq_search
+import hq_music
+import hq_spotify
+import hq_musica
 
 PORT = 8765
 CODE_ROOT = Path(__file__).resolve().parent
@@ -175,6 +183,7 @@ ASSET_CONTENT_TYPES = {
     ".gif": "image/gif",
     ".html": "text/html; charset=utf-8",
     ".wav": "audio/wav",
+    ".mp4": "video/mp4",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
     ".gz": "application/gzip",  # Phase 4: the vendored OCR language data (served raw; the engine inflates it itself)
@@ -336,6 +345,7 @@ SYSTEM_NAMES = {
     "cc_ext.py",
     "readme.txt",
     "design.md",
+    "mini_quests.md",
     "third_party.txt",
     "start-iphone-upload.bat",
     "enable-openssh-server.bat",
@@ -534,12 +544,16 @@ ADMIN_PREFIXES = (
     "/api/telemetry",
     "/api/brief",
     "/api/today",
+    "/api/timeline",
+    "/api/desk",
     "/api/home-layout",
     "/api/push",
     "/api/schedules",
     "/api/calendar",
     "/api/carnet",
     "/api/drawings",
+    "/api/admin/users",
+    "/api/admin/passkeys",
 )
 
 _LOGIN_FAILS: dict[str, list[float]] = {}
@@ -1178,18 +1192,18 @@ def load_config(*, write: bool = True) -> dict:
         base["telemetry_retain_hours"] = max(24, min(48, int(base.get("telemetry_retain_hours") or 36)))
     except (TypeError, ValueError):
         base["telemetry_retain_hours"] = 36
-    # Credential fingerprint → bump auth_generation when PIN/users change
-    users = [u for u in (base.get("users") or []) if isinstance(u, dict)]
-    cred = str(base.get("pin") or "") + "|" + "|".join(
-        f"{u.get('name')}:{u.get('pin')}:{u.get('role')}" for u in users
-    )
+    # Migrate user accounts and ensure original administrator is never locked out
+    hq_security.migrate_users_config(base)
+    # Global root credential fingerprint → bump auth_generation when root PIN changes
+    cred = str(base.get("pin") or "")
     fp = hashlib.sha256(cred.encode("utf-8")).hexdigest()[:24]
     try:
         gen = int(base.get("auth_generation") or 0)
     except (TypeError, ValueError):
         gen = 0
     if base.get("_auth_fp") != fp:
-        gen += 1
+        if base.get("_auth_fp") is not None:
+            gen += 1
         base["auth_generation"] = gen
         base["_auth_fp"] = fp
     else:
@@ -1368,8 +1382,11 @@ except SystemExit as _fatal:  # Phase 15: a malformed config otherwise dies in a
     raise
 
 
-def save_config() -> None:
+def save_config(cfg: dict | None = None) -> None:
     with _CONFIG_LOCK:
+        if cfg is not None and cfg is not CONFIG:
+            CONFIG.clear()
+            CONFIG.update(cfg)
         _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
 
 
@@ -1472,7 +1489,12 @@ def ensure_folders_and_migrate() -> None:
 
 def pin_enabled() -> bool:
     users = CONFIG.get("users") or []
-    if isinstance(users, list) and any(isinstance(u, dict) and str(u.get("pin") or "").strip() for u in users):
+    if isinstance(users, list) and any(
+        isinstance(u, dict)
+        and (str(u.get("pin_hash") or "").strip() or str(u.get("pin") or "").strip())
+        and bool(u.get("enabled", True))
+        for u in users
+    ):
         return True
     return bool(str(CONFIG.get("pin", "") or "").strip())
 
@@ -1539,20 +1561,27 @@ def pin_hash(pin: str) -> str:
 
 def authenticate_pin(pin: str) -> dict | None:
     pin = (pin or "").strip()
-    users = [u for u in (CONFIG.get("users") or []) if isinstance(u, dict) and str(u.get("pin") or "").strip()]
+    if not pin:
+        return None
+    users = [u for u in (CONFIG.get("users") or []) if isinstance(u, dict)]
     if users:
         for u in users:
-            if hmac.compare_digest(pin_hash(str(u.get("pin") or "")), pin_hash(pin)):
+            if not u.get("enabled", True):
+                continue
+            stored = str(u.get("pin_hash") or u.get("pin") or "").strip()
+            if stored and hq_security.verify_pin(pin, stored):
                 role = u.get("role")
                 if role not in ("admin", "upload"):
                     return None
-                return {"user": str(u.get("name") or "user")[:40], "role": role}
-        return None
-    if not pin_enabled():
-        # Fail closed: empty PIN never authenticates (startup should have refused).
-        return None
-    if hmac.compare_digest(pin_hash(pin), pin_hash(pin_value())):
-        return {"user": "admin", "role": "admin"}
+                return {
+                    "id": str(u.get("id") or ""),
+                    "user": str(u.get("name") or "user")[:40],
+                    "role": role,
+                }
+    # Fallback to legacy root CONFIG["pin"] if configured
+    root_pin = pin_value()
+    if root_pin and hq_security.verify_pin(pin, root_pin):
+        return {"id": "admin", "user": "admin", "role": "admin"}
     return None
 
 
@@ -1631,11 +1660,11 @@ def auth_generation() -> int:
         return 0
 
 
-def issue_session(user: str = "admin", role: str = "admin") -> str:
+def issue_session(user: str = "admin", role: str = "admin", user_id: str = "") -> str:
     if role not in ("admin", "upload"):
         raise ValueError("invalid session role")
     token = secrets.token_urlsafe(24)
-    rec = hq_security.create_session_record(user, role, auth_generation(), CONFIG)
+    rec = hq_security.create_session_record(user, role, auth_generation(), CONFIG, user_id=user_id)
     with _SESSIONS_LOCK:
         _SESSIONS[token] = rec
     _persist_sessions()
@@ -1664,6 +1693,16 @@ def session_info(token: str | None, touch: bool = True) -> dict | None:
                 changed = True
                 continue
             is_valid, reason = hq_security.evaluate_session(rec, generation, now=now, touch=False)
+            if is_valid:
+                uid = rec.get("user_id")
+                if uid and uid != "admin":
+                    user_acc = hq_security.find_user_by_id(CONFIG.get("users", []), uid)
+                    if user_acc is None or not user_acc.get("enabled", True):
+                        is_valid = False
+                        reason = "account_disabled_or_deleted"
+                    elif user_acc.get("role") != rec.get("role"):
+                        is_valid = False
+                        reason = "role_changed"
             if not is_valid:
                 _SESSIONS.pop(key, None)
                 changed = True
@@ -1674,6 +1713,16 @@ def session_info(token: str | None, touch: bool = True) -> dict | None:
             info = None
         else:
             is_valid, reason = hq_security.evaluate_session(current, generation, now=now, touch=touch)
+            if is_valid:
+                uid = current.get("user_id")
+                if uid and uid != "admin":
+                    user_acc = hq_security.find_user_by_id(CONFIG.get("users", []), uid)
+                    if user_acc is None or not user_acc.get("enabled", True):
+                        is_valid = False
+                        reason = "account_disabled_or_deleted"
+                    elif user_acc.get("role") != current.get("role"):
+                        is_valid = False
+                        reason = "role_changed"
             if not is_valid:
                 _SESSIONS.pop(token, None)
                 changed = True
@@ -2042,6 +2091,16 @@ def _tailscale_dns_name_uncached() -> str | None:
     return None
 
 
+def _inventoria_notify(title: str, body: str) -> None:
+    """Send an Inventoria alert through the channels HQ already has; each is opt-in in its own settings."""
+    notify_discord(title, body)
+    try:
+        if hq_automation.push_enabled():
+            hq_automation.send_push(title, body, category="alert", url="/")
+    except Exception:
+        pass
+
+
 def notify_discord(title: str, description: str) -> None:
     url = str(CONFIG.get("discord_webhook_url") or "").strip()
     if not url:
@@ -2226,6 +2285,7 @@ def bridge_status() -> dict:
             "qr": [{"label": e["label"], "url": e["url"]} for e in public_bridge_urls() if e["label"] in ("LAN", "Tailscale", "Serve")],
             "public": [e["url"] for e in public_bridge_urls()],
         },
+        "weather": get_weather(),
     }
 
 
@@ -2470,6 +2530,81 @@ def probe_remote_disks_now() -> None:
     for peer in peers:
         cc_ext.apply_disk_cache(peer)
     _store_roster_cache([host_device_entry(), *presence_list(), *peers])
+
+
+# Weather cache for Trois-Rivières (Open-Meteo)
+_WEATHER_CACHE: dict = {}
+_WEATHER_LOCK = threading.Lock()
+_WEATHER_TTL_SEC = 900.0  # 15 minutes
+_WEATHER_PROBING = False
+
+def get_weather(now: float | None = None) -> dict:
+    global _WEATHER_PROBING
+    t = time.time() if now is None else now
+    with _WEATHER_LOCK:
+        if _WEATHER_CACHE and (t - _WEATHER_CACHE.get("updated_at", 0) < _WEATHER_TTL_SEC):
+            return dict(_WEATHER_CACHE)
+        cached = dict(_WEATHER_CACHE)
+        probing = _WEATHER_PROBING
+
+    if not probing:
+        with _WEATHER_LOCK:
+            _WEATHER_PROBING = True
+        threading.Thread(target=_fetch_weather_async, daemon=True).start()
+
+    return cached if cached else {"ok": True, "city": "Trois-Rivières", "kind": "clear", "desc": "Dégagé", "icon": "✨", "temp_h": "", "code": 0}
+
+def _fetch_weather_async() -> None:
+    global _WEATHER_PROBING
+    try:
+        url = "https://api.open-meteo.com/v1/forecast?latitude=46.3432&longitude=-72.5421&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,wind_speed_10m&timezone=America%2FToronto"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Transfert-HQ/7.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            cur = data.get("current", {})
+            code = int(cur.get("weather_code") or 0)
+            temp = round(float(cur.get("temperature_2m") or 0.0), 1)
+            wind = round(float(cur.get("wind_speed_10m") or 0.0), 1)
+            clouds = int(cur.get("cloud_cover") or 0)
+            is_day = bool(cur.get("is_day", 1))
+
+            if code in (71, 73, 75, 77, 85, 86) or float(cur.get("snowfall") or 0) > 0:
+                kind, desc, icon = "snow", "Neige", "❄"
+            elif code in (51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82) or float(cur.get("rain") or 0) > 0 or float(cur.get("precipitation") or 0) > 0:
+                kind, desc, icon = "rain", "Pluie", "🌧"
+            elif code in (95, 96, 99):
+                kind, desc, icon = "storm", "Orage", "⚡"
+            elif code in (45, 48):
+                kind, desc, icon = "fog", "Brume", "🌫"
+            elif clouds >= 70 or code == 3:
+                kind, desc, icon = "cloudy", "Couvert", "☁"
+            elif clouds >= 25 or code in (1, 2):
+                kind, desc, icon = "partly_cloudy", "Partiellement nuageux", "⛅"
+            else:
+                kind, desc, icon = "clear", "Dégagé", ("☀️" if is_day else "🌙")
+
+            res = {
+                "ok": True,
+                "city": "Trois-Rivières",
+                "kind": kind,
+                "desc": desc,
+                "icon": icon,
+                "temp": temp,
+                "temp_h": f"{temp:+.0f}°C" if temp != 0 else "0°C",
+                "wind_kmh": wind,
+                "clouds": clouds,
+                "is_day": is_day,
+                "code": code,
+                "updated_at": time.time(),
+            }
+            with _WEATHER_LOCK:
+                _WEATHER_CACHE.clear()
+                _WEATHER_CACHE.update(res)
+    except Exception:
+        pass
+    finally:
+        with _WEATHER_LOCK:
+            _WEATHER_PROBING = False
 
 
 def harvest_screenshots_now(*, force: bool = False) -> dict:
@@ -2717,6 +2852,7 @@ def hq_attention(devices: list[dict]) -> list[dict]:
                 "level": "critical",
                 "title": "Espace disque bas",
                 "detail": f"{disk.get('free_h') or '?'} libre (seuil {min_gb:g} Go)",
+                "target": "system-session",
             }
         )
     elif free and free < min_gb * 2 * 1024**3:
@@ -2725,6 +2861,7 @@ def hq_attention(devices: list[dict]) -> list[dict]:
                 "level": "warning",
                 "title": "Espace disque à surveiller",
                 "detail": f"{disk.get('free_h') or '?'} libre",
+                "target": "system-session",
             }
         )
     for device in devices:
@@ -2734,6 +2871,7 @@ def hq_attention(devices: list[dict]) -> list[dict]:
                     "level": "warning",
                     "title": "Appareil hors ligne",
                     "detail": str(device.get("name") or device.get("id") or "")[:80],
+                    "target": "home-devices",
                 }
             )
             if sum(1 for it in items if it["title"] == "Appareil hors ligne") >= 5:
@@ -2744,6 +2882,7 @@ def hq_attention(devices: list[dict]) -> list[dict]:
                 "level": "warning",
                 "title": str(alert.get("title") or "Alerte")[:80],
                 "detail": str(alert.get("detail") or "")[:180],
+                "target": "system-alerts",
             }
         )
     for ev in hq_events.recent(30):
@@ -2753,6 +2892,7 @@ def hq_attention(devices: list[dict]) -> list[dict]:
                     "level": "critical",
                     "title": str(ev.get("kind") or "Critique"),
                     "detail": str(ev.get("message") or "")[:180],
+                    "target": "system-journal",
                 }
             )
             break
@@ -2764,6 +2904,7 @@ def hq_attention(devices: list[dict]) -> list[dict]:
                         "level": "warning",
                         "title": "Tâche en échec",
                         "detail": str(job.get("label") or "")[:80],
+                        "target": "system-tasks",
                     }
                 )
                 break
@@ -2811,6 +2952,7 @@ def hq_snapshot(force: bool = False) -> dict:
         "roster_age_sec": roster_cache_age(),
         "calendar": _calendar_summary(),
         "agent": hq_companion.summary(),
+        "weather": get_weather(),
     }
     _HQ_SNAPSHOT_CACHE = (now, payload)
     return payload
@@ -2993,6 +3135,50 @@ def build_today() -> dict:
             sources[name] = []
             missing.append(name)
     out = hq_today.build(now=now, **sources)
+    out["missing"] = missing
+    return out
+
+
+def build_timeline(span: str) -> dict:
+    """Time machine track. Like build_today, each source is optional: one that fails is left out and named in 'missing'.
+    The Forge source is the PUBLIC gallery only; the private vault is never read here."""
+    now = time.time()
+    since = now - hq_timeline.span_seconds(span)
+
+    def gallery() -> list:
+        rows, cursor = [], None
+        for _ in range(12):  # at most 12 pages of 48: enough for a busy week, bounded either way
+            got = hq_forge_gallery.page(ROOT, limit=hq_forge_gallery.PAGE_MAX, cursor=cursor)
+            batch = got.get("images") or []
+            rows.extend(batch)
+            cursor = got.get("next_cursor")
+            oldest = hq_timeline._ts(batch[-1].get("created")) if batch else None
+            if not cursor or oldest is None or oldest < since:
+                break
+        return rows
+
+    def calendar() -> list:
+        start = datetime.fromtimestamp(since)
+        end = datetime.fromtimestamp(now + 6 * 3600)
+        rows, _bad = hq_calendar.manual_between(start, end)
+        return hq_timeline.calendar_rows(rows)
+
+    readers = {
+        "events": lambda: hq_events.list_events(since=since, limit=2000).get("events") or [],
+        "gallery": gallery,
+        "pages": lambda: hq_carnet.get_notebook(meta=True).get("pages") or [] if hq_carnet.ready() else [],
+        "files": lambda: hq_timeline.inbox_files(ROOT / "Inbox", since),
+        "calendar": calendar,
+    }
+    sources: dict = {}
+    missing = []
+    for name, read in readers.items():
+        try:
+            sources[name] = read()
+        except Exception:
+            sources[name] = []
+            missing.append(name)
+    out = hq_timeline.build(now=now, span=span, **sources)
     out["missing"] = missing
     return out
 
@@ -3188,7 +3374,12 @@ def bind_hq() -> None:
         root=ROOT,
         actor=lambda: "admin",
         asset_exists=lambda a: hq_carnet.media.asset_exists(a),
+        llm_adapter=hq_inventoria_ai.adapter,  # Gemini reply: persona + inventory + session history (read-only)
+        notify=_inventoria_notify,  # offline stock alerts: HQ's existing Discord webhook + web push (opt-in, off by default)
     )  # Inventoria: admin-only; CSRF on POST below
+    hq_music.bind(root=ROOT)  # Musique preferences / discoveries / presets (admin + CSRF on POST)
+    hq_spotify.bind(root=ROOT, config_getter=lambda: CONFIG)  # Spotify OAuth + Web API (tokens under .hq-music/)
+    hq_musica.bind(root=ROOT)  # Musica steward chat + music tools (admin + CSRF on POST)
     hq_carnet.bind(
         root=ROOT,
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
@@ -3513,31 +3704,46 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(hide, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', projets: 'Projets', inventaire: 'Inventaire', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
-function hqHashView() {
-  const name = (location.hash || '').replace(/^#/, '').split('/')[0];
-  return Object.prototype.hasOwnProperty.call(VIEW_LABELS, name) ? name : '';
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', musique: 'Musique', projets: 'Projets', inventaire: 'Inventaire', engine: 'Engine', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+let hqRoleKnown = false;
+function hqViewFromHash(hash = location.hash) {
+  const [view, detail] = (hash || '').slice(1).split('/');
+  if (!Object.hasOwn(VIEW_LABELS, view)) return '';
+  if (detail === undefined) return view;
+  if (view === 'inventaire' && window.HqInventory?.pure.HASH_RE.test(hash)) return view;
+  if (view === 'projets' && window.HqProjects?.pure.HASH_RE.test(hash)) return view;
+  if (/^#carnet\/page-[A-Za-z0-9_-]{1,64}\/block-[A-Za-z0-9_-]{1,64}$/.test(hash)) return 'carnet';
+  return view;
 }
+function hqHashView() { return hqViewFromHash(); }
 function hqSessionIsAdmin() {
   return document.body.classList.contains('session-admin');
 }
 function hqApplySessionRole(me) {
-  const admin = !!(me && String(me.role || '').toLowerCase() === 'admin');
+  if (!me) return hqSessionIsAdmin();
+  const admin = String(me.role || '').toLowerCase() === 'admin';
+  const changed = !hqRoleKnown || admin !== hqSessionIsAdmin();
   document.body.classList.toggle('session-admin', admin);
   const navIntime = document.getElementById('nav-intime');
   if (navIntime) navIntime.hidden = !admin;
-  ['nav-repas', 'nav-budget'].forEach((id) => {
+  ['nav-repas', 'nav-budget', 'nav-musique'].forEach((id) => {
     const button = document.getElementById(id);
     if (button) button.hidden = !admin;
   });
   const openIntime = document.getElementById('hq-intime-open');
   if (openIntime) openIntime.hidden = !admin;
+  hqRoleKnown = true;
+  if (changed) window.dispatchEvent(new Event('hq:session-role'));
   if (admin) {
     try {
-      const want = hqHashView() || localStorage.getItem('tf_hq_view') || '';
-      if ((want === 'intime' || want === 'repas' || want === 'budget') && document.body.dataset.view !== want) setView(want);
+      const want = hqViewFromHash() || localStorage.getItem('tf_hq_view') || '';
+      if ((want === 'intime' || want === 'repas' || want === 'budget' || want === 'musique') && document.body.dataset.view !== want) {
+        setView(want, { historyMode: 'replace' });
+      }
     } catch (_) {}
-  } else if (document.body.dataset.view === 'intime' || document.body.dataset.view === 'repas' || document.body.dataset.view === 'budget') setView('accueil');
+  } else if (document.body.dataset.view === 'intime' || document.body.dataset.view === 'repas' || document.body.dataset.view === 'budget' || document.body.dataset.view === 'musique') {
+    setView('accueil');
+  }
   return admin;
 }
 function viewTitle(view) {
@@ -3574,6 +3780,54 @@ function hqForgeLoad() {
   return hqForgeLoading;
 }
 window.hqForgeLoad = hqForgeLoad;
+let hqMusicLoading = null;
+function hqMusicLoad() {
+  if (window.HqMusic) return Promise.resolve();
+  if (hqMusicLoading) return hqMusicLoading;
+  hqMusicLoading = new Promise((resolve) => {
+    const cssId = 'hq-music-css';
+    if (!document.getElementById(cssId)) {
+      const link = document.createElement('link');
+      link.id = cssId;
+      link.rel = 'stylesheet';
+      link.href = '/assets/hq-music.css';
+      document.head.appendChild(link);
+    }
+    const el = document.createElement('script');
+    el.src = '/assets/hq-music.js';
+    el.async = false;
+    el.onload = () => resolve(true);
+    el.onerror = () => { el.remove(); hqMusicLoading = null; resolve(false); };
+    document.body.appendChild(el);
+  });
+  return hqMusicLoading;
+}
+window.hqMusicLoad = hqMusicLoad;
+function hqMusicEnsureMounted() {
+  const host = document.getElementById('hq-music-app');
+  if (!host || !window.HqMusic) return;
+  if (host.dataset.hqmMounted === '1') return;
+  window.HqMusic.mount(host, {
+    request: async ({ path, method, body }) => {
+      const verb = (method || 'GET').toUpperCase();
+      const opts = { method: verb };
+      if (verb !== 'GET') {
+        opts.headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+        opts.body = JSON.stringify(body || {});
+      }
+      try {
+        const data = await api(path, opts);
+        return { status: 200, body: data };
+      } catch (err) {
+        const message = (err && err.message) || 'Music API error';
+        const code = (err && err.data && err.data.code) || (err && err.code) || 'request_failed';
+        return { status: (err && err.status) || 500, body: { ok: false, error: message, code } };
+      }
+    }
+  });
+  host.dataset.hqmMounted = '1';
+}
+window.hqMusicEnsureMounted = hqMusicEnsureMounted;
 // Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
 // when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
 // the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
@@ -3787,13 +4041,109 @@ window.addEventListener('load', () => {
   if (document.body.dataset.view === 'dessiner' && app && !app.querySelector('.sk, .sk-fail')) hqSketchStart();
 }, { once: true });
 
-// Narrow phones may scroll the bottom nav sideways: keep the active target in view.
-function hqNavReveal(b) {
-  const nav = b.parentElement;
-  if (!nav || nav.scrollWidth <= nav.clientWidth + 1) return;
-  const l = b.offsetLeft, r = l + b.offsetWidth;
-  if (l < nav.scrollLeft) nav.scrollLeft = l;
-  else if (r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = r - nav.clientWidth;
+function closeCompanions() {
+  delete document.body.dataset.companion;
+  const launcher = $('#hq-companions-toggle');
+  if (launcher) {
+    launcher.setAttribute('aria-expanded', 'false');
+    launcher.title = launcher.getAttribute('aria-label');
+  }
+  const picker = $('#hq-companions-picker');
+  if (picker) picker.hidden = true;
+  $('#hq-companions-choose')?.setAttribute('aria-expanded', 'false');
+}
+function setupCompanionPicker() {
+  const launcher = $('#hq-companions-toggle');
+  const choose = $('#hq-companions-choose');
+  const picker = $('#hq-companions-picker');
+  if (!launcher || !choose || !picker) return;
+  const entries = {
+    else: { name: 'Else', root: '#hq-else', open: () => window.HqElse?.open({ expanded: true }) },
+    transferania: { name: 'Transferania', root: '#hq-companion', open: () => {
+      const wake = $('#hq-companion-wake:not([hidden])');
+      if (wake) wake.focus({ preventScroll: true });
+      else window.HqCompanion?.setExpanded(true);
+    } },
+    inventoria: { name: 'Inventoria', root: '#hq-inventoria', open: () => window.HqInventoria?.open() },
+  };
+  let recent = '';
+  try { recent = localStorage.getItem('hq_companion_recent') || ''; } catch (_) {}
+  function updateLauncher() {
+    const name = Object.hasOwn(entries, recent) ? entries[recent].name : '';
+    launcher.setAttribute('aria-label', name ? 'Compagnons · ' + name : 'Compagnons');
+    launcher.title = document.body.dataset.companion ? 'Replier le compagnon' : name ? 'Ouvrir ' + name : 'Choisir un compagnon';
+  }
+  function syncPicker() {
+    for (const button of picker.querySelectorAll('[data-companion-choice]')) {
+      const key = button.dataset.companionChoice;
+      const root = $(entries[key].root);
+      const paused = key === 'transferania' && !!$('#hq-companion-wake:not([hidden])');
+      button.disabled = !root || (key === 'inventoria' && !hqSessionIsAdmin()) || (key === 'transferania' && root.hidden && !paused);
+      const unread = root?.querySelector('.hq-companion-new-message:not([hidden])');
+      const active = root?.matches('.is-busy,.is-mood-busy,.is-mood-speaking,.is-typing,.hq-companion-busy') || root?.querySelector('.is-typing');
+      button.querySelector('small').textContent = button.disabled ? 'Indisponible' : paused ? 'En pause' : unread ? 'Nouveau message' : active ? 'En cours' : key === recent ? 'Dernier ouvert' : '';
+    }
+  }
+  const pickerObserver = new MutationObserver(() => {
+    if (picker.hidden) pickerObserver.disconnect();
+    else syncPicker();
+  });
+  function watchPicker() {
+    pickerObserver.observe(picker, { attributes: true, attributeFilter: ['hidden'] });
+    for (const entry of Object.values(entries)) {
+      const root = $(entry.root);
+      if (!root) continue;
+      pickerObserver.observe(root, { attributes: true, attributeFilter: ['class', 'hidden'] });
+      const bubble = $('.hq-companion-bubble', root);
+      const unread = $('.hq-companion-new-message', root);
+      if (bubble) pickerObserver.observe(bubble, { attributes: true, attributeFilter: ['class'] });
+      if (unread) pickerObserver.observe(unread, { attributes: true, attributeFilter: ['hidden'] });
+    }
+  }
+  function showPicker(open) {
+    if (open) { syncPicker(); watchPicker(); }
+    else pickerObserver.disconnect();
+    picker.hidden = !open;
+    choose.setAttribute('aria-expanded', String(open));
+    launcher.setAttribute('aria-expanded', String(open || !!document.body.dataset.companion));
+    if (open) picker.querySelector('button:not(:disabled)')?.focus();
+  }
+  function openCompanion(key) {
+    syncPicker();
+    if (!Object.hasOwn(entries, key) || picker.querySelector('[data-companion-choice="' + key + '"]').disabled) {
+      showPicker(true);
+      return;
+    }
+    recent = key;
+    try { localStorage.setItem('hq_companion_recent', key); } catch (_) {}
+    showPicker(false);
+    document.body.dataset.companion = key;
+    launcher.setAttribute('aria-expanded', 'true');
+    updateLauncher();
+    entries[key].open();
+  }
+  launcher.addEventListener('click', () => {
+    if (document.body.dataset.companion) { closeCompanions(); updateLauncher(); }
+    else if (recent) openCompanion(recent);
+    else showPicker(picker.hidden);
+  });
+  choose.addEventListener('click', () => showPicker(picker.hidden));
+  window.addEventListener('hq:session-role', () => {
+    if (!picker.hidden) { syncPicker(); watchPicker(); }
+  });
+  picker.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-companion-choice]');
+    if (button) openCompanion(button.dataset.companionChoice);
+  });
+  document.addEventListener('click', (event) => {
+    if (!picker.hidden && !event.target.closest('.hq-companions-controls')) showPicker(false);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (!picker.hidden) { showPicker(false); choose.focus(); }
+    else if (document.body.dataset.companion) { closeCompanions(); updateLauncher(); launcher.focus(); }
+  });
+  updateLauncher();
 }
 let viewTicket = 0;
 function hqDeferViewRender(view, ticket, fn) {
@@ -3807,29 +4157,46 @@ function hqDeferViewRender(view, ticket, fn) {
     try { fn(); } catch (e) { console.error(e); }
   }
 }
-function setView(name) {
-  let view = VIEW_LABELS[name] ? name : 'accueil';
+function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) {
+  let view = Object.hasOwn(VIEW_LABELS, name) ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
-  if ((view === 'repas' || view === 'budget') && !hqSessionIsAdmin()) view = 'accueil';
+  if ((view === 'repas' || view === 'budget' || view === 'musique' || view === 'engine') && !hqSessionIsAdmin()) view = 'accueil';
+  const deferIntime = name === 'intime' && !hqRoleKnown;
+  if (!deferIntime && (historyMode !== 'none' || view !== name) && hqViewFromHash() !== view) {
+    if (historyMode === 'push') history.pushState(null, '', '#' + view);
+    else history.replaceState(null, '', '#' + view);
+  }
   const viewT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
   const commit = () => {
   const prevView = document.body.dataset.view;
+  const focusHeading = prevView !== view && document.activeElement?.closest('.hq-more-nav');
+  if (prevView !== view) closeCompanions();
   document.body.dataset.view = view;
+  if (prevView !== view && historyMode === 'push') window.scrollTo(0, 0);
   if (window.hqClientLogView) { try { window.hqClientLogView(prevView, view); } catch (_) {} }
   if (window.hqHideHelp) window.hqHideHelp();
   const lab = $('#view-label');
   const title = viewTitle(view);
   if (lab) lab.textContent = title;
+  if (focusHeading) lab?.focus({ preventScroll: true });
+  if (focus) document.getElementById(focus)?.focus();
+  if (section) window.hqJumpToSection?.(section);
   document.title = 'Transfert HQ · ' + title;
-  $$('.bottom-nav [data-nav]').forEach(b => {
+  const navTabs = $$('.bottom-nav [data-nav]');
+  const mobileOverflow = window.matchMedia('(max-width: 899px)').matches
+    && !navTabs.some(b => b.dataset.nav === view && b.offsetWidth > 0);
+  navTabs.forEach(b => {
     const on = b.dataset.nav === view;
-    b.classList.toggle('active', on);
+    b.classList.toggle('active', mobileOverflow ? b.dataset.nav === 'plus' : on);
     if (on) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
-    if (on) hqNavReveal(b);
   });
-  try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
+  $$('.hq-more-nav [data-view-link]').forEach(link => {
+    if (link.dataset.viewLink === view) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+  if (!deferIntime) try { localStorage.setItem('tf_hq_view', view); } catch (_) {}
   if (window.hqPlayerView) {
     try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
   }
@@ -3859,6 +4226,11 @@ function setView(name) {
   if (view === 'projets' && window.hqProjectsShow) {
     hqDeferViewRender(view, viewTicket, () => { try { window.hqProjectsShow(); } catch (e) { console.error(e); } });
   }
+  if (view === 'engine' && window.hqEngineShow) {
+    hqDeferViewRender(view, viewTicket, () => { try { window.hqEngineShow(); } catch (e) { console.error(e); } });
+  } else if (window.hqEngineHide) {
+    try { window.hqEngineHide(); } catch (e) { console.error(e); }
+  }
   if (view === 'inventaire' && window.hqInventoryShow) {
     hqDeferViewRender(view, viewTicket, () => { try { window.hqInventoryShow(); } catch (e) { console.error(e); } });
   }
@@ -3880,10 +4252,22 @@ function setView(name) {
   } else if (window.hqForgeHide) {
     try { window.hqForgeHide(); } catch (e) { console.error(e); }
   }
+  if (view === 'musique') {
+    hqMusicLoad().then(() => {
+      const lazyMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
+      if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-lazy', target: 'musique', ms: lazyMs, ok: !!(window.HqMusic) }, { force: lazyMs > 400 });
+      if (document.body.dataset.view === 'musique') {
+        try { hqMusicEnsureMounted(); if (window.hqMusicShow) window.hqMusicShow(); } catch (e) { console.error(e); }
+      }
+    }).catch((e) => console.error(e));
+  } else if (window.hqMusicHide) {
+    try { window.hqMusicHide(); } catch (e) { console.error(e); }
+  }
   const viewMs = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - viewT0);
   if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-commit', ms: viewMs, from: prevView, to: view }, { force: viewMs > 120 });
   };
-  if (window.HqTheme && typeof window.HqTheme.runViewChange === 'function') {
+  // A quick action must focus during the tap so mobile browsers can open the keyboard.
+  if (!focus && !section && window.HqTheme && typeof window.HqTheme.runViewChange === 'function') {
     window.HqTheme.runViewChange(window, view, commit);
   } else commit();
 }
@@ -3903,16 +4287,30 @@ function applyMode(simple) {
   }
   if (window.hqHideHelp) window.hqHideHelp();
   try { localStorage.setItem('tf_hq_mode', simple ? 'simple' : 'complet'); } catch (_) {}
-  if (simple && document.body.dataset.view === 'ops') setView('accueil');
+  if (simple && document.body.dataset.view === 'ops') setView('accueil', { historyMode: 'replace' });
 }
 function setupModeToggle() {
   applyMode(isSimpleMode());
   $('#mode-toggle')?.addEventListener('click', () => applyMode(!document.body.classList.contains('mode-simple')));
 }
 function setupNav() {
+  $('.skip-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    $('#main')?.focus();
+  });
   $$('.bottom-nav [data-nav]').forEach(b => b.addEventListener('click', () => setView(b.dataset.nav)));
+  $$('.hq-more-nav [data-view-link]').forEach(link => link.addEventListener('click', (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    setView(link.dataset.viewLink);
+  }));
+  setupCompanionPicker();
   if (window.hqHouseholdInstallHistory) window.hqHouseholdInstallHistory(setView);
-  $('#status-chip')?.addEventListener('click', () => setView('plus'));
+  $('#status-chip')?.addEventListener('click', (event) => {
+    const target = event.currentTarget.dataset?.target || 'system-session';
+    const section = target === 'system-tasks' && isSimpleMode() ? 'hq-banner' : target;
+    setView(section.startsWith('system-') ? 'plus' : 'accueil', { section });
+  });
   $('#hq-intime-open')?.addEventListener('click', () => { if (hqSessionIsAdmin()) setView('intime'); else toast('Réservé admin', 'err'); });
   $('#hq-intime-focus-chat')?.addEventListener('click', () => {
     if (window.HqCompanion && typeof window.HqCompanion.setExpanded === 'function') window.HqCompanion.setExpanded(true);
@@ -3924,12 +4322,22 @@ function setupNav() {
     if (window.HqCompanion && typeof window.HqCompanion.resetFloatHome === 'function') window.HqCompanion.resetFloatHome();
   });
   let saved = 'accueil';
-  try { saved = hqHashView() || localStorage.getItem('tf_hq_view') || 'accueil'; } catch (_) { saved = hqHashView() || 'accueil'; }
+  try {
+    saved = localStorage.getItem('tf_hq_view') || 'accueil';
+    const back = sessionStorage.getItem('tf_return_hash');
+    sessionStorage.removeItem('tf_return_hash');
+    if (!location.hash && back && hqViewFromHash(back)) history.replaceState(null, '', back);
+  } catch (_) {}
   if ((saved === 'intime' || saved === 'repas' || saved === 'budget') && !hqSessionIsAdmin()) saved = 'accueil';
-  setView(saved);
+  if (!location.hash && saved === 'intime') history.replaceState(null, '', '#intime');
+  setView(hqViewFromHash() || saved, { historyMode: location.hash ? 'none' : 'replace' });
+  window.addEventListener('hashchange', () => {
+    const view = hqViewFromHash();
+    if (view && view !== document.body.dataset.view) setView(view, { historyMode: 'none' });
+  });
   const wide = window.matchMedia('(min-width: 900px)');
   if (wide.addEventListener) wide.addEventListener('change', () => {
-    if (document.body.dataset.view) setView(document.body.dataset.view);
+    if (document.body.dataset.view) setView(document.body.dataset.view, { historyMode: 'none' });
   });
 }
 
@@ -3981,6 +4389,7 @@ async function api(url, opts={}) {
     if (!sessionStorage.getItem('tf_auth_redirect') && (now - last > 15000)) {
       sessionStorage.setItem('tf_auth_redirect', '1');
       sessionStorage.setItem('tf_auth_at', String(now));
+      if (hqViewFromHash()) sessionStorage.setItem('tf_return_hash', location.hash);
       location.replace('/logout');
     }
     throw fail('PIN requis');
@@ -4692,7 +5101,7 @@ function renderRecents() {
         sort: t.at || 0,
         html: `<li data-kind="transfer"><strong>${escapeHtml(t.name || 'fichier')}</strong> · ${escapeHtml(t.size_h || '')}
           ${t.rel ? ` <button type="button" class="ghost" data-open-rel="${escapeAttr((t.rel||'').split('/').slice(0,-1).join('/') || t.folder || '')}">Dossier</button>` : ''}
-          <div class="meta">transfert · ${escapeHtml(st)} · ${escapeHtml(t.folder || '')}</div></li>`
+          <div class="meta"><span class="feed-st st-${escapeAttr(t.state || 'done')}">${escapeHtml(st)}</span> · transfert · ${escapeHtml(t.folder || '')}</div></li>`
       });
     }
   }
@@ -4701,7 +5110,7 @@ function renderRecents() {
       rows.push({
         sort: x.at || 0,
         html: `<li data-kind="activity"><strong>${escapeHtml(x.message || '')}</strong>
-          <div class="meta">opération · ${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
+          <div class="meta"><span class="feed-op">${escapeHtml(x.kind || 'opération')}</span> · ${escapeHtml(x.at_h || '')}</div></li>`
       });
     }
   }
@@ -4853,11 +5262,6 @@ async function refreshHQ(scope = 'all') {
       if ($('#hq-disk')) $('#hq-disk').textContent = (disk.free_h || '?') + ' libre / ' + (disk.total_h || '?');
       if ($('#hq-host')) $('#hq-host').textContent = st.hostname || '—';
       if ($('#hq-max')) $('#hq-max').textContent = st.max_upload_h || '—';
-      const chip = $('#status-chip');
-      if (chip) {
-        const free = disk.free_h || '';
-        chip.textContent = free ? ('● ' + free + ' libres') : '● État';
-      }
       renderDevices(dev.devices || []);
       renderTransfers(tr.transfers || []);
       favoritesCache = st.favorites || favoritesCache || [];
@@ -4868,6 +5272,7 @@ async function refreshHQ(scope = 'all') {
       renderTerminalCmds(st.terminal_commands || []);
       fillShellTargets(st.shell_targets || []);
       fillSendTargets(dev.devices || []);
+      if (st.weather && window.hqApplyWeather) window.hqApplyWeather(st.weather);
     } catch (e) {
       if ($('#hq-dev-count')) $('#hq-dev-count').textContent = '!';
       const el = $('#hq-devices');
@@ -5781,13 +6186,16 @@ body[data-view="fichiers"] [data-panel="fichiers"],
 body[data-view="projets"] [data-panel="projets"],
 body[data-view="inventaire"] [data-panel="inventaire"],
 body[data-view="ops"] [data-panel="ops"],
+body[data-view="engine"] [data-panel="engine"],
 body[data-view="lecteur"] [data-panel="lecteur"],
+body[data-view="musique"] [data-panel="musique"],
 body[data-view="forge"] [data-panel="forge"],
 body[data-view="intime"] [data-panel="intime"],
 body[data-view="plus"] [data-panel="plus"]{display:block}
 body:not(.session-admin) .bottom-nav [data-nav="intime"],
 body:not(.session-admin) .bottom-nav [data-nav="repas"],
-body:not(.session-admin) .bottom-nav [data-nav="budget"]{display:none!important}
+body:not(.session-admin) .bottom-nav [data-nav="budget"],
+body:not(.session-admin) .bottom-nav [data-nav="musique"]{display:none!important}
 body[data-view="intime"] .hq-intime-panel{
   position:relative;
   display:flex;
@@ -5996,19 +6404,23 @@ body.kiosk .bottom-nav{display:none}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:2px;background:var(--muted);flex:0 0 auto}
 .dot.on{background:var(--ok)}
 .dot.off{background:var(--danger)}
-@media (max-width:430px){
-  /* Narrow phones: every nav target stays >= 44x44. If they cannot all fit (full mode
-     below 360px), the nav scrolls sideways instead of shrinking the buttons. */
+.hq-more-nav{display:none}
+@media (max-width:899px){
   .bottom-nav{padding-left:max(4px, env(safe-area-inset-left));padding-right:max(4px, env(safe-area-inset-right));
-    grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(44px,1fr);
-    overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+    grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:max(58px,18.6%);gap:2px;
+    overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;touch-action:pan-x;
+    scrollbar-width:none;-webkit-overflow-scrolling:touch}
   .bottom-nav::-webkit-scrollbar{display:none}
-  .bottom-nav button{padding:6px 0;font-size:.66rem;min-width:44px}
-}
-@media (max-width:359px){
-  /* 6.5 buttons visible: the half-cut next button shows the nav scrolls. */
-  body:not(.mode-simple) .bottom-nav{grid-auto-columns:max(44px, calc((100vw - 8px) / 6.5));scroll-snap-type:x proximity}
-  body:not(.mode-simple) .bottom-nav button{scroll-snap-align:start}
+  .bottom-nav button{min-width:0;padding:6px 1px;min-height:48px;font-size:.72rem;font-weight:650}
+  .hq-more-nav{display:grid;gap:14px;margin-bottom:12px}
+  .hq-more-nav h2{margin:0 0 6px;font-size:1rem}
+  .hq-more-nav .hq-more-system-title{margin:8px 0 0}
+  .hq-more-links{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  .hq-more-links a{display:flex;align-items:center;min-height:44px;padding:6px 12px;border:1px solid var(--line);
+    border-radius:12px;background:var(--panel);color:var(--text);font-weight:600;text-decoration:none}
+  .hq-more-links a[aria-current="page"]{border-color:var(--accent)}
+  body:not(.session-admin) .hq-more-links [data-view-link="intime"],
+  body:not(.session-admin) .hq-more-links [data-view-link="engine"]{display:none}
 }
 @media (max-width:520px){
   .qrs{grid-template-columns:1fr}
@@ -6213,27 +6625,991 @@ document.addEventListener('visibilitychange', () => {{
 
 
 def render_login(flash: str = "", error: bool = False) -> bytes:
-    box = f'<div class="toast show {"err" if error else ""}" style="position:static;margin:12px 0">{html.escape(flash)}</div>' if flash else ""
-    page = f"""<!DOCTYPE html><html lang="fr"><head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+    box = f'<div class="toast-msg {"err" if error else ""}">{html.escape(flash)}</div>' if flash else ""
+    page = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<meta name="theme-color" content="#0f1419"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Transfert HQ"/>
+<meta name="theme-color" content="#0a0d14"/>
 <link rel="manifest" href="/manifest.webmanifest"/>
 <link rel="apple-touch-icon" href="/icon-192.png"/>
-<title>Transfert · PIN</title><style>{BASE_CSS}</style>
-<script>try{{sessionStorage.removeItem('tf_auth_redirect');sessionStorage.removeItem('tf_auth_at');if(/^#inventaire\/plc-[0-9a-f]{{16}}$/.test(location.hash))sessionStorage.setItem('tf_return_hash',location.hash);}}catch(e){{}}</script>
-</head><body>
-<div class="wrap"><section class="pin-card">
-<div class="brand">Transfert Bridge</div>
-<h1>Code PIN</h1>
-<p class="sub">Accès au pont fichiers / notes</p>
-{box}
-<form method="post" action="/login">
-<input name="pin" type="password" inputmode="numeric" required placeholder="••••••" autofocus autocomplete="one-time-code"/>
-<button type="submit" style="width:100%;margin-top:12px">Continuer</button>
-</form>
-<p class="hint">PIN dans bridge_config.json</p>
-</section></div></body></html>"""
+<title>Connexion · Transfert HQ</title>
+<style>
+:root {{
+  --bg: #0a0d14;
+  --surface: #121824;
+  --surface-hover: #182030;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-focus: rgba(168, 85, 247, 0.55);
+  --accent: #a855f7;
+  --accent-pink: #ec4899;
+  --glow: rgba(168, 85, 247, 0.2);
+  --text: #f8fafc;
+  --text-dim: #94a3b8;
+  --text-muted: #64748b;
+  --err-bg: rgba(244, 63, 94, 0.12);
+  --err-border: rgba(244, 63, 94, 0.35);
+  --err-text: #fda4af;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", Helvetica, Arial, sans-serif;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+html, body {{
+  height: 100%;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overflow: hidden;
+}}
+body {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  position: relative;
+}}
+.ambient-glow {{
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 65% 45% at 50% 12%, rgba(168, 85, 247, 0.18), transparent 70%),
+    radial-gradient(ellipse 45% 35% at 50% 88%, rgba(236, 72, 153, 0.11), transparent 70%);
+  animation: ambientBreathe 9s ease-in-out infinite;
+}}
+@keyframes ambientBreathe {{
+  0%, 100% {{ transform: scale(1); opacity: 0.85; }}
+  50% {{ transform: scale(1.06); opacity: 1; }}
+}}
+.login-wrap {{
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 400px;
+  animation: fadeIn 0.35s ease-out;
+}}
+@keyframes fadeIn {{
+  from {{ opacity: 0; transform: translateY(10px) scale(0.98); }}
+  to {{ opacity: 1; transform: translateY(0) scale(1); }}
+}}
+.login-card {{
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 34px 28px 28px;
+  box-shadow:
+    0 15px 35px -10px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 0 50px -10px rgba(168, 85, 247, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}}
+.login-card::before {{
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: radial-gradient(
+    280px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(168, 85, 247, 0.45),
+    rgba(236, 72, 153, 0.25) 30%,
+    transparent 70%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}}
+.login-card:hover::before {{
+  opacity: 1;
+}}
+@keyframes springShake {{
+  0%, 100% {{ transform: translateX(0); }}
+  15% {{ transform: translateX(-9px); }}
+  30% {{ transform: translateX(8px); }}
+  45% {{ transform: translateX(-6px); }}
+  60% {{ transform: translateX(5px); }}
+  75% {{ transform: translateX(-3px); }}
+  90% {{ transform: translateX(2px); }}
+}}
+.login-card.shake {{
+  animation: springShake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}}
+.login-card.shake .pin-pip {{
+  border-color: rgba(244, 63, 94, 0.65) !important;
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.35) !important;
+}}
+.login-header {{
+  text-align: center;
+  margin-bottom: 22px;
+}}
+.brand-badge {{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(168, 85, 247, 0.1);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  color: #d8b4fe;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}}
+.brand-badge svg {{
+  width: 14px;
+  height: 14px;
+}}
+h1 {{
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin-bottom: 6px;
+}}
+.sub {{
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+}}
+.toast-msg {{
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  margin-bottom: 20px;
+  line-height: 1.4;
+  text-align: center;
+}}
+.toast-msg.err {{
+  background: var(--err-bg);
+  border: 1px solid var(--err-border);
+  color: var(--err-text);
+}}
+.toast-msg:not(.err) {{
+  background: rgba(168, 85, 247, 0.1);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+  color: #e9d5ff;
+}}
+.input-header {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}}
+.input-label {{
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}}
+.toggle-pin {{
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  font-family: inherit;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}}
+.toggle-pin:hover, .toggle-pin:focus-visible {{
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  outline: none;
+}}
+.toggle-pin svg {{
+  width: 15px;
+  height: 15px;
+}}
+.pin-stage {{
+  position: relative;
+  width: 100%;
+  margin-bottom: 22px;
+  cursor: text;
+}}
+.pin-hidden-input {{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.001;
+  z-index: 10;
+  cursor: text;
+  font-size: 16px;
+  border: none;
+  background: transparent;
+}}
+.pin-pips-row {{
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  pointer-events: none;
+}}
+.pin-pip {{
+  flex: 1;
+  aspect-ratio: 1 / 1.25;
+  max-width: 40px;
+  min-height: 48px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}}
+.pin-pip.is-active {{
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.22), 0 0 16px rgba(168, 85, 247, 0.3);
+  background: rgba(168, 85, 247, 0.06);
+}}
+.pin-pip.is-filled {{
+  border-color: rgba(168, 85, 247, 0.45);
+  background: rgba(18, 24, 36, 0.95);
+}}
+.pip-bead {{
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #c084fc 0%, #ec4899 100%);
+  box-shadow: 0 0 10px rgba(192, 132, 252, 0.7);
+  transform: scale(0);
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+}}
+.pin-pip.is-filled .pip-bead {{
+  transform: scale(1);
+}}
+.pip-char {{
+  display: none;
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #fff;
+  font-family: inherit;
+  transform: scale(0);
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1);
+}}
+.login-card.show-text .pip-bead {{
+  display: none;
+}}
+.login-card.show-text .pip-char {{
+  display: block;
+}}
+.login-card.show-text .pin-pip.is-filled .pip-char {{
+  transform: scale(1);
+}}
+.btn-submit {{
+  width: 100%;
+  padding: 15px;
+  font-size: 1rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: #fff;
+  background: linear-gradient(135deg, #a855f7 0%, #ec4899 100%);
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(168, 85, 247, 0.35);
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}}
+.btn-submit:hover {{
+  opacity: 0.95;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 22px rgba(168, 85, 247, 0.45);
+}}
+.btn-submit:active {{
+  transform: translateY(0);
+}}
+.btn-submit:disabled {{
+  opacity: 0.65;
+  cursor: not-allowed;
+  transform: none;
+}}
+.btn-spinner {{
+  display: none;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}}
+@keyframes spin {{
+  to {{ transform: rotate(360deg); }}
+}}
+.login-card.is-submitting .btn-spinner {{
+  display: inline-block;
+}}
+.btn-webauthn {{
+  width: 100%;
+  padding: 13px;
+  margin-top: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 500;
+  font-family: inherit;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}}
+.btn-webauthn:hover {{
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(168, 85, 247, 0.35);
+  box-shadow: 0 4px 16px rgba(168, 85, 247, 0.15);
+}}
+.btn-webauthn svg {{
+  width: 18px;
+  height: 18px;
+  color: #c084fc;
+}}
+.card-footer {{
+  margin-top: 22px;
+  text-align: center;
+}}
+.card-footer p {{
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}}
+.visually-hidden {{
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}}
+</style>
+<script>
+try {{
+  sessionStorage.removeItem('tf_auth_redirect');
+  sessionStorage.removeItem('tf_auth_at');
+  if (location.hash) {{
+    sessionStorage.setItem('tf_return_hash', location.hash);
+  }}
+  if (new URLSearchParams(location.search).get('desk') === 'pad') {{
+    sessionStorage.setItem('tf_desk', 'pad');
+  }}
+}} catch (e) {{}}
+</script>
+</head>
+<body>
+<div class="ambient-glow" aria-hidden="true"></div>
+<div class="login-wrap">
+  <div class="login-card {'shake' if error else ''}" id="loginCard">
+    <div class="login-header">
+      <div class="brand-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="m9 12 2 2 4-4"/>
+        </svg>
+        <span>Transfert HQ</span>
+      </div>
+      <h1>Authentification</h1>
+      <p class="sub">Entre ton code PIN pour accéder à la console</p>
+    </div>
+    {box}
+    <form method="post" action="/login" id="loginForm">
+      <div class="input-header">
+        <label for="pinInput" class="input-label">Code PIN</label>
+        <button type="button" class="toggle-pin" id="togglePinBtn" aria-label="Afficher le code PIN">
+          <svg id="eyeShow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          <svg id="eyeHide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none">
+            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>
+            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>
+            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>
+            <line x1="2" y1="2" x2="22" y2="22"/>
+          </svg>
+          <span id="toggleText">Afficher</span>
+        </button>
+      </div>
+
+      <div class="pin-stage" id="pinStage">
+        <input
+          id="pinInput"
+          name="pin"
+          type="password"
+          inputmode="numeric"
+          pattern="[0-9]*"
+          required
+          placeholder=""
+          autofocus
+          autocomplete="current-password"
+          class="pin-hidden-input"
+          aria-describedby="pinHelp"
+        />
+        <div class="pin-pips-row" id="pipsRow" aria-hidden="true">
+          <div class="pin-pip is-active"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+          <div class="pin-pip"><span class="pip-bead"></span><span class="pip-char"></span></div>
+        </div>
+      </div>
+
+      <p id="pinHelp" class="visually-hidden">Saisis le code PIN à 8 chiffres pour déverrouiller l'accès.</p>
+      <button type="submit" class="btn-submit" id="submitBtn">
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <span id="btnText">Connexion</span>
+      </button>
+
+      <button type="button" class="btn-webauthn" id="btnWebAuthn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/>
+          <path d="M9 10a1 1 0 0 1 2 0v1a1 1 0 0 1-2 0zm4 0a1 1 0 0 1 2 0v1a1 1 0 0 1-2 0zm-5 5a5 5 0 0 0 6 0"/>
+        </svg>
+        <span id="webauthnBtnText">Face ID / Biométrie</span>
+      </button>
+    </form>
+    <div class="card-footer">
+      <p>Session sécurisée · Transfert HQ</p>
+    </div>
+  </div>
+</div>
+<script>
+(function() {{
+  const form = document.getElementById('loginForm');
+  const card = document.getElementById('loginCard');
+  const stage = document.getElementById('pinStage');
+  const pinInput = document.getElementById('pinInput');
+  const pips = Array.from(document.querySelectorAll('.pin-pip'));
+  const toggleBtn = document.getElementById('togglePinBtn');
+  const eyeShow = document.getElementById('eyeShow');
+  const eyeHide = document.getElementById('eyeHide');
+  const toggleText = document.getElementById('toggleText');
+  const submitBtn = document.getElementById('submitBtn');
+  const btnText = document.getElementById('btnText');
+  const btnWebAuthn = document.getElementById('btnWebAuthn');
+  let autoSubmitted = false;
+
+  function haptic(pattern) {{
+    try {{
+      if (window.navigator && typeof navigator.vibrate === 'function') {{
+        navigator.vibrate(pattern);
+      }}
+    }} catch (_) {{}}
+  }}
+
+  if (card) {{
+    card.addEventListener('pointermove', function(e) {{
+      const rect = card.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      card.style.setProperty('--mouse-x', x + 'px');
+      card.style.setProperty('--mouse-y', y + 'px');
+    }});
+  }}
+
+  if ({'true' if error else 'false'}) {{
+    haptic([35, 45, 35]);
+    setTimeout(() => {{
+      if (pinInput) {{
+        pinInput.value = '';
+        pinInput.focus();
+        updatePips();
+      }}
+    }}, 450);
+  }}
+
+  function updatePips() {{
+    if (!pinInput) return;
+    const val = pinInput.value || '';
+    const len = val.length;
+
+    pips.forEach((pip, idx) => {{
+      const bead = pip.querySelector('.pip-bead');
+      const charSpan = pip.querySelector('.pip-char');
+
+      if (idx < len) {{
+        pip.classList.add('is-filled');
+        pip.classList.remove('is-active');
+        if (charSpan) charSpan.textContent = val[idx];
+      }} else if (idx === len) {{
+        pip.classList.remove('is-filled');
+        pip.classList.add('is-active');
+        if (charSpan) charSpan.textContent = '';
+      }} else {{
+        pip.classList.remove('is-filled');
+        pip.classList.remove('is-active');
+        if (charSpan) charSpan.textContent = '';
+      }}
+    }});
+
+    if (len >= 8 && !autoSubmitted) {{
+      autoSubmitted = true;
+      haptic(15);
+      setTimeout(() => {{
+        doSubmit();
+      }}, 120);
+    }}
+  }}
+
+  if (stage && pinInput) {{
+    stage.addEventListener('click', () => pinInput.focus());
+  }}
+
+  if (pinInput) {{
+    pinInput.addEventListener('input', function() {{
+      haptic(8);
+      updatePips();
+    }});
+
+    pinInput.addEventListener('keydown', function(e) {{
+      if (e.key === 'Escape') {{
+        pinInput.value = '';
+        autoSubmitted = false;
+        haptic(5);
+        updatePips();
+      }}
+    }});
+
+    pinInput.addEventListener('focus', () => updatePips());
+    pinInput.addEventListener('blur', () => {{
+      pips.forEach(p => p.classList.remove('is-active'));
+    }});
+  }}
+
+  if (toggleBtn && pinInput) {{
+    toggleBtn.addEventListener('click', function() {{
+      const isShowing = card.classList.contains('show-text');
+      if (isShowing) {{
+        card.classList.remove('show-text');
+        pinInput.type = 'password';
+        if (eyeShow) eyeShow.style.display = 'block';
+        if (eyeHide) eyeHide.style.display = 'none';
+        if (toggleText) toggleText.textContent = 'Afficher';
+        toggleBtn.setAttribute('aria-label', 'Afficher le code PIN');
+      }} else {{
+        card.classList.add('show-text');
+        pinInput.type = 'text';
+        if (eyeShow) eyeShow.style.display = 'none';
+        if (eyeHide) eyeHide.style.display = 'block';
+        if (toggleText) toggleText.textContent = 'Masquer';
+        toggleBtn.setAttribute('aria-label', 'Masquer le code PIN');
+      }}
+      pinInput.focus();
+    }});
+  }}
+
+  function doSubmit() {{
+    if (!form || !submitBtn) return;
+    card.classList.add('is-submitting');
+    submitBtn.disabled = true;
+    if (btnText) btnText.textContent = 'Connexion…';
+    form.submit();
+  }}
+
+  if (form) {{
+    form.addEventListener('submit', function(e) {{
+      if (autoSubmitted) return;
+      doSubmit();
+    }});
+  }}
+
+  // WebAuthn Passkey Login
+  function b64urlToBuf(str) {{
+    str = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (str.length % 4) str += '=';
+    const binary = atob(str);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }}
+
+  function bufToB64url(buf) {{
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=/g, '');
+  }}
+
+  async function checkWebAuthn() {{
+    if (!window.PublicKeyCredential || !btnWebAuthn) return;
+    try {{
+      const res = await fetch('/api/auth/webauthn/status');
+      const data = await res.json();
+      if (data && data.enabled) {{
+        btnWebAuthn.style.display = 'inline-flex';
+      }}
+    }} catch (_) {{}}
+  }}
+
+  if (btnWebAuthn) {{
+    btnWebAuthn.addEventListener('click', async function() {{
+      const webText = document.getElementById('webauthnBtnText');
+      if (webText) webText.textContent = 'Vérification biométrique…';
+      btnWebAuthn.disabled = true;
+      try {{
+        const optRes = await fetch('/api/auth/webauthn/login/options');
+        if (!optRes.ok) throw new Error('Échec options');
+        const opts = await optRes.json();
+
+        const cred = await navigator.credentials.get({{
+          publicKey: {{
+            challenge: b64urlToBuf(opts.challenge),
+            rpId: opts.rp_id,
+            userVerification: 'preferred',
+            allowCredentials: (opts.allow_credentials || []).map(id => ({{
+              id: b64urlToBuf(id),
+              type: 'public-key'
+            }}))
+          }}
+        }});
+
+        if (!cred) throw new Error('Authentification annulée');
+
+        const verifyRes = await fetch('/api/auth/webauthn/login/verify', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{
+            challenge: opts.challenge,
+            cred_id: bufToB64url(cred.rawId),
+            client_data: bufToB64url(cred.response.clientDataJSON),
+            auth_data: bufToB64url(cred.response.authenticatorData),
+            signature: bufToB64url(cred.response.signature),
+          }})
+        }});
+
+        const vData = await verifyRes.json();
+        if (verifyRes.ok && vData.ok) {{
+          haptic([20, 30, 60]);
+          location.href = vData.redirect || '/';
+        }} else {{
+          throw new Error(vData.error || 'Échec biométrique');
+        }}
+      }} catch (err) {{
+        haptic([30, 40, 30]);
+        if (card) {{
+          card.classList.add('shake');
+          setTimeout(() => card.classList.remove('shake'), 500);
+        }}
+        if (webText) webText.textContent = 'Face ID / Biométrie';
+        btnWebAuthn.disabled = false;
+      }}
+    }});
+  }}
+
+  checkWebAuthn();
+  updatePips();
+}})();
+</script>
+</body>
+</html>"""
+    return page.encode("utf-8")
+
+
+def render_lockdown(flash: str = "", error: bool = False) -> bytes:
+    box = f'<div class="toast-msg {"err" if error else ""}">{html.escape(flash)}</div>' if flash else ""
+    page = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="theme-color" content="#18040a"/>
+<title>Verrouillage d'urgence · Transfert HQ</title>
+<style>
+:root {{
+  --bg: #0d0407;
+  --surface: #18080f;
+  --surface-hover: #220c15;
+  --border: rgba(244, 63, 94, 0.2);
+  --border-focus: rgba(244, 63, 94, 0.6);
+  --crimson: #e11d48;
+  --crimson-glow: rgba(225, 29, 72, 0.35);
+  --text: #fff1f2;
+  --text-dim: #fda4af;
+  --text-muted: #9f1239;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+html, body {{
+  height: 100%;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}}
+body {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  position: relative;
+}}
+.ambient-glow {{
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 65% 45% at 50% 15%, rgba(225, 29, 72, 0.22), transparent 70%),
+    radial-gradient(ellipse 45% 35% at 50% 85%, rgba(190, 18, 60, 0.15), transparent 70%);
+  animation: pulseBreathe 6s ease-in-out infinite;
+}}
+@keyframes pulseBreathe {{
+  0%, 100% {{ transform: scale(1); opacity: 0.85; }}
+  50% {{ transform: scale(1.06); opacity: 1; }}
+}}
+.card-wrap {{
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  animation: fadeIn 0.35s ease-out;
+}}
+@keyframes fadeIn {{
+  from {{ opacity: 0; transform: translateY(10px); }}
+  to {{ opacity: 1; transform: translateY(0); }}
+}}
+.lockdown-card {{
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  padding: 36px 30px 30px;
+  box-shadow:
+    0 15px 35px -10px rgba(0, 0, 0, 0.85),
+    0 0 50px -10px var(--crimson-glow);
+  backdrop-filter: blur(16px);
+  text-align: center;
+}}
+.badge-lockdown {{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(225, 29, 72, 0.15);
+  border: 1px solid rgba(225, 29, 72, 0.4);
+  color: #fecdd3;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}}
+h1 {{
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+}}
+.sub {{
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin-bottom: 24px;
+}}
+.toast-msg {{
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  margin-bottom: 20px;
+  background: rgba(244, 63, 94, 0.15);
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  color: #fda4af;
+}}
+.input-group {{
+  margin-bottom: 20px;
+  text-align: left;
+}}
+.input-label {{
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}}
+.pin-input {{
+  width: 100%;
+  padding: 15px 18px;
+  font-size: 1.3rem;
+  font-family: inherit;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: #fff;
+  background: var(--surface-hover);
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  outline: none;
+  text-align: center;
+  transition: all 0.2s ease;
+}}
+.pin-input:focus {{
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.25), 0 0 20px rgba(225, 29, 72, 0.3);
+}}
+.btn-unlock {{
+  width: 100%;
+  padding: 15px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #e11d48 0%, #be123c 100%);
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+  box-shadow: 0 4px 18px rgba(225, 29, 72, 0.45);
+  transition: all 0.2s ease;
+}}
+.btn-unlock:hover {{
+  opacity: 0.95;
+  transform: translateY(-1px);
+}}
+.footer-note {{
+  margin-top: 24px;
+  font-size: 0.78rem;
+  color: #fda4af;
+  opacity: 0.8;
+}}
+</style>
+</head>
+<body>
+<div class="ambient-glow" aria-hidden="true"></div>
+<div class="card-wrap">
+  <div class="lockdown-card">
+    <div class="badge-lockdown">🚨 Système Verrouillé d'Urgence</div>
+    <h1>Accès Neutralisé</h1>
+    <p class="sub">Transfert HQ a été gelé suite à plusieurs tentatives suspectes. Pour rétablir le service, saisissez votre code PIN administrateur.</p>
+    {box}
+    <form method="post" action="/emergency/unlock">
+      <div class="input-group">
+        <label for="adminPinInput" class="input-label">Code PIN Administrateur</label>
+        <input
+          id="adminPinInput"
+          name="admin_pin"
+          type="password"
+          inputmode="numeric"
+          required
+          placeholder="••••••••"
+          autofocus
+          class="pin-input"
+        />
+      </div>
+      <button type="submit" class="btn-unlock">Déverrouiller et Rétablir l'Accès</button>
+    </form>
+    <p class="footer-note">Protocole de sécurité actif · Transfert HQ</p>
+  </div>
+</div>
+</body>
+</html>"""
+    return page.encode("utf-8")
+
+
+def render_lockdown_confirmed() -> bytes:
+    page = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="theme-color" content="#0d0407"/>
+<title>Verrouillage Confirmé · Transfert HQ</title>
+<style>
+body {{
+  margin: 0;
+  padding: 24px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #0d0407;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}}
+.confirm-card {{
+  max-width: 440px;
+  background: #18080f;
+  border: 1.5px solid rgba(225, 29, 72, 0.35);
+  border-radius: 24px;
+  padding: 38px 30px;
+  text-align: center;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.85), 0 0 50px rgba(225, 29, 72, 0.25);
+}}
+.icon-shield {{
+  width: 56px;
+  height: 56px;
+  margin-bottom: 20px;
+  color: #f43f5e;
+}}
+h1 {{
+  font-size: 1.45rem;
+  margin-bottom: 12px;
+}}
+p {{
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #fda4af;
+  margin-bottom: 28px;
+}}
+.btn {{
+  display: inline-block;
+  padding: 14px 26px;
+  background: linear-gradient(135deg, #e11d48 0%, #be123c 100%);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(225, 29, 72, 0.4);
+}}
+</style>
+</head>
+<body>
+  <div class="confirm-card">
+    <svg class="icon-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      <path d="m9 12 2 2 4-4"/>
+    </svg>
+    <h1>Coupe-circuit activé</h1>
+    <p>Transfert HQ a été verrouillé d'urgence. Toutes les sessions actives ont été immédiatement révoquées et aucun accès n'est autorisé sans votre PIN administrateur.</p>
+    <a href="/emergency/unlock" class="btn">Aller à l'écran de déverrouillage</a>
+  </div>
+</body>
+</html>"""
     return page.encode("utf-8")
 
 
@@ -6291,6 +7667,7 @@ def render_app() -> bytes:
 <style>{BASE_CSS}</style>
 <link rel="stylesheet" href="/assets/hq.css"/>
 <link rel="stylesheet" href="/assets/hq-calendar.css"/>
+<link rel="stylesheet" href="/assets/hq-household-icons.css"/>
 <link rel="stylesheet" href="/assets/hq-household-meals.css"/>
 <link rel="stylesheet" href="/assets/hq-household-budget.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner.css"/>
@@ -6306,11 +7683,18 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/hq-font-fraunces.woff2" as="font" type="font/woff2" crossorigin/>
 <link rel="stylesheet" href="/assets/hq-theme.css"/>
 <link rel="stylesheet" href="/assets/hq-chrome.css"/>
+<link rel="stylesheet" href="/assets/hq-users.css"/>
 <link rel="stylesheet" href="/assets/hq-polish.css"/>
+<link rel="stylesheet" href="/assets/hq-timemachine.css"/>
+<link rel="stylesheet" href="/assets/hq-constellation.css"/>
+<link rel="stylesheet" href="/assets/hq-radial.css"/>
+<link rel="stylesheet" href="/assets/hq-desk.css"/>
 <link rel="stylesheet" href="/assets/hq-lecteur.css"/>
 <link rel="stylesheet" href="/assets/hq-dessiner-motion.css"/>
 <link rel="stylesheet" href="/assets/hq-ai.css"/>
 <link rel="stylesheet" href="/assets/hq-companion.css"/>
+<link rel="stylesheet" href="/assets/hq-inventoria.css"/>
+<link rel="stylesheet" href="/assets/hq-engine.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-face.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-fx.css"/>
 {debug_css_link}
@@ -6336,22 +7720,35 @@ def render_app() -> bytes:
   <button type="button" data-nav="projets"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3M16 20h4"/></svg></span><span class="nav-label">Projets</span></button>
   <button type="button" data-nav="inventaire"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5l8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9"/></svg></span><span class="nav-label">Inventaire</span></button>
   <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
+  <button type="button" id="nav-musique" data-nav="musique" hidden data-help="Spotify natif : lecture, playlists, mixer DJ et découvertes. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 18V6l12-2v12"/><circle cx="7" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Musique</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
-<main class="wrap" id="main">
+<main class="wrap" id="main" tabindex="-1">
   <header class="topbar" role="banner">
     <div class="brand-lockup">
       <div class="brand">Transfert</div>
       <span class="hq-pill">HQ</span>
     </div>
     <div class="topbar-actions">
+      <div class="hq-companions-controls">
+      <button type="button" class="view-search hq-companions-toggle" id="hq-companions-toggle" aria-label="Compagnons" aria-expanded="false" aria-controls="hq-companions-picker hq-else hq-companion hq-inventoria" title="Compagnons">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 6h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-8l-5 3v-3H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 11.5h.01m4 0h.01m4 0h.01"/></svg>
+        <span>Compagnons</span>
+      </button>
+      <button type="button" class="view-search hq-companions-choose" id="hq-companions-choose" aria-label="Choisir un compagnon" aria-expanded="false" aria-controls="hq-companions-picker">▾</button>
+      <div id="hq-companions-picker" class="hq-companions-picker" role="group" aria-label="Choisir un compagnon" hidden>
+        <button type="button" data-companion-choice="else">Else <small></small></button>
+        <button type="button" data-companion-choice="transferania">Transferania <small></small></button>
+        <button type="button" data-companion-choice="inventoria">Inventoria <small></small></button>
+      </div>
+      </div>
       <button type="button" class="hq-dangling-toggle" id="hq-dangling-toggle" aria-pressed="false" title="Afficher / masquer le membre (Zip)"><span class="hq-dangling-toggle-dot" aria-hidden="true"></span><span>Zip</span></button>
-      <button type="button" class="status-chip" id="status-chip" data-help="État du pont. Ouvre Système pour l'espace, l'hôte et le rôle.">● …</button>
+      <button type="button" class="status-chip" id="status-chip" data-help="État de HQ. Ouvre le détail prioritaire.">HQ · …</button>
     </div>
   </header>
   <div class="view-bar">
-    <p class="view-label" id="view-label">Accueil</p>
+    <p class="view-label" id="view-label" tabindex="-1">Accueil</p>
     <div class="view-tools">
     <button type="button" class="view-search view-ai" id="btn-ai" aria-label="Assistant" data-help="Assistant : pose une question sur tes notes, ton agenda, tes projets ou ton inventaire, ou dis une phrase à noter. Ctrl+J."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9-4.9-1.9 4.9-1.9zM18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg></button>
     <button type="button" class="view-search" id="btn-search-bar" aria-label="Recherche" data-help="Recherche partout : dossiers, scènes, appareils, Carnet, prompts Forge, calendrier et noms de fichiers. Ctrl+K ou Cmd+K."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.9"/><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="m15 15 5 5"/></svg></button>
@@ -6364,6 +7761,7 @@ def render_app() -> bytes:
       <div class="home-hero-head">
         <div class="home-hello">
           <p class="home-date" id="home-date"></p>
+          <p class="home-weather" id="home-weather" hidden></p>
           <h2 class="home-greet" id="home-greet">Bonjour</h2>
         </div>
         <button type="button" class="hq-disclosure home-status" id="hq-attention-toggle" aria-expanded="false" aria-controls="hq-attention-panel" data-help="Affiche les éléments qui demandent ton attention.">
@@ -6383,9 +7781,8 @@ def render_app() -> bytes:
     <nav class="home-actions" aria-label="Actions rapides">
       <button type="button" class="home-act" id="btn-camera" data-help="Prend une photo et l'envoie dans le dossier choisi."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.5-2h5.6l1.5 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="home-act-label">Photo</span></button>
       <button type="button" class="home-act" id="home-act-note" hidden data-help="Écrit une note rapide dans le Carnet."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h8l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1zM14 3.5v4h4M8.5 12h7M8.5 15.5h5"/></svg></span><span class="home-act-label">Note</span></button>
-      <button type="button" class="home-act" id="home-act-event" data-help="Ajoute un événement en une phrase : « Dentiste demain 14h »."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16M12 13v4.5M9.75 15.25h4.5"/></svg></span><span class="home-act-label">Agenda</span></button>
-      <button type="button" class="home-act" id="home-act-file" data-help="Envoie un fichier dans le dossier choisi (Envoyer, plus bas). Sur ordinateur, glisse-le n'importe où sur Accueil."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 15V4.5M7.5 9 12 4.5 16.5 9M5 14.5v4A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/></svg></span><span class="home-act-label">Fichier</span></button>
-      <button type="button" class="home-act" id="btn-palette" data-help="Cherche un dossier, une scène, un appareil, une action, ou un mot dans le Carnet, les prompts Forge, le calendrier et les noms de fichiers. Ctrl+K ou Cmd+K."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="m15 15 5 5"/></svg></span><span class="home-act-label">Recherche</span><kbd class="kbd-hint">Ctrl K</kbd></button>
+      <button type="button" class="home-act" id="home-act-event" data-help="Ajoute un événement en une phrase : « Dentiste demain 14h »."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16M12 13v4.5M9.75 15.25h4.5"/></svg></span><span class="home-act-label">Ajouter un événement</span></button>
+      <button type="button" class="home-act" id="home-act-file" data-help="Envoie un fichier dans le dossier choisi (Envoyer, plus bas). Sur ordinateur, glisse-le n'importe où sur Accueil."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 15V4.5M7.5 9 12 4.5 16.5 9M5 14.5v4A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/></svg></span><span class="home-act-label">Envoyer un fichier</span></button>
     </nav>
 
     <div class="home-col home-col-main">
@@ -6427,7 +7824,7 @@ def render_app() -> bytes:
     </div>
 
     <div class="home-col home-col-side">
-    <section class="hq home-devices" aria-labelledby="devices-title">
+    <section class="hq home-devices" id="home-devices" aria-labelledby="devices-title">
       <div class="home-head">
         <h2 id="devices-title">Appareils <span class="badge" id="hq-dev-count">0</span></h2>
         <button type="button" class="ghost home-link" id="btn-agent-center" data-help="Jetons d'enrôlement, approbations et historique des companions. Les iPhone restent des navigateurs.">Centre agents ›</button>
@@ -6543,6 +7940,7 @@ def render_app() -> bytes:
     </section>
   </div>
 
+  <div data-panel="engine" id="hq-engine-panel" aria-label="Engine"></div>
   <div data-panel="inventaire">
     <section class="hq hq-inv" aria-labelledby="inv-title">
       <div class="sec-head">
@@ -6599,6 +7997,12 @@ def render_app() -> bytes:
       </div>
       <div class="media-strip" id="hq-media"></div>
     </section>
+  </div>
+
+  <div data-panel="musique">
+    <div id="hq-music-app" role="region" aria-label="Musique">
+      <p class="hint">Chargement de Musique…</p>
+    </div>
   </div>
 
   <div data-panel="lecteur">
@@ -7304,6 +8708,7 @@ def render_app() -> bytes:
         <button type="button" id="forge-night-cancel-all" class="secondary" hidden>Annuler les entrées en attente</button>
       </details>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
+        <p id="forge-job-destination" class="forge-job-destination">Destination · Galerie</p>
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
         <p id="forge-usual-duration" class="forge-note forge-usual" hidden></p>
         <div class="forge-actions">
@@ -7315,6 +8720,7 @@ def render_app() -> bytes:
         <div id="forge-progress" class="forge-progress" hidden>
           <progress id="forge-progress-bar" max="1" value="0" aria-labelledby="forge-progress-label"></progress>
           <span id="forge-progress-label" aria-live="polite"></span>
+          <button type="button" class="secondary" id="forge-retry-job" title="Relancer avec les réglages de cette tentative" hidden>Réessayer</button>
         </div>
         <div id="forge-wait" class="forge-wait" hidden>
           <button type="button" id="forge-start-now">Lancer quand même</button>
@@ -7599,8 +9005,30 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="plus">
+    <nav class="hq-more-nav" aria-label="Autres espaces HQ">
+      <section aria-labelledby="hq-more-create">
+        <h2 id="hq-more-create">Créer</h2>
+        <div class="hq-more-links"><a href="#dessiner" data-view-link="dessiner">Dessiner</a><a href="#forge" data-view-link="forge">Forge Studio</a></div>
+      </section>
+      <section aria-labelledby="hq-more-organize">
+        <h2 id="hq-more-organize">Organiser</h2>
+        <div class="hq-more-links"><a href="#projets" data-view-link="projets">Projets</a><a href="#inventaire" data-view-link="inventaire">Inventaire</a></div>
+      </section>
+      <section aria-labelledby="hq-more-spaces">
+        <h2 id="hq-more-spaces">Autres espaces</h2>
+        <div class="hq-more-links">
+          <a href="#lecteur" data-view-link="lecteur">Lecteur</a>
+          <a href="#musique" data-view-link="musique">Musique</a>
+          <a href="#intime" data-view-link="intime">Tête-à-tête</a>
+          <a href="#engine" data-view-link="engine">Engine</a>
+          <a href="#ops" data-view-link="ops" class="mode-complet-only">Terminal</a>
+        </div>
+      </section>
+      <h2 class="hq-more-system-title">Système</h2>
+    </nav>
     <nav class="sys-jump" aria-label="Sections Système">
       <button type="button" data-jump="system-session">Session</button>
+      <button type="button" data-jump="system-security">Sécurité &amp; PINs</button>
       <button type="button" data-jump="system-backups">Sauvegardes</button>
       <button type="button" data-jump="system-notifications">Notifications</button>
       <button type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
@@ -7633,6 +9061,16 @@ def render_app() -> bytes:
       </details>
       <span id="hq-health" class="visually-hidden"></span>
       <div id="hq-spark-host" class="spark-host"></div>
+    </section>
+
+    <section class="hq admin-only" id="system-security" aria-labelledby="sec-users-title">
+      <div class="sec-head">
+        <h2 id="sec-users-title">Sécurité &middot; Utilisateurs et PINs</h2>
+        <p class="sec-hint">Gestion des comptes, permissions et révocation des accès</p>
+      </div>
+      <div id="hq-users-root" class="hq-users-container">
+        <div class="hq-users-loading hint">Chargement des utilisateurs…</div>
+      </div>
     </section>
 
     <section class="hq" id="system-brief" aria-labelledby="brief-title">
@@ -7822,6 +9260,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-agent.js"></script>
 <script src="/assets/hq-calendar-quick.js"></script>
 <script src="/assets/hq-calendar.js"></script>
+<script src="/assets/hq-household-icons.js"></script>
 <script src="/assets/hq-household-meals.js"></script>
 <script src="/assets/hq-household-budget.js"></script>
 <script src="/assets/hq-household-nav.js"></script>
@@ -7835,6 +9274,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-kinetic-score.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
 <script src="/assets/hq-theme.js"></script>
+<script src="/assets/hq-nav-order.js"></script>
 <script src="/assets/hq-companion-sfx-bus.js"></script>
 <script src="/assets/hq-companion-reaction-audio.js"></script>
 <script src="/assets/hq-dangle-audio.js"></script>
@@ -7842,6 +9282,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-palm-hand.js"></script>
 <script src="/assets/hq-dangling-member.js"></script>
 <script src="/assets/hq-chrome.js"></script>
+<script src="/assets/hq-users.js"></script>
 <script src="/assets/hq-polish.js"></script>
 <script src="/assets/hq-lecteur.js"></script>
 <script src="/assets/hq-dessiner-motion.js"></script>
@@ -7852,11 +9293,22 @@ def render_app() -> bytes:
 <link rel="preload" href="/assets/companion/chat/reactions/manifest.runtime.json?v={reaction_manifest_rev}" as="fetch" crossorigin>
 {reaction_hot_preload_link_tags()}
 <script src="/assets/hq-sister.js"></script>
+<script src="/assets/hq-voice-studio.js"></script>
 <script src="/assets/hq-companion.js"></script>
 <script src="/assets/hq-image-chip-scale.js"></script>
 <script src="/assets/hq-else-chip.js"></script>
 <script src="/assets/hq-inventoria-chip.js"></script>
+<script src="/assets/hq-engine.js"></script>
 <script src="/assets/hq-model-view.js"></script>
+<script src="/assets/hq-timemachine.js"></script>
+<script src="/assets/hq-constellation.js"></script>
+<script src="/assets/hq-radial.js"></script>
+<script src="/assets/hq-ink.js"></script>
+<script src="/assets/hq-sketch-paint.js"></script>
+<script src="/assets/hq-sketch-float.js"></script>
+<script src="/assets/hq-sketch-input.js"></script>
+<script src="/assets/hq-shape-snap.js"></script>
+<script src="/assets/hq-desk.js"></script>
 {debug_js_tag}
 <dialog id="hq-device-dialog" aria-labelledby="hq-device-title">
   <form method="dialog">
@@ -8123,6 +9575,287 @@ class Handler(BaseHTTPRequestHandler):
             return ""
         return session_role(self._token())
 
+    def _session_info(self) -> dict | None:
+        if not pin_enabled():
+            return None
+        return session_info(self._token(), touch=False)
+
+    def _user_id(self) -> str:
+        info = self._session_info()
+        return str(info.get("user_id") or "") if info else ""
+
+    def _username(self) -> str:
+        info = self._session_info()
+        return str(info.get("user") or "") if info else ""
+
+    def _verify_admin_pin(self, candidate_pin: str) -> bool:
+        if not candidate_pin or not isinstance(candidate_pin, str):
+            return False
+        pin_clean = candidate_pin.strip()
+        if not pin_clean:
+            return False
+
+        current_uid = self._user_id()
+        current_uname = self._username()
+        users = CONFIG.get("users", [])
+
+        # 1. Look up user by user_id
+        admin_account = hq_security.find_user_by_id(users, current_uid) if current_uid else None
+        # 2. Look up user by name if not found by user_id
+        if not admin_account and current_uname:
+            admin_account = hq_security.find_user_by_name(users, current_uname)
+
+        if admin_account and admin_account.get("role") == "admin" and admin_account.get("enabled", True):
+            stored = str(admin_account.get("pin_hash") or admin_account.get("pin") or "")
+            if hq_security.verify_pin(pin_clean, stored):
+                return True
+
+        # 3. Check legacy root PIN fallback
+        root_pin = str(CONFIG.get("pin") or "").strip()
+        if root_pin and hq_security.verify_pin(pin_clean, root_pin):
+            return True
+
+        # 4. If session is admin, check any enabled admin accounts
+        if self._role() == "admin":
+            for u in users:
+                if isinstance(u, dict) and u.get("role") == "admin" and u.get("enabled", True):
+                    stored = str(u.get("pin_hash") or u.get("pin") or "")
+                    if stored and hq_security.verify_pin(pin_clean, stored):
+                        return True
+
+        return False
+
+    def _parse_json_or_form(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0:
+            return {}
+        if length > 65536:
+            raise ValueError("Payload trop grand")
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
+        ct = (self.headers.get("Content-Type") or "").lower()
+        if "application/json" in ct:
+            try:
+                data = json.loads(body)
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
+        parsed = parse_qs(body, keep_blank_values=True)
+        return {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+
+    def _handle_admin_users(self, path: str, method: str) -> None:
+        if self._role() != "admin":
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_ROLE_DENIED,
+                severity="warning",
+                result="denied",
+                actor_role=self._role() or "anonymous",
+                action=path,
+            )
+            self._json(403, {"error": "Réservé administrateur"})
+            return
+
+        try:
+            data = self._parse_json_or_form()
+        except ValueError as e:
+            self._json(413, {"error": str(e)})
+            return
+
+        admin_pin = str(data.get("admin_pin") or self.headers.get("X-Admin-PIN") or "").strip()
+        parts = [p for p in path.split("/") if p]
+        action = parts[3] if len(parts) > 3 else ""
+        sub_action = parts[4] if len(parts) > 4 else ""
+
+        target_user_id = ""
+        op = ""
+
+        if not action or action == "create":
+            op = "create"
+        elif action in ("update", "pin", "delete", "revoke-sessions"):
+            op = action
+            target_user_id = str(data.get("user_id") or data.get("id") or "").strip()
+        else:
+            target_user_id = action
+            if sub_action:
+                op = sub_action
+            elif method == "DELETE":
+                op = "delete"
+            elif method == "PUT":
+                op = "update"
+            else:
+                op = "update"
+
+        if not self._verify_admin_pin(admin_pin):
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_PRIVILEGED_ACTION,
+                severity="warning",
+                result="denied",
+                actor_role="admin",
+                reason="reauth_failed",
+                action=f"user_{op}",
+                target_user_id=target_user_id,
+            )
+            self._json(401, {"error": "Vérification du PIN administrateur requise ou incorrecte.", "code": "reauth_required"})
+            return
+
+        if op == "create":
+            name = str(data.get("name") or "").strip()
+            role = str(data.get("role") or "upload").strip().lower()
+            pin = str(data.get("pin") or "").strip()
+            with _CONFIG_LOCK:
+                account, err = hq_security.create_account(CONFIG, name, role, pin)
+                if err or not account:
+                    self._json(400, {"error": err or "Impossible de créer le compte."})
+                    return
+                _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
+
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_ACCOUNT_CREATED,
+                severity="info",
+                result="created",
+                actor_role="admin",
+                action="create_user",
+                target_user_id=account["id"],
+            )
+            self._json(201, {"ok": True, "user": hq_security.sanitize_account_for_api(account, 0, False)})
+            return
+
+        if op == "update":
+            if not target_user_id:
+                self._json(400, {"error": "Identifiant utilisateur requis."})
+                return
+            name = data.get("name")
+            role = data.get("role")
+            enabled = data.get("enabled")
+            if enabled is not None:
+                if isinstance(enabled, str):
+                    enabled = enabled.lower() in ("true", "1", "yes", "on")
+                else:
+                    enabled = bool(enabled)
+
+            with _CONFIG_LOCK:
+                account, err, perms_changed = hq_security.update_account(
+                    CONFIG,
+                    target_user_id,
+                    name=name,
+                    role=role,
+                    enabled=enabled,
+                )
+                if err or not account:
+                    self._json(400, {"error": err or "Impossible de mettre à jour le compte."})
+                    return
+                _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
+
+            if perms_changed:
+                hq_security.revoke_sessions_for_user(_SESSIONS, target_user_id, sessions_lock=_SESSIONS_LOCK)
+                _persist_sessions()
+                ev = hq_security.SecurityLog.EVENT_ACCOUNT_ROLE_CHANGED if role is not None else hq_security.SecurityLog.EVENT_ACCOUNT_DISABLED
+                self._record_sec_event(
+                    ev,
+                    severity="info",
+                    result="modified",
+                    actor_role="admin",
+                    action="update_permissions",
+                    target_user_id=target_user_id,
+                )
+            else:
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_ACCOUNT_RENAMED,
+                    severity="info",
+                    result="modified",
+                    actor_role="admin",
+                    action="rename_user",
+                    target_user_id=target_user_id,
+                )
+
+            current_uid = self._user_id()
+            is_cur = (target_user_id == current_uid)
+            sess_count = hq_security.count_user_sessions(_SESSIONS, target_user_id)
+            self._json(200, {"ok": True, "user": hq_security.sanitize_account_for_api(account, sess_count, is_cur)})
+            return
+
+        if op == "pin":
+            if not target_user_id:
+                self._json(400, {"error": "Identifiant utilisateur requis."})
+                return
+            new_pin = str(data.get("new_pin") or data.get("pin") or "").strip()
+            with _CONFIG_LOCK:
+                account, err = hq_security.rotate_account_pin(CONFIG, target_user_id, new_pin)
+                if err or not account:
+                    self._json(400, {"error": err or "Impossible de modifier le PIN."})
+                    return
+                _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
+
+            hq_security.revoke_sessions_for_user(_SESSIONS, target_user_id, sessions_lock=_SESSIONS_LOCK)
+            _persist_sessions()
+
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_ACCOUNT_PIN_ROTATED,
+                severity="info",
+                result="rotated",
+                actor_role="admin",
+                action="rotate_pin",
+                target_user_id=target_user_id,
+            )
+
+            current_uid = self._user_id()
+            if target_user_id == current_uid:
+                new_token = issue_session(account["name"], account["role"], user_id=account["id"])
+                resp_data = {"ok": True, "user": hq_security.sanitize_account_for_api(account, 1, True)}
+                self._send(
+                    200,
+                    json.dumps(resp_data).encode("utf-8"),
+                    content_type="application/json; charset=utf-8",
+                    headers=[("Set-Cookie", self._session_cookie(new_token, role=account["role"]))],
+                )
+            else:
+                self._json(200, {"ok": True, "user": hq_security.sanitize_account_for_api(account, 0, False)})
+            return
+
+        if op == "delete":
+            if not target_user_id:
+                self._json(400, {"error": "Identifiant utilisateur requis."})
+                return
+            with _CONFIG_LOCK:
+                ok, err = hq_security.delete_account(CONFIG, target_user_id)
+                if not ok:
+                    self._json(400, {"error": err or "Impossible de supprimer le compte."})
+                    return
+                _save_config_text(json.dumps(CONFIG, indent=2) + "\n")
+
+            hq_security.revoke_sessions_for_user(_SESSIONS, target_user_id, sessions_lock=_SESSIONS_LOCK)
+            _persist_sessions()
+
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_ACCOUNT_DELETED,
+                severity="info",
+                result="deleted",
+                actor_role="admin",
+                action="delete_user",
+                target_user_id=target_user_id,
+            )
+            self._json(200, {"ok": True})
+            return
+
+        if op == "revoke-sessions":
+            if not target_user_id:
+                self._json(400, {"error": "Identifiant utilisateur requis."})
+                return
+            revoked = hq_security.revoke_sessions_for_user(_SESSIONS, target_user_id, sessions_lock=_SESSIONS_LOCK)
+            _persist_sessions()
+
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_SESSIONS_REVOKED,
+                severity="info",
+                result="revoked",
+                actor_role="admin",
+                action="revoke_sessions",
+                target_user_id=target_user_id,
+            )
+            self._json(200, {"ok": True, "revoked": revoked})
+            return
+
+        self._json(404, {"error": "Action inconnue"})
+
     def _effective_port(self) -> int:
         try:
             return int(self.server.server_address[1])
@@ -8208,6 +9941,8 @@ class Handler(BaseHTTPRequestHandler):
         action: str | None = None,
         actor_role: str | None = None,
         path_category: str | None = None,
+        actor_user_id: str | None = None,
+        target_user_id: str | None = None,
     ) -> None:
         try:
             _diag_ensure()
@@ -8228,6 +9963,8 @@ class Handler(BaseHTTPRequestHandler):
                 action=action,
                 path_category=p_cat,
                 request_id=req_id,
+                actor_user_id=actor_user_id or self._user_id(),
+                target_user_id=target_user_id,
             )
         except Exception:
             pass
@@ -8995,6 +10732,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _drawings_get(self, raw: str, parsed) -> bool:
         """Dessiner: list / reopen / fetch saved files. Admin-only (not in UPLOAD_* allowlists)."""
+        if raw.startswith("/api/drawings/usdz/") and raw.endswith(".usdz"):
+            import hq_usdz
+            data = hq_usdz.fetch(raw[len("/api/drawings/usdz/"):-len(".usdz")])
+            if data is None:
+                self._json(404, {"error": "Modèle AR expiré : relance « Voir en AR »", "code": "not_found"})
+            else:
+                self._send(200, data, "model/vnd.usdz+zip", [("Content-Disposition", 'inline; filename="piece.usdz"')])
+            return True
+        if raw == "/api/drawings/caps":
+            import hq_solid_occ
+            self._json(200, {"exact": hq_solid_occ.available(), "version": hq_drawings.VERSION})
+            return True
         if raw not in ("/api/drawings", "/api/drawings/open", "/api/drawings/file"):
             return False
         qs = parse_qs(parsed.query)
@@ -9013,7 +10762,7 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _drawings_post(self, raw: str) -> bool:
-        if raw not in ("/api/drawings", "/api/drawings/mesh"):
+        if raw not in ("/api/drawings", "/api/drawings/mesh", "/api/drawings/usdz", "/api/drawings/step"):
             return False
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -9031,7 +10780,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "JSON invalide"})
             return True
         try:
-            result = hq_drawings.preview_mesh(data) if raw == "/api/drawings/mesh" else hq_drawings.save_drawing(ROOT, data, asset_exists=hq_carnet.media.asset_exists)
+            if raw == "/api/drawings/step":
+                body, name = hq_drawings.step_file(data)
+                self._send(200, body, "model/step", [("Content-Disposition", f'attachment; filename="{name}"')])
+                return True
+            if raw == "/api/drawings/mesh":
+                result = hq_drawings.preview_mesh(data)
+            elif raw == "/api/drawings/usdz":
+                result = hq_drawings.ar_model(data)
+            else:
+                result = hq_drawings.save_drawing(ROOT, data, asset_exists=hq_carnet.media.asset_exists)
         except hq_drawings.DrawingError as e:
             self._json(e.status, {"error": str(e)})
             return True
@@ -9305,6 +11063,13 @@ class Handler(BaseHTTPRequestHandler):
         if inpaint is not None:
             self._json(inpaint[0], inpaint[1])
             return True
+        sketch = hq_forge_sketch.serve_get(raw)
+        if sketch is not None:
+            if isinstance(sketch[1], (bytes, bytearray)):
+                self._send(sketch[0], bytes(sketch[1]), "image/png")  # the latest painting, from memory (no-store)
+            else:
+                self._json(sketch[0], sketch[1])
+            return True
         if raw == "/api/forge/status":
             self._json(200, hq_forge.status())
             return True
@@ -9389,7 +11154,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": "JSON invalide"})
             return True
-        max_length = 262144 if raw == "/api/forge/presets" else (3 * 1024 * 1024 if raw == "/api/forge/inpaint" else 65536)
+        max_length = 262144 if raw == "/api/forge/presets" else (3 * 1024 * 1024 if raw in ("/api/forge/inpaint", "/api/forge/sketch") else 65536)
         if length < 0 or length > max_length:
             self._json(413, {"error": "Requête trop grande."})
             return True
@@ -9437,6 +11202,10 @@ class Handler(BaseHTTPRequestHandler):
         inpaint = hq_forge_inpaint.serve_post(ROOT, raw, data, token)
         if inpaint is not None:
             self._json(inpaint[0], inpaint[1])
+            return True
+        sketch = hq_forge_sketch.serve_post(ROOT, raw, data)
+        if sketch is not None:
+            self._json(sketch[0], sketch[1])
             return True
         night = hq_forge_night.serve_post(ROOT, raw, data)
         if night is not None:
@@ -9561,6 +11330,26 @@ class Handler(BaseHTTPRequestHandler):
         if raw == "/api/today":
             self._json(200, build_today())
             return True
+        if raw == "/api/timeline":
+            span = (parse_qs(parsed.query).get("span", ["day"])[0] or "day").strip()
+            if span not in hq_timeline.SPANS:
+                self._json(400, {"error": "span invalide", "code": "bad_span"})
+                return True
+            self._json(200, build_timeline(span))
+            return True
+        if raw == "/api/desk/snapshot":
+            if not self._require_admin():
+                return True
+            snap = hq_desk.latest_snapshot()
+            if not snap:
+                self._json(404, {"error": "Aucune image", "code": "no_snapshot"})
+                return True
+            self._send(200, snap["body"], snap["mime"], [("X-Desk-Rev", str(snap["rev"]))])
+            return True
+        if raw.startswith("/api/desk/"):
+            got = hq_desk.http_get(raw, parse_qs(parsed.query))
+            self._json(got[0], got[1])
+            return True
         if raw == "/api/home-layout":
             self._json(200, {"layout": hq_home.load(ROOT / "hq_home_layout.json")})
             return True
@@ -9622,6 +11411,74 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_inventory.http_get(parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, payload)
             return True
+        if (raw == "/api/music/studio" or raw.startswith("/api/music/studio/")):
+            import ipaddress
+            try:
+                local_studio = ipaddress.ip_address(self.client_address[0]).is_loopback
+            except (ValueError, IndexError, TypeError):
+                local_studio = False
+            if not local_studio:
+                self._json(403, {"ok": False, "error": "Studio disponible uniquement sur cet ordinateur."})
+                return True
+        if raw.startswith("/api/music/studio/audio/"):
+            import hq_music_studio
+            try:
+                audio = hq_music_studio.audio_path(ROOT, raw.rsplit("/", 1)[-1])
+                self._send_media(audio)
+            except hq_music_studio.StudioError as exc:
+                self._json(exc.status, {"ok": False, "error": str(exc)})
+            return True
+        if raw == "/api/music" or raw.startswith("/api/music/"):  # Musique intelligence (admin: not in upload allowlist)
+            code, payload = hq_music.http_get(raw)
+            self._json(code, payload)
+            return True
+        if raw == "/api/musica" or raw.startswith("/api/musica/"):  # Musica steward (admin)
+            code, payload = hq_musica.http_get(raw)
+            self._json(code, payload)
+            return True
+        if raw == "/api/spotify/callback":
+            code, payload = hq_spotify.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            if code == 200 and payload.get("ok") is not False and payload.get("connected"):
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify connecté</title>"
+                    "<p>Spotify connecté. Redirection…</p>"
+                    "<script>location.replace('/#musique');</script>"
+                )
+                self._send(200, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            else:
+                err = html.escape(str((payload or {}).get("error") or "oauth_failed"))
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify</title>"
+                    f"<p>Connexion Spotify échouée : {err}</p>"
+                    "<p><a href='/#musique'>Retour Musique</a></p>"
+                )
+                self._send(code if code >= 400 else 400, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            return True
+        if raw == "/api/spotify/image":  # Same-origin cover proxy (CSP blocks i.scdn.co)
+            qs = parse_qs(parsed.query, keep_blank_values=True)
+            cover_url = (qs.get("url") or [""])[0]
+            try:
+                try:
+                    cover_width = int((qs.get("w") or ["0"])[0] or 0)
+                except (TypeError, ValueError):
+                    cover_width = 0
+                body, ctype = hq_spotify.fetch_cover_image(str(cover_url or ""), width=cover_width or None)
+            except hq_spotify.SpotifyError as exc:
+                self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
+                return True
+            self._send(
+                200,
+                body,
+                ctype,
+                [("Cache-Control", "private, max-age=3600"), ("X-Content-Type-Options", "nosniff")],
+            )
+            return True
+        if raw == "/api/spotify" or raw.startswith("/api/spotify/"):  # Spotify Web API proxy (admin)
+            code, payload = hq_spotify.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, payload)
+            return True
         if raw == "/api/finances/summary" or raw.startswith("/api/finances/"):  # Finances (admin: not in the upload allowlist)
             code, payload = hq_finances.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, hq_finances.redact_for_logs(payload) if code >= 400 else payload)
@@ -9629,6 +11486,10 @@ class Handler(BaseHTTPRequestHandler):
         if raw.startswith("/api/grocery/purchases/"):  # Actual purchases (admin)
             code, payload = hq_purchases.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
             self._json(code, hq_purchases.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/engine/"):  # Engine: local daemons status/logs (admin: not in the upload allowlist)
+            code, payload = hq_engine.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            self._json(code, hq_engine.redact_for_logs(payload) if code >= 400 else payload)
             return True
         if raw.startswith("/api/inventoria/"):  # Inventoria engine (admin)
             code, payload = hq_inventoria.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
@@ -9895,6 +11756,43 @@ class Handler(BaseHTTPRequestHandler):
     def _hq_post(self, raw: str) -> bool:
         if self._forge_post(raw):
             return True
+        if raw == "/api/desk/snapshot":
+            if not self._require_admin():
+                return True
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                self._json(411, {"error": "Content-Length requis", "code": "bad_length"})
+                return True
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                length = -1
+            if length < 0 or length > hq_desk.SNAP_BYTES:
+                self.close_connection = True
+                self._json(413, {"error": "Image trop grande", "code": "too_large"})
+                return True
+            qs = parse_qs(urlparse(self.path).query)
+            client = (qs.get("client") or [""])[0]
+            mime = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            body = self.rfile.read(length) if length else b""
+            try:
+                payload = hq_desk.put_snapshot(client, mime, body)
+            except hq_desk.DeskError as e:
+                self._json(e.status, {"error": str(e), "code": e.code})
+                return True
+            self._json(200, payload)
+            return True
+        if raw.startswith("/api/desk/"):
+            if not self._require_admin():
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return True
+            code, payload = hq_desk.http_post(raw, data)
+            self._json(code, payload)
+            return True
         if raw == "/api/home-layout":
             data = self._read_json()
             layout = hq_home.default() if data.get("reset") is True else data.get("layout")
@@ -9996,6 +11894,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, {"ok": True, "event": saved})
                 elif action == "delete":
                     self._json(200, hq_calendar.delete_event(str(data.get("id") or ""), data.get("expected_rev")))
+                elif action in ("category_save", "category_delete"):
+                    category = data.get("category") if isinstance(data.get("category"), dict) else {}
+                    self._json(200, hq_calendar.change_category(action, category, data.get("expected_rev")))
                 else:
                     self._json(400, {"error": "action invalide"})
             except hq_calendar.CalendarError as e:
@@ -10081,6 +11982,42 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_inventory.http_post(data)
             self._json(code, payload)
             return True
+        if (raw == "/api/music/studio" or raw.startswith("/api/music/studio/")):
+            import ipaddress
+            try:
+                local_studio = ipaddress.ip_address(self.client_address[0]).is_loopback
+            except (ValueError, IndexError, TypeError):
+                local_studio = False
+            if not local_studio:
+                self._json(403, {"ok": False, "error": "Studio disponible uniquement sur cet ordinateur."})
+                return True
+        if raw == "/api/music" or raw.startswith("/api/music/"):  # Musique (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_music.http_post(raw, data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/musica" or raw.startswith("/api/musica/"):  # Musica steward chat/tools (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_musica.http_post(raw, data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/spotify" or raw.startswith("/api/spotify/"):  # Spotify mutations (CSRF checked before routing)
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_spotify.http_post(raw, data)
+            self._json(code, payload)
+            return True
         if raw.startswith("/api/finances/"):  # Finances (CSRF checked before routing)
             try:
                 length = int(self.headers.get("Content-Length", "0") or 0)
@@ -10118,6 +12055,10 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_purchases.http_post(raw, data)
             self._json(code, hq_purchases.redact_for_logs(payload) if code >= 400 else payload)
+            return True
+        if raw.startswith("/api/engine/"):  # Engine: start/stop/restart a daemon (CSRF checked before routing)
+            code, payload = hq_engine.http_post(raw, {})
+            self._json(code, hq_engine.redact_for_logs(payload) if code >= 400 else payload)
             return True
         if raw.startswith("/api/inventoria/"):  # Inventoria (CSRF checked before routing)
             try:
@@ -10242,6 +12183,41 @@ class Handler(BaseHTTPRequestHandler):
         raw = parsed.path
         ensure_hq()
 
+        # Emergency lockdown handling
+        if raw == "/emergency/lockdown":
+            token = parse_qs(parsed.query).get("token", [""])[0]
+            if hq_security.verify_lockdown_token(CONFIG, token):
+                hq_security.engage_lockdown(CONFIG)
+                save_config(CONFIG)
+                with _SESSIONS_LOCK:
+                    _SESSIONS.clear()
+                _persist_sessions()
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_TRIPWIRE_LOCKDOWN,
+                    severity="critical",
+                    result="accepted",
+                    action="emergency_lockdown",
+                )
+                self._send(200, render_lockdown_confirmed())
+                return
+            else:
+                self._send(400, render_lockdown(flash="Jeton de verrouillage d'urgence invalide ou expiré.", error=True))
+                return
+
+        if raw == "/emergency/unlock":
+            self._send(200, render_lockdown())
+            return
+
+        if hq_security.is_locked_down(CONFIG):
+            if raw.startswith("/assets/") or raw == "/favicon.ico":
+                pass
+            elif raw.startswith("/api/"):
+                self._json(423, {"error": "Système verrouillé d'urgence par l'administrateur", "code": "emergency_lockdown"})
+                return
+            else:
+                self._send(423, render_lockdown())
+                return
+
         if raw == "/local-agent" or raw.startswith("/local-agent/"):
             self._json(404, {"error": "Inconnu"})
             return
@@ -10294,6 +12270,9 @@ class Handler(BaseHTTPRequestHandler):
                 "short_name": "Transfert HQ",
                 "start_url": "/",
                 "display": "standalone",
+                "shortcuts": [
+                    {"name": "Pad", "short_name": "Pad", "url": "/?desk=pad", "description": "Ouvrir le pad de dessin"},
+                ],
                 "background_color": "#0f1419",
                 "theme_color": "#0f1419",
                 "icons": [
@@ -10345,6 +12324,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        # Spotify OAuth return is a top-level browser redirect from accounts.spotify.com.
+        # The HQ session cookie is often absent here (host mismatch 127.0.0.1 vs Serve name,
+        # or cross-site navigation). Authorize via one-time OAuth state, not PIN cookie.
+        if raw == "/api/spotify/callback":
+            ensure_hq()
+            code, payload = hq_spotify.http_get(raw, parse_qs(parsed.query, keep_blank_values=True))
+            if code == 200 and payload.get("connected"):
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify connecté</title>"
+                    "<p>Spotify connecté. Redirection…</p>"
+                    "<script>location.replace('/#musique');</script>"
+                )
+                self._send(200, html_body.encode("utf-8"), "text/html; charset=utf-8")
+            else:
+                err = html.escape(str((payload or {}).get("error") or "oauth_failed"))
+                html_body = (
+                    "<!doctype html><meta charset='utf-8'/>"
+                    "<title>Spotify</title>"
+                    f"<p>Connexion Spotify échouée : {err}</p>"
+                    "<p><a href='/'>Retour HQ</a> · <a href='/#musique'>Musique</a></p>"
+                )
+                self._send(code if code >= 400 else 400, html_body.encode("utf-8"), "text/html; charset=utf-8")
             return
 
         if not self._auth():
@@ -10494,7 +12498,74 @@ class Handler(BaseHTTPRequestHandler):
 
         if raw == "/api/me":
             info = session_info(self._token()) or {"user": "?", "role": self._role() or "upload"}
-            self._json(200, {"user": info.get("user"), "role": info.get("role")})
+            self._json(200, {"user": info.get("user"), "user_id": info.get("user_id", ""), "role": info.get("role")})
+            return
+
+        if raw == "/api/auth/webauthn/status":
+            self._json(200, {"enabled": len(CONFIG.get("passkeys") or []) > 0})
+            return
+
+        if raw == "/api/auth/webauthn/login/options":
+            host = (self.headers.get("Host") or "localhost").split(":")[0]
+            ch = hq_security.create_webauthn_challenge(purpose="login")
+            creds = [p.get("id") for p in (CONFIG.get("passkeys") or []) if isinstance(p, dict) and p.get("id")]
+            self._json(200, {"challenge": ch, "rp_id": host, "allow_credentials": creds})
+            return
+
+        if raw == "/api/admin/passkeys":
+            if self._role() != "admin":
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_ROLE_DENIED,
+                    severity="warning",
+                    result="denied",
+                    actor_role=self._role() or "anonymous",
+                    action=raw,
+                )
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            self._json(200, {"passkeys": hq_security.list_passkeys(CONFIG)})
+            return
+
+        if raw == "/api/admin/tripwire/status":
+            if self._role() != "admin":
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            tw = hq_security.get_tripwire_config(CONFIG)
+            self._json(200, {
+                "enabled": tw["enabled"],
+                "recipient_email": tw["recipient_email"],
+                "smtp_host": tw["smtp_host"],
+                "smtp_port": tw["smtp_port"],
+                "smtp_user": tw["smtp_user"],
+                "has_password": bool(tw["smtp_password"]),
+                "failed_threshold": tw["failed_threshold"],
+            })
+            return
+
+        if raw == "/api/admin/users":
+            if self._role() != "admin":
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_ROLE_DENIED,
+                    severity="warning",
+                    result="denied",
+                    actor_role=self._role() or "anonymous",
+                    action=raw,
+                )
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            hq_security.migrate_users_config(CONFIG)
+            current_uid = self._user_id()
+            current_uname = self._username()
+            users_list = []
+            for u in CONFIG.get("users", []):
+                if not isinstance(u, dict):
+                    continue
+                uid = str(u.get("id") or "")
+                uname = str(u.get("name") or "")
+                is_cur = (uid == current_uid) or (not current_uid and uname == current_uname)
+                active_sess = hq_security.count_user_sessions(_SESSIONS, uid, username=uname)
+                users_list.append(hq_security.sanitize_account_for_api(u, active_sessions=active_sess, is_current=is_cur))
+            self._json(200, {"users": users_list})
             return
 
         if raw == "/api/upload/status":
@@ -10602,11 +12673,68 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def do_PUT(self) -> None:
+        self.do_POST()
+
+    def do_DELETE(self) -> None:
+        self.do_POST()
+
     def _do_POST(self) -> None:
         if not self._validate_host():
             return
         raw = urlparse(self.path).path
         ensure_hq()
+
+        if raw == "/emergency/unlock":
+            ident = self._client_identity()
+            allowed, reason, retry_after, ticket = AUTH_RATE_LIMITER.acquire_attempt(ident)
+            if not allowed:
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_RATE_LIMITED,
+                    severity="warning",
+                    result="throttled",
+                    reason=reason,
+                )
+                retry_s = str(int(math.ceil(retry_after)))
+                self._send(429, render_lockdown(f"Trop d'essais — réessaie dans {retry_s}s.", error=True))
+                return
+
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            body = self.rfile.read(length).decode("utf-8", errors="replace") if length > 0 else ""
+            data = parse_qs(body, keep_blank_values=True)
+            admin_pin = (data.get("admin_pin", [""])[0] or "").strip()
+
+            ok, msg, admin_user = hq_security.unlock_system(CONFIG, admin_pin)
+            if ok and admin_user:
+                save_config(CONFIG)
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_TRIPWIRE_UNLOCKED,
+                    severity="info",
+                    result="accepted",
+                    actor_user_id=admin_user.get("id"),
+                )
+                tok = issue_session(user=admin_user.get("name") or "Admin", role="admin", user_id=admin_user.get("id"))
+                cookie = self._session_cookie(tok, role="admin")
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header("Set-Cookie", cookie)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            else:
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_TRIPWIRE_UNLOCK_FAILED,
+                    severity="warning",
+                    result="denied",
+                    reason="bad_admin_pin",
+                )
+                self._send(401, render_lockdown(flash=msg, error=True))
+                return
+
+        if hq_security.is_locked_down(CONFIG):
+            self._json(423, {"error": "Système verrouillé d'urgence par l'administrateur", "code": "emergency_lockdown"})
+            return
 
         if raw == "/local-agent" or raw.startswith("/local-agent/"):
             self._json(404, {"error": "Inconnu"})
@@ -10633,6 +12761,48 @@ class Handler(BaseHTTPRequestHandler):
                 return
         finally:
             self._prebody_refusal = False
+
+        if raw == "/api/auth/webauthn/login/verify":
+            data = self._read_json()
+            ch = str(data.get("challenge") or "")
+            ch_data = hq_security.consume_webauthn_challenge(ch)
+            if not ch_data or ch_data.get("purpose") != "login":
+                self._json(400, {"error": "Challenge expiré ou invalide", "code": "bad_challenge"})
+                return
+            cred_id = str(data.get("cred_id") or "")
+            client_data_b64 = str(data.get("client_data") or "")
+            auth_data_b64 = str(data.get("auth_data") or "")
+            sig_b64 = str(data.get("signature") or "")
+            try:
+                client_data_bytes = base64.b64decode(client_data_b64)
+                auth_data_bytes = base64.b64decode(auth_data_b64)
+                sig_bytes = base64.b64decode(sig_b64)
+            except Exception:
+                self._json(400, {"error": "Données d'assertion corrompues", "code": "bad_assertion"})
+                return
+            user = hq_security.verify_passkey_assertion(
+                CONFIG, cred_id, client_data_bytes, auth_data_bytes, sig_bytes, ch
+            )
+            if not user:
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_LOGIN_FAILURE,
+                    severity="warning",
+                    result="rejected",
+                    reason="bad_passkey",
+                )
+                self._json(401, {"error": "Échec de l'authentification biométrique", "code": "passkey_failed"})
+                return
+            tok = issue_session(user=user.get("name") or "User", role=user.get("role") or "upload", user_id=user.get("id"))
+            self._record_sec_event(
+                hq_security.SecurityLog.EVENT_PASSKEY_LOGIN,
+                severity="info",
+                result="accepted",
+                actor_user_id=user.get("id"),
+            )
+            save_config(CONFIG)
+            cookie = self._session_cookie(tok, role=user.get("role") or "admin")
+            self._send_raw(200, json.dumps({"ok": True, "redirect": "/"}).encode("utf-8"), "application/json", [("Set-Cookie", cookie)])
+            return
 
         if raw.startswith("/agent/v1/"):
             self._agent_v1()
@@ -10671,6 +12841,23 @@ class Handler(BaseHTTPRequestHandler):
                         result="failed",
                         reason="invalid_pin",
                     )
+                    host = self.headers.get("Host") or "localhost"
+                    proto = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
+                    base_url = f"{proto}://{host}"
+                    alert = hq_security.record_failed_attempt(
+                        self.client_address[0],
+                        self.headers.get("User-Agent", ""),
+                        CONFIG,
+                        base_url=base_url,
+                    )
+                    if alert:
+                        self._record_sec_event(
+                            hq_security.SecurityLog.EVENT_TRIPWIRE_TRIGGERED,
+                            severity="critical",
+                            result="attempted",
+                            reason=f"{alert.get('failures', 2)}_failed_attempts",
+                        )
+                        hq_security.send_tripwire_email_async(CONFIG, alert)
                     self._send(401, render_login("PIN incorrect.", error=True))
                     return
                 if not auth:
@@ -10681,12 +12868,13 @@ class Handler(BaseHTTPRequestHandler):
 
                 AUTH_RATE_LIMITER.record_success(ident, ticket=ticket)
                 ticket = None
-                token = issue_session(auth["user"], auth["role"])
+                token = issue_session(auth["user"], auth["role"], user_id=auth.get("id", ""))
                 self._record_sec_event(
                     hq_security.SecurityLog.EVENT_LOGIN_SUCCESS,
                     severity="info",
                     result="success",
                     actor_role=auth["role"],
+                    actor_user_id=auth.get("id", ""),
                 )
                 # 303 so the browser stores the cookie, then loads / with it.
                 # Returning the app HTML in the same Set-Cookie response races on Safari/iOS
@@ -10721,6 +12909,110 @@ class Handler(BaseHTTPRequestHandler):
                 return
         finally:
             self._prebody_refusal = False
+
+        if raw == "/api/auth/webauthn/register/options":
+            if self._role() != "admin":
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            host = (self.headers.get("Host") or "localhost").split(":")[0]
+            uid = self._user_id() or "usr_root"
+            uname = self._username() or "Admin"
+            ch = hq_security.create_webauthn_challenge(user_id=uid, purpose="register")
+            self._json(200, {
+                "challenge": ch,
+                "rp": {"name": "Transfert HQ", "id": host},
+                "user": {"id": uid, "name": uname, "displayName": uname},
+                "pubKeyCredParams": [
+                    {"alg": -7, "type": "public-key"},
+                    {"alg": -257, "type": "public-key"},
+                ],
+            })
+            return
+
+        if raw == "/api/auth/webauthn/register/verify":
+            if self._role() != "admin":
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            data = self._read_json()
+            ch = str(data.get("challenge") or "")
+            ch_data = hq_security.consume_webauthn_challenge(ch)
+            if not ch_data or ch_data.get("purpose") != "register":
+                self._json(400, {"error": "Challenge expiré ou invalide", "code": "bad_challenge"})
+                return
+            uid = ch_data.get("user_id") or self._user_id() or "usr_root"
+            cred_id = str(data.get("cred_id") or "")
+            pubkey_der_b64 = str(data.get("public_key") or "")
+            name = str(data.get("name") or "Biométrie")
+            try:
+                rec = hq_security.register_passkey(CONFIG, uid, cred_id, pubkey_der_b64, name)
+                save_config(CONFIG)
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_PASSKEY_REGISTERED,
+                    severity="info",
+                    result="created",
+                    actor_user_id=uid,
+                )
+                self._json(201, {"ok": True, "passkey": rec})
+            except ValueError as e:
+                self._json(400, {"error": str(e), "code": "invalid_passkey"})
+            return
+
+        if raw.startswith("/api/admin/passkeys") and (self.command == "DELETE" or raw == "/api/admin/passkeys/delete"):
+            if self._role() != "admin":
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            cred_id = raw.split("/")[-1] if raw not in ("/api/admin/passkeys", "/api/admin/passkeys/delete") else ""
+            if not cred_id:
+                data = self._read_json()
+                cred_id = str(data.get("id") or "")
+            if hq_security.delete_passkey(CONFIG, cred_id):
+                save_config(CONFIG)
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_PASSKEY_DELETED,
+                    severity="info",
+                    result="deleted",
+                    actor_user_id=self._user_id(),
+                )
+                self._json(200, {"ok": True})
+            else:
+                self._json(404, {"error": "Clé introuvable", "code": "not_found"})
+            return
+
+        if raw == "/api/admin/tripwire/test":
+            if self._role() != "admin":
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_ROLE_DENIED,
+                    severity="warning",
+                    result="denied",
+                    actor_role=self._role() or "anonymous",
+                    action=raw,
+                )
+                self._json(403, {"error": "Réservé administrateur"})
+                return
+            data = self._read_json() if self.headers.get("Content-Type", "").startswith("application/json") else {}
+            pwd = str(data.get("smtp_password") or "").strip()
+            test_cfg = dict(CONFIG)
+            if pwd:
+                test_cfg.setdefault("tripwire", {})["smtp_password"] = pwd
+            base = self._request_origin() or f"http://{self.headers.get('Host', '127.0.0.1:8765')}"
+            alert_data = {
+                "ip": self.client_address[0],
+                "timestamp_str": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+                "user_agent": self.headers.get("User-Agent", "Admin Test Dispatch"),
+                "action_url": f"{base}/emergency/lockdown?token=TEST_VERIFY_TOKEN",
+                "unlock_url": f"{base}/emergency/unlock",
+                "recipient": hq_security.get_tripwire_config(test_cfg)["recipient_email"],
+            }
+            ok, msg = hq_security.send_tripwire_email(test_cfg, alert_data)
+            if ok and pwd and data.get("save"):
+                CONFIG.setdefault("tripwire", {})["smtp_password"] = pwd
+                save_config(CONFIG)
+            self._json(200 if ok else 400, {"ok": ok, "message": msg, "recipient": alert_data["recipient"]})
+            return
+
+        if raw.startswith("/api/admin/users"):
+            self._handle_admin_users(raw, self.command or "POST")
+            return
 
         if self._diag_post(raw):
             return
@@ -11574,6 +13866,11 @@ def _main_production_owner() -> None:
         except Exception as exc:
             sys.stderr.write(f"calendar tick: {exc}\n")
         try:
+            import hq_musica_gifts
+            hq_musica_gifts.tick(ROOT)
+        except Exception as exc:
+            sys.stderr.write(f"musica gifts tick: {exc}\n")
+        try:
             hq_folder_backups.tick()
         except Exception as exc:
             sys.stderr.write(f"folder backups tick: {exc}\n")
@@ -11619,10 +13916,26 @@ def _main_production_owner() -> None:
     print(" Ctrl+C to stop")
     print("=" * 56)
     try:
+        import hq_voice_phonon
+        if hq_voice_phonon.bridge_start():
+            print(" Voix   : demarrage du moteur Phonon en arriere-plan")
+    except Exception:
+        pass
+    try:
+        import hq_inventoria_notify
+        hq_inventoria_notify.start(lambda: ROOT, _inventoria_notify)  # records usage history; notifies only when switched on
+    except Exception:
+        pass
+    try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        try:
+            import hq_voice_phonon
+            hq_voice_phonon.bridge_stop()
+        except Exception:
+            pass
         planner_httpd.shutdown()
         planner_httpd.server_close()
         try:
@@ -11696,6 +14009,11 @@ def main() -> None:
         except Exception as e:
             sys.stderr.write(f"calendar tick: {e}\n")
         try:
+            import hq_musica_gifts
+            hq_musica_gifts.tick(ROOT)
+        except Exception as exc:
+            sys.stderr.write(f"musica gifts tick: {exc}\n")
+        try:
             hq_folder_backups.tick()
         except Exception as e:
             sys.stderr.write(f"folder backups tick: {e}\n")
@@ -11766,10 +14084,26 @@ def main() -> None:
     print(" Ctrl+C to stop")
     print("=" * 56)
     try:
+        import hq_voice_phonon
+        if hq_voice_phonon.bridge_start():
+            print(" Voix   : demarrage du moteur Phonon en arriere-plan")
+    except Exception:
+        pass
+    try:
+        import hq_inventoria_notify
+        hq_inventoria_notify.start(lambda: ROOT, _inventoria_notify)  # records usage history; notifies only when switched on
+    except Exception:
+        pass
+    try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        try:
+            import hq_voice_phonon
+            hq_voice_phonon.bridge_stop()
+        except Exception:
+            pass
         if planner_httpd is not None:
             planner_httpd.shutdown()
             planner_httpd.server_close()
