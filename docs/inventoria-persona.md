@@ -77,6 +77,14 @@ bottom-left of HQ, keeps her own conversation and her own memory, and prepares c
   names matched to existing merchants). Her read-only `meal_needs` tool asks the meals module what the current plan still needs to buy.
   Purchases already flow into stock through the household cross-store pipeline, so no extra hook was added.
 
+## Panel layout
+
+The chip panel has three tabs (keyboard: arrows, Home, End; last tab remembered): **Discuter** (chat bubbles, typing indicator, quick actions,
+draft review, input with photo and dictation), **À acheter** (colour-coded alerts with a count badge, the copy list, tick-off, share, grocery
+hand-off) and **Réglages** (watches, offline alerts, what she remembers). Drafts are opened from any tab by switching to Discuter; the quick
+actions hide while a draft is open so Apply and Cancel stay visible. Styles live in `assets/hq-inventoria.css` (loaded after
+`hq-companion.css`, scoped under `.hq-inventoria`); it adapts to phone width and respects reduced motion.
+
 ## Voice
 
 Lottie (Phonon), +0.3 slower, +3 semitones. Change it in Éditer → Studio vocal.
