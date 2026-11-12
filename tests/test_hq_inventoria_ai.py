@@ -47,10 +47,14 @@ class ContextTests(_Base):
         with mock.patch("hq_voice_phonon.language_directive", return_value=""):
             system = iai.build_system("combien de vis ?")
         self.assertIn("You are Inventoria", system)
-        self.assertIn("Vis M3: 4 pcs | min 20 | in Atelier", system)   # low stock and matched by the query
+        vis_id = self.ids_by_name()["Vis M3"]
+        self.assertIn(f"Vis M3 [{vis_id}]: 4 pcs | min 20 | in Atelier", system)   # low stock, matched, with its id
         self.assertIn("Below minimum (1)", system)
         self.assertNotIn("Ruban adhésif: 9", system)                    # fine stock, not asked about
         self.assertIn("Reply in French", system)
+
+    def ids_by_name(self) -> dict:
+        return {i["name"]: i["id"] for i in inv.snapshot()["items"]}
 
     def test_english_directive_follows_the_saved_voice(self) -> None:
         with mock.patch("hq_voice_phonon.language_directive", return_value="LANGUAGE OVERRIDE English"):
@@ -70,6 +74,7 @@ class ContextTests(_Base):
     def test_parse_reply_variants(self) -> None:
         self.assertEqual(iai.parse_reply('{"reply": "Il reste **4** vis."}'), "Il reste 4 vis.")
         self.assertEqual(iai.parse_reply('plain text answer'), "plain text answer")
+        self.assertEqual(iai.parse_reply('{"reply": "Riz [itm-47bc5254d9fc4452] : 1 kg dans plc-1f722c3e1c3710da."}'), "Riz : 1 kg dans.")
         self.assertEqual(iai.parse_reply('{"reply": "truncated'), '{"reply": "truncated')
         self.assertEqual(len(iai.parse_reply(json.dumps({"reply": "a" * 5000}))), iai.REPLY_MAX)
 
@@ -116,3 +121,124 @@ class SessionFlowTests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _j(reply="", tools=None):
+    return json.dumps({"reply": reply, "tools": tools or []})
+
+
+class ToolTests(_Base):
+    def ids(self):
+        snap = inv.snapshot()
+        return ({i["name"]: i for i in snap["items"]}, {p["name"]: p for p in snap["places"]})
+
+    def test_read_tools_return_real_data_with_place_paths(self) -> None:
+        tb = iai.Toolbox()
+        items, places = self.ids()
+        res = tb.run("search_items", {"query": "vis"})
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["items"][0]["id"], items["Vis M3"]["id"])
+        self.assertEqual(res["items"][0]["place"], "Atelier")
+        self.assertEqual(tb.run("get_item", {"id": items["Vis M3"]["id"]})["qty"], 4)
+        self.assertIn("error", tb.run("get_item", {"id": "nope"}))
+        self.assertEqual([r["name"] for r in tb.run("list_low_stock", {})["items"]], ["Vis M3"])
+        self.assertEqual(tb.run("list_place", {"place_id": places["Atelier"]["id"]})["item_count"], 2)
+        self.assertEqual(tb.run("list_places", {})["places"][0]["items"], 2)
+        self.assertIn("error", tb.run("rm_rf", {}))
+        self.assertEqual(inv.snapshot()["rev"], inv.snapshot()["rev"])
+
+    def test_propose_validates_each_change_and_refuses_deletes(self) -> None:
+        tb = iai.Toolbox()
+        items, places = self.ids()
+        vis = items["Vis M3"]["id"]
+        out = tb.run("propose_changes", {"changes": [
+            {"op": "adjust", "item_id": vis, "delta": 16},
+            {"op": "adjust", "item_id": "itm-0000000000000000", "delta": 1},   # unknown id
+            {"op": "delete", "item_id": vis},                                    # not offered
+            {"op": "adjust", "item_id": vis, "delta": -500},                     # would go negative
+            {"op": "adjust", "item_id": vis, "delta": 1.5},                      # not whole
+            {"op": "create", "name": "Colle", "qty": 2, "unit": "tubes", "place_id": places["Atelier"]["id"]},
+        ]})
+        queued = [r["queued"] for r in out["results"]]
+        self.assertEqual(queued, [True, False, False, False, False, True], out)
+        self.assertIn("deleting is not available", out["results"][2]["error"])
+        self.assertEqual([p["op"] for p in tb.proposals], ["item.adjust", "item.create"])
+
+    def test_loop_feeds_tool_results_back_and_creates_a_draft_only(self) -> None:
+        items, _ = self.ids()
+        vis = items["Vis M3"]["id"]
+        rev = inv.snapshot()["rev"]
+        script = [
+            _j("", [{"name": "search_items", "args": {"query": "vis"}}]),
+            _j("", [{"name": "propose_changes", "args": {"changes": [{"op": "adjust", "item_id": vis, "delta": 16}]}}]),
+            _j("A draft is ready: +16 M3 screws. Review it in the panel."),
+        ]
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "Restock the screws"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(len(self.calls), 3)
+        second = json.dumps(self.calls[1][1])
+        self.assertIn("TOOL RESULTS", second)
+        self.assertIn(vis, second)                                   # real id came back from search_items
+        self.assertIn("DRAFT", self.calls[0][0])                     # protocol documented in the prompt
+        self.assertEqual(out["operation"]["status"], "draft")
+        self.assertEqual(len(out["operation"]["proposals"]), 1)
+        self.assertIn("draft is ready", out["messages"][-1]["text"])
+        self.assertEqual(inv.snapshot()["rev"], rev)                 # nothing applied from the chat
+        self.assertEqual(self.ids()[0]["Vis M3"]["qty"], 4)
+
+    def test_ai_draft_goes_through_the_real_validate_preview_commit_flow(self) -> None:
+        items, _ = self.ids()
+        vis = items["Vis M3"]["id"]
+        script = [_j("", [{"name": "propose_changes", "args": {"changes": [{"op": "adjust", "item_id": vis, "delta": 16}]}}]),
+                  _j("Draft ready.")]
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "restock"})
+        op = out["operation"]["id"]
+        self.assertTrue(ivo.http_post(f"/api/inventoria/ops/{op}/validate", {})[1]["validation"]["ok"])
+        _, prev = ivo.http_post(f"/api/inventoria/ops/{op}/preview", {"confirm": True})
+        self.assertEqual(prev["preview"]["changes"][0]["after"]["qty"], 20)
+        code, res = ivo.http_post(f"/api/inventoria/ops/{op}/commit", {"idempotency_key": "ai-draft-test-0001"})
+        self.assertEqual(code, 200, res)
+        self.assertEqual(self.ids()[0]["Vis M3"]["qty"], 20)
+
+    def test_tool_loop_is_bounded(self) -> None:
+        always = _j("", [{"name": "list_places", "args": {}}])
+        with self.fake_generate([always] * 10 + [_j("done")]):
+            reply, props = iai.respond("loop forever", [], None)
+        self.assertLessEqual(len(self.calls), iai.MAX_ROUNDS)
+        self.assertEqual(props, [])
+        self.assertIn("Tool budget exhausted", self.calls[-1][0])
+        self.assertIn("couldn't put together", reply)               # graceful, message not lost
+
+    def test_bad_tool_args_never_break_the_chat(self) -> None:
+        script = [_j("", [{"name": "search_items", "args": {"limit": "abc"}}, {"name": "propose_changes", "args": {"changes": "x"}}]),
+                  _j("Sorry, I could not look that up.")]
+        with self.fake_generate(script):
+            reply, props = iai.respond("hello", [], None)
+        self.assertEqual(reply, "Sorry, I could not look that up.")
+        self.assertIn("error", self.calls[1][1][-1]["parts"][0]["text"])
+
+
+class PlaceNameTests(_Base):
+    def test_tools_accept_exact_place_names_and_reject_unknown(self) -> None:
+        tb = iai.Toolbox()
+        self.assertEqual(tb.run("list_place", {"place_id": "atelier"})["item_count"], 2)       # name, any case
+        self.assertEqual(tb.run("search_items", {"query": "vis", "place_id": "Atelier"})["count"], 1)
+        self.assertIn("error", tb.run("list_place", {"place_id": "Garage"}))
+        vis = {i["name"]: i["id"] for i in inv.snapshot()["items"]}["Vis M3"]
+        out = tb.run("propose_changes", {"changes": [{"op": "move", "item_ids": [vis], "place_id": "Atelier"}]})
+        self.assertIn("results", out)
+        bad = tb.run("propose_changes", {"changes": [{"op": "move", "item_ids": [vis], "place_id": "Garage"}]})
+        self.assertFalse(bad["results"][0]["queued"])
+
+    def test_pre_tool_guesses_are_not_echoed_back_to_the_model(self) -> None:
+        script = [json.dumps({"reply": "There is flour in the pantry.", "tools": [{"name": "list_places", "args": {}}]}),
+                  json.dumps({"reply": "Only the Atelier exists.", "tools": []})]
+        with self.fake_generate(script):
+            reply, _ = iai.respond("what is in the pantry?", [], None)
+        self.assertEqual(reply, "Only the Atelier exists.")
+        echoed = self.calls[1][1][-2]["parts"][0]["text"]
+        self.assertNotIn("flour", echoed)
