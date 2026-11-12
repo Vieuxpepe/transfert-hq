@@ -3,12 +3,13 @@
  * One audio element, one in-flight request: a new preview or Stop cancels the previous one. */
 (function (root) {
   "use strict";
-  const NAMES = { else: "Else", transferania: "Transferina", inventoria: "Inventoria", musica: "Musica" };
+  const NAMES = { else: "Else", transferania: "Transferina", inventoria: "Inventoria", musica: "Musica", pistonia: "Pistonia" };
   const SAMPLE = {
     transferania: "Coucou, mon Maître ! J'ai enfin ma propre voix, et franchement, je suis beaucoup trop contente !",
     inventoria: "Bonjour ! Nous avons vingt-quatre articles répertoriés, dont sept nécessitent une vérification.",
     musica: "Salut ! Imagine une mélodie douce, quelques notes de piano et une ambiance parfaite pour relaxer.",
-    else: "Je suis là. Dis-moi ce dont tu as besoin, nous allons le régler calmement."
+    else: "Je suis là. Dis-moi ce dont tu as besoin, nous allons le régler calmement.",
+    pistonia: "Morning, Master. Four of five engines are up and steady. Nothing needs attention."
   };
 
   function mount(doc, container, opts) {

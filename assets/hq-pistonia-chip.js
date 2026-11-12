@@ -3,7 +3,9 @@
  * A floating chip you can DRAG anywhere (mouse, touch, or arrow keys), RESIZE (pinch / Ctrl+wheel / menu, shared with the other chips)
  * and a chat window you can resize from its corner grip. She only appears on the Engine tab, for an admin session.
  *
- * Backend: GET /api/engine/pistonia/greeting, POST /api/engine/pistonia/message (see hq_pistonia.py). She can only PROPOSE actions: each
+ * Backend (hq_pistonia.py): the conversation, her memory notes, settings and alerts live on the SERVER (GET .../thread, POST .../message,
+ * .../clear, .../seen, .../resolve, .../memory/delete, .../settings, .../voice). She speaks up first when something is wrong (a badge on the
+ * chip and a message in the chat) and can read her replies aloud in her Phonon voice. She can only PROPOSE actions: each
  * proposal is a card with an Apply button, and Apply calls the normal Engine endpoint (admin + CSRF) - nothing happens without the click.
  * Everything is built with createElement + textContent.
  *
@@ -19,10 +21,9 @@
   var ADULT_SRC = "/assets/companion/pistonia-chip.webp";
   var ADULT_SET = ADULT_SRC + " 1x, /assets/companion/pistonia-chip@2x.webp 2x";
   var LS_POS = "hq_pistonia_chip_pos_v1", LS_SCALE = "hq_pistonia_chip_scale_v1", LS_SIZE = "hq_pistonia_bubble_size_v1";
-  var LS_OPEN = "hq_pistonia_open_v1", LS_HIDDEN = "hq_pistonia_hidden_v1", LS_HISTORY = "hq_pistonia_history_v1";
+  var LS_OPEN = "hq_pistonia_open_v1", LS_HIDDEN = "hq_pistonia_hidden_v1";
   var CHIP_BASE = 72, DRAG_PX = 8, LONG_MS = 650, KEY_STEP = 12, EDGE = 6;
   var MIN_W = 300, MIN_H = 300, MAX_W = 760, MAX_H = 860, DEF_W = 400, DEF_H = 520;
-  var HISTORY_KEEP = 24;
   var ACTION_URL = /^\/api\/engine\/daemons\/[a-z0-9][a-z0-9_-]{0,31}\/(start|stop|restart|autostop)$/;
 
   var T = {
@@ -31,7 +32,10 @@
     thinking: "Pistonia réfléchit…", apply: "Appliquer", dismiss: "Ignorer", done: "Fait", failed: "Échec",
     smaller: "Plus petite", larger: "Plus grande", resetSize: "Taille normale", resetPos: "Position d'origine", resetWin: "Fenêtre normale",
     hide: "Masquer Pistonia", retry: "Réessayer", offline: "Réseau indisponible.", errorGeneric: "Pistonia n'a pas pu répondre.",
-    proposal: "Proposition", stopT: "Arrêter", startT: "Démarrer", restartT: "Redémarrer", autoOn: "Arrêt auto activé", autoOff: "Arrêt auto désactivé",
+    proposal: "Proposition", noted: "Noté", forget: "Oublier", settings: "Réglages", back: "Retour à la conversation",
+    voiceOn: "Voix activée", voiceOff: "Voix coupée", notes: "Ce qu'elle retient", noNotes: "Rien pour l'instant. Dis-lui une préférence durable, elle la notera.",
+    notify: "M'avertir aussi par Discord / notification (alertes de Pistonia)", notifyHint: "Désactivé par défaut. Seules ses alertes partent, jamais le contenu des conversations.",
+    clearChat: "Effacer la conversation", alertBadge: "alerte(s) non lue(s)", voiceLabel: "Voix", clearDone: "Conversation effacée.", stopT: "Arrêter", startT: "Démarrer", restartT: "Redémarrer", autoOn: "Arrêt auto activé", autoOff: "Arrêt auto désactivé",
     quick: [["Un souci ?", "Is anything wrong?"], ["Qui mange ma RAM ?", "What is using the most memory right now?"],
             ["Libère de la VRAM", "Help me free some VRAM."], ["Explique l'arrêt auto", "Explain idle auto-stop and when I should use it."]]
   };
@@ -75,11 +79,14 @@
   titles.appendChild(el("strong", "hq-pistonia-name", T.name));
   titles.appendChild(el("span", "hq-pistonia-sub", T.sub));
   head.appendChild(titles);
-  var clearBtn = el("button", "hq-pistonia-hbtn", "↺");
-  clearBtn.type = "button"; clearBtn.title = T.clear; clearBtn.setAttribute("aria-label", T.clear);
+  var voiceBtn = el("button", "hq-pistonia-hbtn hq-pistonia-voicebtn", "🔊");
+  voiceBtn.type = "button"; voiceBtn.setAttribute("aria-pressed", "true");
+  var gearBtn = el("button", "hq-pistonia-hbtn", "⚙");
+  gearBtn.type = "button"; gearBtn.title = T.settings; gearBtn.setAttribute("aria-label", T.settings); gearBtn.setAttribute("aria-pressed", "false");
   var closeBtn = el("button", "hq-pistonia-hbtn", "×");
   closeBtn.type = "button"; closeBtn.title = T.close; closeBtn.setAttribute("aria-label", T.close);
-  head.appendChild(clearBtn);
+  head.appendChild(voiceBtn);
+  head.appendChild(gearBtn);
   head.appendChild(closeBtn);
   bubble.appendChild(head);
 
@@ -87,6 +94,10 @@
   logEl.setAttribute("role", "log");
   logEl.setAttribute("aria-live", "polite");
   bubble.appendChild(logEl);
+
+  var panelEl = el("div", "hq-pistonia-settings");
+  panelEl.hidden = true;
+  bubble.appendChild(panelEl);
 
   var quick = el("div", "hq-pistonia-quick");
   T.quick.forEach(function (q) {
@@ -117,7 +128,10 @@
   chipImg.draggable = false;
   var dot = el("span", "hq-pistonia-dot");
   chip.appendChild(chipImg);
+  var badge = el("span", "hq-pistonia-badge");
+  badge.hidden = true;
   chip.appendChild(dot);
+  chip.appendChild(badge);
 
   var menu = el("div", "hq-pistonia-menu");
   menu.setAttribute("role", "menu");
@@ -344,18 +358,54 @@
   doc.addEventListener("pointerdown", function (ev) { if (!menu.hidden && !menu.contains(ev.target) && ev.target !== chip) closeMenu(); }, true);
 
   /* ---------------- chat ---------------- */
-  var history = readJSON(LS_HISTORY, []);
-  if (!Array.isArray(history)) history = [];
-  var busy = false, greeted = false, typingRow = null, lastText = "";
+  var state = { notes: [], settings: { notify: false, voice: true }, voice: {}, unseen: 0, loaded: false, shown: {} };
+  var busy = false, typingRow = null, lastText = "", view = "chat";
 
-  function saveHistory() { lsSet(LS_HISTORY, JSON.stringify(history.slice(-HISTORY_KEEP))); }
   function scrollDown() { logEl.scrollTop = logEl.scrollHeight; }
 
-  function addMsg(role, text) {
-    var row = el("div", "hq-pistonia-msg is-" + role);
-    row.textContent = text;
+  function post(url, body) {
+    return win.fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; }, function () { return { ok: false, status: r.status, data: {} }; }); });
+  }
+  function getJSON(url) {
+    return win.fetch(url, { credentials: "same-origin", cache: "no-store" })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); });
+  }
+
+  /* ----- one message (chat / alert / all-clear / greeting) with its proposal cards and remembered notes ----- */
+  function addMsg(role, text, kind) {
+    var row = el("div", "hq-pistonia-msg is-" + role + (kind && kind !== "chat" ? " is-" + kind : ""));
+    if (kind === "alert") row.appendChild(el("span", "hq-pistonia-msg-tag", "⚠"));
+    if (kind === "clear") row.appendChild(el("span", "hq-pistonia-msg-tag", "✓"));
+    row.appendChild(doc.createTextNode(text));
     logEl.appendChild(row);
     scrollDown();
+    return row;
+  }
+
+  function renderMessage(m) {
+    state.shown[m.id] = true;
+    state.lastId = m.id;
+    addMsg(m.role, m.text, m.kind);
+    (m.remembered || []).forEach(function (n) { logEl.appendChild(noteLine(n)); });
+    (m.proposals || []).forEach(function (p) { logEl.appendChild(proposalCard(p, m.id)); });
+  }
+
+  function noteLine(n) {
+    var row = el("div", "hq-pistonia-note");
+    row.appendChild(el("span", "hq-pistonia-note-tag", "🧠 " + T.noted + " : "));
+    row.appendChild(el("span", "hq-pistonia-note-text", n.text));
+    var b = el("button", "hq-pistonia-link", T.forget);
+    b.type = "button";
+    b.addEventListener("click", function () {
+      post("/api/engine/pistonia/memory/delete", { id: n.id }).then(function () {
+        state.notes = state.notes.filter(function (x) { return x.id !== n.id; });
+        row.classList.add("is-gone");
+        b.disabled = true;
+        if (view === "settings") renderSettings();
+      });
+    });
+    row.appendChild(b);
     return row;
   }
 
@@ -365,7 +415,7 @@
     return (verb || p.action) + " — " + p.label;
   }
 
-  function proposalCard(p) {
+  function proposalCard(p, msgId) {
     var card = el("div", "hq-pistonia-prop");
     card.appendChild(el("div", "hq-pistonia-prop-title", describe(p)));
     if (p.reason) card.appendChild(el("div", "hq-pistonia-prop-text", p.reason));
@@ -379,19 +429,17 @@
     status.setAttribute("role", "status");
     bar.appendChild(ok); bar.appendChild(no); bar.appendChild(status);
     card.appendChild(bar);
-    no.addEventListener("click", function () { card.remove(); });
+    var resolve = function () { if (msgId) post("/api/engine/pistonia/resolve", { id: msgId }); };
+    no.addEventListener("click", function () { card.remove(); resolve(); });
     ok.addEventListener("click", function () {
       // Only the Engine's own daemon endpoints are ever called, whatever the server sent.
       if (typeof p.url !== "string" || !ACTION_URL.test(p.url)) { status.textContent = T.failed; return; }
       ok.disabled = no.disabled = true;
       status.textContent = "…";
-      win.fetch(p.url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p.body || {}) })
-        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
-        .then(function (r) {
-          if (r.ok) { status.textContent = "✓ " + T.done; card.classList.add("is-done"); if (typeof win.hqEngineRefresh === "function") win.hqEngineRefresh(); }
-          else { status.textContent = T.failed + (r.data && (r.data.message || r.data.error) ? " : " + String(r.data.message || r.data.error).slice(0, 100) : ""); ok.disabled = no.disabled = false; card.classList.add("is-failed"); }
-        })
-        .catch(function () { status.textContent = T.offline; ok.disabled = no.disabled = false; });
+      post(p.url, p.body || {}).then(function (r) {
+        if (r.ok) { status.textContent = "✓ " + T.done; card.classList.add("is-done"); resolve(); if (typeof win.hqEngineRefresh === "function") win.hqEngineRefresh(); }
+        else { status.textContent = T.failed + (r.data && (r.data.message || r.data.error) ? " : " + String(r.data.message || r.data.error).slice(0, 100) : ""); ok.disabled = no.disabled = false; card.classList.add("is-failed"); }
+      }).catch(function () { status.textContent = T.offline; ok.disabled = no.disabled = false; });
     });
     return card;
   }
@@ -407,40 +455,36 @@
       for (var i = 0; i < 3; i++) typingRow.appendChild(el("i"));
       logEl.appendChild(typingRow);
       scrollDown();
-    } else if (typingRow) { typingRow.remove(); typingRow = null; }
-  }
-
-  function post(url, body) {
-    return win.fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; }, function () { return { ok: false, status: r.status, data: {} }; }); });
+    } else {
+      if (typingRow) { typingRow.remove(); typingRow = null; }
+      if (isOpen && view === "chat") input.focus({ preventScroll: true });
+    }
   }
 
   function send(text, shown) {
     text = String(text || "").trim();
     if (!text || busy) return;
+    if (view !== "chat") showView("chat");
+    stopVoice();
     lastText = text;
     addMsg("user", shown || text);
-    var sent = history.slice(-12).map(function (m) { return { role: m.role, text: m.text }; });
-    history.push({ role: "user", text: text });
-    saveHistory();
     input.value = "";
     setBusy(true);
     setMood("busy");
-    post("/api/engine/pistonia/message", { text: text, history: sent }).then(function (r) {
+    post("/api/engine/pistonia/message", { text: text }).then(function (r) {
       setBusy(false);
       if (r.ok && r.data && r.data.reply) {
-        addMsg("assistant", r.data.reply);
-        history.push({ role: "assistant", text: r.data.reply });
-        saveHistory();
-        (r.data.proposals || []).forEach(function (p) { logEl.appendChild(proposalCard(p)); });
-        scrollDown();
+        var m = { id: r.data.id || ("local-" + Date.now()), role: "assistant", text: r.data.reply, kind: "chat",
+                  proposals: r.data.proposals, remembered: r.data.remembered };
+        renderMessage(m);
+        (r.data.remembered || []).forEach(function (n) { state.notes.push(n); });
+        speak(r.data.reply);
       } else {
-        history.pop(); saveHistory();
         showError((r.data && r.data.error) || T.errorGeneric, !!(r.data && r.data.retryable));
       }
       refreshMood();
     }).catch(function () {
-      setBusy(false); history.pop(); saveHistory();
+      setBusy(false);
       showError(T.offline, true);
       refreshMood();
     });
@@ -451,29 +495,153 @@
     if (retryable && lastText) {
       var b = el("button", "hq-pistonia-pbtn", T.retry);
       b.type = "button";
-      b.addEventListener("click", function () { row.remove(); send(lastText); });
+      b.addEventListener("click", function () { row.remove(); var t = lastText; logEl.lastChild && logEl.lastChild.classList.contains("is-user") && logEl.lastChild.remove(); send(t); });
       row.appendChild(b);
     }
     logEl.appendChild(row);
     scrollDown();
   }
 
-  function restore() {
-    logEl.textContent = "";
-    history.forEach(function (m) { addMsg(m.role === "user" ? "user" : "assistant", m.text); });
+  /* ----- conversation from the server; new messages (her alerts) are appended and read aloud ----- */
+  function loadThread(initial) {
+    return getJSON("/api/engine/pistonia/thread").then(function (r) {
+      if (!r.ok || !r.data || !r.data.messages) return;
+      var d = r.data, fresh = [];
+      state.notes = d.notes || [];
+      state.settings = d.settings || state.settings;
+      state.voice = d.voice || {};
+      syncVoiceBtn();
+      if (initial || !state.loaded) {
+        logEl.textContent = "";
+        state.shown = {};
+        d.messages.forEach(renderMessage);
+      } else {
+        // Only what comes AFTER the last message we drew (the user's own lines are drawn locally and have no id here yet).
+        var idx = -1;
+        d.messages.forEach(function (m, i) { if (m.id === state.lastId) idx = i; });
+        (idx >= 0 ? d.messages.slice(idx + 1) : d.messages.filter(function (m) { return !state.shown[m.id]; }))
+          .forEach(function (m) { fresh.push(m); renderMessage(m); });
+      }
+      state.loaded = true;
+      fresh.filter(function (m) { return m.role === "assistant" && m.kind !== "clear"; }).slice(-1).forEach(function (m) { speak(m.text); });
+      markSeen(d.unseen);
+      if (view === "settings") renderSettings();
+    }).catch(function () {});
   }
 
-  function greet() {
-    if (greeted) return;
-    greeted = true;
-    win.fetch("/api/engine/pistonia/greeting", { credentials: "same-origin", cache: "no-store" })
-      .then(function (r) { return r.json(); })
-      .then(function (g) { if (g && g.line) { addMsg("assistant", g.line); if (g.mood) setMood(g.mood); } })
-      .catch(function () {});
+  function markSeen(n) {
+    if (n > 0 && isOpen) post("/api/engine/pistonia/seen", {}).then(function () { setUnseen(0); });
   }
+
+  function setUnseen(n) {
+    state.unseen = n;
+    badge.hidden = !(n > 0);
+    badge.textContent = n > 9 ? "9+" : String(n);
+    chip.setAttribute("aria-label", T.open + (n > 0 ? " (" + n + " " + T.alertBadge + ")" : ""));
+    root.classList.toggle("has-alerts", n > 0);
+  }
+
+  /* ----- voice: her replies read aloud in her Phonon voice; a failure is simply silence ----- */
+  var audio = null, voiceSeq = 0, voiceAbort = null;
+  function stopVoice() {
+    voiceSeq++;
+    if (voiceAbort) { try { voiceAbort.abort(); } catch (_) {} voiceAbort = null; }
+    if (audio) { var a = audio; audio = null; try { a.pause(); a.src = ""; } catch (_) {} }
+    if (root.dataset.mood === "speaking") refreshMood();
+  }
+  function syncVoiceBtn() {
+    var on = state.settings.voice !== false;
+    voiceBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    voiceBtn.textContent = on ? "🔊" : "🔈";
+    voiceBtn.title = on ? T.voiceOn : T.voiceOff;
+    voiceBtn.setAttribute("aria-label", voiceBtn.title);
+    voiceBtn.classList.toggle("is-off", !on);
+  }
+  function speak(text) {
+    if (state.settings.voice === false || !isOpen || !text) return;
+    stopVoice();
+    var my = voiceSeq;
+    voiceAbort = new win.AbortController();
+    win.fetch("/api/engine/pistonia/voice", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text }), signal: voiceAbort.signal })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (my !== voiceSeq || !d || !d.ok || typeof d.audio_url !== "string" || d.audio_url.indexOf("/assets/companion/chat/voice_cache/") !== 0) return;
+        var a = new win.Audio(d.audio_url);
+        audio = a;
+        var done = function () { if (audio === a) { audio = null; refreshMood(); } };
+        a.addEventListener("ended", done);
+        a.addEventListener("error", done);
+        setMood("speaking");
+        var pr = a.play();
+        if (pr && pr.catch) pr.catch(done);            // autoplay can be refused when she speaks first: silence, not an error
+      }).catch(function () {});
+  }
+  voiceBtn.addEventListener("click", function () {
+    var on = !(state.settings.voice !== false);
+    state.settings.voice = on;
+    syncVoiceBtn();
+    if (!on) stopVoice();
+    post("/api/engine/pistonia/settings", { voice: on });
+  });
+
+  /* ----- settings view: notifications, her notes, clear the conversation ----- */
+  function showView(v) {
+    view = v;
+    var chat = v === "chat";
+    logEl.hidden = !chat; quick.hidden = !chat; form.hidden = !chat; panelEl.hidden = chat;
+    gearBtn.setAttribute("aria-pressed", chat ? "false" : "true");
+    gearBtn.title = chat ? T.settings : T.back;
+    gearBtn.textContent = chat ? "⚙" : "←";
+    gearBtn.setAttribute("aria-label", chat ? T.settings : T.back);
+    if (!chat) renderSettings(); else { scrollDown(); input.focus({ preventScroll: true }); }
+  }
+  function renderSettings() {
+    panelEl.textContent = "";
+    var sec1 = el("section", "hq-pistonia-sec");
+    var lab = el("label", "hq-pistonia-switch");
+    var cb = el("input"); cb.type = "checkbox"; cb.checked = !!state.settings.notify;
+    cb.addEventListener("change", function () {
+      post("/api/engine/pistonia/settings", { notify: cb.checked }).then(function (r) { if (r.ok && r.data.settings) state.settings = r.data.settings; else cb.checked = !cb.checked; });
+    });
+    lab.appendChild(cb);
+    lab.appendChild(el("span", null, T.notify));
+    sec1.appendChild(lab);
+    sec1.appendChild(el("p", "hq-pistonia-hint", T.notifyHint));
+    panelEl.appendChild(sec1);
+
+    var sec2 = el("section", "hq-pistonia-sec");
+    sec2.appendChild(el("h4", null, T.notes + " (" + state.notes.length + ")"));
+    if (!state.notes.length) sec2.appendChild(el("p", "hq-pistonia-hint", T.noNotes));
+    var ul = el("ul", "hq-pistonia-notes");
+    state.notes.forEach(function (n) {
+      var li = el("li");
+      li.appendChild(el("span", null, n.text));
+      var b = el("button", "hq-pistonia-link", T.forget);
+      b.type = "button";
+      b.setAttribute("aria-label", T.forget + " : " + n.text);
+      b.addEventListener("click", function () {
+        post("/api/engine/pistonia/memory/delete", { id: n.id }).then(function () { state.notes = state.notes.filter(function (x) { return x.id !== n.id; }); renderSettings(); });
+      });
+      li.appendChild(b);
+      ul.appendChild(li);
+    });
+    sec2.appendChild(ul);
+    panelEl.appendChild(sec2);
+
+    var sec3 = el("section", "hq-pistonia-sec");
+    var clr = el("button", "hq-pistonia-pbtn", T.clearChat);
+    clr.type = "button";
+    clr.addEventListener("click", function () {
+      stopVoice();
+      post("/api/engine/pistonia/clear", {}).then(function () { state.loaded = false; showView("chat"); loadThread(true); });
+    });
+    sec3.appendChild(clr);
+    panelEl.appendChild(sec3);
+  }
+  gearBtn.addEventListener("click", function () { showView(view === "chat" ? "settings" : "chat"); });
 
   form.addEventListener("submit", function (ev) { ev.preventDefault(); send(input.value); });
-  clearBtn.addEventListener("click", function () { history = []; saveHistory(); logEl.textContent = ""; greeted = false; greet(); });
   closeBtn.addEventListener("click", function () { setOpen(false); chip.focus(); });
   bubble.addEventListener("keydown", function (ev) { if (ev.key === "Escape") { setOpen(false); chip.focus(); } });
   doc.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && !menu.hidden) { closeMenu(); chip.focus(); } });
@@ -491,12 +659,19 @@
     return "idle";
   }
   function refreshMood() { if (!busy) setMood(moodFromStatus(lastStatus)); }
-  win.addEventListener("hq:engine-status", function (ev) { lastStatus = ev.detail; refreshMood(); });
+  win.addEventListener("hq:engine-status", function (ev) {
+    lastStatus = ev.detail;
+    refreshMood();
+    var ps = (ev.detail && ev.detail.pistonia) || {}, un = ps.unseen || 0;
+    if (isOpen) { if (state.loaded && ps.last && !state.shown[ps.last] && !busy) loadThread(false); }   // she spoke first: show it (and read it)
+    else setUnseen(un);
+  });
 
   /* ---------------- open / close / visibility ---------------- */
   var isOpen = false;
   function setOpen(on) {
     isOpen = !!on;
+    if (!isOpen) stopVoice();
     bubble.hidden = !isOpen;
     root.classList.toggle("is-open", isOpen);
     chip.setAttribute("aria-expanded", isOpen ? "true" : "false");
@@ -506,8 +681,8 @@
       void bubble.offsetWidth;
       bubble.classList.add("is-pop");
       layoutBubble();
-      if (!logEl.childNodes.length) { restore(); }
-      if (!history.length || !greeted) greet();
+      showView("chat");
+      loadThread(true);
       win.setTimeout(function () { input.focus({ preventScroll: true }); scrollDown(); }, 30);
     }
   }

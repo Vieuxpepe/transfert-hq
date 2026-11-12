@@ -230,7 +230,7 @@ def test_bridge_start_respects_opt_out_and_profiles(stub, monkeypatch):
     monkeypatch.setenv("HQ_PHONON_AUTOSTART", "0")
     assert ph.bridge_start() is False
     monkeypatch.delenv("HQ_PHONON_AUTOSTART")
-    for c in ("transferania", "inventoria", "musica"):
+    for c in ("transferania", "inventoria", "musica", "pistonia"):
         ph.save_profile(c, "browser", None, 0)
     assert ph.bridge_start() is False  # nobody uses Phonon -> don't load models
     ph.save_profile("musica", "phonon", "Noémie", 0)

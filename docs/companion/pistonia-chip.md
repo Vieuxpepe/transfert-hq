@@ -27,16 +27,20 @@ When adult mode is on the chip checks once whether `pistonia-chip.webp` exists: 
 rounded to 24 %); 640 px for 1x and 1280 px for @2x, like the other chips. The conversation itself (persona, tools) is the same in both modes
 for now; a more adult persona would be a separate prompt, which I'd add together with the image if you want one.
 
+## Character, memory, alerts, voice
+Her character, memory, proactive alerts and voice are described in [../pistonia-persona.md](../pistonia-persona.md). In the chip:
+* The conversation is **server-side** (it survives a reload and other devices); the chip restores it on open. The ⚙ button opens settings:
+  notifications toggle, her notes with delete buttons, *Effacer la conversation*.
+* A **red badge** on the chip counts alerts she raised that you have not seen; the chip rings until you open it. With the chat open, new alerts and
+  all-clears appear live.
+* The 🔊 button turns her voice on or off (Phonon, English, read aloud when the chat is open).
+
 ## What she can do
 She sees the live Engine state (this PC, every daemon, paired computers, logs, recent actions) and answers from it. She can **propose** a
 start / stop / restart or turn idle auto-stop on or off, shown as a card with the effect ("Frees about 374 MB of RAM. The next voice line uses
 the browser voice while it reloads") and an **Appliquer** button. The button calls the normal admin + CSRF Engine endpoint; the chip only
-ever calls `/api/engine/daemons/<id>/<start|stop|restart|autostop>` (allow-list in the script), whatever the server sends.
+ever calls `/api/engine/daemons/<id>/<start|stop|restart|autostop>` (allow-list in the script), whatever the server sends. The only thing she can
+write herself is her short memory notes.
 
-Safety, each with a test (`tests/test_hq_pistonia.py`): no tool changes anything; proposals are validated when made (known daemon, action
-allowed, sensible for its state; foreign and observe-only daemons refused); logs are scrubbed and framed to the model as data, not
-instructions; a reply that claims "I stopped X" with no proposal is sent back once, then neutralised; bounded to 4 model rounds, 8 tool calls,
-4 proposals, 12 history turns, 12 messages per minute; provider error text is never shown (friendly "model busy" + Retry).
-
-API: `GET /api/engine/pistonia/greeting` (no model call), `POST /api/engine/pistonia/message` `{text, history}` (32 KB body limit).
-She replies in the language you write in. Persona and tool protocol: `PERSONA` / `TOOLS_DOC` in `hq_pistonia.py`.
+API (all under `/api/engine/pistonia/`): `GET thread`, `GET greeting`, `POST message {text}` (32 KB body limit), `clear`, `seen`, `resolve {id}`,
+`memory/delete {id}`, `settings {notify?, voice?}`, `voice {text}`.

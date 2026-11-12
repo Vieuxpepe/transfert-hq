@@ -660,8 +660,13 @@ def status() -> dict:
         machines, fleet_on = fleet.machines_view(), fleet._root is not None
     except Exception:
         machines, fleet_on = [], False
+    try:
+        import hq_pistonia_store
+        unseen, last_id = hq_pistonia_store.unseen_count(), hq_pistonia_store.last_message_id()
+    except Exception:
+        unseen, last_id = 0, None
     return {"ok": True, "now": time.time(), "daemons": daemons, "events": list(_events), "gpu": _gpu_sample() is not None,
-            "system": sysinfo, "machines": machines, "fleet": fleet_on,
+            "system": sysinfo, "machines": machines, "fleet": fleet_on, "pistonia": {"unseen": unseen, "last": last_id},
             "summary": {"ready": sum(1 for c in daemons if c["state"] in HEALTHY_STATES),
                         "total": len(daemons), "problems": sum(1 for c in daemons if c["state"] in PROBLEM_STATES)}}
 
@@ -780,6 +785,7 @@ def act(daemon_id: str, action: str) -> tuple[int, dict]:
 IDLE_MIN, IDLE_MAX = 3, 480
 IDLE_CHOICES = (5, 10, 15, 30, 60, 120)
 WATCH_EVERY = 30.0
+ALERTS_EVERY = 60.0
 _last_used: dict[str, float] = {}
 _ready_since: dict[str, float] = {}
 _policy: dict[str, dict] = {}
@@ -907,11 +913,20 @@ def start_watcher() -> None:
     stop = threading.Event()
 
     def loop() -> None:
+        last_alerts = 0.0
         while not stop.wait(WATCH_EVERY):
             try:
                 autostop_tick()
             except Exception:                              # the watcher must never die
                 pass
+            if time.time() - last_alerts >= ALERTS_EVERY:
+                last_alerts = time.time()
+                try:
+                    import hq_pistonia
+                    import hq_pistonia_alerts
+                    hq_pistonia_alerts.tick(notify=hq_pistonia.notifier())
+                except Exception:
+                    pass
 
     th = threading.Thread(target=loop, daemon=True, name="engine-autostop")
     _watcher.update(thread=th, stop=stop)
@@ -968,12 +983,12 @@ def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
     query = query or {}
     if path == "/api/engine/status":
         return 200, status()
-    if path == "/api/engine/pistonia/greeting":
+    if path in ("/api/engine/pistonia/greeting", "/api/engine/pistonia/thread"):
         try:
             import hq_pistonia
-            return 200, hq_pistonia.greeting()
+            return 200, (hq_pistonia.greeting() if path.endswith("greeting") else hq_pistonia.thread_payload())
         except Exception:
-            return 500, {"error": "greeting unavailable", "code": "error"}
+            return 500, {"error": "Pistonia indisponible", "code": "error"}
     m = _LOGS_RE.match(path)
     if m:
         try:
@@ -984,18 +999,36 @@ def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
     return 404, {"error": "not found", "code": "not_found"}
 
 
+def _pistonia_post(route: str, data: dict) -> tuple[int, dict]:
+    import hq_pistonia
+    try:
+        if route == "message":
+            return 200, hq_pistonia.message(data)
+        if route == "clear":
+            return 200, hq_pistonia.clear_thread()
+        if route == "seen":
+            return 200, hq_pistonia.mark_seen()
+        if route == "resolve":
+            return 200, hq_pistonia.resolve(data.get("id"))
+        if route == "memory/delete":
+            return hq_pistonia.forget_note(data.get("id"))
+        if route == "settings":
+            return hq_pistonia.save_settings(data)
+        if route == "voice":
+            return hq_pistonia.speak(data)
+    except hq_pistonia.PistoniaError as exc:
+        return exc.status, {"error": str(exc), "code": exc.code, "retryable": exc.retryable}
+    except Exception:
+        return 500, {"error": "Pistonia a rencontré une erreur.", "code": "error", "retryable": True}
+    return 404, {"error": "not found", "code": "not_found"}
+
+
 def http_post(path: str, data: Optional[dict] = None) -> tuple[int, dict]:
     m = _ACT_RE.match(path)
     if m:
         return act(m.group(1), m.group(2))
-    if path == "/api/engine/pistonia/message":
-        import hq_pistonia
-        try:
-            return 200, hq_pistonia.message(data)
-        except hq_pistonia.PistoniaError as exc:
-            return exc.status, {"error": str(exc), "code": exc.code, "retryable": exc.retryable}
-        except Exception:
-            return 500, {"error": "Pistonia a rencontré une erreur.", "code": "error", "retryable": True}
+    if path.startswith("/api/engine/pistonia/"):
+        return _pistonia_post(path[len("/api/engine/pistonia/"):], data or {})
     m = _AUTOSTOP_RE.match(path)
     if m:
         body = data or {}
@@ -1253,11 +1286,16 @@ def music_check() -> dict:
 
 # ---- default registry --------------------------------------------------------------------------------------------
 
-def bind(root: Any) -> None:
-    """Called once by the bridge: enables pairing other computers (state under <root>/.hq-engine)."""
+def bind(root: Any, notify: Any = None) -> None:
+    """Called once by the bridge: pairing of other computers, Pistonia's state (all under <root>/.hq-engine) and, optionally, HQ's
+    notifier (Discord / web push) that Pistonia uses for alerts only when the Master switched notifications on."""
     global _policy_path
     import hq_engine_fleet
+    import hq_pistonia
+    import hq_pistonia_store
     hq_engine_fleet.bind(root)
+    hq_pistonia_store.bind(root)
+    hq_pistonia.bind(notify)
     _policy_path = Path(root) / ".hq-engine" / "autostop.json"
     _policy_load()
     start_watcher()

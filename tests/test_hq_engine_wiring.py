@@ -28,7 +28,7 @@ class EngineWiringTests(unittest.TestCase):
         self.assertRegex(BRIDGE, r'raw\.startswith\("/api/engine/"\)[^\n]*\n(?:[^\n]*\n){1,25}?\s+code, payload = hq_engine\.http_post\(raw, data\)')
         self.assertIn("/engine-agent/v1/", BRIDGE)
         self.assertIn("hq_engine_fleet.handle_agent", BRIDGE)
-        self.assertIn("hq_engine.bind(ROOT)", BRIDGE)
+        self.assertIn("hq_engine.bind(ROOT, notify=_inventoria_notify)", BRIDGE)
 
     def test_post_route_comes_after_the_csrf_gate(self):
         """The POST route must sit in the block that runs after the bridge's CSRF check."""
@@ -84,7 +84,8 @@ class PistoniaWiringTests(unittest.TestCase):
         self.assertIn("ACTION_URL", self.JS)
         self.assertIn(r"\/api\/engine\/daemons\/", self.JS)                   # the allow-list regex
         urls = set(re.findall(r'"(/api/[^"]+)"', self.JS))
-        self.assertEqual(urls, {"/api/engine/pistonia/message", "/api/engine/pistonia/greeting"})
+        self.assertEqual(urls, {"/api/engine/pistonia/" + r for r in ("thread", "message", "clear", "seen", "resolve", "memory/delete", "settings", "voice")})
+        self.assertIn('d.audio_url.indexOf("/assets/companion/chat/voice_cache/") !== 0', self.JS)   # only her own voice cache is ever played
 
     def test_only_visible_on_the_engine_tab_for_admin(self):
         self.assertIn('doc.body.dataset.view === "engine"', self.JS)

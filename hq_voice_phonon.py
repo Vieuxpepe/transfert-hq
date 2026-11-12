@@ -43,9 +43,9 @@ FFMPEG_BIN = r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
 # Light chain only: no EQ, denoise, exciter or reverb.
 MASTER_FILTER = "highpass=f=60,loudnorm=I=-19:TP=-2:LRA=11,aresample=48000"
 
-CHARACTERS = ("else", "transferania", "inventoria", "musica")
+CHARACTERS = ("else", "transferania", "inventoria", "musica", "pistonia")
 ALIASES = {"transferina": "transferania", "transferania": "transferania", "else": "else",
-           "inventoria": "inventoria", "musica": "musica"}
+           "inventoria": "inventoria", "musica": "musica", "pistonia": "pistonia"}
 ENGINES = ("xtts", "phonon", "browser")
 
 # Audition shortlists picked from catalog *descriptions*; NOT verified by listening.
@@ -54,6 +54,7 @@ CANDIDATES = {
     "transferania": ["Coralie", "Maëlys", "Solène"],
     "inventoria": ["Tiphaine", "Orianne", "Hélène"],
     "musica": ["Noémie", "Lilou", "Ninon"],
+    "pistonia": ["Delia", "Hadley", "Bryony"],   # English, calm and to the point; the Engine room keeper
 }
 # Delivery style -> duration_delta (negative = faster). Phonon only exposes duration.
 STYLE_DELTA = {"neutral": 0.0, "warm": 0.05, "thoughtful": 0.08, "deadpan": 0.03,
