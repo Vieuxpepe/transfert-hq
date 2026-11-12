@@ -30,3 +30,7 @@ fallback chain as the other companions).
 - **Photo routing:** `image` messages may carry `intent` (`stock` | `grocery`). The response can contain `grocery: {lines: [{name, qty, unit, store}]}`
   next to `operation(s)`; nothing reaches the grocery module until the chip posts the lines to `/to-grocery`, which appends to the newest open
   non-meal-plan list (max of existing/new quantity per name+unit) or creates one. Tool: `propose_grocery` (queue only).
+- **Multi-item photos:** `intent` may also be `count`. A photo reply can carry `detections: {mode: add|count, rows: [{name, qty, unit, confidence, note,
+  item_id?, qty_now?, place_id?, place}], places}`; the chip posts the reviewed rows to `POST /api/inventoria/detections` (`mode`, `rows`), which returns
+  the usual `operation(s)` drafts. Tools: `report_detections` (needs `photo_kind: "objects"` and a prior `match_items`), `propose_changes` needs
+  `photo_kind: "receipt" | "list"` when a photo is attached.

@@ -690,6 +690,8 @@ def post_session_message(
     household_id: str,
     session_id: str,
     data: dict,
+    *,
+    split: bool = False,
 ) -> dict:
     row = conn.execute(
         "SELECT * FROM inventoria_sessions WHERE id = ? AND household_id = ?",
@@ -704,6 +706,7 @@ def post_session_message(
     proposals: list[dict] = []
     split_ok = False  # only model-drafted lists are re-grouped into valid commit batches
     grocery_lines: list[dict] = []
+    detections: dict | None = None
 
     if "proposals" in data:
         raw = data["proposals"]
@@ -711,6 +714,7 @@ def post_session_message(
             raise InventoriaError(f"proposals invalides (max {PROPOSALS_MAX})", code="validation_error")
         for p in raw:
             proposals.append(schemas.validate_inventoria_proposal(p))
+        split_ok = bool(split)      # server-built lists (photo review) are grouped into valid commit batches
     elif "text" in data or "image" in data:
         text = str(data.get("text") or "").strip()
         image = None
@@ -729,7 +733,7 @@ def post_session_message(
         if callable(adapter):
             _ctx.history = [m for m in messages[:-1] if isinstance(m, dict)]
             _ctx.image = image
-            _ctx.intent = data.get("intent") if data.get("intent") in ("stock", "grocery") else None
+            _ctx.intent = data.get("intent") if data.get("intent") in ("stock", "grocery", "count") else None
             _ctx.conn, _ctx.household_id = conn, household_id
             try:
                 draft = adapter(text, session_id=session_id)
@@ -749,6 +753,10 @@ def post_session_message(
                 raise InventoriaError("réponse modèle invalide", code="validation_error")
             raw_props = draft.get("proposals")
             raw_grocery = draft.get("grocery_lines")
+            raw_detect = draft.get("detections")
+            if isinstance(raw_detect, dict) and isinstance(raw_detect.get("rows"), list):
+                detections = {"mode": "count" if raw_detect.get("mode") == "count" else "add",
+                              "rows": [r for r in raw_detect["rows"][:60] if isinstance(r, dict)]}
             if isinstance(raw_grocery, list):
                 grocery_lines = [g for g in raw_grocery[:40] if isinstance(g, dict) and isinstance(g.get("name"), str)]
             reply_text = draft.get("reply")
@@ -799,6 +807,10 @@ def post_session_message(
         (_safe_json(messages), now, session_id),
     )
     out: dict[str, Any] = {"ok": True, "messages": messages}
+    if detections and detections["rows"]:
+        inv_now = inventory.snapshot()
+        detections["places"] = [{"id": p["id"], "name": p.get("name")} for p in inv_now.get("places", [])][:80]
+        out["detections"] = detections      # editable review card in the chip; drafts are built only after the Master confirms
     if grocery_lines:
         out["grocery"] = {"lines": grocery_lines}    # needed items: the chip asks the Master before they reach the grocery list
     if operation:
@@ -1727,6 +1739,18 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                     raise InventoriaError(str(exc)[:200], code="validation_error") from exc
                 with st.transaction():
                     return 200, post_session_message(conn, household_id, sid, {"proposals": props})
+
+            if path == "/api/inventoria/detections":  # reviewed photo rows -> one reviewable draft (no model call)
+                import hq_inventoria_ai as ai
+                sid = data.get("session_id")
+                if not isinstance(sid, str) or not re.fullmatch(r"ivo-[0-9a-f]{16}", sid):
+                    raise InventoriaError("session_id requis", code="validation_error")
+                try:
+                    props = ai.detection_proposals(data.get("rows"), data.get("mode"), inventory.snapshot())
+                except (ValueError, schemas.SchemaError) as exc:
+                    raise InventoriaError(str(exc)[:200], code="validation_error") from exc
+                with st.transaction():
+                    return 200, post_session_message(conn, household_id, sid, {"proposals": props}, split=True)
 
             if path == "/api/inventoria/to-grocery":  # shopping list or confirmed photo lines -> the open grocery list
                 import hq_grocery

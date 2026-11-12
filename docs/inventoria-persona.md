@@ -102,6 +102,26 @@ actions hide while a draft is open so Apply and Cancel stay visible. Styles live
   omitted otherwise. Her messages carry her portrait as an avatar; alert cards use a coloured edge and ring (red = out or below minimum,
   amber = getting low, teal = estimate).
 
+## Multi-item photos (pile, shelf, fridge, drawer)
+
+One photo of many physical things becomes an **editable review list**, then a normal draft:
+
+1. **She declares what the photo is** (`photo_kind`: `receipt`, `list` or `objects`). Receipts and written lists go through `propose_changes`;
+   physical objects go through `report_detections` only (a wrong choice is refused and she retries). `report_detections` is also refused
+   until she has called `match_items`, so labels like "OLIVE OIL" are mapped to your own item names (translations included).
+2. **Review card** in the chat: one row per kind of item with a tick box, an editable count, the item icon, `old → new` for existing items or a
+   *nouveau* badge with a place picker for new ones (pre-filled from the closest existing item), and a *à vérifier* flag on low-confidence rows
+   (those start unticked). Two modes: **Ajouter au stock** (counts are added: groceries just brought home) or **Compter (remplace)** (the photo shows
+   what is stored: counts replace the stock; items not in the photo are left alone). The photo sheet picks the mode: *Je l'ai acheté / reçu* = add,
+   *C'est mon stock (compter)* = count.
+3. **Préparer le brouillon** sends only the ticked, edited rows to `POST /api/inventoria/detections {session_id, mode, rows}`, which builds adjust/create
+   drafts (creates grouped one per commit batch, as everywhere else) with no model call; you then preview and apply as usual (and can undo the batch).
+4. **Ajouter une photo** scans a shelf in several shots: rows are merged by item; an item seen in two photos keeps the larger count and is flagged
+   *vu sur 2 photos* so you check it.
+
+Counts from a photo are estimates; the model can misread a label (a "2KG" pack counted as 2) or miss hidden items, which is why nothing is applied
+without the review. If she also drafted stock changes for the same items, those drafts are dropped so nothing appears twice.
+
 ## Voice
 
 Lottie (Phonon), +0.3 slower, +3 semitones. Change it in Éditer → Studio vocal.

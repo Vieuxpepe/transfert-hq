@@ -253,3 +253,23 @@
   .hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab .hq-inv-ico{width:1.05em;height:1.05em}
   .hq-inventoria-badge{min-width:16px;line-height:16px;font-size:10.5px;padding:0 4px}
 }
+
+/* ---- multi-item photo review ---------------------------------------------------------------------------------------- */
+.hq-inventoria .hq-inventoria-detect{max-height:260px}
+.hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-detect:not([hidden])) .hq-inventoria-quick{display:none}
+.hq-inventoria-seg{display:inline-flex;border:1px solid var(--inv-line);border-radius:999px;overflow:hidden;margin:0 0 6px;align-self:flex-start}
+.hq-inventoria .hq-inventoria-bubble .hq-inventoria-seg button{border:0;border-radius:0;background:transparent;padding:5px 12px}
+.hq-inventoria .hq-inventoria-bubble .hq-inventoria-seg button[aria-pressed="true"]{background:var(--inv-accent);color:var(--inv-on-accent);font-weight:750}
+.hq-inventoria-det-hint{margin:0 0 6px;font-size:11.5px;color:var(--inv-muted)}
+.hq-inventoria-det-list{list-style:none;margin:0 0 8px;padding:0;flex:1 1 auto;min-height:60px;overflow-y:auto}
+.hq-inventoria-det-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;padding:5px 4px;border-radius:8px}
+.hq-inventoria-det-row:hover{background:var(--inv-surface)}
+.hq-inventoria-det-row.is-low{background:color-mix(in srgb,var(--inv-warn) 8%,transparent)}
+.hq-inventoria-det-name{flex:1 1 90px;min-width:0}
+.hq-inventoria-det-flag{padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;color:#1b1400;background:var(--inv-warn)}
+.hq-inventoria-det-info{display:inline-flex;align-items:center;gap:6px;margin-left:auto;font-size:12px;color:var(--inv-muted);white-space:nowrap}
+.hq-inventoria-det-new{padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;color:var(--inv-on-accent);background:var(--inv-accent)}
+.hq-inventoria-det-info select{max-width:150px;padding:3px 6px;font-size:12px}
+/* while the review card is open the thread shrinks so the list gets the room */
+.hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-detect:not([hidden])) .hq-inventoria-thread-log{flex:0 0 auto;min-height:0;max-height:64px}
+.hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-detect:not([hidden])) .hq-inventoria-detect{flex:1 1 auto;max-height:none;min-height:150px}

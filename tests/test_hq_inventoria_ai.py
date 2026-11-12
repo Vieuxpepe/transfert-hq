@@ -908,3 +908,204 @@ class ClaimGuardTests(_IntakeHelpers, _Base):
         with self.fake_generate(script):
             iai.respond("add 2 screws", [], None)
         self.assertEqual(len(self.calls), 2)                                             # a real draft exists: claim is true
+
+
+class DetectionTests(_IntakeHelpers, _Base):
+    def setUp(self) -> None:
+        super().setUp()
+        inv.apply({"action": "place.create", "name": "Frigo", "kind": "shelf"})
+        inv.apply({"action": "place.create", "name": "Garde-manger", "kind": "shelf"})
+        self.places = {p["name"]: p["id"] for p in inv.snapshot()["places"]}
+        self.mk("Lait demi-écrémé", 1, "cartons", mn=2, place=self.places["Frigo"])
+        self.mk("Riz basmati", 1, "kg", mn=2, place=self.places["Garde-manger"])
+        self.mk("Sauce tomate", 2, "pots", place=self.places["Garde-manger"])
+
+    def _report(self, items, mode="add"):
+        tb = iai.Toolbox()
+        tb.match_called = True                                                       # the catalog step has happened
+        out = tb.run("report_detections", {"mode": mode, "items": items})
+        return tb, out
+
+    def test_rows_are_matched_across_languages_placed_and_never_summed(self) -> None:
+        tb, out = self._report([
+            {"name": "Lait", "qty": 3, "confidence": "high"},
+            {"name": "Sauce tomate bio", "qty": 4},
+            {"name": "Lait", "qty": 5, "confidence": "low"},                       # same item seen twice -> one row, max qty, lowest confidence
+            {"name": "Poivre noir", "qty": 1, "place": "garde-manger", "note": "partly hidden"},
+            {"name": "Beurre", "qty": 2, "place": "Cave"},                         # unknown place hint -> ignored
+            {"name": "", "qty": 1}, {"name": "Sucre", "qty": 0}])
+        rows = {r["name"]: r for r in tb.detections}
+        self.assertEqual((out["rows"], out["existing"], out["new"]), (4, 2, 2))
+        lait = rows["Lait demi-écrémé"]
+        self.assertEqual((lait["item_id"], lait["qty"], lait["qty_now"], lait["confidence"], lait["place"]), (
+            self.by_name()["Lait demi-écrémé"]["id"], 5, 1, "low", "Frigo"))
+        self.assertEqual(rows["Sauce tomate"]["qty"], 4)
+        self.assertEqual((rows["Poivre noir"]["item_id"], rows["Poivre noir"]["place"], rows["Poivre noir"]["note"]), (None, "Garde-manger", "partly hidden"))
+        self.assertIsNone(rows["Beurre"]["place_id"])
+        self.assertEqual([r.get("queued") for r in out["results"][-2:]], [False, False])
+        self.assertEqual({i["name"]: i["qty"] for i in inv.snapshot()["items"]}["Lait demi-écrémé"], 1)   # nothing applied
+
+    def test_new_items_default_to_the_place_of_their_closest_relative(self) -> None:
+        tb, _ = self._report([{"name": "Sauce pesto", "qty": 1}])
+        row = tb.detections[0]
+        self.assertEqual((row["item_id"], row["place"]), (None, "Garde-manger"))
+
+    def test_photo_message_returns_an_editable_review_not_drafts(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait", "Poivre"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "mode": "count", "items": [{"name": "Lait", "qty": 3}, {"name": "Poivre", "qty": 1, "confidence": "low"}]}}]}',
+                  '{"reply": "I saw 2 kinds of items; counts from a photo are estimates, please check them.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        before = {i["name"]: i["qty"] for i in inv.snapshot()["items"]}
+        with self.fake_generate(list(script)):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "stock"})
+        self.assertEqual(code, 200, out)
+        det = out["detections"]
+        self.assertEqual(det["mode"], "add")                                         # the Master's hint wins over the model's "count"
+        self.assertEqual({r["name"] for r in det["rows"]}, {"Lait demi-écrémé", "Poivre"})
+        self.assertEqual({p["name"] for p in det["places"]}, {"Atelier", "Frigo", "Garde-manger"})
+        self.assertNotIn("operation", out)
+        self.assertEqual({i["name"]: i["qty"] for i in inv.snapshot()["items"]}, before)
+        self.assertIn("report_detections", self.calls[0][0])
+        self.assertIn("PHYSICAL ITEMS", self.calls[0][0])
+        with self.fake_generate(list(script)):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "count"})
+        self.assertEqual(out["detections"]["mode"], "count")
+        self.assertIn("IN STOCK", self.calls[2][0])
+
+    def test_reviewed_rows_in_add_mode_become_drafts_that_commit(self) -> None:
+        ids = self.by_name()
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        rows = [{"item_id": ids["Lait demi-écrémé"]["id"], "qty": 3}, {"item_id": ids["Riz basmati"]["id"], "qty": 0},
+                {"name": "Poivre noir", "qty": 2, "unit": "pots", "place_id": self.places["Garde-manger"]},
+                {"name": "Beurre", "qty": 1}]
+        code, out = ivo.http_post("/api/inventoria/detections", {"session_id": sid, "mode": "add", "rows": rows})
+        self.assertEqual(code, 200, out)
+        ops = out["operations"] if "operations" in out else [out["operation"]]
+        self.assertEqual([len(o["proposals"]) for o in ops], [2, 1])                 # adjust + first create, then the second create
+        self.assertEqual(self.by_name()["Lait demi-écrémé"]["qty"], 1)               # still a draft
+        for n, o in enumerate(ops):
+            self.assertTrue(ivo.http_post(f"/api/inventoria/ops/{o['id']}/validate", {})[1]["validation"]["ok"])
+            ivo.http_post(f"/api/inventoria/ops/{o['id']}/preview", {"confirm": True})
+            self.assertEqual(ivo.http_post(f"/api/inventoria/ops/{o['id']}/commit", {"idempotency_key": f"detect-add-{n:05d}"})[0], 200)
+        now = self.by_name()
+        self.assertEqual((now["Lait demi-écrémé"]["qty"], now["Riz basmati"]["qty"], now["Poivre noir"]["qty"], now["Beurre"]["qty"]), (4, 1, 2, 1))
+        self.assertEqual(now["Poivre noir"]["place"], self.places["Garde-manger"])
+
+    def test_count_mode_sets_the_stock_and_skips_unchanged_rows(self) -> None:
+        ids = self.by_name()
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        rows = [{"item_id": ids["Lait demi-écrémé"]["id"], "qty": 5}, {"item_id": ids["Sauce tomate"]["id"], "qty": 2},     # unchanged
+                {"item_id": ids["Riz basmati"]["id"], "qty": 0}]                                                             # counted: none left
+        code, out = ivo.http_post("/api/inventoria/detections", {"session_id": sid, "mode": "count", "rows": rows})
+        self.assertEqual(code, 200, out)
+        labels = [p["label_fr"] for p in out["operation"]["proposals"]]
+        self.assertEqual(labels, ["Compter Lait demi-écrémé : 1 → 5", "Compter Riz basmati : 1 → 0"])
+        op = out["operation"]["id"]
+        ivo.http_post(f"/api/inventoria/ops/{op}/validate", {})
+        ivo.http_post(f"/api/inventoria/ops/{op}/preview", {"confirm": True})
+        self.assertEqual(ivo.http_post(f"/api/inventoria/ops/{op}/commit", {"idempotency_key": "detect-count-0001"})[0], 200)
+        now = self.by_name()
+        self.assertEqual((now["Lait demi-écrémé"]["qty"], now["Riz basmati"]["qty"], now["Sauce tomate"]["qty"]), (5, 0, 2))
+
+    def test_detection_route_rejects_bad_rows(self) -> None:
+        ids = self.by_name()
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        lait = ids["Lait demi-écrémé"]["id"]
+        bad = [("add", []), ("nope", [{"name": "x", "qty": 1}]), ("add", [{"item_id": "itm-0000000000000000", "qty": 1}]),
+               ("add", [{"item_id": lait, "qty": 1}, {"item_id": lait, "qty": 2}]), ("add", [{"name": "", "qty": 1}]),
+               ("add", [{"name": "x", "qty": 0}]), ("add", [{"name": "x", "qty": 1}, {"name": "X", "qty": 1}]),
+               ("add", [{"name": "x", "qty": 1, "place_id": "plc-0000000000000000"}]), ("add", [{"item_id": lait, "qty": -1}]),
+               ("count", [{"item_id": ids["Sauce tomate"]["id"], "qty": 2}])]
+        for mode, rows in bad:
+            self.assertEqual(ivo.http_post("/api/inventoria/detections", {"session_id": sid, "mode": mode, "rows": rows})[0], 400, (mode, rows))
+        self.assertEqual(ivo.http_post("/api/inventoria/detections", {"session_id": "nope", "mode": "add", "rows": []})[0], 400)
+
+    def test_claim_guard_does_not_fire_after_detections(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait"]}}, {"name": "report_detections", "args": {"items": [{"name": "Lait", "qty": 1}]}}]}',
+                  '{"reply": "I have prepared the list of what I saw; please check it.", "tools": []}']
+        with self.fake_generate(script):
+            iai.respond("photo", [], None)
+        self.assertEqual(len(self.calls), 2)
+
+
+class DetectionDedupeTests(_IntakeHelpers, _Base):
+    def test_a_stock_draft_for_the_same_items_is_dropped_when_a_review_list_exists(self) -> None:
+        self.mk("Lait demi-écrémé", 1, "cartons", mn=2)
+        lait = self.by_name()["Lait demi-écrémé"]["id"]
+        vis = self.by_name()["Vis M3"]["id"]
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait", "Beurre"]}}, {"name": "report_detections", "args": {"mode": "add", "items": [{"name": "Lait", "qty": 2}, {"name": "Beurre", "qty": 1}]}},'
+                  f' {{"name": "propose_changes", "args": {{"changes": [{{"op": "adjust", "item_id": "{lait}", "delta": 2}}, {{"op": "adjust", "item_id": "{vis}", "delta": 5}}, {{"op": "create", "name": "Beurre", "qty": 1}}]}}}}]}}',
+                  '{"reply": "Reviewing the list of what I saw.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "here is what I saw and what to change"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual({r["name"] for r in out["detections"]["rows"]}, {"Lait demi-écrémé", "Beurre"})
+        labels = [p["label_fr"] for p in out["operation"]["proposals"]]
+        self.assertEqual(len(labels), 1)                                     # only the unrelated Vis M3 adjustment survives
+        self.assertIn("Vis M3", labels[0])
+
+
+class DetectionDisciplineTests(_IntakeHelpers, _Base):
+    def test_report_detections_is_refused_until_the_catalog_step_has_run(self) -> None:
+        self.mk("Huile d'olive", 3, "bouteilles")
+        tb = iai.Toolbox()
+        first = tb.run("report_detections", {"items": [{"name": "OLIVE OIL", "qty": 1}]})
+        self.assertIn("match_items", first["error"])
+        self.assertEqual(tb.detections, [])
+        tb.run("match_items", {"names": ["OLIVE OIL"]})
+        self.assertEqual(tb.run("report_detections", {"items": [{"name": "Huile d'olive", "qty": 1}]})["existing"], 1)
+        self.assertEqual(iai.Toolbox().__class__.__name__, "Toolbox")
+
+    def test_an_empty_inventory_does_not_need_the_catalog_step(self) -> None:
+        for it in inv.snapshot()["items"]:
+            inv.apply({"action": "item.delete", "id": it["id"], "rev": it["rev"]})
+        self.assertEqual(iai.Toolbox().run("report_detections", {"items": [{"name": "Café", "qty": 1}]})["new"], 1)
+
+    def test_a_photo_claim_without_any_result_gets_the_correction_round(self) -> None:
+        self.assertTrue(iai.claims_a_draft("I have processed the photo and updated the draft.", photo=True))
+        self.assertFalse(iai.claims_a_draft("I have processed the photo and updated the draft.", photo=False))
+        self.assertFalse(iai.claims_a_draft("I could not identify anything in this photo.", photo=True))
+        script = ['{"reply": "I have processed the photo of your stock.", "tools": []}',
+                  '{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Café"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "mode": "count", "items": [{"name": "Café", "qty": 1}]}}]}',
+                  '{"reply": "I saw 1 kind of item; please check it.", "tools": []}']
+        tb = iai.Toolbox()
+        with self.fake_generate(script):
+            iai.respond("", [], None, toolbox=tb, image={"mimeType": "image/jpeg", "data": "AAAA"})
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(tb.detections[0]["name"], "Café")
+
+
+class PhotoKindGateTests(_IntakeHelpers, _Base):
+    def _tb(self, image=True):
+        tb = iai.Toolbox()
+        tb.has_image = image
+        tb.match_called = True
+        return tb
+
+    def test_with_a_photo_the_two_stock_tools_require_a_matching_photo_kind(self) -> None:
+        vis = self.by_name()["Vis M3"]["id"]
+        change = {"changes": [{"op": "adjust", "item_id": vis, "delta": 1}]}
+        det = {"items": [{"name": "Café", "qty": 1}]}
+        tb = self._tb()
+        self.assertIn("photo_kind", tb.run("propose_changes", change)["error"])
+        self.assertIn("photo_kind", tb.run("report_detections", det)["error"])
+        self.assertIn("report_detections", tb.run("propose_changes", {**change, "photo_kind": "objects"})["error"])
+        self.assertIn("only for photos of physical objects", tb.run("report_detections", {**det, "photo_kind": "receipt"})["error"])
+        self.assertTrue(tb.run("propose_changes", {**change, "photo_kind": "receipt"})["results"][0]["queued"])
+        self.assertEqual(tb.run("report_detections", {**det, "photo_kind": "objects"})["new"], 1)
+
+    def test_text_only_messages_are_not_affected(self) -> None:
+        vis = self.by_name()["Vis M3"]["id"]
+        tb = self._tb(image=False)
+        self.assertTrue(tb.run("propose_changes", {"changes": [{"op": "adjust", "item_id": vis, "delta": 1}]})["results"][0]["queued"])
+        self.assertEqual(tb.run("report_detections", {"items": [{"name": "Café", "qty": 1}]})["new"], 1)
+
+    def test_the_model_recovers_from_a_wrong_tool_choice_within_the_same_message(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Café"]}}, {"name": "propose_changes", "args": {"photo_kind": "objects", "changes": [{"op": "create", "name": "Café", "qty": 1}]}}]}',
+                  '{"reply": "", "tools": [{"name": "report_detections", "args": {"photo_kind": "objects", "mode": "add", "items": [{"name": "Café", "qty": 1}]}}]}',
+                  '{"reply": "I saw 1 kind of item; please check it.", "tools": []}']
+        tb = iai.Toolbox()
+        with self.fake_generate(script):
+            iai.respond("", [], None, toolbox=tb, image={"mimeType": "image/jpeg", "data": "AAAA"})
+        self.assertEqual(tb.proposals, [])
+        self.assertEqual(tb.detections[0]["name"], "Café")

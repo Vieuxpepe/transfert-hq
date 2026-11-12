@@ -30,6 +30,7 @@ MAX_PLACES = 14
 MAX_ROUNDS = 4              # model calls per user message (the last one may not ask for tools)
 MAX_TOOL_CALLS = 8          # total tool executions per user message
 GROCERY_MAX = 40            # lines queued for the grocery list per message
+DETECT_MAX = 60             # distinct items reported from one photo of physical items
 MAX_PROPOSALS = 20          # drafts queued per user message (hq_inventoria.PROPOSALS_MAX)
 RESULT_CHARS = 3500         # cap on one tool result sent back to the model
 RESULT_CHARS_BY_TOOL = {"match_items": 9000}
@@ -84,10 +85,15 @@ Store tool (where an item is usually bought; groups the shopping list; stock unc
 Grocery tool (things the Master NEEDS to buy; nothing is added until they confirm):
 - propose_grocery {"lines": [{"name": "<item>", "qty": <integer>, "unit": "<optional>", "store": "<optional>"}]}
   Use the inventory's own item name and unit when the thing already exists (check match_items). Never use it for things already bought.
+Photo-detection tool (a photo of several PHYSICAL items; nothing is applied, the Master edits the list):
+- report_detections {"photo_kind": "objects", "mode": "add" | "count", "items": [{"name": "<item>", "qty": <integer>, "unit": "<optional>", "confidence": "high"|"medium"|"low",
+    "place": "<optional place name>", "note": "<optional>"}]}
+  mode "add": the items are new (a pile of groceries just brought home, a delivery): each qty is ADDED to the stock.
+  mode "count": the photo shows what is stored (shelf, fridge, cupboard, drawer): each qty is the COUNT now present and will REPLACE the stock.
 Meal tool (read-only):
 - meal_needs {}   (what the current meal plan still needs to buy, from the meals module; mention it when the Master asks about meals)
 Draft tool (prepares changes for the Master to review; NOTHING is applied):
-- propose_changes {"changes": [ ... ]} with each change one of:
+- propose_changes {"photo_kind": "receipt" | "list" (only when a photo is attached), "changes": [ ... ]} with each change one of:
     {"op": "adjust", "item_id": "<id>", "item_name": "<its name>", "delta": <non-zero integer, negative to remove>}   (ONE adjust per item: add up the amounts)
     {"op": "create", "name": "...", "qty": <integer>, "unit": "...", "place_id": "<optional>", "min": <optional integer>}
     {"op": "update", "item_id": "<id>", "item_name": "<its name>", "fields": {"name"|"unit"|"min"|"qty"|"note"|"place_id": value}}
@@ -447,6 +453,10 @@ class Toolbox:
         self._inv_fn = inv_fn or hq_inventory.snapshot
         self.proposals: list[dict] = []
         self.grocery: list[dict] = []        # NEEDED items queued for the grocery list (applied only after the Master confirms)
+        self.detections: list[dict] = []     # items recognised in a photo of physical things (reviewed and edited by the Master)
+        self.detection_mode: str | None = None
+        self.match_called = False            # report_detections needs the catalog translation step first
+        self.has_image = False               # a photo is attached to the message being answered
         self.side_effects = 0              # successful remember / watch / set_store ... (not drafts, but real actions)
         self.calls = 0
 
@@ -643,6 +653,7 @@ class Toolbox:
                 {"id": i["id"], "name": i.get("name"), "qty": i.get("qty"), "unit": i.get("unit") or "",
                  "place": places.get(i.get("place"), ""), "score": sc}
                 for sc, i in scored[:3] if sc >= 0.6]})
+        self.match_called = True
         res: dict[str, Any] = {"results": out}
         if len(items) <= CATALOG_MAX:
             res["catalog"] = [f"{i.get('name')} [{i['id']}] ({i.get('unit') or 'no unit'}; {places.get(i.get('place'), 'no place')})"
@@ -704,6 +715,73 @@ class Toolbox:
         import hq_inventoria_watch as watch
         return {"removed": watch.remove_watch(_watch_root(), args.get("item_id"))}
 
+    def _best_match(self, inv: dict, name: str) -> tuple[dict | None, float]:
+        items = [i for i in inv.get("items", []) if isinstance(i, dict)]
+        ranked = sorted(((match_score(name, i.get("name", "")), i) for i in items), key=lambda x: -x[0])
+        if ranked and ranked[0][0] >= NAME_PICK and (len(ranked) < 2 or ranked[1][0] < ranked[0][0] - 0.1):
+            return ranked[0][1], ranked[0][0]
+        return None, (ranked[0][0] if ranked else 0.0)
+
+    def report_detections(self, args: dict) -> dict:
+        """Record what a photo of PHYSICAL items shows. Nothing is applied: the chip shows an editable review card."""
+        items = args.get("items")
+        if not isinstance(items, list) or not items:
+            return {"error": "items must be a non-empty list"}
+        inv = self.inv()
+        if not self.match_called and inv.get("items"):
+            names = [str((d or {}).get("name") or "") for d in items[:DETECT_MAX] if isinstance(d, dict)]
+            return {"error": "Call match_items with all these names first (its catalog shows the inventory's own names, translations included), "
+                             "then send report_detections again using the inventory's name for every item that already exists.", "names": names}
+        if args.get("mode") in ("add", "count"):
+            self.detection_mode = args["mode"]
+        places = _place_names(inv)
+        by_key: dict[str, dict] = {}
+        results = []
+        for i, d in enumerate(items[:DETECT_MAX]):
+            try:
+                if not isinstance(d, dict):
+                    raise ValueError("item must be an object")
+                name = " ".join(str(d.get("name") or "").split())[:160]
+                if not name:
+                    raise ValueError("name required")
+                qty = _to_int(d.get("qty", 1), "qty", min_value=1)
+                if qty > 100000:
+                    raise ValueError("qty too large")
+                conf = d.get("confidence") if d.get("confidence") in ("high", "medium", "low") else "medium"
+                match, score = self._best_match(inv, name)
+                place_id = resolve_place(inv, d.get("place")) if d.get("place") else None
+                if not place_id and match is None:
+                    near, sc = None, 0.0
+                    for it in inv.get("items", []):          # a new item defaults to where its closest relative lives
+                        s2 = match_score(name, it.get("name", ""))
+                        if s2 > sc and it.get("place"):
+                            near, sc = it, s2
+                    if near is not None and sc >= 0.45:
+                        place_id = near["place"]
+                if match is not None and not place_id:
+                    place_id = match.get("place")
+                row = {"name": match.get("name") if match else name, "seen_as": name, "qty": qty,
+                       "unit": (match.get("unit") if match else "") or " ".join(str(d.get("unit") or "").split())[:20],
+                       "confidence": conf, "note": " ".join(str(d.get("note") or "").split())[:120],
+                       "item_id": match["id"] if match else None, "qty_now": match.get("qty") if match else None,
+                       "place_id": place_id, "place": places.get(place_id, "") if place_id else ""}
+                key = row["item_id"] or _norm(row["name"])
+                if key in by_key:                              # the same thing seen twice is one row (never summed)
+                    old = by_key[key]
+                    old["qty"] = max(old["qty"], qty)
+                    if ("high", "medium", "low").index(conf) > ("high", "medium", "low").index(old["confidence"]):
+                        old["confidence"] = conf
+                    results.append({"index": i, "queued": True, "merged": True})
+                    continue
+                by_key[key] = row
+                results.append({"index": i, "queued": True, "existing": bool(match)})
+            except ValueError as exc:
+                results.append({"index": i, "queued": False, "error": str(exc)[:160]})
+        self.detections = list(by_key.values())
+        return {"results": results, "rows": len(self.detections), "existing": sum(1 for r in self.detections if r["item_id"]),
+                "new": sum(1 for r in self.detections if not r["item_id"]),
+                "note": "Not applied. The Master reviews, edits counts and places, and confirms in the panel."}
+
     def propose_grocery(self, args: dict) -> dict:
         """Queue items the Master NEEDS to buy. Nothing is written: the chip shows them and the Master adds them to the grocery list."""
         lines = args.get("lines")
@@ -754,12 +832,23 @@ class Toolbox:
         return {"forgotten": mem.forget(hq_inventoria._root(), args.get("id"))}
 
     TOOLS = ("search_items", "get_item", "list_places", "list_place", "list_low_stock", "list_alerts", "match_items",
-             "propose_changes", "propose_grocery", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget")
+             "propose_changes", "propose_grocery", "report_detections", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget")
 
     def run(self, name: str, args: dict) -> dict:
         self.calls += 1
         if name not in self.TOOLS:
             return {"error": f"unknown tool {name!r}"}
+        if self.has_image and name in ("propose_changes", "report_detections"):
+            kind = (args or {}).get("photo_kind")
+            if kind not in ("receipt", "list", "objects"):
+                return {"error": 'A photo is attached: pass photo_kind = "receipt" (a printed or written purchase record), "list" (a written or typed list) '
+                                 'or "objects" (physical items: a pile, shelf, fridge, drawer...).'}
+            if name == "propose_changes" and kind == "objects":
+                return {"error": 'This photo shows physical objects. Use report_detections (photo_kind "objects"): the Master reviews and edits the '
+                                 'recognised items before any draft exists. propose_changes is for receipts and written lists.'}
+            if name == "report_detections" and kind != "objects":
+                return {"error": 'report_detections is only for photos of physical objects. A receipt or written list goes through propose_changes '
+                                 '(photo_kind "receipt" or "list").'}
         try:
             res = getattr(self, name)(args or {})
         except Exception as exc:  # a bad argument must never break the chat
@@ -788,27 +877,43 @@ CLAIM_NOTE = ("SYSTEM NOTE: your reply says you added or prepared something, but
               "Do not claim an action you did not perform.")
 
 
-def claims_a_draft(reply: str) -> bool:
-    """True when the reply positively claims it added/prepared something ('I have prepared a draft...'); negations are excluded."""
+_PHOTO_CLAIM_RE = re.compile(r"\b(i have|i've|i just|i already|j'ai|je viens de)\b[^.!?]{0,60}\b(processed|identified|recognised|recognized|analysed|analyzed|"
+                            r"counted|listed|updated|recorded|logged|traité|identifié|reconnu|compté|mis à jour)", re.I)
+
+
+def claims_a_draft(reply: str, photo: bool = False) -> bool:
+    """True when the reply positively claims it added/prepared something ('I have prepared a draft...'); negations are excluded.
+    With a photo attached, 'I have processed / identified / updated ...' counts as a claim too."""
     for sentence in re.split(r"(?<=[.!?])\s+", reply or ""):
-        if _CLAIM_RE.search(sentence) and not _NEGATION_RE.search(sentence):
+        if (_CLAIM_RE.search(sentence) or (photo and _PHOTO_CLAIM_RE.search(sentence))) and not _NEGATION_RE.search(sentence):
             return True
     return False
 
 
-PHOTO_RULES = """A PHOTO is attached to the Master's latest message.
+PHOTO_RULES = """A PHOTO is attached to the Master's latest message. FIRST decide what it is, and say so in photo_kind on propose_changes /
+report_detections: "receipt" (printed purchase record), "list" (written or typed list) or "objects" (physical items). Receipts and lists use
+propose_changes; objects use report_detections and NEVER propose_changes (a wrong choice is refused).
 WHERE IT GOES: things the Master HAS (a receipt, groceries just bought or unpacked, a delivery) -> INTAKE drafts (propose_changes).
 Things the Master NEEDS (a handwritten or screenshot shopping list, an empty shelf or fridge, packaging to re-buy, "we are out of X") ->
 propose_grocery. One photo can contain both. If the Master said what the photo is, obey that; if it is genuinely unclear, ask ONE short
 question instead of guessing, and say in your reply which part went to the stock and which to the grocery list.
 - A RECEIPT: read the line items as a purchase list (quantity and name; "2 x LAIT 2% 4L" = 2 of milk). Ignore prices, totals, taxes, dates and the
   store header. Then follow the INTAKE steps (bought = increase).
-- A SHELF, FRIDGE or CUPBOARD: list only what you can clearly see and count; say that visual counts are estimates and ask before treating them as
-  exact stock. Prefer drafting only the items the Master asked about.
+- PHYSICAL ITEMS (a pile on the counter, bags, a shelf, fridge, cupboard, drawer, toolbox): list EVERY distinct item you can clearly identify with
+  report_detections, one row per kind of item with its count, using the inventory's own names when it exists (check match_items first; translations
+  count). Pick mode "add" for new arrivals and "count" for what is stored; if it is genuinely unclear which, ask ONE short question first.
+  Report EVERY distinct item you see, including ones that are NOT in the inventory: those become NEW items in the Master's review. Name new items in the language the
+  inventory already uses ("Oeufs", not "Eggs", in a French inventory), and treat a size label ("2KG") as the package size, not as the count. Never leave an
+  item out because it is missing from the catalog, and never leave out items just because you are unsure (report them with low confidence).
+  ALWAYS call match_items with every name first and report the inventory's own name for anything that exists (a label saying "OLIVE OIL" is the
+  inventory's "Huile d'olive"); report_detections is refused until you have. Mark confidence honestly: "low" for anything partly hidden, blurry, or whose count you are unsure of; never invent hidden items; group identical
+  items; do not list the shelf, bag or furniture themselves. Do not also call propose_changes for the same items. In your reply say how many kinds of
+  items you saw, that counts from a photo are estimates, and that the Master should check the list.
 - If you cannot read something, say which part and leave it out; never invent items to fill gaps."""
 VISION_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")   # image input needs the Gemini models
 INTENT_RULES = {
-    "stock": "The Master says this photo shows things they now HAVE: update the STOCK (INTAKE drafts). Do not use propose_grocery.",
+    "count": "The Master says this photo shows what is IN STOCK right now: report it with report_detections in mode \"count\" (a stock-taking). Do not use propose_grocery.",
+    "stock": "The Master says this photo shows things they now HAVE (just bought or received): update the STOCK (receipt -> INTAKE drafts; physical items -> report_detections in mode \"add\"). Do not use propose_grocery.",
     "grocery": "The Master says this photo shows things they NEED to buy: use propose_grocery. Do not change the stock.",
 }
 
@@ -823,6 +928,7 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
     if image:
         contents[-1]["parts"].append({"inlineData": image})
     chain = VISION_CHAIN if image else hq_ai.ASK_CHAIN
+    tb.has_image = bool(image)
     reply = ""
     rounds_allowed, round_no, corrected = MAX_ROUNDS, 0, False
     while round_no < rounds_allowed:
@@ -832,7 +938,7 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
         raw, _model = hq_ai.generate(chain, sys_r, contents, json_out=True,
                                      temperature=0.4, max_tokens=900)
         reply, tools = parse_model(raw)
-        if not tools and not corrected and claims_a_draft(reply) and not (tb.proposals or tb.grocery or tb.side_effects):
+        if not tools and not corrected and claims_a_draft(reply, photo=bool(image)) and not (tb.proposals or tb.grocery or tb.detections or tb.side_effects):
             # She says she prepared/added something but nothing was queued: one correction round (act for real, or retract).
             corrected = True
             rounds_allowed += 1
@@ -848,7 +954,7 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
             break
         contents = contents + [{"role": "model", "parts": [{"text": json.dumps({"reply": "", "tools": tools})}]},
                                {"role": "user", "parts": [{"text": _result_text(results)}]}]
-    if not reply and (tb.proposals or tb.grocery):
+    if not reply and (tb.proposals or tb.grocery or tb.detections):
         reply = "I've prepared a draft for you to review in the panel."
     elif not reply and tb.calls:
         reply = "I looked through the inventory but couldn't put together a clear answer. Could you rephrase or be more specific?"
@@ -863,11 +969,26 @@ def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     tb = Toolbox()
     reply, proposals = respond(text, hq_inventoria.current_history(), toolbox=tb, image=hq_inventoria.current_image(),
                                intent=hq_inventoria.current_intent())
+    if tb.detections and proposals:
+        # A photo of physical items is reviewed through the editable list. Drop any stock draft that touches the same items,
+        # so the Master never sees (or applies) the same change twice.
+        det_ids = {r["item_id"] for r in tb.detections if r.get("item_id")}
+        det_names = {_norm(r["name"]) for r in tb.detections}
+        def _overlaps(pr: dict) -> bool:
+            pl = pr.get("payload") or {}
+            if pr.get("op") == "item.create":
+                return _norm(pl.get("name")) in det_names
+            ids = {pl.get("id")} | set(pl.get("ids") or [])
+            return bool(ids & det_ids)
+        proposals = [pr for pr in proposals if not _overlaps(pr)]
     out: dict[str, Any] = {"reply": reply}
     if proposals:
         out["proposals"] = proposals
     if tb.grocery:
         out["grocery_lines"] = tb.grocery
+    if tb.detections:
+        forced = {"count": "count", "stock": "add"}.get(hq_inventoria.current_intent())
+        out["detections"] = {"mode": forced or tb.detection_mode or "add", "rows": tb.detections}
     return out
 
 
@@ -1012,3 +1133,59 @@ def grocery_lines(items: list[dict], merchants: dict[str, str] | None = None) ->
             line["merchant_id"] = mid
         lines.append(line)
     return lines
+
+
+# ---------------------------------------------------------------- detections reviewed in the chip -> adjust/create drafts
+
+def detection_proposals(rows: Any, mode: str, inv: dict | None = None) -> list[dict]:
+    """Rows edited by the Master -> validated drafts. ``add``: existing items get +qty; ``count``: existing items are set to qty (delta);
+    unknown items are created (with an optional place). Raises ValueError on anything invalid."""
+    import hq_household_schemas as schemas
+    inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
+    if mode not in ("add", "count"):
+        raise ValueError("mode: add ou count")
+    if not isinstance(rows, list) or not rows or len(rows) > DETECT_MAX:
+        raise ValueError(f"1 à {DETECT_MAX} lignes")
+    by_id = {i["id"]: i for i in inv.get("items", [])}
+    place_ids = {p["id"] for p in inv.get("places", [])}
+    tb = Toolbox(lambda: inv)
+    out, seen_ids, seen_new = [], set(), set()
+    for r in rows:
+        if not isinstance(r, dict):
+            raise ValueError("ligne invalide")
+        qty = _to_int(r.get("qty"), "qty", min_value=0)
+        if qty > 100000:
+            raise ValueError("quantité trop grande")
+        iid = r.get("item_id")
+        if iid:
+            if iid not in by_id or iid in seen_ids:
+                raise ValueError("article inconnu ou en double")
+            seen_ids.add(iid)
+            it = by_id[iid]
+            delta = qty if mode == "add" else qty - int(it.get("qty") or 0)
+            if qty == 0 and mode == "add" or delta == 0:
+                continue
+            prop = tb._build({"op": "adjust", "item_id": iid, "delta": delta}, inv)
+            prop["label_fr"] = (f"Ajouter {it.get('name')} : +{delta}" if mode == "add"
+                                else f"Compter {it.get('name')} : {it.get('qty')} \u2192 {qty}")
+        else:
+            name = " ".join(str(r.get("name") or "").split())[:160]
+            if not name or qty < 1:
+                raise ValueError("nouvel article : nom et quantité requis")
+            key = _norm(name)
+            if key in seen_new:
+                raise ValueError(f"doublon : {name}")
+            seen_new.add(key)
+            ch: dict[str, Any] = {"op": "create", "name": name, "qty": qty}
+            if r.get("unit"):
+                ch["unit"] = str(r["unit"])[:20]
+            pid = r.get("place_id")
+            if pid:
+                if pid not in place_ids:
+                    raise ValueError("emplacement inconnu")
+                ch["place_id"] = pid
+            prop = tb._build(ch, inv)
+        out.append(schemas.validate_inventoria_proposal(prop))
+    if not out:
+        raise ValueError("rien à changer")
+    return out
