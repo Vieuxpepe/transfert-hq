@@ -27,3 +27,6 @@ fallback chain as the other companions).
   (inverse draft), `POST /api/inventoria/to-grocery`, `POST /api/inventoria/notify`, and `image` (a data URL, 1.5 MB max after base64) on
   `/sessions/{id}/message` for photo intake. Transport cap 3 MB; every request without an image is capped at 1 MB.
 - **More tools:** `set_store`, `meal_needs` (read-only), `list_alerts` rows may carry `days_left` (an estimate).
+- **Photo routing:** `image` messages may carry `intent` (`stock` | `grocery`). The response can contain `grocery: {lines: [{name, qty, unit, store}]}`
+  next to `operation(s)`; nothing reaches the grocery module until the chip posts the lines to `/to-grocery`, which appends to the newest open
+  non-meal-plan list (max of existing/new quantity per name+unit) or creates one. Tool: `propose_grocery` (queue only).

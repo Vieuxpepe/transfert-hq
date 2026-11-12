@@ -703,6 +703,7 @@ def post_session_message(
     now = _now()
     proposals: list[dict] = []
     split_ok = False  # only model-drafted lists are re-grouped into valid commit batches
+    grocery_lines: list[dict] = []
 
     if "proposals" in data:
         raw = data["proposals"]
@@ -728,6 +729,7 @@ def post_session_message(
         if callable(adapter):
             _ctx.history = [m for m in messages[:-1] if isinstance(m, dict)]
             _ctx.image = image
+            _ctx.intent = data.get("intent") if data.get("intent") in ("stock", "grocery") else None
             _ctx.conn, _ctx.household_id = conn, household_id
             try:
                 draft = adapter(text, session_id=session_id)
@@ -738,6 +740,7 @@ def post_session_message(
             finally:
                 _ctx.history = None
                 _ctx.image = None
+                _ctx.intent = None
                 _ctx.conn = None
             raw_out = json.dumps(draft, ensure_ascii=False, default=str)
             if len(raw_out) > ADAPTER_OUTPUT_MAX:
@@ -745,6 +748,9 @@ def post_session_message(
             if not isinstance(draft, dict):
                 raise InventoriaError("réponse modèle invalide", code="validation_error")
             raw_props = draft.get("proposals")
+            raw_grocery = draft.get("grocery_lines")
+            if isinstance(raw_grocery, list):
+                grocery_lines = [g for g in raw_grocery[:40] if isinstance(g, dict) and isinstance(g.get("name"), str)]
             reply_text = draft.get("reply")
             has_reply = isinstance(reply_text, str) and bool(reply_text.strip())
             if has_reply:
@@ -793,6 +799,8 @@ def post_session_message(
         (_safe_json(messages), now, session_id),
     )
     out: dict[str, Any] = {"ok": True, "messages": messages}
+    if grocery_lines:
+        out["grocery"] = {"lines": grocery_lines}    # needed items: the chip asks the Master before they reach the grocery list
     if operation:
         out["operation"] = operation
         if len(operations) > 1:
@@ -1537,6 +1545,11 @@ def current_image() -> dict | None:
     return getattr(_ctx, "image", None)
 
 
+def current_intent() -> str | None:
+    """What the Master said the photo is: 'stock', 'grocery' or None (let her decide)."""
+    return getattr(_ctx, "intent", None)
+
+
 def current_db() -> tuple | None:
     """(connection, household_id) while a model turn runs inside post_session_message; used by read-only module tools."""
     conn = getattr(_ctx, "conn", None)
@@ -1566,6 +1579,29 @@ def speak(data: dict) -> tuple[int, dict]:
         return 503, {"ok": False, "error": (res or {}).get("error") or "Voix indisponible",
                      "code": "voice_unavailable"}
     return 200, {"ok": True, "audio_url": url, "visemes": res.get("visemes") or [], "engine": res.get("engine")}
+
+
+def append_or_create_grocery(conn: sqlite3.Connection, household_id: str, lines: list[dict]) -> tuple[dict, bool]:
+    """Add lines to the newest OPEN grocery list that is not tied to a meal plan (those are never edited), else create one.
+    A name+unit already on the list keeps the larger quantity, so sending twice never doubles anything."""
+    import hq_grocery
+    row = conn.execute(
+        "SELECT * FROM grocery_lists WHERE household_id = ? AND status = 'open' AND meal_plan_id IS NULL "
+        "ORDER BY created_at DESC LIMIT 1", (household_id,)).fetchone()
+    if row is None:
+        return hq_grocery.create_grocery_list(conn, household_id, {"lines": lines}), False
+    merged = [dict(x) for x in json.loads(row["lines_json"] or "[]")]
+    index = {(str(m.get("name", "")).casefold(), m.get("unit")): m for m in merged}
+    for ln in lines:
+        key = (ln["name"].casefold(), ln["unit"])
+        if key in index:
+            index[key]["qty_milli"] = max(int(index[key]["qty_milli"]), int(ln["qty_milli"]))
+        else:
+            merged.append(dict(ln))
+            index[key] = merged[-1]
+    if len(merged) > 500:
+        raise InventoriaError("liste de courses pleine (500 lignes)", status=409, code="conflict")
+    return hq_grocery.update_grocery_list(conn, household_id, {"id": row["id"], "rev": int(row["rev"]), "lines": merged}), True
 
 
 def status() -> dict:
@@ -1692,17 +1728,29 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                 with st.transaction():
                     return 200, post_session_message(conn, household_id, sid, {"proposals": props})
 
-            if path == "/api/inventoria/to-grocery":  # shopping list -> a NEW open list in the grocery module
+            if path == "/api/inventoria/to-grocery":  # shopping list or confirmed photo lines -> the open grocery list
                 import hq_grocery
                 import hq_inventoria_ai as ai
-                shop = ai.shopping_list(inventory.snapshot(), include_soon=data.get("include_soon") is not False)
-                if not shop["items"]:
+                if isinstance(data.get("lines"), list):
+                    items = []
+                    for ln in data["lines"][:40]:
+                        if not isinstance(ln, dict) or not isinstance(ln.get("name"), str) or not ln["name"].strip():
+                            raise InventoriaError("ligne invalide", code="validation_error")
+                        qty = ln.get("qty", 1)
+                        if isinstance(qty, bool) or not isinstance(qty, int) or not 1 <= qty <= 100000:
+                            raise InventoriaError("quantité invalide", code="validation_error")
+                        items.append({"name": ln["name"].strip()[:160], "buy": qty, "unit": str(ln.get("unit") or "")[:20],
+                                      "store": str(ln.get("store") or "")[:60]})
+                else:
+                    shop = ai.shopping_list(inventory.snapshot(), include_soon=data.get("include_soon") is not False)
+                    items = shop["items"]
+                if not items:
                     raise InventoriaError("rien à envoyer", status=409, code="conflict")
                 merchants = {m["name"].casefold(): m["id"] for m in hq_grocery.list_merchants(conn, household_id, {}).get("items", [])}
-                lines = ai.grocery_lines(shop["items"], merchants)
+                lines = ai.grocery_lines(items, merchants)
                 with st.transaction():
-                    created = hq_grocery.create_grocery_list(conn, household_id, {"lines": lines})
-                return 200, {"ok": True, "list": created, "count": len(lines)}
+                    created, appended = append_or_create_grocery(conn, household_id, lines)
+                return 200, {"ok": True, "list": created, "count": len(lines), "appended": appended}
 
             m_op = OPS_RE.match(path)
             if not m_op:

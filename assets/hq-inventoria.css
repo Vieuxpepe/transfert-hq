@@ -182,3 +182,74 @@
 @media (prefers-reduced-motion:reduce){
   .hq-inventoria-badge,.hq-inventoria-msg.is-typing i,.hq-inventoria-bubble button{animation:none!important;transition:none!important}
 }
+
+/* ---- icons ------------------------------------------------------------------------------------------------ */
+.hq-inv-ico{width:1.15em;height:1.15em;flex:none;display:inline-block;vertical-align:-.2em}
+.hq-inv-lbl.is-hidden{display:none}
+.hq-inventoria .hq-inventoria-bubble button:not(.hq-inventoria-head-btn){display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.hq-inventoria .hq-inventoria-bubble button.is-icon{padding:7px 10px}
+.hq-inventoria .hq-inventoria-bubble button.is-icon .hq-inv-ico{width:1.3em;height:1.3em}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab .hq-inv-ico{width:1.2em;height:1.2em}
+.hq-inventoria-bubble summary{display:flex;align-items:center;gap:6px;list-style:none}
+.hq-inventoria-bubble summary::-webkit-details-marker{display:none}
+.hq-inventoria-bubble summary::after{content:"";margin-left:auto;width:7px;height:7px;border-right:2px solid var(--inv-muted);border-bottom:2px solid var(--inv-muted);transform:rotate(45deg);transition:transform .15s ease}
+.hq-inventoria-bubble details[open]>summary::after{transform:rotate(-135deg)}
+.hq-inventoria-chat-voice .hq-inv-ico{width:1.2em;height:1.2em}
+.hq-inventoria-draft-title{display:flex;align-items:center;gap:6px}
+.hq-inventoria-shop-empty{display:flex;flex-direction:column;align-items:center;gap:6px}
+.hq-inventoria-shop-empty .hq-inv-ico{width:2.4em;height:2.4em;color:var(--inv-accent)}
+
+/* ---- item badges (HqHouseholdIcons) -------------------------------------------------------------------------- */
+.hq-inventoria-itemico{flex:none;--accent:var(--inv-accent)}
+
+/* ---- chat rows with avatar ------------------------------------------------------------------------------------ */
+.hq-inventoria-row{display:flex;align-items:flex-end;gap:6px;max-width:94%}
+.hq-inventoria-row.is-user{align-self:flex-end}
+.hq-inventoria-row.is-assistant{align-self:flex-start}
+.hq-inventoria .hq-inventoria-row .hq-inventoria-msg{max-width:none;min-width:0}
+.hq-inventoria-avatar{
+  width:26px;height:26px;flex:none;border-radius:50%;object-fit:cover;
+  border:1.5px solid color-mix(in srgb,var(--inv-accent) 70%,transparent);background:#0b1c1a;
+}
+.hq-inventoria-empty{display:flex;flex-direction:column;align-items:center;gap:8px}
+.hq-inventoria-empty p{margin:0}
+.hq-inventoria-empty-ico{width:2.2em;height:2.2em;color:var(--inv-accent);opacity:.9}
+
+/* ---- alerts: [item icon] text [button] ------------------------------------------------------------------------ */
+.hq-inventoria-alert-text{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:6px}
+.hq-inventoria-alert-status{width:1.25em;height:1.25em;color:var(--inv-warn)}
+.hq-inventoria-alert.is-low .hq-inventoria-alert-status,.hq-inventoria-alert.is-out .hq-inventoria-alert-status{color:var(--inv-danger)}
+.hq-inventoria-alert.is-trend .hq-inventoria-alert-status{color:var(--inv-accent)}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-alert-act{padding:4px 10px;font-size:12px;white-space:nowrap}
+
+/* ---- checklist + draft rows ------------------------------------------------------------------------------------- */
+.hq-inventoria-checks li{gap:8px}
+.hq-inventoria-draft-list{list-style:none;padding-left:0}
+.hq-inventoria-draft-li{display:flex;align-items:center;gap:8px;margin:4px 0}
+.hq-inventoria-op-ico{width:1.1em;height:1.1em;flex:none;color:var(--inv-accent)}
+
+/* ---- grocery confirmation card shares the draft card look -------------------------------------------------------- */
+.hq-inventoria .hq-inventoria-grocery{border-color:color-mix(in srgb,var(--inv-warn) 55%,transparent);background:color-mix(in srgb,var(--inv-warn) 9%,transparent)}
+.hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-grocery:not([hidden])) .hq-inventoria-quick{display:none}
+
+/* ---- photo sheet -------------------------------------------------------------------------------------------------- */
+.hq-inventoria-photo-sheet{
+  display:flex;gap:10px;align-items:flex-start;padding:10px;border-radius:12px;
+  background:var(--inv-surface);border:1px solid var(--inv-line);
+}
+.hq-inventoria-photo-sheet[hidden]{display:none}
+.hq-inventoria-photo-thumb{width:84px;height:84px;flex:none;border-radius:10px;object-fit:cover;border:1px solid var(--inv-line);background:#000}
+.hq-inventoria-photo-body{flex:1 1 auto;min-width:0}
+.hq-inventoria-photo-ask{margin:0 0 6px;font-weight:700;font-size:12.5px}
+.hq-inventoria-photo-actions{display:flex;flex-wrap:wrap;gap:6px}
+.hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-photo-sheet:not([hidden])) .hq-inventoria-quick{display:none}
+@media (max-width:560px){.hq-inventoria-photo-thumb{width:64px;height:64px}}
+.hq-inventoria .hq-inventoria-alert.is-low .hq-inventoria-alert-status,.hq-inventoria .hq-inventoria-alert.is-out .hq-inventoria-alert-status{display:none}
+.hq-inventoria .hq-inventoria-alert.is-low .hq-inventoria-itemico,.hq-inventoria .hq-inventoria-alert.is-out .hq-inventoria-itemico{box-shadow:inset 0 0 0 2px var(--inv-danger)}
+.hq-inventoria .hq-inventoria-alert.is-soon .hq-inventoria-itemico{box-shadow:inset 0 0 0 2px var(--inv-warn)}
+.hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab{white-space:nowrap}
+@media (max-width:560px){
+  .hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab{gap:4px;font-size:11.5px}
+  .hq-inventoria .hq-inventoria-bubble button.hq-inventoria-tab .hq-inv-ico{width:1.05em;height:1.05em}
+  .hq-inventoria-badge{min-width:16px;line-height:16px;font-size:10.5px;padding:0 4px}
+}

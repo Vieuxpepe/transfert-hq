@@ -85,6 +85,23 @@ hand-off) and **Réglages** (watches, offline alerts, what she remembers). Draft
 actions hide while a draft is open so Apply and Cancel stay visible. Styles live in `assets/hq-inventoria.css` (loaded after
 `hq-companion.css`, scoped under `.hq-inventoria`); it adapts to phone width and respects reduced motion.
 
+## Photos and icons
+
+- **Photo sheet:** after choosing a picture (camera or library) the chat shows a preview with three hints: *Je l'ai acheté / reçu* (stock),
+  *Il me manque ça* (groceries) or *Laisse-la décider*. The hint is sent as `intent` (`stock` | `grocery`) and only steers her; with no hint she
+  decides: things you HAVE (receipt, unpacked groceries) become stock drafts, things you NEED (a handwritten list, an empty shelf, packaging)
+  become a **grocery card**. One photo can produce both; she says which part went where.
+- **Grocery card:** her `propose_grocery` tool never writes anything. The card lists the lines with item icons; *Ajouter à ma liste* calls
+  `POST /api/inventoria/to-grocery {lines}`, which appends to the newest OPEN grocery list that is not tied to a meal plan (or creates one).
+  A name + unit already on the list keeps the larger quantity, so sending twice never doubles it.
+- **Claim guard:** if a reply says she added or prepared something but nothing was queued, she gets ONE correction round to do it for real or
+  retract the claim. Memory saves and real drafts are exempt.
+- **Package sizes:** "RIZ 2KG x1" is one 2 kg package: +2 when the item is counted in kg, +1 when counted in packages (she says which she assumed).
+- **Icons:** the panel chrome uses a small inline stroke icon set (`ICONS` in `hq-inventoria-chip.js`); item icons (alerts, tick-off list, draft
+  and grocery lines) come from `HqHouseholdIcons.resolveItem()` (food and hardware) when `hq-household-icons.js` is loaded, and are simply
+  omitted otherwise. Her messages carry her portrait as an avatar; alert cards use a coloured edge and ring (red = out or below minimum,
+  amber = getting low, teal = estimate).
+
 ## Voice
 
 Lottie (Phonon), +0.3 slower, +3 semitones. Change it in Éditer → Studio vocal.

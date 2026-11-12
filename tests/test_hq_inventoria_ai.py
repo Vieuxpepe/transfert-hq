@@ -800,3 +800,111 @@ class ResolveItemTests(_IntakeHelpers, _Base):
         self.assertFalse(out["results"][0]["queued"])                                      # same guard inside drafts
         out = tb.run("propose_changes", {"changes": [{"op": "adjust", "item_name": "Riz", "delta": 2}]})
         self.assertTrue(out["results"][0]["queued"])
+
+
+class GroceryRoutingTests(_IntakeHelpers, _Base):
+    def _open_lists(self):
+        import hq_household_store as hs
+        try:
+            with hs.open_store(self.root, readonly=True) as st:
+                return [dict(r) for r in st.conn.execute("SELECT * FROM grocery_lists").fetchall()]
+        except hs.HouseholdStoreError:
+            return []                                                                      # no household database yet
+
+    def test_propose_grocery_validates_merges_duplicates_and_writes_nothing(self) -> None:
+        tb = iai.Toolbox()
+        out = tb.run("propose_grocery", {"lines": [
+            {"name": "Oeufs", "qty": 12, "unit": "pcs"}, {"name": "oeufs", "qty": 6}, {"name": "Pain"},
+            {"name": "", "qty": 1}, {"name": "Sucre", "qty": 0}, {"name": "Lait", "qty": 2.5}, "pain"]})
+        self.assertEqual([r["queued"] for r in out["results"]], [True, True, True, False, False, False, False])
+        self.assertEqual({g["name"]: g["qty"] for g in tb.grocery}, {"Oeufs": 12, "Pain": 1})   # duplicate keeps the larger qty
+        self.assertEqual(self._open_lists(), [])                                              # nothing reached the grocery module
+
+    def test_photo_of_a_need_goes_to_a_grocery_card_not_the_stock(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "propose_grocery", "args": {"lines": [{"name": "Oeufs", "qty": 12}, {"name": "Pain", "qty": 1}]}}]}',
+                  '{"reply": "I added eggs and bread to a grocery draft. Confirm to put them on your list.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        before = {i["name"]: i["qty"] for i in inv.snapshot()["items"]}
+        with self.fake_generate(script):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "grocery"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["grocery"]["lines"], [{"name": "Oeufs", "qty": 12, "unit": "", "store": ""}, {"name": "Pain", "qty": 1, "unit": "", "store": ""}])
+        self.assertNotIn("operation", out)
+        self.assertEqual({i["name"]: i["qty"] for i in inv.snapshot()["items"]}, before)
+        self.assertEqual(self._open_lists(), [])
+        self.assertIn("NEED to buy", self.calls[0][0])                                          # intent reached the model
+        self.assertIn("WHERE IT GOES", self.calls[0][0])
+
+    def test_intent_is_validated_and_only_applies_to_photos(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(['{"reply": "ok", "tools": []}'] * 3):
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "stock"})
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "rm -rf"})
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "hi", "intent": "grocery"})
+        self.assertIn("now HAVE", self.calls[0][0])
+        self.assertNotIn("NEED to buy", self.calls[1][0])
+        self.assertNotIn("PHOTO", self.calls[2][0])
+        self.assertIsNone(ivo.current_intent())
+
+    def test_to_grocery_with_lines_creates_then_appends_and_never_doubles(self) -> None:
+        code, out = ivo.http_post("/api/inventoria/to-grocery", {"lines": [{"name": "Oeufs", "qty": 12, "unit": "pcs"}, {"name": "Pain", "qty": 1}]})
+        self.assertEqual((code, out["appended"], out["count"]), (200, False, 2))
+        first = out["list"]["id"]
+        code, out = ivo.http_post("/api/inventoria/to-grocery", {"lines": [{"name": "oeufs", "qty": 12, "unit": "pcs"}, {"name": "Bananes", "qty": 6}]})
+        self.assertEqual((code, out["appended"], out["list"]["id"]), (200, True, first))        # same list
+        lines = {l["name"]: l["qty_milli"] for l in out["list"]["lines"]}
+        self.assertEqual(lines, {"Oeufs": 12_000, "Pain": 1_000, "Bananes": 6_000})              # eggs not doubled
+        self.assertEqual(len(self._open_lists()), 1)
+
+    def test_lists_tied_to_a_meal_plan_are_never_edited(self) -> None:
+        import hq_household_store as hs
+        code, out = ivo.http_post("/api/inventoria/to-grocery", {"lines": [{"name": "Riz", "qty": 1}]})
+        with hs.open_store(self.root) as st:
+            st.conn.execute("PRAGMA foreign_keys = OFF")                                   # the plan row itself is irrelevant here
+            st.conn.execute("UPDATE grocery_lists SET meal_plan_id = 'mpl-0123456789abcdef' WHERE id = ?", (out["list"]["id"],))
+            st.conn.commit()
+        code, out2 = ivo.http_post("/api/inventoria/to-grocery", {"lines": [{"name": "Thé", "qty": 1}]})
+        self.assertEqual((code, out2["appended"]), (200, False))                                 # a fresh list instead
+        self.assertNotEqual(out2["list"]["id"], out["list"]["id"])
+        plan_list = [l for l in self._open_lists() if l["meal_plan_id"]][0]
+        self.assertNotIn("Thé", plan_list["lines_json"])
+
+    def test_custom_lines_are_validated(self) -> None:
+        for bad in ([{"name": "", "qty": 1}], [{"name": "x", "qty": 0}], [{"name": "x", "qty": 1.5}], [{"name": "x", "qty": True}], ["x"]):
+            self.assertEqual(ivo.http_post("/api/inventoria/to-grocery", {"lines": bad})[0], 400, bad)
+        self.assertEqual(ivo.http_post("/api/inventoria/to-grocery", {"lines": []})[0], 409)
+
+
+class ClaimGuardTests(_IntakeHelpers, _Base):
+    def test_a_claim_without_a_draft_gets_one_correction_round_that_acts_for_real(self) -> None:
+        script = ['{"reply": "I have added the items to your grocery list.", "tools": []}',
+                  '{"reply": "", "tools": [{"name": "propose_grocery", "args": {"lines": [{"name": "Oeufs", "qty": 12}]}}]}',
+                  '{"reply": "Eggs are in a grocery draft; confirm to add them.", "tools": []}']
+        tb = iai.Toolbox()
+        with self.fake_generate(script):
+            reply, _ = iai.respond("photo of my list", [], None, toolbox=tb)
+        self.assertEqual(len(self.calls), 3)
+        self.assertIn("SYSTEM NOTE", json.dumps(self.calls[1][1]))
+        self.assertEqual(tb.grocery[0]["name"], "Oeufs")
+        self.assertIn("confirm", reply)
+
+    def test_the_guard_runs_once_and_leaves_negative_or_already_acted_replies_alone(self) -> None:
+        with self.fake_generate(['{"reply": "I have prepared a draft.", "tools": []}'] * 5):
+            iai.respond("x", [], None)                                                   # keeps claiming: stops after ONE correction
+        self.assertEqual(len(self.calls), 2)
+        self.calls.clear()
+        with self.fake_generate(['{"reply": "I could not add that; it is not in the inventory.", "tools": []}']):
+            iai.respond("x", [], None)
+        self.assertEqual(len(self.calls), 1)                                             # a negation is not a false claim
+        self.calls.clear()
+        script = ['{"reply": "", "tools": [{"name": "remember", "args": {"note": "Buys eggs by the dozen"}}]}',
+                  '{"reply": "I have noted that for next time.", "tools": []}']
+        with self.fake_generate(script):
+            iai.respond("remember eggs by the dozen", [], None)
+        self.assertEqual(len(self.calls), 2)                                             # a real memory save needs no draft
+        self.calls.clear()
+        script = ['{"reply": "", "tools": [{"name": "propose_changes", "args": {"changes": [{"op": "adjust", "item_name": "Vis", "delta": 2}]}}]}',
+                  '{"reply": "I have prepared a draft for the screws.", "tools": []}']
+        with self.fake_generate(script):
+            iai.respond("add 2 screws", [], None)
+        self.assertEqual(len(self.calls), 2)                                             # a real draft exists: claim is true

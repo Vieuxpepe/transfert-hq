@@ -29,6 +29,7 @@ MAX_MATCH = 12
 MAX_PLACES = 14
 MAX_ROUNDS = 4              # model calls per user message (the last one may not ask for tools)
 MAX_TOOL_CALLS = 8          # total tool executions per user message
+GROCERY_MAX = 40            # lines queued for the grocery list per message
 MAX_PROPOSALS = 20          # drafts queued per user message (hq_inventoria.PROPOSALS_MAX)
 RESULT_CHARS = 3500         # cap on one tool result sent back to the model
 RESULT_CHARS_BY_TOOL = {"match_items": 9000}
@@ -80,6 +81,9 @@ Watch tools (alerts only; they never change stock or minimums):
 Store tool (where an item is usually bought; groups the shopping list; stock unchanged):
 - set_store {"item_id": "<id>", "item_name": "<its name>", "store": "<store name, or empty to clear>"}
   Use it when the Master says where they buy something ("I get duct tape at the hardware store").
+Grocery tool (things the Master NEEDS to buy; nothing is added until they confirm):
+- propose_grocery {"lines": [{"name": "<item>", "qty": <integer>, "unit": "<optional>", "store": "<optional>"}]}
+  Use the inventory's own item name and unit when the thing already exists (check match_items). Never use it for things already bought.
 Meal tool (read-only):
 - meal_needs {}   (what the current meal plan still needs to buy, from the meals module; mention it when the Master asks about meals)
 Draft tool (prepares changes for the Master to review; NOTHING is applied):
@@ -108,6 +112,8 @@ INTAKE: the Master may send a list of things bought, received, used or thrown aw
     Per item: an existing match -> an "adjust" with the right sign; no match -> a "create"
     with quantity and unit, placed where it fits best (see what each place already holds in list_places); if no place fits, create it
     without a place and say so.
+ 3a. Package sizes: "RIZ 2KG x1" is ONE package of 2 kg. When the inventory counts that item by weight or volume (kg, g, L, ml) add size x count
+    (here +2 kg); when it counts packages or pieces, add the count. Say in your recap which you assumed.
  3b. Name new items in the language the inventory already uses for its names (French names in a French inventory: "Pommes
     vertes", not "Green apples"), in a natural short singular/plural form, and keep the quantity and unit separate.
  4. If two existing items are equally plausible, or the unit clearly differs (litres vs cartons), do not guess: leave that item out
@@ -440,6 +446,8 @@ class Toolbox:
     def __init__(self, inv_fn=None):
         self._inv_fn = inv_fn or hq_inventory.snapshot
         self.proposals: list[dict] = []
+        self.grocery: list[dict] = []        # NEEDED items queued for the grocery list (applied only after the Master confirms)
+        self.side_effects = 0              # successful remember / watch / set_store ... (not drafts, but real actions)
         self.calls = 0
 
     def inv(self) -> dict:
@@ -696,6 +704,40 @@ class Toolbox:
         import hq_inventoria_watch as watch
         return {"removed": watch.remove_watch(_watch_root(), args.get("item_id"))}
 
+    def propose_grocery(self, args: dict) -> dict:
+        """Queue items the Master NEEDS to buy. Nothing is written: the chip shows them and the Master adds them to the grocery list."""
+        lines = args.get("lines")
+        if not isinstance(lines, list) or not lines:
+            return {"error": "lines must be a non-empty list"}
+        known = {_norm(l["name"]): l for l in self.grocery}
+        results = []
+        for i, ln in enumerate(lines[:GROCERY_MAX]):
+            try:
+                if not isinstance(ln, dict):
+                    raise ValueError("line must be an object")
+                name = " ".join(str(ln.get("name") or "").split())[:160]
+                if not name:
+                    raise ValueError("name required")
+                qty = _to_int(ln.get("qty", 1), "qty", min_value=1)
+                if qty > 100000:
+                    raise ValueError("qty too large")
+                row = {"name": name, "qty": qty, "unit": " ".join(str(ln.get("unit") or "").split())[:20],
+                       "store": " ".join(str(ln.get("store") or "").split())[:60]}
+                key = _norm(name)
+                if key in known:
+                    known[key]["qty"] = max(known[key]["qty"], qty)       # a repeated item never doubles
+                    results.append({"index": i, "queued": True, "merged": True})
+                    continue
+                if len(self.grocery) >= GROCERY_MAX:
+                    raise ValueError("grocery draft limit reached")
+                self.grocery.append(row)
+                known[key] = row
+                results.append({"index": i, "queued": True})
+            except ValueError as exc:
+                results.append({"index": i, "queued": False, "error": str(exc)[:160]})
+        return {"results": results, "grocery_total": len(self.grocery),
+                "note": "Not added yet. The Master confirms in the panel before anything reaches the grocery list."}
+
     # --- memory tools (notes about the Master; never touch stock)
     def remember(self, args: dict) -> dict:
         import hq_inventoria
@@ -712,16 +754,20 @@ class Toolbox:
         return {"forgotten": mem.forget(hq_inventoria._root(), args.get("id"))}
 
     TOOLS = ("search_items", "get_item", "list_places", "list_place", "list_low_stock", "list_alerts", "match_items",
-             "propose_changes", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget")
+             "propose_changes", "propose_grocery", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget")
 
     def run(self, name: str, args: dict) -> dict:
         self.calls += 1
         if name not in self.TOOLS:
             return {"error": f"unknown tool {name!r}"}
         try:
-            return getattr(self, name)(args or {})
+            res = getattr(self, name)(args or {})
         except Exception as exc:  # a bad argument must never break the chat
             return {"error": str(exc)[:200]}
+        if name in ("remember", "forget", "watch", "unwatch", "set_store") and isinstance(res, dict) and (
+                res.get("saved") or res.get("removed") or res.get("forgotten")):
+            self.side_effects += 1
+        return res
 
 
 def _result_text(results: list[tuple[str, dict]]) -> str:
@@ -735,32 +781,64 @@ def _result_text(results: list[tuple[str, dict]]) -> str:
 
 # ---------------------------------------------------------------- orchestration
 
+_CLAIM_RE = re.compile(r"\b(i have|i've|i just|i already|j'ai|je viens de)\b[^.!?]{0,60}\b(added|prepared|drafted|queued|created|ajouté|préparé|créé)", re.I)
+_NEGATION_RE = re.compile(r"\b(not|never|couldn|can't|cannot|unable|unfortunately|pas|impossible|aucun)\b|n't", re.I)
+CLAIM_NOTE = ("SYSTEM NOTE: your reply says you added or prepared something, but nothing was queued. Either call propose_changes (stock) or "
+              "propose_grocery (items to buy) now with the real items, or answer again saying plainly that nothing was drafted. "
+              "Do not claim an action you did not perform.")
+
+
+def claims_a_draft(reply: str) -> bool:
+    """True when the reply positively claims it added/prepared something ('I have prepared a draft...'); negations are excluded."""
+    for sentence in re.split(r"(?<=[.!?])\s+", reply or ""):
+        if _CLAIM_RE.search(sentence) and not _NEGATION_RE.search(sentence):
+            return True
+    return False
+
+
 PHOTO_RULES = """A PHOTO is attached to the Master's latest message.
+WHERE IT GOES: things the Master HAS (a receipt, groceries just bought or unpacked, a delivery) -> INTAKE drafts (propose_changes).
+Things the Master NEEDS (a handwritten or screenshot shopping list, an empty shelf or fridge, packaging to re-buy, "we are out of X") ->
+propose_grocery. One photo can contain both. If the Master said what the photo is, obey that; if it is genuinely unclear, ask ONE short
+question instead of guessing, and say in your reply which part went to the stock and which to the grocery list.
 - A RECEIPT: read the line items as a purchase list (quantity and name; "2 x LAIT 2% 4L" = 2 of milk). Ignore prices, totals, taxes, dates and the
   store header. Then follow the INTAKE steps (bought = increase).
 - A SHELF, FRIDGE or CUPBOARD: list only what you can clearly see and count; say that visual counts are estimates and ask before treating them as
   exact stock. Prefer drafting only the items the Master asked about.
 - If you cannot read something, say which part and leave it out; never invent items to fill gaps."""
 VISION_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")   # image input needs the Gemini models
+INTENT_RULES = {
+    "stock": "The Master says this photo shows things they now HAVE: update the STOCK (INTAKE drafts). Do not use propose_grocery.",
+    "grocery": "The Master says this photo shows things they NEED to buy: use propose_grocery. Do not change the stock.",
+}
 
 
 def respond(text: str, history: list[dict] | None = None, inv: dict | None = None,
-            toolbox: Toolbox | None = None, image: dict | None = None) -> tuple[str, list[dict]]:
+            toolbox: Toolbox | None = None, image: dict | None = None, intent: str | None = None) -> tuple[str, list[dict]]:
     """(reply, queued draft proposals). Runs the bounded tool loop. ``image`` is Gemini inlineData for a photo message."""
     import hq_ai
     tb = toolbox or Toolbox((lambda: inv) if isinstance(inv, dict) else None)
-    system = build_system(text, inv) + (("\n\n" + PHOTO_RULES) if image else "")
+    system = build_system(text, inv) + (("\n\n" + PHOTO_RULES + (("\n" + INTENT_RULES[intent]) if intent in INTENT_RULES else "")) if image else "")
     contents = build_contents(history, text)
     if image:
         contents[-1]["parts"].append({"inlineData": image})
     chain = VISION_CHAIN if image else hq_ai.ASK_CHAIN
     reply = ""
-    for round_no in range(1, MAX_ROUNDS + 1):
-        final_round = round_no == MAX_ROUNDS or tb.calls >= MAX_TOOL_CALLS
+    rounds_allowed, round_no, corrected = MAX_ROUNDS, 0, False
+    while round_no < rounds_allowed:
+        round_no += 1
+        final_round = round_no == rounds_allowed or tb.calls >= MAX_TOOL_CALLS
         sys_r = system + ("\n\nTool budget exhausted: return the final answer now with tools: []." if final_round else "")
         raw, _model = hq_ai.generate(chain, sys_r, contents, json_out=True,
                                      temperature=0.4, max_tokens=900)
         reply, tools = parse_model(raw)
+        if not tools and not corrected and claims_a_draft(reply) and not (tb.proposals or tb.grocery or tb.side_effects):
+            # She says she prepared/added something but nothing was queued: one correction round (act for real, or retract).
+            corrected = True
+            rounds_allowed += 1
+            contents = contents + [{"role": "model", "parts": [{"text": json.dumps({"reply": reply, "tools": []})}]},
+                                   {"role": "user", "parts": [{"text": CLAIM_NOTE}]}]
+            continue
         if final_round or not tools:
             break
         results = []
@@ -770,7 +848,7 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
             break
         contents = contents + [{"role": "model", "parts": [{"text": json.dumps({"reply": "", "tools": tools})}]},
                                {"role": "user", "parts": [{"text": _result_text(results)}]}]
-    if not reply and tb.proposals:
+    if not reply and (tb.proposals or tb.grocery):
         reply = "I've prepared a draft for you to review in the panel."
     elif not reply and tb.calls:
         reply = "I looked through the inventory but couldn't put together a clear answer. Could you rephrase or be more specific?"
@@ -782,10 +860,14 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
 def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     """``llm_adapter`` for hq_inventoria.bind: {"reply": ..., "proposals": [...] (drafts only)}."""
     import hq_inventoria
-    reply, proposals = respond(text, hq_inventoria.current_history(), image=hq_inventoria.current_image())
+    tb = Toolbox()
+    reply, proposals = respond(text, hq_inventoria.current_history(), toolbox=tb, image=hq_inventoria.current_image(),
+                               intent=hq_inventoria.current_intent())
     out: dict[str, Any] = {"reply": reply}
     if proposals:
         out["proposals"] = proposals
+    if tb.grocery:
+        out["grocery_lines"] = tb.grocery
     return out
 
 
