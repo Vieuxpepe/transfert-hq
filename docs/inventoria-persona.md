@@ -53,6 +53,30 @@ bottom-left of HQ, keeps her own conversation and her own memory, and prepares c
 - Voice: replies are spoken in her saved Phonon voice (toggle *Voix*); the microphone button dictates a message in the
   browser's speech recognition (language follows her voice).
 
+## Practical extras
+
+- **Share + tick-off:** *Partager* opens the phone's share sheet (Notes in one tap; shown only when the browser supports it). Under
+  the list, tick what you bought (quantity editable) and press *Marquer acheté*: `POST /api/inventoria/purchased` builds ONE reviewable
+  adjust draft with **no model call**. A pasted list works too: lines marked ☑ / ✅ / [x] count as bought, ☐ lines are ignored.
+- **Photo / receipt intake:** the 📷 button shrinks a photo in the browser (long side 1400 px, JPEG) and sends it with the typed caption.
+  Receipts are read as purchase lists (prices, totals, taxes ignored); shelf or fridge photos are treated as visual estimates and only
+  drafted for what was asked. Vision models only; the photo is never stored (the log keeps "📷 caption").
+- **Offline alerts (off by default):** *Alertes hors ligne* in the chip. A watcher thread started by the bridge records quantity
+  history every 10 minutes (always) and, only when enabled, sends a morning digest (hour configurable) and an instant ping when an item
+  crosses into a worse level, through HQ's existing Discord webhook and web push. Enabling never announces items that were already
+  alerting. Settings, per-alert state and the last digest day live in `.hq-inventoria/notify.json`.
+- **Run-out estimates:** `hq_inventoria_history.py` records quantity changes; with at least 5 days of history and 2 decreases it
+  averages only the *decreases* (restocks ignored) and flags items likely to run out within 7 days (level *trend*, shown as
+  "≈ ... about N day(s) (estimate)"). Always an estimate; never used to change stock.
+- **Stores:** `set_store` remembers where something is bought; *Grouper par magasin* groups the copied list under store headings
+  (unknown items under *Autres*). Tools verify `item_name` against `item_id`, so a wrong-id mix-up is refused with a pointer to the right item.
+- **Undo:** each commit journals the touched items (`.hq-inventoria/undo.json`, 40 batches). *Annuler ce lot* builds an inverse
+  **draft** (adjust -delta, restore edited fields, move back, remove created items) that you preview and confirm; refused if the stock
+  changed since, idempotent while a pending undo exists.
+- **Grocery / meals:** *Envoyer vers Courses* creates a NEW open list in the grocery module (units mapped to g / ml / each, store
+  names matched to existing merchants). Her read-only `meal_needs` tool asks the meals module what the current plan still needs to buy.
+  Purchases already flow into stock through the household cross-store pipeline, so no extra hook was added.
+
 ## Voice
 
 Lottie (Phonon), +0.3 slower, +3 semitones. Change it in Éditer → Studio vocal.

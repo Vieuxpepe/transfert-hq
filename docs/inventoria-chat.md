@@ -23,3 +23,7 @@ fallback chain as the other companions).
 - Ids are stripped from replies; model replies are untrusted text (HTML/markdown removed, 900 characters max).
 - Tests: `tests/test_hq_inventoria_ai.py` (tool validation, loop bounds, draft to real preview/commit, history,
   failure modes).
+- **Extra routes:** `POST /api/inventoria/purchased` (tick-off to an adjust draft, no model call), `POST /api/inventoria/ops/{id}/undo`
+  (inverse draft), `POST /api/inventoria/to-grocery`, `POST /api/inventoria/notify`, and `image` (a data URL, 1.5 MB max after base64) on
+  `/sessions/{id}/message` for photo intake. Transport cap 3 MB; every request without an image is capped at 1 MB.
+- **More tools:** `set_store`, `meal_needs` (read-only), `list_alerts` rows may carry `days_left` (an estimate).

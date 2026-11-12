@@ -492,3 +492,311 @@ class ShoppingListTests(_IntakeHelpers, _Base):
         _, st = ivo.http_get("/api/inventoria/status")
         self.assertEqual(st["shopping"]["all"]["count"], 1)
         self.assertIn("Vis M3", st["shopping"]["urgent"]["text"])
+
+
+class UndoTests(_IntakeHelpers, _Base):
+    def _commit(self, props):
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"proposals": props})
+        self.assertEqual(code, 200, out)
+        op = out["operation"]["id"]
+        self.assertTrue(ivo.http_post(f"/api/inventoria/ops/{op}/validate", {})[1]["validation"]["ok"])
+        ivo.http_post(f"/api/inventoria/ops/{op}/preview", {"confirm": True})
+        code, res = ivo.http_post(f"/api/inventoria/ops/{op}/commit", {"idempotency_key": "undo-test-" + op[-6:]})
+        self.assertEqual(code, 200, res)
+        return op
+
+    def _apply_draft(self, op, tag):
+        self.assertTrue(ivo.http_post(f"/api/inventoria/ops/{op}/validate", {})[1]["validation"]["ok"])
+        ivo.http_post(f"/api/inventoria/ops/{op}/preview", {"confirm": True})
+        code, res = ivo.http_post(f"/api/inventoria/ops/{op}/commit", {"idempotency_key": f"undo-apply-{tag}"})
+        self.assertEqual(code, 200, res)
+
+    def test_undo_restores_adjusts_edits_moves_and_removes_created_items(self) -> None:
+        inv.apply({"action": "place.create", "name": "Cave", "kind": "shelf"})
+        cave = inv.snapshot()["places"][-1]["id"]
+        self.mk("Tape", 5, "rolls", place=inv.snapshot()["places"][0]["id"])
+        ids = self.by_name()
+        before = {i["name"]: (i["qty"], i["place"]) for i in inv.snapshot()["items"]}
+        P = lambda op, refs, payload, label: {"op": op, "refs": refs, "resolved": {"confidence": "high"}, "payload": payload, "label_fr": label}
+        op = self._commit([
+            P("item.adjust", {"item_id": ids["Vis M3"]["id"]}, {"id": ids["Vis M3"]["id"], "delta": 16}, "adj"),
+            P("item.update", {"item_id": ids["Tape"]["id"]}, {"id": ids["Tape"]["id"], "rev": ids["Tape"]["rev"], "name": "Ruban", "min": 2}, "upd"),
+            P("item.move", {}, {"ids": [ids["Tape"]["id"]], "place": cave}, "mov"),
+            P("item.create", {}, {"name": "Colle", "qty": 3}, "crt")])
+        self.assertEqual(self.by_name()["Vis M3"]["qty"], 20)
+        self.assertIn("Colle", self.by_name())
+        code, out = ivo.http_post(f"/api/inventoria/ops/{op}/undo", {})
+        self.assertEqual(code, 200, out)
+        draft = out["operation"]
+        self.assertEqual(draft["status"], "draft")
+        self.assertEqual(self.by_name()["Vis M3"]["qty"], 20)                      # nothing changes until confirmed
+        self.assertEqual(ivo.http_post(f"/api/inventoria/ops/{op}/undo", {})[1]["operation"]["id"], draft["id"])   # idempotent
+        self._apply_draft(draft["id"], "a")
+        now = {i["name"]: (i["qty"], i["place"]) for i in inv.snapshot()["items"]}
+        self.assertEqual(now, before)                                              # exactly where we started (name restored too)
+        self.assertEqual(ivo.http_post(f"/api/inventoria/ops/{op}/undo", {})[0], 409)   # already undone
+
+    def test_undo_refuses_unjournaled_uncommitted_and_stale_batches(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        vis = self.by_name()["Vis M3"]["id"]
+        _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"proposals": [
+            {"op": "item.adjust", "refs": {"item_id": vis}, "resolved": {"confidence": "high"}, "payload": {"id": vis, "delta": 1}, "label_fr": "x"}]})
+        self.assertEqual(ivo.http_post(f"/api/inventoria/ops/{out['operation']['id']}/undo", {})[0], 409)   # still a draft
+        op = self._commit([{"op": "item.adjust", "refs": {"item_id": vis}, "resolved": {"confidence": "high"},
+                            "payload": {"id": vis, "delta": 10}, "label_fr": "x"}])
+        inv.apply({"action": "item.adjust", "id": vis, "delta": -13})            # stock moved on since (4+10-13 = 1)
+        code, res = ivo.http_post(f"/api/inventoria/ops/{op}/undo", {})
+        self.assertEqual(code, 409, res)                                         # undoing -10 would go negative
+        self.assertEqual(self.by_name()["Vis M3"]["qty"], 1)
+
+
+class StoresTrendAndTickOffTests(_IntakeHelpers, _Base):
+    DAY = 86400.0
+
+    def test_store_tool_groups_the_shopping_list(self) -> None:
+        self.mk("Colle", 0, "tubes", mn=3)
+        ids = self.by_name()
+        tb = iai.Toolbox()
+        self.assertTrue(tb.run("set_store", {"item_id": ids["Vis M3"]["id"], "store": "Quincaillerie"})["saved"])
+        self.assertTrue(tb.run("set_store", {"item_id": ids["Colle"]["id"], "store": "Quincaillerie"})["saved"])
+        self.assertFalse(tb.run("set_store", {"item_id": "itm-0000000000000000", "store": "x"})["saved"])
+        out = iai.shopping_list(lang="fr", today="d")
+        self.assertEqual(out["text_grouped"].splitlines(), [
+            "Courses — d", "", "— Quincaillerie —",
+            "☐ Colle — 5 tubes (reste 0, min 3)", "☐ Vis M3 — 26 pcs (reste 4, min 20)"])
+        self.assertTrue(tb.run("set_store", {"item_id": ids["Vis M3"]["id"], "store": ""})["saved"])
+        self.assertIn("— Autres —", iai.shopping_list(lang="fr", today="d")["text_grouped"])
+        self.assertEqual(iai.shopping_list(lang="fr")["items"][0]["store"] in ("Quincaillerie", ""), True)
+
+    def test_estimate_needs_history_and_ignores_restocks(self) -> None:
+        import hq_inventoria_history as h
+        d = self.DAY
+        pts = [[0, 10], [2 * d, 8], [4 * d, 6], [6 * d, 4]]
+        e = h.estimate_from(pts, 4, 6 * d)
+        self.assertEqual((e["rate_per_day"], e["days_left"]), (1.0, 4))
+        self.assertIsNone(h.estimate_from(pts[:2], 8, 2 * d))                         # too little data
+        self.assertIsNone(h.estimate_from([[0, 10], [d, 9], [2 * d, 8]], 8, 2 * d))    # span under 5 days
+        restock = [[0, 10], [2 * d, 8], [3 * d, 20], [5 * d, 18], [7 * d, 16]]
+        self.assertEqual(h.estimate_from(restock, 16, 7 * d)["rate_per_day"], round(6 / 7, 3))   # the +12 restock is ignored
+        self.assertIsNone(h.estimate_from([[0, 1], [3 * d, 5], [6 * d, 9]], 9, 6 * d))  # only increases
+
+    def test_trend_alert_appears_before_any_minimum_is_hit_and_is_labelled_an_estimate(self) -> None:
+        import hq_inventoria_history as h
+        self.mk("Café", 40, "g", mn=5)
+        cafe = self.by_name()["Café"]["id"]
+        for day, qty in enumerate([40, 34, 28, 22, 16, 10]):
+            inv.apply({"action": "item.update", "id": cafe, "rev": self.by_name()["Café"]["rev"], "qty": qty})
+            h.observe(self.root, inv.snapshot(), now=day * self.DAY)
+        rows = {a["name"]: a for a in iai.alerts(now=5 * self.DAY)}
+        self.assertEqual(rows["Café"]["level"], "trend")                                # 10 g left at 6 g/day, minimum 5 not hit
+        self.assertEqual(rows["Café"]["days_left"], 1)
+        with mock.patch.object(iai, "language", return_value="en"):
+            self.assertIn("estimate", iai.GREETING["en"]["state"]["trend"])
+        shop = iai.shopping_list(lang="en", today="d", now=5 * self.DAY)
+        buy = [i for i in shop["items"] if i["name"] == "Café"]
+        self.assertIn("~1 days left", shop["text"])
+        self.assertNotIn("Café", iai.shopping_list(lang="en", today="d", now=5 * self.DAY, include_soon=False)["text"])
+        self.assertTrue(buy and buy[0]["buy"] >= 1)
+
+    def test_tick_off_route_builds_one_reviewable_adjust_draft_without_the_model(self) -> None:
+        ids = self.by_name()
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with mock.patch.object(hq_ai, "generate", side_effect=AssertionError("no model call allowed")):
+            code, out = ivo.http_post("/api/inventoria/purchased", {"session_id": sid, "items": [{"id": ids["Vis M3"]["id"], "qty": 26}]})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["operation"]["proposals"][0]["label_fr"], "Acheté : Vis M3 de +26")
+        self.assertEqual(self.by_name()["Vis M3"]["qty"], 4)                              # still a draft
+        for bad in ([], [{"id": "itm-0000000000000000", "qty": 1}], [{"id": ids["Vis M3"]["id"], "qty": 0}],
+                    [{"id": ids["Vis M3"]["id"], "qty": 1}, {"id": ids["Vis M3"]["id"], "qty": 2}]):
+            self.assertEqual(ivo.http_post("/api/inventoria/purchased", {"session_id": sid, "items": bad})[0], 400)
+        self.assertEqual(ivo.http_post("/api/inventoria/purchased", {"session_id": "nope", "items": []})[0], 400)
+
+    def test_prompt_understands_checkbox_lists_and_stores(self) -> None:
+        with mock.patch("hq_voice_phonon.language_directive", return_value=""):
+            system = iai.build_system("x")
+        self.assertIn("BOUGHT", system)
+        self.assertIn("set_store", system)
+
+
+def _jpeg_data_url(w=64, h=48, text="LAIT 2x") -> str:
+    import base64, io
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (w, h), "white")
+    ImageDraw.Draw(img).text((4, 4), text, fill="black")
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=70)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+class NotifyTests(_IntakeHelpers, _Base):
+    DAY = 86400.0
+
+    def setUp(self) -> None:
+        super().setUp()
+        import hq_inventoria_notify as n
+        self.n = n
+        self.sent: list = []
+        self.send = lambda t, b: self.sent.append((t, b))
+        self.noon = __import__("time").mktime((2026, 11, 12, 12, 0, 0, 0, 0, -1))
+
+    def test_default_off_but_history_is_still_recorded(self) -> None:
+        import hq_inventoria_history as h
+        self.assertFalse(self.n.get_settings(self.root)["enabled"])
+        out = self.n.tick(self.root, self.send, now=self.noon)
+        self.assertEqual((out, self.sent), ({"instant": [], "digest": False}, []))
+        self.assertTrue(h._path(self.root).exists())
+
+    def test_enabling_does_not_announce_old_alerts_but_new_ones_ping_once(self) -> None:
+        self.n.save_settings(self.root, enabled=True, digest_hour=23)           # Vis M3 is already low
+        self.assertEqual(self.n.tick(self.root, self.send, now=self.noon)["instant"], [])
+        self.mk("Beurre", 9, "pl", mn=2)
+        beurre = self.by_name()["Beurre"]
+        inv.apply({"action": "item.update", "id": beurre["id"], "rev": beurre["rev"], "qty": 2})   # crosses into "low"
+        out = self.n.tick(self.root, self.send, now=self.noon + 600)
+        self.assertEqual(out["instant"], ["Beurre"])
+        self.assertIn("Beurre", self.sent[0][0])
+        self.n.tick(self.root, self.send, now=self.noon + 1200)
+        self.assertEqual(len(self.sent), 1)                                      # not repeated every pass
+        b = self.by_name()["Beurre"]
+        inv.apply({"action": "item.update", "id": b["id"], "rev": b["rev"], "qty": 9})            # restocked ...
+        self.n.tick(self.root, self.send, now=self.noon + 1800)
+        b = self.by_name()["Beurre"]
+        inv.apply({"action": "item.update", "id": b["id"], "rev": b["rev"], "qty": 1})            # ... then relapses
+        self.assertEqual(self.n.tick(self.root, self.send, now=self.noon + 2400)["instant"], ["Beurre"])
+
+    def test_digest_once_per_day_after_the_hour_and_only_when_something_needs_attention(self) -> None:
+        self.n.save_settings(self.root, enabled=True, instant=False, digest_hour=8)
+        morning = self.noon - 5 * 3600                                           # 07:00 -> too early
+        self.assertFalse(self.n.tick(self.root, self.send, now=morning)["digest"])
+        self.assertTrue(self.n.tick(self.root, self.send, now=self.noon)["digest"])
+        self.assertIn("Vis M3", self.sent[-1][1])
+        self.assertFalse(self.n.tick(self.root, self.send, now=self.noon + 3600)["digest"])      # same day
+        self.assertTrue(self.n.tick(self.root, self.send, now=self.noon + self.DAY)["digest"])   # next day
+
+    def test_failing_channel_never_breaks_the_watcher(self) -> None:
+        def boom(t, b):
+            raise RuntimeError("discord down")
+        self.n.save_settings(self.root, enabled=True, instant=False, digest_hour=0)
+        self.assertTrue(self.n.tick(self.root, boom, now=self.noon)["digest"])
+
+    def test_notify_route_validates_and_test_ping_uses_the_bound_channel(self) -> None:
+        self.assertEqual(ivo.http_post("/api/inventoria/notify", {"enabled": "yes"})[0], 400)
+        self.assertEqual(ivo.http_post("/api/inventoria/notify", {"digest_hour": 30})[0], 400)
+        ivo.bind(notify=self.send)
+        code, out = ivo.http_post("/api/inventoria/notify", {"enabled": True, "digest_hour": 7, "test": True})
+        self.assertEqual((code, out["notify"]["digest_hour"], out["test_sent"]), (200, 7, True))
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(ivo.http_get("/api/inventoria/status")[1]["notify"]["enabled"])
+
+
+class PhotoTests(_IntakeHelpers, _Base):
+    def test_photo_reaches_the_model_on_a_vision_chain_and_is_never_stored(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        chains = []
+
+        def gen(chain, system, contents, **kw):
+            chains.append(chain)
+            self.calls.append((system, contents))
+            return '{"reply": "I read a receipt with milk.", "tools": []}', "m"
+        with mock.patch.object(hq_ai, "generate", side_effect=gen):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "text": "my receipt"})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(chains[0], iai.VISION_CHAIN)
+        parts = self.calls[0][1][-1]["parts"]
+        self.assertTrue(any("inlineData" in p and p["inlineData"]["mimeType"] == "image/jpeg" for p in parts))
+        self.assertIn("RECEIPT", self.calls[0][0])
+        self.assertEqual(out["messages"][0]["text"], "\U0001F4F7 my receipt")
+        stored = json.dumps(ivo.http_get(f"/api/inventoria/sessions/{sid}")[1])
+        self.assertNotIn("base64", stored)
+        self.assertIsNone(ivo.current_image())                                   # no leak between requests
+
+    def test_text_only_requests_keep_the_normal_chain_and_bad_photos_are_refused(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        chains = []
+
+        def gen(c, *a, **k):
+            chains.append(c)
+            return '{"reply": "ok", "tools": []}', "m"
+        with mock.patch.object(hq_ai, "generate", side_effect=gen):
+            ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "hello"})
+        self.assertEqual(chains[0], hq_ai.ASK_CHAIN)
+        for bad in ("not a data url", "data:text/html;base64,PGI+", "data:image/png;base64," + "A" * 2_100_000):
+            self.assertEqual(ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": bad})[0], 400)
+        self.assertEqual(ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "x" * 1_100_000})[0], 413)
+
+    def test_photo_without_text_gets_a_default_label(self) -> None:
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(['{"reply": "ok", "tools": []}']):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        self.assertEqual(out["messages"][0]["text"], "\U0001F4F7 (photo)")
+
+
+class GroceryAndMealsTests(_IntakeHelpers, _Base):
+    def test_lines_use_canonical_units_and_known_merchants(self) -> None:
+        items = [{"name": "Riz", "buy": 2, "unit": "kg", "store": "Metro"}, {"name": "Huile", "buy": 1, "unit": "L", "store": ""},
+                 {"name": "Vis M3", "buy": 26, "unit": "pcs", "store": "Metro"}, {"name": "Poivre", "buy": 50, "unit": "g", "store": "x"}]
+        lines = iai.grocery_lines(items, {"metro": "mrc-0123456789abcdef"})
+        self.assertEqual([(l["name"], l["qty_milli"], l["unit"], l.get("merchant_id")) for l in lines], [
+            ("Riz", 2_000_000, "g", "mrc-0123456789abcdef"), ("Huile", 1_000_000, "ml", None),
+            ("Vis M3", 26_000, "each", "mrc-0123456789abcdef"), ("Poivre", 50_000, "g", None)])
+
+    def test_to_grocery_route_creates_an_open_list_in_the_grocery_module(self) -> None:
+        code, out = ivo.http_post("/api/inventoria/to-grocery", {})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["count"], 1)
+        line = out["list"]["lines"][0]
+        self.assertEqual((line["name"], line["qty_milli"], line["unit"], line["checked"]), ("Vis M3", 26_000, "each", False))
+        self.assertEqual(out["list"]["status"], "open")
+
+    def test_to_grocery_refuses_an_empty_list(self) -> None:
+        vis = {i["name"]: i for i in inv.snapshot()["items"]}["Vis M3"]
+        inv.apply({"action": "item.update", "id": vis["id"], "rev": vis["rev"], "qty": 99})
+        self.assertEqual(ivo.http_post("/api/inventoria/to-grocery", {})[0], 409)
+
+    def test_meal_tool_is_read_only_and_needs_a_session_db(self) -> None:
+        self.assertIn("error", iai.Toolbox().run("meal_needs", {}))               # outside a chat turn
+        seen: dict = {}
+
+        def gen(chain, system, contents, **kw):
+            if not seen:
+                seen["x"] = 1
+                return '{"reply": "", "tools": [{"name": "meal_needs", "args": {}}]}', "m"
+            seen["result"] = contents[-1]["parts"][0]["text"]
+            return '{"reply": "No meal plan yet.", "tools": []}', "m"
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with mock.patch.object(hq_ai, "generate", side_effect=gen):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"text": "what do my meals need?"})
+        self.assertEqual(code, 200, out)
+        self.assertIn("no meal plan yet", seen["result"])
+
+    def test_meal_tool_picks_the_current_plan_and_lists_only_what_is_missing(self) -> None:
+        import hq_meals
+        plans = [{"id": "mpl-1", "period_start": "2000-01-01", "period_end": "2000-01-07"},
+                 {"id": "mpl-2", "period_start": "2000-01-01", "period_end": "2999-12-31"}]
+        lines = [{"name": "Poulet", "qty_milli": 1_500, "unit": "each"}, {"name": "Riz", "qty_milli": 0, "unit": "g"}]
+        with mock.patch.object(hq_meals, "list_meal_plans", return_value={"items": plans}), \
+             mock.patch.object(hq_meals, "build_list_preview", return_value={"lines": lines, "warnings": []}) as prev, \
+             mock.patch.object(ivo, "current_db", return_value=(object(), "hhold-x")):
+            res = iai.Toolbox().run("meal_needs", {})
+        self.assertEqual(prev.call_args.args[2], "mpl-2")
+        self.assertEqual(res["to_buy"], [{"name": "Poulet", "qty": 1.5, "unit": "each"}])
+
+
+class ResolveItemTests(_IntakeHelpers, _Base):
+    def test_wrong_id_for_the_named_item_is_refused_with_a_pointer_to_the_right_one(self) -> None:
+        self.mk("Beurre", 2, "pl", mn=1)
+        self.mk("Riz basmati", 1, "kg", mn=2)
+        ids = self.by_name()
+        tb = iai.Toolbox()
+        bad = tb.run("set_store", {"item_id": ids["Riz basmati"]["id"], "item_name": "Beurre", "store": "Laiterie"})
+        self.assertFalse(bad["saved"])
+        self.assertIn(ids["Beurre"]["id"], bad["error"])                                  # tells the model who Beurre really is
+        ok = tb.run("set_store", {"item_id": ids["Beurre"]["id"], "item_name": "beurre", "store": "Laiterie"})
+        self.assertTrue(ok["saved"])
+        self.assertTrue(tb.run("watch", {"item_name": "Beurre", "warn_at": 3})["saved"])  # a bare name is enough when it is unambiguous
+        self.assertFalse(tb.run("watch", {"item_name": "xyzzy", "warn_at": 3})["saved"])
+        out = tb.run("propose_changes", {"changes": [{"op": "adjust", "item_id": ids["Riz basmati"]["id"], "item_name": "Beurre", "delta": 1}]})
+        self.assertFalse(out["results"][0]["queued"])                                      # same guard inside drafts
+        out = tb.run("propose_changes", {"changes": [{"op": "adjust", "item_name": "Riz", "delta": 2}]})
+        self.assertTrue(out["results"][0]["queued"])

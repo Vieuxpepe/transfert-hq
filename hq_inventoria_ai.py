@@ -57,7 +57,9 @@ When you have everything you need, return {"reply": "<final answer>", "tools": [
 Use at most a few tool calls; prefer one call that answers the question.
 The INVENTORY SUMMARY is PARTIAL (low-stock and name matches only). Before you state what a place contains, how many items exist, or that something does not exist, you MUST call a tool (list_place, search_items, list_places) and answer from its result.
 While you still need tools, set "reply" to an empty string: NEVER guess or pre-announce an answer before you have the tool results.
-Ids appear in [brackets] in the summary and in tool results; copy them exactly. Where a tool takes a place_id you may also give the exact place name.
+Ids appear in [brackets] in the summary and in tool results; copy them exactly, and ALWAYS pass the item's name as item_name next to
+its id (a mismatch is refused). Never reuse an id you did not just read next to that exact item name; when several items are involved
+(a store for three items, a batch of changes), resolve all of them with match_items first, then act. Where a tool takes a place_id you may also give the exact place name.
 
 Read tools (run immediately, change nothing):
 - search_items {"query": "<words>", "place_id": "<optional>", "limit": 10}
@@ -65,20 +67,26 @@ Read tools (run immediately, change nothing):
 - list_places {}
 - list_place {"place_id": "<place id>"}   (items directly in it + sub-places)
 - list_low_stock {"limit": 15}
-- list_alerts {}   (items out of stock, at/below their minimum, or getting low, plus the Master's watches)
+- list_alerts {}   (items out of stock, at/below their minimum, or getting low, plus the Master's watches; "trend" rows carry
+  days_left, an ESTIMATE from past usage: always call it an estimate, never a promise)
 - match_items {"names": ["saws", "green apples", ...]}   (closest existing items for each name, plus the whole item catalog when
   small: use it to spot translations and synonyms such as "saws" = "Scies")
 Watch tools (alerts only; they never change stock or minimums):
-- watch {"item_id": "<id>", "warn_at": <integer>}   (warn the Master when that item's quantity falls to warn_at or below)
+- watch {"item_id": "<id>", "item_name": "<its name>", "warn_at": <integer>}   (warn the Master when that item's quantity falls to warn_at or below)
 - unwatch {"item_id": "<id>"}
   Use watch when the Master says "warn me when the screws get low / under 30". If no number is given and the item has no minimum, ask for one.
   The Master's name for an item may be in another language than the inventory: look it up with match_items first (its catalog
   lists everything) and never say an item does not exist before you have compared against the whole catalog.
+Store tool (where an item is usually bought; groups the shopping list; stock unchanged):
+- set_store {"item_id": "<id>", "item_name": "<its name>", "store": "<store name, or empty to clear>"}
+  Use it when the Master says where they buy something ("I get duct tape at the hardware store").
+Meal tool (read-only):
+- meal_needs {}   (what the current meal plan still needs to buy, from the meals module; mention it when the Master asks about meals)
 Draft tool (prepares changes for the Master to review; NOTHING is applied):
 - propose_changes {"changes": [ ... ]} with each change one of:
-    {"op": "adjust", "item_id": "<id>", "delta": <non-zero integer, negative to remove>}   (ONE adjust per item: add up the amounts)
+    {"op": "adjust", "item_id": "<id>", "item_name": "<its name>", "delta": <non-zero integer, negative to remove>}   (ONE adjust per item: add up the amounts)
     {"op": "create", "name": "...", "qty": <integer>, "unit": "...", "place_id": "<optional>", "min": <optional integer>}
-    {"op": "update", "item_id": "<id>", "fields": {"name"|"unit"|"min"|"qty"|"note"|"place_id": value}}
+    {"op": "update", "item_id": "<id>", "item_name": "<its name>", "fields": {"name"|"unit"|"min"|"qty"|"note"|"place_id": value}}
     {"op": "move", "item_ids": ["<id>", ...], "place_id": "<id or null>"}
   Use real ids from tool results. Only propose a change when the Master asked for one or clearly agreed to it.
   Deleting is not available: if asked, say the Master can delete it in the panel.
@@ -89,6 +97,8 @@ Memory tools (lasting household preferences, NOT stock):
   allergies, how they like lists). Never for secrets, one-off requests or stock counts. Say plainly when you saved or forgot something.
 INTAKE: the Master may send a list of things bought, received, used or thrown away, in any language
 ("bought 10 saws, 3 green apples, 3 cartons de lait"). Handle it like this:
+ 0. A pasted shopping list uses checkboxes: lines starting with ☑, ✅, [x] or a strike are BOUGHT (use the quantity written on the line);
+    lines with ☐, [ ] or no mark were NOT bought: leave them out.
  1. Parse EVERY item with its quantity and unit ("3 cartons de lait" = 3 cartons of milk). Bought, received, added = increase;
     used, ate, threw away, gave away = decrease.
  2. In ONE step call match_items with all the names AND list_places.
@@ -160,29 +170,50 @@ def _watch_root() -> Any:
         return None
 
 
-def alerts(inv: dict | None = None, root: Any = None) -> list[dict]:
-    """Items needing attention, worst first: out, low, soon."""
+TREND_DAYS = 7              # "may run out within a week" (estimate from past usage)
+LEVEL_ORDER = {"out": 0, "low": 1, "soon": 2, "trend": 3}
+
+
+def alerts(inv: dict | None = None, root: Any = None, now: float | None = None) -> list[dict]:
+    """Items needing attention, worst first: out, low, soon (within 25% / at a watch), trend (estimated to run out within a week)."""
     inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
     root = root if root is not None else _watch_root()
     marks: dict = {}
+    stores: dict = {}
+    est: dict = {}
     if root is not None:
         try:
             import hq_inventoria_watch as watch
             marks = watch.thresholds(root)
         except Exception:
             marks = {}
+        try:
+            import hq_inventoria_stores
+            stores = hq_inventoria_stores.all_stores(root)
+        except Exception:
+            stores = {}
+        try:
+            import hq_inventoria_history
+            est = hq_inventoria_history.estimates(root, inv, now)
+        except Exception:
+            est = {}
     places = _place_names(inv)
-    order = {"out": 0, "low": 1, "soon": 2}
     rows = []
     for it in inv.get("items", []):
         if not isinstance(it, dict):
             continue
-        lvl = alert_level(it, marks.get(it.get("id")))
+        iid = it["id"]
+        lvl = alert_level(it, marks.get(iid))
+        e = est.get(iid)
+        if lvl is None and e and e["days_left"] <= TREND_DAYS and isinstance(it.get("qty"), (int, float)) and it["qty"] > 0:
+            lvl = "trend"
         if lvl:
-            rows.append({"id": it["id"], "name": it.get("name"), "qty": it.get("qty"), "unit": it.get("unit") or "",
-                         "min": it.get("min") or 0, "level": lvl, "warn_at": marks.get(it["id"]),
-                         "watched": it["id"] in marks, "place": places.get(it.get("place"), "")})
-    rows.sort(key=lambda r: (order[r["level"]], (r["qty"] / r["min"]) if r["min"] else 0, str(r["name"]).lower()))
+            rows.append({"id": iid, "name": it.get("name"), "qty": it.get("qty"), "unit": it.get("unit") or "",
+                         "min": it.get("min") or 0, "level": lvl, "warn_at": marks.get(iid), "watched": iid in marks,
+                         "place": places.get(it.get("place"), ""), "store": stores.get(iid, ""),
+                         "days_left": e["days_left"] if e else None, "rate_per_day": e["rate_per_day"] if e else None})
+    rows.sort(key=lambda r: (LEVEL_ORDER[r["level"]], r["days_left"] if r["level"] == "trend" else ((r["qty"] / r["min"]) if r["min"] else 0),
+                             str(r["name"]).lower()))
     return rows
 
 
@@ -375,6 +406,34 @@ def resolve_place(inv: dict, v: Any) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+NAME_OK = 0.6        # an item_name this close to the real name confirms an id
+NAME_PICK = 0.75     # a bare name must be at least this close to be accepted as the item
+
+
+def resolve_item(inv: dict, item_id: Any = None, item_name: Any = None) -> dict:
+    """Find the item a tool call means, guarding against wrong-id mix-ups.
+
+    The id wins when it exists, but if an ``item_name`` is also given and clearly does not match that item, the call is refused with a
+    pointer to the item the name does match. With no usable id, a sufficiently close, unambiguous name is accepted."""
+    items = [i for i in inv.get("items", []) if isinstance(i, dict)]
+    by_id = {i["id"]: i for i in items}
+    name = str(item_name or "").strip()
+    if isinstance(item_id, str) and item_id in by_id:
+        it = by_id[item_id]
+        if name and match_score(name, it.get("name", "")) < NAME_OK:
+            best = max(items, key=lambda i: match_score(name, i.get("name", "")), default=None)
+            hint = (f"; did you mean {best.get('name')} [{best['id']}]?" if best and match_score(name, best.get("name", "")) >= NAME_PICK else "")
+            raise ValueError(f"item_id {item_id} is {it.get('name')!r}, not {name!r}{hint}")
+        return it
+    if name:
+        ranked = sorted(((match_score(name, i.get("name", "")), i) for i in items), key=lambda x: -x[0])
+        if ranked and ranked[0][0] >= NAME_PICK and (len(ranked) < 2 or ranked[1][0] < ranked[0][0] - 0.1):
+            return ranked[0][1]
+        cands = ", ".join(f"{i.get('name')} [{i['id']}]" for sc, i in ranked[:3] if sc >= 0.45)
+        raise ValueError(f"could not tell which item {name!r} is" + (f"; candidates: {cands}" if cands else "; call match_items"))
+    raise ValueError("unknown item_id; call match_items or search_items to get a real id")
+
+
 class Toolbox:
     """Executes allow-listed tools against the live inventory; collects validated draft proposals."""
 
@@ -446,10 +505,10 @@ class Toolbox:
         by_item = {i["id"]: i for i in inv.get("items", [])}
         by_place = {p["id"]: p for p in inv.get("places", [])}
 
-        def item(iid: Any) -> dict:
-            if not isinstance(iid, str) or iid not in by_item:
-                raise ValueError(f"unknown item_id {iid!r}")
-            return by_item[iid]
+        def item(iid: Any, name: Any = None) -> dict:
+            if isinstance(iid, str) and iid in by_item and not name:
+                return by_item[iid]
+            return resolve_item(inv, iid, name)
 
         def place(pid: Any, *, none_ok: bool = False) -> str | None:
             if pid is None and none_ok:
@@ -460,7 +519,7 @@ class Toolbox:
             return real
 
         if op == "adjust":
-            it = item(ch.get("item_id"))
+            it = item(ch.get("item_id"), ch.get("item_name"))
             delta = _to_int(ch.get("delta"), "delta", allow_zero=False)
             return {"op": "item.adjust", "refs": {"item_id": it["id"]}, "resolved": {"confidence": "high"},
                     "payload": {"id": it["id"], "delta": delta},
@@ -480,7 +539,7 @@ class Toolbox:
             return {"op": "item.create", "refs": {}, "resolved": {"confidence": "high"}, "payload": payload,
                     "label_fr": f"Créer {name} (×{payload['qty']})" + (f" dans {where}" if where else " (sans emplacement)")}
         if op == "update":
-            it = item(ch.get("item_id"))
+            it = item(ch.get("item_id"), ch.get("item_name"))
             fields = ch.get("fields")
             if not isinstance(fields, dict) or not fields:
                 raise ValueError("fields required")
@@ -582,12 +641,50 @@ class Toolbox:
                               for i in items]
         return res
 
+    def meal_needs(self, args: dict) -> dict:
+        """Read-only: what the current/next meal plan still needs to buy (the meals module already subtracts food stock)."""
+        import hq_inventoria as ivo
+        db = ivo.current_db()
+        if db is None:
+            return {"error": "meal plans are not reachable from here"}
+        conn, hh = db
+        try:
+            import hq_meals
+            plans = hq_meals.list_meal_plans(conn, hh, {}).get("items", [])
+            if not plans:
+                return {"plans": 0, "note": "no meal plan yet"}
+            import time as _t
+            today = _t.strftime("%Y-%m-%d")
+            cur = [p for p in plans if p["period_start"] <= today <= p["period_end"]]
+            upcoming = [p for p in plans if p["period_start"] >= today]
+            plan = cur[0] if cur else (upcoming[0] if upcoming else plans[-1])
+            prev = hq_meals.build_list_preview(conn, hh, plan["id"], subtract_available_stock=True)
+        except Exception as exc:
+            return {"error": str(exc)[:160]}
+        need = [{"name": ln.get("name"), "qty": ln["qty_milli"] / 1000, "unit": ln.get("unit")}
+                for ln in prev.get("lines", []) if ln.get("qty_milli", 0) > 0]
+        return {"plan": f"{plan['period_start']} to {plan['period_end']}", "to_buy": need[:40], "warnings": [str(w)[:120] for w in prev.get("warnings", [])[:5]]}
+
+    def set_store(self, args: dict) -> dict:
+        import hq_inventoria_stores as stores
+        inv = self.inv()
+        try:
+            it = resolve_item(inv, args.get("item_id"), args.get("item_name"))
+        except ValueError as exc:
+            return {"saved": False, "error": str(exc)}
+        try:
+            name = stores.set_store(_watch_root(), it["id"], args.get("store"))
+        except stores.StoreError as exc:
+            return {"saved": False, "error": str(exc)}
+        return {"saved": True, "item": it.get("name"), "store": name, "note": "Used to group the shopping list; stock unchanged."}
+
     def watch(self, args: dict) -> dict:
         import hq_inventoria_watch as watch
         inv = self.inv()
-        it = next((i for i in inv.get("items", []) if i.get("id") == args.get("item_id")), None)
-        if not it:
-            return {"saved": False, "error": "item not found"}
+        try:
+            it = resolve_item(inv, args.get("item_id"), args.get("item_name"))
+        except ValueError as exc:
+            return {"saved": False, "error": str(exc)}
         try:
             res = watch.set_watch(_watch_root(), it["id"], args.get("warn_at"), name=str(it.get("name") or ""))
         except watch.WatchError as exc:
@@ -615,7 +712,7 @@ class Toolbox:
         return {"forgotten": mem.forget(hq_inventoria._root(), args.get("id"))}
 
     TOOLS = ("search_items", "get_item", "list_places", "list_place", "list_low_stock", "list_alerts", "match_items",
-             "propose_changes", "watch", "unwatch", "remember", "forget")
+             "propose_changes", "watch", "unwatch", "set_store", "meal_needs", "remember", "forget")
 
     def run(self, name: str, args: dict) -> dict:
         self.calls += 1
@@ -638,18 +735,30 @@ def _result_text(results: list[tuple[str, dict]]) -> str:
 
 # ---------------------------------------------------------------- orchestration
 
+PHOTO_RULES = """A PHOTO is attached to the Master's latest message.
+- A RECEIPT: read the line items as a purchase list (quantity and name; "2 x LAIT 2% 4L" = 2 of milk). Ignore prices, totals, taxes, dates and the
+  store header. Then follow the INTAKE steps (bought = increase).
+- A SHELF, FRIDGE or CUPBOARD: list only what you can clearly see and count; say that visual counts are estimates and ask before treating them as
+  exact stock. Prefer drafting only the items the Master asked about.
+- If you cannot read something, say which part and leave it out; never invent items to fill gaps."""
+VISION_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite")   # image input needs the Gemini models
+
+
 def respond(text: str, history: list[dict] | None = None, inv: dict | None = None,
-            toolbox: Toolbox | None = None) -> tuple[str, list[dict]]:
-    """(reply, queued draft proposals). Runs the bounded tool loop."""
+            toolbox: Toolbox | None = None, image: dict | None = None) -> tuple[str, list[dict]]:
+    """(reply, queued draft proposals). Runs the bounded tool loop. ``image`` is Gemini inlineData for a photo message."""
     import hq_ai
     tb = toolbox or Toolbox((lambda: inv) if isinstance(inv, dict) else None)
-    system = build_system(text, inv)
+    system = build_system(text, inv) + (("\n\n" + PHOTO_RULES) if image else "")
     contents = build_contents(history, text)
+    if image:
+        contents[-1]["parts"].append({"inlineData": image})
+    chain = VISION_CHAIN if image else hq_ai.ASK_CHAIN
     reply = ""
     for round_no in range(1, MAX_ROUNDS + 1):
         final_round = round_no == MAX_ROUNDS or tb.calls >= MAX_TOOL_CALLS
         sys_r = system + ("\n\nTool budget exhausted: return the final answer now with tools: []." if final_round else "")
-        raw, _model = hq_ai.generate(hq_ai.ASK_CHAIN, sys_r, contents, json_out=True,
+        raw, _model = hq_ai.generate(chain, sys_r, contents, json_out=True,
                                      temperature=0.4, max_tokens=900)
         reply, tools = parse_model(raw)
         if final_round or not tools:
@@ -673,7 +782,7 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
 def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     """``llm_adapter`` for hq_inventoria.bind: {"reply": ..., "proposals": [...] (drafts only)}."""
     import hq_inventoria
-    reply, proposals = respond(text, hq_inventoria.current_history())
+    reply, proposals = respond(text, hq_inventoria.current_history(), image=hq_inventoria.current_image())
     out: dict[str, Any] = {"reply": reply}
     if proposals:
         out["proposals"] = proposals
@@ -687,14 +796,16 @@ GREETING = {
         "empty": "No items yet. Tell me what you keep, and where, and I'll help you build the list.",
         "ok": "Everything is comfortably stocked. Ask me anything about the stock.",
         "attn": "{n} item(s) need attention; {first} is {state}. Shall I prepare a restock draft?",
-        "state": {"out": "out of stock", "low": "below its minimum ({qty} of {mn})", "soon": "getting low ({qty}, minimum {mn})"},
+        "state": {"out": "out of stock", "low": "below its minimum ({qty} of {mn})", "soon": "getting low ({qty}, minimum {mn})",
+                  "trend": "likely to run out in about {days} day(s) (estimate)"},
         "watch": "{first} reached your watch level ({qty}, warning at {warn}).",
     },
     "fr": {
         "empty": "Aucun article pour l'instant. Dis-moi ce que tu gardes et où, et je t'aide à monter la liste.",
         "ok": "Tout est bien approvisionné. Demande-moi ce que tu veux sur le stock.",
         "attn": "{n} article(s) à surveiller; {first} est {state}. Je prépare un brouillon de réapprovisionnement ?",
-        "state": {"out": "en rupture", "low": "sous son minimum ({qty} sur {mn})", "soon": "bientôt bas ({qty}, minimum {mn})"},
+        "state": {"out": "en rupture", "low": "sous son minimum ({qty} sur {mn})", "soon": "bientôt bas ({qty}, minimum {mn})",
+                  "trend": "probablement épuisé dans environ {days} jour(s) (estimation)"},
         "watch": "{first} a atteint ton seuil de surveillance ({qty}, alerte à {warn}).",
     },
 }
@@ -719,7 +830,7 @@ def greeting(inv: dict | None = None) -> dict[str, Any]:
     if not rows:
         return {"line": t["ok"], "mood": "idle", "low_count": 0, "alert_count": 0, "language": lang}
     first = rows[0]
-    state = t["state"][first["level"]].format(qty=first["qty"], mn=first["min"])
+    state = t["state"][first["level"]].format(qty=first["qty"], mn=first["min"], days=first.get("days_left"))
     line = t["attn"].format(n=len(rows), first=first["name"], state=state)
     if first["level"] == "soon" and first["watched"] and not first["min"]:
         line = t["watch"].format(first=first["name"], qty=first["qty"], warn=first["warn_at"])
@@ -730,36 +841,92 @@ def greeting(inv: dict | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------- shopping list (copy block)
 
 SHOP_WORDS = {
-    "fr": {"title": "Courses", "left": "reste", "min": "min", "watch": "alerte", "none": "Rien à acheter pour l'instant."},
-    "en": {"title": "Shopping list", "left": "left", "min": "min", "watch": "alert", "none": "Nothing to buy right now."},
+    "fr": {"title": "Courses", "left": "reste", "min": "min", "watch": "alerte", "none": "Rien à acheter pour l'instant.",
+           "other": "Autres", "days": "~{n} j restants"},
+    "en": {"title": "Shopping list", "left": "left", "min": "min", "watch": "alert", "none": "Nothing to buy right now.",
+           "other": "Other", "days": "~{n} days left"},
 }
 
 
 def suggested_buy(row: dict) -> int:
     """Whole units to buy to get back to 1.5x the reference level (the minimum, or the watch level), at least 1."""
     ref = row["min"] if row.get("min") else (row.get("warn_at") or 0)
+    if row.get("level") == "trend" and row.get("rate_per_day") and not ref:
+        return max(1, math.ceil(row["rate_per_day"] * 14) - int(row["qty"] or 0))   # two weeks of the observed usage
     target = max(math.ceil(ref * 1.5), ref + 1) if ref else (row["qty"] or 0) + 1
     return max(1, int(target - (row["qty"] or 0)))
 
 
 def shopping_list(inv: dict | None = None, *, include_soon: bool = True, lang: str | None = None,
-                  today: str | None = None) -> dict[str, Any]:
+                  today: str | None = None, now: float | None = None) -> dict[str, Any]:
     """Plain-text, checkbox-style list of what to buy (out / low / getting low), made to be copied into iPhone Notes."""
     inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
     lang = lang or language()
     w = SHOP_WORDS.get(lang, SHOP_WORDS["fr"])
-    rows = [r for r in alerts(inv) if include_soon or r["level"] != "soon"]
+    rows = [r for r in alerts(inv, now=now) if include_soon or r["level"] in ("out", "low")]
     items = []
     for r in rows:
         unit = (r["unit"] or "").strip()
         buy = suggested_buy(r)
         ref = f"{w['min']} {r['min']}" if r["min"] else (f"{w['watch']} {r['warn_at']}" if r.get("warn_at") is not None else "")
+        if r["level"] == "trend" and r.get("days_left") is not None:
+            ref = (ref + ", " if ref else "") + w["days"].format(n=r["days_left"])
         detail = f"{w['left']} {r['qty']}" + (f", {ref}" if ref else "")
         items.append({"id": r["id"], "name": r["name"], "unit": unit, "level": r["level"], "qty": r["qty"],
-                      "min": r["min"], "buy": buy, "place": r["place"],
+                      "min": r["min"], "buy": buy, "place": r["place"], "store": r.get("store") or "",
                       "line": f"\u2610 {r['name']} \u2014 {buy}{(' ' + unit) if unit else ''} ({detail})"})
     if today is None:
         import time as _t
         today = _t.strftime("%Y-%m-%d")
     text = (f"{w['title']} \u2014 {today}\n" + "\n".join(i["line"] for i in items)) if items else f"{w['title']} \u2014 {today}\n{w['none']}"
-    return {"count": len(items), "items": items, "text": text, "include_soon": include_soon, "language": lang}
+    grouped = None
+    if any(i["store"] for i in items):
+        by: dict[str, list[str]] = {}
+        for i in items:
+            by.setdefault(i["store"] or w["other"], []).append(i["line"])
+        order = sorted(by, key=lambda k: (k == w["other"], k.lower()))
+        grouped = f"{w['title']} \u2014 {today}\n" + "\n".join(f"\n\u2014 {k} \u2014\n" + "\n".join(by[k]) for k in order)
+    return {"count": len(items), "items": items, "text": text, "text_grouped": grouped, "include_soon": include_soon, "language": lang}
+
+
+# ---------------------------------------------------------------- tick-off: bought items -> adjust drafts (no model call)
+
+def purchased_proposals(items: Any, inv: dict | None = None) -> list[dict]:
+    """[{"id": "<item id>", "qty": n}, ...] -> validated ``item.adjust`` proposals (+qty). Raises ValueError on bad input."""
+    import hq_household_schemas as schemas
+    inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
+    if not isinstance(items, list) or not items or len(items) > MAX_PROPOSALS:
+        raise ValueError(f"1 à {MAX_PROPOSALS} articles")
+    tb = Toolbox(lambda: inv)
+    out, seen = [], set()
+    for row in items:
+        if not isinstance(row, dict) or row.get("id") in seen:
+            raise ValueError("article invalide ou en double")
+        seen.add(row.get("id"))
+        qty = _to_int(row.get("qty"), "qty", min_value=1)
+        if qty > 100000:
+            raise ValueError("quantité trop grande")
+        prop = tb._build({"op": "adjust", "item_id": row.get("id"), "delta": qty}, inv)
+        prop["label_fr"] = prop["label_fr"].replace("Ajuster", "Acheté :", 1)
+        out.append(schemas.validate_inventoria_proposal(prop))
+    return out
+
+
+# ---------------------------------------------------------------- grocery hand-off
+
+_CANON = {"kg": ("g", 1000), "g": ("g", 1), "l": ("ml", 1000), "ml": ("ml", 1), "cl": ("ml", 10), "dl": ("ml", 100)}
+
+
+def grocery_lines(items: list[dict], merchants: dict[str, str] | None = None) -> list[dict]:
+    """Shopping-list items -> grocery-module lines (canonical unit g / ml / each, quantities in milli-units, optional merchant by store name)."""
+    merchants = merchants or {}
+    lines = []
+    for it in items:
+        unit = (it.get("unit") or "").strip().lower()
+        canon, factor = _CANON.get(unit, ("each", 1))
+        line = {"name": str(it["name"])[:160], "qty_milli": int(it["buy"]) * factor * 1000, "unit": canon, "checked": False}
+        mid = merchants.get(str(it.get("store") or "").casefold())
+        if mid:
+            line["merchant_id"] = mid
+        lines.append(line)
+    return lines

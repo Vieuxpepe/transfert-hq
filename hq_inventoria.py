@@ -19,13 +19,14 @@ import hq_household_store as hstore
 import hq_inventoria_commit as commit_mod
 import hq_inventory as inventory
 
-BODY_MAX = 1_048_576
+BODY_MAX = 3_000_000          # transport cap (a message may carry one photo)
+BODY_MAX_TEXT = 1_048_576     # every other request
 MESSAGES_MAX = 100
 PROPOSALS_MAX = 20
 TEXT_MAX = 8_000
 ADAPTER_OUTPUT_MAX = 64_000
 SESSION_RE = re.compile(r"^/api/inventoria/sessions(?:/(ivo-[0-9a-f]{16}))?(?:/message)?\Z")
-OPS_RE = re.compile(r"^/api/inventoria/ops/(iop-[0-9a-f]{16})(?:/(validate|preview|commit|cancel|reconcile))?\Z")
+OPS_RE = re.compile(r"^/api/inventoria/ops/(iop-[0-9a-f]{16})(?:/(validate|preview|commit|cancel|reconcile|undo))?\Z")
 
 PREVIEW_KEYS = frozenset({"confirm"})
 COMMIT_KEYS = frozenset({"idempotency_key"})
@@ -53,7 +54,7 @@ class InventoriaError(Exception):
 
 def bind(**kwargs: Any) -> None:
     with _guard:
-        for key in ("root", "actor", "now", "llm_adapter", "asset_exists"):
+        for key in ("root", "actor", "now", "llm_adapter", "asset_exists", "notify"):
             if key in kwargs:
                 _cb[key] = kwargs[key]
 
@@ -709,16 +710,25 @@ def post_session_message(
             raise InventoriaError(f"proposals invalides (max {PROPOSALS_MAX})", code="validation_error")
         for p in raw:
             proposals.append(schemas.validate_inventoria_proposal(p))
-    elif "text" in data:
-        text = str(data["text"]).strip()
+    elif "text" in data or "image" in data:
+        text = str(data.get("text") or "").strip()
+        image = None
+        if data.get("image") is not None:
+            import hq_ai
+            image = hq_ai.parse_chat_image(data.get("image"))
+            if image is None:
+                raise InventoriaError("photo invalide (png, jpeg ou webp, 1,5 Mo max)", code="validation_error")
+            text = text or "(photo)"
         if not text:
             raise InventoriaError("text requis", code="validation_error")
         if len(text) > TEXT_MAX:
             raise InventoriaError("text trop long", code="validation_error")
-        messages.append({"role": "user", "text": text, "at": now})
+        messages.append({"role": "user", "text": ("\U0001F4F7 " + text) if image else text, "at": now})
         adapter = _cb.get("llm_adapter")
         if callable(adapter):
             _ctx.history = [m for m in messages[:-1] if isinstance(m, dict)]
+            _ctx.image = image
+            _ctx.conn, _ctx.household_id = conn, household_id
             try:
                 draft = adapter(text, session_id=session_id)
             except InventoriaError:
@@ -727,6 +737,8 @@ def post_session_message(
                 raise InventoriaError(str(exc)[:200], code="validation_error") from exc
             finally:
                 _ctx.history = None
+                _ctx.image = None
+                _ctx.conn = None
             raw_out = json.dumps(draft, ensure_ascii=False, default=str)
             if len(raw_out) > ADAPTER_OUTPUT_MAX:
                 raise InventoriaError("réponse modèle trop volumineuse", code="validation_error")
@@ -1236,6 +1248,53 @@ _NON_CANCELLABLE = frozenset({
 })
 
 
+def undo_operation(conn: sqlite3.Connection, household_id: str, op_id: str) -> dict:
+    """Create an inverse DRAFT for a committed batch. Nothing is applied; the Master previews and confirms it."""
+    import hq_inventoria_undo as undo_mod
+    row = conn.execute("SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?", (op_id, household_id)).fetchone()
+    if row is None:
+        raise InventoriaError("opération introuvable", status=404, code="not_found")
+    if row["status"] != "committed":
+        raise InventoriaError("seul un lot appliqué peut être annulé", status=409, code="conflict")
+    entry = undo_mod.get(_root(), op_id)
+    if entry is None:
+        raise InventoriaError("ce lot n'a pas de journal d'annulation", status=409, code="conflict")
+    prior = entry.get("undone_by")
+    if prior:
+        prow = conn.execute("SELECT * FROM inventoria_operations WHERE id = ?", (prior,)).fetchone()
+        if prow is not None and prow["status"] in ("draft", "validated", "previewed"):
+            return {"ok": True, "operation": _op_row_to_api(prow), "existing": True}   # idempotent: same pending undo
+        if prow is not None and prow["status"] == "committed":
+            raise InventoriaError("ce lot est déjà annulé", status=409, code="conflict")
+        undo_mod.clear_undo_mark(_root(), op_id)
+    inv = inventory.snapshot()
+    props, skipped = undo_mod.inverse(entry, inv)
+    if not props:
+        raise InventoriaError("rien à annuler" + (" (" + ", ".join(skipped[:3]) + ")" if skipped else ""), status=409, code="conflict")
+    for p in props:
+        schemas.validate_inventoria_proposal(p)
+    resolved, issues = [], []
+    for p in props:
+        rp, local = _resolve_proposal(p, inv)
+        resolved.append(rp)
+        issues.extend(local)
+    issues.extend(_simulate_batch_sequential(resolved, inv))
+    if issues:
+        raise InventoriaError("annulation impossible : le stock a changé depuis", status=409, code="conflict")
+    new_id = _new_id("op")
+    now = _now()
+    conn.execute(
+        "INSERT INTO inventoria_operations(id, household_id, session_id, status, proposals_json, rev, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_id, household_id, row["session_id"], "draft", _safe_json(props), 1, now, now),
+    )
+    _audit(conn, household_id=household_id, operation_id=new_id, action="propose", prev_status=None, next_status="draft",
+           detail={"count": len(props), "undo_of": op_id})
+    undo_mod.mark_undo(_root(), op_id, new_id)
+    api = _op_row_to_api(conn.execute("SELECT * FROM inventoria_operations WHERE id = ?", (new_id,)).fetchone())
+    return {"ok": True, "operation": api, "skipped": skipped}
+
+
 def cancel_operation(conn: sqlite3.Connection, household_id: str, op_id: str) -> dict:
     row = conn.execute(
         "SELECT * FROM inventoria_operations WHERE id = ? AND household_id = ?",
@@ -1473,6 +1532,17 @@ REPLY_TEXT_MAX = 1_500
 _ctx = threading.local()
 
 
+def current_image() -> dict | None:
+    """The photo (Gemini inlineData) attached to the message being answered, if any."""
+    return getattr(_ctx, "image", None)
+
+
+def current_db() -> tuple | None:
+    """(connection, household_id) while a model turn runs inside post_session_message; used by read-only module tools."""
+    conn = getattr(_ctx, "conn", None)
+    return (conn, _ctx.household_id) if conn is not None else None
+
+
 def current_history() -> list[dict]:
     """Earlier messages of the session whose message is being answered (empty outside an adapter call)."""
     return list(getattr(_ctx, "history", None) or [])
@@ -1512,10 +1582,35 @@ def status() -> dict:
     import hq_inventory
     import hq_inventoria_watch as watch
     inv = hq_inventory.snapshot()
-    return {"ok": True, "greeting": ai.greeting(inv), "alerts": ai.alerts(inv)[:12],
+    try:
+        import hq_inventoria_history
+        hq_inventoria_history.observe(_root(), inv)      # usage history for the run-out estimates
+    except Exception:
+        pass
+    import hq_inventoria_notify as notify
+    return {"ok": True, "greeting": ai.greeting(inv), "alerts": ai.alerts(inv)[:12], "notify": notify.get_settings(_root()),
             "shopping": {"all": ai.shopping_list(inv, include_soon=True), "urgent": ai.shopping_list(inv, include_soon=False)},
             "watches": watch.list_watches(_root(), inv.get("items", [])), "memory": mem.list_notes(_root()),
             "voice": voice, "max_notes": mem.MAX_NOTES, "language": ai.language()}
+
+
+def notify_post(data: dict) -> tuple[int, dict]:
+    import hq_inventoria_notify as notify
+    try:
+        cfg = notify.save_settings(_root(), enabled=data.get("enabled"), instant=data.get("instant"), digest_hour=data.get("digest_hour"))
+    except ValueError as exc:
+        raise InventoriaError(str(exc), code="validation_error") from exc
+    sent = False
+    if data.get("test") is True:
+        fn = _cb.get("notify")
+        if callable(fn):
+            try:
+                import hq_inventoria_ai as _ai
+                fn("Inventoria", "Test: offline alerts work." if _ai.language() == "en" else "Test : les alertes hors ligne fonctionnent.")
+                sent = True
+            except Exception:
+                sent = False
+    return 200, {"ok": True, "notify": cfg, "test_sent": sent}
 
 
 def watch_post(data: dict) -> tuple[int, dict]:
@@ -1558,7 +1653,7 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
     try:
         if not isinstance(data, dict):
             raise InventoriaError("JSON objet requis", code="validation_error")
-        if len(json.dumps(data, ensure_ascii=False)) > BODY_MAX:
+        if len(json.dumps(data, ensure_ascii=False)) > (BODY_MAX if "image" in data else BODY_MAX_TEXT):
             raise InventoriaError("corps trop volumineux", status=413, code="validation_error")
 
         if path == "/api/inventoria/voice":  # speech only; touches no household data
@@ -1567,6 +1662,8 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             return memory_post(data)
         if path == "/api/inventoria/watch":  # alert thresholds only; never changes stock
             return watch_post(data)
+        if path == "/api/inventoria/notify":  # offline-alert settings; touches no household data
+            return notify_post(data)
 
         st = _open_store(readonly=False)
         try:
@@ -1582,6 +1679,30 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
             if m_sess and m_sess.group(1) and path.endswith("/message"):
                 with st.transaction():
                     return 200, post_session_message(conn, household_id, m_sess.group(1), data)
+
+            if path == "/api/inventoria/purchased":  # ticked-off shopping items -> one reviewable draft (no model call)
+                import hq_inventoria_ai as ai
+                sid = data.get("session_id")
+                if not isinstance(sid, str) or not re.fullmatch(r"ivo-[0-9a-f]{16}", sid):
+                    raise InventoriaError("session_id requis", code="validation_error")
+                try:
+                    props = ai.purchased_proposals(data.get("items"), inventory.snapshot())
+                except (ValueError, schemas.SchemaError) as exc:
+                    raise InventoriaError(str(exc)[:200], code="validation_error") from exc
+                with st.transaction():
+                    return 200, post_session_message(conn, household_id, sid, {"proposals": props})
+
+            if path == "/api/inventoria/to-grocery":  # shopping list -> a NEW open list in the grocery module
+                import hq_grocery
+                import hq_inventoria_ai as ai
+                shop = ai.shopping_list(inventory.snapshot(), include_soon=data.get("include_soon") is not False)
+                if not shop["items"]:
+                    raise InventoriaError("rien à envoyer", status=409, code="conflict")
+                merchants = {m["name"].casefold(): m["id"] for m in hq_grocery.list_merchants(conn, household_id, {}).get("items", [])}
+                lines = ai.grocery_lines(shop["items"], merchants)
+                with st.transaction():
+                    created = hq_grocery.create_grocery_list(conn, household_id, {"lines": lines})
+                return 200, {"ok": True, "list": created, "count": len(lines)}
 
             m_op = OPS_RE.match(path)
             if not m_op:
@@ -1604,13 +1725,24 @@ def http_post(path: str, data: Any) -> tuple[int, dict]:
                     return 409, _commit_in_progress(op_id)
                 try:
                     with st.transaction():
+                        import hq_inventoria_undo as undo_mod
+                        prow = conn.execute("SELECT proposals_json FROM inventoria_operations WHERE id = ?", (op_id,)).fetchone()
+                        pre_inv = inventory.snapshot()
                         out = commit_operation(conn, household_id, op_id, data)
                         commit_mod._invoke_test_hook("F7")
                         if not out.get("ok"):
                             return int(out.get("http_status", 409)), out
+                        try:  # journal for "undo this batch"; a repeated (idempotent) commit must not overwrite it
+                            if prow is not None and undo_mod.get(_root(), op_id) is None:
+                                undo_mod.record(_root(), op_id, json.loads(prow["proposals_json"] or "[]"), pre_inv, inventory.snapshot())
+                        except Exception:
+                            pass
                         return 200, out
                 finally:
                     _release_commit(op_id)
+            if action == "undo":
+                with st.transaction():
+                    return 200, undo_operation(conn, household_id, op_id)
             if action == "cancel":
                 if not _claim_commit(op_id):
                     return 409, _commit_in_progress(op_id)
