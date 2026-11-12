@@ -446,6 +446,24 @@ def resolve_item(inv: dict, item_id: Any = None, item_name: Any = None) -> dict:
     raise ValueError("unknown item_id; call match_items or search_items to get a real id")
 
 
+BOX_MAX = 12   # boxes kept per detected item
+
+
+def clean_boxes(raw: Any) -> list[list[int]]:
+    """Normalise model boxes to [ymin, xmin, ymax, xmax] integers in 0..1000 (top-left origin). Bad or tiny boxes are dropped."""
+    cand = raw if isinstance(raw, list) else []
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    if len(cand) == 4 and all(num(v) for v in cand):
+        cand = [cand]                                  # a single flat box
+    out: list[list[int]] = []
+    for b in cand[:BOX_MAX]:
+        if isinstance(b, (list, tuple)) and len(b) == 4 and all(num(v) for v in b):
+            y1, x1, y2, x2 = (int(max(0, min(1000, round(v)))) for v in b)
+            if y2 - y1 >= 5 and x2 - x1 >= 5:
+                out.append([y1, x1, y2, x2])
+    return out
+
+
 class Toolbox:
     """Executes allow-listed tools against the live inventory; collects validated draft proposals."""
 
@@ -764,11 +782,13 @@ class Toolbox:
                        "unit": (match.get("unit") if match else "") or " ".join(str(d.get("unit") or "").split())[:20],
                        "confidence": conf, "note": " ".join(str(d.get("note") or "").split())[:120],
                        "item_id": match["id"] if match else None, "qty_now": match.get("qty") if match else None,
-                       "place_id": place_id, "place": places.get(place_id, "") if place_id else ""}
+                       "place_id": place_id, "place": places.get(place_id, "") if place_id else "",
+                       "boxes": clean_boxes(d.get("boxes") if d.get("boxes") is not None else d.get("box"))}
                 key = row["item_id"] or _norm(row["name"])
                 if key in by_key:                              # the same thing seen twice is one row (never summed)
                     old = by_key[key]
                     old["qty"] = max(old["qty"], qty)
+                    old["boxes"] = (old["boxes"] + row["boxes"])[:BOX_MAX]
                     if ("high", "medium", "low").index(conf) > ("high", "medium", "low").index(old["confidence"]):
                         old["confidence"] = conf
                     results.append({"index": i, "queued": True, "merged": True})
@@ -963,6 +983,40 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
     return reply, tb.proposals
 
 
+LOCATE_SYSTEM = (
+    "You locate items in a photo. Return ONLY JSON: an array of objects {\"index\": <number from the list>, \"box_2d\": [ymin, xmin, ymax, xmax]}. "
+    "Coordinates are integers from 0 to 1000 relative to the WHOLE image, origin at the top-left. Give one entry per visible instance "
+    "(identical items side by side get one entry each; a big pile gets one box around it) and make each box tight around the item. "
+    "Skip items you cannot see. No text outside the JSON.")
+
+
+def locate_items(image: dict, rows: list[dict]) -> None:
+    """Second, focused vision pass: add ``boxes`` to detected rows so the chip can draw them on the photo. Best effort: any failure leaves
+    the rows without boxes (the list still works)."""
+    import hq_ai
+    if not image or not rows:
+        return
+    listing = "\n".join(f"{i + 1}. {r.get('seen_as') or r['name']} (about {r['qty']})" for i, r in enumerate(rows))
+    contents = [{"role": "user", "parts": [{"text": "Items to locate:\n" + listing}, {"inlineData": image}]}]
+    try:
+        raw, _ = hq_ai.generate(VISION_CHAIN, LOCATE_SYSTEM, contents, json_out=True, temperature=0.1, max_tokens=2500)
+        data = json.loads((raw or "").strip().removeprefix("```json").removesuffix("```").strip())
+    except Exception:
+        return
+    if isinstance(data, dict):
+        data = data.get("boxes") or data.get("items") or []
+    if not isinstance(data, list):
+        return
+    for ent in data:
+        try:
+            idx = int(ent.get("index")) - 1
+            box = clean_boxes(ent.get("box_2d") or ent.get("box"))
+        except Exception:
+            continue
+        if 0 <= idx < len(rows) and box:
+            rows[idx]["boxes"] = (rows[idx].get("boxes", []) + box)[:BOX_MAX]
+
+
 def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     """``llm_adapter`` for hq_inventoria.bind: {"reply": ..., "proposals": [...] (drafts only)}."""
     import hq_inventoria
@@ -987,6 +1041,9 @@ def adapter(text: str, session_id: str | None = None) -> dict[str, Any]:
     if tb.grocery:
         out["grocery_lines"] = tb.grocery
     if tb.detections:
+        image = hq_inventoria.current_image()
+        if image and any(not r.get("boxes") for r in tb.detections):
+            locate_items(image, tb.detections)
         forced = {"count": "count", "stock": "add"}.get(hq_inventoria.current_intent())
         out["detections"] = {"mode": forced or tb.detection_mode or "add", "rows": tb.detections}
     return out

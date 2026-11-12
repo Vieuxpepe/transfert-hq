@@ -34,3 +34,5 @@ fallback chain as the other companions).
   item_id?, qty_now?, place_id?, place}], places}`; the chip posts the reviewed rows to `POST /api/inventoria/detections` (`mode`, `rows`), which returns
   the usual `operation(s)` drafts. Tools: `report_detections` (needs `photo_kind: "objects"` and a prior `match_items`), `propose_changes` needs
   `photo_kind: "receipt" | "list"` when a photo is attached.
+- **Boxes on the photo:** after `report_detections`, `locate_items` (one extra vision call, best effort) fills `rows[].boxes` with `[ymin, xmin, ymax, xmax]`
+  integers 0-1000 (top-left origin, one per visible instance, max 12). The chip draws them over the photo; they are never posted back to `/detections`.

@@ -969,7 +969,7 @@ class DetectionTests(_IntakeHelpers, _Base):
         with self.fake_generate(list(script)):
             _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url(), "intent": "count"})
         self.assertEqual(out["detections"]["mode"], "count")
-        self.assertIn("IN STOCK", self.calls[2][0])
+        self.assertTrue(any("IN STOCK" in c[0] for c in self.calls[2:]))
 
     def test_reviewed_rows_in_add_mode_become_drafts_that_commit(self) -> None:
         ids = self.by_name()
@@ -1109,3 +1109,78 @@ class PhotoKindGateTests(_IntakeHelpers, _Base):
             iai.respond("", [], None, toolbox=tb, image={"mimeType": "image/jpeg", "data": "AAAA"})
         self.assertEqual(tb.proposals, [])
         self.assertEqual(tb.detections[0]["name"], "Café")
+
+
+class DetectionBoxTests(_IntakeHelpers, _Base):
+    def test_boxes_are_validated_clamped_and_merged_with_duplicates(self) -> None:
+        self.assertEqual(iai.clean_boxes([10, 20, 300, 400]), [[10, 20, 300, 400]])                  # a single flat box
+        self.assertEqual(iai.clean_boxes([[-5, 0, 2000, 1000], [1, 1, 3, 3], [5, 5, 5, 50], "x", [1, 2, 3], [0, 0, 900, 900]]),
+                         [[0, 0, 1000, 1000], [0, 0, 900, 900]])                                    # clamped; tiny, flat and malformed ones dropped
+        self.assertEqual(iai.clean_boxes(None), [])
+        self.assertEqual(len(iai.clean_boxes([[0, 0, 10, 10]] * 40)), iai.BOX_MAX)
+        tb = iai.Toolbox()
+        tb.match_called = True
+        tb.run("report_detections", {"items": [
+            {"name": "Oeufs", "qty": 2, "boxes": [[100, 100, 300, 200]]},
+            {"name": "oeufs", "qty": 3, "box": [100, 300, 300, 400]},
+            {"name": "Sel", "qty": 1}]})
+        rows = {r["name"]: r for r in tb.detections}
+        self.assertEqual(rows["Oeufs"]["boxes"], [[100, 100, 300, 200], [100, 300, 300, 400]])
+        self.assertEqual((rows["Oeufs"]["qty"], rows["Sel"]["boxes"]), (3, []))
+
+    def test_boxes_reach_the_client_inside_the_detections_payload(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "mode": "add", "items": [{"name": "Lait", "qty": 1, "boxes": [[10, 10, 500, 400]]}]}}]}',
+                  '{"reply": "I saw one kind of item.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        self.assertEqual(out["detections"]["rows"][0]["boxes"], [[10, 10, 500, 400]])
+
+
+class LocateTests(_IntakeHelpers, _Base):
+    IMG = {"mimeType": "image/jpeg", "data": "AAAA"}
+
+    def _rows(self):
+        return [{"name": "Lait demi-écrémé", "seen_as": "MILK", "qty": 2, "boxes": []}, {"name": "Oeufs", "seen_as": "EGGS", "qty": 4, "boxes": []}]
+
+    def test_the_locate_pass_attaches_clean_boxes_by_index(self) -> None:
+        rows = self._rows()
+        raw = '```json\n[{"index": 1, "box_2d": [10, 20, 300, 400]}, {"index": 1, "box_2d": [10, 450, 300, 800]}, {"index": 2, "box_2d": [-9, 0, 5000, 100]}, {"index": 9, "box_2d": [1, 1, 99, 99]}, {"index": 2, "box_2d": "x"}]\n```'
+        with self.fake_generate([raw]):
+            iai.locate_items(self.IMG, rows)
+        self.assertEqual(rows[0]["boxes"], [[10, 20, 300, 400], [10, 450, 300, 800]])
+        self.assertEqual(rows[1]["boxes"], [[0, 0, 1000, 100]])                                    # clamped; out-of-range index and junk ignored
+        self.assertIn("MILK", self.calls[0][1][0]["parts"][0]["text"])                              # asks about what she SAW (the label)
+        self.assertTrue(any("inlineData" in p for p in self.calls[0][1][0]["parts"]))
+
+    def test_a_failed_or_garbled_locate_pass_never_breaks_detection(self) -> None:
+        for raw in ("not json at all", "{}", "[]", '{"boxes": "x"}'):
+            rows = self._rows()
+            with self.fake_generate([raw]):
+                iai.locate_items(self.IMG, rows)
+            self.assertEqual([r["boxes"] for r in rows], [[], []])
+        rows = self._rows()
+        with mock.patch.object(hq_ai, "generate", side_effect=hq_ai.AiError("busy", 503, "busy")):
+            iai.locate_items(self.IMG, rows)
+        self.assertEqual([r["boxes"] for r in rows], [[], []])
+        iai.locate_items(None, self._rows())                                                      # no image / no rows: nothing happens
+
+    def test_photo_replies_include_boxes_end_to_end(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "mode": "add", "items": [{"name": "Lait", "qty": 2}]}}]}',
+                  '{"reply": "I saw one kind of item.", "tools": []}',
+                  '[{"index": 1, "box_2d": [100, 100, 400, 300]}]']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            code, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        self.assertEqual(code, 200, out)
+        self.assertEqual(out["detections"]["rows"][0]["boxes"], [[100, 100, 400, 300]])
+        self.assertEqual(len(self.calls), 3)                                                       # 2 loop rounds + 1 locate pass
+
+    def test_boxes_the_model_already_gave_are_not_requested_again(self) -> None:
+        script = ['{"reply": "", "tools": [{"name": "match_items", "args": {"names": ["Lait"]}}, {"name": "report_detections", "args": {"photo_kind": "objects", "items": [{"name": "Lait", "qty": 1, "boxes": [[1, 1, 50, 50]]}]}}]}',
+                  '{"reply": "One item.", "tools": []}']
+        sid = ivo.http_post("/api/inventoria/sessions", {"device_id": "d"})[1]["session"]["id"]
+        with self.fake_generate(script):
+            _, out = ivo.http_post(f"/api/inventoria/sessions/{sid}/message", {"image": _jpeg_data_url()})
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(out["detections"]["rows"][0]["boxes"], [[1, 1, 50, 50]])

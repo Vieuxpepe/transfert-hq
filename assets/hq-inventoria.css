@@ -273,3 +273,35 @@
 /* while the review card is open the thread shrinks so the list gets the room */
 .hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-detect:not([hidden])) .hq-inventoria-thread-log{flex:0 0 auto;min-height:0;max-height:64px}
 .hq-inventoria-pane[data-pane="chat"]:has(.hq-inventoria-detect:not([hidden])) .hq-inventoria-detect{flex:1 1 auto;max-height:none;min-height:150px}
+
+/* ---- annotated photo: numbered boxes linked to the rows --------------------------------------------------------------- */
+.hq-inventoria .hq-inventoria-detect{overflow-y:auto}
+.hq-inventoria-detect .hq-inventoria-det-list{overflow:visible;flex:none}
+.hq-inventoria-detect .hq-inventoria-draft-actions{position:sticky;bottom:-10px;padding:8px 0 2px;background:color-mix(in srgb,var(--panel,#16201f) 94%,transparent);z-index:3}
+.hq-inventoria-figblock{margin:0 0 4px}
+.hq-inventoria-fig{position:relative;width:100%;margin:0 auto 6px;border-radius:10px;overflow:hidden;border:1px solid var(--inv-line);background:#000;cursor:zoom-in;line-height:0}
+.hq-inventoria-fig img{display:block;width:100%;height:auto;user-select:none}
+.hq-inventoria .hq-inventoria-bubble .hq-inventoria-fig .hq-inventoria-box,
+.hq-inventoria-box{
+  position:absolute;box-sizing:border-box;padding:0;margin:0;min-width:0;cursor:pointer;
+  border:2px solid var(--c);border-radius:4px;background:color-mix(in srgb,var(--c) 14%,transparent);
+  box-shadow:0 0 0 1px rgba(0,0,0,.55);transition:opacity .15s ease,background .15s ease;
+}
+.hq-inventoria-box span{position:absolute;left:-2px;top:-2px;min-width:16px;padding:1px 4px;border-radius:3px 0 6px 0;background:var(--c);color:#111;font:800 11px/14px system-ui,sans-serif;text-align:center}
+.hq-inventoria-box.is-off{opacity:.28;border-style:dashed}
+.hq-inventoria-box.is-active{border-width:3px;background:color-mix(in srgb,var(--c) 34%,transparent);z-index:2}
+.hq-inventoria-fig.has-active .hq-inventoria-box:not(.is-active){opacity:.3}
+.hq-inventoria-fig.is-plain .hq-inventoria-box{display:none}
+.hq-inventoria-figtools{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:12px;color:var(--inv-muted)}
+.hq-inventoria-figtools label{display:inline-flex;align-items:center;gap:4px}
+.hq-inventoria-det-num{flex:none;display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 3px;border-radius:50%;background:var(--c);color:#111;font:800 11px/1 system-ui,sans-serif}
+.hq-inventoria-det-row.is-flash{animation:hq-inv-flash .9s ease}
+@keyframes hq-inv-flash{0%,60%{background:color-mix(in srgb,var(--inv-accent) 35%,transparent)}100%{background:transparent}}
+.hq-inventoria-lightbox{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.86);padding:16px}
+.hq-inventoria-lightbox-wrap{display:flex;flex-direction:column;align-items:center;gap:10px;max-width:96vw;max-height:94vh}
+.hq-inventoria-fig.is-large{display:inline-block;width:auto;max-width:94vw;max-height:78vh;margin:0;cursor:default}
+.hq-inventoria-fig.is-large img{width:auto;height:auto;max-width:94vw;max-height:78vh}
+.hq-inventoria-legend{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;max-width:94vw}
+.hq-inventoria-legend span{padding:2px 9px;border-radius:999px;background:var(--c);color:#111;font:700 12px system-ui,sans-serif}
+.hq-inventoria-lightbox-close{position:absolute;top:12px;right:14px;width:38px;height:38px;border-radius:50%;border:0;background:rgba(255,255,255,.16);color:#fff;font-size:24px;line-height:1;cursor:pointer}
+.hq-inventoria-lightbox-close:hover{background:rgba(255,255,255,.3)}

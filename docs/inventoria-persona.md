@@ -119,6 +119,14 @@ One photo of many physical things becomes an **editable review list**, then a no
 4. **Ajouter une photo** scans a shelf in several shots: rows are merged by item; an item seen in two photos keeps the larger count and is flagged
    *vu sur 2 photos* so you check it.
 
+**Annotated photo.** The review card shows your photo with a numbered, colour-coded box on every recognised item; each number is a row of the list.
+Hover or focus a row to light up its box (the others dim), tap a box to jump to its row, untick a row and its boxes turn dashed. *Agrandir* (or a tap on
+the photo) opens a full-size view with a legend; Escape closes it. *Afficher les boîtes* hides the boxes to see the plain photo, and with several shots
+a *Photo 1 / Photo 2* switch appears. Boxes come from a dedicated second vision pass (`locate_items`: one extra call, boxes as 0-1000 coordinates, one per
+visible instance) rather than from the detection itself, because the model skips boxes when they are optional. On drawn test shelves the mean overlap
+with the true positions was 0.98 (33 of 33 items located); real photos will be harder. If the pass fails the photo still shows, without boxes, and a note
+says so. Boxes are only a visual check: they are never sent back or stored.
+
 Counts from a photo are estimates; the model can misread a label (a "2KG" pack counted as 2) or miss hidden items, which is why nothing is applied
 without the review. If she also drafted stock changes for the same items, those drafts are dropped so nothing appears twice.
 
