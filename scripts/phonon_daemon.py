@@ -60,7 +60,7 @@ class H(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         info = {l: {"repo": m["repo"], "rate": m["tts"].sample_rate, "quant": m["tts"].quant,
                     "load_s": m["load_s"]} for l, m in MODELS.items()}
-        self._send(200, json.dumps({"ready": bool(MODELS), "models": info, "errors": ERRORS}).encode())
+        self._send(200, json.dumps({"ready": bool(MODELS), "models": info, "errors": ERRORS, "pid": os.getpid()}).encode())
 
     def do_POST(self):
         if self.path != "/synthesize":

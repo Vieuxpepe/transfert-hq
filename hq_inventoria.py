@@ -1437,12 +1437,38 @@ def http_get(path: str, qs: dict | None = None) -> tuple[int, dict]:
         return 503, {"ok": False, "error": "stockage indisponible", "code": "storage_error"}
 
 
+MAX_SPEAK_CHARS = 600
+
+
+def speak(data: dict) -> tuple[int, dict]:
+    """Speak a short line in Inventoria's saved voice. The caller supplies the text; nothing here
+    reads or changes inventory state. Phonon failures return ok=false so the client stays silent
+    or uses browser speech; XTTS (Else) is never substituted."""
+    import re
+    import hq_voice
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise InventoriaError("Texte vocal requis", code="validation_error")
+    text = re.sub(r"<[^>]+>|[`*_#]", "", text)[:MAX_SPEAK_CHARS]
+    res = hq_voice.synthesize(text, language="en" if data.get("language") == "en" else "fr",
+                              style="neutral", timeout_sec=30, character="inventoria")
+    url = res.get("audio_url") if res and res.get("ok") else None
+    if not isinstance(url, str) or not re.fullmatch(
+            r"/assets/companion/chat/voice_cache/voice_ph[0-9a-f]{16}\.wav", url):
+        return 503, {"ok": False, "error": (res or {}).get("error") or "Voix indisponible",
+                     "code": "voice_unavailable"}
+    return 200, {"ok": True, "audio_url": url, "visemes": res.get("visemes") or [], "engine": res.get("engine")}
+
+
 def http_post(path: str, data: Any) -> tuple[int, dict]:
     try:
         if not isinstance(data, dict):
             raise InventoriaError("JSON objet requis", code="validation_error")
         if len(json.dumps(data, ensure_ascii=False)) > BODY_MAX:
             raise InventoriaError("corps trop volumineux", status=413, code="validation_error")
+
+        if path == "/api/inventoria/voice":  # speech only; touches no household data
+            return speak(data)
 
         st = _open_store(readonly=False)
         try:

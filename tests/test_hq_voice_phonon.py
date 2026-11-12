@@ -188,3 +188,62 @@ def test_english_only_voice_in_profile_selects_english_model(stub):
     ph.save_profile("inventoria", "phonon", "Zoey", 0.0, 0)
     r = hq_voice.synthesize("Bonjour tout le monde", character="inventoria", language="fr")
     assert r["ok"] and r["voice"] == "Zoey" and r["language"] == "en"
+
+
+def test_stop_daemon_kills_only_the_pid_the_daemon_reports(stub, monkeypatch):
+    import subprocess, sys, time
+    victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    state = {"up": True}
+    monkeypatch.setattr(ph, "_health", lambda timeout=1.0: {"ready": True, "pid": victim.pid} if state["up"] else {})
+    real_run = subprocess.run
+
+    def fake_run(args, **kw):
+        r = real_run(args, **kw)
+        if args and args[0] == "taskkill":
+            state["up"] = False
+        return r
+    monkeypatch.setattr(ph.subprocess, "run", fake_run)
+    try:
+        assert ph.stop_daemon(wait_sec=5) is True
+        deadline = time.time() + 5
+        while victim.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert victim.poll() is not None, "reported daemon pid must be terminated"
+        assert bystander.poll() is None, "unrelated processes must survive"
+    finally:
+        for p in (victim, bystander):
+            if p.poll() is None:
+                p.kill()
+
+
+def test_stop_daemon_is_noop_when_nothing_answers(monkeypatch):
+    monkeypatch.setattr(ph, "_health", lambda timeout=1.0: {})
+    assert ph.stop_daemon(wait_sec=0.2) is True
+
+
+def test_bridge_start_respects_opt_out_and_profiles(stub, monkeypatch):
+    started = []
+    monkeypatch.setattr(ph, "start_daemon", lambda *a, **k: started.append(1))
+    monkeypatch.setattr(ph, "PHONON_PYTHON", Path(__file__))  # exists
+    monkeypatch.setenv("HQ_PHONON_AUTOSTART", "0")
+    assert ph.bridge_start() is False
+    monkeypatch.delenv("HQ_PHONON_AUTOSTART")
+    for c in ("transferania", "inventoria", "musica"):
+        ph.save_profile(c, "browser", None, 0)
+    assert ph.bridge_start() is False  # nobody uses Phonon -> don't load models
+    ph.save_profile("musica", "phonon", "Noémie", 0)
+    assert ph.bridge_start() is True
+
+
+def test_inventoria_speak_route_uses_her_voice_and_validates(stub):
+    import hq_inventoria
+    ph.save_profile("inventoria", "phonon", "Zoey", 0.0, 0)
+    code, body = hq_inventoria.http_post("/api/inventoria/voice", {"text": "Bonjour, vingt-quatre articles."})
+    assert code == 200 and body["ok"] and body["audio_url"].startswith("/assets/companion/chat/voice_cache/voice_ph")
+    assert stub.calls[-1]["voice"] == "Zoey"
+    code, body = hq_inventoria.http_post("/api/inventoria/voice", {"text": "   "})
+    assert code == 400
+    stub.mode = "busy"
+    code, body = hq_inventoria.http_post("/api/inventoria/voice", {"text": "Une autre ligne assez longue."})
+    assert code == 503 and body["ok"] is False

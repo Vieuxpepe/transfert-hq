@@ -393,3 +393,63 @@ def studio(op: str, data: dict, *, admin: bool) -> dict[str, Any]:
     else:
         return {"ok": False, "error": "Aperçu navigateur côté client", "code": "browser_only"}
     return res or {"ok": False, "error": "Texte vide"}
+
+
+# ---- bridge lifecycle -------------------------------------------------------
+
+_atexit_registered = False
+
+
+def wanted() -> bool:
+    """True when some companion routes to Phonon and autostart isn't disabled."""
+    if os.environ.get("HQ_PHONON_AUTOSTART", "1") == "0":
+        return False
+    try:
+        return any(p["engine"] == "phonon" for c, p in load_profiles().items() if c != "else")
+    except Exception:
+        return False
+
+
+def stop_daemon(wait_sec: float = 5.0) -> bool:
+    """Stop the daemon that answers on our port. The PID comes from the daemon's own /health
+    answer, so we never kill an unrelated process. True if nothing answers afterwards."""
+    h = _health(1.5)
+    if not h:
+        return True
+    pid = h.get("pid")
+    if isinstance(pid, int) and pid > 0 and pid != os.getpid():
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
+            else:
+                os.kill(pid, 15)
+        except Exception:
+            pass
+    end = time.time() + wait_sec
+    while time.time() < end:
+        if not _health(0.5):
+            return True
+        time.sleep(0.2)
+    return not _health(0.5)
+
+
+def bridge_start() -> bool:
+    """Called once by the bridge at boot: warm the daemon in the background (non-blocking)
+    and make sure it is stopped when the bridge process exits normally."""
+    global _atexit_registered
+    if not wanted() or not PHONON_PYTHON.exists():
+        return False
+    if not _atexit_registered:
+        import atexit
+        atexit.register(bridge_stop)
+        _atexit_registered = True
+    threading.Thread(target=start_daemon, args=(0,), daemon=True, name="phonon-start").start()
+    return True
+
+
+def bridge_stop() -> None:
+    """Called by the bridge on shutdown. Idempotent; never raises."""
+    try:
+        stop_daemon()
+    except Exception:
+        pass
