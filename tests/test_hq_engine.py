@@ -317,5 +317,181 @@ class HttpTests(EngineBase):
         self.assertTrue(all("state" in c for c in eng.status()["daemons"]))
 
 
+class CheckTests(EngineBase):
+    """Spotify / Google AI Studio / logins / music worker checks, with every outside world faked."""
+
+    def _fake_spotify(self, running, connected, product="premium", configured=True):
+        import types
+        fake = types.SimpleNamespace(
+            local_spotify_probe=lambda: {"spotify_desktop_running": running, "spotify_pids": [11, 12] if running else [],
+                                         "spotify_install_path": "C:/x/Spotify.exe"},
+            status=lambda: ({"connected": True, "display_name": "Ana", "product": product, "configured": True}
+                            if connected else {"connected": False, "configured": configured}),
+            wake_local_spotify=lambda wait_s=0: {"ok": True})
+        saved = sys.modules.get("hq_spotify")
+        sys.modules["hq_spotify"] = fake
+        self.addCleanup(lambda: sys.modules.__setitem__("hq_spotify", saved) if saved else sys.modules.pop("hq_spotify", None))
+
+    def test_spotify_states(self):
+        self._fake_spotify(running=False, connected=True)
+        self.assertEqual(eng.spotify_check()["state"], "down")
+        self._fake_spotify(running=True, connected=True)
+        r = eng.spotify_check()
+        self.assertEqual((r["state"], r["facts"]["Application"], r["facts"]["Compte"]), ("ready", "ouverte", "Ana"))
+        self._fake_spotify(running=True, connected=False)
+        self.assertEqual(eng.spotify_check()["state"], "warn")
+        self._fake_spotify(running=True, connected=True, product="free")
+        self.assertIn("gratuite", eng.spotify_check()["note"])
+
+    def test_spotify_card_offers_start_only(self):
+        self._fake_spotify(running=False, connected=False)
+        d = eng.Daemon(id="spotify", label="S", description="", kind="apps", check=eng.spotify_check, start=lambda: True)
+        card = eng.probe(d)
+        self.assertEqual(card["state"], "down")
+        self.assertEqual(card["can"], {"start": True, "stop": False, "restart": False})
+
+    def _gemini(self, keys, code, ms=120):
+        old = (eng._gemini_keys, eng._gemini_ping)
+        eng._gemini_keys = lambda: keys
+        eng._gemini_ping = lambda k: {"code": code, "ms": ms}
+        self.addCleanup(lambda: (setattr(eng, "_gemini_keys", old[0]), setattr(eng, "_gemini_ping", old[1])))
+
+    def test_gemini_states_and_no_key_leak(self):
+        cases = [([], None, "down"), (["sk-SECRET"], 200, "ready"), (["sk-SECRET"], 429, "warn"),
+                 (["sk-SECRET"], 403, "error"), (["sk-SECRET"], 400, "error"), (["sk-SECRET"], 0, "warn"), (["sk-SECRET"], 500, "warn")]
+        for keys, code, want in cases:
+            self._gemini(keys, code)
+            r = eng.gemini_check()
+            self.assertEqual(r["state"], want, (code, r))
+            self.assertNotIn("sk-SECRET", json.dumps(r))
+
+    def test_gemini_ping_is_cached(self):
+        import urllib.request
+        calls = []
+
+        class R:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, timeout=0: calls.append(req.get_header("X-goog-api-key")) or R()
+        self.addCleanup(lambda: setattr(urllib.request, "urlopen", real))
+        eng._gemini_cache.update(at=0.0, value=None)
+        self.addCleanup(lambda: eng._gemini_cache.update(at=0.0, value=None))
+        for _ in range(5):
+            eng._gemini_ping("k")
+        self.assertEqual(calls, ["k"])                           # key goes in a header, once
+
+    def test_logins_rows_and_state(self):
+        self._fake_spotify(running=True, connected=True)
+        self._gemini(["k1", "k2"], 200)
+        saved = (eng._hf_token_present, eng._cfg_file)
+        eng._hf_token_present = lambda: False
+        eng._cfg_file = lambda: {"pin": "123456", "discord_webhook_url": ""}
+        self.addCleanup(lambda: (setattr(eng, "_hf_token_present", saved[0]), setattr(eng, "_cfg_file", saved[1])))
+        r = eng.logins_check()
+        rows = {x["label"]: x for x in r["rows"]}
+        self.assertEqual(rows["Spotify"]["state"], "ok")
+        self.assertIn("2 clé", rows["Google AI Studio"]["text"])
+        self.assertEqual(rows["Hugging Face"]["state"], "warn")
+        self.assertEqual(rows["Discord"]["state"], "off")
+        self.assertEqual(r["state"], "warn")
+        self.assertNotIn("123456", json.dumps(r))                # presence only, never the value
+        eng._hf_token_present = lambda: True
+        self.assertEqual(eng.logins_check()["state"], "ready")
+        eng._cfg_file = lambda: {"pin": ""}
+        self.assertEqual(eng.logins_check()["state"], "error")   # no PIN is a real problem
+
+    def _music_env(self, venv=True):
+        tmp = Path(tempfile.mkdtemp())
+        ace = tmp / "ACE-Step-1.5"
+        if venv:
+            (ace / ".venv" / "Scripts").mkdir(parents=True)
+            (ace / ".venv" / "Scripts" / "python.exe").write_text("")
+        worker = tmp / "worker.py"
+        worker.write_text(
+            "initialize_service(config_path='acestep-v15-turbo', device='cuda', offload_to_cpu=True, offload_dit_to_cpu=True,"
+            " quantization='int8_weight_only')\nlm.initialize(lm_model_path='acestep-5Hz-lm-0.6B', backend='pt', device='cuda')\n"
+            "GenerationParams(inference_steps=8)\nGenerationConfig(batch_size=1)\n")
+        saved = (eng.ACE_DIR, eng.WORKER_SCRIPT, eng.STUDIO_DIR)
+        eng.ACE_DIR, eng.WORKER_SCRIPT, eng.STUDIO_DIR = ace, worker, tmp / "studio"
+        self.addCleanup(lambda: (setattr(eng, "ACE_DIR", saved[0]), setattr(eng, "WORKER_SCRIPT", saved[1]),
+                                 setattr(eng, "STUDIO_DIR", saved[2])))
+        return tmp
+
+    def _freeze_procs(self, rows):
+        eng._ps_cache.update(at=time.time() + 1e6, rows=rows)
+        self.addCleanup(lambda: eng._ps_cache.update(at=0.0, rows=[]))
+
+    def test_music_settings_come_from_the_worker_script(self):
+        self._music_env()
+        self._freeze_procs([])
+        r = eng.music_check()
+        f = r["facts"]
+        self.assertEqual(r["state"], "idle")
+        self.assertEqual(f["DiT"], "acestep-v15-turbo · INT8")
+        self.assertEqual(f["LM"], "acestep-5Hz-lm-0.6B · backend PyTorch")
+        self.assertEqual((f["Appareil"], f["Étapes"], f["Lot"], f["Décharge"]), ("CUDA", 8, 1, "CPU + DiT"))
+
+    def test_music_missing_env_and_busy(self):
+        self._music_env(venv=False)
+        self.assertEqual(eng.music_check()["state"], "error")
+        self._music_env()
+        self._freeze_procs([{"pid": 4321, "ppid": 1, "name": "python.exe",
+                             "cmdline": "python hq_music_studio_worker.py x y", "private_mb": 5000, "started": None}])
+        r = eng.music_check()
+        self.assertEqual((r["state"], r["pid"]), ("busy", 4321))
+
+    def test_music_last_job_and_log(self):
+        tmp = self._music_env()
+        self._freeze_procs([])
+        job = tmp / "studio" / ("a" * 32)
+        job.mkdir(parents=True)
+        (job / "job.json").write_text("{}")
+        (job / "result.json").write_text(json.dumps({"status": "completed", "elapsed_seconds": 127.4}))
+        (job / "worker.log").write_text("generating...\napi_key=sk-ZZZ\n")
+        f = eng.music_check()["facts"]
+        self.assertEqual((f["Dernière création"], f["Durée de calcul"]), ("terminée", "127 s"))
+        eng.register(eng.Daemon(id="m", label="M", description="", check=eng.music_check, log_path=eng._latest_worker_log, observe_only=True))
+        code, out = eng.tail_log("m")
+        self.assertEqual(code, 200)
+        self.assertNotIn("sk-ZZZ", "\n".join(out["lines"]))
+
+    def test_callable_log_without_file_is_empty_not_404(self):
+        eng.register(eng.Daemon(id="m", label="M", description="", log_path=lambda: None))
+        self.assertEqual(eng.tail_log("m")[0], 200)
+
+    def test_summary_counts_idle_busy_as_healthy_and_warn_as_problem(self):
+        for i, st in enumerate(("ready", "idle", "busy", "warn", "error", "down")):
+            eng.register(eng.Daemon(id=f"c{i}", label=st, description="", check=(lambda s=st: {"state": s})))
+        s = eng.status()["summary"]
+        self.assertEqual((s["ready"], s["problems"], s["total"]), (3, 2, 6))
+
+    @unittest.skipUnless(sys.platform == "win32", "PowerShell fallback is Windows only")
+    def test_proc_table_fallback_without_psutil(self):
+        saved = (eng.psutil, subprocess.run)
+        self.addCleanup(lambda: (setattr(eng, "psutil", saved[0]), setattr(subprocess, "run", saved[1]), eng._ps_cache.update(at=0.0, rows=[])))
+        eng.psutil = None
+        eng._ps_cache.update(at=0.0, rows=[])
+        rows = [{"p": 10, "pp": 1, "n": "python.exe", "c": "python phonon_daemon.py", "w": 100 * 1048576, "s": 1700000000},
+                {"p": 11, "pp": 10, "n": "ffmpeg.exe", "c": "ffmpeg", "w": 50 * 1048576, "s": 1700000001}]
+
+        class Done:
+            stdout = json.dumps(rows)
+
+        subprocess.run = lambda *a, **k: Done()
+        self.assertEqual(eng._find_by_hint("phonon_daemon"), 10)
+        info = eng._proc_info(10)
+        self.assertEqual((info["rss_mb"], sorted(info["pids"])), (150, [10, 11]))     # parent + child
+        eng._ps_cache.update(at=0.0, rows=[])
+        Done.stdout = json.dumps(rows[0])                                              # PowerShell emits a bare object for one row
+        self.assertEqual(len(eng._proc_table()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

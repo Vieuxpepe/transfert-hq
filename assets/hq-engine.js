@@ -13,6 +13,7 @@
     title: "Engine",
     hint: "Les moteurs locaux dont HQ dépend : voix, images, serveur. Démarre ou arrête-les ici pour libérer la mémoire.",
     ready: "Prêt", loading: "Chargement…", down: "Arrêté", foreign: "Autre programme", error: "Erreur",
+    busy: "Génération en cours", idle: "Au repos", warn: "À surveiller",
     start: "Démarrer", stop: "Arrêter", restart: "Redémarrer", confirm: "Confirmer ?", logs: "Journal", hideLogs: "Masquer le journal",
     open: "Ouvrir", port: "Port", pid: "PID", mem: "Mémoire", vram: "VRAM", up: "Actif depuis", models: "Modèles",
     summary: function (r, t) { return r + " / " + t + " prêt" + (r > 1 ? "s" : ""); },
@@ -20,10 +21,10 @@
     empty: "Aucun moteur déclaré.", noLog: "Pas encore de journal.", events: "Dernières actions",
     noEvents: "Aucune action depuis le démarrage du serveur.", offline: "Statut indisponible. Nouvelle tentative…",
     foreignNote: "Un autre programme occupe ce port : HQ ne l'arrêtera pas.",
-    observe: "Géré ailleurs", self: "Ce serveur", failed: "Échec", done: "Fait", busy: "En cours…"
+    observe: "Géré ailleurs", self: "Ce serveur", failed: "Échec", done: "Fait", working: "En cours…"
   };
-  var GROUP = { core: "Serveur", voice: "Voix", image: "Images", service: "Services" };
-  var ORDER = ["core", "voice", "image", "service"];
+  var GROUP = { core: "Serveur", voice: "Voix", music: "Musique", apps: "Comptes et services", image: "Images", service: "Services" };
+  var ORDER = ["core", "voice", "music", "apps", "image", "service"];
 
   var state = { data: null, timer: null, active: false, openLogs: {}, logText: {}, busy: {}, armed: {}, err: "", inflight: false };
 
@@ -97,7 +98,7 @@
     titles.appendChild(el("h3", "hq-eng-name", d.label));
     titles.appendChild(el("p", "hq-eng-desc", d.description || ""));
     head.appendChild(titles);
-    var st = el("span", "hq-eng-state", state.busy[d.id] ? T.busy : (T[d.state] || d.state));
+    var st = el("span", "hq-eng-state", state.busy[d.id] ? T.working : (T[d.state] || d.state));
     st.setAttribute("role", "status");
     head.appendChild(st);
     c.appendChild(head);
@@ -121,6 +122,18 @@
       Object.keys(det.errors).forEach(function (k) { ul.appendChild(el("li", null, k + " — " + det.errors[k])); });
       c.appendChild(ul);
     }
+    if (d.rows && d.rows.length) {
+      var rows = el("ul", "hq-eng-rows");
+      d.rows.forEach(function (r) {
+        var li = el("li", "is-" + (r.state || "off"));
+        li.appendChild(el("span", "hq-eng-rdot"));
+        li.appendChild(el("strong", null, r.label));
+        li.appendChild(el("span", "hq-eng-rtext", r.text || ""));
+        rows.appendChild(li);
+      });
+      c.appendChild(rows);
+    }
+    if (d.note) c.appendChild(el("p", "hq-eng-note", d.note));
     if (d.state === "foreign") c.appendChild(el("p", "hq-eng-note", T.foreignNote));
 
     var bar = el("div", "hq-eng-actions");

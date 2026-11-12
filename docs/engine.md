@@ -36,4 +36,18 @@ hq_engine.register(hq_engine.Daemon(
 Files: `hq_engine.py`, `assets/hq-engine.js`, `assets/hq-engine.css`, hooks in `iphone_bridge.py` (import, 2 routes, `engine` view,
 panel, nav link, setView hook), tests `tests/test_hq_engine.py`, `tests/test_hq_engine_wiring.py`.
 
+## Checks (things that are not a port)
+A `Daemon` may carry `check=callable` returning `{"state", "facts", "note", "rows", "pid"}`; states add `idle` (a worker that is not
+running right now), `busy` and `warn`. `idle` and `busy` count as healthy in the header chip, `warn`/`error`/`foreign` as "à vérifier".
+
+| id | what it answers |
+|---|---|
+| `spotify` | Is the Spotify desktop app open (a Connect device exists only then)? Is HQ linked to the account, which offer (free limits playback)? "Démarrer" wakes the app. |
+| `gemini` | Google AI Studio: keys configured, live reachability via one cached (60 s) models-list call (no generation quota used), latency, requests today. 429 = `warn`, 400/401/403 = `error`. Key sent in a header, never shown. |
+| `logins` | Presence-only rows: Spotify account, Google AI keys, Hugging Face token (`HF_TOKEN` or `$HF_HOME/token`, needed by Phonon), Discord webhook (optional), HQ PIN. No value is ever read out. |
+| `music` | ACE-Step: is `hq_music_studio_worker.py` running (`busy`) or not (`idle`); venv present; last job result and compute time; log tail of the latest job. The settings shown (turbo DiT + INT8, 0.6B LM on the PyTorch backend, CUDA, 8 steps, batch 1, CPU/DiT offload) are parsed from the worker script, so the card cannot disagree with what runs. |
+
+Process lookups use psutil when installed, otherwise one PowerShell/CIM query (about 2 s, cached 10 s), so memory and worker detection
+also work in a Python without psutil (the live bridge runs Python 3.13 without it; `pip install psutil` there makes it faster).
+
 Not built yet: the Pistonia assistant (chat + propose-only actions) and idle auto-stop.
