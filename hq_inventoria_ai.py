@@ -725,3 +725,41 @@ def greeting(inv: dict | None = None) -> dict[str, Any]:
         line = t["watch"].format(first=first["name"], qty=first["qty"], warn=first["warn_at"])
     return {"line": line, "mood": "proactive", "low_count": sum(1 for r in rows if r["level"] in ("out", "low")),
             "alert_count": len(rows), "language": lang}
+
+
+# ---------------------------------------------------------------- shopping list (copy block)
+
+SHOP_WORDS = {
+    "fr": {"title": "Courses", "left": "reste", "min": "min", "watch": "alerte", "none": "Rien à acheter pour l'instant."},
+    "en": {"title": "Shopping list", "left": "left", "min": "min", "watch": "alert", "none": "Nothing to buy right now."},
+}
+
+
+def suggested_buy(row: dict) -> int:
+    """Whole units to buy to get back to 1.5x the reference level (the minimum, or the watch level), at least 1."""
+    ref = row["min"] if row.get("min") else (row.get("warn_at") or 0)
+    target = max(math.ceil(ref * 1.5), ref + 1) if ref else (row["qty"] or 0) + 1
+    return max(1, int(target - (row["qty"] or 0)))
+
+
+def shopping_list(inv: dict | None = None, *, include_soon: bool = True, lang: str | None = None,
+                  today: str | None = None) -> dict[str, Any]:
+    """Plain-text, checkbox-style list of what to buy (out / low / getting low), made to be copied into iPhone Notes."""
+    inv = inv if isinstance(inv, dict) else hq_inventory.snapshot()
+    lang = lang or language()
+    w = SHOP_WORDS.get(lang, SHOP_WORDS["fr"])
+    rows = [r for r in alerts(inv) if include_soon or r["level"] != "soon"]
+    items = []
+    for r in rows:
+        unit = (r["unit"] or "").strip()
+        buy = suggested_buy(r)
+        ref = f"{w['min']} {r['min']}" if r["min"] else (f"{w['watch']} {r['warn_at']}" if r.get("warn_at") is not None else "")
+        detail = f"{w['left']} {r['qty']}" + (f", {ref}" if ref else "")
+        items.append({"id": r["id"], "name": r["name"], "unit": unit, "level": r["level"], "qty": r["qty"],
+                      "min": r["min"], "buy": buy, "place": r["place"],
+                      "line": f"\u2610 {r['name']} \u2014 {buy}{(' ' + unit) if unit else ''} ({detail})"})
+    if today is None:
+        import time as _t
+        today = _t.strftime("%Y-%m-%d")
+    text = (f"{w['title']} \u2014 {today}\n" + "\n".join(i["line"] for i in items)) if items else f"{w['title']} \u2014 {today}\n{w['none']}"
+    return {"count": len(items), "items": items, "text": text, "include_soon": include_soon, "language": lang}

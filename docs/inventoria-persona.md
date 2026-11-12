@@ -36,6 +36,10 @@ bottom-left of HQ, keeps her own conversation and her own memory, and prepares c
   `.hq-inventoria/watches.json`, listed under *Surveillances* with delete buttons; it never changes stock or the item's minimum).
   The chip lists alerts with a *Restock?* button, re-checks every 5 minutes (no model call), and when an item crosses into a worse
   level it shows a warning, turns *proactive* and fires `hq:inventoria-alert`.
+- **Copy block (shopping list):** under *Liste à copier* the chip shows everything out, low or getting low as plain text, one
+  `☐ Name — qty unit (left n, min m)` line each, sorted by urgency, with a suggested quantity (back to 1.5x the minimum or
+  watch level, at least 1). *Copier* puts it on the clipboard (with a select-and-copy fallback for iPhone Safari over plain HTTP) so it can
+  be pasted into Notes; the "include getting low" toggle is remembered. Built by `shopping_list()` and sent in `GET /api/inventoria/status`.
 - **Intake of a message:** "bought 10 saws, 3 green apples, 3 cartons de lait, ..." is parsed into quantities and units; names are
   matched across languages and plural forms against the whole catalog (`match_items`), existing items get an *adjust*, new ones a
   *create* in the place that fits best (new items are named in the inventory's language), and everything arrives as ONE reviewable

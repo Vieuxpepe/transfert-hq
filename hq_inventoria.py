@@ -1513,6 +1513,7 @@ def status() -> dict:
     import hq_inventoria_watch as watch
     inv = hq_inventory.snapshot()
     return {"ok": True, "greeting": ai.greeting(inv), "alerts": ai.alerts(inv)[:12],
+            "shopping": {"all": ai.shopping_list(inv, include_soon=True), "urgent": ai.shopping_list(inv, include_soon=False)},
             "watches": watch.list_watches(_root(), inv.get("items", [])), "memory": mem.list_notes(_root()),
             "voice": voice, "max_notes": mem.MAX_NOTES, "language": ai.language()}
 

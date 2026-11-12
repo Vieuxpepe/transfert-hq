@@ -459,3 +459,36 @@ class DuplicateGuardTests(_IntakeHelpers, _Base):
             {"op": "create", "name": "colle", "qty": 2}]})
         self.assertEqual([r["queued"] for r in out["results"]], [True, False, True, False])
         self.assertIn("duplicate", out["results"][1]["error"])
+
+
+class ShoppingListTests(_IntakeHelpers, _Base):
+    def test_list_is_plain_checkbox_text_sorted_by_urgency_with_sane_quantities(self) -> None:
+        self.mk("Colle", 0, "tubes", mn=3)
+        self.mk("Beurre", 2, "plaquettes", mn=1)          # getting low
+        self.mk("Riz", 50, "kg", mn=2)                    # fine: not listed
+        out = iai.shopping_list(lang="fr", today="2026-11-12")
+        lines = out["text"].splitlines()
+        self.assertEqual(lines[0], "Courses — 2026-11-12")
+        self.assertEqual(lines[1:], [
+            "☐ Colle — 5 tubes (reste 0, min 3)",
+            "☐ Vis M3 — 26 pcs (reste 4, min 20)",
+            "☐ Beurre — 1 plaquettes (reste 2, min 1)"])
+        self.assertNotIn("Riz", out["text"])
+        self.assertEqual(out["count"], 3)
+        self.assertNotIn("Beurre", iai.shopping_list(include_soon=False, lang="fr")["text"])
+        self.assertIn("(left 4, min 20)", iai.shopping_list(lang="en")["text"])
+
+    def test_buy_quantity_never_zero_and_watch_only_items_use_the_watch_level(self) -> None:
+        self.assertEqual(iai.suggested_buy({"qty": 1, "min": 1, "warn_at": None}), 1)      # target 2
+        self.assertEqual(iai.suggested_buy({"qty": 40, "min": 0, "warn_at": 35}), 13)       # 35*1.5=53 -> 13
+        self.assertEqual(iai.suggested_buy({"qty": 0, "min": 0, "warn_at": None}), 1)
+        self.mk("Piles AA", 40, "pcs")
+        aa = self.by_name()["Piles AA"]["id"]
+        iai.Toolbox().run("watch", {"item_id": aa, "warn_at": 45})
+        self.assertIn("Piles AA — 28 pcs (reste 40, alerte 45)", iai.shopping_list(lang="fr")["text"])
+
+    def test_nothing_to_buy_and_status_feed(self) -> None:
+        self.assertEqual(iai.shopping_list({"places": [], "items": []}, lang="en", today="d")["text"], "Shopping list — d\nNothing to buy right now.")
+        _, st = ivo.http_get("/api/inventoria/status")
+        self.assertEqual(st["shopping"]["all"]["count"], 1)
+        self.assertIn("Vis M3", st["shopping"]["urgent"]["text"])
