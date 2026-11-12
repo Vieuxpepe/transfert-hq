@@ -2,6 +2,7 @@
    --accent --ok --warn --danger --accent-text) so it follows the light/dark theme. Everything is scoped under .hq-eng. */
 .hq-eng{--eng-ready:var(--ok,#3dffb5);--eng-loading:var(--warn,#e8a838);--eng-bad:var(--danger,#ff5c5c);--eng-down:color-mix(in srgb,var(--muted,#b7c2ce) 70%,transparent);
   margin-top:6px;font-size:.95rem;line-height:1.5}
+.hq-eng h2,.hq-eng h3,.hq-eng dt,.hq-eng dd,.hq-eng p{font-family:inherit;font-synthesis:none}
 .hq-eng-head{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;margin:0 0 4px}
 .hq-eng-title{margin:0;font-size:1.5rem;letter-spacing:-.02em}
 .hq-eng-chip{display:inline-flex;align-items:center;min-height:28px;padding:2px 12px;border-radius:999px;font-weight:700;font-size:.85rem;

@@ -4328,7 +4328,7 @@ function setupNav() {
     sessionStorage.removeItem('tf_return_hash');
     if (!location.hash && back && hqViewFromHash(back)) history.replaceState(null, '', back);
   } catch (_) {}
-  if ((saved === 'intime' || saved === 'repas' || saved === 'budget') && !hqSessionIsAdmin()) saved = 'accueil';
+  if ((saved === 'intime' || saved === 'repas' || saved === 'budget' || saved === 'engine') && !hqSessionIsAdmin()) saved = 'accueil';
   if (!location.hash && saved === 'intime') history.replaceState(null, '', '#intime');
   setView(hqViewFromHash() || saved, { historyMode: location.hash ? 'none' : 'replace' });
   window.addEventListener('hashchange', () => {
@@ -6195,7 +6195,8 @@ body[data-view="plus"] [data-panel="plus"]{display:block}
 body:not(.session-admin) .bottom-nav [data-nav="intime"],
 body:not(.session-admin) .bottom-nav [data-nav="repas"],
 body:not(.session-admin) .bottom-nav [data-nav="budget"],
-body:not(.session-admin) .bottom-nav [data-nav="musique"]{display:none!important}
+body:not(.session-admin) .bottom-nav [data-nav="musique"],
+body:not(.session-admin) .bottom-nav [data-nav="engine"]{display:none!important}
 body[data-view="intime"] .hq-intime-panel{
   position:relative;
   display:flex;
@@ -7722,6 +7723,7 @@ def render_app() -> bytes:
   <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
   <button type="button" id="nav-musique" data-nav="musique" hidden data-help="Spotify natif : lecture, playlists, mixer DJ et découvertes. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 18V6l12-2v12"/><circle cx="7" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Musique</span></button>
   <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
+  <button type="button" id="nav-engine" data-nav="engine" data-help="Moteurs locaux (voix, images, serveur) : état, mémoire, démarrer/arrêter. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg></span><span class="nav-label">Engine</span></button>
   <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
 <main class="wrap" id="main" tabindex="-1">
