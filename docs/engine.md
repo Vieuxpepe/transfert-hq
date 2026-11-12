@@ -98,4 +98,8 @@ it for the chosen time, which frees its RAM/VRAM. Choices persist in `.hq-engine
 * API: `POST /api/engine/daemons/<id>/autostop` with `{"enabled": true|false, "idle_min": 3..480}`; the card's `auto_stop` block carries
   `enabled`, `idle_min`, `idle_for_s`, `stops_in_s`. A daemon opts in with `Daemon(idle_stop=True, idle_default_min=N)`.
 
-Not built yet: the Pistonia assistant (chat + propose-only actions) and starting/stopping daemons on other PCs.
+## Pistonia (assistant)
+A draggable, resizable chip on the Engine tab opens a chat with Pistonia, who reads the live state and can propose actions that you confirm
+with a button. Details, safety rules and the adult-mode portrait slot: [companion/pistonia-chip.md](companion/pistonia-chip.md).
+
+Not built yet: starting/stopping daemons on other PCs.

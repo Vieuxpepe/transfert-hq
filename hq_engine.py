@@ -968,6 +968,12 @@ def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
     query = query or {}
     if path == "/api/engine/status":
         return 200, status()
+    if path == "/api/engine/pistonia/greeting":
+        try:
+            import hq_pistonia
+            return 200, hq_pistonia.greeting()
+        except Exception:
+            return 500, {"error": "greeting unavailable", "code": "error"}
     m = _LOGS_RE.match(path)
     if m:
         try:
@@ -982,6 +988,14 @@ def http_post(path: str, data: Optional[dict] = None) -> tuple[int, dict]:
     m = _ACT_RE.match(path)
     if m:
         return act(m.group(1), m.group(2))
+    if path == "/api/engine/pistonia/message":
+        import hq_pistonia
+        try:
+            return 200, hq_pistonia.message(data)
+        except hq_pistonia.PistoniaError as exc:
+            return exc.status, {"error": str(exc), "code": exc.code, "retryable": exc.retryable}
+        except Exception:
+            return 500, {"error": "Pistonia a rencontré une erreur.", "code": "error", "retryable": True}
     m = _AUTOSTOP_RE.match(path)
     if m:
         body = data or {}
@@ -1004,7 +1018,10 @@ def http_post(path: str, data: Optional[dict] = None) -> tuple[int, dict]:
 
 def redact_for_logs(payload: Any) -> dict:
     if isinstance(payload, dict):
-        return {"error": str(payload.get("error", ""))[:120], "code": payload.get("code", "error")}
+        out = {"error": str(payload.get("error", ""))[:160], "code": payload.get("code", "error")}
+        if payload.get("retryable"):
+            out["retryable"] = True
+        return out
     return {"error": "error", "code": "error"}
 
 

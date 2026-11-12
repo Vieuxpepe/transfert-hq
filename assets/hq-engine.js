@@ -28,7 +28,7 @@
     rename: "Renommer", remove: "Retirer", save: "Enregistrer", cancel: "Annuler", noMachines: "Aucun autre ordinateur pour l'instant.",
     codeTitle: "Code d'appairage (valable 10 min, usage unique)", codeHelp: "Sur l'autre PC, copie hq_engine.py, hq_forge_worker.py et scripts\\engine_agent.py, puis :",
     codeRun: "Ensuite, laisse tourner :", codeFail: "Impossible de créer un code.", copy: "Copier", copied: "Copié",
-    noDaemons: "Aucun moteur signalé.", temp: "Température", cores: "cœurs",
+    askPistonia: "Demander à Pistonia, l'assistante de la salle des machines", noDaemons: "Aucun moteur signalé.", temp: "Température", cores: "cœurs",
     autostop: "Arrêt auto", autostop_on: "Arrêt auto activé", autostop_off: "Arrêt auto désactivé",
     autoLabel: "Arrêt auto si inactif", after: "après", minutes: function (n) { return n >= 60 && n % 60 === 0 ? (n / 60) + " h" : n + " min"; },
     stopsIn: function (t) { return "s'arrête dans " + t; }, idleFor: function (t) { return "inactif depuis " + t; },
@@ -494,6 +494,13 @@
     var h = el("h2", "hq-eng-title", T.title);
     h.id = "hq-eng-title";
     head.appendChild(h);
+    if (win.HqPistonia) {
+      var ask = el("button", "hq-eng-btn is-ghost hq-eng-ask", "Pistonia");
+      ask.type = "button";
+      ask.title = T.askPistonia;
+      ask.addEventListener("click", function () { win.HqPistonia.open(); });
+      head.appendChild(ask);
+    }
     var d = state.data;
     if (d) {
       var s = d.summary || {};
@@ -551,7 +558,10 @@
     if (state.inflight) return Promise.resolve();
     state.inflight = true;
     return jget("/api/engine/status").then(function (r) {
-      if (r.ok && r.data && r.data.daemons) { state.data = r.data; state.err = ""; }
+      if (r.ok && r.data && r.data.daemons) {
+        state.data = r.data; state.err = "";
+        try { win.dispatchEvent(new win.CustomEvent("hq:engine-status", { detail: r.data })); } catch (_) {}   // Pistonia's mood
+      }
       else state.err = T.offline;
     }).catch(function () { state.err = T.offline; }).then(function () {
       state.inflight = false;
@@ -601,6 +611,7 @@
     }, fast || anyLoading() ? POLL_FAST_MS : POLL_MS);
   }
 
+  win.hqEngineRefresh = function () { return refresh(); };
   win.hqEngineShow = function () {
     state.active = true;
     render();

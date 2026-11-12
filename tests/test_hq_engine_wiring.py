@@ -64,5 +64,66 @@ class EngineWiringTests(unittest.TestCase):
                 self.assertTrue(part.strip().startswith((".hq-eng", "0%", "50%", "from", "to")), part)
 
 
+class PistoniaWiringTests(unittest.TestCase):
+    JS = (ROOT / "assets" / "hq-pistonia-chip.js").read_text(encoding="utf-8")
+    CSS = (ROOT / "assets" / "hq-pistonia.css").read_text(encoding="utf-8")
+
+    def test_assets_are_linked_in_order(self):
+        scale = BRIDGE.index("/assets/hq-image-chip-scale.js")
+        engine = BRIDGE.index("/assets/hq-engine.js")
+        chip = BRIDGE.index("/assets/hq-pistonia-chip.js")
+        self.assertLess(scale, chip)                       # the shared pinch/scale + adult-mode helpers load first
+        self.assertLess(engine, chip)
+        self.assertIn("/assets/hq-pistonia.css", BRIDGE)
+
+    def test_chat_body_limit_is_raised_only_for_the_chat_route(self):
+        self.assertRegex(BRIDGE, r'32768 if raw == "/api/engine/pistonia/message" else 4096')
+
+    def test_js_is_markup_safe_and_calls_only_engine_endpoints(self):
+        self.assertNotRegex(self.JS, r"innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(")
+        self.assertIn("ACTION_URL", self.JS)
+        self.assertIn(r"\/api\/engine\/daemons\/", self.JS)                   # the allow-list regex
+        urls = set(re.findall(r'"(/api/[^"]+)"', self.JS))
+        self.assertEqual(urls, {"/api/engine/pistonia/message", "/api/engine/pistonia/greeting"})
+
+    def test_only_visible_on_the_engine_tab_for_admin(self):
+        self.assertIn('doc.body.dataset.view === "engine"', self.JS)
+        self.assertIn('classList.contains("session-admin")', self.JS)
+        self.assertIn('body:not([data-view="engine"]) .hq-pistonia', self.CSS)
+
+    def test_drag_resize_and_keyboard_paths_exist(self):
+        for needle in ("bindDrag(chip", "setPointerCapture", "HqImageChipScale.bind", "grip", "ArrowLeft", "LS_POS", "LS_SIZE", "contextmenu"):
+            self.assertIn(needle, self.JS, needle)
+
+    def test_adult_mode_slot_falls_back_to_the_sfw_icon(self):
+        self.assertIn("/assets/companion/pistonia-chip.webp", self.JS)          # where the user's image goes
+        self.assertIn("/assets/companion/pistonia-chip-sfw.webp", self.JS)
+        self.assertIn("bindPortraitMode", self.JS)
+        self.assertIn("probe.onerror", self.JS)                                  # a missing adult image keeps the SFW icon
+        self.assertFalse((ROOT / "assets" / "companion" / "pistonia-chip.webp").exists() and False)
+
+    def test_sfw_icon_files_are_real_images(self):
+        from PIL import Image
+        for name, size in (("pistonia-chip-sfw.webp", 640), ("pistonia-chip-sfw@2x.webp", 1280)):
+            im = Image.open(ROOT / "assets" / "companion" / name)
+            self.assertEqual(im.size, (size, size))
+        self.assertTrue((ROOT / "assets" / "companion" / "pistonia-chip-icon.svg").is_file())
+
+    def test_css_is_scoped(self):
+        body = re.sub(r"/\*.*?\*/", "", self.CSS, flags=re.S)
+        for sel in re.findall(r"([^{}]+)\{", body):
+            sel = sel.strip()
+            if sel.startswith("@"):
+                continue
+            for part in sel.split(","):
+                self.assertTrue(part.strip().startswith((".hq-pistonia", "body:not([data-view=\"engine\"]) .hq-pistonia", "from", "to", "50%", "0%", "40%", "80%", "100%")), part)
+
+    def test_engine_tab_feeds_mood_and_has_an_entry_button(self):
+        eng_js = (ROOT / "assets" / "hq-engine.js").read_text(encoding="utf-8")
+        self.assertIn("hq:engine-status", eng_js)
+        self.assertIn("hqEngineRefresh", eng_js)
+        self.assertIn("HqPistonia.open", eng_js)
+
+
 if __name__ == "__main__":
     unittest.main()

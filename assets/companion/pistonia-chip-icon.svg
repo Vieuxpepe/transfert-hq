@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Pistonia">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7c2d12"/><stop offset="1" stop-color="#f59e0b"/></linearGradient></defs>
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#g)" stroke="#fbbf24" stroke-width="2.5"/>
+  <circle cx="64" cy="64" r="36" fill="none" stroke="#fff7ed" stroke-width="12" stroke-dasharray="9.4 8" />
+  <circle cx="64" cy="64" r="32" fill="#fff7ed"/>
+  <circle cx="64" cy="64" r="17" fill="#7c2d12" stroke="#c2410c" stroke-width="2"/>
+  <rect x="55" y="51" width="18" height="9" rx="2" fill="#fdba74"/>
+  <rect x="62.5" y="60" width="3" height="12" fill="#ffedd5"/>
+  <circle cx="64" cy="72" r="4" fill="#fbbf24"/>
+  <path d="M102 26 L108 32 L102 38 L96 32 Z" fill="#fde047" stroke="#78350f" stroke-width="1"/>
+</svg>
