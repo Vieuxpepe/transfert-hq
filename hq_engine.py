@@ -73,6 +73,8 @@ class Daemon:
     details: Optional[Callable[[dict], dict]] = None  # health JSON -> small dict of facts for the card
     link_view: Optional[str] = None                  # HQ view that owns this daemon (e.g. "forge")
     self_process: bool = False                       # the bridge itself
+    idle_stop: bool = False                          # may be stopped automatically after a quiet period (opt-in per daemon)
+    idle_default_min: int = 15                       # suggested quiet period shown in the UI
 
     def can(self, action: str) -> bool:
         if self.observe_only or self.self_process:
@@ -556,6 +558,14 @@ def _attach_usage(out: dict, pid: int, info: dict) -> None:
 
 
 def probe(d: Daemon) -> dict:
+    out = _probe_core(d)
+    info = idle_info(d, out.get("state", "down"))
+    if info is not None:
+        out["auto_stop"] = info
+    return out
+
+
+def _probe_core(d: Daemon) -> dict:
     """One daemon's live status card. States: ready | loading | down | foreign | error."""
     out: dict[str, Any] = {
         "id": d.id, "label": d.label, "description": d.description, "kind": d.kind, "port": d.port,
@@ -752,11 +762,167 @@ def act(daemon_id: str, action: str) -> tuple[int, dict]:
             ok, msg = _do_stop(d)
         if ok and action in ("start", "restart"):
             ok, msg = _do_start(d)
+            touch(d.id)
+        if action in ("stop", "restart"):
+            _ready_since.pop(d.id, None)
         _event(d.id, action, ok, msg)
         card = probe(d)
         return (200 if ok else 500), {"ok": ok, "message": msg, "daemon": card, "events": list(_events)}
     finally:
         lock.release()
+
+
+# ---- idle auto-stop ------------------------------------------------------------------------------------------------
+# A daemon that supports it (``idle_stop``) can be stopped after N quiet minutes to free RAM/VRAM. It is OFF by default and
+# chosen per daemon. "Quiet" = nobody called touch() for it: the voice engines call touch() on every request that needs the
+# daemon (cache hits do not count), and Start/Restart from the tab count as use. Both voice engines restart themselves on the
+# next request (that one line falls back to browser speech while the model loads), so stopping them is safe.
+IDLE_MIN, IDLE_MAX = 3, 480
+IDLE_CHOICES = (5, 10, 15, 30, 60, 120)
+WATCH_EVERY = 30.0
+_last_used: dict[str, float] = {}
+_ready_since: dict[str, float] = {}
+_policy: dict[str, dict] = {}
+_policy_path: Optional[Path] = None
+_policy_lock = threading.Lock()
+_watcher: dict[str, Any] = {"thread": None, "stop": None}
+
+
+def touch(daemon_id: str) -> None:
+    """Record that ``daemon_id`` was just needed (cheap, never raises)."""
+    _last_used[daemon_id] = time.time()
+
+
+def _policy_load() -> None:
+    _policy.clear()
+    if _policy_path is None:
+        return
+    try:
+        data = json.loads(_policy_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return
+    for k, v in (data.items() if isinstance(data, dict) else []):
+        if _ID_RE.match(str(k)) and isinstance(v, dict):
+            m = v.get("idle_min")
+            _policy[k] = {"enabled": v.get("enabled") is True,
+                          "idle_min": m if isinstance(m, int) and not isinstance(m, bool) and IDLE_MIN <= m <= IDLE_MAX else None}
+
+
+def _policy_save() -> None:
+    if _policy_path is None:
+        return
+    try:
+        _policy_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _policy_path.with_name(_policy_path.name + ".partial")
+        tmp.write_text(json.dumps(_policy), encoding="utf-8")
+        os.replace(tmp, _policy_path)
+    except OSError:
+        pass
+
+
+def get_policy(d: Daemon) -> dict:
+    p = _policy.get(d.id) or {}
+    return {"enabled": bool(p.get("enabled")), "idle_min": p.get("idle_min") or d.idle_default_min}
+
+
+def set_policy(daemon_id: str, enabled: Any, idle_min: Any) -> tuple[int, dict]:
+    d = get(daemon_id)
+    if d is None:
+        return 404, {"error": "unknown daemon", "code": "not_found"}
+    if not d.idle_stop or d.observe_only or d.self_process:
+        return 409, {"error": f"auto-stop is not available for {d.label}", "code": "not_supported"}
+    if not isinstance(enabled, bool):
+        return 400, {"error": "enabled must be true or false", "code": "validation_error"}
+    if idle_min is None:
+        idle_min = get_policy(d)["idle_min"]
+    if isinstance(idle_min, bool) or not isinstance(idle_min, int) or not IDLE_MIN <= idle_min <= IDLE_MAX:
+        return 400, {"error": f"idle_min must be a whole number of minutes ({IDLE_MIN}-{IDLE_MAX})", "code": "validation_error"}
+    with _policy_lock:
+        _policy[d.id] = {"enabled": enabled, "idle_min": idle_min}
+        _policy_save()
+    h = _health(d)
+    ready = h is not None and bool(h.get("ready", h.get("_plain", False)))
+    if enabled and ready:
+        _ready_since.setdefault(d.id, time.time())
+        touch(d.id)                                    # the quiet period starts now, not from an older call
+    _event(d.id, "autostop_on" if enabled else "autostop_off", True, f"{idle_min} min" if enabled else "")
+    return 200, {"ok": True, "auto_stop": idle_info(d, "ready" if ready else "down"), "events": list(_events)}
+
+
+def idle_info(d: Daemon, state: str, now: Optional[float] = None) -> Optional[dict]:
+    """The auto-stop block of a status card (None when the daemon does not support it)."""
+    if not d.idle_stop or d.observe_only or d.self_process:
+        return None
+    now = time.time() if now is None else now
+    pol = get_policy(d)
+    info: dict[str, Any] = {"enabled": pol["enabled"], "idle_min": pol["idle_min"], "choices": list(IDLE_CHOICES)}
+    if state == "ready":
+        base = max(_last_used.get(d.id, 0.0), _ready_since.get(d.id, 0.0))
+        if base:
+            info["idle_for_s"] = max(0, int(now - base))
+            if pol["enabled"]:
+                info["stops_in_s"] = max(0, int(pol["idle_min"] * 60 - (now - base)))
+    return info
+
+
+def autostop_tick(now: Optional[float] = None) -> list[str]:
+    """One watcher pass. Stops every enabled daemon that is ready and has been quiet long enough. Returns the ids stopped."""
+    now = time.time() if now is None else now
+    stopped: list[str] = []
+    for d in all_daemons():
+        if not d.idle_stop or d.observe_only or d.self_process or not d.can("stop"):
+            continue
+        h = _health(d)
+        if h is None:
+            _ready_since.pop(d.id, None)                   # down: the next time it comes up starts a fresh quiet period
+            continue
+        if not bool(h.get("ready", h.get("_plain", False))):
+            continue                                       # loading or failing: never auto-stop what is not serving yet
+        _ready_since.setdefault(d.id, now)
+        pol = get_policy(d)
+        if not pol["enabled"]:
+            continue
+        base = max(_last_used.get(d.id, 0.0), _ready_since[d.id])
+        if now - base < pol["idle_min"] * 60:
+            continue
+        lock = _action_locks.setdefault(d.id, threading.Lock())
+        if not lock.acquire(blocking=False):
+            continue                                       # a manual action is running
+        try:
+            ok, msg = _do_stop(d)
+            _event(d.id, "autostop", ok, (f"inactif depuis {pol['idle_min']} min" if ok else msg))
+            if ok:
+                _ready_since.pop(d.id, None)
+                stopped.append(d.id)
+        finally:
+            lock.release()
+    return stopped
+
+
+def start_watcher() -> None:
+    """Background pass every WATCH_EVERY seconds (idempotent). Started by the bridge via bind()."""
+    t = _watcher.get("thread")
+    if t is not None and t.is_alive():
+        return
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(WATCH_EVERY):
+            try:
+                autostop_tick()
+            except Exception:                              # the watcher must never die
+                pass
+
+    th = threading.Thread(target=loop, daemon=True, name="engine-autostop")
+    _watcher.update(thread=th, stop=stop)
+    th.start()
+
+
+def stop_watcher() -> None:
+    ev = _watcher.get("stop")
+    if ev is not None:
+        ev.set()
+    _watcher.update(thread=None, stop=None)
 
 
 # ---- logs --------------------------------------------------------------------------------------------------------
@@ -795,6 +961,7 @@ def tail_log(daemon_id: str, lines: int = 80) -> tuple[int, dict]:
 _LOGS_RE = re.compile(r"^/api/engine/logs/([a-z0-9][a-z0-9_-]{0,31})\Z")
 _ACT_RE = re.compile(r"^/api/engine/daemons/([a-z0-9][a-z0-9_-]{0,31})/(start|stop|restart)\Z")
 _MACHINE_RE = re.compile(r"^/api/engine/machines/(pc_[0-9a-f]{16})/(rename|remove)\Z")
+_AUTOSTOP_RE = re.compile(r"^/api/engine/daemons/([a-z0-9][a-z0-9_-]{0,31})/autostop\Z")
 
 
 def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
@@ -815,6 +982,10 @@ def http_post(path: str, data: Optional[dict] = None) -> tuple[int, dict]:
     m = _ACT_RE.match(path)
     if m:
         return act(m.group(1), m.group(2))
+    m = _AUTOSTOP_RE.match(path)
+    if m:
+        body = data or {}
+        return set_policy(m.group(1), body.get("enabled"), body.get("idle_min"))
     try:
         import hq_engine_fleet as fleet
     except Exception:
@@ -1067,8 +1238,12 @@ def music_check() -> dict:
 
 def bind(root: Any) -> None:
     """Called once by the bridge: enables pairing other computers (state under <root>/.hq-engine)."""
+    global _policy_path
     import hq_engine_fleet
     hq_engine_fleet.bind(root)
+    _policy_path = Path(root) / ".hq-engine" / "autostop.json"
+    _policy_load()
+    start_watcher()
 
 
 def register_defaults() -> None:
@@ -1086,6 +1261,7 @@ def register_defaults() -> None:
         register(Daemon(id="phonon", label="Phonon TTS", kind="voice", port=ph.PHONON_PORT, health_path="/health",
                         process_hint="phonon_daemon", log_path=ph.PHONON_LOG, details=ph_details,
                         start=lambda: ph.start_daemon(wait_sec=0.0), stop=lambda: ph.stop_daemon(),
+                        idle_stop=True, idle_default_min=30,
                         description="Voix sur processeur de Transferina, Inventoria et Musica (anglais)."))
     except Exception:
         pass
@@ -1097,7 +1273,7 @@ def register_defaults() -> None:
 
         register(Daemon(id="xtts", label="Coqui XTTS", kind="voice", port=xt.XTTS_DAEMON_PORT, health_path="/health",
                         process_hint="coqui_xtts_daemon", log_path=xt.DAEMON_LOG, details=xt_details,
-                        start=lambda: xt.start_daemon(wait_sec=0.0),
+                        start=lambda: xt.start_daemon(wait_sec=0.0), idle_stop=True, idle_default_min=15,
                         description="Voix d'Else sur carte graphique (français/anglais). Garde le modèle chaud en VRAM."))
     except Exception:
         pass

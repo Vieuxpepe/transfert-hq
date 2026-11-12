@@ -302,6 +302,10 @@ def synthesize(text: str, *, character: str, language: str = "fr", style: str = 
     if final.exists() and wav_ok(final):
         return {"ok": True, "cached": True, "audio_url": url, "wav_url": url,
                 "visemes": compute_viseme_envelope(final), **meta}
+    try:  # Engine tab: this request needs the daemon, so it is not idle
+        import hq_engine; hq_engine.touch("phonon")
+    except Exception:
+        pass
     if not daemon_ready(lang):
         start_daemon(0)
         return {"ok": False, "engine": "phonon", "code": "preparing",

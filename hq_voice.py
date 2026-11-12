@@ -324,6 +324,10 @@ def _synthesize_xtts(
     # Expressive parameters: temperature=0.84 for maximum vocal breath, pitch nuances and sighing
     temperature, top_p, _, _ = PROFILES[style]
 
+    try:  # Engine tab: this request needs the daemon, so it is not idle
+        import hq_engine; hq_engine.touch("xtts")
+    except Exception:
+        pass
     # Fast path: warm daemon (model already on GPU). XTTS needs >= 8 chars.
     via_daemon = False
     if len(clean_text) >= 8 and daemon_ready():

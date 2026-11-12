@@ -83,4 +83,19 @@ HTTPS is required (Tailscale); `--dev` allows http only for a loopback HQ in tes
 
 Admin routes: `POST /api/engine/machines/code`, `POST /api/engine/machines/<pc_id>/rename|remove`. Agent routes: `POST /engine-agent/v1/enroll|report`.
 
-Not built yet: the Pistonia assistant (chat + propose-only actions), idle auto-stop, starting/stopping daemons on other PCs.
+## Idle auto-stop
+Per daemon, **off by default**: a switch and a delay (5 min to 2 h) on the card of Phonon and XTTS ("Arrêt auto si inactif", with a live
+"s'arrête dans …" countdown). When on, a background pass (every 30 s, started by `hq_engine.bind`) stops the daemon once nobody has used
+it for the chosen time, which frees its RAM/VRAM. Choices persist in `.hq-engine/autostop.json`.
+
+* **What counts as use**: `hq_engine.touch(id)` is called by `hq_voice_phonon.synthesize` and `hq_voice._synthesize_xtts` right where a
+  request really needs the daemon (a cache hit does not count), and by Start/Restart in the tab. Enabling the switch starts the quiet
+  period at that moment, and a daemon found already warm after an HQ restart gets a fresh quiet period instead of being stopped at once.
+* **Never stopped automatically**: a daemon that is still loading or failing, one that is down, observe-only ones (Forge, the bridge, other
+  PCs), or one whose manual action is running. A failed auto-stop is logged in "Dernières actions" and retried.
+* **Cost**: both voice engines restart themselves on the next request, but that one line is spoken by the browser voice while the model
+  loads (a few seconds for Phonon, about 25 s for XTTS). That is why it is opt-in.
+* API: `POST /api/engine/daemons/<id>/autostop` with `{"enabled": true|false, "idle_min": 3..480}`; the card's `auto_stop` block carries
+  `enabled`, `idle_min`, `idle_for_s`, `stops_in_s`. A daemon opts in with `Daemon(idle_stop=True, idle_default_min=N)`.
+
+Not built yet: the Pistonia assistant (chat + propose-only actions) and starting/stopping daemons on other PCs.

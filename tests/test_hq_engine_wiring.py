@@ -19,7 +19,7 @@ class EngineWiringTests(unittest.TestCase):
 
     def test_admin_gate_in_client_and_nav(self):
         self.assertRegex(BRIDGE, r"view === 'engine'\) && !hqSessionIsAdmin\(\)\) view = 'accueil'")
-        self.assertIn('[data-view-link="engine"]{display:none}', BRIDGE)
+        self.assertRegex(BRIDGE, r'\[data-view-link="engine"\](?:,[^{]*)?\{display:none\}')
         self.assertIn('data-view-link="engine"', BRIDGE)
 
     def test_routes_use_the_engine_module(self):

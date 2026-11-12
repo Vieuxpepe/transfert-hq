@@ -28,7 +28,11 @@
     rename: "Renommer", remove: "Retirer", save: "Enregistrer", cancel: "Annuler", noMachines: "Aucun autre ordinateur pour l'instant.",
     codeTitle: "Code d'appairage (valable 10 min, usage unique)", codeHelp: "Sur l'autre PC, copie hq_engine.py, hq_forge_worker.py et scripts\\engine_agent.py, puis :",
     codeRun: "Ensuite, laisse tourner :", codeFail: "Impossible de créer un code.", copy: "Copier", copied: "Copié",
-    noDaemons: "Aucun moteur signalé.", temp: "Température", cores: "cœurs"
+    noDaemons: "Aucun moteur signalé.", temp: "Température", cores: "cœurs",
+    autostop: "Arrêt auto", autostop_on: "Arrêt auto activé", autostop_off: "Arrêt auto désactivé",
+    autoLabel: "Arrêt auto si inactif", after: "après", minutes: function (n) { return n >= 60 && n % 60 === 0 ? (n / 60) + " h" : n + " min"; },
+    stopsIn: function (t) { return "s'arrête dans " + t; }, idleFor: function (t) { return "inactif depuis " + t; },
+    autoHint: "Libère la mémoire. La première phrase après l'arrêt passe par la voix du navigateur pendant que le moteur se relance tout seul."
   };
   var GROUP = { core: "Serveur", voice: "Voix", music: "Musique", apps: "Comptes et services", image: "Images", service: "Services" };
   var ORDER = ["core", "voice", "music", "apps", "image", "service"];
@@ -179,6 +183,51 @@
     return b;
   }
 
+  function fmtSpan(s) {
+    if (s < 90) return s + " s";
+    if (s < 5400) return Math.round(s / 60) + " min";
+    return (s / 3600).toFixed(1).replace(/\.0$/, "") + " h";
+  }
+
+  function autoStopRow(d) {
+    var a = d.auto_stop;
+    var row = el("div", "hq-eng-auto" + (a.enabled ? " is-on" : ""));
+    var lab = el("label", "hq-eng-switch");
+    var cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = !!a.enabled;
+    cb.disabled = !!state.busy[d.id];
+    lab.appendChild(cb);
+    lab.appendChild(el("span", null, T.autoLabel));
+    row.appendChild(lab);
+    var sel = el("select", "hq-eng-select");
+    sel.setAttribute("aria-label", T.autoLabel + " : " + T.after);
+    var choices = (a.choices || []).slice();
+    if (choices.indexOf(a.idle_min) < 0) choices.push(a.idle_min);
+    choices.sort(function (x, y) { return x - y; }).forEach(function (n) {
+      var o = el("option", null, T.after + " " + T.minutes(n));
+      o.value = String(n);
+      if (n === a.idle_min) o.selected = true;
+      sel.appendChild(o);
+    });
+    row.appendChild(sel);
+    var send = function () {
+      jpost("/api/engine/daemons/" + encodeURIComponent(d.id) + "/autostop", { enabled: cb.checked, idle_min: parseInt(sel.value, 10) }).then(function (r) {
+        if (r.data && r.data.events && state.data) state.data.events = r.data.events;
+        if (r.ok && r.data && r.data.auto_stop && state.data) {
+          state.data.daemons = state.data.daemons.map(function (x) { if (x.id === d.id) x.auto_stop = r.data.auto_stop; return x; });
+        } else if (typeof win.toast === "function") { try { win.toast((r.data && r.data.error) || T.failed); } catch (_) {} }
+        render();
+      }).catch(function () { render(); });
+    };
+    cb.addEventListener("change", send);
+    sel.addEventListener("change", send);
+    if (a.enabled && a.stops_in_s != null) row.appendChild(el("span", "hq-eng-auto-state", T.stopsIn(fmtSpan(a.stops_in_s))));
+    else if (a.idle_for_s != null && d.state === "ready") row.appendChild(el("span", "hq-eng-auto-state", T.idleFor(fmtSpan(a.idle_for_s))));
+    if (a.enabled) row.appendChild(el("p", "hq-eng-auto-hint", T.autoHint));
+    return row;
+  }
+
   function card(d) {
     var c = el("article", "hq-eng-card is-" + d.state);
     c.dataset.daemon = d.id;
@@ -206,6 +255,7 @@
     if (facts.childNodes.length) c.appendChild(facts);
     var usage = usageBlock(d, state.data && state.data.system);
     if (usage) c.appendChild(usage);
+    if (d.auto_stop) c.appendChild(autoStopRow(d));
 
     if (det.errors) {
       var ul = el("ul", "hq-eng-errors");
@@ -492,6 +542,11 @@
     return !!(d && d.daemons && d.daemons.some(function (x) { return x.state === "loading"; })) || Object.keys(state.busy).length > 0;
   }
 
+  function editing() {
+    var a = doc.activeElement, root = panel();
+    return !!(a && root && root.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== "checkbox");
+  }
+
   function refresh() {
     if (state.inflight) return Promise.resolve();
     state.inflight = true;
@@ -500,7 +555,7 @@
       else state.err = T.offline;
     }).catch(function () { state.err = T.offline; }).then(function () {
       state.inflight = false;
-      if (state.active) render();
+      if (state.active && !editing()) render();
       Object.keys(state.openLogs).forEach(function (id) { if (state.openLogs[id]) loadLog(id, true); });
     });
   }

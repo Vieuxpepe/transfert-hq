@@ -493,5 +493,253 @@ class CheckTests(EngineBase):
         self.assertEqual(len(eng._proc_table()), 1)
 
 
+class AutoStopTests(EngineBase):
+    """Idle auto-stop: policy validation/persistence, the quiet-period maths, and what the watcher may and may not stop."""
+
+    def setUp(self):
+        super().setUp()
+        self._saved_state = (dict(eng._policy), dict(eng._last_used), dict(eng._ready_since), eng._policy_path)
+        eng._policy.clear()
+        eng._last_used.clear()
+        eng._ready_since.clear()
+        eng._policy_path = None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        eng.stop_watcher()
+        eng._policy.clear()
+        eng._policy.update(self._saved_state[0])
+        eng._last_used.clear()
+        eng._last_used.update(self._saved_state[1])
+        eng._ready_since.clear()
+        eng._ready_since.update(self._saved_state[2])
+        eng._policy_path = self._saved_state[3]
+
+    def _daemon(self, **kw):
+        fh = FakeHealth(kw.pop("body", {"ready": True}))
+        self.addCleanup(fh.close)
+        stops = []
+
+        def stop():
+            stops.append(1)
+            fh.srv.shutdown()
+            fh.srv.server_close()
+            return True
+
+        spec = dict(id="a", label="A", description="", port=fh.port, idle_stop=True, stop=stop, process_hint="x", start=lambda: True)
+        spec.update(kw)
+        eng.register(eng.Daemon(**spec))
+        return fh, stops
+
+    # -- policy ---------------------------------------------------------------------------------------------------------
+    def test_policy_validation(self):
+        self._daemon()
+        eng.register(eng.Daemon(id="plain", label="P", description="", port=free_port(), start=lambda: True, process_hint="x"))
+        eng.register(eng.Daemon(id="obs", label="O", description="", port=free_port(), idle_stop=True, observe_only=True))
+        self.assertEqual(eng.set_policy("nope", True, 10)[0], 404)
+        self.assertEqual(eng.set_policy("plain", True, 10)[0], 409)          # does not support it
+        self.assertEqual(eng.set_policy("obs", True, 10)[0], 409)            # observe-only daemons are never stopped
+        self.assertEqual(eng.set_policy("a", "yes", 10)[0], 400)
+        self.assertEqual(eng.set_policy("a", 1, 10)[0], 400)
+        for bad in (0, 2, eng.IDLE_MAX + 1, -5, True, "10", 7.5):
+            self.assertEqual(eng.set_policy("a", True, bad)[0], 400, bad)
+        self.assertEqual(eng.set_policy("a", True, 10)[0], 200)
+        self.assertEqual(eng.get_policy(eng.get("a")), {"enabled": True, "idle_min": 10})
+        self.assertEqual(eng.set_policy("a", False, None)[1]["auto_stop"]["idle_min"], 10)   # keeps the chosen minutes
+
+    def test_policy_is_off_by_default_with_the_daemons_suggested_minutes(self):
+        self._daemon(idle_default_min=30)
+        self.assertEqual(eng.get_policy(eng.get("a")), {"enabled": False, "idle_min": 30})
+
+    def test_policy_persists_and_ignores_garbage(self):
+        self._daemon()
+        eng._policy_path = Path(tempfile.mkdtemp()) / ".hq-engine" / "autostop.json"
+        eng.set_policy("a", True, 15)
+        self.assertTrue(eng._policy_path.is_file())
+        eng._policy.clear()
+        eng._policy_load()
+        self.assertEqual(eng.get_policy(eng.get("a")), {"enabled": True, "idle_min": 15})
+        eng._policy_path.write_text(json.dumps({"a": {"enabled": "true", "idle_min": 99999}, "../x": {"enabled": True}, "b": 5}))
+        eng._policy.clear()
+        eng._policy_load()
+        self.assertEqual(eng.get_policy(eng.get("a"))["enabled"], False)                      # only a real boolean enables
+        self.assertEqual(eng.get_policy(eng.get("a"))["idle_min"], 15)                        # absurd minutes fall back to the default
+        self.assertNotIn("../x", eng._policy)
+        eng._policy_path.write_text("{not json")
+        eng._policy_load()                                                                    # corrupt file: no crash, nothing enabled
+        self.assertEqual(eng._policy, {})
+
+    # -- the quiet-period maths -----------------------------------------------------------------------------------------
+    def test_idle_info(self):
+        self._daemon()
+        self.assertEqual(eng.idle_info(eng.get("a"), "down"), {"enabled": False, "idle_min": 15, "choices": list(eng.IDLE_CHOICES)})
+        eng.set_policy("a", True, 10)
+        t0 = 1000.0
+        eng._ready_since["a"], eng._last_used["a"] = t0, t0 + 100
+        info = eng.idle_info(eng.get("a"), "ready", now=t0 + 160)
+        self.assertEqual((info["idle_for_s"], info["stops_in_s"]), (60, 540))
+        eng.register(eng.Daemon(id="plain", label="P", description=""))
+        self.assertIsNone(eng.idle_info(eng.get("plain"), "ready"))
+
+    def test_status_card_carries_the_block_only_when_supported(self):
+        self._daemon()
+        eng.register(eng.Daemon(id="plain", label="P", description="", port=free_port()))
+        cards = {c["id"]: c for c in eng.status()["daemons"]}
+        self.assertIn("auto_stop", cards["a"])
+        self.assertNotIn("auto_stop", cards["plain"])
+
+    # -- the watcher ----------------------------------------------------------------------------------------------------
+    def test_stops_after_the_quiet_period_and_not_before(self):
+        fh, stops = self._daemon()
+        eng.set_policy("a", True, 5)
+        eng._ready_since.clear()                                              # simulated clock: forget the real-time baseline
+        eng._last_used.clear()
+        t0 = time.time() + 1000
+        self.assertEqual(eng.autostop_tick(now=t0), [])                       # first sight starts the quiet period
+        self.assertEqual(eng.autostop_tick(now=t0 + 299), [])
+        self.assertEqual(stops, [])
+        self.assertEqual(eng.autostop_tick(now=t0 + 301), ["a"])
+        self.assertEqual(stops, [1])
+        ev = eng.status()["events"][0]
+        self.assertEqual((ev["action"], ev["ok"]), ("autostop", True))
+        self.assertIn("5 min", ev["message"])
+
+    def test_a_request_resets_the_clock(self):
+        fh, stops = self._daemon()
+        eng.set_policy("a", True, 5)
+        eng._ready_since.clear()                                              # simulated clock: forget the real-time baseline
+        eng._last_used.clear()
+        t0 = time.time() + 1000
+        eng.autostop_tick(now=t0)
+        eng._last_used["a"] = t0 + 250                                        # a request arrived
+        self.assertEqual(eng.autostop_tick(now=t0 + 301), [])                 # 51 s since the request: still warm
+        self.assertEqual(eng.autostop_tick(now=t0 + 250 + 301), ["a"])
+
+    def test_disabled_policy_never_stops(self):
+        fh, stops = self._daemon()
+        t0 = time.time() + 1000
+        eng.autostop_tick(now=t0)
+        self.assertEqual(eng.autostop_tick(now=t0 + 10 ** 6), [])
+        self.assertEqual(stops, [])
+
+    def test_loading_daemon_is_never_stopped(self):
+        fh, stops = self._daemon(body={"ready": False})
+        eng.set_policy("a", True, 5)
+        eng._ready_since.clear()                                              # simulated clock: forget the real-time baseline
+        eng._last_used.clear()
+        t0 = time.time() + 1000
+        eng.autostop_tick(now=t0)
+        self.assertEqual(eng.autostop_tick(now=t0 + 10 ** 6), [])
+        self.assertEqual(stops, [])
+
+    def test_down_daemon_resets_the_quiet_period(self):
+        fh, stops = self._daemon()
+        eng.set_policy("a", True, 5)
+        eng._ready_since.clear()                                              # simulated clock: forget the real-time baseline
+        eng._last_used.clear()
+        t0 = time.time() + 1000
+        eng.autostop_tick(now=t0)
+        self.assertIn("a", eng._ready_since)
+        fh.srv.shutdown()
+        fh.srv.server_close()
+        eng.autostop_tick(now=t0 + 10)
+        self.assertNotIn("a", eng._ready_since)
+
+    def test_never_touches_observe_only_self_or_unsupported(self):
+        called = []
+        for spec in (dict(id="obs", observe_only=True), dict(id="me", self_process=True), dict(id="plain", idle_stop=False)):
+            fh = FakeHealth()
+            self.addCleanup(fh.close)
+            eng.register(eng.Daemon(label="x", description="", port=fh.port, idle_stop=spec.pop("idle_stop", True), process_hint="x",
+                                    stop=lambda: called.append(1) or True, **spec))
+            eng._policy[spec["id"]] = {"enabled": True, "idle_min": 5}
+        eng.autostop_tick(now=time.time() + 10 ** 6)
+        eng.autostop_tick(now=time.time() + 2 * 10 ** 6)
+        self.assertEqual(called, [])
+
+    def test_failed_stop_is_reported_and_retried(self):
+        fh, _ = self._daemon(stop=lambda: False)
+        eng.set_policy("a", True, 5)
+        eng._ready_since.clear()                                              # simulated clock: forget the real-time baseline
+        eng._last_used.clear()
+        t0 = time.time() + 1000
+        eng.autostop_tick(now=t0)
+        self.assertEqual(eng.autostop_tick(now=t0 + 400), [])
+        ev = eng.status()["events"][0]
+        self.assertEqual((ev["action"], ev["ok"]), ("autostop", False))
+        self.assertIn("a", eng._ready_since)                                   # still warm: it will be tried again
+
+    def test_skipped_while_a_manual_action_holds_the_lock(self):
+        fh, stops = self._daemon()
+        eng.set_policy("a", True, 5)
+        eng._ready_since.clear()                                              # simulated clock: forget the real-time baseline
+        eng._last_used.clear()
+        t0 = time.time() + 1000
+        eng.autostop_tick(now=t0)
+        lock = eng._action_locks["a"]
+        lock.acquire()
+        try:
+            self.assertEqual(eng.autostop_tick(now=t0 + 400), [])
+        finally:
+            lock.release()
+        self.assertEqual(stops, [])
+
+    def test_manual_start_counts_as_use_and_stop_forgets_the_baseline(self):
+        fh, stops = self._daemon()
+        eng._ready_since["a"] = 1.0
+        code, _ = eng.act("a", "start")                                        # already running: no-op, still counts as use
+        self.assertEqual(code, 200)
+        self.assertGreater(eng._last_used["a"], 1000)
+        eng.act("a", "stop")
+        self.assertNotIn("a", eng._ready_since)
+
+    def test_touch_is_cheap_and_never_raises(self):
+        eng.touch("whatever")
+        eng.touch("")
+        self.assertIn("whatever", eng._last_used)
+
+    # -- HTTP + wiring --------------------------------------------------------------------------------------------------
+    def test_route(self):
+        self._daemon()
+        code, out = eng.http_post("/api/engine/daemons/a/autostop", {"enabled": True, "idle_min": 30})
+        self.assertEqual(code, 200)
+        self.assertEqual((out["auto_stop"]["enabled"], out["auto_stop"]["idle_min"]), (True, 30))
+        self.assertEqual(eng.http_post("/api/engine/daemons/a/autostop", {"enabled": True, "idle_min": 1})[0], 400)
+        self.assertEqual(eng.http_post("/api/engine/daemons/a/autostop", {})[0], 400)
+        self.assertEqual(eng.http_post("/api/engine/daemons/zzz/autostop", {"enabled": True})[0], 404)
+        self.assertEqual(eng.http_post("/api/engine/daemons/a/autostop/x", {"enabled": True})[0], 404)
+
+    def test_watcher_thread_stops_a_quiet_daemon_and_is_idempotent(self):
+        fh, stops = self._daemon()
+        eng._policy["a"] = {"enabled": True, "idle_min": 0.001}                 # ~0.06 s: bypasses validation on purpose
+        old = eng.WATCH_EVERY
+        eng.WATCH_EVERY = 0.1
+        self.addCleanup(lambda: setattr(eng, "WATCH_EVERY", old))
+        eng.start_watcher()
+        first = eng._watcher["thread"]
+        eng.start_watcher()
+        self.assertIs(eng._watcher["thread"], first)
+        for _ in range(40):
+            if stops:
+                break
+            time.sleep(0.1)
+        eng.stop_watcher()
+        self.assertEqual(stops, [1])
+
+    def test_bind_enables_policy_file_and_defaults_support_it(self):
+        eng._registry.clear()
+        eng.register_defaults()
+        self.assertTrue(eng.get("phonon").idle_stop)
+        self.assertTrue(eng.get("xtts").idle_stop)
+        self.assertEqual((eng.get("phonon").idle_default_min, eng.get("xtts").idle_default_min), (30, 15))
+        self.assertFalse(eng.get("forge").idle_stop)
+        self.assertFalse(eng.get("bridge").idle_stop)
+
+    def test_voice_engines_report_use(self):
+        for name, key in (("hq_voice_phonon.py", "phonon"), ("hq_voice.py", "xtts")):
+            src = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn(f'hq_engine.touch("{key}")', src)
+
+
 if __name__ == "__main__":
     unittest.main()
