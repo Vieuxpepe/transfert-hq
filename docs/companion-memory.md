@@ -70,6 +70,14 @@ and Else's continuity arbitration, development is derived from the existing
 owner-scoped episodes rather than a second database or background model loop.
 No Else biography, personal memories, relational scores or live state is copied.
 
+The same evidence engine is reused by Culinia and Forgia. Their episodes live in
+`.hq-household/culinia_growth.json` and `.hq-forge/forgia_growth.json`, never in
+the companion file or in each other's store. Only explicit statements recognised
+by `hq_companion_growth.extract` are kept; at most one relevant view is added to
+that assistant's own prompt when the message shares its topic, and the block
+explicitly asks her to keep her voice and not recite the card. No sister
+biography, bond score or shared memory is copied.
+
 Repeated interests and experiences on separate days can become natural callbacks
 in relevant social conversation, without an explicit memory question. Repeating
 the same statement in one sitting does not strengthen it. The provisional motif's

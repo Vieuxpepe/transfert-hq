@@ -18,7 +18,9 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 
+import hq_companion_growth as growth
 import hq_finances
 import hq_grocery
 import hq_inventory
@@ -28,6 +30,8 @@ import hq_state
 
 STATE_FOLDER = ".hq-household"
 THREAD_FILE = "culinia_thread.json"
+GROWTH_FILE = "culinia_growth.json"
+_GROWTH_KINDS = {"outcome", "decision", "correction", "experience", "interest", "meaning", "ritual"}
 MEAL_PLAN_FILE = "culinia_meals.json"
 PREFS_FILE = "culinia_prefs.json"
 MAX_THREAD = 40
@@ -364,6 +368,77 @@ def clear_thread() -> dict[str, Any]:
     with _lock:
         _save_thread([])
         return {"ok": True, "messages": []}
+
+
+def _growth_schema_ok(episodes: Any) -> bool:
+    if not isinstance(episodes, list):
+        return False
+    for episode in episodes:
+        if not isinstance(episode, dict) or not isinstance(episode.get("text"), str) or not episode["text"].strip():
+            return False
+        if episode.get("kind") not in _GROWTH_KINDS or episode.get("status") not in {"active", "superseded", "forgotten"}:
+            return False
+        if not isinstance(episode.get("topic", ""), str) or not isinstance(episode.get("id"), str):
+            return False
+        at = episode.get("at")
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            return False
+    return True
+
+
+def _growth_episodes() -> list[dict[str, Any]]:
+    """Episodes for Culinia only; a damaged file is left untouched and ignored."""
+    try:
+        with _lock:
+            data = _load_json(GROWTH_FILE, {"episodes": []})
+    except Exception:
+        return []
+    episodes = data.get("episodes")
+    if not _growth_schema_ok(episodes):
+        log.warning("Culinia growth file unreadable; development skipped")
+        return []
+    return [dict(e) for e in episodes]
+
+
+def _record_growth(text: str) -> None:
+    """Keep only explicit user statements the growth engine recognizes."""
+    item = growth.extract(text)
+    if not item:
+        return
+    try:
+        with _lock:
+            data = _load_json(GROWTH_FILE, {"episodes": []})
+            episodes = data.get("episodes")
+            if not _growth_schema_ok(episodes):
+                log.warning("Culinia growth file unreadable; episode not saved")
+                return
+            now = time.time()
+            today = time.strftime("%Y-%m-%d", time.localtime(now))
+            for episode in episodes:
+                if (episode.get("status") == "active"
+                        and growth.fold(episode["text"]) == growth.fold(item["text"])
+                        and time.strftime("%Y-%m-%d", time.localtime(float(episode["at"]))) == today):
+                    return
+            episodes.append({"id": uuid.uuid4().hex, "text": item["text"], "kind": item["kind"],
+                             "topic": item["topic"], "at": now, "status": "active",
+                             "source_device": "culinia", "evidence": "user_statement"})
+            _save_json(GROWTH_FILE, {"episodes": episodes[-40:]})
+    except Exception:
+        log.warning("Culinia growth episode not saved", exc_info=True)
+
+
+def _growth_hint(query: str) -> str:
+    """One relevant, revisable view — never a personality rewrite."""
+    cards = growth.derive(_growth_episodes(), time.time())
+    words = set(re.findall(r"[a-z0-9]{4,}", growth.fold(query)))
+    if not words:
+        return ""
+    related = [c for c in cards
+               if words & set(re.findall(r"[a-z0-9]{4,}", growth.fold(c.get("topic", ""))))]
+    if not related:
+        return ""
+    card = max(related, key=lambda c: (c.get("salience", 0), c.get("updated_at", 0)))
+    return growth.render(card)
 
 
 def _prefs_schema_ok(data: Any) -> bool:
@@ -822,7 +897,12 @@ def chat(message: Any) -> dict[str, Any]:
     contents = _history_contents(messages, text)
     history_len = len(contents)
 
+    _record_growth(text)
     system = f"{PERSONA_CORE}{_prefs_prompt_block()}\n{TOOL_SCHEMA}"
+    development = _growth_hint(text)
+    if development:
+        system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
+                   "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
     tools_used: list[str] = []
     images: list[dict[str, Any]] = []
     reply = ""
@@ -836,11 +916,11 @@ def chat(message: Any) -> dict[str, Any]:
 
         raw, model = hq_ai.generate(
             hq_ai.ASK_CHAIN,
+            instructions,
             contents,
-            system_instruction=instructions,
-            max_output_tokens=600,
+            max_tokens=600,
             temperature=0.55,
-            timeout=25,
+            deadline=time.monotonic() + hq_ai.CHAT_DEADLINE_S,
         )
         parsed = _parse_model_json(raw)
         reply = parsed["reply"]
@@ -905,12 +985,11 @@ def chat(message: Any) -> dict[str, Any]:
             try:
                 raw, regen_model = hq_ai.generate(
                     hq_ai.ASK_CHAIN,
+                    system + "\nD'autres messages sont arrivés pendant ta réponse : tiens-en compte et réponds maintenant avec tools:[].",
                     _history_contents(current["messages"], text) + tool_tail,
-                    system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : "
-                                                "tiens-en compte et réponds maintenant avec tools:[].",
-                    max_output_tokens=600,
+                    max_tokens=600,
                     temperature=0.55,
-                    timeout=25,
+                    deadline=time.monotonic() + hq_ai.CHAT_DEADLINE_S,
                 )
             except Exception as exc:
                 # The earlier reply (with its tool results) is still valid; save
@@ -1043,26 +1122,30 @@ def ambient(context: dict[str, Any] | None = None) -> dict[str, Any]:
     )
     line = ""
     model = None
+    reason = ""
     try:
-        chain = getattr(hq_ai, "FAST_CHAIN", hq_ai.ASK_CHAIN)
         raw, model = hq_ai.generate(
-            chain,
+            hq_ai.AMBIENT_CHAIN,
+            PERSONA_CORE,
             [{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction=PERSONA_CORE,
-            max_output_tokens=120,
+            max_tokens=120,
             temperature=0.82,
-            timeout=12,
+            ambient=True,
+            nsfw=nsfw,
         )
         line = (raw or "").strip().strip('"«»')
         if len(line) > 210:
             line = line[:207].rstrip() + "…"
-    except Exception:
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"[:160]
+        log.warning("ambient line unavailable (%s); using a local line", reason)
         line = ""
 
     if not line:
         line = _fallback_ambient(snap, ctx)
 
-    return {"ok": True, "line": line, "model": model, "recipe": recipe}
+    return {"ok": True, "line": line, "model": model, "recipe": recipe,
+            **({"fallback_reason": reason} if reason else {})}
 
 
 def http_post(path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:

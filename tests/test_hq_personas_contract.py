@@ -726,7 +726,7 @@ class ReviewFixTests(unittest.TestCase):
             calls = []
             before = module.status_summary()["reply_contention"]
 
-            def fake_generate(chain, contents, system_instruction="", _m=module, _calls=calls, **kw):
+            def fake_generate(chain, system, contents, _m=module, _calls=calls, **kw):
                 _calls.append(contents)
                 if len(_calls) == 1:
                     # a second tab completes a turn while this reply is generating
@@ -771,7 +771,7 @@ class ReviewFixTests(unittest.TestCase):
                                      {"role": "assistant", "text": "ok2", "ts": 4.0}], base, epoch)
                 return _real(turn, base, epoch)
 
-            def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+            def fake_generate(chain, system, contents, _calls=calls, **kw):
                 _calls.append(contents)
                 answer = "seconde" if len(_calls) > 1 else "première"
                 return json.dumps({"reply": answer, "tools": []}), "m"
@@ -808,7 +808,7 @@ class ReviewFixTests(unittest.TestCase):
                                  {"role": "assistant", "text": "ok", "ts": 4.0 + _c["n"]}], base, epoch)
                 return False
 
-            def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+            def fake_generate(chain, system, contents, _calls=calls, **kw):
                 _calls.append(contents)
                 return json.dumps({"reply": f"r{len(_calls)}", "tools": []}), "m"
 
@@ -843,7 +843,7 @@ class ReviewFixTests(unittest.TestCase):
             path.write_text(json.dumps({"messages": rows, "revision": 7}), encoding="utf-8")
             calls = []
 
-            def fake_generate(chain, contents, system_instruction="", _calls=calls, _m=module, **kw):
+            def fake_generate(chain, system, contents, _calls=calls, _m=module, **kw):
                 _calls.append(contents)
                 if len(_calls) == 1:
                     _m._append_turn([{"role": "user", "text": "nouveau", "ts": 99.0},
@@ -895,7 +895,7 @@ class ReviewFixTests(unittest.TestCase):
                                   {"role": "assistant", "text": "ok", "ts": 2.0}], 0)
             return {"name": name, "ok": True, "result": {"days": {"lundi": "soupe"}}}
 
-        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+        def fake_generate(chain, system, contents, _calls=calls, **kw):
             _calls.append(contents)
             if len(_calls) == 1:
                 return json.dumps({"reply": "", "tools": [{"name": "get_meal_plan", "args": {}}]}), "m"
@@ -922,7 +922,7 @@ class ReviewFixTests(unittest.TestCase):
                                     "revision": 0}), encoding="utf-8")
         calls = []
 
-        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+        def fake_generate(chain, system, contents, _calls=calls, **kw):
             _calls.append(contents)
             if len(_calls) == 1:
                 culinia._append_turn([{"role": "user", "text": "autre", "ts": 2.0},
@@ -937,6 +937,86 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(out["reply"], "ancienne")          # stale answer not sold as reconciled
         self.assertIn("autre", [m["text"] for m in culinia.get_thread()["messages"]])
 
+    def test_growth_views_reach_culinia_and_forgia_without_changing_their_voice(self):
+        import time as _time
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        now = _time.time()
+        for module, folder, filename, growth_file in (
+                (culinia, ".hq-household", "culinia_thread.json", "culinia_growth.json"),
+                (forgia, ".hq-forge", "forgia_thread.json", "forgia_growth.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / growth_file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"episodes": [
+                {"id": "a", "text": "Je m'intéresse à la fermentation lactique.", "kind": "interest",
+                 "topic": "fermentation lactique", "at": now - 90000, "status": "active",
+                 "source_device": "test", "evidence": "user_statement"},
+                {"id": "b", "text": "J'explore la fermentation lactique.", "kind": "interest",
+                 "topic": "fermentation lactique", "at": now - 180000, "status": "active",
+                 "source_device": "test", "evidence": "user_statement"},
+            ]}), encoding="utf-8")
+            seen = []
+
+            def fake_generate(chain, system, contents, _seen=seen, **kw):
+                _seen.append(system)
+                return json.dumps({"reply": "ok", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                out = module.chat("Parle-moi de la fermentation.")
+            self.assertEqual(out["reply"], "ok")
+            self.assertEqual(len(seen), 1)
+            self.assertIn("ÉVOLUTION VÉCUE", seen[0])
+            self.assertIn("fermentation lactique", seen[0])
+            self.assertTrue(seen[0].startswith(module.PERSONA_CORE))
+
+    def test_single_day_interest_is_not_yet_a_view(self):
+        import time as _time
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        now = _time.time()
+        for module, folder, growth_file in ((culinia, ".hq-household", "culinia_growth.json"),
+                                            (forgia, ".hq-forge", "forgia_growth.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / growth_file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"episodes": [
+                {"id": "a", "text": "Je m'intéresse à la fermentation lactique.", "kind": "interest",
+                 "topic": "fermentation lactique", "at": now - 3600, "status": "active",
+                 "source_device": "test", "evidence": "user_statement"},
+            ]}), encoding="utf-8")
+            seen = []
+
+            def fake_generate(chain, system, contents, _seen=seen, **kw):
+                _seen.append(system)
+                return json.dumps({"reply": "ok", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                module.chat("Parle-moi de la fermentation.")
+            self.assertEqual(len(seen), 1)
+            self.assertNotIn("ÉVOLUTION VÉCUE", seen[0])
+
+    def test_explicit_development_is_recorded_per_assistant(self):
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, growth_file in ((culinia, ".hq-household", "culinia_growth.json"),
+                                            (forgia, ".hq-forge", "forgia_growth.json")):
+            module.bind(root=self.root)
+
+            def fake_generate(chain, system, contents, **kw):
+                return json.dumps({"reply": "ok", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                module.chat("Je m'intéresse à la fermentation lactique.")
+            data = json.loads((self.root / folder / growth_file).read_text(encoding="utf-8"))
+            self.assertEqual([e["kind"] for e in data["episodes"]], ["interest"])
+            self.assertIn("fermentation lactique", data["episodes"][0]["topic"])
+            other = "forgia_growth.json" if growth_file.startswith("culinia") else "culinia_growth.json"
+            self.assertFalse((self.root / folder / other).exists())
+
     def test_clear_during_generation_cancels_the_reply(self):
         import hq_ai as ai
         import hq_culinia as culinia
@@ -950,7 +1030,7 @@ class ReviewFixTests(unittest.TestCase):
                                         "revision": 0, "clear_epoch": 2}), encoding="utf-8")
             calls = []
 
-            def fake_generate(chain, contents, system_instruction="", _calls=calls, _m=module, **kw):
+            def fake_generate(chain, system, contents, _calls=calls, _m=module, **kw):
                 _calls.append(contents)
                 _m.clear_thread()          # the user clears while the model is thinking
                 return json.dumps({"reply": "fantôme", "tools": []}), "m"
@@ -982,7 +1062,7 @@ class ReviewFixTests(unittest.TestCase):
                 _m.clear_thread()          # clear lands after the check, before the write
                 return False
 
-            def fake_generate(chain, contents, system_instruction="", **kw):
+            def fake_generate(chain, system, contents, **kw):
                 return json.dumps({"reply": "fantôme", "tools": []}), "m"
 
             with mock.patch.dict(os.environ, {"HQ_CHAT_REPLY_ATTEMPTS": "1"}), \
@@ -1012,7 +1092,7 @@ class ReviewFixTests(unittest.TestCase):
                                  {"role": "assistant", "text": "ok", "ts": 2.0}], 0, 0)
             return {"name": name, "ok": True, "result": {"queue": ["job-42"]}}
 
-        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+        def fake_generate(chain, system, contents, _calls=calls, **kw):
             _calls.append(contents)
             if len(_calls) == 1:
                 return json.dumps({"reply": "", "tools": [{"name": "forge_status", "args": {}}]}), "m"
@@ -1046,7 +1126,7 @@ class ReviewFixTests(unittest.TestCase):
                                   {"role": "assistant", "text": "ok", "ts": 2.0}], 0, 0)
             return {"name": name, "ok": True, "result": {"days": {"lundi": "soupe"}}}
 
-        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+        def fake_generate(chain, system, contents, _calls=calls, **kw):
             _calls.append(contents)
             if len(_calls) == 1:
                 return json.dumps({"reply": "", "tools": [{"name": "get_meal_plan", "args": {}}]}), "m"
@@ -1074,7 +1154,7 @@ class ReviewFixTests(unittest.TestCase):
                                     "revision": 0, "clear_epoch": 0}), encoding="utf-8")
         calls = []
 
-        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+        def fake_generate(chain, system, contents, _calls=calls, **kw):
             _calls.append(contents)
             if len(_calls) == 1:
                 culinia._append_turn([{"role": "user", "text": "autre", "ts": 2.0},

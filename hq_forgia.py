@@ -14,7 +14,9 @@ import threading
 import logging
 import os
 import time
+import uuid
 
+import hq_companion_growth as growth
 import hq_forge
 import hq_forge_jobs
 import hq_forge_presets
@@ -24,6 +26,8 @@ import hq_state
 STATE_FOLDER = ".hq-forge"
 THREAD_FILE = "forgia_thread.json"
 PREFS_FILE = "forgia_prefs.json"
+GROWTH_FILE = "forgia_growth.json"
+_GROWTH_KINDS = {"outcome", "decision", "correction", "experience", "interest", "meaning", "ritual"}
 MAX_THREAD = 40
 MAX_MESSAGE = 4000
 MAX_ROUNDS = 4
@@ -248,6 +252,77 @@ def clear_thread() -> dict[str, Any]:
         return {"ok": True, "messages": []}
 
 
+def _growth_schema_ok(episodes: Any) -> bool:
+    if not isinstance(episodes, list):
+        return False
+    for episode in episodes:
+        if not isinstance(episode, dict) or not isinstance(episode.get("text"), str) or not episode["text"].strip():
+            return False
+        if episode.get("kind") not in _GROWTH_KINDS or episode.get("status") not in {"active", "superseded", "forgotten"}:
+            return False
+        if not isinstance(episode.get("topic", ""), str) or not isinstance(episode.get("id"), str):
+            return False
+        at = episode.get("at")
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            return False
+    return True
+
+
+def _growth_episodes() -> list[dict[str, Any]]:
+    """Episodes for Forgia only; a damaged file is left untouched and ignored."""
+    try:
+        with _lock:
+            data = _load_json(GROWTH_FILE, {"episodes": []})
+    except Exception:
+        return []
+    episodes = data.get("episodes")
+    if not _growth_schema_ok(episodes):
+        log.warning("Forgia growth file unreadable; development skipped")
+        return []
+    return [dict(e) for e in episodes]
+
+
+def _record_growth(text: str) -> None:
+    """Keep only explicit user statements the growth engine recognizes."""
+    item = growth.extract(text)
+    if not item:
+        return
+    try:
+        with _lock:
+            data = _load_json(GROWTH_FILE, {"episodes": []})
+            episodes = data.get("episodes")
+            if not _growth_schema_ok(episodes):
+                log.warning("Forgia growth file unreadable; episode not saved")
+                return
+            now = time.time()
+            today = time.strftime("%Y-%m-%d", time.localtime(now))
+            for episode in episodes:
+                if (episode.get("status") == "active"
+                        and growth.fold(episode["text"]) == growth.fold(item["text"])
+                        and time.strftime("%Y-%m-%d", time.localtime(float(episode["at"]))) == today):
+                    return
+            episodes.append({"id": uuid.uuid4().hex, "text": item["text"], "kind": item["kind"],
+                             "topic": item["topic"], "at": now, "status": "active",
+                             "source_device": "forgia", "evidence": "user_statement"})
+            _save_json(GROWTH_FILE, {"episodes": episodes[-40:]})
+    except Exception:
+        log.warning("Forgia growth episode not saved", exc_info=True)
+
+
+def _growth_hint(query: str) -> str:
+    """One relevant, revisable view — never a personality rewrite."""
+    cards = growth.derive(_growth_episodes(), time.time())
+    words = set(re.findall(r"[a-z0-9]{4,}", growth.fold(query)))
+    if not words:
+        return ""
+    related = [c for c in cards
+               if words & set(re.findall(r"[a-z0-9]{4,}", growth.fold(c.get("topic", ""))))]
+    if not related:
+        return ""
+    card = max(related, key=lambda c: (c.get("salience", 0), c.get("updated_at", 0)))
+    return growth.render(card)
+
+
 def _prefs_schema_ok(data: Any) -> bool:
     """A parseable object is not enough: a field of the wrong type would be
     normalised on the next save and lose its original value."""
@@ -439,7 +514,12 @@ def chat(message: Any) -> dict[str, Any]:
     contents = _history_contents(messages, text)
     history_len = len(contents)
 
+    _record_growth(text)
     system = f"{PERSONA_CORE}{_prefs_prompt_block()}\n{TOOL_SCHEMA}"
+    development = _growth_hint(text)
+    if development:
+        system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
+                   "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
     tools_used: list[str] = []
     reply = ""
     model = None
@@ -452,11 +532,11 @@ def chat(message: Any) -> dict[str, Any]:
 
         raw, model = hq_ai.generate(
             hq_ai.ASK_CHAIN,
+            instructions,
             contents,
-            system_instruction=instructions,
-            max_output_tokens=650,
+            max_tokens=650,
             temperature=0.55,
-            timeout=25,
+            deadline=time.monotonic() + hq_ai.CHAT_DEADLINE_S,
         )
         parsed = _parse_model_json(raw)
         reply = parsed["reply"]
@@ -508,12 +588,11 @@ def chat(message: Any) -> dict[str, Any]:
             try:
                 raw, regen_model = hq_ai.generate(
                     hq_ai.ASK_CHAIN,
+                    system + "\nD'autres messages sont arrivés pendant ta réponse : tiens-en compte et réponds maintenant avec tools:[].",
                     _history_contents(current["messages"], text) + tool_tail,
-                    system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : "
-                                                "tiens-en compte et réponds maintenant avec tools:[].",
-                    max_output_tokens=650,
+                    max_tokens=650,
                     temperature=0.55,
-                    timeout=25,
+                    deadline=time.monotonic() + hq_ai.CHAT_DEADLINE_S,
                 )
             except Exception as exc:
                 # The earlier reply (with its tool results) is still valid; save
@@ -579,20 +658,67 @@ def _forge_snapshot() -> dict[str, Any]:
     return snap
 
 
+# Last ambient lines served this process: the small models otherwise reuse the same closing sentence.
+_RECENT_LINES: list[str] = []
+
+_FALLBACK_TURN = 0
+
+
+def _fallback_line(options: tuple[str, ...], **values: Any) -> str:
+    """Rotate through local lines: an offline or quota-exhausted companion must not repeat one sentence."""
+    global _FALLBACK_TURN
+    template = options[_FALLBACK_TURN % len(options)]
+    _FALLBACK_TURN += 1
+    return template.format(**values) if values else template
+
+
 def _fallback_ambient(snap: dict[str, Any], ctx: dict[str, Any]) -> str:
     nsfw = bool(ctx.get("nsfw"))
     ckpt = snap.get("checkpoint") or ""
     if snap.get("progress", 0) > 0.01:
         pct = int(round(snap["progress"] * 100))
-        return f"Ça chauffe dans le creuset, Maître — rendu à {pct}%, j'ai hâte de voir le résultat."
+        return _fallback_line(
+            (
+                "Ça chauffe dans le creuset, Maître — rendu à {pct}%, j'ai hâte de voir le résultat.",
+                "{pct}% au compteur, Maître : le rendu avance et je garde un œil sur chaque pixel.",
+                "Le fourneau travaille, Maître — {pct}% et je ne lâche pas la barre des yeux.",
+            ),
+            pct=pct,
+        )
     if ckpt:
         short = ckpt.split(".")[0][:32]
         if nsfw:
-            return f"En tablier devant l'enclume avec {short}, Maître… dis-moi ce qu'on fait naître ce soir."
-        return f"{short} est chargé et l'enclume est chaude, Maître. Besoin d'un prompt affûté ?"
+            return _fallback_line(
+                (
+                    "En tablier devant l'enclume avec {short}, Maître… dis-moi ce qu'on fait naître ce soir.",
+                    "{short} ronronne sur l'enclume, Maître. Une idée coquine à forger ?",
+                    "Tablier de cuir, lunettes baissées, {short} chargé. Tu me souffles quoi, Maître ?",
+                ),
+                short=short,
+            )
+        return _fallback_line(
+            (
+                "{short} est chargé et l'enclume est chaude, Maître. Besoin d'un prompt affûté ?",
+                "{short} attend sur l'enclume, Maître. Tu me donnes une idée à forger ?",
+                "L'enclume est chaude avec {short}, Maître. Quelle image on fait naître ?",
+            ),
+            short=short,
+        )
     if nsfw:
-        return "Juste mon tablier de cuir et mes lunettes, Maître… tu me lances une nouvelle idée de prompt ?"
-    return "L'atelier Forge est prêt, Maître. Donne-moi une idée et je te taille un prompt chirurgical."
+        return _fallback_line(
+            (
+                "Juste mon tablier de cuir et mes lunettes, Maître… tu me lances une nouvelle idée de prompt ?",
+                "L'atelier est vide et le tablier est prêt, Maître. On invente quoi ce soir ?",
+                "Pas de modèle chargé, Maître, mais j'ai des idées plein le carnet. Tu commences ?",
+            )
+        )
+    return _fallback_line(
+        (
+            "L'atelier Forge est prêt, Maître. Donne-moi une idée et je te taille un prompt chirurgical.",
+            "Tablier noué, outils en place, Maître : dis-moi ce qu'on forge aujourd'hui.",
+            "L'atelier tourne au ralenti, Maître. Une idée, et je la change en prompt propre.",
+        )
+    )
 
 
 def ambient(context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -619,28 +745,41 @@ def ambient(context: dict[str, Any] | None = None) -> dict[str, Any]:
         f"{tone_hint}\n"
         "Écris UNE seule bulle spontanée (1 à 2 phrases max, <= 165 caractères, en français, sans guillemets ni markdown) pour interpeller le Maître sur son atelier ou ses prompts."
     )
+    if _RECENT_LINES:
+        prompt += "\n\nNe réutilise aucune de ces formulations déjà dites au Maître :\n" + "\n".join(f"- {old}" for old in _RECENT_LINES)
+
     line = ""
     model = None
+    reason = ""
     try:
-        chain = getattr(hq_ai, "FAST_CHAIN", hq_ai.ASK_CHAIN)
+        # generate(chain, system, contents, ...): the old call passed a contents list as the system
+        # prompt and three kwargs that do not exist, so every ambient line raised TypeError and fell
+        # back to the same fixed sentence.
         raw, model = hq_ai.generate(
-            chain,
+            hq_ai.AMBIENT_CHAIN,
+            PERSONA_CORE,
             [{"role": "user", "parts": [{"text": prompt}]}],
-            system_instruction=PERSONA_CORE,
-            max_output_tokens=120,
+            max_tokens=120,
             temperature=0.82,
-            timeout=12,
+            ambient=True,
+            nsfw=nsfw,
         )
         line = (raw or "").strip().strip('"«»')
         if len(line) > 210:
             line = line[:207].rstrip() + "…"
-    except Exception:
+        if line:
+            _RECENT_LINES.append(line)
+            del _RECENT_LINES[:-4]
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"[:160]
+        log.warning("ambient line unavailable (%s); using a local line", reason)
         line = ""
 
     if not line:
         line = _fallback_ambient(snap, ctx)
 
-    return {"ok": True, "line": line, "model": model}
+    return {"ok": True, "line": line, "model": model,
+            **({"fallback_reason": reason} if reason else {})}
 
 
 def http_get(path: str) -> tuple[int, dict[str, Any]]:
