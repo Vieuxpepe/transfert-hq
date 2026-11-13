@@ -737,6 +737,8 @@ class ReviewFixTests(unittest.TestCase):
             with mock.patch.object(ai, "generate", side_effect=fake_generate):
                 out = module.chat("lent")
             self.assertEqual(out["reply"], "seconde")
+            self.assertFalse(out["fallback_append"])
+            self.assertEqual(out["reconciled"], 1)
             self.assertEqual(len(calls), 2)
             self.assertIn("autre", json.dumps(calls[1], ensure_ascii=False))
             texts = [m["text"] for m in module.get_thread()["messages"]]
@@ -774,10 +776,47 @@ class ReviewFixTests(unittest.TestCase):
                  mock.patch.object(module, "_append_turn_if_current", racing_append):
                 out = module.chat("lent")
             self.assertEqual(out["reply"], "seconde")
+            self.assertFalse(out["fallback_append"])
             self.assertEqual(len(calls), 2)
             self.assertIn("tardif", json.dumps(calls[1], ensure_ascii=False))
             texts = [m["text"] for m in module.get_thread()["messages"]]
             self.assertEqual(texts, ["ancien", "tardif", "ok2", "lent", "seconde"])
+
+    def test_fallback_append_is_reported_when_every_attempt_races(self):
+        import os
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}]}),
+                            encoding="utf-8")
+            calls = []
+            counter = {"n": 0}
+
+            def always_raced(turn, base, _m=module, _c=counter):
+                _c["n"] += 1
+                _m._append_turn([{"role": "user", "text": f"tardif{_c['n']}", "ts": 4.0 + _c["n"]},
+                                 {"role": "assistant", "text": "ok", "ts": 4.0 + _c["n"]}], base)
+                return False
+
+            def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+                _calls.append(contents)
+                return json.dumps({"reply": f"r{len(_calls)}", "tools": []}), "m"
+
+            with mock.patch.dict(os.environ, {"HQ_CHAT_REPLY_ATTEMPTS": "2"}), \
+                 mock.patch.object(ai, "generate", side_effect=fake_generate), \
+                 mock.patch.object(module, "_append_turn_if_current", always_raced):
+                out = module.chat("lent")
+            self.assertTrue(out["fallback_append"])
+            self.assertEqual(len(calls), 2)          # initial reply + one regeneration
+            texts = [m["text"] for m in module.get_thread()["messages"]]
+            self.assertEqual(texts[-2:], ["lent", "r2"])
+            self.assertEqual(texts.count("lent"), 1)
+            self.assertIn("tardif2", texts)
 
     def test_thread_without_messages_key_is_refused(self):
         import hq_culinia as culinia

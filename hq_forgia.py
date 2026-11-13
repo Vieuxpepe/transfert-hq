@@ -11,6 +11,7 @@ from typing import Any
 import json
 import re
 import threading
+import os
 import time
 
 import hq_forge
@@ -26,6 +27,17 @@ MAX_THREAD = 40
 MAX_MESSAGE = 4000
 MAX_ROUNDS = 4
 MAX_TOTAL_TOOLS = 6
+DEFAULT_REPLY_ATTEMPTS = 3
+MAX_REPLY_ATTEMPTS = 10
+
+
+def _reply_attempts() -> int:
+    """How many reply regenerations are allowed when turns land mid-answer."""
+    raw = os.environ.get("HQ_CHAT_REPLY_ATTEMPTS", "").strip()
+    try:
+        return max(1, min(MAX_REPLY_ATTEMPTS, int(raw))) if raw else DEFAULT_REPLY_ATTEMPTS
+    except ValueError:
+        return DEFAULT_REPLY_ATTEMPTS
 
 _bound_root: Path | None = None
 _lock = threading.RLock()
@@ -413,11 +425,14 @@ def chat(message: Any) -> dict[str, Any]:
         return [{"role": "user", "text": text, "ts": stamp},
                 {"role": "assistant", "text": answer, "ts": stamp, "tools_used": tools_used, "model": model}]
 
-    for _ in range(3):
+    rebases = 0
+    fallback = False
+    for _ in range(_reply_attempts()):
         fresh = get_thread().get("messages", [])
         if len(fresh) != base_count:
             # A turn landed while this reply was generated: answer the merged
             # conversation instead of the history this reply was based on.
+            rebases += 1
             raw, model = hq_ai.generate(
                 hq_ai.ASK_CHAIN,
                 _history_contents(fresh, text),
@@ -431,9 +446,10 @@ def chat(message: Any) -> dict[str, Any]:
         if _append_turn_if_current(_turn(reply), base_count):
             break
     else:
-        # Three turns landed inside the save window: keep them all rather than
-        # loop forever, even though the reply cannot mention the last one.
+        # Every attempt hit a new turn: keep them all rather than loop forever,
+        # even though the reply cannot mention the last one.
         _append_turn(_turn(reply), base_count)
+        fallback = True
 
     return {
         "ok": True,
@@ -441,6 +457,8 @@ def chat(message: Any) -> dict[str, Any]:
         "tools_used": tools_used,
         "model": model,
         "messages": get_thread().get("messages", [])[-MAX_THREAD:],
+        "reconciled": rebases,
+        "fallback_append": fallback,
     }
 
 
