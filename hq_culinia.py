@@ -780,6 +780,21 @@ def chat(message: Any) -> dict[str, Any]:
     if not reply:
         reply = "Les fourneaux sont prêts, Maître — dis-moi ce qui te ferait envie."
 
+    fresh = get_thread().get("messages", [])
+    if len(fresh) != base_count:
+        # A turn landed while this reply was generated: answer the merged
+        # conversation instead of the history this reply was based on.
+        raw, model = hq_ai.generate(
+            hq_ai.ASK_CHAIN,
+            _history_contents(fresh, text),
+            system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : tiens-en compte.",
+            max_output_tokens=600,
+            temperature=0.55,
+            timeout=25,
+        )
+        reply = _parse_model_json(raw)["reply"] or reply
+        base_count = len(fresh)
+
     now = time.time()
     assistant_msg: dict[str, Any] = {
         "role": "assistant",

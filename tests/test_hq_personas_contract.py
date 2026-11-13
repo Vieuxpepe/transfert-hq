@@ -712,6 +712,36 @@ class ReviewFixTests(unittest.TestCase):
             self.assertEqual([m["text"] for m in saved["messages"]],
                              ["ancien", "autre", "ok", "lent", "réponse"])
 
+    def test_reply_answers_turns_that_land_during_generation(self):
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}]}),
+                            encoding="utf-8")
+            calls = []
+
+            def fake_generate(chain, contents, system_instruction="", _m=module, _calls=calls, **kw):
+                _calls.append(contents)
+                if len(_calls) == 1:
+                    # a second tab completes a turn while this reply is generating
+                    _m._append_turn([{"role": "user", "text": "autre", "ts": 2.0},
+                                     {"role": "assistant", "text": "ok", "ts": 2.0}], 1)
+                    return json.dumps({"reply": "première", "tools": []}), "m"
+                return json.dumps({"reply": "seconde", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                out = module.chat("lent")
+            self.assertEqual(out["reply"], "seconde")
+            self.assertEqual(len(calls), 2)
+            self.assertIn("autre", json.dumps(calls[1], ensure_ascii=False))
+            texts = [m["text"] for m in module.get_thread()["messages"]]
+            self.assertEqual(texts, ["ancien", "autre", "ok", "lent", "seconde"])
+
     def test_thread_without_messages_key_is_refused(self):
         import hq_culinia as culinia
         import hq_forgia as forgia
