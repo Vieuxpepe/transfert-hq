@@ -290,5 +290,90 @@ class MusicaTasteTests(unittest.TestCase):
         self.assertIn("pas des faits sur le Maître", system)
 
 
+class ReviewFixTests(unittest.TestCase):
+    """Regressions from the package review: prompt ownership, store preservation, alerts."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="hq-review-fix-")
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _ai(self):
+        import hq_ai as ai
+        ai.bind(root=self.root, now=lambda: 1_700_000_100.0, key=lambda: "test-key")
+        return ai
+
+    def test_default_prompt_carries_registry_pastimes(self):
+        ai = self._ai()
+        system = ai.build_transferania_system("chat", "warm", nsfw=False, view="accueil",
+                                              device_id="device-pastimes", prefs={}, signals={},
+                                              trait_overrides={})
+        self.assertIn("OCCUPATIONS", system)
+        self.assertIn(hq_personas.get("transferania")["pastimes"], system)
+
+    def test_else_prompt_never_borrows_transferania_traits(self):
+        import hq_companion_presence as presence
+        ai = self._ai()
+        system = ai.build_else_system("chat", "warm", nsfw=False, view="accueil",
+                                      device_id="device-else-traits", prefs={})
+        self.assertNotIn(presence.PASTIMES_DEFAULT, system)
+        self.assertNotIn("NOYAU — TRANSFERANIA", system)
+        self.assertNotIn(hq_personas.get("transferania")["pastimes"], system)
+        self.assertIn(hq_personas.get("else")["pastimes"], system)
+
+    def test_one_damaged_row_blocks_writes_and_preserves_file(self):
+        import hq_inventoria_memory as inv
+        p = self.root / inv.STATE_FOLDER / inv.FILE
+        p.parent.mkdir(parents=True)
+        good = {"id": "mem-aaaaaaaa", "text": "Le Master aime le thé vert.", "at": 1.0}
+        raw = json.dumps({"version": 1, "notes": [good, {"id": "nope", "text": "x"}]}).encode("utf-8")
+        p.write_bytes(raw)
+        with self.assertRaises(inv.MemoryError_):
+            inv.add(self.root, "Le Master aime le café noir.")
+        self.assertEqual(p.read_bytes(), raw)
+        self.assertEqual(inv.list_notes(self.root), [])
+
+    def test_correction_needs_most_of_the_vocabulary(self):
+        import hq_inventoria_memory as inv
+        target = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        other = inv.add(self.root, "Le Master range les vis dans l'atelier", now=2.0)
+        inv.add(self.root, "En fait le Master range les bols dans le tiroir", now=3.0)
+        rows = {r["id"]: r["text"] for r in inv.list_notes(self.root)}
+        self.assertIn("tiroir", rows[target["id"]])
+        self.assertEqual(rows[other["id"]], "Le Master range les vis dans l'atelier")
+
+    def test_plain_non_starts_a_correction(self):
+        import hq_inventoria_memory as inv
+        first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        second = inv.add(self.root, "Non, le Master range les bols dans le tiroir", now=2.0)
+        self.assertEqual(second.get("superseded"), first["id"])
+        self.assertEqual(len(inv.list_notes(self.root)), 1)
+
+    def test_corrected_note_ranks_as_recent(self):
+        import hq_inventoria_memory as inv
+        rows = [{"id": "mem-aaaaaaaa", "text": "Le Master aime les bols bleus", "at": 10.0},
+                {"id": "mem-bbbbbbbb", "text": "Le Master aime les bols verts", "at": 50.0}]
+        rows[0]["updated_at"] = 100.0
+        self.assertEqual(inv._select(rows, "bols")[0]["id"], "mem-aaaaaaaa")
+
+    def test_unreadable_alert_state_sends_nothing(self):
+        import hq_pistonia_store as pstore
+        import hq_pistonia_alerts as palerts
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        (folder / "alerts.json").write_text("{not json", encoding="utf-8")
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}):
+            self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
+        self.assertEqual(pstore.thread(), [])
+
+    def test_relationship_owner_never_defaults_to_admin(self):
+        with mock.patch.object(memory, "current_owner", return_value=None):
+            with self.assertRaises(RuntimeError):
+                rel.pair(self.root, "else", "transferania")
+
+
 if __name__ == "__main__":
     unittest.main()

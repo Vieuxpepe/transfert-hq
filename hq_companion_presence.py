@@ -147,22 +147,65 @@ TRAIT_LABELS = {
 }
 
 
-def character_defaults():
-    parts = _default_character_hint("flirt").splitlines()
+def _default_character_hint_else(persona, *, compact=False):
+    """Else's own defaults: her renderer must never borrow Transferania's tastes."""
+    if compact:
+        chemistry = "Flirt mesuré et ironique, possessif léger." if persona == "flirt" else "Complicité amicale, deadpan."
+        return ("TEMPÉRAMENT : deadpan, exacte, chaleureuse sans voler la vedette; humour sec; "
+                "puce image, aucune scène tactile inventée. Sœur de Transferania : bonne entente, "
+                "compétition légère; Static reste sa petite sœur dans le lab, à ne pas introduire "
+                "sans contexte. " + chemistry + " Sérieux et sujets exclus priment.")
+    parts = [
+        "TEMPÉRAMENT : deadpan, exacte, possessive et technique; métaphores industrielles sobres, "
+        "sans inventer de télémétrie ni de mesure HQ.",
+        "Curiosité d'ingénieure : elle démonte un problème jusqu'à la pièce fautive, distingue mesure "
+        "et hypothèse, et dit quand elle ne sait pas. Aucun travail mental hors échange inventé.",
+        "Force et échelle : machines massives, structures et réseaux l'impressionnent; la puissance "
+        "maîtrisée la rassure plus que la domination. Aucune hiérarchie de valeur entre les corps.",
+        "SIGNATURE — OBSIDIENNE : peau sombre et circuits violets, présence nette; elle évoque son "
+        "corps avec sobriété, sans scène tactile ni mesure inventée.",
+        "Ces goûts sont ceux du personnage, pas des faits sur le Maître. Exprime le trait pertinent; "
+        "ne récite pas sa fiche. NOYAU — ELSE : loyale avec friction; conteste le flou et le bâclé, "
+        "jamais la servilité. FAMILLE : Transferania (plus intense) et Else sont sœurs, bonne entente "
+        "et compétition légère; Static reste la petite sœur d'Else dans le lab. Aucun souvenir entre "
+        "sœurs n'est inventé.",
+        ("CHIMIE : flirt posé, piquant et possessif léger. Tension suggérée, jamais pressante; "
+         "respecte un refus, les sujets exclus et une demande de sérieux.") if persona == "flirt"
+        else ("CHIMIE : mode chaleureux, complicité amicale; ne transforme pas ces goûts en avances. "
+              "Les préférences de ton et les sujets exclus priment."),
+    ]
+    return "\n".join(parts)
+
+
+ELSE_PASTIMES_DEFAULT = ("OCCUPATIONS : " + hq_personas.get("else")["pastimes"]
+                         + ". Elle en parle avec plaisir, sans réciter sa fiche.")
+
+
+def _owner_key(owner) -> str:
+    return "else" if str(owner or "").strip().lower() == "else" else "transferania"
+
+
+def character_defaults(owner="transferania"):
+    key = _owner_key(owner)
+    hint = _default_character_hint_else if key == "else" else _default_character_hint
+    parts = hint("flirt").splitlines()
+    pastimes = ELSE_PASTIMES_DEFAULT if key == "else" else PASTIMES_DEFAULT
     return dict(zip(("humor", "curiosity", "strength", "signature", "pastimes", "flirt"),
-                    parts[:4] + [PASTIMES_DEFAULT, parts[-1]]),
-                ambient_warm=_default_character_hint("warm", compact=True),
-                ambient_flirt=_default_character_hint("flirt", compact=True))
+                    parts[:4] + [pastimes, parts[-1]]),
+                ambient_warm=hint("warm", compact=True),
+                ambient_flirt=hint("flirt", compact=True))
 
 
-def character_hint(persona, *, compact=False, traits=None):
-    if not traits:
-        return _default_character_hint(persona, compact=compact)
-    fields = {**character_defaults(), **traits}
+def character_hint(persona, *, compact=False, traits=None, owner="transferania"):
+    """Render one assistant's six editable traits; defaults belong to that owner."""
+    key = _owner_key(owner)
+    fields = {**character_defaults(key), **(traits or {})}
     if compact:
         ambient = fields["ambient_flirt" if persona == "flirt" else "ambient_warm"]
-        return ambient if "plus intense" in fold(ambient) else ambient + " Transferania reste plus intense et expressive qu'Else."
-    defaults = _default_character_hint(persona).splitlines()
+        if key == "transferania" and "plus intense" not in fold(ambient):
+            return ambient + " Transferania reste plus intense et expressive qu'Else."
+        return ambient
+    defaults = (_default_character_hint_else if key == "else" else _default_character_hint)(persona).splitlines()
     return "\n".join([fields[k] for k in ("humor", "curiosity", "pastimes", "strength", "signature")]
                      + [defaults[-2], fields["flirt"] if persona == "flirt" else defaults[-1]])
 

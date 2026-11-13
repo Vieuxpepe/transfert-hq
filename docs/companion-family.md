@@ -98,9 +98,12 @@ companion side the stable core states `Autre nom : « Transferina »` once
 (`alias_line`), before the editable character hint, so a customized trait cannot
 duplicate or contradict it.
 `quirks_line()` renders her quirks once, in her own prompt, for the six domain
-assistants and Else's capsule; Transferania's pastimes
-seed her editable `pastimes` trait, so her character editor remains the live
-source and her quirks are not injected twice into the companion prompt.
+assistants and Else's capsule. Transferania is the exception: her companion
+prompt is editor-driven, so her registry quirks are not injected there at all
+(no duplication to guard against), and her registry `pastimes` seed the editable
+`pastimes` trait, which now also appears in her default prompt when nothing has
+been customised. Else renders her own defaults, never Transferania's: the two
+sisters share the trait editor, not the trait text.
 `guest_voice` stays filled only for the sisters: the Music DJ can only invite a
 character that has a real voice.
 

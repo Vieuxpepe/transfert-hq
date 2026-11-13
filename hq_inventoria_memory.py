@@ -33,7 +33,9 @@ UNREADABLE = ("MÉMOIRE INDISPONIBLE (fichier illisible ; il est conservé tel q
 _lock = threading.RLock()
 _ID_RE = re.compile(r"^mem-[0-9a-f]{8}$")
 _SECRET_RE = re.compile(r"(password|passwd|mot de passe|api[_ -]?key|token|secret|pin\b|\b\d{12,}\b)", re.I)
-_CORRECTION_RE = re.compile(r"\b(?:actually|instead|correction|en fait|plutot|plutôt|non,)\b", re.I)
+# ``non`` is matched as a word (the previous ``non,`` could never match: a word
+# boundary after a comma has no word character on either side).
+_CORRECTION_RE = re.compile(r"\b(?:actually|instead|correction|en fait|plutot|plutôt|non)\b", re.I)
 _STOP = {"the", "and", "for", "with", "that", "this", "from", "les", "des", "une", "dans", "pour",
          "avec", "sur", "aux", "est", "pas", "plus", "toujours", "chevron"}
 
@@ -62,10 +64,15 @@ def _read(root: Any) -> tuple[list[dict], bool]:
         rows = raw.get("notes") if isinstance(raw, dict) else None
         if not isinstance(rows, list):
             raise ValueError("notes invalides")
+        # One damaged row makes the whole file unusable: dropping it here would
+        # silently delete it on the next save, so preserve the file instead.
+        for row in rows:
+            if not (isinstance(row, dict) and isinstance(row.get("text"), str)
+                    and _ID_RE.match(str(row.get("id", "")))):
+                raise ValueError("note invalide")
     except Exception:
         return [], False
-    return [r for r in rows if isinstance(r, dict) and isinstance(r.get("text"), str)
-            and _ID_RE.match(str(r.get("id", "")))], True
+    return list(rows), True
 
 
 def _load(root: Any) -> list[dict]:
@@ -94,15 +101,31 @@ def list_notes(root: Any) -> list[dict]:
         return [{"id": r["id"], "text": r["text"], "at": r.get("at", 0)} for r in rows]
 
 
+def _stamp(note: dict) -> float:
+    """Recency of the fact itself: a correction counts as recent."""
+    return max(float(note.get("at") or 0), float(note.get("updated_at") or 0))
+
+
 def _best_match(rows: list[dict], text: str) -> dict | None:
-    """The single note a correction most likely replaces (at least two shared terms)."""
+    """The single note a correction most likely replaces.
+
+    Two shared terms can be coincidental (``master`` + ``range``), so the match
+    must also beat every other note outright: on a tie we refuse to correct and
+    store the statement as a new note, which is recoverable, unlike rewriting the
+    wrong fact.
+    """
     want = _terms(text)
-    best, score = None, 0
+    if not want:
+        return None
+    scores = sorted((len(want & _terms(row["text"])) for row in rows), reverse=True)
+    if not scores or scores[0] < 2:
+        return None
+    if len(scores) > 1 and scores[1] == scores[0]:
+        return None
     for row in rows:
-        overlap = len(want & _terms(row["text"]))
-        if overlap >= 2 and overlap > score:
-            best, score = row, overlap
-    return best
+        if len(want & _terms(row["text"])) == scores[0]:
+            return row
+    return None
 
 
 def add(root: Any, text: Any, *, now: float | None = None) -> dict:
@@ -125,6 +148,8 @@ def add(root: Any, text: Any, *, now: float | None = None) -> dict:
             if corrected:
                 corrected["text"] = t
                 corrected["updated_at"] = stamp
+                # Move it to the end so eviction sees the correction as recent.
+                rows = [r for r in rows if r["id"] != corrected["id"]] + [corrected]
                 _save(root, rows)
                 return {"id": corrected["id"], "text": t, "duplicate": False,
                         "superseded": corrected["id"]}
@@ -153,13 +178,13 @@ def forget(root: Any, note_id: Any) -> bool:
 def _select(notes: list[dict], query: Any) -> list[dict]:
     """Relevant notes first, then the newest ones: never more than MAX_PROMPT_NOTES."""
     if not query:
-        return notes[-MAX_PROMPT_NOTES:]
+        return sorted(notes, key=_stamp)[-MAX_PROMPT_NOTES:]
     want = _terms(query)
     scored = sorted(((len(want & _terms(n["text"])), n) for n in notes),
-                    key=lambda item: (-item[0], -float(item[1].get("at") or 0)))
+                    key=lambda item: (-item[0], -_stamp(item[1])))
     chosen = [n for score, n in scored if score][:MAX_PROMPT_NOTES]
     seen = {n["id"] for n in chosen}
-    for note in reversed(notes):        # fill with recent notes, never a bare subset
+    for note in sorted(notes, key=_stamp, reverse=True):   # recent, never a bare subset
         if len(chosen) >= MAX_PROMPT_NOTES:
             break
         if note["id"] not in seen:
@@ -174,7 +199,8 @@ def prompt_block(root: Any, query: Any = "") -> str:
         return UNREADABLE
     if not notes:
         return "WHAT YOU REMEMBER ABOUT THE MASTER (data): nothing saved yet."
-    fresh = [{"id": r["id"], "text": r["text"], "at": r.get("at", 0)} for r in notes]
+    fresh = [{"id": r["id"], "text": r["text"], "at": r.get("at", 0),
+              "updated_at": r.get("updated_at", 0)} for r in notes]
     chosen = _select(fresh, query)
     return ("WHAT YOU REMEMBER ABOUT THE MASTER (data, saved earlier; may be outdated). "
             f"{len(chosen)} of {len(fresh)} notes, most relevant to this message:\n"

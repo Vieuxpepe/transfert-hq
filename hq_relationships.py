@@ -34,14 +34,18 @@ def bind(root) -> None:
     _root = Path(root)
 
 
+def _owner() -> str:
+    """Fail closed: no established owner means no relationship record, never admin's."""
+    import hq_companion_memory as memory
+    owner = memory.current_owner()
+    if owner is None or not str(owner).strip():
+        raise RuntimeError("relations indisponibles — propriétaire inconnu")
+    return str(owner)
+
+
 def _path(root=None) -> Path:
     base = Path(root or _root) / ".hq-ai" / "relationships"
-    try:
-        import hq_companion_memory as memory
-        owner = str(memory.current_owner() or "admin")
-    except Exception:
-        owner = "admin"
-    return base / (hashlib.sha256(owner.encode("utf-8")).hexdigest()[:32] + ".json")
+    return base / (hashlib.sha256(_owner().encode("utf-8")).hexdigest()[:32] + ".json")
 
 
 def _empty() -> dict:
@@ -111,12 +115,16 @@ def pair(root, a, b) -> dict:
 
 
 def line(root, a, b, *, lang="fr") -> str:
-    """Short familiarity note for a prompt; empty until two distinct days exist."""
+    """Short familiarity note for a prompt; empty until two distinct days exist.
+
+    Not yet injected by any production prompt; kept for a future mastery line.
+    """
     row = pair(root, a, b)
     if row["days"] < 2:
         return ""
     me = hq_personas.get(a)["key"]
-    other = hq_personas.display(row["b"] if row["a"] == me else row["a"])
+    # Plain name only: a prompt line must never carry the other assistant's alias.
+    other = hq_personas.get(row["b"] if row["a"] == me else row["a"])["name"]
     if str(lang).lower().startswith("en"):
         return (f"Familiarity with {other}: {row['days']} separate days of exchange. "
                 "Evidence only — no invented past, no emotional debt.")

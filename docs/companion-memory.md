@@ -32,10 +32,13 @@ the authenticated session's user identity; a request body cannot choose an owner
 Upload-only sessions cannot access memory operations.
 
 Transferania's profile lives under `.hq-ai/companion-memory/<owner-hash>.json`;
-every other assistant uses its own subfolder
-(`.hq-ai/companion-memory/<assistant>/<owner-hash>.json`, e.g. `else/`). A scope
+Else uses her own subfolder (`else/<owner-hash>.json`), and any other assistant
+that opts into the shared companion store gets its own subfolder too. A scope
 name that is not declared in `hq_personas` is refused rather than falling back to
-Transferania's file. No new model calls
+Transferania's file. Most domain assistants keep their purpose-built stores
+instead (`.hq-household` for Culinia, `.hq-forge` for Forgia, `.hq-inventoria`
+for Inventoria, `.hq-engine/pistonia` for Pistonia); they do not read or write
+the companion memory file. No new model calls
 are made for memory extraction, retrieval, migration, correction or review.
 Each request still uses the existing context builder and its budgets. At most
 five relevant active memories are selected, ordered by relevance and recency.

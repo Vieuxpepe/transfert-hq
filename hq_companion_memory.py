@@ -522,7 +522,7 @@ def validate_personality(traits, *, enforce_budget: bool = True):
     if any(not isinstance(v, str) or not v.strip() or len(v.encode("utf-8")) > (320 if k.startswith("ambient_") else 2400)
            for k, v in traits.items()):
         raise ValueError("Trait vide ou trop long (320 octets en ambiance, 2400 par trait)")
-    full = {**presence.character_defaults(), **traits}
+    full = {**presence.character_defaults(_memory_scope.get()), **traits}
     # The budget is enforced when saving. Reading a profile that already existed
     # before the sixth trait must stay possible: otherwise a near-cap profile
     # would make the whole companion memory unreadable after the upgrade.
@@ -539,7 +539,7 @@ def personality_traits():
 def personality_snapshot():
     with _lock:
         data = _load()
-        defaults = presence.character_defaults()
+        defaults = presence.character_defaults(_memory_scope.get())
         return {"ok": True, "shared": True, "revision": data.get("personality_revision", 0), "defaults": defaults,
                 "traits": {**defaults, **data.get("personality", {})}, "labels": presence.TRAIT_LABELS,
                 "customized": sorted(data.get("personality", {}))}
@@ -551,7 +551,7 @@ def save_personality(traits, revision, *, reset=False):
         data = _load()
         if type(revision) is not int or revision != data.get("personality_revision", 0):
             raise ValueError("La personnalité a changé sur un autre appareil. Recharge l'éditeur avant d'enregistrer.")
-        defaults = presence.character_defaults()
+        defaults = presence.character_defaults(_memory_scope.get())
         data["personality"] = {k: v for k, v in cleaned.items() if v != defaults[k]}
         data["personality_revision"] = data.get("personality_revision", 0) + 1
         _save(data)

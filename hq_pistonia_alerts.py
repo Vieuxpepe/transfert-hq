@@ -170,6 +170,11 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
         import hq_engine
         st = st or hq_engine.status()
         conds = detect(st, now, list(hq_engine._events))
+        if store.unreadable("alerts.json"):
+            # The alert file exists but cannot be parsed: raising an alert now would
+            # append to the thread and notify without a durable cooldown, repeating
+            # the same alert every tick. Preserve the file and stay quiet.
+            return []
         state = store.alerts_state()
         active = set(state["active"])
         added: list[dict] = []

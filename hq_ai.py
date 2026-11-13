@@ -2065,8 +2065,12 @@ def build_else_system(channel: str, persona: str, *, nsfw: bool, view: str, devi
     v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
     system = base.format(today=_today_text())
     system += "\n\n" + CHARACTER_SHEET_ELSE
+    # Read Else's own profile even if the caller forgot to open her scope: the
+    # shared trait editor must never hand her Transferania's customized fields.
+    with companion_memory.memory_scope("else"):
+        else_traits = _shared_memory(companion_memory.personality_traits)
     system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
-        traits=_shared_memory(companion_memory.personality_traits))
+        traits=else_traits, owner="else")
     # Else-specific address / topics override shared prefs when set.
     else_prefs = dict(p)
     if p.get("else_address"):
