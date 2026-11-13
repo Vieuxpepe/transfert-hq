@@ -8,6 +8,7 @@ import ctypes
 import hashlib
 import hmac
 import html
+import http.client
 import json
 import math
 import mimetypes
@@ -57,6 +58,7 @@ import hq_purchases
 import hq_inventoria
 import hq_inventoria_ai
 import hq_engine
+import hq_engine_fleet
 import hq_companion
 import hq_planner
 import hq_devices
@@ -69,6 +71,8 @@ import hq_forge_jobs
 import hq_forge_lab
 import hq_forge_night
 import hq_forge_inpaint
+import hq_forge_library
+import hq_forge_preview
 import hq_forge_sketch
 import hq_forge_presets
 import hq_forge_bricks
@@ -78,10 +82,15 @@ import hq_forge_vault
 import hq_today
 import hq_timeline
 import hq_desk
+import hq_robotics
+from hq_robotics_arm import private_peer as robotics_private_peer
 import hq_search
 import hq_music
 import hq_spotify
 import hq_musica
+import hq_securia
+import hq_culinia
+import hq_forgia
 
 PORT = 8765
 CODE_ROOT = Path(__file__).resolve().parent
@@ -298,6 +307,57 @@ def asset_version_for(rel: str) -> str | None:
     return ver
 
 
+_ASSET_BUILD_TTL = 5.0
+_ASSET_BUILD_CACHE: tuple[float, str] | None = None
+
+
+# name -> ((size, mtime_ns), content digest). A tool that rewrites a file with identical bytes changes
+# its mtime, so the digest is recomputed for that one file and the stamp stays put.
+_ASSET_DIGESTS: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def _asset_digest(path: Path, st: os.stat_result) -> str:
+    key = (st.st_size, st.st_mtime_ns)
+    hit = _ASSET_DIGESTS.get(path.name)
+    if hit and hit[0] == key:
+        return hit[1]
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+    _ASSET_DIGESTS[path.name] = (key, digest)
+    return digest
+
+
+def asset_build_stamp() -> str:
+    """Content version of assets/*.js|css for lazily loaded files.
+
+    A lazy loader cannot know a file's own stat, so it carries this stamp instead. It is derived from
+    file contents rather than mtimes: a rewrite that leaves the bytes identical (a formatter, a build
+    step) must not re-version every cached module. Per-file digests are cached by (size, mtime), so a
+    real edit re-reads only the edited file. The 't' prefix can never start a per-file version (hex)."""
+    global _ASSET_BUILD_CACHE
+    now = time.monotonic()
+    hit = _ASSET_BUILD_CACHE
+    if hit and now - hit[0] < _ASSET_BUILD_TTL:
+        return hit[1]
+    rows: list[tuple[str, str]] = []
+    try:
+        for entry in os.scandir(CODE_ROOT / "assets"):
+            if entry.name.endswith((".js", ".css")):
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                rows.append((entry.name, _asset_digest(Path(entry.path), st)))
+    except OSError:
+        pass
+    rows.sort()
+    stamp = "t" + hashlib.sha256("|".join(name + ":" + digest for name, digest in rows).encode("utf-8")).hexdigest()[:16]
+    _ASSET_BUILD_CACHE = (now, stamp)
+    return stamp
+
+
 def version_page_assets(body: bytes) -> bytes:
     """Served page only (render_app() output itself is unchanged): add ?v= to its static script/stylesheet links."""
     def sub(m: "re.Match[bytes]") -> bytes:
@@ -306,9 +366,12 @@ def version_page_assets(body: bytes) -> bytes:
             return m.group(0)
         return m.group(1) + b"/assets/" + m.group(2) + b"?v=" + ver.encode("ascii") + b'"'
     try:
-        return _PAGE_ASSET_RE.sub(sub, body)
+        out = _PAGE_ASSET_RE.sub(sub, body)
     except Exception:
         return body
+    # Lazily appended scripts read this to build ?v= URLs; without it they revalidate on every visit.
+    tag = b'<script>window.HQ_ASSET_BUILD="' + asset_build_stamp().encode("ascii") + b'";</script>'
+    return out.replace(b"</body>", tag + b"</body>", 1) if b"</body>" in out else out
 
 
 UPLOAD_POST_EXACT = {
@@ -318,7 +381,7 @@ UPLOAD_POST_EXACT = {
     "/api/upload/init", "/api/upload/chunk", "/api/upload/complete",
     "/api/hq/client-log",
     "/api/hq/repro-note",
-    "/api/hq/lag-capture",
+    # /api/hq/lag-capture stays admin-only: it captures the host's primary screen.
 }
 UPLOAD_POST_PREFIX = ()
 COOKIE_NAME = "transfert_session"
@@ -476,6 +539,61 @@ def bridge_code_changed(root: Path | None = None, started: float | None = None) 
         except OSError:
             continue
     return False
+
+
+BOOT_REVISION_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _boot_revision_files(base: Path) -> list[Path]:
+    """The shipped files that define what this process serves: the entry points and the page assets."""
+    files: list[Path] = []
+    try:
+        files.extend(sorted(p for p in base.glob("*.py") if p.is_file()))
+        assets = base / "assets"
+        files.extend(sorted(p for p in assets.iterdir()
+                            if p.is_file() and p.suffix.lower() in {".js", ".css"}))
+    except OSError:
+        pass
+    return files
+
+
+def boot_revision_fingerprint(root: Path | None = None, paths=None) -> str:
+    """Stable identity of the code on disk: same bytes, same revision; any edit, a new one.
+
+    ``paths`` is an explicit list of paths relative to ``root`` (tests); by default the entry points
+    and the top-level page assets are read. Oversized files fall back to their name and size so this
+    stays cheap at import time.
+    """
+    base = Path(root or CODE_ROOT)
+    files = [base / str(p) for p in paths] if paths is not None else _boot_revision_files(base)
+    digest = hashlib.sha256()
+    for f in files:
+        try:
+            rel = f.relative_to(base).as_posix()
+        except ValueError:
+            rel = f.name
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"|")
+        try:
+            st = f.stat()
+            if st.st_size > BOOT_REVISION_MAX_BYTES:
+                digest.update(f"{st.st_size}".encode("ascii"))
+            else:
+                digest.update(f.read_bytes())
+        except OSError:
+            digest.update(b"<missing>")
+        digest.update(b"|")
+    return digest.hexdigest()[:16]
+
+
+# The revision this process loaded. Never recomputed: a restart is what changes it.
+_BOOT_REVISION = boot_revision_fingerprint()
+
+
+def boot_revision_status() -> dict:
+    """The loaded code revision, for /api/diag/live and the restart routes."""
+    return {"boot_revision": _BOOT_REVISION}
+
 
 
 def _is_windows() -> bool:
@@ -2695,6 +2813,9 @@ def pc_lock() -> None:
 
 def pc_sleep() -> None:
     cc_ext.log_activity("sleep", "PC en veille")
+    # Guard against test suites or automated runs putting the host machine to sleep
+    if os.environ.get("TRANSFERT_TEST_MODE") or os.environ.get("PYTEST_CURRENT_TEST") or "unittest" in sys.modules:
+        return
     # Hibernate=False, ForceCritical=True, DisableWakeEvent=False
     ctypes.windll.powrprof.SetSuspendState(0, 1, 0)
 
@@ -3342,7 +3463,7 @@ def bind_hq() -> None:
         companion_persona=lambda: str(CONFIG.get("companion_persona") or "flirt").strip().lower(),
         companion_context_config=lambda: CONFIG.get("companion_context", {}),
         client_is_controller=lambda ip: cc_ext.classify_ip(str(ip or "")) in ("local", "lan", "tailscale"),
-        nsfw_enabled=lambda: CONFIG.get("companion_nsfw_enabled", True) is not False,
+        nsfw_enabled=lambda: CONFIG.get("companion_nsfw_enabled", False) is True,
         activity=lambda n: cc_ext.activity_list(n),  # Transferania reacts to true events: backups, prints
     )
     hq_folder_backups.bind(  # Fichiers: automatic backups of chosen folders, rolling window, to backup_dir/Dossiers
@@ -3377,9 +3498,49 @@ def bind_hq() -> None:
         llm_adapter=hq_inventoria_ai.adapter,  # Gemini reply: persona + inventory + session history (read-only)
         notify=_inventoria_notify,  # offline stock alerts: HQ's existing Discord webhook + web push (opt-in, off by default)
     )  # Inventoria: admin-only; CSRF on POST below
-    hq_music.bind(root=ROOT)  # Musique preferences / discoveries / presets (admin + CSRF on POST)
+    hq_engine.bind(ROOT, notify=_inventoria_notify)  # Engine: pairing, Pistonia (state in .hq-engine); notifier used only if she is switched on
+    hq_music.bind(root=ROOT, notify=_inventoria_notify,  # release alerts / Studio pings: opt-in channels
+                  calendar=lambda start, end: hq_calendar.manual_between(start, end)[0])  # Musique preferences / discoveries / presets (admin + CSRF on POST); calendar read-only for mood picks
     hq_spotify.bind(root=ROOT, config_getter=lambda: CONFIG)  # Spotify OAuth + Web API (tokens under .hq-music/)
     hq_musica.bind(root=ROOT)  # Musica steward chat + music tools (admin + CSRF on POST)
+    import hq_music_dj
+    hq_music_dj.boot()  # DJ Musica PC station resumes when it was left on (voice on the PC speakers)
+    def _securia_sessions() -> list[dict]:
+        out = []
+        now_ts = time.time()
+        with _SESSIONS_LOCK:
+            sess_copy = dict(_SESSIONS)
+        for tok, sess in sess_copy.items():
+            created = sess.get("created", now_ts)
+            last_seen = sess.get("last_seen", created)
+            out.append({
+                "id": tok[:8] + "…",
+                "token": tok,
+                "user": sess.get("user", "Inconnu"),
+                "role": sess.get("role", "upload"),
+                "created_h": datetime.fromtimestamp(created, timezone.utc).strftime("%H:%M:%S"),
+                "last_seen_h": datetime.fromtimestamp(last_seen, timezone.utc).strftime("%H:%M:%S"),
+                "idle_sec": int(now_ts - last_seen),
+            })
+        return out
+    def _securia_revoke(tok: str) -> bool:
+        with _SESSIONS_LOCK:
+            if tok and tok in _SESSIONS:
+                del _SESSIONS[tok]
+                _persist_sessions()
+                return True
+        return False
+    hq_security.IP_BLOCKLIST.attach(ROOT)
+    hq_securia.bind(
+        root=ROOT,
+        sessions_getter=_securia_sessions,
+        revoke_session_fn=_securia_revoke,
+        rate_limiter_getter=lambda: AUTH_RATE_LIMITER.get_status(),
+        config_getter=lambda: CONFIG,
+        presence_getter=lambda: presence_list(),
+    )
+    hq_culinia.bind(root=ROOT)
+    hq_forgia.bind(root=ROOT)
     hq_carnet.bind(
         root=ROOT,
         folders=lambda: list(CONFIG.get("folders") or DEFAULT_FOLDERS),
@@ -3704,7 +3865,7 @@ function toast(msg, kind='ok', ms=3200) {
   setTimeout(hide, ms);
 }
 
-const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', musique: 'Musique', projets: 'Projets', inventaire: 'Inventaire', engine: 'Engine', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
+const VIEW_LABELS = { accueil: 'Accueil', carnet: 'Carnet', calendrier: 'Calendrier', repas: 'Repas', budget: 'Budget', dessiner: 'Dessiner', forge: 'Forge Studio', fichiers: 'Fichiers', lecteur: 'Lecteur', musique: 'Musique', projets: 'Projets', inventaire: 'Inventaire', engine: 'Engine', robotique: 'Robotique', securite: 'Sécurité', ops: 'Terminal', intime: 'Tête-à-tête', plus: 'Plus' };
 let hqRoleKnown = false;
 function hqViewFromHash(hash = location.hash) {
   const [view, detail] = (hash || '').slice(1).split('/');
@@ -3724,6 +3885,8 @@ function hqApplySessionRole(me) {
   const admin = String(me.role || '').toLowerCase() === 'admin';
   const changed = !hqRoleKnown || admin !== hqSessionIsAdmin();
   document.body.classList.toggle('session-admin', admin);
+  document.body.dataset.role = admin ? 'admin' : 'upload'; // one declarative hook for owner-only affordances
+  document.body.classList.toggle('session-upload', !admin);
   const navIntime = document.getElementById('nav-intime');
   if (navIntime) navIntime.hidden = !admin;
   ['nav-repas', 'nav-budget', 'nav-musique'].forEach((id) => {
@@ -3732,16 +3895,23 @@ function hqApplySessionRole(me) {
   });
   const openIntime = document.getElementById('hq-intime-open');
   if (openIntime) openIntime.hidden = !admin;
+  // Accueil's owner controls: every one of them is an admin route, so the upload role never sees them.
+  ['hq-actions', 'btn-sync-captures', 'btn-restart-bridge', 'home-edit', 'home-edit-row'].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) node.hidden = !admin;
+  });
+  const pcCard = document.querySelector('.home-v2 .home-pc');
+  if (pcCard) pcCard.hidden = !admin;
   hqRoleKnown = true;
   if (changed) window.dispatchEvent(new Event('hq:session-role'));
   if (admin) {
     try {
       const want = hqViewFromHash() || localStorage.getItem('tf_hq_view') || '';
-      if ((want === 'intime' || want === 'repas' || want === 'budget' || want === 'musique') && document.body.dataset.view !== want) {
+      if ((want === 'intime' || want === 'repas' || want === 'budget' || want === 'musique' || want === 'robotique') && document.body.dataset.view !== want) {
         setView(want, { historyMode: 'replace' });
       }
     } catch (_) {}
-  } else if (document.body.dataset.view === 'intime' || document.body.dataset.view === 'repas' || document.body.dataset.view === 'budget' || document.body.dataset.view === 'musique') {
+  } else if (['intime', 'repas', 'budget', 'musique', 'robotique'].includes(document.body.dataset.view)) {
     setView('accueil');
   }
   return admin;
@@ -3750,32 +3920,73 @@ function viewTitle(view) {
   if (view === 'plus' && window.matchMedia('(min-width: 900px)').matches) return 'Système';
   return VIEW_LABELS[view] || 'Accueil';
 }
-// Forge: ten classic scripts, order matters (hq-forge.js defines window.hqForgeHooks the others use). Loaded once, on first
-// use, sequentially; a failing add-on is skipped like a missing optional module, a failing core file allows a later retry.
-const HQ_FORGE_SCRIPTS = ['hq-forge.js', 'hq-forge-next.js', 'hq-forge-explore.js', 'hq-forge-night.js', 'hq-forge-vault-search.js',
-  'hq-forge-inpaint.js', 'hq-forge-bricks.js', 'hq-forge-lineage.js', 'hq-forge-style.js', 'hq-forge-couch.js'];
+// Forge: five core scripts gate the first paint (hooks, shell, couch, gallery wiring). The add-ons
+// load once the view is usable, so their parse and their first requests stay off the entry path;
+// order still matters because hq-forge.js defines window.hqForgeHooks the others read at load.
+const HQ_FORGE_SCRIPTS = ['hq-forge.js', 'hq-forge-next.js', 'hq-forge-vault-search.js', 'hq-forge-couch.js', 'hq-forge-studio.js'];
+const HQ_FORGE_SCRIPTS_DEFERRED = ['hq-forge-explore.js', 'hq-forge-night.js', 'hq-forge-inpaint.js', 'hq-forge-bricks.js',
+  'hq-forge-plateau.js', 'hq-forge-preview.js', 'hq-forge-lineage.js', 'hq-forge-style.js'];
 let hqForgeLoading = null;
-function hqForgeLoad() {
-  if (window.hqForgeShow) return Promise.resolve();
-  if (hqForgeLoading) return hqForgeLoading;
-  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-  const one = (name) => new Promise((resolve) => {
+let hqForgeDeferredLoading = null;
+// Lazy asset URLs carry the page's build stamp, so the server can answer them immutable (see
+// asset_build_stamp()) and a repeat visit reads them from cache instead of revalidating one by one.
+function hqAssetUrl(name) {
+  return '/assets/' + name + (window.HQ_ASSET_BUILD ? '?v=' + window.HQ_ASSET_BUILD : '');
+}
+function hqForgeScriptEl(name) {
+  return new Promise((resolve) => {
     const el = document.createElement('script');
-    el.src = '/assets/' + name;
-    el.async = false;
-    el.onload = () => resolve(true);
+    // Ahead of the view's chip images and API pollers: only six sockets exist per origin, and the last
+    // scripts in the list were queued behind ~27 simultaneous requests.
+    el.fetchPriority = 'high';
+    el.src = hqAssetUrl(name);
+    el.async = false;  // order matters: hq-forge.js defines the hooks every other file reads
+    el.onload = () => {
+      // onload fires after this file ran, so the spread between files is their execution time.
+      (window.hqForgeScriptAt = window.hqForgeScriptAt || []).push({ name: name, at: Math.round(hqForgeNow()) });
+      resolve(true);
+    };
     el.onerror = () => { el.remove(); resolve(false); };
     document.body.appendChild(el);
   });
-  hqForgeLoading = Promise.all(HQ_FORGE_SCRIPTS.map(one)).then((results) => {
-    const ms = Math.round(((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - t0);
+}
+function hqForgeNow() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+function hqForgeLoadDeferred() {
+  if (hqForgeDeferredLoading || window.hqForgeAddonsReady) return;
+  const start = () => {
+    if (hqForgeDeferredLoading || window.hqForgeAddonsReady) return;
+    const t0 = hqForgeNow();
+    hqForgeDeferredLoading = Promise.all(HQ_FORGE_SCRIPTS_DEFERRED.map(hqForgeScriptEl)).then((results) => {
+      const ms = Math.round(hqForgeNow() - t0);
+      window.hqForgeAddonsReady = true;
+      // A failing add-on is skipped, exactly as when the whole list loaded in one go.
+      if (window.hqPerfMark) window.hqPerfMark('forge', { op: 'script-deferred', ms, ok: results.every(Boolean), scripts: HQ_FORGE_SCRIPTS_DEFERRED.length }, { force: ms > 600 });
+      return results;
+    });
+  };
+  // Next macrotask, not an animation frame: the shell renders in a long task, so two frames slipped to
+  // ~123 ms and left no margin before the 150 ms backstop. A hidden tab also receives no frames at all;
+  // a timer covers both cases the same way, and the kick runs as soon as the render task yields.
+  let kicked = false;
+  const kick = () => { if (kicked) return; kicked = true; start(); };
+  setTimeout(kick, 0);
+}
+function hqForgeLoad() {
+  if (window.hqForgeShow) { hqForgeLoadDeferred(); return Promise.resolve(); }
+  if (hqForgeLoading) return hqForgeLoading;
+  const t0 = hqForgeNow();
+  hqForgeLoading = Promise.all(HQ_FORGE_SCRIPTS.map(hqForgeScriptEl)).then((results) => {
+    const ms = Math.round(hqForgeNow() - t0);
     const ok = !!(results[0] && window.hqForgeShow);
-    if (window.hqPerfMark) window.hqPerfMark('forge', { op: 'script-load', ms, ok, scripts: HQ_FORGE_SCRIPTS.length }, { force: ms > 600 || !ok });
-    const coreOk = results[0];
-    if (!coreOk || !window.hqForgeShow) {
+    if (window.hqPerfMark) window.hqPerfMark('forge', { op: 'script-load', ms, ok, scripts: HQ_FORGE_SCRIPTS.length, times: window.hqForgeScriptAt || [] }, { force: ms > 600 || !ok });
+    if (!results[0] || !window.hqForgeShow) {
       hqForgeLoading = null;  // allow a retry on the next visit
       if (typeof toast === 'function') toast('Forge indisponible (module non chargé)');
+      return;
     }
+    hqForgeLoadDeferred();
   });
   return hqForgeLoading;
 }
@@ -3790,11 +4001,11 @@ function hqMusicLoad() {
       const link = document.createElement('link');
       link.id = cssId;
       link.rel = 'stylesheet';
-      link.href = '/assets/hq-music.css';
+      link.href = hqAssetUrl('hq-music.css');
       document.head.appendChild(link);
     }
     const el = document.createElement('script');
-    el.src = '/assets/hq-music.js';
+    el.src = hqAssetUrl('hq-music.js');
     el.async = false;
     el.onload = () => resolve(true);
     el.onerror = () => { el.remove(); hqMusicLoading = null; resolve(false); };
@@ -3828,6 +4039,41 @@ function hqMusicEnsureMounted() {
   host.dataset.hqmMounted = '1';
 }
 window.hqMusicEnsureMounted = hqMusicEnsureMounted;
+let hqRoboticsLoading;
+function hqRoboticsLoad() {
+  if (hqRoboticsLoading) return hqRoboticsLoading;
+  const asset = (tag, url) => new Promise((resolve, reject) => {
+    const el = document.createElement(tag);
+    if (tag === 'script') el.src = url;
+    else { el.rel = 'stylesheet'; el.href = url; }
+    el.onload = () => resolve(el);
+    el.onerror = () => { el.remove(); reject(new Error('Robotique indisponible')); };
+    document.head.append(el);
+  });
+  hqRoboticsLoading = asset('link', hqAssetUrl('hq-robotics.css')).then(css =>
+    asset('script', hqAssetUrl('hq-robotics.js')).catch(err => { css.remove(); throw err; })
+  ).catch(err => { hqRoboticsLoading = null; throw err; });
+  return hqRoboticsLoading;
+}
+let hqRoboticsAssistantLoading;
+function hqRoboticsAssistantLoad() {
+  if (!hqRoboticsAssistantLoading) hqRoboticsAssistantLoading = new Promise(resolve => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = hqAssetUrl('hq-robotics-assistant.css');
+    const failed = () => { css.remove(); hqRoboticsAssistantLoading = null; resolve(false); };
+    css.onerror = failed;
+    css.onload = () => {
+      const script = document.createElement('script');
+      script.src = hqAssetUrl('hq-robotics-assistant.js');
+      script.onload = () => resolve(true);
+      script.onerror = () => { script.remove(); failed(); };
+      document.head.append(script);
+    };
+    document.head.append(css);
+  });
+  return hqRoboticsAssistantLoading;
+}
 // Carnet: 41 classic scripts, order matters (hq-carnet.js last). They are no longer fetched with the page: loaded once, in order,
 // when the browser is idle after window load, or at once when Carnet / the palette / a project link needs them. Quick Capture,
 // the motion layer and the home summary keep working, just a moment after first paint. A script that fails is skipped (as a
@@ -3884,7 +4130,7 @@ function hqCarnetLoad() {
   const one = (name) => new Promise((resolve) => {
     if (hqCarnetDone.has(name)) { resolve(); return; }
     const el = document.createElement('script');
-    el.src = '/assets/' + name;
+    el.src = hqAssetUrl(name);
     el.async = false;
     el.onload = () => { hqCarnetDone.add(name); resolve(); };
     el.onerror = () => { el.remove(); resolve(); };
@@ -3986,7 +4232,7 @@ function hqSketchRetry(kind, btn) {
     }
     const [name, , required] = item;
     const el = document.createElement('script');
-    el.src = '/assets/' + name;
+    el.src = hqAssetUrl(name);
     el.dataset.sk = name;
     el.onload = next;
     el.onerror = () => {
@@ -4161,8 +4407,8 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
   let view = Object.hasOwn(VIEW_LABELS, name) ? name : 'accueil';
   if (document.body.classList.contains('mode-simple') && view === 'ops') view = 'accueil';
   if (view === 'intime' && !hqSessionIsAdmin()) view = 'accueil';
-  if ((view === 'repas' || view === 'budget' || view === 'musique' || view === 'engine') && !hqSessionIsAdmin()) view = 'accueil';
-  const deferIntime = name === 'intime' && !hqRoleKnown;
+  if (['repas', 'budget', 'musique', 'engine', 'securite', 'robotique'].includes(view) && !hqSessionIsAdmin()) view = 'accueil';
+  const deferIntime = ['intime', 'robotique'].includes(name) && !hqRoleKnown;
   if (!deferIntime && (historyMode !== 'none' || view !== name) && hqViewFromHash() !== view) {
     if (historyMode === 'push') history.pushState(null, '', '#' + view);
     else history.replaceState(null, '', '#' + view);
@@ -4189,7 +4435,7 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
   navTabs.forEach(b => {
     const on = b.dataset.nav === view;
     b.classList.toggle('active', mobileOverflow ? b.dataset.nav === 'plus' : on);
-    if (on) b.setAttribute('aria-current', 'page');
+    if (on) { b.setAttribute('aria-current', 'page'); const bar = b.parentElement; if (bar && bar.scrollWidth > bar.clientWidth + 4) bar.scrollTo({ left: b.offsetLeft - (bar.clientWidth - b.offsetWidth) / 2, behavior: 'smooth' }); }
     else b.removeAttribute('aria-current');
   });
   $$('.hq-more-nav [data-view-link]').forEach(link => {
@@ -4201,6 +4447,16 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
     try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
   }
   const currentViewTicket = ++viewTicket;
+  if (view === 'robotique') {
+    hqRoboticsLoad().then(() => {
+      if (viewTicket !== currentViewTicket || !hqSessionIsAdmin()) return;
+      window.HqRobotics.show(document.getElementById('hq-robotics-app'), api, section === 'robotics-settings', hqRoboticsAssistantLoad);
+      window.hqPerfMark?.('nav', { op: 'setView-lazy', target: 'robotique', ms: Math.round(performance.now() - viewT0), ok: true });
+    }).catch(() => {
+      const note = document.getElementById('hq-robotics-loading');
+      if (note) note.textContent = 'Chargement impossible. Rouvrez Robotique pour réessayer.';
+    });
+  } else if (prevView === 'robotique') window.HqRobotics?.hide();
   if (view === 'fichiers') hqDeferViewRender(view, viewTicket, () => refreshFiles().catch(() => {}));
   if (view === 'carnet' && window.hqCarnetShow) {
     hqDeferViewRender(view, viewTicket, () => { try { window.hqCarnetShow(); } catch (e) { console.error(e); } });
@@ -4304,6 +4560,9 @@ function setupNav() {
     e.preventDefault();
     setView(link.dataset.viewLink);
   }));
+  $('#system-robotics-settings')?.addEventListener('click', () => {
+    if (hqSessionIsAdmin()) setView('robotique', { section: 'robotics-settings' });
+  });
   setupCompanionPicker();
   if (window.hqHouseholdInstallHistory) window.hqHouseholdInstallHistory(setView);
   $('#status-chip')?.addEventListener('click', (event) => {
@@ -4312,15 +4571,16 @@ function setupNav() {
     setView(section.startsWith('system-') ? 'plus' : 'accueil', { section });
   });
   $('#hq-intime-open')?.addEventListener('click', () => { if (hqSessionIsAdmin()) setView('intime'); else toast('Réservé admin', 'err'); });
-  $('#hq-intime-focus-chat')?.addEventListener('click', () => {
-    if (window.HqCompanion && typeof window.HqCompanion.setExpanded === 'function') window.HqCompanion.setExpanded(true);
-  });
-  $('#hq-intime-fold')?.addEventListener('click', () => {
-    if (window.HqCompanion && typeof window.HqCompanion.setCollapsed === 'function') window.HqCompanion.setCollapsed(true, true);
-  });
-  $('#hq-intime-reset')?.addEventListener('click', () => {
-    if (window.HqCompanion && typeof window.HqCompanion.resetFloatHome === 'function') window.HqCompanion.resetFloatHome();
-  });
+  const intimeFocus = $('#hq-intime-focus-mode');
+  if (intimeFocus) {
+    try { intimeFocus.checked = localStorage.getItem('hq_intime_focus') === '1'; } catch (_) {}
+    const syncFocus = () => document.body.classList.toggle('hq-intime-focus', intimeFocus.checked);
+    intimeFocus.addEventListener('change', () => {
+      syncFocus();
+      try { localStorage.setItem('hq_intime_focus', intimeFocus.checked ? '1' : '0'); } catch (_) {}
+    });
+    syncFocus();
+  }
   let saved = 'accueil';
   try {
     saved = localStorage.getItem('tf_hq_view') || 'accueil';
@@ -4328,7 +4588,7 @@ function setupNav() {
     sessionStorage.removeItem('tf_return_hash');
     if (!location.hash && back && hqViewFromHash(back)) history.replaceState(null, '', back);
   } catch (_) {}
-  if ((saved === 'intime' || saved === 'repas' || saved === 'budget' || saved === 'engine') && !hqSessionIsAdmin()) saved = 'accueil';
+  if ((saved === 'intime' || saved === 'repas' || saved === 'budget' || saved === 'engine' || saved === 'securite') && !hqSessionIsAdmin()) saved = 'accueil';
   if (!location.hash && saved === 'intime') history.replaceState(null, '', '#intime');
   setView(hqViewFromHash() || saved, { historyMode: location.hash ? 'none' : 'replace' });
   window.addEventListener('hashchange', () => {
@@ -4384,6 +4644,10 @@ async function api(url, opts={}) {
   // Non-2xx errors carry err.status (+ err.data for JSON bodies); messages unchanged.
   const fail = (msg, data) => { const err = new Error(msg); err.status = res.status; if (data !== undefined) err.data = data; return err; };
   if (res.status === 401) {
+    if (url.startsWith('/api/spotify/')) {
+      const data = await res.clone().json().catch(() => null);
+      if (data?.code?.startsWith('spotify_')) throw fail(data.error || 'Connexion Spotify requise', data);
+    }
     const now = Date.now();
     const last = Number(sessionStorage.getItem('tf_auth_at') || 0);
     if (!sessionStorage.getItem('tf_auth_redirect') && (now - last > 15000)) {
@@ -4442,7 +4706,7 @@ function renderFiles() {
     } else {
       list.innerHTML = `<li class="file empty empty-teach">
         <em>Aucun fichier ici</em>
-        <p class="hint"><button type="button" class="ghost" data-go-accueil>Envoie depuis Accueil</button></p>
+        <p class="hint"><button data-help="Ouvrir Accueil pour envoyer un fichier." type="button" class="ghost" data-go-accueil>Envoie depuis Accueil</button></p>
       </li>`;
       $$('[data-go-accueil]', list).forEach(b => b.addEventListener('click', () => setView('accueil')));
     }
@@ -4454,12 +4718,12 @@ function renderFiles() {
     const mediaAttr = mkind ? ` data-media="${mkind}" data-rel="${escapeAttr(f.rel)}" title="Double-clic : ouvrir dans le Lecteur"` : '';
     const editable = !isDir && /\.(txt|md|csv|json|log|py|css|js|html?|xml|ya?ml|ini|cfg|srt)$/i.test(f.name);
     const openBtn = isDir
-      ? `<button type="button" class="btn" data-open="${escapeAttr(f.rel)}">Ouvrir</button>`
+      ? `<button data-help="Ouvrir ce fichier." type="button" class="btn" data-open="${escapeAttr(f.rel)}">Ouvrir</button>`
       : `<a class="btn" href="${fmtRel(f.rel)}" target="_blank" rel="noopener">Ouvrir</a>`;
     const saveBtn = isDir ? '' : `<a class="btn secondary" href="${dlRel(f.rel)}" download>Sauver</a>`;
-    const editBtn = editable ? `<button type="button" class="ghost" data-edit="${escapeAttr(f.rel)}">Éditer</button>` : '';
+    const editBtn = editable ? `<button data-help="Modifier ce fichier texte." type="button" class="ghost" data-edit="${escapeAttr(f.rel)}">Éditer</button>` : '';
     const printBtn = (!isDir && f.rel.startsWith('Print/'))
-      ? `<button type="button" class="ghost" data-print="${escapeAttr(f.rel)}">Imprimer</button>` : '';
+      ? `<button data-help="Imprimer ce fichier." type="button" class="ghost" data-print="${escapeAttr(f.rel)}">Imprimer</button>` : '';
     const nameEl = isDir
       ? `<button type="button" class="fname" data-open="${escapeAttr(f.rel)}" style="background:none;border:0;padding:0;text-align:left">📁 ${escapeHtml(f.name)}</button>`
       : `<a class="fname" href="${fmtRel(f.rel)}" target="_blank" rel="noopener">${hqMediaIcon(mkind)} ${escapeHtml(f.name)}</a>`;
@@ -4468,12 +4732,12 @@ function renderFiles() {
       <div class="row-actions">
         ${openBtn}${saveBtn}
         <div class="file-more">
-          <button type="button" class="ghost more-toggle" aria-label="Plus d'actions">⋯</button>
+          <button data-help="Renommer, déplacer ou supprimer." type="button" class="ghost more-toggle" aria-label="Plus d'actions">⋯</button>
           <div class="file-more-menu">
             ${editBtn}${printBtn}
-            <button type="button" class="ghost" data-rename="${escapeAttr(f.rel)}" data-name="${escapeAttr(f.name)}">Renommer</button>
-            <button type="button" class="ghost" data-move="${escapeAttr(f.rel)}">Déplacer</button>
-            <button type="button" class="danger" data-del="${escapeAttr(f.rel)}" data-type="${f.type}" data-name="${escapeAttr(f.name)}">Supprimer</button>
+            <button data-help="Renommer ce fichier." type="button" class="ghost" data-rename="${escapeAttr(f.rel)}" data-name="${escapeAttr(f.name)}">Renommer</button>
+            <button data-help="Déplacer ce fichier vers un autre dossier." type="button" class="ghost" data-move="${escapeAttr(f.rel)}">Déplacer</button>
+            <button data-help="Supprimer ce fichier." type="button" class="danger" data-del="${escapeAttr(f.rel)}" data-type="${f.type}" data-name="${escapeAttr(f.name)}">Supprimer</button>
           </div>
         </div>
       </div>
@@ -4971,7 +5235,7 @@ function spaceBar(label, free, total, freeH, totalH) {
 
 /* Accueil: one row of small device tiles (storage ring, name, status); offline ones fold away.
    The wallboard keeps the detailed cards. */
-function deviceTile(d) {
+function distinctDevices(list) { const seen = new Set(); return list.filter(d => { const key = d.source === 'browser' ? 'browser|' + String(d.name || '').toLowerCase() : 'id|' + (d.id || d.name || ''); if (seen.has(key)) return false; seen.add(key); return true; }); } function deviceTile(d) {
   const on = d.online !== false;
   const name = String(d.name || '?').replace(/\.[a-z0-9-]+\.ts\.net$/i, '');
   let used = null;
@@ -4984,7 +5248,7 @@ function deviceTile(d) {
     if (!x.total) continue;
     const u = 1 - (x.free / x.total);
     // The fullest disk speaks for the device: « C: 106.88 Go libres sur 952.49 Go ».
-    if (used == null || u > used) { used = u; freeLabel = (many && x.name ? x.name + ' ' : '') + round(x.free_h) + ' libres'; totalLabel = x.total_h ? 'sur ' + round(x.total_h) : ''; }
+    if (used == null || u > used) { used = u; freeLabel = (many && x.name ? x.name + ' ' : '') + round(x.free_h) + ' libres'; totalLabel = x.total_h ? 'sur ' + round(x.total_h) : ''; if (round(x.free_h) === round(x.total_h)) totalLabel = ''; }
   }
   const detail = disks.filter(x => x.total).map(x => (x.name ? x.name + ' ' : '') + (x.free_h || '?') + ' libres sur ' + (x.total_h || '?')).join(' · ');
   const tone = used == null ? '' : (used > 0.85 ? 'is-low' : (used > 0.7 ? 'is-mid' : 'is-ok'));
@@ -4992,7 +5256,7 @@ function deviceTile(d) {
   const glyph = mobile
     ? '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M8 3.5h8a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1zM11 17.5h2"/>'
     : '<path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 5.5h16v10H4zM9 19.5h6M12 15.5v4"/>';
-  const meta = on ? (freeLabel || (d.source === 'browser' ? 'navigateur' : 'en ligne')) : 'hors ligne';
+  const srcLabel = ({host:'PC hôte',browser:'Navigateur',tailscale:'Tailscale',agent:'Agent',local:'Local',direct:'Direct',relay:'Relais'})[d.source] || ''; const meta = on ? [srcLabel, freeLabel || 'en ligne'].filter(Boolean).join(' · ') : 'hors ligne';
   const ring = used == null ? '' : ` style="--used:${Math.max(0.02, Math.min(1, used)).toFixed(3)}"`;
   return `<li class="device-card device-tile ${on ? '' : 'is-off'} ${tone}" tabindex="0" role="button" aria-label="${escapeAttr(name + ' — ' + (detail || meta) + ' — ouvrir la fiche')}"${detail ? ` data-help="${escapeAttr(detail)}"` : ''} data-device-id="${escapeAttr(d.id || '')}">
       <span class="device-ring${used == null ? ' is-none' : ''}"${ring}><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${glyph}</svg></span>
@@ -5004,7 +5268,7 @@ function deviceTile(d) {
 function renderDevices(devices) {
   const el = $('#hq-devices');
   if (!el) return;
-  $('#hq-dev-count').textContent = String((devices || []).length);
+  devices = distinctDevices(devices || []); $('#hq-dev-count').textContent = String(devices.length);
   if (!devices || !devices.length) {
     el.innerHTML = '<li class="empty-teach"><em>Aucun appareil détecté</em><p class="hint">Ouvre HQ sur ton téléphone (même Tailscale) pour le voir ici</p></li>';
     return;
@@ -5058,7 +5322,7 @@ function renderDevices(devices) {
 
 let transfersCache = [];
 let activityCache = [];
-let recentsFilter = 'all';
+let recentsFilter = 'all'; function feedMarkup(text) { return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>'); } function groupRepeats(rows) { const out = []; for (const row of rows) { const last = out[out.length - 1]; if (last && last.key && row.key && last.key === row.key) { last.count += 1; continue; } out.push({ key: row.key, count: 1, html: row.html }); } return out; }
 
 function renderTransfers(items) {
   transfersCache = items || [];
@@ -5083,7 +5347,7 @@ function renderActivity(items) {
   const el = $('#hq-activity');
   if (el && !el.hidden) {
     el.innerHTML = (items || []).slice(0, 14).map(x =>
-      `<li><strong>${escapeHtml(x.message || '')}</strong><div class="meta">${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
+      `<li><strong>${feedMarkup(x.message || '')}</strong><div class="meta">${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
     ).join('') || '<li class="hint">—</li>';
   }
   renderRecents();
@@ -5098,7 +5362,7 @@ function renderRecents() {
     for (const t of transfersCache.slice(0, 12)) {
       const st = t.state === 'active' ? 'en cours' : (t.state === 'done' ? 'ok' : 'erreur');
       rows.push({
-        sort: t.at || 0,
+        sort: t.at || 0, key: 'transfer|' + (t.name || 'fichier') + '|' + (t.state || 'done'),
         html: `<li data-kind="transfer"><strong>${escapeHtml(t.name || 'fichier')}</strong> · ${escapeHtml(t.size_h || '')}
           ${t.rel ? ` <button type="button" class="ghost" data-open-rel="${escapeAttr((t.rel||'').split('/').slice(0,-1).join('/') || t.folder || '')}">Dossier</button>` : ''}
           <div class="meta"><span class="feed-st st-${escapeAttr(t.state || 'done')}">${escapeHtml(st)}</span> · transfert · ${escapeHtml(t.folder || '')}</div></li>`
@@ -5108,14 +5372,14 @@ function renderRecents() {
   if (filter === 'all' || filter === 'activity') {
     for (const x of activityCache.slice(0, 14)) {
       rows.push({
-        sort: x.at || 0,
-        html: `<li data-kind="activity"><strong>${escapeHtml(x.message || '')}</strong>
+        sort: x.at || 0, key: 'activity|' + (x.message || '') + '|' + (x.kind || ''),
+        html: `<li data-kind="activity"><strong>${feedMarkup(x.message || '')}</strong>
           <div class="meta"><span class="feed-op">${escapeHtml(x.kind || 'opération')}</span> · ${escapeHtml(x.at_h || '')}</div></li>`
       });
     }
   }
   if (filter === 'all') rows.sort((a, b) => (b.sort || 0) - (a.sort || 0));
-  el.innerHTML = rows.slice(0, 16).map(r => r.html).join('')
+  el.innerHTML = groupRepeats(rows).slice(0, 16).map(r => (r.count > 1 ? r.html.replace('</li>', ' <span class="feed-count">×' + r.count + '</span></li>') : r.html)).join('')
     || '<li class="hint">Rien de récent. Un envoi depuis Accueil apparaîtra ici.</li>';
   $$('[data-open-rel]', el).forEach(b => b.addEventListener('click', () => navigate(b.dataset.openRel || '')));
 }
@@ -5173,7 +5437,7 @@ function setupRecentsFilters() {
     $$('#recents-filters [data-recents]').forEach(x => {
       const on = x === b;
       x.classList.toggle('active', on);
-      x.setAttribute('aria-selected', on ? 'true' : 'false');
+      x.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
     renderRecents();
   }));
@@ -6012,7 +6276,7 @@ function hqPlayerRenderList() {
   }
   list.innerHTML = items.map(f => {
     const cur = f.rel === hqPlayer.rel;
-    return `<li class="player-item${cur ? ' is-current' : ''}"><button type="button" class="player-pick" data-play="${escapeAttr(f.rel)}"${cur ? ' aria-current="true"' : ''}>
+    return `<li class="player-item${cur ? ' is-current' : ''}"><button data-help="Le terminal : commandes et opérations du pont." type="button" class="player-pick" data-play="${escapeAttr(f.rel)}"${cur ? ' aria-current="true"' : ''}>
       <span class="player-ico" aria-hidden="true">${hqMediaIcon(f.kind)}</span>
       <span class="player-item-body"><span class="fname">${escapeHtml(f.name)}</span>
       <span class="meta">${escapeHtml(f.rel.split('/').slice(0, -1).join(' / '))} · ${escapeHtml(f.size_h)} · ${escapeHtml(f.mtime_h)}</span></span></button></li>`;
@@ -6187,6 +6451,8 @@ body[data-view="projets"] [data-panel="projets"],
 body[data-view="inventaire"] [data-panel="inventaire"],
 body[data-view="ops"] [data-panel="ops"],
 body[data-view="engine"] [data-panel="engine"],
+body[data-view="securite"] [data-panel="securite"],
+body[data-view="robotique"] [data-panel="robotique"],
 body[data-view="lecteur"] [data-panel="lecteur"],
 body[data-view="musique"] [data-panel="musique"],
 body[data-view="forge"] [data-panel="forge"],
@@ -6196,7 +6462,10 @@ body:not(.session-admin) .bottom-nav [data-nav="intime"],
 body:not(.session-admin) .bottom-nav [data-nav="repas"],
 body:not(.session-admin) .bottom-nav [data-nav="budget"],
 body:not(.session-admin) .bottom-nav [data-nav="musique"],
-body:not(.session-admin) .bottom-nav [data-nav="engine"]{display:none!important}
+body:not(.session-admin) .bottom-nav [data-nav="engine"],
+body:not(.session-admin) .bottom-nav [data-nav="securite"],
+body:not(.session-admin) .bottom-nav [data-nav="robotique"],
+body:not(.session-admin) [data-view-link="robotique"]{display:none!important}
 body[data-view="intime"] .hq-intime-panel{
   position:relative;
   display:flex;
@@ -6207,38 +6476,15 @@ body[data-view="intime"] .hq-intime-panel{
   pointer-events:none;
 }
 .hq-intime-bar{
-  position:sticky;
-  top:0;
-  z-index:2;
   display:flex;
   flex-wrap:wrap;
-  align-items:flex-end;
-  justify-content:space-between;
-  gap:10px 14px;
-  padding:10px 12px 12px;
-  margin:0 0 8px;
-  border-radius:16px;
-  border:1px solid color-mix(in srgb,var(--line) 75%,transparent);
-  background:color-mix(in srgb,var(--panel) 92%,transparent);
-  backdrop-filter:blur(10px);
+  align-items:center;
+  margin:0 0 10px;
   pointer-events:auto;
 }
-.hq-intime-bar-copy h2{margin:0;font-size:1.05rem;line-height:1.25}
-.hq-intime-kicker{margin:4px 0 0;font-size:var(--text-xs);color:var(--muted);max-width:min(520px,100%)}
 .hq-intime-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .hq-intime-actions button{width:auto;min-height:var(--tap-min);padding:8px 12px;font-size:var(--text-sm)}
-.hq-intime-ambient{
-  flex:1 1 auto;
-  min-height:40vh;
-  margin:0 8px;
-  border-radius:20px;
-  pointer-events:none;
-  background:
-    radial-gradient(120% 80% at 15% 0%,color-mix(in srgb,var(--accent) 14%,transparent),transparent 58%),
-    radial-gradient(90% 70% at 95% 100%,color-mix(in srgb,var(--accent2) 12%,transparent),transparent 52%),
-    linear-gradient(180deg,color-mix(in srgb,var(--panel) 40%,transparent),transparent 70%);
-  border:1px dashed color-mix(in srgb,var(--line) 55%,transparent);
-}
+.hq-intime-actions label{display:inline-flex;align-items:center;gap:6px;min-height:var(--tap-min);padding-inline:6px;font-size:var(--text-sm)}
 .player-name{margin:0;font-weight:800;font-size:1.05rem;word-break:break-word}
 .player-where{margin:2px 0 12px}
 .player-stage video{display:block;width:100%;max-height:62vh;background:#000;border-radius:12px}
@@ -6279,7 +6525,7 @@ details.hq[open] > summary .sec-head{margin-bottom:12px}
 .mode-toggle[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);
   background:color-mix(in srgb,var(--accent) 16%,var(--panel));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 40%,var(--line))}
 body.mode-simple .mode-complet-only{display:none!important}
-body.mode-simple .bottom-nav [data-nav="ops"]{display:none}
+body.mode-simple .bottom-nav [data-nav="ops"],body.mode-simple .bottom-nav [data-nav="engine"],body.mode-simple .bottom-nav [data-nav="securite"],body.mode-simple .bottom-nav [data-nav="musique"]{display:none}
 body.mode-simple[data-view="ops"] [data-panel="ops"]{display:none}
 .empty-teach{padding:16px 4px;text-align:center}
 .empty-teach em{display:block;font-style:normal;font-weight:700;margin-bottom:6px}
@@ -6407,6 +6653,7 @@ body.kiosk .bottom-nav{display:none}
 .dot.off{background:var(--danger)}
 .hq-more-nav{display:none}
 @media (max-width:899px){
+  .bottom-nav [data-nav="robotique"]{display:none!important}
   .bottom-nav{padding-left:max(4px, env(safe-area-inset-left));padding-right:max(4px, env(safe-area-inset-right));
     grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:max(58px,18.6%);gap:2px;
     overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;touch-action:pan-x;
@@ -6421,7 +6668,8 @@ body.kiosk .bottom-nav{display:none}
     border-radius:12px;background:var(--panel);color:var(--text);font-weight:600;text-decoration:none}
   .hq-more-links a[aria-current="page"]{border-color:var(--accent)}
   body:not(.session-admin) .hq-more-links [data-view-link="intime"],
-  body:not(.session-admin) .hq-more-links [data-view-link="engine"]{display:none}
+  body:not(.session-admin) .hq-more-links [data-view-link="engine"],
+  body:not(.session-admin) .hq-more-links [data-view-link="securite"]{display:none}
 }
 @media (max-width:520px){
   .qrs{grid-template-columns:1fr}
@@ -7531,7 +7779,7 @@ h1 {{
           class="pin-input"
         />
       </div>
-      <button type="submit" class="btn-unlock">Déverrouiller et Rétablir l'Accès</button>
+      <button data-help="Déverrouiller ce HQ avec la phrase de secours." type="submit" class="btn-unlock">Déverrouiller et Rétablir l'Accès</button>
     </form>
     <p class="footer-note">Protocole de sécurité actif · Transfert HQ</p>
   </div>
@@ -7654,10 +7902,15 @@ def render_app() -> bytes:
         if ts_url
         else '<div class="qrbox"><em class="hint">Installe Tailscale pour un QR distant</em></div>'
     )
+    # The adult line bank ships only when adult mode is enabled in the config.
+    lewd_script = ('<script src="/assets/hq-companion-lewd-lines.js"></script>'
+                   if CONFIG.get("companion_nsfw_enabled", False) is True else "")
     page = f"""<!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-hq-boot-revision="{_BOOT_REVISION}">
 <head>
 <meta charset="utf-8"/>
+<meta name="hq-boot-revision" id="hq-build-rev" content="{_BOOT_REVISION}"/>
+<script>window.HQ_BOOT_REVISION=Object.freeze("{_BOOT_REVISION}");</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-title" content="Transfert HQ"/>
@@ -7695,7 +7948,14 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-ai.css"/>
 <link rel="stylesheet" href="/assets/hq-companion.css"/>
 <link rel="stylesheet" href="/assets/hq-inventoria.css"/>
+<link rel="stylesheet" href="/assets/hq-musica-chip.css"/>
 <link rel="stylesheet" href="/assets/hq-engine.css"/>
+<link rel="stylesheet" href="/assets/hq-pistonia.css"/>
+<link rel="stylesheet" href="/assets/hq-security.css"/>
+<link rel="stylesheet" href="/assets/hq-securia-chip.css"/>
+<link rel="stylesheet" href="/assets/hq-culinia-chip.css"/>
+<link rel="stylesheet" href="/assets/hq-forgia-chip.css"/>
+<link rel="stylesheet" href="/assets/hq-assistant-visits.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-face.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-fx.css"/>
 {debug_css_link}
@@ -7709,48 +7969,50 @@ def render_app() -> bytes:
   </div>
 </div>
 <nav class="bottom-nav" aria-label="Navigation HQ">
-  <button type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
+  <button data-help="La page d'accueil : l'essentiel du jour." type="button" class="active" data-nav="accueil" aria-current="page"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg></span><span class="nav-label">Accueil</span></button>
   <button type="button" id="nav-intime" data-nav="intime" hidden data-help="Espace rien qu'à vous deux — visible seulement avec une session admin (PIN admin)."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 20.5s-6.5-4.2-6.5-9.4a4.9 4.9 0 0 1 9.3-2.1A4.9 4.9 0 0 1 18.5 11c0 5.2-6.5 9.5-6.5 9.5z"/></svg></span><span class="nav-label">Intime</span></button>
-  <button type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
-  <button type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
-  <button type="button" id="nav-repas" data-nav="repas" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 10h14v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="nav-label">Repas</span></button>
-  <button type="button" id="nav-budget" data-nav="budget" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3.5 10h17"/></svg></span><span class="nav-label">Budget</span></button>
-  <button type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
-  <button type="button" data-nav="forge"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 16l4.2-3.2 2.6 2.2L15 11l5 4"/></svg></span><span class="nav-label">Forge</span></button>
-  <button type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
-  <button type="button" data-nav="projets"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3M16 20h4"/></svg></span><span class="nav-label">Projets</span></button>
-  <button type="button" data-nav="inventaire"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5l8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9"/></svg></span><span class="nav-label">Inventaire</span></button>
-  <button type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
+  <button data-help="Le carnet : notes, idées et brouillons." type="button" data-nav="carnet"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5H6zM6 3.5v17M9.5 8h5.5M9.5 11.5h5.5"/></svg></span><span class="nav-label">Carnet</span></button>
+  <button data-help="Le calendrier du foyer : rendez-vous, repas, rappels." type="button" data-nav="calendrier"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16"/></svg></span><span class="nav-label">Calendrier</span></button>
+  <button data-help="Les repas de la semaine et les recettes." type="button" id="nav-repas" data-nav="repas" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 10h14v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="nav-label">Repas</span></button>
+  <button data-help="Les comptes du foyer et les dépenses du mois." type="button" id="nav-budget" data-nav="budget" hidden><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3.5 10h17"/></svg></span><span class="nav-label">Budget</span></button>
+  <button data-help="Un espace de dessin, au doigt ou au stylet." type="button" data-nav="dessiner"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4 20l1.2-4.6L15.8 4.8a2 2 0 0 1 2.8 0l.6.6a2 2 0 0 1 0 2.8L8.6 18.8zM13.5 7l3.5 3.5M4 20h7"/></svg></span><span class="nav-label">Dessiner</span></button>
+  <button data-help="Forge : générer et garder des images." type="button" data-nav="forge"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 16l4.2-3.2 2.6 2.2L15 11l5 4"/></svg></span><span class="nav-label">Forge</span></button>
+  <button data-help="Les fichiers du HQ : parcourir, ouvrir, envoyer." type="button" data-nav="fichiers"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="nav-label">Fichiers</span></button>
+  <button data-help="Les projets en cours et leurs tâches." type="button" data-nav="projets"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 6.5l3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10zM4 4h6M4 8h3M16 20h4"/></svg></span><span class="nav-label">Projets</span></button>
+  <button data-help="L'inventaire de la maison : stocks et courses." type="button" data-nav="inventaire"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 3.5l8 4v9l-8 4-8-4v-9zM4 7.5l8 4 8-4M12 11.5v9"/></svg></span><span class="nav-label">Inventaire</span></button>
+  <button data-help="Lire ou regarder un fichier en grand." type="button" data-nav="lecteur"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="currentColor" d="M10 8.6v6.8l5.6-3.4z"/></svg></span><span class="nav-label">Lecteur</span></button>
   <button type="button" id="nav-musique" data-nav="musique" hidden data-help="Spotify natif : lecture, playlists, mixer DJ et découvertes. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M9 18V6l12-2v12"/><circle cx="7" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Musique</span></button>
-  <button type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
+  <button data-help="Le terminal : commandes et opérations du pont." type="button" data-nav="ops"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7l5 5-5 5M12 17h7"/></svg></span><span class="nav-label">Terminal</span></button>
   <button type="button" id="nav-engine" data-nav="engine" data-help="Moteurs locaux (voix, images, serveur) : état, mémoire, démarrer/arrêter. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg></span><span class="nav-label">Engine</span></button>
-  <button type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
+  <button type="button" id="nav-securite" data-nav="securite" data-help="Trafic réseau, IPs, provenance, sécurité et alertes en direct. Réservé admin."><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 3s7 3 7 9c0 5-7 9-7 9s-7-4-7-9c0-6 7-9 7-9z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="m9.5 12 1.8 1.8 3.7-3.6"/></svg></span><span class="nav-label">Sécurité</span></button>
+  <button type="button" data-nav="robotique"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><path d="M4 20h16M8 20v-4l5-5-4-5m4 5 5-3m0 0V4m0 4h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="nav-label">Robotique</span></button>
+  <button data-help="Système : réglages, sécurité, sauvegardes." type="button" data-nav="plus"><span class="nav-ico" aria-hidden="true"><svg class="nav-svg" viewBox="0 0 24 24" focusable="false"><circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/></svg></span><span class="nav-label nav-label-mobile">Plus</span><span class="nav-label nav-label-desktop">Système</span></button>
 </nav>
 <main class="wrap" id="main" tabindex="-1">
-  <header class="topbar" role="banner">
+  <header class="topbar">
     <div class="brand-lockup">
       <div class="brand">Transfert</div>
       <span class="hq-pill">HQ</span>
     </div>
     <div class="topbar-actions">
       <div class="hq-companions-controls">
-      <button type="button" class="view-search hq-companions-toggle" id="hq-companions-toggle" aria-label="Compagnons" aria-expanded="false" aria-controls="hq-companions-picker hq-else hq-companion hq-inventoria" title="Compagnons">
+      <button data-help="Compagnons : Else, Transferania et Inventoria." type="button" class="view-search hq-companions-toggle" id="hq-companions-toggle" aria-label="Compagnons" aria-expanded="false" aria-controls="hq-companions-picker hq-else hq-companion hq-inventoria">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 6h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-8l-5 3v-3H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M8 11.5h.01m4 0h.01m4 0h.01"/></svg>
         <span>Compagnons</span>
       </button>
-      <button type="button" class="view-search hq-companions-choose" id="hq-companions-choose" aria-label="Choisir un compagnon" aria-expanded="false" aria-controls="hq-companions-picker">▾</button>
+      <button data-help="Choisir à quel compagnon parler." type="button" class="view-search hq-companions-choose" id="hq-companions-choose" aria-label="Choisir un compagnon" aria-expanded="false" aria-controls="hq-companions-picker">▾</button>
       <div id="hq-companions-picker" class="hq-companions-picker" role="group" aria-label="Choisir un compagnon" hidden>
-        <button type="button" data-companion-choice="else">Else <small></small></button>
-        <button type="button" data-companion-choice="transferania">Transferania <small></small></button>
-        <button type="button" data-companion-choice="inventoria">Inventoria <small></small></button>
+        <button data-help="Parler à Else, la mémoire du foyer." type="button" data-companion-choice="else">Else <small></small></button>
+        <button data-help="Parler à Transferania, la sœur du quotidien." type="button" data-companion-choice="transferania">Transferania <small></small></button>
+        <button data-help="Parler à Inventoria, la sœur des stocks." type="button" data-companion-choice="inventoria">Inventoria <small></small></button>
       </div>
       </div>
-      <button type="button" class="hq-dangling-toggle" id="hq-dangling-toggle" aria-pressed="false" title="Afficher / masquer le membre (Zip)"><span class="hq-dangling-toggle-dot" aria-hidden="true"></span><span>Zip</span></button>
+      <button data-help="Afficher ou masquer le membre Zip dans la liste." type="button" class="hq-dangling-toggle" id="hq-dangling-toggle" aria-pressed="false"><span class="hq-dangling-toggle-dot" aria-hidden="true"></span><span>Zip</span></button>
       <button type="button" class="status-chip" id="status-chip" data-help="État de HQ. Ouvre le détail prioritaire.">HQ · …</button>
     </div>
   </header>
   <div class="view-bar">
-    <p class="view-label" id="view-label" tabindex="-1">Accueil</p>
+    <h1 class="view-label" id="view-label" tabindex="-1">Accueil</h1>
     <div class="view-tools">
     <button type="button" class="view-search view-ai" id="btn-ai" aria-label="Assistant" data-help="Assistant : pose une question sur tes notes, ton agenda, tes projets ou ton inventaire, ou dis une phrase à noter. Ctrl+J."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9-4.9-1.9 4.9-1.9zM18.5 15.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg></button>
     <button type="button" class="view-search" id="btn-search-bar" aria-label="Recherche" data-help="Recherche partout : dossiers, scènes, appareils, Carnet, prompts Forge, calendrier et noms de fichiers. Ctrl+K ou Cmd+K."><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.9"/><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="m15 15 5 5"/></svg></button>
@@ -7777,17 +8039,32 @@ def render_app() -> bytes:
         <ul class="hq-list" id="hq-attention"></ul>
         <div class="row hq-actions" id="hq-quick-scenes"></div>
       </div>
-      <button type="button" class="home-next" id="home-next" hidden></button>
+            <div class="home-live" id="home-live" hidden>
+        <button type="button" class="home-live-chip" id="home-now" hidden data-help="Ce qui joue sur ce PC."><span class="home-live-dot" aria-hidden="true"></span><span class="home-live-text" id="home-now-text"></span></button>
+        <button type="button" class="home-live-chip home-live-resume" id="home-resume" hidden data-help="Revenir à la dernière page ouverte."><span class="home-live-text" id="home-resume-text"></span></button>
+        <span class="home-live-health" id="home-health" role="img" aria-label="État du pont" data-help="État du pont : pont, disque et sauvegarde de ce PC." hidden></span>
+      </div>
+      <button data-help="Ouvrir le prochain rendez-vous du jour." type="button" class="home-next" id="home-next" hidden></button>
     </section>
 
     <nav class="home-actions" aria-label="Actions rapides">
       <button type="button" class="home-act" id="btn-camera" data-help="Prend une photo et l'envoie dans le dossier choisi."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.5-2h5.6l1.5 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="home-act-label">Photo</span></button>
       <button type="button" class="home-act" id="home-act-note" hidden data-help="Écrit une note rapide dans le Carnet."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M6 3.5h8l4 4v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1zM14 3.5v4h4M8.5 12h7M8.5 15.5h5"/></svg></span><span class="home-act-label">Note</span></button>
-      <button type="button" class="home-act" id="home-act-event" data-help="Ajoute un événement en une phrase : « Dentiste demain 14h »."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16M12 13v4.5M9.75 15.25h4.5"/></svg></span><span class="home-act-label">Ajouter un événement</span></button>
-      <button type="button" class="home-act" id="home-act-file" data-help="Envoie un fichier dans le dossier choisi (Envoyer, plus bas). Sur ordinateur, glisse-le n'importe où sur Accueil."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 15V4.5M7.5 9 12 4.5 16.5 9M5 14.5v4A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/></svg></span><span class="home-act-label">Envoyer un fichier</span></button>
+      <button type="button" class="home-act" id="home-act-event" data-help="Ajoute un événement en une phrase : « Dentiste demain 14h »."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8 3.5v3M16 3.5v3M4 10h16M12 13v4.5M9.75 15.25h4.5"/></svg></span><span class="home-act-label">Événement</span></button>
+      <button type="button" class="home-act" id="home-act-file" data-help="Envoie un fichier dans le dossier choisi (Envoyer, plus bas). Sur ordinateur, glisse-le n'importe où sur Accueil."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M12 15V4.5M7.5 9 12 4.5 16.5 9M5 14.5v4A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-4"/></svg></span><span class="home-act-label">Envoyer</span></button><button type="button" class="home-act" id="home-act-budget" data-home-open="budget" data-help="Ouvre Budget pour ajouter une dépense."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="3.5" y="6" width="17" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3.5 10h17"/></svg></span><span class="home-act-label">Dépense</span></button>
+<button type="button" class="home-act" id="home-act-repas" data-home-open="repas" data-help="Ouvre Repas pour planifier un repas."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 10h14v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2zM8 10V7a4 4 0 0 1 8 0v3"/></svg></span><span class="home-act-label">Repas</span></button>
+<button type="button" class="home-act" id="home-act-inventaire" data-home-open="inventaire" data-help="Ouvre Inventaire pour ajouter un article."><span class="home-act-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4.5 8 12 4l7.5 4v8L12 20l-7.5-4zM4.5 8 12 12l7.5-4M12 12v8"/></svg></span><span class="home-act-label">Article</span></button>
     </nav>
 
     <div class="home-col home-col-main">
+        <section class="hq home-brief" id="home-brief-card" aria-labelledby="home-brief-title" hidden>
+      <div class="home-head">
+        <h2 id="home-brief-title">Brief du jour</h2>
+        <button data-help="Ouvrir les réglages du brief dans Système." type="button" class="ghost home-link" id="home-brief-more">Système ›</button>
+      </div>
+      <ul class="hq-list" id="home-brief-lines"></ul>
+    </section>
+
     <section class="hq carnet-home" id="hq-carnet-home" aria-label="Carnet" hidden></section>
 
     <section class="hq home-today" id="hq-cal-home" aria-labelledby="cal-home-title">
@@ -7800,7 +8077,8 @@ def render_app() -> bytes:
       </button>
       <div id="hq-today-panel" class="hq-disclosure-panel">
         <div id="hq-cal-today"><div class="home-skel-lines" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></div></div>
-        <button type="button" class="ghost home-link" id="hq-cal-open">Ouvrir le calendrier ›</button>
+                <div class="home-week" id="home-week" aria-label="Sept prochains jours" hidden></div>
+        <button data-help="Ouvrir le calendrier sur aujourd'hui." type="button" class="ghost home-link" id="hq-cal-open">Ouvrir le calendrier ›</button>
       </div>
     </section>
 
@@ -7813,15 +8091,16 @@ def render_app() -> bytes:
         <ul class="hq-list hq-since-list" id="hq-since-list" aria-labelledby="hq-since-title"></ul>
         <p class="hint" id="hq-since-empty" hidden>Rien de nouveau depuis hier.</p>
       </div>
-      <div class="chips filter-chips" id="recents-filters" role="tablist" aria-label="Filtrer récents">
-        <button type="button" class="chip active" data-recents="all" role="tab" aria-selected="true">Tous</button>
-        <button type="button" class="chip" data-recents="transfers" role="tab" aria-selected="false">Envois</button>
-        <button type="button" class="chip" data-recents="activity" role="tab" aria-selected="false">Opérations</button>
+      <div class="chips filter-chips" id="recents-filters" role="group" aria-label="Filtrer récents">
+        <button data-help="Montrer tous les échanges récents." type="button" class="chip active" data-recents="all" aria-pressed="true">Tous</button>
+        <button data-help="Ne montrer que les envois de fichiers." type="button" class="chip" data-recents="transfers" aria-pressed="false">Envois</button>
+        <button data-help="Ne montrer que les opérations du pont." type="button" class="chip" data-recents="activity" aria-pressed="false">Opérations</button>
       </div>
       <ul class="hq-list home-feed-list" id="hq-recents"><li class="home-skel-row" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></li><li class="home-skel-row" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></li><li class="home-skel-row" aria-hidden="true"><span class="home-skel"></span><span class="home-skel is-short"></span></li></ul>
-      <button type="button" class="ghost home-link" id="home-feed-more" aria-controls="hq-recents" aria-expanded="false" hidden>Tout voir</button>
+      <button data-help="Ouvrir le journal complet." type="button" class="ghost home-link" id="home-feed-more" aria-controls="hq-recents" aria-expanded="false" hidden>Tout voir</button>
       <ul class="hq-list" id="hq-transfers" hidden></ul>
       <ul class="hq-list" id="hq-activity" hidden></ul>
+
     </section>
     </div>
 
@@ -7838,13 +8117,13 @@ def render_app() -> bytes:
       <div class="home-head">
         <h2 id="actions-title">Ce PC</h2>
         <button type="button" class="secondary home-chip" id="btn-sync-captures" data-help="Ramène les captures récentes dans Inbox/Captures.">Récupérer les captures</button>
+        <button type="button" class="secondary home-chip home-pc-restart" id="btn-restart-bridge" hidden aria-label="Redémarrer le pont HQ" data-help="Redémarre le pont HQ sur le PC principal (applique les mises à jour). La page se reconnecte toute seule."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></svg></span><span class="home-pc-restart-label">Relancer</span></button>
       </div>
       <div class="icon-actions home-pc-row" id="hq-actions">
         <button type="button" class="icon-btn" id="btn-lock" aria-label="Verrouiller le PC" data-help="Verrouille la session Windows de ce PC."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><rect x="5" y="10.5" width="14" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg></span><span class="lbl">Verrouiller</span></button>
         <button type="button" class="icon-btn" id="btn-sleep" aria-label="Mettre en veille" data-help="Met ce PC en veille."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z"/></svg></span><span class="lbl">Veille</span></button>
         <button type="button" class="icon-btn" id="btn-shot" aria-label="Prendre une capture" data-help="Enregistre une capture d'écran dans Captures."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="lbl">Capture</span></button>
         <button type="button" class="icon-btn" id="btn-explore" aria-label="Ouvrir l'explorateur" data-help="Ouvre le dossier courant dans l'explorateur de ce PC."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span><span class="lbl">Dossier</span></button>
-        <button type="button" class="icon-btn" id="btn-restart-bridge" hidden aria-label="Redémarrer le pont HQ" data-help="Redémarre le pont HQ sur le PC principal (applique les mises à jour). La page se reconnecte toute seule."><span class="ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></svg></span><span class="lbl">Relancer</span></button>
       </div>
       <div class="row hq-actions mode-complet-only" id="hq-custom-actions" aria-label="Actions personnalisées"></div>
       <div class="row hq-actions mode-complet-only" id="hq-scenes" aria-label="Scènes"></div>
@@ -7857,8 +8136,8 @@ def render_app() -> bytes:
         <label class="home-send-to" for="upload-folder"><span>vers</span><select id="upload-folder">{opts}</select></label>
       </div>
       <div class="row home-send-more">
-        <button type="button" class="secondary home-chip" id="btn-paste">Coller une image</button>
-        <button type="button" class="secondary home-chip" id="btn-voice">Note vocale</button>
+        <button data-help="Envoyer une image depuis le presse-papiers." type="button" class="secondary home-chip" id="btn-paste">Coller une image</button>
+        <button data-help="Enregistrer une note vocale." type="button" class="secondary home-chip" id="btn-voice">Note vocale</button>
       </div>
       <p class="hint home-send-hint">Photos → Inbox/Photos · captures → Captures · PDF → Uni · max {html.escape(human_size(max_upload_bytes()))}</p>
       <div id="progress" class="progress" hidden><div id="progress-fill"></div></div>
@@ -7872,17 +8151,41 @@ def render_app() -> bytes:
             <input id="note-title" type="text" maxlength="80" placeholder="Optionnel"/></div>
           <div class="field"><label for="note-body">Texte</label>
             <textarea id="note-body" required placeholder="Écris ici…" style="min-height:72px"></textarea></div>
-          <button class="block" type="submit">Enregistrer la note</button>
+          <button data-help="Ajouter cette note au carnet." class="block" type="submit">Enregistrer la note</button>
         </form>
       </details>
+    </section>
+    <section class="hq home-mini" id="home-budget" aria-labelledby="home-budget-title" hidden>
+      <div class="home-head"><h2 id="home-budget-title">Budget</h2></div>
+      <div class="home-mini-body" id="home-budget-body"></div>
+    </section>
+    <section class="hq home-mini" id="home-meals" aria-labelledby="home-meals-title" hidden>
+      <div class="home-head"><h2 id="home-meals-title">Repas</h2></div>
+      <div class="home-mini-body" id="home-meals-body"></div>
+    </section>
+    <section class="hq home-mini" id="home-stock" aria-labelledby="home-stock-title" hidden>
+      <div class="home-head"><h2 id="home-stock-title">Stock</h2></div>
+      <div class="home-mini-body" id="home-stock-body"></div>
+    </section>
+    <section class="hq home-mini" id="home-forge" aria-labelledby="home-forge-title" hidden>
+      <div class="home-head"><h2 id="home-forge-title">Forge</h2></div>
+      <div class="home-mini-body" id="home-forge-body"></div>
+    </section>
+    <section class="hq home-mini" id="home-projects" aria-labelledby="home-projects-title" hidden>
+      <div class="home-head"><h2 id="home-projects-title">Projets</h2></div>
+      <div class="home-mini-body" id="home-projects-body"></div>
+    </section>
+    <section class="hq home-mini" id="home-quests" aria-labelledby="home-quests-title" hidden>
+      <div class="home-head"><h2 id="home-quests-title">Quêtes</h2></div>
+      <div class="home-mini-body" id="home-quests-body"></div>
     </section>
     </div>
 
     <div class="home-edit-row" id="home-edit-row" hidden>
-      <button type="button" class="ghost home-link" id="home-edit" aria-pressed="false">Modifier l'accueil</button>
+      <button data-help="Réorganiser, masquer ou déplacer les cartes." type="button" class="ghost home-link home-edit-entry" id="home-edit" aria-pressed="false" aria-label="Modifier l'accueil" hidden><span class="home-edit-ico" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4.5 7h7M17.5 7h2M4.5 12h3M13.5 12h6M4.5 17h7M17.5 17h2"/><circle cx="14.5" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="10.5" cy="12" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="14.5" cy="17" r="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span><span class="home-edit-label">Modifier l'accueil</span></button>
     </div>
 
-    <div id="drop-zone" class="home-drop" role="button" tabindex="-1" aria-label="Zone d'envoi de fichiers">
+    <div id="drop-zone" class="home-drop" aria-hidden="true">
       <div class="home-drop-card"><strong>Lâche pour envoyer</strong><span class="hint">vers <b id="home-drop-folder">Inbox</b></span></div>
     </div>
     <input id="file-input" type="file" multiple hidden/>
@@ -7902,7 +8205,7 @@ def render_app() -> bytes:
     <section class="hq hq-cal" aria-labelledby="cal-title">
       <div class="sec-head">
         <h2 id="cal-title" class="visually-hidden">Calendrier</h2>
-        <p class="sec-hint" id="hq-cal-tz">Ce qui se passe, ce qui est prévu, ce qui vient</p>
+        <p class="hq-cal-tz" id="hq-cal-tz" hidden></p>
       </div>
       <div id="hq-cal-app"><p class="hint">Chargement…</p></div>
     </section>
@@ -7943,6 +8246,8 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="engine" id="hq-engine-panel" aria-label="Engine"></div>
+  <div data-panel="securite" id="hq-security-panel" aria-label="Sécurité et Trafic"></div>
+  <section data-panel="robotique" id="hq-robotics-app" aria-label="Robotique"><p id="hq-robotics-loading" class="hint">Chargement du laboratoire…</p></section>
   <div data-panel="inventaire">
     <section class="hq hq-inv" aria-labelledby="inv-title">
       <div class="sec-head">
@@ -7969,14 +8274,14 @@ def render_app() -> bytes:
         <p class="sec-hint">Parcourir, télécharger, déplacer</p>
       </div>
       <div class="fav-bar">
-        <button type="button" class="secondary" id="btn-fav-toggle">Épingler ce dossier</button>
+        <button data-help="Épingler ou retirer ce dossier des favoris." type="button" class="secondary" id="btn-fav-toggle">Épingler ce dossier</button>
         <div class="chips" id="hq-favorites" aria-label="Favoris"></div>
       </div>
       <nav class="crumbs" id="crumbs" aria-label="Chemin"></nav>
       <div class="fm-tools">
-        <button type="button" class="secondary" id="btn-up">↑ Remonter</button>
-        <button type="button" class="secondary" id="btn-mkdir">+ Dossier</button>
-        <button type="button" class="secondary" id="btn-newfile">+ Fichier</button>
+        <button data-help="Remonter au dossier parent." type="button" class="secondary" id="btn-up">↑ Remonter</button>
+        <button data-help="Créer un dossier ici." type="button" class="secondary" id="btn-mkdir">+ Dossier</button>
+        <button data-help="Créer un fichier texte ici." type="button" class="secondary" id="btn-newfile">+ Fichier</button>
       </div>
       <div class="fm-filter">
         <input id="search" type="search" placeholder="Filtrer ce dossier…" aria-label="Filtrer ce dossier"/>
@@ -8021,7 +8326,7 @@ def render_app() -> bytes:
         <div id="player-model" class="player-model" hidden>
           <canvas id="player-model-canvas" aria-label="Aperçu 3D du modèle"></canvas>
           <div class="player-model-bar">
-            <button type="button" class="secondary" id="btn-player-fit">Recadrer</button>
+            <button data-help="Ajuster l'image à l'écran." type="button" class="secondary" id="btn-player-fit">Recadrer</button>
             <span class="hint" id="player-model-info" role="status"></span>
           </div>
           <p class="hint player-model-help">Un doigt : tourner · deux doigts : déplacer et zoomer · souris : glisser pour tourner, clic droit ou Maj pour déplacer, molette pour zoomer.</p>
@@ -8029,7 +8334,7 @@ def render_app() -> bytes:
       </div>
       <p class="player-msg" id="player-msg" role="status" hidden></p>
       <div class="player-actions">
-        <button type="button" class="secondary" id="btn-player-back">← Retour aux fichiers</button>
+        <button data-help="Revenir à la liste des fichiers." type="button" class="secondary" id="btn-player-back">← Retour aux fichiers</button>
         <a class="btn secondary" id="player-dl" href="#" download hidden>Sauver</a>
       </div>
     </section>
@@ -8062,7 +8367,7 @@ def render_app() -> bytes:
         <input id="shell-cmd" type="text" placeholder="Get-Process | Select -First 5" autocomplete="off"/>
       </div>
       <div class="row hq-actions">
-        <button type="button" id="btn-shell-run">Lancer</button>
+        <button data-help="Exécuter la commande saisie." type="button" id="btn-shell-run">Lancer</button>
       </div>
       <p class="sec-hint">« Local » = cet ordinateur. Les autres PCs apparaissent s'ils ont OpenSSH.</p>
       <div class="busy-line" id="shell-busy" hidden><span class="busy-dot"></span><span class="busy-text">Exécution…</span><span class="busy-elapsed">0s</span></div>
@@ -8077,10 +8382,10 @@ def render_app() -> bytes:
         </div>
       </summary>
       <div class="row hq-actions">
-        <button type="button" class="secondary" id="btn-iz-archive">Archiver l'Inbox</button>
-        <button type="button" class="secondary" id="btn-iz-sort">Trier l'Inbox</button>
-        <button type="button" class="secondary" id="btn-iz-tmp">Vider le dossier tmp</button>
-        <button type="button" class="secondary" id="btn-backup">Faire une sauvegarde</button>
+        <button data-help="Compresser le contenu d'Inbox en une archive." type="button" class="secondary" id="btn-iz-archive">Archiver l'Inbox</button>
+        <button data-help="Ranger Inbox par type de fichier." type="button" class="secondary" id="btn-iz-sort">Trier l'Inbox</button>
+        <button data-help="Vider le dossier temporaire." type="button" class="secondary" id="btn-iz-tmp">Vider le dossier tmp</button>
+        <button data-help="Lancer une sauvegarde de la base et des fichiers." type="button" class="secondary" id="btn-backup">Faire une sauvegarde</button>
       </div>
       <div class="busy-line" id="backup-busy" hidden><span class="busy-dot"></span><span class="busy-text">Backup…</span><span class="busy-elapsed">0s</span></div>
     </details>
@@ -8093,7 +8398,7 @@ def render_app() -> bytes:
         </div>
       </summary>
       <div class="row hq-actions" style="margin-bottom:8px">
-        <button type="button" class="secondary" id="btn-queue-add">+ Ouvrir Uni au réveil</button>
+        <button data-help="Programmer l'ouverture d'Uni au prochain réveil." type="button" class="secondary" id="btn-queue-add">+ Ouvrir Uni au réveil</button>
       </div>
       <form id="hq-schedule-form" class="rule-form">
         <div class="field"><label for="sched-label">Planifier</label><input id="sched-label" type="text" maxlength="80" placeholder="Backup du matin"/></div>
@@ -8118,7 +8423,7 @@ def render_app() -> bytes:
           </select>
         </div>
         <div class="field"><label for="sched-target">Id de scène</label><input id="sched-target" type="text" maxlength="40"/></div>
-        <button type="submit" class="secondary">Ajouter au planning</button>
+        <button data-help="Ajouter cette opération au planning de la nuit." type="submit" class="secondary">Ajouter au planning</button>
       </form>
       <ul class="hq-list" id="hq-queue"><li class="hint">File vide — rien n'attend le réveil</li></ul>
     </details>
@@ -8129,8 +8434,8 @@ def render_app() -> bytes:
         <p class="sec-hint">Copier du texte entre téléphone et PC</p>
       </div>
       <div class="row hq-actions">
-        <button type="button" class="secondary" id="btn-clip-to-pc">Téléphone → PC</button>
-        <button type="button" class="secondary" id="btn-clip-from-pc">PC → Téléphone</button>
+        <button data-help="Envoyer le presse-papiers du téléphone vers le PC." type="button" class="secondary" id="btn-clip-to-pc">Téléphone → PC</button>
+        <button data-help="Envoyer le presse-papiers du PC vers le téléphone." type="button" class="secondary" id="btn-clip-from-pc">PC → Téléphone</button>
       </div>
       <textarea id="clip-box" placeholder="Texte à synchroniser…" style="margin-top:10px;min-height:72px"></textarea>
     </section>
@@ -8143,7 +8448,7 @@ def render_app() -> bytes:
         </div>
       </summary>
       <textarea id="scratchpad" placeholder="Écris une note partagée…" style="min-height:90px"></textarea>
-      <button type="button" class="secondary" id="btn-scratch-save" style="margin-top:8px">Enregistrer le bloc-notes</button>
+      <button data-help="Enregistrer le bloc-notes partagé." type="button" class="secondary" id="btn-scratch-save" style="margin-top:8px">Enregistrer le bloc-notes</button>
     </details>
 
     <details class="hq">
@@ -8156,7 +8461,7 @@ def render_app() -> bytes:
       <div class="field"><label for="send-to">Destinataire</label><select id="send-to"></select></div>
       <div class="field"><label for="send-rel">Fichier (ex: Inbox/Photos/x.jpg)</label>
         <input id="send-rel" type="text" placeholder="Inbox/…"/></div>
-      <button type="button" id="btn-send">Envoyer</button>
+      <button data-help="Envoyer vers l'appareil choisi." type="button" id="btn-send">Envoyer</button>
     </details>
 
     <details class="hq">
@@ -8171,8 +8476,8 @@ def render_app() -> bytes:
         <select id="print-printer"></select>
         <div class="row" style="justify-content:stretch;margin-top:8px">
           <input id="print-rel" type="text" placeholder="Print/fichier.pdf" style="flex:1 1 auto;min-width:0"/>
-          <button type="button" class="secondary" id="btn-print-preview">Aperçu</button>
-          <button type="button" class="secondary" id="btn-print">Imprimer</button>
+          <button data-help="Voir l'aperçu avant impression." type="button" class="secondary" id="btn-print-preview">Aperçu</button>
+          <button data-help="Imprimer la page choisie." type="button" class="secondary" id="btn-print">Imprimer</button>
         </div>
       </div>
     </details>
@@ -8185,6 +8490,7 @@ def render_app() -> bytes:
       <p id="forge-couch-note" class="forge-note forge-couch-note" hidden>Mode canapé : réglages masqués, ils restent appliqués. La session et le verrouillage ne changent pas.</p>
       <p id="forge-status" class="forge-status" role="status" aria-live="polite">Lecture de Forge…</p>
       <div class="forge-head-tools">
+        <button data-help="Lancer Forge sur ce PC s'il ne tourne pas encore." type="button" id="forge-power" class="forge-power" hidden>Démarrer WebForge</button>
         <div class="forge-layout-pick">
           <label for="forge-layout">Disposition</label>
           <select id="forge-layout">
@@ -8193,21 +8499,24 @@ def render_app() -> bytes:
             <option value="expanded">Étendue</option>
           </select>
         </div>
-        <button type="button" id="forge-couch" class="secondary forge-couch-toggle" aria-pressed="false">Mode canapé</button>
-        <button type="button" id="forge-capture" class="forge-capture" aria-haspopup="dialog" aria-expanded="false" aria-controls="hq-capture" title="Capture rapide dans le carnet" hidden>Capturer</button>
+        <button data-help="Agrandit les commandes pour un usage au doigt." type="button" id="forge-couch" class="secondary forge-couch-toggle" aria-pressed="false">Mode canapé</button>
+        <button data-help="Capture rapide : ouvrir la feuille de capture du carnet." type="button" id="forge-capture" class="forge-capture" aria-haspopup="dialog" aria-expanded="false" aria-controls="hq-capture" hidden>Capturer</button>
       </div>
     </header>
+    <nav id="forge-modebar" class="forge-modebar" role="group" aria-label="Atelier Forge">
+      <button data-help="Revenir à la génération d'images." type="button" id="forge-mode-generate" class="forge-mode" aria-pressed="true">Générer</button>
+      <button data-help="Ouvrir une séance : plusieurs images d'un même thème." type="button" id="forge-seance-open" class="forge-mode forge-mode-launch" aria-haspopup="dialog" aria-controls="forge-seance-dialog">Séance</button>
+      <button data-help="Chercher et filtrer les images déjà générées." type="button" id="forge-library-open" class="forge-mode forge-mode-launch" aria-controls="forge-normal-gallery">Bibliothèque</button>
+    </nav>
     <div class="forge-shell">
       <div class="forge-dest forge-m" role="radiogroup" aria-label="Destination">
-        <div class="forge-help-wrap">
+        <div class="forge-dest-option">
           <label><input type="radio" name="forge-destination" value="normal" checked/> Galerie</label>
-          <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-gallery">Aide</button>
-          <p id="forge-help-gallery" class="forge-help-pop" role="tooltip">L'image est enregistrée dans la galerie de cet HQ. Elle n'entre pas dans le coffre privé.</p>
+          <p id="forge-help-gallery" class="forge-hint">L'image est enregistrée dans la galerie de cet HQ. Elle n'entre pas dans le coffre privé.</p>
         </div>
-        <div class="forge-help-wrap">
+        <div class="forge-dest-option">
           <label><input type="radio" name="forge-destination" value="private"/> Coffre privé</label>
-          <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-private">Aide</button>
-          <p id="forge-help-private" class="forge-help-pop" role="tooltip">L'image n'est gardée que si le coffre est déverrouillé et limité à ce compte Windows. Un préréglage n'enregistre jamais ces images ni la clé du coffre. Un préréglage créatif copie le prompt en clair, hors du coffre.</p>
+          <p id="forge-help-private" class="forge-hint">L'image n'est gardée que si le coffre est déverrouillé et limité à ce compte Windows. Un préréglage n'enregistre jamais ces images ni la clé du coffre. Un préréglage créatif copie le prompt en clair, hors du coffre.</p>
         </div>
       </div>
       <section id="forge-vault" class="forge-vault forge-m" hidden>
@@ -8215,32 +8524,32 @@ def render_app() -> bytes:
           <span class="forge-lock" aria-hidden="true">&#128274;</span>
           <div>
             <h2 id="forge-vault-title">Coffre privé</h2>
-            <div class="forge-help-wrap forge-vault-lead-wrap"><p id="forge-vault-lead">Chiffré à part, avec sa propre phrase.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-lead">Aide</button><p id="forge-help-vault-lead" class="forge-help-pop" role="tooltip">Un chiffrement séparé protège ces images. Le PIN HQ ne les déverrouille pas : seule la phrase du coffre (ou sa clé de récupération) l'ouvre.</p></div>
+            <div class="forge-help-wrap forge-vault-lead-wrap"><p id="forge-vault-lead">Chiffré à part, avec sa propre phrase.</p><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-lead">Aide</button><p id="forge-help-vault-lead" class="forge-help-pop" role="tooltip">Un chiffrement séparé protège ces images. Le PIN HQ ne les déverrouille pas : seule la phrase du coffre (ou sa clé de récupération) l'ouvre.</p></div>
           </div>
         </div>
         <div id="forge-vaults" class="forge-vaults" hidden>
           <div class="forge-vaults-head">
             <h3 id="forge-vaults-title" class="forge-vault-sub">Mes coffres</h3>
-            <button type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
-            <button type="button" id="forge-vaults-restore" class="secondary">Restaurer un ZIP</button>
+            <button data-help="Créer un nouveau coffre chiffré." type="button" id="forge-vaults-new" class="secondary">Nouveau coffre</button>
+            <button data-help="Restaurer un coffre depuis un ZIP." type="button" id="forge-vaults-restore" class="secondary">Restaurer un ZIP</button>
           </div>
           <p id="forge-vaults-note" class="forge-note" role="status" aria-live="polite"></p>
           <ul id="forge-vaults-list" class="forge-vaults-list" aria-labelledby="forge-vaults-title"></ul>
           <p id="forge-vaults-empty" class="forge-note">Aucun coffre pour l'instant.</p>
           <div id="forge-vault-current-actions" class="forge-actions forge-vault-main" hidden>
-            <button type="button" id="forge-vault-lock">Verrouiller</button>
-            <button type="button" id="forge-vault-current-open" hidden>Ouvrir</button>
+            <button data-help="Refermer le coffre et effacer la phrase de la mémoire." type="button" id="forge-vault-lock">Verrouiller</button>
+            <button data-help="Ouvrir le coffre affiché." type="button" id="forge-vault-current-open" hidden>Ouvrir</button>
           </div>
-          <button type="button" id="forge-vaults-all" class="secondary forge-vaults-all" aria-expanded="false" aria-controls="forge-vaults-more" hidden>Tous mes coffres</button>
+          <button data-help="Voir tous les coffres de ce HQ." type="button" id="forge-vaults-all" class="secondary forge-vaults-all" aria-expanded="false" aria-controls="forge-vaults-more" hidden>Tous mes coffres</button>
           <div id="forge-vaults-more" class="forge-vaults-more" hidden>
             <div class="field forge-vaults-sort"><label for="forge-vaults-sort">Trier</label><select id="forge-vaults-sort"><option value="manuel">Ordre choisi</option><option value="nom">Par nom</option><option value="recent">Par récent</option></select></div>
             <p id="forge-vaults-sort-note" class="forge-note" hidden>« Récent » utilise le jour de la dernière ouverture. Ce jour reste visible quand les coffres sont verrouillés.</p>
           </div>
           <details id="forge-vaults-health-fold" class="forge-fold">
             <summary>État des coffres</summary>
-            <div class="forge-help-wrap"><p class="forge-note">Lecture seule : rien n'est réparé ni effacé.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vaults-health">Aide</button>
+            <div class="forge-help-wrap"><p class="forge-note">Lecture seule : rien n'est réparé ni effacé.</p><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vaults-health">Aide</button>
             <p id="forge-help-vaults-health" class="forge-help-pop" role="tooltip">Sans phrase, HQ ne vérifie que ce que le disque montre : dossiers, en-têtes, fichiers en trop, taille et dernière sauvegarde. Pour déchiffrer chaque image, ouvre le coffre puis « Vérifier toutes les images ».</p></div>
-            <button type="button" id="forge-vaults-health-run" class="secondary">Actualiser</button>
+            <button data-help="Vérifier l'état des coffres." type="button" id="forge-vaults-health-run" class="secondary">Actualiser</button>
             <ul id="forge-vaults-health-list" class="forge-health-list" aria-label="État de chaque coffre"></ul>
             <p id="forge-vaults-health-total" class="forge-note" role="status" aria-live="polite"></p>
           </details>
@@ -8251,21 +8560,21 @@ def render_app() -> bytes:
           <p class="forge-note">Rien ne se fait tout seul : le déplacement commence seulement quand tu le confirmes.</p>
           <form id="forge-migrate-unlock" class="forge-vault-sheet">
             <div class="field"><label for="forge-migrate-pass">Phrase du coffre</label><input id="forge-migrate-pass" type="password" maxlength="128" autocomplete="current-password" required/></div>
-            <button type="submit" id="forge-migrate-open">Ouvrir le coffre</button>
+            <button data-help="Ouvrir le coffre avant de le déplacer." type="submit" id="forge-migrate-open">Ouvrir le coffre</button>
           </form>
           <div id="forge-migrate-offer" class="forge-migrate-step" hidden>
             <p class="forge-note">1. Télécharge d'abord une sauvegarde chiffrée (ZIP) et garde-la hors de HQ.</p>
             <div class="forge-actions">
-              <button type="button" id="forge-migrate-zip">Télécharger la sauvegarde</button>
-              <button type="button" class="secondary" id="forge-migrate-skip">Continuer sans sauvegarde</button>
+              <button data-help="Télécharger une sauvegarde avant le déplacement." type="button" id="forge-migrate-zip">Télécharger la sauvegarde</button>
+              <button data-help="Continuer le déplacement sans sauvegarde." type="button" class="secondary" id="forge-migrate-skip">Continuer sans sauvegarde</button>
             </div>
           </div>
           <div id="forge-migrate-confirm" class="forge-migrate-step" hidden>
             <p id="forge-migrate-offer-note" class="forge-note">2. Confirme dans les 15 minutes, sans verrouiller. Verrouiller, l'auto-verrouillage ou 5 minutes sans rien faire annulent l'offre : il faudra télécharger à nouveau la sauvegarde.</p>
             <label class="forge-privacy-ack" for="forge-migrate-ack"><input type="checkbox" id="forge-migrate-ack"/> J'ai compris : mon coffre va être déplacé</label>
-            <button type="button" id="forge-migrate-go" disabled>Déplacer mon coffre</button>
+            <button data-help="Déplacer le coffre vers le nouvel emplacement." type="button" id="forge-migrate-go" disabled>Déplacer mon coffre</button>
           </div>
-          <div class="forge-actions"><button type="button" class="secondary" id="forge-migrate-lock" hidden>Verrouiller</button></div>
+          <div class="forge-actions"><button data-help="Refermer le coffre." type="button" class="secondary" id="forge-migrate-lock" hidden>Verrouiller</button></div>
           <p id="forge-migrate-status" class="forge-note" role="status" aria-live="polite"></p>
         </section>
         <p id="forge-private-note" class="forge-note">La génération privée reste désactivée tant que cette installation de Forge n'a pas prouvé qu'elle n'écrit pas de copie en clair.</p>
@@ -8282,8 +8591,8 @@ def render_app() -> bytes:
           <div class="field"><label for="forge-vault-confirm">Confirmation</label><input id="forge-vault-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
           <p class="forge-note">Au moins 12 caractères, et pas seulement des chiffres. Une clé de récupération s'affichera une seule fois.</p>
           <div class="forge-actions">
-            <button type="submit" id="forge-vault-create">Créer le coffre</button>
-            <button type="button" class="secondary" id="forge-vault-create-cancel">Annuler</button>
+            <button data-help="Créer le coffre avec cette phrase." type="submit" id="forge-vault-create">Créer le coffre</button>
+            <button data-help="Annuler la création du coffre." type="button" class="secondary" id="forge-vault-create-cancel">Annuler</button>
           </div>
           <p id="forge-vault-create-error" class="forge-note" role="alert"></p>
         </form>
@@ -8296,8 +8605,8 @@ def render_app() -> bytes:
           <p class="forge-note forge-vault-warn">Ne mets rien de sensible dans le nom : il reste lisible quand le coffre est verrouillé. Un coffre Discret revient Discret, avec son nom scellé.</p>
           <div class="field"><label for="forge-vault-restore-pass">Phrase du coffre au moment de la sauvegarde</label><input id="forge-vault-restore-pass" type="password" maxlength="128" autocomplete="off" required/></div>
           <div class="forge-actions">
-            <button type="submit" id="forge-vault-restore-go">Restaurer</button>
-            <button type="button" class="secondary" id="forge-vault-restore-cancel">Annuler</button>
+            <button data-help="Restaurer le coffre depuis ce ZIP." type="submit" id="forge-vault-restore-go">Restaurer</button>
+            <button data-help="Annuler la restauration." type="button" class="secondary" id="forge-vault-restore-cancel">Annuler</button>
           </div>
           <p id="forge-vault-restore-error" class="forge-note" role="alert"></p>
         </form>
@@ -8309,31 +8618,31 @@ def render_app() -> bytes:
             <input id="forge-vault-pass" type="password" maxlength="128" autocomplete="current-password" required/>
           </div>
           <div class="forge-actions">
-            <button type="button" id="forge-vault-reveal" aria-pressed="false">Afficher</button>
-            <button type="submit" id="forge-vault-open">Déverrouiller</button>
-            <button type="button" class="secondary" id="forge-vault-unlock-cancel">Annuler</button>
+            <button data-help="Afficher la phrase saisie." type="button" id="forge-vault-reveal" aria-pressed="false">Afficher</button>
+            <button data-help="Déverrouiller le coffre avec cette phrase." type="submit" id="forge-vault-open">Déverrouiller</button>
+            <button data-help="Refermer sans déverrouiller." type="button" class="secondary" id="forge-vault-unlock-cancel">Annuler</button>
           </div>
           <p id="forge-vault-error" class="forge-note" role="alert"></p>
-          <button type="button" class="secondary" id="forge-vault-back">Retour à la galerie</button>
+          <button data-help="Retour à la galerie du coffre." type="button" class="secondary" id="forge-vault-back">Retour à la galerie</button>
         </form>
         <div id="forge-vault-recovery" hidden>
           <p class="forge-note">Conservez cette clé hors de HQ. Elle ne sera plus affichée.</p>
           <p id="forge-vault-recovery-extra" class="forge-note" hidden></p>
           <textarea id="forge-vault-recovery-key" readonly rows="3"></textarea>
-          <button type="button" id="forge-vault-recovery-ok">J'ai enregistré la clé</button>
+          <button data-help="Confirmer que la clé de récupération est enregistrée." type="button" id="forge-vault-recovery-ok">J'ai enregistré la clé</button>
         </div>
         <div id="forge-vault-open-tools" hidden>
           <details id="forge-vault-edit-fold" class="forge-fold">
             <summary>Apparence</summary>
             <div id="forge-vault-rename-row" class="forge-vault-rename">
               <p class="forge-note">Nom : <strong id="forge-vault-rename-current"></strong></p>
-              <button type="button" id="forge-vault-rename-open" class="secondary" aria-expanded="false" aria-controls="forge-vault-rename">Renommer</button>
+              <button data-help="Renommer ce coffre." type="button" id="forge-vault-rename-open" class="secondary" aria-expanded="false" aria-controls="forge-vault-rename">Renommer</button>
               <form id="forge-vault-rename" hidden>
                 <div class="field"><label for="forge-vault-rename-label">Nouveau nom</label><input id="forge-vault-rename-label" type="text" maxlength="40" autocomplete="off" spellcheck="false" required/></div>
                 <p id="forge-vault-rename-honest" class="forge-note"></p>
                 <div class="forge-actions">
-                  <button type="submit" class="secondary">Enregistrer le nom</button>
-                  <button type="button" id="forge-vault-rename-cancel" class="secondary">Annuler</button>
+                  <button data-help="Enregistrer le nouveau nom du coffre." type="submit" class="secondary">Enregistrer le nom</button>
+                  <button data-help="Annuler le renommage." type="button" id="forge-vault-rename-cancel" class="secondary">Annuler</button>
                 </div>
               </form>
               <p id="forge-vault-rename-status" class="forge-note" role="status" aria-live="polite"></p>
@@ -8345,45 +8654,45 @@ def render_app() -> bytes:
               </div>
               <label class="forge-privacy-ack" for="forge-vault-edit-discret"><input type="checkbox" id="forge-vault-edit-discret"/> Discret : le nom n'apparaît que coffre ouvert</label>
               <p id="forge-vault-edit-honest" class="forge-note"></p>
-              <button type="submit" class="secondary">Enregistrer les réglages</button>
+              <button data-help="Enregistrer ces réglages de coffre." type="submit" class="secondary">Enregistrer les réglages</button>
               <p id="forge-vault-edit-status" class="forge-note" role="status" aria-live="polite"></p>
             </form>
             <div id="forge-vault-icon-row" class="forge-actions" hidden>
               <p class="forge-note">Une photo du coffre sert d'icône. Elle est chiffrée dans ce coffre et n'apparaît que coffre ouvert.</p>
-              <button type="button" id="forge-vault-icon-clear" class="secondary">Retirer l'icône photo</button>
+              <button data-help="Retirer l'icône photo du coffre." type="button" id="forge-vault-icon-clear" class="secondary">Retirer l'icône photo</button>
             </div>
           </details>
           <details id="forge-vault-security-fold" class="forge-fold">
             <summary>Sécurité</summary>
             <div class="forge-help-wrap forge-vault-away">
               <label class="forge-privacy-ack" for="forge-vault-away"><input type="checkbox" id="forge-vault-away"/> Verrouiller en quittant l'app</label>
-            <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-away">Aide</button>
+            <button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-away">Aide</button>
             <p id="forge-help-vault-away" class="forge-help-pop" role="tooltip">Si HQ reste en arrière-plan 30 secondes, le coffre se verrouille. Sans ce réglage, il se verrouille quand même après 5 minutes sans activité.</p>
           </div>
             <form id="forge-vault-rotate">
-              <div class="forge-help-wrap"><p class="forge-vault-sub">Changer la phrase</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-rotate">Aide</button><p id="forge-help-vault-rotate" class="forge-help-pop" role="tooltip">Changer la phrase ne retire pas la clé de récupération actuelle.</p></div>
+              <div class="forge-help-wrap"><p class="forge-vault-sub">Changer la phrase</p><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-rotate">Aide</button><p id="forge-help-vault-rotate" class="forge-help-pop" role="tooltip">Changer la phrase ne retire pas la clé de récupération actuelle.</p></div>
               <div class="field"><label for="forge-vault-current">Phrase actuelle</label><input id="forge-vault-current" type="password" autocomplete="current-password"/></div>
               <div class="field"><label for="forge-vault-next">Nouvelle phrase</label><input id="forge-vault-next" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
               <div class="field"><label for="forge-vault-next-confirm">Confirmation</label><input id="forge-vault-next-confirm" type="password" minlength="12" maxlength="128" autocomplete="new-password" required/></div>
-              <button type="submit">Enregistrer la phrase</button>
+              <button data-help="Enregistrer la nouvelle phrase du coffre." type="submit">Enregistrer la phrase</button>
             </form>
             <form id="forge-vault-rekey">
-              <div class="forge-help-wrap"><p class="forge-vault-sub">Clé de récupération</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-rekey">Aide</button><p id="forge-help-vault-rekey" class="forge-help-pop" role="tooltip">Remplacer la clé de récupération invalide l'ancienne. La phrase du coffre ne change pas.</p></div>
+              <div class="forge-help-wrap"><p class="forge-vault-sub">Clé de récupération</p><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-rekey">Aide</button><p id="forge-help-vault-rekey" class="forge-help-pop" role="tooltip">Remplacer la clé de récupération invalide l'ancienne. La phrase du coffre ne change pas.</p></div>
               <div class="field"><label for="forge-vault-rekey-pass">Phrase actuelle</label><input id="forge-vault-rekey-pass" type="password" autocomplete="current-password" required/></div>
-              <button type="submit" class="secondary">Remplacer la clé de récupération</button>
+              <button data-help="Remplacer la clé de récupération du coffre." type="submit" class="secondary">Remplacer la clé de récupération</button>
             </form>
           </details>
           <details id="forge-vault-backup-fold" class="forge-fold">
             <summary>Sauvegarde</summary>
-            <div class="forge-help-wrap"><p class="forge-note">Un ZIP chiffré de ce coffre seul. Images, nom Discret et icône restent scellés.</p><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-backup">Aide</button>
+            <div class="forge-help-wrap"><p class="forge-note">Un ZIP chiffré de ce coffre seul. Images, nom Discret et icône restent scellés.</p><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-vault-backup">Aide</button>
             <p id="forge-help-vault-backup" class="forge-help-pop" role="tooltip">Garde le ZIP hors de HQ. Pour le reprendre : Mes coffres, « Restaurer un ZIP ». Il revient comme un nouveau coffre, avec la phrase qu'il avait le jour de la sauvegarde.</p></div>
-            <button type="button" id="forge-vault-backup-zip" class="secondary">Télécharger la sauvegarde</button>
+            <button data-help="Télécharger un ZIP chiffré de ce coffre." type="button" id="forge-vault-backup-zip" class="secondary">Télécharger la sauvegarde</button>
             <p id="forge-vault-backup-status" class="forge-note" role="status" aria-live="polite"></p>
           </details>
           <details id="forge-vault-check-fold" class="forge-fold">
             <summary>Vérification</summary>
             <p class="forge-note">Déchiffre chaque image de ce coffre pour vérifier qu'elle est intacte. Rien n'est modifié.</p>
-            <button type="button" id="forge-vault-check-run" class="secondary">Vérifier toutes les images</button>
+            <button data-help="Vérifier toutes les images du coffre." type="button" id="forge-vault-check-run" class="secondary">Vérifier toutes les images</button>
             <ul id="forge-vault-check-result" class="forge-health-detail" aria-live="polite"></ul>
             <p id="forge-vault-check-status" class="forge-note" role="status" aria-live="polite"></p>
           </details>
@@ -8394,16 +8703,16 @@ def render_app() -> bytes:
               <p class="forge-note">Les fichiers sont écrasés avant d'être retirés. Sur un SSD, cela ne garantit pas leur effacement physique.</p>
               <div class="field"><label for="forge-vault-destroy-pass">Phrase du coffre</label><input id="forge-vault-destroy-pass" type="password" maxlength="128" autocomplete="current-password" required/></div>
               <div class="field"><label for="forge-vault-destroy-word">Tape SUPPRIMER</label><input id="forge-vault-destroy-word" type="text" maxlength="20" autocomplete="off" autocapitalize="characters" spellcheck="false" required/></div>
-              <button type="submit" id="forge-vault-destroy-go" class="forge-danger" disabled>Supprimer définitivement</button>
+              <button data-help="Supprimer définitivement ce coffre et son contenu." type="submit" id="forge-vault-destroy-go" class="forge-danger" disabled>Supprimer définitivement</button>
               <p id="forge-vault-destroy-error" class="forge-note" role="alert"></p>
             </form>
           </details>
           <section aria-labelledby="forge-vault-gallery-title">
             <h2 id="forge-vault-gallery-title">Coffre</h2>
-            <div class="forge-triage-bar"><button type="button" id="forge-vault-triage-open" class="secondary">Trier</button><button type="button" id="forge-vault-trash-open" class="secondary">Corbeille du coffre</button><label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label></div>
+            <div class="forge-triage-bar"><button data-help="Trier les images du coffre." type="button" id="forge-vault-triage-open" class="secondary">Trier</button><button data-help="Ouvrir la corbeille du coffre." type="button" id="forge-vault-trash-open" class="secondary">Corbeille du coffre</button><label class="secondary forge-file" for="forge-vault-import">Importer une image<input id="forge-vault-import" type="file" accept="image/png,image/jpeg,image/webp"/></label></div>
             <form id="forge-vault-search" class="forge-vault-search" role="search">
               <input id="forge-vault-q" type="search" autocomplete="off" spellcheck="false" maxlength="120" aria-label="Rechercher dans le coffre" placeholder="Prompt, étiquette ou collection"/>
-              <button type="submit" class="secondary">Chercher</button>
+              <button data-help="Chercher dans le coffre." type="submit" class="secondary">Chercher</button>
             </form>
             <div id="forge-vault-filters" class="forge-vault-filters" role="group" aria-label="Étiquettes et collections du coffre"></div>
             <p id="forge-vault-search-note" class="forge-note" role="status"></p>
@@ -8412,9 +8721,13 @@ def render_app() -> bytes:
           </section>
         </div>
       </section>
-      <form id="forge-form" class="forge-compose forge-m">
+      <form id="forge-form" class="forge-compose forge-m forge-brief">
+        <div class="forge-brief-head">
+          <div><p class="forge-studio-kicker">Brief</p><h2>L'idée</h2></div>
+          <span id="forge-brief-meta" class="forge-brief-meta">Prompt et références</span>
+        </div>
         <div id="forge-dest-chip-row" class="forge-dest-chip-row" hidden>
-          <button type="button" id="forge-dest-chip" class="forge-dest-chip" aria-expanded="false" aria-controls="forge-private-target-row"><span class="forge-dest-chip-lock" aria-hidden="true">&#128274;</span> <span id="forge-dest-chip-text">Coffre : à choisir</span></button>
+          <button data-help="Choisir où l'image sera gardée : galerie ou coffre." type="button" id="forge-dest-chip" class="forge-dest-chip" aria-expanded="false" aria-controls="forge-private-target-row"><span class="forge-dest-chip-lock" aria-hidden="true">&#128274;</span> <span id="forge-dest-chip-text">Coffre : à choisir</span></button>
         </div>
         <div id="forge-private-target-row" class="field forge-private-target forge-dest-sheet" hidden>
           <label for="forge-private-target">Coffre de destination</label>
@@ -8427,17 +8740,21 @@ def render_app() -> bytes:
           <p id="forge-draft-note" class="forge-note" role="status" hidden></p>
         </div>
         <div class="forge-prompt-tools" role="group" aria-label="Prompts précédents">
-          <button type="button" id="forge-last-prompt" class="forge-tool">Dernier prompt</button>
-          <button type="button" id="forge-history-open" class="forge-tool" aria-haspopup="dialog" aria-controls="forge-history">Historique</button>
+          <button data-help="Reprendre le dernier prompt utilisé." type="button" id="forge-last-prompt" class="forge-tool">Dernier prompt</button>
+          <button data-help="Voir les générations précédentes." type="button" id="forge-history-open" class="forge-tool" aria-haspopup="dialog" aria-controls="forge-history">Historique</button>
           <span id="forge-prompt-count" class="forge-count" aria-hidden="true">0 / 2000</span>
         </div>
         <p id="forge-history-note" class="forge-note" role="status" aria-live="polite"></p>
+        <div id="forge-brief-context" class="forge-brief-context">
+          <div id="forge-brief-refs" class="forge-brief-refs" aria-label="Références de la séance" hidden></div>
+          <div id="forge-brief-loras" class="forge-brief-loras" aria-label="LoRA du prompt" hidden></div>
+        </div>
         <details id="forge-bricks" class="forge-bricks">
           <summary>Briques</summary>
-          <div class="forge-label-row"><span class="forge-note">Touchez une brique pour l'ajouter au prompt. Rien n'est lancé.</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-bricks">Aide</button><p id="forge-help-bricks" class="forge-help-pop" role="tooltip">Une brique est un morceau de prompt réutilisable : un texte, et si besoin un LoRA avec son poids et ses mots-clés. Les briques sont gardées sur cet HQ, hors du coffre ; en mode privé, on peut les ajouter mais pas en enregistrer.</p></span></div>
+          <div class="forge-label-row"><span class="forge-note">Touchez une brique pour l'ajouter au prompt. Rien n'est lancé.</span><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-bricks">Aide</button><p id="forge-help-bricks" class="forge-help-pop" role="tooltip">Une brique est un morceau de prompt réutilisable : un texte, et si besoin un LoRA avec son poids et ses mots-clés. Les briques sont gardées sur cet HQ, hors du coffre ; en mode privé, on peut les ajouter mais pas en enregistrer.</p></span></div>
           <div id="forge-bricks-list" class="forge-bricks-list" role="group" aria-label="Briques enregistrées"></div>
           <p id="forge-bricks-empty" class="forge-note">Aucune brique pour l'instant.</p>
-          <button type="button" id="forge-brick-new" class="secondary">Nouvelle brique</button>
+          <button data-help="Créer une brique de prompt réutilisable." type="button" id="forge-brick-new" class="secondary">Nouvelle brique</button>
           <div id="forge-brick-editor" class="forge-brick-editor" hidden>
             <div class="field"><label for="forge-brick-name">Nom</label><input id="forge-brick-name" maxlength="60" autocomplete="off"/></div>
             <div class="field"><label for="forge-brick-text">Texte</label><textarea id="forge-brick-text" rows="2" maxlength="400" autocomplete="off" spellcheck="false"></textarea></div>
@@ -8447,28 +8764,28 @@ def render_app() -> bytes:
             <div id="forge-brick-suggest" class="forge-brick-suggest" role="group" aria-label="Mots-clés suggérés" hidden></div>
             <p id="forge-brick-note" class="forge-note" role="status"></p>
             <div class="forge-actions">
-              <button type="button" id="forge-brick-save">Enregistrer la brique</button>
-              <button type="button" id="forge-brick-delete" class="secondary" hidden>Supprimer</button>
-              <button type="button" id="forge-brick-cancel" class="secondary">Annuler</button>
+              <button data-help="Garder la brique décrite ci-dessus." type="button" id="forge-brick-save">Enregistrer la brique</button>
+              <button data-help="Supprimer cette brique." type="button" id="forge-brick-delete" class="secondary" hidden>Supprimer</button>
+              <button data-help="Fermer sans enregistrer." type="button" id="forge-brick-cancel" class="secondary">Annuler</button>
             </div>
           </div>
         </details>
         <details id="forge-style" class="forge-style">
           <summary>Style maison</summary>
-          <div class="forge-label-row"><span class="forge-note">Indicatif : les réglages les plus fréquents parmi vos images gardées.</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-style">Aide</button><p id="forge-help-style" class="forge-help-pop" role="tooltip">Calculé sur les images gardées ou favorites de la galerie (une favorite compte double), jamais sur le coffre. Appliquer remplit seulement les réglages ; rien n'est lancé et le modèle n'est jamais changé.</p></span></div>
+          <div class="forge-label-row"><span class="forge-note">Indicatif : les réglages les plus fréquents parmi vos images gardées.</span><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-style">Aide</button><p id="forge-help-style" class="forge-help-pop" role="tooltip">Calculé sur les images gardées ou favorites de la galerie (une favorite compte double), jamais sur le coffre. Appliquer remplit seulement les réglages ; rien n'est lancé et le modèle n'est jamais changé.</p></span></div>
           <p id="forge-style-note" class="forge-note" role="status"></p>
           <dl id="forge-style-list" class="forge-style-list"></dl>
           <div class="forge-actions">
-            <button type="button" id="forge-style-apply" hidden>Appliquer le style maison</button>
-            <button type="button" id="forge-style-negative" class="secondary" hidden>Reprendre son prompt négatif</button>
+            <button data-help="Remplir les réglages avec le style calculé sur vos images gardées." type="button" id="forge-style-apply" hidden>Appliquer le style maison</button>
+            <button data-help="Remettre le prompt négatif que vous utilisiez." type="button" id="forge-style-negative" class="secondary" hidden>Reprendre son prompt négatif</button>
           </div>
           <p id="forge-style-done" class="forge-note" role="status"></p>
         </details>
         <div id="forge-restore-confirm" class="forge-privacy forge-confirm" role="group" aria-labelledby="forge-restore-text" hidden>
           <p id="forge-restore-text">Le prompt actuel n'a pas été utilisé. Le remplacer ?</p>
           <div class="forge-actions">
-            <button type="button" id="forge-restore-replace">Remplacer</button>
-            <button type="button" id="forge-restore-keep" class="secondary">Garder mon texte</button>
+            <button data-help="Remplacer le prompt actuel par celui sauvegardé." type="button" id="forge-restore-replace">Remplacer</button>
+            <button data-help="Garder votre texte et ne restaurer que les réglages." type="button" id="forge-restore-keep" class="secondary">Garder mon texte</button>
           </div>
         </div>
         <details class="forge-fold" id="forge-negative-fold">
@@ -8478,7 +8795,7 @@ def render_app() -> bytes:
               <div class="forge-label-row">
                 <label for="forge-negative">À éviter</label>
                 <span class="forge-help-wrap">
-                  <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-negative">Aide</button>
+                  <button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-negative">Aide</button>
                   <p id="forge-help-negative" class="forge-help-pop" role="tooltip">Décrivez ce qu'il faut éviter, par exemple le flou ou le texte illisible. Ce champ ne remplace pas le prompt.</p>
                 </span>
               </div>
@@ -8487,25 +8804,28 @@ def render_app() -> bytes:
           </div>
         </details>
       </form>
-        <aside class="forge-side" aria-label="Réglages de génération">
+        <aside class="forge-side" id="forge-settings-rail" aria-label="Réglages de génération">
+          <button data-help="Refermer les réglages avancés." type="button" id="forge-settings-close" class="forge-settings-close" aria-controls="forge-settings-rail">Fermer les réglages</button>
           <section class="forge-quick" aria-labelledby="forge-quick-title">
             <h2 id="forge-quick-title">Réglages</h2>
             <div class="field">
-              <div class="forge-label-row"><label for="forge-checkpoint">Modèle</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-checkpoint">Aide</button><p id="forge-help-checkpoint" class="forge-help-pop" role="tooltip">Le modèle dessine l'image. Un modèle illustré et un modèle photo ne donnent pas le même résultat.</p></span></div>
+              <div class="forge-label-row"><label for="forge-checkpoint">Modèle</label></div>
+              <p class="forge-hint">Le modèle dessine l'image. Un modèle illustré et un modèle photo ne donnent pas le même résultat.</p>
               <select id="forge-checkpoint"></select>
             </div>
             <p id="forge-choice-note" class="forge-note" role="status"></p>
             <div class="forge-ratios" role="group" aria-label="Format">
-              <button type="button" class="forge-ratio" data-forge-ratio="1:1" data-width="1024" data-height="1024" aria-pressed="false">1:1</button>
-              <button type="button" class="forge-ratio" data-forge-ratio="3:2" data-width="1152" data-height="768" aria-pressed="false">3:2</button>
-              <button type="button" class="forge-ratio" data-forge-ratio="2:3" data-width="768" data-height="1152" aria-pressed="false">2:3</button>
-              <button type="button" class="forge-ratio" data-forge-ratio="4:3" data-width="1024" data-height="768" aria-pressed="false">4:3</button>
-              <button type="button" class="forge-ratio" data-forge-ratio="3:4" data-width="768" data-height="1024" aria-pressed="false">3:4</button>
-              <button type="button" class="forge-ratio" data-forge-ratio="16:9" data-width="1024" data-height="576" aria-pressed="false">16:9</button>
-              <button type="button" class="forge-ratio" data-forge-ratio="9:16" data-width="576" data-height="1024" aria-pressed="false">9:16</button>
+              <button data-help="Format carré, 1024 × 1024." type="button" class="forge-ratio" data-forge-ratio="1:1" data-width="1024" data-height="1024" aria-pressed="false">1:1</button>
+              <button data-help="Format paysage, 1152 × 768." type="button" class="forge-ratio" data-forge-ratio="3:2" data-width="1152" data-height="768" aria-pressed="false">3:2</button>
+              <button data-help="Format portrait, 768 × 1152." type="button" class="forge-ratio" data-forge-ratio="2:3" data-width="768" data-height="1152" aria-pressed="false">2:3</button>
+              <button data-help="Format paysage large, 1024 × 768." type="button" class="forge-ratio" data-forge-ratio="4:3" data-width="1024" data-height="768" aria-pressed="false">4:3</button>
+              <button data-help="Format portrait large, 768 × 1024." type="button" class="forge-ratio" data-forge-ratio="3:4" data-width="768" data-height="1024" aria-pressed="false">3:4</button>
+              <button data-help="Format écran, 1024 × 576." type="button" class="forge-ratio" data-forge-ratio="16:9" data-width="1024" data-height="576" aria-pressed="false">16:9</button>
+              <button data-help="Format téléphone, 576 × 1024." type="button" class="forge-ratio" data-forge-ratio="9:16" data-width="576" data-height="1024" aria-pressed="false">9:16</button>
             </div>
             <div class="field">
-              <div class="forge-label-row"><label id="forge-steps-label" for="forge-steps">Pas</label><span id="forge-steps-live" class="forge-live">20</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-steps">Aide</button><p id="forge-help-steps" class="forge-help-pop" role="tooltip">Plus de pas affine l'image et prend plus de temps. Vingt est un équilibre courant.</p></span></div>
+              <div class="forge-label-row"><label id="forge-steps-label" for="forge-steps">Pas</label><span id="forge-steps-live" class="forge-live">20</span></div>
+              <p class="forge-hint">Plus de pas affine l'image et prend plus de temps. Vingt est un équilibre courant.</p>
               <div class="forge-slider">
                 <input id="forge-steps-range" type="range" min="1" max="40" step="1" value="20" aria-labelledby="forge-steps-label"/>
                 <input id="forge-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/>
@@ -8518,11 +8838,11 @@ def render_app() -> bytes:
               <summary>Échantillonneur et planificateur</summary>
               <div class="forge-fold-body forge-grid-fields">
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-sampler">Échantillonneur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-sampler">Aide</button><p id="forge-help-sampler" class="forge-help-pop" role="tooltip">C'est la méthode qui construit l'image pas à pas. Euler a est un bon départ. Les méthodes DPM sont souvent plus nettes.</p></span></div>
+                  <div class="forge-label-row"><label for="forge-sampler">Échantillonneur</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-sampler">Aide</button><p id="forge-help-sampler" class="forge-help-pop" role="tooltip">C'est la méthode qui construit l'image pas à pas. Euler a est un bon départ. Les méthodes DPM sont souvent plus nettes.</p></span></div>
                   <select id="forge-sampler"></select>
                 </div>
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-scheduler">Planificateur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-scheduler">Aide</button><p id="forge-help-scheduler" class="forge-help-pop" role="tooltip">Il répartit les pas du début à la fin. Automatic convient presque toujours.</p></span></div>
+                  <div class="forge-label-row"><label for="forge-scheduler">Planificateur</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-scheduler">Aide</button><p id="forge-help-scheduler" class="forge-help-pop" role="tooltip">Il répartit les pas du début à la fin. Automatic convient presque toujours.</p></span></div>
                   <select id="forge-scheduler"></select>
                 </div>
               </div>
@@ -8531,7 +8851,8 @@ def render_app() -> bytes:
               <summary>CFG</summary>
               <div class="forge-fold-body">
                 <div class="field">
-                  <div class="forge-label-row"><label id="forge-cfg-label" for="forge-cfg">Suivi du prompt</label><span id="forge-cfg-live" class="forge-live">7</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-cfg">Aide</button><p id="forge-help-cfg" class="forge-help-pop" role="tooltip">Indique à quel point Forge suit le prompt. Autour de 7, le prompt guide sans figer l'image.</p></span></div>
+                  <div class="forge-label-row"><label id="forge-cfg-label" for="forge-cfg">Suivi du prompt</label><span id="forge-cfg-live" class="forge-live">7</span></div>
+                  <p class="forge-hint">Indique à quel point Forge suit le prompt. Autour de 7, le prompt guide sans figer l'image.</p>
                   <div class="forge-slider">
                     <input id="forge-cfg-range" type="range" min="1" max="15" step="0.5" value="7" aria-labelledby="forge-cfg-label"/>
                     <input id="forge-cfg" type="number" min="1" max="15" step="0.5" value="7" inputmode="decimal"/>
@@ -8547,12 +8868,13 @@ def render_app() -> bytes:
                   <label><input type="radio" name="forge-seed-mode" value="fixed"/> Fixe</label>
                 </div>
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-seed">Valeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-seed">Aide</button><p id="forge-help-seed" class="forge-help-pop" role="tooltip">Aléatoire change l'image à chaque fois. Fixe répète une base proche si les autres réglages ne changent pas. Réutiliser reprend la dernière graine de la galerie normale.</p></span></div>
-                  <input id="forge-seed" type="number" min="0" max="4294967295" step="1" value="0" inputmode="numeric" disabled/>
+                  <div class="forge-label-row"><label for="forge-seed">Valeur</label></div>
+                  <p class="forge-hint">Aléatoire change l'image à chaque fois. Fixe répète une base proche si les autres réglages ne changent pas. Réutiliser reprend la dernière graine de la galerie normale.</p>
+                  <input id="forge-seed" type="number" min="0" max="4294967295" step="1" value="0" inputmode="numeric" readonly aria-disabled="true"/>
                 </div>
-                <p id="forge-variation-chip" class="forge-note forge-variation-chip" hidden><span id="forge-variation-text"></span> <button type="button" id="forge-variation-clear" class="secondary">Retirer</button></p>
+                <p id="forge-variation-chip" class="forge-note forge-variation-chip" hidden><span id="forge-variation-text"></span> <button data-help="Retirer cette variation du prompt." type="button" id="forge-variation-clear" class="secondary">Retirer</button></p>
                 <div class="forge-actions">
-                  <button type="button" id="forge-seed-reuse">Réutiliser</button>
+                  <button data-help="Reprendre la dernière graine de la galerie." type="button" id="forge-seed-reuse">Réutiliser</button>
                 </div>
                 <p id="forge-seed-note" class="forge-note" role="status"></p>
               </div>
@@ -8561,11 +8883,11 @@ def render_app() -> bytes:
               <summary>Dimensions exactes</summary>
               <div class="forge-fold-body forge-grid-fields">
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-width">Largeur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-width">Aide</button><p id="forge-help-width" class="forge-help-pop" role="tooltip">Largeur en pixels, multiple de 64, entre 256 et 1536. Une image plus grande demande plus de mémoire.</p></span></div>
+                  <div class="forge-label-row"><label for="forge-width">Largeur</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-width">Aide</button><p id="forge-help-width" class="forge-help-pop" role="tooltip">Largeur en pixels, multiple de 64, entre 256 et 1536. Une image plus grande demande plus de mémoire.</p></span></div>
                   <input id="forge-width" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/>
                 </div>
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-height">Hauteur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-height">Aide</button><p id="forge-help-height" class="forge-help-pop" role="tooltip">Hauteur en pixels, multiple de 64, entre 256 et 1536.</p></span></div>
+                  <div class="forge-label-row"><label for="forge-height">Hauteur</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-height">Aide</button><p id="forge-help-height" class="forge-help-pop" role="tooltip">Hauteur en pixels, multiple de 64, entre 256 et 1536.</p></span></div>
                   <input id="forge-height" type="number" min="256" max="1536" step="64" value="512" inputmode="numeric"/>
                 </div>
               </div>
@@ -8574,11 +8896,11 @@ def render_app() -> bytes:
               <summary>Lot</summary>
               <div class="forge-fold-body forge-grid-fields">
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-iter">Images à la suite</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-iter">Aide</button><p id="forge-help-iter" class="forge-help-pop" role="tooltip">Une ou deux images, l'une après l'autre. Deux prend environ deux fois plus de temps.</p></span></div>
+                  <div class="forge-label-row"><label for="forge-iter">Images à la suite</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-iter">Aide</button><p id="forge-help-iter" class="forge-help-pop" role="tooltip">Une ou deux images, l'une après l'autre. Deux prend environ deux fois plus de temps.</p></span></div>
                   <select id="forge-iter"><option value="1" selected>1</option><option value="2">2</option></select>
                 </div>
                 <div class="field">
-                  <div class="forge-label-row"><label for="forge-batch">Taille de lot</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-batch">Aide</button><p id="forge-help-batch" class="forge-help-pop" role="tooltip">HQ garde une seule image par passage. La taille de lot reste à 1.</p></span></div>
+                  <div class="forge-label-row"><label for="forge-batch">Taille de lot</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-batch">Aide</button><p id="forge-help-batch" class="forge-help-pop" role="tooltip">HQ garde une seule image par passage. La taille de lot reste à 1.</p></span></div>
                   <input id="forge-batch" type="text" value="1" readonly tabindex="-1"/>
                 </div>
               </div>
@@ -8590,19 +8912,20 @@ def render_app() -> bytes:
                 <label class="forge-privacy-ack" for="forge-hr"><input id="forge-hr" type="checkbox"/> Activer le second passage</label>
                 <div class="forge-grid-fields">
                   <div class="field">
-                    <div class="forge-label-row"><label for="forge-hr-scale">Échelle</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-scale">Aide</button><p id="forge-help-hr-scale" class="forge-help-pop" role="tooltip">1,5 ou 2. Le résultat de chaque côté doit rester d'au plus 2048 pixels.</p></span></div>
+                    <div class="forge-label-row"><label for="forge-hr-scale">Échelle</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-scale">Aide</button><p id="forge-help-hr-scale" class="forge-help-pop" role="tooltip">1,5 ou 2. Le résultat de chaque côté doit rester d'au plus 2048 pixels.</p></span></div>
                     <select id="forge-hr-scale"><option value="1.5">1,5</option><option value="2" selected>2</option></select>
                   </div>
                   <div class="field">
-                    <div class="forge-label-row"><label for="forge-hr-upscaler">Agrandisseur</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-upscaler">Aide</button><p id="forge-help-hr-upscaler" class="forge-help-pop" role="tooltip">Méthode du second passage, parmi celles proposées par Forge.</p></span></div>
+                    <div class="forge-label-row"><label for="forge-hr-upscaler">Agrandisseur</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-upscaler">Aide</button><p id="forge-help-hr-upscaler" class="forge-help-pop" role="tooltip">Méthode du second passage, parmi celles proposées par Forge.</p></span></div>
                     <select id="forge-hr-upscaler"></select>
                   </div>
                   <div class="field">
-                    <div class="forge-label-row"><label for="forge-hr-steps">Pas du second passage</label><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-steps">Aide</button><p id="forge-help-hr-steps" class="forge-help-pop" role="tooltip">0 reprend le nombre de pas du premier passage. Sinon, de 1 à 20.</p></span></div>
+                    <div class="forge-label-row"><label for="forge-hr-steps">Pas du second passage</label><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-steps">Aide</button><p id="forge-help-hr-steps" class="forge-help-pop" role="tooltip">0 reprend le nombre de pas du premier passage. Sinon, de 1 à 20.</p></span></div>
                     <input id="forge-hr-steps" type="number" min="0" max="20" step="1" value="0" inputmode="numeric"/>
                   </div>
                   <div class="field">
-                    <div class="forge-label-row"><label id="forge-hr-denoise-label" for="forge-hr-denoise">Force</label><span id="forge-hr-denoise-live" class="forge-live">0,5</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-hr-denoise">Aide</button><p id="forge-help-hr-denoise" class="forge-help-pop" role="tooltip">De 0,2 à 0,7. Plus la force est haute, plus le second passage s'éloigne de la première image.</p></span></div>
+                    <div class="forge-label-row"><label id="forge-hr-denoise-label" for="forge-hr-denoise">Force</label><span id="forge-hr-denoise-live" class="forge-live">0,5</span></div>
+                      <p class="forge-hint">De 0,2 à 0,7. Plus la force est haute, plus le second passage s'éloigne de la première image.</p>
                     <div class="forge-slider">
                       <input id="forge-hr-denoise-range" type="range" min="0.2" max="0.7" step="0.05" value="0.5" aria-labelledby="forge-hr-denoise-label"/>
                       <input id="forge-hr-denoise" type="number" min="0.2" max="0.7" step="0.05" value="0.5" inputmode="decimal"/>
@@ -8622,23 +8945,23 @@ def render_app() -> bytes:
             </div>
             <p id="forge-preset-state" class="forge-note" role="status"></p>
             <div class="forge-actions forge-preset-main">
-              <button type="button" id="forge-preset-load">Charger</button>
-              <button type="button" id="forge-preset-save">Enregistrer</button>
+              <button data-help="Charger ce preset dans les réglages." type="button" id="forge-preset-load">Charger</button>
+              <button data-help="Enregistrer les réglages actuels comme preset." type="button" id="forge-preset-save">Enregistrer</button>
             </div>
             <div class="forge-actions forge-preset-more" role="group" aria-label="Autres actions du préréglage">
-              <button type="button" id="forge-preset-update">Mettre à jour</button>
-              <button type="button" id="forge-preset-rename">Renommer</button>
-              <button type="button" id="forge-preset-duplicate">Dupliquer</button>
-              <button type="button" id="forge-preset-delete" class="secondary">Supprimer</button>
-              <button type="button" id="forge-preset-export" class="secondary">Exporter</button>
+              <button data-help="Écraser ce preset avec les réglages actuels." type="button" id="forge-preset-update">Mettre à jour</button>
+              <button data-help="Renommer ce preset." type="button" id="forge-preset-rename">Renommer</button>
+              <button data-help="Faire une copie de ce preset." type="button" id="forge-preset-duplicate">Dupliquer</button>
+              <button data-help="Supprimer ce preset." type="button" id="forge-preset-delete" class="secondary">Supprimer</button>
+              <button data-help="Exporter ce preset en fichier." type="button" id="forge-preset-export" class="secondary">Exporter</button>
               <label class="secondary forge-file" for="forge-preset-import">Importer<input id="forge-preset-import" type="file" accept="application/json,.json"/></label>
             </div>
             <div id="forge-preset-export-gate" class="forge-privacy" hidden>
               <p id="forge-preset-export-plain">Le fichier exporté contient les prompts en clair. Le coffre privé ne les chiffre pas.</p>
               <p id="forge-preset-export-vault" hidden>Génération privée : cet export n'est pas une sauvegarde du coffre. Les prompts du fichier restent lisibles.</p>
               <div class="forge-actions">
-                <button type="button" id="forge-preset-export-confirm">Télécharger le fichier en clair</button>
-                <button type="button" id="forge-preset-export-cancel" class="secondary">Annuler</button>
+                <button data-help="Télécharger le preset en clair." type="button" id="forge-preset-export-confirm">Télécharger le fichier en clair</button>
+                <button data-help="Renoncer à l'export." type="button" id="forge-preset-export-cancel" class="secondary">Annuler</button>
               </div>
             </div>
             <div id="forge-preset-update-gate" class="forge-privacy" hidden>
@@ -8646,8 +8969,8 @@ def render_app() -> bytes:
               <p id="forge-preset-update-vault" hidden>Génération privée : le coffre ne protège pas cette copie. Le prompt actuel quitte le coffre et reste lisible.</p>
               <label class="forge-privacy-ack" for="forge-preset-update-ack"><input id="forge-preset-update-ack" type="checkbox"/> Je copie ce prompt en clair, hors du coffre</label>
               <div class="forge-actions">
-                <button type="button" id="forge-preset-update-confirm" disabled>Confirmer la mise à jour</button>
-                <button type="button" id="forge-preset-update-cancel" class="secondary">Annuler</button>
+                <button data-help="Confirmer l'écrasement du preset." type="button" id="forge-preset-update-confirm" disabled>Confirmer la mise à jour</button>
+                <button data-help="Renoncer à l'écrasement." type="button" id="forge-preset-update-cancel" class="secondary">Annuler</button>
               </div>
             </div>
             <form id="forge-preset-editor" hidden>
@@ -8662,8 +8985,8 @@ def render_app() -> bytes:
                 <label class="forge-privacy-ack" for="forge-preset-privacy-ack"><input id="forge-preset-privacy-ack" type="checkbox"/> J'enregistre ce prompt en clair, hors du coffre</label>
               </div>
               <div class="forge-actions">
-                <button type="submit" id="forge-preset-confirm">Confirmer</button>
-                <button type="button" id="forge-preset-cancel" class="secondary">Annuler</button>
+                <button data-help="Confirmer ce choix de preset." type="submit" id="forge-preset-confirm">Confirmer</button>
+                <button data-help="Renoncer et fermer sans rien changer." type="button" id="forge-preset-cancel" class="secondary">Annuler</button>
               </div>
             </form>
             </div>
@@ -8677,8 +9000,8 @@ def render_app() -> bytes:
         <p id="forge-devices-note" class="forge-note" role="status"></p>
         <ul id="forge-device-list" class="forge-device-list" aria-label="Appareils"></ul>
         <div class="forge-devices-tools">
-          <button type="button" id="forge-devices-all" class="forge-tool">Tout sélectionner (compatibles)</button>
-          <button type="button" id="forge-device-add" class="forge-tool" aria-haspopup="dialog" aria-controls="forge-device-dialog">Ajouter un appareil</button>
+          <button data-help="Sélectionner tous les appareils compatibles." type="button" id="forge-devices-all" class="forge-tool">Tout sélectionner (compatibles)</button>
+          <button data-help="Ajouter un appareil à la flotte Forge." type="button" id="forge-device-add" class="forge-tool" aria-haspopup="dialog" aria-controls="forge-device-dialog">Ajouter un appareil</button>
           <div id="forge-fleet-count-field" class="forge-fleet-count" hidden>
             <label for="forge-fleet-count">Images</label>
             <input id="forge-fleet-count" type="number" min="1" max="16" step="1" value="4" inputmode="numeric"/>
@@ -8695,37 +9018,52 @@ def render_app() -> bytes:
         <div class="field" id="forge-sweep-lora-field" hidden><label for="forge-sweep-lora">LoRA du prompt</label><select id="forge-sweep-lora"></select></div>
         <div class="field"><label for="forge-sweep-values">Valeurs (séparées par ;)</label><input id="forge-sweep-values" type="text" autocomplete="off" spellcheck="false" value="4 ; 6 ; 8 ; 10"/></div>
         <p id="forge-sweep-note" class="forge-note" role="status"></p>
-        <button type="button" id="forge-sweep-run">Lancer le balayage</button>
+        <button data-help="Lancer un balayage des réglages à essayer." type="button" id="forge-sweep-run">Lancer le balayage</button>
       </details>
       <details class="forge-fold forge-block forge-m forge-night" id="forge-night">
         <summary>Atelier de nuit</summary>
         <p class="forge-note">Met ces réglages en file sur ce PC : « ce soir » (22 h – 7 h) ou « quand Forge est libre ». Rien n'est interrompu : une entrée attend tant que Forge ou le GPU travaille. 6 h au plus par nuit, 24 entrées au plus.</p>
         <div class="forge-actions">
-          <button type="button" id="forge-night-tonight">Lancer ce soir</button>
-          <button type="button" id="forge-night-idle" class="secondary">Quand Forge est libre</button>
+          <button data-help="Programmer les gardées pour cette nuit." type="button" id="forge-night-tonight">Lancer ce soir</button>
+          <button data-help="Lancer quand Forge est libre." type="button" id="forge-night-idle" class="secondary">Quand Forge est libre</button>
         </div>
-        <button type="button" id="forge-night-finish" class="secondary">Finir les gardées cette nuit</button>
+        <button data-help="Finir cette nuit les images gardées." type="button" id="forge-night-finish" class="secondary">Finir les gardées cette nuit</button>
         <p id="forge-night-note" class="forge-note" role="status"></p>
         <ul id="forge-night-list" class="forge-night-list" aria-label="File de nuit"></ul>
-        <button type="button" id="forge-night-cancel-all" class="secondary" hidden>Annuler les entrées en attente</button>
+        <button data-help="Vider la file de la nuit." type="button" id="forge-night-cancel-all" class="secondary" hidden>Annuler les entrées en attente</button>
       </details>
       <div id="forge-actionbar" class="forge-actionbar forge-m">
+        <div class="forge-tray-head">
+          <p class="forge-tray-title">Atelier</p>
+          <button data-help="Ouvrir les réglages avancés." type="button" id="forge-settings-open" class="forge-tray-settings" aria-controls="forge-settings-rail" aria-expanded="false">Réglages</button>
+        </div>
         <p id="forge-job-destination" class="forge-job-destination">Destination · Galerie</p>
         <p id="forge-generate-reason" class="forge-note" role="status"></p>
         <p id="forge-usual-duration" class="forge-note forge-usual" hidden></p>
-        <div class="forge-actions">
-          <button type="submit" id="forge-generate" form="forge-form">Générer</button>
-          <button type="button" id="forge-generate-private" hidden>Générer en privé</button>
-          <button type="button" id="forge-cancel" disabled>Annuler</button>
+        <div class="forge-bar-main">
+          <div class="forge-bar-controls" aria-label="Réglages de génération">
+            <label>Modèle<select id="forge-bar-model"></select></label>
+            <label>Format<select id="forge-bar-size">
+              <option value="1024x1024">1:1</option><option value="1152x768">3:2</option><option value="768x1152">2:3</option>
+              <option value="1024x768">4:3</option><option value="768x1024">3:4</option><option value="1024x576">16:9</option><option value="576x1024">9:16</option>
+            </select></label>
+            <label>Pas<input id="forge-bar-steps" type="number" min="1" max="40" step="1" value="20" inputmode="numeric"/></label>
+            <label>Images<select id="forge-bar-count"><option value="1">1</option><option value="2">2</option></select></label>
+          </div>
+          <div class="forge-actions">
+            <button data-help="Lancer la génération avec ces réglages." type="submit" id="forge-generate" form="forge-form">Générer</button>
+            <button data-help="Générer directement dans le coffre chiffré." type="button" id="forge-generate-private" hidden>Générer en privé</button>
+            <button data-help="Annuler la génération en cours." type="button" id="forge-cancel" disabled>Annuler</button>
+          </div>
         </div>
-        <button type="button" id="forge-see-result" class="forge-see-result" aria-controls="forge-normal-results" hidden>Voir le résultat</button>
+        <button data-help="Afficher la dernière image produite." type="button" id="forge-see-result" class="forge-see-result" aria-controls="forge-normal-results" hidden>Voir le résultat</button>
         <div id="forge-progress" class="forge-progress" hidden>
           <progress id="forge-progress-bar" max="1" value="0" aria-labelledby="forge-progress-label"></progress>
           <span id="forge-progress-label" aria-live="polite"></span>
-          <button type="button" class="secondary" id="forge-retry-job" title="Relancer avec les réglages de cette tentative" hidden>Réessayer</button>
+          <button data-help="Relancer avec les réglages de cette tentative." type="button" class="secondary" id="forge-retry-job" hidden>Réessayer</button>
         </div>
         <div id="forge-wait" class="forge-wait" hidden>
-          <button type="button" id="forge-start-now">Lancer quand même</button>
+          <button data-help="Démarrer sans attendre la file." type="button" id="forge-start-now">Lancer quand même</button>
           <p class="forge-note">Votre image passera après le travail en cours de Forge. Rien n'est interrompu.</p>
         </div>
       </div>
@@ -8733,7 +9071,7 @@ def render_app() -> bytes:
       <div id="forge-prefs" class="forge-prefs forge-m">
         <div id="forge-wake-wrap" class="forge-help-wrap" hidden>
           <label class="forge-privacy-ack" for="forge-wake"><input type="checkbox" id="forge-wake"/> Garder l'écran allumé</label>
-          <button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-wake">Aide</button>
+          <button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-wake">Aide</button>
           <p id="forge-help-wake" class="forge-help-pop" role="tooltip">Pendant une génération ou un lot, l'écran de cet appareil ne se met pas en veille. Réglage gardé sur cet appareil ; rien n'est envoyé à Forge.</p>
         </div>
       </div>
@@ -8750,33 +9088,48 @@ def render_app() -> bytes:
           <ol id="forge-fleet-journal-list" class="forge-journal"></ol>
         </details>
         <div class="forge-actions">
-          <button type="button" id="forge-fleet-batch-cancel" class="secondary">Annuler le lot</button>
-          <button type="button" id="forge-fleet-batch-retry" hidden>Relancer les images manquantes</button>
-          <button type="button" id="forge-fleet-batch-close" class="secondary" hidden>Masquer</button>
+          <button data-help="Annuler le lot en cours." type="button" id="forge-fleet-batch-cancel" class="secondary">Annuler le lot</button>
+          <button data-help="Relancer les images qui ont échoué." type="button" id="forge-fleet-batch-retry" hidden>Relancer les images manquantes</button>
+          <button data-help="Masquer le suivi du lot." type="button" id="forge-fleet-batch-close" class="secondary" hidden>Masquer</button>
         </div>
       </section>
-      <section class="forge-block forge-m" id="forge-normal-results" aria-labelledby="forge-results-title">
-        <h2 id="forge-results-title">Résultat</h2>
+      <section class="forge-block forge-m forge-canvas" id="forge-normal-results" aria-labelledby="forge-results-title">
+        <div class="forge-canvas-head">
+          <h2 id="forge-results-title">Résultat</h2>
+          <div class="forge-contact-bar" id="forge-contact-bar">
+            <button data-help="Passer en sélection multiple." type="button" id="forge-select-toggle" class="secondary" aria-pressed="false">Sélectionner</button>
+            <span id="forge-select-count" class="forge-select-count" aria-live="polite">0 sélectionnée</span>
+            <div id="forge-contact-actions" class="forge-contact-actions" hidden>
+              <button data-help="Comparer les images sélectionnées." type="button" data-cact="compare" disabled>Comparer</button>
+              <button data-help="Garder les images sélectionnées." type="button" data-cact="keep" disabled>Garder</button>
+              <button data-help="Lancer la finition des images sélectionnées." type="button" data-cact="finish" disabled>Finir</button>
+              <button data-help="Étiqueter les images sélectionnées." type="button" data-cact="tag" disabled>Étiqueter</button>
+              <button data-help="Exporter les images sélectionnées." type="button" data-cact="export" disabled>Exporter</button>
+            </div>
+          </div>
+        </div>
         <div id="forge-job-choice" class="forge-job-choice" hidden></div>
         <details class="forge-fold" id="forge-job-journal" hidden>
           <summary>Journal</summary>
           <ol id="forge-job-journal-list" class="forge-journal"></ol>
         </details>
-        <p id="forge-results-empty" class="forge-note">Le résultat de la génération apparaîtra ici.</p>
+        <div id="forge-results-empty" class="forge-empty-steps"><p class="forge-note">Le résultat de la génération apparaîtra ici.</p><ol class="forge-steps"><li>Écris l'idée dans le brief.</li><li>Choisis le modèle et le format dans les réglages.</li><li>Touche Générer, puis Gardée : l'image rejoint la galerie.</li></ol></div>
         <section id="forge-night-summary" class="forge-night-summary" aria-label="Résumé de la nuit" hidden>
           <p id="forge-night-summary-text"></p>
           <div id="forge-night-summary-images" class="forge-night-thumbs"></div>
-          <button type="button" id="forge-night-summary-ok" class="secondary">Vu</button>
+          <button data-help="Marquer le résumé de la nuit comme lu." type="button" id="forge-night-summary-ok" class="secondary">Vu</button>
         </section>
         <div id="forge-sweep-strip" class="forge-sweep-strip" role="list" aria-label="Balayage, une image par valeur" hidden></div>
         <div id="forge-results" class="forge-grid"></div>
       </section>
       <section class="forge-block forge-m" id="forge-normal-gallery" aria-labelledby="forge-gallery-title">
         <h2 id="forge-gallery-title">Galerie</h2>
-        <div class="forge-triage-bar"><button type="button" id="forge-triage-open" class="secondary">Trier</button><button type="button" id="forge-trash-open" class="secondary">Corbeille</button></div>
-        <p id="forge-gallery-empty" class="forge-note">La galerie HQ est vide. Les images de Forge ne sont pas copiées ici toutes seules.</p>
+        <form id="forge-gallery-search" class="forge-gallery-search" role="search"><input id="forge-gallery-q" type="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Prompt, modèle, étiquette…" aria-label="Chercher dans la galerie"/><button type="submit">Chercher</button><button type="button" id="forge-gallery-clear" hidden>Effacer</button></form>
+        <div id="forge-gallery-filters" class="forge-triage-row" role="group" aria-label="Filtres et rangement de la galerie"><div class="forge-gallery-filter-group" role="group" aria-label="Filtres de la galerie"><button type="button" class="forge-triage-chip" data-gview="" aria-pressed="true">Tout</button><button type="button" class="forge-triage-chip" data-gview="untriaged" aria-pressed="false">À trier</button></div><div class="forge-gallery-action-group" role="group" aria-label="Actions de la galerie"><button data-help="Ouvrir les filtres complets de la galerie." type="button" id="forge-gallery-advanced" class="forge-tool">Recherche avancée</button><button data-help="Trier les images à garder." type="button" id="forge-triage-open" class="secondary">Trier</button><button data-help="Ouvrir la corbeille des images." type="button" id="forge-trash-open" class="secondary">Corbeille</button></div></div>
+        <p id="forge-gallery-count" class="forge-gallery-count" role="status"></p>
+        <div id="forge-gallery-empty" class="forge-empty-steps"><p class="forge-note">La galerie HQ est vide. Les images de Forge ne sont pas copiées ici toutes seules.</p><ol class="forge-steps"><li>Génère une image : elle s'ouvre dans Résultat.</li><li>Sur cette image, touche Gardée (ou Favori) pour la ranger ici.</li><li>Ensuite, cherche par prompt, modèle ou étiquette juste au-dessus.</li></ol></div>
         <div id="forge-gallery" class="forge-grid"></div>
-        <button type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
+        <button data-help="Charger des images plus anciennes." type="button" id="forge-more" class="secondary" hidden>Plus d'images</button>
       </section>
       <details class="forge-fold forge-block forge-m forge-lab" id="forge-lab">
         <summary>Laboratoire</summary>
@@ -8785,46 +9138,46 @@ def render_app() -> bytes:
           <p id="forge-help-lab" class="forge-note forge-lab-rules">Seules les images de la galerie comptent ; le coffre privé n’est jamais mesuré. Un réglage n’est comparé qu’à partir de 20 images, et seulement avec le même modèle, la même taille et la même haute résolution. Les chiffres disent ce qui s’est passé, pas pourquoi.</p>
         </div>
         <div class="forge-lab-tabs" role="tablist" aria-label="Vues du laboratoire">
-          <button type="button" role="tab" id="forge-lab-tab-speed" data-view="speed" aria-selected="true" aria-controls="forge-lab-panel">Vitesse</button>
-          <button type="button" role="tab" id="forge-lab-tab-reliability" data-view="reliability" aria-selected="false" aria-controls="forge-lab-panel">Fiabilité</button>
-          <button type="button" role="tab" id="forge-lab-tab-keep" data-view="keep" aria-selected="false" aria-controls="forge-lab-panel">Taux de garde</button>
+          <button data-help="Classement des réglages les plus rapides." type="button" role="tab" id="forge-lab-tab-speed" data-view="speed" aria-selected="true" aria-controls="forge-lab-panel">Vitesse</button>
+          <button data-help="Classement des réglages les plus fiables." type="button" role="tab" id="forge-lab-tab-reliability" data-view="reliability" aria-selected="false" aria-controls="forge-lab-panel">Fiabilité</button>
+          <button data-help="Classement des réglages qui font garder le plus d'images." type="button" role="tab" id="forge-lab-tab-keep" data-view="keep" aria-selected="false" aria-controls="forge-lab-panel">Taux de garde</button>
         </div>
         <div id="forge-lab-panel" role="tabpanel" aria-live="polite"></div>
         <div id="forge-lab-mixed" class="forge-lab-mixed" hidden></div>
         <p id="forge-lab-applied" class="forge-note" role="status" tabindex="-1"></p>
-        <button type="button" id="forge-lab-refresh" class="secondary">Actualiser</button>
+        <button data-help="Recalculer ces classements." type="button" id="forge-lab-refresh" class="secondary">Actualiser</button>
       </details>
     </div>
     <dialog id="forge-vault-viewer" aria-labelledby="forge-vault-viewer-title">
       <form method="dialog">
         <header class="forge-viewer-bar">
           <h2 id="forge-vault-viewer-title">Image privée</h2>
-          <button type="button" id="forge-vault-viewer-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-vault-viewer-close" class="secondary">Fermer</button>
         </header>
         <img id="forge-vault-viewer-img" alt=""/>
         <p id="forge-vault-viewer-meta"></p>
         <div class="forge-vault-labels" id="forge-vault-labels">
           <div class="field"><label for="forge-vault-tags">Étiquettes (séparées par une virgule)</label><input id="forge-vault-tags" type="text" autocomplete="off" spellcheck="false" maxlength="420"/></div>
           <div class="field"><label for="forge-vault-collection">Collection</label><input id="forge-vault-collection" type="text" autocomplete="off" spellcheck="false" maxlength="48"/></div>
-          <button type="button" id="forge-vault-labels-save" class="secondary">Enregistrer</button>
+          <button data-help="Enregistrer les étiquettes de cette image." type="button" id="forge-vault-labels-save" class="secondary">Enregistrer</button>
           <p id="forge-vault-labels-note" class="forge-note" role="status">Chiffrées dans le coffre, comme l'image.</p>
         </div>
         <div class="forge-triage-row" id="forge-vault-viewer-triage" role="group" aria-label="Tri de l’image"></div>
-        <button type="button" id="forge-vault-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
-        <button type="button" id="forge-vault-icon-use" class="secondary">Utiliser comme icône</button>
+        <button data-help="Retoucher une zone de cette image." type="button" id="forge-vault-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
+        <button data-help="Utiliser cette image comme icône du coffre." type="button" id="forge-vault-icon-use" class="secondary">Utiliser comme icône</button>
         <p id="forge-vault-icon-note" class="forge-note" role="status" aria-live="polite"></p>
         <div class="forge-explore" id="forge-vault-explore-box">
           <div class="forge-label-row"><label for="forge-vault-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-vault-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
-          <button type="button" id="forge-vault-explore">Générer 6 variations</button>
+          <button data-help="Générer six variantes de cette image." type="button" id="forge-vault-explore">Générer 6 variations</button>
           <p class="forge-note" id="forge-vault-explore-note" role="status">Même graine et mêmes réglages : proche garde l'image, loin s'en écarte. Touchez une variation puis Réutiliser pour continuer depuis elle. Reste dans le coffre, sur cet HQ : jamais envoyé aux autres appareils.</p>
         </div>
         <div class="forge-actions">
-          <button type="button" id="forge-vault-download">Télécharger l'original</button>
-          <button type="button" id="forge-vault-share" class="secondary" hidden>Enregistrer dans Photos</button>
+          <button data-help="Télécharger l'image d'origine, sans compression." type="button" id="forge-vault-download">Télécharger l'original</button>
+          <button data-help="Enregistrer l'image dans Photos sur cet appareil." type="button" id="forge-vault-share" class="secondary" hidden>Enregistrer dans Photos</button>
           <label class="forge-privacy-ack" for="forge-vault-params"><input type="checkbox" id="forge-vault-params"/> Inclure les paramètres</label>
-          <button type="button" id="forge-vault-reuse">Réutiliser les réglages</button>
-          <button type="button" id="forge-vault-delete" class="secondary">Supprimer du coffre</button>
+          <button data-help="Reprendre les réglages qui ont produit cette image." type="button" id="forge-vault-reuse">Réutiliser les réglages</button>
+          <button data-help="Retirer cette image du coffre." type="button" id="forge-vault-delete" class="secondary">Supprimer du coffre</button>
         </div>
       </form>
     </dialog>
@@ -8833,16 +9186,16 @@ def render_app() -> bytes:
         <header class="forge-viewer-bar">
           <h2 id="forge-triage-title">Tri rapide</h2>
           <span id="forge-triage-count" class="forge-summary-hint" aria-live="polite"></span>
-          <button type="button" id="forge-triage-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-triage-close" class="secondary">Fermer</button>
         </header>
         <div id="forge-triage-stage" class="forge-triage-stage"><img id="forge-triage-img" alt=""/></div>
         <p id="forge-triage-empty" class="forge-note" hidden>Rien à trier : toutes les images ont déjà un choix.</p>
         <div class="forge-triage-actions">
-          <button type="button" id="forge-triage-reject" class="secondary">Rejeter</button>
-          <button type="button" id="forge-triage-favorite" class="secondary">Favori</button>
-          <button type="button" id="forge-triage-keep">Garder</button>
+          <button data-help="Écarter cette image." type="button" id="forge-triage-reject" class="secondary">Rejeter</button>
+          <button data-help="Marquer cette image comme favorite." type="button" id="forge-triage-favorite" class="secondary">Favori</button>
+          <button data-help="Garder cette image." type="button" id="forge-triage-keep">Garder</button>
         </div>
-        <button type="button" id="forge-triage-undo" class="secondary" disabled>Annuler le dernier choix</button>
+        <button data-help="Revenir sur le dernier choix." type="button" id="forge-triage-undo" class="secondary" disabled>Annuler le dernier choix</button>
         <p id="forge-triage-note" class="forge-note" role="status">Glisser à droite : garder · à gauche : rejeter · vers le haut : favori. Une image rejetée va à la corbeille ; rien n’est effacé.</p>
       </div>
     </dialog>
@@ -8850,7 +9203,7 @@ def render_app() -> bytes:
       <div class="forge-sheet-inner">
         <header class="forge-viewer-bar">
           <h2 id="forge-trash-title">Corbeille</h2>
-          <button type="button" id="forge-trash-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-trash-close" class="secondary">Fermer</button>
         </header>
         <p class="forge-note">Les images rejetées restent ici. Remettre les fait revenir dans la galerie ; rien n’est effacé sans Supprimer.</p>
         <p id="forge-trash-empty" class="forge-note" hidden>La corbeille est vide.</p>
@@ -8860,13 +9213,13 @@ def render_app() -> bytes:
     <dialog id="forge-inpaint" class="forge-inpaint" aria-labelledby="forge-inpaint-title">
       <header class="forge-viewer-bar">
         <h2 id="forge-inpaint-title">Retoucher une zone</h2>
-        <button type="button" id="forge-inpaint-close" class="secondary">Fermer</button>
+        <button data-help="Fermer cette fenêtre." type="button" id="forge-inpaint-close" class="secondary">Fermer</button>
       </header>
       <div class="forge-inpaint-stage"><img id="forge-inpaint-img" alt=""/><canvas id="forge-inpaint-canvas" width="1" height="1" aria-label="Peignez au doigt la zone à refaire"></canvas></div>
       <div class="forge-inpaint-tools" role="group" aria-label="Pinceau">
         <label class="forge-inpaint-brush">Pinceau <input type="range" id="forge-inpaint-brush" min="8" max="80" step="2" value="28"/></label>
-        <button type="button" id="forge-inpaint-undo" class="secondary">Annuler</button>
-        <button type="button" id="forge-inpaint-clear" class="secondary">Effacer</button>
+        <button data-help="Effacer le dernier trait." type="button" id="forge-inpaint-undo" class="secondary">Annuler</button>
+        <button data-help="Effacer tout le masque." type="button" id="forge-inpaint-clear" class="secondary">Effacer</button>
       </div>
       <label class="forge-check"><input type="checkbox" id="forge-inpaint-invert"/> Inverser : refaire tout sauf la zone</label>
       <label for="forge-inpaint-prompt">Ce qu’il faut dans la zone</label>
@@ -8880,53 +9233,53 @@ def render_app() -> bytes:
       </details>
       <p class="forge-note" id="forge-inpaint-where"></p>
       <p class="forge-note" id="forge-inpaint-model" role="status"></p>
-      <button type="button" id="forge-inpaint-send">Retoucher</button>
+      <button data-help="Appliquer la retouche à cette zone." type="button" id="forge-inpaint-send">Retoucher</button>
       <p class="forge-note" id="forge-inpaint-note" role="status">Peignez la zone à refaire, puis touchez Retoucher. Forge (ce PC) doit être libre.</p>
     </dialog>
     <dialog id="forge-viewer" aria-labelledby="forge-viewer-title">
       <form method="dialog">
         <header class="forge-viewer-bar">
           <h2 id="forge-viewer-title">Image</h2>
-          <button type="button" id="forge-viewer-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-viewer-close" class="secondary">Fermer</button>
         </header>
         <img id="forge-viewer-img" alt=""/>
         <p id="forge-viewer-meta"></p>
         <div class="forge-triage-row" id="forge-viewer-triage" role="group" aria-label="Tri de l’image"></div>
-        <button type="button" id="forge-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
+        <button data-help="Retoucher une zone de cette image." type="button" id="forge-viewer-inpaint" class="secondary forge-inpaint-open">Retoucher une zone</button>
         <details id="forge-lineage" class="forge-lineage">
           <summary>Généalogie</summary>
-          <div class="forge-label-row"><span class="forge-note">D'où vient cette image et ce qui en est né.</span><span class="forge-help-wrap"><button type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-lineage">Aide</button><p id="forge-help-lineage" class="forge-help-pop" role="tooltip">Les liens viennent des finitions et des retouches de la galerie. Les variations ne sont pas reliées. Le coffre privé n'apparaît jamais ici.</p></span></div>
+          <div class="forge-label-row"><span class="forge-note">D'où vient cette image et ce qui en est né.</span><span class="forge-help-wrap"><button data-help="Ouvre l'aide de ce réglage." type="button" class="forge-help" aria-expanded="false" aria-controls="forge-help-lineage">Aide</button><p id="forge-help-lineage" class="forge-help-pop" role="tooltip">Les liens viennent des finitions et des retouches de la galerie. Les variations ne sont pas reliées. Le coffre privé n'apparaît jamais ici.</p></span></div>
           <p id="forge-lineage-note" class="forge-note" role="status"></p>
           <ol id="forge-lineage-tree" class="forge-lineage-tree" aria-label="Arbre de l'image"></ol>
         </details>
         <div class="forge-explore" id="forge-viewer-explore-box">
           <div class="forge-label-row"><label for="forge-viewer-explore-range">Explorer autour</label></div>
           <div class="forge-explore-row"><span aria-hidden="true">proche</span><input type="range" id="forge-viewer-explore-range" min="0.05" max="0.6" step="0.05" value="0.2" aria-valuetext="proche"/><span aria-hidden="true">loin</span></div>
-          <button type="button" id="forge-viewer-explore">Générer 6 variations</button>
+          <button data-help="Générer six variantes de cette image." type="button" id="forge-viewer-explore">Générer 6 variations</button>
           <p class="forge-note" id="forge-viewer-explore-note" role="status">Même graine et mêmes réglages : proche garde l'image, loin s'en écarte. Touchez une variation puis Réutiliser pour continuer depuis elle.</p>
         </div>
         <div class="forge-finish" id="forge-viewer-finish">
           <div class="forge-label-row"><label for="forge-finish-scale">Finition sur ce PC</label></div>
           <select id="forge-finish-scale"><option value="1.5">Haute résolution ×1,5</option><option value="2">Haute résolution ×2</option></select>
-          <button type="button" id="forge-finish">Lancer la finition</button>
+          <button data-help="Lancer la finition de cette image." type="button" id="forge-finish">Lancer la finition</button>
           <p class="forge-note" id="forge-finish-note" role="status">Finition, pas une copie identique : la haute résolution peut changer des détails et la composition. Rendu par le Forge de ce PC.</p>
         </div>
-        <p class="forge-note" id="forge-finish-of" hidden><span>Finition d'une image de la galerie. La composition peut différer.</span> <button type="button" id="forge-finish-source" class="forge-tool">Voir l'image d'origine</button></p>
+        <p class="forge-note" id="forge-finish-of" hidden><span>Finition d'une image de la galerie. La composition peut différer.</span> <button data-help="Voir l'image d'origine, avant finition." type="button" id="forge-finish-source" class="forge-tool">Voir l'image d'origine</button></p>
         <div class="forge-actions">
           <a id="forge-download" href="#" download>Télécharger l'original</a>
-          <button type="button" id="forge-share" class="secondary" hidden>Enregistrer dans Photos</button>
-          <button type="button" id="forge-reuse">Réutiliser les réglages</button>
-          <button type="button" id="forge-compare-start" class="secondary">Comparer avec…</button>
-          <button type="button" id="forge-delete" class="secondary">Supprimer la copie HQ</button>
+          <button data-help="Enregistrer l'image dans Photos sur cet appareil." type="button" id="forge-share" class="secondary" hidden>Enregistrer dans Photos</button>
+          <button data-help="Reprendre les réglages de cette image." type="button" id="forge-reuse">Réutiliser les réglages</button>
+          <button data-help="Comparer cette image avec une autre." type="button" id="forge-compare-start" class="secondary">Comparer avec…</button>
+          <button data-help="Envoyer cette copie HQ à la corbeille. Rien n'est effacé ici." type="button" id="forge-delete" class="secondary">Mettre à la corbeille</button>
         </div>
       </form>
     </dialog>
-    <p id="forge-compare-pick" class="forge-compare-pick" role="status" hidden><span>Touchez la seconde image à comparer.</span> <button type="button" id="forge-compare-pick-cancel" class="secondary">Annuler</button></p>
+    <p id="forge-compare-pick" class="forge-compare-pick" role="status" hidden><span>Touchez la seconde image à comparer.</span> <button data-help="Annuler la sélection pour la comparaison." type="button" id="forge-compare-pick-cancel" class="secondary">Annuler</button></p>
     <dialog id="forge-compare" class="forge-sheet forge-compare" aria-labelledby="forge-compare-title">
       <div class="forge-sheet-inner">
         <header class="forge-viewer-bar">
           <h2 id="forge-compare-title">Comparer A / B</h2>
-          <button type="button" id="forge-compare-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-compare-close" class="secondary">Fermer</button>
         </header>
         <div id="forge-compare-stage" class="forge-compare-stage" role="img" aria-label="Image A et image B superposées. Pincez pour zoomer sur les deux à la fois.">
           <div class="forge-compare-layer"><img id="forge-compare-a" alt=""/></div>
@@ -8936,8 +9289,8 @@ def render_app() -> bytes:
         <div class="forge-label-row"><label for="forge-compare-reveal">Révéler B</label></div>
         <input type="range" id="forge-compare-reveal" min="0" max="100" step="1" value="50"/>
         <div class="forge-actions">
-          <button type="button" id="forge-compare-swap" class="secondary">Inverser A et B</button>
-          <button type="button" id="forge-compare-reset" class="secondary">Zoom initial</button>
+          <button data-help="Inverser A et B." type="button" id="forge-compare-swap" class="secondary">Inverser A et B</button>
+          <button data-help="Revenir au zoom initial." type="button" id="forge-compare-reset" class="secondary">Zoom initial</button>
         </div>
         <h3 class="forge-compare-h">Différences de réglages</h3>
         <dl id="forge-compare-diff" class="forge-compare-diff"></dl>
@@ -8948,7 +9301,7 @@ def render_app() -> bytes:
       <div class="forge-sheet-inner">
         <header class="forge-viewer-bar">
           <h2 id="forge-device-dialog-title">Ajouter un appareil</h2>
-          <button type="button" id="forge-device-dialog-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-device-dialog-close" class="secondary">Fermer</button>
         </header>
         <p class="forge-note">Six étapes sur le PC à ajouter. Rien n'est installé automatiquement. Ce PC appelle HQ par Tailscale ; HQ ne se connecte jamais à lui.</p>
         <ol class="forge-device-steps forge-guide">
@@ -8957,9 +9310,9 @@ def render_app() -> bytes:
           <li><h3>Forge</h3><p>Démarrez Forge avec <code>--api</code> et <strong>sans</strong> <code>--listen</code> : son API reste sur 127.0.0.1, seul le worker local l'utilise.</p></li>
           <li><h3>Worker</h3><p>Copiez le fichier <code>hq_forge_worker.py</code> du dossier HQ (à côté de <code>iphone_bridge.py</code>) dans un dossier de ce PC, puis ouvrez PowerShell dans ce dossier et lancez l'appairage :</p>
             <pre id="forge-device-snippet" class="forge-snippet"></pre>
-            <button type="button" class="forge-tool" data-copy="pair">Copier la commande d'appairage</button></li>
+            <button data-help="Copier la commande d'appairage d'un appareil." type="button" class="forge-tool" data-copy="pair">Copier la commande d'appairage</button></li>
           <li><h3>Code d'appairage</h3><p>Créez un code et tapez-le à l'invite masquée de PowerShell. Il n'est jamais dans une commande copiée, une URL ou un fichier.</p>
-            <button type="button" id="forge-device-code-new">Créer un code à usage unique</button>
+            <button data-help="Créer un code à usage unique pour un appareil." type="button" id="forge-device-code-new">Créer un code à usage unique</button>
             <div id="forge-device-code-box" class="forge-device-code-box" hidden>
               <p class="forge-note">Code valable 10 minutes, une seule fois. Il ne sera plus affiché.</p>
               <output id="forge-device-code" class="forge-device-code" aria-live="polite"></output>
@@ -8967,7 +9320,7 @@ def render_app() -> bytes:
             </div>
             <p>Puis démarrez le worker :</p>
             <pre id="forge-device-run" class="forge-snippet"></pre>
-            <button type="button" class="forge-tool" data-copy="run">Copier la commande de lancement</button></li>
+            <button data-help="Copier la commande de lancement de Forge." type="button" class="forge-tool" data-copy="run">Copier la commande de lancement</button></li>
           <li><h3>Vérification</h3><p id="forge-device-detect" class="forge-device-detect" role="status" aria-live="polite"></p></li>
         </ol>
         <p class="forge-note">Démarrage automatique : voir <code>docs/forge-workers.md</code> (tâche planifiée à l'ouverture de session).</p>
@@ -8977,7 +9330,7 @@ def render_app() -> bytes:
       <div class="forge-sheet-inner">
         <header class="forge-viewer-bar">
           <h2 id="forge-history-title">Historique des prompts</h2>
-          <button type="button" id="forge-history-close" class="secondary">Fermer</button>
+          <button data-help="Fermer cette fenêtre." type="button" id="forge-history-close" class="secondary">Fermer</button>
         </header>
         <p class="forge-note">Les images de la galerie HQ, des plus récentes aux plus anciennes. Rien n'est généré sans votre action. Le coffre privé n'apparaît jamais ici.</p>
         <div class="field">
@@ -8986,24 +9339,21 @@ def render_app() -> bytes:
         </div>
         <p id="forge-history-state" class="forge-note" role="status" aria-live="polite"></p>
         <ul id="forge-history-list" class="forge-history-list"></ul>
-        <button type="button" id="forge-history-more" class="secondary" hidden>Plus d'entrées</button>
+        <button data-help="Charger des entrées plus anciennes." type="button" id="forge-history-more" class="secondary" hidden>Plus d'entrées</button>
       </div>
     </dialog>
   </div>
 
-  <div data-panel="intime" class="hq-intime-panel" id="hq-intime-panel" aria-labelledby="hq-intime-title">
+  <div data-panel="intime" class="hq-intime-panel" id="hq-intime-panel" aria-label="Tête-à-tête">
     <div class="hq-intime-bar">
-      <div class="hq-intime-bar-copy">
-        <h2 id="hq-intime-title">Tête-à-tête</h2>
-        <p class="hq-intime-kicker">Session admin · déplace-la avec ⠿, les bords de bulle ou pince l'avatar — comme partout ailleurs sur HQ.</p>
-      </div>
       <div class="hq-intime-actions">
-        <button type="button" class="ghost" id="hq-intime-fold">Replier</button>
-        <button type="button" class="secondary" id="hq-intime-reset">Reset position</button>
-        <button type="button" class="secondary" id="hq-intime-focus-chat">Ouvrir le fil</button>
+        <button data-help="Replier l'espace tête-à-tête." type="button" class="ghost" id="hq-intime-fold">Replier</button>
+        <button data-help="Recentrer Transferania et le chat." type="button" class="secondary" id="hq-intime-reset">Recentrer</button>
+        <button data-help="Ouvrir le fil de discussion." type="button" class="secondary" id="hq-intime-focus-chat">Ouvrir le fil</button>
+        <label><input type="checkbox" id="hq-intime-focus-mode"> Mode concentration</label>
       </div>
     </div>
-    <div class="hq-intime-ambient" aria-hidden="true"></div>
+    <div id="hq-intime-room"></div>
   </div>
 
   <div data-panel="plus">
@@ -9023,22 +9373,25 @@ def render_app() -> bytes:
           <a href="#musique" data-view-link="musique">Musique</a>
           <a href="#intime" data-view-link="intime">Tête-à-tête</a>
           <a href="#engine" data-view-link="engine">Engine</a>
+          <a href="#robotique" data-view-link="robotique">Robotique</a>
+          <a href="#securite" data-view-link="securite">Sécurité</a>
           <a href="#ops" data-view-link="ops" class="mode-complet-only">Terminal</a>
         </div>
       </section>
       <h2 class="hq-more-system-title">Système</h2>
     </nav>
     <nav class="sys-jump" aria-label="Sections Système">
-      <button type="button" data-jump="system-session">Session</button>
-      <button type="button" data-jump="system-security">Sécurité &amp; PINs</button>
-      <button type="button" data-jump="system-backups">Sauvegardes</button>
-      <button type="button" data-jump="system-notifications">Notifications</button>
-      <button type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
-      <button type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
-      <button type="button" data-jump="system-journal">Journal</button>
-      <button type="button" data-jump="system-mini-quests">Mini-Quêtes</button>
-      <button type="button" data-jump="system-alerts">Alertes</button>
-      <button type="button" data-jump="system-info">Infos</button>
+      <button type="button" class="admin-only" id="system-robotics-settings">Réglages Robotique</button>
+      <button data-help="Cet appareil, la session et la déconnexion." type="button" data-jump="system-session">Session</button>
+      <button data-help="PINs, accès et sécurité du pont." type="button" data-jump="system-security">Sécurité &amp; PINs</button>
+      <button data-help="Sauvegardes et restauration." type="button" data-jump="system-backups">Sauvegardes</button>
+      <button data-help="Notifications sur cet appareil." type="button" data-jump="system-notifications">Notifications</button>
+      <button data-help="Règles automatiques du foyer." type="button" class="mode-complet-only" data-jump="system-automations">Automatisations</button>
+      <button data-help="Tâches planifiées du pont." type="button" class="mode-complet-only" data-jump="system-tasks">Tâches</button>
+      <button data-help="Journal des événements récents." type="button" data-jump="system-journal">Journal</button>
+      <button data-help="Petites quêtes du quotidien." type="button" data-jump="system-mini-quests">Mini-Quêtes</button>
+      <button data-help="Alertes en attente." type="button" data-jump="system-alerts">Alertes</button>
+      <button data-help="Version, appareils et diagnostic." type="button" data-jump="system-info">Infos</button>
     </nav>
     <section class="hq" id="system-session" aria-labelledby="plus-status-title">
       <div class="sec-head">
@@ -9119,7 +9472,7 @@ def render_app() -> bytes:
           </select>
         </div>
         <div class="field"><label for="rule-target">Cible (id scène ou commande)</label><input id="rule-target" type="text" maxlength="40"/></div>
-        <button type="submit" class="secondary">Enregistrer la règle</button>
+        <button data-help="Enregistrer cette règle automatique." type="submit" class="secondary">Enregistrer la règle</button>
       </form>
     </details>
 
@@ -9129,7 +9482,7 @@ def render_app() -> bytes:
         <p class="sec-hint">Web Push opt-in (HTTPS / Tailscale Serve, push_enabled) : alertes, attention critique, échec d'automatisation. Pas toutes les notifications HQ.</p>
       </div>
       <p id="hq-push-note" class="hint"></p>
-      <button type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
+      <button data-help="Recevoir les notifications sur cet appareil." type="button" class="secondary" id="btn-push">Activer sur cet appareil</button>
     </section>
 
     <details class="hq mode-complet-only" id="system-tasks">
@@ -9140,7 +9493,7 @@ def render_app() -> bytes:
         </div>
       </summary>
       <p class="hint">Les cartes sans projet (et celles créées depuis le Carnet) sont dans Projets › Tâches libres.</p>
-      <button type="button" class="secondary" onclick="setView('projets')">Ouvrir Projets</button>
+      <button data-help="Aller à la page Projets." type="button" class="secondary" onclick="setView('projets')">Ouvrir Projets</button>
     </details>
 
     <details class="hq" id="system-journal">
@@ -9151,13 +9504,13 @@ def render_app() -> bytes:
         </div>
       </summary>
       <div class="chips filter-chips" id="hq-event-filters" role="tablist" aria-label="Filtrer le journal">
-        <button type="button" class="chip active" data-event-kind="all">Tous</button>
-        <button type="button" class="chip" data-event-kind="alert">Alertes</button>
-        <button type="button" class="chip" data-event-kind="upload">Envois</button>
-        <button type="button" class="chip" data-event-kind="scene">Scènes</button>
-        <button type="button" class="chip" data-event-kind="backup">Backups</button>
-        <button type="button" class="chip" data-event-kind="automation">Auto</button>
-        <button type="button" class="chip" data-event-kind="schedule">Planning</button>
+        <button data-help="Montrer tous les événements." type="button" class="chip active" data-event-kind="all">Tous</button>
+        <button data-help="Ne montrer que les alertes." type="button" class="chip" data-event-kind="alert">Alertes</button>
+        <button data-help="Ne montrer que les envois de fichiers." type="button" class="chip" data-event-kind="upload">Envois</button>
+        <button data-help="Ne montrer que les scènes." type="button" class="chip" data-event-kind="scene">Scènes</button>
+        <button data-help="Ne montrer que les sauvegardes." type="button" class="chip" data-event-kind="backup">Backups</button>
+        <button data-help="Ne montrer que les automatisations." type="button" class="chip" data-event-kind="automation">Auto</button>
+        <button data-help="Ne montrer que le planning." type="button" class="chip" data-event-kind="schedule">Planning</button>
       </div>
       <ul class="hq-list" id="hq-events"><li class="hint">Chargement…</li></ul>
     </details>
@@ -9244,7 +9597,7 @@ def render_app() -> bytes:
       <div class="field">
         <label><input type="checkbox" id="hq-companion-nsfw-visible"/> Afficher le bouton <strong>Adulte</strong> à côté de l'avatar Transferania</label>
         <p class="hint">Visible seulement avec une session <strong>admin</strong> (PIN admin). Les comptes envoi ne voient pas ce bouton. Règle l'intensité 1–3 ci-dessus pour le registre en mode adulte.</p>
-        <button type="button" class="secondary" id="hq-intime-open" hidden style="margin-top:8px">Ouvrir l'espace Tête-à-tête ›</button>
+        <button data-help="Ouvrir l'espace tête-à-tête." type="button" class="secondary" id="hq-intime-open" hidden style="margin-top:8px">Ouvrir l'espace Tête-à-tête ›</button>
       </div>
     </section>
   </div>
@@ -9272,6 +9625,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-files.js"></script>
 <script src="/assets/hq-today.js"></script>
 <script src="/assets/hq-home.js"></script>
+<script src="/assets/hq-home-cards.js"></script>
 <script src="/assets/hq-motion-coordinator.js"></script>
 <script src="/assets/hq-kinetic-score.js"></script>
 <script src="/assets/hq-home-fx.js"></script>
@@ -9289,7 +9643,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-lecteur.js"></script>
 <script src="/assets/hq-dessiner-motion.js"></script>
 <script src="/assets/hq-ai.js"></script>
-<script src="/assets/hq-companion-lewd-lines.js"></script>
+{lewd_script}
 <link rel="preload" href="/assets/hq-companion-sfx-bus.js" as="script">
 <link rel="preload" href="/assets/hq-companion-reaction-audio.js" as="script">
 <link rel="preload" href="/assets/companion/chat/reactions/manifest.runtime.json?v={reaction_manifest_rev}" as="fetch" crossorigin>
@@ -9300,7 +9654,14 @@ def render_app() -> bytes:
 <script src="/assets/hq-image-chip-scale.js"></script>
 <script src="/assets/hq-else-chip.js"></script>
 <script src="/assets/hq-inventoria-chip.js"></script>
+<script src="/assets/hq-musica-chip.js"></script>
 <script src="/assets/hq-engine.js"></script>
+<script src="/assets/hq-pistonia-chip.js"></script>
+<script src="/assets/hq-security.js"></script>
+<script src="/assets/hq-securia-chip.js"></script>
+<script src="/assets/hq-culinia-chip.js"></script>
+<script src="/assets/hq-forgia-chip.js"></script>
+<script src="/assets/hq-assistant-visits.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <script src="/assets/hq-timemachine.js"></script>
 <script src="/assets/hq-constellation.js"></script>
@@ -9316,14 +9677,14 @@ def render_app() -> bytes:
   <form method="dialog">
     <header><strong id="hq-device-title">Appareil</strong></header>
     <div id="hq-device-body"></div>
-    <div class="row"><button value="cancel" class="secondary">Fermer</button></div>
+    <div class="row"><button data-help="Fermer cette fenêtre." value="cancel" class="secondary">Fermer</button></div>
   </form>
 </dialog>
 <dialog id="hq-agent-dialog" aria-labelledby="hq-agent-title">
   <form method="dialog">
     <header><strong id="hq-agent-title">Centre agents</strong></header>
     <div id="hq-agent-body"><p class="hint">Chargement…</p></div>
-    <div class="row"><button value="cancel" class="secondary">Fermer</button></div>
+    <div class="row"><button data-help="Fermer cette fenêtre." value="cancel" class="secondary">Fermer</button></div>
   </form>
 </dialog>
 <div id="hq-palette" class="palette" hidden>
@@ -9331,7 +9692,7 @@ def render_app() -> bytes:
     <p id="hq-palette-title" class="palette-title">Recherche HQ</p>
     <input id="hq-palette-input" type="search" placeholder="Dossier, scène, appareil, action…" autocomplete="off" aria-autocomplete="list" aria-controls="hq-palette-list"/>
     <div id="hq-palette-list"></div>
-    <p class="palette-foot">↑ ↓ naviguer · Entrée ouvrir · Échap fermer</p>
+    <p class="palette-foot"><kbd class="kbd-hint">Ctrl K</kbd> ↑ ↓ naviguer · Entrée ouvrir · Échap fermer</p>
   </div>
 </div>
 </body></html>"""
@@ -9457,6 +9818,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup(self) -> None:
         super().setup()
+        self._req_start = time.time()
+        self._req_pin_hint = None
+        try:
+            hq_security.TRAFFIC_TRACKER.start_request()
+        except Exception:
+            pass
         try:
             self.connection.settimeout(REQ_TIMEOUT_SEC)
         except OSError:
@@ -9465,6 +9832,13 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         except (OSError, AttributeError):
             pass
+
+    def finish(self) -> None:
+        try:
+            hq_security.TRAFFIC_TRACKER.end_request()
+        except Exception:
+            pass
+        super().finish()
 
     def parse_request(self) -> bool:
         ok = super().parse_request()
@@ -10197,6 +10571,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+        try:
+            dur = (time.time() - getattr(self, "_req_start", time.time())) * 1000.0
+            ip = self.client_address[0] if getattr(self, "client_address", None) else "unknown"
+            prov = self._source_class()
+            if prov == "tailscale_serve":
+                prov = "tailscale"
+            role = self._role() or "anonymous"
+            hint = getattr(self, "_req_pin_hint", None)
+            hq_security.TRAFFIC_TRACKER.record(
+                ip=ip,
+                method=getattr(self, "command", "GET"),
+                path=getattr(self, "path", "/"),
+                status=code,
+                duration_ms=dur,
+                provenance=prov,
+                role=role,
+                pin_hint=hint,
+            )
+        except Exception:
+            pass
 
     def _gzip_send_body(self, code, body, content_type, headers) -> bytes | None:
         """Gzipped body for _send() when worthwhile and safe, else None (send as-is). Text/JSON/HTML/JS only,
@@ -10232,7 +10626,7 @@ class Handler(BaseHTTPRequestHandler):
         sent = [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",") if t.strip()]
         # perf9: immutable only when ?v= names THIS version; a stale or missing tag stays no-cache (revalidated).
         want = (parse_qs(urlparse(self.path).query).get("v") or [""])[0]
-        if reaction_fingerprinted_ogg_asset(path) or (want and want == asset_version(st)):
+        if reaction_fingerprinted_ogg_asset(path) or (want and (want == asset_version(st) or want == asset_build_stamp())):
             cache = ASSET_IMMUTABLE_CC
         elif want and path.suffix.lower() in ASSET_TAGGED_IMAGE_EXT:
             # Hand-bumped ?v= tags on images (the repo convention when a picture changes): reuse for a day, no revalidation.
@@ -10408,6 +10802,21 @@ class Handler(BaseHTTPRequestHandler):
         code, payload = hq_forge_fleet.handle_worker(self.command or "POST", raw, self.headers, body, ip)
         self._json(code, payload)
 
+    def _engine_agent(self, raw: str) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "longueur invalide"})
+            return
+        if length < 0 or length > hq_engine_fleet.REPORT_MAX:
+            self._json(413, {"error": "Requête trop grande."})
+            return
+        body = self.rfile.read(length) if length else b""
+        hq_engine_fleet.bind(ROOT)
+        ip = self.client_address[0] if self.client_address else ""
+        code, payload = hq_engine_fleet.handle_agent(self.command or "POST", raw, self.headers, body, ip)
+        self._json(code, payload)
+
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length < 0 or length > 8 * 1024 * 1024:
@@ -10447,7 +10856,7 @@ class Handler(BaseHTTPRequestHandler):
             if raw == "/diagnostics":
                 self._send(200, hq_diagnostics_ui.render_page().encode("utf-8"), "text/html; charset=utf-8")
             elif raw == "/api/diag/live":
-                self._json(200, hq_diagnostics.liveness())
+                self._json(200, {**hq_diagnostics.liveness(), **boot_revision_status()})
             elif raw == "/api/diag/security":
                 try:
                     lim = int((qs.get("limit", ["50"])[0] or "50"))
@@ -11065,6 +11474,13 @@ class Handler(BaseHTTPRequestHandler):
         if inpaint is not None:
             self._json(inpaint[0], inpaint[1])
             return True
+        preview = hq_forge_preview.serve_get(raw)
+        if preview is not None:
+            if isinstance(preview[1], (bytes, bytearray)):
+                self._send(preview[0], bytes(preview[1]), "image/png")  # constellation preview, memory only
+            else:
+                self._json(preview[0], preview[1])
+            return True
         sketch = hq_forge_sketch.serve_get(raw)
         if sketch is not None:
             if isinstance(sketch[1], (bytes, bytearray)):
@@ -11093,6 +11509,10 @@ class Handler(BaseHTTPRequestHandler):
         lineage = hq_forge_lineage.serve_get(ROOT, raw)
         if lineage is not None:
             self._json(lineage[0], lineage[1])
+            return True
+        studio = hq_forge_library.serve_get(ROOT, raw, parsed)
+        if studio is not None:
+            self._json(studio[0], studio[1])
             return True
         served = hq_forge_gallery.serve_file(ROOT, raw)
         if served is not None:
@@ -11197,6 +11617,10 @@ class Handler(BaseHTTPRequestHandler):
         if style is not None:
             self._json(style[0], style[1])
             return True
+        studio = hq_forge_library.serve_post(ROOT, raw, data)
+        if studio is not None:
+            self._json(studio[0], studio[1])
+            return True
         bricks = hq_forge_bricks.serve_post(ROOT, raw, data)
         if bricks is not None:
             self._json(bricks[0], bricks[1])
@@ -11204,6 +11628,10 @@ class Handler(BaseHTTPRequestHandler):
         inpaint = hq_forge_inpaint.serve_post(ROOT, raw, data, token)
         if inpaint is not None:
             self._json(inpaint[0], inpaint[1])
+            return True
+        preview = hq_forge_preview.serve_post(ROOT, raw, data)
+        if preview is not None:
+            self._json(preview[0], preview[1])
             return True
         sketch = hq_forge_sketch.serve_post(ROOT, raw, data)
         if sketch is not None:
@@ -11226,6 +11654,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _hq_get(self, raw: str, parsed) -> bool:
+        if raw.startswith(hq_robotics.PREFIX):
+            self._robotics(raw, "GET")
+            return True
         if self._forge_get(raw, parsed):
             return True
         if self._drawings_get(raw, parsed):
@@ -11396,8 +11827,20 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
             self._json(code, payload)
             return True
+        if raw.startswith("/api/companion/chat-image/"):
+            if self._role() != "admin":
+                self._json(403, {"error": "Réservé admin", "code": "forbidden"})
+                return True
+            qs = parse_qs(parsed.query)
+            owner = (session_info(self._token()) or {}).get("user", "admin")
+            path = hq_ai.transferania_chat_image(raw.rsplit("/", 1)[-1], hq_ai.device_id_from(None, qs), owner_id=owner)
+            if path:
+                self._send_file(path)
+            else:
+                self._json(404, {"error": "Photo introuvable", "code": "not_found"})
+            return True
         if raw == "/api/companion/art":
-            nsfw = CONFIG.get("companion_nsfw_enabled", True) is not False
+            nsfw = CONFIG.get("companion_nsfw_enabled", False) is True
             code, payload = hq_companion_art.http_get(role=self._role(), nsfw=nsfw, root=ROOT)
             self._json(code, payload)
             return True
@@ -11434,8 +11877,45 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_music.http_get(raw)
             self._json(code, payload)
             return True
+        if raw.startswith("/api/musica/dj/audio/"):  # DJ Musica drops (admin; mixed voice/jingle cache)
+            import hq_music_dj
+            try:
+                self._send_media(hq_music_dj.drop_path(raw.rsplit("/", 1)[-1]))
+            except hq_music_dj.DjError as exc:
+                self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
+            return True
         if raw == "/api/musica" or raw.startswith("/api/musica/"):  # Musica steward (admin)
             code, payload = hq_musica.http_get(raw)
+            self._json(code, payload)
+            return True
+        if raw == "/api/securia" or raw.startswith("/api/securia/"):  # Securia sentinel (admin)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            code, payload = hq_securia.http_get(raw)
+            self._json(code, payload)
+            return True
+        if raw.startswith("/api/culinia/image/"):  # Culinia cached recipe photos (admin)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            try:
+                self._send_media(hq_culinia.image_path(raw.rsplit("/", 1)[-1]))
+            except hq_culinia.CuliniaError as exc:
+                self._json(exc.status, {"ok": False, "code": exc.code, "error": str(exc)})
+            return True
+        if raw == "/api/culinia" or raw.startswith("/api/culinia/"):  # Culinia meal assistant (admin)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            code, payload = hq_culinia.http_get(raw)
+            self._json(code, payload)
+            return True
+        if raw == "/api/forgia" or raw.startswith("/api/forgia/"):  # Forgia Forge assistant (admin)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            code, payload = hq_forgia.http_get(raw)
             self._json(code, payload)
             return True
         if raw == "/api/spotify/callback":
@@ -11589,6 +12069,26 @@ class Handler(BaseHTTPRequestHandler):
         self._security_headers(frame_self=True)
         self.end_headers()
         self.wfile.write(body)
+        try:
+            dur = (time.time() - getattr(self, "_req_start", time.time())) * 1000.0
+            ip = self.client_address[0] if getattr(self, "client_address", None) else "unknown"
+            prov = self._source_class()
+            if prov == "tailscale_serve":
+                prov = "tailscale"
+            role = self._role() or "anonymous"
+            hint = getattr(self, "_req_pin_hint", None)
+            hq_security.TRAFFIC_TRACKER.record(
+                ip=ip,
+                method=getattr(self, "command", "GET"),
+                path=getattr(self, "path", "/"),
+                status=code,
+                duration_ms=dur,
+                provenance=prov,
+                role=role,
+                pin_hint=hint,
+            )
+        except Exception:
+            pass
 
     def _carnet_asset_get(self, asset_id: str) -> None:
         """Stage 06: serve one confined Carnet image. Admin-only (the caller already enforced the role).
@@ -11755,7 +12255,117 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True  # the unread body must never be parsed as the next request
         self._json(code, payload)
 
+    def _robotics(self, raw: str, method: str) -> None:
+        if not self._require_admin():
+            return
+        lab = hq_robotics.controller(ROOT)
+        action = raw[len(hq_robotics.PREFIX):]
+        token = self._token()
+        host = (self.headers.get("Host") or "").lower()
+        port = self._effective_port()
+        peer = self.client_address[0]
+        forwarded = any(name.lower().startswith(("x-forwarded-", "tailscale-")) or name.lower() == "forwarded"
+                        for name in self.headers)
+        physical = (not forwarded and peer in ("127.0.0.1", "::1") and
+                    host in {f"{name}:{port}" for name in ("localhost", "127.0.0.1", "[::1]")})
+        lan = lan_ipv4()
+        local = physical or (not forwarded and host == f"{lan}:{port}" and
+                             robotics_private_peer(peer))
+
+        def authorized():
+            return not hq_security.is_locked_down(CONFIG) and session_role(token) == "admin"
+
+        try:
+            if action == "assistant/portrait" and method == "GET":
+                portrait = lab.state_dir / "robotics-assistant-chip.webp"
+                if physical and hq_ai.nsfw_allowed(peer, "admin") and portrait.is_file() and not portrait.is_symlink():
+                    with portrait.open("rb") as image:
+                        payload = image.read(4 * 1024 * 1024 + 1)
+                    if len(payload) <= 4 * 1024 * 1024 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+                        self._send(200, payload, "image/webp")
+                        return
+                self._json(404, {"error": "Portrait indisponible"})
+                return
+            if action == "camera/video" and method == "GET":
+                self._robotics_video(lab, token, local, authorized)
+                return
+            if method != "GET" and self.command != "POST":
+                self._json(405, {"error": "POST requis", "code": "robotics_method"})
+                return
+            if method == "POST":
+                length = int(self.headers.get("Content-Length") or 0)
+                if not 0 <= length <= 16384:
+                    self.close_connection = True
+                    self._json(413, {"error": "Requête Robotique trop volumineuse"})
+                    return
+                if self.headers.get_content_type() != "application/json":
+                    self.close_connection = True
+                    self._json(415, {"error": "JSON requis"})
+                    return
+                data = self._read_json()
+            else:
+                data = {"lease": self.headers.get("X-HQ-Robotics-Lease", "")}
+            assistant_action = action.startswith("assistant/")
+            owner = ""
+            if assistant_action or (action == "move" and data.get("kind") == "reviewed_script"):
+                session = self._session_info() or {}
+                owner = str(session.get("user_id") or "legacy-admin")
+            if assistant_action:
+                import hq_robotics_assistant
+                result = hq_robotics_assistant.dispatch(
+                    lab, action[len(hq_robotics_assistant.PREFIX):], method, data, owner, authorized)
+            else:
+                result = lab.dispatch(action, method, data, token, physical=physical, local=local,
+                                      authorized=authorized, owner=owner)
+            self._json(200, result)
+        except hq_robotics.Rejected as exc:
+            self._json(exc.status, {"error": str(exc), "code": exc.code})
+        except hq_robotics.DeviceError as exc:
+            self._json(502, {"error": str(exc), "code": "robotics_device"})
+        except ValueError:
+            # Validation error text never includes request fields or credentials.
+            self._json(400, {"error": "Paramètres Robotique invalides", "code": "robotics_invalid"})
+
+    def _robotics_video(self, lab, token, local, authorized) -> None:
+        cfg, stream = lab.open_video(token, self.headers.get("X-HQ-Robotics-Stream"), local)
+        sent = failed = False
+        next_auth_check = 0.0
+        try:
+            with lab.camera.stream(cfg, stream.quality) as (mime, response):
+                self.close_connection = True
+                self.connection.settimeout(3)
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Cache-Control", "no-store, no-transform")
+                self.send_header("Connection", "close")
+                self._security_headers()
+                self.end_headers()
+                sent = True
+                while lab.video_alive(stream):
+                    now = time.monotonic()
+                    if now >= next_auth_check:
+                        if not authorized():
+                            break
+                        next_auth_check = now + 1
+                    chunk = response.read1(65536)
+                    if not chunk:
+                        failed = lab.video_alive(stream)
+                        break
+                    self.wfile.write(chunk)
+                    lab.video_bytes(stream)
+        except (hq_robotics.DeviceError, OSError, http.client.HTTPException):
+            failed = lab.video_alive(stream)
+            if not sent:
+                raise hq_robotics.DeviceError("Flux H.264 Tapo inaccessible") from None
+        finally:
+            lab.close_video(stream, failed)
+            if failed and sent:
+                _diag_record_5xx(self, 502, {"code": "robotics_camera_interrupted"})
+
     def _hq_post(self, raw: str) -> bool:
+        if raw.startswith(hq_robotics.PREFIX):
+            self._robotics(raw, "POST")
+            return True
         if self._forge_post(raw):
             return True
         if raw == "/api/desk/snapshot":
@@ -11953,7 +12563,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
-            nsfw = CONFIG.get("companion_nsfw_enabled", True) is not False
+            nsfw = CONFIG.get("companion_nsfw_enabled", False) is True
             code, payload = hq_companion_art.http_post(ROOT, data, role=self._role(), nsfw=nsfw)
             self._json(code, payload)
             return True
@@ -12008,7 +12618,44 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
-            code, payload = hq_musica.http_post(raw, data)
+            ip = self.client_address[0] if self.client_address else ""
+            code, payload = hq_musica.http_post(raw, data, client_ip=ip, role=self._role())
+            self._json(code, payload)
+            return True
+        if raw == "/api/securia" or raw.startswith("/api/securia/"):  # Securia sentinel chat/tools (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_securia.http_post(raw, data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/culinia" or raw.startswith("/api/culinia/"):  # Culinia meal assistant (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_culinia.http_post(raw, data)
+            self._json(code, payload)
+            return True
+        if raw == "/api/forgia" or raw.startswith("/api/forgia/"):  # Forgia Forge assistant (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_forgia.http_post(raw, data)
             self._json(code, payload)
             return True
         if raw == "/api/spotify" or raw.startswith("/api/spotify/"):  # Spotify mutations (CSRF checked before routing)
@@ -12058,8 +12705,23 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_purchases.http_post(raw, data)
             self._json(code, hq_purchases.redact_for_logs(payload) if code >= 400 else payload)
             return True
-        if raw.startswith("/api/engine/"):  # Engine: start/stop/restart a daemon (CSRF checked before routing)
-            code, payload = hq_engine.http_post(raw, {})
+        if raw.startswith("/api/engine/"):  # Engine: daemon actions + pairing (CSRF checked before routing)
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > (32768 if raw == "/api/engine/pistonia/message" else 4096):   # chat carries a short history
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json() if length else {}
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_engine.http_post(raw, data)
             self._json(code, hq_engine.redact_for_logs(payload) if code >= 400 else payload)
             return True
         if raw.startswith("/api/inventoria/"):  # Inventoria (CSRF checked before routing)
@@ -12158,8 +12820,21 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _reject_if_ip_blocked(self) -> bool:
+        try:
+            cip = self._client_ip()
+            blocked, rec = hq_security.IP_BLOCKLIST.is_blocked(cip)
+            if blocked:
+                self._json(403, {"error": "IP mise en quarantaine par Securia", "blocked": True, "reason": (rec or {}).get("reason", "")})
+                return True
+        except Exception:
+            pass
+        return False
+
     def do_GET(self) -> None:
         try:
+            if self._reject_if_ip_blocked():
+                return
             self._do_GET()
         except BrokenPipeError:
             return
@@ -12224,7 +12899,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Inconnu"})
             return
 
-        if raw.startswith("/agent/v1/") or raw.startswith("/forge-worker/v1/"):
+        if raw.startswith("/agent/v1/") or raw.startswith("/forge-worker/v1/") or raw.startswith("/engine-agent/v1/"):
             self._json(405, {"error": "POST requis"})
             return
 
@@ -12396,6 +13071,47 @@ class Handler(BaseHTTPRequestHandler):
 
         if raw == "/api/status":
             self._json(200, bridge_status())
+            return
+
+        if raw == "/api/security/traffic":
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return
+
+            traffic_data = hq_security.TRAFFIC_TRACKER.snapshot()
+            sec_events = hq_diagnostics.SECURITY_LOG.tail(50)
+            rl_status = AUTH_RATE_LIMITER.get_status()
+
+            active_sessions = []
+            try:
+                now_ts = time.time()
+                with _SESSIONS_LOCK:
+                    sess_copy = dict(_SESSIONS)
+                for tok, sess in sess_copy.items():
+                    created = sess.get("created", now_ts)
+                    last_seen = sess.get("last_seen", created)
+                    role = sess.get("role", "upload")
+                    user = sess.get("user", "Inconnu")
+                    active_sessions.append({
+                        "id": tok[:8] + "…",
+                        "token": tok,
+                        "user": user,
+                        "role": role,
+                        "created_h": datetime.fromtimestamp(created, timezone.utc).strftime("%H:%M:%S"),
+                        "last_seen_h": datetime.fromtimestamp(last_seen, timezone.utc).strftime("%H:%M:%S"),
+                        "idle_sec": int(now_ts - last_seen),
+                    })
+            except Exception:
+                pass
+
+            self._json(200, {
+                "ok": True,
+                "traffic": traffic_data,
+                "security_events": sec_events,
+                "active_sessions": active_sessions,
+                "rate_limiter": rl_status,
+                "tripwire": hq_security.tripwire_status(CONFIG),
+            })
             return
 
         if raw == "/api/pc/restart-bridge":
@@ -12655,6 +13371,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
+            if self._reject_if_ip_blocked():
+                return
             self._do_POST()
         except BrokenPipeError:
             return
@@ -12747,6 +13465,10 @@ class Handler(BaseHTTPRequestHandler):
             # except the one-time-code enrollment. The body is never logged.
             self._forge_worker(raw)
             return
+        if raw.startswith("/engine-agent/v1/"):
+            # Engine agents (other computers): same trust model as the Forge workers, no cookie is read, HMAC on /report.
+            self._engine_agent(raw)
+            return
         import hq_forge_lifecycle_listener as _lifecycle_listener
         if _lifecycle_listener.is_lifecycle_action_path(raw):
             self._json(404, {"error": "Inconnu"})
@@ -12833,6 +13555,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.rfile.read(length).decode("utf-8", errors="replace")
                 data = parse_qs(body, keep_blank_values=True)
                 pin = (data.get("pin", [""])[0] or "").strip()
+                if pin:
+                    self._req_pin_hint = f"{len(pin)} chiffres" if pin.isdigit() else f"texte ({len(pin)} car.)"
                 auth = authenticate_pin(pin)
                 if pin_enabled() and not auth:
                     AUTH_RATE_LIMITER.record_failure(ident, ticket=ticket)
@@ -12911,6 +13635,82 @@ class Handler(BaseHTTPRequestHandler):
                 return
         finally:
             self._prebody_refusal = False
+
+        if raw == "/api/security/sessions/revoke":
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return
+            data = self._read_json()
+            target_tok = data.get("token")
+            with _SESSIONS_LOCK:
+                if target_tok and target_tok in _SESSIONS:
+                    del _SESSIONS[target_tok]
+                    _persist_sessions()
+                    revoked = True
+                else:
+                    revoked = False
+            if revoked:
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_SESSION_REVOKED,
+                    severity="warning",
+                    result="revoked",
+                    reason="manual_admin_revoke",
+                )
+                self._json(200, {"ok": True, "message": "Session révoquée"})
+            else:
+                self._json(404, {"error": "Session introuvable"})
+            return
+
+        if raw == "/api/security/tripwire":
+            if self._role() != "admin":
+                self._json(403, {"error": "Accès admin requis"})
+                return
+            data = self._read_json()
+            action = str(data.get("action") or "rearm").strip().lower()
+            threshold_raw = data.get("threshold")
+            threshold = int(threshold_raw) if threshold_raw is not None else None
+            if action == "lockdown":
+                hq_security.engage_lockdown(CONFIG)
+                save_config(CONFIG)
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_TRIPWIRE_LOCKDOWN,
+                    severity="critical",
+                    result="locked_down",
+                    reason="manual_admin_tripwire_lockdown",
+                )
+                tw_state = hq_security.tripwire_status(CONFIG)
+                self._json(200, {"ok": True, "message": "Lockdown d'urgence activé", "tripwire": tw_state})
+                return
+            if action == "disarm":
+                tw_state = hq_security.arm_or_rearm_tripwire(CONFIG, enabled=False, threshold=threshold)
+                save_config(CONFIG)
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_TRIPWIRE_UNLOCKED,
+                    severity="warning",
+                    result="disarmed",
+                    reason="manual_admin_tripwire_disarm",
+                )
+                self._json(200, {"ok": True, "message": "Tripwire désarmé", "tripwire": tw_state})
+                return
+            if action in ("arm", "rearm", "unlock_lockdown"):
+                release_ld = bool(data.get("release_lockdown", action == "unlock_lockdown"))
+                tw_state = hq_security.arm_or_rearm_tripwire(
+                    CONFIG,
+                    enabled=True,
+                    threshold=threshold,
+                    release_lockdown=release_ld,
+                )
+                save_config(CONFIG)
+                self._record_sec_event(
+                    hq_security.SecurityLog.EVENT_TRIPWIRE_UNLOCKED,
+                    severity="info",
+                    result="rearmed",
+                    reason=f"manual_admin_tripwire_{action}",
+                )
+                self._json(200, {"ok": True, "message": "Tripwire armé et compteurs réinitialisés", "tripwire": tw_state})
+                return
+            self._json(400, {"error": f"Action tripwire inconnue: {action}"})
+            return
 
         if raw == "/api/auth/webauthn/register/options":
             if self._role() != "admin":
@@ -13246,7 +14046,8 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         sys.stderr.write(f"sleep failed: {e}\n")
 
-                threading.Timer(0.8, _do_sleep).start()
+                if not (os.environ.get("TRANSFERT_TEST_MODE") or os.environ.get("PYTEST_CURRENT_TEST") or "unittest" in sys.modules):
+                    threading.Timer(0.8, _do_sleep).start()
                 return
 
         if raw == "/api/pc/explore":
@@ -13873,6 +14674,16 @@ def _main_production_owner() -> None:
         except Exception as exc:
             sys.stderr.write(f"musica gifts tick: {exc}\n")
         try:
+            import hq_music_journal
+            import hq_music_radar
+            hq_music_journal.tick()  # listening journal: Spotify recently-played every 20 min
+            hq_music_radar.tick()  # release alerts (opt-in): radar at most once a day
+            import hq_music_dj
+            hq_music_dj.tick()  # scheduled DJ shows (matinale / Sunday recap), opt-in
+            hq_music_dj.jingle_tick()  # DJ jingles on the idle GPU, one ACE-Step job at a time
+        except Exception as exc:
+            sys.stderr.write(f"music journal/radar tick: {exc}\n")
+        try:
             hq_folder_backups.tick()
         except Exception as exc:
             sys.stderr.write(f"folder backups tick: {exc}\n")
@@ -13938,6 +14749,7 @@ def _main_production_owner() -> None:
             hq_voice_phonon.bridge_stop()
         except Exception:
             pass
+        hq_robotics.shutdown()
         planner_httpd.shutdown()
         planner_httpd.server_close()
         try:
@@ -14015,6 +14827,16 @@ def main() -> None:
             hq_musica_gifts.tick(ROOT)
         except Exception as exc:
             sys.stderr.write(f"musica gifts tick: {exc}\n")
+        try:
+            import hq_music_journal
+            import hq_music_radar
+            hq_music_journal.tick()  # listening journal: Spotify recently-played every 20 min
+            hq_music_radar.tick()  # release alerts (opt-in): radar at most once a day
+            import hq_music_dj
+            hq_music_dj.tick()  # scheduled DJ shows (matinale / Sunday recap), opt-in
+            hq_music_dj.jingle_tick()  # DJ jingles on the idle GPU, one ACE-Step job at a time
+        except Exception as exc:
+            sys.stderr.write(f"music journal/radar tick: {exc}\n")
         try:
             hq_folder_backups.tick()
         except Exception as e:
@@ -14106,6 +14928,7 @@ def main() -> None:
             hq_voice_phonon.bridge_stop()
         except Exception:
             pass
+        hq_robotics.shutdown()
         if planner_httpd is not None:
             planner_httpd.shutdown()
             planner_httpd.server_close()

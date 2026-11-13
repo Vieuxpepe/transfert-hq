@@ -1,0 +1,68 @@
+/* Transfert HQ — assistant chip visits (assets/hq-assistant-visits.css) */
+.hq-visit-visitor {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1300;
+  display: block;
+  pointer-events: none;
+  opacity: 1;
+  transition: transform 1.6s cubic-bezier(.22, .9, .3, 1), opacity .5s ease;
+  will-change: transform;
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, .35));
+}
+
+.hq-visit-visitor > button {
+  margin: 0;
+  pointer-events: none;
+}
+
+.hq-visit-bubble {
+  position: fixed;
+  z-index: 1301;
+  max-width: calc(100vw - 24px);
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--line, #334155) 72%, transparent);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--panel, #0f172a) 94%, transparent);
+  color: var(--text, #e2e8f0);
+  font: 500 12.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .32);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity .22s ease, transform .22s ease;
+  pointer-events: none;
+}
+
+.hq-visit-bubble.is-shown {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.hq-visit-bubble.is-below {
+  transform: translateY(4px);
+}
+
+.hq-visit-bubble.is-below.is-shown {
+  transform: translateY(0);
+}
+
+/* The host chip keeps its own ambient bubble out of the way during a visit. */
+body.hq-visit-active .hq-culinia-chip-bubble,
+body.hq-visit-active .hq-forgia-chip-bubble,
+body.hq-visit-active .hq-musica-chip-bubble,
+body.hq-visit-active .hq-securia-chip-bubble,
+body.hq-visit-active .hq-inventoria-bubble,
+body.hq-visit-active .hq-pistonia-bubble,
+body.hq-visit-active .hq-else-bubble {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hq-visit-visitor { transition: opacity .2s ease; }
+  .hq-visit-bubble { transition: opacity .15s ease; }
+}
+
+@media (max-width: 520px) {
+  .hq-visit-bubble { font-size: 12px; padding: 8px 10px; }
+}
