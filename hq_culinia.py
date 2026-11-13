@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -35,6 +36,7 @@ MAX_ROUNDS = 4
 MAX_TOTAL_TOOLS = 8
 DEFAULT_REPLY_ATTEMPTS = 3
 MAX_REPLY_ATTEMPTS = 10
+log = logging.getLogger(__name__)
 
 
 def _reply_attempts() -> int:
@@ -847,6 +849,7 @@ def chat(message: Any) -> dict[str, Any]:
         # even though the reply cannot mention the last one.
         _append_turn(_turn(reply), base_count)
         fallback = True
+        log.warning("chat reply kept unanswered after %d regeneration(s): every append raced", rebases)
 
     return {
         "ok": True,

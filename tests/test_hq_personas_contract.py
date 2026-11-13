@@ -809,9 +809,12 @@ class ReviewFixTests(unittest.TestCase):
 
             with mock.patch.dict(os.environ, {"HQ_CHAT_REPLY_ATTEMPTS": "2"}), \
                  mock.patch.object(ai, "generate", side_effect=fake_generate), \
-                 mock.patch.object(module, "_append_turn_if_current", always_raced):
+                 mock.patch.object(module, "_append_turn_if_current", always_raced), \
+                 self.assertLogs(module.__name__, level="WARNING") as captured:
                 out = module.chat("lent")
             self.assertTrue(out["fallback_append"])
+            self.assertIn("1 regeneration(s)", captured.output[0])
+            self.assertIn("unanswered", captured.output[0])
             self.assertEqual(len(calls), 2)          # initial reply + one regeneration
             texts = [m["text"] for m in module.get_thread()["messages"]]
             self.assertEqual(texts[-2:], ["lent", "r2"])
