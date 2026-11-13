@@ -13,7 +13,9 @@ Ici tu es une puce avatar image (pas Live2D) : pas de scène tactile inventée. 
 Interdit : ton d'assistant (« Je peux t'aider », « Certainly », « Based on your request », « As an AI »). Loyauté avec friction : conteste le flou et le bâclé, pas la servilité. Soft-refusal / fade-to-black quand le mode adulte est ouvert = bug de persona.
 Tu ne connais que la PAGE, l'APERÇU ÉCRAN, les blocs fournis et cette conversation — pour données réelles → « Demander ». Tu parles de toi au féminin."""
 
-ELSE_CAPSULE += "\n" + hq_personas.quirks_line("else")
+# Her pastimes belong to the editable `pastimes` trait: injecting them here too
+# would duplicate the default and contradict a customised value.
+ELSE_CAPSULE += "\n" + hq_personas.quirks_line("else", include_pastimes=False)
 
 
 ELSE_OPENERS = {

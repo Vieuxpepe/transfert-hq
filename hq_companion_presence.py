@@ -182,7 +182,11 @@ ELSE_PASTIMES_DEFAULT = ("OCCUPATIONS : " + hq_personas.get("else")["pastimes"]
 
 
 def _owner_key(owner) -> str:
-    return "else" if str(owner or "").strip().lower() == "else" else "transferania"
+    """Only the two companions whose personality this editor owns."""
+    key = str(owner or "").strip().lower()
+    if key not in ("transferania", "else"):
+        raise ValueError(f"portée de personnalité inconnue : {owner!r} (transferania ou else)")
+    return key
 
 
 def character_defaults(owner="transferania"):

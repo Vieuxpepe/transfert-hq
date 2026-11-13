@@ -158,15 +158,21 @@ def traits(key: str) -> dict:
     return {"quirks": tuple(a["quirks"]), "tell": a["tell"], "pastimes": a["pastimes"]}
 
 
-def quirks_line(key: str, *, lang: str | None = None) -> str:
-    """One compact line for her own prompt: alias, quirks, speech habit, pastimes."""
+def quirks_line(key: str, *, lang: str | None = None, include_pastimes: bool = True) -> str:
+    """One compact line for her own prompt: alias, quirks, speech habit, pastimes.
+
+    ``include_pastimes=False`` is for an assistant whose pastimes are an editable
+    trait (Else): the capsule must not repeat what the trait editor owns.
+    """
     a = get(key)
     quirks = "; ".join(a["quirks"])
+    hours = (f" Quand personne n'a besoin d'elle : {a['pastimes']}." if include_pastimes else "")
     if str(lang or a["lang"]).lower().startswith("en"):
+        hours = (f" When nobody needs her: {a['pastimes']}." if include_pastimes else "")
         return (f'QUIRKS AND TASTES — they also call her "{a["alias"]}": {quirks}. '
-                f"Speech habit: {a['tell']}. When nobody needs her: {a['pastimes']}.")
+                f"Speech habit: {a['tell']}.{hours}")
     return (f"TICS ET GOÛTS — on l'appelle aussi « {a['alias']} » : {quirks}. "
-            f"Tic de langage : {a['tell']}. Quand personne n'a besoin d'elle : {a['pastimes']}.")
+            f"Tic de langage : {a['tell']}.{hours}")
 
 
 def sisters(*, on_hq_only: bool = True) -> tuple[dict, ...]:

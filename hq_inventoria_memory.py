@@ -13,6 +13,7 @@ is never overwritten: it stays untouched and is reported unavailable.
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 import threading
@@ -66,10 +67,21 @@ def _read(root: Any) -> tuple[list[dict], bool]:
             raise ValueError("notes invalides")
         # One damaged row makes the whole file unusable: dropping it here would
         # silently delete it on the next save, so preserve the file instead.
+        seen: set[str] = set()
         for row in rows:
             if not (isinstance(row, dict) and isinstance(row.get("text"), str)
                     and _ID_RE.match(str(row.get("id", "")))):
                 raise ValueError("note invalide")
+            # Duplicate ids would make the correction reordering delete both rows.
+            if row["id"] in seen:
+                raise ValueError("note dupliquée")
+            seen.add(row["id"])
+            for field in ("at", "updated_at"):
+                if row.get(field) is None:
+                    continue
+                stamp = float(row[field])
+                if not math.isfinite(stamp) or stamp < 0:
+                    raise ValueError("horodatage invalide")
     except Exception:
         return [], False
     return list(rows), True
@@ -106,29 +118,24 @@ def _stamp(note: dict) -> float:
     return max(float(note.get("at") or 0), float(note.get("updated_at") or 0))
 
 
-def _best_match(rows: list[dict], text: str) -> dict | None:
-    """The single note a correction most likely replaces.
-
-    Two shared terms can be coincidental (``master`` + ``range``), so the match
-    must also beat every other note outright: on a tie we refuse to correct and
-    store the statement as a new note, which is recoverable, unlike rewriting the
-    wrong fact.
-    """
+def _candidates(rows: list[dict], text: str, limit: int = 3) -> list[str]:
+    """Notes that might be the one a correction refers to (ids only, never
+    rewritten automatically)."""
     want = _terms(text)
-    if not want:
-        return None
-    scores = sorted((len(want & _terms(row["text"])) for row in rows), reverse=True)
-    if not scores or scores[0] < 2:
-        return None
-    if len(scores) > 1 and scores[1] == scores[0]:
-        return None
-    for row in rows:
-        if len(want & _terms(row["text"])) == scores[0]:
-            return row
-    return None
+    scored = sorted(((len(want & _terms(r["text"])), _stamp(r), r["id"]) for r in rows),
+                    key=lambda item: (-item[0], -item[1]))
+    return [rid for score, _stamp_, rid in scored if score][:limit]
 
 
-def add(root: Any, text: Any, *, now: float | None = None) -> dict:
+def add(root: Any, text: Any, *, now: float | None = None,
+        corrects_id: str | None = None) -> dict:
+    """Save a note. Only an explicit ``corrects_id`` may replace an existing note.
+
+    Shared vocabulary cannot tell "same fact, new value" from an unrelated fact
+    that happens to share a verb and a noun (``master`` + ``range``), so an
+    implicit correction is stored as a new note and reports ``needs_target`` with
+    candidate ids instead of risking an unrelated rewrite.
+    """
     t = clean(text)
     if len(t) < 3:
         raise MemoryError_("note trop courte")
@@ -140,25 +147,40 @@ def add(root: Any, text: Any, *, now: float | None = None) -> dict:
         if not readable:
             raise MemoryError_("mémoire illisible : fichier conservé, non modifié")
         low = t.lower()
-        for r in rows:
-            if r["text"].lower() == low:
-                return {"id": r["id"], "text": r["text"], "duplicate": True}
-        if _CORRECTION_RE.search(t):
-            corrected = _best_match(rows, t)
-            if corrected:
-                corrected["text"] = t
-                corrected["updated_at"] = stamp
-                # Move it to the end so eviction sees the correction as recent.
-                rows = [r for r in rows if r["id"] != corrected["id"]] + [corrected]
-                _save(root, rows)
-                return {"id": corrected["id"], "text": t, "duplicate": False,
-                        "superseded": corrected["id"]}
+        target = None
+        if corrects_id is not None:
+            if not isinstance(corrects_id, str) or not _ID_RE.match(corrects_id):
+                raise MemoryError_("identifiant de note invalide")
+            target = next((r for r in rows if r["id"] == corrects_id), None)
+            if target is None:
+                raise MemoryError_("note à corriger introuvable")
+        else:
+            # An explicit target is authoritative; otherwise an identical text is
+            # the same fact and must not be stored twice.
+            for r in rows:
+                if r["text"].lower() == low:
+                    return {"id": r["id"], "text": r["text"], "duplicate": True}
+        if target is not None:
+            rows = [r for r in rows if r["id"] != target["id"]]
+            target["text"] = t
+            target["updated_at"] = stamp
+            target["at"] = float(target.get("at") or stamp)
+            rows.append(target)          # the correction counts as the most recent
+            _save(root, rows)
+            return {"id": target["id"], "text": t, "duplicate": False,
+                    "superseded": target["id"], "corrected": True}
         row = {"id": "mem-" + secrets.token_hex(4), "text": t, "at": stamp}
         rows.append(row)
         evicted = [r["id"] for r in rows[:-MAX_NOTES]]
         rows = rows[-MAX_NOTES:]  # oldest notes fall off first, and are reported
         _save(root, rows)
-        return {"id": row["id"], "text": t, "duplicate": False, "evicted": evicted}
+        out = {"id": row["id"], "text": t, "duplicate": False, "evicted": evicted}
+        if _CORRECTION_RE.search(t):
+            candidates = [rid for rid in _candidates(rows, t) if rid != row["id"]]
+            if candidates:
+                out["needs_target"] = True   # ask which saved note it corrects
+                out["candidates"] = candidates
+        return out
 
 
 def forget(root: Any, note_id: Any) -> bool:
@@ -178,7 +200,7 @@ def forget(root: Any, note_id: Any) -> bool:
 def _select(notes: list[dict], query: Any) -> list[dict]:
     """Relevant notes first, then the newest ones: never more than MAX_PROMPT_NOTES."""
     if not query:
-        return sorted(notes, key=_stamp)[-MAX_PROMPT_NOTES:]
+        return sorted(notes, key=_stamp, reverse=True)[:MAX_PROMPT_NOTES]
     want = _terms(query)
     scored = sorted(((len(want & _terms(n["text"])), n) for n in notes),
                     key=lambda item: (-item[0], -_stamp(item[1])))

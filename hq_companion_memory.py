@@ -19,6 +19,9 @@ import hq_companion_growth as growth
 import hq_personas
 
 _owner = ContextVar("companion_owner", default="admin")
+# The default owner exists for single-user single-account installs, but a store
+# that must not leak (relationships) can tell an explicit owner from a default.
+_owner_established = ContextVar("companion_owner_established", default=False)
 _memory_scope = ContextVar("companion_memory_scope", default="transferania")
 _lock = threading.RLock()
 _root = Path(".")
@@ -55,15 +58,27 @@ def current_owner():
     return _owner.get()
 
 
+def owner_established() -> bool:
+    return bool(_owner_established.get())
+
+
+def set_owner(owner) -> None:
+    """Mark the owner as explicitly established for the current operation."""
+    _owner.set(str(owner))
+    _owner_established.set(True)
+
+
 def owner_request(fn):
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
         owner = kwargs.get("owner_id")
         token = _owner.set(str(owner) if owner is not None else current_owner())
+        etoken = _owner_established.set(owner is not None or owner_established())
         try:
             return fn(*args, **kwargs)
         finally:
             _owner.reset(token)
+            _owner_established.reset(etoken)
     return wrapped
 
 

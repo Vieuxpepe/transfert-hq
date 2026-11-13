@@ -38,7 +38,10 @@ def _owner() -> str:
     """Fail closed: no established owner means no relationship record, never admin's."""
     import hq_companion_memory as memory
     owner = memory.current_owner()
-    if owner is None or not str(owner).strip():
+    # The context default is "admin"; only an explicitly established owner may
+    # read or write relationship evidence, so an unbound request cannot inherit
+    # the admin account's file.
+    if not memory.owner_established() or owner is None or not str(owner).strip():
         raise RuntimeError("relations indisponibles — propriétaire inconnu")
     return str(owner)
 

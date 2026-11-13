@@ -43,6 +43,15 @@ are made for memory extraction, retrieval, migration, correction or review.
 Each request still uses the existing context builder and its budgets. At most
 five relevant active memories are selected, ordered by relevance and recency.
 
+Inventoria's notepad (`.hq-inventoria/memory.json`) is stricter. A correction
+must name the note it replaces (`corrects_id`); a statement that merely looks
+like a correction is stored as a new note and the tool reports `needs_target`
+with candidate ids, because two shared words cannot tell “same fact, new value”
+from an unrelated fact that happens to share a verb and a noun. Ranking and
+eviction use `max(at, updated_at)`, so a corrected note counts as recent. A file
+with invalid, duplicated or non-numeric rows is treated as unreadable and kept
+exactly as it is.
+
 ## Character evolution
 
 Transferania keeps her own identity, dry humour, curiosity, aesthetic tastes and

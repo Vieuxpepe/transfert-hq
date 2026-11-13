@@ -102,7 +102,7 @@ Draft tool (prepares changes for the Master to review; NOTHING is applied):
   Use real ids from tool results. Only propose a change when the Master asked for one or clearly agreed to it.
   Deleting is not available: if asked, say the Master can delete it in the panel.
 Memory tools (lasting household preferences, NOT stock):
-- remember {"note": "<one short durable fact or preference>"}
+- remember {"note": "<one short durable fact or preference>", "corrects_id": "<mem id, only when correcting a saved note>"}
 - forget {"id": "<mem id>"}
   Use remember only for lasting preferences or rules the Master states (pack sizes, where things belong, favourite shops,
   allergies, how they like lists). Never for secrets, one-off requests or stock counts. Say plainly when you saved or forgot something.
@@ -947,10 +947,16 @@ class Toolbox:
         import hq_inventoria
         import hq_inventoria_memory as mem
         try:
-            res = mem.add(hq_inventoria._root(), args.get("note"))
+            res = mem.add(hq_inventoria._root(), args.get("note"),
+                          corrects_id=args.get("corrects_id"))
         except mem.MemoryError_ as exc:
             return {"saved": False, "error": str(exc)}
         out = {"saved": True, "id": res["id"], "already_known": res["duplicate"]}
+        if res.get("needs_target"):
+            # Never guess: ask which saved note this correction replaces.
+            out["needs_target"] = True
+            out["candidates"] = res.get("candidates") or []
+            out["hint"] = "Ask which of these saved notes it corrects, then call remember with corrects_id."
         if res.get("superseded"):
             out["superseded"] = res["superseded"]      # an explicit correction replaced a note
         if res.get("evicted"):

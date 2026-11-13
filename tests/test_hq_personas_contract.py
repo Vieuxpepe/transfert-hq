@@ -75,7 +75,10 @@ class PersonaRosterTests(unittest.TestCase):
         for key, (module_name, attr, _lang) in PERSONAS.items():
             text = getattr(importlib.import_module(module_name), attr)
             self.assertEqual(text.count(hq_personas.quirks_line(key)), 1, f"{key}: quirks line missing or duplicated")
-        self.assertEqual(hq_else_persona.ELSE_CAPSULE.count(hq_personas.quirks_line("else")), 1)
+        self.assertEqual(hq_else_persona.ELSE_CAPSULE.count(
+            hq_personas.quirks_line("else", include_pastimes=False)), 1)
+        # Her pastimes are an editable trait, so the capsule must not repeat them.
+        self.assertNotIn(hq_personas.get("else")["pastimes"], hq_else_persona.ELSE_CAPSULE)
         # Transferania's editor is the live source: her registry pastimes only seed
         # the editable default, they are never injected a second time.
         self.assertIn(hq_personas.get("transferania")["pastimes"], presence.character_defaults()["pastimes"])
@@ -146,6 +149,15 @@ class MemoryScopeTests(unittest.TestCase):
 class RelationshipTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
+        memory.set_owner("admin")      # an explicit session, not the bare context default
+
+    def test_unbound_owner_cannot_read_relationships(self):
+        token = memory._owner_established.set(False)
+        try:
+            with self.assertRaises(RuntimeError):
+                rel.pair(self.root, "else", "transferania")
+        finally:
+            memory._owner_established.reset(token)
 
     def test_two_distinct_days_before_familiarity_is_mentioned(self):
         rel.note_exchange(self.root, "else", "transferania", "Salut", now=1_700_000_000)
@@ -183,7 +195,8 @@ class InventoriaMemoryTests(unittest.TestCase):
 
     def test_explicit_correction_supersedes_the_note(self):
         first = self.mem.add(self.root, "Le Master range les vis dans le garage")
-        second = self.mem.add(self.root, "En fait le Master range les vis dans le sous-sol")
+        second = self.mem.add(self.root, "En fait le Master range les vis dans le sous-sol",
+                              corrects_id=first["id"])
         self.assertEqual(second.get("superseded"), first["id"])
         self.assertEqual(len(self.mem.list_notes(self.root)), 1)
 
@@ -261,7 +274,7 @@ class SisterRelationshipTests(unittest.TestCase):
             root = Path(tmp)
             ai.bind(root=root, now=lambda: 1_700_000_100.0, key=lambda: "test-key")
             memory.bind(root=root, now=lambda: 1_700_000_100.0)
-            owner = memory._owner.set("admin")
+            memory.set_owner("admin")
             lines = iter(["Salut Else.", "Salut Transferania."])
             try:
                 with mock.patch.object(ai, "generate", side_effect=lambda *a, **k: (next(lines), "gemini-3.1-flash-lite")), \
@@ -276,7 +289,7 @@ class SisterRelationshipTests(unittest.TestCase):
                 self.assertEqual(bond["exchanges"], 2)
                 self.assertEqual(bond["days"], 1)
             finally:
-                memory._owner.reset(owner)
+                memory.set_owner("admin")
 
 
 class MusicaTasteTests(unittest.TestCase):
@@ -335,21 +348,51 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(p.read_bytes(), raw)
         self.assertEqual(inv.list_notes(self.root), [])
 
-    def test_correction_needs_most_of_the_vocabulary(self):
+    def test_implicit_correction_never_guesses_its_target(self):
+        """Two generic shared words must not overwrite an unrelated saved note."""
         import hq_inventoria_memory as inv
         target = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
         other = inv.add(self.root, "Le Master range les vis dans l'atelier", now=2.0)
-        inv.add(self.root, "En fait le Master range les bols dans le tiroir", now=3.0)
+        out = inv.add(self.root, "En fait le Master range les bols dans le tiroir", now=3.0)
         rows = {r["id"]: r["text"] for r in inv.list_notes(self.root)}
-        self.assertIn("tiroir", rows[target["id"]])
+        self.assertEqual(rows[target["id"]], "Le Master range les bols dans le placard")
         self.assertEqual(rows[other["id"]], "Le Master range les vis dans l'atelier")
+        self.assertTrue(out.get("needs_target"))
+        self.assertIn(target["id"], out["candidates"])
 
-    def test_plain_non_starts_a_correction(self):
+    def test_plain_non_asks_for_a_target_then_corrects_it(self):
         import hq_inventoria_memory as inv
         first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
-        second = inv.add(self.root, "Non, le Master range les bols dans le tiroir", now=2.0)
-        self.assertEqual(second.get("superseded"), first["id"])
-        self.assertEqual(len(inv.list_notes(self.root)), 1)
+        asked = inv.add(self.root, "Non, le Master range les bols dans le tiroir", now=2.0)
+        self.assertTrue(asked.get("needs_target"))
+        self.assertEqual(len(inv.list_notes(self.root)), 2)
+        fixed = inv.add(self.root, "Non, le Master range les bols dans le tiroir", now=3.0,
+                        corrects_id=first["id"])
+        self.assertEqual(fixed.get("superseded"), first["id"])
+        self.assertEqual(len(inv.list_notes(self.root)), 2)
+
+    def test_duplicate_ids_block_writes_and_preserve_the_file(self):
+        import hq_inventoria_memory as inv
+        p = self.root / inv.STATE_FOLDER / inv.FILE
+        p.parent.mkdir(parents=True)
+        row = {"id": "mem-aaaaaaaa", "text": "Le Master aime le thé vert.", "at": 1.0}
+        raw = json.dumps({"version": 1, "notes": [row, dict(row)]}).encode("utf-8")
+        p.write_bytes(raw)
+        with self.assertRaises(inv.MemoryError_):
+            inv.add(self.root, "Le Master aime le café noir.")
+        self.assertEqual(p.read_bytes(), raw)
+
+    def test_correction_is_not_evicted_before_older_notes(self):
+        import hq_inventoria_memory as inv
+        first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        for index in range(inv.MAX_NOTES - 1):
+            inv.add(self.root, f"note numero {index} sur les etageres", now=2.0 + index)
+        inv.add(self.root, "Le Master range les bols dans le tiroir", now=100.0,
+                corrects_id=first["id"])
+        out = inv.add(self.root, "Le Master aime le the vert", now=200.0)
+        self.assertEqual(len(out["evicted"]), 1)
+        self.assertNotIn(first["id"], out["evicted"])
+        self.assertIn(first["id"], {r["id"] for r in inv.list_notes(self.root)})
 
     def test_corrected_note_ranks_as_recent(self):
         import hq_inventoria_memory as inv
@@ -358,21 +401,62 @@ class ReviewFixTests(unittest.TestCase):
         rows[0]["updated_at"] = 100.0
         self.assertEqual(inv._select(rows, "bols")[0]["id"], "mem-aaaaaaaa")
 
-    def test_unreadable_alert_state_sends_nothing(self):
+    def _alert_tick(self, payload: str):
         import hq_pistonia_store as pstore
         import hq_pistonia_alerts as palerts
         pstore.bind(self.root)
         folder = self.root / ".hq-engine" / "pistonia"
-        folder.mkdir(parents=True)
-        (folder / "alerts.json").write_text("{not json", encoding="utf-8")
-        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "alerts.json").write_text(payload, encoding="utf-8")
+        palerts.reset_for_tests()
+        palerts._since["ram"] = 0.0          # hold already elapsed: an alert is due
+        return pstore, palerts
+
+    def test_unreadable_alert_state_sends_nothing(self):
+        pstore, palerts = self._alert_tick("{not json")
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}), \
+             mock.patch.object(palerts, "_compose", return_value="RAM high"), \
+             mock.patch.object(pstore, "add_message") as add_message:
             self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
+        add_message.assert_not_called()
         self.assertEqual(pstore.thread(), [])
+
+    def test_schema_invalid_alert_state_sends_nothing(self):
+        pstore, palerts = self._alert_tick("[]")
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}), \
+             mock.patch.object(palerts, "_compose", return_value="RAM high"), \
+             mock.patch.object(pstore, "add_message") as add_message:
+            self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
+        add_message.assert_not_called()
+
+    def test_failed_alert_state_save_rolls_the_thread_back(self):
+        pstore, palerts = self._alert_tick('{"alerts": [], "cooldown": {}, "active": []}')
+        notified = []
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}), \
+             mock.patch.object(palerts, "_compose", return_value="RAM high"), \
+             mock.patch.object(pstore, "save_alerts_state", side_effect=pstore.StoreError("io")):
+            self.assertEqual(palerts.tick({"daemons": []}, now=1000.0,
+                                          notify=lambda *a: notified.append(a)), [])
+        self.assertEqual(pstore.thread(), [])
+        self.assertEqual(notified, [])
 
     def test_relationship_owner_never_defaults_to_admin(self):
         with mock.patch.object(memory, "current_owner", return_value=None):
             with self.assertRaises(RuntimeError):
                 rel.pair(self.root, "else", "transferania")
+
+    def test_else_pastime_appears_once_and_a_custom_value_replaces_it(self):
+        ai = self._ai()
+        pastime = hq_personas.get("else")["pastimes"]
+        system = ai.build_else_system("chat", "warm", nsfw=False, view="accueil",
+                                      device_id="device-else-pastimes", prefs={})
+        self.assertEqual(system.count(pastime), 1)
+        with mock.patch.object(memory, "personality_traits",
+                               return_value={"pastimes": "Collectionner des engrenages."}):
+            custom = ai.build_else_system("chat", "warm", nsfw=False, view="accueil",
+                                          device_id="device-else-pastimes", prefs={})
+        self.assertIn("Collectionner des engrenages.", custom)
+        self.assertNotIn(pastime, custom)
 
 
 if __name__ == "__main__":

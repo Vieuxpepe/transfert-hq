@@ -75,6 +75,26 @@ def unreadable(name: str) -> bool:
         return True
 
 
+def alerts_unreadable() -> bool:
+    """True when alerts.json exists but is not a valid alert-state object.
+
+    Parseable JSON is not enough: ``[]`` or ``{"alerts": 3}`` would load as empty
+    state and the next save would overwrite the original file.
+    """
+    p = _dir() / "alerts.json"
+    if not p.is_file():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(data, dict):
+        return True
+    return not (isinstance(data.get("alerts", []), list)
+                and isinstance(data.get("cooldown", {}), dict)
+                and isinstance(data.get("active", []), list))
+
+
 def clean_text(text: Any, limit: int) -> str:
     t = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", " ", str(text or ""))
     return t.strip()[:limit]
@@ -214,6 +234,19 @@ def alerts_state() -> dict:
     return {"alerts": rows[-ALERTS_MAX:], "cooldown": {k: v for k, v in (data.get("cooldown") or {}).items()
                                                       if isinstance(k, str) and isinstance(v, (int, float))},
             "active": [k for k in (data.get("active") or []) if isinstance(k, str)]}
+
+
+def drop_message(msg_id: str) -> bool:
+    """Remove one message (rollback for an alert whose state could not persist)."""
+    if not isinstance(msg_id, str) or not _ID_MSG.match(msg_id):
+        return False
+    with _lock:
+        rows = thread()
+        keep = [m for m in rows if m.get("id") != msg_id]
+        if len(keep) == len(rows):
+            return False
+        _write("thread.json", {"version": 1, "messages": keep[-THREAD_MAX:]})
+        return True
 
 
 def save_alerts_state(state: dict) -> None:

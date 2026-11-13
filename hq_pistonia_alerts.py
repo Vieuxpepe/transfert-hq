@@ -170,7 +170,7 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
         import hq_engine
         st = st or hq_engine.status()
         conds = detect(st, now, list(hq_engine._events))
-        if store.unreadable("alerts.json"):
+        if store.alerts_unreadable():
             # The alert file exists but cannot be parsed: raising an alert now would
             # append to the thread and notify without a durable cooldown, repeating
             # the same alert every tick. Preserve the file and stay quiet.
@@ -191,6 +191,9 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
             n = sum(1 for a in state["alerts"] if a.get("key") == key)
             text = _compose(key, cond, held, n)
             props = _proposals_for(cond)
+            before_alerts = len(state["alerts"])
+            before_cooldown = dict(state["cooldown"])
+            before_active = set(active)
             try:
                 msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
             except store.StoreError:
@@ -199,6 +202,17 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                                     "label": _what(key, cond)})
             state["cooldown"][key] = now
             active.add(key)
+            state["active"] = sorted(active)
+            try:
+                # Durable before notify/return: a later tick must not repeat it.
+                store.save_alerts_state(state)
+            except store.StoreError:
+                store.drop_message(msg["id"])
+                state["alerts"] = state["alerts"][:before_alerts]
+                state["cooldown"] = before_cooldown
+                active = before_active
+                state["active"] = sorted(active)
+                continue
             added.append(msg)
             if notify and store.settings().get("notify"):
                 try:
@@ -218,13 +232,15 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 except store.StoreError:
                     continue
                 state["alerts"].append({"id": msg["id"], "key": key, "kind": "clear", "text": text, "at": now, "seen": True})
+                state["active"] = sorted(active)
+                try:
+                    store.save_alerts_state(state)
+                except store.StoreError:
+                    store.drop_message(msg["id"])
+                    state["alerts"].pop()
+                    continue
                 added.append(msg)
         state["active"] = sorted(active)
-        if added:
-            try:
-                store.save_alerts_state(state)
-            except store.StoreError:
-                pass              # alerts file unreadable: preserve it, retry next tick
         return added
     finally:
         _tick_lock.release()

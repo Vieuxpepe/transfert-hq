@@ -110,6 +110,9 @@ character that has a real voice.
 The Music DJ's guest voices come from `hq_personas.guest_voices()`.
 `hq_relationships.py` keeps one owner-scoped record per pair of assistants under
 `.hq-ai/relationships/`: distinct days of exchange, exchange count, last
-timestamp and one short motif. It is evidence only — no affection score, no debt
+timestamp and one short motif. A request with no explicitly established owner
+reads and records nothing: the context's `admin` default is not authorisation to
+reach the admin account's evidence, and `hq_sister` treats the refusal as
+non-critical. It is evidence only — no affection score, no debt
 and no private chat invented between assistants — and the sister dialogue fills
 it as it speaks. Per-assistant memory stores are never merged.
