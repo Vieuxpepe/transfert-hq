@@ -334,6 +334,12 @@ def save_settings(**kw: Any) -> dict:
         if settings_unreadable():
             raise StoreError("réglages illisibles : fichier conservé, non modifié")
         cur = settings()
+        raw = _read("settings.json", {})
+        if isinstance(raw, dict):
+            # A field this version does not know is kept, not silently dropped.
+            for key, value in raw.items():
+                if key not in cur:
+                    cur[key] = value
         for k, v in kw.items():
             if k in SETTINGS_DEFAULT and isinstance(v, bool):
                 cur[k] = v

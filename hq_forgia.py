@@ -110,9 +110,9 @@ def get_thread() -> dict[str, Any]:
 
 
 def _thread_schema_ok(data: Any) -> bool:
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or "messages" not in data:
         return False
-    msgs = data.get("messages", [])
+    msgs = data["messages"]
     if not isinstance(msgs, list):
         return False
     return all(isinstance(m, dict) and m.get("role") in ("user", "assistant")

@@ -161,6 +161,20 @@ def _proposals_for(cond: dict) -> list[dict]:
 
 # ---- the tick ------------------------------------------------------------------------------------------------------------------
 
+def _merge_acknowledgements(state: dict) -> None:
+    """Carry over `seen` flags committed by mark_seen() since the tick read state.
+
+    Both the alert and the all-clear paths save a state object read before they
+    take the lock; without this merge either could undo an acknowledgement made
+    in between.
+    """
+    fresh = store.alerts_state()
+    seen_ids = {a.get("id") for a in fresh["alerts"] if a.get("seen")}
+    for row in state["alerts"]:
+        if row.get("id") in seen_ids:
+            row["seen"] = True
+
+
 def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optional[Callable[[str, str], None]] = None) -> list[dict]:
     """One pass. Returns the messages added to her conversation (alerts and all-clears)."""
     if not _tick_lock.acquire(blocking=False):
@@ -198,13 +212,7 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 before_cooldown = dict(state["cooldown"])
                 before_active = set(active)
                 before_thread = store.thread()
-                # A `mark_seen` may have committed since the tick read its state:
-                # merge acknowledgements so saving the tick's copy cannot undo them.
-                fresh = store.alerts_state()
-                seen_ids = {a.get("id") for a in fresh["alerts"] if a.get("seen")}
-                for acked in state["alerts"]:
-                    if acked.get("id") in seen_ids:
-                        acked["seen"] = True
+                _merge_acknowledgements(state)
                 try:
                     msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
                 except store.StoreError:
@@ -242,6 +250,7 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 text = text[:1].upper() + text[1:]
                 with store.thread_transaction():
                     before_thread = store.thread()
+                    _merge_acknowledgements(state)   # same race as the alert path
                     try:
                         msg = store.add_message("assistant", text, kind="clear", now=now)
                     except store.StoreError:

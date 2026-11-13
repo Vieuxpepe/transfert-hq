@@ -656,6 +656,55 @@ class ReviewFixTests(unittest.TestCase):
         self.assertTrue(done.wait(2.0))
         self.assertIn("message du Maître", [m["text"] for m in pstore.thread()])
 
+    def test_mark_seen_survives_a_concurrent_all_clear(self):
+        import contextlib
+        pstore, palerts = self._alert_tick(json.dumps({
+            "version": 1,
+            "alerts": [{"id": "msg-aaaaaaaaaa", "key": "disk", "kind": "alert", "text": "Disk",
+                        "at": 10.0, "seen": False, "label": "the disk"}],
+            "cooldown": {"disk": 1.0}, "active": ["disk"]}))
+        real_tx = pstore.thread_transaction
+
+        @contextlib.contextmanager
+        def ack_then_transaction():
+            pstore.mark_seen()          # acknowledged after the tick read its state
+            with real_tx():
+                yield
+
+        with mock.patch.object(palerts, "detect", return_value={}), \
+             mock.patch.object(pstore, "thread_transaction", ack_then_transaction):
+            palerts.tick({"daemons": []}, now=10000.0)
+        rows = pstore.alerts_state()["alerts"]
+        disk = next(a for a in rows if a.get("key") == "disk" and a.get("kind") == "alert")
+        self.assertTrue(disk["seen"], "the all-clear un-acknowledged the alert")
+        self.assertTrue(any(a.get("kind") == "clear" and a.get("key") == "disk" for a in rows))
+
+    def test_settings_keep_unknown_fields(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        (folder / "settings.json").write_text(json.dumps({"notify": True, "future": {"x": 1}}), encoding="utf-8")
+        pstore.save_settings(voice=False)
+        saved = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["future"], {"x": 1})
+        self.assertTrue(saved["notify"])
+        self.assertFalse(saved["voice"])
+
+    def test_thread_without_messages_key_is_refused(self):
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        culinia.bind(root=self.root)
+        forgia.bind(root=self.root)
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+            with self.assertRaises(module.CuliniaError if module is culinia else module.ForgiaError):
+                module._save_thread([{"role": "assistant", "text": "bonjour"}])
+            self.assertEqual(path.read_text(encoding="utf-8"), "{}")
+
     def test_duplicate_message_ids_are_refused(self):
         import hq_pistonia_store as pstore
         pstore.bind(self.root)

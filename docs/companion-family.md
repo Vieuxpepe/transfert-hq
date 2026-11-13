@@ -95,10 +95,10 @@ and her own `pastimes`. The alias is never used in another assistant's roster
 sentence (that line carries plain names); her own quirks line opens with it, so
 she knows what she is called and nobody else's prompt repeats it. On the
 companion side the stable core states `Autre nom : « Transferina »` once
-(`alias_line`), before the editable character hint, so a customized trait cannot
-duplicate or contradict it. Prompt assembly never rewrites user text: a profile
-saved before this change whose customised ambient line still contains the alias
-shows it twice until the Master edits that field.
+(`alias_line`), before the editable character hint. Editing a customized trait
+cannot remove that stable declaration; a profile saved before this change whose
+ambient line still contains the alias can still show it twice until the Master
+edits that field, because prompt assembly never rewrites user text.
 `quirks_line()` renders her quirks once, in her own prompt, for the six domain
 assistants and Else's capsule. Transferania is the exception: her companion
 prompt is editor-driven, so her registry quirks are not injected there at all
@@ -110,9 +110,9 @@ sisters share the trait editor, not the trait text.
 character that has a real voice.
 
 The Music DJ's guest voices come from `hq_personas.guest_voices()`.
-`hq_relationships.py` keeps one owner-scoped record per pair of assistants under
-`.hq-ai/relationships/`: distinct days of exchange, exchange count, last
-timestamp and one short motif. A request with no explicitly established owner
+`hq_relationships.py` keeps one owner-scoped file under
+`.hq-ai/relationships/`, holding one record per pair of assistants: distinct days
+of exchange, exchange count, last timestamp and one short motif. A request with no explicitly established owner
 reads and records nothing: the context's `admin` default is not authorisation to
 reach the admin account's evidence, and `hq_sister` treats the refusal as
 non-critical. It is evidence only — no affection score, no debt
