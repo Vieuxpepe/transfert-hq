@@ -182,6 +182,7 @@
   function finishAndSchedule(visit, wrap, startX, w, y) {
     return function () {
       if (!active || active !== visit || visit.stopped) return;
+      if (visit.bubble) { clearBubble(visit.bubble); visit.bubble = null; }
       wrap.style.transform = "translate3d(" + startX + "px," + y + "px,0)";
       wrap.style.opacity = "0";
       window.setTimeout(function () {
@@ -311,6 +312,7 @@
     if (document.hidden) {
       stopActive();
       window.clearTimeout(timer);
+      timer = 0;
     } else if (!active && !timer) {
       schedule(rand(12000, 26000));
     }
