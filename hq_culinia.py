@@ -42,6 +42,11 @@ _contention = {"regenerations": 0, "fallbacks": 0}
 _contention_lock = threading.Lock()
 
 
+def _contention_snapshot() -> dict[str, int]:
+    with _contention_lock:
+        return dict(_contention)
+
+
 def _note_contention(regenerations: int, fallback: bool) -> None:
     if not regenerations and not fallback:
         return
@@ -51,7 +56,10 @@ def _note_contention(regenerations: int, fallback: bool) -> None:
 
 
 def _reply_attempts() -> int:
-    """How many reply regenerations are allowed when turns land mid-answer."""
+    """How many append attempts a reply may make when turns land mid-answer.
+
+    Each failed attempt regenerates once, so this also bounds extra model calls.
+    """
     raw = os.environ.get("HQ_CHAT_REPLY_ATTEMPTS", "").strip()
     try:
         return max(1, min(MAX_REPLY_ATTEMPTS, int(raw))) if raw else DEFAULT_REPLY_ATTEMPTS
@@ -245,15 +253,24 @@ def _save_json(filename: str, data: dict[str, Any]) -> None:
         raise CuliniaError(str(exc), status=409, code="state_unreadable") from exc
 
 
+def _thread_revision(data: Any) -> int:
+    rev = data.get("revision", 0) if isinstance(data, dict) else 0
+    return rev if isinstance(rev, int) and not isinstance(rev, bool) and rev >= 0 else 0
+
+
 def get_thread() -> dict[str, Any]:
     with _lock:
         data = _load_json(THREAD_FILE, {"messages": []})
         msgs = data.get("messages")
-        return {"messages": list(msgs) if isinstance(msgs, list) else []}
+        return {"messages": list(msgs) if isinstance(msgs, list) else [],
+                "revision": _thread_revision(data)}
 
 
 def _thread_schema_ok(data: Any) -> bool:
     if not isinstance(data, dict) or "messages" not in data:
+        return False
+    if "revision" in data and (isinstance(data["revision"], bool)
+                               or not isinstance(data["revision"], int) or data["revision"] < 0):
         return False
     msgs = data["messages"]
     if not isinstance(msgs, list):
@@ -274,44 +291,55 @@ def _thread_unreadable() -> bool:
 
 
 def _save_thread(messages: list[dict[str, Any]]) -> None:
+    """Replace the thread (clear) and advance the revision so stale replies abort."""
     with _lock:
         if _thread_unreadable():
             raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
-        _save_json(THREAD_FILE, {"messages": messages[-MAX_THREAD:]})
+        data = _load_json(THREAD_FILE, {"messages": []})
+        updated = dict(data)
+        updated.update({"messages": messages[-MAX_THREAD:], "revision": _thread_revision(data) + 1})
+        _save_json(THREAD_FILE, updated)
 
 
-def _append_turn(turn: list[dict[str, Any]], base_count: int) -> bool:
+def _append_turn(turn: list[dict[str, Any]], base_revision: int) -> bool:
     """Append a completed turn without replacing turns saved meanwhile.
 
-    ``base_count`` is the history length read before the model call. The file is
-    reloaded under the lock; if it grew, the newer turns are kept and this turn is
-    appended after them. Returns True when the append had to rebase.
+    ``base_revision`` is the revision read before the model call. The file is
+    reloaded under the lock; if it moved, the newer turns are kept and this turn
+    is appended after them. Returns True when the append had to rebase.
     """
     with _lock:
         if _thread_unreadable():
             raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         data = _load_json(THREAD_FILE, {"messages": []})
         current = list(data["messages"])
-        rebased = len(current) != base_count
-        _save_json(THREAD_FILE, {"messages": (current + list(turn))[-MAX_THREAD:]})
+        rebased = _thread_revision(data) != base_revision
+        updated = dict(data)
+        updated.update({"messages": (current + list(turn))[-MAX_THREAD:],
+                        "revision": _thread_revision(data) + 1})
+        _save_json(THREAD_FILE, updated)
     return rebased
 
 
-def _append_turn_if_current(turn: list[dict[str, Any]], base_count: int) -> bool:
-    """Atomically append only if the file still has ``base_count`` messages.
+def _append_turn_if_current(turn: list[dict[str, Any]], base_revision: int) -> bool:
+    """Atomically append only if the file is still at ``base_revision``.
 
-    The length check and the write happen under one lock, so a turn cannot land
-    between them. Returns False without writing when the history moved; the
-    caller regenerates against the new history and retries.
+    A monotonic revision is compared and advanced under one lock, so a turn
+    cannot land between the check and the write. Unlike a message count, it still
+    detects a replacement once the thread is at its retention cap. Returns False
+    without writing when the history moved; the caller regenerates and retries.
     """
     with _lock:
         if _thread_unreadable():
             raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         data = _load_json(THREAD_FILE, {"messages": []})
         current = list(data["messages"])
-        if len(current) != base_count:
+        revision = _thread_revision(data)
+        if revision != base_revision:
             return False
-        _save_json(THREAD_FILE, {"messages": (current + list(turn))[-MAX_THREAD:]})
+        updated = dict(data)
+        updated.update({"messages": (current + list(turn))[-MAX_THREAD:], "revision": revision + 1})
+        _save_json(THREAD_FILE, updated)
     return True
 
 
@@ -759,7 +787,7 @@ def status_summary() -> dict[str, Any]:
         "headline": f"{planned_days} jour(s) planifié(s)" if planned_days else "Brigade prête · En cuisine",
         "planned_days": planned_days,
         "thread": get_thread().get("messages", []),
-        "reply_contention": dict(_contention),
+        "reply_contention": _contention_snapshot(),
     }
 
 
@@ -772,8 +800,9 @@ def chat(message: Any) -> dict[str, Any]:
 
     thread = get_thread()
     messages = list(thread.get("messages") or [])
-    base_count = len(messages)          # revision this reply is based on
+    base_revision = thread.get("revision", 0)   # revision this reply is based on
     contents = _history_contents(messages, text)
+    history_len = len(contents)
 
     system = f"{PERSONA_CORE}{_prefs_prompt_block()}\n{TOOL_SCHEMA}"
     tools_used: list[str] = []
@@ -822,6 +851,7 @@ def chat(message: Any) -> dict[str, Any]:
 
     if not reply:
         reply = "Les fourneaux sont prêts, Maître — dis-moi ce qui te ferait envie."
+    tool_tail = contents[history_len:]      # tool calls and results already executed
 
     def _turn(answer: str) -> list[dict[str, Any]]:
         stamp = time.time()
@@ -838,30 +868,41 @@ def chat(message: Any) -> dict[str, Any]:
 
     rebases = 0
     fallback = False
+    saved = False
     for _ in range(_reply_attempts()):
-        fresh = get_thread().get("messages", [])
-        if len(fresh) != base_count:
+        current = get_thread()
+        if current["revision"] != base_revision:
             # A turn landed while this reply was generated: answer the merged
-            # conversation instead of the history this reply was based on.
+            # conversation, keeping the tool results already obtained (never
+            # replaying them: they may have changed real state).
             rebases += 1
             raw, model = hq_ai.generate(
                 hq_ai.ASK_CHAIN,
-                _history_contents(fresh, text),
-                system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : tiens-en compte.",
+                _history_contents(current["messages"], text) + tool_tail,
+                system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : "
+                                            "tiens-en compte et réponds maintenant avec tools:[].",
                 max_output_tokens=600,
                 temperature=0.55,
                 timeout=25,
             )
-            reply = _parse_model_json(raw)["reply"] or reply
-            base_count = len(fresh)
-        if _append_turn_if_current(_turn(reply), base_count):
+            parsed = _parse_model_json(raw)
+            answer = (parsed.get("reply") or "").strip()
+            if not answer or parsed.get("tools"):
+                # A tool request or empty reply is not a reconciled answer; keep
+                # the earlier reply and report the fallback rather than calling
+                # the stale answer reconciled.
+                log.warning("chat regeneration returned no final answer; keeping the earlier reply")
+                break
+            reply = answer
+            base_revision = current["revision"]
+        if _append_turn_if_current(_turn(reply), base_revision):
+            saved = True
             break
-    else:
-        # Every attempt hit a new turn: keep them all rather than loop forever,
-        # even though the reply cannot mention the last one.
-        _append_turn(_turn(reply), base_count)
+    if not saved:
+        # Keep every turn rather than loop forever; the reply is reported as a fallback.
+        _append_turn(_turn(reply), base_revision)
         fallback = True
-        log.warning("chat reply kept unanswered after %d regeneration(s): every append raced", rebases)
+        log.warning("chat reply not reconciled after %d regeneration(s): kept the earlier answer", rebases)
     _note_contention(rebases, fallback)
 
     return {
