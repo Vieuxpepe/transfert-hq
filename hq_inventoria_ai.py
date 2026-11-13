@@ -1058,12 +1058,27 @@ INTENT_RULES = {
 }
 
 
+def _growth_path():
+    import hq_inventoria
+    root = hq_inventoria.root()
+    return (root / ".hq-inventoria" / "inventoria_growth.json") if root else None
+
+
 def respond(text: str, history: list[dict] | None = None, inv: dict | None = None,
             toolbox: Toolbox | None = None, image: dict | None = None, intent: str | None = None) -> tuple[str, list[dict]]:
     """(reply, queued draft proposals). Runs the bounded tool loop. ``image`` is Gemini inlineData for a photo message."""
     import hq_ai
+    import hq_assistant_growth as assistant_growth
     tb = toolbox or Toolbox((lambda: inv) if isinstance(inv, dict) else None)
+    path = _growth_path()
+    development = ""
+    if path:
+        assistant_growth.record(path, text, "inventoria")
+        development = assistant_growth.hint(path, text)
     system = build_system(text, inv) + (("\n\n" + PHOTO_RULES + (("\n" + INTENT_RULES[intent]) if intent in INTENT_RULES else "")) if image else "")
+    if development:
+        system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
+                   "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
     contents = build_contents(history, text)
     if image:
         contents[-1]["parts"].append({"inlineData": image})

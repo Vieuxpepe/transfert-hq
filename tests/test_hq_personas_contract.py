@@ -971,6 +971,73 @@ class ReviewFixTests(unittest.TestCase):
             self.assertIn("fermentation lactique", seen[0])
             self.assertTrue(seen[0].startswith(module.PERSONA_CORE))
 
+    def test_growth_reaches_musica_securia_inventoria_and_pistonia(self):
+        import time as _time
+        import hq_ai as ai
+        import hq_inventoria
+        import hq_inventoria_ai
+        import hq_music
+        import hq_musica
+        import hq_pistonia
+        import hq_pistonia_store
+        import hq_securia
+        now = _time.time()
+        hq_music.bind(root=self.root)
+        seed = {"episodes": [
+            {"id": "a", "text": "Je m'intéresse à la fermentation lactique.", "kind": "interest",
+             "topic": "fermentation lactique", "at": now - 90000, "status": "active",
+             "source_device": "test", "evidence": "user_statement"},
+            {"id": "b", "text": "J'explore la fermentation lactique.", "kind": "interest",
+             "topic": "fermentation lactique", "at": now - 180000, "status": "active",
+             "source_device": "test", "evidence": "user_statement"},
+        ]}
+
+        for module, folder, filename in ((hq_musica, ".hq-music", "musica_growth.json"),
+                                         (hq_securia, ".hq-security", "securia_growth.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(seed), encoding="utf-8")
+            seen = []
+
+            def fake_generate(chain, system, contents, _seen=seen, **kw):
+                _seen.append(system)
+                return json.dumps({"reply": "ok", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                module.chat("Parle-moi de la fermentation.")
+            self.assertIn("ÉVOLUTION VÉCUE", seen[0], module.__name__)
+            self.assertIn("fermentation lactique", seen[0], module.__name__)
+
+        hq_inventoria.bind(root=self.root)
+        path = self.root / ".hq-inventoria" / "inventoria_growth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seed), encoding="utf-8")
+        seen = []
+
+        def inv_generate(chain, system, contents, _seen=seen, **kw):
+            _seen.append(system)
+            return json.dumps({"reply": "ok", "tools": []}), "m"
+
+        with mock.patch.object(ai, "generate", side_effect=inv_generate):
+            hq_inventoria_ai.respond("Parle-moi de la fermentation.", [], {})
+        self.assertIn("ÉVOLUTION VÉCUE", seen[0])
+        self.assertIn("fermentation lactique", seen[0])
+
+        hq_pistonia_store.bind(self.root)
+        path = self.root / ".hq-engine" / "pistonia" / "pistonia_growth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seed), encoding="utf-8")
+        seen = []
+
+        def pis_generate(system, contents, _seen=seen):
+            _seen.append(system)
+            return json.dumps({"reply": "ok", "tools": []})
+
+        hq_pistonia.message({"text": "Parle-moi de la fermentation."}, generate=pis_generate)
+        self.assertIn("ÉVOLUTION VÉCUE", seen[0])
+        self.assertIn("fermentation lactique", seen[0])
+
     def test_single_day_interest_is_not_yet_a_view(self):
         import time as _time
         import hq_ai as ai

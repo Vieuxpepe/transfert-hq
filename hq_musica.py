@@ -16,11 +16,13 @@ import secrets
 import time
 import threading
 
+import hq_assistant_growth as assistant_growth
 import hq_state
 from hq_music import MusicError, get_taste, update_taste
 
 STATE_FOLDER = ".hq-music"
 THREAD_FILE = "musica_thread.json"
+GROWTH_FILE = "musica_growth.json"
 SNAPSHOT_FILE = "musica_snapshot.json"
 PLAY_HISTORY_FILE = "musica_play_history.json"
 MAX_PLAY_HISTORY = 200
@@ -40,6 +42,14 @@ ACTION_TOOLS = DESTRUCTIVE_TOOLS | {
 }
 _bound_root: Path | None = None
 _lock = threading.RLock()
+
+def _record_growth(text: str) -> None:
+    assistant_growth.record(_path(GROWTH_FILE), text, "musica")
+
+
+def _growth_hint(query: str) -> str:
+    return assistant_growth.hint(_path(GROWTH_FILE), query)
+
 
 def _english_directive() -> str:
     try:
@@ -835,6 +845,7 @@ def _chat(message: Any, *, history_inject: bool, explain_session: bool) -> dict[
     if not isinstance(message, str) or not message.strip():
         raise MusicaError("Message requis")
     text = message.strip()[:MAX_MESSAGE]
+    _record_growth(text)
 
     try:
         spotify = hq_spotify.status()
@@ -858,6 +869,10 @@ def _chat(message: Any, *, history_inject: bool, explain_session: bool) -> dict[
     top = list(dict.fromkeys(a for period in snapshot.get("top", {}).values() for a in period))[:8]
     if top:
         system += "\nArtistes les plus écoutés (Spotify): " + ", ".join(top)
+    development = _growth_hint(text)
+    if development:
+        system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
+                   "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
     system = refs.clean(system)
     messages = thread.get("messages") or []
     refs.history_used = bool(top) or (refs.history_enabled and any(m.get("history_used") for m in messages[-12:]))
@@ -1044,6 +1059,14 @@ def ambient_line(*, nsfw: bool = False, track: str = "", artist: str = "", playi
     """Generate one short spontaneous whisper from Musica via hq_ai.generate."""
     global _LAST_AMBIENT_AT
     import hq_ai
+
+    try:  # a blind tournament match is open: she must not whisper about the song that is playing
+        import hq_music_dj
+        duel = hq_music_dj._state().get("duel") or {}
+        if duel.get("blind") and not duel.get("vote"):
+            return {"ok": True, "line": "", "blind": True}
+    except Exception:  # noqa: BLE001 — the DJ module may be unbound (tests, CLI)
+        pass
 
     now = time.time()
     with _AMBIENT_LOCK:

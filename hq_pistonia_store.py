@@ -47,6 +47,14 @@ def _dir() -> Path:
     return _root / ".hq-engine" / "pistonia"
 
 
+def growth_path() -> Optional[Path]:
+    """Episode file beside the conversation, or None before the store is bound."""
+    try:
+        return _dir() / "pistonia_growth.json"
+    except StoreError:
+        return None
+
+
 def _read(name: str, default: Any) -> Any:
     try:
         data = json.loads((_dir() / name).read_text(encoding="utf-8"))

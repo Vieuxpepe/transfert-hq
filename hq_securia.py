@@ -15,10 +15,12 @@ import re
 import threading
 import time
 
+import hq_assistant_growth as assistant_growth
 import hq_security
 
 STATE_FOLDER = ".hq-security"
 THREAD_FILE = "securia_thread.json"
+GROWTH_FILE = "securia_growth.json"
 MAX_THREAD = 40
 MAX_MESSAGE = 4000
 MAX_ROUNDS = 3
@@ -99,6 +101,14 @@ def bind(
     _rate_limiter_getter = rate_limiter_getter
     _config_getter = config_getter
     _presence_getter = presence_getter
+
+
+def _record_growth(text: str) -> None:
+    assistant_growth.record(_state_dir() / GROWTH_FILE, text, "securia")
+
+
+def _growth_hint(query: str) -> str:
+    return assistant_growth.hint(_state_dir() / GROWTH_FILE, query)
 
 
 def _utcnow() -> str:
@@ -658,12 +668,17 @@ def chat(message: Any) -> dict[str, Any]:
     if not isinstance(message, str) or not message.strip():
         raise SecuriaError("Message requis")
     text = message.strip()[:MAX_MESSAGE]
+    _record_growth(text)
 
     thread = get_thread()
     messages = list(thread.get("messages") or [])
     contents = _history_contents(messages, text)
 
     system = f"{PERSONA_CORE}\n{TOOL_SCHEMA}"
+    development = _growth_hint(text)
+    if development:
+        system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
+                   "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
     tools_used: list[str] = []
     reply = ""
     model = None

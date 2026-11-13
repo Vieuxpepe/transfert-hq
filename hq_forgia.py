@@ -16,7 +16,7 @@ import os
 import time
 import uuid
 
-import hq_companion_growth as growth
+import hq_assistant_growth as assistant_growth
 import hq_forge
 import hq_forge_jobs
 import hq_forge_presets
@@ -27,7 +27,6 @@ STATE_FOLDER = ".hq-forge"
 THREAD_FILE = "forgia_thread.json"
 PREFS_FILE = "forgia_prefs.json"
 GROWTH_FILE = "forgia_growth.json"
-_GROWTH_KINDS = {"outcome", "decision", "correction", "experience", "interest", "meaning", "ritual"}
 MAX_THREAD = 40
 MAX_MESSAGE = 4000
 MAX_ROUNDS = 4
@@ -252,75 +251,16 @@ def clear_thread() -> dict[str, Any]:
         return {"ok": True, "messages": []}
 
 
-def _growth_schema_ok(episodes: Any) -> bool:
-    if not isinstance(episodes, list):
-        return False
-    for episode in episodes:
-        if not isinstance(episode, dict) or not isinstance(episode.get("text"), str) or not episode["text"].strip():
-            return False
-        if episode.get("kind") not in _GROWTH_KINDS or episode.get("status") not in {"active", "superseded", "forgotten"}:
-            return False
-        if not isinstance(episode.get("topic", ""), str) or not isinstance(episode.get("id"), str):
-            return False
-        at = episode.get("at")
-        if isinstance(at, bool) or not isinstance(at, (int, float)):
-            return False
-    return True
-
-
-def _growth_episodes() -> list[dict[str, Any]]:
-    """Episodes for Forgia only; a damaged file is left untouched and ignored."""
-    try:
-        with _lock:
-            data = _load_json(GROWTH_FILE, {"episodes": []})
-    except Exception:
-        return []
-    episodes = data.get("episodes")
-    if not _growth_schema_ok(episodes):
-        log.warning("Forgia growth file unreadable; development skipped")
-        return []
-    return [dict(e) for e in episodes]
-
-
 def _record_growth(text: str) -> None:
-    """Keep only explicit user statements the growth engine recognizes."""
-    item = growth.extract(text)
-    if not item:
-        return
-    try:
-        with _lock:
-            data = _load_json(GROWTH_FILE, {"episodes": []})
-            episodes = data.get("episodes")
-            if not _growth_schema_ok(episodes):
-                log.warning("Forgia growth file unreadable; episode not saved")
-                return
-            now = time.time()
-            today = time.strftime("%Y-%m-%d", time.localtime(now))
-            for episode in episodes:
-                if (episode.get("status") == "active"
-                        and growth.fold(episode["text"]) == growth.fold(item["text"])
-                        and time.strftime("%Y-%m-%d", time.localtime(float(episode["at"]))) == today):
-                    return
-            episodes.append({"id": uuid.uuid4().hex, "text": item["text"], "kind": item["kind"],
-                             "topic": item["topic"], "at": now, "status": "active",
-                             "source_device": "forgia", "evidence": "user_statement"})
-            _save_json(GROWTH_FILE, {"episodes": episodes[-40:]})
-    except Exception:
-        log.warning("Forgia growth episode not saved", exc_info=True)
+    assistant_growth.record(_state_dir() / GROWTH_FILE, text, "forgia")
 
 
 def _growth_hint(query: str) -> str:
-    """One relevant, revisable view — never a personality rewrite."""
-    cards = growth.derive(_growth_episodes(), time.time())
-    words = set(re.findall(r"[a-z0-9]{4,}", growth.fold(query)))
-    if not words:
-        return ""
-    related = [c for c in cards
-               if words & set(re.findall(r"[a-z0-9]{4,}", growth.fold(c.get("topic", ""))))]
-    if not related:
-        return ""
-    card = max(related, key=lambda c: (c.get("salience", 0), c.get("updated_at", 0)))
-    return growth.render(card)
+    return assistant_growth.hint(_state_dir() / GROWTH_FILE, query)
+
+
+
+
 
 
 def _prefs_schema_ok(data: Any) -> bool:

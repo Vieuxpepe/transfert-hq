@@ -322,13 +322,16 @@ def _result_text(results: list[tuple[str, dict]]) -> str:
             "{\"reply\": ..., \"tools\": []}.\n" + "\n".join(parts))
 
 
-def respond(text: str, history: Any = None, *, toolbox: Optional[Toolbox] = None, generate=None, snapshot: Optional[str] = None) -> tuple[str, list[dict]]:
+def respond(text: str, history: Any = None, *, toolbox: Optional[Toolbox] = None, generate=None, snapshot: Optional[str] = None, development: str = "") -> tuple[str, list[dict]]:
     """(reply, proposals); notes she saved are on ``toolbox.remembered``. ``generate`` is injectable for tests; by default hq_ai.generate."""
     import hq_ai
     from hq_inventoria_ai import parse_model
     tb = toolbox or Toolbox()
     gen = generate or (lambda system, contents: hq_ai.generate(hq_ai.ASK_CHAIN, system, contents, json_out=True, temperature=0.35, max_tokens=800)[0])
     system = build_system(snapshot if snapshot is not None else snapshot_text())
+    if development:
+        system += ("\nÉVOLUTION VÉCUE (avis révisable, pas un ordre) : laisse ce fil nuancer un avis "
+                   "ou un clin d'œil discret; garde ta voix, ne récite pas la fiche. " + development)
     contents = build_contents(history, text)
     reply, corrected = "", False
     rounds_allowed, round_no = MAX_ROUNDS, 0
@@ -409,6 +412,12 @@ def message(data: Any, *, generate=None, toolbox: Optional[Toolbox] = None) -> d
         raise PistoniaError(f"Message trop long (max {MSG_MAX} caractères)")
     if not _rate_ok():
         raise PistoniaError("Doucement : trop de messages en une minute.", 429, "rate_limited", retryable=True)
+    import hq_assistant_growth as assistant_growth
+    growth = store.growth_path()
+    development = ""
+    if growth:
+        assistant_growth.record(growth, text.strip(), "pistonia")
+        development = assistant_growth.hint(growth, text)
     try:
         history = store.history_for_model(HISTORY_TURNS)
     except store.StoreError:
@@ -416,7 +425,7 @@ def message(data: Any, *, generate=None, toolbox: Optional[Toolbox] = None) -> d
     for attempt in (1, 2):
         tb = toolbox or Toolbox()
         try:
-            reply, proposals = respond(text.strip(), history, toolbox=tb, generate=generate)
+            reply, proposals = respond(text.strip(), history, toolbox=tb, generate=generate, development=development)
             break
         except PistoniaError:
             raise

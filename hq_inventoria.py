@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Callable
 
 import hq_finances as finances
@@ -58,6 +59,13 @@ def bind(**kwargs: Any) -> None:
         for key in ("root", "actor", "now", "llm_adapter", "asset_exists", "notify"):
             if key in kwargs:
                 _cb[key] = kwargs[key]
+
+
+def root() -> Path | None:
+    """The bound HQ root, or None before bind (growth stays disabled then)."""
+    with _guard:
+        value = _cb.get("root")
+    return Path(value) if value else None
 
 
 def reset_for_tests() -> None:
