@@ -56,7 +56,23 @@ def _read(name: str, default: Any) -> Any:
 def _write(name: str, data: Any) -> None:
     d = _dir()
     d.mkdir(parents=True, exist_ok=True)
-    hq_state.write_json_atomic(d / name, data)
+    try:
+        # hq_state refuses to replace a file that is present but unreadable.
+        hq_state.write_json_atomic(d / name, data)
+    except RuntimeError as exc:
+        raise StoreError(str(exc)) from exc
+
+
+def unreadable(name: str) -> bool:
+    """True when the file exists but cannot be parsed (it is never replaced)."""
+    p = _dir() / name
+    if not p.is_file():
+        return False
+    try:
+        json.loads(p.read_text(encoding="utf-8"))
+        return False
+    except Exception:
+        return True
 
 
 def clean_text(text: Any, limit: int) -> str:
@@ -148,8 +164,9 @@ def remember(text: Any, *, now: Optional[float] = None) -> dict:
                 return {"id": r["id"], "text": r["text"], "duplicate": True}
         row = {"id": "mem-" + secrets.token_hex(4), "text": t, "at": float(now if now is not None else time.time())}
         rows.append(row)
+        evicted = [r["id"] for r in rows[:-NOTES_MAX]]  # reported, not silently dropped
         _write("memory.json", {"version": 1, "notes": rows[-NOTES_MAX:]})
-    return {"id": row["id"], "text": t, "duplicate": False}
+    return {"id": row["id"], "text": t, "duplicate": False, "evicted": evicted}
 
 
 def forget(note_id: Any) -> bool:

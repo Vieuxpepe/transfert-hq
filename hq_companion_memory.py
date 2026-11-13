@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import hq_companion_presence as presence
 import hq_companion_growth as growth
+import hq_personas
 
 _owner = ContextVar("companion_owner", default="admin")
 _memory_scope = ContextVar("companion_memory_scope", default="transferania")
@@ -35,10 +36,14 @@ def bind(*, root, now):
 
 @contextmanager
 def memory_scope(name: str):
-    """Isolate memory JSON and personality by character: ``transferania`` (default) or ``else``."""
+    """Isolate memory JSON and personality per assistant (see ``hq_personas``).
+
+    An unknown name raises instead of silently borrowing Transferania's store, so a
+    new assistant can never write into another one's memories by accident.
+    """
     key = str(name or "").strip().lower()
-    if key not in ("transferania", "else"):
-        key = "transferania"
+    if key not in hq_personas.memory_scopes():
+        raise ValueError(f"portée mémoire inconnue : {name!r} (voir hq_personas)")
     token = _memory_scope.set(key)
     try:
         yield
@@ -91,8 +96,8 @@ def path():
     key = hashlib.sha256(current_owner().encode("utf-8")).hexdigest()[:32]
     scope = _memory_scope.get()
     base = _root / ".hq-ai" / "companion-memory"
-    if scope == "else":
-        base = base / "else"
+    if scope != "transferania":      # Transferania keeps the original path
+        base = base / scope
     return base / (key + ".json")
 
 
@@ -114,7 +119,7 @@ def _load():
         data.setdefault("personality_revision", 0)
         if type(data["personality_revision"]) is not int or data["personality_revision"] < 0:
             raise ValueError("Révision de personnalité invalide")
-        validate_personality(data["personality"])
+        validate_personality(data["personality"], enforce_budget=False)
         if not isinstance(data.get("revision"), int) or isinstance(data["revision"], bool) or any(not isinstance(data.get(k), dict) for k in ("imported", "forgotten")):
             raise ValueError("Mémoire partagée invalide")
         if any(not isinstance(m, dict) or not {"id", "key", "kind", "subject", "polarity", "text", "status", "updated_at", "created_at", "source_device", "evidence"}.issubset(m) for m in data["memories"]):
@@ -511,14 +516,17 @@ def snapshot():
             "followups": [{k: f[k] for k in ("id", "topic", "question", "status", "ask_count")} for f in data["followups"] if f["status"].startswith("awaiting")]}
 
 
-def validate_personality(traits):
+def validate_personality(traits, *, enforce_budget: bool = True):
     if not isinstance(traits, dict) or set(traits) - set(presence.TRAIT_LABELS):
         raise ValueError("Traits de personnalité invalides")
     if any(not isinstance(v, str) or not v.strip() or len(v.encode("utf-8")) > (320 if k.startswith("ambient_") else 2400)
            for k, v in traits.items()):
         raise ValueError("Trait vide ou trop long (320 octets en ambiance, 2400 par trait)")
     full = {**presence.character_defaults(), **traits}
-    if sum(len(full[k].encode("utf-8")) for k in ("humor", "curiosity", "strength", "signature", "flirt")) > 4200:
+    # The budget is enforced when saving. Reading a profile that already existed
+    # before the sixth trait must stay possible: otherwise a near-cap profile
+    # would make the whole companion memory unreadable after the upgrade.
+    if enforce_budget and sum(len(full[k].encode("utf-8")) for k in ("humor", "curiosity", "pastimes", "strength", "signature", "flirt")) > 4200:
         raise ValueError("Personnalité trop longue : maximum 4200 octets hors ambiance")
     return {k: v.strip() for k, v in traits.items()}
 
@@ -673,9 +681,9 @@ def note_sister_line(speaker: str, text: str, device: str) -> None:
     """Light episode note from a Master-triggered sister dialogue (current memory_scope)."""
     line = re.sub(r"\s+", " ", str(text or "").strip())[:400]
     who = str(speaker or "").strip().lower()
-    if not line or who not in ("transferania", "else"):
+    if not line or who not in hq_personas.memory_scopes():
         return
-    label = "Transferania" if who == "transferania" else "Else"
+    label = hq_personas.get(who)["name"]
     with _lock:
         data = _load()
         _record_episode(data, f"{label} a dit (dialogue sœurs) : {line}", "experience", device, None, topic="sister_dialogue")

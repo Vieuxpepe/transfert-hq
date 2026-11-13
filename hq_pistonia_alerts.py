@@ -186,7 +186,10 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
             n = sum(1 for a in state["alerts"] if a.get("key") == key)
             text = _compose(key, cond, held, n)
             props = _proposals_for(cond)
-            msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
+            try:
+                msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
+            except store.StoreError:
+                continue          # thread file unreadable: keep it, never overwrite it
             state["alerts"].append({"id": msg["id"], "key": key, "kind": "alert", "text": text, "at": now, "seen": False,
                                     "label": _what(key, cond)})
             state["cooldown"][key] = now
@@ -205,12 +208,18 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 n = sum(1 for a in state["alerts"] if a.get("key") == key and a.get("kind") == "clear")
                 text = _pick("clear", key, n).format(what=what)
                 text = text[:1].upper() + text[1:]
-                msg = store.add_message("assistant", text, kind="clear", now=now)
+                try:
+                    msg = store.add_message("assistant", text, kind="clear", now=now)
+                except store.StoreError:
+                    continue
                 state["alerts"].append({"id": msg["id"], "key": key, "kind": "clear", "text": text, "at": now, "seen": True})
                 added.append(msg)
         state["active"] = sorted(active)
         if added:
-            store.save_alerts_state(state)
+            try:
+                store.save_alerts_state(state)
+            except store.StoreError:
+                pass              # alerts file unreadable: preserve it, retry next tick
         return added
     finally:
         _tick_lock.release()

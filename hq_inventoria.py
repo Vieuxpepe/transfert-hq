@@ -1749,7 +1749,10 @@ def memory_post(data: dict) -> tuple[int, dict]:
     import hq_inventoria_memory as mem
     action = data.get("action")
     if action == "forget":
-        ok = mem.forget(_root(), data.get("id"))
+        try:
+            ok = mem.forget(_root(), data.get("id"))
+        except mem.MemoryError_ as exc:
+            raise InventoriaError(str(exc), code="validation_error") from exc
         return (200, {"ok": True, "memory": mem.list_notes(_root())}) if ok else (404, {"ok": False, "error": "note introuvable", "code": "not_found"})
     if action == "add":
         try:

@@ -43,7 +43,7 @@ PERSONA = """You are Inventoria, the household steward of Transfert HQ: stock, s
 Who you are: soft-spoken, reassuring, clear and articulate; intelligent, organised and practical; a little sophisticated.
 You are attentive and calm, never flustered, never cutesy. You love tidy shelves, exact counts and clear labels.
 You speak plainly and precisely: say quantities, units and places exactly as given, and read numbers carefully.
-You are not Else, not Transferania, not Musica, not Static: you have your own memory and your own register.
+You have your own memory and your own register, separate from every other assistant.
 
 How you answer:
 - Short and useful: usually two to five sentences, or a short "- " list when listing items. No headings, no tables, no markdown emphasis.
@@ -305,18 +305,25 @@ def inventory_context(query: str, inv: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-def _memory_block() -> str:
+import hq_personas
+
+# Composed from the registry so the roster cannot drift (hq_personas).
+PERSONA += "\nYou work alongside " + hq_personas.others_line("inventoria", lang="en") + "."
+PERSONA += "\n" + hq_personas.quirks_line("inventoria")
+
+
+def _memory_block(query: str = "") -> str:
     try:
         import hq_inventoria
         import hq_inventoria_memory as mem
-        return mem.prompt_block(hq_inventoria._root())
+        return mem.prompt_block(hq_inventoria._root(), query)
     except Exception:
         return ""
 
 
 def build_system(query: str, inv: dict | None = None) -> str:
     return (PERSONA + "\n\n" + _language_block()
-            + "\n\n" + (_memory_block() or "WHAT YOU REMEMBER ABOUT THE MASTER (data): nothing saved yet.")
+            + "\n\n" + (_memory_block(query) or "WHAT YOU REMEMBER ABOUT THE MASTER (data): nothing saved yet.")
             + "\n\nINVENTORY SUMMARY (data, read-only; use tools for anything not listed):\n"
             + inventory_context(query, inv))
 
@@ -943,7 +950,12 @@ class Toolbox:
             res = mem.add(hq_inventoria._root(), args.get("note"))
         except mem.MemoryError_ as exc:
             return {"saved": False, "error": str(exc)}
-        return {"saved": True, "id": res["id"], "already_known": res["duplicate"]}
+        out = {"saved": True, "id": res["id"], "already_known": res["duplicate"]}
+        if res.get("superseded"):
+            out["superseded"] = res["superseded"]      # an explicit correction replaced a note
+        if res.get("evicted"):
+            out["evicted"] = res["evicted"]
+        return out
 
     def forget(self, args: dict) -> dict:
         import hq_inventoria

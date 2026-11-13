@@ -42,6 +42,7 @@ import hq_companion_memory as companion_memory
 import hq_companion_presence as companion_presence
 import hq_companion_context as companion_context
 import hq_companion_archive as companion_archive
+import hq_personas
 import hq_else_persona as _else_persona
 from pathlib import Path
 from typing import Any, Callable
@@ -56,10 +57,15 @@ MODELS = {
     "gemini-3.6-flash": ("Gemini 3.6 Flash", 5, 20),
     "gemma-4-26b-a4b-it": ("Gemma 4 26B", 30, 14400),
     "gemma-4-31b-it": ("Gemma 4 31B", 30, 14400),
+    # Web search (Google Search grounding) has a free quota only on Gemini 2.x / 2.5 (1.5K a day on AI Studio);
+    # « Gemini 3 and newer » get 0, so grounded calls go through SEARCH_CHAIN, never the 3.x chains.
+    "gemini-2.5-flash-lite": ("Gemini 2.5 Flash Lite", 15, 1000),
+    "gemini-2.5-flash": ("Gemini 2.5 Flash", 10, 250),
 }
 # Input TPM from the project's AI Studio limits; independent of request quotas.
 MODEL_TPM = {m: (16000 if m.startswith("gemma-") else 250000) for m in MODELS}
 ASK_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-31b-it")
+SEARCH_CHAIN = ("gemini-2.5-flash-lite", "gemini-2.5-flash")  # the models with a web-search quota
 DEEP_CHAIN = ("gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
 CAPTURE_CHAIN = ("gemma-4-26b-a4b-it", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-31b-it")
 AMBIENT_CHAIN = ("gemini-3.1-flash-lite", "gemma-4-26b-a4b-it", "gemini-3.5-flash-lite")
@@ -772,7 +778,7 @@ def chain_floor_cap(chain: tuple[str, ...], channel: str = "chat") -> int:
     return min((model_input_cap(m, channel) for m in chain), default=context_budget(channel))
 
 
-def _reconcile_tokens(model: str, reservation: str, data: dict, status: int) -> None:
+def _reconcile_tokens(model: str, reservation: str, data: dict, status: int, *, hold: bool = True) -> None:
     meta = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
     measured = meta.get("promptTokenCount") if isinstance(meta, dict) else None
     with _usage_transaction():
@@ -781,13 +787,14 @@ def _reconcile_tokens(model: str, reservation: str, data: dict, status: int) -> 
             for row in u.get("token_window", {}).get(model, []):
                 if row["id"] == reservation:
                     row["tokens"] = measured
-        if status == 429:
+        if status == 429 and hold:
             # Other clients may consume the same project quota. Avoid hammering it.
             u.setdefault("model_backoff_until", {})[model] = _now() + 60
         _save_usage(u)
 
 
 KEY_REJECTED_BACKOFF = 3600
+SEARCH_REFUSED_BACKOFF = 600  # web search has its own (smaller) quota: a refusal pauses search only, never the model
 
 
 def _backoff(slot: str, seconds: float) -> None:
@@ -903,6 +910,19 @@ def _parse_generation(data: dict) -> tuple[str, str, bool]:
     return text, fr, False
 
 
+def _grounding_of(data: dict) -> dict:
+    """Search queries and web sources of a grounded reply (titles are usually the site's domain)."""
+    cands = data.get("candidates") or []
+    meta = (cands[0] if cands and isinstance(cands[0], dict) else {}).get("groundingMetadata") or {}
+    sources = []
+    for chunk in meta.get("groundingChunks") or []:
+        web = chunk.get("web") if isinstance(chunk, dict) else None
+        if isinstance(web, dict) and isinstance(web.get("uri"), str) and web["uri"].startswith("https://"):
+            sources.append({"title": str(web.get("title") or "")[:80], "uri": web["uri"][:600]})
+    queries = [str(q)[:120] for q in meta.get("webSearchQueries") or [] if isinstance(q, str)]
+    return {"queries": queries[:6], "sources": sources[:6]}
+
+
 # Gemma 4 thinks by default and its thoughts count against maxOutputTokens: with the companion's short
 # caps it spent the whole allowance thinking (~637 of 640 tokens) and returned no text. "minimal" is
 # the only level these models accept (thinkingBudget and "low" are rejected with HTTP 400).
@@ -916,9 +936,13 @@ def _model_body(model: str, body: dict) -> dict:
 
 
 def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_out: bool = False, temperature: float = 0.3, ambient: bool = False, transferania: bool = False, max_tokens: int | None = None, nsfw: bool = False, background: bool = False,
-             refit: Callable[[int], tuple[str, list]] | None = None, deadline: float | None = None) -> tuple[str, str]:
+             refit: Callable[[int], tuple[str, list]] | None = None, deadline: float | None = None,
+             search: bool = False, grounding: dict | None = None) -> tuple[str, str]:
     """(text, model). Tries each model of ``chain`` in turn, on key 1 then each extra key; busy or exhausted
     model/key slots are skipped. A filtered, truncated or empty reply moves on to the next model, not the next key.
+
+    ``search=True`` lets Gemini models ground the reply with Google Search (Gemma models are skipped: they have no
+    search tool). When ``grounding`` is a dict it receives ``{"queries": [...], "sources": [{"title", "uri"}]}``.
 
     ``refit(cap)`` re-assembles a smaller prompt for a model whose cap (``model_input_cap``) is below this
     prompt's size, instead of skipping that model. Without it, a model that cannot take the prompt is skipped."""
@@ -936,6 +960,9 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
         body["safetySettings"] = _NSFW_SAFETY
     if json_out:
         body["generationConfig"]["responseMimeType"] = "application/json"
+    if search:
+        body["tools"] = [{"google_search": {}}]
+        chain = tuple(m for m in chain if not m.startswith("gemma-"))
     last = "Tous les modèles sont occupés ou à court de quota pour aujourd'hui"
     attempts = 0
     state = getattr(_companion_local, "state", None)
@@ -978,6 +1005,8 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                     continue
                 sys_m, contents_m = fitted[cap]
                 tokens_m = estimate_context(sys_m, contents_m)
+        if search and _now() < usage().get("model_backoff_until", {}).get(slot + "#search", 0):
+            continue  # web search refused on this key/model a moment ago
         with _usage_transaction():
             if not available(slot, tokens_m):
                 continue
@@ -1003,7 +1032,7 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
             content_failed.add(model)
             continue
         data = data if isinstance(data, dict) else {}
-        _reconcile_tokens(slot, reservation, data, status)
+        _reconcile_tokens(slot, reservation, data, status, hold=not search)
         if status == 200 and isinstance(data.get("usageMetadata"), dict):
             _observe_tokens(model, tokens_m, data["usageMetadata"].get("promptTokenCount"))
         if state is not None:
@@ -1032,6 +1061,9 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
             # This key's quota for this model: instant, nothing generated, so it does not use up one of the
             # two attempts; the next key (or the next model) still gets its turn.
             last = msg or f"{model} occupé ({status})"
+            if search:
+                _backoff(slot + "#search", SEARCH_REFUSED_BACKOFF)
+                last = "Recherche web Gemini refusée (quota de recherche)"
             attempts -= 1
             continue
         if status in (500, 502, 503, 504):
@@ -1049,6 +1081,10 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                 last = f"{model} : réglage de réflexion refusé"  # never fail the reply over GEMMA_THINKING
                 content_failed.add(model)
                 continue
+            if status == 400 and search:
+                last = f"{model} : recherche web refusée"  # this model has no search tool: try the next one
+                content_failed.add(model)
+                continue
             raise AiError((msg or f"Erreur {status}")[:300], 502 if status >= 500 else 400, "model_error")
         text, finish, retry = _parse_generation(data if isinstance(data, dict) else {})
         if not text.strip():
@@ -1059,6 +1095,8 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
             last = f"{model} tronqué ou filtré ({finish})"
             content_failed.add(model)
             continue
+        if search and isinstance(grounding, dict):
+            grounding.update(_grounding_of(data))
         return text.strip(), model
     raise AiError(str(last)[:300], 503, "busy")
 
@@ -1936,6 +1974,9 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
     v = re.sub(r"[^a-z0-9_-]", "", str(view or "accueil").lower())[:32] or "accueil"
     system = base.format(today=_today_text())
     system += "\n\n" + CHARACTER_SHEET
+    # Stable identity, not an editable trait: one line, so the alias cannot be
+    # duplicated by a customized humour/curiosity field.
+    system += "\n" + hq_personas.alias_line("transferania")
     system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
         traits=trait_overrides if trait_overrides is not None else _shared_memory(companion_memory.personality_traits))
     if nsfw:
@@ -2506,7 +2547,7 @@ def ambient(view: Any, digest: Any = "", persona: Any = "warm", *, nsfw: bool = 
     prefs = load_transferania_prefs(did)
     mem = load_transferania(did)
     _shared_memory(companion_memory.migrate, did, mem)
-    summary = str(mem.get("summary") or "").strip()
+    summary = summary_for_mode(mem, use_nsfw)
     st = _life_begin(did, v, signals)
     ev = hq_life.find(st, event_id)  # only an event the server itself sees counts; the client sends an id, never text
     base = {"ambient_used": ambient_used(), "ambient_per_day": daily_limit("ambient"), "device_id": did, "mood": _mood_out(st), "event_id": ev["id"] if ev else None}
@@ -2706,6 +2747,19 @@ def thread_keep_limit(messages: list) -> int:
     return TRANSFERANIA_KEEP
 
 
+def summary_for_mode(data: dict, nsfw: bool) -> str:
+    """A summary that may hold adult text never reaches a SFW prompt.
+
+    ``summary_clean`` is set by the compressor once the summary was rebuilt without adult rows; a
+    summary of unknown provenance (legacy threads) stays out of SFW prompts until then.
+    """
+    d = data if isinstance(data, dict) else {}
+    s = str(d.get("summary") or "").strip()
+    if nsfw or d.get("summary_clean") is True:
+        return s
+    return ""
+
+
 def split_over_keep(messages: list, keep: int | None = None) -> tuple[list, list]:
     lim = keep if keep is not None else thread_keep_limit(messages)
     if len(messages) <= lim:
@@ -2761,33 +2815,6 @@ def compress_with_llm(old_summary: str, chunk: list[dict], *, nsfw: bool = False
     return "\n".join(lines)
 
 
-def companion_reflection_hint(data: dict, prefs: dict, signals: Any, msg: str = "") -> str:
-    """Compact live reflection suffix folded into VOIX TRANSFERANIA (delivery priority 30)."""
-    sig = parse_companion_signals(signals)
-    cues: list[str] = []
-    interactions = sig.get("interactions") or []
-    fav_acts = str(sig.get("fav_acts") or "").strip()
-    if interactions:
-        cues.append(f"Écho tactile Live2D ({', '.join(interactions[-2:])}) : laisse-le affleurer sans le lister.")
-    elif fav_acts:
-        cues.append(f"Goût complice connu : « {fav_acts} ».")
-    clean_msg = str(msg or "").strip()
-    if 0 < len(clean_msg) < 28 and "?" not in clean_msg:
-        cues.append("Message court : apporte le relief et une relance vivante.")
-    avoid: list[str] = []
-    for r in (data.get("recent_replies") or [])[-3:]:
-        op = _opening_signature(str(r))
-        if op and op not in avoid:
-            avoid.append(op)
-    for r in (prefs.get("recent_ambient") or [])[-2:]:
-        op = _opening_signature(str(r))
-        if op and op not in avoid:
-            avoid.append(op)
-    if avoid:
-        cues.append("N'attaque pas par « " + " » / « ".join(avoid[:3]) + "… ».")
-    return " ".join(cues)
-
-
 def _chunk_has_nsfw(chunk: list[dict]) -> bool:
     return any(isinstance(m, dict) and m.get("nsfw") for m in chunk)
 
@@ -2826,7 +2853,11 @@ def refresh_companion_summary(data: dict, device_id: str, system: str, message: 
         pass
     load_thread = load_fn if callable(load_fn) else load_transferania
     save_thread = save_fn if callable(save_fn) else save_transferania
-    old = str(data.get("summary") or "")
+    # Adult exchanges never enter the summary: it is re-injected into SFW prompts. A summary of
+    # unknown provenance is not merged either — the first SFW compression rebuilds it clean.
+    merge_old = data.get("summary_clean") is True
+    old = str(data.get("summary") or "") if merge_old else ""
+    chunk = [m for m in chunk if not (isinstance(m, dict) and m.get("nsfw"))]
     now = _now()
     summary = compress_chunk_deterministic(old, chunk)
     attempted = data.get("summary_attempt_at")
@@ -2853,7 +2884,7 @@ def refresh_companion_summary(data: dict, device_id: str, system: str, message: 
                 state.pop("generation_reason", None)
     with _lock:
         current = load_thread(device_id)
-        current.update(summary=summary, summary_through=end, summary_exchange_count=len(groups), compressed_at=now)
+        current.update(summary=summary, summary_clean=True, summary_through=end, summary_exchange_count=len(groups), compressed_at=now)
         save_thread(current, device_id)
     return current
 
@@ -2899,6 +2930,7 @@ def transferania_public_messages(data: dict) -> list[dict]:
             "ts": m.get("ts"),
             "kind": m.get("kind"),
             "view": m.get("view"),
+            "nsfw": bool(m.get("nsfw")),
         }
         model_id = str(m.get("model") or "").strip()[:40]
         if model_id:
@@ -2956,7 +2988,8 @@ def transferania_history(*, device_id: str, client_ip: Any = None, role: Any = N
     nudged = _maybe_nudge(did)
     data = load_transferania(did)
     _shared_memory(companion_memory.migrate, did, data)
-    summary = str(data.get("summary") or "").strip()
+    allowed = nsfw_allowed(client_ip, role)
+    summary = summary_for_mode(data, allowed)
     msgs = data.get("messages") or []
     facts_state = load_facts(did)
     life_st = hq_life.load(_owner_device(did))
@@ -2968,7 +3001,7 @@ def transferania_history(*, device_id: str, client_ip: Any = None, role: Any = N
         "keep": thread_keep_limit(msgs),
         "has_summary": bool(summary),
         "summary_preview": summary[:240] if summary else "",
-        "messages": transferania_public_messages(data),
+        "messages": [m for m in transferania_public_messages(data) if allowed or not m.get("nsfw")],
         "prefs": load_transferania_prefs(did),
         "transferania_used": transferania_used(),
         "transferania_per_day": daily_limit("chat"),
@@ -3756,7 +3789,7 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         maybe_compress(data)
         save_transferania(data, did)
         hist = list(data.get("messages") or [])
-        summary = str(data.get("summary") or "").strip()
+        summary = summary_for_mode(data, use_nsfw)
     life = hq_life.mood_label(st["mood"]) + ("\n" + remember if remember else "")
     system = _chat_system("nsfw" if use_nsfw else mode, nsfw=use_nsfw, view=v, device_id=did, prefs=prefs)
     chain = NSFW_CHAIN if use_nsfw else CHAT_CHAIN
@@ -3766,7 +3799,7 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
                                      deadline=None if use_nsfw else started + CHAT_SUMMARY_WINDOW_S)
     groups = complete_exchanges(hist[:-1])
     prompt_history = [m for group in groups for m in group]
-    packet = _continuity_packet(msg + " " + v + " " + str(data.get("summary") or ""), conversation_text=msg,
+    packet = _continuity_packet(msg + " " + v + " " + summary_for_mode(data, use_nsfw), conversation_text=msg,
                                reserve_followup=not due, allow_followup=not due)
     previous_reply = next((m.get("text", "") for m in reversed(hist[:-1]) if m.get("role") == "assistant"), "")
     voice_guidance = companion_presence.delivery_hint(previous_reply, msg, packet["presence"], has_ritual=packet["ritual_available"])
@@ -3778,7 +3811,7 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     arch_text = companion_archive.archive_block(msg, nsfw=use_nsfw, recent_messages=prompt_history[-8:])
     core = system
     evidence = dict(history=prompt_history,
-        summary=str(data.get("summary") or ""), memories=shared_memories, corrections=packet.get("corrections", []), page=join_evidence_page(
+        summary=summary, memories=shared_memories, corrections=packet.get("corrections", []), page=join_evidence_page(
             facts_block(did), packet["prompt"], life, resolved_followup,
             presence_page_block(prefs, signals, nsfw=use_nsfw),
             nsfw_evidence_page("chat") if use_nsfw else "",
@@ -3998,7 +4031,7 @@ def else_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "wa
         )
         groups = complete_exchanges(hist[:-1])
         prompt_history = [m for group in groups for m in group]
-        packet = _continuity_packet(msg + " " + v + " " + str(data.get("summary") or ""), conversation_text=msg,
+        packet = _continuity_packet(msg + " " + v + " " + summary_for_mode(data, use_nsfw), conversation_text=msg,
                                    reserve_followup=True, allow_followup=True)
         previous_reply = next((m.get("text", "") for m in reversed(hist[:-1]) if m.get("role") == "assistant"), "")
         voice_guidance = companion_presence.delivery_hint(previous_reply, msg, packet["presence"], has_ritual=packet["ritual_available"])
@@ -4008,8 +4041,7 @@ def else_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "wa
         hq_lookup_text, hq_sources = hq_live_lookup_block(msg)
         core = system
         evidence = dict(history=prompt_history,
-            summary=str(data.get("summary") or ""), memories=shared_memories, corrections=packet.get("corrections", []),
-            page=join_evidence_page(
+                    summary=summary_for_mode(data, use_nsfw), memories=shared_memories, corrections=packet.get("corrections", []), page=join_evidence_page(
                 facts_block(did), packet["prompt"], resolved_followup,
                 presence_page_block(prefs, signals, nsfw=use_nsfw),
                 nsfw_evidence_page("chat") if use_nsfw else "",

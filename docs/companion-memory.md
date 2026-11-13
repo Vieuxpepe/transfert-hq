@@ -31,7 +31,11 @@ accounts have separate profiles, thread files and preferences. The bridge passes
 the authenticated session's user identity; a request body cannot choose an owner.
 Upload-only sessions cannot access memory operations.
 
-Profiles live under `.hq-ai/companion-memory/<owner-hash>.json`. No new model calls
+Transferania's profile lives under `.hq-ai/companion-memory/<owner-hash>.json`;
+every other assistant uses its own subfolder
+(`.hq-ai/companion-memory/<assistant>/<owner-hash>.json`, e.g. `else/`). A scope
+name that is not declared in `hq_personas` is refused rather than falling back to
+Transferania's file. No new model calls
 are made for memory extraction, retrieval, migration, correction or review.
 Each request still uses the existing context builder and its budgets. At most
 five relevant active memories are selected, ordered by relevance and recency.
@@ -100,6 +104,13 @@ current shared revision, validate an explicit development statement, and keep
 the original evidence day, so editing cannot manufacture reinforcement. Another
 device's update yields a reload message; **Actualiser le journal** refreshes it.
 The `episode_correct` memory operation accepts `id`, `text`, and `revision`.
+
+### Own pastimes
+
+A sixth editable trait, `pastimes` (Occupations et goûts), holds Transferania's own
+hobbies. It is a character field, never a claim about the Master, and it is not
+fed by the interest/ritual cards, which still come only from his explicit
+statements. It shares the existing byte budget and revision guard.
 
 ### Occasional habits and input hygiene
 

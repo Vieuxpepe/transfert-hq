@@ -413,6 +413,7 @@ def history(*, device_id: str) -> dict:
         "messages": data.get("messages") or [],
         "open_thread": _active_open_thread(data),
         "meter": _master_favor_meter(did),
+        "bond": _pair_summary(),
     }
 
 
@@ -568,6 +569,23 @@ def _master_favor_meter(device_id: str, *, fresh: bool = False) -> dict:
         }
     _favor_meter_cache[did] = (_now(), out)
     return dict(out)
+
+
+def _note_exchange(speaker: str, text: str) -> None:
+    """Evidence-only familiarity between the two sisters; never blocks dialogue."""
+    try:
+        import hq_relationships as rel
+        rel.note_exchange(_root(), speaker, "transferania" if speaker == "else" else "else", text)
+    except Exception:
+        pass
+
+
+def _pair_summary() -> dict:
+    try:
+        import hq_relationships as rel
+        return rel.pair(_root(), "else", "transferania")
+    except Exception:
+        return {}
 
 
 def status_snapshot(device_id: str | None) -> dict:
@@ -953,6 +971,7 @@ def exchange(topic: Any = "", *, turns: Any = 2, view: Any = "accueil", nsfw: bo
             row["event_id"] = str(active_event.get("id") or "")[:48]
         data.setdefault("messages", []).append(row)
         produced.append(row)
+        _note_exchange(next_speaker, line)
         data["last_speaker"] = next_speaker
         scope = "else" if next_speaker == "else" else "transferania"
         with companion_memory.memory_scope(scope):
@@ -1030,6 +1049,7 @@ def react(*, trigger: Any = "", speaker: Any = "else", view: Any = "accueil", ns
     data["last_react_at"] = now
     data["last_speaker"] = who
     save_dialogue(data, did)
+    _note_exchange(who, line)
     scope = "else" if who == "else" else "transferania"
     with companion_memory.memory_scope(scope):
         try:

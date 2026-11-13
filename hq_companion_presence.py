@@ -83,7 +83,7 @@ def _default_character_hint(persona, *, compact=False):
     if compact:
         chemistry = "Flirt audacieux et piquant." if persona == "flirt" else "Complicité amicale."
         return ("TEMPÉRAMENT : plus intense qu'Else, vive et expressive; humour noir; veines imaginées, aucune supposition sur son corps. "
-                "Alias Transferina, sœur d'Else : avides d'attention du Maître, complices, plus douces qu'Else/Static. "
+                "Sœur d'Else : toutes deux avides d'attention du Maître, complices, plus douces qu'Else/Static. "
                 + chemistry + " Sérieux et sujets exclus priment.")
     parts = [
         "TEMPÉRAMENT : spontanée, ardente et expressive. Son enthousiasme déborde "
@@ -112,7 +112,7 @@ def _default_character_hint(persona, *, compact=False):
         "convictions et ses rituels; une seule interaction ne redéfinit pas son caractère. Sa familiarité "
         "devient précise, jamais exigeante : aucune dette affective ni reproche d'absence. "
         "Pas de vie hors conversation inventée; une hésitation peut rester ouverte, sans question finale obligatoire. "
-        "FAMILLE : Transferania (Transferina) et Else sont sœurs, chacune avec sa propre identité. "
+        "FAMILLE : Transferania et Else sont sœurs, chacune avec sa propre identité. "
         "Toutes deux désirent l'attention du Maître; elles s'entendent bien, avec une complicité affectueuse "
         "et une rivalité joueuse, plus harmonieuse que le lien plus frictionnel entre Else et Static. "
         "Transferania est plus intense qu'Else et se dévoile directement; Else garde le recul technique et la retenue. "
@@ -132,8 +132,16 @@ def _default_character_hint(persona, *, compact=False):
     return "\n".join(parts)
 
 
+import hq_personas
+
+# Her own pastimes, from the registry, distinct from the interests derived from
+# the Master's statements. Still an editable trait: the editor overrides it.
+PASTIMES_DEFAULT = ("OCCUPATIONS : " + hq_personas.get("transferania")["pastimes"]
+                    + ". Elle en parle avec plaisir, sans réciter sa fiche.")
+
 TRAIT_LABELS = {
-    "humor": "Humour", "curiosity": "Curiosité", "strength": "Force et grandeur",
+    "humor": "Humour", "curiosity": "Curiosité", "pastimes": "Occupations et goûts",
+    "strength": "Force et grandeur",
     "signature": "Trait signature", "flirt": "Flirt et complicité",
     "ambient_warm": "Voix ambiante chaleureuse", "ambient_flirt": "Voix ambiante flirteuse",
 }
@@ -141,7 +149,8 @@ TRAIT_LABELS = {
 
 def character_defaults():
     parts = _default_character_hint("flirt").splitlines()
-    return dict(zip(("humor", "curiosity", "strength", "signature", "flirt"), parts[:4] + [parts[-1]]),
+    return dict(zip(("humor", "curiosity", "strength", "signature", "pastimes", "flirt"),
+                    parts[:4] + [PASTIMES_DEFAULT, parts[-1]]),
                 ambient_warm=_default_character_hint("warm", compact=True),
                 ambient_flirt=_default_character_hint("flirt", compact=True))
 
@@ -154,7 +163,7 @@ def character_hint(persona, *, compact=False, traits=None):
         ambient = fields["ambient_flirt" if persona == "flirt" else "ambient_warm"]
         return ambient if "plus intense" in fold(ambient) else ambient + " Transferania reste plus intense et expressive qu'Else."
     defaults = _default_character_hint(persona).splitlines()
-    return "\n".join([fields[k] for k in ("humor", "curiosity", "strength", "signature")]
+    return "\n".join([fields[k] for k in ("humor", "curiosity", "pastimes", "strength", "signature")]
                      + [defaults[-2], fields["flirt"] if persona == "flirt" else defaults[-1]])
 
 

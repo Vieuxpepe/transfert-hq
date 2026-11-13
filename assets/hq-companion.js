@@ -3037,7 +3037,10 @@
     status.setAttribute("role", "status");
     const fail = error => { status.textContent = error.message || "Éditeur indisponible"; };
     let active = "", loading = false;
+    let studioHandle = null;
+    const endStudio = () => { if (studioHandle) { studioHandle.destroy(); studioHandle = null; } };
     const endVoicePreview = () => {
+      endStudio();
       if (!S.voicePreview) return;
       S.voicePreview = false;
       stopSpeech(win);
@@ -3110,7 +3113,7 @@
         });
         form.append(save, reset);
         body.appendChild(form);
-        status.textContent = "4200 octets maximum pour les cinq traits principaux. Aucun appel au modèle pour enregistrer.";
+        status.textContent = "4200 octets maximum pour les six traits principaux. Aucun appel au modèle pour enregistrer.";
       } catch (error) { fail(error); }
       finally { loading = false; }
     };
@@ -3229,7 +3232,16 @@
       });
       body.append(label, messageLabel, listen, button("Arrêter l’essai", endVoicePreview));
     };
-    nav.append(button("Personnalité", personality), button("Contexte API", context), button("Voix", voice), button("Souvenirs et évolution", () => {
+    const studio = () => {
+      if (loading) return;
+      endVoicePreview();
+      active = "studio";
+      body.replaceChildren();
+      status.textContent = "Écoute locale; rien n'est enregistré avant « Enregistrer ».";
+      if (!win.HqVoiceStudio) { status.textContent = "Studio vocal indisponible."; return; }
+      studioHandle = win.HqVoiceStudio.mount(doc, body, { deviceId: getDeviceId(win), character: "transferania" });
+    };
+    nav.append(button("Personnalité", personality), button("Contexte API", context), button("Voix", voice), button("Studio vocal", studio), button("Souvenirs et évolution", () => {
       if (loading) return;
       dialog.close();
       if (S.memoryPanel.hidden) S.memoryBtn.click();
@@ -3656,7 +3668,7 @@
       S.hasSummary = !!out.has_summary;
       if (S.hasSummary && !S.hadSummary) pulseMemChip();
       S.hadSummary = S.hasSummary;
-      if (typeof out.warmth === "number" && out.warmth > (S.warmth || 0)) {
+      if (S.nsfwOn && typeof out.warmth === "number" && out.warmth > (S.warmth || 0)) {
         S.warmth = Math.min(100, out.warmth);
         syncLargePortraitCaption(win);
       }
@@ -6814,6 +6826,8 @@
   }
 
   function addArousalWarmth(win, delta, reason) {
+    // Jauge de désir gelée en SFW : les événements affectueux ne la font plus monter.
+    if (!S.nsfwOn && delta > 0) return;
     if (delta >= 4) setEmotionalAfterglow("warm", clampNum(0.6 + delta * 0.02, 0.6, 0.95));
     if (delta > 0 && reason && reason !== "init") {
       recordFavoriteInteraction(win, reason);
@@ -13191,17 +13205,19 @@
       const modeHint = isAdult
         ? " (Mode Adulte actif : sois charnelle, complice, troublante ou très affectueuse)"
         : " (Sois spontanée, complice, jamais générique, en lien avec la page actuelle)";
-      const tInfo = getSessionTensionInfo(win);
-      const tensionHint =
-        " [Tension de session : Niveau " +
-        tInfo.level +
-        "/4 (" +
-        tInfo.label +
-        ", désir " +
-        tInfo.warmth +
-        "%" +
-        (tInfo.topFavs ? ", ce que Marco aime le plus : " + tInfo.topFavs : "") +
-        ")]";
+      // Les libellés de tension (niveaux 3–4, actes préférés) sont adultes : jamais injectés en SFW.
+      const tInfo = isAdult ? getSessionTensionInfo(win) : null;
+      const tensionHint = tInfo
+        ? " [Tension de session : Niveau " +
+          tInfo.level +
+          "/4 (" +
+          tInfo.label +
+          ", désir " +
+          tInfo.warmth +
+          "%" +
+          (tInfo.topFavs ? ", ce que Marco aime le plus : " + tInfo.topFavs : "") +
+          ")]"
+        : "";
       const fullDigest = digest(win) + "\n[Événement interactif en direct : " + interactionPrompt + modeHint + tensionHint + ". Réponds en 1 phrase unique, vivante et personnelle.]";
       const out = await callAmbient(win, view, fullDigest, persona === "off" ? "flirt" : persona);
       const aiLine = (out && !out.fallback && out.line && String(out.line).trim()) || instantLine;

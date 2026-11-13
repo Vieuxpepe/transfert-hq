@@ -28,6 +28,10 @@ Transferania is also called Transferina. Her application name and independent
 personality stay intact. The Master established her sibling relationship with
 Else on 2026-11-03.
 
+**Musica** is the Musique-tab music steward (`docs/musica-persona.md`,
+`hq_musica.py`). She is not Else/Transferania/Static and does not share their
+memory stores; playlist/discovery chat stays under `.hq-music/musica_*.json`.
+
 The relationship is part of her full and compact character guidance in
 `hq_companion_presence.py`. It does not copy Else's private history or merge their
 memories. Shared sister dialogue (Master-triggered, ambient banter, or rare react)
@@ -75,3 +79,34 @@ hash; the handoff card also surfaces recent views and the favor tease. Manual:
 `python scripts/export_else_handoff.py` (`--dry-run` builds without writing).
 Stores stay partitioned; test/temp HQ roots do not auto-export; handoff files are
 never written into the Transfert tree.
+
+## Roster and relationship data
+
+`hq_personas.py` is the single source of truth for the roster: display name,
+alias, language, module, on-HQ presence and the sibling bond. Each assistant's
+prompt composes its "not me" sentence from `others_line()`, so adding or renaming
+an assistant cannot leave a stale list behind, and `hq_companion_memory` accepts
+memory scopes only for assistants declared there (an unknown name raises instead
+of borrowing Transferania's store). Static is declared `on_hq: false`: she stays
+Else's little sister in Project G and is never listed among the HQ companions.
+
+Each entry also carries a playful alias, three quirks, a speech habit (`tell`)
+and her own `pastimes`. The alias is never used in another assistant's roster
+sentence (that line carries plain names); her own quirks line opens with it, so
+she knows what she is called and nobody else's prompt repeats it. On the
+companion side the stable core states `Autre nom : « Transferina »` once
+(`alias_line`), before the editable character hint, so a customized trait cannot
+duplicate or contradict it.
+`quirks_line()` renders her quirks once, in her own prompt, for the six domain
+assistants and Else's capsule; Transferania's pastimes
+seed her editable `pastimes` trait, so her character editor remains the live
+source and her quirks are not injected twice into the companion prompt.
+`guest_voice` stays filled only for the sisters: the Music DJ can only invite a
+character that has a real voice.
+
+The Music DJ's guest voices come from `hq_personas.guest_voices()`.
+`hq_relationships.py` keeps one owner-scoped record per pair of assistants under
+`.hq-ai/relationships/`: distinct days of exchange, exchange count, last
+timestamp and one short motif. It is evidence only — no affection score, no debt
+and no private chat invented between assistants — and the sister dialogue fills
+it as it speaks. Per-assistant memory stores are never merged.
