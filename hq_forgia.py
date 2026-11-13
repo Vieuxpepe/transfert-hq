@@ -31,6 +31,17 @@ MAX_TOTAL_TOOLS = 6
 DEFAULT_REPLY_ATTEMPTS = 3
 MAX_REPLY_ATTEMPTS = 10
 log = logging.getLogger(__name__)
+# Process-local since start: tells the status endpoint whether replies are racing.
+_contention = {"regenerations": 0, "fallbacks": 0}
+_contention_lock = threading.Lock()
+
+
+def _note_contention(regenerations: int, fallback: bool) -> None:
+    if not regenerations and not fallback:
+        return
+    with _contention_lock:
+        _contention["regenerations"] += regenerations
+        _contention["fallbacks"] += 1 if fallback else 0
 
 
 def _reply_attempts() -> int:
@@ -365,6 +376,7 @@ def status_summary() -> dict[str, Any]:
         "ok": True,
         "headline": headline,
         "thread": get_thread().get("messages", []),
+        "reply_contention": dict(_contention),
     }
 
 
@@ -453,6 +465,7 @@ def chat(message: Any) -> dict[str, Any]:
         _append_turn(_turn(reply), base_count)
         fallback = True
         log.warning("chat reply kept unanswered after %d regeneration(s): every append raced", rebases)
+    _note_contention(rebases, fallback)
 
     return {
         "ok": True,

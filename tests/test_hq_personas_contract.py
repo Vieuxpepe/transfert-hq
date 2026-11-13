@@ -724,6 +724,7 @@ class ReviewFixTests(unittest.TestCase):
             path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}]}),
                             encoding="utf-8")
             calls = []
+            before = module.status_summary()["reply_contention"]
 
             def fake_generate(chain, contents, system_instruction="", _m=module, _calls=calls, **kw):
                 _calls.append(contents)
@@ -740,6 +741,9 @@ class ReviewFixTests(unittest.TestCase):
             self.assertFalse(out["fallback_append"])
             self.assertEqual(out["reconciled"], 1)
             self.assertEqual(len(calls), 2)
+            after = module.status_summary()["reply_contention"]
+            self.assertEqual(after["regenerations"] - before["regenerations"], 1)
+            self.assertEqual(after["fallbacks"] - before["fallbacks"], 0)
             self.assertIn("autre", json.dumps(calls[1], ensure_ascii=False))
             texts = [m["text"] for m in module.get_thread()["messages"]]
             self.assertEqual(texts, ["ancien", "autre", "ok", "lent", "seconde"])
@@ -796,6 +800,7 @@ class ReviewFixTests(unittest.TestCase):
                             encoding="utf-8")
             calls = []
             counter = {"n": 0}
+            before = module.status_summary()["reply_contention"]
 
             def always_raced(turn, base, _m=module, _c=counter):
                 _c["n"] += 1
@@ -813,6 +818,9 @@ class ReviewFixTests(unittest.TestCase):
                  self.assertLogs(module.__name__, level="WARNING") as captured:
                 out = module.chat("lent")
             self.assertTrue(out["fallback_append"])
+            after = module.status_summary()["reply_contention"]
+            self.assertEqual(after["regenerations"] - before["regenerations"], 1)
+            self.assertEqual(after["fallbacks"] - before["fallbacks"], 1)
             self.assertIn("1 regeneration(s)", captured.output[0])
             self.assertIn("unanswered", captured.output[0])
             self.assertEqual(len(calls), 2)          # initial reply + one regeneration
