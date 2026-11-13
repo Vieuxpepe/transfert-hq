@@ -154,6 +154,24 @@ def _append_turn(turn: list[dict[str, Any]], base_count: int) -> bool:
     return rebased
 
 
+def _append_turn_if_current(turn: list[dict[str, Any]], base_count: int) -> bool:
+    """Atomically append only if the file still has ``base_count`` messages.
+
+    The length check and the write happen under one lock, so a turn cannot land
+    between them. Returns False without writing when the history moved; the
+    caller regenerates against the new history and retries.
+    """
+    with _lock:
+        if _thread_unreadable():
+            raise ForgiaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
+        data = _load_json(THREAD_FILE, {"messages": []})
+        current = list(data["messages"])
+        if len(current) != base_count:
+            return False
+        _save_json(THREAD_FILE, {"messages": (current + list(turn))[-MAX_THREAD:]})
+    return True
+
+
 def clear_thread() -> dict[str, Any]:
     with _lock:
         _save_thread([])
@@ -390,25 +408,32 @@ def chat(message: Any) -> dict[str, Any]:
     if not reply:
         reply = "L'atelier est allumé, Maître — quel prompt ou rendu forge-t-on ?"
 
-    fresh = get_thread().get("messages", [])
-    if len(fresh) != base_count:
-        # A turn landed while this reply was generated: answer the merged
-        # conversation instead of the history this reply was based on.
-        raw, model = hq_ai.generate(
-            hq_ai.ASK_CHAIN,
-            _history_contents(fresh, text),
-            system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : tiens-en compte.",
-            max_output_tokens=650,
-            temperature=0.55,
-            timeout=25,
-        )
-        reply = _parse_model_json(raw)["reply"] or reply
-        base_count = len(fresh)
+    def _turn(answer: str) -> list[dict[str, Any]]:
+        stamp = time.time()
+        return [{"role": "user", "text": text, "ts": stamp},
+                {"role": "assistant", "text": answer, "ts": stamp, "tools_used": tools_used, "model": model}]
 
-    now = time.time()
-    _append_turn([{"role": "user", "text": text, "ts": now},
-                  {"role": "assistant", "text": reply, "ts": now, "tools_used": tools_used, "model": model}],
-                 base_count)
+    for _ in range(3):
+        fresh = get_thread().get("messages", [])
+        if len(fresh) != base_count:
+            # A turn landed while this reply was generated: answer the merged
+            # conversation instead of the history this reply was based on.
+            raw, model = hq_ai.generate(
+                hq_ai.ASK_CHAIN,
+                _history_contents(fresh, text),
+                system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : tiens-en compte.",
+                max_output_tokens=650,
+                temperature=0.55,
+                timeout=25,
+            )
+            reply = _parse_model_json(raw)["reply"] or reply
+            base_count = len(fresh)
+        if _append_turn_if_current(_turn(reply), base_count):
+            break
+    else:
+        # Three turns landed inside the save window: keep them all rather than
+        # loop forever, even though the reply cannot mention the last one.
+        _append_turn(_turn(reply), base_count)
 
     return {
         "ok": True,

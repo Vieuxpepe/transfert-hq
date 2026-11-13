@@ -742,6 +742,43 @@ class ReviewFixTests(unittest.TestCase):
             texts = [m["text"] for m in module.get_thread()["messages"]]
             self.assertEqual(texts, ["ancien", "autre", "ok", "lent", "seconde"])
 
+    def test_turn_landing_between_check_and_append_is_answered(self):
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}]}),
+                            encoding="utf-8")
+            calls = []
+            raced = {"done": False}
+            real_append = module._append_turn_if_current
+
+            def racing_append(turn, base, _m=module, _real=real_append, _raced=raced):
+                if not _raced["done"]:
+                    _raced["done"] = True
+                    # lands after the chat read the thread, before its atomic append
+                    _m._append_turn([{"role": "user", "text": "tardif", "ts": 4.0},
+                                     {"role": "assistant", "text": "ok2", "ts": 4.0}], base)
+                return _real(turn, base)
+
+            def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+                _calls.append(contents)
+                answer = "seconde" if len(_calls) > 1 else "première"
+                return json.dumps({"reply": answer, "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate), \
+                 mock.patch.object(module, "_append_turn_if_current", racing_append):
+                out = module.chat("lent")
+            self.assertEqual(out["reply"], "seconde")
+            self.assertEqual(len(calls), 2)
+            self.assertIn("tardif", json.dumps(calls[1], ensure_ascii=False))
+            texts = [m["text"] for m in module.get_thread()["messages"]]
+            self.assertEqual(texts, ["ancien", "tardif", "ok2", "lent", "seconde"])
+
     def test_thread_without_messages_key_is_refused(self):
         import hq_culinia as culinia
         import hq_forgia as forgia
