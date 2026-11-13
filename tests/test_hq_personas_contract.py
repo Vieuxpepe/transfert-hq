@@ -763,13 +763,13 @@ class ReviewFixTests(unittest.TestCase):
             raced = {"done": False}
             real_append = module._append_turn_if_current
 
-            def racing_append(turn, base, _m=module, _real=real_append, _raced=raced):
+            def racing_append(turn, base, epoch=0, _m=module, _real=real_append, _raced=raced):
                 if not _raced["done"]:
                     _raced["done"] = True
                     # lands after the chat read the thread, before its atomic append
                     _m._append_turn([{"role": "user", "text": "tardif", "ts": 4.0},
-                                     {"role": "assistant", "text": "ok2", "ts": 4.0}], base)
-                return _real(turn, base)
+                                     {"role": "assistant", "text": "ok2", "ts": 4.0}], base, epoch)
+                return _real(turn, base, epoch)
 
             def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
                 _calls.append(contents)
@@ -802,10 +802,10 @@ class ReviewFixTests(unittest.TestCase):
             counter = {"n": 0}
             before = module.status_summary()["reply_contention"]
 
-            def always_raced(turn, base, _m=module, _c=counter):
+            def always_raced(turn, base, epoch=0, _m=module, _c=counter):
                 _c["n"] += 1
                 _m._append_turn([{"role": "user", "text": f"tardif{_c['n']}", "ts": 4.0 + _c["n"]},
-                                 {"role": "assistant", "text": "ok", "ts": 4.0 + _c["n"]}], base)
+                                 {"role": "assistant", "text": "ok", "ts": 4.0 + _c["n"]}], base, epoch)
                 return False
 
             def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
@@ -871,10 +871,11 @@ class ReviewFixTests(unittest.TestCase):
                                         "revision": 5}), encoding="utf-8")
             module.clear_thread()
             self.assertEqual(module.get_thread()["revision"], 6)
-            stale = module._append_turn_if_current([{"role": "user", "text": "lent", "ts": 2.0}], 5)
+            epoch = module.get_thread()["clear_epoch"]
+            stale = module._append_turn_if_current([{"role": "user", "text": "lent", "ts": 2.0}], 5, epoch)
             self.assertFalse(stale)
             self.assertEqual(module.get_thread()["messages"], [])
-            fresh = module._append_turn_if_current([{"role": "user", "text": "lent", "ts": 2.0}], 6)
+            fresh = module._append_turn_if_current([{"role": "user", "text": "lent", "ts": 2.0}], 6, epoch)
             self.assertTrue(fresh)
 
     def test_regeneration_includes_tool_results_without_replaying_tools(self):
@@ -935,6 +936,159 @@ class ReviewFixTests(unittest.TestCase):
         self.assertTrue(out["fallback_append"])
         self.assertEqual(out["reply"], "ancienne")          # stale answer not sold as reconciled
         self.assertIn("autre", [m["text"] for m in culinia.get_thread()["messages"]])
+
+    def test_clear_during_generation_cancels_the_reply(self):
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}],
+                                        "revision": 0, "clear_epoch": 2}), encoding="utf-8")
+            calls = []
+
+            def fake_generate(chain, contents, system_instruction="", _calls=calls, _m=module, **kw):
+                _calls.append(contents)
+                _m.clear_thread()          # the user clears while the model is thinking
+                return json.dumps({"reply": "fantôme", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate), \
+                 self.assertLogs(module.__name__, level="WARNING") as captured:
+                out = module.chat("lent")
+            self.assertTrue(out["cancelled"])
+            self.assertFalse(out["fallback_append"])
+            self.assertEqual(len(calls), 1)            # no regeneration into the empty thread
+            self.assertEqual(module.get_thread()["messages"], [])
+            self.assertEqual(module.get_thread()["clear_epoch"], 3)
+            self.assertIn("cleared", captured.output[0])
+
+    def test_clear_between_append_attempt_and_fallback_does_not_resurrect(self):
+        import os
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}],
+                                        "revision": 0, "clear_epoch": 0}), encoding="utf-8")
+
+            def racing_clear(turn, base, epoch=0, _m=module):
+                _m.clear_thread()          # clear lands after the check, before the write
+                return False
+
+            def fake_generate(chain, contents, system_instruction="", **kw):
+                return json.dumps({"reply": "fantôme", "tools": []}), "m"
+
+            with mock.patch.dict(os.environ, {"HQ_CHAT_REPLY_ATTEMPTS": "1"}), \
+                 mock.patch.object(ai, "generate", side_effect=fake_generate), \
+                 mock.patch.object(module, "_append_turn_if_current", racing_clear), \
+                 self.assertLogs(module.__name__, level="WARNING"):
+                out = module.chat("lent")
+            self.assertTrue(out["cancelled"])
+            self.assertFalse(out["fallback_append"])
+            self.assertEqual(module.get_thread()["messages"], [])
+            self.assertEqual(module.get_thread()["clear_epoch"], 1)
+
+    def test_forgia_regeneration_includes_tool_results_without_replaying(self):
+        import hq_ai as ai
+        import hq_forgia as forgia
+        forgia.bind(root=self.root)
+        path = self.root / ".hq-forge" / "forgia_thread.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}],
+                                    "revision": 0, "clear_epoch": 0}), encoding="utf-8")
+        calls = []
+        executions = []
+
+        def fake_execute(name, args):
+            executions.append(name)
+            forgia._append_turn([{"role": "user", "text": "autre", "ts": 2.0},
+                                 {"role": "assistant", "text": "ok", "ts": 2.0}], 0, 0)
+            return {"name": name, "ok": True, "result": {"queue": ["job-42"]}}
+
+        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+            _calls.append(contents)
+            if len(_calls) == 1:
+                return json.dumps({"reply": "", "tools": [{"name": "forge_status", "args": {}}]}), "m"
+            if len(_calls) == 2:
+                return json.dumps({"reply": "ancienne", "tools": []}), "m"
+            return json.dumps({"reply": "seconde", "tools": []}), "m"
+
+        with mock.patch.object(forgia, "_execute_tool", side_effect=fake_execute), \
+             mock.patch.object(ai, "generate", side_effect=fake_generate):
+            out = forgia.chat("lent")
+        self.assertEqual(out["reply"], "seconde")
+        self.assertEqual(executions, ["forge_status"])
+        regenerated = json.dumps(calls[-1], ensure_ascii=False)
+        self.assertIn("job-42", regenerated)
+        self.assertIn("autre", regenerated)
+
+    def test_regeneration_failure_keeps_the_tool_backed_reply_as_a_fallback(self):
+        import hq_ai as ai
+        import hq_culinia as culinia
+        culinia.bind(root=self.root)
+        path = self.root / ".hq-household" / "culinia_thread.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}],
+                                    "revision": 0, "clear_epoch": 0}), encoding="utf-8")
+        calls = []
+        executions = []
+
+        def fake_execute(name, args):
+            executions.append(name)
+            culinia._append_turn([{"role": "user", "text": "autre", "ts": 2.0},
+                                  {"role": "assistant", "text": "ok", "ts": 2.0}], 0, 0)
+            return {"name": name, "ok": True, "result": {"days": {"lundi": "soupe"}}}
+
+        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+            _calls.append(contents)
+            if len(_calls) == 1:
+                return json.dumps({"reply": "", "tools": [{"name": "get_meal_plan", "args": {}}]}), "m"
+            if len(_calls) == 2:
+                return json.dumps({"reply": "ancienne", "tools": []}), "model-a"
+            raise TimeoutError("modèle lent")
+
+        with mock.patch.object(culinia, "_execute_tool", side_effect=fake_execute), \
+             mock.patch.object(ai, "generate", side_effect=fake_generate), \
+             self.assertLogs(culinia.__name__, level="WARNING"):
+            out = culinia.chat("lent")
+        self.assertTrue(out["fallback_append"])
+        self.assertFalse(out["cancelled"])
+        self.assertEqual(out["reply"], "ancienne")
+        self.assertEqual(out["model"], "model-a")
+        self.assertEqual(executions, ["get_meal_plan"])      # never replayed
+
+    def test_rejected_regeneration_keeps_attempts_and_model_attribution_apart(self):
+        import hq_ai as ai
+        import hq_culinia as culinia
+        culinia.bind(root=self.root)
+        path = self.root / ".hq-household" / "culinia_thread.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}],
+                                    "revision": 0, "clear_epoch": 0}), encoding="utf-8")
+        calls = []
+
+        def fake_generate(chain, contents, system_instruction="", _calls=calls, **kw):
+            _calls.append(contents)
+            if len(_calls) == 1:
+                culinia._append_turn([{"role": "user", "text": "autre", "ts": 2.0},
+                                      {"role": "assistant", "text": "ok", "ts": 2.0}], 0, 0)
+                return json.dumps({"reply": "ancienne", "tools": []}), "model-a"
+            return json.dumps({"reply": "", "tools": [{"name": "get_meal_plan", "args": {}}]}), "model-b"
+
+        with mock.patch.object(ai, "generate", side_effect=fake_generate), \
+             self.assertLogs(culinia.__name__, level="WARNING"):
+            out = culinia.chat("lent")
+        self.assertEqual(out["regenerations"], 1)
+        self.assertEqual(out["reconciled"], 0)              # attempted, not reconciled
+        self.assertTrue(out["fallback_append"])
+        self.assertEqual(out["model"], "model-a")          # retained reply's model, not the rejected one
 
     def test_thread_without_messages_key_is_refused(self):
         import hq_culinia as culinia

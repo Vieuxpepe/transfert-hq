@@ -258,20 +258,27 @@ def _thread_revision(data: Any) -> int:
     return rev if isinstance(rev, int) and not isinstance(rev, bool) and rev >= 0 else 0
 
 
+def _thread_epoch(data: Any) -> int:
+    """Conversation generation: only clear_thread() advances it."""
+    epoch = data.get("clear_epoch", 0) if isinstance(data, dict) else 0
+    return epoch if isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0 else 0
+
+
 def get_thread() -> dict[str, Any]:
     with _lock:
         data = _load_json(THREAD_FILE, {"messages": []})
         msgs = data.get("messages")
         return {"messages": list(msgs) if isinstance(msgs, list) else [],
-                "revision": _thread_revision(data)}
+                "revision": _thread_revision(data), "clear_epoch": _thread_epoch(data)}
 
 
 def _thread_schema_ok(data: Any) -> bool:
     if not isinstance(data, dict) or "messages" not in data:
         return False
-    if "revision" in data and (isinstance(data["revision"], bool)
-                               or not isinstance(data["revision"], int) or data["revision"] < 0):
-        return False
+    for key in ("revision", "clear_epoch"):
+        if key in data and (isinstance(data[key], bool)
+                            or not isinstance(data[key], int) or data[key] < 0):
+            return False
     msgs = data["messages"]
     if not isinstance(msgs, list):
         return False
@@ -291,27 +298,33 @@ def _thread_unreadable() -> bool:
 
 
 def _save_thread(messages: list[dict[str, Any]]) -> None:
-    """Replace the thread (clear) and advance the revision so stale replies abort."""
+    """Replace the thread and advance the epoch so in-flight replies are cancelled."""
     with _lock:
         if _thread_unreadable():
             raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         data = _load_json(THREAD_FILE, {"messages": []})
         updated = dict(data)
-        updated.update({"messages": messages[-MAX_THREAD:], "revision": _thread_revision(data) + 1})
+        updated.update({"messages": messages[-MAX_THREAD:],
+                        "revision": _thread_revision(data) + 1,
+                        "clear_epoch": _thread_epoch(data) + 1})
         _save_json(THREAD_FILE, updated)
 
 
-def _append_turn(turn: list[dict[str, Any]], base_revision: int) -> bool:
+def _append_turn(turn: list[dict[str, Any]], base_revision: int, base_epoch: int = 0) -> bool:
     """Append a completed turn without replacing turns saved meanwhile.
 
     ``base_revision`` is the revision read before the model call. The file is
     reloaded under the lock; if it moved, the newer turns are kept and this turn
-    is appended after them. Returns True when the append had to rebase.
+    is appended after them. Returns True when the append had to rebase. Returns
+    False without writing when ``base_epoch`` no longer matches: the conversation
+    was cleared, so this turn belongs to the previous one and is dropped.
     """
     with _lock:
         if _thread_unreadable():
             raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         data = _load_json(THREAD_FILE, {"messages": []})
+        if _thread_epoch(data) != base_epoch:
+            return False
         current = list(data["messages"])
         rebased = _thread_revision(data) != base_revision
         updated = dict(data)
@@ -321,18 +334,22 @@ def _append_turn(turn: list[dict[str, Any]], base_revision: int) -> bool:
     return rebased
 
 
-def _append_turn_if_current(turn: list[dict[str, Any]], base_revision: int) -> bool:
-    """Atomically append only if the file is still at ``base_revision``.
+def _append_turn_if_current(turn: list[dict[str, Any]], base_revision: int, base_epoch: int = 0) -> bool:
+    """Atomically append only if the thread is still in the same generation and
+    at ``base_revision``.
 
-    A monotonic revision is compared and advanced under one lock, so a turn
-    cannot land between the check and the write. Unlike a message count, it still
-    detects a replacement once the thread is at its retention cap. Returns False
-    without writing when the history moved; the caller regenerates and retries.
+    Revision and epoch are compared and advanced under one lock, so a turn cannot
+    land between the check and the write. The revision detects a replacement once
+    the thread is at its retention cap; the epoch detects a clear, which must
+    cancel the reply instead of regenerating into the emptied conversation.
+    Returns False without writing when either moved.
     """
     with _lock:
         if _thread_unreadable():
             raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         data = _load_json(THREAD_FILE, {"messages": []})
+        if _thread_epoch(data) != base_epoch:
+            return False
         current = list(data["messages"])
         revision = _thread_revision(data)
         if revision != base_revision:
@@ -801,6 +818,7 @@ def chat(message: Any) -> dict[str, Any]:
     thread = get_thread()
     messages = list(thread.get("messages") or [])
     base_revision = thread.get("revision", 0)   # revision this reply is based on
+    base_epoch = thread.get("clear_epoch", 0)   # conversation generation
     contents = _history_contents(messages, text)
     history_len = len(contents)
 
@@ -867,24 +885,38 @@ def chat(message: Any) -> dict[str, Any]:
         return [{"role": "user", "text": text, "ts": stamp}, assistant_msg]
 
     rebases = 0
+    reconciled = 0
     fallback = False
+    cancelled = False
     saved = False
     for _ in range(_reply_attempts()):
         current = get_thread()
+        if current["clear_epoch"] != base_epoch:
+            # The conversation was cleared: the reply belongs to the old one and
+            # must not be regenerated into the empty thread or re-inserted.
+            cancelled = True
+            log.warning("chat reply discarded: the conversation was cleared while generating")
+            break
         if current["revision"] != base_revision:
             # A turn landed while this reply was generated: answer the merged
             # conversation, keeping the tool results already obtained (never
             # replaying them: they may have changed real state).
             rebases += 1
-            raw, model = hq_ai.generate(
-                hq_ai.ASK_CHAIN,
-                _history_contents(current["messages"], text) + tool_tail,
-                system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : "
-                                            "tiens-en compte et réponds maintenant avec tools:[].",
-                max_output_tokens=600,
-                temperature=0.55,
-                timeout=25,
-            )
+            try:
+                raw, regen_model = hq_ai.generate(
+                    hq_ai.ASK_CHAIN,
+                    _history_contents(current["messages"], text) + tool_tail,
+                    system_instruction=system + "\nD'autres messages sont arrivés pendant ta réponse : "
+                                                "tiens-en compte et réponds maintenant avec tools:[].",
+                    max_output_tokens=600,
+                    temperature=0.55,
+                    timeout=25,
+                )
+            except Exception as exc:
+                # The earlier reply (with its tool results) is still valid; save
+                # it through the fallback instead of failing the request.
+                log.warning("chat regeneration failed (%s); keeping the earlier reply", type(exc).__name__)
+                break
             parsed = _parse_model_json(raw)
             answer = (parsed.get("reply") or "").strip()
             if not answer or parsed.get("tools"):
@@ -894,15 +926,20 @@ def chat(message: Any) -> dict[str, Any]:
                 log.warning("chat regeneration returned no final answer; keeping the earlier reply")
                 break
             reply = answer
+            model = regen_model
+            reconciled += 1
             base_revision = current["revision"]
-        if _append_turn_if_current(_turn(reply), base_revision):
+        if _append_turn_if_current(_turn(reply), base_revision, base_epoch):
             saved = True
             break
-    if not saved:
+    if not saved and not cancelled:
         # Keep every turn rather than loop forever; the reply is reported as a fallback.
-        _append_turn(_turn(reply), base_revision)
-        fallback = True
-        log.warning("chat reply not reconciled after %d regeneration(s): kept the earlier answer", rebases)
+        if _append_turn(_turn(reply), base_revision, base_epoch):
+            fallback = True
+            log.warning("chat reply not reconciled after %d regeneration(s): kept the earlier answer", rebases)
+        else:
+            cancelled = True
+            log.warning("chat reply discarded: the conversation was cleared before it could be saved")
     _note_contention(rebases, fallback)
 
     return {
@@ -912,8 +949,10 @@ def chat(message: Any) -> dict[str, Any]:
         "images": images,
         "model": model,
         "messages": get_thread().get("messages", [])[-MAX_THREAD:],
-        "reconciled": rebases,
+        "reconciled": reconciled,
+        "regenerations": rebases,
         "fallback_append": fallback,
+        "cancelled": cancelled,
     }
 
 
