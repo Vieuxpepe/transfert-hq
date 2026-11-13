@@ -79,7 +79,9 @@ the companion store or another assistant's folder. Only explicit statements
 recognised by `hq_companion_growth.extract` are kept; at most one relevant view is
 added to that assistant's own prompt when the message shares its topic, and the
 block explicitly asks her to keep her voice and not recite the card. No sister
-biography, bond score or shared memory is copied.
+biography, bond score or shared memory is copied. Once an episode falls outside
+the same 90-day window, it is deleted from the growth file on the next read or
+write: the assistant forgets it rather than keeping it invisibly.
 
 Repeated interests and experiences on separate days can become natural callbacks
 in relevant social conversation, without an explicit memory question. Repeating

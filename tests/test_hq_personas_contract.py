@@ -971,6 +971,31 @@ class ReviewFixTests(unittest.TestCase):
             self.assertIn("fermentation lactique", seen[0])
             self.assertTrue(seen[0].startswith(module.PERSONA_CORE))
 
+    def test_growth_episodes_are_forgotten_after_the_window(self):
+        import time as _time
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        now = _time.time()
+        for module, folder, growth_file in ((culinia, ".hq-household", "culinia_growth.json"),
+                                            (forgia, ".hq-forge", "forgia_growth.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / growth_file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"episodes": [
+                {"id": "old", "text": "Je m'intéresse à la fermentation lactique.", "kind": "interest",
+                 "topic": "fermentation lactique", "at": now - 100 * 86400, "status": "active",
+                 "source_device": "test", "evidence": "user_statement"},
+            ]}), encoding="utf-8")
+
+            def fake_generate(chain, system, contents, **kw):
+                return json.dumps({"reply": "ok", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                module.chat("bonjour")
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["episodes"], [], module.__name__)
+
     def test_growth_reaches_musica_securia_inventoria_and_pistonia(self):
         import time as _time
         import hq_ai as ai
