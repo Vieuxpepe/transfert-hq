@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from contextlib import contextmanager
 import secrets
 import threading
 import time
@@ -103,6 +104,7 @@ def alerts_unreadable() -> bool:
                 and row.get("kind") in ("alert", "clear")
                 and isinstance(row.get("text"), str)
                 and isinstance(row.get("at"), (int, float)) and not isinstance(row.get("at"), bool)
+                and math.isfinite(float(row["at"])) and float(row["at"]) >= 0
                 and isinstance(row.get("seen"), bool)
                 and _ID_MSG.match(str(row.get("id") or ""))):
             return True
@@ -131,6 +133,35 @@ def thread() -> list[dict]:
     return out[-THREAD_MAX:]
 
 
+def thread_unreadable() -> bool:
+    """True when thread.json exists but is not a complete, valid message store."""
+    p = _dir() / "thread.json"
+    if not p.is_file():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(data, dict) or data.get("version") not in (None, 1):
+        return True
+    rows = data.get("messages", [])
+    if not isinstance(rows, list):
+        return True
+    for row in rows:
+        if not (isinstance(row, dict) and row.get("role") in ("user", "assistant")
+                and isinstance(row.get("text"), str)
+                and _ID_MSG.match(str(row.get("id") or ""))):
+            return True
+    return False
+
+
+@contextmanager
+def thread_transaction():
+    """Hold the store lock across snapshot + write + rollback (chat cannot interleave)."""
+    with _lock:
+        yield
+
+
 def add_message(role: str, text: str, *, kind: str = "chat", proposals: Optional[list] = None, remembered: Optional[list] = None,
                 now: Optional[float] = None) -> dict:
     if role not in ("user", "assistant"):
@@ -142,6 +173,8 @@ def add_message(role: str, text: str, *, kind: str = "chat", proposals: Optional
     if remembered:
         row["remembered"] = [r for r in remembered if isinstance(r, dict)][:4]
     with _lock:
+        if thread_unreadable():
+            raise StoreError("conversation illisible : fichier conservé, non modifié")
         rows = thread()
         rows.append(row)
         _write("thread.json", {"version": 1, "messages": rows[-THREAD_MAX:]})
@@ -153,6 +186,8 @@ def resolve_proposals(message_id: str) -> bool:
     if not _ID_MSG.match(str(message_id or "")):
         return False
     with _lock:
+        if thread_unreadable():
+            raise StoreError("conversation illisible : fichier conservé, non modifié")
         rows = thread()
         hit = False
         for m in rows:
@@ -203,10 +238,14 @@ def memory_unreadable() -> bool:
     rows = data.get("notes", [])
     if not isinstance(rows, list):
         return True
+    seen: set[str] = set()
     for row in rows:
         if not (isinstance(row, dict) and isinstance(row.get("text"), str)
                 and _ID_NOTE.match(str(row.get("id") or ""))):
             return True
+        if row["id"] in seen:      # forget() would delete both records
+            return True
+        seen.add(row["id"])
         at = row.get("at")
         if at is not None and (isinstance(at, bool) or not isinstance(at, (int, float))
                                or not math.isfinite(float(at)) or float(at) < 0):
@@ -304,6 +343,8 @@ def unseen_count() -> int:
 
 def mark_seen() -> int:
     with _lock:
+        if alerts_unreadable():
+            raise StoreError("alertes illisibles : fichier conservé, non modifié")
         st = alerts_state()
         n = 0
         for a in st["alerts"]:

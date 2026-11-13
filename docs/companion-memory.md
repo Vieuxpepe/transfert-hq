@@ -45,8 +45,10 @@ five relevant active memories are selected, ordered by relevance and recency.
 
 Inventoria's notepad (`.hq-inventoria/memory.json`) is stricter. A correction
 must name the note it replaces (`corrects_id` plus its exact saved text as
-`expect`). A statement that merely looks like a correction is **not written at
-all**: the tool reports `needs_target` with candidate ids, because two shared
+`expect`; a missing `expect` is refused, because the comparison is a
+compare-and-swap guard, not proof of intent). A statement that merely looks like
+a correction is **not written at all** — even when no keyword candidate exists —
+and the tool reports `needs_target` with candidate ids, because two shared
 words cannot tell “same fact, new value” from an unrelated fact that happens to
 share a verb and a noun, and a pending note could evict the very fact it was
 meant to correct. Ranking uses `max(at, updated_at)`; eviction follows list

@@ -239,13 +239,30 @@ def clear_thread() -> dict[str, Any]:
         return {"ok": True, "messages": []}
 
 
+def _prefs_schema_ok(data: Any) -> bool:
+    """A parseable object is not enough: a field of the wrong type would be
+    normalised on the next save and lose its original value."""
+    if not isinstance(data, dict):
+        return False
+    for key in ("likes", "dislikes", "equipment"):
+        if key in data and not (isinstance(data[key], list) and all(isinstance(x, str) for x in data[key])):
+            return False
+    for key in ("dietary_notes", "updated_at"):
+        if key in data and not isinstance(data[key], str):
+            return False
+    if "household_size" in data and (isinstance(data["household_size"], bool)
+                                     or not isinstance(data["household_size"], int)):
+        return False
+    return True
+
+
 def _prefs_unreadable() -> bool:
-    """True when the saved preferences exist but cannot be parsed (never replaced)."""
+    """True when the saved preferences exist but cannot be read safely (never replaced)."""
     p = _state_dir() / PREFS_FILE
     if not p.is_file():
         return False
     try:
-        return not isinstance(json.loads(p.read_text(encoding="utf-8")), dict)
+        return not _prefs_schema_ok(json.loads(p.read_text(encoding="utf-8")))
     except Exception:
         return True
 
@@ -259,6 +276,8 @@ def _load_prefs() -> dict[str, Any]:
             "dietary_notes": "",
             "household_size": 1,
         })
+        if not _prefs_schema_ok(data):
+            raise CuliniaError("préférences illisibles — fichier conservé", status=409, code="state_unreadable")
         return {
             "likes": [str(x).strip()[:80] for x in (data.get("likes") or []) if str(x).strip()][:30],
             "dislikes": [str(x).strip()[:80] for x in (data.get("dislikes") or []) if str(x).strip()][:30],

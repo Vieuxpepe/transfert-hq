@@ -3,6 +3,8 @@ import importlib
 import json
 import re
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -196,7 +198,7 @@ class InventoriaMemoryTests(unittest.TestCase):
     def test_explicit_correction_supersedes_the_note(self):
         first = self.mem.add(self.root, "Le Master range les vis dans le garage")
         second = self.mem.add(self.root, "En fait le Master range les vis dans le sous-sol",
-                              corrects_id=first["id"])
+                              corrects_id=first["id"], expect="Le Master range les vis dans le garage")
         self.assertEqual(second.get("superseded"), first["id"])
         self.assertEqual(len(self.mem.list_notes(self.root)), 1)
 
@@ -396,6 +398,27 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("tiroir", notes[0]["text"])
 
+    def test_missing_expect_is_refused(self):
+        import hq_inventoria_memory as inv
+        first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        before = [(r["id"], r["text"]) for r in inv.list_notes(self.root)]
+        with self.assertRaises(inv.MemoryError_):
+            inv.add(self.root, "Le Master range les bols dans le tiroir", now=2.0,
+                    corrects_id=first["id"])
+        self.assertEqual([(r["id"], r["text"]) for r in inv.list_notes(self.root)], before)
+
+    def test_zero_overlap_correction_on_a_full_notepad_evicts_nothing(self):
+        import hq_inventoria_memory as inv
+        inv.add(self.root, "La boite est au garage", now=1.0)
+        for index in range(inv.MAX_NOTES - 1):
+            inv.add(self.root, f"note numero {index} sur les etageres", now=2.0 + index)
+        before = [(r["id"], r["text"]) for r in inv.list_notes(self.root)]
+        out = inv.add(self.root, "Non, maintenant au grenier", now=100.0)
+        self.assertFalse(out.get("saved"))
+        self.assertTrue(out.get("needs_target"))
+        self.assertEqual(out.get("candidates"), [])
+        self.assertEqual([(r["id"], r["text"]) for r in inv.list_notes(self.root)], before)
+
     def test_wrong_target_text_is_refused(self):
         import hq_inventoria_memory as inv
         first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
@@ -443,7 +466,7 @@ class ReviewFixTests(unittest.TestCase):
         for index in range(inv.MAX_NOTES - 1):
             inv.add(self.root, f"note numero {index} sur les etageres", now=2.0 + index)
         inv.add(self.root, "Le Master range les bols dans le tiroir", now=100.0,
-                corrects_id=first["id"])
+                corrects_id=first["id"], expect="Le Master range les bols dans le placard")
         out = inv.add(self.root, "Le Master aime le the vert", now=200.0)
         self.assertEqual(len(out["evicted"]), 1)
         self.assertNotIn(first["id"], out["evicted"])
@@ -547,7 +570,88 @@ class ReviewFixTests(unittest.TestCase):
         memory.set_owner("admin")
         with memory.memory_scope("musica"):
             memory.note_sister_line("else", "Salut Transferania.", "device-scope-01")
-        self.assertEqual(memory.snapshot()["memories"], [])
+            # Assert inside the scope: outside it, snapshot() reads Transferania's store.
+            self.assertEqual(memory.snapshot()["memories"], [])
+
+    def test_culinia_malformed_preferences_are_preserved(self):
+        import hq_culinia as culinia
+        culinia.bind(root=self.root)
+        path = self.root / ".hq-household" / "culinia_prefs.json"
+        path.parent.mkdir(parents=True)
+        raw = json.dumps({"likes": {"eggs": "yes"}}).encode("utf-8")
+        path.write_bytes(raw)
+        with self.assertRaises(culinia.CuliniaError):
+            culinia._load_prefs()
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertIn("illisibles", culinia._prefs_prompt_block())
+
+    def test_forgia_malformed_preferences_are_preserved(self):
+        import hq_forgia as forgia
+        forgia.bind(root=self.root)
+        path = self.root / ".hq-forge" / "forgia_prefs.json"
+        path.parent.mkdir(parents=True)
+        raw = json.dumps({"styles": {"anime": True}}).encode("utf-8")
+        path.write_bytes(raw)
+        with self.assertRaises(forgia.ForgiaError):
+            forgia._load_prefs()
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertIn("illisibles", forgia._prefs_prompt_block())
+
+    def test_pistonia_duplicate_note_ids_are_refused(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        row = {"id": "mem-aaaaaaaa", "text": "Le Master aime le thé vert.", "at": 1.0}
+        raw = json.dumps({"version": 1, "notes": [row, dict(row)]}).encode("utf-8")
+        (folder / "memory.json").write_bytes(raw)
+        with self.assertRaises(pstore.StoreError):
+            pstore.forget("mem-aaaaaaaa")
+        self.assertEqual((folder / "memory.json").read_bytes(), raw)
+
+    def test_mark_seen_refuses_a_damaged_alert_store(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        raw = json.dumps({"version": 1, "alerts": [
+            {"id": "msg-aaaaaaaaaa", "key": "ram", "kind": "alert", "text": "x", "at": 1.0, "seen": False},
+            {"damaged": True}], "cooldown": {}, "active": []}).encode("utf-8")
+        (folder / "alerts.json").write_bytes(raw)
+        with self.assertRaises(pstore.StoreError):
+            pstore.mark_seen()
+        self.assertEqual((folder / "alerts.json").read_bytes(), raw)
+
+    def test_add_message_refuses_a_partly_damaged_thread(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        raw = json.dumps({"version": 1, "messages": [
+            {"id": "msg-aaaaaaaaaa", "role": "user", "text": "bonjour", "at": 1.0},
+            {"id": "bad", "role": "user", "text": "x", "at": 2.0}]}).encode("utf-8")
+        (folder / "thread.json").write_bytes(raw)
+        with self.assertRaises(pstore.StoreError):
+            pstore.add_message("assistant", "salut", now=3.0)
+        self.assertEqual((folder / "thread.json").read_bytes(), raw)
+
+    def test_thread_transaction_blocks_a_chat_writer(self):
+        """The alert snapshot/commit/rollback window excludes chat writes, so a
+        rollback cannot erase a message that arrived in between."""
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        done = threading.Event()
+
+        def chat():
+            pstore.add_message("user", "message du Maître", now=1.0)
+            done.set()
+
+        with pstore.thread_transaction():
+            threading.Thread(target=chat, daemon=True).start()
+            time.sleep(0.1)
+            self.assertFalse(done.is_set(), "a chat writer entered the alert transaction")
+        self.assertTrue(done.wait(2.0))
+        self.assertIn("message du Maître", [m["text"] for m in pstore.thread()])
 
     def test_relationship_owner_never_defaults_to_admin(self):
         with mock.patch.object(memory, "current_owner", return_value=None):

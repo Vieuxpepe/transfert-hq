@@ -149,8 +149,10 @@ def add(root: Any, text: Any, *, now: float | None = None,
     candidate ids. Writing it first would let a full notepad evict the very fact
     it was meant to correct and would leave two active contradictory notes.
 
-    ``expect`` must repeat the target note's exact text, so a model that picked a
-    valid but wrong id is refused rather than rewriting an unrelated fact.
+    ``expect`` is mandatory with ``corrects_id``: it must repeat the target note's
+    exact saved text. This is a compare-and-swap guard against a stale or wrong
+    id, not proof of user intent — the caller must have asked the Master which
+    note is wrong.
     """
     t = clean(text)
     if len(t) < 3:
@@ -167,6 +169,8 @@ def add(root: Any, text: Any, *, now: float | None = None,
         if corrects_id is not None:
             if not isinstance(corrects_id, str) or not _ID_RE.match(corrects_id):
                 raise MemoryError_("identifiant de note invalide")
+            if not isinstance(expect, str) or not expect.strip():
+                raise MemoryError_("texte de la note cible requis (expect)")
             target = next((r for r in rows if r["id"] == corrects_id), None)
             if target is None:
                 raise MemoryError_("note à corriger introuvable")
@@ -178,11 +182,10 @@ def add(root: Any, text: Any, *, now: float | None = None,
                 if r["text"].lower() == low:
                     return {"saved": True, "id": r["id"], "text": r["text"], "duplicate": True}
             if _CORRECTION_RE.search(t):
-                candidates = _candidates(rows, t)
-                if candidates:
-                    # Nothing is written: the target must be resolved first.
-                    return {"saved": False, "needs_target": True, "pending": t,
-                            "candidates": candidates, "duplicate": False}
+                # Nothing is written, even with zero keyword candidates: a
+                # correction with no match must not evict an unrelated old fact.
+                return {"saved": False, "needs_target": True, "pending": t,
+                        "candidates": _candidates(rows, t), "duplicate": False}
         if target is not None:
             rows = [r for r in rows if r["id"] != target["id"] and r["text"].lower() != low]
             target["text"] = t

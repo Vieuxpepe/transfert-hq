@@ -191,32 +191,35 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
             n = sum(1 for a in state["alerts"] if a.get("key") == key)
             text = _compose(key, cond, held, n)
             props = _proposals_for(cond)
-            before_alerts = len(state["alerts"])
-            before_cooldown = dict(state["cooldown"])
-            before_active = set(active)
-            before_thread = store.thread()
-            try:
-                msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
-            except store.StoreError:
-                continue          # thread file unreadable: keep it, never overwrite it
-            state["alerts"].append({"id": msg["id"], "key": key, "kind": "alert", "text": text, "at": now, "seen": False,
-                                    "label": _what(key, cond)})
-            state["cooldown"][key] = now
-            active.add(key)
-            state["active"] = sorted(active)
-            try:
-                # Durable before notify/return: a later tick must not repeat it.
-                store.save_alerts_state(state)
-            except store.StoreError:
-                # Restore the snapshot: add_message() may have evicted the oldest
-                # message, which removing the new one would not bring back.
-                store.restore_thread(before_thread)
-                state["alerts"] = state["alerts"][:before_alerts]
-                state["cooldown"] = before_cooldown
-                active = before_active
+            # Snapshot, append, commit and rollback under one lock: a chat message
+            # arriving mid-sequence must not be erased by the rollback.
+            with store.thread_transaction():
+                before_alerts = len(state["alerts"])
+                before_cooldown = dict(state["cooldown"])
+                before_active = set(active)
+                before_thread = store.thread()
+                try:
+                    msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
+                except store.StoreError:
+                    continue      # thread file unreadable: keep it, never overwrite it
+                state["alerts"].append({"id": msg["id"], "key": key, "kind": "alert", "text": text, "at": now, "seen": False,
+                                        "label": _what(key, cond)})
+                state["cooldown"][key] = now
+                active.add(key)
                 state["active"] = sorted(active)
-                continue
-            added.append(msg)
+                try:
+                    # Durable before notify/return: a later tick must not repeat it.
+                    store.save_alerts_state(state)
+                except store.StoreError:
+                    # Restore the snapshot: add_message() may have evicted the oldest
+                    # message, which removing the new one would not bring back.
+                    store.restore_thread(before_thread)
+                    state["alerts"] = state["alerts"][:before_alerts]
+                    state["cooldown"] = before_cooldown
+                    active = before_active
+                    state["active"] = sorted(active)
+                    continue
+                added.append(msg)
             if notify and store.settings().get("notify"):
                 try:
                     notify("Pistonia · Engine", text[:NOTIFY_MAX])
@@ -230,23 +233,24 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 n = sum(1 for a in state["alerts"] if a.get("key") == key and a.get("kind") == "clear")
                 text = _pick("clear", key, n).format(what=what)
                 text = text[:1].upper() + text[1:]
-                before_thread = store.thread()
-                try:
-                    msg = store.add_message("assistant", text, kind="clear", now=now)
-                except store.StoreError:
-                    active.add(key)
-                    continue
-                state["alerts"].append({"id": msg["id"], "key": key, "kind": "clear", "text": text, "at": now, "seen": True})
-                state["active"] = sorted(active)
-                try:
-                    store.save_alerts_state(state)
-                except store.StoreError:
-                    store.restore_thread(before_thread)
-                    state["alerts"].pop()
-                    active.add(key)                 # the condition is still uncleared
+                with store.thread_transaction():
+                    before_thread = store.thread()
+                    try:
+                        msg = store.add_message("assistant", text, kind="clear", now=now)
+                    except store.StoreError:
+                        active.add(key)
+                        continue
+                    state["alerts"].append({"id": msg["id"], "key": key, "kind": "clear", "text": text, "at": now, "seen": True})
                     state["active"] = sorted(active)
-                    continue
-                added.append(msg)
+                    try:
+                        store.save_alerts_state(state)
+                    except store.StoreError:
+                        store.restore_thread(before_thread)
+                        state["alerts"].pop()
+                        active.add(key)             # the condition is still uncleared
+                        state["active"] = sorted(active)
+                        continue
+                    added.append(msg)
         state["active"] = sorted(active)
         return added
     finally:
