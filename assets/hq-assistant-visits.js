@@ -9,7 +9,7 @@
   window.hqAssistantVisitsReady = true;
 
   var CHIPS = [
-    { key: "culinia", name: "Culinia", selector: ".hq-culinia-chip",
+    { key: "culinia", name: "Culinia", selector: ".hq-culinia-chip", size: [54, 54],
       hello: "Ça sent bon, par ici.",
       reply: "Toujours : je goûte trois fois avant de servir.",
       about: "Je surveille les stocks, les lots qui périment et les menus de la semaine.",
@@ -17,7 +17,7 @@
       answer: "Je range, je vérifie, je repère ce qui manque. Rien d'urgent.",
       extra: "Il me reste des épluchures « pour un bouillon » que je ne ferai jamais.",
       bye: "Je retourne aux fourneaux." },
-    { key: "forgia", name: "Forgia", selector: ".hq-forgia-chip",
+    { key: "forgia", name: "Forgia", selector: ".hq-forgia-chip", size: [54, 54],
       hello: "Je passais jeter un œil à la lumière.",
       reply: "La lumière, c'est ce qui décide de tout.",
       about: "Je travaille les prompts, les poids et les rendus, sans toucher à ton Atelier.",
@@ -25,7 +25,7 @@
       answer: "Je collectionne les éclairages ratés qui valent mieux que les propres.",
       extra: "Un sampler bien choisi vaut parfois un long discours.",
       bye: "Bonne suite — je retourne à l'atelier." },
-    { key: "musica", name: "Musica", selector: ".hq-musica-chip",
+    { key: "musica", name: "Musica", selector: ".hq-musica-chip", size: [54, 54],
       hello: "Je cherchais une basse, je tombe sur toi.",
       reply: "Tant mieux : j'allais justement poser une question.",
       about: "Je gère les playlists, les découvertes et la lecture Connect.",
@@ -33,7 +33,7 @@
       answer: "J'écoute un album dans l'ordre, une fois, sans rien faire d'autre.",
       extra: "Les fondus de moins de trois secondes me méfient.",
       bye: "Je te laisse, j'ai un morceau à finir." },
-    { key: "inventoria", name: "Inventoria", selector: ".hq-inventoria-toggle",
+    { key: "inventoria", name: "Inventoria", selector: ".hq-inventoria-toggle", size: [118, 30],
       hello: "Je passais vérifier les étiquettes.",
       reply: "Deux fois, puis une troisième à voix haute.",
       about: "Je compte le stock, les lots et les listes de courses.",
@@ -41,7 +41,7 @@
       answer: "Je relis les vieilles listes comme un journal.",
       extra: "Je nomme les bacs comme des rues, ça aide à retrouver.",
       bye: "Je retourne ranger." },
-    { key: "pistonia", name: "Pistonia", selector: ".hq-pistonia-chip",
+    { key: "pistonia", name: "Pistonia", selector: ".hq-pistonia-chip", size: [54, 54],
       hello: "Je faisais le tour des machines.",
       reply: "Un bon chiffre se mesure deux fois.",
       about: "Je surveille la salle des machines : températures, courbes, bruit de fond.",
@@ -49,7 +49,7 @@
       answer: "J'écoute un moteur au ralenti jusqu'à entendre la bonne note.",
       extra: "Un ventilateur bruyant est une diva : il faut le laisser chanter.",
       bye: "Je retourne au bruit de fond." },
-    { key: "securia", name: "Securia", selector: ".hq-securia-chip",
+    { key: "securia", name: "Securia", selector: ".hq-securia-chip", size: [54, 54],
       hello: "Je passais vérifier une serrure.",
       reply: "Le cadenas, puis la poignée — toujours dans cet ordre.",
       about: "Je lis les journaux, les ports ouverts et les sessions actives.",
@@ -57,7 +57,7 @@
       answer: "Je lis les journaux de serveurs comme des romans policiers.",
       extra: "Les ports ouverts sont des fenêtres mal fermées.",
       bye: "Je retourne à la ronde." },
-    { key: "else", name: "Else", selector: ".hq-else-toggle",
+    { key: "else", name: "Else", selector: ".hq-else-toggle", size: [104, 30],
       hello: "Je passais, sans bruit.",
       reply: "Rien ne presse. Je regarde.",
       about: "Je travaille l'image, les formes, ce qui tient dans un cadre.",
@@ -84,7 +84,11 @@
     return r.width > 20 && r.height > 20;
   }
   function drawerOpen() {
-    var nodes = document.querySelectorAll('[class$="-drawer"]:not([hidden])');
+    var nodes = document.querySelectorAll(
+      '[class$="-drawer"]:not([hidden]), .hq-else-chip-menu:not([hidden]), ' +
+      '.hq-inventoria-chip-menu:not([hidden]), .hq-pistonia-menu:not([hidden]), ' +
+      '.hq-pistonia-settings:not([hidden]), [role="dialog"]:not([hidden]), .hq-inventoria-lightbox'
+    );
     for (var i = 0; i < nodes.length; i++) if (visible(nodes[i])) return true;
     return false;
   }
@@ -125,14 +129,17 @@
     var w = Math.min(230, Math.max(150, rect.width + 120));
     b.style.width = w + "px";
     b.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, rect.left + rect.width / 2 - w / 2)) + "px";
-    var top = rect.top - 12;
-    b.style.top = top + "px";
-    b.style.transform = "translateY(0)";
-    void b.offsetWidth;
-    if (top < 90) {
-      b.style.top = (rect.bottom + 12) + "px";
+    b.style.top = "0px";
+    b.style.visibility = "hidden";
+    var h = b.offsetHeight;
+    var top = rect.top - h - 10;
+    if (top < 8) {
+      top = rect.bottom + 10;
       b.classList.add("is-below");
     }
+    b.style.top = top + "px";
+    b.style.visibility = "";
+    void b.offsetWidth;
     b.classList.add("is-shown");
     return b;
   }
@@ -163,9 +170,10 @@
     active.stopped = true;
     window.clearTimeout(active.timer);
     clearBubble(active.bubble);
-    if (active.wrap) {
-      active.wrap.style.opacity = "0";
-      window.setTimeout(function () { if (active.wrap && active.wrap.parentNode) active.wrap.remove(); }, 300);
+    var wrap = active.wrap;
+    if (wrap) {
+      wrap.style.opacity = "0";
+      window.setTimeout(function () { if (wrap.parentNode) wrap.remove(); }, 300);
     }
     document.body.classList.remove("hq-visit-active");
     active = null;
@@ -218,22 +226,39 @@
 
     var wrap = document.createElement("div");
     wrap.className = "hq-visit-visitor";
+    wrap.setAttribute("aria-hidden", "true");
     var clone = visitorButton.cloneNode(true);
     clone.removeAttribute("id");
     clone.removeAttribute("aria-label");
     clone.removeAttribute("hidden");
-    clone.style.display = "";
+    clone.tabIndex = -1;
+    clone.setAttribute("aria-hidden", "true");
+    clone.style.position = "relative";
+    clone.style.left = clone.style.top = clone.style.right = clone.style.bottom = "auto";
+    clone.style.margin = "0";
+    clone.style.transform = "none";
+    var originalDisplay = window.getComputedStyle(visitorButton).display;
+    clone.style.display = originalDisplay && originalDisplay !== "none" ? originalDisplay : "inline-flex";
     clone.style.visibility = "visible";
     clone.style.opacity = "1";
     var ids = clone.querySelectorAll("[id]");
     for (var i = 0; i < ids.length; i++) ids[i].removeAttribute("id");
     wrap.appendChild(clone);
+    wrap.style.left = "-9999px";
     document.body.appendChild(wrap);
     document.body.classList.add("hq-visit-active");
 
+    // Measure the clone itself: the real chip can be hidden on this view.
     var size = clone.getBoundingClientRect();
-    var w = Math.max(44, size.width || 54);
-    var h = Math.max(44, size.height || 54);
+    var w = Math.max(44, size.width || (visitor.size && visitor.size[0]) || 54);
+    var h = Math.max(24, size.height || (visitor.size && visitor.size[1]) || 54);
+    wrap.style.left = "0";
+    wrap.style.width = w + "px";
+    wrap.style.height = h + "px";
+    clone.style.width = w + "px";
+    clone.style.height = h + "px";
+    clone.style.boxSizing = "border-box";
+    if (visitor.key === "else" || visitor.key === "inventoria") clone.style.justifyContent = "center";
     var side = hostRect.left > window.innerWidth / 2 ? "left" : "right";
     var endX = side === "left" ? hostRect.left - w - 16 : hostRect.right + 16;
     if (endX < 8) { side = "right"; endX = hostRect.right + 16; }
@@ -294,6 +319,25 @@
     if (active) stopActive();
     if (!document.hidden) schedule(rand(9000, 18000));
   });
+  document.addEventListener("pointerdown", function (ev) {
+    if (!active) return;
+    var target = ev.target;
+    if (!target || !target.closest) return;
+    if (target.closest("[class*='-chip'], [class*='-drawer'], .hq-else-chip-menu, .hq-inventoria-chip-menu, .hq-pistonia-menu, .hq-pistonia-settings")) {
+      stopActive();
+      schedule(rand(MIN_DELAY, MAX_DELAY));
+    }
+  }, true);
+  var lastView = document.body.getAttribute("data-view") || "";
+  if (window.MutationObserver) {
+    new MutationObserver(function () {
+      var view = document.body.getAttribute("data-view") || "";
+      if (view === lastView) return;
+      lastView = view;
+      if (active) stopActive();
+      if (!document.hidden) schedule(rand(9000, 18000));
+    }).observe(document.body, { attributes: true, attributeFilter: ["data-view"] });
+  }
 
   window.hqAssistantVisitNow = function () {
     if (active) return false;
