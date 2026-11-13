@@ -228,8 +228,31 @@ def get_thread() -> dict[str, Any]:
         return {"messages": list(msgs) if isinstance(msgs, list) else []}
 
 
+def _thread_schema_ok(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    msgs = data.get("messages", [])
+    if not isinstance(msgs, list):
+        return False
+    return all(isinstance(m, dict) and m.get("role") in ("user", "assistant")
+               and isinstance(m.get("text"), str) for m in msgs)
+
+
+def _thread_unreadable() -> bool:
+    """True when the thread exists but is not a valid message list (never replaced)."""
+    p = _state_dir() / THREAD_FILE
+    if not p.is_file():
+        return False
+    try:
+        return not _thread_schema_ok(json.loads(p.read_text(encoding="utf-8")))
+    except Exception:
+        return True
+
+
 def _save_thread(messages: list[dict[str, Any]]) -> None:
     with _lock:
+        if _thread_unreadable():
+            raise CuliniaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         _save_json(THREAD_FILE, {"messages": messages[-MAX_THREAD:]})
 
 
@@ -583,6 +606,11 @@ def _execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
             note = str(args.get("note") or "").strip()[:500]
             with _lock:
                 cur = _load_json(MEAL_PLAN_FILE, {"days": {}, "note": ""})
+                if not (isinstance(cur.get("days", {}), dict)
+                        and all(isinstance(k, str) and isinstance(v, str) for k, v in (cur.get("days") or {}).items())
+                        and isinstance(cur.get("note", ""), str)
+                        and isinstance(cur.get("updated_at", ""), str)):
+                    raise CuliniaError("plan de repas illisible — fichier conservé", status=409, code="state_unreadable")
                 days = dict(cur.get("days") or {})
                 if isinstance(days_in, dict):
                     for k, v in days_in.items():

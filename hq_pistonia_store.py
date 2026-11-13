@@ -66,7 +66,12 @@ def _write(name: str, data: Any) -> None:
 
 
 def unreadable(name: str) -> bool:
-    """True when the file exists but cannot be parsed (it is never replaced)."""
+    """True when the file exists but cannot be parsed (it is never replaced).
+
+    This is the parse-only guard for files with no schema validator; stores that
+    have one (``thread_``/``memory_``/``alerts_``/``settings_unreadable``) use it
+    instead, because parseable JSON can still be the wrong shape.
+    """
     p = _dir() / name
     if not p.is_file():
         return False
@@ -90,7 +95,7 @@ def alerts_unreadable() -> bool:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return True
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or data.get("version") not in (None, 1):
         return True
     alerts = data.get("alerts", [])
     cooldown = data.get("cooldown", {})
@@ -147,10 +152,18 @@ def thread_unreadable() -> bool:
     rows = data.get("messages", [])
     if not isinstance(rows, list):
         return True
+    seen_ids: set[str] = set()
     for row in rows:
         if not (isinstance(row, dict) and row.get("role") in ("user", "assistant")
                 and isinstance(row.get("text"), str)
                 and _ID_MSG.match(str(row.get("id") or ""))):
+            return True
+        if row["id"] in seen_ids:          # two records under one id cannot be told apart
+            return True
+        seen_ids.add(row["id"])
+        at = row.get("at")
+        if at is not None and (isinstance(at, bool) or not isinstance(at, (int, float))
+                               or not math.isfinite(float(at))):
             return True
     return False
 
@@ -206,6 +219,8 @@ def last_message_id() -> Optional[str]:
 
 def clear_thread() -> None:
     with _lock:
+        if thread_unreadable():
+            raise StoreError("conversation illisible : fichier conservé, non modifié")
         _write("thread.json", {"version": 1, "messages": []})
 
 
@@ -300,8 +315,24 @@ def settings() -> dict:
     return out
 
 
+def settings_unreadable() -> bool:
+    """True when settings.json exists but has a non-boolean saved preference."""
+    p = _dir() / "settings.json"
+    if not p.is_file():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(data, dict):
+        return True
+    return any(key in data and not isinstance(data[key], bool) for key in SETTINGS_DEFAULT)
+
+
 def save_settings(**kw: Any) -> dict:
     with _lock:
+        if settings_unreadable():
+            raise StoreError("réglages illisibles : fichier conservé, non modifié")
         cur = settings()
         for k, v in kw.items():
             if k in SETTINGS_DEFAULT and isinstance(v, bool):

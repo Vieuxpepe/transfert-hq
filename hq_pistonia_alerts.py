@@ -198,6 +198,13 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 before_cooldown = dict(state["cooldown"])
                 before_active = set(active)
                 before_thread = store.thread()
+                # A `mark_seen` may have committed since the tick read its state:
+                # merge acknowledgements so saving the tick's copy cannot undo them.
+                fresh = store.alerts_state()
+                seen_ids = {a.get("id") for a in fresh["alerts"] if a.get("seen")}
+                for acked in state["alerts"]:
+                    if acked.get("id") in seen_ids:
+                        acked["seen"] = True
                 try:
                     msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
                 except store.StoreError:

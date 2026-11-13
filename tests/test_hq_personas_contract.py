@@ -402,10 +402,13 @@ class ReviewFixTests(unittest.TestCase):
         import hq_inventoria_memory as inv
         first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
         before = [(r["id"], r["text"]) for r in inv.list_notes(self.root)]
+        path = self.root / ".hq-inventoria" / "memory.json"
+        raw = path.read_bytes()
         with self.assertRaises(inv.MemoryError_):
             inv.add(self.root, "Le Master range les bols dans le tiroir", now=2.0,
                     corrects_id=first["id"])
         self.assertEqual([(r["id"], r["text"]) for r in inv.list_notes(self.root)], before)
+        self.assertEqual(path.read_bytes(), raw)
 
     def test_zero_overlap_correction_on_a_full_notepad_evicts_nothing(self):
         import hq_inventoria_memory as inv
@@ -652,6 +655,112 @@ class ReviewFixTests(unittest.TestCase):
             self.assertFalse(done.is_set(), "a chat writer entered the alert transaction")
         self.assertTrue(done.wait(2.0))
         self.assertIn("message du Maître", [m["text"] for m in pstore.thread()])
+
+    def test_duplicate_message_ids_are_refused(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        row = {"id": "msg-bbbbbbbbbb", "role": "user", "text": "bonjour", "at": 1.0}
+        raw = json.dumps({"version": 1, "messages": [row, dict(row)]}).encode("utf-8")
+        (folder / "thread.json").write_bytes(raw)
+        with self.assertRaises(pstore.StoreError):
+            pstore.add_message("assistant", "salut", now=2.0)
+        self.assertEqual((folder / "thread.json").read_bytes(), raw)
+
+    def test_clear_thread_refuses_a_damaged_thread(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        raw = json.dumps({"version": 1, "messages": [{"role": "user"}]}).encode("utf-8")
+        (folder / "thread.json").write_bytes(raw)
+        with self.assertRaises(pstore.StoreError):
+            pstore.clear_thread()
+        self.assertEqual((folder / "thread.json").read_bytes(), raw)
+
+    def test_settings_writer_refuses_a_malformed_preference(self):
+        import hq_pistonia_store as pstore
+        pstore.bind(self.root)
+        folder = self.root / ".hq-engine" / "pistonia"
+        folder.mkdir(parents=True)
+        raw = json.dumps({"notify": {"unexpected": True}, "voice": True}).encode("utf-8")
+        (folder / "settings.json").write_bytes(raw)
+        with self.assertRaises(pstore.StoreError):
+            pstore.save_settings(notify=False)
+        self.assertEqual((folder / "settings.json").read_bytes(), raw)
+
+    def test_unknown_alert_version_is_refused(self):
+        pstore, palerts = self._alert_tick(json.dumps({"version": 2, "alerts": [], "cooldown": {}, "active": []}))
+        path = self.root / ".hq-engine" / "pistonia" / "alerts.json"
+        raw = path.read_bytes()
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}), \
+             mock.patch.object(palerts, "_compose", return_value="RAM high"):
+            self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
+        with self.assertRaises(pstore.StoreError):
+            pstore.mark_seen()
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_mark_seen_survives_a_concurrent_alert_tick(self):
+        import contextlib
+        pstore, palerts = self._alert_tick(json.dumps({
+            "version": 1,
+            "alerts": [{"id": "msg-aaaaaaaaaa", "key": "disk", "kind": "alert", "text": "Disk",
+                        "at": 10.0, "seen": False, "label": "the disk"}],
+            "cooldown": {"disk": 1.0}, "active": ["disk"]}))
+        real_tx = pstore.thread_transaction
+
+        @contextlib.contextmanager
+        def ack_then_transaction():
+            pstore.mark_seen()          # acknowledged after the tick read its state, before it writes
+            with real_tx():
+                yield
+
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram", "pct": 91}}), \
+             mock.patch.object(palerts, "_compose", return_value="RAM high"), \
+             mock.patch.object(pstore, "thread_transaction", ack_then_transaction):
+            palerts.tick({"daemons": []}, now=10000.0)   # past the default RAM cooldown
+        rows = pstore.alerts_state()["alerts"]
+        disk = next(a for a in rows if a.get("key") == "disk")
+        self.assertTrue(disk["seen"], "the tick's stale copy un-acknowledged the alert")
+        self.assertTrue(any(a.get("key") == "ram" for a in rows))
+
+    def test_culinia_refuses_to_rewrite_a_damaged_thread(self):
+        import hq_culinia as culinia
+        culinia.bind(root=self.root)
+        path = self.root / ".hq-household" / "culinia_thread.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = json.dumps({"messages": [{"role": "user"}]}).encode("utf-8")
+        path.write_bytes(raw)
+        with self.assertRaises(culinia.CuliniaError):
+            culinia._save_thread([{"role": "assistant", "text": "bonjour"}])
+        with self.assertRaises(culinia.CuliniaError):
+            culinia.clear_thread()
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_culinia_refuses_to_rewrite_a_malformed_meal_plan(self):
+        import hq_culinia as culinia
+        culinia.bind(root=self.root)
+        path = self.root / ".hq-household" / "culinia_meals.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = json.dumps({"days": [["monday", "soup"]], "note": "", "updated_at": ""}).encode("utf-8")
+        path.write_bytes(raw)
+        out = culinia._execute_tool("save_meal_plan", {"days": {"tuesday": "rice"}, "note": "x"})
+        self.assertFalse(out.get("ok"))
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_forgia_refuses_to_rewrite_a_damaged_thread(self):
+        import hq_forgia as forgia
+        forgia.bind(root=self.root)
+        path = self.root / ".hq-forge" / "forgia_thread.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        raw = json.dumps({"messages": "not a list"}).encode("utf-8")
+        path.write_bytes(raw)
+        with self.assertRaises(forgia.ForgiaError):
+            forgia._save_thread([{"role": "assistant", "text": "bonjour"}])
+        with self.assertRaises(forgia.ForgiaError):
+            forgia.clear_thread()
+        self.assertEqual(path.read_bytes(), raw)
 
     def test_relationship_owner_never_defaults_to_admin(self):
         with mock.patch.object(memory, "current_owner", return_value=None):

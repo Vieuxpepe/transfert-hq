@@ -109,8 +109,31 @@ def get_thread() -> dict[str, Any]:
         return {"messages": list(msgs) if isinstance(msgs, list) else []}
 
 
+def _thread_schema_ok(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    msgs = data.get("messages", [])
+    if not isinstance(msgs, list):
+        return False
+    return all(isinstance(m, dict) and m.get("role") in ("user", "assistant")
+               and isinstance(m.get("text"), str) for m in msgs)
+
+
+def _thread_unreadable() -> bool:
+    """True when the thread exists but is not a valid message list (never replaced)."""
+    p = _state_dir() / THREAD_FILE
+    if not p.is_file():
+        return False
+    try:
+        return not _thread_schema_ok(json.loads(p.read_text(encoding="utf-8")))
+    except Exception:
+        return True
+
+
 def _save_thread(messages: list[dict[str, Any]]) -> None:
     with _lock:
+        if _thread_unreadable():
+            raise ForgiaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
         _save_json(THREAD_FILE, {"messages": messages[-MAX_THREAD:]})
 
 
