@@ -2,9 +2,9 @@
 
 Evidence only: distinct days of exchange (capped), the exchange count, the last
 timestamp and one short motif. There is no affection score, no debt and no
-private chat invented between assistants: each pair lives in its own
-owner-scoped file under ``.hq-ai/relationships/`` and the per-assistant memory
-stores are never merged.
+private chat invented between assistants. All pairs for one owner live in that
+owner's file under ``.hq-ai/relationships/`` (a ``pairs`` map), and the
+per-assistant memory stores are never merged.
 
 Canon: ``docs/companion-family.md`` (sisters stay affectionate and playfully
 competitive; Static remains Else's little sister in the lab).

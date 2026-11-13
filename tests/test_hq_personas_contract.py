@@ -360,16 +360,71 @@ class ReviewFixTests(unittest.TestCase):
         self.assertTrue(out.get("needs_target"))
         self.assertIn(target["id"], out["candidates"])
 
-    def test_plain_non_asks_for_a_target_then_corrects_it(self):
+    def test_plain_non_asks_for_a_target_without_writing(self):
         import hq_inventoria_memory as inv
         first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
         asked = inv.add(self.root, "Non, le Master range les bols dans le tiroir", now=2.0)
+        self.assertFalse(asked.get("saved"))
         self.assertTrue(asked.get("needs_target"))
-        self.assertEqual(len(inv.list_notes(self.root)), 2)
+        self.assertEqual([r["text"] for r in inv.list_notes(self.root)],
+                         ["Le Master range les bols dans le placard"])
         fixed = inv.add(self.root, "Non, le Master range les bols dans le tiroir", now=3.0,
-                        corrects_id=first["id"])
+                        corrects_id=first["id"], expect="Le Master range les bols dans le placard")
         self.assertEqual(fixed.get("superseded"), first["id"])
-        self.assertEqual(len(inv.list_notes(self.root)), 2)
+        self.assertEqual([r["text"] for r in inv.list_notes(self.root)],
+                         ["Non, le Master range les bols dans le tiroir"])
+
+    def test_pending_correction_on_a_full_notepad_evicts_nothing(self):
+        import hq_inventoria_memory as inv
+        target = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        for index in range(inv.MAX_NOTES - 1):
+            inv.add(self.root, f"note numero {index} sur les etageres", now=2.0 + index)
+        before = [(r["id"], r["text"]) for r in inv.list_notes(self.root)]
+        out = inv.add(self.root, "En fait le Master range les bols dans le tiroir", now=100.0)
+        self.assertFalse(out.get("saved"))
+        self.assertTrue(out.get("needs_target"))
+        self.assertIn(target["id"], out["candidates"])
+        self.assertEqual([(r["id"], r["text"]) for r in inv.list_notes(self.root)], before)
+
+    def test_resolution_leaves_exactly_one_active_fact(self):
+        import hq_inventoria_memory as inv
+        first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        inv.add(self.root, "En fait le Master range les bols dans le tiroir", now=2.0)
+        inv.add(self.root, "En fait le Master range les bols dans le tiroir", now=3.0,
+                corrects_id=first["id"], expect="Le Master range les bols dans le placard")
+        notes = inv.list_notes(self.root)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("tiroir", notes[0]["text"])
+
+    def test_wrong_target_text_is_refused(self):
+        import hq_inventoria_memory as inv
+        first = inv.add(self.root, "Le Master range les bols dans le placard", now=1.0)
+        with self.assertRaises(inv.MemoryError_):
+            inv.add(self.root, "Le Master range les bols dans le tiroir", now=2.0,
+                    corrects_id=first["id"], expect="Le Master range les vis au garage")
+        self.assertEqual(len(inv.list_notes(self.root)), 1)
+
+    def test_unknown_schema_version_is_preserved(self):
+        import hq_inventoria_memory as inv
+        p = self.root / inv.STATE_FOLDER / inv.FILE
+        p.parent.mkdir(parents=True)
+        raw = json.dumps({"version": 2, "notes": [
+            {"id": "mem-aaaaaaaa", "text": "Le Master aime le thé vert.", "at": 1.0}]}).encode("utf-8")
+        p.write_bytes(raw)
+        with self.assertRaises(inv.MemoryError_):
+            inv.add(self.root, "Le Master aime le café noir.")
+        self.assertEqual(p.read_bytes(), raw)
+
+    def test_numeric_string_timestamp_is_refused(self):
+        import hq_inventoria_memory as inv
+        p = self.root / inv.STATE_FOLDER / inv.FILE
+        p.parent.mkdir(parents=True)
+        raw = json.dumps({"version": 1, "notes": [
+            {"id": "mem-aaaaaaaa", "text": "Le Master aime le thé vert.", "at": "1.0"}]}).encode("utf-8")
+        p.write_bytes(raw)
+        with self.assertRaises(inv.MemoryError_):
+            inv.add(self.root, "Le Master aime le café noir.")
+        self.assertEqual(p.read_bytes(), raw)
 
     def test_duplicate_ids_block_writes_and_preserve_the_file(self):
         import hq_inventoria_memory as inv
@@ -429,16 +484,70 @@ class ReviewFixTests(unittest.TestCase):
             self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
         add_message.assert_not_called()
 
+    def test_damaged_alert_record_inside_valid_json_is_preserved(self):
+        pstore, palerts = self._alert_tick(json.dumps({
+            "alerts": [{"key": "ram"}, {"damaged": True}],
+            "cooldown": {"ram": "invalid"}, "active": [123]}))
+        path = self.root / ".hq-engine" / "pistonia" / "alerts.json"
+        before = path.read_bytes()
+        with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}), \
+             mock.patch.object(palerts, "_compose", return_value="RAM high"), \
+             mock.patch.object(pstore, "add_message") as add_message:
+            self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
+        add_message.assert_not_called()
+        self.assertEqual(path.read_bytes(), before)
+
     def test_failed_alert_state_save_rolls_the_thread_back(self):
         pstore, palerts = self._alert_tick('{"alerts": [], "cooldown": {}, "active": []}')
+        for index in range(60):                      # a full thread: adding evicts the oldest
+            pstore.add_message("user" if index % 2 else "assistant", f"message {index}", now=index)
+        before = [(m["id"], m["text"]) for m in pstore.thread()]
         notified = []
         with mock.patch.object(palerts, "detect", return_value={"ram": {"kind": "ram"}}), \
              mock.patch.object(palerts, "_compose", return_value="RAM high"), \
              mock.patch.object(pstore, "save_alerts_state", side_effect=pstore.StoreError("io")):
             self.assertEqual(palerts.tick({"daemons": []}, now=1000.0,
                                           notify=lambda *a: notified.append(a)), [])
-        self.assertEqual(pstore.thread(), [])
+        self.assertEqual([(m["id"], m["text"]) for m in pstore.thread()], before)
         self.assertEqual(notified, [])
+
+    def test_failed_clear_keeps_the_condition_active(self):
+        import hq_pistonia_store as pstore
+        import hq_pistonia_alerts as palerts
+        pstore.bind(self.root)
+        pstore.save_alerts_state({"alerts": [{"id": "msg-aaaaaaaaaa", "key": "ram", "kind": "alert",
+                                              "text": "RAM high", "at": 1.0, "seen": True}],
+                                  "cooldown": {}, "active": ["ram"]})
+        palerts.reset_for_tests()
+        with mock.patch.object(palerts, "detect", return_value={}), \
+             mock.patch.object(pstore, "save_alerts_state", side_effect=pstore.StoreError("io")):
+            self.assertEqual(palerts.tick({"daemons": []}, now=1000.0), [])
+        self.assertEqual(pstore.alerts_state()["active"], ["ram"])
+        self.assertEqual(pstore.thread(), [])
+
+    def test_transferania_never_reads_else_traits(self):
+        ai = self._ai()
+        seen = lambda: {"humor": "ELSE ONLY"} if memory._memory_scope.get() == "else" else {}
+        with mock.patch.object(memory, "personality_traits", side_effect=seen):
+            with memory.memory_scope("else"):
+                system = ai.build_transferania_system("chat", "warm", nsfw=False, view="accueil",
+                                                      device_id="device-scope", prefs={}, signals={})
+        self.assertNotIn("ELSE ONLY", system)
+
+    def test_two_owners_cannot_see_each_other_evidence(self):
+        memory.set_owner("owner-a")
+        rel.note_exchange(self.root, "else", "transferania", "Salut", now=1_700_000_000)
+        memory.set_owner("owner-b")
+        self.assertEqual(rel.pair(self.root, "else", "transferania")["exchanges"], 0)
+        memory.set_owner("owner-a")
+        self.assertEqual(rel.pair(self.root, "else", "transferania")["exchanges"], 1)
+
+    def test_sister_line_is_ignored_in_a_foreign_scope(self):
+        memory.bind(root=self.root, now=lambda: 1_700_000_100.0)
+        memory.set_owner("admin")
+        with memory.memory_scope("musica"):
+            memory.note_sister_line("else", "Salut Transferania.", "device-scope-01")
+        self.assertEqual(memory.snapshot()["memories"], [])
 
     def test_relationship_owner_never_defaults_to_admin(self):
         with mock.patch.object(memory, "current_owner", return_value=None):

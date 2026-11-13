@@ -1756,9 +1756,14 @@ def memory_post(data: dict) -> tuple[int, dict]:
         return (200, {"ok": True, "memory": mem.list_notes(_root())}) if ok else (404, {"ok": False, "error": "note introuvable", "code": "not_found"})
     if action == "add":
         try:
-            mem.add(_root(), data.get("text"))
+            out = mem.add(_root(), data.get("text"), corrects_id=data.get("corrects_id"),
+                          expect=data.get("expect"))
         except mem.MemoryError_ as exc:
             raise InventoriaError(str(exc), code="validation_error") from exc
+        if out.get("needs_target"):
+            # Nothing was saved; the panel must choose the note to correct.
+            return 409, {"ok": False, "code": "needs_target", "needs_target": True,
+                         "candidates": out.get("candidates") or [], "pending": out.get("pending") or ""}
         return 200, {"ok": True, "memory": mem.list_notes(_root())}
     raise InventoriaError("action inconnue (add|forget)", code="validation_error")
 

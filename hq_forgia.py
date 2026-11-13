@@ -84,11 +84,13 @@ def _load_json(filename: str, default: dict[str, Any]) -> dict[str, Any]:
         return dict(default)
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-    return dict(default)
+    except Exception as exc:
+        # Present but unparseable: report it instead of returning defaults that a
+        # later write would turn into an overwrite.
+        raise ForgiaError("état illisible — fichier conservé", status=409, code="state_unreadable") from exc
+    if not isinstance(data, dict):
+        raise ForgiaError("état illisible — fichier conservé", status=409, code="state_unreadable")
+    return data
 
 
 def _save_json(filename: str, data: dict[str, Any]) -> None:
@@ -147,9 +149,11 @@ def _load_prefs() -> dict[str, Any]:
 
 
 def _prefs_prompt_block() -> str:
-    p = _load_prefs()
+    # Checked first: an unreadable file now raises from _load_prefs instead of
+    # being silently replaced by defaults.
     if _prefs_unreadable():
         return "\nPréférences illisibles : fichier conservé, non modifié. Demande au Maître de le vérifier.\n"
+    p = _load_prefs()
     parts = []
     if p["styles"]:
         parts.append("Styles favoris : " + ", ".join(p["styles"]))

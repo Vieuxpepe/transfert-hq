@@ -44,13 +44,16 @@ Each request still uses the existing context builder and its budgets. At most
 five relevant active memories are selected, ordered by relevance and recency.
 
 Inventoria's notepad (`.hq-inventoria/memory.json`) is stricter. A correction
-must name the note it replaces (`corrects_id`); a statement that merely looks
-like a correction is stored as a new note and the tool reports `needs_target`
-with candidate ids, because two shared words cannot tell “same fact, new value”
-from an unrelated fact that happens to share a verb and a noun. Ranking and
-eviction use `max(at, updated_at)`, so a corrected note counts as recent. A file
-with invalid, duplicated or non-numeric rows is treated as unreadable and kept
-exactly as it is.
+must name the note it replaces (`corrects_id` plus its exact saved text as
+`expect`). A statement that merely looks like a correction is **not written at
+all**: the tool reports `needs_target` with candidate ids, because two shared
+words cannot tell “same fact, new value” from an unrelated fact that happens to
+share a verb and a noun, and a pending note could evict the very fact it was
+meant to correct. Ranking uses `max(at, updated_at)`; eviction follows list
+order, where a correction is moved to the end. A file with an unknown version,
+invalid or duplicated rows, or non-numeric timestamps is treated as unreadable
+and kept exactly as it is. The panel endpoint accepts `corrects_id`/`expect` too
+and answers 409 `needs_target` instead of saving a guess.
 
 ## Character evolution
 

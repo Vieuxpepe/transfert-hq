@@ -696,7 +696,10 @@ def note_sister_line(speaker: str, text: str, device: str) -> None:
     """Light episode note from a Master-triggered sister dialogue (current memory_scope)."""
     line = re.sub(r"\s+", " ", str(text or "").strip())[:400]
     who = str(speaker or "").strip().lower()
-    if not line or who not in hq_personas.memory_scopes():
+    # Only a sister, and only inside her own scope: a domain assistant's memory
+    # must never receive sister dialogue from whichever scope happens to be open.
+    sisters = {a["key"] for a in hq_personas.sisters()}
+    if not line or who not in sisters or _memory_scope.get() != who:
         return
     label = hq_personas.get(who)["name"]
     with _lock:

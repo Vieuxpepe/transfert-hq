@@ -62,6 +62,8 @@ def _read(root: Any) -> tuple[list[dict], bool]:
         return [], True
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and raw.get("version") not in (None, 1):
+            raise ValueError("version de mémoire inconnue")
         rows = raw.get("notes") if isinstance(raw, dict) else None
         if not isinstance(rows, list):
             raise ValueError("notes invalides")
@@ -79,8 +81,11 @@ def _read(root: Any) -> tuple[list[dict], bool]:
             for field in ("at", "updated_at"):
                 if row.get(field) is None:
                     continue
-                stamp = float(row[field])
-                if not math.isfinite(stamp) or stamp < 0:
+                value = row[field]
+                # A numeric string or a bool is not a timestamp this schema wrote.
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError("horodatage invalide")
+                if not math.isfinite(float(value)) or float(value) < 0:
                     raise ValueError("horodatage invalide")
     except Exception:
         return [], False
@@ -107,6 +112,13 @@ def clean(text: Any) -> str:
     return " ".join(t.split())[:MAX_CHARS]
 
 
+def find(root: Any, note_id: Any) -> dict | None:
+    """One saved note by id (for an explicit correction preview)."""
+    if not isinstance(note_id, str) or not _ID_RE.match(note_id):
+        return None
+    return next((r for r in _load(root) if r["id"] == note_id), None)
+
+
 def list_notes(root: Any) -> list[dict]:
     with _lock:
         rows, _ok = _read(root)
@@ -128,13 +140,17 @@ def _candidates(rows: list[dict], text: str, limit: int = 3) -> list[str]:
 
 
 def add(root: Any, text: Any, *, now: float | None = None,
-        corrects_id: str | None = None) -> dict:
+        corrects_id: str | None = None, expect: str | None = None) -> dict:
     """Save a note. Only an explicit ``corrects_id`` may replace an existing note.
 
     Shared vocabulary cannot tell "same fact, new value" from an unrelated fact
     that happens to share a verb and a noun (``master`` + ``range``), so an
-    implicit correction is stored as a new note and reports ``needs_target`` with
-    candidate ids instead of risking an unrelated rewrite.
+    unresolved correction writes nothing at all: it reports ``needs_target`` with
+    candidate ids. Writing it first would let a full notepad evict the very fact
+    it was meant to correct and would leave two active contradictory notes.
+
+    ``expect`` must repeat the target note's exact text, so a model that picked a
+    valid but wrong id is refused rather than rewriting an unrelated fact.
     """
     t = clean(text)
     if len(t) < 3:
@@ -154,33 +170,34 @@ def add(root: Any, text: Any, *, now: float | None = None,
             target = next((r for r in rows if r["id"] == corrects_id), None)
             if target is None:
                 raise MemoryError_("note à corriger introuvable")
+            if expect is not None and str(expect).strip() != target["text"].strip():
+                raise MemoryError_("note cible inattendue : relis la note avant de la corriger")
         else:
-            # An explicit target is authoritative; otherwise an identical text is
-            # the same fact and must not be stored twice.
+            # An identical text is the same fact and must not be stored twice.
             for r in rows:
                 if r["text"].lower() == low:
-                    return {"id": r["id"], "text": r["text"], "duplicate": True}
+                    return {"saved": True, "id": r["id"], "text": r["text"], "duplicate": True}
+            if _CORRECTION_RE.search(t):
+                candidates = _candidates(rows, t)
+                if candidates:
+                    # Nothing is written: the target must be resolved first.
+                    return {"saved": False, "needs_target": True, "pending": t,
+                            "candidates": candidates, "duplicate": False}
         if target is not None:
-            rows = [r for r in rows if r["id"] != target["id"]]
+            rows = [r for r in rows if r["id"] != target["id"] and r["text"].lower() != low]
             target["text"] = t
             target["updated_at"] = stamp
             target["at"] = float(target.get("at") or stamp)
             rows.append(target)          # the correction counts as the most recent
             _save(root, rows)
-            return {"id": target["id"], "text": t, "duplicate": False,
+            return {"saved": True, "id": target["id"], "text": t, "duplicate": False,
                     "superseded": target["id"], "corrected": True}
         row = {"id": "mem-" + secrets.token_hex(4), "text": t, "at": stamp}
         rows.append(row)
         evicted = [r["id"] for r in rows[:-MAX_NOTES]]
         rows = rows[-MAX_NOTES:]  # oldest notes fall off first, and are reported
         _save(root, rows)
-        out = {"id": row["id"], "text": t, "duplicate": False, "evicted": evicted}
-        if _CORRECTION_RE.search(t):
-            candidates = [rid for rid in _candidates(rows, t) if rid != row["id"]]
-            if candidates:
-                out["needs_target"] = True   # ask which saved note it corrects
-                out["candidates"] = candidates
-        return out
+        return {"saved": True, "id": row["id"], "text": t, "duplicate": False, "evicted": evicted}
 
 
 def forget(root: Any, note_id: Any) -> bool:

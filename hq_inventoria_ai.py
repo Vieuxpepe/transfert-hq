@@ -102,7 +102,8 @@ Draft tool (prepares changes for the Master to review; NOTHING is applied):
   Use real ids from tool results. Only propose a change when the Master asked for one or clearly agreed to it.
   Deleting is not available: if asked, say the Master can delete it in the panel.
 Memory tools (lasting household preferences, NOT stock):
-- remember {"note": "<one short durable fact or preference>", "corrects_id": "<mem id, only when correcting a saved note>"}
+- remember {"note": "<one short durable fact or preference>", "corrects_id": "<mem id>", "expect": "<that note's exact saved text>"}
+  corrects_id/expect only after the Master has said which saved note is wrong: a correction writes nothing until then.
 - forget {"id": "<mem id>"}
   Use remember only for lasting preferences or rules the Master states (pack sizes, where things belong, favourite shops,
   allergies, how they like lists). Never for secrets, one-off requests or stock counts. Say plainly when you saved or forgot something.
@@ -948,15 +949,16 @@ class Toolbox:
         import hq_inventoria_memory as mem
         try:
             res = mem.add(hq_inventoria._root(), args.get("note"),
-                          corrects_id=args.get("corrects_id"))
+                          corrects_id=args.get("corrects_id"), expect=args.get("expect"))
         except mem.MemoryError_ as exc:
             return {"saved": False, "error": str(exc)}
+        if not res.get("saved"):
+            # Nothing was written: ask which saved note this correction replaces.
+            return {"saved": False, "needs_target": True,
+                    "candidates": res.get("candidates") or [],
+                    "hint": "Nothing was saved. Ask which saved note is wrong, then call remember "
+                            "again with corrects_id and expect (its exact saved text)."}
         out = {"saved": True, "id": res["id"], "already_known": res["duplicate"]}
-        if res.get("needs_target"):
-            # Never guess: ask which saved note this correction replaces.
-            out["needs_target"] = True
-            out["candidates"] = res.get("candidates") or []
-            out["hint"] = "Ask which of these saved notes it corrects, then call remember with corrects_id."
         if res.get("superseded"):
             out["superseded"] = res["superseded"]      # an explicit correction replaced a note
         if res.get("evicted"):

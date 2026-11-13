@@ -194,6 +194,7 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
             before_alerts = len(state["alerts"])
             before_cooldown = dict(state["cooldown"])
             before_active = set(active)
+            before_thread = store.thread()
             try:
                 msg = store.add_message("assistant", text, kind="alert", proposals=props, now=now)
             except store.StoreError:
@@ -207,7 +208,9 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 # Durable before notify/return: a later tick must not repeat it.
                 store.save_alerts_state(state)
             except store.StoreError:
-                store.drop_message(msg["id"])
+                # Restore the snapshot: add_message() may have evicted the oldest
+                # message, which removing the new one would not bring back.
+                store.restore_thread(before_thread)
                 state["alerts"] = state["alerts"][:before_alerts]
                 state["cooldown"] = before_cooldown
                 active = before_active
@@ -227,17 +230,21 @@ def tick(st: Optional[dict] = None, now: Optional[float] = None, notify: Optiona
                 n = sum(1 for a in state["alerts"] if a.get("key") == key and a.get("kind") == "clear")
                 text = _pick("clear", key, n).format(what=what)
                 text = text[:1].upper() + text[1:]
+                before_thread = store.thread()
                 try:
                     msg = store.add_message("assistant", text, kind="clear", now=now)
                 except store.StoreError:
+                    active.add(key)
                     continue
                 state["alerts"].append({"id": msg["id"], "key": key, "kind": "clear", "text": text, "at": now, "seen": True})
                 state["active"] = sorted(active)
                 try:
                     store.save_alerts_state(state)
                 except store.StoreError:
-                    store.drop_message(msg["id"])
+                    store.restore_thread(before_thread)
                     state["alerts"].pop()
+                    active.add(key)                 # the condition is still uncleared
+                    state["active"] = sorted(active)
                     continue
                 added.append(msg)
         state["active"] = sorted(active)

@@ -7,6 +7,7 @@ are clipped). Her memory is separate from every other companion's. Memory notes 
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 import threading
@@ -90,9 +91,27 @@ def alerts_unreadable() -> bool:
         return True
     if not isinstance(data, dict):
         return True
-    return not (isinstance(data.get("alerts", []), list)
-                and isinstance(data.get("cooldown", {}), dict)
-                and isinstance(data.get("active", []), list))
+    alerts = data.get("alerts", [])
+    cooldown = data.get("cooldown", {})
+    active = data.get("active", [])
+    if not (isinstance(alerts, list) and isinstance(cooldown, dict) and isinstance(active, list)):
+        return True
+    # Container types are not enough: a damaged row would be filtered out by
+    # alerts_state() and lost on the next save.
+    for row in alerts:
+        if not (isinstance(row, dict) and isinstance(row.get("key"), str) and row["key"]
+                and row.get("kind") in ("alert", "clear")
+                and isinstance(row.get("text"), str)
+                and isinstance(row.get("at"), (int, float)) and not isinstance(row.get("at"), bool)
+                and isinstance(row.get("seen"), bool)
+                and _ID_MSG.match(str(row.get("id") or ""))):
+            return True
+    for key, value in cooldown.items():
+        if not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return True
+        if not math.isfinite(float(value)) or float(value) < 0:
+            return True
+    return any(not isinstance(key, str) for key in active)
 
 
 def clean_text(text: Any, limit: int) -> str:
@@ -170,6 +189,31 @@ def notes() -> list[dict]:
             if isinstance(r, dict) and isinstance(r.get("text"), str) and _ID_NOTE.match(str(r.get("id", "")))]
 
 
+def memory_unreadable() -> bool:
+    """True when memory.json exists but is not a complete, valid notes store."""
+    p = _dir() / "memory.json"
+    if not p.is_file():
+        return False
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(data, dict) or data.get("version") not in (None, 1):
+        return True
+    rows = data.get("notes", [])
+    if not isinstance(rows, list):
+        return True
+    for row in rows:
+        if not (isinstance(row, dict) and isinstance(row.get("text"), str)
+                and _ID_NOTE.match(str(row.get("id") or ""))):
+            return True
+        at = row.get("at")
+        if at is not None and (isinstance(at, bool) or not isinstance(at, (int, float))
+                               or not math.isfinite(float(at)) or float(at) < 0):
+            return True
+    return False
+
+
 def remember(text: Any, *, now: Optional[float] = None) -> dict:
     import hq_inventoria_memory as _m
     t = _m.clean(text)[:NOTE_CHARS]
@@ -178,6 +222,8 @@ def remember(text: Any, *, now: Optional[float] = None) -> dict:
     if _SECRET.search(t):
         raise StoreError("ne retient pas les secrets")
     with _lock:
+        if memory_unreadable():
+            raise StoreError("mémoire illisible : fichier conservé, non modifié")
         rows = notes()
         for r in rows:
             if r["text"].lower() == t.lower():
@@ -193,6 +239,8 @@ def forget(note_id: Any) -> bool:
     if not _ID_NOTE.match(str(note_id or "")):
         return False
     with _lock:
+        if memory_unreadable():
+            raise StoreError("mémoire illisible : fichier conservé, non modifié")
         rows = notes()
         keep = [r for r in rows if r["id"] != note_id]
         if len(keep) == len(rows):
@@ -236,17 +284,12 @@ def alerts_state() -> dict:
             "active": [k for k in (data.get("active") or []) if isinstance(k, str)]}
 
 
-def drop_message(msg_id: str) -> bool:
-    """Remove one message (rollback for an alert whose state could not persist)."""
-    if not isinstance(msg_id, str) or not _ID_MSG.match(msg_id):
-        return False
+def restore_thread(messages: list[dict]) -> None:
+    """Restore a thread snapshot (rollback that also brings back an evicted message)."""
+    rows = [m for m in (messages or []) if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and isinstance(m.get("text"), str) and _ID_MSG.match(str(m.get("id", "")))]
     with _lock:
-        rows = thread()
-        keep = [m for m in rows if m.get("id") != msg_id]
-        if len(keep) == len(rows):
-            return False
-        _write("thread.json", {"version": 1, "messages": keep[-THREAD_MAX:]})
-        return True
+        _write("thread.json", {"version": 1, "messages": rows[-THREAD_MAX:]})
 
 
 def save_alerts_state(state: dict) -> None:

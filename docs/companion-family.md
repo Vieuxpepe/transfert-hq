@@ -96,7 +96,9 @@ sentence (that line carries plain names); her own quirks line opens with it, so
 she knows what she is called and nobody else's prompt repeats it. On the
 companion side the stable core states `Autre nom : « Transferina »` once
 (`alias_line`), before the editable character hint, so a customized trait cannot
-duplicate or contradict it.
+duplicate or contradict it. Prompt assembly never rewrites user text: a profile
+saved before this change whose customised ambient line still contains the alias
+shows it twice until the Mistress edits that field.
 `quirks_line()` renders her quirks once, in her own prompt, for the six domain
 assistants and Else's capsule. Transferania is the exception: her companion
 prompt is editor-driven, so her registry quirks are not injected there at all

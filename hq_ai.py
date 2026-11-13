@@ -1977,8 +1977,12 @@ def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: s
     # Stable identity, not an editable trait: one line, so the alias cannot be
     # duplicated by a customized humour/curiosity field.
     system += "\n" + hq_personas.alias_line("transferania")
+    # Her own profile, explicitly scoped: a caller left inside Else's scope must
+    # not hand Else's customized traits to Transferania's prompt.
+    with companion_memory.memory_scope("transferania"):
+        transferania_traits = _shared_memory(companion_memory.personality_traits)
     system += "\n" + companion_presence.character_hint(mode, compact=ch == "ambient",
-        traits=trait_overrides if trait_overrides is not None else _shared_memory(companion_memory.personality_traits))
+        traits=trait_overrides if trait_overrides is not None else transferania_traits)
     if nsfw:
         system += "\n" + FAITS_NSFW
         if not context_core:
