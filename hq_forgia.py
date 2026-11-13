@@ -137,6 +137,23 @@ def _save_thread(messages: list[dict[str, Any]]) -> None:
         _save_json(THREAD_FILE, {"messages": messages[-MAX_THREAD:]})
 
 
+def _append_turn(turn: list[dict[str, Any]], base_count: int) -> bool:
+    """Append a completed turn without replacing turns saved meanwhile.
+
+    ``base_count`` is the history length read before the model call. The file is
+    reloaded under the lock; if it grew, the newer turns are kept and this turn is
+    appended after them. Returns True when the append had to rebase.
+    """
+    with _lock:
+        if _thread_unreadable():
+            raise ForgiaError("conversation illisible — fichier conservé", status=409, code="state_unreadable")
+        data = _load_json(THREAD_FILE, {"messages": []})
+        current = list(data["messages"])
+        rebased = len(current) != base_count
+        _save_json(THREAD_FILE, {"messages": (current + list(turn))[-MAX_THREAD:]})
+    return rebased
+
+
 def clear_thread() -> dict[str, Any]:
     with _lock:
         _save_thread([])
@@ -328,6 +345,7 @@ def chat(message: Any) -> dict[str, Any]:
 
     thread = get_thread()
     messages = list(thread.get("messages") or [])
+    base_count = len(messages)          # revision this reply is based on
     contents = _history_contents(messages, text)
 
     system = f"{PERSONA_CORE}{_prefs_prompt_block()}\n{TOOL_SCHEMA}"
@@ -373,16 +391,16 @@ def chat(message: Any) -> dict[str, Any]:
         reply = "L'atelier est allumé, Maître — quel prompt ou rendu forge-t-on ?"
 
     now = time.time()
-    messages.append({"role": "user", "text": text, "ts": now})
-    messages.append({"role": "assistant", "text": reply, "ts": now, "tools_used": tools_used, "model": model})
-    _save_thread(messages)
+    _append_turn([{"role": "user", "text": text, "ts": now},
+                  {"role": "assistant", "text": reply, "ts": now, "tools_used": tools_used, "model": model}],
+                 base_count)
 
     return {
         "ok": True,
         "reply": reply,
         "tools_used": tools_used,
         "model": model,
-        "messages": messages[-MAX_THREAD:],
+        "messages": get_thread().get("messages", [])[-MAX_THREAD:],
     }
 
 

@@ -691,6 +691,27 @@ class ReviewFixTests(unittest.TestCase):
         self.assertTrue(saved["notify"])
         self.assertFalse(saved["voice"])
 
+    def test_slow_reply_appends_after_a_newer_turn(self):
+        import hq_culinia as culinia
+        import hq_forgia as forgia
+        for module, folder, name in ((culinia, ".hq-household", "culinia_thread.json"),
+                                     (forgia, ".hq-forge", "forgia_thread.json")):
+            module.bind(root=self.root)
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"messages": [{"role": "user", "text": "ancien", "ts": 1.0}]}),
+                            encoding="utf-8")
+            base = 1
+            # another tab finishes a turn while this one is still generating
+            module._append_turn([{"role": "user", "text": "autre", "ts": 2.0},
+                                 {"role": "assistant", "text": "ok", "ts": 2.0}], base)
+            rebased = module._append_turn([{"role": "user", "text": "lent", "ts": 3.0},
+                                           {"role": "assistant", "text": "réponse", "ts": 3.0}], base)
+            self.assertTrue(rebased)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual([m["text"] for m in saved["messages"]],
+                             ["ancien", "autre", "ok", "lent", "réponse"])
+
     def test_thread_without_messages_key_is_refused(self):
         import hq_culinia as culinia
         import hq_forgia as forgia
