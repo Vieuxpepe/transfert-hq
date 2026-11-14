@@ -7,7 +7,10 @@ subject states for the session's own owner:
   hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 530
   warm       one turn about it three hours ago          -> tier warm, priority 70, share 440
   cold       one turn about it twenty hours ago          -> tier cold, priority 40, share 380,
-                                                            her line still carried, as a dated "SUJET ANCIEN"
+                                                            her line still carried, as a dated "SUJET ANCIEN";
+                                                            he names the subject, so it opens again
+  cold_unasked  the same old turn, a message that only         -> the same cold row, but dated and shut:
+               greets her ("Salut, ça va ?")                   “ne pas le rouvrir de soi-même”
   corrected  the hot turns plus two corrections about it -> tier withheld, rung answering (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
@@ -123,7 +126,10 @@ DETAIL = "Explique davantage, plus de détail."
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
     "warm": {"expected": WARM, "ages": (3 * 3600,)},
-    "cold": {"expected": COLD, "ages": (20 * 3600,)},
+    # The dated wording only suppresses the reopen when nothing in his message
+    # touches the subject: naming it hands the reopen back to him.
+    "cold": {"expected": {**COLD, "asked": True}, "ages": (20 * 3600,)},
+    "cold_unasked": {"expected": COLD, "ages": (20 * 3600,), "message": SOCIAL},
     "pushed_back": {"expected": PUSHED, "ages": (3600, 1800), "corrections": 2},
     "recovered": {"expected": RECOVERED, "ages": (1800, 900), "corrections": 2,
                   "correction_age": 3 * 3600},
@@ -135,7 +141,7 @@ STATES = {
              "correction_age": 6 * 3600},
     # Eight open of sixteen, answered by turns old enough to stay out of the hot
     # window: the deepest warm rung, which must still outrank a cold subject.
-    "deep_warm": {"expected": DEEP_WARM,
+    "deep_warm": {"expected": {**DEEP_WARM, "asked": True},
                   "ages": (63000, 62280, 61560, 60840, 60120, 59400, 58680, 57960),
                   "corrections": 16, "correction_age": 23 * 3600},
     # The same depth on the hot band: every return inside the recent window.
@@ -504,7 +510,12 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         if shown and not old and "trace locale du" in shown:
             failures.append(f"{name}: a fresh trace is printed as an old one")
         if shown and old:
-            if "rouvrir de soi-même" not in shown.lower():
+            if expected.get("asked"):
+                if "il y revient maintenant" not in shown:
+                    failures.append(f"{name}: he came back to this subject and the old trace still stays shut")
+                if "rouvrir de soi-même" in shown.lower():
+                    failures.append(f"{name}: an old trace he asked about still closes itself")
+            elif "rouvrir de soi-même" not in shown.lower():
                 failures.append(f"{name}: an old trace does not close itself in the payload")
             if "si le fil s'y prête" in shown or "clin d'œil" in shown:
                 failures.append(f"{name}: an old trace still licenses unprompted resumption")
@@ -687,7 +698,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, warm, stale, corrected, recovered, burst, climbing, deep, "
+    print("verify_live_personhood: OK (hot, warm, stale, cold_unasked, corrected, recovered, burst, climbing, deep, "
           "deep_warm, deep_hot, fil_fresh, fil_stale, fil_repeat, fil_else_fresh, fil_else_stale, "
           "fil_else_repeat, point_fresh, point_stale, visit_fresh, visit_stale, visit_repeat, "
           "visit_else_fresh, visit_else_stale and visit_else_repeat states)")

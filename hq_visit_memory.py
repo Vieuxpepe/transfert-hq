@@ -235,6 +235,9 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
     date = time.strftime("%d/%m/%Y", time.localtime(float(row["at"])))
     age = max(0.0, stamp - float(row["at"]))
     stale = stale_after is not None and age > float(stale_after)
+    # His own message coming back to this visit is what makes an old one current:
+    # the reopen is then his, not something she does on her own.
+    touched = bool(words & _words(" ".join(str(line.get("text") or "") for line in row["lines"])))
     if stale:
         # Same visit, same quote — but past the window it must not read as current
         # and must not license reopening itself.
@@ -246,8 +249,11 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
         parts.append(f"{name} a dit « {other_quote} ».")
     if self_quote:
         parts.append(f"Tu as répondu « {self_quote} ».")
-    parts.append("Ne pas la rouvrir de soi-même ; à reprendre seulement si le fil y revient." if stale
-                 else "Tu peux y faire un clin d'œil si le fil s'y prête, sans réciter.")
+    if stale:
+        parts.append("Il y revient maintenant : tu peux la reprendre, sans réciter." if touched
+                     else "Ne pas la rouvrir de soi-même ; à reprendre seulement si le fil y revient.")
+    else:
+        parts.append("Tu peux y faire un clin d'œil si le fil s'y prête, sans réciter.")
     return " ".join(parts), age, repeats
 
 
