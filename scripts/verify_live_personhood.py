@@ -5,12 +5,19 @@ bridge_config.json and never printed), then drives six genuinely different
 subject states for the session's own owner:
 
   hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 320
-  cold       one turn about it twenty hours ago          -> tier cold, priority 84, share 160
+  warm       one turn about it three hours ago          -> tier warm, priority 70, share 200
+  cold       one turn about it twenty hours ago          -> tier cold, priority 40, share 160
   corrected  the hot turns plus two corrections about it -> tier withheld, rung answering (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
-  climbing   four corrections, two returns                  -> tier answering, 91/240, offered (half-answered)
-  deep       eight corrections, four returns                -> tier careful, 89/190, offered (four still open)
+  climbing   four corrections, two returns                  -> tier answering, 95/275, offered (half-answered)
+  deep       eight corrections, four returns                -> tier careful, 91/250, offered (four still open)
+  deep_warm  sixteen corrections answered by eight older turns -> tier unready on the warm band, 48/165
+  deep_hot   sixteen corrections answered by eight fresh turns -> tier unready on the hot band, 80/210
+
+Every band is disjoint, so the deepest rung of a warmer band must outrank the
+best row of the colder one: deepest warm (48/165) above best cold (40/160), and
+deepest hot (80/210) above best warm (70/200).
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -48,8 +55,9 @@ COOKIE = "transfert_session"
 SUBJECT = "Parle-moi de la fermentation du chou."
 
 HOT = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
-COLD = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "pushback": 0}
-PUSHED = {"tier": "withheld", "rung": "answering", "priority": 91, "share": 240,
+WARM = {"tier": "warm", "priority": 70, "share": 200, "selected": True, "pushback": 0}
+COLD = {"tier": "cold", "priority": 40, "share": 160, "selected": False, "pushback": 0}
+PUSHED = {"tier": "withheld", "rung": "answering", "priority": 95, "share": 275,
           "selected": False, "withhold": True, "pushback": 2}
 # Same recent evidence as hot, but the Master corrected this very subject twice:
 # the offer is withdrawn instead of merely shrinking...
@@ -61,14 +69,20 @@ RECOVERED = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pus
 BURST = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
 # Half of four corrections answered: she is back in the offer, between the
 # withdrawn subject and her own salience, rather than switched on abruptly.
-CLIMBING = {"tier": "answering", "rung": "answering", "priority": 91, "share": 240,
+CLIMBING = {"tier": "answering", "rung": "answering", "priority": 95, "share": 275,
             "selected": True, "pushback": 2, "progress": 0.5}
 # Eight corrections, four answered: deep in a long recovery, exactly half
 # answered, so the ladder keeps her named four rungs down instead of withheld.
-DEEP = {"tier": "careful", "rung": "careful", "priority": 89, "share": 190,
+DEEP = {"tier": "careful", "rung": "careful", "priority": 91, "share": 250,
         "selected": True, "pushback": 4, "progress": 0.5}
+# The deepest rung of each band, so the bands can be compared where they meet.
+DEEP_WARM = {"tier": "unready", "rung": "unready", "priority": 48, "share": 165,
+             "selected": False, "pushback": 8, "progress": 0.5}
+DEEP_HOT = {"tier": "unready", "rung": "unready", "priority": 80, "share": 210,
+            "selected": True, "pushback": 8, "progress": 0.5}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
+    "warm": {"expected": WARM, "ages": (3 * 3600,)},
     "cold": {"expected": COLD, "ages": (20 * 3600,)},
     "pushed_back": {"expected": PUSHED, "ages": (3600, 1800), "corrections": 2},
     "recovered": {"expected": RECOVERED, "ages": (1800, 900), "corrections": 2,
@@ -79,6 +93,15 @@ STATES = {
                  "correction_age": 4 * 3600},
     "deep": {"expected": DEEP, "ages": (1800, 1500, 1200, 900), "corrections": 8,
              "correction_age": 6 * 3600},
+    # Eight open of sixteen, answered by turns old enough to stay out of the hot
+    # window: the deepest warm rung, which must still outrank a cold subject.
+    "deep_warm": {"expected": DEEP_WARM,
+                  "ages": (63000, 62280, 61560, 60840, 60120, 59400, 58680, 57960),
+                  "corrections": 16, "correction_age": 23 * 3600},
+    # The same depth on the hot band: every return inside the recent window.
+    "deep_hot": {"expected": DEEP_HOT,
+                 "ages": (3000, 2700, 2400, 2100, 1800, 1500, 1200, 900),
+                 "corrections": 16, "correction_age": 20 * 3600},
 }
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
                "J'aime beaucoup la fermentation du chou.",
@@ -86,7 +109,15 @@ CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation
                "La fermentation du chou me lasse.",
                "La fermentation du chou, c'est fade.",
                "Je préfère le chou cru, pas fermenté.",
-               "La fermentation du chou sent trop fort."]
+               "La fermentation du chou sent trop fort.",
+               "Le chou fermenté, c'est trop acide.",
+               "Je n'en veux plus au petit-déjeuner.",
+               "La texture du chou fermenté me déplaît.",
+               "Je préfère le chou rôti.",
+               "La fermentation du chou prend trop de place.",
+               "Je trouve ça trop salé.",
+               "Le chou fermenté, ça me fatigue.",
+               "Je me suis lassé de la fermentation du chou."]
 
 
 def config() -> dict:
@@ -366,8 +397,21 @@ def main() -> int:
         failures.append("a deep half-answered subject was withheld instead of named")
     if deep["live"]["personhood"] and deep["live"]["personhood"][0].get("rung") != "careful":
         failures.append("the deep subject's manifest row did not carry its rung name")
-    elif burst["personhood"] and (climbing["personhood"][0]["priority"]
-                                  >= burst["personhood"][0]["priority"]):
+    deep_warm = report["states"]["deep_warm"]["live"]["personhood"]
+    deep_hot = report["states"]["deep_hot"]["live"]["personhood"]
+    best_cold = report["states"]["cold"]["live"]["personhood"]
+    best_warm = report["states"]["warm"]["live"]["personhood"]
+    if not (deep_warm and deep_hot and best_cold and best_warm):
+        failures.append("a band comparison lost its manifest row")
+    else:
+        if deep_warm[0]["priority"] <= best_cold[0]["priority"] or \
+                deep_warm[0]["share"] <= best_cold[0]["share"]:
+            failures.append("the deepest warm rung did not outrank the best cold subject")
+        if deep_hot[0]["priority"] <= best_warm[0]["priority"] or \
+                deep_hot[0]["share"] <= best_warm[0]["share"]:
+            failures.append("the deepest hot rung did not outrank the best warm subject")
+    if burst["personhood"] and (climbing["personhood"][0]["priority"]
+                                >= burst["personhood"][0]["priority"]):
         failures.append("the climb did not stay below full salience")
     if not burst["personhood"]:
         failures.append("a burst of returns did not bring her line back")
@@ -408,7 +452,8 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, stale, corrected, recovered, burst, climbing and deep states)")
+    print("verify_live_personhood: OK (hot, warm, stale, corrected, recovered, burst, climbing, deep, "
+          "deep_warm and deep_hot states)")
     return 0
 
 

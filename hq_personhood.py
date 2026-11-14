@@ -206,37 +206,44 @@ MAX_HINT_BYTES = 320
 # subject last appeared, and how many recent turns carried it.
 SALIENCE_RECENT_S = 6 * 3600
 SALIENCE_WARM_S = 18 * 3600
-SALIENCE_PRIORITY = {"hot": 98, "warm": 92, "cold": 84}
+# Each tier owns a disjoint band: every rung and the base of a warmer tier sits
+# strictly above every rung and the base of a colder one, so tier dominance holds
+# at any correction depth and not only along a single ladder.
+SALIENCE_PRIORITY = {"hot": 98, "warm": 70, "cold": 40}
 SALIENCE_SHARE = {"hot": 320, "warm": 200, "cold": 160}
+# The reported score follows the same bands (floor, span): a deep hot rung still
+# reads stronger than the best cold subject, so no consumer can disagree with
+# the ordering the packet actually uses.
+SALIENCE_SCORE_BAND = {"hot": (0.70, 0.30), "warm": (0.35, 0.30), "cold": (0.0, 0.30)}
 # The rungs she climbs back through, one per answered correction: how many of
 # the Master's corrections are still open -> (name, priority, byte share, score
 # factor). Declared values, not a lerp between tier anchors, so every consumer
 # of the rung name agrees with the room it is actually given.
 SALIENCE_LADDER = {
-    "hot": {1: ("almost_herself", 95, 260, 0.8),
-            2: ("answering", 91, 240, 0.65),
-            3: ("guarded", 90, 200, 0.5),
-            4: ("careful", 89, 190, 0.42),
-            5: ("watchful", 88, 184, 0.36),
-            6: ("quiet", 87, 178, 0.30),
-            7: ("distant", 86, 172, 0.25),
-            8: ("unready", 85, 166, 0.20)},
-    "warm": {1: ("almost_herself", 89, 180, 0.8),
-             2: ("answering", 87, 172, 0.65),
-             3: ("guarded", 86, 168, 0.5),
-             4: ("careful", 84, 166, 0.42),
-             5: ("watchful", 81, 162, 0.36),
-             6: ("quiet", 78, 158, 0.30),
-             7: ("distant", 75, 154, 0.25),
-             8: ("unready", 72, 150, 0.20)},
-    "cold": {1: ("almost_herself", 83, 150, 0.8),
-             2: ("answering", 82, 145, 0.65),
-             3: ("guarded", 81, 142, 0.5),
-             4: ("careful", 79, 140, 0.42),
-             5: ("watchful", 77, 138, 0.36),
-             6: ("quiet", 75, 136, 0.30),
-             7: ("distant", 73, 134, 0.25),
-             8: ("unready", 71, 132, 0.20)},
+    "hot": {1: ("almost_herself", 96, 290, 0.8),
+            2: ("answering", 95, 275, 0.65),
+            3: ("guarded", 93, 260, 0.5),
+            4: ("careful", 91, 250, 0.42),
+            5: ("watchful", 89, 240, 0.36),
+            6: ("quiet", 86, 230, 0.30),
+            7: ("distant", 83, 220, 0.25),
+            8: ("unready", 80, 210, 0.20)},
+    "warm": {1: ("almost_herself", 68, 195, 0.8),
+             2: ("answering", 66, 193, 0.65),
+             3: ("guarded", 64, 190, 0.5),
+             4: ("careful", 61, 185, 0.42),
+             5: ("watchful", 58, 180, 0.36),
+             6: ("quiet", 55, 175, 0.30),
+             7: ("distant", 52, 170, 0.25),
+             8: ("unready", 48, 165, 0.20)},
+    "cold": {1: ("almost_herself", 37, 150, 0.8),
+             2: ("answering", 34, 145, 0.65),
+             3: ("guarded", 31, 142, 0.5),
+             4: ("careful", 28, 140, 0.42),
+             5: ("watchful", 26, 138, 0.36),
+             6: ("quiet", 24, 136, 0.30),
+             7: ("distant", 22, 134, 0.25),
+             8: ("unready", 20, 132, 0.20)},
 }
 # The deepest declared rung. Past it the same withhold rule closes the offer, so
 # no state exists where salience is owed and unnamed.
@@ -1152,11 +1159,13 @@ def salience(age: float | None, repeats: int, pushback: int = 0,
 
     ``pushback`` is how many of the Master's corrections about that subject are
     still unanswered and ``corrected`` how many there were in all. Each of his
-    returns answers one, moving her up exactly one declared rung: guarded, then
-    answering, then almost_herself, then her own base tier. The offer stays
-    closed while two corrections are open and he has answered less than half of
-    them, and when more than ``SALIENCE_MAX_OPEN`` are open there is no rung to
-    offer from at all.
+    returns answers one, moving her up exactly one declared rung: unready,
+    distant, quiet, watchful, careful, guarded, answering, almost_herself, then
+    her own base tier. Every rung of a warmer band outranks every rung of a
+    colder one, so a deeply corrected hot subject still sits above a cold one.
+    The offer stays closed while two corrections are open and he has answered
+    less than half of them, and when more than ``SALIENCE_MAX_OPEN`` are open
+    there is no rung to offer from at all.
     """
     repeats = max(1, int(repeats or 1))
     pushback = max(0, int(pushback or 0))
@@ -1172,15 +1181,17 @@ def salience(age: float | None, repeats: int, pushback: int = 0,
         base = "cold"
     freshness = 1.0 if age is None else max(0.0, 1.0 - max(0.0, float(age)) / PREOCCUPATION_TTL)
     base_score = round(0.65 * freshness + 0.35 * min(1.0, (repeats - 1) / 2.0), 3)
+    floor_, span = SALIENCE_SCORE_BAND[base]
+    score = round(floor_ + span * base_score, 3)
     if pushback:
         rung, priority, share, factor = SALIENCE_LADDER[base][min(SALIENCE_MAX_OPEN, pushback)]
-        score = round(base_score * factor, 3)
+        score = round(floor_ + span * base_score * factor, 3)
         withhold = pushback > SALIENCE_MAX_OPEN or (pushback >= 2 and progress < 0.5)
         tier = "withheld" if withhold else rung
     else:
         rung, tier = base, base
         priority, share = SALIENCE_PRIORITY[base], SALIENCE_SHARE[base]
-        score, withhold = base_score, False
+        withhold = False
     return {"tier": tier, "rung": rung, "base": base, "score": score, "priority": priority,
             "share": share, "age_s": None if age is None else int(age), "repeats": repeats,
             "pushback": pushback, "corrected": total, "progress": round(progress, 3),

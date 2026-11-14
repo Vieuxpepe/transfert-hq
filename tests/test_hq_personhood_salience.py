@@ -55,22 +55,22 @@ class PersonhoodSalienceTests(Base):
         packet = self.seed(3 * 3600)
         salience = packet["personhood"]
         self.assertEqual(salience["tier"], "warm")
-        self.assertEqual((salience["priority"], salience["share"]), (92, 200))
+        self.assertEqual((salience["priority"], salience["share"]), (70, 200))
         row, _, payload = self.assemble(packet)
         self.assertTrue(row["selected"])
-        self.assertEqual(row["priority"], 92)
+        self.assertEqual(row["priority"], 70)
         self.assertIn("SUJET RÉCENT", payload)
 
     def test_a_stale_single_subject_is_cold_and_loses_its_room(self):
         packet = self.seed(20 * 3600)
         salience = packet["personhood"]
         self.assertEqual(salience["tier"], "cold")
-        self.assertEqual((salience["priority"], salience["share"]), (84, 160))
+        self.assertEqual((salience["priority"], salience["share"]), (40, 160))
         self.assertEqual(salience["repeats"], 1)
         row, usage, payload = self.assemble(packet)
         self.assertFalse(row["selected"], "a cold subject must not occupy the packet")
         self.assertEqual(row["reason"], "budget", "refused on her own byte share")
-        self.assertEqual((row["priority"], row["share"]), (84, 160))
+        self.assertEqual((row["priority"], row["share"]), (40, 160))
         self.assertNotIn("SUJET RÉCENT", payload)
         self.assertNotIn("personhood", usage["selection_totals"], "nothing selected on that share")
 
@@ -81,7 +81,7 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["tier"], "cold")
         row, _, payload = self.assemble(packet)
         self.assertTrue(row["selected"], "a compact cold line still fits its share")
-        self.assertEqual(row["priority"], 84)
+        self.assertEqual(row["priority"], 40)
         self.assertIn("SUJET RÉCENT", payload)
 
     def test_the_two_states_differ_in_priority_share_and_totals(self):
@@ -131,11 +131,11 @@ class PersonhoodSalienceTests(Base):
         self.assertFalse(salience["withhold"])
         self.assertEqual((salience["tier"], salience["rung"]), ("almost_herself", "almost_herself"))
         self.assertEqual(salience["base"], "hot")
-        self.assertEqual((salience["priority"], salience["share"]), (95, 260))
-        self.assertEqual(salience["score"], 0.649)
+        self.assertEqual((salience["priority"], salience["share"]), (96, 290))
+        self.assertEqual(salience["score"], 0.895)
         row, _, payload = self.assemble(packet)
         self.assertTrue(row["selected"])
-        self.assertEqual(row["priority"], 95)
+        self.assertEqual(row["priority"], 96)
         self.assertIn("SUJET RÉCENT", payload)
 
     def test_two_corrections_take_the_offer_away(self):
@@ -146,7 +146,7 @@ class PersonhoodSalienceTests(Base):
         self.assertTrue(salience["withhold"])
         self.assertEqual(salience["tier"], "withheld")
         self.assertEqual(salience["rung"], "answering")
-        self.assertEqual((salience["priority"], salience["share"]), (91, 240))
+        self.assertEqual((salience["priority"], salience["share"]), (95, 275))
         self.assertEqual(packet["continuity"], "", "she stops offering the subject unprompted")
         self.assertNotEqual(packet["presence"]["continuity_kind"], "episode",
                             "the correction must not be what silences her")
@@ -185,7 +185,9 @@ class PersonhoodSalienceTests(Base):
                 self.assertEqual((got["rung"], got["priority"], got["share"]), (name, priority, share),
                                  (base, depth))
                 self.assertEqual(got["tier"], "withheld" if got["withhold"] else name, (base, depth))
-                self.assertEqual(got["score"], round(base_score * factor, 3), (base, depth))
+                floor_, span = ph.SALIENCE_SCORE_BAND[base]
+                self.assertEqual(got["score"], round(floor_ + span * base_score * factor, 3),
+                                 (base, depth))
 
     def test_the_whole_ladder_lifts_exactly_one_rung_per_return(self):
         depth = ph.SALIENCE_MAX_OPEN
@@ -208,7 +210,7 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual((salience["pushback"], salience["corrected"]), (4, 8))
         self.assertFalse(salience["withhold"], "four of eight answered is not closed")
         self.assertEqual((salience["tier"], salience["rung"]), ("careful", "careful"))
-        self.assertEqual((salience["priority"], salience["share"]), (89, 190))
+        self.assertEqual((salience["priority"], salience["share"]), (91, 250))
         row, _, payload = self.assemble(packet)
         self.assertIsNotNone(row)
         self.assertTrue(row["selected"])
@@ -234,12 +236,80 @@ class PersonhoodSalienceTests(Base):
         self.tearDown()
         self.setUp()
         cold_row, _, _ = self.assemble(self.seed(20 * 3600))
-        self.assertEqual(cold_row["priority"], 84)
+        self.assertEqual(cold_row["priority"], 40)
         self.assertEqual(deep_row["rung"], "careful")
         self.assertEqual(cold_row["rung"], "cold")
         self.assertGreater(deep_row["priority"], cold_row["priority"],
                            "eight corrections deep she still outranks a cold subject")
         self.assertGreater(deep_row["share"], cold_row["share"])
+
+    def _band_rows(self):
+        """Every reachable (band, depth) pair as a real assembled manifest row.
+
+        A return is itself a recent turn, so a subject with any answered
+        correction has at least two sources and can never stay in the cold band:
+        cold is only reachable with zero open corrections.
+        """
+        def hot_ages(depth):
+            # The hot band needs two sources, so one older turn rides along; it is
+            # older than the corrections, so it never counts as a return.
+            if not depth:
+                return (1800, 1500)
+            return (7 * 3600,) + tuple(3000 - 300 * i for i in range(depth))
+
+        ages = {
+            "hot": hot_ages,
+            "warm": lambda depth: tuple(int((17.5 - 0.2 * i) * 3600) for i in range(max(1, depth))),
+            "cold": lambda depth: (20 * 3600,),
+        }
+        correction_age = {"hot": 4 * 3600, "warm": 23 * 3600, "cold": 4 * 3600}
+        rows = {}
+        for base in ("cold", "warm", "hot"):
+            depths = (0,) if base == "cold" else tuple(range(ph.SALIENCE_MAX_OPEN + 1))
+            for depth in depths:
+                self.tearDown()
+                self.setUp()
+                if depth:
+                    self.push_back(times=2 * depth, age=correction_age[base])
+                packet = self.seed(*ages[base](depth))
+                detail = packet["personhood"]
+                self.assertEqual(detail["base"], base, (base, depth))
+                self.assertEqual(detail["pushback"], depth, (base, depth))
+                self.assertFalse(detail["withhold"], (base, depth))
+                row, _, _ = self.assemble(packet)
+                self.assertIsNotNone(row, (base, depth))
+                rows[(base, depth)] = (row["priority"], row["share"], detail["score"])
+        return rows
+
+    def test_every_band_outranks_every_colder_band_at_every_depth(self):
+        rows = self._band_rows()
+        bands = ("cold", "warm", "hot")
+        names = ("priority", "share", "score")
+        depths = {base: sorted(d for b, d in rows if b == base) for base in bands}
+        evidence = {"hot": (1800, 2), "warm": (int(17.5 * 3600), 1), "cold": (20 * 3600, 1)}
+        for base in bands:
+            for shallower, deeper in zip(depths[base], depths[base][1:]):
+                for index, what in enumerate(("priority", "share")):
+                    self.assertGreater(rows[(base, shallower)][index],
+                                       rows[(base, deeper)][index],
+                                       f"{base}: one rung down must lower {what}")
+            # Score is compared on one subject's own evidence, so the rungs are
+            # the only thing that changes as she climbs.
+            scores = [ph.salience(*evidence[base], open_count, ph.SALIENCE_MAX_OPEN)["score"]
+                      for open_count in depths[base]]
+            self.assertEqual(scores, sorted(scores, reverse=True), base)
+            self.assertEqual(len(set(scores)), len(scores), base)
+        for colder, warmer in zip(bands, bands[1:]):
+            for index, what in enumerate(names):
+                self.assertGreater(min(rows[(warmer, d)][index] for d in depths[warmer]),
+                                   max(rows[(colder, d)][index] for d in depths[colder]),
+                                   f"every {warmer} state must outrank every {colder} one on {what}")
+        deepest_warm, best_cold = rows[("warm", depths["warm"][-1])], rows[("cold", 0)]
+        deepest_hot, best_warm = rows[("hot", depths["hot"][-1])], rows[("warm", 0)]
+        self.assertGreater(deepest_warm[0], best_cold[0])
+        self.assertGreater(deepest_warm[1], best_cold[1])
+        self.assertGreater(deepest_hot[0], best_warm[0])
+        self.assertGreater(deepest_hot[1], best_warm[1])
 
     def test_the_prompt_and_the_row_never_name_a_base_tier_while_she_climbs(self):
         self.push_back(times=8, age=6 * 3600)
@@ -289,7 +359,7 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["pushback"], 1)
         self.assertFalse(salience["withhold"])
         self.assertEqual(salience["tier"], "almost_herself")
-        self.assertEqual((salience["priority"], salience["share"]), (95, 260))
+        self.assertEqual((salience["priority"], salience["share"]), (96, 290))
 
     def test_salience_climbs_with_each_of_his_returns(self):
         """One ladder, not an on/off switch: each answer raises her a step."""
@@ -306,7 +376,7 @@ class PersonhoodSalienceTests(Base):
             row, _, payload = self.assemble(packet)
             ladder.append((salience["priority"], salience["share"], row is not None
                            and row["selected"], "SUJET RÉCENT" in payload))
-        self.assertEqual([(p, s) for p, s, _, _ in ladder], [(91, 240), (95, 260), (98, 320)])
+        self.assertEqual([(p, s) for p, s, _, _ in ladder], [(95, 275), (96, 290), (98, 320)])
         self.assertEqual([selected for _, _, selected, _ in ladder], [True, True, True])
         self.assertEqual([shown for _, _, _, shown in ladder], [True, True, True])
 
@@ -319,7 +389,7 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["progress"], 0.25)
         self.assertTrue(salience["withhold"])
         self.assertEqual((salience["tier"], salience["rung"]), ("withheld", "guarded"))
-        self.assertEqual((salience["priority"], salience["share"]), (90, 200))
+        self.assertEqual((salience["priority"], salience["share"]), (93, 260))
         self.assertEqual(packet["continuity"], "")
 
     def test_interleaved_corrections_and_returns_end_clean(self):
@@ -340,11 +410,11 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["progress"], 0.5)
         self.assertFalse(salience["withhold"], "one return reopens the offer")
         self.assertEqual(salience["tier"], "almost_herself")
-        self.assertEqual((salience["priority"], salience["share"]), (95, 260))
+        self.assertEqual((salience["priority"], salience["share"]), (96, 290))
         self.assertNotEqual(packet["continuity"], "")
         row, _, payload = self.assemble(packet)
         self.assertTrue(row["selected"])
-        self.assertEqual(row["priority"], 95)
+        self.assertEqual(row["priority"], 96)
         self.assertIn("SUJET RÉCENT", payload)
 
     def test_coming_back_twice_restores_the_full_salience(self):
