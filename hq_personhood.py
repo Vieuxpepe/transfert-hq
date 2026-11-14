@@ -210,7 +210,9 @@ SALIENCE_WARM_S = 18 * 3600
 # strictly above every rung and the base of a colder one, so tier dominance holds
 # at any correction depth and not only along a single ladder.
 SALIENCE_PRIORITY = {"hot": 98, "warm": 70, "cold": 40}
-SALIENCE_SHARE = {"hot": 320, "warm": 200, "cold": 160}
+SALIENCE_SHARE = {"hot": 530, "warm": 440, "cold": 380}
+# Shares start above MAX_HINT_BYTES + overhead, so a named state always covers
+# the cost of its own line and reaches the packet instead of being refused.
 # The reported score follows the same bands (floor, span): a deep hot rung still
 # reads stronger than the best cold subject, so no consumer can disagree with
 # the ordering the packet actually uses.
@@ -220,30 +222,30 @@ SALIENCE_SCORE_BAND = {"hot": (0.70, 0.30), "warm": (0.35, 0.30), "cold": (0.0, 
 # factor). Declared values, not a lerp between tier anchors, so every consumer
 # of the rung name agrees with the room it is actually given.
 SALIENCE_LADDER = {
-    "hot": {1: ("almost_herself", 96, 290, 0.8),
-            2: ("answering", 95, 275, 0.65),
-            3: ("guarded", 93, 260, 0.5),
-            4: ("careful", 91, 250, 0.42),
-            5: ("watchful", 89, 240, 0.36),
-            6: ("quiet", 86, 230, 0.30),
-            7: ("distant", 83, 220, 0.25),
-            8: ("unready", 80, 210, 0.20)},
-    "warm": {1: ("almost_herself", 68, 195, 0.8),
-             2: ("answering", 66, 193, 0.65),
-             3: ("guarded", 64, 190, 0.5),
-             4: ("careful", 61, 185, 0.42),
-             5: ("watchful", 58, 180, 0.36),
-             6: ("quiet", 55, 175, 0.30),
-             7: ("distant", 52, 170, 0.25),
-             8: ("unready", 48, 165, 0.20)},
-    "cold": {1: ("almost_herself", 37, 150, 0.8),
-             2: ("answering", 34, 145, 0.65),
-             3: ("guarded", 31, 142, 0.5),
-             4: ("careful", 28, 140, 0.42),
-             5: ("watchful", 26, 138, 0.36),
-             6: ("quiet", 24, 136, 0.30),
-             7: ("distant", 22, 134, 0.25),
-             8: ("unready", 20, 132, 0.20)},
+    "hot": {1: ("almost_herself", 96, 524, 0.8),
+            2: ("answering", 95, 518, 0.65),
+            3: ("guarded", 93, 510, 0.5),
+            4: ("careful", 91, 495, 0.42),
+            5: ("watchful", 89, 480, 0.36),
+            6: ("quiet", 86, 465, 0.30),
+            7: ("distant", 83, 455, 0.25),
+            8: ("unready", 80, 450, 0.20)},
+    "warm": {1: ("almost_herself", 68, 431, 0.8),
+             2: ("answering", 66, 420, 0.65),
+             3: ("guarded", 64, 414, 0.5),
+             4: ("careful", 61, 408, 0.42),
+             5: ("watchful", 58, 402, 0.36),
+             6: ("quiet", 55, 396, 0.30),
+             7: ("distant", 52, 393, 0.25),
+             8: ("unready", 48, 390, 0.20)},
+    "cold": {1: ("almost_herself", 37, 371, 0.8),
+             2: ("answering", 34, 365, 0.65),
+             3: ("guarded", 31, 362, 0.5),
+             4: ("careful", 28, 359, 0.42),
+             5: ("watchful", 26, 356, 0.36),
+             6: ("quiet", 24, 353, 0.30),
+             7: ("distant", 22, 351, 0.25),
+             8: ("unready", 20, 350, 0.20)},
 }
 # The deepest declared rung. Past it the same withhold rule closes the offer, so
 # no state exists where salience is owed and unnamed.

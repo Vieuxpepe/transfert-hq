@@ -4,20 +4,21 @@ Signs in through the bridge's own /login (the PIN is read from
 bridge_config.json and never printed), then drives six genuinely different
 subject states for the session's own owner:
 
-  hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 320
-  warm       one turn about it three hours ago          -> tier warm, priority 70, share 200
-  cold       one turn about it twenty hours ago          -> tier cold, priority 40, share 160
+  hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 530
+  warm       one turn about it three hours ago          -> tier warm, priority 70, share 440
+  cold       one turn about it twenty hours ago          -> tier cold, priority 40, share 380
   corrected  the hot turns plus two corrections about it -> tier withheld, rung answering (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
-  climbing   four corrections, two returns                  -> tier answering, 95/275, offered (half-answered)
-  deep       eight corrections, four returns                -> tier careful, 91/250, offered (four still open)
-  deep_warm  sixteen corrections answered by eight older turns -> tier unready on the warm band, 48/165
-  deep_hot   sixteen corrections answered by eight fresh turns -> tier unready on the hot band, 80/210
+  climbing   four corrections, two returns                  -> tier answering, 95/518, offered (half-answered)
+  deep       eight corrections, four returns                -> tier careful, 91/495, offered (four still open)
+  deep_warm  sixteen corrections answered by eight older turns -> tier unready on the warm band, 48/390
+  deep_hot   sixteen corrections answered by eight fresh turns -> tier unready on the hot band, 80/450
 
 Every band is disjoint, so the deepest rung of a warmer band must outrank the
-best row of the colder one: deepest warm (48/165) above best cold (40/160), and
-deepest hot (80/210) above best warm (70/200).
+best row of the colder one: deepest warm (48/390) above best cold (40/380), and
+deepest hot (80/450) above best warm (70/440). Every one of them is included in
+the packet: each share covers the cost of her own line.
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -54,31 +55,31 @@ MESSAGE = "La fermentation du chou, c'est intéressant."
 COOKIE = "transfert_session"
 SUBJECT = "Parle-moi de la fermentation du chou."
 
-HOT = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
-WARM = {"tier": "warm", "priority": 70, "share": 200, "selected": True, "pushback": 0}
-COLD = {"tier": "cold", "priority": 40, "share": 160, "selected": False, "pushback": 0}
-PUSHED = {"tier": "withheld", "rung": "answering", "priority": 95, "share": 275,
+HOT = {"tier": "hot", "priority": 98, "share": 530, "selected": True, "pushback": 0}
+WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "pushback": 0}
+COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "pushback": 0}
+PUSHED = {"tier": "withheld", "rung": "answering", "priority": 95, "share": 518,
           "selected": False, "withhold": True, "pushback": 2}
 # Same recent evidence as hot, but the Master corrected this very subject twice:
 # the offer is withdrawn instead of merely shrinking...
 # ...and the same corrections followed by his own return to it twice restore her
 # full salience: the fade is a pause, not a verdict.
-RECOVERED = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
+RECOVERED = {"tier": "hot", "priority": 98, "share": 530, "selected": True, "pushback": 0}
 # Four corrections answered by five returns in one burst: the store keeps only
 # three sources per subject, so the row must come back from the ledger itself.
-BURST = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
+BURST = {"tier": "hot", "priority": 98, "share": 530, "selected": True, "pushback": 0}
 # Half of four corrections answered: she is back in the offer, between the
 # withdrawn subject and her own salience, rather than switched on abruptly.
-CLIMBING = {"tier": "answering", "rung": "answering", "priority": 95, "share": 275,
+CLIMBING = {"tier": "answering", "rung": "answering", "priority": 95, "share": 518,
             "selected": True, "pushback": 2, "progress": 0.5}
 # Eight corrections, four answered: deep in a long recovery, exactly half
 # answered, so the ladder keeps her named four rungs down instead of withheld.
-DEEP = {"tier": "careful", "rung": "careful", "priority": 91, "share": 250,
+DEEP = {"tier": "careful", "rung": "careful", "priority": 91, "share": 495,
         "selected": True, "pushback": 4, "progress": 0.5}
 # The deepest rung of each band, so the bands can be compared where they meet.
-DEEP_WARM = {"tier": "unready", "rung": "unready", "priority": 48, "share": 165,
-             "selected": False, "pushback": 8, "progress": 0.5}
-DEEP_HOT = {"tier": "unready", "rung": "unready", "priority": 80, "share": 210,
+DEEP_WARM = {"tier": "unready", "rung": "unready", "priority": 48, "share": 390,
+             "selected": True, "pushback": 8, "progress": 0.5}
+DEEP_HOT = {"tier": "unready", "rung": "unready", "priority": 80, "share": 450,
             "selected": True, "pushback": 8, "progress": 0.5}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
@@ -426,8 +427,8 @@ def main() -> int:
         failures.append("his return to the subject did not bring her line back")
     elif recovered["personhood"][0]["priority"] != 98:
         failures.append("the recovered subject did not return to full priority")
-    if hot["totals"] == pushed["totals"] and hot["estimate"] == pushed["estimate"]:
-        failures.append("hot and corrected subjects produced identical contexts")
+    if hot["estimate"] <= pushed["estimate"]:
+        failures.append("a withdrawn subject still took her line's bytes")
     if not hot["personhood"] or not cold["personhood"]:
         failures.append("one of the states has no personhood row")
     else:
@@ -435,10 +436,10 @@ def main() -> int:
             failures.append("hot priority is not above cold")
         if (hot["personhood"][0].get("share") or 0) <= (cold["personhood"][0].get("share") or 0):
             failures.append("hot byte share is not above cold")
-        if hot["totals"] == cold["totals"]:
-            failures.append("the two states produced identical totals")
-        if hot["estimate"] <= cold["estimate"]:
-            failures.append("the hot state did not take more bytes")
+        if not (cold["personhood"][0]["selected"] and hot["personhood"][0]["selected"]):
+            failures.append("a named state was dropped from the packet")
+        if hot["personhood"][0]["estimated_bytes"] != cold["personhood"][0]["estimated_bytes"]:
+            failures.append("her own line changed size between two named states")
 
     after = freshness(opener)
     report["pending_after"] = after.get("pending")
