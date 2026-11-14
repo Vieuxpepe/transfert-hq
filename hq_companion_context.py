@@ -63,6 +63,12 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
 
     Costs use the same conservative UTF-8-plus-message-overhead estimator as
     hq_ai. The manifest uses fixed kind/index IDs, sizes and reasons only.
+
+    An explicit correction is reserved before anything optional is considered:
+    its bytes are charged up front, so no other block can take that room and
+    the correction is admitted by rule whenever the mandatory core plus the
+    correction still fit the budget. If they do not, the reservation is
+    withdrawn and selection degrades to plain priority order.
     """
     base = 48 + len(system.encode()) + len(message.encode())
     if base > budget:
@@ -91,7 +97,15 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     ranked = sorted(candidates, key=lambda c: (-PRIORITY[c["kind"]],
         -c.get("relevance", 0) if c["kind"] == "history_relevant" else 0,
         -c.get("history_index", 0), c["order"]))
-    used, page_selected = base, False
+    reserved = sum(len((HEADINGS["correction"] + ":\n" + c["text"]).encode()) + 2
+                   for c in candidates if c["kind"] == "correction")
+    if base + reserved > budget:
+        # The mandatory core leaves no room for an explicit correction; keep the
+        # ordinary priority pass rather than overspending the budget.
+        reserved = 0
+    # Charged before anything optional is considered, so no other block can
+    # take the correction's room: optional candidates only see what is left.
+    used, page_selected = base + reserved, False
     selected, seen = [], {normalize(message), normalize(system)}
     seen.update(normalize(b) for b in re.split(r"\n\s*\n", system))
     for c in ranked:
@@ -110,6 +124,14 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
             row["reason"] = "irrelevant"
         elif not history and normalize(text) in seen:
             row["reason"] = "duplicate"
+            if reserved and kind == "correction":
+                used -= cost  # release a reservation nothing will spend
+        elif reserved and kind == "correction":
+            # Already paid for by the reservation; never re-checked against the
+            # remaining room.
+            row.update(selected=True, reason="included")
+            selected.append(c)
+            seen.add(normalize(text))
         elif used + cost <= budget:
             row.update(selected=True, reason="included")
             used += cost
