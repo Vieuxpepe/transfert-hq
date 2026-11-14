@@ -48,7 +48,8 @@ def page_kind(text):
                          ("Rituel partagé", "continuity"), ("Avis provisoire", "continuity"),
                          # Her own personhood lines: identity content, not page chrome.
                          ("FIL RÉCENT AVEC", "personhood"), ("POINT À ÉCLAIRCIR", "personhood"),
-                         ("SUJET RÉCENT", "personhood"), ("NOTE SUR MOI", "personhood"),
+                         ("SUJET RÉCENT", "personhood"), ("SUJET ANCIEN", "personhood"),
+                         ("NOTE SUR MOI", "personhood"),
                          ("VALEUR APPRISE", "personhood")):
         if head.startswith(prefix):
             return kind
@@ -95,7 +96,8 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     ``personhood`` carries the salience of her own line (tier, priority and
     byte share) derived from the evidence behind it: a subject that is recent
     and repeated ranks higher and may take more bytes, while a stale one ranks
-    lower and is refused when its line exceeds its share.
+    lower in its own band and keeps a smaller share — still carried, as a dated
+    trace, rather than dropped. Only a line longer than that share is refused.
     """
     base = 48 + len(system.encode()) + len(message.encode())
     if base > budget:
@@ -131,8 +133,9 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
                 # The manifest says which rung she is on, not a base tier she is not.
                 c["rung"] = str(salience["rung"])
             if personhood_share and block_cost(c) > personhood_share:
-                # Her byte share is already spent by the size of her own line:
-                # a subject this cold does not get to occupy the packet.
+                # Her declared share is smaller than her own line: this state may
+                # not occupy the packet. The bands are sized so a normal hint
+                # always fits; only a longer line is refused here.
                 c["over_share"] = personhood_share
     ranked = sorted(candidates, key=lambda c: (-c.get("priority", PRIORITY[c["kind"]]),
         -c.get("relevance", 0) if c["kind"] == "history_relevant" else 0,

@@ -6,7 +6,8 @@ subject states for the session's own owner:
 
   hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 530
   warm       one turn about it three hours ago          -> tier warm, priority 70, share 440
-  cold       one turn about it twenty hours ago          -> tier cold, priority 40, share 380
+  cold       one turn about it twenty hours ago          -> tier cold, priority 40, share 380,
+                                                            her line still carried, as a dated "SUJET ANCIEN"
   corrected  the hot turns plus two corrections about it -> tier withheld, rung answering (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
@@ -171,7 +172,7 @@ def freshness(opener) -> dict:
             "started_at": data.get("started_at")}
 
 
-def pinned(usage: dict, contents: list) -> dict:
+def pinned(usage: dict, contents: list, line: str = "") -> dict:
     text = json.dumps(contents, ensure_ascii=False)
     return {
         "budget": usage["input_budget"],
@@ -180,9 +181,9 @@ def pinned(usage: dict, contents: list) -> dict:
         "rows": [(r["kind"], r["selected"], r["reason"], r["priority"], r.get("share"))
                  for r in usage["selection_manifest"]],
         "personhood": [r for r in usage["selection_manifest"] if r["kind"] == "personhood"],
-        "hint_in_payload": "SUJET RÉCENT" in text,
+        "hint_in_payload": bool(line) and line in text,
         "hint_text": next((part["text"] for m in contents for part in m.get("parts", [])
-                           if isinstance(part.get("text"), str) and "SUJET RÉCENT" in part["text"]), ""),
+                           if isinstance(part.get("text"), str) and line and line in part["text"]), ""),
     }
 
 
@@ -246,13 +247,13 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
         live = json.loads(body.decode("utf-8"))
         out["read_only"] = live.get("read_only")
         out["model_calls"] = live.get("model_calls")
-        out["live"] = pinned(live["context_usage"], live["contents"])
+        out["live"] = pinned(live["context_usage"], live["contents"], out["line"])
         out["system_bytes"] = len(live["system"].encode("utf-8"))
 
         ai.bind(root=ROOT, companion_context_config=lambda: live_cfg)
         code, inproc = ai.http_post(dict(payload), role="admin", owner_id=owner)
         out["inproc_status"] = code
-        out["inproc"] = pinned(inproc["context_usage"], inproc["contents"])
+        out["inproc"] = pinned(inproc["context_usage"], inproc["contents"], out["line"])
         out["system_identical"] = live["system"] == inproc["system"]
     finally:
         if original is not None:
@@ -438,8 +439,6 @@ def main() -> int:
             failures.append("hot byte share is not above cold")
         if not (cold["personhood"][0]["selected"] and hot["personhood"][0]["selected"]):
             failures.append("a named state was dropped from the packet")
-        if hot["personhood"][0]["estimated_bytes"] != cold["personhood"][0]["estimated_bytes"]:
-            failures.append("her own line changed size between two named states")
 
     after = freshness(opener)
     report["pending_after"] = after.get("pending")

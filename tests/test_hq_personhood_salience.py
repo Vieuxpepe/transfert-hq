@@ -71,7 +71,7 @@ class PersonhoodSalienceTests(Base):
         self.assertTrue(row["selected"], "a named tier must reach the packet")
         self.assertEqual(row["reason"], "included")
         self.assertEqual((row["priority"], row["share"]), (40, 380))
-        self.assertIn("SUJET RÉCENT", payload)
+        self.assertIn("SUJET ANCIEN", payload)
         self.assertEqual(usage["selection_totals"]["included"], 1)
 
     def test_the_cold_share_is_a_byte_limit_not_a_blanket_drop(self):
@@ -82,7 +82,25 @@ class PersonhoodSalienceTests(Base):
         row, _, payload = self.assemble(packet)
         self.assertTrue(row["selected"], "a compact cold line still fits its share")
         self.assertEqual(row["priority"], 40)
-        self.assertIn("SUJET RÉCENT", payload)
+        self.assertIn("SUJET ANCIEN", payload)
+
+    def test_a_stale_subject_says_how_old_it_is_and_stays_shut(self):
+        packet = self.seed(20 * 3600)
+        line = packet["continuity"]
+        self.assertTrue(line.startswith("SUJET ANCIEN — "), line)
+        self.assertIn("trace locale du " + ph._date(self.clock[0] - 20 * 3600), line)
+        self.assertIn("ne pas le rouvrir de soi-même", line)
+        self.assertIn("ne pas exécuter", line)
+        row, _, payload = self.assemble(packet)
+        self.assertEqual(row["kind"], "personhood", "an old trace is still her line")
+        self.assertTrue(row["selected"])
+        self.assertIn("SUJET ANCIEN", payload)
+        self.tearDown()
+        self.setUp()
+        recent = self.seed(3 * 3600)
+        self.assertTrue(recent["continuity"].startswith("SUJET RÉCENT — "), recent["continuity"])
+        self.assertIn("à reprendre seulement si le fil s'y prête", recent["continuity"])
+        self.assertNotIn("ANCIEN", recent["continuity"])
 
     def test_the_two_states_differ_in_priority_share_and_totals(self):
         hot = self.assemble(self.seed(3600, 1800))
@@ -95,9 +113,11 @@ class PersonhoodSalienceTests(Base):
         self.assertTrue(cold_row["selected"])
         self.assertEqual(hot_usage["selection_totals"], cold_usage["selection_totals"],
                          "both named states are carried; only their rank differs")
-        self.assertEqual(hot_usage["estimated_input_tokens"], cold_usage["estimated_input_tokens"])
+        self.assertLessEqual(cold_row["estimated_bytes"], cold_row["share"])
+        self.assertGreater(cold_row["estimated_bytes"], hot_row["estimated_bytes"],
+                           "the dated line is longer and still inside its share")
         self.assertIn("SUJET RÉCENT", hot_payload)
-        self.assertIn("SUJET RÉCENT", cold_payload)
+        self.assertIn("SUJET ANCIEN", cold_payload)
 
     def test_salience_never_changes_her_wording(self):
         packet = self.seed(3600, 1800)
@@ -281,7 +301,9 @@ class PersonhoodSalienceTests(Base):
                 self.assertIsNotNone(row, (base, depth))
                 self.assertTrue(row["selected"], f"{base} at depth {depth} was dropped for budget")
                 self.assertEqual(row["reason"], "included", (base, depth))
-                self.assertIn("SUJET RÉCENT", payload, (base, depth))
+                newest = min(ages[base](depth))
+                expected = "SUJET ANCIEN" if newest > ph.SALIENCE_WARM_S else "SUJET RÉCENT"
+                self.assertIn(expected, payload, (base, depth))
                 rows[(base, depth)] = (row["priority"], row["share"], detail["score"])
         return rows
 
@@ -465,6 +487,10 @@ class PersonhoodSalienceTests(Base):
         hot_row, hot_usage, _ = self.assemble(self.seed(3600, 1800), budget=6200)
         cold_row, cold_usage, _ = self.assemble(self.seed(20 * 3600), budget=6200)
         self.assertTrue(hot_row["selected"])
-        self.assertTrue(cold_row["selected"])
+        # Her share no longer drops her; the whole-prompt budget still can, and
+        # her low rank is what makes her the one that goes.
+        self.assertFalse(cold_row["selected"])
+        self.assertEqual(cold_row["reason"], "budget")
+        self.assertGreater(hot_row["priority"], cold_row["priority"])
         self.assertLessEqual(hot_usage["estimated_input_tokens"], hot_usage["input_budget"])
         self.assertLessEqual(cold_usage["estimated_input_tokens"], cold_usage["input_budget"])
