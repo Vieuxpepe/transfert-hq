@@ -98,7 +98,12 @@ FIL_WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "bas
 FIL_COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "basis": "visit"}
 POINT_WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "basis": "contested"}
 POINT_COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "basis": "contested"}
-VISIT_PAGE = {"tier": None, "priority": 96, "share": None, "selected": True, "visit_page": True}
+# The recall page ranks by the visit it quotes, in the same bands as her
+# subject line: a fresh visit is warm, an old one is cold.
+VISIT_PAGE = {"tier": "warm", "rung": "warm", "priority": 70, "share": 440, "selected": True,
+              "basis": "visit_recall", "visit_page": True}
+VISIT_PAGE_STALE = {"tier": "cold", "rung": "cold", "priority": 40, "share": 380, "selected": True,
+                    "basis": "visit_recall", "visit_page": True}
 VISIT_LINES = [{"who": "forgia", "text": "On a reparlé du chou et du bras robot."},
                {"who": "transferania", "text": "Je lui ai dit que le chou fermentait encore."}]
 VISIT_QUERY = "Tu penses à Forgia ?"
@@ -145,7 +150,7 @@ STATES = {
     "visit_fresh": {"expected": VISIT_PAGE, "message": VISIT_QUERY,
                     "visit": {"age": 3600, "log": "own", "other": "forgia", "name": "Forgia",
                               "lines": VISIT_LINES, "page": True}},
-    "visit_stale": {"expected": VISIT_PAGE, "message": VISIT_QUERY,
+    "visit_stale": {"expected": VISIT_PAGE_STALE, "message": VISIT_QUERY,
                     "visit": {"age": 20 * 3600, "log": "own", "other": "forgia", "name": "Forgia",
                               "lines": VISIT_LINES, "page": True}},
 }
@@ -311,10 +316,11 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
             # even consulted, so this state has no salience of its own to report.
             # The clock is passed explicitly: ``memory._now`` is only bound once
             # the bridge has, and this script runs before that.
-            out["salience"] = {}
-            out["line"] = visits.hint(logs["transferania"], self_key="transferania",
-                                      query=message, now=time.time(),
-                                      stale_after=ph.SALIENCE_WARM_S)
+            out["line"], visit_age = visits.hint_detail(logs["transferania"],
+                                                        self_key="transferania", query=message,
+                                                        now=time.time(),
+                                                        stale_after=ph.SALIENCE_WARM_S)
+            out["salience"] = {**ph.salience(visit_age, 1), "basis": "visit_recall"}
         else:
             detail = ph.hint_detail("transferania", message, owner=owner, now=time.time(),
                                     pushback=pushback)
@@ -395,8 +401,8 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: live priority {row['priority']} != {expected['priority']}")
     if row and expected.get("share") is not None and row.get("share") != expected["share"]:
         failures.append(f"{name}: live share {row.get('share')} != {expected['share']}")
-    if row and expected.get("visit_page") and row.get("rung"):
-        failures.append(f"{name}: a visit recall page claimed a salience rung")
+    if row and expected.get("visit_page") and not row.get("rung"):
+        failures.append(f"{name}: the recall page did not carry the rung its visit implies")
     if row and "rung" in expected and row.get("rung") != expected["rung"]:
         failures.append(f"{name}: live row rung {row.get('rung')} != {expected['rung']}")
     if expected["selected"] and row.get("selected") is not True:
@@ -545,6 +551,13 @@ def main() -> int:
             hot["personhood"][0]["priority"], hot["personhood"][0].get("share"),
             hot["personhood"][0]["estimated_bytes"]):
         failures.append("the burst state did not match an uncorrected hot subject")
+    recall_fresh = report["states"]["visit_fresh"]["live"]["personhood"]
+    recall_stale = report["states"]["visit_stale"]["live"]["personhood"]
+    if not (recall_fresh and recall_stale):
+        failures.append("a recall state lost its manifest row")
+    elif (recall_stale[0]["priority"] >= recall_fresh[0]["priority"]
+          or recall_stale[0]["share"] >= recall_fresh[0]["share"]):
+        failures.append("a stale visit recall did not rank below a fresh one")
     if hot["estimate"] <= pushed["estimate"]:
         failures.append("the corrected subject did not free the room its line took")
     if not recovered["personhood"]:

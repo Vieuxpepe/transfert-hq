@@ -177,6 +177,29 @@ class PersonhoodSalienceTests(Base):
         self.assertIn("clin d'œil si le fil s'y prête", fresh)
         self.assertNotIn("ANCIENNE", fresh)
 
+    def test_the_recall_page_ranks_by_the_visit_it_quotes(self):
+        import hq_visit_memory as visits
+        lines = [{"who": "forgia", "text": "On a reparlé du chou."}]
+        query = "Tu penses à Forgia ?"
+
+        def recall(age):
+            with memory.owner_context("admin"), memory.memory_scope("transferania"):
+                path = memory.visit_path()
+            visits.record(path, self_key="transferania", other_key="forgia", other_name="Forgia",
+                          lines=lines, now=self.clock[0] - age)
+            packet = memory.context_packet(query, conversation_text=query)
+            return packet["continuity"], packet["personhood"]
+
+        line, salience = recall(3600)
+        self.assertTrue(line.startswith("VISITE RÉCENTE AVEC FORGIA"), line)
+        self.assertEqual((salience["tier"], salience["priority"], salience["share"]), ("warm", 70, 440))
+        self.assertEqual(salience["basis"], "visit_recall")
+        self.tearDown()
+        self.setUp()
+        line, salience = recall(20 * 3600)
+        self.assertTrue(line.startswith("VISITE ANCIENNE AVEC FORGIA (trace locale du "), line)
+        self.assertEqual((salience["tier"], salience["priority"], salience["share"]), ("cold", 40, 380))
+
     def test_every_trace_heading_keeps_its_personhood_row(self):
         import hq_companion_context as context
         for heading in ("SUJET RÉCENT — x", "SUJET ANCIEN — x",

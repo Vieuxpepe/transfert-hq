@@ -174,16 +174,17 @@ def _quote(lines: list[dict[str, Any]], who: str) -> str:
     return re.sub(r"\s+", " ", line["text"]).strip()[:180]
 
 
-def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
-         stale_after: float | None = None) -> str:
-    """One compact recall block, only when the query invites it.
+def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = None,
+                stale_after: float | None = None) -> tuple[str, float | None]:
+    """The recall block plus the age of the visit it quotes, or ("", None).
 
     ``stale_after`` is the caller's own window: past it the visit is still
-    offered, but dated and closed instead of announced as recent.
+    offered, but dated and closed instead of announced as recent. The age comes
+    back too, so the caller can rank the page by the same bands as her lines.
     """
     text = str(query or "").strip()
     if not text:
-        return ""
+        return "", None
     words = _words(text)
     folded = _fold(text)
     social = bool(_SOCIAL.search(folded))
@@ -191,7 +192,7 @@ def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
     with _lock:
         rows = _load(path)
         if rows is _UNREADABLE:
-            return ""
+            return "", None
         rows = _prune(rows, stamp)
     mine = [row for row in rows if row.get("self") == self_key]
     named = [row for row in mine
@@ -204,13 +205,14 @@ def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
         matches = [row for row in mine
                    if words & _words(" ".join(line["text"] for line in row["lines"]))]
     if not matches:
-        return ""
+        return "", None
     row = max(matches, key=lambda item: float(item["at"]))
     name = row["other_name"]
     other_quote = _quote(row["lines"], row["other"])
     self_quote = _quote(row["lines"], self_key)
     date = time.strftime("%d/%m/%Y", time.localtime(float(row["at"])))
-    stale = stale_after is not None and max(0.0, stamp - float(row["at"])) > float(stale_after)
+    age = max(0.0, stamp - float(row["at"]))
+    stale = stale_after is not None and age > float(stale_after)
     if stale:
         # Same visit, same quote — but past the window it must not read as current
         # and must not license reopening itself.
@@ -224,4 +226,10 @@ def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
         parts.append(f"Tu as répondu « {self_quote} ».")
     parts.append("Ne pas la rouvrir de soi-même ; à reprendre seulement si le fil y revient." if stale
                  else "Tu peux y faire un clin d'œil si le fil s'y prête, sans réciter.")
-    return " ".join(parts)
+    return " ".join(parts), age
+
+
+def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
+         stale_after: float | None = None) -> str:
+    """One compact recall block, only when the query invites it."""
+    return hint_detail(path, self_key=self_key, query=query, now=now, stale_after=stale_after)[0]
