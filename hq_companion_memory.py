@@ -565,10 +565,10 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
                     hint = detail.get("line") or ""
                     # The line comes with the salience its own evidence implies:
                     # how present that subject is decides its priority and bytes.
-                    personhood = {k: detail[k] for k in ("tier", "score", "priority", "share",
-                                                         "basis", "age_s", "repeats", "pushback",
-                                                         "corrected", "progress", "withhold")
-                                  if k in detail}
+                    personhood = {k: detail[k] for k in ("tier", "rung", "base", "score",
+                                                         "priority", "share", "basis", "age_s",
+                                                         "repeats", "pushback", "corrected",
+                                                         "progress", "withhold") if k in detail}
                 except Exception:
                     hint, personhood = "", {}
         style = presence.style_from_memories(active)

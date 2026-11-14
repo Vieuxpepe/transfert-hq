@@ -6,10 +6,10 @@ subject states for the session's own owner:
 
   hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 320
   cold       one turn about it twenty hours ago          -> tier cold, priority 84, share 160
-  corrected  the hot turns plus two corrections about it -> withheld entirely (pushback 2)
+  corrected  the hot turns plus two corrections about it -> tier withheld, rung answering (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
-  climbing   four corrections, two returns                  -> offered at priority 91, share 240 (half-answered)
+  climbing   four corrections, two returns                  -> tier answering, 91/240, offered (half-answered)
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -48,8 +48,8 @@ SUBJECT = "Parle-moi de la fermentation du chou."
 
 HOT = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
 COLD = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "pushback": 0}
-PUSHED = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "withhold": True,
-          "pushback": 2}
+PUSHED = {"tier": "withheld", "rung": "answering", "priority": 91, "share": 240,
+          "selected": False, "withhold": True, "pushback": 2}
 # Same recent evidence as hot, but the Master corrected this very subject twice:
 # the offer is withdrawn instead of merely shrinking...
 # ...and the same corrections followed by his own return to it twice restore her
@@ -60,8 +60,8 @@ RECOVERED = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pus
 BURST = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
 # Half of four corrections answered: she is back in the offer, between the
 # withdrawn subject and her own salience, rather than switched on abruptly.
-CLIMBING = {"tier": "cold", "priority": 91, "share": 240, "selected": True,
-            "pushback": 2, "progress": 0.5}
+CLIMBING = {"tier": "answering", "rung": "answering", "priority": 91, "share": 240,
+            "selected": True, "pushback": 2, "progress": 0.5}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
     "cold": {"expected": COLD, "ages": (20 * 3600,)},
@@ -190,8 +190,8 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
                     for e in archive if e.get("kind") == "correction"]
         detail = ph.hint_detail("transferania", MESSAGE, owner=owner, now=time.time(),
                                 pushback=pushback)
-        out["salience"] = {k: detail[k] for k in ("tier", "score", "priority", "share",
-                                                  "basis", "age_s", "repeats", "pushback",
+        out["salience"] = {k: detail[k] for k in ("tier", "rung", "base", "score", "priority",
+                                                  "share", "basis", "age_s", "repeats", "pushback",
                                                   "corrected", "progress", "withhold")
                            if k in detail}
         out["line"] = detail.get("line") or ""
@@ -248,6 +248,8 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: net pushback {result['salience'].get('pushback')} != {expected['pushback']}")
     if "progress" in expected and result["salience"].get("progress") != expected["progress"]:
         failures.append(f"{name}: climb progress {result['salience'].get('progress')} != {expected['progress']}")
+    if "rung" in expected and result["salience"].get("rung") != expected["rung"]:
+        failures.append(f"{name}: rung {result['salience'].get('rung')} != {expected['rung']}")
     if (result["salience"].get("share") or 0) != expected["share"] and not expected.get("withhold"):
         failures.append(f"{name}: in-process share {result['salience'].get('share')} != {expected['share']}")
 
@@ -342,6 +344,10 @@ def main() -> int:
     climbing = report["states"]["climbing"]["live"]
     if not climbing["personhood"]:
         failures.append("a half-answered subject was not offered at all")
+    if report["states"]["climbing"]["salience"].get("tier") != "answering":
+        failures.append("the climbing state did not report its own rung name")
+    if report["states"]["pushed_back"]["salience"].get("tier") != "withheld":
+        failures.append("a closed subject did not report the withheld rung")
     elif burst["personhood"] and (climbing["personhood"][0]["priority"]
                                   >= burst["personhood"][0]["priority"]):
         failures.append("the climb did not stay below full salience")

@@ -208,6 +208,23 @@ SALIENCE_RECENT_S = 6 * 3600
 SALIENCE_WARM_S = 18 * 3600
 SALIENCE_PRIORITY = {"hot": 98, "warm": 92, "cold": 84}
 SALIENCE_SHARE = {"hot": 320, "warm": 200, "cold": 160}
+# The rungs she climbs back through, one per answered correction: how many of
+# the Master's corrections are still open -> (name, priority, byte share, score
+# factor). Declared values, not a lerp between tier anchors, so every consumer
+# of the rung name agrees with the room it is actually given.
+SALIENCE_LADDER = {
+    "hot": {1: ("almost_herself", 95, 260, 0.8),
+            2: ("answering", 91, 240, 0.65),
+            3: ("guarded", 88, 200, 0.5)},
+    "warm": {1: ("almost_herself", 89, 180, 0.8),
+             2: ("answering", 87, 172, 0.65),
+             3: ("guarded", 86, 168, 0.5)},
+    "cold": {1: ("almost_herself", 83, 150, 0.8),
+             2: ("answering", 82, 145, 0.65),
+             3: ("guarded", 81, 142, 0.5)},
+}
+# Beyond this many open corrections there is no rung left to offer from.
+SALIENCE_MAX_OPEN = 3
 
 _PHASE_LABELS = {
     "attentive": "Attentive, sans urgence",
@@ -1115,14 +1132,15 @@ def _delivery_clause(snap: dict[str, Any], social: bool) -> str:
 
 def salience(age: float | None, repeats: int, pushback: int = 0,
              corrected: int | None = None) -> dict[str, Any]:
-    """Tier, priority and byte share for one line, from its own evidence.
+    """Which rung she stands on, and the room that rung is declared to take.
 
     ``pushback`` is how many of the Master's corrections about that subject are
     still unanswered and ``corrected`` how many there were in all. Each of his
-    returns answers one, so the tier climbs back a step at a time and the
-    priority and byte share climb with it; only the last one restored reaches the
-    uncorrected values. The offer stays closed while two corrections are open and
-    he has answered less than half of them.
+    returns answers one, moving her up exactly one declared rung: guarded, then
+    answering, then almost_herself, then her own base tier. The offer stays
+    closed while two corrections are open and he has answered less than half of
+    them, and when more than ``SALIENCE_MAX_OPEN`` are open there is no rung to
+    offer from at all.
     """
     repeats = max(1, int(repeats or 1))
     pushback = max(0, int(pushback or 0))
@@ -1136,21 +1154,21 @@ def salience(age: float | None, repeats: int, pushback: int = 0,
         base = "warm"
     else:
         base = "cold"
-    tiers = ("cold", "warm", "hot")
-    tier = tiers[max(0, tiers.index(base) - min(2, pushback))]
     freshness = 1.0 if age is None else max(0.0, 1.0 - max(0.0, float(age)) / PREOCCUPATION_TTL)
-    score = round(0.65 * freshness + 0.35 * min(1.0, (repeats - 1) / 2.0), 3)
-    score = round(score * (0.5 + 0.5 * progress) if total
-                  else score * max(0.0, 1.0 - 0.2 * pushback), 3)
-    priority, share = SALIENCE_PRIORITY[tier], SALIENCE_SHARE[tier]
-    if total and 0.0 < progress < 1.0:
-        # Half-answered corrections sit between the demoted tier and her own.
-        priority = int(priority + (SALIENCE_PRIORITY[base] - priority) * progress + 0.5)
-        share = int(share + (SALIENCE_SHARE[base] - share) * progress + 0.5)
-    return {"tier": tier, "score": score, "priority": priority, "share": share,
-            "age_s": None if age is None else int(age), "repeats": repeats,
+    base_score = round(0.65 * freshness + 0.35 * min(1.0, (repeats - 1) / 2.0), 3)
+    if pushback:
+        rung, priority, share, factor = SALIENCE_LADDER[base][min(SALIENCE_MAX_OPEN, pushback)]
+        score = round(base_score * factor, 3)
+        withhold = pushback > SALIENCE_MAX_OPEN or (pushback >= 2 and progress < 0.5)
+        tier = "withheld" if withhold else rung
+    else:
+        rung, tier = base, base
+        priority, share = SALIENCE_PRIORITY[base], SALIENCE_SHARE[base]
+        score, withhold = base_score, False
+    return {"tier": tier, "rung": rung, "base": base, "score": score, "priority": priority,
+            "share": share, "age_s": None if age is None else int(age), "repeats": repeats,
             "pushback": pushback, "corrected": total, "progress": round(progress, 3),
-            "withhold": pushback >= 2 and progress < 0.5}
+            "withhold": withhold}
 
 
 def _pushback_detail(pushback: Any, label: str, stamp: float) -> tuple[int, float | None]:
