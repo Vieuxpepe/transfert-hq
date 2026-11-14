@@ -1,13 +1,14 @@
 """Live personhood gate: her line must come out of real state, not a constant.
 
 Signs in through the bridge's own /login (the PIN is read from
-bridge_config.json and never printed), then drives four genuinely different
+bridge_config.json and never printed), then drives five genuinely different
 subject states for the session's own owner:
 
   hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 320
   cold       one turn about it twenty hours ago          -> tier cold, priority 84, share 160
   corrected  the hot turns plus two corrections about it -> withheld entirely (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
+  burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -53,15 +54,21 @@ PUSHED = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "with
 # ...and the same corrections followed by his own return to it twice restore her
 # full salience: the fade is a pause, not a verdict.
 RECOVERED = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
+# Four corrections answered by five returns in one burst: the store keeps only
+# three sources per subject, so the row must come back from the ledger itself.
+BURST = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
     "cold": {"expected": COLD, "ages": (20 * 3600,)},
     "pushed_back": {"expected": PUSHED, "ages": (3600, 1800), "corrections": 2},
     "recovered": {"expected": RECOVERED, "ages": (1800, 900), "corrections": 2,
                   "correction_age": 3 * 3600},
+    "burst": {"expected": BURST, "ages": (1800, 1500, 1200, 900, 600), "corrections": 4,
+              "correction_age": 4 * 3600},
 }
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
-               "J'aime beaucoup la fermentation du chou."]
+               "J'aime beaucoup la fermentation du chou.",
+               "Je me trompe souvent sur la fermentation du chou."]
 
 
 def config() -> dict:
@@ -321,6 +328,14 @@ def main() -> int:
     if pushed["personhood"]:
         failures.append("a subject corrected twice still has a live personhood row")
     recovered = report["states"]["recovered"]["live"]
+    burst = report["states"]["burst"]["live"]
+    if not burst["personhood"]:
+        failures.append("a burst of returns did not bring her line back")
+    elif hot["personhood"] and (burst["personhood"][0]["priority"], burst["personhood"][0].get("share"),
+                                burst["personhood"][0]["estimated_bytes"]) != (
+            hot["personhood"][0]["priority"], hot["personhood"][0].get("share"),
+            hot["personhood"][0]["estimated_bytes"]):
+        failures.append("the burst state did not match an uncorrected hot subject")
     if hot["estimate"] <= pushed["estimate"]:
         failures.append("the corrected subject did not free the room its line took")
     if not recovered["personhood"]:
@@ -353,7 +368,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, stale, corrected and recovered live states)")
+    print("verify_live_personhood: OK (hot, stale, corrected, recovered and burst live states)")
     return 0
 
 

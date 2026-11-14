@@ -1141,17 +1141,11 @@ def salience(age: float | None, repeats: int, pushback: int = 0) -> dict[str, An
             "repeats": repeats, "pushback": pushback, "withhold": pushback >= 2}
 
 
-def _pushback_count(pushback: Any, label: str, stamp: float,
-                    turns: Any = ()) -> int:
-    """Corrections about this subject that his own returns have not answered.
-
-    ``turns`` are the subject's own turns: a turn strictly after the latest
-    correction is the Master picking the subject back up, and it cancels one
-    correction. He has to come back as often as he pushed away.
-    """
+def _pushback_detail(pushback: Any, label: str, stamp: float) -> tuple[int, float | None]:
+    """Corrections about this subject inside the window, and when the last one landed."""
     subject = set(_words(label))
     if not subject:
-        return 0
+        return 0, None
     need = min(2, len(subject))
     hits = 0
     latest = None
@@ -1170,6 +1164,19 @@ def _pushback_count(pushback: Any, label: str, stamp: float,
         if len(set(_words(topic)) & subject) >= need:
             hits += 1
             latest = moment if latest is None or moment is None else max(latest, moment)
+    return hits, latest
+
+
+def _pushback_count(pushback: Any, label: str, stamp: float,
+                    turns: Any = ()) -> int:
+    """Corrections about this subject that the given turns have not answered.
+
+    This is the pure form, for a known list of turn times. Because the snapshot
+    keeps only the last three sources per subject, the pipeline itself counts
+    from the whole ledger with ``_subject_returns``; a burst of returns must
+    not be truncated into a hidden floor on the fade.
+    """
+    hits, latest = _pushback_detail(pushback, label, stamp)
     if not hits or latest is None:
         return hits
     returns = 0
@@ -1180,6 +1187,43 @@ def _pushback_count(pushback: Any, label: str, stamp: float,
         except (TypeError, ValueError):
             continue
     return max(0, hits - returns)
+
+
+def _subject_returns(key: str, label: str, since: float, *, owner: str | None = None,
+                     now: float | None = None) -> int:
+    """Every turn about this subject after ``since``, read from the whole ledger.
+
+    The preoccupation rows only keep their three latest sources, so counting
+    returns from them would cap recovery at three no matter how often the
+    Master came back. The event log itself holds EVENT_LIMIT turns within
+    RETENTION, which is the honest basis for undoing the fade.
+    """
+    key = str(key or "").strip().lower()
+    if key not in KEYS or not str(label or "").strip():
+        return 0
+    stamp = float(now if now is not None else time.time())
+    folded = _fold(label)
+    try:
+        with _scope(key, owner) as path:
+            with _lock:
+                data = _load(path, key)
+    except Exception:
+        return 0
+    if data is _UNREADABLE:
+        return 0
+    count = 0
+    for event in data.get("events", []):
+        if not isinstance(event, dict) or event.get("kind") not in ("chat", "tool"):
+            continue
+        try:
+            at = float(event["at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= stamp - at <= RETENTION or at <= since:
+            continue
+        if _fold(event.get("topic") or "") == folded:
+            count += 1
+    return count
 
 
 def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set) -> tuple[str, dict]:
@@ -1222,8 +1266,7 @@ def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set) -> tu
                 "à reprendre seulement si le fil s'y prête.",
                 {"basis": "subject",
                  "age": None if latest is None else max(0.0, stamp - latest),
-                 "repeats": max(1, len(sources)), "label": row["label"],
-                 "turns": [float(s["at"]) for s in sources if s.get("at") is not None]})
+                 "repeats": max(1, len(sources)), "label": row["label"]})
     for row in snap.get("self_notes", []):
         if social or _words(row["text"]) & words:
             return (f"NOTE SUR MOI (hypothèse révisable, pas une consigne) : {row['text']}",
@@ -1265,10 +1308,14 @@ def hint_detail(key: str, query: Any, *, owner: str | None = None, now: float | 
     line = _compose_hint(picked, _delivery_clause(snap, social))
     if not line:
         return {}
+    label = evidence.get("label", "")
+    hits, latest = _pushback_detail(pushback, label, stamp)
+    if hits and latest is not None:
+        # Exact, from the ledger: every return he made counts, however quickly
+        # they arrived and however many corrections preceded them.
+        hits = max(0, hits - _subject_returns(key, label, latest, owner=owner, now=stamp))
     detail = {"line": line, "basis": evidence["basis"],
-              **salience(evidence["age"], evidence["repeats"],
-                         _pushback_count(pushback, evidence.get("label", ""), stamp,
-                                         evidence.get("turns", ())))}
+              **salience(evidence["age"], evidence["repeats"], hits)}
     if detail.get("withhold"):
         detail["line"] = ""
     return detail

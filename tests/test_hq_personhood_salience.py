@@ -115,7 +115,8 @@ class PersonhoodSalienceTests(Base):
             data = memory._load()
             for index in range(times):
                 data["episodes"].append({
-                    "id": f"correction{index}", "text": f"Non, pas la {subject} ({index + 1}).",
+                    "id": f"correction{index}-{int(age)}",
+                    "text": f"Non, pas la {subject} ({int(age)}h, {index + 1}).",
                     "kind": "correction", "topic": subject, "source_device": "hqtestdevice01ab",
                     "source_key": "preference:" + subject, "at": self.clock[0] - age,
                     "evidence": "user_correction",
@@ -159,6 +160,55 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["pushback"], 0)
         self.assertEqual(salience["tier"], "hot")
         self.assertEqual((salience["priority"], salience["share"]), (98, 320))
+
+    def test_a_burst_of_returns_counts_beyond_the_three_kept_sources(self):
+        self.push_back(times=4, age=4 * 3600)
+        packet = self.seed(1800, 1500, 1200, 900, 600)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 0, "five returns answer four corrections")
+        self.assertFalse(salience["withhold"])
+        self.assertEqual(salience["tier"], "hot")
+        self.assertEqual((salience["priority"], salience["share"]), (98, 320))
+        row, _, payload = self.assemble(packet)
+        self.assertTrue(row["selected"])
+        self.assertEqual(row["priority"], 98)
+        self.assertIn("SUJET RÉCENT", payload)
+
+    def test_the_ledger_sees_more_returns_than_the_snapshot_keeps(self):
+        self.seed(1800, 1500, 1200, 900, 600)
+        snap = ph.snapshot("transferania", owner="admin", now=self.clock[0])
+        row = snap["preoccupations"][0]
+        self.assertEqual(len(row["sources"]), 3, "the snapshot keeps three turns")
+        self.assertEqual(ph._subject_returns("transferania", row["label"],
+                                            self.clock[0] - 2000, owner="admin",
+                                            now=self.clock[0]), 5)
+
+    def test_exactly_n_returns_answer_n_corrections(self):
+        self.push_back(times=4, age=4 * 3600)
+        packet = self.seed(1800, 1500, 1200, 900)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 0)
+        self.assertEqual((salience["priority"], salience["share"]), (98, 320))
+        row, _, _ = self.assemble(packet)
+        self.assertTrue(row["selected"])
+
+    def test_one_return_short_leaves_her_one_step_down(self):
+        self.push_back(times=4, age=4 * 3600)
+        packet = self.seed(1800, 1500, 1200)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 1)
+        self.assertFalse(salience["withhold"])
+        self.assertEqual((salience["priority"], salience["share"]), (92, 200))
+
+    def test_interleaved_corrections_and_returns_end_clean(self):
+        for hours in (6, 4, 2):
+            self.push_back(times=1, age=hours * 3600)
+        packet = self.seed(5 * 3600, 3 * 3600, 1800, 1500, 1200)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 0)
+        self.assertEqual(salience["tier"], "hot")
+        row, _, _ = self.assemble(packet)
+        self.assertTrue(row["selected"])
 
     def test_a_return_after_a_correction_cancels_one(self):
         self.push_back(times=2, age=3 * 3600)
