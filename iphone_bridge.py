@@ -6593,6 +6593,8 @@ function hqScreenSetOpen(on) {
 }
 
 const HQ_TERM_STATE_SHORT = { running: 'en cours', done: 'OK', failed: 'échec', stopped: 'arrêtée', timeout: 'délai' };
+// The day header counts jobs: « 3 arrêtées », not « 3 arrêtée ».
+const HQ_TERM_STATE_PLURAL = { failed: 'échecs', stopped: 'arrêtées', timeout: 'délais' };
 
 function hqTermDayKey(ms) {
   const d = new Date(Number(ms) || 0);
@@ -6642,7 +6644,10 @@ function hqTermDayCounts(jobs, key) {
   const total = Object.keys(counts).reduce((sum, state) => sum + counts[state], 0);
   const bits = [total + (total > 1 ? ' tâches' : ' tâche')];
   ['running', 'done', 'failed', 'stopped', 'timeout'].forEach(state => {
-    if (counts[state]) bits.push(counts[state] + ' ' + (HQ_TERM_STATE_SHORT[state] || state));
+    if (counts[state]) {
+      const word = counts[state] > 1 ? (HQ_TERM_STATE_PLURAL[state] || HQ_TERM_STATE_SHORT[state] || state) : (HQ_TERM_STATE_SHORT[state] || state);
+      bits.push(counts[state] + ' ' + word);
+    }
   });
   return bits.join(' · ');
 }
