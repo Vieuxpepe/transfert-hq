@@ -167,23 +167,53 @@ class PersonhoodSalienceTests(Base):
         samples = {"hot": (1800, 2), "warm": (3600, 1), "cold": (20 * 3600, 1)}
         for base, (age, repeats) in samples.items():
             rungs = ph.SALIENCE_LADDER[base]
-            self.assertEqual(sorted(rungs), [1, 2, 3])
-            priorities = [rungs[depth][1] for depth in (3, 2, 1)]
-            shares = [rungs[depth][2] for depth in (3, 2, 1)]
-            self.assertEqual(priorities, sorted(priorities), base)
-            self.assertEqual(shares, sorted(shares), base)
+            self.assertGreaterEqual(ph.SALIENCE_MAX_OPEN, 8)
+            self.assertEqual(sorted(rungs), list(range(1, ph.SALIENCE_MAX_OPEN + 1)), base)
+            order = sorted(rungs, reverse=True)
+            priorities = [rungs[depth][1] for depth in order]
+            shares = [rungs[depth][2] for depth in order]
+            self.assertEqual(priorities, sorted(set(priorities)), base)
+            self.assertEqual(shares, sorted(set(shares)), base)
             self.assertLess(priorities[-1], ph.SALIENCE_PRIORITY[base], base)
             self.assertLess(shares[-1], ph.SALIENCE_SHARE[base], base)
-            for depth in (1, 2, 3):
+            base_score = round(0.65 * (1 - age / (24 * 3600))
+                               + 0.35 * min(1.0, (repeats - 1) / 2.0), 3)
+            for depth in rungs:
                 name, priority, share, factor = rungs[depth]
-                got = ph.salience(age, repeats, depth, 4)
+                got = ph.salience(age, repeats, depth, ph.SALIENCE_MAX_OPEN)
                 self.assertEqual(got["base"], base)
                 self.assertEqual((got["rung"], got["priority"], got["share"]), (name, priority, share),
                                  (base, depth))
                 self.assertEqual(got["tier"], "withheld" if got["withhold"] else name, (base, depth))
-                self.assertEqual(got["score"], round(round(0.65 * (1 - age / (24 * 3600))
-                                                           + 0.35 * min(1.0, (repeats - 1) / 2.0), 3)
-                                                         * factor, 3))
+                self.assertEqual(got["score"], round(base_score * factor, 3), (base, depth))
+
+    def test_the_whole_ladder_lifts_exactly_one_rung_per_return(self):
+        depth = ph.SALIENCE_MAX_OPEN
+        ladder = [ph.salience(1800, 2, open_count, depth) for open_count in range(depth, -1, -1)]
+        self.assertEqual([r["rung"] for r in ladder],
+                         [ph.SALIENCE_LADDER["hot"][d][0] for d in range(depth, 0, -1)] + ["hot"])
+        self.assertEqual(len({r["rung"] for r in ladder}), depth + 1, "every rung is distinct")
+        priorities = [r["priority"] for r in ladder]
+        shares = [r["share"] for r in ladder]
+        self.assertEqual(priorities, sorted(set(priorities)))
+        self.assertEqual(shares, sorted(set(shares)))
+        self.assertEqual(ladder[-1]["tier"], "hot")
+        self.assertTrue(all(r["withhold"] for r in ladder if r["progress"] < 0.5 and r["pushback"] >= 2),
+                        "only the withhold rule closes a rung")
+
+    def test_a_deep_half_answered_subject_is_named_not_withheld(self):
+        self.push_back(times=8, age=6 * 3600)
+        packet = self.seed(1800, 1500, 1200, 900)
+        salience = packet["personhood"]
+        self.assertEqual((salience["pushback"], salience["corrected"]), (4, 8))
+        self.assertFalse(salience["withhold"], "four of eight answered is not closed")
+        self.assertEqual((salience["tier"], salience["rung"]), ("careful", "careful"))
+        self.assertEqual((salience["priority"], salience["share"]), (84, 190))
+        row, _, payload = self.assemble(packet)
+        self.assertIsNotNone(row)
+        self.assertTrue(row["selected"])
+        self.assertEqual(row["rung"], "careful")
+        self.assertIn("SUJET RÉCENT", payload)
 
     def test_a_partial_recovery_never_reports_a_base_tier(self):
         self.push_back(times=4, age=4 * 3600)
@@ -194,6 +224,16 @@ class PersonhoodSalienceTests(Base):
             tier = self.seed(*ages)["personhood"]["tier"]
             self.assertEqual(tier, expected)
             self.assertNotIn(tier, ("cold", "warm", "hot"))
+
+    def test_the_prompt_and_the_row_never_name_a_base_tier_while_she_climbs(self):
+        self.push_back(times=8, age=6 * 3600)
+        packet = self.seed(1800, 1500, 1200, 900)
+        row, _, payload = self.assemble(packet)
+        self.assertEqual(row["rung"], "careful")
+        self.assertEqual(packet["personhood"]["tier"], "careful")
+        for word in ("cold", "hot", "withheld"):
+            self.assertNotIn(word, payload, word)
+            self.assertNotIn(word, packet["continuity"], word)
 
     def test_a_burst_of_returns_counts_beyond_the_three_kept_sources(self):
         self.push_back(times=4, age=4 * 3600)

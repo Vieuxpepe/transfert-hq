@@ -215,16 +215,32 @@ SALIENCE_SHARE = {"hot": 320, "warm": 200, "cold": 160}
 SALIENCE_LADDER = {
     "hot": {1: ("almost_herself", 95, 260, 0.8),
             2: ("answering", 91, 240, 0.65),
-            3: ("guarded", 88, 200, 0.5)},
+            3: ("guarded", 88, 200, 0.5),
+            4: ("careful", 84, 190, 0.42),
+            5: ("watchful", 80, 178, 0.36),
+            6: ("quiet", 76, 168, 0.30),
+            7: ("distant", 73, 158, 0.25),
+            8: ("unready", 70, 148, 0.20)},
     "warm": {1: ("almost_herself", 89, 180, 0.8),
              2: ("answering", 87, 172, 0.65),
-             3: ("guarded", 86, 168, 0.5)},
+             3: ("guarded", 86, 168, 0.5),
+             4: ("careful", 84, 166, 0.42),
+             5: ("watchful", 81, 162, 0.36),
+             6: ("quiet", 78, 158, 0.30),
+             7: ("distant", 75, 154, 0.25),
+             8: ("unready", 72, 150, 0.20)},
     "cold": {1: ("almost_herself", 83, 150, 0.8),
              2: ("answering", 82, 145, 0.65),
-             3: ("guarded", 81, 142, 0.5)},
+             3: ("guarded", 81, 142, 0.5),
+             4: ("careful", 79, 140, 0.42),
+             5: ("watchful", 77, 138, 0.36),
+             6: ("quiet", 75, 136, 0.30),
+             7: ("distant", 73, 134, 0.25),
+             8: ("unready", 71, 132, 0.20)},
 }
-# Beyond this many open corrections there is no rung left to offer from.
-SALIENCE_MAX_OPEN = 3
+# The deepest declared rung. Past it the same withhold rule closes the offer, so
+# no state exists where salience is owed and unnamed.
+SALIENCE_MAX_OPEN = max(SALIENCE_LADDER["hot"])
 
 _PHASE_LABELS = {
     "attentive": "Attentive, sans urgence",

@@ -10,6 +10,7 @@ subject states for the session's own owner:
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
   climbing   four corrections, two returns                  -> tier answering, 91/240, offered (half-answered)
+  deep       eight corrections, four returns                -> tier careful, 84/190, offered (four still open)
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -62,6 +63,10 @@ BURST = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushbac
 # withdrawn subject and her own salience, rather than switched on abruptly.
 CLIMBING = {"tier": "answering", "rung": "answering", "priority": 91, "share": 240,
             "selected": True, "pushback": 2, "progress": 0.5}
+# Eight corrections, four answered: deep in a long recovery, exactly half
+# answered, so the ladder keeps her named four rungs down instead of withheld.
+DEEP = {"tier": "careful", "rung": "careful", "priority": 84, "share": 190,
+        "selected": True, "pushback": 4, "progress": 0.5}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
     "cold": {"expected": COLD, "ages": (20 * 3600,)},
@@ -72,10 +77,16 @@ STATES = {
               "correction_age": 4 * 3600},
     "climbing": {"expected": CLIMBING, "ages": (1800, 1500), "corrections": 4,
                  "correction_age": 4 * 3600},
+    "deep": {"expected": DEEP, "ages": (1800, 1500, 1200, 900), "corrections": 8,
+             "correction_age": 6 * 3600},
 }
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
                "J'aime beaucoup la fermentation du chou.",
-               "Je me trompe souvent sur la fermentation du chou."]
+               "Je me trompe souvent sur la fermentation du chou.",
+               "La fermentation du chou me lasse.",
+               "La fermentation du chou, c'est fade.",
+               "Je préfère le chou cru, pas fermenté.",
+               "La fermentation du chou sent trop fort."]
 
 
 def config() -> dict:
@@ -257,6 +268,8 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: live priority {row['priority']} != {expected['priority']}")
     if row and row.get("share") != expected["share"]:
         failures.append(f"{name}: live share {row.get('share')} != {expected['share']}")
+    if row and "rung" in expected and row.get("rung") != expected["rung"]:
+        failures.append(f"{name}: live row rung {row.get('rung')} != {expected['rung']}")
     if expected["selected"] and row.get("selected") is not True:
         failures.append(f"{name}: live selected {row['selected']} != {expected['selected']}")
     if expected["selected"] and live["hint_in_payload"] is not True:
@@ -348,6 +361,11 @@ def main() -> int:
         failures.append("the climbing state did not report its own rung name")
     if report["states"]["pushed_back"]["salience"].get("tier") != "withheld":
         failures.append("a closed subject did not report the withheld rung")
+    deep = report["states"]["deep"]
+    if deep["salience"].get("withhold") or deep["salience"].get("pushback") != 4:
+        failures.append("a deep half-answered subject was withheld instead of named")
+    if deep["live"]["personhood"] and deep["live"]["personhood"][0].get("rung") != "careful":
+        failures.append("the deep subject's manifest row did not carry its rung name")
     elif burst["personhood"] and (climbing["personhood"][0]["priority"]
                                   >= burst["personhood"][0]["priority"]):
         failures.append("the climb did not stay below full salience")
@@ -390,7 +408,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, stale, corrected, recovered, burst and climbing states)")
+    print("verify_live_personhood: OK (hot, stale, corrected, recovered, burst, climbing and deep states)")
     return 0
 
 

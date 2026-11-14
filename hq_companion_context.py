@@ -127,6 +127,9 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     for c in candidates:
         if c["kind"] == "personhood":
             c["priority"] = personhood_priority
+            if salience.get("rung"):
+                # The manifest says which rung she is on, not a base tier she is not.
+                c["rung"] = str(salience["rung"])
             if personhood_share and block_cost(c) > personhood_share:
                 # Her byte share is already spent by the size of her own line:
                 # a subject this cold does not get to occupy the packet.
@@ -155,8 +158,11 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
         history = "group" in c
         row = dict(id=f"{kind}.{c['order']}", kind=kind, estimated_bytes=len(text.encode()),
                    selected=False, reason="budget", priority=c.get("priority", PRIORITY[kind]))
-        if kind == "personhood" and personhood_share:
-            row["share"] = personhood_share
+        if kind == "personhood":
+            if personhood_share:
+                row["share"] = personhood_share
+            if c.get("rung"):
+                row["rung"] = c["rung"]
         if history:
             row["history_index"] = c["history_index"]
         cost = block_cost(c, page_prefix=not page_selected)
