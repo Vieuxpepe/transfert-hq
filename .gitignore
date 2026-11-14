@@ -109,3 +109,4 @@ tools/librespot/*.exe
 assets/companion/chat/voice_cache/
 .hq-engine/
 /_walk_phone.txt
+/nav-*.png

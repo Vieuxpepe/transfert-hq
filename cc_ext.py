@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import heapq
 import ipaddress
 import json
@@ -30,6 +31,7 @@ TRANSFERS_PATH_NAME = "bridge_transfers.json"
 ACTIVITY_PATH_NAME = "bridge_activity.json"
 
 _lock = threading.Lock()
+_OUTPUT_CODEC = ""  # resolved once from the console code page (see _output_codec)
 _activity: list[dict] = []
 
 
@@ -2707,12 +2709,46 @@ def _get_job(job_id: str) -> _TerminalJob:
     return job
 
 
+def _output_codec() -> str:
+    """Code page of a shell's output pipe: cmd.exe and PowerShell write OEM (850 here), not UTF-8.
+
+    Decoding that pipe with Python's ANSI default turned « Réponse » into « R‚ponse ».
+    """
+    global _OUTPUT_CODEC
+    if _OUTPUT_CODEC:
+        return _OUTPUT_CODEC
+    name = "utf-8"
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            candidate = "cp%d" % int(ctypes.windll.kernel32.GetOEMCP())
+        except Exception:
+            candidate = ""
+        if candidate:
+            try:
+                codecs.lookup(candidate)
+                name = candidate
+            except LookupError:
+                pass
+    _OUTPUT_CODEC = name
+    return name
+
+
+def _decode_output(chunk: bytes) -> str:
+    """UTF-8 when the tool emits UTF-8 (python, git, ssh), the console code page otherwise."""
+    try:
+        return chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        return chunk.decode(_output_codec(), "replace")
+
+
 def _drain(job: _TerminalJob) -> None:
     try:
         stream = job.proc.stdout if job.proc else None
         if stream is not None:
-            for line in stream:
-                job.write(line)
+            for chunk in iter(stream.readline, b""):
+                job.write(_decode_output(chunk))
             stream.close()
     except (OSError, ValueError):
         pass
@@ -2893,9 +2929,7 @@ def _spawn(job: _TerminalJob, argv, *, shell: bool, cwd: str | None) -> None:
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,  # one stream, so the transcript keeps its order
         "stdin": subprocess.DEVNULL,
-        "text": True,
-        "errors": "replace",
-        "bufsize": 1,
+        # Bytes: _drain decodes each line itself, because a Windows shell writes OEM, not UTF-8.
         "shell": shell,
         "cwd": cwd,
     }
