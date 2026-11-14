@@ -55,7 +55,7 @@ PRIORITY = {"correction": 100, "event": 95, "followthrough": 92, "sister": 91, "
             "behavior": 88, "memory": 85, "summary": 80, "history_recent": 76, "page": 70,
             "continuity": 68, "history_relevant": 65,
             "delivery": 30, "quirk": 20}
-HEADINGS = {"summary": "RÉSUMÉ", "memory": "SOUVENIR PERTINENT", "correction": "CORRECTION EXPLICITE"}
+HEADINGS = {"summary": "RÉSUMÉ", "memory": "SOUVENIR PERTINENT", "correction": "CORRECTION"}
 
 
 def assemble(system, message, *, budget, groups, summary="", memories=(), corrections=(), page=""):
