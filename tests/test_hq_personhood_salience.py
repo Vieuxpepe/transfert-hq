@@ -208,7 +208,7 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual((salience["pushback"], salience["corrected"]), (4, 8))
         self.assertFalse(salience["withhold"], "four of eight answered is not closed")
         self.assertEqual((salience["tier"], salience["rung"]), ("careful", "careful"))
-        self.assertEqual((salience["priority"], salience["share"]), (84, 190))
+        self.assertEqual((salience["priority"], salience["share"]), (89, 190))
         row, _, payload = self.assemble(packet)
         self.assertIsNotNone(row)
         self.assertTrue(row["selected"])
@@ -224,6 +224,22 @@ class PersonhoodSalienceTests(Base):
             tier = self.seed(*ages)["personhood"]["tier"]
             self.assertEqual(tier, expected)
             self.assertNotIn(tier, ("cold", "warm", "hot"))
+
+    def test_a_deep_hot_subject_never_ranks_below_a_cold_one(self):
+        rungs = ph.SALIENCE_LADDER["hot"]
+        self.assertGreater(min(v[1] for v in rungs.values()), ph.SALIENCE_PRIORITY["cold"])
+        self.assertGreater(min(v[2] for v in rungs.values()), ph.SALIENCE_SHARE["cold"])
+        self.push_back(times=8, age=6 * 3600)
+        deep_row, _, _ = self.assemble(self.seed(1800, 1500, 1200, 900))
+        self.tearDown()
+        self.setUp()
+        cold_row, _, _ = self.assemble(self.seed(20 * 3600))
+        self.assertEqual(cold_row["priority"], 84)
+        self.assertEqual(deep_row["rung"], "careful")
+        self.assertEqual(cold_row["rung"], "cold")
+        self.assertGreater(deep_row["priority"], cold_row["priority"],
+                           "eight corrections deep she still outranks a cold subject")
+        self.assertGreater(deep_row["share"], cold_row["share"])
 
     def test_the_prompt_and_the_row_never_name_a_base_tier_while_she_climbs(self):
         self.push_back(times=8, age=6 * 3600)
@@ -303,7 +319,7 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["progress"], 0.25)
         self.assertTrue(salience["withhold"])
         self.assertEqual((salience["tier"], salience["rung"]), ("withheld", "guarded"))
-        self.assertEqual((salience["priority"], salience["share"]), (88, 200))
+        self.assertEqual((salience["priority"], salience["share"]), (90, 200))
         self.assertEqual(packet["continuity"], "")
 
     def test_interleaved_corrections_and_returns_end_clean(self):

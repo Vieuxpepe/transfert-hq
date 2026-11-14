@@ -10,7 +10,7 @@ subject states for the session's own owner:
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
   climbing   four corrections, two returns                  -> tier answering, 91/240, offered (half-answered)
-  deep       eight corrections, four returns                -> tier careful, 84/190, offered (four still open)
+  deep       eight corrections, four returns                -> tier careful, 89/190, offered (four still open)
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -65,7 +65,7 @@ CLIMBING = {"tier": "answering", "rung": "answering", "priority": 91, "share": 2
             "selected": True, "pushback": 2, "progress": 0.5}
 # Eight corrections, four answered: deep in a long recovery, exactly half
 # answered, so the ladder keeps her named four rungs down instead of withheld.
-DEEP = {"tier": "careful", "rung": "careful", "priority": 84, "share": 190,
+DEEP = {"tier": "careful", "rung": "careful", "priority": 89, "share": 190,
         "selected": True, "pushback": 4, "progress": 0.5}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
