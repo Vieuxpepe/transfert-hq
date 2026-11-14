@@ -567,7 +567,8 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
                     # how present that subject is decides its priority and bytes.
                     personhood = {k: detail[k] for k in ("tier", "score", "priority", "share",
                                                          "basis", "age_s", "repeats", "pushback",
-                                                         "withhold") if k in detail}
+                                                         "corrected", "progress", "withhold")
+                                  if k in detail}
                 except Exception:
                     hint, personhood = "", {}
         style = presence.style_from_memories(active)

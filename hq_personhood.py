@@ -1113,32 +1113,44 @@ def _delivery_clause(snap: dict[str, Any], social: bool) -> str:
     return "TONALITÉ DE PASSAGE (pas un fait) : " + "; ".join(parts) + "." if parts else ""
 
 
-def salience(age: float | None, repeats: int, pushback: int = 0) -> dict[str, Any]:
+def salience(age: float | None, repeats: int, pushback: int = 0,
+             corrected: int | None = None) -> dict[str, Any]:
     """Tier, priority and byte share for one line, from its own evidence.
 
-    ``pushback`` counts the Master's corrections about that same subject that he
-    has not yet come back to himself: each one lowers the tier, two of them close
-    the offer. Every turn he spends on that subject afterwards answers one of
-    them, so the fade is a pause, not a verdict.
+    ``pushback`` is how many of the Master's corrections about that subject are
+    still unanswered and ``corrected`` how many there were in all. Each of his
+    returns answers one, so the tier climbs back a step at a time and the
+    priority and byte share climb with it; only the last one restored reaches the
+    uncorrected values. The offer stays closed while two corrections are open and
+    he has answered less than half of them.
     """
     repeats = max(1, int(repeats or 1))
     pushback = max(0, int(pushback or 0))
+    total = max(0, int(corrected if corrected is not None else pushback))
+    progress = 0.0 if not total else max(0.0, min(1.0, (total - pushback) / total))
     if age is None:
-        tier = "warm"
+        base = "warm"
     elif age <= SALIENCE_RECENT_S and repeats >= 2:
-        tier = "hot"
+        base = "hot"
     elif age <= SALIENCE_WARM_S or repeats >= 2:
-        tier = "warm"
+        base = "warm"
     else:
-        tier = "cold"
+        base = "cold"
     tiers = ("cold", "warm", "hot")
-    tier = tiers[max(0, tiers.index(tier) - min(2, pushback))]
+    tier = tiers[max(0, tiers.index(base) - min(2, pushback))]
     freshness = 1.0 if age is None else max(0.0, 1.0 - max(0.0, float(age)) / PREOCCUPATION_TTL)
     score = round(0.65 * freshness + 0.35 * min(1.0, (repeats - 1) / 2.0), 3)
-    score = round(score * max(0.0, 1.0 - 0.2 * pushback), 3)
-    return {"tier": tier, "score": score, "priority": SALIENCE_PRIORITY[tier],
-            "share": SALIENCE_SHARE[tier], "age_s": None if age is None else int(age),
-            "repeats": repeats, "pushback": pushback, "withhold": pushback >= 2}
+    score = round(score * (0.5 + 0.5 * progress) if total
+                  else score * max(0.0, 1.0 - 0.2 * pushback), 3)
+    priority, share = SALIENCE_PRIORITY[tier], SALIENCE_SHARE[tier]
+    if total and 0.0 < progress < 1.0:
+        # Half-answered corrections sit between the demoted tier and her own.
+        priority = int(priority + (SALIENCE_PRIORITY[base] - priority) * progress + 0.5)
+        share = int(share + (SALIENCE_SHARE[base] - share) * progress + 0.5)
+    return {"tier": tier, "score": score, "priority": priority, "share": share,
+            "age_s": None if age is None else int(age), "repeats": repeats,
+            "pushback": pushback, "corrected": total, "progress": round(progress, 3),
+            "withhold": pushback >= 2 and progress < 0.5}
 
 
 def _pushback_detail(pushback: Any, label: str, stamp: float) -> tuple[int, float | None]:
@@ -1309,13 +1321,14 @@ def hint_detail(key: str, query: Any, *, owner: str | None = None, now: float | 
     if not line:
         return {}
     label = evidence.get("label", "")
-    hits, latest = _pushback_detail(pushback, label, stamp)
-    if hits and latest is not None:
+    total, latest = _pushback_detail(pushback, label, stamp)
+    hits = total
+    if total and latest is not None:
         # Exact, from the ledger: every return he made counts, however quickly
         # they arrived and however many corrections preceded them.
-        hits = max(0, hits - _subject_returns(key, label, latest, owner=owner, now=stamp))
+        hits = max(0, total - _subject_returns(key, label, latest, owner=owner, now=stamp))
     detail = {"line": line, "basis": evidence["basis"],
-              **salience(evidence["age"], evidence["repeats"], hits)}
+              **salience(evidence["age"], evidence["repeats"], hits, total)}
     if detail.get("withhold"):
         detail["line"] = ""
     return detail

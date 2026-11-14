@@ -1,7 +1,7 @@
 """Live personhood gate: her line must come out of real state, not a constant.
 
 Signs in through the bridge's own /login (the PIN is read from
-bridge_config.json and never printed), then drives five genuinely different
+bridge_config.json and never printed), then drives six genuinely different
 subject states for the session's own owner:
 
   hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 320
@@ -9,6 +9,7 @@ subject states for the session's own owner:
   corrected  the hot turns plus two corrections about it -> withheld entirely (pushback 2)
   recovered  those corrections, then two turns of his own -> back to hot, pushback 0
   burst      four corrections, five returns back to back    -> hot again, pushback 0, same row as hot
+  climbing   four corrections, two returns                  -> offered at priority 91, share 240 (half-answered)
 
 For each state it captures the live read-only /api/ai context_preview, compares
 it with in-process assembly under the live companion config, and restores both
@@ -57,6 +58,10 @@ RECOVERED = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pus
 # Four corrections answered by five returns in one burst: the store keeps only
 # three sources per subject, so the row must come back from the ledger itself.
 BURST = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
+# Half of four corrections answered: she is back in the offer, between the
+# withdrawn subject and her own salience, rather than switched on abruptly.
+CLIMBING = {"tier": "cold", "priority": 91, "share": 240, "selected": True,
+            "pushback": 2, "progress": 0.5}
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
     "cold": {"expected": COLD, "ages": (20 * 3600,)},
@@ -65,6 +70,8 @@ STATES = {
                   "correction_age": 3 * 3600},
     "burst": {"expected": BURST, "ages": (1800, 1500, 1200, 900, 600), "corrections": 4,
               "correction_age": 4 * 3600},
+    "climbing": {"expected": CLIMBING, "ages": (1800, 1500), "corrections": 4,
+                 "correction_age": 4 * 3600},
 }
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
                "J'aime beaucoup la fermentation du chou.",
@@ -185,7 +192,8 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
                                 pushback=pushback)
         out["salience"] = {k: detail[k] for k in ("tier", "score", "priority", "share",
                                                   "basis", "age_s", "repeats", "pushback",
-                                                  "withhold") if k in detail}
+                                                  "corrected", "progress", "withhold")
+                           if k in detail}
         out["line"] = detail.get("line") or ""
 
         payload = {"action": "transferania", "op": "context_preview", "kind": "chat",
@@ -238,6 +246,8 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: tier {result['salience'].get('tier')} != {expected['tier']}")
     if "pushback" in expected and result["salience"].get("pushback") != expected["pushback"]:
         failures.append(f"{name}: net pushback {result['salience'].get('pushback')} != {expected['pushback']}")
+    if "progress" in expected and result["salience"].get("progress") != expected["progress"]:
+        failures.append(f"{name}: climb progress {result['salience'].get('progress')} != {expected['progress']}")
     if (result["salience"].get("share") or 0) != expected["share"] and not expected.get("withhold"):
         failures.append(f"{name}: in-process share {result['salience'].get('share')} != {expected['share']}")
 
@@ -329,6 +339,12 @@ def main() -> int:
         failures.append("a subject corrected twice still has a live personhood row")
     recovered = report["states"]["recovered"]["live"]
     burst = report["states"]["burst"]["live"]
+    climbing = report["states"]["climbing"]["live"]
+    if not climbing["personhood"]:
+        failures.append("a half-answered subject was not offered at all")
+    elif burst["personhood"] and (climbing["personhood"][0]["priority"]
+                                  >= burst["personhood"][0]["priority"]):
+        failures.append("the climb did not stay below full salience")
     if not burst["personhood"]:
         failures.append("a burst of returns did not bring her line back")
     elif hot["personhood"] and (burst["personhood"][0]["priority"], burst["personhood"][0].get("share"),
@@ -368,7 +384,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, stale, corrected, recovered and burst live states)")
+    print("verify_live_personhood: OK (hot, stale, corrected, recovered, burst and climbing states)")
     return 0
 
 

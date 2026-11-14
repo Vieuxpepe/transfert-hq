@@ -192,13 +192,43 @@ class PersonhoodSalienceTests(Base):
         row, _, _ = self.assemble(packet)
         self.assertTrue(row["selected"])
 
-    def test_one_return_short_leaves_her_one_step_down(self):
+    def test_one_return_short_leaves_her_close_to_her_own_salience(self):
         self.push_back(times=4, age=4 * 3600)
         packet = self.seed(1800, 1500, 1200)
         salience = packet["personhood"]
         self.assertEqual(salience["pushback"], 1)
         self.assertFalse(salience["withhold"])
-        self.assertEqual((salience["priority"], salience["share"]), (92, 200))
+        self.assertEqual(salience["tier"], "warm")
+        self.assertEqual((salience["priority"], salience["share"]), (97, 290))
+
+    def test_salience_climbs_with_each_of_his_returns(self):
+        """One ladder, not an on/off switch: each answer raises her a step."""
+        self.push_back(times=4, age=4 * 3600)
+        ladder = []
+        for ages in ((1800, 1500), (1800, 1500, 1200), (1800, 1500, 1200, 900)):
+            if ladder:  # fresh store per rung
+                self.tearDown()
+                self.setUp()
+                self.push_back(times=4, age=4 * 3600)
+            packet = self.seed(*ages)
+            salience = packet["personhood"]
+            self.assertEqual(salience["pushback"], 4 - len(ages))
+            row, _, payload = self.assemble(packet)
+            ladder.append((salience["priority"], salience["share"], row is not None
+                           and row["selected"], "SUJET RÉCENT" in payload))
+        self.assertEqual([(p, s) for p, s, _, _ in ladder], [(91, 240), (97, 290), (98, 320)])
+        self.assertEqual([selected for _, _, selected, _ in ladder], [True, True, True])
+        self.assertEqual([shown for _, _, _, shown in ladder], [True, True, True])
+
+    def test_a_barely_answered_subject_stays_closed(self):
+        # One of four corrections answered: a quarter of the way back, still shut.
+        self.push_back(times=4, age=4 * 3600)
+        packet = self.seed(20000, 1800)  # one turn long before the corrections
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 3)
+        self.assertEqual(salience["progress"], 0.25)
+        self.assertTrue(salience["withhold"])
+        self.assertEqual(packet["continuity"], "")
 
     def test_interleaved_corrections_and_returns_end_clean(self):
         for hours in (6, 4, 2):
@@ -211,18 +241,19 @@ class PersonhoodSalienceTests(Base):
         self.assertTrue(row["selected"])
 
     def test_a_return_after_a_correction_cancels_one(self):
-        self.push_back(times=2, age=3 * 3600)
-        packet = self.seed(1800)
+        self.push_back(times=2, age=3600)
+        packet = self.seed(7200, 1800)  # one turn before the correction, one after
         salience = packet["personhood"]
         self.assertEqual(salience["pushback"], 1)
+        self.assertEqual(salience["progress"], 0.5)
         self.assertFalse(salience["withhold"], "one return reopens the offer")
-        self.assertEqual(salience["tier"], "cold")
-        self.assertEqual((salience["priority"], salience["share"]), (84, 160))
+        self.assertEqual(salience["tier"], "warm")
+        self.assertEqual((salience["priority"], salience["share"]), (95, 260))
         self.assertNotEqual(packet["continuity"], "")
-        row, _, _ = self.assemble(packet)
-        self.assertIsNotNone(row)
-        self.assertFalse(row["selected"])
-        self.assertEqual(row["reason"], "budget")
+        row, _, payload = self.assemble(packet)
+        self.assertTrue(row["selected"])
+        self.assertEqual(row["priority"], 95)
+        self.assertIn("SUJET RÉCENT", payload)
 
     def test_coming_back_twice_restores_the_full_salience(self):
         self.push_back(times=2, age=3 * 3600)
