@@ -1,15 +1,17 @@
 """Live personhood gate: her line must come out of real state, not a constant.
 
 Signs in through the bridge's own /login (the PIN is read from
-bridge_config.json and never printed), then drives two genuinely different
+bridge_config.json and never printed), then drives four genuinely different
 subject states for the session's own owner:
 
-  hot   two turns about the subject inside the hour  -> tier hot,  priority 98, share 320
-  cold  one turn about it twenty hours ago           -> tier cold, priority 84, share 160
+  hot        two turns about the subject inside the hour -> tier hot,  priority 98, share 320
+  cold       one turn about it twenty hours ago          -> tier cold, priority 84, share 160
+  corrected  the hot turns plus two corrections about it -> withheld entirely (pushback 2)
+  recovered  those corrections, then two turns of his own -> back to hot, pushback 0
 
 For each state it captures the live read-only /api/ai context_preview, compares
-it with in-process assembly under the live companion config, and restores the
-personhood store byte-for-byte. It fails closed when the bridge is stale
+it with in-process assembly under the live companion config, and restores both
+of the account's stores byte-for-byte. It fails closed when the bridge is stale
 (``pending: true``) or when any predicted value does not match.
 
 Run with the bridge up:  python scripts/verify_live_personhood.py
@@ -35,19 +37,29 @@ import hq_personhood as ph  # noqa: E402
 
 BASE = "http://127.0.0.1:8765"
 DEVICE = "hqtestdevice01ab"
-# Social, and it names the subject, so the live pick cannot drift onto another
-# recent turn while the bridge is in use.
-MESSAGE = "Tu te souviens de notre discussion sur la fermentation du chou ?"
+# It names the subject (so the live pick cannot drift onto another recent turn)
+# without being a recall request, which would hand the turn to the correction
+# episode instead of letting her own salience decide.
+MESSAGE = "La fermentation du chou, c'est intéressant."
 COOKIE = "transfert_session"
 SUBJECT = "Parle-moi de la fermentation du chou."
 
-HOT = {"tier": "hot", "priority": 98, "share": 320, "selected": True}
-COLD = {"tier": "cold", "priority": 84, "share": 160, "selected": False}
-PUSHED = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "withhold": True}
+HOT = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
+COLD = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "pushback": 0}
+PUSHED = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "withhold": True,
+          "pushback": 2}
 # Same recent evidence as hot, but the Master corrected this very subject twice:
-# the offer is withdrawn instead of merely shrinking.
-STATES = {"hot": (HOT, (3600, 1800), 0), "cold": (COLD, (20 * 3600,), 0),
-          "pushed_back": (PUSHED, (3600, 1800), 2)}
+# the offer is withdrawn instead of merely shrinking...
+# ...and the same corrections followed by his own return to it twice restore her
+# full salience: the fade is a pause, not a verdict.
+RECOVERED = {"tier": "hot", "priority": 98, "share": 320, "selected": True, "pushback": 0}
+STATES = {
+    "hot": {"expected": HOT, "ages": (3600, 1800)},
+    "cold": {"expected": COLD, "ages": (20 * 3600,)},
+    "pushed_back": {"expected": PUSHED, "ages": (3600, 1800), "corrections": 2},
+    "recovered": {"expected": RECOVERED, "ages": (1800, 900), "corrections": 2,
+                  "correction_age": 3 * 3600},
+}
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
                "J'aime beaucoup la fermentation du chou."]
 
@@ -122,7 +134,8 @@ def owner_for_token(token: str) -> str:
     return ((raw.get(token) if isinstance(raw, dict) else None) or {}).get("user") or "admin"
 
 
-def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: int = 0) -> dict:
+def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: int = 0,
+                  correction_age: float = 600) -> dict:
     """Seed one subject state, capture live + in-process, restore the store."""
     path = self_path(owner)
     store = memory_path(owner)
@@ -152,7 +165,7 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
                         "text": CORRECTIONS[index], "kind": "correction",
                         "topic": "fermentation du chou", "source_device": DEVICE,
                         "source_key": "preference:fermentation du chou",
-                        "at": time.time() - 600, "evidence": "user_correction",
+                        "at": time.time() - correction_age, "evidence": "user_correction",
                         "status": "active" if index == corrections - 1 else "superseded"})
                 memory._save(mem)
         # Read-only salience: the same helper the pipeline uses, without
@@ -216,6 +229,8 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
             failures.append(f"{name}: a withdrawn line is counted as selected")
     if result["salience"].get("tier") != expected["tier"]:
         failures.append(f"{name}: tier {result['salience'].get('tier')} != {expected['tier']}")
+    if "pushback" in expected and result["salience"].get("pushback") != expected["pushback"]:
+        failures.append(f"{name}: net pushback {result['salience'].get('pushback')} != {expected['pushback']}")
     if (result["salience"].get("share") or 0) != expected["share"] and not expected.get("withhold"):
         failures.append(f"{name}: in-process share {result['salience'].get('share')} != {expected['share']}")
 
@@ -275,9 +290,10 @@ def main() -> int:
     report = {"owner": owner, "pid": before.get("pid"), "started_at": before.get("started_at"),
               "pending_before": before.get("pending"), "config_budget": live_cfg.get("chat_input_budget"),
               "states": {}}
-    for name in ("hot", "cold", "pushed_back"):
-        expected, ages, corrections = STATES[name]
-        result = capture_state(opener, owner, live_cfg, ages, corrections)
+    for name, spec in STATES.items():
+        expected = spec["expected"]
+        result = capture_state(opener, owner, live_cfg, spec["ages"], spec.get("corrections", 0),
+                               spec.get("correction_age", 600))
         check_state(name, expected, result, failures)
         report["states"][name] = {
             "expected": expected,
@@ -304,8 +320,13 @@ def main() -> int:
     pushed = report["states"]["pushed_back"]["live"]
     if pushed["personhood"]:
         failures.append("a subject corrected twice still has a live personhood row")
+    recovered = report["states"]["recovered"]["live"]
     if hot["estimate"] <= pushed["estimate"]:
         failures.append("the corrected subject did not free the room its line took")
+    if not recovered["personhood"]:
+        failures.append("his return to the subject did not bring her line back")
+    elif recovered["personhood"][0]["priority"] != 98:
+        failures.append("the recovered subject did not return to full priority")
     if hot["totals"] == pushed["totals"] and hot["estimate"] == pushed["estimate"]:
         failures.append("hot and corrected subjects produced identical contexts")
     if not hot["personhood"] or not cold["personhood"]:
@@ -332,7 +353,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (hot, stale and corrected live states)")
+    print("verify_live_personhood: OK (hot, stale, corrected and recovered live states)")
     return 0
 
 

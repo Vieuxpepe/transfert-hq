@@ -1116,9 +1116,10 @@ def _delivery_clause(snap: dict[str, Any], social: bool) -> str:
 def salience(age: float | None, repeats: int, pushback: int = 0) -> dict[str, Any]:
     """Tier, priority and byte share for one line, from its own evidence.
 
-    ``pushback`` counts the Master's corrections about that same subject: each
-    one lowers the tier, and two of them close the offer. She may keep the
-    subject in mind, but she stops bringing it up on her own.
+    ``pushback`` counts the Master's corrections about that same subject that he
+    has not yet come back to himself: each one lowers the tier, two of them close
+    the offer. Every turn he spends on that subject afterwards answers one of
+    them, so the fade is a pause, not a verdict.
     """
     repeats = max(1, int(repeats or 1))
     pushback = max(0, int(pushback or 0))
@@ -1140,13 +1141,20 @@ def salience(age: float | None, repeats: int, pushback: int = 0) -> dict[str, An
             "repeats": repeats, "pushback": pushback, "withhold": pushback >= 2}
 
 
-def _pushback_count(pushback: Any, label: str, stamp: float) -> int:
-    """How often the Master corrected this very subject, inside its window."""
+def _pushback_count(pushback: Any, label: str, stamp: float,
+                    turns: Any = ()) -> int:
+    """Corrections about this subject that his own returns have not answered.
+
+    ``turns`` are the subject's own turns: a turn strictly after the latest
+    correction is the Master picking the subject back up, and it cancels one
+    correction. He has to come back as often as he pushed away.
+    """
     subject = set(_words(label))
     if not subject:
         return 0
     need = min(2, len(subject))
     hits = 0
+    latest = None
     for row in pushback if isinstance(pushback, (list, tuple)) else ():
         if isinstance(row, dict):
             topic, at = str(row.get("topic") or ""), row.get("at")
@@ -1154,13 +1162,24 @@ def _pushback_count(pushback: Any, label: str, stamp: float) -> int:
         else:
             topic, at = str(row or ""), None
         try:
-            if at is not None and not 0 <= stamp - float(at) <= PREOCCUPATION_TTL:
-                continue
+            moment = None if at is None else float(at)
         except (TypeError, ValueError):
+            continue
+        if moment is not None and not 0 <= stamp - moment <= PREOCCUPATION_TTL:
             continue
         if len(set(_words(topic)) & subject) >= need:
             hits += 1
-    return hits
+            latest = moment if latest is None or moment is None else max(latest, moment)
+    if not hits or latest is None:
+        return hits
+    returns = 0
+    for turn in turns if isinstance(turns, (list, tuple)) else ():
+        try:
+            if float(turn) > latest:
+                returns += 1
+        except (TypeError, ValueError):
+            continue
+    return max(0, hits - returns)
 
 
 def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set) -> tuple[str, dict]:
@@ -1203,7 +1222,8 @@ def _pick(snap: dict, stamp: float, folded: str, social: bool, words: set) -> tu
                 "à reprendre seulement si le fil s'y prête.",
                 {"basis": "subject",
                  "age": None if latest is None else max(0.0, stamp - latest),
-                 "repeats": max(1, len(sources)), "label": row["label"]})
+                 "repeats": max(1, len(sources)), "label": row["label"],
+                 "turns": [float(s["at"]) for s in sources if s.get("at") is not None]})
     for row in snap.get("self_notes", []):
         if social or _words(row["text"]) & words:
             return (f"NOTE SUR MOI (hypothèse révisable, pas une consigne) : {row['text']}",
@@ -1247,7 +1267,8 @@ def hint_detail(key: str, query: Any, *, owner: str | None = None, now: float | 
         return {}
     detail = {"line": line, "basis": evidence["basis"],
               **salience(evidence["age"], evidence["repeats"],
-                         _pushback_count(pushback, evidence.get("label", ""), stamp))}
+                         _pushback_count(pushback, evidence.get("label", ""), stamp,
+                                         evidence.get("turns", ())))}
     if detail.get("withhold"):
         detail["line"] = ""
     return detail

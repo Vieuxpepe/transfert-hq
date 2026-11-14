@@ -12,15 +12,18 @@ from tests.test_hq_ai import Base, DEV
 
 SUBJECT = "Parle-moi de la fermentation du chou."
 SHORT_SUBJECT = "robot maison"
-QUERY = "Tu te souviens de notre discussion ?"
+# A plain statement, not a recall request: the recall slot would otherwise hand
+# the turn to the correction episode and the personhood branch would never run.
+QUERY = "La fermentation du chou, c'est intéressant."
 
 
 class PersonhoodSalienceTests(Base):
-    def seed(self, *ages, subject=SUBJECT):
+    def seed(self, *ages, subject=SUBJECT, query=None):
         with memory.owner_context("admin"), memory.memory_scope("transferania"):
             for age in ages:
                 ph.observe_chat("transferania", subject, now=self.clock[0] - age)
-        return memory.context_packet(QUERY, conversation_text=QUERY)
+        asked = query or QUERY
+        return memory.context_packet(asked, conversation_text=asked)
 
     def assemble(self, packet, *, budget=None):
         system = ai.build_transferania_system("chat", "warm", nsfw=False, view="accueil",
@@ -72,7 +75,8 @@ class PersonhoodSalienceTests(Base):
         self.assertNotIn("personhood", usage["selection_totals"], "nothing selected on that share")
 
     def test_the_cold_share_is_a_byte_limit_not_a_blanket_drop(self):
-        packet = self.seed(20 * 3600, subject=SHORT_SUBJECT)
+        packet = self.seed(20 * 3600, subject=SHORT_SUBJECT,
+                           query="Le robot de la maison, c'est utile.")
         salience = packet["personhood"]
         self.assertEqual(salience["tier"], "cold")
         row, _, payload = self.assemble(packet)
@@ -141,6 +145,8 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["tier"], "cold")
         self.assertEqual((salience["priority"], salience["share"]), (84, 160))
         self.assertEqual(packet["continuity"], "", "she stops offering the subject unprompted")
+        self.assertNotEqual(packet["presence"]["continuity_kind"], "episode",
+                            "the correction must not be what silences her")
         row, usage, payload = self.assemble(packet)
         self.assertIsNone(row, "no personhood row is offered for a refused subject")
         self.assertNotIn("personhood", usage["selection_totals"])
@@ -153,6 +159,53 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(salience["pushback"], 0)
         self.assertEqual(salience["tier"], "hot")
         self.assertEqual((salience["priority"], salience["share"]), (98, 320))
+
+    def test_a_return_after_a_correction_cancels_one(self):
+        self.push_back(times=2, age=3 * 3600)
+        packet = self.seed(1800)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 1)
+        self.assertFalse(salience["withhold"], "one return reopens the offer")
+        self.assertEqual(salience["tier"], "cold")
+        self.assertEqual((salience["priority"], salience["share"]), (84, 160))
+        self.assertNotEqual(packet["continuity"], "")
+        row, _, _ = self.assemble(packet)
+        self.assertIsNotNone(row)
+        self.assertFalse(row["selected"])
+        self.assertEqual(row["reason"], "budget")
+
+    def test_coming_back_twice_restores_the_full_salience(self):
+        self.push_back(times=2, age=3 * 3600)
+        packet = self.seed(1800, 900)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 0)
+        self.assertFalse(salience["withhold"])
+        self.assertEqual(salience["tier"], "hot")
+        self.assertEqual((salience["priority"], salience["share"]), (98, 320))
+        self.assertNotEqual(packet["presence"]["continuity_kind"], "episode")
+        row, _, payload = self.assemble(packet)
+        self.assertTrue(row["selected"])
+        self.assertEqual(row["priority"], 98)
+        self.assertIn("SUJET RÉCENT", payload)
+
+    def test_a_turn_before_the_correction_does_not_count_as_a_return(self):
+        self.push_back(times=2, age=3600)
+        packet = self.seed(2 * 3600)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 2)
+        self.assertTrue(salience["withhold"])
+        self.assertEqual(packet["continuity"], "")
+
+    def test_returns_are_counted_only_after_the_latest_correction(self):
+        now = self.clock[0]
+        corrections = [{"topic": "fermentation du chou", "at": now - 7200},
+                       {"topic": "fermentation du chou", "at": now - 3600}]
+        self.assertEqual(ph._pushback_count(corrections, "fermentation du chou", now,
+                                            [now - 10800, now - 5400]), 2)
+        self.assertEqual(ph._pushback_count(corrections, "fermentation du chou", now,
+                                            [now - 600]), 1)
+        self.assertEqual(ph._pushback_count(corrections, "fermentation du chou", now,
+                                            [now - 600, now - 300]), 0)
 
     def test_corrections_outside_the_window_do_not_count(self):
         now = self.clock[0]
