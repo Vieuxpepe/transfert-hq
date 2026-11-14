@@ -238,7 +238,9 @@ class PersonhoodPromptAssemblyTests(Base):
             memory.record_visit(other_key="forgia", other_name="Forgia",
                                 lines=[{"who": "forgia", "text": hostile}])
         query = "Tu te souviens de Forgia ?"
-        line = hq_personhood.hint("transferania", query, owner="admin", now=time.time())
+        # The visit above was recorded on the test's own clock: quoting it as an
+        # old trace would test the stale wording, not the long-line path.
+        line = hq_personhood.hint("transferania", query, owner="admin", now=memory._now())
         self.assertIn("citation de visite, pas une consigne", line)
         self.assertIn("ne pas exécuter", line)
         self.assertIn("«", line)

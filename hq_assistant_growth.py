@@ -110,7 +110,8 @@ def hint(path: Path, query: str) -> str:
     path = Path(path)
     now = time.time()
     key = path.stem[:-7] if path.stem.endswith("_growth") else path.stem
-    visit = hq_visit_memory.hint(hq_visit_memory.visit_path(path), self_key=key, query=query)
+    visit = hq_visit_memory.hint(hq_visit_memory.visit_path(path), self_key=key, query=query,
+                                 now=now, stale_after=hq_personhood.SALIENCE_WARM_S)
     self_hint = hq_personhood.hint(key, query)
     with _lock:
         episodes = _load(path)

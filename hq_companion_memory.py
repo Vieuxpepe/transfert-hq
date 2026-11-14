@@ -152,7 +152,8 @@ def recent_visit(*, other_key: str | None = None) -> dict | None:
 
 
 def visit_hint(query) -> str:
-    return hq_visit_memory.hint(visit_path(), self_key=_memory_scope.get(), query=query, now=_now())
+    return hq_visit_memory.hint(visit_path(), self_key=_memory_scope.get(), query=query, now=_now(),
+                                stale_after=hq_personhood.SALIENCE_WARM_S)
 
 
 def _load():

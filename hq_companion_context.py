@@ -47,7 +47,9 @@ def page_kind(text):
                          ("SUJET EN ATTENTE", "continuity"), ("ÉPISODE ÉNONCÉ", "continuity"),
                          ("Rituel partagé", "continuity"), ("Avis provisoire", "continuity"),
                          # Her own personhood lines: identity content, not page chrome.
-                         ("FIL RÉCENT AVEC", "personhood"), ("POINT À ÉCLAIRCIR", "personhood"),
+                         ("FIL RÉCENT AVEC", "personhood"), ("FIL ANCIEN AVEC", "personhood"),
+                         ("POINT À ÉCLAIRCIR", "personhood"), ("POINT ANCIEN À ÉCLAIRCIR", "personhood"),
+                         ("VISITE RÉCENTE AVEC", "personhood"), ("VISITE ANCIENNE AVEC", "personhood"),
                          ("SUJET RÉCENT", "personhood"), ("SUJET ANCIEN", "personhood"),
                          ("NOTE SUR MOI", "personhood"),
                          ("VALEUR APPRISE", "personhood")):

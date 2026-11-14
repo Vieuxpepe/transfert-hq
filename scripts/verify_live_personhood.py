@@ -16,6 +16,14 @@ subject states for the session's own owner:
   deep_warm  sixteen corrections answered by eight older turns -> tier unready on the warm band, 48/390
   deep_hot   sixteen corrections answered by eight fresh turns -> tier unready on the hot band, 80/450
 
+Her other trace-bearing lines are seeded too, each at both sides of the same warm
+window, and each checked from the printed payload rather than from an assumed
+string: fil_fresh/fil_stale carry a thread from Forgia's own visit log into
+"FIL RÉCENT AVEC" / "FIL ANCIEN AVEC"; point_fresh/point_stale turn two
+contradictory delivery signals into "POINT À ÉCLAIRCIR" / "POINT ANCIEN À
+ÉCLAIRCIR"; visit_fresh/visit_stale put a visit in her own log so the recall
+block itself is printed, as "VISITE RÉCENTE AVEC" / "VISITE ANCIENNE AVEC".
+
 Every band is disjoint, so the deepest rung of a warmer band must outrank the
 best row of the colder one: deepest warm (48/390) above best cold (40/380), and
 deepest hot (80/450) above best warm (70/440). Every one of them is included in
@@ -46,6 +54,7 @@ sys.path.insert(0, str(ROOT))
 import hq_ai as ai  # noqa: E402
 import hq_companion_memory as memory  # noqa: E402
 import hq_personhood as ph  # noqa: E402
+import hq_visit_memory as visits  # noqa: E402
 
 BASE = "http://127.0.0.1:8765"
 DEVICE = "hqtestdevice01ab"
@@ -82,6 +91,21 @@ DEEP_WARM = {"tier": "unready", "rung": "unready", "priority": 48, "share": 390,
              "selected": True, "pushback": 8, "progress": 0.5}
 DEEP_HOT = {"tier": "unready", "rung": "unready", "priority": 80, "share": 450,
             "selected": True, "pushback": 8, "progress": 0.5}
+# Her other three lines, in their own warm and cold bands: a thread, an open
+# question, and the recall page (which is a page block, so it has no salience of
+# its own — only the default priority and no declared byte share).
+FIL_WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "basis": "visit"}
+FIL_COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "basis": "visit"}
+POINT_WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "basis": "contested"}
+POINT_COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "basis": "contested"}
+VISIT_PAGE = {"tier": None, "priority": 96, "share": None, "selected": True, "visit_page": True}
+VISIT_LINES = [{"who": "forgia", "text": "On a reparlé du chou et du bras robot."},
+               {"who": "transferania", "text": "Je lui ai dit que le chou fermentait encore."}]
+VISIT_QUERY = "Tu penses à Forgia ?"
+SOCIAL = "Salut, ça va ?"
+# Both land on brevity, one per side, so the store has an open question to show.
+CONCISE = "Sois plus court, c'est trop long."
+DETAIL = "Explique davantage, plus de détail."
 STATES = {
     "hot": {"expected": HOT, "ages": (3600, 1800)},
     "warm": {"expected": WARM, "ages": (3 * 3600,)},
@@ -104,6 +128,26 @@ STATES = {
     "deep_hot": {"expected": DEEP_HOT,
                  "ages": (3000, 2700, 2400, 2100, 1800, 1500, 1200, 900),
                  "corrections": 16, "correction_age": 20 * 3600},
+    # Her other trace-bearing lines, each seeded at both sides of the window the
+    # code already declares. ``fil_*`` seeds the visit in the sister's own log,
+    # which is the only way her thread line reaches the prompt unobstructed;
+    # ``visit_*`` seeds it in her own, so the recall block owns the slot.
+    "fil_fresh": {"expected": FIL_WARM, "message": VISIT_QUERY,
+                  "visit": {"age": 3600, "log": "other", "other": "forgia", "name": "Forgia",
+                            "lines": VISIT_LINES}},
+    "fil_stale": {"expected": FIL_COLD, "message": VISIT_QUERY,
+                  "visit": {"age": 20 * 3600, "log": "other", "other": "forgia", "name": "Forgia",
+                            "lines": VISIT_LINES}},
+    "point_fresh": {"expected": POINT_WARM, "message": SOCIAL,
+                    "feedback": ((3600, CONCISE), (1800, DETAIL))},
+    "point_stale": {"expected": POINT_COLD, "message": SOCIAL,
+                    "feedback": ((20 * 3600, CONCISE), (19 * 3600, DETAIL))},
+    "visit_fresh": {"expected": VISIT_PAGE, "message": VISIT_QUERY,
+                    "visit": {"age": 3600, "log": "own", "other": "forgia", "name": "Forgia",
+                              "lines": VISIT_LINES, "page": True}},
+    "visit_stale": {"expected": VISIT_PAGE, "message": VISIT_QUERY,
+                    "visit": {"age": 20 * 3600, "log": "own", "other": "forgia", "name": "Forgia",
+                              "lines": VISIT_LINES, "page": True}},
 }
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
                "J'aime beaucoup la fermentation du chou.",
@@ -135,6 +179,11 @@ def self_path(owner: str) -> Path:
 def memory_path(owner: str) -> Path:
     with memory.owner_context(owner), memory.memory_scope("transferania"):
         return Path(memory.path())
+
+
+def visit_path(owner: str, key: str) -> Path:
+    with memory.owner_context(owner), memory.memory_scope("transferania"):
+        return Path(ph._visit_path_for(key, owner))
 
 
 def get(opener, path: str):
@@ -192,15 +241,20 @@ def owner_for_token(token: str) -> str:
     return ((raw.get(token) if isinstance(raw, dict) else None) or {}).get("user") or "admin"
 
 
-def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: int = 0,
-                  correction_age: float = 600) -> dict:
-    """Seed one subject state, capture live + in-process, restore the store."""
+def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), corrections: int = 0,
+                  correction_age: float = 600, *, message: str = MESSAGE,
+                  visit: dict | None = None, feedback: tuple = ()) -> dict:
+    """Seed one state, capture live + in-process, restore every store it touched."""
     path = self_path(owner)
     store = memory_path(owner)
+    logs = {key: visit_path(owner, key) for key in ("transferania", "forgia")}
     original = path.read_bytes() if path.exists() else None
     other = store.read_bytes() if store.exists() else None
+    log_originals = {log: log.read_bytes() if log.exists() else None for log in logs.values()}
     before = hashlib.sha256(original or b"").hexdigest()
-    out = {"ages": list(ages), "store_restored": False}
+    seed_ages = list(ages) + ([visit["age"]] if visit else []) + [age for age, _ in feedback]
+    out = {"ages": list(ages), "message": message, "store_restored": False,
+           "seed_age_s": max(seed_ages) if seed_ages else None}
     try:
         with memory.owner_context(owner), memory.memory_scope("transferania"):
             # The store only surfaces its two most recent threads, so a capture
@@ -213,6 +267,26 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
                     ph._write(Path(store_path), data)
             for age in ages:
                 ph.observe_chat("transferania", SUBJECT, now=time.time() - age)
+            for age, phrase in feedback:
+                ph.observe_chat("transferania", phrase, now=time.time() - age)
+            # Both visit logs start empty: a real visit would otherwise be picked
+            # ahead of the seeded one and decide the state. They are restored in
+            # ``finally`` like the other stores.
+            for log in logs.values():
+                log.parent.mkdir(parents=True, exist_ok=True)
+                log.write_text('{"v": 1, "visits": []}\n', encoding="utf-8")
+            if visit:
+                stamp = time.time() - float(visit["age"])
+                if visit.get("log") == "own":
+                    visits.record(logs["transferania"], self_key="transferania",
+                                  other_key=visit["other"], other_name=visit["name"],
+                                  lines=visit["lines"], now=stamp)
+                else:
+                    # A visit the sister recorded in her own log: the same visit,
+                    # seen from the other side of it.
+                    visits.record(logs[visit["other"]], self_key=visit["other"],
+                                  other_key="transferania", other_name="Transferania",
+                                  lines=visit["lines"], now=stamp)
             if corrections:
                 # The archive keeps one active correction per subject; the earlier
                 # ones stay as superseded evidence of the repetition.
@@ -232,16 +306,26 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
             archive = memory._load().get("episodes", [])
         pushback = [{"topic": e.get("topic") or "", "text": e.get("text") or "", "at": e.get("at")}
                     for e in archive if e.get("kind") == "correction"]
-        detail = ph.hint_detail("transferania", MESSAGE, owner=owner, now=time.time(),
-                                pushback=pushback)
-        out["salience"] = {k: detail[k] for k in ("tier", "rung", "base", "score", "priority",
-                                                  "share", "basis", "age_s", "repeats", "pushback",
-                                                  "corrected", "progress", "withhold")
-                           if k in detail}
-        out["line"] = detail.get("line") or ""
+        if visit and visit.get("page"):
+            # A visit recall owns the continuity slot before her own salience is
+            # even consulted, so this state has no salience of its own to report.
+            # The clock is passed explicitly: ``memory._now`` is only bound once
+            # the bridge has, and this script runs before that.
+            out["salience"] = {}
+            out["line"] = visits.hint(logs["transferania"], self_key="transferania",
+                                      query=message, now=time.time(),
+                                      stale_after=ph.SALIENCE_WARM_S)
+        else:
+            detail = ph.hint_detail("transferania", message, owner=owner, now=time.time(),
+                                    pushback=pushback)
+            out["salience"] = {k: detail[k] for k in ("tier", "rung", "base", "score", "priority",
+                                                      "share", "basis", "age_s", "repeats", "pushback",
+                                                      "corrected", "progress", "withhold")
+                               if k in detail}
+            out["line"] = detail.get("line") or ""
 
         payload = {"action": "transferania", "op": "context_preview", "kind": "chat",
-                   "device_id": DEVICE, "persona": "warm", "message": MESSAGE}
+                   "device_id": DEVICE, "persona": "warm", "message": message}
         status, body, _ = post(opener, "/api/ai", data=payload)
         out["preview_status"] = status
         live = json.loads(body.decode("utf-8"))
@@ -260,7 +344,14 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: 
             path.write_bytes(original)
         if other is not None:
             store.write_bytes(other)
+        for log, saved in log_originals.items():
+            if saved is not None:
+                log.write_bytes(saved)
+            elif log.exists():
+                log.unlink()
         after = hashlib.sha256(path.read_bytes() if path.exists() else b"").hexdigest()
+        out["visits_restored"] = all((log.read_bytes() if log.exists() else None) == saved
+                                     for log, saved in log_originals.items())
         out["memory_restored"] = (hashlib.sha256(store.read_bytes() if store.exists() else b"").hexdigest()
                                   == hashlib.sha256(other or b"").hexdigest())
         out["store_restored"] = after == before
@@ -286,7 +377,9 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
             failures.append(f"{name}: the withdrawn subject still reaches the prompt")
         if "personhood" in live["totals"]:
             failures.append(f"{name}: a withdrawn line is counted as selected")
-    if result["salience"].get("tier") != expected["tier"]:
+    if "basis" in expected and result["salience"].get("basis") != expected["basis"]:
+        failures.append(f"{name}: basis {result['salience'].get('basis')} != {expected['basis']}")
+    if expected.get("tier") is not None and result["salience"].get("tier") != expected["tier"]:
         failures.append(f"{name}: tier {result['salience'].get('tier')} != {expected['tier']}")
     if "pushback" in expected and result["salience"].get("pushback") != expected["pushback"]:
         failures.append(f"{name}: net pushback {result['salience'].get('pushback')} != {expected['pushback']}")
@@ -294,13 +387,16 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: climb progress {result['salience'].get('progress')} != {expected['progress']}")
     if "rung" in expected and result["salience"].get("rung") != expected["rung"]:
         failures.append(f"{name}: rung {result['salience'].get('rung')} != {expected['rung']}")
-    if (result["salience"].get("share") or 0) != expected["share"] and not expected.get("withhold"):
+    if expected.get("share") is not None and (result["salience"].get("share") or 0) != expected["share"] \
+            and not expected.get("withhold"):
         failures.append(f"{name}: in-process share {result['salience'].get('share')} != {expected['share']}")
 
     if row and row.get("priority") != expected["priority"]:
         failures.append(f"{name}: live priority {row['priority']} != {expected['priority']}")
-    if row and row.get("share") != expected["share"]:
+    if row and expected.get("share") is not None and row.get("share") != expected["share"]:
         failures.append(f"{name}: live share {row.get('share')} != {expected['share']}")
+    if row and expected.get("visit_page") and row.get("rung"):
+        failures.append(f"{name}: a visit recall page claimed a salience rung")
     if row and "rung" in expected and row.get("rung") != expected["rung"]:
         failures.append(f"{name}: live row rung {row.get('rung')} != {expected['rung']}")
     if expected["selected"] and row.get("selected") is not True:
@@ -332,6 +428,29 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
     if not result.get("line") and not result["salience"].get("withhold"):
         failures.append(f"{name}: the store offered no line for this state")
 
+    # What the payload actually prints, not what a test expected it to print:
+    # the block must begin with the line the pipeline assembled, and its own age
+    # must be readable there.
+    if expected["selected"] and row:
+        printed = live.get("hint_text") or ""
+        shown = next((ln.strip() for ln in printed.splitlines() if ln.strip() == result["line"].strip()), "")
+        result["printed_line"] = shown
+        if not shown:
+            failures.append(f"{name}: the printed payload does not carry the assembled line as its own line")
+        seed_age = result.get("seed_age_s")
+        old = seed_age is not None and seed_age > ph.SALIENCE_WARM_S
+        if shown and old and "trace locale du" not in shown:
+            failures.append(f"{name}: a trace past the warm window is printed as current")
+        if shown and not old and "trace locale du" in shown:
+            failures.append(f"{name}: a fresh trace is printed as an old one")
+        if shown and old:
+            if "rouvrir de soi-même" not in shown.lower():
+                failures.append(f"{name}: an old trace does not close itself in the payload")
+            if "si le fil s'y prête" in shown or "clin d'œil" in shown:
+                failures.append(f"{name}: an old trace still licenses unprompted resumption")
+        if shown and not old and ("rouvrir de soi-même" in shown.lower() or "trace locale du" in shown):
+            failures.append(f"{name}: a fresh trace is printed as closed or dated")
+
 
 def main() -> int:
     cfg = config()
@@ -357,8 +476,9 @@ def main() -> int:
               "states": {}}
     for name, spec in STATES.items():
         expected = spec["expected"]
-        result = capture_state(opener, owner, live_cfg, spec["ages"], spec.get("corrections", 0),
-                               spec.get("correction_age", 600))
+        result = capture_state(opener, owner, live_cfg, spec.get("ages", ()), spec.get("corrections", 0),
+                               spec.get("correction_age", 600), message=spec.get("message", MESSAGE),
+                               visit=spec.get("visit"), feedback=spec.get("feedback", ()))
         check_state(name, expected, result, failures)
         report["states"][name] = {
             "expected": expected,
@@ -375,7 +495,10 @@ def main() -> int:
                                   and result.get("system_identical")),
             "store_restored": result.get("store_restored"),
             "memory_restored": result.get("memory_restored"),
+            "visits_restored": result.get("visits_restored"),
+            "seed_age_s": result.get("seed_age_s"),
             "line_bytes": len(result.get("line", "").encode("utf-8")),
+            "printed_line": result.get("printed_line", ""),
             "hint_excerpt": result["live"]["hint_text"][:150],
             "preview_status": result.get("preview_status"),
         }
@@ -453,7 +576,8 @@ def main() -> int:
             print("  -", item)
         return 1
     print("verify_live_personhood: OK (hot, warm, stale, corrected, recovered, burst, climbing, deep, "
-          "deep_warm and deep_hot states)")
+          "deep_warm, deep_hot, fil_fresh, fil_stale, point_fresh, point_stale, visit_fresh "
+          "and visit_stale states)")
     return 0
 
 

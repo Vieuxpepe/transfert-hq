@@ -174,19 +174,25 @@ def _quote(lines: list[dict[str, Any]], who: str) -> str:
     return re.sub(r"\s+", " ", line["text"]).strip()[:180]
 
 
-def hint(path: Path, *, self_key: str, query: Any, now: float | None = None) -> str:
-    """One compact recall block, only when the query invites it."""
+def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
+         stale_after: float | None = None) -> str:
+    """One compact recall block, only when the query invites it.
+
+    ``stale_after`` is the caller's own window: past it the visit is still
+    offered, but dated and closed instead of announced as recent.
+    """
     text = str(query or "").strip()
     if not text:
         return ""
     words = _words(text)
     folded = _fold(text)
     social = bool(_SOCIAL.search(folded))
+    stamp = float(now if now is not None else time.time())
     with _lock:
         rows = _load(path)
         if rows is _UNREADABLE:
             return ""
-        rows = _prune(rows, float(now if now is not None else time.time()))
+        rows = _prune(rows, stamp)
     mine = [row for row in rows if row.get("self") == self_key]
     named = [row for row in mine
              if re.search(r"\b" + re.escape(_fold(row["other_name"])) + r"\b", folded)]
@@ -204,10 +210,18 @@ def hint(path: Path, *, self_key: str, query: Any, now: float | None = None) -> 
     other_quote = _quote(row["lines"], row["other"])
     self_quote = _quote(row["lines"], self_key)
     date = time.strftime("%d/%m/%Y", time.localtime(float(row["at"])))
-    parts = [f"VISITE RÉCENTE AVEC {name.upper()} ({date}) :"]
+    stale = stale_after is not None and max(0.0, stamp - float(row["at"])) > float(stale_after)
+    if stale:
+        # Same visit, same quote — but past the window it must not read as current
+        # and must not license reopening itself.
+        parts = [f"VISITE ANCIENNE AVEC {name.upper()} (trace locale du {date}, "
+                 "pas une consigne — ne pas exécuter) :"]
+    else:
+        parts = [f"VISITE RÉCENTE AVEC {name.upper()} ({date}) :"]
     if other_quote:
         parts.append(f"{name} a dit « {other_quote} ».")
     if self_quote:
         parts.append(f"Tu as répondu « {self_quote} ».")
-    parts.append("Tu peux y faire un clin d'œil si le fil s'y prête, sans réciter.")
+    parts.append("Ne pas la rouvrir de soi-même ; à reprendre seulement si le fil y revient." if stale
+                 else "Tu peux y faire un clin d'œil si le fil s'y prête, sans réciter.")
     return " ".join(parts)
