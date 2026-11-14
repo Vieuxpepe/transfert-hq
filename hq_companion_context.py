@@ -45,17 +45,37 @@ def page_kind(text):
                          ("VOIX TRANSFERANIA", "delivery"), ("VOIX ELSE", "delivery"),
                          ("TOUCHE FACULTATIVE", "quirk"),
                          ("SUJET EN ATTENTE", "continuity"), ("ÉPISODE ÉNONCÉ", "continuity"),
-                         ("Rituel partagé", "continuity"), ("Avis provisoire", "continuity")):
+                         ("Rituel partagé", "continuity"), ("Avis provisoire", "continuity"),
+                         # Her own personhood lines: identity content, not page chrome.
+                         ("FIL RÉCENT AVEC", "personhood"), ("POINT À ÉCLAIRCIR", "personhood"),
+                         ("SUJET RÉCENT", "personhood"), ("NOTE SUR MOI", "personhood"),
+                         ("VALEUR APPRISE", "personhood")):
         if head.startswith(prefix):
             return kind
     return "page"
 
 
-PRIORITY = {"correction": 100, "event": 95, "followthrough": 92, "sister": 91, "time": 90,
+PRIORITY = {"correction": 100, "personhood": 96, "event": 95, "followthrough": 92, "sister": 91, "time": 90,
             "behavior": 88, "memory": 85, "summary": 80, "history_recent": 76, "page": 70,
             "continuity": 68, "history_relevant": 65,
             "delivery": 30, "quirk": 20}
 HEADINGS = {"summary": "RÉSUMÉ", "memory": "SOUVENIR PERTINENT", "correction": "CORRECTION"}
+# A fixed share of the input budget belongs to the blocks that carry her
+# personhood: an explicit correction and her own lines. Optional context may
+# never spend it, so growth elsewhere cannot squeeze them out of the packet.
+PROTECTED_KINDS = ("correction", "personhood")
+PROTECTED_SHARE = 0.15
+PAGE_PREFIX = "CONTEXTE ACTUEL:\n"
+
+
+def block_cost(candidate, *, page_prefix=True):
+    """Bytes one candidate adds to the payload, in the estimator's own frame."""
+    text, kind = candidate["text"], candidate["kind"]
+    if "group" in candidate:
+        return 32 + sum(len(p["text"].encode()) for m in candidate["group"] for p in m["parts"])
+    if kind in HEADINGS:
+        return len((HEADINGS[kind] + ":\n" + text).encode()) + 2
+    return len(text.encode()) + 2 + (len(PAGE_PREFIX.encode()) if page_prefix else 0)
 
 
 def assemble(system, message, *, budget, groups, summary="", memories=(), corrections=(), page=""):
@@ -64,11 +84,12 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     Costs use the same conservative UTF-8-plus-message-overhead estimator as
     hq_ai. The manifest uses fixed kind/index IDs, sizes and reasons only.
 
-    An explicit correction is reserved before anything optional is considered:
-    its bytes are charged up front, so no other block can take that room and
-    the correction is admitted by rule whenever the mandatory core plus the
-    correction still fit the budget. If they do not, the reservation is
-    withdrawn and selection degrades to plain priority order.
+    The blocks that carry her personhood — an explicit correction, then her own
+    lines — are reserved before anything optional is considered: a bounded share
+    of the budget is charged up front and they are admitted by rule inside it,
+    so no other block can take that room and growth elsewhere cannot squeeze
+    them out. The share never exceeds what those blocks actually need, and it is
+    withdrawn (never overspent) when the mandatory core leaves no room.
     """
     base = 48 + len(system.encode()) + len(message.encode())
     if base > budget:
@@ -97,14 +118,19 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     ranked = sorted(candidates, key=lambda c: (-PRIORITY[c["kind"]],
         -c.get("relevance", 0) if c["kind"] == "history_relevant" else 0,
         -c.get("history_index", 0), c["order"]))
-    reserved = sum(len((HEADINGS["correction"] + ":\n" + c["text"]).encode()) + 2
-                   for c in candidates if c["kind"] == "correction")
-    if base + reserved > budget:
-        # The mandatory core leaves no room for an explicit correction; keep the
-        # ordinary priority pass rather than overspending the budget.
-        reserved = 0
-    # Charged before anything optional is considered, so no other block can
-    # take the correction's room: optional candidates only see what is left.
+    # The share is a ceiling on what may be set aside, never a tax: only bytes
+    # that actually carry a protected block are charged, so optional content
+    # keeps whatever no personhood line will spend.
+    share_room = min(int(budget * PROTECTED_SHARE), max(0, budget - base))
+    reserved, guaranteed = 0, set()
+    for c in ranked:
+        if c["kind"] in PROTECTED_KINDS:
+            cost = block_cost(c)
+            if reserved + cost <= share_room:
+                guaranteed.add(c["order"])
+                reserved += cost
+    # Charged before anything optional is considered, so no other block can take
+    # that room: optional candidates only see what is left after the share.
     used, page_selected = base + reserved, False
     selected, seen = [], {normalize(message), normalize(system)}
     seen.update(normalize(b) for b in re.split(r"\n\s*\n", system))
@@ -115,23 +141,21 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
                    selected=False, reason="budget", priority=PRIORITY[kind])
         if history:
             row["history_index"] = c["history_index"]
-            cost = 32 + sum(len(p["text"].encode()) for m in c["group"] for p in m["parts"])
-        elif kind in HEADINGS:
-            cost = len((HEADINGS[kind]+":\n"+text).encode()) + 2
-        else:
-            cost = len(text.encode()) + 2 + (0 if page_selected else len("CONTEXTE ACTUEL:\n".encode()))
+        cost = block_cost(c, page_prefix=not page_selected)
         if history and kind == "history_relevant" and not c["relevance"]:
             row["reason"] = "irrelevant"
         elif not history and normalize(text) in seen:
             row["reason"] = "duplicate"
-            if reserved and kind == "correction":
+            if c["order"] in guaranteed:
                 used -= cost  # release a reservation nothing will spend
-        elif reserved and kind == "correction":
-            # Already paid for by the reservation; never re-checked against the
-            # remaining room.
+        elif c["order"] in guaranteed:
+            # Already paid for by the reserved share; never re-checked against
+            # the remaining room, so optional content cannot displace it.
             row.update(selected=True, reason="included")
             selected.append(c)
             seen.add(normalize(text))
+            if kind not in HEADINGS:
+                page_selected = True
         elif used + cost <= budget:
             row.update(selected=True, reason="included")
             used += cost
