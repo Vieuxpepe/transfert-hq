@@ -152,7 +152,7 @@ def recent_visit(*, other_key: str | None = None) -> dict | None:
 
 
 def visit_detail(query):
-    """The recall block and how old the visit behind it is."""
+    """The recall block, how old the visit behind it is, and how many back it."""
     return hq_visit_memory.hint_detail(visit_path(), self_key=_memory_scope.get(), query=query,
                                        now=_now(), stale_after=hq_personhood.SALIENCE_WARM_S)
 
@@ -555,14 +555,16 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
             # stays out of ambient lines that have no conversational turn.
             # An explicit recall still gets its visit; only the unprompted
             # continuity offer is closed by a tense grade.
-            visit_recall, visit_age = (("", None) if (withheld and not recall)
-                                       else visit_detail(episode_query))
+            visit_recall, visit_age, visit_repeats = (
+                ("", None, 1) if (withheld and not recall) else visit_detail(episode_query))
             if visit_recall:
                 hint = visit_recall
                 # The recall page ranks by the visit it quotes instead of a fixed
-                # personhood priority, so an old visit sits below a fresh one and
-                # below her own live line; the bands are the same ones.
-                personhood = {**hq_personhood.salience(visit_age, 1), "basis": "visit_recall"}
+                # personhood priority: an old visit sits below a fresh one, and a
+                # sister visited again and again reaches the hot band her line
+                # would, because repeats comes from the log, not a constant.
+                personhood = {**hq_personhood.salience(visit_age, visit_repeats),
+                              "basis": "visit_recall"}
             elif conversation_text is not None:
                 try:
                     # The correction archive is the record of the Master pushing

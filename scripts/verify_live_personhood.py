@@ -104,9 +104,16 @@ VISIT_PAGE = {"tier": "warm", "rung": "warm", "priority": 70, "share": 440, "sel
               "basis": "visit_recall", "visit_page": True}
 VISIT_PAGE_STALE = {"tier": "cold", "rung": "cold", "priority": 40, "share": 380, "selected": True,
                     "basis": "visit_recall", "visit_page": True}
+# The same sister, visited again and again: repeats comes from the log, so the
+# recall page reaches the hot band exactly as a repeated subject does.
+VISIT_PAGE_REPEAT = {"tier": "hot", "rung": "hot", "priority": 98, "share": 530, "selected": True,
+                     "basis": "visit_recall", "visit_page": True}
+VISIT_ELSE_LINES = [{"who": "else", "text": "On a reparlé du chou, elle avait des chiffres."},
+                    {"who": "transferania", "text": "Je lui ai dit que le chou fermentait encore."}]
 VISIT_LINES = [{"who": "forgia", "text": "On a reparlé du chou et du bras robot."},
                {"who": "transferania", "text": "Je lui ai dit que le chou fermentait encore."}]
 VISIT_QUERY = "Tu penses à Forgia ?"
+ELSE_QUERY = "Tu penses à Else ?"
 SOCIAL = "Salut, ça va ?"
 # Both land on brevity, one per side, so the store has an open question to show.
 CONCISE = "Sois plus court, c'est trop long."
@@ -138,21 +145,35 @@ STATES = {
     # which is the only way her thread line reaches the prompt unobstructed;
     # ``visit_*`` seeds it in her own, so the recall block owns the slot.
     "fil_fresh": {"expected": FIL_WARM, "message": VISIT_QUERY,
-                  "visit": {"age": 3600, "log": "other", "other": "forgia", "name": "Forgia",
+                  "visit": {"ages": (3600,), "log": "other", "other": "forgia", "name": "Forgia",
                             "lines": VISIT_LINES}},
     "fil_stale": {"expected": FIL_COLD, "message": VISIT_QUERY,
-                  "visit": {"age": 20 * 3600, "log": "other", "other": "forgia", "name": "Forgia",
+                  "visit": {"ages": (20 * 3600,), "log": "other", "other": "forgia", "name": "Forgia",
                             "lines": VISIT_LINES}},
     "point_fresh": {"expected": POINT_WARM, "message": SOCIAL,
                     "feedback": ((3600, CONCISE), (1800, DETAIL))},
     "point_stale": {"expected": POINT_COLD, "message": SOCIAL,
                     "feedback": ((20 * 3600, CONCISE), (19 * 3600, DETAIL))},
     "visit_fresh": {"expected": VISIT_PAGE, "message": VISIT_QUERY,
-                    "visit": {"age": 3600, "log": "own", "other": "forgia", "name": "Forgia",
+                    "visit": {"ages": (3600,), "log": "own", "other": "forgia", "name": "Forgia",
                               "lines": VISIT_LINES, "page": True}},
     "visit_stale": {"expected": VISIT_PAGE_STALE, "message": VISIT_QUERY,
-                    "visit": {"age": 20 * 3600, "log": "own", "other": "forgia", "name": "Forgia",
+                    "visit": {"ages": (20 * 3600,), "log": "own", "other": "forgia", "name": "Forgia",
                               "lines": VISIT_LINES, "page": True}},
+    "visit_repeat": {"expected": VISIT_PAGE_REPEAT, "message": VISIT_QUERY,
+                     "visit": {"ages": (3600, 7200, 10800), "log": "own", "other": "forgia",
+                               "name": "Forgia", "lines": VISIT_LINES, "page": True}},
+    # The other sister through the same log and the same bands: one visit is warm,
+    # one old visit is cold, three recent ones reach hot.
+    "visit_else_fresh": {"expected": VISIT_PAGE, "message": ELSE_QUERY,
+                         "visit": {"ages": (3600,), "log": "own", "other": "else", "name": "Else",
+                                   "lines": VISIT_ELSE_LINES, "page": True}},
+    "visit_else_stale": {"expected": VISIT_PAGE_STALE, "message": ELSE_QUERY,
+                         "visit": {"ages": (20 * 3600,), "log": "own", "other": "else", "name": "Else",
+                                   "lines": VISIT_ELSE_LINES, "page": True}},
+    "visit_else_repeat": {"expected": VISIT_PAGE_REPEAT, "message": ELSE_QUERY,
+                          "visit": {"ages": (3600, 7200, 10800), "log": "own", "other": "else",
+                                    "name": "Else", "lines": VISIT_ELSE_LINES, "page": True}},
 }
 CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
                "J'aime beaucoup la fermentation du chou.",
@@ -252,12 +273,12 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
     """Seed one state, capture live + in-process, restore every store it touched."""
     path = self_path(owner)
     store = memory_path(owner)
-    logs = {key: visit_path(owner, key) for key in ("transferania", "forgia")}
+    logs = {key: visit_path(owner, key) for key in ("transferania", "forgia", "else")}
     original = path.read_bytes() if path.exists() else None
     other = store.read_bytes() if store.exists() else None
     log_originals = {log: log.read_bytes() if log.exists() else None for log in logs.values()}
     before = hashlib.sha256(original or b"").hexdigest()
-    seed_ages = list(ages) + ([visit["age"]] if visit else []) + [age for age, _ in feedback]
+    seed_ages = list(ages) + (list(visit["ages"]) if visit else []) + [age for age, _ in feedback]
     out = {"ages": list(ages), "message": message, "store_restored": False,
            "seed_age_s": max(seed_ages) if seed_ages else None}
     try:
@@ -280,8 +301,10 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
             for log in logs.values():
                 log.parent.mkdir(parents=True, exist_ok=True)
                 log.write_text('{"v": 1, "visits": []}\n', encoding="utf-8")
-            if visit:
-                stamp = time.time() - float(visit["age"])
+            # Oldest first: a record prunes against its own timestamp, so writing
+            # a more recent visit first would drop the next one.
+            for age in sorted((visit or {}).get("ages", ()), reverse=True):
+                stamp = time.time() - float(age)
                 if visit.get("log") == "own":
                     visits.record(logs["transferania"], self_key="transferania",
                                   other_key=visit["other"], other_name=visit["name"],
@@ -316,11 +339,10 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
             # even consulted, so this state has no salience of its own to report.
             # The clock is passed explicitly: ``memory._now`` is only bound once
             # the bridge has, and this script runs before that.
-            out["line"], visit_age = visits.hint_detail(logs["transferania"],
-                                                        self_key="transferania", query=message,
-                                                        now=time.time(),
-                                                        stale_after=ph.SALIENCE_WARM_S)
-            out["salience"] = {**ph.salience(visit_age, 1), "basis": "visit_recall"}
+            out["line"], visit_age, visit_repeats = visits.hint_detail(
+                logs["transferania"], self_key="transferania", query=message, now=time.time(),
+                stale_after=ph.SALIENCE_WARM_S)
+            out["salience"] = {**ph.salience(visit_age, visit_repeats), "basis": "visit_recall"}
         else:
             detail = ph.hint_detail("transferania", message, owner=owner, now=time.time(),
                                     pushback=pushback)
@@ -503,6 +525,7 @@ def main() -> int:
             "memory_restored": result.get("memory_restored"),
             "visits_restored": result.get("visits_restored"),
             "seed_age_s": result.get("seed_age_s"),
+            "repeats": result["salience"].get("repeats"),
             "line_bytes": len(result.get("line", "").encode("utf-8")),
             "printed_line": result.get("printed_line", ""),
             "hint_excerpt": result["live"]["hint_text"][:150],
@@ -558,6 +581,25 @@ def main() -> int:
     elif (recall_stale[0]["priority"] >= recall_fresh[0]["priority"]
           or recall_stale[0]["share"] >= recall_fresh[0]["share"]):
         failures.append("a stale visit recall did not rank below a fresh one")
+    # Both sisters, through the same log and the same bands: one visit is warm,
+    # three recent ones are hot, and the words do not move while the rank does.
+    for sister, single, repeated in (("Forgia", "visit_fresh", "visit_repeat"),
+                                     ("Else", "visit_else_fresh", "visit_else_repeat")):
+        one, many = report["states"][single], report["states"][repeated]
+        rows_one, rows_many = one["live"]["personhood"], many["live"]["personhood"]
+        if not (rows_one and rows_many):
+            failures.append(f"a {sister} recall state lost its manifest row")
+            continue
+        if one["repeats"] != 1:
+            failures.append(f"{sister}: a single visit reported repeats {one['repeats']} != 1")
+        if many["repeats"] < 2:
+            failures.append(f"{sister}: three visits reported repeats {many['repeats']} < 2")
+        if rows_many[0]["priority"] != 98 or rows_many[0].get("rung") != "hot":
+            failures.append(f"{sister}: a repeatedly visited sister did not reach the hot band")
+        if (rows_many[0]["priority"], rows_many[0]["share"]) != (98, 530):
+            failures.append(f"{sister}: the repeated recall row is not the hot row")
+        if one["printed_line"] != many["printed_line"]:
+            failures.append(f"{sister}: repetition changed the recall page's words")
     if hot["estimate"] <= pushed["estimate"]:
         failures.append("the corrected subject did not free the room its line took")
     if not recovered["personhood"]:
@@ -589,8 +631,8 @@ def main() -> int:
             print("  -", item)
         return 1
     print("verify_live_personhood: OK (hot, warm, stale, corrected, recovered, burst, climbing, deep, "
-          "deep_warm, deep_hot, fil_fresh, fil_stale, point_fresh, point_stale, visit_fresh "
-          "and visit_stale states)")
+          "deep_warm, deep_hot, fil_fresh, fil_stale, point_fresh, point_stale, visit_fresh, "
+          "visit_stale, visit_repeat, visit_else_fresh, visit_else_stale and visit_else_repeat states)")
     return 0
 
 

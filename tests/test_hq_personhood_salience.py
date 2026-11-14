@@ -182,23 +182,41 @@ class PersonhoodSalienceTests(Base):
         lines = [{"who": "forgia", "text": "On a reparlé du chou."}]
         query = "Tu penses à Forgia ?"
 
-        def recall(age):
+        def seed(*ages):
             with memory.owner_context("admin"), memory.memory_scope("transferania"):
                 path = memory.visit_path()
-            visits.record(path, self_key="transferania", other_key="forgia", other_name="Forgia",
-                          lines=lines, now=self.clock[0] - age)
-            packet = memory.context_packet(query, conversation_text=query)
-            return packet["continuity"], packet["personhood"]
+            # Oldest first: a record prunes against its own timestamp.
+            for age in sorted(ages, reverse=True):
+                visits.record(path, self_key="transferania", other_key="forgia", other_name="Forgia",
+                              lines=lines, now=self.clock[0] - age)
+            return memory.context_packet(query, conversation_text=query)
 
-        line, salience = recall(3600)
-        self.assertTrue(line.startswith("VISITE RÉCENTE AVEC FORGIA"), line)
+        fresh = seed(3600)
+        self.assertTrue(fresh["continuity"].startswith("VISITE RÉCENTE AVEC FORGIA"), fresh["continuity"])
+        salience = fresh["personhood"]
         self.assertEqual((salience["tier"], salience["priority"], salience["share"]), ("warm", 70, 440))
         self.assertEqual(salience["basis"], "visit_recall")
+        self.assertEqual(salience["repeats"], 1, "a single visit must not be counted twice")
+
         self.tearDown()
         self.setUp()
-        line, salience = recall(20 * 3600)
-        self.assertTrue(line.startswith("VISITE ANCIENNE AVEC FORGIA (trace locale du "), line)
-        self.assertEqual((salience["tier"], salience["priority"], salience["share"]), ("cold", 40, 380))
+        stale = seed(20 * 3600)
+        self.assertTrue(stale["continuity"].startswith("VISITE ANCIENNE AVEC FORGIA (trace locale du "),
+                        stale["continuity"])
+        self.assertEqual((stale["personhood"]["tier"], stale["personhood"]["priority"],
+                          stale["personhood"]["share"]), ("cold", 40, 380))
+
+        # The same sister visited again and again: the count comes from the log,
+        # so the page reaches the hot band her own line would — same words.
+        self.tearDown()
+        self.setUp()
+        repeated = seed(3600, 7200, 10800)
+        self.assertEqual(repeated["personhood"]["repeats"], 3)
+        self.assertEqual((repeated["personhood"]["tier"], repeated["personhood"]["priority"],
+                          repeated["personhood"]["share"]), ("hot", 98, 530))
+        self.assertEqual(repeated["personhood"]["basis"], "visit_recall")
+        self.assertEqual(repeated["continuity"], fresh["continuity"],
+                         "ranking moved but the words did not")
 
     def test_every_trace_heading_keeps_its_personhood_row(self):
         import hq_companion_context as context

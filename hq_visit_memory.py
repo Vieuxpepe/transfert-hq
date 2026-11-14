@@ -175,16 +175,18 @@ def _quote(lines: list[dict[str, Any]], who: str) -> str:
 
 
 def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = None,
-                stale_after: float | None = None) -> tuple[str, float | None]:
-    """The recall block plus the age of the visit it quotes, or ("", None).
+                stale_after: float | None = None) -> tuple[str, float | None, int]:
+    """The recall block, the age of the visit it quotes, and how many back it.
 
     ``stale_after`` is the caller's own window: past it the visit is still
-    offered, but dated and closed instead of announced as recent. The age comes
-    back too, so the caller can rank the page by the same bands as her lines.
+    offered, but dated and closed instead of announced as recent. The age and the
+    number of retained visits to that same sister come back too, so the caller can
+    rank the page by the same bands as her lines. Nothing is counted from a
+    single visit: ``repeats`` is 1 unless the log itself holds more.
     """
     text = str(query or "").strip()
     if not text:
-        return "", None
+        return "", None, 1
     words = _words(text)
     folded = _fold(text)
     social = bool(_SOCIAL.search(folded))
@@ -192,7 +194,7 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
     with _lock:
         rows = _load(path)
         if rows is _UNREADABLE:
-            return "", None
+            return "", None, 1
         rows = _prune(rows, stamp)
     mine = [row for row in rows if row.get("self") == self_key]
     named = [row for row in mine
@@ -205,8 +207,11 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
         matches = [row for row in mine
                    if words & _words(" ".join(line["text"] for line in row["lines"]))]
     if not matches:
-        return "", None
+        return "", None, 1
     row = max(matches, key=lambda item: float(item["at"]))
+    # How present that sister is, from the log itself: the visits with the same
+    # other in this assistant's own file.
+    repeats = max(1, len([r for r in mine if r.get("other") == row.get("other")]))
     name = row["other_name"]
     other_quote = _quote(row["lines"], row["other"])
     self_quote = _quote(row["lines"], self_key)
@@ -226,7 +231,7 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
         parts.append(f"Tu as répondu « {self_quote} ».")
     parts.append("Ne pas la rouvrir de soi-même ; à reprendre seulement si le fil y revient." if stale
                  else "Tu peux y faire un clin d'œil si le fil s'y prête, sans réciter.")
-    return " ".join(parts), age
+    return " ".join(parts), age, repeats
 
 
 def hint(path: Path, *, self_key: str, query: Any, now: float | None = None,
