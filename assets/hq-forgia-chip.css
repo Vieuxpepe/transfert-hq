@@ -1,0 +1,327 @@
+/* Transfert HQ — Forgia floating Forge Master chip & prompt architect drawer (assets/hq-forgia-chip.css) */
+
+.hq-forgia-chip-dock {
+  position: fixed;
+  z-index: 1179;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(220px, calc(var(--nav-h, 64px) + 156px + env(safe-area-inset-bottom)));
+  display: inline-flex;
+  transition: transform .28s cubic-bezier(.22, 1.05, .32, 1);
+}
+
+.hq-forgia-chip-dock[hidden] { display: none !important; }
+body:not(.session-admin) .hq-forgia-chip-dock,
+body:not([data-view="forge"]) .hq-forgia-chip-dock,
+body:not([data-view="forge"]) .hq-forgia-drawer { display: none !important; }
+.hq-forgia-chip-dock.is-dragging { transition: none; opacity: .96; }
+
+.hq-forgia-chip {
+  --hq-forgia-accent: #f59e0b;
+  position: relative;
+  width: calc(54px * var(--image-chip-user-scale, 1));
+  height: calc(54px * var(--image-chip-user-scale, 1));
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--hq-forgia-accent) 55%, var(--line, #334155));
+  background:
+    radial-gradient(circle at 32% 22%, color-mix(in srgb, var(--hq-forgia-accent) 34%, transparent), transparent 58%),
+    linear-gradient(150deg, #27160b, #140c08);
+  color: #fef3c7;
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, .4),
+    0 0 0 1px color-mix(in srgb, var(--hq-forgia-accent) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
+  cursor: grab;
+  touch-action: none;
+  overflow: visible;
+  isolation: isolate;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: width .2s ease, height .2s ease, border-color .25s ease, box-shadow .25s ease, transform .2s ease;
+}
+
+@media (hover: hover) {
+  .hq-forgia-chip:hover {
+    transform: translateY(-2px) scale(1.035);
+    border-color: color-mix(in srgb, var(--hq-forgia-accent) 82%, #fff);
+    box-shadow:
+      0 11px 26px rgba(0, 0, 0, .44),
+      0 0 20px color-mix(in srgb, var(--hq-forgia-accent) 30%, transparent);
+  }
+}
+
+.hq-forgia-chip:active { transform: translateY(0) scale(.97); }
+
+.hq-forgia-chip-frame {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.hq-forgia-chip-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 20%;
+  transform: scale(1.16);
+  pointer-events: none;
+  display: none;
+  transition: transform .25s ease, object-position .25s ease;
+}
+
+.hq-forgia-chip.has-art .hq-forgia-chip-art { display: block; }
+.hq-forgia-chip.has-art .hq-forgia-chip-icon { display: none; }
+
+.hq-forgia-chip.is-nsfw {
+  --hq-forgia-accent: #fb7185;
+  width: calc(66px * var(--image-chip-user-scale, 1));
+  height: calc(96px * var(--image-chip-user-scale, 1));
+  border-radius: 16px;
+}
+
+.hq-forgia-chip.is-nsfw .hq-forgia-chip-art {
+  object-fit: contain;
+  object-position: 50% 50%;
+  transform: scale(1);
+  background: #140b08;
+}
+
+.hq-forgia-chip-icon {
+  position: relative;
+  z-index: 2;
+  width: calc(25px * var(--image-chip-user-scale, 1));
+  height: calc(25px * var(--image-chip-user-scale, 1));
+  pointer-events: none;
+}
+
+/* Drawer */
+.hq-forgia-drawer {
+  position: fixed;
+  z-index: 1191;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(max(90px, calc(var(--nav-h, 64px) + 26px + env(safe-area-inset-bottom))), calc(var(--hq-chip-kb, 0px) + 10px));
+  width: min(410px, calc(100vw - 24px));
+  max-height: min(620px, calc(100vh - 120px));
+  max-height: min(620px, calc(var(--hq-chip-vvh, 100dvh) - 120px));
+  background: rgba(20, 14, 10, 0.96);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(245, 158, 11, 0.36);
+  border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.65), 0 0 30px rgba(245, 158, 11, 0.14);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #fef3c7;
+}
+
+.hq-forgia-drawer[hidden] { display: none !important; }
+
+.hq-forgia-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(20, 14, 10, 0.92));
+  border-bottom: 1px solid rgba(245, 158, 11, 0.22);
+  gap: 8px;
+}
+
+.hq-forgia-drawer-brand { display: flex; align-items: center; gap: 10px; }
+
+.hq-forgia-drawer-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #d97706, #f59e0b);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #1c1008;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.45);
+}
+
+.hq-forgia-drawer-title { font-weight: 800; font-size: 0.95rem; letter-spacing: 0.02em; }
+.hq-forgia-drawer-sub { font-size: 0.72rem; color: #fcd34d; }
+.hq-forgia-drawer-controls { display: flex; gap: 6px; }
+
+.hq-forgia-icon-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fef3c7;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.hq-forgia-icon-btn:hover { background: rgba(245, 158, 11, 0.2); border-color: rgba(245, 158, 11, 0.5); }
+
+.hq-forgia-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 96px;
+}
+
+.hq-forgia-msg {
+  max-width: 90%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  word-wrap: break-word;
+}
+
+.hq-forgia-msg.is-user {
+  align-self: flex-end;
+  background: rgba(217, 119, 6, 0.28);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.hq-forgia-msg.is-assistant {
+  align-self: flex-start;
+  background: rgba(34, 24, 17, 0.92);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+}
+
+.hq-forgia-msg-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+
+.hq-forgia-tool-tag {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fde68a;
+}
+
+.hq-forgia-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  border-top: 1px solid rgba(245, 158, 11, 0.14);
+}
+
+.hq-forgia-quick-btn {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fde68a;
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.hq-forgia-quick-btn:hover { background: rgba(245, 158, 11, 0.26); }
+
+.hq-forgia-form {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(245, 158, 11, 0.2);
+  background: rgba(16, 11, 8, 0.85);
+}
+
+.hq-forgia-input {
+  flex: 1 1 auto;
+  background: rgba(36, 26, 18, 0.92);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 9px;
+  padding: 8px 11px;
+  color: #fef3c7;
+  font-size: 16px;
+  outline: none;
+}
+.hq-forgia-input:focus { border-color: #f59e0b; }
+
+.hq-forgia-send {
+  background: #f59e0b;
+  color: #1c1008;
+  font-weight: 700;
+  border: none;
+  border-radius: 9px;
+  padding: 0 14px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.hq-forgia-send:disabled { opacity: 0.5; cursor: default; }
+
+/* Proactive Forge speech bubble */
+.hq-forgia-chip-bubble {
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  width: max-content;
+  min-width: 210px;
+  max-width: min(320px, 72vw);
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: rgba(24, 17, 11, 0.95);
+  border: 1px solid rgba(245, 158, 11, 0.58);
+  color: #fef3c7;
+  font-size: 12.5px;
+  line-height: 1.42;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.48), 0 0 16px rgba(245, 158, 11, 0.22);
+  cursor: pointer;
+  z-index: 5;
+  animation: hq-forgia-bubble-in 0.22s ease;
+}
+
+.hq-forgia-chip-bubble.is-nsfw {
+  background: rgba(29, 13, 18, 0.96);
+  border-color: rgba(251, 113, 133, 0.62);
+  color: #ffe4e6;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5), 0 0 18px rgba(251, 113, 133, 0.24);
+}
+
+.hq-forgia-chip-bubble::after {
+  content: "";
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  background: inherit;
+  border-right: 1px solid rgba(245, 158, 11, 0.58);
+  border-top: 1px solid rgba(245, 158, 11, 0.58);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.hq-forgia-chip-bubble.is-nsfw::after {
+  border-color: rgba(251, 113, 133, 0.62);
+}
+
+@keyframes hq-forgia-bubble-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(8px) scale(0.95); }
+  to { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
+}
+
+.hq-forgia-list {
+  margin: 4px 0 4px 16px;
+  padding: 0;
+}
+.hq-forgia-list li { margin: 2px 0; }
+.hq-forgia-msg code {
+  background: rgba(245, 158, 11, 0.16);
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 0.79em;
+  user-select: all;
+}

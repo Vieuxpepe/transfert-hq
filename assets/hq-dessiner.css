@@ -112,3 +112,110 @@
 .sk-return[hidden]{display:none}
 .sk-return-msg{font-size:var(--text-sm,13px);font-weight:600}
 .sk-return-btn{min-height:44px;padding:6px 14px;font-weight:800}
+
+/* « Forge peint » (assets/hq-sketch-paint.js): the PC's Forge paints the sketch, beside the canvas */
+.sk-paint-host[hidden]{display:none}
+.sk-paint{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.sk-paint-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.sk-paint .sk-paint-x{min-height:36px;min-width:36px;padding:0;border-radius:999px;border:1px solid var(--line);background:none;color:inherit;font-weight:600}
+.sk-paint .sk-paint-prompt{width:100%;box-sizing:border-box;min-height:56px;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;resize:vertical}
+.sk-paint-row{display:flex;align-items:center;gap:8px;font-size:.82rem;color:var(--muted)}
+.sk-paint-row input{flex:1;accent-color:var(--accent)}
+.sk-paint-live{display:flex;align-items:center;gap:8px;font-size:.85rem}
+.sk-paint-acts{display:flex;flex-wrap:wrap;gap:8px}
+.sk-paint .sk-paint-go{min-height:40px;padding:0 16px;border-radius:999px;border:0;background:var(--accent);color:var(--accent-text,#fff);font-weight:600}
+.sk-paint .sk-paint-alt{min-height:40px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:none;color:inherit;font-weight:500}
+.sk-paint .sk-paint-alt:disabled{opacity:.45}
+.sk-paint-status{margin:0;font-size:.85rem;color:var(--muted);min-height:1.2em}
+.sk-paint-status.is-err{color:var(--warn,#e8a838)}
+.sk-paint-frame{position:relative;margin:0;border-radius:10px;overflow:hidden;background:var(--bg);min-height:8px}
+.sk-paint-img{display:block;width:100%;height:auto;max-height:60vh;object-fit:contain}
+.sk-paint-img[hidden]{display:none}
+.sk-paint-frame.is-busy .sk-paint-img{filter:saturate(.6) brightness(.9);transition:filter .3s}
+.sk-paint-bar{position:absolute;left:0;right:0;bottom:0;height:4px;background:transparent}
+.sk-paint-bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s}
+.sk-paint-note{margin:0;font-size:.75rem;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){.sk-paint-bar i,.sk-paint-frame.is-busy .sk-paint-img{transition:none}}
+
+/* Pièce 3D v5: editable feature list, profile dimensions, new steps, history, AR */
+.sk-solid-feature.sk-feat{grid-template-columns:minmax(7em,auto) minmax(0,1fr) auto;gap:6px 12px;align-items:center}
+.sk-solid-feature.sk-feat > button{width:auto}
+.sk-solid-add .sk-solid-controls select,.sk-feat-fields select{width:auto;min-width:6.5em;max-width:12em}
+.sk-solid-add .sk-solid-controls input[type=number]{width:6.5em}
+@media (max-width:600px){.sk-solid-feature.sk-feat{grid-template-columns:minmax(0,1fr) auto}.sk-feat-fields{grid-column:1/-1;order:3}}
+.sk-feat-name{font-weight:600;min-width:7.5em}
+.sk-feat-fields{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px 10px}
+.sk-feat-num{display:inline-flex;align-items:center;gap:4px;font-size:.85rem;color:var(--muted)}
+.sk-feat-num input{width:6.5em}
+.sk-feat-num input,.sk-feat-num select,.sk-solid-add select{min-height:34px}
+.sk-dims{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:6px 0;padding:8px 10px;border:1px dashed var(--line);border-radius:10px}
+.sk-dims .hint{flex-basis:100%}
+.sk-solid-add{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.sk-add-title{min-width:5.5em}
+.sk-hist3d{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:var(--bg)}
+.sk-hist3d input[type=range]{width:min(320px,60vw);accent-color:var(--accent);vertical-align:middle}
+.sk-hist3d-label{font-size:.85rem;color:var(--muted)}
+.sk-3d-overlay .sk-ar{font-weight:600}
+
+/* v6: sketches on planes, geometric constraints, exact-part feature tree */
+.sk-sketch{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;color:var(--muted);margin-left:6px}
+.sk-sketch select{min-height:36px;max-width:16em}
+.sk-geo{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+.sk-geo-opts,.sk-geo-held{flex-wrap:wrap;gap:6px}
+.sk-geo .sk-chip{display:inline-flex;align-items:center;gap:4px}
+.sk-x{min-height:0;min-width:0;padding:0 4px;border:0;background:none;color:inherit;font-weight:700;cursor:pointer}
+.sk-solid-feature.sk-feat.is-off .sk-feat-name,.sk-solid-feature.sk-feat.is-off .sk-feat-fields > :not(.sk-feat-tools){opacity:.45;text-decoration:line-through}
+.sk-solid-feature.sk-feat.is-past{opacity:.5}
+.sk-feat-tools{display:inline-flex;align-items:center;gap:4px;margin-left:4px}
+.sk-mini{min-height:30px;min-width:30px;padding:0 6px;border-radius:8px;border:1px solid var(--line);background:none;color:inherit}
+.sk-mini:disabled{opacity:.35}
+.sk-rollback,.sk-mass{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:6px 0;padding:8px 10px;border-radius:10px;background:var(--bg);font-size:.85rem}
+.sk-rollback input[type=range]{width:min(260px,55vw);accent-color:var(--accent);vertical-align:middle}
+.sk-mass span{color:var(--muted)}
+.sk-v6{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+
+/* Floating action bubble (assets/hq-sketch-float.js): the useful fields next to the selection */
+.sk-bubble{position:absolute;z-index:4;max-width:min(560px,calc(100% - 16px));padding:8px 10px 10px;border-radius:14px;
+  background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);box-shadow:0 12px 32px rgba(0,0,0,.18),0 2px 6px rgba(0,0,0,.08);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-size:.88rem;animation:sk-bubble-in .16s ease-out}
+.sk-bubble[hidden]{display:none}
+@keyframes sk-bubble-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.sk-bubble-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.sk-bubble-head strong{font-size:.85rem}
+.sk-bubble .sk-bubble-x{min-height:28px;min-width:28px;padding:0;border:0;border-radius:999px;background:none;color:var(--muted);font-weight:700}
+.sk-bubble-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
+.sk-bubble-row + .sk-bubble-row{margin-top:6px}
+.sk-bubble-chips{padding-top:6px;border-top:1px dashed var(--line)}
+.sk-bubble-field{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:.82rem}
+.sk-bubble-field input{width:5.8em;min-height:36px;padding:0 8px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}
+.sk-bubble-field select{min-height:36px;width:auto;max-width:9em;border-radius:9px}
+.sk-bubble-unit{font-size:.78rem}
+.sk-bubble .sk-bubble-btn{min-height:36px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:none;color:inherit;font-weight:600}
+.sk-bubble .sk-bubble-btn.is-primary{background:var(--accent);border-color:transparent;color:var(--accent-text,#fff)}
+.sk-bubble .sk-bubble-btn.is-chip{min-width:36px;padding:0 10px;font-weight:700}
+.sk-bubble .sk-bubble-btn.is-quiet{border-color:transparent;color:var(--muted)}
+.sk-bubble .sk-bubble-btn:disabled{opacity:.45}
+.sk-bubble-note{margin:6px 0 0;font-size:.75rem;color:var(--muted)}
+.sk-bubble.is-docked{left:8px;right:8px;bottom:56px;top:auto;max-width:none}
+.sk-bubble.is-docked[data-side="dock-top"]{top:8px;bottom:auto}
+@media (prefers-reduced-motion:reduce){.sk-bubble{animation:none}}
+/* fluid editing: action ring, shortcut sheet, side-by-side 2D + 3D */
+.sk-ring{position:absolute;inset:0;z-index:6;background:rgba(10,20,30,.08)}
+.sk-ring-hub{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:999px;background:var(--accent)}
+.sk-ring .sk-ring-item{position:absolute;transform:translate(-50%,-50%);min-height:38px;padding:0 14px;border-radius:999px;border:1px solid var(--line);
+  background:var(--panel);color:var(--text);font-weight:600;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,.14);animation:sk-bubble-in .14s ease-out}
+.sk-ring .sk-ring-item:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sk-keys{position:absolute;z-index:6;top:12px;left:50%;transform:translateX(-50%);width:min(440px,calc(100% - 24px));max-height:calc(100% - 24px);overflow:auto;
+  padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:var(--panel);color:var(--text);box-shadow:0 10px 30px rgba(0,0,0,.18);font-size:.86rem}
+.sk-keys dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:8px 0 0}
+.sk-keys dt{font-weight:700;white-space:nowrap}
+.sk-keys dd{margin:0;color:var(--muted)}
+.sk-view-tabs .sk-split-tab{display:none}
+@media (min-width:1100px){
+  .sk-view-tabs .sk-split-tab{display:inline-flex}
+  .sk.is-split .sk-stages{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+}
+@media (prefers-reduced-motion:reduce){.sk-ring .sk-ring-item{animation:none}}
+.sk.is-split .sk-3d-overlay{flex-wrap:wrap;justify-content:flex-end}
+.sk.is-split .sk-3d-status{flex:1 1 100%}
+.sk-stage.is-shift .sk-bubble,.sk-stage.is-multi .sk-bubble{pointer-events:none;opacity:.55}

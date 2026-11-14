@@ -14,7 +14,7 @@ import hq_personas
 import hq_relationships as rel
 
 PERSONAS = {
-    "musica": ("hq_musica", "PERSONA_CORE", "fr"),
+    "musica": ("hq_musica", "PERSONA_CORE", "en"),
     "inventoria": ("hq_inventoria_ai", "PERSONA", "en"),
     "pistonia": ("hq_pistonia", "PERSONA", "en"),
     "culinia": ("hq_culinia", "PERSONA_CORE", "fr"),
@@ -301,8 +301,8 @@ class MusicaTasteTests(unittest.TestCase):
         system = hq_musica.persona_system(spotify_connected=False,
                                           profile={"favorite_artists": [], "preferred_genres": []},
                                           taste=taste)
-        self.assertIn("TES GOÛTS À TOI", system)
-        self.assertIn("pas des faits sur le Maître", system)
+        self.assertIn("YOUR OWN TASTE", system)
+        self.assertIn("not facts about the Master", system)
 
 
 class ReviewFixTests(unittest.TestCase):
@@ -1089,6 +1089,42 @@ class ReviewFixTests(unittest.TestCase):
                 module.chat("Parle-moi de la fermentation.")
             self.assertEqual(len(seen), 1)
             self.assertNotIn("ÉVOLUTION VÉCUE", seen[0])
+
+    def test_personhood_line_fits_culinia_full_system_prompt(self):
+        import time as _time
+        import hq_ai as ai
+        import hq_culinia as culinia
+        import hq_personhood as personhood
+
+        ai = self._ai()
+        culinia.bind(root=self.root)
+        personhood.observe_chat(
+            "culinia", "Parle-moi de la fermentation.", now=_time.time() - 7200)
+        query = "Tu penses à la fermentation ?"
+
+        def ask():
+            seen = []
+
+            def fake_generate(chain, system, contents, _seen=seen, **kw):
+                _seen.append(system)
+                return json.dumps({"reply": "ok", "tools": []}), "m"
+
+            with mock.patch.object(ai, "generate", side_effect=fake_generate):
+                culinia.chat(query)
+            self.assertEqual(len(seen), 1)
+            return seen[0]
+
+        with_personhood = ask()
+        self.assertIn("SUJET RÉCENT", with_personhood)
+        self.assertIn("fermentation", with_personhood)
+        self.assertLessEqual(len(with_personhood.encode("utf-8")), ai.context_budget("chat"))
+
+        with mock.patch.object(personhood, "hint", return_value=""):
+            baseline = ask()
+        self.assertNotIn("SUJET RÉCENT", baseline)
+        delta = len(with_personhood.encode("utf-8")) - len(baseline.encode("utf-8"))
+        self.assertGreater(delta, 0)
+        self.assertLessEqual(delta, 500, "Culinia's full system prompt must stay within a small margin")
 
     def test_explicit_development_is_recorded_per_assistant(self):
         import hq_ai as ai

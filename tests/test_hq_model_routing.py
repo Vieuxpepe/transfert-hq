@@ -26,7 +26,8 @@ class RoutingTests(Base):
 
     def test_normal_chat_stays_on_flash_lite(self):
         result = ai.transferania_chat("bonjour", device_id=DEV)
-        self.assertEqual(result["model"], LITE)
+        self.assertEqual(result["model"], ai.CHAT_LEAD_MODEL)
+        self.assertIn("flash-lite", ai.CHAT_LEAD_MODEL)
 
     def test_gemma_tpm_exhaustion_falls_back_without_calling_it(self):
         system, contents = self.payload()
@@ -453,6 +454,7 @@ class SessionRegressionTests(Base):
         self.assertEqual(len(self.calls), 1)
 
     def _chat_with_followup(self, gemma_extra_bytes):
+        # The lead chat model answers 503, so the second model of the chat chain (with a smaller configured cap) answers.
         from unittest.mock import patch
         real = ai.companion_memory.context_packet("bonjour", conversation_text="bonjour")
         marker = "SUJET EN ATTENTE (une seule relance) : MARQUEUR " + "x" * 1500
@@ -460,7 +462,7 @@ class SessionRegressionTests(Base):
         core = ai._chat_system("warm", nsfw=False, view="accueil", device_id=DEV)
         cap_bytes = ai.estimate_context(core, [{"role": "user", "parts": [{"text": "bonjour"}]}]) + gemma_extra_bytes
         tpm = math.ceil(cap_bytes / (ai.MODEL_INPUT_SHARE * ai.BYTES_PER_TOKEN_DEFAULT))
-        ai.bind(companion_context_config=lambda: {"chat_input_budget": 100000, "model_input_tpm": {GEMMA: tpm}})
+        ai.bind(companion_context_config=lambda: {"chat_input_budget": 100000, "model_input_tpm": {ai.CHAT_CHAIN[1]: tpm}})
         cancelled = []
         self.answers = [(503, {}), reply("ok")]
         with patch.object(ai, "_continuity_packet", return_value=packet), \
@@ -470,12 +472,12 @@ class SessionRegressionTests(Base):
 
     def test_followup_dropped_by_a_refit_is_released(self):
         out, cancelled, marker = self._chat_with_followup(gemma_extra_bytes=1200)
-        self.assertEqual(out["model"], GEMMA)
+        self.assertEqual(out["model"], ai.CHAT_CHAIN[1])
         self.assertNotIn("MARQUEUR", json.dumps(self.calls[-1][1]["contents"]))
         self.assertEqual(cancelled, [marker])
 
     def test_followup_kept_by_the_answering_model_stays_reserved(self):
         out, cancelled, _ = self._chat_with_followup(gemma_extra_bytes=60000)
-        self.assertEqual(out["model"], GEMMA)
+        self.assertEqual(out["model"], ai.CHAT_CHAIN[1])
         self.assertIn("MARQUEUR", json.dumps(self.calls[-1][1]["contents"]))
         self.assertEqual(cancelled, [])

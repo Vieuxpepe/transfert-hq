@@ -43,9 +43,10 @@ FFMPEG_BIN = r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
 # Light chain only: no EQ, denoise, exciter or reverb.
 MASTER_FILTER = "highpass=f=60,loudnorm=I=-19:TP=-2:LRA=11,aresample=48000"
 
-CHARACTERS = ("else", "transferania", "inventoria", "musica", "pistonia")
+CHARACTERS = ("else", "transferania", "inventoria", "musica", "pistonia", "kinetia")
 ALIASES = {"transferina": "transferania", "transferania": "transferania", "else": "else",
-           "inventoria": "inventoria", "musica": "musica", "pistonia": "pistonia"}
+           "inventoria": "inventoria", "musica": "musica", "pistonia": "pistonia",
+           "kinetia": "kinetia", "kinétia": "kinetia"}
 ENGINES = ("xtts", "phonon", "browser")
 
 # Audition shortlists picked from catalog *descriptions*; NOT verified by listening.
@@ -55,6 +56,7 @@ CANDIDATES = {
     "inventoria": ["Tiphaine", "Orianne", "Hélène"],
     "musica": ["Noémie", "Lilou", "Ninon"],
     "pistonia": ["Delia", "Hadley", "Bryony"],   # English, calm and to the point; the Engine room keeper
+    "kinetia": ["Solène", "Noémie", "Lilou"],
 }
 # Delivery style -> duration_delta (negative = faster). Phonon only exposes duration.
 STYLE_DELTA = {"neutral": 0.0, "warm": 0.05, "thoughtful": 0.08, "deadpan": 0.03,
@@ -218,11 +220,18 @@ def start_daemon(wait_sec: float = 0.0) -> bool:
             for lang, repo in MODELS.items():
                 args += ["--model", f"{lang}={repo}"]
             flags = 0
+            extra: dict[str, Any] = {}
             if os.name == "nt":
-                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000
+                # CREATE_NO_WINDOW (hidden console, inherited by children) — NOT DETACHED_PROCESS, which
+                # makes CREATE_NO_WINDOW ignored and lets console grandchildren pop up their own windows.
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0  # SW_HIDE
+                extra["startupinfo"] = si
             with open(PHONON_LOG, "ab") as log:
                 _proc = subprocess.Popen(args, cwd=str(PHONON_ROOT), env=env, stdout=log, stderr=log,
-                                         stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+                                         stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True, **extra)
     finally:
         _daemon_lock.release()
     end = time.time() + wait_sec

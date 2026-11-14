@@ -18,6 +18,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 # Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -95,7 +97,7 @@ class Run:
     def open_forge(self, page):
         page.on("pageerror", lambda exc: None if "due to access control checks" in str(exc) else self.errors.append("pageerror " + str(exc)))  # WebKit: requests aborted by a navigation
         page.goto(self.base + "/")
-        page.locator('.bottom-nav [data-nav="forge"]').click()
+        open_section(page, "forge")
         if not self.until(page, "() => !!(document.querySelector('#forge-checkpoint').value && !document.querySelector('#forge-generate').disabled)", 15):
             raise SystemExit("FAIL: Forge Studio did not become ready")
 
@@ -485,7 +487,47 @@ def section_retry(run: Run) -> None:
     ctx.close()
 
 
-SECTIONS = {"retry": section_retry, "away": section_away, "share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
+def section_job_retry(run: Run) -> None:
+    ctx = run.context(width=390)
+    page = ctx.new_page()
+    run.open_forge(page)
+    sent = []
+
+    def submit(route):
+        if route.request.method != "POST":
+            route.continue_()
+            return
+        sent.append((route.request.headers["idempotency-key"], route.request.post_data_json))
+        if len(sent) == 3:
+            route.fulfill(status=503, json={"message": "Réponse interrompue"})
+            return
+        failed = len(sent) == 1
+        route.fulfill(json={"job": {
+            "job_id": str(len(sent)), "destination": "normal", "state": "failed" if failed else "completed",
+            "progress": 0 if failed else 1, "message": "Erreur simulée" if failed else "Terminé",
+        }})
+
+    page.route("**/api/forge/jobs", submit)
+    page.locator("#forge-prompt").fill("Prompt original")
+    page.locator("#forge-generate").click()
+    retry = page.locator("#forge-retry-job")
+    retry.wait_for()
+    run.check(page.locator("#forge-progress-label").inner_text() == "Erreur simulée", "the error remains beside Réessayer")
+    run.check(page.locator("#forge-job-destination").is_visible(), "mobile bar names the destination")
+    page.locator("#forge-prompt").fill("Brouillon modifié")
+    retry.click()
+    retry.wait_for(state="hidden")
+    run.check(len(sent) == 2 and sent[0][0] != sent[1][0] and sent[0][1] == sent[1][1],
+              "retry starts a new job with the original prompt and settings")
+    page.locator("#forge-generate").click()
+    retry.wait_for()
+    retry.click()
+    retry.wait_for(state="hidden")
+    run.check(len(sent) == 4 and sent[2] == sent[3], "an interrupted submission retries with the same key and settings")
+    ctx.close()
+
+
+SECTIONS = {"retry": section_retry, "job-retry": section_job_retry, "away": section_away, "share": section_share, "wake": section_wake, "draft": section_draft, "eta": section_eta}
 
 
 def main() -> None:

@@ -14,6 +14,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 # Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -59,7 +61,7 @@ def main() -> None:
                 print("  OK  ", message)
 
             page.goto(base + "/")
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             check(page.locator("#forge-negative-fold").evaluate("node => node.open") is False, "negative prompt starts closed")
             check(page.locator("#forge-prompt").is_visible() and page.locator("#forge-checkpoint").is_visible(), "prompt and model stay visible")
@@ -158,7 +160,7 @@ def main() -> None:
             )
             check(preset.status == 200, "a preset stores the compact settings")
             page.reload()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => [...document.querySelectorAll('#forge-preset-list option')].some((item) => item.textContent.includes('Contrôle'))")
             page.locator("#forge-preset-list").select_option(label="Contrôle · technique")
             page.locator("#forge-preset-load").click()
@@ -183,13 +185,13 @@ def main() -> None:
             page.route("**/api/forge/status", lambda route: route.abort())
             page.route("**/api/forge/catalog", lambda route: route.abort())
             page.locator('.bottom-nav [data-nav="carnet"]').click()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => (document.querySelector('#forge-generate-reason').textContent || '').includes(\"n'a pas répondu\")")
             check(page.locator("#forge-generate").is_disabled(), "a connection error disables generate")
             page.unroute("**/api/forge/status")
             page.unroute("**/api/forge/catalog")
             page.locator('.bottom-nav [data-nav="carnet"]').click()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value && !document.querySelector('#forge-generate').disabled")
             check(page.locator("#forge-generate").is_enabled(), "generate returns after the connection recovers")
             browser.close()

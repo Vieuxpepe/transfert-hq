@@ -24,7 +24,7 @@
   const TOOLS = {
     quick: [["select", "Sélection", "↖"], ["pen", "Stylo", "✎"], ["eraser", "Gomme", "⌫"], ["text", "Texte", "T"],
       ["dimlin", "Cote", "↔"], ["dimang", "Cote ∠", "∠"], ["pan", "Main", "✋"]],
-    construction: [["select", "Sélection", "↖"], ["line", "Ligne", "╱"], ["rect", "Rect.", "▭"], ["circle", "Cercle", "◯"],
+    construction: [["select", "Sélection", "↖"], ["line", "Ligne", "╱"], ["rect", "Rect.", "▭"], ["circle", "Cercle", "◯"], ["arc", "Arc", "◠"],
       ["centerline", "Axe", "┄"], ["dimlin", "Cote", "↔"], ["pan", "Main", "✋"]],
   };
   const HINTS = {
@@ -38,6 +38,7 @@
     line: "Glisse du début à la fin. Accroche aux extrémités, à la grille et aux angles.",
     rect: "Glisse d'un coin au coin opposé.",
     circle: "Glisse du centre vers le rayon.",
+    arc: "Glisse du centre vers le début de l'arc, puis touche sa fin (sens inverse des aiguilles d'une montre).",
     centerline: "Glisse pour tracer un axe (trait mixte).",
   };
 
@@ -46,8 +47,38 @@
     hist: S.createHistory(100), view: null, W: 0, H: 0, dpr: 1, ptrs: new Map(), gesture: null, action: null,
     penSeen: false, fixedEnd: "p1", swapAngle: false, angleTaps: [], built: false, draftTimer: 0, hudMsg: "",
     tab3d: false, solidDepth: 20, cutDepth: 5, cutThrough: false, solidBusy: false, mesh: [], edges: [], meshVersion: 0, meshLoadedVersion: -1, meshTimer: 0, faceSelection: null, edgeSelection: null, edgeMode: false, roundRadius: 2,
+    hole: { standard: "M3", fit: "clearance", extent: "throughAll", depth: 5 }, shell: { t: 2, open: true },
+    pat: { mode: "linear", count: 4, dx: "", dy: 0, cx: "", cy: "", angle: 360, source: "" }, revAngle: 360,
+    preview3d: null, histMesh: new Map(),
+    sketch: "", caps: { exact: false }, newSketch: false, arcPending: null, arcHover: null,
+    edgePick: null, sweepProfile: null, loftProfiles: [], boss: { depth: 5, op: "add" }, rf: { radius: 2, distance: 1 }, mass: null,
   };
-  let root, canvas, ctx, hud, props, textIn, solidView, faceSketch;
+  /** The active sketch's view of the drawing (same ids): what the 2D editor draws and hit-tests. */
+  const vdoc = () => S.inSketch(st.doc, st.sketch);
+  let I = window.HqSketchInput; // refreshed at build: the helper may load after this file
+  Object.assign(st, { typed: null, guides: null, autoRules: true, lastFloat: null, split: false, pushPull: null, previewT: 0, previewSeq: 0, previewing: false, pressT: 0, ringOpen: null });
+  const PREFS_KEY = "tf_hq_sketch_prefs_v1";
+  /** Last height, hole and fillet values, and the automatic-constraint switch: remembered on this device. */
+  function loadPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+      if (p.solidDepth > 0) st.solidDepth = p.solidDepth;
+      if (p.bossDepth > 0) st.boss.depth = p.bossDepth;
+      if (S.HOLE_STANDARDS.includes(p.holeStd)) st.hole.standard = p.holeStd;
+      if (S.HOLE_FITS[p.holeFit]) st.hole.fit = p.holeFit;
+      if (p.radius > 0) st.rf.radius = p.radius;
+      if (p.distance > 0) st.rf.distance = p.distance;
+      st.autoRules = p.autoRules !== false;
+    } catch (_) { st.autoRules = true; }
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ solidDepth: Number(st.solidDepth) || undefined, bossDepth: Number(st.boss.depth) || undefined,
+        holeStd: st.hole.standard, holeFit: st.hole.fit, radius: Number(st.rf.radius) || undefined, distance: Number(st.rf.distance) || undefined, autoRules: st.autoRules }));
+    } catch (_) {}
+  }
+  const inV6 = () => !!(st.caps && st.caps.exact);
+  let root, canvas, ctx, hud, props, textIn, solidView, faceSketch, bubble2d, bubble3d;
 
   // ------------------------------------------------------------ Phase 3: underlay image + link back to the caller (Carnet)
   // The underlay is ONE Carnet Stage-06 asset shown beneath the strokes (fixed "contain" placement, see hq-sketch-core.js). It is
@@ -66,6 +97,7 @@
       UL.ok = true;
       if (UL.fitOnLoad) { UL.fitOnLoad = false; if (st.W) st.view = S.fitView(st.doc, st.W, st.H, 40, underlayRect()); }
       draw();
+      notePicture();
     };
     img.onerror = () => { if (UL.img === img) { UL.failed = true; say("Image du fond introuvable", "err"); } };
     img.src = "/api/carnet/asset/" + encodeURIComponent(u.asset_id);
@@ -90,6 +122,7 @@
 
   // ------------------------------------------------------------ doc helpers
   function commit(next, opts) {
+    st.preview3d = null; // any change ends a 3D history preview
     if (!(opts && opts.noHistory)) st.hist.push(st.doc);
     st.doc = next;
     st.meshVersion++;
@@ -106,7 +139,32 @@
     return true;
   }
   function mutate(fn) { const d = S.clone(st.doc); const r = fn(d); if (r === false) return null; commit(d); return r; }
+  function notePicture() {
+    if (typeof window.hqDeskSnapshotSoon === "function") window.hqDeskSnapshotSoon();
+    if (typeof window.hqSketchChanged === "function") window.hqSketchChanged(); // « Forge peint » repaints live
+  }
+  /** The sketch as Forge should see it: what is on screen, black ink on white paper, no grid, no photo underlay,
+   * at a Forge-friendly size (hq-sketch-paint.js sizeFor). Null when there is nothing to paint. */
+  window.hqSketchPaintSource = () => {
+    if (!st.doc || !st.W || !st.H || !st.view || !st.doc.objects.length || !window.HqSketchPaint) return null;
+    const sz = window.HqSketchPaint.sizeFor(st.W, st.H);
+    const k = Math.min(sz.w / st.W, sz.h / st.H), ppu = st.view.ppu * k;
+    const cx = st.view.x0 + st.W / 2 / st.view.ppu, cy = st.view.y0 + st.H / 2 / st.view.ppu;
+    const view = { x0: cx - sz.w / 2 / ppu, y0: cy - sz.h / 2 / ppu, ppu: ppu };
+    const cv = document.createElement("canvas");
+    cv.width = sz.w; cv.height = sz.h;
+    const c = cv.getContext("2d");
+    if (!c) return null;
+    const ink = "#000000", paper = "#ffffff";
+    const T = { bg: paper, grid: paper, gridMajor: paper, ink, axis: ink, ref: ink, note: ink, dim: ink, accent: ink, sel: ink, axisX: paper, axisY: paper };
+    const d = S.clone(S.inSketch(st.doc, st.sketch)); d.grid = Object.assign({}, d.grid, { visible: false });
+    drawScene(c, d, view, sz.w, sz.h, T, { sel: [], noUnderlay: true, preview: function () {} });
+    const url = cv.toDataURL("image/png");
+    cv.width = 0; cv.height = 0;
+    return url;
+  };
   function scheduleDraft() {
+    notePicture();
     clearTimeout(st.draftTimer);
     st.draftTimer = setTimeout(flushDraft, 300);
   }
@@ -142,6 +200,7 @@
       <button type="button" class="sk-btn" data-act="settings" aria-label="Réglages grille et unités" aria-expanded="false" title="Réglages">⚙</button>
       <button type="button" class="sk-btn" data-act="open" aria-label="Ouvrir un dessin" title="Ouvrir">📂</button>
       <button type="button" class="sk-btn" data-act="new" aria-label="Nouveau dessin" title="Nouveau">＋</button>
+      <button type="button" class="sk-btn sk-paint-btn" data-act="paint" aria-label="Forge peint le croquis" aria-expanded="false" title="Forge peint le croquis">🎨</button>
       <button type="button" class="sk-btn sk-save" data-act="save">Enregistrer</button>
     </div>
   </div>
@@ -149,6 +208,7 @@
   <div class="sk-view-tabs" role="tablist" aria-label="Vue du dessin">
     <button type="button" data-act="view2d" role="tab" aria-selected="true">Dessin 2D</button>
     <button type="button" data-act="view3d" role="tab" aria-selected="false">Aperçu 3D</button>
+    <button type="button" data-act="viewSplit" role="tab" aria-selected="false" class="sk-split-tab" title="Esquisse et pièce côte à côte">2D + 3D</button>
   </div>
   <div class="sk-settings" hidden>
     <label>Unités <select data-set="units"><option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option><option value="in">po (in)</option></select></label>
@@ -156,8 +216,10 @@
     <label class="sk-chk"><input data-set="visible" type="checkbox"/> Grille visible</label>
     <label class="sk-chk"><input data-set="gsnap" type="checkbox"/> Accroche grille</label>
     <label class="sk-chk"><input data-set="asnap" type="checkbox"/> Accroche angle</label>
+    <label class="sk-chk"><input data-pref="autoRules" type="checkbox"/> Contraintes automatiques</label>
     <label>Pas <select data-set="astep"><option>5</option><option>7.5</option><option>10</option><option>15</option><option>22.5</option><option>30</option><option>45</option><option>90</option></select> °</label>
   </div>
+  <div class="sk-stages">
   <div class="sk-stage">
     <canvas class="sk-canvas" aria-label="Zone de dessin" role="img"></canvas>
     <input class="sk-textin" type="text" maxlength="500" enterkeyhint="done" autocomplete="off" aria-label="Texte de la note" hidden/>
@@ -166,9 +228,11 @@
   </div>
   <div class="sk-3d-stage" hidden>
     <canvas class="sk-3d-canvas" aria-label="Aperçu 3D interactif" role="img"></canvas>
-    <div class="sk-3d-overlay"><span class="sk-3d-status" aria-live="polite"></span><button type="button" data-act="faceSketch" class="sk-face-start" hidden>Dessiner sur cette face</button><button type="button" data-act="roundMode" class="sk-round-mode" aria-pressed="false">Arrondir une arête</button><button type="button" data-act="reset3d">Recentrer</button></div>
+    <div class="sk-3d-overlay"><span class="sk-3d-status" aria-live="polite"></span><button type="button" data-act="faceSketch" class="sk-face-start" hidden>Dessiner sur cette face</button><button type="button" data-act="roundMode" class="sk-round-mode" aria-pressed="false">Arrondir une arête</button><button type="button" data-act="ar3d" class="sk-ar">Voir en AR</button><button type="button" data-act="reset3d">Recentrer</button></div>
     <div class="sk-face-editor" hidden></div>
   </div>
+  </div>
+  <div class="sk-paint-host" hidden></div>
   <div class="sk-solid"></div>
   <div class="sk-props"></div>
   <dialog class="sk-dlg" id="sk-save-dlg" aria-labelledby="sk-save-title">
@@ -196,17 +260,33 @@
     if (window.HQSolidView) {
       solidView = window.HQSolidView($(".sk-3d-canvas", root));
       solidView.onFaceSelect(face => {
-        st.faceSelection = face;
+        restorePreview();
+        st.pushPull = face && I ? I.capFeature(st.doc, face.plane) : null;
+        st.faceSelection = face; st.faceAt = st.meshVersion;
+        updateFloat();
         $(".sk-face-start", root).hidden = !face;
-        if (face) $(".sk-3d-status", root).textContent = "Face sélectionnée";
+        if (face) $(".sk-3d-status", root).textContent = st.pushPull ? "Face sélectionnée · glisse-la pour la pousser ou la tirer" : "Face sélectionnée";
       });
+      solidView.onFaceDrag(ppDragHandler());
       solidView.onEdgeSelect(edge => {
+        if (st.edgePick) { // several edges for one congé / chanfrein (exact part)
+          const i = edge ? st.edges.indexOf(edge) : -1;
+          if (i >= 0) { const at = st.edgePick.picks.indexOf(i); if (at >= 0) st.edgePick.picks.splice(at, 1); else st.edgePick.picks.push(i); }
+          solidView.setMarked(st.edgePick.picks, true);
+          $(".sk-3d-status", root).textContent = st.edgePick.picks.length + " arête(s) choisie(s) · touche-en d'autres ou applique";
+          renderSolid(); updateFloat();
+          return;
+        }
         st.edgeSelection = edge;
         $(".sk-3d-status", root).textContent = edge ? "Arête sélectionnée · choisis un rayon" : "Touche une arête droite convexe de la pièce";
         renderSolid();
       });
     }
     if (window.HQFaceSketch) faceSketch = window.HQFaceSketch($(".sk-face-editor", root), createFaceSolid);
+    if (window.HqSketchFloat) {
+      bubble2d = window.HqSketchFloat.mount(window, $(".sk-stage", root), { onAction: floatAction, onInput: floatInput });
+      bubble3d = window.HqSketchFloat.mount(window, $(".sk-3d-stage", root), { onAction: floatAction, onInput: floatInput });
+    }
     wire();
     return true;
   }
@@ -242,7 +322,14 @@
     props.addEventListener("click", onPropsClick);
     props.addEventListener("change", onPropsChange);
     props.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.matches("input[data-apply]")) { e.preventDefault(); applyProp(e.target.dataset.apply); } });
+    $(".sk-solid", root).addEventListener("change", onSolidChange);
+    $(".sk-tools", root).addEventListener("change", e => { if (e.target.matches(".sk-sketch-sel")) setSketch(e.target.value); });
+    $(".sk-settings", root).addEventListener("change", e => { if (e.target.dataset.pref === "autoRules") { st.autoRules = e.target.checked; savePrefs(); } });
     $(".sk-solid", root).addEventListener("input", e => {
+      const key = e.target.dataset.solid || "";
+      if (key.includes(".")) { const [o, k] = key.split("."); st[o][k] = e.target.type === "checkbox" ? e.target.checked : e.target.value; }
+      if (key === "revAngle") st.revAngle = e.target.value;
+      if (e.target.dataset.hist3d != null) previewStep(Number(e.target.value));
       if (e.target.dataset.solid === "base-depth") st.solidDepth = e.target.value;
       if (e.target.dataset.solid === "cut-depth") st.cutDepth = e.target.value;
       if (e.target.dataset.solid === "round-radius") st.roundRadius = e.target.value;
@@ -268,6 +355,10 @@
     });
     textIn.addEventListener("blur", () => finishText(true));
     document.addEventListener("keydown", onKey);
+    // while building a selection (Shift held, or the Multi toggle) the bubble lets clicks through to what is under it
+    const shiftPass = e => { if (e.key !== "Shift") return; const s = $(".sk-stage", root); if (s) s.classList.toggle("is-shift", e.type === "keydown"); };
+    document.addEventListener("keydown", shiftPass); document.addEventListener("keyup", shiftPass);
+    window.addEventListener("blur", () => { const s = $(".sk-stage", root); if (s) s.classList.remove("is-shift"); });
     window.addEventListener("pagehide", flushDraft);
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushDraft(); });
     if (window.ResizeObserver) new ResizeObserver(resize).observe($(".sk-stage", root));
@@ -291,8 +382,12 @@
     refreshAll();
     skMotion("mode", { mode });
   }
+  function setSketch(id) {
+    st.sketch = id || ""; st.sel = []; st.arcPending = null; cancelAction();
+    renderToolbar(); renderProps(); draw(); updateButtons();
+  }
   function setTool(tool) {
-    st.tool = tool; st.angleTaps = []; cancelAction();
+    st.tool = tool; st.angleTaps = []; st.arcPending = null; st.arcHover = null; st.typed = null; st.guides = null; cancelAction();
     if (tool !== "select") st.multi = false;
     refreshAll();
     skMotion("tool", { tool });
@@ -306,6 +401,14 @@
     let h = TOOLS[mode].map(([id, label, ico]) =>
       `<button type="button" class="sk-tool${st.tool === id ? " on" : ""}" data-tool="${id}" aria-pressed="${st.tool === id}"><span class="sk-ico" aria-hidden="true">${ico}</span><span>${label}</span></button>`).join("");
     if (st.tool === "select") h += `<button type="button" class="sk-tool sk-multi${st.multi ? " on" : ""}" data-act="multi" aria-pressed="${st.multi}"><span class="sk-ico" aria-hidden="true">⊕</span><span>Multi</span></button>`;
+    if (mode === "construction" && inV6()) {
+      const sks = st.doc.sketches || [];
+      if (st.sketch && !sks.some(x => x.id === st.sketch)) st.sketch = "";
+      h += `<label class="sk-sketch"><span>Esquisse</span><select class="sk-sketch-sel" aria-label="Esquisse active">
+        <option value=""${st.sketch ? "" : " selected"}>Base · plan XY</option>
+        ${sks.map(x => `<option value="${esc(x.id)}"${x.id === st.sketch ? " selected" : ""}>${esc(x.name)} · ${esc(x.plane)}${x.offset ? " " + (x.offset > 0 ? "+" : "") + S.fmt(x.offset) : ""}</option>`).join("")}
+      </select></label><button type="button" class="sk-tool" data-act="newSketch" aria-expanded="${st.newSketch}"><span class="sk-ico" aria-hidden="true">＋</span><span>Esquisse</span></button>`;
+    }
     bar.innerHTML = h;
   }
   function syncSettings() {
@@ -313,6 +416,8 @@
     const set = (k, v, prop) => { const el = s.querySelector(`[data-set="${k}"]`); if (el && document.activeElement !== el) el[prop || "value"] = v; };
     set("units", d.units); set("spacing", S.fmt(d.grid.spacing, 6)); set("visible", d.grid.visible, "checked");
     set("gsnap", d.grid.snap, "checked"); set("asnap", d.snap.angle, "checked"); set("astep", String(d.snap.angleStep));
+    const ar = s.querySelector('[data-pref="autoRules"]');
+    if (ar) { ar.checked = !!st.autoRules; ar.closest("label").hidden = !inV6(); }
   }
   function updateButtons() {
     const set = (n, off) => root.querySelectorAll(`[data-act="${n}"]`).forEach(el => { el.disabled = off; });
@@ -321,37 +426,684 @@
     set("delete", !st.sel.length);
   }
 
-  function selectedProfile() {
-    if (!st.sel.length) return [];
-    const chosen = st.sel.map(id => S.getObj(st.doc, id)).filter(Boolean);
-    if (chosen.length !== 1 || chosen[0].type !== "line") return chosen.map(o => o.id);
+  function selectedProfile() { return profileFrom(st.sel); }
+  /** A profile from picked objects: one picked line grows to its whole rectangle (group) or connected outline. */
+  function profileFrom(ids) {
+    if (!ids.length) return [];
+    const chosen = ids.map(id => S.getObj(st.doc, id)).filter(Boolean);
+    if (chosen.length !== 1 || (chosen[0].type !== "line" && chosen[0].type !== "arc")) return chosen.map(o => o.id);
     const first = chosen[0];
     if (first.group) return st.doc.objects.filter(o => o.type === "line" && o.group === first.group).map(o => o.id);
-    const seen = new Set(), queue = [first];
+    const seen = new Set(), queue = [first], chain = o => o.type === "line" || o.type === "arc";
     while (queue.length) {
       const line = queue.pop(); if (seen.has(line.id)) continue; seen.add(line.id);
-      for (const o of st.doc.objects) if (o.type === "line" && !seen.has(o.id) && [o.p1, o.p2].some(p => p === line.p1 || p === line.p2)) queue.push(o);
+      for (const o of st.doc.objects) if (chain(o) && !seen.has(o.id) && (o.sketch || "") === (line.sketch || "") && [o.p1, o.p2].some(p => p === line.p1 || p === line.p2)) queue.push(o);
     }
     return [...seen];
+  }
+
+  const FEATURE_NAMES = { extrude: "Extrusion", revolve: "Révolution", cut: "Enlèvement", hole: "Trou", shell: "Coque", pattern: "Répétition",
+    fillet: "Congé", chamfer: "Chanfrein", sweep: "Balayage", loft: "Lissage" };
+  function featureTitle(f, i) {
+    if (i > 0 && ["extrude", "revolve", "sweep", "loft"].includes(f.type)) return (f.op === "cut" ? "Enlèvement · " : "Bossage · ") + FEATURE_NAMES[f.type].toLowerCase();
+    return FEATURE_NAMES[f.type] || f.type;
+  }
+  function featureRow(f, i, all) {
+    const u = esc(st.doc.units), id = esc(f.id);
+    const num = (key, val, label, extra) => `<label class="sk-feat-num">${label} <input type="number" inputmode="decimal" step="any" data-edit="${key}" data-feature="${id}" value="${esc(val === "" || val == null ? "" : S.fmt(Number(val)))}" ${extra || ""}/></label>`;
+    const pick = (key, val, opts, label) => `<label class="sk-feat-num">${label} <select data-edit="${key}" data-feature="${id}">${opts.map(([v, t]) => `<option value="${esc(v)}"${v === val ? " selected" : ""}>${esc(t)}</option>`).join("")}</select></label>`;
+    const extent = (f) => pick("extent", f.extent, [["throughAll", "Traversant"], ["blind", "Profondeur"]], "");
+    let title = featureTitle(f, i), body = "";
+    if (f.type === "extrude") body = num("depth", f.depth, "Hauteur (" + u + ")", 'min="0.001"');
+    else if (f.type === "revolve") body = num("angle", f.angle, "Angle (°)", 'min="1" max="360"');
+    else if (f.type === "cut") body = extent(f) + (f.extent === "blind" ? num("depth", f.depth, "(" + u + ")", 'min="0.001"') : "");
+    else if (f.type === "hole") {
+      title += f.at.length > 1 ? " ×" + f.at.length : "";
+      body = pick("standard", f.standard, S.HOLE_STANDARDS.map(x => [x, x]), "") + pick("fit", f.fit, Object.entries(S.HOLE_FITS), "") +
+        extent(f) + (f.extent === "blind" ? num("depth", f.depth || "", "(" + u + ")", 'min="0"') : "");
+    } else if (f.type === "shell") body = num("thickness", f.thickness, "Paroi (" + u + ")", 'min="0.001"') +
+      `<label class="sk-chk"><input type="checkbox" data-edit="open" data-feature="${id}"${f.open ? " checked" : ""}/> Ouverte en haut</label>`;
+    else if (f.type === "fillet") body = num("radius", f.radius, "Rayon (" + u + ")", 'min="0.001"') + `<span class="hint">${f.edges.length} arête(s)</span>`;
+    else if (f.type === "chamfer") body = num("distance", f.distance, "Distance (" + u + ")", 'min="0.001"') + `<span class="hint">${f.edges.length} arête(s)</span>`;
+    else if (f.type === "sweep") body = `<span class="hint">profil ${f.profile.length} objet(s) · chemin ${f.path.length} segment(s)</span>`;
+    else if (f.type === "loft") body = `<span class="hint">${f.profiles.length} profils</span>`;
+    else if (f.type === "pattern") {
+      const src = all.findIndex(x => x.id === f.source);
+      title += " de " + (src + 1);
+      body = num("count", f.count, "Nombre", 'min="2" max="50" step="1"') + (f.mode === "linear"
+        ? num("dx", f.dx, "Pas X", "") + num("dy", f.dy, "Pas Y", "")
+        : num("cx", f.cx, "Centre X", "") + num("cy", f.cy, "Centre Y", "") + num("angle", f.angle, "Angle (°)", 'min="1" max="360"'));
+    }
+    if (i > 0 && ["extrude", "revolve", "sweep", "loft"].includes(f.type) && (st.doc.version >= 6 || f.op)) body = pick("op", f.op || "add", [["add", "Ajoute"], ["cut", "Enlève"]], "") + body;
+    const v6 = (Number(st.doc.version) || 1) >= 6 && inV6();
+    const past = st.doc.rollback != null && i >= st.doc.rollback;
+    const tools = v6 && i > 0 ? `<span class="sk-feat-tools"><label class="sk-chk" title="Désactiver sans supprimer"><input type="checkbox" data-active="${id}"${f.suppressed ? "" : " checked"}/> active</label><button type="button" class="sk-mini" data-act="featUp" data-feature="${id}" aria-label="Monter la fonction ${i + 1}"${i < 2 ? " disabled" : ""}>↑</button><button type="button" class="sk-mini" data-act="featDown" data-feature="${id}" aria-label="Descendre la fonction ${i + 1}"${i === all.length - 1 ? " disabled" : ""}>↓</button></span>` : "";
+    return `<div class="sk-solid-feature sk-feat${f.suppressed ? " is-off" : ""}${past ? " is-past" : ""}" data-type="${esc(f.type)}"><span class="sk-feat-name">${i + 1}. ${esc(title)}</span><span class="sk-feat-fields">${body}${tools}</span><button type="button" data-act="remove3d" data-feature="${id}" aria-label="Retirer la fonction ${i + 1}">Retirer</button></div>`;
+  }
+  /** The base profile's own dimensions, editable: a line's length or a circle's radius rebuilds the part. */
+  function profileDims(base) {
+    if (!base || !base.profile) return "";
+    const pm = S.pointMap(st.doc), u = esc(st.doc.units), rows = [];
+    for (const id of base.profile.slice(0, 16)) {
+      const o = S.getObj(st.doc, id); if (!o) continue;
+      if (o.type === "circle") rows.push(`<label class="sk-feat-num">Rayon <input type="number" inputmode="decimal" step="any" min="0.001" data-dim-circle="${esc(id)}" value="${esc(S.fmt(o.r))}"/> ${u}</label>`);
+      else if (o.p1 && o.p2) {
+        const a = pm.get(o.p1), b = pm.get(o.p2);
+        if (a && b) rows.push(`<label class="sk-feat-num">Côté ${rows.length + 1} <input type="number" inputmode="decimal" step="any" min="0.001" data-dim-line="${esc(id)}" value="${esc(S.fmt(Math.hypot(b.x - a.x, b.y - a.y)))}"/> ${u}</label>`);
+      }
+    }
+    return rows.length ? `<div class="sk-dims"><span class="hint">Cotes du profil de base (le côté s'allonge depuis son premier point) :</span>${rows.join("")}</div>` : "";
+  }
+  function partCenter() {
+    const base = (st.doc.features || [])[0];
+    const pm = S.pointMap(st.doc);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const id of (base && base.profile) || []) {
+      const o = S.getObj(st.doc, id); if (!o) continue;
+      const pts = o.type === "circle" ? [pm.get(o.center)].filter(Boolean).flatMap(c => [{ x: c.x - o.r, y: c.y - o.r }, { x: c.x + o.r, y: c.y + o.r }]) : [pm.get(o.p1), pm.get(o.p2)].filter(Boolean);
+      for (const p of pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+    }
+    return isFinite(x0) ? { x: (x0 + x1) / 2, y: (y0 + y1) / 2 } : { x: 0, y: 0 };
+  }
+  function selectedCircles() { return st.sel.filter(id => (S.getObj(st.doc, id) || {}).type === "circle"); }
+  function revolveSelection() {
+    const axes = st.sel.filter(id => (S.getObj(st.doc, id) || {}).type === "centerline");
+    return { axis: axes.length === 1 ? axes[0] : null, profile: profileFrom(st.sel.filter(id => !axes.includes(id))) };
   }
 
   function renderSolid() {
     const box = $(".sk-solid", root);
     const features = st.doc.features || [], selected = selectedProfile();
-    const parts = features.map((f, i) => `<div class="sk-solid-feature"><span>${i + 1}. ${f.type === "extrude" ? "Extrusion" : "Enlèvement"} · ${f.extent === "throughAll" ? "traversant" : S.fmt(f.depth) + " " + esc(st.doc.units)} · ${f.profile.length} objet(s)</span><button type="button" data-act="remove3d" data-feature="${esc(f.id)}" aria-label="Retirer la fonction ${i + 1}">Retirer</button></div>`).join("");
-    const faceParts = (st.doc.faceFeatures || []).map((f, i) => `<div class="sk-solid-feature"><span>Face ${i + 1}. ${f.type === "extrude" ? "Ajout" : "Enlèvement"} · ${f.extent === "throughAll" ? "traversant" : S.fmt(f.depth) + " " + esc(st.doc.units)}</span><button type="button" data-act="removeFace3d" data-feature="${esc(f.id)}" aria-label="Retirer la fonction sur face ${i + 1}">Retirer</button></div>`).join("");
-    const roundParts = (st.doc.roundFeatures || []).map((f, i) => `<div class="sk-solid-feature"><span>Arrondi ${i + 1} · R ${S.fmt(f.radius)} ${esc(st.doc.units)}</span><button type="button" data-act="removeRound3d" data-feature="${esc(f.id)}" aria-label="Retirer l'arrondi ${i + 1}">Retirer</button></div>`).join("");
-    box.innerHTML = `<div class="sk-solid-head"><strong>Pièce 3D</strong><span>${features.length ? features.length + (st.doc.faceFeatures || []).length + (st.doc.roundFeatures || []).length + " fonction(s)" : "Sélectionne un contour fermé en Construction"}</span></div>
+    const u = esc(st.doc.units);
+    const busy = st.solidBusy ? " disabled" : "";
+    const parts = features.map((f, i) => featureRow(f, i, features)).join("");
+    const faceParts = (st.doc.faceFeatures || []).map((f, i) => `<div class="sk-solid-feature"><span>Face ${i + 1}. ${f.type === "extrude" ? "Ajout" : "Enlèvement"} · ${f.extent === "throughAll" ? "traversant" : S.fmt(f.depth) + " " + u}</span><button type="button" data-act="removeFace3d" data-feature="${esc(f.id)}" aria-label="Retirer la fonction sur face ${i + 1}">Retirer</button></div>`).join("");
+    const roundParts = (st.doc.roundFeatures || []).map((f, i) => `<div class="sk-solid-feature"><span>Arrondi ${i + 1} · R ${S.fmt(f.radius)} ${u}</span><button type="button" data-act="removeRound3d" data-feature="${esc(f.id)}" aria-label="Retirer l'arrondi ${i + 1}">Retirer</button></div>`).join("");
+    const opt = (v, cur, t) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(t)}</option>`;
+    let add = "";
+    if (!features.length) {
+      const rv = revolveSelection();
+      add = `<div class="sk-solid-controls"><span class="hint">Profil : ${selected.length ? selected.length + " objet(s) sélectionné(s)" : "touche un rectangle, un cercle ou plusieurs lignes fermées"}</span>
+        <label>Profondeur (${u}) <input data-solid="base-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.solidDepth)}"/></label><button type="button" data-act="solid-extrude"${selected.length && !st.solidBusy ? "" : " disabled"}>Extruder</button></div>
+        <div class="sk-solid-controls"><label>Révolution (°) <input data-solid="revAngle" type="number" inputmode="decimal" min="1" max="360" step="any" value="${esc(st.revAngle)}"/></label><button type="button" data-act="solid-revolve"${rv.axis && rv.profile.length && !st.solidBusy ? "" : " disabled"}>Tourner</button>
+        <span class="hint">Pour une pièce tournée : sélectionne le demi-profil fermé et un trait d'axe (outil « Axe »).</span></div>`;
+    } else {
+      const circles = selectedCircles().length;
+      const sources = features.filter(f => f.type === "cut" || f.type === "hole");
+      if (!sources.some(f => f.id === st.pat.source)) st.pat.source = sources.length ? sources[sources.length - 1].id : "";
+      const c = partCenter();
+      add = `<div class="sk-solid-add">
+        <div class="sk-solid-controls"><strong class="sk-add-title">Enlever</strong><label>Profondeur (${u}) <input data-solid="cut-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.cutDepth)}"${st.cutThrough ? " disabled" : ""}/></label><label class="sk-chk"><input data-solid="through" type="checkbox"${st.cutThrough ? " checked" : ""}/> Traversant</label><button type="button" data-act="solid-cut"${selected.length && !st.solidBusy ? "" : " disabled"}>Enlever matière</button></div>
+        <div class="sk-solid-controls"><strong class="sk-add-title">Percer</strong>
+          <select data-solid="hole.standard" aria-label="Taille de vis">${S.HOLE_STANDARDS.map(x => opt(x, st.hole.standard, x)).join("")}</select>
+          <select data-solid="hole.fit" aria-label="Type de trou">${Object.entries(S.HOLE_FITS).map(([k, t]) => opt(k, st.hole.fit, t)).join("")}</select>
+          <select data-solid="hole.extent" aria-label="Étendue">${opt("throughAll", st.hole.extent, "Traversant")}${opt("blind", st.hole.extent, "Profondeur")}</select>
+          ${st.hole.extent === "blind" ? `<input data-solid="hole.depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.hole.depth)}" aria-label="Profondeur du trou"/>` : ""}
+          <button type="button" data-act="solid-hole"${circles && !st.solidBusy ? "" : " disabled"}>Percer${circles > 1 ? " ×" + circles : ""}</button>
+          <span class="hint">Touche un ou plusieurs cercles : le trou se perce en leur centre, depuis le dessus.</span></div>
+        ${features.some(f => f.type === "shell") ? "" : `<div class="sk-solid-controls"><strong class="sk-add-title">Évider</strong><label>Paroi (${u}) <input data-solid="shell.t" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.shell.t)}"/></label><label class="sk-chk"><input data-solid="shell.open" type="checkbox"${st.shell.open ? " checked" : ""}/> Ouverte en haut</label><button type="button" data-act="solid-shell"${busy}>Évider</button></div>`}
+        ${sources.length ? `<div class="sk-solid-controls"><strong class="sk-add-title">Répéter</strong>
+          <select data-solid="pat.source" aria-label="Fonction à répéter">${sources.map(f => opt(f.id, st.pat.source, (features.indexOf(f) + 1) + ". " + FEATURE_NAMES[f.type])).join("")}</select>
+          <select data-solid="pat.mode" aria-label="Disposition">${opt("linear", st.pat.mode, "En ligne")}${opt("circular", st.pat.mode, "En cercle")}</select>
+          <label>Nombre <input data-solid="pat.count" type="number" min="2" max="50" step="1" value="${esc(st.pat.count)}"/></label>
+          ${st.pat.mode === "linear"
+            ? `<label>Pas X <input data-solid="pat.dx" type="number" step="any" value="${esc(st.pat.dx === "" ? S.fmt(st.doc.grid.spacing * 2) : st.pat.dx)}"/></label><label>Pas Y <input data-solid="pat.dy" type="number" step="any" value="${esc(st.pat.dy)}"/></label>`
+            : `<label>Centre X <input data-solid="pat.cx" type="number" step="any" value="${esc(st.pat.cx === "" ? S.fmt(c.x) : st.pat.cx)}"/></label><label>Centre Y <input data-solid="pat.cy" type="number" step="any" value="${esc(st.pat.cy === "" ? S.fmt(c.y) : st.pat.cy)}"/></label><label>Angle <input data-solid="pat.angle" type="number" min="1" max="360" step="any" value="${esc(st.pat.angle)}"/></label>`}
+          <button type="button" data-act="solid-pattern"${busy}>Répéter</button></div>` : ""}
+      </div>`;
+    }
+    if (inV6() && st.doc.mode === "construction") add += v6Controls(features, selected, u);
+    const steps = history3d();
+    const at = st.preview3d == null ? steps.length - 1 : st.preview3d;
+    const hist = steps.length > 1 ? `<div class="sk-hist3d"><label>Historique 3D <input type="range" min="0" max="${steps.length - 1}" step="1" value="${at}" data-hist3d="" aria-label="Étape de la pièce 3D"/></label>
+      <span class="sk-hist3d-label">Étape ${at + 1}/${steps.length} · ${esc(steps[at].label)}</span>
+      <button type="button" data-act="hist3dGo"${busy}${at < steps.length - 1 ? "" : " hidden"}>Revenir à cette étape</button></div>` : "";
+    box.innerHTML = `<div class="sk-solid-head"><strong>Pièce 3D</strong><span>${features.length ? features.length + (st.doc.faceFeatures || []).length + (st.doc.roundFeatures || []).length + " fonction(s) · change une valeur, la pièce suit" : "Sélectionne un contour fermé en Construction"}</span></div>
+      ${hist}
+      ${rollbackBar(features)}
       <div class="sk-solid-features">${parts}${faceParts}${roundParts}</div>
-      <div class="sk-solid-controls"><span class="hint">Profil : ${selected.length ? selected.length + " objet(s) sélectionné(s)" : "touche un rectangle, un cercle ou plusieurs lignes fermées"}</span>
-      ${!features.length ? `<label>Profondeur (${esc(st.doc.units)}) <input data-solid="base-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.solidDepth)}"/></label><button type="button" data-act="solid-extrude" ${selected.length && !st.solidBusy ? "" : "disabled"}>Extruder</button>`
-      : `<label>Profondeur de coupe (${esc(st.doc.units)}) <input data-solid="cut-depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.cutDepth)}" ${st.cutThrough ? "disabled" : ""}/></label><label class="sk-chk"><input data-solid="through" type="checkbox" ${st.cutThrough ? "checked" : ""}/> Traversant</label><button type="button" data-act="solid-cut" ${selected.length && !st.solidBusy ? "" : "disabled"}>Enlever matière</button>`}</div>
-      ${features.length && st.edgeMode ? `<div class="sk-solid-controls"><label>Rayon (${esc(st.doc.units)}) <input data-solid="round-radius" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.roundRadius)}"/></label><button type="button" data-act="roundApply" ${st.edgeSelection && !st.solidBusy ? "" : "disabled"}>Appliquer l'arrondi</button><span class="hint">Sélectionne une arête droite convexe. Le rayon est refusé s'il traverse la pièce ou une autre fonction.</span></div>` : ""}
+      ${massLine(u)}
+      ${profileDims(features[0])}
+      ${add}
+      ${features.length && st.edgeMode ? `<div class="sk-solid-controls"><label>Rayon (${u}) <input data-solid="round-radius" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.roundRadius)}"/></label><button type="button" data-act="roundApply" ${st.edgeSelection && !st.solidBusy ? "" : "disabled"}>Appliquer l'arrondi</button><span class="hint">Sélectionne une arête droite convexe. Le rayon est refusé s'il traverse la pièce ou une autre fonction.</span></div>` : ""}
       <p class="hint">La pièce part du plan Z=0. Pour ajouter ou enlever de la matière sur une face plane, touche la face dans l'aperçu 3D. STL exporté en millimètres.</p>`;
   }
 
+  function rollbackBar(features) {
+    if (!inV6() || (Number(st.doc.version) || 1) < 6 || features.length < 2) return "";
+    const at = st.doc.rollback == null ? features.length : st.doc.rollback;
+    return `<div class="sk-rollback"><label>Point de retour <input type="range" min="1" max="${features.length}" step="1" value="${at}" data-rollback aria-label="Construire jusqu'à la fonction"/></label>
+      <span class="hint">${at >= features.length ? "toutes les fonctions" : "jusqu'à la fonction " + at + " (les suivantes sont ignorées)"}</span></div>`;
+  }
+  function massLine(u) {
+    const m = st.mass;
+    if (!m || !(m.volume > 0)) return "";
+    const f = v => S.fmt(v, 2);
+    return `<div class="sk-mass"><span>Volume ${f(m.volume)} ${u}³ · surface ${f(m.area)} ${u}² · encombrement ${m.size.map(f).join(" × ")} ${u} · centre (${m.center.map(f).join(", ")})</span>
+      <button type="button" data-act="step3d">Exporter STEP</button></div>`;
+  }
+  /** v6 steps: bosses / cuts on any sketch, congés / chanfreins on picked edges, sweep, loft. */
+  function v6Controls(features, selected, u) {
+    const opt = (v, cur, t) => `<option value="${esc(v)}"${String(v) === String(cur) ? " selected" : ""}>${esc(t)}</option>`;
+    const busy = st.solidBusy ? " disabled" : "";
+    const sk = (st.doc.sketches || []).find(x => x.id === st.sketch);
+    const where = sk ? "sur l'esquisse « " + esc(sk.name) + " »" : "sur la base";
+    let h = `<div class="sk-solid-add sk-v6"><strong class="sk-add-title">Pièce exacte</strong>`;
+    if (features.length) {
+      h += `<div class="sk-solid-controls"><span class="sk-add-title">Extrusion</span><select data-solid="boss.op" aria-label="Ajouter ou enlever">${opt("add", st.boss.op, "Bossage (ajoute)")}${opt("cut", st.boss.op, "Enlèvement (retire)")}</select>
+        <label>Hauteur (${u}) <input data-solid="boss.depth" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.boss.depth)}"/></label>
+        <button type="button" data-act="solid-boss"${selected.length && !st.solidBusy ? "" : " disabled"}>Extruder ${where}</button></div>`;
+      const ep = st.edgePick;
+      h += `<div class="sk-solid-controls"><span class="sk-add-title">Arêtes</span>
+        ${ep ? `<span class="hint">${ep.picks.length} arête(s) choisie(s) dans l'aperçu 3D</span>
+          <label>Rayon (${u}) <input data-solid="rf.radius" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.rf.radius)}"/></label><button type="button" data-act="solid-fillet"${ep.picks.length && !st.solidBusy ? "" : " disabled"}>Congé</button>
+          <label>Distance (${u}) <input data-solid="rf.distance" type="number" inputmode="decimal" min="0.001" step="any" value="${esc(st.rf.distance)}"/></label><button type="button" data-act="solid-chamfer"${ep.picks.length && !st.solidBusy ? "" : " disabled"}>Chanfrein</button>
+          <button type="button" class="secondary" data-act="edgePick">Terminer</button>`
+        : `<button type="button" data-act="edgePick"${busy}>Choisir des arêtes (congé, chanfrein)</button><span class="hint">Toute arête, droite ou courbe.</span>`}</div>`;
+    }
+    h += `<div class="sk-solid-controls"><span class="sk-add-title">Balayage</span>
+      ${st.sweepProfile ? `<span class="hint">Profil retenu (${st.sweepProfile.length} objet(s)). Sélectionne maintenant le chemin (autre esquisse).</span><button type="button" data-act="solid-sweep"${selected.length && !st.solidBusy ? "" : " disabled"}>Balayer le long de la sélection</button><button type="button" class="secondary" data-act="sweepReset">Annuler</button>`
+      : `<button type="button" data-act="sweepProfile"${selected.length ? "" : " disabled"}>Retenir ce profil</button><span class="hint">Un profil fermé, puis un chemin de lignes ou d'arcs.</span>`}</div>
+      <div class="sk-solid-controls"><span class="sk-add-title">Lissage</span>
+      <button type="button" data-act="loftAdd"${selected.length ? "" : " disabled"}>Ajouter ce profil (${st.loftProfiles.length})</button>
+      <button type="button" data-act="solid-loft"${st.loftProfiles.length >= 2 && !st.solidBusy ? "" : " disabled"}>Lisser</button>${st.loftProfiles.length ? `<button type="button" class="secondary" data-act="loftReset">Vider</button>` : ""}
+      <span class="hint">Des profils fermés sur des esquisses parallèles (par ex. base et plan XY décalé).</span></div></div>`;
+    return h;
+  }
+
+  // ---- floating action bubble (hq-sketch-float.js): the useful fields next to the selection, no scrolling
+  /** Selection box in stage pixels (the canvas fills its stage from the top-left corner). */
+  function selectionBox() {
+    const pm = S.pointMap(st.doc);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = (x, y) => { const q = S.toScreen(st.view, st.H, x, y); x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); };
+    for (const id of st.sel) {
+      const o = S.getObj(st.doc, id); if (!o) continue;
+      if (S.isLine(o)) { const a = pm.get(o.p1), b = pm.get(o.p2); if (a) add(a.x, a.y); if (b) add(b.x, b.y); }
+      else if (o.type === "circle" || o.type === "arc") {
+        const c = pm.get(o.center), r = o.type === "circle" ? o.r : S.arcGeom(o, pm).r;
+        if (c) { add(c.x - r, c.y - r); add(c.x + r, c.y + r); }
+      }
+    }
+    return isFinite(x0) ? { x0: x0, y0: y0, x1: x1, y1: y1 } : null;
+  }
+  /** A picked face parallel to a base plane → the sketch plane, offset and outward side that match it. */
+  function faceFrame(plane) {
+    const n = plane.normal, o = plane.origin, T = 1e-4;
+    if (Math.abs(Math.abs(n[2]) - 1) < T) return { plane: "XY", offset: o[2], face: n[2] > 0 ? 1 : -1, map: p => [p[0], p[1]] };
+    if (Math.abs(Math.abs(n[1]) - 1) < T) return { plane: "XZ", offset: -o[1], face: n[1] < 0 ? 1 : -1, map: p => [p[0], p[2]] };
+    if (Math.abs(Math.abs(n[0]) - 1) < T) return { plane: "YZ", offset: o[0], face: n[0] > 0 ? 1 : -1, map: p => [p[1], p[2]] };
+    return null;
+  }
+  /** « Esquisser sur la face »: a real, editable sketch on the picked face, with the face's outline as a faint guide. */
+  function startFaceSketch() {
+    const face = st.faceSelection, fr = face && faceFrame(face.plane);
+    if (!fr) { say("Cette face est inclinée : utilise « Dessiner sur cette face » (rapide)", "err"); return; }
+    const r = S.addSketch(st.doc, fr.plane, fr.offset, "Face " + fr.plane + " " + S.fmt(fr.offset), fr.face);
+    if (!r.ok) { say(r.error, "err"); return; }
+    const pl = face.plane;
+    const made = r.doc.sketches.find(x => x.id === r.id);
+    st.faceRef = { sketch: r.id, plane: made.plane, offset: made.offset, face: made.face, tris: face.triangles.map(t => t.map(q => fr.map([0, 1, 2].map(k => pl.origin[k] + pl.u[k] * q[0] + pl.v[k] * q[1])))) };
+    commit(r.doc);
+    st.faceSelection = null; st.pushPull = null; $(".sk-face-start", root).hidden = true;
+    if (st.doc.mode !== "construction") setMode("construction");
+    if (st.tab3d && !st.split) setView3d(false);
+    setSketch(r.id);
+    setTool("rect");
+    say("Esquisse sur la face : dessine un contour, puis « Extruder » (Ajouter ou Enlever)");
+  }
+  function drawFaceRef() {
+    const ref = st.faceRef;
+    // only on the sketch it was made for: an undone sketch's id can be reused by another one
+    const sk = ref && (st.doc.sketches || []).find(x => x.id === ref.sketch);
+    if (!ref || ref.sketch !== st.sketch || !sk || sk.plane !== ref.plane || sk.offset !== ref.offset || sk.face !== ref.face) return;
+    ctx.save();
+    ctx.fillStyle = "rgba(61,140,255,.10)"; ctx.strokeStyle = "rgba(61,140,255,.45)"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    for (const t of ref.tris) { t.forEach((p, i) => { const q = S.toScreen(st.view, st.H, p[0], p[1]); if (i) ctx.lineTo(q.x, q.y); else ctx.moveTo(q.x, q.y); }); ctx.closePath(); }
+    ctx.fill(); ctx.restore();
+  }
+  function floatSpec3d() {
+    const u = st.doc.units;
+    if (st.edgePick) {
+      const n = st.edgePick.picks.length;
+      return { sig: "edges:" + n, title: n ? n + " arête(s) choisie(s)" : "Touche des arêtes dans la vue",
+        fields: [{ key: "r", label: "Rayon", type: "number", value: st.rf.radius, unit: u, min: "0", action: "fillet", live: true },
+                 { key: "d", label: "Distance", type: "number", value: st.rf.distance, unit: u, min: "0", action: "chamfer", live: true }],
+        actions: [{ key: "fillet", label: "Congé", primary: true, disabled: !n }, { key: "chamfer", label: "Chanfrein", disabled: !n }, { key: "edgesDone", label: "Terminer", kind: "quiet" }] };
+    }
+    const pp = st.pushPull;
+    const fr = st.faceSelection && inV6() && faceFrame(st.faceSelection.plane);
+    if (fr && !pp) {
+      return { sig: "face:" + fr.plane + ":" + fr.offset, title: "Face " + fr.plane + " · " + S.fmt(fr.offset) + " " + u, fields: [],
+        actions: [{ key: "faceSketch", label: "Esquisser sur la face", primary: true }, { key: "faceClose", label: "Fermer", kind: "quiet" }],
+        note: "Dessine un contour sur la face, puis ajoute ou enlève de la matière." };
+    }
+    if (pp) {
+      const step = st.doc.grid.spacing / 2, hi = Math.max(pp.depth * 3, pp.depth + st.doc.grid.spacing * 10);
+      const f = (st.doc.features || [])[pp.index];
+      return { sig: "pp:" + pp.id + ":" + pp.depth, title: (pp.index === 0 ? "Extrusion" : pp.op === "cut" ? "Enlèvement" : "Bossage") + " " + (pp.index + 1) + (f ? "" : ""),
+        fields: [{ key: "pp", label: "Hauteur", type: "number", value: S.fmt(pp.depth), unit: u, min: "0", action: "pp", live: true },
+                 { key: "ppr", label: "", type: "range", value: pp.depth, min: String(step), max: String(Math.round(hi * 1000) / 1000), step: String(step), action: "pp", live: true }],
+        actions: [{ key: "pp", label: "Appliquer", primary: true }].concat(fr ? [{ key: "faceSketch", label: "Esquisser sur la face" }] : [], [{ key: "ppDone", label: "Fermer", kind: "quiet" }]),
+        note: "Glisse la face elle-même, ou règle la hauteur ici ; la pièce exacte suit au relâché." };
+    }
+    return null;
+  }
+  function floatSpec() { return st.tab3d && !st.split ? floatSpec3d() : floatSpec2d(); }
+  function floatSpec2d() {
+    const u = st.doc.units, features = st.doc.features || [], hasPart = features.length > 0;
+    if (st.tool !== "select" || st.action || !st.sel.length) return null;
+    const sel = st.sel.map(id => S.getObj(st.doc, id)).filter(Boolean);
+    const lines = sel.filter(o => S.isLine(o)), rounds = sel.filter(o => o.type === "circle" || o.type === "arc");
+    const v6 = inV6() && st.doc.mode === "construction";
+    const fields = [], actions = [];
+    let title = "";
+    const geo = (type, label) => v6 && actions.push({ key: "geo:" + type, label: label, kind: "chip" });
+    const profile = selectedProfile();
+    const closed = profile.length && profile.every(id => { const o = S.getObj(st.doc, id); return o && (S.isLine(o) || o.type === "circle" || o.type === "arc"); }) &&
+      (profile.length > 1 || (S.getObj(st.doc, profile[0]) || {}).type === "circle");
+    if (sel.length === 1 && lines.length === 1) {
+      const L = lineInfo(lines[0].id).L;
+      title = (lines[0].type === "centerline" ? "Axe" : "Ligne") + " · " + S.fmt(L) + " " + u;
+      fields.push({ key: "len", label: "Longueur", type: "number", value: S.fmt(L), unit: u, min: "0", action: "len" });
+      actions.push({ key: "len", label: "Appliquer", primary: true });
+      geo("horizontal", "H"); geo("vertical", "V"); geo("fixed", "Fixer");
+    } else if (sel.length === 1 && rounds.length === 1) {
+      const o = rounds[0], r = o.type === "circle" ? o.r : S.arcGeom(o, S.pointMap(st.doc)).r;
+      title = (o.type === "circle" ? "Cercle · Ø " + S.fmt(2 * r) : "Arc · R " + S.fmt(r)) + " " + u;
+      fields.push({ key: "rad", label: "Rayon", type: "number", value: S.fmt(r), unit: u, min: "0", action: "rad" });
+      actions.push({ key: "rad", label: "Appliquer", primary: true });
+      geo("fixed", "Fixer");
+    } else if (sel.length === 2 && lines.length === 2) {
+      const v = S.sharedVertex(st.doc, lines[0].id, lines[1].id);
+      title = "Deux lignes";
+      if (v) {
+        fields.push({ key: "ang", label: "Angle", type: "number", value: S.fmt(S.angleBetween(st.doc, lines[0].id, lines[1].id).deg, 3), unit: "°", min: "0", max: "180", action: "ang" });
+        actions.push({ key: "ang", label: "Appliquer", primary: true });
+      }
+      geo("parallel", "∥"); geo("perpendicular", "⊥"); geo("equal", "=");
+    } else if (sel.length === 2 && lines.length === 1 && rounds.length === 1) { title = "Ligne et arrondi"; geo("tangent", "Tangentes"); }
+    else if (sel.length === 2 && rounds.length === 2) { title = "Deux arrondis"; geo("tangent", "Tangents"); geo("equal", "Même rayon"); }
+    else if (rounds.length === sel.length && sel.every(o => o.type === "circle")) title = sel.length + " cercles";
+    else if (!closed) return null;
+    // 3D straight from the selection: extrude a closed shape, drill circles
+    const circles = sel.filter(o => o.type === "circle").length;
+    if (hasPart && circles && circles === sel.length) {
+      fields.push({ key: "std", label: "Trou", type: "select", value: st.hole.standard, options: S.HOLE_STANDARDS.map(x => [x, x]), action: "hole" });
+      actions.push({ key: "hole", label: "Percer" + (circles > 1 ? " ×" + circles : ""), primary: !fields.some(f => f.action !== "hole") });
+    }
+    if (closed && !(hasPart && circles && circles === sel.length && sel.length > 1)) {
+      if (!title) title = "Contour fermé";
+      const depth = hasPart ? st.boss.depth : st.solidDepth;
+      fields.push({ key: "h", label: hasPart ? "Hauteur" : "Extrusion", type: "number", value: depth, unit: u, min: "0", action: "extrude", live: true });
+      if (hasPart && inV6()) fields.push({ key: "op", label: "", type: "select", value: st.boss.op, options: [["add", "Ajouter"], ["cut", "Enlever"]], action: "extrude" });
+      actions.push({ key: "extrude", label: hasPart ? (inV6() ? "Extruder" : "Enlever") : "Extruder", primary: !actions.some(a => a.primary) });
+    }
+    if (!fields.length && !actions.length) return null;
+    const sig = ["2d", st.sel.join(","), title, hasPart, v6, st.doc.objects.length, features.length].join("|");
+    return { sig: sig, title: title, fields: fields, actions: actions };
+  }
+  function updateFloat() {
+    if (!bubble2d || !st.doc || !canvas) return;
+    const stage2d = $(".sk-stage", root); if (stage2d) stage2d.classList.toggle("is-multi", !!st.multi);
+    if ((st.faceSelection || st.pushPull) && st.faceAt !== st.meshVersion) { // the part changed (edit, undo, load): the picked face is stale
+      st.faceSelection = null; st.pushPull = null; restorePreview();
+      const b = $(".sk-face-start", root); if (b) b.hidden = true;
+    }
+    const show2d = !st.tab3d || st.split, show3d = st.tab3d;
+    const s2 = show2d ? floatSpec2d() : null, s3 = show3d ? floatSpec3d() : null;
+    if (show2d) bubble2d.show(s2, s2 ? selectionBox() : null); else bubble2d.hide();
+    if (bubble3d) { if (show3d) bubble3d.show(s3, null); else bubble3d.hide(); }
+    if (st.previewing && !s3 && !(s2 && s2.fields.some(f => f.key === "h"))) restorePreview(); // nothing left to preview
+  }
+  // ---- instant previews: the shown part changes while a value is typed or dragged; Enter / release applies
+  function restorePreview() {
+    if (!st.previewing) return;
+    st.previewing = false; st.previewSeq++; clearTimeout(st.previewT);
+    if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
+    const status = $(".sk-3d-status", root);
+    if (status && st.mesh.length) status.textContent = st.mesh.length + " triangles";
+  }
+  function previewCandidate(doc) {
+    if (!st.tab3d || !doc) return;
+    clearTimeout(st.previewT);
+    const seq = ++st.previewSeq;
+    st.previewT = setTimeout(async () => {
+      try {
+        const res = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: doc }), timeoutMs: 30000 });
+        if (seq !== st.previewSeq) return;
+        st.previewing = true;
+        if (solidView) solidView.setTriangles(res.triangles || []);
+        $(".sk-3d-status", root).textContent = "Aperçu" + (res.mass && res.mass.volume ? " · volume " + S.fmt(res.mass.volume, 2) + " " + st.doc.units + "³" : "") + " · Entrée pour appliquer";
+      } catch (e) {
+        if (seq === st.previewSeq) $(".sk-3d-status", root).textContent = "Aperçu impossible : " + ((e && e.message) || "valeur refusée");
+      }
+    }, 200);
+  }
+  /** Push / pull by hand: a drag that starts on the picked end face moves it along its normal (the camera does not
+   * orbit). The part stretches live; releasing rebuilds it exactly. Anywhere else a drag still orbits. */
+  function ppDragHandler() {
+    let drag = null;
+    const sameFace = (a, b) => {
+      const n = a.normal, m = b.normal, d = [0, 1, 2].map(k => a.origin[k] - b.origin[k]);
+      const scale = Math.max(1, Math.abs(b.origin[0]) + Math.abs(b.origin[1]) + Math.abs(b.origin[2]));
+      return n[0] * m[0] + n[1] * m[1] + n[2] * m[2] > 0.9999 && Math.abs(d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) < 1e-6 * scale;
+    };
+    return {
+      start(face) {
+        const pp = st.pushPull, c = $(".sk-3d-canvas", root);
+        if (!pp || !st.faceSelection || st.solidBusy || !c || !c.hqSolidProject || !sameFace(face.plane, st.faceSelection.plane)) return false;
+        const o = face.plane.origin, n = pp.normal, L = Math.max(1, pp.depth), r = c.getBoundingClientRect();
+        const px = p => { const q = c.hqSolidProject(p); return [(q[0] + 1) / 2 * r.width, (1 - q[1]) / 2 * r.height]; };
+        const a = px(o), b = px([o[0] + n[0] * L, o[1] + n[1] * L, o[2] + n[2] * L]);
+        let v = [(b[0] - a[0]) / L, (b[1] - a[1]) / L]; // screen pixels per model unit along the normal
+        const len = Math.hypot(v[0], v[1]);
+        if (len < 1.5) v = len > 1e-9 ? [v[0] / len * 1.5, v[1] / len * 1.5] : [0, -1.5]; // seen end-on: fall back to a vertical drag
+        drag = { depth0: pp.depth, v: v, val: pp.depth, q: Math.max(1e-3, st.doc.grid.spacing / 10) };
+        if (solidView) solidView.lockFrame(st.mesh); // the framing stays put while the part grows
+        return true;
+      },
+      move(dx, dy) {
+        if (!drag) return;
+        const k = (dx * drag.v[0] + dy * drag.v[1]) / (drag.v[0] * drag.v[0] + drag.v[1] * drag.v[1]);
+        let val = Math.round((drag.depth0 + k) / drag.q) * drag.q;
+        val = Math.max(drag.q, Math.round(val * 1e6) / 1e6);
+        if (val === drag.val) return;
+        drag.val = val;
+        floatInput("ppr", { ppr: val });
+      },
+      end(moved) {
+        const d = drag; drag = null;
+        if (solidView) solidView.lockFrame(null);
+        if (!d || !moved) return;
+        if (d.val === d.depth0) { restorePreview(); return; }
+        floatAction("pp", { pp: String(d.val) });
+      },
+      cancel() { drag = null; if (solidView) solidView.lockFrame(null); restorePreview(); },
+    };
+  }
+  function floatInput(key, v) {
+    const num = x => Number(String(x == null ? "" : x).replace(",", "."));
+    if (key === "pp" || key === "ppr") {
+      const pp = st.pushPull; if (!pp) return;
+      const val = num(v[key]);
+      if (!(val > 0)) return;
+      if (bubble3d) bubble3d.setValue(key === "pp" ? "ppr" : "pp", key === "pp" ? val : S.fmt(val));
+      st.previewing = true;
+      if (solidView && I) solidView.setTriangles(I.stretch(st.mesh, pp.normal, pp.level, val - pp.depth, 1e-6 * Math.max(1, Math.abs(pp.level))));
+      $(".sk-3d-status", root).textContent = "Hauteur " + S.fmt(val) + " " + st.doc.units + " · relâche ou Entrée pour appliquer";
+      const res = S.updateFeature(st.doc, pp.id, { depth: val });
+      if (res.ok && key === "pp") previewCandidate(res.doc); // typed: the exact part a moment later
+      return;
+    }
+    if (key === "h") {
+      const depth = num(v.h), profile = selectedProfile();
+      if (!(depth > 0) || !profile.length) return;
+      const res = (st.doc.features || []).length
+        ? (inV6() ? S.addSolidStep(st.doc, { type: "boss", profile: profile, depth: depth, op: v.op === "cut" ? "cut" : "add" }) : S.addFeature(st.doc, "cut", profile, depth, "blind"))
+        : S.addFeature(st.doc, "extrude", profile, depth, "blind");
+      if (res.ok) previewCandidate(res.doc);
+      return;
+    }
+    if (key === "r" || key === "d") {
+      const val = num(v[key]);
+      const edges = (st.edgePick ? st.edgePick.picks : []).map(i => st.edges[i]).filter(Boolean).map(e => ({ a: e.a, b: e.b, m: e.m || [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2, (e.a[2] + e.b[2]) / 2] }));
+      if (!(val > 0) || !edges.length) return;
+      const res = S.addSolidStep(st.doc, key === "r" ? { type: "fillet", edges: edges, radius: val } : { type: "chamfer", edges: edges, distance: val });
+      if (res.ok) previewCandidate(res.doc);
+    }
+  }
+  function floatAction(key, v) {
+    const num = x => Number(String(x == null ? "" : x).replace(",", "."));
+    if (["extrude", "hole", "fillet", "chamfer", "len", "rad"].includes(key)) st.lastFloat = { key: key, v: Object.assign({}, v) };
+    setTimeout(savePrefs, 0);
+    if (key === "pp") {
+      const pp = st.pushPull; if (!pp) return;
+      const val = num(v.pp);
+      const res = S.updateFeature(st.doc, pp.id, { depth: val });
+      if (!res.ok) { say(res.error, "err"); restorePreview(); return; }
+      st.previewSeq++; st.previewing = false;
+      applySolidDoc(res.doc, "Hauteur " + S.fmt(val) + " " + st.doc.units).then(ok => { if (!ok) restorePreview(); st.pushPull = null; updateFloat(); });
+      return;
+    }
+    if (key === "faceSketch") { restorePreview(); startFaceSketch(); return; }
+    if (key === "faceClose") { st.faceSelection = null; $(".sk-face-start", root).hidden = true; updateFloat(); return; }
+    if (key === "ppDone") { st.pushPull = null; restorePreview(); updateFloat(); return; }
+    if (key === "len") {
+      const o = S.getObj(st.doc, st.sel[0]); if (!o) return;
+      if (tryCommit(S.setLineLength(st.doc, o.id, o[st.fixedEnd], num(v.len)))) say("Longueur " + S.fmt(num(v.len)) + " " + st.doc.units + " appliquée");
+      return;
+    }
+    if (key === "ang") {
+      const [a, b] = st.sel; const [ref, mv] = st.swapAngle ? [b, a] : [a, b];
+      if (tryCommit(S.setAngle(st.doc, mv, ref, num(v.ang)))) say("Angle " + S.fmt(num(v.ang), 3) + "° appliqué");
+      return;
+    }
+    if (key === "rad") {
+      const o = S.getObj(st.doc, st.sel[0]); if (!o) return;
+      if (o.type === "arc") { applyGeo("radius", num(v.rad)); return; }
+      if (tryCommit(S.updateObject(st.doc, o.id, { r: num(v.rad) }))) say("Rayon " + S.fmt(num(v.rad)) + " " + st.doc.units);
+      return;
+    }
+    if (key.startsWith("geo:")) { applyGeo(key.slice(4)); return; }
+    if (key === "hole") { if (v.std) st.hole.standard = v.std; createStep("hole"); return; }
+    if (key === "extrude") {
+      const depth = num(v.h), profile = selectedProfile();
+      if (!(depth > 0)) { say("Hauteur invalide", "err"); return; }
+      if (!(st.doc.features || []).length) { st.solidDepth = depth; createSolid("extrude", { profile: profile, depth: depth }); return; }
+      if (inV6()) { st.boss.depth = depth; st.boss.op = v.op === "cut" ? "cut" : "add"; createV6Step("boss"); return; }
+      st.cutDepth = depth; createSolid("cut", { profile: profile, depth: depth });
+      return;
+    }
+    if (key === "fillet" || key === "chamfer") {
+      if (key === "fillet") st.rf.radius = num(v.r); else st.rf.distance = num(v.d);
+      createV6Step(key);
+      return;
+    }
+    if (key === "edgesDone") {
+      st.edgePick = null;
+      if (solidView) { solidView.setEdgeMode(false); solidView.setMarked([], false); }
+      renderSolid(); updateFloat();
+    }
+  }
+
+  // ---- edits: every change is built by the server first; a value that breaks the part is refused, the old one stays
+  async function applySolidDoc(next, okMsg) {
+    if (st.solidBusy) return false;
+    const version = st.meshVersion;
+    st.solidBusy = true;
+    try {
+      let tris = [], edges = [], mass = null;
+      if ((next.features || []).length) {
+        const check = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: next }), timeoutMs: 45000 });
+        tris = check.triangles; edges = check.edges || []; mass = check.mass || null;
+      }
+      if (version !== st.meshVersion) throw new Error("Le dessin a changé pendant le calcul : réessaie");
+      st.preview3d = null;
+      commit(next); st.mesh = tris; st.edges = edges; st.mass = mass; st.meshLoadedVersion = st.meshVersion;
+      clearTimeout(st.meshTimer);
+      st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
+      if (solidView) { solidView.setTriangles(tris); solidView.setEdges(edges); }
+      $(".sk-3d-status", root).textContent = tris.length ? `${tris.length} triangles · glisse pour tourner · deux doigts ou clic droit pour déplacer · pince ou molette pour zoomer` : "Crée une extrusion pour voir la pièce.";
+      if (okMsg) say(okMsg);
+      return true;
+    } catch (e) { say((e && e.message) || "Refusé", "err"); flashHud((e && e.message) || "Refusé"); return false; }
+    finally { st.solidBusy = false; renderSolid(); }
+  }
+  function onSolidChange(e) {
+    const t = e.target, d = t.dataset;
+    if (d.active) {
+      const res = S.updateFeature(st.doc, d.active, { suppressed: !t.checked });
+      if (!res.ok) { say(res.error, "err"); renderSolid(); return; }
+      applySolidDoc(res.doc, t.checked ? "Fonction réactivée" : "Fonction désactivée");
+      return;
+    }
+    if (d.rollback != null && t.type === "range") {
+      const n = Number(t.value), len = (st.doc.features || []).length;
+      const res = S.setRollback(st.doc, n >= len ? null : n);
+      if (!res.ok) { say(res.error, "err"); renderSolid(); return; }
+      applySolidDoc(res.doc, n >= len ? "Toutes les fonctions" : "Pièce construite jusqu'à la fonction " + n);
+      return;
+    }
+    if (d.edit && d.feature) {
+      const v = t.type === "checkbox" ? t.checked : t.value;
+      if (t.type === "number" && !(t.value !== "" && isFinite(Number(t.value)))) { renderSolid(); return; }
+      const res = S.updateFeature(st.doc, d.feature, { [d.edit]: v });
+      if (!res.ok) { say(res.error, "err"); renderSolid(); return; }
+      applySolidDoc(res.doc, "Pièce mise à jour");
+      return;
+    }
+    if (d.dimLine || d.dimCircle) {
+      const v = Number(t.value);
+      const res = d.dimCircle ? S.setCircleRadius(st.doc, d.dimCircle, v) : (() => { const o = S.getObj(st.doc, d.dimLine); return o ? S.setLineLength(st.doc, d.dimLine, o.p1, v) : { ok: false, error: "Ligne introuvable" }; })();
+      if (!res.ok) { say(res.error, "err"); renderSolid(); return; }
+      applySolidDoc(res.doc, d.dimCircle ? "Rayon " + S.fmt(v) + " " + st.doc.units : "Côté " + S.fmt(v) + " " + st.doc.units);
+      return;
+    }
+    if (d.solid && t.tagName === "SELECT") renderSolid(); // a different hole extent or pattern layout shows other fields
+  }
+  function createStep(kind) {
+    let step;
+    if (kind === "revolve") {
+      const rv = revolveSelection();
+      if (!rv.axis) { say("Sélectionne aussi un trait d'axe (outil « Axe »)", "err"); return; }
+      step = { type: "revolve", profile: rv.profile, axis: rv.axis, angle: Number(String(st.revAngle).replace(",", ".")) || 360 };
+    } else if (kind === "hole") {
+      step = { type: "hole", at: selectedCircles(), standard: st.hole.standard, fit: st.hole.fit, extent: st.hole.extent, depth: Number(String(st.hole.depth).replace(",", ".")) || 0 };
+    } else if (kind === "shell") {
+      step = { type: "shell", thickness: Number(String(st.shell.t).replace(",", ".")), open: !!st.shell.open };
+    } else {
+      const c = partCenter(), P = st.pat;
+      const n = (v, dflt) => (v === "" || v == null ? dflt : Number(String(v).replace(",", ".")));
+      step = { type: "pattern", source: P.source, mode: P.mode, count: n(P.count, 4),
+        dx: n(P.dx, st.doc.grid.spacing * 2), dy: n(P.dy, 0), cx: n(P.cx, c.x), cy: n(P.cy, c.y), angle: n(P.angle, 360) };
+    }
+    const res = S.addSolidStep(st.doc, step);
+    if (!res.ok) { say(res.error, "err"); return; }
+    const names = { revolve: "Pièce tournée", hole: "Trou percé", shell: "Pièce évidée", pattern: "Répétition ajoutée" };
+    applySolidDoc(res.doc, names[kind]).then(ok => { if (ok) setView3d(true); });
+  }
+
+  function createV6Step(kind) {
+    let step;
+    if (kind === "boss") step = { type: "boss", profile: selectedProfile(), depth: Number(String(st.boss.depth).replace(",", ".")), op: st.boss.op };
+    else if (kind === "fillet" || kind === "chamfer") {
+      const edges = (st.edgePick ? st.edgePick.picks : []).map(i => st.edges[i]).filter(Boolean).map(e => ({ a: e.a, b: e.b, m: e.m || [(e.a[0] + e.b[0]) / 2, (e.a[1] + e.b[1]) / 2, (e.a[2] + e.b[2]) / 2] }));
+      if (!edges.length) { say("Choisis au moins une arête", "err"); return; }
+      step = kind === "fillet" ? { type: "fillet", edges: edges, radius: Number(String(st.rf.radius).replace(",", ".")) } : { type: "chamfer", edges: edges, distance: Number(String(st.rf.distance).replace(",", ".")) };
+    } else if (kind === "sweep") {
+      if (!st.sweepProfile) { say("Retiens d'abord un profil", "err"); return; }
+      step = { type: "sweep", profile: st.sweepProfile, path: st.sel.slice(), op: (st.doc.features || []).length ? st.boss.op : "add" };
+    } else step = { type: "loft", profiles: st.loftProfiles.map(p => p.slice()), op: (st.doc.features || []).length ? st.boss.op : "add" };
+    const res = S.addSolidStep(st.doc, step);
+    if (!res.ok) { say(res.error, "err"); return; }
+    const names = { boss: step.op === "cut" ? "Matière enlevée" : "Bossage ajouté", fillet: "Congé appliqué", chamfer: "Chanfrein appliqué", sweep: "Balayage créé", loft: "Lissage créé" };
+    applySolidDoc(res.doc, names[kind]).then(ok => {
+      if (!ok) return;
+      if (kind === "fillet" || kind === "chamfer") { st.edgePick = null; if (solidView) { solidView.setEdgeMode(false); solidView.setMarked([], false); } updateFloat(); }
+      if (kind === "sweep") st.sweepProfile = null;
+      if (kind === "loft") st.loftProfiles = [];
+      setView3d(true); renderSolid();
+    });
+  }
+  async function exportStep(btn) {
+    btn.disabled = true;
+    try {
+      const res = await window.api("/api/drawings/step", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: st.doc, name: st.name || "piece" }), timeoutMs: 60000 });
+      const blob = res && typeof res.blob === "function" ? await res.blob() : null;
+      if (!blob || !blob.size) throw new Error("Export STEP impossible");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = (st.name || "piece") + ".step";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      say("Fichier STEP exporté (millimètres)");
+    } catch (e) { say((e && e.message) || "Export STEP impossible", "err"); }
+    finally { btn.disabled = false; }
+  }
+
+  // ---- 3D history: every past state of the part (from undo history), previewed without changing anything
+  function history3d() {
+    const key = st.hist.past.length + ":" + st.meshVersion;
+    if (st.hist3dKey === key && st.hist3d) return st.hist3d;
+    const docs = st.hist.past.map(j => { try { return JSON.parse(j); } catch (_) { return null; } }).filter(Boolean).concat([st.doc]);
+    const sig = d => JSON.stringify([d.features || [], d.faceFeatures || [], d.roundFeatures || []]);
+    const out = [];
+    let last = null;
+    for (const d of docs) {
+      if (!(d.features || []).length) { last = null; continue; }
+      const sg = sig(d);
+      if (sg === last) { out[out.length - 1].doc = d; continue; }
+      last = sg;
+      const fs = d.features, lf = fs[fs.length - 1];
+      const extra = (d.faceFeatures || []).length + (d.roundFeatures || []).length;
+      out.push({ doc: d, sig: sg, label: fs.length + " fonction(s)" + (extra ? " + " + extra : "") + " · " + (FEATURE_NAMES[lf.type] || lf.type) });
+    }
+    if (out.length) out[out.length - 1].doc = st.doc;
+    st.hist3dKey = key; st.hist3d = out;
+    return out;
+  }
+  async function previewStep(i) {
+    const steps = history3d();
+    if (!steps[i]) return;
+    st.preview3d = i === steps.length - 1 ? null : i;
+    const label = $(".sk-hist3d-label", root);
+    if (label) label.textContent = "Étape " + (i + 1) + "/" + steps.length + " · " + steps[i].label;
+    const go = $('[data-act="hist3dGo"]', root);
+    if (go) go.hidden = st.preview3d == null; // the slider itself is never re-rendered while it is being dragged
+    if (!st.tab3d) setView3d(true);
+    if (st.preview3d == null) {
+      if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
+      $(".sk-3d-status", root).textContent = st.mesh.length + " triangles · état actuel";
+      return;
+    }
+    let tris = st.histMesh.get(steps[i].sig);
+    if (!tris) {
+      try {
+        const res = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: steps[i].doc }), timeoutMs: 45000 });
+        tris = res.triangles || [];
+        if (st.histMesh.size > 30) st.histMesh.clear();
+        st.histMesh.set(steps[i].sig, tris);
+      } catch (e) { say((e && e.message) || "Étape illisible", "err"); return; }
+    }
+    if (st.preview3d !== i) return; // the slider moved on meanwhile
+    if (solidView) { solidView.setTriangles(tris); solidView.setEdges([]); }
+    $(".sk-3d-status", root).textContent = "Aperçu de l'étape " + (i + 1) + " : rien n'est modifié tant que tu ne reviens pas à cette étape";
+  }
+
+  // ---- AR Quick Look (iPhone / iPad): the part at real size on the table
+  async function arModel() {
+    if (!(st.doc.features || []).length) return { ok: false, text: "Crée d'abord une pièce 3D" };
+    try {
+      const r = await window.api("/api/drawings/usdz", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: st.doc, name: st.name || "Piece" }), timeoutMs: 45000 });
+      return r && typeof r.url === "string" && r.url.startsWith("/api/drawings/usdz/") ? { ok: true, url: r.url, text: "Modèle AR prêt" } : { ok: false, text: "Modèle AR indisponible" };
+    } catch (e) { return { ok: false, text: (e && e.message) || "Modèle AR indisponible" }; }
+  }
+  function openAr(url) {
+    const a = document.createElement("a");
+    a.href = url;
+    const quickLook = a.relList && a.relList.supports && a.relList.supports("ar");
+    if (quickLook) { a.rel = "ar"; a.appendChild(document.createElement("img")); }
+    else a.download = (st.name || "piece") + ".usdz";
+    document.body.appendChild(a); a.click(); a.remove();
+    if (!quickLook) say("Modèle AR téléchargé (.usdz) : ouvre-le sur un iPhone ou un iPad, ou « Voir en AR » depuis le 2e écran.");
+  }
+
+  function setSplit(on) {
+    st.split = !!on;
+    root.querySelector(".sk").classList.toggle("is-split", st.split);
+    st.tab3d = st.split || st.tab3d;
+    $(".sk-stage", root).hidden = false; $(".sk-3d-stage", root).hidden = !st.tab3d;
+    root.querySelector('[data-act="viewSplit"]').setAttribute("aria-selected", String(st.split));
+    root.querySelector('[data-act="view2d"]').setAttribute("aria-selected", String(!st.split && !st.tab3d));
+    root.querySelector('[data-act="view3d"]').setAttribute("aria-selected", String(!st.split && st.tab3d));
+    resize(); if (st.tab3d) scheduleMesh(); if (solidView) solidView.draw();
+    updateFloat();
+  }
   function setView3d(on) {
+    if (st.split) { if (on) { scheduleMesh(); return; } st.split = false; root.querySelector(".sk").classList.remove("is-split"); root.querySelector('[data-act="viewSplit"]').setAttribute("aria-selected", "false"); }
     if (!on && faceSketch) faceSketch.close();
+    if (bubble2d && on) bubble2d.hide();
     st.tab3d = on;
     $(".sk-stage", root).hidden = on; $(".sk-3d-stage", root).hidden = !on;
     root.querySelector('[data-act="view2d"]').setAttribute("aria-selected", on ? "false" : "true");
@@ -372,13 +1124,14 @@
   }
 
   async function loadMesh() {
+    if (st.lift || st.preview3d != null) return; // a live lift or a history preview owns the 3D view meanwhile
     const version = st.meshVersion, status = $(".sk-3d-status", root);
     if (!(st.doc.features || []).length) { st.mesh = []; st.edges = []; st.meshLoadedVersion = version; if (solidView) { solidView.setTriangles([]); solidView.setEdges([]); } status.textContent = "Crée une extrusion pour voir la pièce."; return; }
     status.textContent = "Calcul du modèle…";
     try {
       const res = await window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: st.doc }), timeoutMs: 45000 });
       if (version !== st.meshVersion) return;
-      st.mesh = res.triangles; st.edges = res.edges || []; st.meshLoadedVersion = version;
+      st.mesh = res.triangles; st.edges = res.edges || []; st.meshLoadedVersion = version; st.mass = res.mass || null;
       st.faceSelection = null; st.edgeSelection = null; $(".sk-face-start", root).hidden = true;
       if (solidView) { solidView.setTriangles(st.mesh); solidView.setEdges(st.edges); }
       renderSolid();
@@ -386,10 +1139,10 @@
     } catch (e) { if (version === st.meshVersion) { st.mesh = []; st.edges = []; st.meshLoadedVersion = -1; if (solidView) { solidView.setTriangles([]); solidView.setEdges([]); } status.textContent = e.message; } }
   }
 
-  async function createSolid(kind) {
+  async function createSolid(kind, given) {
     if (st.solidBusy) return;
-    const profile = selectedProfile();
-    const depth = Number(String(kind === "extrude" ? st.solidDepth : st.cutDepth).replace(",", "."));
+    const profile = given ? given.profile : selectedProfile();
+    const depth = given ? given.depth : Number(String(kind === "extrude" ? st.solidDepth : st.cutDepth).replace(",", "."));
     const result = S.addFeature(st.doc, kind, profile, kind === "cut" && st.cutThrough ? 0 : depth, kind === "cut" && st.cutThrough ? "throughAll" : "blind");
     if (!result.ok) { say(result.error, "err"); return; }
     const version = st.meshVersion;
@@ -471,8 +1224,17 @@
   // ------------------------------------------------------------ actions
   function act(name, el) {
     if (name === "return") { if (st.link) st.link.ret(); return; }
-    if (name === "view2d" || name === "view3d") { setView3d(name === "view3d"); return; }
+    if (name === "view2d" || name === "view3d") { if (st.split) { st.split = false; root.querySelector(".sk").classList.remove("is-split"); root.querySelector('[data-act="viewSplit"]').setAttribute("aria-selected", "false"); } setView3d(name === "view3d"); return; }
+    if (name === "viewSplit") { if (st.split) { setSplit(false); setView3d(false); } else setSplit(true); return; }
     if (name === "reset3d") { if (solidView) solidView.reset(); return; }
+    if (name === "paint") {
+      if (!window.HqSketchPaint) { say("« Forge peint » n'est pas chargé", "err"); return; }
+      if (!st.paint) st.paint = window.HqSketchPaint.mount(window, $(".sk-paint-host", root));
+      const on = st.paint.toggle();
+      root.querySelector('[data-act="paint"]').setAttribute("aria-expanded", String(on));
+      if (on) st.paint.changed();
+      return;
+    }
     if (name === "roundMode") {
       st.edgeMode = !st.edgeMode; st.edgeSelection = null; st.faceSelection = null;
       $(".sk-face-start", root).hidden = true;
@@ -485,14 +1247,51 @@
     if (name === "roundApply") { createRound(); return; }
     if (name === "faceSketch") { if (faceSketch && st.faceSelection) faceSketch.open(st.faceSelection); return; }
     if (name === "solid-extrude" || name === "solid-cut") { createSolid(name === "solid-extrude" ? "extrude" : "cut"); return; }
+    if (name === "solid-revolve" || name === "solid-hole" || name === "solid-shell" || name === "solid-pattern") { createStep(name.slice(6)); return; }
+    if (name === "solid-boss" || name === "solid-fillet" || name === "solid-chamfer" || name === "solid-sweep" || name === "solid-loft") { createV6Step(name.slice(6)); return; }
+    if (name === "featUp" || name === "featDown") {
+      const res = S.moveFeature(st.doc, el.dataset.feature, name === "featUp" ? -1 : 1);
+      if (!res.ok) { say(res.error, "err"); return; }
+      applySolidDoc(res.doc, "Ordre des fonctions changé");
+      return;
+    }
+    if (name === "edgePick") {
+      st.edgePick = st.edgePick ? null : { picks: [] };
+      if (st.edgePick && !st.tab3d) setView3d(true);
+      if (solidView) { solidView.setEdgeMode(!!st.edgePick); solidView.setMarked([], !!st.edgePick); }
+      $(".sk-3d-status", root).textContent = st.edgePick ? "Touche les arêtes à arrondir ou chanfreiner" : "";
+      renderSolid(); updateFloat(); return;
+    }
+    if (name === "sweepProfile") { st.sweepProfile = selectedProfile(); say("Profil retenu : sélectionne le chemin"); renderSolid(); return; }
+    if (name === "sweepReset") { st.sweepProfile = null; renderSolid(); return; }
+    if (name === "loftAdd") {
+      const prof = selectedProfile();
+      if (!prof.length) return;
+      st.loftProfiles.push(prof); st.sel = []; refreshAll(); say("Profil " + st.loftProfiles.length + " ajouté au lissage"); return;
+    }
+    if (name === "loftReset") { st.loftProfiles = []; renderSolid(); return; }
+    if (name === "step3d") { exportStep(el); return; }
+    if (name === "hist3dGo") {
+      const steps = history3d(), i = st.preview3d;
+      if (i == null || !steps[i]) return;
+      const back = S.clone(steps[i].doc);
+      applySolidDoc(back, "Dessin remis à l'étape " + (i + 1) + " (Annuler pour revenir)");
+      return;
+    }
+    if (name === "ar3d") {
+      el.disabled = true;
+      arModel().then(r => { el.disabled = false; if (r.ok) openAr(r.url); else say(r.text, "err"); });
+      return;
+    }
     if (name === "remove3d") { removeSolidFeature(el.dataset.feature, "legacy"); return; }
     if (name === "removeFace3d") { removeSolidFeature(el.dataset.feature, "face"); return; }
     if (name === "removeRound3d") { removeSolidFeature(el.dataset.feature, "round"); return; }
-    if (name === "undo") { const p = st.hist.undo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
-    if (name === "redo") { const p = st.hist.redo(st.doc); if (p) { st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
+    if (name === "undo") { const p = st.hist.undo(st.doc); if (p) { st.preview3d = null; st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
+    if (name === "redo") { const p = st.hist.redo(st.doc); if (p) { st.preview3d = null; st.doc = p; st.meshVersion++; st.dirty = true; scheduleDraft(); refreshAll(); } return; }
     if (name === "delete") { deleteSel(); return; }
     if (name === "fit") { st.view = S.fitView(st.doc, st.W, st.H, 40, underlayRect()); scheduleDraft(); draw(); return; }
-    if (name === "multi") { st.multi = !st.multi; renderToolbar(); return; }
+    if (name === "multi") { st.multi = !st.multi; renderToolbar(); updateFloat(); return; }
+    if (name === "newSketch") { st.newSketch = !st.newSketch; renderToolbar(); renderProps(); return; }
     if (name === "settings") {
       const s = $(".sk-settings", root); s.hidden = !s.hidden; el.setAttribute("aria-expanded", s.hidden ? "false" : "true"); syncSettings(); return;
     }
@@ -520,17 +1319,17 @@
   function screenAt(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
   // snap: existing point > grid; returns { x, y, id? }
   function snapStart(m, e) {
-    const pid = S.findPointNear(st.doc, m.x, m.y, tolPx(e) / st.view.ppu);
-    if (pid) { const p = S.pointMap(st.doc).get(pid); return { x: p.x, y: p.y, id: pid }; }
-    return st.doc.grid.snap ? S.snapGrid(m, st.doc.grid.spacing) : { x: m.x, y: m.y };
+    const pid = S.findPointNear(vdoc(), m.x, m.y, tolPx(e) / st.view.ppu);
+    if (pid) { st.guides = null; const p = S.pointMap(st.doc).get(pid); return { x: p.x, y: p.y, id: pid }; }
+    return aligned(m, e, st.doc.grid.snap ? S.snapGrid(m, st.doc.grid.spacing) : { x: m.x, y: m.y });
   }
   function snapEnd(from, m, e) {
-    const pid = S.findPointNear(st.doc, m.x, m.y, tolPx(e) / st.view.ppu);
-    if (pid && pid !== from.id) { const p = S.pointMap(st.doc).get(pid); return { x: p.x, y: p.y, id: pid }; }
-    return S.snapSegmentEnd(from, m, { angle: st.doc.snap.angle, angleStep: st.doc.snap.angleStep, grid: st.doc.grid.snap, spacing: st.doc.grid.spacing });
+    const pid = S.findPointNear(vdoc(), m.x, m.y, tolPx(e) / st.view.ppu);
+    if (pid && pid !== from.id) { st.guides = null; const p = S.pointMap(st.doc).get(pid); return { x: p.x, y: p.y, id: pid }; }
+    return aligned(m, e, S.snapSegmentEnd(from, m, { angle: st.doc.snap.angle, angleStep: st.doc.snap.angleStep, grid: st.doc.grid.snap, spacing: st.doc.grid.spacing }));
   }
   function annotSnap(m, e) {
-    const pid = S.findPointNear(st.doc, m.x, m.y, tolPx(e) / st.view.ppu);
+    const pid = S.findPointNear(vdoc(), m.x, m.y, tolPx(e) / st.view.ppu);
     if (pid) { const p = S.pointMap(st.doc).get(pid); return { x: p.x, y: p.y, id: pid }; }
     return st.doc.grid.snap ? S.snapGrid(m, st.doc.grid.spacing / 2) : m;
   }
@@ -546,8 +1345,15 @@
     if (touches.length >= 2) { startGesture(); return; }
     if (st.gesture) return;
     const panOnly = e.button === 1 || e.button === 2 || st.tool === "pan" || (e.pointerType === "touch" && st.penSeen && st.tool !== "select");
-    if (panOnly) { st.action = { kind: "pan", last: screenAt(e), id: e.pointerId }; return; }
+    if (panOnly) { st.action = { kind: "pan", last: screenAt(e), id: e.pointerId, button: e.button, start: screenAt(e) }; return; }
     if (e.button && e.button !== 0) return;
+    if (st.action && st.action.click) { // second click: the end of a click-click shape
+      const a = st.action;
+      toolMove(e, [e]);
+      st.action = null; st.hudMsg = "";
+      createShape(a);
+      return;
+    }
     toolDown(e);
   }
   function onMove(e) {
@@ -556,8 +1362,10 @@
     if (st.gesture) { moveGesture(); return; }
     if (!st.action || st.action.id !== e.pointerId) return;
     const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    if (st.pressT && st.pressAt && Math.hypot(e.clientX - st.pressAt.x, e.clientY - st.pressAt.y) > 8) { clearTimeout(st.pressT); st.pressT = 0; }
     if (st.action.kind === "pan") {
       const s = screenAt(e);
+      if (st.action.start && Math.hypot(s.x - st.action.start.x, s.y - st.action.start.y) > 4) st.action.moved = true;
       st.view = { x0: st.view.x0 - (s.x - st.action.last.x) / st.view.ppu, y0: st.view.y0 + (s.y - st.action.last.y) / st.view.ppu, ppu: st.view.ppu };
       st.action.last = s; draw(); return;
     }
@@ -572,8 +1380,40 @@
       return;
     }
     if (!had || !st.action || st.action.id !== e.pointerId) return;
-    if (st.action.kind === "pan") { st.action = null; scheduleDraft(); return; }
+    if (st.pressT) { clearTimeout(st.pressT); st.pressT = 0; }
+    if (st.action.kind === "pan") {
+      const a = st.action; st.action = null; scheduleDraft();
+      if (a.button === 2 && !a.moved) openRing(e); // a right click (no drag) opens the action ring
+      return;
+    }
     toolUp(e);
+  }
+  function armLongPress(e, hit) {
+    clearTimeout(st.pressT);
+    st.pressAt = { x: e.clientX, y: e.clientY };
+    const ev = { clientX: e.clientX, clientY: e.clientY };
+    st.pressT = setTimeout(() => { st.pressT = 0; if (st.action && st.action.kind === "move" && !st.action.moved) { st.action = null; openRing(ev); } }, 550);
+  }
+  /** The action ring: the bubble's actions around the pointer (right click, long press). */
+  function openRing(e) {
+    if (!window.HqSketchFloat || !window.HqSketchFloat.ring) return;
+    const m = modelAt(e);
+    const hit = S.hitTest(vdoc(), m.x, m.y, tolPx(e) / st.view.ppu);
+    if (hit && !st.sel.includes(hit)) { st.sel = [hit]; renderProps(); draw(); updateButtons(); }
+    const spec = floatSpec2d();
+    const items = (spec ? spec.actions.filter(a => !a.disabled).map(a => ({ key: a.key, label: a.label })) : []);
+    if (st.sel.length) items.push({ key: "ring:delete", label: "Supprimer" });
+    items.push({ key: "ring:fit", label: "Tout afficher" });
+    const values = {};
+    (spec ? spec.fields : []).forEach(f => { values[f.key] = f.value; });
+    const r = canvas.getBoundingClientRect();
+    if (bubble2d) bubble2d.hide(); // the ring carries the same actions; it returns with the next selection change
+    st.ringOpen = window.HqSketchFloat.ring(window, $(".sk-stage", root), { x: e.clientX - r.left, y: e.clientY - r.top }, items, key => {
+      st.ringOpen = null;
+      if (key === "ring:delete") deleteSel();
+      else if (key === "ring:fit") act("fit");
+      else floatAction(key, values);
+    });
   }
   function onCancel(e) {
     st.ptrs.delete(e.pointerId);
@@ -619,8 +1459,9 @@
     scheduleDraft(); draw();
   }
   function hover(e) {
-    if (st.action) return;
+    if (st.action) { if (st.action.click) toolMove(e, [e]); return; } // click-click shapes follow the pointer
     const m = modelAt(e);
+    if (st.arcPending) { st.arcHover = m; draw(); }
     setHud(m);
   }
 
@@ -637,8 +1478,14 @@
           for (const k of ["p1", "p2"]) { const p = pm.get(o[k]); if (Math.hypot(p.x - m.x, p.y - m.y) <= tol) { st.action = { kind: "point", id: id, pid: o[k], base: st.doc, res: null }; return; } }
         }
       }
-      const hit = S.hitTest(st.doc, m.x, m.y, tol);
-      if (!hit) { if (!st.multi && !e.shiftKey) st.sel = []; st.action = { kind: "pan", last: screenAt(e), id: id }; renderProps(); draw(); updateButtons(); return; }
+      const hit = S.hitTest(vdoc(), m.x, m.y, tol);
+      if (!hit) {
+        if (!st.multi && !e.shiftKey) st.sel = [];
+        // a mouse or pen drag on empty space selects a box of objects; a finger still pans
+        st.action = e.pointerType === "touch" ? { kind: "pan", last: screenAt(e), id: id } : { kind: "box", id: id, a: m, b: m, add: st.multi || e.shiftKey };
+        renderProps(); draw(); updateButtons(); return;
+      }
+      if (e.pointerType === "touch") armLongPress(e, hit);
       if (st.multi || e.shiftKey) {
         st.sel = st.sel.includes(hit) ? st.sel.filter(x => x !== hit) : st.sel.concat(hit);
       } else if (!st.sel.includes(hit)) st.sel = [hit];
@@ -655,6 +1502,11 @@
       const a = snapStart(m, e);
       st.action = { kind: tool, id: id, a: a, b: a }; draw(); return;
     }
+    if (tool === "arc") {
+      if (st.arcPending) { st.action = { kind: "arcEnd", id: id }; st.arcHover = m; draw(); return; }
+      const a = snapStart(m, e);
+      st.action = { kind: "arc", id: id, a: a, b: null }; draw(); return;
+    }
   }
 
   function toolMove(e, events) {
@@ -663,7 +1515,11 @@
       const minD = 1.5 / st.view.ppu;
       for (const ev of events) {
         const p = modelAt(ev), last = a.pts[a.pts.length - 1];
-        if (Math.hypot(p.x - last[0], p.y - last[1]) >= minD && a.pts.length < S.LIMITS.strokePts * 4) a.pts.push([p.x, p.y]);
+        if (Math.hypot(p.x - last[0], p.y - last[1]) >= minD && a.pts.length < S.LIMITS.strokePts * 4) {
+          const pressure = ev.pointerType === "pen" && ev.pressure > 0 ? ev.pressure : 0;
+          if (pressure) a.pressure = true;
+          a.pts.push(pressure ? [p.x, p.y, Math.round((0.35 + 0.65 * Math.min(1, pressure)) * 100) / 100] : [p.x, p.y]);
+        }
       }
       draw(); return;
     }
@@ -686,12 +1542,15 @@
       draw(a.res.ok ? a.res.doc : null); setHud(m); return;
     }
     if (a.kind === "dimlin") { a.b = annotSnap(m, e); draw(); setHud(m, a.a, a.b); return; }
-    if (a.kind === "line" || a.kind === "centerline") { a.b = snapEnd(a.a, m, e); draw(); setHud(m, a.a, a.b); return; }
-    if (a.kind === "rect") { a.b = snapStart(m, e); draw(); setHud(m, a.a, a.b, true); return; }
+    if (a.kind === "box") { a.b = m; draw(); return; }
+    if (a.kind === "line" || a.kind === "centerline") { a.b = a.pointer = snapEnd(a.a, m, e); applyTyped(a); draw(); if (st.typed) setHud(); else setHud(m, a.a, a.b); return; }
+    if (a.kind === "rect") { a.b = a.pointer = snapStart(m, e); applyTyped(a); draw(); if (st.typed) setHud(); else setHud(m, a.a, a.b, true); return; }
+    if (a.kind === "arc") { a.b = snapStart(m, e); st.hudMsg = "R " + S.fmt(Math.hypot(a.b.x - a.a.x, a.b.y - a.a.y)) + " " + st.doc.units; draw(); setHud(m); return; }
+    if (a.kind === "arcEnd") { st.arcHover = m; draw(); return; }
     if (a.kind === "circle") {
       let r = Math.hypot(m.x - a.a.x, m.y - a.a.y);
       if (st.doc.grid.snap) r = Math.max(st.doc.grid.spacing / 2, Math.round(r / (st.doc.grid.spacing / 2)) * (st.doc.grid.spacing / 2));
-      a.r = r; a.b = m; draw(); st.hudMsg = "R " + S.fmt(r) + " " + st.doc.units + " · Ø " + S.fmt(2 * r); setHud(m); return;
+      a.r = r; a.b = a.pointer = m; applyTyped(a); draw(); if (!st.typed) st.hudMsg = "R " + S.fmt(a.r) + " " + st.doc.units + " · Ø " + S.fmt(2 * a.r); setHud(m); return;
     }
   }
 
@@ -699,7 +1558,10 @@
     const a = st.action; st.action = null; st.hudMsg = ""; st.hudErr = false;
     const m = modelAt(e);
     if (a.kind === "pen") {
-      mutate(d => { S.addStroke(d, a.pts, 0.6 / st.view.ppu); });
+      if (a.pressure) {
+        const ks = a.pts.map(p => p.length > 2 ? p[2] : 1);
+        mutate(d => { S.withSketch(d, st.sketch, x => S.addStroke(x, a.pts, 0.6 / st.view.ppu, { w: 2.2 / st.view.ppu, k: ks })); });
+      } else mutate(d => { S.withSketch(d, st.sketch, x => S.addStroke(x, a.pts, 0.6 / st.view.ppu)); });
       return;
     }
     if (a.kind === "erase") { draw(); return; }
@@ -721,50 +1583,156 @@
         const [c, p1, p2] = st.angleTaps.map(p => [p.x, p.y]);
         st.angleTaps = [];
         const r = Math.min(S.measureLinear(c, p1), S.measureLinear(c, p2)) * 0.6 || st.doc.grid.spacing * 2;
-        const id = mutate(d => S.addDimAngle(d, c, p1, p2, r, ""));
+        const id = mutate(d => S.withSketch(d, st.sketch, x => S.addDimAngle(x, c, p1, p2, r, "")));
         if (id) { st.sel = [id]; refreshAll(); }
       } else draw();
       return;
     }
     if (a.kind === "dimlin") {
       if (S.measureLinear([a.a.x, a.a.y], [a.b.x, a.b.y]) * st.view.ppu < 6) { draw(); return; }
-      const id = mutate(d => S.addDimLinear(d, [a.a.x, a.a.y], [a.b.x, a.b.y], st.doc.grid.spacing, ""));
+      const id = mutate(d => S.withSketch(d, st.sketch, x => S.addDimLinear(x, [a.a.x, a.a.y], [a.b.x, a.b.y], st.doc.grid.spacing, "")));
       if (id) { st.sel = [id]; refreshAll(); }
       return;
     }
-    if (a.kind === "line" || a.kind === "centerline") {
-      if (Math.hypot(a.b.x - a.a.x, a.b.y - a.a.y) * st.view.ppu < 4) { draw(); return; }
-      const id = mutate(d => S.addLine(d, a.a, a.b, a.kind) || false);
-      if (id) { st.sel = [id]; st.fixedEnd = "p1"; refreshAll(); }
+    if (a.kind === "line" || a.kind === "centerline" || a.kind === "rect" || a.kind === "circle") {
+      st.guides = null;
+      if (st.typed) { finishTyped(a); return; } // values typed while dragging win over the pointer
+      if (tinyShape(a)) { // a click, not a drag: the shape waits for a second click or typed dimensions
+        st.action = Object.assign(a, { id: null, click: true });
+        st.hudMsg = "Clique la fin, ou tape la dimension (Tab passe au champ suivant, Entrée valide)"; setHud(m); draw();
+        return;
+      }
+      createShape(a);
       return;
     }
-    if (a.kind === "rect") {
-      const r = mutate(d => S.addRect(d, a.a, { x: a.b.x, y: a.b.y, id: a.b.id }) || false);
-      if (!r) draw();
+    if (a.kind === "box") { boxSelect(a); return; }
+    if (a.kind === "arc") {
+      if (!a.b || Math.hypot(a.b.x - a.a.x, a.b.y - a.a.y) * st.view.ppu < 4) { draw(); return; }
+      st.arcPending = { c: a.a, s: a.b };
+      st.hudMsg = "Touche la fin de l'arc"; setHud(m); draw();
       return;
     }
-    if (a.kind === "circle") {
-      if (!(a.r > 0) || a.r * st.view.ppu < 3) { draw(); return; }
-      const id = mutate(d => S.addCircle(d, a.a, a.r) || false);
-      if (id) { st.sel = [id]; refreshAll(); }
+    if (a.kind === "arcEnd") {
+      const P = st.arcPending; st.arcPending = null; st.arcHover = null;
+      const end = snapStart(m, e);
+      const id = mutate(d => S.withSketch(d, st.sketch, x => S.addArc(x, P.c, P.s, end)) || false);
+      if (id) { st.sel = [id]; refreshAll(); } else { say("Arc trop petit", "err"); draw(); }
     }
   }
 
-  function eraseAt(m, e) {
-    const hits = S.hitAll(st.doc, m.x, m.y, tolPx(e) / st.view.ppu);
-    if (!hits.length) return;
+  function tinyShape(a) {
+    if (a.kind === "circle") return !(a.r > 0) || a.r * st.view.ppu < 3;
+    return !a.b || Math.hypot(a.b.x - a.a.x, a.b.y - a.a.y) * st.view.ppu < 4;
+  }
+  /** Lines, rectangles and circles are made here, whatever the input (drag, two clicks, typed sizes). With the
+   * exact engine, what is exactly horizontal or vertical also gets its constraint (« Contraintes automatiques »). */
+  function createShape(a) {
+    st.typed = null; st.guides = null;
+    if (tinyShape(a)) { draw(); return null; }
+    const auto = inV6() && st.autoRules && st.doc.mode === "construction";
+    if (a.kind === "line" || a.kind === "centerline") {
+      const id = mutate(d => { const r = S.withSketch(d, st.sketch, x => S.addLine(x, a.a, a.b, a.kind)); if (r && auto && a.kind === "line") autoConstrain(d, [r]); return r || false; });
+      if (id) { st.sel = [id]; st.fixedEnd = "p1"; refreshAll(); }
+      return id;
+    }
+    if (a.kind === "rect") {
+      const r = mutate(d => { const res = S.withSketch(d, st.sketch, x => S.addRect(x, a.a, { x: a.b.x, y: a.b.y, id: a.b.id })); if (res && auto) autoConstrain(d, res.lines); return res || false; });
+      if (!r) draw();
+      return r;
+    }
+    const id = mutate(d => S.withSketch(d, st.sketch, x => S.addCircle(x, a.a, a.r)) || false);
+    if (id) { st.sel = [id]; refreshAll(); }
+    return id;
+  }
+  function autoConstrain(d, lineIds) {
+    if (!I) return;
+    const pm = S.pointMap(d);
+    const lines = lineIds.map(id => S.getObj(d, id)).filter(Boolean).map(o => ({ id: o.id, a: pm.get(o.p1), b: pm.get(o.p2) }));
+    let cur = d;
+    for (const k of I.autoRules(lines)) { const r = S.addConstraint(cur, k); if (r.ok) cur = r.doc; }
+    if (cur !== d) for (const key of ["constraints", "points", "objects", "version", "sketches", "nextId"]) if (cur[key] !== undefined) d[key] = cur[key];
+  }
+  // ---- typed dimensions: digits while drawing fill L / ∠, l / h or R; Tab moves on, Enter places the shape
+  function applyTyped(a) {
+    if (!st.typed || !I) return;
+    const sh = I.typedShape(a.kind, a.a, a.pointer || a.b || a.a, st.typed.fields);
+    if (sh.b) a.b = sh.b;
+    if (sh.r != null) a.r = sh.r;
+  }
+  function typedHud() {
+    const T = st.typed;
+    return T.fields.map((f, i) => f.label + " " + (f.text || "…") + (i === T.idx ? "▌" : "")).join("   ·   ") + "   (Tab · Entrée)";
+  }
+  function finishTyped(a) {
+    applyTyped(a);
+    st.action = null; st.hudMsg = "";
+    const id = createShape(a);
+    if (!id) say("Dimension trop petite", "err");
+  }
+  function typedKey(e) {
+    const a = st.action;
+    const k = e.key;
+    if (!(/^[0-9.,+\-*/()]$/.test(k) || k === "Backspace" || k === "Tab" || k === "Enter" || k === "Escape")) return false;
+    e.preventDefault();
+    if (k === "Escape") { if (st.typed) { st.typed = null; st.hudMsg = ""; if (a.pointer) a.b = a.pointer; draw(); setHud(); } else { st.guides = null; cancelAction(); } return true; }
+    if (!st.typed) { if (k === "Tab" || k === "Enter" || k === "Backspace") { if (k === "Enter" && a.click) { st.action = null; createShape(a); } return true; } st.typed = { fields: I.fieldsFor(a.kind), idx: 0 }; if (!a.pointer) a.pointer = a.b; }
+    const T = st.typed, f = T.fields[T.idx];
+    if (k === "Tab") T.idx = (T.idx + (e.shiftKey ? T.fields.length - 1 : 1)) % T.fields.length;
+    else if (k === "Backspace") f.text = f.text.slice(0, -1);
+    else if (k === "Enter") { st.action = null; finishTyped(a); return true; }
+    else f.text += k;
+    applyTyped(a);
+    st.hudMsg = typedHud(); setHud(); draw();
+    return true;
+  }
+  // ---- box selection (mouse or pen dragged on empty space)
+  function objectBox(o, pm) {
+    const pts = [];
+    if (S.isLine(o)) pts.push(pm.get(o.p1), pm.get(o.p2));
+    else if (o.type === "circle") { const c = pm.get(o.center); pts.push({ x: c.x - o.r, y: c.y - o.r }, { x: c.x + o.r, y: c.y + o.r }); }
+    else if (o.type === "arc") { const g = S.arcGeom(o, pm); pts.push({ x: g.c.x - g.r, y: g.c.y - g.r }, { x: g.c.x + g.r, y: g.c.y + g.r }); }
+    else if (o.type === "stroke") o.pts.forEach(p => pts.push({ x: p[0], y: p[1] }));
+    else if (o.type === "text") pts.push({ x: o.x, y: o.y });
+    const ok = pts.filter(Boolean);
+    if (!ok.length) return null;
+    return { x0: Math.min(...ok.map(p => p.x)), y0: Math.min(...ok.map(p => p.y)), x1: Math.max(...ok.map(p => p.x)), y1: Math.max(...ok.map(p => p.y)) };
+  }
+  function boxSelect(a) {
+    if (!a.b || Math.hypot(a.b.x - a.a.x, a.b.y - a.a.y) * st.view.ppu < 4) { renderProps(); draw(); updateButtons(); return; }
+    const x0 = Math.min(a.a.x, a.b.x), x1 = Math.max(a.a.x, a.b.x), y0 = Math.min(a.a.y, a.b.y), y1 = Math.max(a.a.y, a.b.y);
+    const v = vdoc(), pm = S.pointMap(v);
+    const inside = v.objects.filter(o => { const b = objectBox(o, pm); return b && b.x0 >= x0 && b.x1 <= x1 && b.y0 >= y0 && b.y1 <= y1; }).map(o => o.id);
+    st.sel = a.add ? [...new Set(st.sel.concat(inside))] : inside;
+    renderProps(); draw(); updateButtons();
+  }
+  // ---- alignment guides: the pointer lines up with another point's X or Y
+  function aligned(m, e, base) {
+    if (!I) return base;
+    const ali = I.alignSnap(vdoc().points, m, tolPx(e) / st.view.ppu);
+    st.guides = ali.gx != null || ali.gy != null ? { x: ali.gx, y: ali.gy } : null;
+    if (!st.guides) return base;
+    return Object.assign({}, base, { x: ali.gx != null ? ali.gx : base.x, y: ali.gy != null ? ali.gy : base.y, id: undefined });
+  }
+
+  function eraseModel(m, tol) {
+    const hits = S.hitAll(vdoc(), m.x, m.y, tol);
+    if (!hits.length) return false;
     const a = st.action;
     const next = S.deleteObjects(st.doc, hits);
-    if (a && !a.pushed) { st.hist.push(st.doc); a.pushed = true; }
+    if (a && a.kind === "erase" && !a.pushed) { st.hist.push(st.doc); a.pushed = true; }
+    else if (st.remote && st.remote.erase && !st.remote.pushed) { st.hist.push(st.doc); st.remote.pushed = true; }
     st.doc = next; st.dirty = true; st.sel = st.sel.filter(id => !hits.includes(id));
     scheduleDraft(); updateButtons(); draw();
+    return true;
   }
+  function eraseAt(m, e) { eraseModel(m, tolPx(e) / st.view.ppu); }
 
   function onDouble(e) {
     const m = modelAt(e);
-    const hit = S.hitTest(st.doc, m.x, m.y, tolPx(e) / st.view.ppu);
+    const hit = S.hitTest(vdoc(), m.x, m.y, tolPx(e) / st.view.ppu);
     const o = hit && S.getObj(st.doc, hit);
-    if (o && o.type === "text") openTextInput({ x: o.x, y: o.y }, o.id);
+    if (o && o.type === "text") { openTextInput({ x: o.x, y: o.y }, o.id); return; }
+    if (o && (o.type === "line" || o.type === "arc")) { st.sel = profileFrom([o.id]); renderProps(); draw(); updateButtons(); } // the whole outline
   }
 
   // ------------------------------------------------------------ text notes
@@ -785,7 +1753,7 @@
     textIn.hidden = true; textIn.value = ""; st.hudMsg = "";
     if (!keep || !v) { draw(); return; }
     if (editId) { tryCommit(S.updateObject(st.doc, editId, { text: v })); return; }
-    const id = mutate(d => S.addText(d, x, y, v, niceHeight(16 / st.view.ppu)) || false);
+    const id = mutate(d => S.withSketch(d, st.sketch, z => S.addText(z, x, y, v, niceHeight(16 / st.view.ppu))) || false);
     if (id) { st.sel = [id]; refreshAll(); }
   }
 
@@ -847,8 +1815,56 @@
     } else {
       h = `<div class="sk-prop-head"><strong>${sel.length} objet(s)</strong></div><p class="sk-hint">Glisse pour déplacer, 🗑 pour supprimer. Sélectionne deux lignes reliées pour coter leur angle.</p>`;
     }
+    if (st.newSketch && inV6()) {
+      h = `<div class="sk-prop-head"><strong>Nouvelle esquisse</strong></div>
+        <div class="sk-row"><label>Plan <select data-ns="plane">${Object.entries(S.SKETCH_PLANES).map(([k, t]) => `<option value="${k}">${esc(t)}</option>`).join("")}</select></label>
+        <label>Décalage (${u})<input data-ns="offset" type="number" inputmode="decimal" step="any" value="0"/></label>
+        <label class="sk-grow">Nom<input data-ns="name" type="text" maxlength="40" placeholder="Face avant"/></label>
+        <button type="button" data-do="createSketch">Créer</button><button type="button" class="secondary" data-do="cancelSketch">Annuler</button></div>
+        <p class="sk-hint">L'esquisse se dessine à plat ; sa pièce 3D se place sur ce plan (XZ : vue de face, YZ : vue de côté).</p>` + h;
+    }
+    if (inV6() && st.doc.mode === "construction" && sel.length) h += constraintPanel(sel, u);
     props.innerHTML = h;
     renderSolid();
+    updateFloat();
+  }
+  /** Geometric constraints offered for the selection, and those already holding it (✕ removes one). */
+  function constraintPanel(sel, u) {
+    const lines = sel.filter(o => S.isLine(o)), rounds = sel.filter(o => o.type === "circle" || o.type === "arc");
+    const b = (type, label, extra) => `<button type="button" class="sk-chip" data-geo="${type}"${extra || ""}>${label}</button>`;
+    let opts = "";
+    if (lines.length === 1 && sel.length === 1) opts += b("horizontal", "Horizontale") + b("vertical", "Verticale");
+    if (lines.length === 2 && sel.length === 2) opts += b("parallel", "Parallèles") + b("perpendicular", "Perpendiculaires") + b("equal", "Égales");
+    if (lines.length === 1 && rounds.length === 1 && sel.length === 2) opts += b("tangent", "Tangentes");
+    if (rounds.length === 2 && sel.length === 2) opts += b("tangent", "Tangents") + b("equal", "Même rayon");
+    if (rounds.length === 1 && sel.length === 1) opts += `<label>Rayon (${u})<input data-geo-val type="number" inputmode="decimal" step="any" min="0" value="${S.fmt(rounds[0].type === "circle" ? rounds[0].r : S.arcGeom(rounds[0], S.pointMap(st.doc)).r)}"/></label>` + b("radius", "Imposer le rayon");
+    if (sel.some(o => S.isLine(o) || o.type === "circle" || o.type === "arc")) opts += b("fixed", "Fixer");
+    const ids = new Set(sel.map(o => o.id)), pts = new Set();
+    sel.forEach(o => ["p1", "p2", "center"].forEach(k => o[k] && pts.add(o[k])));
+    const held = st.doc.constraints.filter(k => S.GEO_CONSTRAINTS.includes(k.type) && (ids.has(k.line) || ids.has(k.item) || (k.items || []).some(x => ids.has(x)) || pts.has(k.point)));
+    const NAMES = { horizontal: "Horizontale", vertical: "Verticale", parallel: "Parallèles", perpendicular: "Perpendiculaires", equal: "Égales", tangent: "Tangentes", radius: "Rayon", fixed: "Fixe" };
+    const f = S.freedom(st.doc);
+    return `<div class="sk-geo"><div class="sk-prop-head"><strong>Contraintes</strong> · ${f.dof ? f.dof + " degré(s) de liberté (bleu = encore libre)" : "esquisse entièrement définie"}</div>
+      ${opts ? `<div class="sk-row sk-geo-opts">${opts}</div>` : ""}
+      ${held.length ? `<div class="sk-row sk-geo-held">${held.map(k => `<span class="sk-chip on">${esc(NAMES[k.type] + (k.type === "radius" ? " " + S.fmt(k.value) : ""))} <button type="button" class="sk-x" data-unlock="${esc(k.id)}" aria-label="Retirer la contrainte ${esc(NAMES[k.type])}">✕</button></span>`).join("")}</div>` : ""}</div>`;
+  }
+  function applyGeo(type, given) {
+    const sel = st.sel.map(id => S.getObj(st.doc, id)).filter(Boolean);
+    let doc = st.doc, err = null;
+    const add = k => { const r = S.addConstraint(doc, k); if (r.ok) doc = r.doc; else err = r.error; };
+    if (type === "horizontal" || type === "vertical") add({ type: type, line: sel[0].id });
+    else if (type === "radius") {
+      const v = given != null ? Number(given) : Number(String((props.querySelector("[data-geo-val]") || {}).value || "").replace(",", "."));
+      if (!(v > 0)) { say("Rayon invalide", "err"); return; }
+      add({ type: "radius", item: sel[0].id, value: v });
+    } else if (type === "fixed") {
+      const pts = new Set();
+      sel.forEach(o => ["p1", "p2", "center"].forEach(k => o[k] && pts.add(o[k])));
+      for (const pid of pts) if (!err && !doc.constraints.some(k => k.type === "fixed" && k.point === pid)) add({ type: "fixed", point: pid });
+    } else add({ type: type, items: [sel[0].id, sel[1].id] });
+    if (err) { say(err, "err"); return; }
+    commit(doc);
+    say("Contrainte appliquée");
   }
   function onPropsClick(e) {
     const f = e.target.closest("[data-fixed]");
@@ -860,8 +1876,17 @@
     }
     const u = e.target.closest("[data-unlock]");
     if (u) { commit(S.removeConstraint(st.doc, u.dataset.unlock)); return; }
+    const g = e.target.closest("[data-geo]");
+    if (g) { applyGeo(g.dataset.geo); return; }
     const d = e.target.closest("[data-do]");
     if (!d) return;
+    if (d.dataset.do === "createSketch") {
+      const plane = props.querySelector('[data-ns="plane"]').value, off = Number(String(props.querySelector('[data-ns="offset"]').value).replace(",", ".")) || 0;
+      const r = S.addSketch(st.doc, plane, off, props.querySelector('[data-ns="name"]').value);
+      if (!r.ok) { say(r.error, "err"); return; }
+      st.newSketch = false; commit(r.doc); setSketch(r.id); say("Esquisse créée : dessine-la à plat"); return;
+    }
+    if (d.dataset.do === "cancelSketch") { st.newSketch = false; renderProps(); renderToolbar(); return; }
     if (d.dataset.do === "swap") {
       const typed = props.querySelector('input[data-apply="angle"]');
       const keep = typed && typed.value;
@@ -935,6 +1960,36 @@
   }
 
   let FK = 1; // annotation size factor (1 on screen, larger for the PNG export)
+  const FREE_INK = "#2f6fd6";
+  const GLYPH = { horizontal: "H", vertical: "V", parallel: "∥", perpendicular: "⊥", equal: "=", tangent: "T", radius: "R", fixed: "⚓" };
+  /** Which objects are fully defined (v6 sketches only), cached per document object. */
+  const definedCache = new WeakMap();
+  function definedSet(doc) {
+    if (!doc || (Number(doc.version) || 1) < 6 || doc.mode !== "construction") return null;
+    if (!definedCache.has(doc)) { try { definedCache.set(doc, S.freedom(doc).defined); } catch (_) { definedCache.set(doc, null); } }
+    return definedCache.get(doc);
+  }
+  /** A small mark next to what a geometric constraint holds: H, V, ∥, ⊥, =, T, R…, ⚓. */
+  function geoGlyph(c, doc, k, pm, ts, T) {
+    const mid = id => {
+      const o = S.getObj(doc, id); if (!o) return null;
+      if (S.isLine(o)) { const a = pm.get(o.p1), b = pm.get(o.p2); return ts((a.x + b.x) / 2, (a.y + b.y) / 2); }
+      if (o.type === "circle") { const ce = pm.get(o.center); return ts(ce.x + o.r * 0.71, ce.y + o.r * 0.71); }
+      if (o.type === "arc") { const g = S.arcGeom(o, pm), t = g.t0 + g.sweep / 2; return ts(g.c.x + g.r * Math.cos(t), g.c.y + g.r * Math.sin(t)); }
+      return null;
+    };
+    const label = k.type === "radius" ? "R" + S.fmt(k.value) : GLYPH[k.type];
+    const at = k.type === "fixed" ? (pm.get(k.point) ? ts(pm.get(k.point).x, pm.get(k.point).y) : null) : mid(k.line || k.item || (k.items || [])[0]);
+    if (!at) return;
+    const dx = k.type === "fixed" ? 10 : 12, dy = k.type === "fixed" ? 12 : -12;
+    c.save(); c.font = "600 11px system-ui, sans-serif";
+    const w = c.measureText(label).width + 8;
+    c.fillStyle = "rgba(255,255,255,.85)"; c.strokeStyle = FREE_INK; c.lineWidth = 1;
+    c.fillRect(at.x + dx - 4, at.y + dy - 10, w, 14); c.strokeRect(at.x + dx - 4, at.y + dy - 10, w, 14);
+    c.fillStyle = FREE_INK; c.fillText(label, at.x + dx, at.y + dy + 1);
+    c.restore();
+  }
+
   function drawScene(c, doc, view, W, H, T, opts) {
     const o = opts || {};
     FK = o.k || 1;
@@ -966,23 +2021,47 @@
       const isSel = sel.has(ob.id);
       c.setLineDash([]);
       c.lineCap = "round"; c.lineJoin = "round";
+      const free = o.defined && !o.defined.has(ob.id); // v6: blue while it can still move, black once fully defined
       if (S.isLine(ob)) {
         const a = ts(pm.get(ob.p1).x, pm.get(ob.p1).y), b = ts(pm.get(ob.p2).x, pm.get(ob.p2).y);
-        c.strokeStyle = isSel ? T.sel : (ob.type === "centerline" ? T.axis : T.ink);
+        c.strokeStyle = isSel ? T.sel : (ob.type === "centerline" ? T.axis : free ? FREE_INK : T.ink);
         c.lineWidth = isSel ? 3 : (ob.type === "centerline" ? 1.4 : 2);
         if (ob.type === "centerline") c.setLineDash([14, 4, 3, 4]);
         c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke();
       } else if (ob.type === "circle") {
         const ce = ts(pm.get(ob.center).x, pm.get(ob.center).y);
-        c.strokeStyle = isSel ? T.sel : T.ink; c.lineWidth = isSel ? 3 : 2;
+        c.strokeStyle = isSel ? T.sel : free ? FREE_INK : T.ink; c.lineWidth = isSel ? 3 : 2;
         c.beginPath(); c.arc(ce.x, ce.y, ob.r * view.ppu, 0, Math.PI * 2); c.stroke();
         c.lineWidth = 1; c.beginPath(); c.moveTo(ce.x - 4, ce.y); c.lineTo(ce.x + 4, ce.y); c.moveTo(ce.x, ce.y - 4); c.lineTo(ce.x, ce.y + 4); c.stroke();
+      } else if (ob.type === "arc") {
+        const g = S.arcGeom(ob, pm), ce = ts(g.c.x, g.c.y);
+        c.strokeStyle = isSel ? T.sel : free ? FREE_INK : T.ink; c.lineWidth = isSel ? 3 : 2;
+        c.beginPath(); c.arc(ce.x, ce.y, g.r * view.ppu, -g.t0, -(g.t0 + g.sweep), true); c.stroke();
+        c.lineWidth = 1; c.beginPath(); c.moveTo(ce.x - 3, ce.y); c.lineTo(ce.x + 3, ce.y); c.moveTo(ce.x, ce.y - 3); c.lineTo(ce.x, ce.y + 3); c.stroke();
       } else if (ob.type === "stroke") {
-        c.strokeStyle = isSel ? T.sel : T.ref; c.lineWidth = isSel ? 3 : 2;
-        c.beginPath();
-        ob.pts.forEach((p, i) => { const s = ts(p[0], p[1]); if (i) c.lineTo(s.x, s.y); else c.moveTo(s.x, s.y); });
-        if (ob.pts.length === 1) { const s = ts(ob.pts[0][0], ob.pts[0][1]); c.lineTo(s.x + 0.1, s.y); }
-        c.stroke();
+        const basePx = ob.w > 0 ? ob.w * view.ppu : (isSel ? 3 : 2);
+        c.strokeStyle = isSel ? T.sel : T.ref;
+        c.lineCap = "round"; c.lineJoin = "round";
+        if (!ob.k || ob.k.length !== ob.pts.length) {
+          c.lineWidth = isSel && !(ob.w > 0) ? 3 : Math.max(0.6, basePx);
+          c.beginPath();
+          ob.pts.forEach((p, i) => { const s = ts(p[0], p[1]); if (i) c.lineTo(s.x, s.y); else c.moveTo(s.x, s.y); });
+          if (ob.pts.length === 1) { const s = ts(ob.pts[0][0], ob.pts[0][1]); c.lineTo(s.x + 0.1, s.y); }
+          c.stroke();
+        } else if (window.HqInk) {
+          // pen strokes from the pad: the same smooth, tapered outline the pad and the live preview draw (hq-ink.js)
+          c.fillStyle = c.strokeStyle;
+          window.HqInk.fill(c, ob.pts.map((p, i) => { const q = ts(p[0], p[1]); return { x: q.x, y: q.y, w: Math.max(0.6, basePx * (ob.k[i] || 1)) }; }));
+        } else if (ob.pts.length === 1) {
+          const s = ts(ob.pts[0][0], ob.pts[0][1]);
+          c.fillStyle = c.strokeStyle; c.beginPath(); c.arc(s.x, s.y, Math.max(0.6, basePx * (ob.k[0] || 1)) / 2, 0, Math.PI * 2); c.fill();
+        } else {
+          for (let i = 1; i < ob.pts.length; i++) {
+            const s0 = ts(ob.pts[i - 1][0], ob.pts[i - 1][1]), s1 = ts(ob.pts[i][0], ob.pts[i][1]);
+            c.lineWidth = Math.max(0.6, basePx * (((ob.k[i - 1] || 1) + (ob.k[i] || 1)) / 2));
+            c.beginPath(); c.moveTo(s0.x, s0.y); c.lineTo(s1.x, s1.y); c.stroke();
+          }
+        }
       } else if (ob.type === "text") {
         const s = ts(ob.x, ob.y);
         c.fillStyle = isSel ? T.sel : T.note; c.font = font(ob.h * view.ppu); c.textBaseline = "alphabetic";
@@ -994,6 +2073,7 @@
     c.setLineDash([]);
     // driving constraints (shown, never exported as CAD constraints)
     if (!o.noConstraints) for (const k of doc.constraints) {
+      if (GLYPH[k.type]) { geoGlyph(c, doc, k, pm, ts, T); continue; }
       if (k.type === "length") {
         const l = S.getObj(doc, k.line); if (!l) continue;
         const a = pm.get(l.p1), b = pm.get(l.p2), m = ts((a.x + b.x) / 2, (a.y + b.y) / 2);
@@ -1095,6 +2175,43 @@
         c.strokeStyle = T.ref; c.lineWidth = 2; c.lineCap = "round"; c.lineJoin = "round";
         c.beginPath(); a.pts.forEach((p, i) => { const s = ts(p[0], p[1]); if (i) c.lineTo(s.x, s.y); else c.moveTo(s.x, s.y); }); c.stroke();
       }
+      const hv = st.remoteHover;
+      if (hv && !st.remote) {
+        const h = ts(hv.x, hv.y); c.strokeStyle = T.accent; c.lineWidth = 1.5; c.globalAlpha = 0.8;
+        c.beginPath(); c.arc(h.x, h.y, 7, 0, Math.PI * 2); c.stroke(); c.globalAlpha = 1;
+        c.fillStyle = T.accent; c.beginPath(); c.arc(h.x, h.y, 1.8, 0, Math.PI * 2); c.fill();
+      }
+      const rip = st.remoteRipple;
+      if (rip && !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
+        const age = (window.performance ? performance.now() : Date.now()) - rip.at;
+        if (age >= 0 && age < 400) {
+          const p = ts(rip.x, rip.y), k = age / 400;
+          c.save(); c.globalAlpha = 0.45 * (1 - k); c.strokeStyle = T.accent; c.lineWidth = 2;
+          c.beginPath(); c.arc(p.x, p.y, 8 + k * 26, 0, Math.PI * 2); c.stroke(); c.restore();
+        }
+      }
+      const rm = st.remote; // a stroke arriving live from the phone pad (hq-desk.js); omitted from snapshots
+      if (rm && !rm.erase && rm.pts.length) {
+        // drawn exactly as it will be saved (colour, width, outline), so nothing changes when the pen lifts
+        c.strokeStyle = T.ref; c.lineCap = "round"; c.lineJoin = "round";
+        const box = canvas ? canvas.getBoundingClientRect() : null;
+        const short = box ? Math.min(box.width, box.height) : 0;
+        if (window.HqInk && rm.wn && rm.wn.length === rm.pts.length && short > 0) {
+          c.fillStyle = T.ref;
+          window.HqInk.fill(c, rm.pts.map((p, i) => { const q = ts(p[0], p[1]); return { x: q.x, y: q.y, w: Math.max(0.6, (rm.wn[i] || 0.009) * short) }; }));
+        } else if (rm.wn && rm.wn.length === rm.pts.length && short > 0 && rm.pts.length > 1) {
+          for (let i = 1; i < rm.pts.length; i++) {
+            const s0 = ts(rm.pts[i - 1][0], rm.pts[i - 1][1]), s1 = ts(rm.pts[i][0], rm.pts[i][1]);
+            c.lineWidth = Math.max(0.8, ((rm.wn[i - 1] || 0.009) + (rm.wn[i] || 0.009)) / 2 * short);
+            c.beginPath(); c.moveTo(s0.x, s0.y); c.lineTo(s1.x, s1.y); c.stroke();
+          }
+        } else {
+          c.lineWidth = 2.5;
+          c.beginPath(); rm.pts.forEach((p, i) => { const s = ts(p[0], p[1]); if (i) c.lineTo(s.x, s.y); else c.moveTo(s.x, s.y); }); c.stroke();
+        }
+        const last = ts(rm.pts[rm.pts.length - 1][0], rm.pts[rm.pts.length - 1][1]);
+        c.fillStyle = T.accent; c.globalAlpha = 0.35; c.beginPath(); c.arc(last.x, last.y, 9, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1;
+      }
       const ring = p => { if (p && p.id) { const s = ts(p.x, p.y); c.strokeStyle = T.accent; c.lineWidth = 2; c.beginPath(); c.arc(s.x, s.y, 9, 0, Math.PI * 2); c.stroke(); } };
       if (a && (a.kind === "line" || a.kind === "centerline" || a.kind === "dimlin")) {
         const s1 = ts(a.a.x, a.a.y), s2 = ts(a.b.x, a.b.y);
@@ -1105,6 +2222,28 @@
         const s1 = ts(a.a.x, a.a.y), s2 = ts(a.b.x, a.b.y);
         c.strokeStyle = T.accent; c.lineWidth = 2; c.strokeRect(Math.min(s1.x, s2.x), Math.min(s1.y, s2.y), Math.abs(s2.x - s1.x), Math.abs(s2.y - s1.y)); ring(a.a);
       }
+      if (a && a.kind === "box" && a.b) {
+        const s1 = ts(a.a.x, a.a.y), s2 = ts(a.b.x, a.b.y);
+        c.save(); c.strokeStyle = T.accent; c.fillStyle = "rgba(61,140,255,.08)"; c.lineWidth = 1; c.setLineDash([5, 4]);
+        c.fillRect(Math.min(s1.x, s2.x), Math.min(s1.y, s2.y), Math.abs(s2.x - s1.x), Math.abs(s2.y - s1.y));
+        c.strokeRect(Math.min(s1.x, s2.x), Math.min(s1.y, s2.y), Math.abs(s2.x - s1.x), Math.abs(s2.y - s1.y)); c.restore();
+      }
+      if (st.guides && a && a.kind !== "box") {
+        c.save(); c.strokeStyle = "rgba(47,111,214,.75)"; c.lineWidth = 1; c.setLineDash([3, 5]);
+        if (st.guides.x != null) { const g = ts(st.guides.x, 0); c.beginPath(); c.moveTo(g.x, 0); c.lineTo(g.x, st.H); c.stroke(); }
+        if (st.guides.y != null) { const g = ts(0, st.guides.y); c.beginPath(); c.moveTo(0, g.y); c.lineTo(st.W, g.y); c.stroke(); }
+        c.restore();
+      }
+      if (a && a.kind === "arc" && a.b) {
+        const s0 = ts(a.a.x, a.a.y); c.strokeStyle = T.accent; c.lineWidth = 1.5; c.setLineDash([6, 4]);
+        c.beginPath(); c.arc(s0.x, s0.y, Math.hypot(a.b.x - a.a.x, a.b.y - a.a.y) * st.view.ppu, 0, Math.PI * 2); c.stroke(); c.setLineDash([]); ring(a.a);
+      }
+      if (st.arcPending && st.arcHover) {
+        const P = st.arcPending, cc = ts(P.c.x, P.c.y), r = Math.hypot(P.s.x - P.c.x, P.s.y - P.c.y);
+        const t0 = Math.atan2(P.s.y - P.c.y, P.s.x - P.c.x), t1 = Math.atan2(st.arcHover.y - P.c.y, st.arcHover.x - P.c.x);
+        c.strokeStyle = T.accent; c.lineWidth = 2;
+        c.beginPath(); c.arc(cc.x, cc.y, r * st.view.ppu, -t0, -t1, true); c.stroke();
+      }
       if (a && a.kind === "circle" && a.r) {
         const s = ts(a.a.x, a.a.y); c.strokeStyle = T.accent; c.lineWidth = 2; c.beginPath(); c.arc(s.x, s.y, a.r * st.view.ppu, 0, Math.PI * 2); c.stroke(); ring(a.a);
       }
@@ -1112,10 +2251,18 @@
     };
   }
 
+  /** At most one redraw per frame for live input (the pad can deliver many points per frame). */
+  function drawSoon() {
+    if (st.drawRaf) return;
+    st.drawRaf = requestAnimationFrame(() => { st.drawRaf = 0; draw(); });
+  }
   function draw(previewDoc) {
     if (!ctx || !st.doc || !st.W) return;
     ctx.setTransform(st.dpr, 0, 0, st.dpr, 0, 0);
-    drawScene(ctx, previewDoc || st.doc, st.view, st.W, st.H, theme(false), { sel: st.sel, fixedEnd: st.fixedEnd, preview: previewFn() });
+    const shown = S.inSketch(previewDoc || st.doc, st.sketch);
+    drawScene(ctx, shown, st.view, st.W, st.H, theme(false), { sel: st.sel, fixedEnd: st.fixedEnd, preview: previewFn(), defined: definedSet(previewDoc || st.doc) });
+    drawFaceRef();
+    updateFloat();
     if (!st.action) setHud();
   }
 
@@ -1130,6 +2277,7 @@
       canvas.style.width = W + "px"; canvas.style.height = H + "px";
       st.W = W; st.H = H;
       if (!st.view) st.view = st.doc.view && st.doc.view.ppu > 0 ? Object.assign({}, st.doc.view) : initialView();
+      notePicture();
     }
     draw();
   }
@@ -1188,7 +2336,7 @@
     $("#sk-save-preview", root).textContent = "→ Inbox/Drawings/" + stem + " (.hqdraw.json, .png, .dxf" + ((st.doc.features || []).length || (st.doc.faceFeatures || []).length ? ", .stl" : "") + "). Un suffixe -2, -3… est ajouté si le nom existe déjà. Source estimée d'après le type de pointeur et la taille d'écran.";
   }
   async function doSave(name) {
-    if (name == null) return;
+    if (name == null) return false;
     const btn = root.querySelector('[data-act="save"]');
     btn.disabled = true; btn.textContent = "Envoi…";
     try {
@@ -1211,7 +2359,8 @@
       skMotion("save");
       showSaved(res);
       if (st.link && st.link.onSaved) { try { st.link.onSaved({ stem: res.stem, parent: res.parent || "" }); } catch (_) {} }
-    } catch (e) { say("Échec de l'enregistrement : " + e.message, "err"); }
+      return true;
+    } catch (e) { say("Échec de l'enregistrement : " + e.message, "err"); return false; }
     finally { btn.disabled = false; btn.textContent = "Enregistrer"; }
   }
   function fileUrl(stem, kind) { return "/api/drawings/file?stem=" + encodeURIComponent(stem) + "&kind=" + kind; }
@@ -1275,6 +2424,304 @@
   window.hqSketchStartBlank = opts => startFresh(opts, "");
   window.hqSketchStartUnderlay = (assetId, opts) => /^asset-[0-9a-f]{24}$/.test(String(assetId)) ? startFresh(opts, String(assetId)) : { ok: false, error: "Image invalide" };
   window.hqSketchClearLink = () => setLink(null);
+  const ASSET_RE = /^asset-[0-9a-f]{24}$/;
+  function ipadStamp(date) {
+    const d = date || new Date(), p = (n) => String(n).padStart(2, "0");
+    return "iPad " + d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + "h" + p(d.getMinutes());
+  }
+  function boxOf() { return canvas ? canvas.getBoundingClientRect() : null; }
+  function normPoint(p, r) {
+    if (!Array.isArray(p) || !isFinite(p[0]) || !isFinite(p[1])) return null;
+    return {
+      x: Math.min(1, Math.max(0, p[0])) * r.width,
+      y: Math.min(1, Math.max(0, p[1])) * r.height,
+      w: isFinite(p[2]) && p[2] > 0 ? Math.min(0.2, p[2]) : 0,
+    };
+  }
+  // The pad sends view steps ~30 times a second. They move a goal; the shown view eases toward it on each frame, so a
+  // pinch on the iPad glides on the PC instead of stepping. Anything else that sets st.view cancels the glide.
+  function reducedMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+  function viewBase() { return st.viewGoal && st.view === st.viewShown ? st.viewGoal : st.view; }
+  function setViewGoal(v) {
+    if (reducedMotion()) { st.viewGoal = null; st.view = v; scheduleDraft(); draw(); return; }
+    st.viewGoal = v;
+    if (st.view !== st.viewShown) st.viewShown = st.view;
+    glide();
+  }
+  function glide() {
+    if (st.glideRaf) return;
+    st.glideRaf = requestAnimationFrame(() => {
+      st.glideRaf = 0;
+      let again = false;
+      const g = st.viewGoal;
+      if (g && st.view !== st.viewShown) st.viewGoal = null; // the user moved the view on the PC: theirs wins
+      else if (g) {
+        const v = st.view, k = 0.45;
+        const ppu = v.ppu * Math.pow(g.ppu / v.ppu, k);
+        const next = { x0: v.x0 + (g.x0 - v.x0) * k, y0: v.y0 + (g.y0 - v.y0) * k, ppu: ppu };
+        const done = Math.abs(g.ppu / ppu - 1) < 0.002 && Math.hypot(g.x0 - next.x0, g.y0 - next.y0) * ppu < 0.3;
+        st.view = done ? g : next;
+        st.viewShown = st.view;
+        if (done) { st.viewGoal = null; scheduleDraft(); } else again = true;
+      }
+      const hg = st.hoverGoal, hv = st.remoteHover;
+      if (hg && hv) {
+        const nx = hv.x + (hg.x - hv.x) * 0.5, ny = hv.y + (hg.y - hv.y) * 0.5;
+        if (Math.hypot(hg.x - nx, hg.y - ny) * st.view.ppu < 0.3) { st.remoteHover = hg; st.hoverGoal = null; }
+        else { st.remoteHover = { x: nx, y: ny }; again = true; }
+      } else st.hoverGoal = null;
+      draw();
+      if (again) glide();
+    });
+  }
+  function applyView(dx, dy) {
+    if (!st.view) return;
+    const r = boxOf(); if (!r) return;
+    const v = viewBase();
+    setViewGoal({ x0: v.x0 - (dx * r.width) / v.ppu, y0: v.y0 + (dy * r.height) / v.ppu, ppu: v.ppu });
+  }
+  function applyZoom(factor, cx, cy) {
+    if (!st.view || !(factor > 0) || factor === 1) return;
+    const r = boxOf(); if (!r) return;
+    const sx = Math.min(1, Math.max(0, cx)) * r.width, sy = Math.min(1, Math.max(0, cy)) * r.height;
+    setViewGoal(S.zoomAt(viewBase(), st.H, sx, sy, factor, minPpu(), maxPpu()));
+  }
+  // ---- sketch to 3D (the pad's lift gesture)
+  function profileSize(ids) {
+    const pm = S.pointMap(st.doc);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+    for (const id of ids) {
+      const o = S.getObj(st.doc, id); if (!o) continue;
+      if (o.type === "circle") { const c = pm.get(o.center); if (c) { add(c.x - o.r, c.y - o.r); add(c.x + o.r, c.y + o.r); } }
+      else if (o.p1 && o.p2) { const a = pm.get(o.p1), b = pm.get(o.p2); if (a) add(a.x, a.y); if (b) add(b.x, b.y); }
+    }
+    return isFinite(x0) ? Math.max(x1 - x0, y1 - y0) : 0;
+  }
+  /** Height for a lift of h (0..1 of the pad): up to 1.5x the shape's size, on a tidy step (1, 2 or 5 x 10^n). */
+  function liftDepth(L, h) {
+    const raw = h * L.size * 1.5;
+    const mag = Math.pow(10, Math.floor(Math.log10(Math.max(L.size / 60, 1e-6))));
+    const step = [1, 2, 5, 10].map(k => k * mag).find(v => v >= L.size / 60) || mag;
+    const d = Math.round(raw / step) * step;
+    return d >= step ? Math.round(d * 1e6) / 1e6 : 0;
+  }
+  function liftLabel(depth) { return "Hauteur " + S.fmt(depth) + " " + st.doc.units; }
+  function liftStart() {
+    if (st.lift) return { ok: true, text: "Glisse vers le haut" };
+    let lc = st.lastClosed;
+    if (!lc || !lc.profile.length || !lc.profile.every(id => S.getObj(st.doc, id))) {
+      const sel = selectedProfile(); // or the closed shape selected on the PC
+      lc = sel.length ? { profile: sel } : null;
+    }
+    if (!lc) return { ok: false, text: "Dessine d'abord un cercle ou un rectangle (garde le stylo immobile à la fin)" };
+    if ((st.doc.features || []).length) return { ok: false, text: "Ce dessin a déjà une pièce 3D" };
+    if (st.solidBusy) return { ok: false, text: "Calcul 3D en cours" };
+    const size = profileSize(lc.profile);
+    if (!(size > 0)) return { ok: false, text: "Forme trop petite" };
+    // one mesh at a reference height, computed once by the server, then stretched live on each move
+    const probe = S.addFeature(st.doc, "extrude", lc.profile, size, "blind");
+    if (!probe.ok) return { ok: false, text: probe.error };
+    const L = st.lift = { profile: lc.profile.slice(), size: size, h: 0, base: null, was3d: !!st.tab3d };
+    setView3d(true);
+    $(".sk-3d-status", root).textContent = "Pièce en préparation…";
+    window.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: probe.doc }), timeoutMs: 45000 })
+      .then(res => {
+        if (st.lift !== L) return;
+        const tris = res.triangles || [];
+        let z0 = Infinity, z1 = -Infinity;
+        for (const t of tris) for (const p of t) { z0 = Math.min(z0, p[2]); z1 = Math.max(z1, p[2]); }
+        L.base = tris; L.z0 = z0; L.ref = z1 - z0 || size;
+        if (solidView && solidView.lockFrame) solidView.lockFrame(liftTris(L, size * 1.5));
+        liftShow();
+      })
+      .catch(e => { if (st.lift === L) $(".sk-3d-status", root).textContent = (e && e.message) || "Aperçu 3D indisponible"; });
+    return { ok: true, text: "Glisse vers le haut" };
+  }
+  /** The reference mesh stretched along its height to `depth` (a prism scales exactly). */
+  function liftTris(L, depth) {
+    const k = Math.max(depth, L.ref * 0.002) / L.ref;
+    return L.base.map(t => t.map(p => [p[0], p[1], L.z0 + (p[2] - L.z0) * k]));
+  }
+  function liftShow() {
+    const L = st.lift;
+    if (!L || !L.base || L.raf) return;
+    L.raf = requestAnimationFrame(() => {
+      L.raf = 0;
+      if (st.lift !== L) return;
+      const depth = liftDepth(L, L.h);
+      if (solidView) { solidView.setTriangles(liftTris(L, depth)); solidView.setEdges([]); }
+      $(".sk-3d-status", root).textContent = depth > 0 ? liftLabel(depth) + " · lâche pour extruder" : "Glisse vers le haut pour donner de la hauteur";
+    });
+  }
+  function liftStop(keep, depth) {
+    const L = st.lift;
+    if (!L) return;
+    st.lift = null;
+    if (L.raf) cancelAnimationFrame(L.raf);
+    if (solidView && solidView.lockFrame) solidView.lockFrame(null);
+    if (keep) { createSolid("extrude", { profile: L.profile, depth: depth }); return; }
+    if (solidView) { solidView.setTriangles([]); solidView.setEdges([]); }
+    if (L.was3d) scheduleMesh(); else setView3d(false);
+  }
+
+  function commitSnap(snap) {
+    st.remote = null;
+    const r = boxOf();
+    if (!snap || !r || !st.view) return { ok: false, text: "Forme ignorée" };
+    const pt = (p) => S.toModel(st.view, st.H, p[0] * r.width, p[1] * r.height);
+    let id = null;
+    if (snap.kind === "line" && snap.params && snap.params.a && snap.params.b) {
+      id = mutate(d => S.withSketch(d, st.sketch, x => S.addLine(x, pt(snap.params.a), pt(snap.params.b), "line")) || false);
+      if (id) return { ok: true, text: "Ligne" };
+    } else if (snap.kind === "circle" && snap.params && snap.params.c && snap.params.r > 0) {
+      const c = pt(snap.params.c), radius = snap.params.r * r.width / st.view.ppu;
+      id = mutate(d => S.withSketch(d, st.sketch, x => S.addCircle(x, c, radius)) || false);
+      if (id) { st.lastClosed = { profile: [id], at: Date.now() }; return { ok: true, text: "Cercle", closed: true }; }
+    } else if (snap.kind === "rect" && snap.params && snap.params.a && snap.params.b) {
+      id = mutate(d => S.withSketch(d, st.sketch, x => S.addRect(x, pt(snap.params.a), pt(snap.params.b))) || false);
+      if (id && id.lines) { st.lastClosed = { profile: id.lines.slice(), at: Date.now() }; return { ok: true, text: "Rectangle", closed: true }; }
+    }
+    return { ok: false, text: "Trait libre" };
+  }
+  function snapshotBlob() {
+    if (!canvas || !st.doc || !st.W || !st.view) return Promise.resolve(null);
+    const long = Math.max(st.W, st.H), scale = Math.min(1, 1280 / long);
+    const W = Math.max(1, Math.round(st.W * scale)), H = Math.max(1, Math.round(st.H * scale));
+    const view = { x0: st.view.x0, y0: st.view.y0, ppu: st.view.ppu * scale };
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const c = cv.getContext("2d");
+    if (!c) return Promise.resolve(null);
+    const saved = st.remote; st.remote = null; const savedH = st.remoteHover; st.remoteHover = null;
+    try { drawScene(c, S.inSketch(st.doc, st.sketch), view, W, H, theme(false), { sel: [], preview: function () {} }); }
+    finally { st.remote = saved; st.remoteHover = savedH; }
+    const grab = (type, q) => new Promise((res) => { try { cv.toBlob(res, type, q); } catch (_) { res(null); } });
+    return grab("image/webp", 0.6).then((b) => {
+      if (b && b.size && b.size <= 512 * 1024 && (b.type === "image/webp" || b.type === "image/jpeg")) return b;
+      return grab("image/jpeg", 0.6);
+    }).then((b) => {
+      if (b && b.size > 512 * 1024) return grab("image/jpeg", 0.4);
+      return b;
+    }).then((b) => { cv.width = 0; cv.height = 0; return b && b.size && b.size <= 512 * 1024 ? b : null; });
+  }
+  // Phone as a drawing pad (hq-desk.js). hqSketchRemote stays as the sketch target; hqPadTargets may hold others.
+  const remote = {
+    id: "sketch",
+    label: "Dessiner",
+    ready: () => !!(st.built && st.doc && canvas && document.body.dataset.view === "dessiner"),
+    size: () => (canvas ? { w: Math.round(canvas.clientWidth), h: Math.round(canvas.clientHeight) } : null),
+    history: () => ({ undo: !!(st.hist && st.hist.canUndo()), redo: !!(st.hist && st.hist.canRedo()) }),
+    begin(pts, meta) {
+      if (!this.ready()) return false;
+      st.remoteHover = null;
+      const erase = meta && meta.tool === "erase";
+      st.remote = erase ? { erase: true, pushed: false, pts: [] } : { pts: [], wn: [] };
+      this.add(pts, meta);
+      return true;
+    },
+    add(pts, meta) {
+      if (!st.remote || !canvas || !Array.isArray(pts)) return;
+      const r = boxOf(); if (!r) return;
+      if (st.remote.erase) {
+        const tol = (meta && meta.thick === "bold" ? 18 : meta && meta.thick === "fine" ? 8 : 12);
+        for (const p of pts) {
+          const n = normPoint(p, r); if (!n) continue;
+          eraseModel(S.toModel(st.view, st.H, n.x, n.y), tol / st.view.ppu);
+        }
+        return;
+      }
+      const out = st.remote.pts;
+      for (const p of pts) {
+        const n = normPoint(p, r); if (!n) continue;
+        const m = S.toModel(st.view, st.H, n.x, n.y), last = out[out.length - 1];
+        if (last && Math.hypot(m.x - last[0], m.y - last[1]) < 0.75 / st.view.ppu) continue;
+        if (out.length >= S.LIMITS.strokePts * 4) break;
+        out.push([m.x, m.y]);
+        st.remote.wn.push(n.w || 0.009);
+        if (!st.remoteRipple) st.remoteRipple = { x: m.x, y: m.y, at: (window.performance ? performance.now() : Date.now()) };
+      }
+      drawSoon();
+    },
+    end(snap) {
+      const rm = st.remote;
+      if (rm && rm.erase) {
+        st.remote = null;
+        draw();
+        return { ok: true, text: "Effacé" };
+      }
+      if (snap && snap.kind) {
+        const shaped = commitSnap(snap);
+        if (shaped.ok) return shaped;
+      }
+      st.remote = null;
+      if (rm && rm.pts.length > 1) {
+        const short = boxOf() ? Math.min(boxOf().width, boxOf().height) : 0;
+        let width = null;
+        if (short > 0 && rm.wn && rm.wn.some((v) => v > 0)) {
+          const first = rm.wn.find((v) => v > 0) || 0.009;
+          const ks = rm.wn.map((v) => Math.round(Math.min(4, Math.max(0.05, (v || first) / first)) * 100) / 100);
+          width = { w: first * short / st.view.ppu, k: ks };
+        }
+        mutate(d => { S.withSketch(d, st.sketch, x => S.addStroke(x, rm.pts, 0.6 / st.view.ppu, width)); });
+        return { ok: true, text: "Trait" };
+      }
+      draw();
+      return { ok: false, text: "Trait trop court" };
+    },
+    cancel() { st.remote = null; if (canvas) draw(); },
+    hover(pt) {
+      if (!canvas) return;
+      clearTimeout(st.remoteHoverT);
+      if (!Array.isArray(pt) || !isFinite(pt[0]) || !isFinite(pt[1])) { st.remoteHover = null; draw(); return; }
+      const r = boxOf();
+      const goal = S.toModel(st.view, st.H, Math.min(1, Math.max(0, pt[0])) * r.width, Math.min(1, Math.max(0, pt[1])) * r.height);
+      st.remoteHoverT = setTimeout(() => { st.remoteHover = null; st.hoverGoal = null; draw(); }, 1500);
+      const cur = st.remoteHover;
+      // a big jump (pen lifted away and back) lands at once; small moves glide over a few frames
+      if (!cur || reducedMotion() || Math.hypot(goal.x - cur.x, goal.y - cur.y) * st.view.ppu > 90) { st.remoteHover = goal; st.hoverGoal = null; draw(); return; }
+      st.hoverGoal = goal;
+      glide();
+    },
+    inkColor() { return theme(false).ref; },
+    has3d() { return !!(st.doc && (st.doc.features || []).length); },
+    ar() { return this.ready() ? arModel() : Promise.resolve({ ok: false, text: "Dessiner n'est pas ouvert" }); },
+    /** Sketch to 3D from the pad: "start" lifts the last closed shape the pad snapped, "move" sets the height
+     * (h = 0..1 of the pad), "end" saves a normal extrusion, "cancel" puts everything back. */
+    lift(phase, h) {
+      if (!this.ready()) return { ok: false, text: "Dessiner n'est pas ouvert" };
+      const hh = Math.max(0, Math.min(1, Number(h) || 0));
+      if (phase === "start") return liftStart();
+      const L = st.lift;
+      if (!L) return { ok: false, text: "" };
+      if (phase === "move") { L.h = hh; liftShow(); return { ok: true, text: liftLabel(liftDepth(L, hh)) }; }
+      const depth = liftDepth(L, hh);
+      if (phase !== "end" || !(depth > 0)) { liftStop(false); return { ok: true, text: "Extrusion annulée" }; }
+      liftStop(true, depth);
+      return { ok: true, text: "Extrusion · " + liftLabel(depth).replace("Hauteur ", "") };
+    },
+    undo() { if (this.ready()) act("undo"); },
+    redo() { if (this.ready()) act("redo"); },
+    pan(dx, dy) { if (this.ready()) applyView(Number(dx) || 0, Number(dy) || 0); },
+    zoom(factor, cx, cy) { if (this.ready()) applyZoom(Number(factor), Number(cx), Number(cy)); },
+    setUnderlay(id) {
+      if (!this.ready()) return { ok: false, text: "Dessiner n'est pas ouvert" };
+      if (!ASSET_RE.test(String(id || ""))) return { ok: false, text: "Image invalide" };
+      const cur = st.doc.underlay && st.doc.underlay.asset_id;
+      if (cur === id) return { ok: true, text: "Fond déjà en place" };
+      mutate(d => { d.version = Math.max(d.version || 1, 3); d.underlay = { asset_id: String(id), fit: "contain" }; });
+      return { ok: true, text: "Photo en fond" };
+    },
+    async save() {
+      if (!this.ready()) return { ok: false, text: "Dessiner n'est pas ouvert" };
+      const name = (st.name && String(st.name).trim()) || ipadStamp();
+      const ok = await doSave(name);
+      return ok ? { ok: true, text: "Enregistré" } : { ok: false, text: "Enregistrement impossible" };
+    },
+    snapshot: snapshotBlob,
+  };
+  window.hqSketchRemote = remote;
+  if (window.hqPadTargets && typeof window.hqPadTargets.register === "function") window.hqPadTargets.register(remote);
 
   // ------------------------------------------------------------ keyboard
   function onKey(e) {
@@ -1282,11 +2729,21 @@
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
     const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+    if (!mod && st.action && ["line", "centerline", "rect", "circle"].includes(st.action.kind) && I && typedKey(e)) return;
     if (mod && k === "z") { e.preventDefault(); act(e.shiftKey ? "redo" : "undo"); return; }
     if (mod && k === "y") { e.preventDefault(); act("redo"); return; }
     if (mod) return;
     if (k === "delete" || k === "backspace") { if (st.sel.length) { e.preventDefault(); deleteSel(); } return; }
-    if (k === "escape") { st.sel = []; st.angleTaps = []; cancelAction(); refreshAll(); return; }
+    if (k === "escape") { st.sel = []; st.angleTaps = []; st.pushPull = null; cancelAction(); refreshAll(); return; }
+    if (e.key === "?") { toggleKeys(); return; }
+    if (e.key === " ") { // repeat the last bubble action on the new selection (same height, same hole…)
+      e.preventDefault();
+      if (st.lastFloat) floatAction(st.lastFloat.key, Object.assign({}, st.lastFloat.v));
+      return;
+    }
+    if (k === "c" && e.shiftKey) { if (st.doc.mode !== "construction") setMode("construction"); setTool("arc"); return; }
+    if (k === "x") { const b = st.tab3d && !st.split ? null : bubble2d; if (b && b.focus("h")) e.preventDefault(); return; }
+    if (k === "o") { if (bubble2d && (bubble2d.focus("std") || bubble2d.focus("rad"))) e.preventDefault(); return; }
     const map = { v: "select", p: "pen", e: "eraser", t: "text", d: "dimlin", l: "line", r: "rect", c: "circle", a: "centerline", h: "pan" };
     if (map[k]) {
       const tool = map[k];
@@ -1295,11 +2752,32 @@
     }
   }
 
+  const KEYS = [["L", "Ligne"], ["R", "Rectangle"], ["C", "Cercle"], ["Maj+C", "Arc"], ["A", "Axe"], ["D", "Cote"], ["V", "Sélection"], ["H", "Main"],
+    ["X", "Extruder la sélection (bulle)"], ["O", "Percer / rayon (bulle)"], ["Espace", "Refaire la dernière action de la bulle"], ["Chiffres", "Cote pendant le tracé (Tab, Entrée)"],
+    ["Double-clic", "Tout le contour"], ["Glisser dans le vide", "Sélection par cadre"], ["Clic droit / appui long", "Anneau d'actions"], ["Échap", "Annuler / désélectionner"], ["Ctrl+Z / Y", "Annuler / rétablir"]];
+  function toggleKeys() {
+    const stage = $(".sk-stage", root);
+    let box = stage.querySelector(".sk-keys");
+    if (box) { box.remove(); return; }
+    box = document.createElement("div");
+    box.className = "sk-keys"; box.setAttribute("role", "dialog"); box.setAttribute("aria-label", "Raccourcis clavier");
+    const h = document.createElement("strong"); h.textContent = "Raccourcis (? pour fermer)"; box.appendChild(h);
+    const dl = document.createElement("dl");
+    for (const [k, t] of KEYS) { const dt = document.createElement("dt"); dt.textContent = k; const dd = document.createElement("dd"); dd.textContent = t; dl.append(dt, dd); }
+    box.appendChild(dl);
+    box.addEventListener("pointerdown", ev => { ev.stopPropagation(); box.remove(); });
+    stage.appendChild(box);
+  }
+
   // ------------------------------------------------------------ entry
   function init() {
     if (st.built) return true;
     if (!build()) return false;
     st.built = true;
+    I = I || window.HqSketchInput;
+    loadPrefs();
+    // does this HQ build exact parts (OpenCascade)? sketches on planes, arcs, constraints and v6 features need it
+    window.api("/api/drawings/caps", { timeoutMs: 15000 }).then(r => { st.caps = r || { exact: false }; if (st.doc) { renderToolbar(); renderProps(); } }).catch(() => {});
     let draft = null;
     try { draft = S.loadDraft(window.localStorage); } catch (_) {}
     if (draft) {

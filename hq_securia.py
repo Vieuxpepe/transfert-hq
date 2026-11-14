@@ -103,8 +103,12 @@ def bind(
     _presence_getter = presence_getter
 
 
+def growth_path() -> Path:
+    return _state_dir() / GROWTH_FILE
+
+
 def _record_growth(text: str) -> None:
-    assistant_growth.record(_state_dir() / GROWTH_FILE, text, "securia")
+    assistant_growth.record(growth_path(), text, "securia")
 
 
 def _growth_hint(query: str) -> str:
@@ -734,6 +738,12 @@ def chat(message: Any) -> dict[str, Any]:
         "model": model,
     })
     _save_thread(messages)
+
+    try:
+        import hq_personhood
+        hq_personhood.observe_reply("securia", tools=tools_used)
+    except Exception:
+        pass
 
     return {
         "ok": True,

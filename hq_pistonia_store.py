@@ -21,6 +21,7 @@ import hq_state
 THREAD_MAX = 60               # messages kept
 MSG_CHARS = 2000
 PROPOSALS_PER_MSG = 4
+TRACE_PER_MSG = 12
 NOTES_MAX = 30
 NOTE_CHARS = 200
 ALERTS_MAX = 30
@@ -184,7 +185,7 @@ def thread_transaction():
 
 
 def add_message(role: str, text: str, *, kind: str = "chat", proposals: Optional[list] = None, remembered: Optional[list] = None,
-                now: Optional[float] = None) -> dict:
+                trace: Optional[list] = None, now: Optional[float] = None) -> dict:
     if role not in ("user", "assistant"):
         raise StoreError("role invalide")
     row: dict[str, Any] = {"id": "msg-" + secrets.token_hex(5), "role": role, "text": clean_text(text, MSG_CHARS),
@@ -193,6 +194,10 @@ def add_message(role: str, text: str, *, kind: str = "chat", proposals: Optional
         row["proposals"] = [p for p in proposals if isinstance(p, dict)][:PROPOSALS_PER_MSG]
     if remembered:
         row["remembered"] = [r for r in remembered if isinstance(r, dict)][:4]
+    if trace:
+        # What she read for this answer: short labels only, never the tool payloads.
+        row["trace"] = [{"tool": str(t.get("tool"))[:40], "label": str(t.get("label"))[:120]}
+                        for t in trace if isinstance(t, dict) and isinstance(t.get("label"), str)][:TRACE_PER_MSG]
     with _lock:
         if thread_unreadable():
             raise StoreError("conversation illisible : fichier conservé, non modifié")

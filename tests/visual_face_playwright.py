@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import iphone_bridge
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 
 FAKE_PIN = "246810"
 
@@ -153,7 +155,7 @@ def run():
                 page.goto(url)
                 page.fill('input[name="pin"]', FAKE_PIN)
                 page.click('button[type="submit"]')
-                page.click('.bottom-nav [data-nav="dessiner"]')
+                open_section(page, "dessiner")
                 page.click('.sk-seg [data-mode="construction"]')
                 page.click('[data-tool="rect"]')
                 box = page.locator('.sk-canvas').bounding_box()
@@ -244,7 +246,7 @@ def run():
                 touch.goto(url)
                 touch.fill('input[name="pin"]', FAKE_PIN)
                 touch.click('button[type="submit"]')
-                touch.click('.bottom-nav [data-nav="dessiner"]')
+                open_section(touch, "dessiner")
                 touch.click('[data-act="open"]')
                 touch.click(f'[data-open="{stem}"]')
                 touch.click('[data-act="view3d"]')

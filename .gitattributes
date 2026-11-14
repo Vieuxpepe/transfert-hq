@@ -1,0 +1,7 @@
+# Check files out byte-for-byte as committed. Without this, core.autocrlf=true on Windows
+# rewrites LF to CRLF, which breaks the hashes recorded in THIRD_PARTY.txt for vendored files.
+* -text
+
+# Batch files need CRLF to run reliably under cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf

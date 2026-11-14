@@ -169,3 +169,63 @@ def backlinks(kind: Any, ident: Any) -> dict:
         "items": items[:ITEMS_MAX], "total": len(items), "trashed": trashed[:ITEMS_MAX], "trashed_total": len(trashed),
         "notebook_rev": state["notebook_rev"],
     }
+
+
+GRAPH_PAGES_MAX = 2000
+GRAPH_TARGETS_MAX = 800
+
+
+def _target_label(kind: str, ident: str) -> str:
+    if kind in ("file", "model", "media"):
+        return ident.rsplit("/", 1)[-1][:80]
+    if kind == "drawing":
+        return ident.replace("_", " ")[:80]
+    return ident[:80]
+
+
+def graph() -> dict:
+    """The whole notebook as a star map (read-only, nothing is written): active pages, projects, and every other target the
+    pages reference (sources, files, drawings, models, media). Edges are ``page -> target`` with the reference count; a
+    page's project is NOT an edge (the client clusters by ``project_id``). Trashed pages and links to them are left out.
+    Uses the same per-page memo as ``backlinks``: an unchanged notebook costs one dictionary lookup per page."""
+    hc = _hc()
+    path = hc._path()
+    with hq_state.path_lock(path):
+        state = hc._load_locked(create=False)
+    key = str(path)
+    _forget(key, state["pages"])
+    active = [p for p in state["pages"] if p["deleted_at"] is None]
+    active.sort(key=lambda p: -p["updated_at"])
+    truncated = len(active) > GRAPH_PAGES_MAX
+    active = active[:GRAPH_PAGES_MAX]
+    page_ids = {p["id"] for p in active}
+    project_ids = {p["id"] for p in state["projects"]}
+    pages, edges, targets = [], [], {}
+    for page in active:
+        pages.append({
+            "id": page["id"], "title": hc.derive_title(rich.flat_text(page["content"])), "project_id": page["project_id"],
+            "pinned": bool(page.get("pinned")), "updated_at": page["updated_at"], "created_at": page["created_at"],
+        })
+        for (kind, ident), count in _page_refs(key, page).items():
+            if kind == "note":
+                if ident not in page_ids or ident == page["id"]:
+                    continue  # a link to a trashed / missing page, or to itself: not a line in the sky
+                edges.append({"from": page["id"], "to": "note:" + ident, "count": count})
+                continue
+            if kind == "project":
+                if ident not in project_ids:
+                    continue
+                edges.append({"from": page["id"], "to": "project:" + ident, "count": count})
+                continue
+            tid = kind + ":" + ident
+            if tid not in targets:
+                if len(targets) >= GRAPH_TARGETS_MAX:
+                    truncated = True
+                    continue
+                targets[tid] = {"id": tid, "kind": kind, "label": _target_label(kind, ident)}
+            edges.append({"from": page["id"], "to": tid, "count": count})
+    projects = [{"id": p["id"], "name": p["name"], "archived": bool(p.get("archived"))} for p in state["projects"]]
+    return {
+        "ok": True, "pages": pages, "projects": projects, "targets": list(targets.values()), "edges": edges,
+        "truncated": truncated, "notebook_rev": state["notebook_rev"],
+    }

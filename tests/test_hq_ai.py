@@ -39,6 +39,7 @@ class Base(unittest.TestCase):
             return self.answers.pop(0) if self.answers else reply("ok")
 
         ai._minute.clear()
+        ai._health.clear()
         ai.bind(companion_context_config=lambda: {}, root=self.root, extra_keys=lambda: [], key=lambda: "test-key", now=lambda: self.clock[0], post=post,
                 companion_persona=lambda: "flirt",
                 client_is_controller=lambda ip: str(ip).startswith("127.") or ip == "::1",
@@ -86,6 +87,29 @@ class AskTests(Base):
         self.assertEqual(ai.usage()["count"]["gemini-3.5-flash-lite"], 1)
         self.clock[0] += 86400
         self.assertEqual(ai.usage()["count"], {}, "a new day starts from zero")
+
+    def test_visit_quota_is_separate_from_chat_and_ambient(self):
+        self.answers = [reply("visite")]
+        text, model = ai.generate(
+            ("gemini-3.1-flash-lite",), "system", [{"role": "user", "parts": [{"text": "x"}]}],
+            visit=True, max_tokens=360,
+        )
+        self.assertEqual((text, model), ("visite", "gemini-3.1-flash-lite"))
+        st = ai.status()
+        self.assertEqual(st["visits"], {"used": 1, "per_day": ai.VISIT_DAILY})
+        self.assertEqual(st["transferania"]["used"], 0)
+        self.assertEqual(st["ambient"]["used"], 0)
+
+    def test_visit_quota_stops_before_the_provider_call(self):
+        (self.root / ai.STORE).mkdir()
+        (self.root / ai.STORE / ai.USAGE).write_text(json.dumps({
+            "day": "2026-11-01", "count": {}, "visits": ai.VISIT_DAILY,
+        }))
+        with self.assertRaises(ai.AiError) as caught:
+            ai.generate(("gemini-3.1-flash-lite",), "system",
+                        [{"role": "user", "parts": [{"text": "x"}]}], visit=True)
+        self.assertEqual((caught.exception.status, caught.exception.code), (429, "visit_quota"))
+        self.assertEqual(self.calls, [])
 
     def test_no_key(self):
         ai.bind(key=lambda: "")
@@ -470,6 +494,81 @@ class WiringTests(unittest.TestCase):
         self.assertIn("transferania_prefs.json", ai_py)
         self.assertIn("TRANSFERANIA_THREADS", ai_py)
         self.assertNotIn("AQ.", src, "no API key in the code")
+
+
+class SearchGroundingTests(Base):
+    def test_search_sends_the_tool_skips_gemma_and_reports_sources(self):
+        status, data = reply("fact")
+        data["candidates"][0]["groundingMetadata"] = {
+            "webSearchQueries": ["song sample"],
+            "groundingChunks": [{"web": {"uri": "https://vertexaisearch.example/1", "title": "wikipedia.org"}},
+                                {"web": {"uri": "http://insecure.example", "title": "x"}}]}
+        self.answers = [(400, {"error": {"message": "tool not supported"}}), (status, data)]
+        grounding = {}
+        text, model = ai.generate(("gemini-3.1-flash-lite", "gemma-4-31b-it", "gemini-3.5-flash-lite"), "sys",
+                                  [{"role": "user", "parts": [{"text": "q"}]}], search=True, grounding=grounding)
+        self.assertEqual((text, model), ("fact", "gemini-3.5-flash-lite"))  # 400 on the first: next model, gemma skipped
+        self.assertNotIn("gemma-4-31b-it", [c[0] for c in self.calls])
+        self.assertEqual(self.calls[0][1]["tools"], [{"google_search": {}}])
+        self.assertEqual(grounding, {"queries": ["song sample"],
+                                     "sources": [{"title": "wikipedia.org", "uri": "https://vertexaisearch.example/1"}]})
+
+    def test_search_refusal_pauses_search_only(self):
+        self.answers = [(429, {"error": {"message": "quota"}})]
+        with self.assertRaises(ai.AiError):
+            ai.generate(("gemini-3.1-flash-lite",), "sys", [{"role": "user", "parts": [{"text": "q"}]}], search=True)
+        holds = ai.usage().get("model_backoff_until", {})
+        self.assertIn("gemini-3.1-flash-lite#search", holds)
+        self.assertNotIn("gemini-3.1-flash-lite", holds)  # normal use of the model is untouched
+        self.calls.clear()
+        with self.assertRaises(ai.AiError):  # within the pause: no request is sent at all
+            ai.generate(("gemini-3.1-flash-lite",), "sys", [{"role": "user", "parts": [{"text": "q"}]}], search=True)
+        self.assertEqual(self.calls, [])
+        text, _model = ai.generate(("gemini-3.1-flash-lite",), "sys", [{"role": "user", "parts": [{"text": "q"}]}])
+        self.assertEqual(text, "ok")
+
+
+class HealthOrderTests(Base):
+    chain = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-31b-it")
+
+    def test_failing_model_goes_last_and_recovers(self):
+        for _ in range(4):
+            ai._health_note("gemini-3.1-flash-lite", False)
+        self.assertEqual(ai._health_order(self.chain), ("gemini-3.5-flash-lite", "gemma-4-31b-it", "gemini-3.1-flash-lite"))
+        self.assertTrue(ai.model_health("gemini-3.1-flash-lite")["demoted"])
+        for _ in range(8):
+            ai._health_note("gemini-3.1-flash-lite", True)
+        self.assertEqual(ai._health_order(self.chain), self.chain)  # 4 failures in 12 calls is under the threshold
+
+    def test_too_few_samples_keep_the_authored_order(self):
+        for _ in range(3):
+            ai._health_note("gemini-3.1-flash-lite", False)
+        self.assertEqual(ai._health_order(self.chain), self.chain)
+
+    def test_generate_skips_to_the_healthy_model(self):
+        for _ in range(4):
+            ai._health_note("gemini-3.1-flash-lite", False)
+        text, model = ai.generate(self.chain, "sys", [{"role": "user", "parts": [{"text": "q"}]}])
+        self.assertEqual((text, model), ("ok", "gemini-3.5-flash-lite"))
+
+    def test_deep_chain_has_the_extra_pools_and_a_missing_model_is_skipped(self):
+        for m in ("gemini-3.8-flash", "gemini-4-hydrogen", "gemini-3-flash-preview"):
+            self.assertIn(m, ai.DEEP_CHAIN)
+            self.assertIn(m, ai.MODELS)
+        self.answers = [(404, {"error": {"message": "models/x is not found"}})]
+        text, model = ai.generate(ai.DEEP_CHAIN, "sys", [{"role": "user", "parts": [{"text": "q"}]}])
+        self.assertEqual(model, "gemini-4-hydrogen")  # the first model 404ed, the chain went on
+        self.assertIn("gemini-3.6-flash", ai.usage().get("model_backoff_until", {}))
+
+    def test_overload_is_recorded_but_quota_429_is_not(self):
+        self.answers = [(429, {"error": {"message": "quota"}})] * 2
+        with self.assertRaises(ai.AiError):
+            ai.generate(("gemini-3.1-flash-lite",), "sys", [{"role": "user", "parts": [{"text": "q"}]}])
+        self.assertEqual(ai.model_health("gemini-3.1-flash-lite")["samples"], 0)
+        self.answers = [(503, {"error": {"message": "high demand"}})]
+        with self.assertRaises(ai.AiError):
+            ai.generate(("gemini-3.5-flash-lite",), "sys", [{"role": "user", "parts": [{"text": "q"}]}])
+        self.assertEqual(ai.model_health("gemini-3.5-flash-lite"), {"samples": 1, "failures": 1, "demoted": False})
 
 
 if __name__ == "__main__":

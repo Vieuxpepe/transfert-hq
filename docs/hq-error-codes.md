@@ -61,6 +61,7 @@ Prefer **`agent_triage.error_code_hints`** and **`request_id_index`** in **`GET 
 | `forge_error` | 500 | Companion/forge art handler fault |
 | `no_favorite` | 400 | Missing favorite look for action |
 | `deprecated` | 410 | Route/action retired |
+| `gemini_visit_quota` | 502 | Visit-specific Gemini budget spent; NVIDIA fallback was unavailable or also failed |
 
 ## Reader / diagnostics
 

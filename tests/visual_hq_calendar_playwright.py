@@ -1,5 +1,5 @@
 """Calendar layout in a browser (phone 375 px and desktop): hour slots are flat rows (not buttons
-drawn as pills), the header is three rows, events show their start time, phone month shows marks on
+drawn as pills), the header is two stacked rows, events show their start time, phone month shows marks on
 one line, agenda rows line up, no empty box under the grid, and the existing flows still work
 (view switching, tap a slot to create, open an event). Throwaway loopback HQ, fake PINs.
 
@@ -101,10 +101,15 @@ def flow_checks(page, base, label, today):
     check(page.locator(".hq-cal-moreopts").evaluate("(d) => !d.open"), "notes, scene, action, device and reminders wait under Plus d'options")
     page.locator('.hq-cal-durations [data-mins="90"]').click()
     check(page.locator("#cal-end").input_value().endswith("18:30"), "a duration chip sets the end")
+    start = page.locator("#cal-start")
+    start.fill(start.input_value().split("T")[0] + "T16:00")
+    check(page.locator("#cal-end").input_value().endswith("17:30"), "moving the start preserves the edited duration")
     page.locator('.hq-cal-catbtn[data-cat="personal"]').click()
     check(page.locator("#cal-category").input_value() == "personal", "a category chip sets the category")
     page.keyboard.press("Escape")
     no_sheet(page)
+    check(quick.input_value() == "Cours de piano vendredi 17h", "closing the editor preserves the quick-add draft")
+    quick.fill("")
     page.locator(".hq-cal-today").click() if page.locator(".hq-cal-today").count() else None
     until(page, "() => !document.querySelector('.hq-cal-today')")
     # Strip pill slides between days; month day zooms in
@@ -133,7 +138,7 @@ def flow_checks(page, base, label, today):
         no_sheet(page)
         return
     # Desktop mouse: drag on empty hours creates; drag an event moves it; drag its edge resizes it.
-    page.evaluate("() => { const s = document.querySelector('.hq-cal-scroll'); if (s) s.scrollTop = 0; window.scrollTo(0, 0); }")
+    page.evaluate("() => { const s = document.querySelector('.hq-cal-scroll'); if (s) s.scrollTop = 4 * s.querySelector('.hq-cal-slot').offsetHeight; window.scrollTo(0, 0); }")
     slot = page.locator('.hq-cal-day .hq-cal-slot[data-hour="6"]')
     slot.scroll_into_view_if_needed()
     box = slot.bounding_box()
@@ -160,10 +165,26 @@ def flow_checks(page, base, label, today):
     page.mouse.down()
     page.mouse.move(b["x"] + 30, b["y"] + 8 + hour * 2, steps=8)
     check(page.locator("#hq-cal-app").evaluate("(r) => r.classList.contains('is-dragging')"), "an event lifts while it is dragged")
+    page.evaluate("""() => {
+        const animate = Element.prototype.animate;
+        window.__calendarDrop = [];
+        Element.prototype.animate = function (frames, timing) {
+            if (this.closest('.hq-cal-event')?.textContent.includes('Glissé')) {
+                window.__calendarDrop.push({ first: frames[0], delay: timing.delay });
+            }
+            return animate.call(this, frames, timing);
+        };
+    }""")
     page.mouse.up()
     check(until(page, "() => true") and not open_sheet_now(page), "a drag does not also open the event")
     item = server_until(page, base, today, "Glissé", lambda e: e["start"].endswith("T08:00"))
     check(item and item["start"].endswith("T08:00"), f"moving it two hours down saves 08:00 on the server ({item and item['start']})")
+    check(until(page, "() => window.__calendarDrop.some(effect => effect.first.transformOrigin === 'top left')"),
+          "the event settles from its drag preview")
+    check(until(page, """() => {
+        const glows = window.__calendarDrop.filter(effect => effect.first.boxShadow);
+        return glows.length >= 2 && glows[1].delay < glows[0].delay;
+    }"""), "the refresh continues the same drop highlight")
     check(until(page, "() => !document.getElementById('hq-cal-undo').hidden && document.querySelector('.hq-cal-undo-text').textContent.startsWith('Déplacé')"),
           "Annuler is offered after the move")
     grip = page.locator(".hq-cal-event", has_text="Glissé").locator(".hq-cal-resize")
@@ -175,12 +196,25 @@ def flow_checks(page, base, label, today):
     page.mouse.up()
     item = server_until(page, base, today, "Glissé", lambda e: e["end"].endswith("T10:30"))
     check(item and item["end"].endswith("T10:30"), f"dragging its bottom edge an hour down saves the new end ({item and item['end']})")
-    # Annuler takes the resize back (once its own bar is up: the move's bar left when the resize began).
+    # Annuler takes the resize back and leaves the earlier changes available.
     check(until(page, "() => !document.getElementById('hq-cal-undo').hidden && document.querySelector('.hq-cal-undo-text').textContent.startsWith('Durée')"),
           "the resize offers its own Annuler")
     page.locator("#hq-cal-undo .hq-cal-undo-btn").click()
     item = server_until(page, base, today, "Glissé", lambda e: e["end"].endswith("T09:30"))
     check(item and item["end"].endswith("T09:30"), f"Annuler puts the old end back ({item and item['end']})")
+    page.locator(".hq-cal-event", has_text="Glissé").click()
+    page.locator("#hq-cal-detail [data-sheet=delete]").click()
+    no_sheet(page)
+    check("Glissé" not in api_events(page, base, today), "the event can be deleted after undoing a resize")
+    page.locator(".hq-cal-options-trigger").click()
+    page.locator('[data-cal="history"]').click()
+    history = page.locator("#hq-cal-history")
+    undo = history.locator(".hq-cal-history-undo")
+    for label in ("Supprimé", "Déplacé", "Ajouté"):
+        check(history.locator("li").first.inner_text().startswith(label + " · Glissé"), f"history shows {label.lower()} next")
+        undo.click()
+        until(page, "(label) => !document.querySelector('#hq-cal-history li')?.textContent.startsWith(label + ' · Glissé')", label)
+    check("Glissé" not in api_events(page, base, today), "undo can restore a deletion, reverse a move and remove the original creation")
     page.keyboard.press("Escape")
 
 
@@ -232,20 +266,20 @@ def main() -> None:
                 page = ctx.new_page()
                 errors: list[str] = []
                 page.on("pageerror", lambda e: errors.append(str(e)))
-                page.goto(base + "/")
-                page.fill('input[name="pin"]', info["admin_pin"])
-                page.click('button[type="submit"]')
-                page.wait_for_load_state("networkidle")
+                login = ctx.request.post(base + "/login", headers={"Origin": base},
+                                         form={"pin": info["admin_pin"]}, max_redirects=0)
+                check(login.status == 303, "the fixture admin session is ready")
                 if label == "phone":
                     for e in (event("Réunion équipe", today, "09:30", "10:30", "hq"), event("Dentiste", today, "14:00", "15:00", "appointment"),
                               event("Appel", today, "18:00", "18:30", "personal"), event("Lecture", today, "20:00", "21:00", "study"),
                               event("Anniversaire Léa", today + timedelta(days=2), cat="personal", all_day=True),
                               event("Hier passé", today - timedelta(days=1), "10:00", "11:00", "hq")):
-                        r = page.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
+                        r = ctx.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
                                               data=json.dumps({"action": "save", "expected_rev": 0, "event": e}))
                         check(r.ok, "synthetic event saved: " + e["title"])
                 print(f"[{label}]")
-                page.click('.bottom-nav [data-nav="calendrier"]')
+                page.goto(base + "/#calendrier", wait_until="domcontentloaded")
+                page.locator("body.session-admin").wait_for(timeout=20000)
                 check(until(page, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')"), "the calendar renders")
                 page.locator('#hq-cal-app [data-view="day"]').click()
                 until(page, "() => !!document.querySelector('.hq-cal-day')")
@@ -254,14 +288,25 @@ def main() -> None:
                 slots = page.evaluate("""() => [...document.querySelectorAll('.hq-cal-day .hq-cal-slot')].map((s) => { const r = s.getBoundingClientRect(), c = getComputedStyle(s);
                     return { w: r.width, h: r.height, bg: c.backgroundColor, radius: c.borderTopLeftRadius }; })""")
                 col = page.evaluate("() => document.querySelector('.hq-cal-day .hq-cal-col').getBoundingClientRect().width")
-                check(len(slots) == 24 and all(abs(s["w"] - col) < 1.5 and 47 <= s["h"] <= 49 for s in slots),
-                      f"24 hour slots, each a full-width 48 px row ({slots[0]['w']:.0f}/{col:.0f} px)")
+                # Phone density is one 44 px hour (48 on desktop), so ~9 h stay on screen.
+                check(len(slots) == 24 and all(abs(s["w"] - col) < 1.5 and 43 <= s["h"] <= 49 for s in slots),
+                      f"24 hour slots, each a full-width hour row ({slots[0]['w']:.0f}/{col:.0f} px, {slots[0]['h']:.0f} px high)")
                 check(all(s["bg"] in ("rgba(0, 0, 0, 0)", "transparent") and s["radius"] == "0px" for s in slots), f"slots are flat and transparent (no pill buttons) {[ (s['bg'], s['radius']) for s in slots if s['bg'] not in ('rgba(0, 0, 0, 0)', 'transparent') or s['radius'] != '0px'][:3]}")
+                rhythm = page.locator(".hq-cal-stage .hq-cal-slot").first.evaluate("(slot) => getComputedStyle(slot).backgroundImage")
+                check(rhythm.startswith("linear-gradient"), "the timeline shows a quiet half-hour line at its default zoom")
                 rows = page.evaluate("() => [...document.querySelector('.hq-cal-bar').children].map((c) => c.classList[0])")
-                check(rows == ["hq-cal-head", "hq-cal-views", "hq-cal-tools"], f"the header is three rows {rows}")
+                stacked = page.evaluate("() => { const [a, b] = [...document.querySelector('.hq-cal-bar').children]; return b.getBoundingClientRect().top > a.getBoundingClientRect().bottom - 2; }")
+                check(rows == ["hq-cal-top", "hq-cal-views-row"] and stacked, f"the header is two stacked rows {rows}")
                 check(page.locator(".hq-cal-today").count() == 0, "Aujourd'hui is hidden while today is on screen")
+                page.locator('[data-cal="search"]').click()
+                search = page.get_by_role("dialog", name="Rechercher un événement")
+                search.get_by_role("searchbox").fill("reunion")
+                search.get_by_role("button", name="Réunion équipe", exact=False).click()
+                check(page.get_by_role("dialog", name="Réunion équipe").is_visible(), "search matches accents and opens the event")
+                page.keyboard.press("Escape")
+                no_sheet(page)
                 labels = page.evaluate("() => [...document.querySelectorAll('.hq-cal-day .hq-cal-event, .hq-cal-day .hq-cal-face')].map((e) => e.innerText.replace(/\\s+/g, ' ').trim())")
-                check(any(t.startswith("09:30") and "Réunion équipe" in t for t in labels), f"events show their start time {labels[:3]}")
+                check(any(t.startswith("Réunion équipe") and "09:30" in t for t in labels), f"events show the title before the start time {labels[:3]}")
                 check(page.locator(".hq-cal-cond").count() == 0, "no empty box under the grid")
                 check(page.evaluate("() => !document.querySelector('.hq-cal-allday') || document.querySelector('.hq-cal-allday').children.length > 0 || getComputedStyle(document.querySelector('.hq-cal-allday')).display === 'none'"),
                       "an empty all-day lane takes no room")
@@ -287,6 +332,17 @@ def main() -> None:
                     check(page.locator(".hq-cal-mcell.is-today .hq-cal-chip").count() == 2 and page.locator(".hq-cal-mcell.is-today .hq-cal-more").count() == 1,
                           "desktop month shows two titles and +n")
                 shot(page, f"month-{label}", browser_name)
+                jump_date = (today + timedelta(days=70)).isoformat()
+                page.locator(".hq-cal-date-trigger").click()
+                jump = page.get_by_role("dialog", name="Aller à une date")
+                jump.get_by_label("Date").fill(jump_date)
+                jump.get_by_role("button", name="Aller à cette date").click()
+                check(until(page, "(d) => !!document.querySelector('.hq-cal-month .hq-cal-mday[data-day=\"' + d + '\"]')", jump_date),
+                      "the date picker jumps to the requested month")
+                page.locator(".hq-cal-date-trigger").click()
+                check(jump.get_by_label("Date").input_value() == jump_date, "the picker remembers the selected date")
+                jump.get_by_role("button", name="Aujourd’hui").click()
+                check(until(page, "() => !!document.querySelector('.hq-cal-month .hq-cal-mcell.is-today')"), "Aujourd’hui returns to the current month")
                 page.locator(".hq-cal-mcell.is-today .hq-cal-mday").click()
                 check(until(page, "() => !!document.querySelector('.hq-cal-day')"), "tapping a month day opens that day")
                 page.locator('#hq-cal-app [data-view="agenda"]').click()
@@ -331,13 +387,16 @@ def main() -> None:
                     return [getComputedStyle(n).color, getComputedStyle(document.querySelector('.hq-cal-weekstrip'), '::before').backgroundColor, n.textContent]; }""")
                 check(colours[0] != colours[1] and colours[2].isdigit(), f"the selected day's number is visible {colours}")
 
-                # Categories are tinted differently; yesterday's event is dimmed.
+                # Categories are tinted differently; yesterday's event keeps full text opacity.
                 tints = page.evaluate("""() => { const pick = (t) => { const e = [...document.querySelectorAll('.hq-cal-day .hq-cal-event')].find((x) => x.innerText.includes(t));
                     const f = e && (e.querySelector('.hq-cal-face') || e); return f ? getComputedStyle(f).backgroundColor : null; }; return [pick('Réunion'), pick('Dentiste')]; }""")
                 check(tints[0] and tints[1] and tints[0] != tints[1], f"each category has its own tint {tints}")
                 page.locator("#hq-cal-app [data-cal=prev]").click()
                 check(until(page, "() => [...document.querySelectorAll('.hq-cal-day .hq-cal-event')].some((e) => e.innerText.includes('Hier passé') && e.classList.contains('is-past'))"),
-                      "a finished event is dimmed")
+                      "a finished event gets the past-event treatment")
+                past = page.locator(".hq-cal-day .hq-cal-event.is-past", has_text="Hier passé")
+                check(past.evaluate("(e) => getComputedStyle(e).opacity === '1' && getComputedStyle(e.querySelector('.hq-cal-face') || e).opacity === '1'"),
+                      "the past event keeps its text at full opacity")
                 page.locator("#hq-cal-app [data-cal=prev]").click()
                 check(until(page, "() => !!document.querySelector('.hq-cal-hint.is-empty')"), "an empty day says so and how to add")
                 page.locator(".hq-cal-today").click()
@@ -370,26 +429,32 @@ def main() -> None:
                 flow_checks(page, base, label, today)
                 check(not errors, f"no page errors {errors[:3]}")
                 ctx.close()
-            # Reduced motion: nothing slides or pulses.
+            # Calendar keeps its gentle action feedback with system reduced motion enabled.
             ctx = browser.new_context(viewport={"width": 375, "height": 812}, bypass_csp=True, reduced_motion="reduce")
             page = ctx.new_page()
-            page.goto(base + "/")
-            page.fill('input[name="pin"]', info["admin_pin"])
-            page.click('button[type="submit"]')
-            page.wait_for_load_state("networkidle")
-            page.click('.bottom-nav [data-nav="calendrier"]')
+            login = ctx.request.post(base + "/login", headers={"Origin": base},
+                                     form={"pin": info["admin_pin"]}, max_redirects=0)
+            check(login.status == 303, "the reduced-motion fixture admin session is ready")
+            page.goto(base + "/#calendrier", wait_until="domcontentloaded")
+            page.locator("body.session-admin").wait_for(timeout=20000)
             until(page, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')")
             page.locator('#hq-cal-app [data-view="day"]').click()
+            page.locator("#hq-cal-app [data-cal=now]").click()
+            now_animation = page.locator(".hq-cal-now.is-focused").evaluate("(line) => getComputedStyle(line).animationName")
+            check(now_animation == "hq-cal-now-focus", f"Maintenant still highlights the current hour ({now_animation})")
             page.locator("#hq-cal-app [data-cal=next]").click()
             until(page, "() => document.querySelector('.hq-cal-stage').classList.contains('is-next')")
-            names = page.evaluate("""() => [getComputedStyle(document.querySelector('.hq-cal-stage')).animationName,
-                getComputedStyle(document.querySelector('.hq-cal-views'), '::before').animationName]""")
-            check(all(n == "none" for n in names), f"with reduced motion nothing animates {names}")
+            slide = page.locator(".hq-cal-stage").evaluate("(stage) => getComputedStyle(stage).animationName")
+            check(slide == "hq-cal-in-next", f"the day still eases in ({slide})")
+            page.locator("#hq-cal-app [data-cal=free-slots]").click()
+            sheet_animation = page.locator("#hq-cal-free-slots .hq-sheet-card").evaluate("(card) => getComputedStyle(card).animationName")
+            check(sheet_animation == "hq-cal-morph", f"the free-slot sheet still eases in ({sheet_animation})")
             ctx.close()
             browser.close()
     finally:
         proc.stdin.close()
         proc.kill()
+        proc.wait(timeout=10)
     print(f"PASS {passed} checks ({browser_name})")
 
 

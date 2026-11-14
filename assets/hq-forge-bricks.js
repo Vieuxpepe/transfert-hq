@@ -56,7 +56,8 @@
 
   function render() {
     list.replaceChildren();
-    for (const b of bricks) {
+    const promptBricks = bricks.filter((b) => (b.kind || "prompt") !== "cast");
+    for (const b of promptBricks) {
       const row = document.createElement("div");
       row.className = "forge-brick";
       const add = document.createElement("button");
@@ -75,7 +76,7 @@
       row.append(add, edit);
       list.append(row);
     }
-    empty.hidden = bricks.length > 0;
+    empty.hidden = promptBricks.length > 0;
   }
 
   async function load() {

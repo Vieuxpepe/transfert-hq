@@ -62,6 +62,27 @@ class ModelTests(unittest.TestCase):
         base.update(over)
         return base
 
+    def test_category_changes_keep_ids_and_reassign_events(self):
+        added = hq_calendar.change_category("category_save", {"label": "Atelier", "color": "#a14080"}, 0)
+        key = next(row["id"] for row in added["categories"] if row["label"] == "Atelier")
+        event = hq_calendar.save_event(self._payload(category=key), 0)
+        renamed = hq_calendar.change_category("category_save", {"id": key, "label": "Création", "color": "#347760"}, 1)
+        self.assertIn({"id": key, "label": "Création", "color": "#347760"}, renamed["categories"])
+        with self.assertRaises(hq_calendar.CalendarConflict):
+            hq_calendar.change_category("category_delete", {"id": key, "replacement": "study"}, 1)
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.change_category("category_delete", {"id": "other", "replacement": "study"}, 2)
+        deleted = hq_calendar.change_category("category_delete", {"id": key, "replacement": "study"}, 2)
+        self.assertEqual(deleted["categories_rev"], 3)
+        self.assertFalse(any(row["id"] == key for row in deleted["categories"]))
+        data = hq_calendar.query(datetime(2026, 9, 28), datetime(2026, 9, 29))
+        moved = next(row for row in data["items"] if row["id"] == event["id"])
+        self.assertEqual((moved["category"], moved["rev"]), ("study", event["rev"] + 1))
+        for field in ("start", "end", "notes", "reminders_min"):
+            self.assertEqual(moved[field], event[field])
+        with self.assertRaises(hq_calendar.CalendarError):
+            hq_calendar.save_event(self._payload(category=key), 0)
+
     def test_done_flag_recent_titles_and_next(self):
         first = hq_calendar.save_event(self._payload(title="Sport", start="2026-09-28T08:00", end="2026-09-28T09:00"))
         self.assertNotIn("done", first)

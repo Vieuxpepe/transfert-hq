@@ -1984,17 +1984,19 @@
     const pin = iconButton("btn-carnet-pin", "Épingler", ICON.pin, { "aria-pressed": "false" });
     const library = iconButton("btn-carnet-library", "Bibliothèque", ICON.library, { "aria-expanded": "false", "aria-controls": "hq-carnet-library" });
     const focusBtn = iconButton("btn-carnet-focus", "Mode concentration", ICON.focus, { "aria-pressed": "false" });
-    const more = iconButton("btn-carnet-more", "Plus d'outils (symboles, recherche, export, historique…)", ICON.more, { "aria-expanded": "false", "aria-controls": "carnet-quick-tools" });
+    const more = el("button", { type: "button", id: "btn-carnet-more", class: "carnet-btn carnet-more-btn", text: "Outils", "aria-expanded": "false", "aria-controls": "carnet-quick-tools" });
+    pin.appendChild(el("span", { text: "Épingler" }));
+    focusBtn.appendChild(el("span", { text: "Concentration" }));
     const P = polishUi();
     const saveN = P ? P.saveNodes() : null;
     const outN = P ? P.outlineNodes() : null;
     const top = el("div", { class: "carnet-bar carnet-bar-top" }, [
       context,
       el("div", { class: "carnet-status-wrap" }, saveN ? [saveN.pill, saveN.pop, saveN.live, status, attention, exportFlag, flash] : [status, attention, exportFlag, flash]),
-      el("div", { class: "carnet-actions" }, outN ? [pin, outN.button, library, focusBtn, more] : [pin, library, focusBtn, more]),
+      el("div", { class: "carnet-actions" }, outN ? [outN.button, library, more] : [library, more]),
     ]);
 
-    const tools = el("div", { id: "carnet-quick-tools", class: "carnet-tools", role: "toolbar", "aria-label": "Symboles", hidden: true });
+    const tools = el("div", { id: "carnet-quick-tools", class: "carnet-tools", role: "region", "aria-label": "Outils de la page", hidden: true });
     const mkGroup = (label) => { const g = el("div", { class: "carnet-tool-group", role: "group", "aria-label": label }, [el("span", { class: "carnet-tool-group-label", "aria-hidden": "true", text: label })]); tools.appendChild(g); return g; };
     let grp = mkGroup("Insérer");
     const strip = el("div", { class: "carnet-sym-strip" }); // phone: one scrollable line instead of three wrapped rows
@@ -2021,6 +2023,7 @@
     grp.appendChild(toolBtn("btn-carnet-eng", "Outils d'ingénierie (calcul, mesure, décision, conversion, tâche, lien)", "Ingénierie"));
     grp.appendChild(toolBtn("btn-carnet-templates", "Modèles : nouvelle page depuis un modèle", "Modèles"));
     grp = mkGroup("Page");
+    grp.append(pin, focusBtn);
     grp.appendChild(toolBtn("btn-carnet-find", "Rechercher et remplacer dans la page", "Rechercher"));
     grp.appendChild(toolBtn("btn-carnet-export", "Exporter la page", "Exporter"));
     grp.appendChild(toolBtn("btn-carnet-history", "Historique, rapport et liens entrants (Liée depuis)", "Historique"));
@@ -2167,8 +2170,12 @@
     ctxPanel.addEventListener("click", onContextClick);
     library.addEventListener("click", toggleLibrary);
     libBackdrop.addEventListener("click", () => closeLibrary(true));
-    focusBtn.addEventListener("click", () => (ui.focus ? exitFocus() : enterFocus()));
-    focusExit.addEventListener("click", exitFocus);
+    focusBtn.addEventListener("click", () => {
+      if (ui.toolsOpen) more.click();
+      if (ui.focus) exitFocus();
+      else enterFocus();
+    });
+    focusExit.addEventListener("click", () => exitFocus(true));
     more.addEventListener("click", () => {
       ui.toolsOpen = !ui.toolsOpen;
       tools.hidden = !ui.toolsOpen;
@@ -3411,7 +3418,7 @@
     else doc.getElementById("btn-carnet-focus-exit").focus({ preventScroll: true });
   }
 
-  function exitFocus() {
+  function exitFocus(restoreFocus = false) {
     if (!ui.focus) return;
     const onExit = doc.activeElement && doc.activeElement.id === "btn-carnet-focus-exit";
     ui.focus = false;
@@ -3420,7 +3427,7 @@
     const b = doc.getElementById("btn-carnet-focus");
     if (b) b.setAttribute("aria-pressed", "false");
     layoutLibrary();
-    if (onExit && b) b.focus({ preventScroll: true });
+    if (restoreFocus || onExit) doc.getElementById("btn-carnet-more")?.focus({ preventScroll: true });
   }
 
   /** Escape closes the innermost transient layer; returns true when it handled something. */
@@ -3455,6 +3462,12 @@
     }
     if (libMode() !== "dock" && ui.lib.open) {
       closeLibrary(true);
+      return true;
+    }
+    if (ui.toolsOpen) {
+      const more = doc.getElementById("btn-carnet-more");
+      more.click();
+      more.focus({ preventScroll: true });
       return true;
     }
     if (ui.focus) {

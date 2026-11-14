@@ -791,10 +791,13 @@ class StaticVoiceTests(unittest.TestCase):
 
     def test_csp_only_relaxes_wasm_for_the_ocr_worker_script(self):
         text = (self.ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
-        self.assertEqual(text.count("wasm-unsafe-eval"), 1)
-        self.assertIn('self._wasm_ok = name == "vendor-tesseract-worker.min.js"', text)
-        self.assertIn("script-src 'self' 'unsafe-inline'; connect-src 'self'", text)
-        self.assertNotIn("worker-src", text)  # no blob: workers are allowed
+        import hq_forge_lifecycle_listener as listener  # the policy string is built there since the lifecycle listener landed
+        policy_source = (self.ROOT / "hq_forge_lifecycle_listener.py").read_text(encoding="utf-8")
+        self.assertEqual((text + policy_source).count("'wasm-unsafe-eval'"), 1)
+        self.assertIn('self._wasm_ok = path.name == "vendor-tesseract-worker.min.js"', text)
+        self.assertIn("script-src 'self' 'unsafe-inline'; connect-src 'self'", listener.content_security_policy("", "/"))
+        self.assertIn("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'self'", listener.content_security_policy("", "/", wasm=True))
+        self.assertNotIn("worker-src", text + policy_source)  # no blob: workers are allowed
 
     def test_vendored_ocr_files_match_the_recorded_hashes(self):
         import hashlib

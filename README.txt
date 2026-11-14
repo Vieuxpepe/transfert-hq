@@ -56,7 +56,7 @@ Architecture
 
 Client debug HUD (navigateur → disque)
 --------------------------------------
-  **Agents:** docs/agent-conventions.md · AGENTS.md · verify: python scripts/verify_all_agent_maps.py
+  **Agents:** [docs/agent-conventions.md](docs/agent-conventions.md) · [AGENTS.md](AGENTS.md) · verify: python scripts/verify_all_agent_maps.py
   Optionnel : bridge_config.json → client_debug_hud:true (ou env HQ_CLIENT_DEBUG=1).
   Panneau perf + envoi vers .hq-carnet/diagnostics/client-browser.jsonl (2 fichiers max,
   rotation toutes les 200 lignes). Perf : client_debug_perf_interval_sec (15 par défaut, 0 = départ/sortie seulement).
@@ -834,6 +834,43 @@ Dessiner (croquis mécanique)
   les opérations qui créent une pièce vide, séparée ou non fermée sont refusées.
   Les croquis de face sont stockés dans le JSON v3 et peuvent être retirés puis
   recréés ; les outils de cotes pilotantes du croquis 2D ne s'y appliquent pas.
+  Modélisation exacte (format v6, paquet optionnel requirements-occ.txt : OpenCascade) :
+    Dessiner ne propose ces outils que si le bridge l'a installé (GET /api/drawings/caps).
+    - Esquisses sur plans : « + Esquisse » (plan XY, XZ ou YZ, avec décalage) ; l'esquisse
+      active se dessine à plat, seule à l'écran. Arcs (centre, début, fin).
+    - Contraintes : horizontale, verticale, parallèles, perpendiculaires, égales, tangentes,
+      rayon, fixe, en plus des cotes de longueur et d'angle. Un solveur les tient pendant
+      qu'on déplace un point ; bleu = encore libre, noir = entièrement défini, avec le nombre
+      de degrés de liberté restants. Une contrainte impossible est refusée.
+    - Arbre de fonctions : bossage ou enlèvement extrudé sur n'importe quelle esquisse,
+      congé et chanfrein sur des arêtes choisies dans l'aperçu 3D (droites ou courbes),
+      balayage (profil + chemin), lissage (profils sur plans parallèles) ; chaque fonction
+      peut être désactivée, montée ou descendue, et un « point de retour » construit la
+      pièce jusqu'à une fonction. Volume, surface, encombrement et centre sont affichés.
+    - « Exporter STEP » : pièce exacte en millimètres (AP214) pour l'atelier ou un autre CAO.
+    - Limites : pas de contrainte de point sur ligne ni de symétrie, pas de spline, trim,
+      décalage ou miroir d'esquisse, pas d'assemblage ; une arête choisie est retrouvée par
+      sa position, donc un congé peut être refusé si une fonction placée avant lui change
+      cette arête (le message le dit). Le DXF reste l'esquisse de base (plan XY).
+  Pièce 3D (format v5, mêmes paquets manifold3d/numpy) :
+    - Révolution : sélectionner un demi-profil fermé et un trait d'axe (outil « Axe »),
+      angle 1–360°, « Tourner ». La pièce reste couchée sur son axe dans le plan du
+      croquis et repose sur la table (Z=0).
+    - Percer : toucher un ou plusieurs cercles ; trou M2 à M8 en leur centre, depuis le
+      dessus : passage (ISO 273 moyen), fraisé 90° (tête ISO 10642), insert à chaud ou
+      taraudage ; traversant ou à profondeur.
+    - Évider : paroi en unités du dessin, ouverte en haut ou fermée (pièce tournée : fermée).
+    - Répéter : une coupe ou un trou, en ligne (pas X/Y) ou en cercle (centre, angle).
+    - Chaque valeur de la liste des fonctions se modifie sur place (hauteur, angle, taille
+      et type de trou, paroi, nombre et pas) ainsi que les côtés et rayons du profil de
+      base : le serveur reconstruit la pièce avant d'appliquer ; une valeur impossible est
+      refusée et l'ancienne reste.
+    - Historique 3D : le curseur parcourt les états passés de la pièce (aperçu sans rien
+      modifier) ; « Revenir à cette étape » restaure le dessin, Annuler le rétablit.
+    - Voir en AR : fichier USDZ (Quick Look) sur iPhone/iPad, à taille réelle ; sur un
+      ordinateur, le .usdz est téléchargé ; depuis le 2e écran, « Voir en AR » sur le pad.
+    - Carnet : un bloc croquis dont le dessin a une pièce propose « Voir en 3D » (vue
+      tournante dans la page).
   Arrondis : dans l'aperçu 3D, choisir « Arrondir une arête », toucher une arête
   droite convexe, saisir un rayon et appliquer. Le serveur enlève réellement la
   matière du coin ; aperçu et STL montrent le même arrondi. Arêtes courbes ou

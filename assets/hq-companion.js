@@ -1008,6 +1008,8 @@
     S.intimeMode = true;
     S.el.classList.add("is-intime-mode");
     win.document.body.classList.add("hq-intime-active");
+    const room = win.document.getElementById("hq-intime-room");
+    if (room) room.appendChild(S.el);
     setExpanded(true);
     setCollapsed(false, false);
     applyCompanionFloat(win);
@@ -1017,6 +1019,8 @@
 
   function leaveIntimeView(win) {
     if (!win || !S.el || !S.intimeMode) return;
+    win.document.querySelectorAll(".hq-companion-gift-reveal").forEach(reveal => reveal.remove());
+    win.document.body.appendChild(S.el);
     S.el.classList.remove("is-intime-mode");
     win.document.body.classList.remove("hq-intime-active");
     S.intimeMode = false;
@@ -1065,7 +1069,10 @@
     }
     if (foldBtn && !foldBtn.__hqCompanionIntime) {
       foldBtn.__hqCompanionIntime = true;
-      foldBtn.addEventListener("click", () => setCollapsed(true, true));
+      foldBtn.addEventListener("click", () => {
+        setExpanded(false);
+        setCollapsed(true, false);
+      });
     }
   }
 
@@ -2635,7 +2642,7 @@
   function syncMemChip() {
     if (!S.memChip) return;
     const n = chatMessagesOnly(S.messages).length;
-    let label = n ? n + " msg" : "Mémoire vide";
+    let label = n ? n + " msg · cet appareil" : "Conversation vide · cet appareil";
     if (S.hasSummary) label += " · résumé";
     S.memChip.textContent = label;
     S.memChip.title = "Conversation de cet appareil · souvenirs partagés disponibles dans Mémoire.";
@@ -2700,7 +2707,9 @@
         meta.title = String(m.model || m.model_label || "");
         row.appendChild(meta);
       }
-      if (m.photo_href) {
+      if (m.photo_href && m.chat_art_presentation === "bubble") {
+        row.appendChild(chatBubbleGift(doc, m));
+      } else if (m.photo_href) {
         const pic = doc.createElement("img");
         pic.className = "hq-companion-msg-photo";
         pic.src = String(m.photo_href);
@@ -2801,6 +2810,55 @@
     syncAmbientLineDup();
   }
 
+  function chatBubbleGift(doc, message) {
+    const win = doc.defaultView;
+    const popped = S.poppedChatGifts || (S.poppedChatGifts = new Set());
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "hq-companion-gift-bubble";
+    button.textContent = "🎁";
+    button.setAttribute("aria-label", "Éclater la bulle cadeau de Transferania");
+    const markPopped = () => {
+      button.disabled = true;
+      button.textContent = "✓";
+      button.setAttribute("aria-label", "Bulle cadeau ouverte");
+    };
+    if (popped.has(message.chat_art_id)) markPopped();
+    button.addEventListener("click", async event => {
+      if (popped.has(message.chat_art_id)) return;
+      const rect = button.getBoundingClientRect();
+      const x = event.detail ? event.clientX : rect.left + rect.width / 2;
+      const y = event.detail ? event.clientY : rect.top + rect.height / 2;
+      const pic = doc.createElement("img");
+      pic.className = "hq-companion-gift-reveal";
+      pic.alt = "Image cadeau de Transferania";
+      pic.hidden = true;
+      button.disabled = true;
+      doc.body.appendChild(pic);
+      pic.src = message.photo_href;
+      try {
+        await pic.decode();
+        if (!pic.isConnected) {
+          button.disabled = false;
+          return;
+        }
+        popped.add(message.chat_art_id);
+        markPopped();
+        pic.hidden = false;
+        const halfWidth = pic.offsetWidth / 2 + 8;
+        const halfHeight = pic.offsetHeight / 2 + 8;
+        pic.style.left = clampNum(x, halfWidth, win.innerWidth - halfWidth) + "px";
+        pic.style.top = clampNum(y, halfHeight, win.innerHeight - halfHeight) + "px";
+        win.setTimeout(() => pic.remove(), 6000);
+      } catch (_) {
+        pic.remove();
+        button.disabled = false;
+        toastMsg(win, "Image cadeau indisponible. Réessaie.");
+      }
+    });
+    return button;
+  }
+
   async function loadHistory() {
     const win = S.win;
     if (!win || S.blocked) return;
@@ -2816,7 +2874,38 @@
         syncLargePortraitCaption(win);
       }
       renderLog();
+      const pending = S.messages.slice().reverse().find(m => m.chat_art_id && !m.photo_href);
+      if (pending) watchChatArt(win, pending.chat_art_id);
     } catch (_) {}
+  }
+
+  async function watchChatArt(win, id) {
+    if (S.chatArtWatch === id) return;
+    S.chatArtWatch = id;
+    try {
+      for (let attempt = 0; attempt < 160 && S.chatArtWatch === id; attempt++) {
+        const result = await fetchJson(win, aiGetUrl(win, "chat_art=" + encodeURIComponent(id)));
+        if (S.chatArtWatch !== id) return;
+        if (result.photo_href && S.chatBusy) {
+          await new Promise(resolve => win.setTimeout(resolve, 4000));
+          continue;
+        }
+        if (result.photo_href) {
+          const message = S.messages.find(row => row.chat_art_id === id);
+          if (message && !message.photo_href) {
+            message.photo_href = result.photo_href;
+            renderLog();
+          }
+          return;
+        }
+        if (!result.pending) return;
+        await new Promise(resolve => win.setTimeout(resolve, 4000));
+      }
+    } catch (_) {
+      // The image remains in the saved conversation and will load on reopen.
+    } finally {
+      if (S.chatArtWatch === id) S.chatArtWatch = null;
+    }
   }
 
   function setExpanded(on) {
@@ -2993,8 +3082,36 @@
         row.appendChild(sources);
         panel.appendChild(row);
       }
-      for (const episode of data.episodes || []) {
-        if (!shownSources.has(episode.id)) appendEpisode(panel, episode);
+      const remaining = (data.episodes || []).filter((episode) => !shownSources.has(episode.id));
+      if (remaining.length) {
+        const filter = doc.createElement("select");
+        filter.setAttribute("aria-label", "Filtrer les moments du journal");
+        const kinds = [["", "Tous les moments"], ["sister", "Dialogue sœurs"], ["experience", "Expériences"], ["interest", "Intérêts"], ["ritual", "Rituels"], ["other", "Autres moments"]];
+        for (const [value, label] of kinds) {
+          const option = doc.createElement("option");
+          option.value = value; option.textContent = label; filter.appendChild(option);
+        }
+        const list = doc.createElement("div");
+        const drawEpisodes = () => {
+          list.replaceChildren();
+          const groups = new Map();
+          for (const episode of remaining) {
+            const kind = String(episode.kind || "");
+            const sister = /sister|sœur/i.test(kind + " " + String(episode.text || ""));
+            if (filter.value && !(filter.value === "sister" ? sister : filter.value === "other" ? !sister && !["experience", "interest", "ritual"].includes(kind) : !sister && kind === filter.value)) continue;
+            const day = new Date(episode.at * 1000).toLocaleDateString();
+            if (!groups.has(day)) {
+              const group = doc.createElement("details");
+              const summary = doc.createElement("summary");
+              summary.textContent = day;
+              group.appendChild(summary); list.appendChild(group); groups.set(day, group);
+            }
+            appendEpisode(groups.get(day), episode);
+          }
+        };
+        filter.addEventListener("change", drawEpisodes);
+        panel.append(filter, list);
+        drawEpisodes();
       }
       for (const followup of data.followups || []) {
         const row = doc.createElement("div");
@@ -3642,27 +3759,36 @@
     syncListening(true);
     S.el && S.el.classList.add("hq-companion-chat-busy");
     S.readPreview = null;
-    S.messages.push({ role: "user", text, ts: Date.now(), has_image: !!attachedImg });
+    const pendingMessage = { role: "user", text, ts: Date.now(), has_image: !!attachedImg };
+    S.messages.push(pendingMessage);
     renderLog();
     playNaturalVoiceCue(win, "message_ack");
-    S.inputEl.value = "";
-    S.pendingChatImage = null;
-    if (S.imgBtn) {
-      S.imgBtn.textContent = "📷";
-      S.imgBtn.classList.remove("is-armed");
-    }
+    S.inputEl.disabled = true;
+    if (S.imgBtn) S.imgBtn.disabled = true;
+    if (S.sendBtn) S.sendBtn.disabled = true;
+    if (S.chatStatus) S.chatStatus.textContent = "Transferania répond…";
     if (S.nsfwAllowed && readNsfw(win)) playAdultFx(win, "send-pulse", 900);
     try {
       const out = await callTransferania(win, {
         op: "send",
         message: text,
         image: attachedImg || undefined,
+        steam: !!(S.steamToggle && S.steamToggle.checked),
+        chat_art: !!(S.chatArtToggle && S.chatArtToggle.checked),
         view,
         digest: digest(win),
         persona,
         nsfw: S.nsfwAllowed && readNsfw(win),
         signals: collectSignals(win),
       });
+      S.inputEl.value = "";
+      S.pendingChatImage = null;
+      if (S.imgBtn) {
+        S.imgBtn.textContent = "📷";
+        S.imgBtn.classList.remove("is-armed");
+      }
+      if (S.chatStatus) S.chatStatus.textContent = "Réponse reçue.";
+      if (out.chat_art_id) watchChatArt(win, out.chat_art_id);
       if (Array.isArray(out.messages)) S.messages = out.messages;
       else if (out.reply) S.messages.push({ role: "assistant", text: out.reply, kind: "chat" });
       S.hasSummary = !!out.has_summary;
@@ -3707,8 +3833,10 @@
         }
       }
     } catch (e) {
-      S.messages.pop();
+      const failedIndex = S.messages.indexOf(pendingMessage);
+      if (failedIndex !== -1) S.messages.splice(failedIndex, 1);
       renderLog();
+      if (S.chatStatus) S.chatStatus.textContent = "Envoi incertain. Ton brouillon et ton image sont conservés. Vérifie le fil avant de renvoyer.";
       if (e && (e.status === 403 || e.status === 401)) {
         S.blocked = true;
         S.el.hidden = true;
@@ -3719,6 +3847,9 @@
       try { if (S.pacingPromise) await S.pacingPromise; } catch (_) {}
       S.pacingPromise = null;
       S.chatBusy = false;
+      if (S.inputEl) S.inputEl.disabled = false;
+      if (S.imgBtn) S.imgBtn.disabled = false;
+      if (S.sendBtn) S.sendBtn.disabled = false;
       syncListening(S.busy);
       S.el && S.el.classList.remove("hq-companion-chat-busy");
       if (S.escalateBtn) S.escalateBtn.classList.remove("is-armed");
@@ -14821,6 +14952,7 @@
     if (S.root) S.root.classList.remove("is-speaking");
     if (S.el) S.el.classList.remove("is-speaking");
     stopVoiceLipsyncLoop(win);
+    if (S.voiceStatus) S.voiceStatus.textContent = "";
   }
 
   function playAudioUrl(win, url, onFailure, visemes) {
@@ -14843,6 +14975,7 @@
         if (S.speechWebVoice?.audio === audio) stopSpeechWebVoice(win, true);
         S.currentAudio = null;
         updateCompanionSfxDuck(win);
+        if (S.voiceStatus) S.voiceStatus.textContent = "Lecture terminée";
       };
       const failed = () => {
         if (S.currentAudio !== audio) return;
@@ -14854,6 +14987,7 @@
       const routeBus = canRouteSpeechThroughBus(win, url);
       audio.play().then(() => {
         if (request !== S.speechRequest || S.currentAudio !== audio) return;
+        if (S.voiceStatus) S.voiceStatus.textContent = "Voix locale en lecture";
         if (routeBus) {
           try {
             primeCompanionAudioContext(win);
@@ -14867,9 +15001,13 @@
 
   function fallbackSpeech(win, t, delivery) {
     const ss = win.speechSynthesis;
-    if (!ss || typeof win.SpeechSynthesisUtterance !== "function") return;
+    if (!ss || typeof win.SpeechSynthesisUtterance !== "function") {
+      if (S.voiceStatus) S.voiceStatus.textContent = "Voix indisponible sur cet appareil";
+      return;
+    }
     try {
       stopSpeech(win);
+      if (S.voiceStatus) S.voiceStatus.textContent = "Voix du navigateur en lecture";
       const request = S.speechRequest;
       const segments = speechSegments(t);
       const v = pickVoice(ss.getVoices());
@@ -14881,7 +15019,7 @@
       };
       const next = index => {
         if (request !== S.speechRequest || !readVoice(win) || win.document.hidden) return;
-        if (index >= segments.length) { finish(); return; }
+        if (index >= segments.length) { finish(); if (S.voiceStatus) S.voiceStatus.textContent = "Lecture terminée"; return; }
         const u = new win.SpeechSynthesisUtterance(segments[index]);
         if (v) u.voice = v;
         u.lang = v ? v.lang : "fr-CA";
@@ -14911,6 +15049,7 @@
     const t = String(text || "").replace(/[♥✨🔥💋🍓☕🌹🥂🎲🫧🙈💄💘🐾🧽🕯️👗📸💌]/g, "").trim();
     if (!t || !readVoice(win) || win.document.hidden) return;
     stopSpeech(win);
+    if (S.voiceStatus) S.voiceStatus.textContent = "Préparation de la voix…";
     const request = S.speechRequest;
     const mode = conversationMode || "social";
     const delivery = speechDelivery(t, {mode, flirt: readPersona(win) === "flirt", style: deliveryStyle});
@@ -15594,6 +15733,7 @@
       // Event-driven panel sizing, never a per-frame companion-root mutation.
       bubble.style.setProperty("--chat-viewport-height", height + "px");
       bubble.style.setProperty("--chat-keyboard-offset", keyboard + "px");
+      if (S.el && S.companionFloat && !S.intimeMode) applyCompanionFloat(win);
     };
     win.visualViewport?.addEventListener("resize", fitReadingPanel, {passive:true});
     win.visualViewport?.addEventListener("scroll", fitReadingPanel, {passive:true});
@@ -15656,6 +15796,29 @@
       win.clearTimeout(S.palmHushDebounceT);
     });
     S.inputEl = input;
+    const steamLabel = doc.createElement("label");
+    steamLabel.className = "hq-companion-steam-toggle";
+    const steamToggle = doc.createElement("input");
+    steamToggle.type = "checkbox";
+    try { steamToggle.checked = win.localStorage.getItem("hq_companion_steam") !== "0"; } catch (_) { steamToggle.checked = true; }
+    steamToggle.addEventListener("change", () => {
+      try { win.localStorage.setItem("hq_companion_steam", steamToggle.checked ? "1" : "0"); } catch (_) {}
+    });
+    steamLabel.append(steamToggle, doc.createTextNode(" Jeux Steam installés · envoyés au modèle quand tu en parles"));
+    S.steamToggle = steamToggle;
+    const artLabel = doc.createElement("label");
+    artLabel.className = "hq-companion-chat-art-toggle";
+    const artToggle = doc.createElement("input");
+    artToggle.type = "checkbox";
+    artToggle.checked = readFxPref(win, "hq_companion_chat_art") !== "0";
+    artToggle.addEventListener("change", () => writeFxPref(win, "hq_companion_chat_art", artToggle.checked ? "1" : "0"));
+    artLabel.append(artToggle, doc.createTextNode(" Photos spontanées (Forge)"));
+    S.chatArtToggle = artToggle;
+    const chatStatus = doc.createElement("p");
+    chatStatus.className = "hq-companion-chat-status";
+    chatStatus.setAttribute("role", "status");
+    chatStatus.setAttribute("aria-live", "polite");
+    S.chatStatus = chatStatus;
     const sendBtn = doc.createElement("button");
     sendBtn.type = "button";
     sendBtn.className = "hq-companion-send is-primary";
@@ -15725,6 +15888,7 @@
     imgBtn.type = "button";
     imgBtn.className = "hq-companion-tools";
     imgBtn.textContent = "📷";
+    imgBtn.setAttribute("aria-label", "Joindre ou supprimer une image");
     imgBtn.setAttribute("title", "Joindre ou supprimer une image (ou coller / glisser)");
     imgBtn.addEventListener("click", () => {
       if (S.pendingChatImage) {
@@ -15758,6 +15922,7 @@
     micBtn.type = "button";
     micBtn.className = "hq-companion-tools";
     micBtn.textContent = "🎙️";
+    micBtn.setAttribute("aria-label", "Dicter un message à vérifier avant l’envoi");
     micBtn.hidden = !SpeechRec;
     micBtn.setAttribute("title", "Dictée vocale mains-libres (fr-CA)");
     micBtn.addEventListener("click", () => {
@@ -15778,7 +15943,8 @@
         const tr = ev.results && ev.results[0] && ev.results[0][0] ? String(ev.results[0][0].transcript || "").trim() : "";
         if (tr) {
           input.value = (input.value ? input.value + " " : "") + tr;
-          sendChat();
+          input.focus();
+          toastMsg(win, "Dictée prête à vérifier avant l’envoi.");
         }
       };
       rec.onend = () => {
@@ -15790,6 +15956,7 @@
         S.activeSpeechRec = null;
         micBtn.classList.remove("is-armed");
         syncListening(S.busy || S.chatBusy);
+        toastMsg(win, "Dictée indisponible. Vérifie l’accès au microphone et réessaie.");
       };
       try { rec.start(); } catch (_) { S.activeSpeechRec = null; micBtn.classList.remove("is-armed"); }
     });
@@ -15818,12 +15985,21 @@
     lofiBtn.type = "button";
     lofiBtn.className = "hq-companion-tools";
     lofiBtn.textContent = "🎵";
+    lofiBtn.setAttribute("aria-label", "Activer ou arrêter l’ambiance musicale");
     lofiBtn.setAttribute("title", "Écouter ensemble : ambiance Lo-Fi d'atelier (0 Mo réseau)");
     lofiBtn.addEventListener("click", () => toggleWorkshopLofi(win));
     S.lofiBtn = lofiBtn;
 
-    composeRow.append(toolsBtn, briefBtn, lofiBtn, imgBtn, micBtn, filePicker, escalateBtn, sendBtn);
-    compose.append(input, composeRow);
+    const moreActions = doc.createElement("details");
+    moreActions.className = "hq-companion-more-actions";
+    const moreSummary = doc.createElement("summary");
+    moreSummary.textContent = "Outils et ambiance";
+    const moreItems = doc.createElement("div");
+    moreItems.className = "hq-companion-more-items";
+    moreItems.append(toolsBtn, briefBtn, lofiBtn, artLabel);
+    moreActions.append(moreSummary, moreItems);
+    composeRow.append(moreActions, imgBtn, micBtn, filePicker, escalateBtn, sendBtn);
+    compose.append(input, chatStatus, steamLabel, composeRow);
 
     const actions = doc.createElement("div");
     actions.className = "hq-companion-actions";
@@ -15892,6 +16068,15 @@
       else stopSpeech(win);
     });
     S.voiceBtn = voiceBtn;
+    const voiceStopBtn = doc.createElement("button");
+    voiceStopBtn.type = "button";
+    voiceStopBtn.textContent = "Arrêter la voix";
+    voiceStopBtn.addEventListener("click", () => { stopSpeech(win); if (S.voiceStatus) S.voiceStatus.textContent = "Lecture arrêtée"; });
+    const voiceStatus = doc.createElement("span");
+    voiceStatus.className = "hq-companion-voice-status";
+    voiceStatus.setAttribute("role", "status");
+    S.voiceStatus = voiceStatus;
+    actions.append(voiceStopBtn, voiceStatus);
     doc.addEventListener("visibilitychange", () => {
       if (doc.hidden) { S.voicePreview = false; stopSpeech(win); syncVoiceBtn(win); }
     });

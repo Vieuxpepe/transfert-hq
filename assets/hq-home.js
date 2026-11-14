@@ -23,12 +23,100 @@
     return m ? new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0)) : null;
   }
 
-  function greeting(hour) {
-    if (hour >= 5 && hour < 12) return "Bonjour";
-    if (hour >= 12 && hour < 18) return "Bon après-midi";
-    if (hour >= 18 && hour < 22) return "Bonsoir";
-    return "Bonne nuit";
+  /* The greeting: the hour picks the moment, the day picks the wording, and the console is
+     addressed to the one person it belongs to. Stable all day (so it never rewrites itself on a
+     poll), a different line tomorrow — not a formula repeated at every visit. */
+  const PERSON = "Marc-Antoine";
+  const GREETINGS = {
+    early: [
+      "Bon matin, " + PERSON, "Bon matin", "Doucement, " + PERSON, "Tôt levé ?",
+      "Bien dormi ?", "Le jour se lève", "Café d'abord ?", "Petit matin tranquille",
+      "La maison s'éveille", "Réveil en douceur", "Bonjour, tout doux", "Belle lumière",
+      "Bon matin, doucement", PERSON + ", bonjour", "Tout est calme", "On démarre en douceur",
+    ],
+    morning: [
+      "Bonjour, " + PERSON, "Bonjour", "Salut, " + PERSON, "Content de te voir",
+      "Bon avant-midi", "Belle matinée", "Salut", "La matinée est à toi",
+      "Ça va, " + PERSON + " ?", "Tout est en ordre", "On reprend ?", "Bien réveillé ?",
+      "Une matinée devant toi", "Bonjour, sans presse", "Doucement, ce matin", "Bonjour, " + PERSON + " ?",
+    ],
+    noon: [
+      "Bon midi, " + PERSON, "Bon midi", PERSON + ", bon midi", "Midi déjà",
+      "Pause à midi ?", "Bon appétit", "Mi-journée", "Midi, " + PERSON,
+      "La journée à moitié", "Bon midi, ça va ?", "Il est midi", "Mi-chemin",
+      "Bonjour, midi pile", "Une pause, " + PERSON + " ?",
+    ],
+    afternoon: [
+      "Bon après-midi, " + PERSON, "Bon après-midi", "Bel après-midi", "L'après-midi file",
+      PERSON + ", bel après-midi", "Ça avance ?", "L'après-midi est à toi", "Tout va bien ?",
+      "Le cœur de l'après-midi", "Doucement, cet après-midi", "L'après-midi s'étire", "Après-midi tranquille",
+      "Bel après-midi devant toi", "Bon après-midi, sans presse", "On avance bien", "Tout suit son cours",
+    ],
+    evening: [
+      "Bonsoir, " + PERSON, "Bonsoir", "Bonne soirée, " + PERSON, "La journée se pose",
+      "Bien fini ?", "Ce soir, " + PERSON, "Belle soirée devant toi", "On ralentit",
+      "La maison est tranquille", "Bonne soirée", "Bonsoir, ça va ?", "Le soir t'appartient",
+      "Bonsoir, tout est calme", "Fin de journée", "Bonsoir, sans presse", "Bonne soirée devant toi",
+    ],
+    late: [
+      "Encore debout, " + PERSON + " ?", "Tout dort, " + PERSON, "La soirée s'achève", "Il se fait tard",
+      "Encore un peu ?", "La nuit est calme", "Bonne nuit, bientôt", "Il est tard, " + PERSON,
+      "Doucement, la nuit", "Encore là ?", "Le calme de la nuit", "Bonne fin de soirée",
+      "Veille pas trop", "La nuit t'appartient", "Repose-toi bientôt", "Bonne nuit, à demain",
+    ],
+    night: [
+      "Encore debout ?", "Bonne nuit, " + PERSON, "Il est très tard", "Le lit t'attend",
+      "Bonne nuit", "Nuit profonde", "Repose-toi, " + PERSON, "Encore éveillé ?",
+      "Le silence de la nuit", "À demain, " + PERSON, "La nuit est longue", "Le sommeil t'attend",
+    ],
+  };
+  window.hqGreetingLines = GREETINGS; // test/debug hook: the whole bank, for width checks
+
+  function phaseOf(hour) {
+    if (hour >= 5 && hour < 9) return "early";
+    if (hour >= 9 && hour < 12) return "morning";
+    if (hour >= 12 && hour < 14) return "noon";
+    if (hour >= 14 && hour < 18) return "afternoon";
+    if (hour >= 18 && hour < 22) return "evening";
+    if (hour >= 22 || hour < 2) return "late";
+    return "night";
   }
+
+  function dayIndex(date) {
+    const start = new Date(date.getFullYear(), 0, 0);
+    return Math.floor((date.getTime() - start.getTime()) / 86400000);
+  }
+
+  const RETURNS = [
+    "Rebonjour, " + PERSON, "De retour, " + PERSON + " ?", "Rebonjour", "Te revoilà, " + PERSON,
+    "Content de te revoir", "Re-bonjour", "De retour ?", "Te revoilà",
+  ];
+  const GREET_DAY_KEY = "hq_greet_day";
+  let returning = false;
+
+  /* Coming back the same day is greeted as a return, not as a fresh « Bonjour ».
+     If storage is blocked, every load is simply a first visit. */
+  function noteVisit(date) {
+    try {
+      const day = date.toDateString();
+      const seen = localStorage.getItem(GREET_DAY_KEY);
+      if (seen !== day) localStorage.setItem(GREET_DAY_KEY, day);
+      return seen === day;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function greeting(date) {
+    const phase = phaseOf(date.getHours());
+    if (returning && phase !== "late" && phase !== "night") {
+      return RETURNS[dayIndex(date) % RETURNS.length];
+    }
+    const lines = GREETINGS[phase];
+    return lines[dayIndex(date) % lines.length];
+  }
+  returning = noteVisit(now()); // read once, so the line never rewrites on a poll
+  window.hqGreetingAt = greeting; // test/debug hook: the line HQ would show at this date
 
   function ambient(date) {
     const t = date.getHours() + date.getMinutes() / 60;
@@ -48,7 +136,7 @@
       const text = new Intl.DateTimeFormat("fr-CA", { weekday: "long", day: "numeric", month: "long" }).format(d);
       date.textContent = text.charAt(0).toUpperCase() + text.slice(1);
     }
-    if (greet) greet.textContent = greeting(d.getHours());
+    if (greet) { const want = greeting(d); if ((greet.dataset.fxText || greet.textContent) !== want) greet.textContent = want; }
     const hero = $("hq-banner");
     if (hero) hero.style.setProperty("--home-amb", ambient(d));
   }
@@ -162,9 +250,7 @@
     const event = $("home-act-event");
     if (event) {
       event.addEventListener("click", () => {
-        if (typeof window.setView === "function") window.setView("calendrier");
-        const input = $("hq-cal-quick-input");
-        if (input) input.focus(); // same tap: the phone keyboard opens
+        if (typeof window.setView === "function") window.setView("calendrier", { focus: "hq-cal-quick-input" });
       });
     }
     const file = $("home-act-file");
@@ -328,12 +414,24 @@
   const CARDS = [
     ["carnet", "#hq-carnet-home", "Carnet"],
     ["today", "#hq-cal-home", "Aujourd'hui"],
+    ["musica", "#home-musica", "Musica"],
+    ["brief", "#home-brief-card", "Brief"],
     ["devices", ".home-devices", "Appareils"],
     ["pc", ".home-pc", "Ce PC"],
     ["send", ".home-send", "Envoyer"],
     ["feed", ".home-feed", "Activité récente"],
+    ["budget", "#home-budget", "Budget"],
+    ["meals", "#home-meals", "Repas"],
+    ["stock", "#home-stock", "Stock"],
+    ["forge", "#home-forge", "Forge"],
+    ["projects", "#home-projects", "Projets"],
+    ["quests", "#home-quests", "Quêtes"],
   ];
-  const DEFAULT_LAYOUT = { order: CARDS.map((c) => c[0]), hidden: [], side: ["devices", "pc", "send"] };
+  const DEFAULT_LAYOUT = {
+    order: CARDS.map((c) => c[0]),
+    hidden: [],
+    side: ["devices", "pc", "send", "budget", "meals", "stock", "forge", "projects", "quests"],
+  };
   const LAYOUT_KEY = "hq_home_layout"; // a copy for an instant first paint; HQ keeps the real one
   let layout = null;
   let saveTimer = 0;
@@ -360,7 +458,9 @@
       const raw = data && Array.isArray(data[name]) ? data[name] : fallback;
       return order.filter((k) => raw.includes(k));
     };
-    return { order, hidden: pick("hidden", []), side: pick("side", DEFAULT_LAYOUT.side) };
+    const out = { order, hidden: pick("hidden", []), side: pick("side", DEFAULT_LAYOUT.side) };
+    if (data && data.v) out.v = data.v; // the server's layout version rides along, it drives the one-time placement
+    return out;
   }
 
   function applyLayout(next, animate) {
@@ -372,7 +472,8 @@
     layout.order.forEach((key, i) => {
       const el = card(key);
       if (!el) return;
-      (layout.side.includes(key) ? side : main).appendChild(el);
+      // The feed is a full-width band on desktop: it rides on the grid, not inside a column.
+      (key === "feed" ? (document.querySelector(".home-v2") || main) : (layout.side.includes(key) ? side : main)).appendChild(el);
       el.style.order = String(3 + i); // phone: one list in this order
       el.classList.toggle("is-user-hidden", layout.hidden.includes(key));
       const bar = el.querySelector(":scope > .home-edit-bar");
@@ -399,6 +500,7 @@
       const data = await window.api("/api/home-layout", { timeoutMs: 8000 });
       const row = $("home-edit-row");
       if (row) row.hidden = false; // the owner can arrange Accueil (an upload session gets 403 and never sees it)
+      placeEditEntry();
       if (JSON.stringify(clean(data && data.layout)) !== JSON.stringify(layout)) {
         applyLayout(data && data.layout, false);
         storeLocal();
@@ -429,6 +531,11 @@
     const hide = bar.querySelector("[data-edit=hide]");
     hide.textContent = hidden ? "Afficher" : "Masquer";
     hide.setAttribute("aria-pressed", hidden ? "true" : "false");
+    const wide = key === "feed" && desktop(); // full width: there is no column to move it to
+    ["up", "down", "side"].forEach((d) => {
+      const btn = bar.querySelector("[data-edit=" + d + "]");
+      if (btn) btn.hidden = wide;
+    });
     const sideBtn = bar.querySelector("[data-edit=side]");
     const onSide = layout.side.includes(key);
     sideBtn.textContent = onSide ? "← Colonne" : "Colonne →";
@@ -474,13 +581,33 @@
     });
   }
 
+  // The arrange entry is icon-sized so it rides in the hero head without pushing the layout.
+  function setEditLabel(btn, text) {
+    const label = btn.querySelector(".home-edit-label");
+    if (label) label.textContent = text; else btn.textContent = text;
+    btn.setAttribute("aria-label", text);
+    btn.title = text;
+  }
+
+  function placeEditEntry() {
+    const btn = $("home-edit");
+    const head = document.querySelector(".home-v2 .home-hero-head");
+    if (!btn || !head) return;
+    if (btn.parentElement !== head) {
+      const pill = $("hq-attention-toggle");
+      if (pill && pill.parentElement === head) head.insertBefore(btn, pill);
+      else head.appendChild(btn);
+    }
+    btn.hidden = !document.body.classList.contains("session-admin");
+  }
+
   function startEditing() {
     const home = document.querySelector(".home-v2");
     const btn = $("home-edit");
     if (!home || !btn || home.classList.contains("is-editing")) return;
     home.classList.add("is-editing");
     btn.setAttribute("aria-pressed", "true");
-    btn.textContent = "Terminé";
+    setEditLabel(btn, "Terminer l'arrangement");
     ensureBars();
     barWatch = new MutationObserver(() => { if (home.classList.contains("is-editing")) ensureBars(); });
     CARDS.forEach(([key]) => { const el = card(key); if (el) barWatch.observe(el, { childList: true }); });
@@ -499,7 +626,7 @@
     if (barWatch) barWatch.disconnect();
     barWatch = null;
     btn.setAttribute("aria-pressed", "false");
-    btn.textContent = "Modifier l'accueil";
+    setEditLabel(btn, "Modifier l'accueil");
     document.querySelectorAll(".home-v2 .home-edit-bar, .home-v2 .home-edit-tools").forEach((el) => el.remove());
   }
 
@@ -536,6 +663,16 @@
     });
   }
 
+  // Desktop Accueil carries the view tools in the hero head instead of a band of their own.
+  function placeViewTools() {
+    const tools = document.querySelector(".view-tools");
+    if (!tools) return;
+    const inHero = document.body.dataset.view === "accueil" && window.matchMedia("(min-width:1100px)").matches;
+    const host = inHero ? document.querySelector(".home-v2 .home-hero-head") : document.querySelector(".view-bar");
+    if (host && tools.parentElement !== host) host.appendChild(tools);
+    document.body.classList.toggle("home-tools-in-hero", !!inHero);
+  }
+
   function boot() {
     if (!$("hq-banner") || !document.querySelector(".home-v2")) return;
     let cached = null;
@@ -548,6 +685,12 @@
     bindDevices();
     bindEditing();
     bindPull();
+    placeViewTools();
+    window.addEventListener("resize", placeViewTools);
+    window.matchMedia("(min-width:1100px)").addEventListener("change", placeViewTools);
+    if (window.ResizeObserver) new ResizeObserver(placeViewTools).observe(document.documentElement);
+    document.addEventListener("hq:view", placeViewTools);
+    document.addEventListener("hq:session-role", placeEditEntry);
     loadLayout();
     let lastView = document.body.dataset.view;
     if (lastView === "accueil") enter();
@@ -555,6 +698,7 @@
       const view = document.body.dataset.view;
       if (view === lastView) return; // the app re-sets the same view on resize: no replay
       lastView = view;
+      placeViewTools(); // the tools leave the hero as soon as Accueil is not the view
       if (view === "accueil") enter();
       else stopEditing();
     }).observe(document.body, { attributes: true, attributeFilter: ["data-view"] });

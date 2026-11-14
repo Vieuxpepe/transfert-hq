@@ -27,7 +27,8 @@ class CarnetShellTests(unittest.TestCase):
 
     def test_nav_first_class_after_accueil(self):
         navs = re.findall(r'data-nav="([a-z]+)"', self.html.split('<nav class="bottom-nav"', 1)[1].split("</nav>", 1)[0])
-        self.assertEqual(navs[:3], ["accueil", "carnet", "calendrier"])
+        visible = [n for n in navs if n != "intime"]  # intime is hidden unless the session is admin
+        self.assertEqual(visible[:3], ["accueil", "carnet", "calendrier"])
         self.assertIn("carnet: 'Carnet'", self.app_js)
         self.assertIn('body[data-view="carnet"] [data-panel="carnet"]', self.css)
 
@@ -52,7 +53,7 @@ class CarnetShellTests(unittest.TestCase):
 
     def test_guarded_show_hook_and_missing_fallback(self):
         self.assertIn("if (view === 'carnet' && window.hqCarnetShow) {\n"
-                      "    try { window.hqCarnetShow(); } catch (e) { console.error(e); }", self.app_js)
+                      "    hqDeferViewRender(view, viewTicket, () => { try { window.hqCarnetShow(); } catch (e) { console.error(e); } });", self.app_js)
         self.assertIn("function hqCarnetMissing()", self.app_js)
         self.assertIn("carnet-retry", self.app_js)
 
@@ -71,7 +72,8 @@ class CarnetShellTests(unittest.TestCase):
         self.assertEqual(iphone_bridge.UPLOAD_GET_PREFIX, ("/assets/",))
         self.assertEqual(iphone_bridge.UPLOAD_POST_PREFIX, ())
         src = (ROOT / "iphone_bridge.py").read_text(encoding="utf-8")
-        self.assertIn("script-src 'self' 'unsafe-inline'; connect-src 'self'", src)
+        import hq_forge_lifecycle_listener  # the policy string is built there since the lifecycle listener landed
+        self.assertIn("script-src 'self' 'unsafe-inline'; connect-src 'self'", hq_forge_lifecycle_listener.content_security_policy("", "/"))
         self.assertIn('self.send_header("X-Content-Type-Options", "nosniff")', src)
 
     def test_js_never_uses_html_sinks_or_leaks(self):

@@ -19,7 +19,7 @@
   panel.setAttribute("aria-label", "Diagnostics performance");
   panel.innerHTML =
     '<div class="hq-debug-head">' +
-    '<span class="hq-debug-title" title="Glisser pour déplacer · cliquer pour replier">Perf debug</span>' +
+    '<span class="hq-debug-title" role="button" tabindex="0" aria-expanded="false" aria-controls="hq-debug-body" title="Glisser pour déplacer · cliquer pour déplier">Perf debug<span class="hq-debug-caret" aria-hidden="true"></span></span>' +
     '<button type="button" class="hq-debug-copy" title="Copier les dernières lignes">Copy</button>' +
     '<button type="button" class="hq-debug-brief" title="Copier agent-brief (brief_md, admin)">Brief</button>' +
     '<button type="button" class="hq-debug-packet" title="Copier agent packet (brief + index, admin)">Packet</button>' +
@@ -32,7 +32,7 @@
     "</select>" +
     '<span class="hq-debug-fps">— fps</span>' +
     "</div>" +
-    '<div class="hq-debug-body">' +
+    '<div class="hq-debug-body" id="hq-debug-body">' +
     '<div class="hq-debug-grid" id="hq-debug-metrics"></div>' +
     '<div class="hq-debug-log" id="hq-debug-recent" hidden></div>' +
     "</div>";
@@ -55,6 +55,20 @@
   var headEl = panel.querySelector(".hq-debug-head");
   var dragState = null;
   var suppressTitleClick = false;
+
+  // Folded by default: the HUD keeps shipping logs while closed, and folded it stays a thin bar out of the page's way.
+  // Unfolding is a per-page choice; a reload starts folded again.
+  function setCollapsed(on) {
+    panel.classList.toggle("is-collapsed", !!on);
+    titleEl.setAttribute("aria-expanded", on ? "false" : "true");
+    titleEl.setAttribute("title", "Glisser pour déplacer · cliquer pour " + (on ? "déplier" : "replier"));
+  }
+
+  function toggleCollapsed() {
+    setCollapsed(!panel.classList.contains("is-collapsed"));
+  }
+
+  setCollapsed(true);
 
   function clampPanelPos(x, y) {
     var rect = panel.getBoundingClientRect();
@@ -114,8 +128,10 @@
       origX: rect.left,
       origY: rect.top,
       moved: false,
+      captured: false,
     };
-    headEl.setPointerCapture(ev.pointerId);
+    // Capture only once the pointer really moves: capturing on pointerdown retargets the click to the
+    // header, and the title would stop folding the panel.
   });
 
   function finishDrag(ev) {
@@ -125,9 +141,11 @@
       savePanelPos(rect.left, rect.top);
       suppressTitleClick = true;
     }
-    try {
-      headEl.releasePointerCapture(ev.pointerId);
-    } catch (_) {}
+    if (dragState.captured) {
+      try {
+        headEl.releasePointerCapture(ev.pointerId);
+      } catch (_) {}
+    }
     dragState = null;
   }
 
@@ -137,23 +155,29 @@
     var dy = ev.clientY - dragState.startY;
     if (!dragState.moved && Math.abs(dx) + Math.abs(dy) > 5) dragState.moved = true;
     if (dragState.moved) {
+      if (!dragState.captured) {
+        try {
+          headEl.setPointerCapture(ev.pointerId);
+          dragState.captured = true;
+        } catch (_) {}
+      }
       applyPanelPos(dragState.origX + dx, dragState.origY + dy);
     }
   });
   headEl.addEventListener("pointerup", finishDrag);
   headEl.addEventListener("pointercancel", finishDrag);
 
-  var collapsed = win.localStorage && win.localStorage.getItem("hq-debug-collapsed") === "1";
-  if (collapsed) panel.classList.add("is-collapsed");
   titleEl.addEventListener("click", function () {
     if (suppressTitleClick) {
       suppressTitleClick = false;
       return;
     }
-    panel.classList.toggle("is-collapsed");
-    if (win.localStorage) {
-      win.localStorage.setItem("hq-debug-collapsed", panel.classList.contains("is-collapsed") ? "1" : "0");
-    }
+    toggleCollapsed();
+  });
+  titleEl.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    toggleCollapsed();
   });
 
   function copyText(text, btn) {
@@ -367,9 +391,29 @@
     return h;
   }
 
+  function fpsClock() {
+    return win.performance && win.performance.now ? win.performance.now() : Date.now();
+  }
+  function resetFpsWindow() {
+    frames = 0;
+    lastFpsAt = fpsClock();
+  }
+  function paintFpsIdle() {
+    if (fpsEl) fpsEl.textContent = "\u2014 fps";
+  }
   function loop(now) {
+    /* A hidden tab receives no animation frames at all, so counting them reports
+       0 fps as if the view were slow. Show the idle mark instead and restart the
+       one-second window, so the first visible sample is not averaged against the
+       time spent in the background. */
+    if (doc.hidden) {
+      resetFpsWindow();
+      paintFpsIdle();
+      win.requestAnimationFrame(loop);
+      return;
+    }
     frames += 1;
-    var t = now || (win.performance && win.performance.now ? win.performance.now() : Date.now());
+    var t = now || fpsClock();
     if (t - lastFpsAt >= 1000) {
       fps = Math.round((frames * 1000) / (t - lastFpsAt));
       frames = 0;
@@ -378,6 +422,12 @@
       if (typeof onFpsSample === "function") onFpsSample(fps, t);
     }
     win.requestAnimationFrame(loop);
+  }
+  if (doc.addEventListener) {
+    doc.addEventListener("visibilitychange", function () {
+      resetFpsWindow();
+      if (doc.hidden) paintFpsIdle();
+    });
   }
   win.requestAnimationFrame(loop);
 
@@ -637,7 +687,7 @@
     metricsEl.textContent = "";
     setMetric("Session", sessionId || "—");
     setMetric("Vue", currentView() || "—");
-    setMetric("FPS", String(fps), fps < 45 ? "hq-debug-warn" : "");
+    setMetric("FPS", doc.hidden ? "\u2014" : String(fps), !doc.hidden && fps < 45 ? "hq-debug-warn" : "");
     setMetric("Mémoire", memLine());
     setMetric("Chargement", navMs());
     setMetric("Long tasks", String(longTasks) + (lastLongAt ? " (last " + lastLongAt + ")" : ""), longTasks ? "hq-debug-warn" : "");
@@ -655,6 +705,10 @@
     setMetric("Logs", "2 fichiers · 200 lignes · perf " + perfHint);
     setMetric("Agents", "Brief → agent-brief · Snap/Bundle");
     setMetric("Animation", motionLine());
+    if (typeof win.hqDeskLatency === "function") {
+      var padLat = win.hqDeskLatency();
+      setMetric("Pad → PC", padLat == null ? "—" : Math.round(padLat) + " ms", padLat > 180 ? "hq-debug-warn" : "");
+    }
   }
   win.setInterval(paintMetrics, 500);
 
@@ -840,7 +894,7 @@
       return origFetch.call(this, input, init).then(function (res) {
         try {
           var ms = Math.round((win.performance && win.performance.now ? win.performance.now() : Date.now()) - t0);
-          if (path.indexOf("/api/") === 0 && res.ok && ms >= 800) {
+          if (path.indexOf("/api/") === 0 && path.indexOf("/api/desk/poll") !== 0 && res.ok && ms >= 800) { // a desk poll waits on purpose
             res
               .clone()
               .text()

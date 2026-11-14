@@ -18,6 +18,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import hq_forge_worker as W  # noqa: E402  (pairs a "new PC" from the test process for the detection step)
@@ -113,7 +115,7 @@ def main() -> None:
 
             page.set_viewport_size({"width": 375, "height": 812})
             page.goto(base + "/")
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             page.wait_for_function("() => document.querySelectorAll('#forge-device-list .forge-device').length === 4")
             page.wait_for_function("() => [...document.querySelectorAll('#forge-device-list .forge-device')].filter((n) => n.dataset.state === 'available').length >= 3")
@@ -326,7 +328,7 @@ def main() -> None:
                 page.emulate_media(reduced_motion="reduce")
                 page.set_viewport_size({"width": 1440, "height": 900})
                 page.goto(dbase + "/")
-                page.locator('.bottom-nav [data-nav="forge"]').click()
+                open_section(page, "forge")
                 page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
                 page.wait_for_function("() => document.querySelectorAll('#forge-device-list .forge-device').length === 10")
                 page.wait_for_function("() => [...document.querySelectorAll('.forge-device')].some((n) => n.textContent.includes('ne r\u00e9pond plus depuis'))", timeout=20000)

@@ -1,0 +1,47 @@
+{
+  "v": 1,
+  "visits": [
+    {
+      "at": 1794617416.1803932,
+      "self": "securia",
+      "other": "musica",
+      "other_name": "Musica",
+      "lines": [
+        {
+          "who": "musica",
+          "text": "Bonsoir Securia."
+        },
+        {
+          "who": "securia",
+          "text": "Bonsoir Musica."
+        },
+        {
+          "who": "musica",
+          "text": "J'ai fini mon écoute avant de penser à fermer tout."
+        },
+        {
+          "who": "securia",
+          "text": "Mieux vaut vérifier le cadenas avant de partir."
+        }
+      ],
+      "thread": "Mieux vaut vérifier le cadenas avant de partir."
+    },
+    {
+      "at": 1794619197.170106,
+      "self": "securia",
+      "other": "else",
+      "other_name": "Else",
+      "lines": [
+        {
+          "who": "securia",
+          "text": "Je passais vérifier une serrure."
+        },
+        {
+          "who": "else",
+          "text": "Rien ne presse. Je regarde."
+        }
+      ],
+      "thread": "Rien ne presse. Je regarde."
+    }
+  ]
+}

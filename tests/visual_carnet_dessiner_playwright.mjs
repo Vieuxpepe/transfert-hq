@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openSection } from "./hq_browser_nav.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let chromium;
@@ -202,7 +203,7 @@ const backToCarnet = async (p) => {
 };
 /** Make a drawing with the real Dessiner UI (through the Dessiner tab, no Carnet link) and come back to Carnet. */
 async function makeDrawing(p, name) {
-  await p.locator('.bottom-nav [data-nav="dessiner"]').click();
+  await openSection(p, "dessiner");
   await skView(p);
   await drawLine(p);
   const stem = await dessinerSave(p, name);
@@ -508,7 +509,7 @@ scenario("12 removing the Carnet reference NEVER deletes the drawing", async () 
   await saved(p);
   check(srv.blocks().every((b) => b.type !== "drawing"), "server page has no drawing block");
   check(srv.stems().includes(stem) && srv.drawingBytes(stem).every((b, i) => b.equals(bytes[i])), "drawing files all still present and byte-identical");
-  await p.locator('.bottom-nav [data-nav="dessiner"]').click();
+  await openSection(p, "dessiner");
   await skView(p);
   const r = await p.evaluate(async (stem) => (await window.api("/api/drawings")).items.some((x) => (x.stem || x.name || "").startsWith(stem)) || JSON.stringify(await window.api("/api/drawings")).includes(stem), stem);
   check(r, "the drawing is still listed by Dessiner");

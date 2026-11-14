@@ -882,6 +882,70 @@ class SecurityRegressionTests(unittest.TestCase):
     def _login_instance(self, pin: str) -> str:
         return type(self)._login(pin)
 
+    def test_shell_jobs_start_poll_and_stop(self):
+        status, _h, body = self._post("/api/shell", {"target": "local", "shell": "cmd", "cmd": "echo hq-route-ok"})
+        self.assertEqual(status, 202)
+        job_id = json.loads(body.decode("utf-8")).get("job_id") or ""
+        self.assertTrue(job_id)
+        snap = {}
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            st, _h, body = self._get("/api/shell/job?id=" + job_id + "&cursor=0")
+            self.assertEqual(st, 200)
+            snap = json.loads(body.decode("utf-8"))
+            if snap.get("state") != "running":
+                break
+            time.sleep(0.05)
+        self.assertEqual(snap.get("state"), "done")
+        self.assertIn("hq-route-ok", snap.get("output") or "")
+
+        status, _h, body = self._get("/api/shell/jobs")
+        self.assertEqual(status, 200)
+        listed = json.loads(body.decode("utf-8")).get("jobs") or []
+        self.assertIn(job_id, [j.get("job_id") for j in listed])
+
+        status, _h, body = self._post("/api/shell", {"target": "local", "shell": "cmd", "cmd": "ping -n 20 127.0.0.1"})
+        self.assertEqual(status, 202)
+        slow = json.loads(body.decode("utf-8"))["job_id"]
+        status, _h, body = self._post("/api/shell/job/stop", {"id": slow})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8")).get("state"), "stopped")
+
+        status, _h, _body = self._get("/api/shell/job?id=deadbeefdeadbeef&cursor=0")
+        self.assertEqual(status, 404)
+
+        status, _h, body = self._get("/api/shell/stats")
+        self.assertEqual(status, 200)
+        self.assertIn("stats", json.loads(body.decode("utf-8")))
+
+        status, _h, body = self._get("/api/shell/jobs")
+        self.assertEqual(status, 200)
+        self.assertIn("storage", json.loads(body.decode("utf-8")))
+
+        status, _h, body = self._post("/api/shell/job/stop", {"all": True})
+        self.assertEqual(status, 200)
+        self.assertIn("stopped", json.loads(body.decode("utf-8")))
+
+        status, _h, body = self._post("/api/shell/jobs/clear", {})
+        self.assertEqual(status, 200)
+        self.assertIn("deleted", json.loads(body.decode("utf-8")))
+
+    def test_screen_frame_is_one_jpeg_and_needs_admin(self):
+        status, _h, _b = self._get("/api/screen/frame?w=640", cookie="")
+        self.assertEqual(status, 401)
+        status, headers, body = self._get("/api/screen/frame?w=640")
+        if status == 503:  # no interactive desktop (locked session, CI): the route refuses cleanly
+            self.skipTest("capture d'écran indisponible dans cet environnement")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Content-Type"), "image/jpeg")
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        self.assertEqual(body[:2], b"\xff\xd8")
+        self.assertGreater(len(body), 2000)
+        # A target that is not in the list is refused before any SSH attempt.
+        status, _h, body = self._get("/api/screen/frame?target=nope")
+        self.assertEqual(status, 404)
+        self.assertEqual(json.loads(body.decode("utf-8"))["code"], "unknown_target")
+
     def test_shell_host_override_rejected(self):
         status, _h, body = self._post("/api/shell", {"host": "evil.example", "cmd": "whoami", "target": "local"})
         self.assertEqual(status, 400)

@@ -32,6 +32,7 @@ briefly). ``page_save`` holds only the notebook lock and never takes this lock (
 
 from __future__ import annotations
 
+import locale
 import os
 import re
 import secrets
@@ -487,6 +488,27 @@ def copy_voices_to(root: Path | str, ids: list[str], dest_dir: Path) -> dict:
 
 # ---------------------------------------------------------------- transcription adapter (optional, never installed here)
 
+_TEXT_BOMS = (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe", b"\xfe\xff")
+
+
+def _decode_engine_stdout(raw: bytes) -> str:
+    """Decode an engine's stdout as text.
+
+    UTF-8 first. A Windows console program writes in the locale code page instead (cp1252 here), so one
+    accented byte must not lose the whole transcription: fall back to the preferred encoding. A UTF-16/32
+    payload is refused — it is not the plain-text line protocol this adapter reads.
+    """
+    if raw.startswith(_TEXT_BOMS):
+        raise UnicodeError("UTF-16/32 output")
+    for encoding in ("utf-8", locale.getpreferredencoding(False), "cp1252"):
+        if not encoding:
+            continue
+        try:
+            return raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    raise UnicodeError("undecodable transcript")
+
 
 def transcribe_configured(command: Any) -> bool:
     return (
@@ -557,8 +579,8 @@ def transcribe(voice_id: str, read: Callable[[int], bytes], length: Any, command
             if len(raw) > TRANSCRIBE_OUTPUT_MAX:
                 raise VoiceError("Transcription trop longue", 413, "transcript_too_long")
             try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError as e:
+                text = _decode_engine_stdout(raw)
+            except UnicodeError as e:
                 raise VoiceError("Réponse du moteur illisible", 502, "transcribe_failed") from e
             lines = [" ".join(line.split()) for line in text.replace("\r", "\n").split("\n")]
             lines = [line for line in lines if line]

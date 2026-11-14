@@ -737,10 +737,36 @@ class ReviewR2Tests(IntelBase):
             os.unlink(target)
             os.symlink(other, target)
 
+        def can_replace_an_open_file() -> bool:
+            """POSIX replaces a file another handle has open; Windows needs FILE_SHARE_DELETE and refuses.
+            On Windows the swap aborts the read instead, which is a different (still fail-closed) path."""
+            probe = target.with_name("probe.bin")
+            other = target.with_name("probe.new")
+            probe.write_bytes(b"P")
+            other.write_bytes(b"Q")
+            try:
+                with open(probe, "rb"):
+                    os.replace(other, probe)
+                return True
+            except OSError:
+                return False
+            finally:
+                for p in (probe, other):
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+
+        # Swapping or deleting a path that another handle has open is POSIX-only: Windows refuses the
+        # unlink/replace (sharing violation) and the read aborts instead of completing. Those three
+        # cases only exercise the intended path where the platform allows it.
+        cases = [("grown", grow), ("mtime", touch_same_size)]
+        if can_replace_an_open_file():
+            cases += [("replaced", replace_path), ("deleted", delete_path), ("symlinked", swap_for_symlink)]
         old_chunk = snaps.CHUNK
         snaps.CHUNK = 512
         try:
-            for name, mutate in (("grown", grow), ("mtime", touch_same_size), ("replaced", replace_path), ("deleted", delete_path), ("symlinked", swap_for_symlink)):
+            for name, mutate in cases:
                 if target.is_symlink() or target.exists():
                     target.unlink()
                 target.write_bytes(b"A" * 4096)

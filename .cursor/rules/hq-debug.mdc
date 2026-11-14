@@ -42,6 +42,6 @@ voice and log.
 2. Read **`agent_triage`** (`top_issues`, `slowest_marks`, `likely_subsystem`, `degraded_now`, `view_context`)
 3. Skim **`timeline`**; join **`request_id`** with server errors
 4. Full raw lines: **`GET /api/diag/session-bundle`**
-5. CLI: `python scripts/agent_hq_brief.py --pin 1427785 --packet` · UAC auto-accepted ([agent-conventions.md](docs/agent-conventions.md))
+5. CLI: `python scripts/agent_hq_brief.py --pin <admin-pin> --packet` · UAC auto-accepted ([agent-conventions.md](docs/agent-conventions.md))
 
 Do not hunt random paths when brief, bundle, or `/diagnostics` is available.

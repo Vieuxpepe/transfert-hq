@@ -332,7 +332,7 @@ class ValidationTests(unittest.TestCase):
         bads = [
             None, [], "x",
             mut(lambda d: d.update(format="other")),
-            mut(lambda d: d.update(version=4)),
+            mut(lambda d: d.update(version=99)),
             mut(lambda d: d.update(units="furlong")),
             mut(lambda d: d["objects"].append({"id": "z", "type": "script"})),
             mut(lambda d: d["objects"][0].update(p2="missing")),
@@ -467,6 +467,42 @@ def _http(port, method, path, *, body=None, headers=None, cookie=None):
     payload = resp.read()
     conn.close()
     return resp.status, dict(resp.getheaders()), payload
+
+
+class StrokeWidthTests(unittest.TestCase):
+    def _doc(self, version, stroke):
+        d = sample_doc()
+        d["version"] = version
+        d["objects"][4] = stroke
+        return d
+
+    def test_version_4_width_roundtrips_and_older_versions_do_not(self):
+        stroke = {"id": "s1", "type": "stroke", "pts": [[0, 0], [10, 2], [20, 0]], "w": 1.25, "k": [1, 0.4, 1]}
+        out = D.validate_document(self._doc(4, stroke))
+        saved = out["objects"][4]
+        self.assertEqual(saved["w"], 1.25)
+        self.assertEqual(saved["k"], [1, 0.4, 1])
+        self.assertEqual(D.stroke_widths(saved), [1.25, 0.5, 1.25])
+        bare = {"id": "s1", "type": "stroke", "pts": [[0, 20], [10, 20], [10, 30]]}
+        old = D.validate_document(self._doc(1, bare))
+        self.assertNotIn("w", old["objects"][4])
+        self.assertEqual(D.stroke_widths(old["objects"][4]), [])
+        with self.assertRaises(D.DrawingError):
+            D.validate_document(self._doc(3, stroke))
+        with self.assertRaises(D.DrawingError):
+            D.validate_document(self._doc(4, {"id": "s1", "type": "stroke", "pts": [[0, 0], [1, 1]], "w": 1, "k": [1]}))
+        with self.assertRaises(D.DrawingError):
+            D.validate_document(self._doc(4, {"id": "s1", "type": "stroke", "pts": [[0, 0], [1, 1]], "w": 0}))
+
+    def test_dxf_polyline_ignores_width(self):
+        stroke = {"id": "s1", "type": "stroke", "pts": [[0, 20], [10, 20], [10, 30]], "w": 2, "k": [1, 1, 0.5]}
+        ents = dxf_entities(D.build_dxf(D.validate_document(self._doc(4, stroke))))
+        poly = [e for e in ents if e.get(8) == "REFERENCE_MAIN_LEVEE"]
+        self.assertEqual(poly[0]["_type"], "POLYLINE")
+        self.assertNotIn(40, poly[0], "DXF keeps an unweighted polyline")
+        verts = [e for e in poly if e["_type"] == "VERTEX"]
+        self.assertTrue(verts)
+        self.assertTrue(all(40 not in e for e in verts))
 
 
 class HttpTests(unittest.TestCase):
@@ -612,6 +648,27 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 413)
         self.assertIn("volumineux", json.loads(body)["error"])
 
+    def test_desk_snapshot_is_admin_only(self):
+        jpeg = b"\xff\xd8\xff" + b"\x00" * 32
+        path = "/api/desk/snapshot?client=" + "ab" * 8
+        headers = {"Content-Type": "image/jpeg"}
+        status, _h, _b = self._post(None, raw=jpeg, cookie=None, path=path, headers=headers)
+        self.assertEqual(status, 401)
+        status, _h, _b = self._post(None, raw=jpeg, cookie="phone", path=path, headers=headers)
+        self.assertEqual(status, 403)
+        status, _h, body = self._post(None, raw=jpeg, path=path, headers=headers)
+        self.assertEqual(status, 200, body)
+        rev = json.loads(body)["rev"]
+        status, hdrs, got = self._get("/api/desk/snapshot?rev=" + str(rev))
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs.get("Cache-Control"), "no-store")
+        self.assertEqual(hdrs.get("X-Desk-Rev"), str(rev))
+        self.assertTrue(got.startswith(b"\xff\xd8\xff"))
+        status, _h, _b = self._get("/api/desk/snapshot?rev=" + str(rev), cookie="phone")
+        self.assertEqual(status, 403)
+        status, _h, _b = self._get("/api/desk/snapshot", cookie=None)
+        self.assertEqual(status, 401)
+
     def test_app_page_has_dessiner_tab(self):
         html = iphone_bridge.render_app().decode("utf-8")
         self.assertIn('data-nav="dessiner"', html)
@@ -621,7 +678,10 @@ class HttpTests(unittest.TestCase):
         self.assertIn("'/assets/' + name", html)
         self.assertIn("/api/drawings", iphone_bridge.ADMIN_PREFIXES)
         self.assertNotIn("/api/drawings", iphone_bridge.UPLOAD_POST_EXACT)
-        for asset in ("hq-sketch-core.js", "hq-dessiner.js", "hq-dessiner.css"):
+        self.assertIn("/assets/hq-shape-snap.js", html)
+        self.assertIn("/assets/hq-ink.js", html)
+        self.assertLess(html.index("/assets/hq-ink.js"), html.index("/assets/hq-desk.js"), "the pad needs the ink look first")
+        for asset in ("hq-sketch-core.js", "hq-dessiner.js", "hq-dessiner.css", "hq-shape-snap.js", "hq-ink.js", "hq-desk.js"):
             self.assertTrue((Path(iphone_bridge.__file__).resolve().parent / "assets" / asset).is_file(), asset)
 
 

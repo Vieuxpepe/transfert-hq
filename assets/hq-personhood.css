@@ -1,0 +1,67 @@
+/* Transfert HQ — bounded personhood review (assets/hq-personhood.css) */
+.hq-self-open {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 60;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 999px;
+  background: rgba(18,18,22,.82);
+  color: #f4efe7;
+  font: 600 12px/1 system-ui, sans-serif;
+  padding: 10px 14px;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0,0,0,.24);
+}
+.hq-self-open:hover { border-color: rgba(255,255,255,.4); }
+.hq-self-panel {
+  position: fixed;
+  left: 12px;
+  bottom: 58px;
+  z-index: 61;
+  width: min(430px, calc(100vw - 24px));
+  max-height: min(76vh, 720px);
+  overflow: auto;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 18px;
+  background: rgba(16,16,20,.97);
+  color: #f4efe7;
+  box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  padding: 16px;
+  font: 13px/1.45 system-ui, sans-serif;
+}
+.hq-self-panel[hidden] { display: none; }
+.hq-self-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.hq-self-head h2 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+.hq-self-head button, .hq-self-actions button {
+  border: 1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.06);
+  color: inherit;
+  border-radius: 8px;
+  padding: 6px 9px;
+  cursor: pointer;
+  font: inherit;
+}
+.hq-self-head button:hover, .hq-self-actions button:hover { background: rgba(255,255,255,.13); }
+.hq-self-panel select {
+  margin: 12px 0 4px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: #1d1d23;
+  color: inherit;
+}
+.hq-self-section { border-top: 1px solid rgba(255,255,255,.1); margin-top: 13px; padding-top: 11px; }
+.hq-self-section h3 { margin: 0 0 7px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: #c9c1b5; }
+.hq-self-kv { margin: 3px 0; }
+.hq-self-muted { color: #a9a29a; font-size: 12px; }
+.hq-self-chip { display: inline-block; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 2px 7px; margin: 2px 4px 2px 0; font-size: 11px; }
+.hq-self-item { padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.06); }
+.hq-self-item:last-child { border-bottom: 0; }
+.hq-self-item strong { font-weight: 600; }
+.hq-self-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+.hq-self-bar { height: 4px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 4px; }
+.hq-self-bar i { display: block; height: 100%; background: #c9a86a; }
+.hq-self-error { color: #ffb4a8; }

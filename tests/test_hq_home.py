@@ -18,14 +18,27 @@ import hq_home as H  # noqa: E402
 class Normalize(unittest.TestCase):
     def test_default_and_garbage(self):
         self.assertEqual(H.normalize(None), H.default())
-        self.assertEqual(H.normalize({"order": "x", "hidden": 3}), {"order": list(H.KEYS), "hidden": [], "side": list(H.DEFAULT_SIDE)})
+        self.assertEqual(
+            H.normalize({"order": "x", "hidden": 3}),
+            {"v": H.LAYOUT_V, "order": list(H.KEYS), "hidden": [], "side": list(H.DEFAULT_SIDE) + list(H.STATUS_CARDS)},
+        )
 
     def test_known_keys_once_every_card_placed(self):
         got = H.normalize({"order": ["send", "feed", "send", "evil", 7], "hidden": ["pc", "evil"], "side": ["send", "feed"]})
         self.assertEqual(got["order"][:2], ["send", "feed"])
         self.assertEqual(sorted(got["order"]), sorted(H.KEYS))
         self.assertEqual(got["hidden"], ["pc"])
-        self.assertEqual(got["side"], ["send", "feed"])  # in display order
+        self.assertEqual(got["side"][:2], ["send", "feed"])  # in display order
+        self.assertTrue(set(H.STATUS_CARDS) <= set(got["side"]))  # a pre-v2 layout gains them on the side
+        self.assertNotIn("pc", got["side"])
+        v2 = H.normalize({"v": H.LAYOUT_V, "order": ["budget"], "side": ["budget"]})
+        self.assertEqual(v2["side"], ["budget"])  # once placed, nothing is forced back
+
+    def test_a_card_the_layout_never_saw_goes_after_its_predecessor(self):
+        old = [k for k in H.KEYS if k != "musica"]  # a layout saved before the Musica card existed
+        got = H.normalize({"v": H.LAYOUT_V, "order": old, "hidden": [], "side": ["devices"]})
+        self.assertEqual(got["order"].index("musica"), got["order"].index("today") + 1)
+        self.assertNotIn("musica", got["side"])
 
     def test_save_and_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,7 +70,7 @@ if MultiHttp is not None:
             self.assertEqual(self.admin.req("/api/home-layout", "POST", body_bytes, {**JSON, "Origin": "http://evil.example"})[0], 403)
             status, body = self.post(self.admin, "/api/home-layout", {"layout": layout})
             self.assertEqual(status, 200, body)
-            self.assertEqual(body["layout"]["order"][:2], ["today", "carnet"])
+            self.assertEqual(body["layout"]["order"][:3], ["today", "musica", "carnet"])  # the new Musica card slots in after its predecessor
             self.assertEqual(self.admin.json("/api/home-layout")[1]["layout"], body["layout"])  # what another device reads
             self.assertTrue((B.ROOT / "hq_home_layout.json").is_file())
             status, body = self.post(self.admin, "/api/home-layout", {"reset": True})

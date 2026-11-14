@@ -99,7 +99,7 @@ A client log line follows: `kind: lag-spike`, `detail: screenshot=<rel path>`, `
 | Route | Role |
 |-------|------|
 | `POST /api/hq/client-log` | Any authenticated session — ingest batches |
-| `POST /api/hq/lag-capture` | Any authenticated session — lag spike PNG (Windows primary screen) |
+| `POST /api/hq/lag-capture` | Admin — lag spike PNG (Windows primary screen); the upload role cannot capture the host's screen |
 | `GET /api/diag/client-log?limit=40` | Admin — tail for `/diagnostics` page |
 | `GET /api/diag/agent-brief?limit=50` | Admin — **compact** triage + `timeline` + pasteable **`brief_md`** (no full `client_log`) |
 | `GET /api/diag/session-bundle?limit=50` | Admin — full tail + **`agent_triage`** + **`timeline`** |
@@ -123,6 +123,7 @@ Registry: **[hq-error-codes.md](hq-error-codes.md)**.
 
 ## HUD
 
+- **Folded by default** — the panel opens as a thin bar (title, **Copy**, fps). Click **Perf debug** (Enter/Space when focused) to unfold; a reload folds it again. Folded, perf/console lines are skipped unless `client_debug_log_when_collapsed` is true — **api** and **error** lines always ship.
 - **Copy** — local buffer (+ session, last API failure)
 - **Brief** — admin: **`brief_md`** from `agent-brief`; else hint text
 - **Snap** — download admin `session-bundle` as `.json`

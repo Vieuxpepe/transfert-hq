@@ -214,8 +214,13 @@ def _build_legacy_mesh(doc):
 
 
 def build_mesh(doc):
-    """Build legacy profiles, then apply optional planar-face features."""
-    mesh = _build_legacy_mesh(doc)
+    """Build the part (legacy extrusion + cuts, or v5 features on the Boolean kernel), then optional face features
+    and fillets."""
+    import hq_solid_ops
+    import hq_solid_occ
+    if hq_solid_occ.uses_occ(doc):  # version 6: one exact solid (it rebuilds face features and fillets itself)
+        return hq_solid_occ.build(doc)
+    mesh = hq_solid_ops.build(doc) if hq_solid_ops.uses_v5(doc) else _build_legacy_mesh(doc)
     face_features = doc.get("faceFeatures") or []
     if face_features:
         from hq_face_solid import apply_face_features

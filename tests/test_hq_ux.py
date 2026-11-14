@@ -73,8 +73,24 @@ class UxMarkupTests(unittest.TestCase):
         self.assertNotIn("innerHTML", block)
         self.assertIn("textContent", block)
         self.assertIn("(hover: hover) and (pointer: fine)", block)
-        self.assertIn("2000", block)
-        self.assertIn("250", block)
+        # A tooltip on plain hover: 500 ms, desktop only; the keyboard path keeps its own 250 ms.
+        self.assertIn("const HELP_HOVER_MS = 500", self.hq_js)
+        self.assertIn('scheduleHelp(target, HELP_HOVER_MS, "hover")', block)
+        self.assertIn('scheduleHelp(target, 250, "focus")', block)
+        self.assertIn('mode === "hover" && !finePointer()', block)
+        self.assertNotIn("2000", block)
+
+    def test_every_static_button_has_a_tooltip(self):
+        import re
+        # The page embeds JS that builds more buttons later; only markup is checked.
+        body = re.sub(r"<script\b.*?</script>", "", self.html, flags=re.S)
+        bare = []
+        for tag in re.findall(r"<button\b[^>]*>", body):
+            if "data-help=" in tag or "data-help-skip" in tag:
+                continue
+            found = re.search(r'id="([^"]+)"', tag)
+            bare.append(found.group(1) if found else tag[:70])
+        self.assertEqual(bare, [], "buttons with no data-help (add one, or data-help-skip)")
 
     def test_calendar_a11y_preserves_month_clip(self):
         self.assertIn("Mois précédent", self.cal_js)
@@ -108,10 +124,12 @@ class UxMarkupTests(unittest.TestCase):
                        'aria-expanded="false"', 'id="hq-attention-panel"', 'id="home-next"'):
             self.assertIn(needle, hero)
         self.assertNotIn("<button", hero.split('id="hq-attention-toggle"', 1)[1].split("</button>", 1)[0])
-        # One row of big actions: photo, note, event, file, search.
+        # Quick actions are separate from the global search in the header.
         actions = accueil.split('class="home-actions"', 1)[1].split("</nav>", 1)[0]
-        for needle in ('id="btn-camera"', 'id="home-act-note"', 'id="home-act-event"', 'id="home-act-file"', 'id="btn-palette"'):
+        for needle in ('id="btn-camera"', 'id="home-act-note"', 'id="home-act-event"', 'id="home-act-file"'):
             self.assertIn(needle, actions)
+        self.assertNotIn('id="btn-palette"', html)
+        self.assertEqual(html.count('id="btn-search-bar"'), 1)
         # Priority order in the page: header, actions, Carnet, Today, activity | devices, this PC, send.
         order = [accueil.index(x) for x in ('id="hq-banner"', 'class="home-actions"', 'id="hq-carnet-home"', 'id="hq-cal-home"',
                                             'class="hq home-feed"', 'class="hq home-devices"', 'class="hq home-pc"', 'class="hq home-send"')]

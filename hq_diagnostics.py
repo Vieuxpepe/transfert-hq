@@ -146,7 +146,7 @@ KNOWN_API = frozenset((
     "carnet", "diag", "hq", "status", "health", "list", "upload", "inbox", "inbox-zero", "calendar", "drawings", "backup", "backups",
     "events", "device", "palette", "automation", "runs", "telemetry", "brief", "push", "schedules", "terminal", "shell", "captures",
     "print", "me", "presence", "scratchpad", "activity", "alerts", "media", "pc", "files", "forge", "companion", "projects",
-    "inventory", "today", "home-layout", "agent", "ai", "mini-quests",
+    "inventory", "today", "home-layout", "agent", "ai", "mini-quests", "robotics",
 ))
 KNOWN_TOP = frozenset(("assets", "diagnostics", "login", "logout", "files", "download", "media", "wallboard", "manifest.webmanifest"))
 
@@ -1298,6 +1298,7 @@ ERROR_CODE_AGENT_HINTS: dict[str, str] = {
     "forbidden": "Role or policy refused the action",
     "nsfw_off": "NSFW companion/forge action blocked by config",
     "forge_error": "Forge/companion art internal error",
+    "gemini_visit_quota": "Visit-specific Gemini budget spent — inspect visit fallback telemetry",
     "reader_unknown": "Reader PDF route not available",
     "diagnostic_failed": "Diagnostics route threw — not the main app route",
     "http_500": "Generic server fault — use path_category + trace in errors.jsonl",

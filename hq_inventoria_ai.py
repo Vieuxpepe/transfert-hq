@@ -1064,6 +1064,10 @@ def _growth_path():
     return (root / ".hq-inventoria" / "inventoria_growth.json") if root else None
 
 
+def growth_path():
+    return _growth_path()
+
+
 def respond(text: str, history: list[dict] | None = None, inv: dict | None = None,
             toolbox: Toolbox | None = None, image: dict | None = None, intent: str | None = None) -> tuple[str, list[dict]]:
     """(reply, queued draft proposals). Runs the bounded tool loop. ``image`` is Gemini inlineData for a photo message."""
@@ -1115,6 +1119,11 @@ def respond(text: str, history: list[dict] | None = None, inv: dict | None = Non
         reply = "I looked through the inventory but couldn't put together a clear answer. Could you rephrase or be more specific?"
     if not reply:
         raise hq_ai.AiError("Réponse vide d'Inventoria", 502, "empty_reply")
+    try:
+        import hq_personhood
+        hq_personhood.observe_reply("inventoria")
+    except Exception:
+        pass
     return reply, tb.proposals
 
 

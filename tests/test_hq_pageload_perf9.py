@@ -37,7 +37,10 @@ class PageLoadPerf9(unittest.TestCase):
         cls.js = cls.tmp / "assets" / "big.js"
         cls.js.write_text("/* " + "transfert " * 3000 + "*/\n", encoding="utf-8")
         (cls.tmp / "assets" / "a.css").write_text("a{b:c}" * 400, encoding="utf-8")
+        # Assets ship with the code, so versioning resolves against CODE_ROOT (state and code are split now).
+        cls._code_root = B.CODE_ROOT
         B.ROOT = cls.tmp
+        B.CODE_ROOT = cls.tmp
         cls.httpd = B.HQServer(("127.0.0.1", 0), _Q)
         cls.port = cls.httpd.server_address[1]
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
@@ -47,6 +50,7 @@ class PageLoadPerf9(unittest.TestCase):
         cls.httpd.shutdown()
         cls.httpd.server_close()
         B.ROOT = cls._root
+        B.CODE_ROOT = cls._code_root
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def conn(self):
@@ -99,7 +103,8 @@ class PageLoadPerf9(unittest.TestCase):
     def test_http10_client_still_closes(self):
         s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
         try:
-            s.sendall(b"GET /assets/a.css HTTP/1.0\r\nHost: x\r\n\r\n")
+            # The Host header is validated now: a placeholder like "x" is an untrusted host (400).
+            s.sendall(("GET /assets/a.css HTTP/1.0\r\nHost: 127.0.0.1:%d\r\n\r\n" % self.port).encode("ascii"))
             data = b""
             while True:
                 chunk = s.recv(65536)
@@ -175,11 +180,13 @@ class PageLoadPerf9(unittest.TestCase):
 
     def test_real_page_every_static_link_versioned_order_kept(self):
         B.ROOT = SOURCE
+        B.CODE_ROOT = SOURCE
         try:
             raw = B.render_app()
             out = B.version_page_assets(raw).decode("utf-8")
         finally:
             B.ROOT = self.tmp
+            B.CODE_ROOT = self.tmp
         before = re.findall(r'<script src="/assets/([^"?]+)"', raw.decode("utf-8"))
         after = re.findall(r'<script src="/assets/([^"?]+)\?v=[0-9a-f]+"', out)
         self.assertEqual(before, after)

@@ -1,0 +1,308 @@
+#hq-robotics-app {
+  --rb-ink: var(--text, #eaf0f5);
+  --rb-muted: var(--muted, #a7b5bf);
+  --rb-line: var(--line, #2c3a48);
+  --rb-panel: var(--panel, #111b25);
+  --rb-surface: color-mix(in srgb, var(--rb-panel) 94%, var(--rb-ink));
+  --rb-monitor: #0b171e;
+  --rb-active: #117f6c;
+  color: var(--rb-ink);
+  font-family: var(--font, system-ui);
+  max-width: 1400px;
+  margin-inline: auto;
+  padding-bottom: 16px;
+}
+
+#hq-robotics-app [hidden] { display: none !important; }
+#hq-robotics-app :where(h1, h2, p, dl, dd) { margin: 0; }
+#hq-robotics-app :where(p, output) { overflow-wrap: anywhere; }
+#hq-robotics-app :is(h1, h2) { font-family: inherit; }
+#hq-robotics-app h1 { font-size: clamp(1.75rem, 4vw, 2.4rem); font-weight: 760; letter-spacing: -.055em; }
+#hq-robotics-app h2 { font-size: 1rem; font-weight: 730; letter-spacing: -.018em; }
+
+.rb-head, .rb-head-actions, .rb-card-head, .rb-actions, .rb-tabs, .rb-camera-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rb-head { justify-content: space-between; margin-bottom: 15px; }
+.rb-head p, .rb-card-head > span, .rb-readings, .rb-safety p, .rb-config p {
+  color: var(--rb-muted);
+  font-size: .82rem;
+}
+.rb-head p span { padding-inline: 4px; opacity: .75; }
+
+.rb-status {
+  position: sticky;
+  top: 8px;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(max-content, 1.35fr);
+  gap: 1px;
+  margin-bottom: 12px;
+  border: 1px solid var(--rb-line);
+  border-radius: 12px;
+  background: var(--rb-line);
+  overflow: hidden;
+}
+.rb-status > div { min-width: 0; background: var(--rb-panel); }
+.rb-status-device { display: grid; gap: 3px; align-content: center; padding: 9px 12px; }
+.rb-status-device > span { color: var(--rb-muted); font-size: .72rem; font-weight: 600; }
+.rb-status strong { font-size: .83rem; }
+.rb-status-safety { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 6px 8px 6px 12px; }
+.rb-status-safety strong { white-space: nowrap; }
+.rb-status-safety strong, .rb-status [data-state="live"], .rb-card-head [data-state="moving"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rb-status-safety strong::before, .rb-status [data-state="live"]::before, .rb-card-head [data-state="moving"]::before {
+  content: "";
+  flex: 0 0 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.rb-status-safety strong::before { background: var(--rb-muted); }
+.rb-status [data-state="armed"]::before, .rb-status [data-state="live"]::before { background: #168f75; }
+.rb-status [data-state="stop"]::before { background: #db4760; }
+.rb-card-head [data-state="moving"]::before { background: #be7a24; }
+
+.rb-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.28fr) minmax(0, 1fr);
+  grid-template-areas: "camera motion" "telemetry motion" "presets presets" "config history";
+  grid-template-rows: auto 1fr;
+  align-items: start;
+  gap: 12px;
+}
+.rb-card {
+  min-width: 0;
+  padding: clamp(12px, 1.6vw, 18px);
+  border: 1px solid var(--rb-line);
+  border-radius: 14px;
+  background: var(--rb-panel);
+}
+.rb-card-head { justify-content: space-between; margin-bottom: 12px; }
+.rb-camera { grid-area: camera; }
+.rb-motion { grid-area: motion; }
+.rb-telemetry { grid-area: telemetry; }
+.rb-presets { grid-area: presets; }
+.rb-config { grid-area: config; }
+.rb-history { grid-area: history; }
+
+.rb-viewport {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid #293f49;
+  border-radius: 10px;
+  background: var(--rb-monitor);
+  color: #dbedee;
+}
+.rb-viewport video, .rb-video-idle, .rb-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rb-viewport video { object-fit: contain; }
+.rb-viewport:fullscreen { border: 0; border-radius: 0; }
+.rb-plot, .rb-video-idle {
+  background:
+    linear-gradient(90deg, #4d6c741c 1px, transparent 1px),
+    linear-gradient(#4d6c741c 1px, transparent 1px), var(--rb-monitor);
+  background-position: center;
+  background-size: 24px 24px;
+}
+.rb-plot-caption, .rb-plot-key {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  font-size: .72rem;
+  color: #bfdbdd;
+  pointer-events: none;
+}
+.rb-plot-caption { inset: 9px 10px auto; justify-content: space-between; }
+.rb-plot-key { inset: auto auto 8px 10px; }
+.rb-plot-key > span { display: inline-flex; align-items: center; gap: 5px; }
+.rb-plot-key > span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #73edce; }
+.rb-plot-key .rb-key-area::before { border: 1px solid #5d9295; border-radius: 2px; background: #17373e; }
+.rb-plot-key .rb-key-preview::before { background: #ffc176; }
+.rb-coordinates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px !important; }
+.rb-coordinates > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 3px;
+  padding: 7px 9px;
+  background: var(--rb-surface);
+  border-radius: 7px;
+}
+.rb-coordinates dt, .rb-coordinates dd span { font-size: .73rem; color: var(--rb-muted); }
+.rb-coordinates dd { font: 650 .9rem ui-monospace, monospace; }
+.rb-coordinates dd span { margin-inline-start: 4px; font-weight: 500; }
+
+.rb-video-idle { display: grid; place-content: center; justify-items: center; gap: 5px; padding: 14px; text-align: center; }
+.rb-video-idle strong { font-size: 1rem; }
+.rb-video-idle span { color: #b3cbd2; font-size: .78rem; }
+.rb-video-note {
+  position: absolute;
+  z-index: 2;
+  inset: 9px auto auto 9px;
+  max-width: calc(100% - 18px);
+  padding: 4px 8px;
+  border: 1px solid #3c525c;
+  border-radius: 5px;
+  background: #0b171ef2;
+  color: #dbedee;
+  font-size: .72rem;
+}
+.rb-lens {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid #587e87;
+  border-radius: 50%;
+  margin-bottom: 3px;
+}
+.rb-lens::after { content: ""; width: 14px; height: 14px; border: 2px solid #78b7bb; border-radius: 50%; }
+
+#hq-robotics-app :is(button, input, select) {
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+  background: var(--rb-panel);
+  color: var(--rb-ink);
+  font-size: .83rem;
+  box-shadow: none;
+}
+#hq-robotics-app :is(input, select) { width: 100%; padding-inline: 8px; }
+#hq-robotics-app button { padding: 6px 10px; font-weight: 660; line-height: 1.2; }
+#hq-robotics-app button:hover:enabled { background: var(--rb-surface); }
+#hq-robotics-app :is(button, input, select, summary):focus-visible { outline: 2px solid var(--rb-active); outline-offset: 2px; }
+#hq-robotics-app button:disabled {
+  background: var(--rb-surface);
+  border-color: transparent;
+  color: var(--rb-muted);
+  cursor: default;
+  opacity: .75;
+}
+#hq-robotics-app .rb-primary:enabled { background: #09665d; color: #fff; border-color: #22867b; }
+#hq-robotics-app .rb-primary:hover:enabled { background: #08796c; }
+#hq-robotics-app .rb-stop:enabled { background: #a9213a; color: #fff; border-color: #c34558; font-weight: 760; }
+#hq-robotics-app .rb-stop:hover:enabled { background: #be3047; }
+#hq-robotics-app [data-rb="camera-setup"] { color: #d9f0ed; border-color: #496e76; background: #19343d; }
+#hq-robotics-app [data-rb="camera-setup"]:hover { background: #25505a; }
+.rb-actions { margin-top: 10px; }
+.rb-camera-actions { margin-top: 9px; justify-content: space-between; }
+.rb-camera-actions .rb-actions { margin-top: 0; }
+.rb-quality { display: flex; gap: 6px; align-items: center; color: var(--rb-muted); font-size: .8rem; }
+.rb-quality select { width: auto !important; }
+
+.rb-safety { padding: 9px 10px; background: var(--rb-surface); border-radius: 9px; }
+.rb-safety .rb-actions { margin: 0; }
+.rb-safety p { margin-top: 6px !important; line-height: 1.38; }
+.rb-hardware-note { border-inline-start: 2px solid #b96051; padding-inline-start: 7px; }
+.rb-tabs { gap: 2px; background: var(--rb-surface); border-radius: 9px; padding: 2px; }
+.rb-motion > .rb-tabs { margin-block: 11px; }
+#hq-robotics-app .rb-tabs button { flex: 1 0 auto; border-color: transparent; background: transparent; color: var(--rb-muted); }
+#hq-robotics-app .rb-tabs button[aria-pressed="true"] {
+  background: var(--rb-panel);
+  border-color: var(--rb-line);
+  color: var(--rb-ink);
+  box-shadow: inset 0 -2px var(--rb-active);
+}
+
+.rb-axis {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px minmax(74px, .95fr) 44px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.rb-axis label { font-size: .85rem; font-weight: 630; }
+#hq-robotics-app .rb-axis button { padding: 0; touch-action: manipulation; font-size: 1.2rem; }
+.rb-axis-input { position: relative; }
+.rb-axis-input span { position: absolute; inset: 50% 7px auto auto; transform: translateY(-50%); font-size: .72rem; color: var(--rb-muted); pointer-events: none; }
+#hq-robotics-app .rb-axis-input input { padding-inline: 6px 25px; appearance: textfield; }
+.rb-axis-input input::-webkit-inner-spin-button { appearance: none; }
+#hq-robotics-app input[type="number"], .rb-telemetry td { font-variant-numeric: tabular-nums; }
+.rb-tuning, .rb-preset-fields, .rb-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.rb-tuning { grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); }
+:is(.rb-tuning, .rb-preset-fields, .rb-settings-grid) label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--rb-muted);
+  font-size: .79rem;
+}
+.rb-motion-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.rb-motion-actions button:last-child { grid-column: 1 / -1; }
+.rb-pose output { display: block; margin-top: 8px; font-size: .82rem; color: var(--rb-muted); }
+
+.rb-telemetry table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.rb-telemetry :is(th, td) { padding: 7px 3px; border-bottom: 1px solid var(--rb-line); text-align: right; }
+.rb-telemetry th:first-child { text-align: left; }
+.rb-telemetry thead th { color: var(--rb-muted); font-size: .76rem; }
+.rb-telemetry tbody td:nth-child(2) { font-weight: 700; }
+.rb-readings { margin-top: 9px; }
+.rb-readings output { background: none; }
+.rb-config { scroll-margin-top: 120px; }
+#hq-robotics-app summary { cursor: pointer; min-height: 44px; align-content: center; font-weight: 680; font-size: .9rem; }
+.rb-config fieldset { margin: 8px 0 0; padding: 0; border: 0; min-inline-size: 0; }
+.rb-config legend { font-size: .82rem; color: var(--rb-muted); }
+.rb-limit { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.rb-limit > span { grid-column: 1 / -1; font-size: .82rem; }
+.rb-sequence { margin-top: 8px; border-top: 1px solid var(--rb-line); }
+.rb-history ol, .rb-sequence ol { padding-inline-start: 22px; font-size: .85rem; }
+.rb-message:not(:empty) {
+  position: sticky;
+  z-index: 2;
+  bottom: max(5rem, calc(env(safe-area-inset-bottom) + 4rem));
+  padding: 8px 12px;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+  background: var(--rb-panel);
+  font-size: .85rem;
+  margin-top: 8px !important;
+}
+.rb-message.rb-error { border-color: #c74659; }
+
+@media (max-width: 1050px) {
+  .rb-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "camera" "motion" "telemetry" "presets" "config" "history";
+    grid-template-rows: auto;
+  }
+}
+
+@media (max-width: 620px) {
+  body[data-view="robotique"] .view-bar { flex-wrap: wrap; }
+  body[data-view="robotique"] .view-tools { flex-wrap: wrap; gap: 4px; }
+  .rb-status { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rb-status-device { padding: 5px 7px; }
+  .rb-status-device strong { font-size: .75rem; }
+  .rb-status-safety { grid-column: 1 / -1; padding: 3px 5px 3px 8px; }
+  .rb-video-idle { padding: 30px 8px 5px; gap: 3px; }
+  .rb-viewport:has(.rb-video-idle:not([hidden])) { min-height: 170px; }
+  .rb-lens { width: 25px; height: 25px; margin-bottom: 0; }
+  .rb-lens::after { width: 9px; height: 9px; }
+  .rb-camera-actions .rb-actions { flex: 1 1 100%; }
+  .rb-camera-actions button { flex: 1 1 auto; }
+}
+
+@media (max-width: 365px) {
+  .rb-settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .rb-axis { gap: 4px; }
+  .rb-coordinates > div { padding-inline: 6px; }
+}

@@ -2,10 +2,10 @@
 (function () {
   "use strict";
 
-  const SCALE_MIN = 0.72;
-  const SCALE_MAX = 1.42;
-  const WHEEL_STEP = 0.055;
-  const MENU_STEP = 0.08;
+  const SCALE_MIN = 0.40;
+  const SCALE_MAX = 6.00;
+  const WHEEL_STEP = 0.15;
+  const MENU_STEP = 0.25;
 
   function clampNum(n, lo, hi) {
     const v = Number(n);

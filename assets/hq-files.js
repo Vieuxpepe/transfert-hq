@@ -1831,7 +1831,7 @@
         for (const r of order()) S.sel.add(r);
         render();
       } }),
-      btn("Déplacer", { cls: "fx-btn", icon: "move", on: () => movePicker([...S.sel]) }),
+      btn("Déplacer", { cls: "fx-btn", icon: "move", aria: "Déplacer", on: () => movePicker([...S.sel]) }),
       btn("Corbeille", { cls: "fx-btn is-danger", icon: "trash", on: () => trash([...S.sel]) }),
       btn("", { cls: "fx-btn is-ghost", icon: "close", aria: "Annuler la sélection", on: () => {
         S.sel.clear();
@@ -1844,6 +1844,24 @@
   }
 
   // ---------------------------------------------------------------- actions
+
+  const MOVE_RECENTS_KEY = "hq_files_move_recents";
+  const MOVE_RECENTS_LIMIT = 5;
+
+  function recentMoveFolders() {
+    try {
+      const paths = JSON.parse(S.win.localStorage.getItem(MOVE_RECENTS_KEY));
+      return Array.isArray(paths) ? paths.filter(path => typeof path === "string").slice(0, MOVE_RECENTS_LIMIT) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function rememberMoveFolder(dest) {
+    if (!dest) return;
+    const recent = [dest, ...recentMoveFolders().filter(path => path !== dest)].slice(0, MOVE_RECENTS_LIMIT);
+    try { S.win.localStorage.setItem(MOVE_RECENTS_KEY, JSON.stringify(recent)); } catch (_) {}
+  }
 
   async function moveTo(rels, dest, folderEl) {
     if (!rels.length) return;
@@ -1861,6 +1879,7 @@
     await flight;
     S.sel.clear();
     if (moved.length) {
+      rememberMoveFolder(dest);
       toast((moved.length > 1 ? moved.length + " éléments déplacés" : "Déplacé") + " dans « " + (dest.split("/").pop() || dest) + " »", "Annuler", async () => {
         for (const m of moved) {
           try {
@@ -2349,65 +2368,110 @@
   /** Choose a destination by browsing folders (no typing paths). */
   function movePicker(rels) {
     let at = parentOf(rels[0]) || "";
+    let paintTicket = 0;
+    const shortcuts = el("div", { class: "fx-pick-shortcuts", hidden: true });
     const list = el("div", { class: "fx-pick" });
     const crumbs = el("div", { class: "fx-pick-crumbs" });
     const here = btn("Déplacer ici", { cls: "fx-btn is-primary", icon: "move" });
+    const openFolder = path => {
+      at = path;
+      paint();
+    };
+    function allowed(path) {
+      return typeof path === "string" && !!path && !path.includes("\\")
+        && path.split("/").every(part => part && part !== "." && part !== "..")
+        && !rels.some(rel => within(path, rel));
+    }
+    function showShortcuts(favorites) {
+      const used = new Set();
+      const groups = [];
+      for (const [title, paths] of [["Favoris", favorites], ["Destinations récentes", recentMoveFolders()]]) {
+        const rows = [];
+        for (const path of paths) {
+          if (!allowed(path) || used.has(path) || rels.every(rel => parentOf(rel) === path)) continue;
+          used.add(path);
+          const parts = path.split("/");
+          const row = btn(parts.pop(), { cls: "fx-btn fx-pick-shortcut", icon: "move", on: () => openFolder(path) });
+          if (parts.length) {
+            row.appendChild(el("small", { text: parts.join(" › ") }));
+          }
+          rows.push(row);
+        }
+        if (rows.length) groups.push(el("section", { class: "fx-pick-group", "aria-label": title }, [
+          el("h4", { text: title }), el("div", { class: "fx-pick-group-rows" }, rows),
+        ]));
+      }
+      shortcuts.replaceChildren(...groups);
+      shortcuts.hidden = !groups.length;
+    }
     const paint = async () => {
-      list.textContent = "";
+      const ticket = ++paintTicket;
+      const path = at;
+      list.replaceChildren(el("p", { class: "fx-hint", text: "Chargement…" }));
       crumbs.textContent = "";
-      const parts = at.split("/").filter(Boolean);
-      const top = btn("Fichiers", { cls: "fx-pick-crumb", on: () => {
-        at = "";
-        paint();
-      } });
+      here.disabled = true;
+      mk.disabled = true;
+      const caption = here.querySelector("span");
+      caption.textContent = "Déplacer ici";
+      const parts = path.split("/").filter(Boolean);
+      const top = btn("Fichiers", { cls: "fx-pick-crumb", on: () => openFolder("") });
       crumbs.appendChild(top);
       parts.forEach((p, k) => {
         crumbs.appendChild(icon("right", "fx-sep"));
         const rel = parts.slice(0, k + 1).join("/");
-        crumbs.appendChild(btn(p, { cls: "fx-pick-crumb", on: () => {
-          at = rel;
-          paint();
-        } }));
+        crumbs.appendChild(btn(p, { cls: "fx-pick-crumb", on: () => openFolder(rel) }));
       });
       let data;
       try {
-        data = await call("/api/list" + (at ? "?path=" + encodeURIComponent(at) : ""));
+        data = await call("/api/list" + (path ? "?path=" + encodeURIComponent(path) : ""));
+        if (data.error) throw new Error(data.error);
       } catch (e) {
-        list.appendChild(el("p", { class: "fx-hint", text: (e && e.message) || "Dossier indisponible" }));
+        if (ticket !== paintTicket || !list.isConnected) return;
+        list.replaceChildren(el("p", { class: "fx-hint", text: (e && e.message) || "Dossier indisponible" }));
         return;
       }
+      if (ticket !== paintTicket || !list.isConnected) return;
+      list.textContent = "";
       const dirs = (data.items || []).filter((i) => i.type === "dir" && !rels.some((r) => within(i.rel, r)));
       if (!dirs.length) list.appendChild(el("p", { class: "fx-hint", text: at ? "Pas de sous-dossier ici." : "" }));
       for (const d of sortItems(dirs, "name")) {
         const b = el("button", { type: "button", class: "fx-pick-row" }, [el("span", { class: "fx-pick-folder", "aria-hidden": "true" }), el("span", { text: d.name }), icon("right", "fx-sep")]);
         b.style.setProperty("--hue", String(rootHue(d.rel)));
-        b.addEventListener("click", () => {
-          at = d.rel;
-          paint();
-        });
+        b.addEventListener("click", () => openFolder(d.rel));
         list.appendChild(b);
       }
-      const same = rels.every((r) => parentOf(r) === at);
-      here.disabled = !at || same;
-      here.querySelector("span").textContent = !at ? "Choisis un dossier" : same ? "Déjà ici" : "Déplacer dans « " + at.split("/").pop() + " »";
+      const same = rels.every((r) => parentOf(r) === path);
+      mk.disabled = !allowed(path);
+      here.disabled = mk.disabled || same;
+      caption.textContent = !path ? "Choisis un dossier" : same ? "Déjà ici" : "Déplacer dans « " + path.split("/").pop() + " »";
     };
     here.addEventListener("click", async () => {
+      if (here.disabled) return;
+      here.disabled = true;
       closeSheet();
       await moveTo(rels, at);
     });
     const mk = btn("Nouveau dossier ici", { cls: "fx-btn is-ghost", icon: "folderPlus", on: async () => {
       if (!at) return;
+      const path = at;
       const name = S.win.prompt("Nom du dossier :", "Nouveau dossier");
       if (!name || !validName(name)) return;
       try {
-        await postJson("/api/mkdir", { path: at, name });
-        at = joinRel(at, name.trim());
-        paint();
+        await postJson("/api/mkdir", { path, name });
+        if (at === path && list.isConnected) openFolder(joinRel(path, name.trim()));
       } catch (e) {
         toast((e && e.message) || "Création impossible", null, null, true);
       }
     } });
-    openSheet(rels.length > 1 ? "Déplacer " + rels.length + " éléments" : "Déplacer « " + rels[0].split("/").pop() + " »", el("div", {}, [crumbs, list]), [mk, here], "is-pick");
+    const favorites = S.win.hqFavoriteFolders?.() || [];
+    showShortcuts(favorites);
+    openSheet(rels.length > 1 ? "Déplacer " + rels.length + " éléments" : "Déplacer « " + rels[0].split("/").pop() + " »",
+      el("div", { class: "fx-pick-scroll" }, [shortcuts, crumbs, list]), [mk, here], "is-pick");
+    call("/api/favorites").then(data => {
+      if (shortcuts.isConnected && Array.isArray(data.favorites) && JSON.stringify(data.favorites) !== JSON.stringify(favorites)) {
+        showShortcuts(data.favorites);
+      }
+    }).catch(() => {});
     paint();
   }
 

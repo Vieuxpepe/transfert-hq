@@ -50,7 +50,7 @@ First message:
 Agent can run:
 
 ```bash
-python scripts/agent_hq_brief.py --pin 1427785 --packet
+python scripts/agent_hq_brief.py --pin <admin-pin> --packet
 ```
 
 ---

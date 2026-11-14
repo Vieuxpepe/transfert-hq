@@ -161,7 +161,8 @@ class BootstrapPageTests(unittest.TestCase):
         self.assertIn("filter(([, glob]) => !window[glob])", watchdog)
 
     def test_show_hooks_cannot_abort_startup(self):
-        view = self._block("function setView(name) {", "\n}\n")
+        # setView gained an options argument (historyMode/focus/section); match its prefix.
+        view = self._block("function setView(name", "\n}\n")
         self.assertIn("hqDeferViewRender(view, viewTicket", view)
         self.assertIn("window.hqCalendarShow()", view)
         self.assertNotIn("toast(", view)  # calendar behavior unchanged apart from not aborting startup

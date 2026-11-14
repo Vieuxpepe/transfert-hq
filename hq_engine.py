@@ -983,6 +983,12 @@ def http_get(path: str, query: Optional[dict] = None) -> tuple[int, dict]:
     query = query or {}
     if path == "/api/engine/status":
         return 200, status()
+    if path == "/api/engine/pistonia/progress":
+        try:
+            import hq_pistonia
+            return 200, hq_pistonia.progress((query.get("job") or [""])[0])
+        except Exception:
+            return 200, {"ok": True, "stage": "", "found": "", "steps": []}
     if path in ("/api/engine/pistonia/greeting", "/api/engine/pistonia/thread"):
         try:
             import hq_pistonia
@@ -1016,6 +1022,8 @@ def _pistonia_post(route: str, data: dict) -> tuple[int, dict]:
             return hq_pistonia.save_settings(data)
         if route == "voice":
             return hq_pistonia.speak(data)
+        if route == "cancel":
+            return 200, hq_pistonia.cancel(data.get("job"))
     except hq_pistonia.PistoniaError as exc:
         return exc.status, {"error": str(exc), "code": exc.code, "retryable": exc.retryable}
     except Exception:
@@ -1301,6 +1309,63 @@ def bind(root: Any, notify: Any = None) -> None:
     start_watcher()
 
 
+FORGE_PORT = 7860
+FORGE_ROOT = Path(os.environ.get("HQ_FORGE_ROOT") or r"C:\AI\stable-diffusion-webui-forge")
+FORGE_LOG = PROJECT_ROOT / ".tmp" / "forge_webui.log"
+_forge_lock = threading.Lock()
+
+
+def forge_busy() -> bool:
+    """True when Forge reports a generation in flight (so stopping it would throw work away)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{FORGE_PORT}/sdapi/v1/progress?skip_current_image=true", timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return False
+    state = data.get("state") or {}
+    return bool(state.get("job_count")) or float(data.get("progress") or 0) > 0
+
+
+def forge_start() -> bool:
+    """Launch the user's own webui-user.bat (their PYTHON / COMMANDLINE_ARGS=--api) in a hidden console."""
+    bat = FORGE_ROOT / "webui-user.bat"
+    if not bat.is_file() or _port_open(FORGE_PORT):
+        return _port_open(FORGE_PORT)
+    if not _forge_lock.acquire(blocking=False):
+        return False
+    try:
+        FORGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        flags, extra = 0, {}
+        if os.name == "nt":
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            extra["startupinfo"] = si
+        with open(FORGE_LOG, "ab") as log:
+            subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(FORGE_ROOT), stdout=log, stderr=log,
+                             stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True, **extra)
+    finally:
+        _forge_lock.release()
+    return False
+
+
+def forge_stop() -> bool:
+    d = get("forge")
+    if d is None or forge_busy():
+        raise RuntimeError("Forge est en train de générer : attends la fin du travail avant de l'arrêter.")
+    pid = _verified_owner(d)
+    if pid is None:
+        return _is_down(d)
+    _kill(pid)
+    end = time.time() + STOP_WAIT
+    while time.time() < end:
+        if _is_down(d):
+            return True
+        time.sleep(0.25)
+    return _is_down(d)
+
+
 def register_defaults() -> None:
     """XTTS, Phonon, Forge (observe-only) and the bridge itself. Imports are local so a missing optional engine
     never stops the others from being listed."""
@@ -1321,6 +1386,25 @@ def register_defaults() -> None:
     except Exception:
         pass
     try:
+        import hq_voice_chatterbox as cb
+
+        def cb_details(h: dict) -> dict:
+            out = {"device": h.get("device") or "?"}
+            if h.get("vram_mb") is not None:
+                out["vram"] = f"{h['vram_mb']} MB"
+            if h.get("error"):
+                out["error"] = str(h["error"])[:120]
+            return out
+
+        if cb.installed():
+            register(Daemon(id="chatterbox", label="Chatterbox TTS", kind="voice", port=cb.CB_PORT, health_path="/health",
+                            process_hint="chatterbox_daemon", log_path=cb.CB_LOG, details=cb_details,
+                            start=lambda: cb.start_daemon(wait_sec=0.0), stop=lambda: cb.stop_daemon(),
+                            idle_stop=True, idle_default_min=15, link_view="musique",
+                            description="Voix expressive de DJ Musica (anglais, carte graphique), clonée depuis sa voix Phonon."))
+    except Exception:
+        pass
+    try:
         import hq_voice as xt
 
         def xt_details(h: dict) -> dict:
@@ -1336,8 +1420,29 @@ def register_defaults() -> None:
         import hq_spotify as sp
         return sp.wake_local_spotify(wait_s=0.0)
 
+    def spotify_stop():
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/IM", "Spotify.exe", "/T", "/F"], capture_output=True, timeout=10,
+                           creationflags=0x08000000)
+        else:
+            subprocess.run(["pkill", "-x", "spotify"], capture_output=True, timeout=10)
+        end = time.time() + STOP_WAIT
+        while time.time() < end:
+            if (spotify_check() or {}).get("state") == "down":
+                return True
+            time.sleep(0.3)
+        return False
+
     register(Daemon(id="spotify", label="Spotify", kind="apps", check=spotify_check, start=spotify_start,
+                    stop=spotify_stop,
                     description="L'application Spotify doit être ouverte pour que HQ ait un appareil de lecture."))
+    try:
+        import hq_librespot as lr
+        register(Daemon(id="librespot", label="Spotify sans fenêtre (librespot)", kind="apps", check=lr.check,
+                        start=lr.start, process_hint=lr.PROCESS_HINT, log_path=lr.LOG_PATH,
+                        description="Lecteur Spotify Connect léger, sans interface : HQ joue dessus via l'API (Premium requis)."))
+    except Exception:
+        pass
     register(Daemon(id="gemini", label="Google AI Studio", kind="apps", check=gemini_check,
                     description="Gemini : les réponses des compagnons et d'Inventoria passent par cette API."))
     register(Daemon(id="logins", label="Connexions", kind="apps", check=logins_check,
@@ -1345,9 +1450,10 @@ def register_defaults() -> None:
     register(Daemon(id="music", label="Génération musicale (ACE-Step)", kind="music", check=music_check,
                     log_path=_latest_worker_log, observe_only=True, link_view="musique",
                     description="HQ lance un worker dans l'environnement ACE-Step dédié, une création à la fois."))
-    register(Daemon(id="forge", label="Forge (image backend)", kind="image", port=7860, health_path="/",
-                    observe_only=True, link_view="forge",
-                    description="Moteur de génération d'images, piloté depuis l'onglet Forge Studio."))
+    register(Daemon(id="forge", label="Forge (image backend)", kind="image", port=FORGE_PORT, health_path="/",
+                    process_hint="launch.py", log_path=FORGE_LOG, link_view="forge",
+                    start=forge_start, stop=forge_stop,
+                    description="Moteur de génération d'images (WebForge), piloté depuis l'onglet Forge Studio."))
 
 
 register_defaults()

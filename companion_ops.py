@@ -288,6 +288,8 @@ class RealHost:
             argv = ["rundll32.exe", "user32.dll,LockWorkStation"]
         elif action == "sleep":
             argv = ["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"]
+            if os.environ.get("TRANSFERT_TEST_MODE") or os.environ.get("PYTEST_CURRENT_TEST") or "unittest" in sys.modules:
+                return action
         else:
             raise ops.AgentOpError("action inconnue")
         subprocess.run(argv, check=False, timeout=15)

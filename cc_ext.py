@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path, PurePath
 from typing import Any, Callable
@@ -1251,14 +1252,22 @@ def smb_share_ok() -> bool:
         return _smb_cache[1]
     ok = False
     try:
+        # net share, not Get-SmbShare: PowerShell plus the SmbShare module autoload costs ~1.5 s per cold
+        # call, which held one of the browser's six per-origin sockets for the whole health request.
+        # It asks LanmanServer what it is actually serving; the registry's Shares key can keep an entry
+        # for a share that is no longer served, which would report a healthy share that nobody can reach.
         r = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-SmbShare -Name Transfert -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name"],
+            ["net", "share"],
             capture_output=True,
             text=True,
             timeout=3,
             check=False,
         )
-        ok = "Transfert" in (r.stdout or "")
+        for line in (r.stdout or "").splitlines():
+            parts = line.split()
+            if parts and parts[0].lower() == "transfert":
+                ok = True
+                break
     except (OSError, subprocess.TimeoutExpired):
         ok = False
     _smb_cache = (now, ok)
@@ -2187,41 +2196,72 @@ def print_file(path: Path, printer: str | None = None) -> None:
 
 # ---- v6: allowlisted terminal ----
 
-def run_terminal(cmd_id: str | None = None, raw: str | None = None) -> dict:
+def _tail(text: str, limit: int) -> tuple[str, bool]:
+    """Keep the last `limit` characters of a command's output, and say whether it was cut."""
+    text = text or ""
+    if len(text) <= limit:
+        return text, False
+    return text[-limit:], True
+
+
+def _terminal_spec(cmd_id: str | None, raw: str | None) -> tuple[str, str, int]:
+    """(command line, label, timeout) for one allowlisted terminal command.
+
+    An id must name one entry; a raw command must match an allowlisted cmd string
+    exactly. Anything else is refused before a process is ever created.
+    """
     cfg = _cfg()
     allowed = cfg.get("terminal_commands") or []
     cmdline = None
     label = cmd_id or "cmd"
     if cmd_id:
         for c in allowed:
-            if isinstance(c, dict) and c.get("id") == cmd_id:
-                cmdline = c.get("cmd")
+            if not isinstance(c, dict) or c.get("id") != cmd_id:
+                continue
+            # A malformed entry (missing or empty cmd) is refused, never half-run.
+            if isinstance(c.get("cmd"), str) and c["cmd"].strip():
+                cmdline = c["cmd"]
                 label = c.get("label") or cmd_id
-                break
+            break
         if not cmdline:
             raise ValueError("Commande non autorisée")
     elif raw is not None:
         # only exact match against allowlist cmd strings
         for c in allowed:
-            if isinstance(c, dict) and str(c.get("cmd") or "").strip() == raw.strip():
-                cmdline = raw.strip()
+            if not isinstance(c, dict):
+                continue
+            candidate = c.get("cmd")
+            if isinstance(candidate, str) and candidate.strip() == raw.strip():
+                cmdline = candidate.strip()
                 label = c.get("label") or c.get("id") or "cmd"
                 break
         if not cmdline:
             raise ValueError("Commande brute non autorisée")
     else:
         raise ValueError("cmd_id requis")
-    r = subprocess.run(
-        cmdline,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=int(cfg.get("terminal_timeout_sec") or 20),
-        check=False,
-        cwd=str(_root()),
-    )
-    out = (r.stdout or "")[-8000:]
-    err = (r.stderr or "")[-2000:]
+    # terminal_timeout_sec wins; shell_timeout_sec is the fallback so one knob can cover both.
+    timeout_sec = int(cfg.get("terminal_timeout_sec") or cfg.get("shell_timeout_sec") or 20)
+    return str(cmdline), str(label), timeout_sec
+
+
+def run_terminal(cmd_id: str | None = None, raw: str | None = None) -> dict:
+    cmdline, label, timeout_sec = _terminal_spec(cmd_id, raw)
+    started = time.monotonic()
+    try:
+        r = subprocess.run(
+            cmdline,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+            cwd=str(_root()),
+        )
+    except subprocess.TimeoutExpired:
+        # Not TimeoutExpired upwards: its repr repeats the raw command line in the JSON error.
+        raise ValueError(f"Délai dépassé ({timeout_sec} s) — commande interrompue.") from None
+    out, out_cut = _tail(r.stdout, 8000)
+    err, err_cut = _tail(r.stderr, 2000)
     log_activity("terminal", f"Terminal: {label}")
     return {
         "ok": r.returncode == 0,
@@ -2229,6 +2269,10 @@ def run_terminal(cmd_id: str | None = None, raw: str | None = None) -> dict:
         "label": label,
         "stdout": out,
         "stderr": err,
+        "truncated": {"stdout": out_cut, "stderr": err_cut},
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "timeout_sec": timeout_sec,
+        "cwd": str(_root()),
     }
 
 
@@ -2261,14 +2305,18 @@ def list_shell_targets(tailscale_peers_fn=None) -> list[dict]:
             continue
         tid = str(t["id"])
         seen.add(tid)
+        typ = str(t.get("type") or "local")
         out.append(
             {
                 "id": tid,
                 "label": t.get("label") or tid,
-                "type": t.get("type") or "local",
+                "type": typ,
                 "host": t.get("host") or "",
                 "user": t.get("user") or cfg.get("ssh_user") or "",
-                "online": True if (t.get("type") or "local") == "local" else t.get("online"),
+                # The browser switches to a raw shell on a non-Windows peer; config may declare os.
+                "os": t.get("os") or "",
+                # local is always reachable; a declared SSH target without a probe stays unknown (None).
+                "online": True if typ == "local" else t.get("online"),
             }
         )
     # auto Tailscale peers
@@ -2311,14 +2359,14 @@ def list_shell_targets(tailscale_peers_fn=None) -> list[dict]:
     return out
 
 
-def run_shell(
+def _shell_spec(
     *,
     target: dict,
     shell: str = "powershell",
     command: str,
     timeout: int | None = None,
-    quiet: bool = False,
 ) -> dict:
+    """Validate one shell request and build its argv (shared by run_shell and the job runner)."""
     command = (command or "").strip()
     if not command:
         raise ValueError("Commande vide")
@@ -2332,25 +2380,20 @@ def run_shell(
 
     typ = str(target.get("type") or "local")
     label = str(target.get("label") or target.get("id") or typ)
+    shell_flag = False
+    cwd = None
 
     if typ == "local":
         if shell == "raw":
             raise ValueError("Shell raw réservé au SSH distant")
         if shell == "cmd":
-            full = f'cmd.exe /c {command}'
+            argv = f'cmd.exe /c {command}'
+            shell_flag = True
         elif shell == "pwsh":
-            full = ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command]
+            argv = ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command]
         else:
-            full = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-        r = subprocess.run(
-            full,
-            shell=isinstance(full, str),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            cwd=str(_root()),
-        )
+            argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+        cwd = str(_root())
     elif typ in ("ssh", "tailscale-ssh"):
         host = str(target.get("host") or "").strip()
         user = str(target.get("user") or cfg.get("ssh_user") or "").strip()
@@ -2395,30 +2438,727 @@ def run_shell(
             if key.is_file():
                 argv += ["-i", str(key)]
             argv += [dest, remote_cmd]
-        r = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
     else:
         raise ValueError(f"Type de cible inconnu: {typ}")
 
-    out = (r.stdout or "")[-12000:]
-    err = (r.stderr or "")[-4000:]
+    return {
+        "argv": argv,
+        "shell_flag": shell_flag,
+        "shell": shell,
+        "timeout": timeout,
+        "label": label,
+        "cwd": cwd,
+        "type": typ,
+    }
+
+
+def run_shell(
+    *,
+    target: dict,
+    shell: str = "powershell",
+    command: str,
+    timeout: int | None = None,
+    quiet: bool = False,
+) -> dict:
+    spec = _shell_spec(target=target, shell=shell, command=command, timeout=timeout)
+    started = time.monotonic()
+    r = subprocess.run(
+        spec["argv"],
+        shell=spec["shell_flag"],
+        capture_output=True,
+        text=True,
+        timeout=spec["timeout"],
+        check=False,
+        cwd=spec["cwd"],
+    )
+
+    out, out_cut = _tail(r.stdout, 12000)
+    err, err_cut = _tail(r.stderr, 4000)
     if not quiet:
         # Never log/post raw command text (may contain secrets).
-        log_activity("shell", f"{label} [{shell}] exit={r.returncode}")
+        log_activity("shell", f"{spec['label']} [{spec['shell']}] exit={r.returncode}")
         if notify_discord and _cfg().get("discord_log_shell"):
-            notify_discord("Terminal distant", f"**{label}** `{shell}` exit={r.returncode}")
+            notify_discord("Terminal distant", f"**{spec['label']}** `{spec['shell']}` exit={r.returncode}")
 
     return {
         "ok": r.returncode == 0,
         "code": r.returncode,
         "target": target.get("id"),
-        "label": label,
-        "shell": shell,
+        "label": spec["label"],
+        "shell": spec["shell"],
         "stdout": out,
         "stderr": err,
+        "truncated": {"stdout": out_cut, "stderr": err_cut},
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "timeout_sec": spec["timeout"],
+        "cwd": str(_root()) if spec["type"] == "local" else "",
     }
+
+
+# ---- terminal jobs: a command with an id, streamed output and a real stop ----
+#
+# run_terminal / run_shell stay for internal callers that need the answer inside
+# the request (disk probes, scripts). The Terminal view starts a job instead:
+# POST returns an id at once, a poll returns only the new output, and a stop kills
+# the whole process tree (cmd.exe or ssh included).
+
+JOB_OUTPUT_MAX = 200_000  # characters kept per job; older output is dropped and flagged
+JOB_TTL_SEC = 900         # a finished job stays pollable this long
+JOB_KEEP = 8              # at most this many jobs in memory
+JOB_MAX_RUNNING = 3       # commands running at once; the rest wait in a queue
+PERSIST_DIRNAME = ".hq-terminal"  # finished jobs: the session list outlives a restart
+PERSIST_KEEP = 40         # files kept under .hq-terminal/jobs
+PERSIST_OUTPUT_MAX = 60_000  # characters written per job (the tail)
+
+
+def _kill_tree(proc: "subprocess.Popen | None") -> None:
+    """Kill a job and its children. ssh is killed locally: its remote command may survive."""
+    if proc is None or proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        import signal
+
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+class _TerminalJob:
+    """One running command: a Popen plus a bounded, incrementally readable transcript."""
+
+    def __init__(self, *, kind: str, label: str, target: str, shell: str, timeout_sec: int, cwd: str,
+                 command: str = "", cmd_id: str = "") -> None:
+        self.id = os.urandom(8).hex()
+        self.kind = kind
+        self.label = label
+        self.target = target
+        self.shell = shell
+        self.timeout_sec = int(timeout_sec or 0)
+        self.cwd = cwd
+        self.command = command        # replayed by the ⟳ row action
+        self.cmd_id = cmd_id
+        self.pid: int | None = None   # written to disk: a boot reconciles leftovers
+        self._starter: Callable[[], None] | None = None
+        self.state = "running"
+        self.code: int | None = None
+        self.error = ""
+        self.started = time.time()
+        self.ended: float | None = None
+        self.proc: "subprocess.Popen | None" = None
+        self.truncated = False
+        self.finished = threading.Event()
+        self._chunks: "deque[str]" = deque()
+        self._size = 0
+        self._dropped = 0
+        self._total = 0
+        # Re-entrant: the finish path persists the job while holding it, so a reader
+        # can never observe "done" before the saved copy says the same.
+        self._lock = threading.RLock()
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            self._chunks.append(text)
+            self._size += len(text)
+            self._total += len(text)
+            while self._size > JOB_OUTPUT_MAX and len(self._chunks) > 1:
+                old = self._chunks.popleft()
+                self._size -= len(old)
+                self._dropped += len(old)
+                self.truncated = True
+
+    def read(self, cursor: int | None) -> tuple[str, int, bool]:
+        """(new text since `cursor`, absolute cursor, whether the start was dropped)."""
+        with self._lock:
+            start = max(0, int(cursor or 0))
+            if start < self._dropped:
+                start = self._dropped
+            pos = self._dropped
+            parts: list[str] = []
+            for chunk in self._chunks:
+                end = pos + len(chunk)
+                if end <= start:
+                    pos = end
+                    continue
+                parts.append(chunk[start - pos :] if start > pos else chunk)
+                pos = end
+            return "".join(parts), self._total, self.truncated
+
+    def payload(self, cursor: int | None = None) -> dict:
+        output, total, truncated = self.read(cursor)
+        with self._lock:
+            state, code, error, ended = self.state, self.code, self.error, self.ended
+        return {
+            "job_id": self.id,
+            "kind": self.kind,
+            "label": self.label,
+            "target": self.target,
+            "shell": self.shell,
+            "state": state,
+            "code": code,
+            "error": error,
+            "cwd": self.cwd,
+            "output": output,
+            "cursor": total,
+            "truncated": truncated,
+            "elapsed_ms": int(((ended or time.time()) - self.started) * 1000),
+            "timeout_sec": self.timeout_sec,
+            "command": self.command,
+            "cmd_id": self.cmd_id,
+            "pid": self.pid,
+        }
+
+
+_JOBS: dict[str, _TerminalJob] = {}
+_pending: "deque[_TerminalJob]" = deque()
+_JOBS_LOCK = threading.Lock()
+
+
+def _register(job: _TerminalJob) -> None:
+    with _JOBS_LOCK:
+        now = time.time()
+        for jid in [j for j, item in _JOBS.items() if item.ended and now - (item.ended or 0) > JOB_TTL_SEC]:
+            _JOBS.pop(jid, None)
+        while len(_JOBS) >= JOB_KEEP:
+            done = sorted((j for j in _JOBS.values() if j.ended), key=lambda j: j.started)
+            if not done:
+                break
+            _JOBS.pop(done[0].id, None)
+        _JOBS[job.id] = job
+
+
+def _running_count() -> int:
+    with _JOBS_LOCK:
+        return sum(1 for item in _JOBS.values() if item.state == "running")
+
+
+def _enqueue(job: _TerminalJob) -> None:
+    """Start now, or wait for a slot: a burst of commands must not all run at once."""
+    with job._lock:
+        job.state = "queued"  # not running yet: _running_count must not count the newcomer
+    _register(job)
+    if _running_count() >= JOB_MAX_RUNNING:
+        with job._lock:
+            job.state = "queued"
+        with _JOBS_LOCK:
+            _pending.append(job)
+        _persist_job(job)
+        return
+    _spawn_queued(job)
+
+
+def _spawn_queued(job: _TerminalJob) -> None:
+    with job._lock:
+        job.state = "running"
+    starter = job._starter
+    try:
+        if starter is None:
+            raise ValueError("Lancement impossible: commande absente")
+        starter()
+    except (OSError, ValueError) as exc:
+        with job._lock:
+            job.state = "failed"
+            job.error = f"Lancement impossible: {exc}"
+            job.ended = time.time()
+        job.finished.set()
+        _persist_job(job)
+        raise
+    _persist_job(job)  # records the pid: a later boot can reconcile it
+
+
+def _pump_queue() -> None:
+    while True:
+        if _running_count() >= JOB_MAX_RUNNING:
+            return
+        with _JOBS_LOCK:
+            nxt = next((item for item in _pending if item.state == "queued"), None)
+            if nxt is not None:
+                _pending.remove(nxt)
+        if nxt is None:
+            return
+        try:
+            _spawn_queued(nxt)
+        except (OSError, ValueError):
+            pass
+
+
+def _get_job(job_id: str) -> _TerminalJob:
+    jid = str(job_id or "").strip()
+    with _JOBS_LOCK:
+        job = _JOBS.get(jid)
+    if job is None:
+        raise KeyError(jid)
+    return job
+
+
+def _drain(job: _TerminalJob) -> None:
+    try:
+        stream = job.proc.stdout if job.proc else None
+        if stream is not None:
+            for line in stream:
+                job.write(line)
+            stream.close()
+    except (OSError, ValueError):
+        pass
+    code: int | None = None
+    try:
+        if job.proc is not None:
+            code = job.proc.wait(timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        code = job.proc.poll() if job.proc else None
+    with job._lock:
+        if job.state == "running":
+            job.state = "done" if code == 0 else "failed"
+        job.code = code
+        job.ended = time.time()
+        _persist_job(job)  # still holding the lock: state and file stay in step
+    job.finished.set()
+    _log_job_end(job)
+    _pump_queue()
+
+
+def _watch_timeout(job: _TerminalJob) -> None:
+    if job.finished.is_set():
+        return
+    with job._lock:
+        if job.state != "running":
+            return
+        job.state = "timeout"
+        job.error = f"Délai dépassé ({job.timeout_sec} s)"
+    _kill_tree(job.proc)
+
+
+def _log_job_end(job: _TerminalJob) -> None:
+    try:
+        if job.kind == "terminal":
+            log_activity("terminal", f"Terminal: {job.label}")
+        else:
+            log_activity("shell", f"{job.label} [{job.shell}] exit={job.code}")
+            if notify_discord and _cfg().get("discord_log_shell"):
+                notify_discord("Terminal distant", f"**{job.label}** `{job.shell}` exit={job.code}")
+    except Exception:
+        pass
+
+
+def _jobs_dir() -> Path | None:
+    return None if ROOT is None else _root() / PERSIST_DIRNAME / "jobs"
+
+
+def _persist_job(job: _TerminalJob) -> None:
+    """Write a finished job so its row and transcript survive a bridge restart."""
+    try:
+        max_out = _persist_output_max()
+        output, total, truncated = job.read(0)
+        if len(output) > max_out:
+            output = output[-max_out:]
+            truncated = True
+        doc = {
+            "version": 1,
+            "job_id": job.id,
+            "kind": job.kind,
+            "label": job.label,
+            "target": job.target,
+            "shell": job.shell,
+            "state": job.state,
+            "code": job.code,
+            "error": job.error,
+            "started": int(job.started * 1000),
+            "ended": int((job.ended or time.time()) * 1000),
+            "timeout_sec": job.timeout_sec,
+            "cwd": job.cwd,
+            "pid": job.pid,
+            "command": job.command,
+            "cmd_id": job.cmd_id,
+            "total": total,
+            "truncated": truncated,
+            "output": output,
+        }
+        folder = _jobs_dir()
+        if folder is None:
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        hq_state.write_json_atomic(folder / f"{job.id}.json", doc, compact=True)
+        _prune_persisted(folder)
+    except (OSError, RuntimeError, ValueError):
+        pass  # convenience only: a read-only or full disk must never fail the command
+
+
+def _prune_persisted(folder: Path) -> None:
+    try:
+        files = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for old in files[_persist_keep():]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _persisted_docs() -> list[dict]:
+    """Newest first. A malformed file is skipped, never deleted."""
+    folder = _jobs_dir()
+    if folder is None:
+        return []
+    try:
+        files = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+    docs: list[dict] = []
+    for path in files[:_persist_keep()]:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            docs.append(doc)
+    return docs
+
+
+def _persist_keep() -> int:
+    try:
+        return max(1, int(_cfg().get("terminal_jobs_keep") or PERSIST_KEEP))
+    except (TypeError, ValueError):
+        return PERSIST_KEEP
+
+
+def _persist_output_max() -> int:
+    try:
+        return max(1000, int(_cfg().get("terminal_job_output_max") or PERSIST_OUTPUT_MAX))
+    except (TypeError, ValueError):
+        return PERSIST_OUTPUT_MAX
+
+
+def _persisted_doc(job_id: str) -> dict | None:
+    jid = str(job_id or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", jid):
+        return None  # only names we write: never read outside the jobs folder
+    folder = _jobs_dir()
+    if folder is None:
+        return None
+    path = folder / f"{jid}.json"
+    try:
+        if not path.is_file():
+            return None
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _persisted_payload(doc: dict, cursor: int | None = None) -> dict:
+    text = str(doc.get("output") or "")
+    total = int(doc.get("total") or len(text))
+    started = int(doc.get("started") or 0)
+    return {
+        "job_id": str(doc.get("job_id") or ""),
+        "kind": str(doc.get("kind") or "shell"),
+        "label": str(doc.get("label") or ""),
+        "target": str(doc.get("target") or ""),
+        "shell": str(doc.get("shell") or ""),
+        "state": str(doc.get("state") or "done"),
+        "code": doc.get("code"),
+        "error": str(doc.get("error") or ""),
+        "cwd": str(doc.get("cwd") or ""),
+        # The stored transcript on a first read, nothing once the caller is past it.
+        "output": text if max(0, int(cursor or 0)) <= 0 else "",
+        "cursor": total,
+        "truncated": bool(doc.get("truncated")),
+        "elapsed_ms": max(0, int(doc.get("ended") or 0) - started),
+        "timeout_sec": int(doc.get("timeout_sec") or 0),
+        "command": str(doc.get("command") or ""),
+        "cmd_id": str(doc.get("cmd_id") or ""),
+        "pid": doc.get("pid"),
+    }
+
+
+def _spawn(job: _TerminalJob, argv, *, shell: bool, cwd: str | None) -> None:
+    kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,  # one stream, so the transcript keeps its order
+        "stdin": subprocess.DEVNULL,
+        "text": True,
+        "errors": "replace",
+        "bufsize": 1,
+        "shell": shell,
+        "cwd": cwd,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kwargs["start_new_session"] = True
+    job.proc = subprocess.Popen(argv, **kwargs)
+    job.pid = job.proc.pid
+    if job.timeout_sec > 0:
+        watchdog = threading.Timer(job.timeout_sec, _watch_timeout, args=(job,))
+        watchdog.daemon = True
+        watchdog.start()
+    threading.Thread(target=_drain, args=(job,), daemon=True, name=f"hq-term-{job.id}").start()
+
+
+def job_snapshot(job_id: str, cursor: int | None = None) -> dict:
+    """Poll one job. `cursor` is the absolute offset the caller already has."""
+    try:
+        return _get_job(job_id).payload(cursor)
+    except KeyError:
+        doc = _persisted_doc(job_id)
+        if doc is None:
+            raise
+        return _persisted_payload(doc, cursor)
+
+
+def list_jobs(limit: int = 20) -> list[dict]:
+    """This session's jobs, newest first, without their transcripts.
+
+    Live jobs come from memory; finished ones also come from `.hq-terminal/jobs`,
+    so the list still fills after the bridge restarts.
+    """
+    now = time.time()
+    with _JOBS_LOCK:
+        live = [j for j in _JOBS.values() if j.ended is None or now - (j.ended or 0) <= JOB_TTL_SEC]
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for job in live:
+        with job._lock:
+            rows.append({
+                "job_id": job.id,
+                "kind": job.kind,
+                "label": job.label,
+                "target": job.target,
+                "shell": job.shell,
+                "state": job.state,
+                "code": job.code,
+                "error": job.error,
+                "started": int(job.started * 1000),
+                "elapsed_ms": int(((job.ended or now) - job.started) * 1000),
+                "command": job.command,
+                "cmd_id": job.cmd_id,
+                "truncated": job.truncated,
+            })
+        seen.add(job.id)
+    for doc in _persisted_docs():
+        jid = str(doc.get("job_id") or "")
+        if not jid or jid in seen:
+            continue
+        seen.add(jid)
+        rows.append({
+            "job_id": jid,
+            "kind": str(doc.get("kind") or "shell"),
+            "label": str(doc.get("label") or ""),
+            "target": str(doc.get("target") or ""),
+            "shell": str(doc.get("shell") or ""),
+            "state": str(doc.get("state") or "done"),
+            "code": doc.get("code"),
+            "error": str(doc.get("error") or ""),
+            "started": int(doc.get("started") or 0),
+            "elapsed_ms": max(0, int(doc.get("ended") or 0) - int(doc.get("started") or 0)),
+            "command": str(doc.get("command") or ""),
+            "cmd_id": str(doc.get("cmd_id") or ""),
+            "truncated": bool(doc.get("truncated")),
+        })
+    rows.sort(key=lambda r: r["started"], reverse=True)
+    return rows[: max(1, int(limit or 20))]
+
+
+def stop_job(job_id: str) -> dict:
+    """Stop a running or queued job (whole tree). Returns the final state, not the transcript."""
+    try:
+        job = _get_job(job_id)
+    except KeyError:
+        doc = _persisted_doc(job_id)
+        if doc is None:
+            raise
+        payload = _persisted_payload(doc)
+        return {key: payload[key] for key in ("job_id", "state", "code", "error", "elapsed_ms", "cursor")}
+    queued = job.state == "queued"
+    with job._lock:
+        if job.state in ("running", "queued"):
+            job.state = "stopped"
+            job.error = ""
+            if job.proc is None:
+                job.ended = time.time()
+    _kill_tree(job.proc)
+    job.finished.wait(0.2 if queued else 2.0)  # let the reader record the exit code and the last lines
+    if queued:
+        with _JOBS_LOCK:
+            if job in _pending:
+                _pending.remove(job)
+        _persist_job(job)
+        _pump_queue()
+    with job._lock:
+        return {
+            "job_id": job.id,
+            "state": job.state,
+            "code": job.code,
+            "error": job.error,
+            "elapsed_ms": int(((job.ended or time.time()) - job.started) * 1000),
+            "cursor": job._total,
+        }
+
+
+def stop_all_jobs() -> dict:
+    """Stop every running or queued job. Returns how many were asked to stop."""
+    with _JOBS_LOCK:
+        ids = [item.id for item in _JOBS.values() if item.state in ("running", "queued")]
+    stopped: list[str] = []
+    for jid in ids:
+        try:
+            stop_job(jid)
+            stopped.append(jid)
+        except KeyError:
+            pass
+    return {"stopped": len(stopped), "ids": stopped}
+
+
+def clear_persisted() -> dict:
+    """Forget the saved jobs. Live jobs are untouched."""
+    folder = _jobs_dir()
+    if folder is None:
+        return {"deleted": 0, "bytes": 0}
+    deleted = 0
+    size = 0
+    for path in list(folder.glob("*.json")):
+        try:
+            size += path.stat().st_size
+            path.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    return {"deleted": deleted, "bytes": size}
+
+
+def persisted_stats() -> dict:
+    folder = _jobs_dir()
+    if folder is None:
+        return {"count": 0, "bytes": 0}
+    count = 0
+    size = 0
+    for path in folder.glob("*.json"):
+        try:
+            size += path.stat().st_size
+            count += 1
+        except OSError:
+            pass
+    return {"count": count, "bytes": size}
+
+
+def job_stats() -> dict:
+    """Local aggregates over this session's jobs: counts, durations, slowest, per command."""
+    rows = list_jobs(limit=200)
+    states: dict[str, int] = {}
+    durations: list[int] = []
+    slowest: list[dict] = []
+    per_cmd: dict[str, dict] = {}
+    for row in rows:
+        state = str(row.get("state") or "done")
+        states[state] = states.get(state, 0) + 1
+        ms = int(row.get("elapsed_ms") or 0)
+        finished = state not in ("running", "queued")
+        if finished:
+            durations.append(ms)
+            slowest.append({"job_id": row.get("job_id"), "label": row.get("label") or "", "elapsed_ms": ms, "state": state})
+        key = str(row.get("cmd_id") or row.get("label") or "?")
+        bucket = per_cmd.setdefault(key, {"label": row.get("label") or key, "runs": 0, "failures": 0, "total_ms": 0})
+        bucket["runs"] += 1
+        if state in ("failed", "timeout", "interrupted"):
+            bucket["failures"] += 1
+        if finished:
+            bucket["total_ms"] += ms
+    slowest.sort(key=lambda item: item["elapsed_ms"], reverse=True)
+    commands = [
+        {
+            "label": bucket["label"],
+            "runs": bucket["runs"],
+            "failures": bucket["failures"],
+            "avg_ms": int(bucket["total_ms"] / bucket["runs"]) if bucket["runs"] else 0,
+        }
+        for bucket in per_cmd.values()
+    ]
+    commands.sort(key=lambda item: item["runs"], reverse=True)
+    return {
+        "total": len(rows),
+        "states": states,
+        "ok": states.get("done", 0),
+        "failed": states.get("failed", 0) + states.get("timeout", 0) + states.get("interrupted", 0),
+        "avg_ms": int(sum(durations) / len(durations)) if durations else 0,
+        "slowest": slowest[:5],
+        "commands": commands[:10],
+    }
+
+
+def reconcile_orphans() -> int:
+    """A job left 'running' on disk died with the bridge: mark it, never kill a recorded PID.
+
+    The PID stays in the file for diagnosis only. By the time the bridge restarts it may
+    belong to another process, so killing it would be worse than leaving it alone.
+    """
+    count = 0
+    folder = _jobs_dir()
+    if folder is None:
+        return 0
+    for path in list(folder.glob("*.json")):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict) or doc.get("state") not in ("running", "queued"):
+            continue
+        doc["state"] = "interrupted"
+        doc["error"] = "Le pont s'est arrêté pendant cette tâche"
+        doc["ended"] = int(time.time() * 1000)
+        try:
+            hq_state.write_json_atomic(path, doc, compact=True)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        count += 1
+    return count
+
+
+def start_terminal_job(cmd_id: str | None = None, raw: str | None = None) -> dict:
+    cmdline, label, timeout_sec = _terminal_spec(cmd_id, raw)
+    cwd = str(_root())
+    job = _TerminalJob(
+        kind="terminal", label=label, target="", shell="cmd", timeout_sec=timeout_sec, cwd=cwd,
+        command=cmdline, cmd_id=str(cmd_id or ""),
+    )
+    job._starter = lambda: _spawn(job, cmdline, shell=True, cwd=cwd)
+    _enqueue(job)
+    return job.payload(0)
+
+
+def start_shell_job(
+    *,
+    target: dict,
+    shell: str = "powershell",
+    command: str,
+    timeout: int | None = None,
+) -> dict:
+    spec = _shell_spec(target=target, shell=shell, command=command, timeout=timeout)
+    job = _TerminalJob(
+        kind="shell",
+        label=spec["label"],
+        target=str(target.get("id") or ""),
+        shell=spec["shell"],
+        timeout_sec=spec["timeout"],
+        cwd=str(spec["cwd"] or ""),
+        command=command,
+    )
+    job._starter = lambda: _spawn(job, spec["argv"], shell=spec["shell_flag"], cwd=spec["cwd"])
+    _enqueue(job)
+    return job.payload(0)

@@ -16,13 +16,13 @@ disable-model-invocation: false
 
 ## Step 1 — snapshot (pick one)
 
-**PIN:** `1427785` (handoff). **UAC:** auto-accepted on Maître’s machine — run CLI without asking.
+**PIN:** `<admin-pin>` (handoff). **UAC:** auto-accepted on Maître’s machine — run CLI without asking.
 
 | Method | Command / route |
 |--------|------------------|
 | Smallest | `GET /api/diag/agent-brief?limit=50` → read **`brief_md`** or **`agent_triage`** |
-| CLI markdown | `python scripts/agent_hq_brief.py --pin 1427785` |
-| CLI packet | `python scripts/agent_hq_brief.py --pin 1427785 --packet` |
+| CLI markdown | `python scripts/agent_hq_brief.py --pin <admin-pin>` |
+| CLI packet | `python scripts/agent_hq_brief.py --pin <admin-pin> --packet` |
 | On disk (after save) | `<Transfert>/.hq-carnet/diagnostics/agent-packet-latest.md` |
 | Full tail | `GET /api/diag/session-bundle?limit=50` |
 

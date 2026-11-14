@@ -33,6 +33,7 @@
     const edgeCtx = edgeCanvas.getContext("2d");
     let pointers = new Map();
     function bounds() {
+      if (state.frame) return state.frame; // a locked framing: the model can grow without the camera following
       const b = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
       for (const tri of state.triangles) for (const p of tri) for (let i = 0; i < 3; i++) { b[0][i] = Math.min(b[0][i], p[i]); b[1][i] = Math.max(b[1][i], p[i]); }
       if (!state.triangles.length) return { center: [0, 0, 0], span: 1 };
@@ -91,12 +92,16 @@
         }
       }
       edgeCanvas.width = w; edgeCanvas.height = h;
-      if (state.edgeMode && state.selectedEdge >= 0 && state.edges[state.selectedEdge]) {
-        const edge = state.edges[state.selectedEdge], q = viewParams(), a = projectPoint(edge.a, q), b = projectPoint(edge.b, q);
-        edgeCtx.beginPath(); edgeCtx.moveTo((a[0] + 1) * w / 2, (1 - a[1]) * h / 2);
-        edgeCtx.lineTo((b[0] + 1) * w / 2, (1 - b[1]) * h / 2);
-        edgeCtx.strokeStyle = "#f97316"; edgeCtx.lineWidth = Math.max(4, 4 * dpr); edgeCtx.lineCap = "round"; edgeCtx.stroke();
-      }
+      const q = viewParams();
+      const stroke = (edge, color, width) => {
+        const pts = edgePoints(edge).map(p => projectPoint(p, q));
+        edgeCtx.beginPath();
+        pts.forEach((pp, i) => { const X = (pp[0] + 1) * w / 2, Y = (1 - pp[1]) * h / 2; if (i) edgeCtx.lineTo(X, Y); else edgeCtx.moveTo(X, Y); });
+        edgeCtx.strokeStyle = color; edgeCtx.lineWidth = width; edgeCtx.lineCap = "round"; edgeCtx.lineJoin = "round"; edgeCtx.stroke();
+      };
+      if (state.edgeMode && state.showAll) state.edges.forEach(edge => stroke(edge, "rgba(15,40,50,.45)", Math.max(1, dpr)));
+      if (state.edgeMode) (state.marked || []).forEach(i => { if (state.edges[i]) stroke(state.edges[i], "#f97316", Math.max(4, 4 * dpr)); });
+      if (state.edgeMode && state.selectedEdge >= 0 && state.edges[state.selectedEdge]) stroke(state.edges[state.selectedEdge], "#f97316", Math.max(4, 4 * dpr));
     }
     function faceAt(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
@@ -135,22 +140,38 @@
       const q = viewParams();
       let best = null;
       state.edges.forEach((edge, index) => {
-        const a = projectPoint(edge.a, q), b = projectPoint(edge.b, q);
-        const ax = (a[0] + 1) * rect.width / 2, ay = (1 - a[1]) * rect.height / 2;
-        const bx = (b[0] + 1) * rect.width / 2, by = (1 - b[1]) * rect.height / 2;
-        const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
-        if (len2 < 1) return;
-        const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / len2));
-        const dist = Math.hypot(x - ax - t * (bx - ax), y - ay - t * (by - ay));
-        const depth = a[2] + t * (b[2] - a[2]);
-        if (dist > threshold || (front && depth > front.depth + 0.005)) return;
-        if (!best || dist < best.dist) best = { index, dist, edge };
+        const pts = edgePoints(edge);  // a straight edge, or a curved one as a short polyline
+        for (let s = 1; s < pts.length; s++) {
+          const a = projectPoint(pts[s - 1], q), b = projectPoint(pts[s], q);
+          const ax = (a[0] + 1) * rect.width / 2, ay = (1 - a[1]) * rect.height / 2;
+          const bx = (b[0] + 1) * rect.width / 2, by = (1 - b[1]) * rect.height / 2;
+          const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+          if (len2 < 1e-6) continue;
+          const t = Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / len2));
+          const dist = Math.hypot(x - ax - t * (bx - ax), y - ay - t * (by - ay));
+          const depth = a[2] + t * (b[2] - a[2]);
+          if (dist > threshold || (front && depth > front.depth + 0.005)) continue;
+          if (!best || dist < best.dist) best = { index, dist, edge };
+        }
       });
       return best;
     }
+    function edgePoints(edge) { return Array.isArray(edge.pts) && edge.pts.length > 1 ? edge.pts : [edge.a, edge.b]; }
+    /** Several picked edges highlighted at once (fillet / chamfer on many edges); showAll draws every edge faintly. */
+    function setMarked(indices, showAll) { state.marked = (indices || []).slice(); state.showAll = !!showAll; draw(); }
     function setTriangles(triangles) { state.triangles = triangles || []; state.selectedIndex = -1; state.selectedEdge = -1; draw(); }
     function setEdges(edges) { state.edges = edges || []; state.selectedEdge = -1; draw(); }
     function setEdgeMode(on) { state.edgeMode = !!on; state.selectedIndex = -1; state.selectedEdge = -1; draw(); }
+    /** Freeze the framing on the bounds of `triangles` (or release it with null), e.g. while an extrusion grows live. */
+    function lockFrame(triangles) {
+      state.frame = null;
+      if (triangles && triangles.length) {
+        const keep = state.triangles; state.triangles = triangles;
+        state.frame = bounds();
+        state.triangles = keep;
+      }
+      draw();
+    }
     function reset() { state.yaw = -0.72; state.pitch = 0.62; state.zoom = 1; state.panX = 0; state.panY = 0; draw(); }
     // Pan is in screen space: a drag of (dx, dy) CSS px moves the projected model by exactly (dx, dy),
     // whatever the orbit or zoom. projectPoint divides x (pan included) by max(1, aspect) and maps clip
@@ -180,13 +201,21 @@
     const centre = () => { const p = [...pointers.values()]; return [(p[0][0] + p[1][0]) / 2, (p[0][1] + p[1][1]) / 2]; };
     const spread = () => { const p = [...pointers.values()]; return Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]); };
     canvas.addEventListener("contextmenu", e => e.preventDefault());
+    // A face drag (push / pull): the owner may take a one-finger / left-button drag that starts on a face instead of orbiting.
+    // handler: { start(face, event) → true to take it, move(dx, dy, event), end(moved, event), cancel() }.
+    let faceDrag = null;
     canvas.addEventListener("pointerdown", e => {
       canvas.setPointerCapture(e.pointerId);
       const pan = e.pointerType === "mouse" && (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey));
       if (e.button === 1) e.preventDefault(); // no autoscroll on middle click
-      pointers.set(e.pointerId, [e.clientX, e.clientY, e.clientX, e.clientY, pan ? "pan" : "orbit"]);
+      let mode = pan ? "pan" : "orbit";
+      if (mode === "orbit" && faceDrag && pointers.size === 0 && !state.edgeMode) {
+        const face = faceAt(e.clientX, e.clientY);
+        if (face && faceDrag.start(face, e)) mode = "face";
+      }
+      pointers.set(e.pointerId, [e.clientX, e.clientY, e.clientX, e.clientY, mode]);
       if (pointers.size === 2) {
-        for (const rec of pointers.values()) rec[4] = "multi";
+        for (const rec of pointers.values()) { if (rec[4] === "face" && faceDrag) faceDrag.cancel(); rec[4] = "multi"; }
         pinch = { zoom: state.zoom, panX: state.panX, panY: state.panY, at: clip(...centre()), spread: Math.max(1, spread()) };
       }
     });
@@ -194,7 +223,8 @@
       if (!pointers.has(e.pointerId)) return;
       const old = pointers.get(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, old[2], old[3], old[4]]);
       if (pointers.size === 1) {
-        if (old[4] === "pan") { panBy(e.clientX - old[0], e.clientY - old[1]); draw(); }
+        if (old[4] === "face") faceDrag.move(e.clientX - old[2], e.clientY - old[3], e);
+        else if (old[4] === "pan") { panBy(e.clientX - old[0], e.clientY - old[1]); draw(); }
         else if (old[4] === "orbit") { state.yaw -= (e.clientX - old[0]) * 0.012; state.pitch = Math.max(-1.48, Math.min(1.48, state.pitch + (e.clientY - old[1]) * 0.012)); draw(); }
       } else if (pointers.size === 2 && pinch) {
         // The model point under the starting centre follows the current centre; the spread sets the zoom.
@@ -207,7 +237,13 @@
     for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) canvas.addEventListener(name, e => {
       const start = pointers.get(e.pointerId), single = pointers.size === 1;
       pointers.delete(e.pointerId); if (pointers.size < 2) pinch = null;
-      if (name === "pointerup" && single && start && start[4] === "orbit" && Math.hypot(e.clientX - start[2], e.clientY - start[3]) < 6) {
+      let tap = start && start[4] === "orbit";
+      if (start && start[4] === "face") { // end of a face drag; a tap on the face is still a normal click
+        const moved = name === "pointerup" && Math.hypot(e.clientX - start[2], e.clientY - start[3]) >= 6;
+        if (name !== "pointerup") faceDrag.cancel(); else faceDrag.end(moved, e);
+        tap = !moved;
+      }
+      if (name === "pointerup" && single && start && tap && Math.hypot(e.clientX - start[2], e.clientY - start[3]) < 6) {
         if (state.edgeMode) {
           const hit = edgeAt(e.clientX, e.clientY, e.pointerType);
           state.selectedEdge = hit ? hit.index : -1; draw();
@@ -222,8 +258,8 @@
     canvas.addEventListener("wheel", e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 0.9 : 1.1); draw(); }, { passive: false });
     if (root.ResizeObserver) new ResizeObserver(draw).observe(canvas);
     canvas.hqSolidProject = p => projectPoint(p); // read-only test hook: [x, y, depth] in clip space, smaller depth is nearer
-    return { setTriangles, setEdges, setEdgeMode, reset, draw, state, faceAt, edgeAt,
-      onFaceSelect(callback) { onFace = callback; }, onEdgeSelect(callback) { onEdge = callback; } };
+    return { setTriangles, setEdges, setEdgeMode, setMarked, lockFrame, reset, draw, state, faceAt, edgeAt,
+      onFaceSelect(callback) { onFace = callback; }, onEdgeSelect(callback) { onEdge = callback; }, onFaceDrag(handler) { faceDrag = handler; } };
   }
   root.HQSolidView = viewer;
 })(window);

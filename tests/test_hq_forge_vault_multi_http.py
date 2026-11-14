@@ -308,12 +308,15 @@ class Authorisation(MultiHttp):
                 self.assertNotIn(name, text, where)
 
     def test_forge_allowlists_unchanged(self):
-        import subprocess
-        out = subprocess.run(["git", "diff", "--name-only", "0c0edfa", "--", "hq_forge.py", "hq_forge_worker.py", "hq_forge_fleet.py"],
-                             cwd=SOURCE, capture_output=True, text=True)
-        if out.returncode != 0:
-            self.skipTest("not a git checkout")
-        self.assertEqual(out.stdout.strip(), "")
+        """The adapter stays read-only plus masked img2img: HQ never writes /sdapi/v1/options.
+
+        This used to diff the files against a commit hash, which fails for every legitimate edit and
+        says nothing about the actual rule. Assert the rule instead; test_hq_forge_adapter pins the
+        read-only set itself.
+        """
+        import hq_forge as F
+        self.assertEqual({r for r in F.ALLOWED_ROUTES if r[0] == "POST"}, {("POST", "/sdapi/v1/img2img")})
+        self.assertFalse(hasattr(F, "set_options"), "HQ must not write Forge's global options")
 
 class OldRoutesGone(MultiHttp):
     """V4.6: the old /api/forge/vault/* alias is removed; every old route answers 404, before and after migration."""

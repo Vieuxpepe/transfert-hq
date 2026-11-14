@@ -1392,9 +1392,9 @@ def _write_export(directory: Path, name: str, images: list[dict], render, leaf_o
 
 def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
     """``query`` is ``parse_qs`` output. Accepted (one at a time): ``meta=1`` (page metadata), ``sources=1`` (Stage 05),
-    ``history=1[&page=<page-id>]`` and ``backlinks=<kind>&id=<id>`` (Stage 08, read-only, nothing is written)."""
+    ``history=1[&page=<page-id>]`` and ``backlinks=<kind>&id=<id>`` (Stage 08), ``graph=1`` (constellation); all read-only, nothing is written."""
     try:
-        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "id", "cockpit", "snapshots", "snapshot", "verify", "view", "baselines", "diff", "base", "to", "project", "at", "reviews", "review", "freshness"}
+        extra = set(query) - {"meta", "sources", "history", "page", "backlinks", "graph", "id", "cockpit", "snapshots", "snapshot", "verify", "view", "baselines", "diff", "base", "to", "project", "at", "reviews", "review", "freshness"}
         if extra:
             raise CarnetError("Paramètre inconnu")
         if any(len(v) != 1 for v in query.values()):
@@ -1409,6 +1409,10 @@ def http_get(query: dict[str, list[str]]) -> tuple[int, dict]:
             if query["history"] != ["1"] or (set(query) - {"history", "page"}) or ("page" in query and len(query["page"]) != 1):
                 raise CarnetError("history invalide")
             return 200, history.list_events(query["page"][0] if "page" in query else None)
+        if "graph" in query:
+            if set(query) != {"graph"} or query["graph"] != ["1"]:
+                raise CarnetError("graph invalide")
+            return 200, links.graph()
         if "backlinks" in query:
             if set(query) != {"backlinks", "id"} or len(query["backlinks"]) != 1 or len(query["id"]) != 1:
                 raise CarnetError("backlinks invalide")

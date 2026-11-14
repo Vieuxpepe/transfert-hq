@@ -94,7 +94,7 @@ def login(page, url):
     page.goto(url)
     page.fill('input[name="pin"]', FAKE_PIN)
     page.click('button[type="submit"]')
-    page.wait_for_selector('.bottom-nav [data-nav="lecteur"]')
+    page.wait_for_selector('.bottom-nav [data-nav="fichiers"]')
 
 
 def open_folder(page):

@@ -187,10 +187,10 @@ Full field reference: **[client-debug-log.md](client-debug-log.md)**.
 
 | Command | Purpose |
 |---------|---------|
-| `python scripts/agent_hq_brief.py --pin 1427785` | Brief markdown (PIN in [agent-conventions.md](agent-conventions.md)) |
-| `python scripts/agent_hq_brief.py --pin 1427785 --packet` | Full agent packet |
-| `python scripts/fetch_session_bundle.py --pin 1427785 --brief --md` | Brief via fetch script |
-| `python scripts/save_agent_packet.py --pin 1427785` | Save packet on disk |
+| `python scripts/agent_hq_brief.py --pin <admin-pin>` | Brief markdown (use the operator credential store) |
+| `python scripts/agent_hq_brief.py --pin <admin-pin> --packet` | Full agent packet |
+| `python scripts/fetch_session_bundle.py --pin <admin-pin> --brief --md` | Brief via fetch script |
+| `python scripts/save_agent_packet.py --pin <admin-pin>` | Save packet on disk |
 
 **UAC:** On the Maître’s Windows host, elevation is **auto-accepted** — agents should run these commands without asking for UAC clicks.
 | `python tests/test_hq_client_debug_smoke.py` | Bundle + client-log HTTP smoke |

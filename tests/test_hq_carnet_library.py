@@ -89,7 +89,7 @@ class LibraryStaticTests(unittest.TestCase):
         accueil = self.html.split('<div data-panel="accueil"', 1)[1]
         self.assertLess(accueil.index('id="hq-carnet-home"'), accueil.index('id="hq-cal-home"'))
         self.assertIn("if (view === 'accueil' && window.hqCarnetHome) {\n"
-                      "    try { window.hqCarnetHome(); } catch (e) { console.error(e); }", self.app_js)
+                      "    hqDeferViewRender(view, viewTicket, () => { try { window.hqCarnetHome(); } catch (e) { console.error(e); } });", self.app_js)
 
     def test_home_privacy_role_gate_before_any_carnet_fetch(self):
         home = self.js.split("async function refreshHome()", 1)[1].split("global.hqCarnetHome", 1)[0]

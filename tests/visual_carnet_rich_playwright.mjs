@@ -749,6 +749,7 @@ async function main() {
     console.log("-- Focus mode");
     await openFormat(p);
     await p.click("#btn-carnet-find");
+    if (await p.locator("#carnet-quick-tools").isHidden()) await p.click("#btn-carnet-more");
     await p.click("#btn-carnet-focus");
     await until(async () => await p.locator(".carnet.is-focus").count() === 1, "focus mode on");
     const visible = async (sel2) => (await p.locator(sel2).count()) > 0 && (await p.locator(sel2).first().isVisible());
@@ -883,6 +884,7 @@ async function main() {
     check(!["page-shaft", "page-idea"].includes(newId) && (await value(p)) === "", "new page is blank, no title prompt");
     await p.keyboard.type("Nouvelle note");
     await until(async () => srv.text(newId) === "Nouvelle note", "new page autosaves");
+    if (await p.locator("#carnet-quick-tools").isHidden()) await p.click("#btn-carnet-more");
     await p.locator("#btn-carnet-pin").click();
     await until(async () => srv.nb().pages.find((x) => x.id === newId).pinned === true, "pin saved");
     // keys

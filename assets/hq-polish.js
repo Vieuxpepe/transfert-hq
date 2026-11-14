@@ -99,9 +99,14 @@
     if (calm(win) || !fromView || fromView === toView) return;
     const nav = win.document.querySelector(".bottom-nav");
     if (!nav) return;
-    const a = nav.querySelector('button[data-nav="' + fromView + '"]');
-    const b = nav.querySelector('button[data-nav="' + toView + '"]');
-    if (!a || !b) return;
+    const more = nav.querySelector('button[data-nav="plus"]');
+    const target = (view) => {
+      const button = nav.querySelector('button[data-nav="' + view + '"]');
+      return button?.offsetWidth ? button : more;
+    };
+    const a = target(fromView);
+    const b = target(toView);
+    if (!a?.offsetWidth || !b?.offsetWidth || a === b) return;
     let streak = win.document.querySelector(".nav-streak");
     if (!streak) {
       streak = win.document.createElement("span");

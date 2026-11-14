@@ -54,7 +54,7 @@
 .carnet-bar-bottom{justify-content:space-between;position:sticky;z-index:3;bottom:calc(var(--nav-h, 64px) + env(safe-area-inset-bottom, 0px));
   padding:6px 0;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px)}
 .carnet-actions,.carnet-nav{display:flex;align-items:center;gap:6px;flex:0 0 auto}
-.carnet-status-wrap{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:flex-end;gap:8px;overflow:hidden}
+.carnet-status-wrap{flex:1 1 auto;min-width:0;display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .carnet-status{margin:0;font-size:var(--text-sm);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .carnet-status[data-kind="warn"]{color:var(--warn);font-weight:700;white-space:normal}
 .carnet-status[data-kind="err"]{color:var(--danger);font-weight:700;white-space:normal}
@@ -74,6 +74,9 @@
 
 /* ---- quick tools */
 .carnet-tools{display:flex;flex-wrap:wrap;gap:6px 14px}
+.carnet-tools:not([hidden]){padding:8px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+.carnet-tool-group .carnet-btn{width:auto;gap:6px;padding-inline:9px}
+.carnet-more-btn{width:auto;padding-inline:10px}
 .carnet-tool-group{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .carnet-tool-group-label{font-size:var(--carnet-fs-meta);font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
 .carnet.is-focus .carnet-tool-group-label{display:none}
@@ -838,10 +841,11 @@ body.carnet-focus .hq-capture-fab,body.kiosk .hq-capture-fab,body.hq-capture-ope
 .carnet-status-wrap{position:relative}
 .carnet-savepill{flex:0 0 auto;min-height:var(--carnet-tap);padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel-2);color:var(--muted);font-size:var(--text-sm);font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .carnet-savepill::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 auto}
-.carnet-savepill[data-kind="ok"]{color:var(--ok)}
-.carnet-savepill[data-kind="busy"]{color:var(--muted)}
+.carnet-savepill[data-kind="ok"]{color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--panel))}
+.carnet-savepill[data-kind="busy"]{color:var(--text)}
 .carnet-savepill[data-kind="busy"]::before{animation:carnet-pulse-dot 1.1s ease-in-out infinite}
 .carnet-savepill[data-kind="warn"]{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
+.carnet-savepill[data-state="offline"]{background:color-mix(in srgb,var(--warn) 12%,var(--panel))}
 .carnet-savepill[data-kind="err"]{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 60%,var(--line))}
 .carnet-savepill:focus-visible{outline:3px solid var(--carnet-focus,var(--accent));outline-offset:2px}
 .carnet-savepop{position:absolute;z-index:20;top:calc(100% + 6px);right:0;width:min(320px,92vw);box-sizing:border-box;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--text);font-size:var(--text-sm);line-height:1.4;box-shadow:0 10px 30px rgba(0,0,0,.28)}
@@ -1681,12 +1685,11 @@ body.carnet-resizing,body.carnet-resizing *{cursor:ew-resize!important;-webkit-u
 @media (min-width:900px){.carnet-bar-top{flex-wrap:nowrap}.carnet-bar-top>.carnet-status-wrap{order:2}.carnet-bar-top>.carnet-actions{order:3}}
 @media (hover:hover) and (pointer:fine){
   .carnet :is(.carnet-bar-top,.carnet-bar-bottom,.carnet-library,.carnet-page-grip,.carnet-side-grip){transition:opacity .25s ease}
-  .carnet.c16-quiet :is(.carnet-bar-top,.carnet-bar-bottom){opacity:.08;transition:opacity .9s ease .25s}
+  .carnet.c16-quiet .carnet-bar-bottom,
+  .carnet.c16-quiet .carnet-bar-top:not(:hover,:focus-within)>:not(.carnet-status-wrap){opacity:.08;transition:opacity .9s ease .25s}
   .carnet.c16-quiet .carnet-library{opacity:.38;transition:opacity .9s ease .25s}
   .carnet.c16-quiet :is(.carnet-page-grip,.carnet-side-grip){opacity:0;transition:opacity .9s ease .25s}
   .carnet.c16-quiet :is(.carnet-bar-top,.carnet-bar-bottom,.carnet-library):is(:hover,:focus-within){opacity:1;transition:opacity .15s ease}
-  /* a problem is never hidden: the bar stays visible while the save pill warns */
-  .carnet.c16-quiet .carnet-bar-top:has(.carnet-savepill:is([data-kind="warn"],[data-kind="err"])){opacity:1}
 }
 
 /* ================================================================ Phase 16I: how things leave, glide and settle (hq-carnet-feel.js) */
@@ -1758,3 +1761,8 @@ body.carnet-resizing,body.carnet-resizing *{cursor:ew-resize!important;-webkit-u
   .hq-carnet .carnet-paper:hover::before{opacity:1}
 }
 @media print{.c16-caret,.c16-ghost,.carnet-sticky-guide,.c16-outline-mark{display:none!important}}
+
+/* A drawing's part shown live in 3D inside the page (hq-carnet-structured-ui.js « Voir en 3D ») */
+.carnet-drawing .carnet-drawing-3d{display:block;width:100%;aspect-ratio:4/3;border-radius:10px;touch-action:none;cursor:grab;
+  background:linear-gradient(160deg,var(--panel-2,#eef2f6),var(--panel,#fff))}
+.carnet-drawing.is-3d .carnet-drawing-img{display:none}

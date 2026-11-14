@@ -12,6 +12,8 @@ import time
 import zlib
 from pathlib import Path
 
+from hq_browser_nav import open_section
+
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(SOURCE / "tests"))
@@ -81,7 +83,7 @@ def open_inv(ctx, srv, errors, hash_=""):
     p.on("console", lambda m: errors.append("console " + m.text) if m.type == "error" else None)
     p.goto(srv.base + "/" + hash_)
     if not hash_:
-        p.locator('.bottom-nav [data-nav="inventaire"]').click()
+        open_section(p, "inventaire")
     p.wait_for_selector("#hq-inv-app .inv-main")
     p.wait_for_timeout(400)
     return p

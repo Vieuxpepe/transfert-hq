@@ -77,14 +77,16 @@ class PistoniaWiringTests(unittest.TestCase):
         self.assertIn("/assets/hq-pistonia.css", BRIDGE)
 
     def test_chat_body_limit_is_raised_only_for_the_chat_route(self):
-        self.assertRegex(BRIDGE, r'32768 if raw == "/api/engine/pistonia/message" else 4096')
+        self.assertRegex(BRIDGE, r'32768 if raw in \("/api/engine/pistonia/message", "/api/engine/pistonia/stream"\) else 4096')
 
     def test_js_is_markup_safe_and_calls_only_engine_endpoints(self):
         self.assertNotRegex(self.JS, r"innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(")
         self.assertIn("ACTION_URL", self.JS)
         self.assertIn(r"\/api\/engine\/daemons\/", self.JS)                   # the allow-list regex
         urls = set(re.findall(r'"(/api/[^"]+)"', self.JS))
-        self.assertEqual(urls, {"/api/engine/pistonia/" + r for r in ("thread", "message", "clear", "seen", "resolve", "memory/delete", "settings", "voice")})
+        self.assertEqual(urls, {"/api/engine/pistonia/" + r for r in ("thread", "message", "stream", "clear", "seen", "resolve", "memory/delete", "settings", "voice", "cancel")}
+                         | {"/api/engine/pistonia/progress?job="}   # the live stage she is on, polled while she thinks
+                         | {"/api/engine/daemons/"})               # the prefix Undo builds, still validated by ACTION_URL
         self.assertIn('d.audio_url.indexOf("/assets/companion/chat/voice_cache/") !== 0', self.JS)   # only her own voice cache is ever played
 
     def test_only_visible_on_the_engine_tab_for_admin(self):

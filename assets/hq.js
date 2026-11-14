@@ -142,6 +142,15 @@
     try {
       const snap = await api("/api/hq", { timeoutMs: 8000 });
       const state = snap.state || "ok";
+      const chip = $("#status-chip");
+      if (chip) {
+        const items = snap.attention || [];
+        const first = items.find((item) => item.level === "critical") || items[0];
+        chip.dataset.state = state;
+        chip.dataset.target = first?.target || (first ? "hq-banner" : "system-session");
+        chip.textContent = "HQ · " + (STATE_LABEL[state] || state);
+        chip.title = first?.title || "Détails de la session HQ";
+      }
       banner.classList.remove("state-ok", "state-warning", "state-critical");
       banner.classList.add("state-" + state);
       const label = $("#hq-state-label");
@@ -194,7 +203,15 @@
       if (window.hqPaintAgentBadge) window.hqPaintAgentBadge(snap.agent || {});
       noteHqState(state);
       if (document.body.classList.contains("wall")) drawFleet(snap);
-    } catch (_) {}
+    } catch (_) {
+      const chip = $("#status-chip");
+      if (chip) {
+        chip.dataset.state = "unknown";
+        chip.dataset.target = "system-session";
+        chip.textContent = "HQ · Inconnu";
+        chip.title = "État de HQ indisponible";
+      }
+    }
   }
 
   let eventKind = "all";
@@ -535,19 +552,33 @@
     if (hit.kind === "terminal") {
       if (!confirm("Exécuter la commande allowlist « " + (hit.label || hit.id) + " » ?")) return "skip";
       const busy = typeof withBusy === "function" ? withBusy : async (_label, fn) => fn();
-      const data = await busy("Exécution…", () => api("/api/terminal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: hit.id }),
-      }));
+      if (typeof setView === "function") setView("ops");
+      let data = null;
+      try {
+        data = await busy("Lancement…", () => api("/api/terminal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: hit.id }),
+          timeoutMs: 15000,
+        }));
+      } catch (e) {
+        if (typeof window.hqTermFail === "function") window.hqTermFail(e.message);
+        if (typeof toast === "function") toast(e.message, "err");
+        return "fail";
+      }
+      // The Terminal view follows the same job: streamed output, Arrêter, exit code.
+      if (typeof window.hqTermAttachJob === "function" && window.hqTermAttachJob(data)) {
+        if (typeof toast === "function") toast("Commande lancée");
+        return "ok";
+      }
       const out = $("#shell-out");
       if (out) out.textContent = (data.stdout || "") + (data.stderr || "");
-      if (typeof setView === "function") setView("ops");
-      if (typeof toast === "function") toast(data.ok ? "Commande terminée" : "Commande en erreur");
       return "ok";
     }
     return "fail";
   }
+  // Time machine, constellation and radial menu open things exactly like a palette hit.
+  window.hqOpenHit = (hit) => dispatchPalette(hit);
 
   async function runPalette(hit) {
     if (!hit) return;
@@ -875,9 +906,25 @@
   let helpFromKeyboard = false;
   let helpPointerRecent = false;
   let helpReady = false;
+  const HELP_HOVER_MS = 500; // a tooltip that waits two seconds reads as a broken one
+  const HELP_TOUCH_MS = 480; // long press on a phone, where there is no hover
 
   function finePointer() {
     return window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  }
+
+  function helpTextFor(target) {
+    const own = (target.getAttribute("data-help") || "").trim();
+    if (own) return own;
+    // Buttons built in JS often carry only an accessible name: a symbol button
+    // (‹, ×, ⋯) has no readable label of its own, so the name is the tooltip.
+    const aria = (target.getAttribute("aria-label") || "").trim();
+    if (!aria) return "";
+    const visible = (target.textContent || "").trim();
+    // A symbol button (‹, ×, ⋯) has no readable label of its own, and a name that
+    // says more than the label does is worth showing; anything else would just
+    // repeat the button and add noise.
+    return visible.length <= 2 || aria !== visible ? aria : "";
   }
 
   function ensureTooltip() {
@@ -943,7 +990,7 @@
   }
 
   function showHelp(target) {
-    const text = (target.getAttribute("data-help") || "").trim();
+    const text = helpTextFor(target);
     if (!text || !target.isConnected) return;
     if (helpCurrent && helpCurrent !== target) restoreDescribed(helpCurrent);
     const node = ensureTooltip();
@@ -961,8 +1008,8 @@
     node.classList.add("is-on");
   }
 
-  function scheduleHelp(target, delay) {
-    if (!target || !target.getAttribute("data-help")) return;
+  function scheduleHelp(target, delay, mode) {
+    if (!target || !helpTextFor(target)) return;
     if (helpCurrent === target && helpTip && !helpTip.hidden) return;
     cancelHelp();
     helpPending = target;
@@ -974,14 +1021,23 @@
         hideHelp();
         return;
       }
-      if (delay >= 1000 && !finePointer()) return;
-      if (delay < 1000 && document.activeElement !== target) return;
+      if (mode === "hover" && !finePointer()) return;
+      if (mode === "focus" && document.activeElement !== target) return;
       showHelp(target);
     }, delay);
   }
 
   function helpTargetFrom(node) {
     return node && node.closest ? node.closest("[data-help]") : null;
+  }
+
+  function helpTargetAt(ev) {
+    const direct = helpTargetFrom(ev.target);
+    if (direct) return direct;
+    // A disabled button swallows pointer events, so the pointer lands on its
+    // parent; hit-test the coordinates to still reach the control.
+    if (!document.elementFromPoint || ev.clientX == null) return null;
+    return helpTargetFrom(document.elementFromPoint(ev.clientX, ev.clientY));
   }
 
   function setupHelp() {
@@ -1000,23 +1056,63 @@
     }, true);
     document.addEventListener("pointerover", (ev) => {
       if (!finePointer()) return;
-      const target = helpTargetFrom(ev.target);
+      const target = helpTargetAt(ev);
       if (!target) return;
       if (helpTargetFrom(ev.relatedTarget) === target) return;
-      scheduleHelp(target, 2000);
+      scheduleHelp(target, HELP_HOVER_MS, "hover");
+    }, true);
+    let helpMoveAt = 0;
+    let helpMoveHit = null;
+    document.addEventListener("pointermove", (ev) => {
+      if (!finePointer()) return;
+      const now = Date.now();
+      if (now - helpMoveAt < 120) return;
+      helpMoveAt = now;
+      const hit = helpTargetAt(ev);
+      if (hit === helpMoveHit) return;
+      helpMoveHit = hit;
+      if (!hit) {
+        if (helpCurrent || helpPending) hideHelp();
+        return;
+      }
+      scheduleHelp(hit, HELP_HOVER_MS, "hover");
     }, true);
     document.addEventListener("pointerout", (ev) => {
-      const target = helpTargetFrom(ev.target);
-      if (!target) return;
+      const target = helpTargetAt(ev);
+      if (!target) {
+        if (helpCurrent || helpPending) hideHelp();
+        return;
+      }
       if (helpTargetFrom(ev.relatedTarget) === target) return;
       if (helpCurrent === target || helpPending === target) hideHelp();
     }, true);
+    let touchHelpTimer = 0;
+    const cancelTouchHelp = () => {
+      if (!touchHelpTimer) return;
+      clearTimeout(touchHelpTimer);
+      touchHelpTimer = 0;
+    };
+    document.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType !== "touch") return;
+      const target = helpTargetAt(ev);
+      cancelTouchHelp();
+      if (!target) return;
+      // No hover on a phone: a long press is the equivalent gesture.
+      touchHelpTimer = setTimeout(() => {
+        touchHelpTimer = 0;
+        if (!target.isConnected) return;
+        showHelp(target);
+        setTimeout(hideHelp, 2600);
+      }, HELP_TOUCH_MS);
+    }, true);
+    document.addEventListener("pointerup", cancelTouchHelp, true);
+    document.addEventListener("pointercancel", cancelTouchHelp, true);
     document.addEventListener("focusin", (ev) => {
       const target = helpTargetFrom(ev.target);
       if (!target || helpPointerRecent) return;
       const keyboard = helpFromKeyboard || (target.matches && target.matches(":focus-visible"));
       if (!keyboard) return;
-      scheduleHelp(target, 250);
+      scheduleHelp(target, 250, "focus");
     });
     document.addEventListener("focusout", (ev) => {
       const target = helpTargetFrom(ev.target);
@@ -1027,6 +1123,22 @@
     window.addEventListener("resize", () => hideHelp());
   }
 
+  function jumpToSection(id, focus = false) {
+    const target = document.getElementById(id);
+    if (!target) return;
+    if (id === "hq-banner") setDisclosure($("#hq-attention-toggle"), true);
+    if (id === "home-devices") $("#home-devices-off[aria-expanded='false']")?.click();
+    if (target.tagName === "DETAILS") target.open = true;
+    if (focus) {
+      const heading = target.querySelector(":scope > summary, h2") || target;
+      if (heading.tabIndex < 0) heading.setAttribute("tabindex", "-1");
+      heading.focus({ preventScroll: true });
+    }
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+  }
+  window.hqJumpToSection = (id) => jumpToSection(id, true);
+
   function setupSystemNav() {
     const nav = document.querySelector('nav[aria-label="Sections Système"]');
     if (!nav || nav.dataset.ready) return;
@@ -1034,12 +1146,7 @@
     nav.addEventListener("click", (ev) => {
       const btn = ev.target && ev.target.closest ? ev.target.closest("[data-jump]") : null;
       if (!btn || !nav.contains(btn)) return;
-      const target = document.getElementById(btn.dataset.jump || "");
-      if (!target) return;
-      const details = target.tagName === "DETAILS" ? target : target.querySelector("details");
-      if (details) details.open = true;
-      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      target.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+      jumpToSection(btn.dataset.jump);
       nav.querySelectorAll("[data-jump]").forEach((node) => {
         const on = node === btn;
         node.classList.toggle("is-current", on);
@@ -1052,7 +1159,6 @@
   function boot() {
     setupHelp();
     setupSystemNav();
-    $("#btn-palette")?.addEventListener("click", () => openPalette());
     $("#btn-search-bar")?.addEventListener("click", () => openPalette()); // every view, phone included
     $("#hq-palette")?.addEventListener("click", (ev) => {
       if (ev.target && ev.target.id === "hq-palette") closePalette();

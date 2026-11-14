@@ -369,8 +369,12 @@ def clear_thread() -> dict[str, Any]:
         return {"ok": True, "messages": []}
 
 
+def growth_path() -> Path:
+    return _state_dir() / GROWTH_FILE
+
+
 def _record_growth(text: str) -> None:
-    assistant_growth.record(_state_dir() / GROWTH_FILE, text, "culinia")
+    assistant_growth.record(growth_path(), text, "culinia")
 
 
 def _growth_hint(query: str) -> str:
@@ -956,6 +960,13 @@ def chat(message: Any) -> dict[str, Any]:
             cancelled = True
             log.warning("chat reply discarded: the conversation was cleared before it could be saved")
     _note_contention(rebases, fallback)
+
+    try:
+        import hq_personhood
+        hq_personhood.observe_reply("culinia", tools=tools_used,
+                                     outcome="cancelled" if cancelled else "fallback" if fallback else "ok")
+    except Exception:
+        pass
 
     return {
         "ok": True,

@@ -242,3 +242,48 @@ nodes, remove media handlers, release the media source and clear fade timers.
 cycles and rejected playback. Only the three impacts are predecoded (about
 0.54 MiB of sample buffers); the remaining recordings load on demand.
 These are resource/lifecycle checks, not a live browser frame-rate measurement.
+
+## Phonon engine and per-companion voices (2026-11-11, branch `feat/phonon-tts`)
+
+**Engines:** `xtts` (Else only, unchanged default), `phonon`, `browser`. `hq_voice.synthesize()` keeps its
+signature; new optional `character=`, `voice=`, `rate=`. No `character` (legacy callers) → XTTS exactly as before.
+A Phonon character **never falls back to XTTS**: failures return `ok:false, engine:"phonon", code:…`
+(`preparing`, `busy`, `bad_voice`, `no_voice`, `bad_audio`, `unreachable`) and the client uses browser speech.
+Responses keep `ok/cached/audio_url/wav_url/visemes/text/delivery` and add `engine/model/voice/language/preview`.
+
+**Install:** `ptts` 0.7.0 in `C:\AI\Phonon\venv` (CPU wheel, AVX; no GPU backend, no VRAM used). Models are
+resolved by `hf://` id and cached by ptts; after first download they load offline (verified with `HF_HUB_OFFLINE=1`).
+- `gradium/phonon-31m-en` — installed, working (English, 24 kHz, f32).
+- `gradium/phonon-40m-fr` — **gated**: accept the terms on Hugging Face, then run
+  `C:\AI\Phonon\venv\Scripts\hf auth login` (or set `HF_TOKEN` for one run). Licence **CC BY-NC 4.0**:
+  non-commercial only; do not distribute the weights or generated audio commercially.
+- Not installed: q8 files (only offered if the checkpoint ships `model.q8.gguf`), multilingual checkpoint.
+
+**Shared model:** `scripts/phonon_daemon.py` runs in the Phonon venv on `127.0.0.1:8058` (`HQ_PHONON_PORT`),
+loads each language once at start-up (never in a request), runs one synthesis at a time and answers 429 when
+busy. `hq_voice_phonon.start_daemon()` launches it detached; it coexists with the XTTS daemon on 8057 and
+touches nothing in `C:\Gemini-Test`. Characters share the model; they differ only by voice name and rate.
+
+**Profiles:** `hq_voice_profiles.json` (git-ignored, atomic writes) stores `{engine, voice, rate}` per character.
+Defaults: Else→xtts; Transferina/Inventoria/Musica→phonon with *no* saved voice (`preview:true` in responses,
+each with a different shortlist voice). Shortlists in `CANDIDATES` come from catalog descriptions and are
+**unverified until listened to**. Restore defaults with "Valeur par défaut" in the studio, or delete the JSON file.
+
+**Studio:** Éditer → **Studio vocal** (`assets/hq-voice-studio.js`; API ops `voice_profiles`, `voice_preview`,
+`voice_save`, `voice_reset`, `voice_start` on the `transferania` action; saves need admin). Previews persist
+nothing, a new preview or Stop cancels the previous one, destroy releases the audio element. Phonon exposes only
+a duration control, so only *Débit* and the existing delivery styles (small duration offsets) are offered.
+
+**Cache/mastering:** files `voice_ph<sha256[:16]>.wav` (key = engine, model, voice, language, delivery, duration
+delta, mastering rev `ph-m1`, text), disjoint from XTTS `voice_<md5>` / `master_voice_*` files. Mastering is a light
+chain (`highpass 60 Hz`, `loudnorm -19 LUFS`, 48 kHz, 16-bit PCM) — the XTTS chain (denoise/EQ/crystalizer) is
+not reused. Visemes come from the existing envelope function.
+
+**Integration status:** Transferina (`op:"voice"` and prewarm) and Musica (`hq_musica.speak`) route by profile.
+Inventoria has no spoken-reply path (it is an inventory ops engine) — only the profile + studio exist; calling
+`hq_voice.synthesize(text, character="inventoria")` is the reusable entry point. Else audition on Phonon is
+experimental; XTTS stays default. Streaming (`TTS.stream`) is not wired; measure before adopting.
+
+**Commands:** `python scripts/phonon_audition.py --lang fr` (writes WAVs to `C:\AI\Phonon\samples`),
+`python scripts/bench_voice.py [--xtts]`, `python -m pytest tests/test_hq_voice_phonon.py`,
+`node tests/check_hq_voice_studio.mjs`. Log: `.tmp/phonon_daemon.log`.

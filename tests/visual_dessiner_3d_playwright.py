@@ -8,6 +8,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 BASE = os.environ.get("HQ_BASE", "http://127.0.0.1:9877")
 ROOT = Path(os.environ.get("HQ_ROOT", "/tmp/hq-visual-root"))
 PIN = os.environ.get("HQ_TEST_PIN", "246810")
@@ -112,7 +114,7 @@ def run():
         page.goto(BASE + "/")
         page.fill('input[name="pin"]', PIN); page.click('button[type="submit"]')
         page.wait_for_load_state("networkidle")  # the nav handlers bind after load; an early click is lost
-        page.click('.bottom-nav [data-nav="dessiner"]')
+        open_section(page, "dessiner")
         page.wait_for_selector(".sk-canvas")
         page.click('.sk-seg [data-mode="construction"]')
         page.locator(".sk-canvas").scroll_into_view_if_needed()
@@ -178,7 +180,7 @@ def run():
         touch.goto(BASE + "/")
         touch.fill('input[name="pin"]', PIN); touch.click('button[type="submit"]')
         touch.wait_for_load_state("networkidle")
-        touch.click('.bottom-nav [data-nav="dessiner"]')
+        open_section(touch, "dessiner")
         touch.wait_for_selector(".sk-canvas")
         touch.click('[data-act="open"]'); touch.wait_for_selector('.sk-item')
         touch.click(f'[data-open="{stem}"]')

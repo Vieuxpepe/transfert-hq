@@ -51,13 +51,13 @@ def shot(page, name, browser_name):
 
 
 def save(page, base, ev):
-    r = page.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
+    r = page.context.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
                           data=json.dumps({"action": "save", "expected_rev": 0, "event": ev}))
     return r.json().get("event") if r.ok else None
 
 
 def events_on(page, base, day):
-    data = page.request.get(f"{base}/api/calendar?from={day.isoformat()}&to={(day + timedelta(days=1)).isoformat()}").json()
+    data = page.context.request.get(f"{base}/api/calendar?from={day.isoformat()}&to={(day + timedelta(days=1)).isoformat()}").json()
     return {item["title"]: item for item in data.get("items") or []}
 
 
@@ -104,14 +104,13 @@ def main() -> None:
         with sync_playwright() as p:
             browser = getattr(p, browser_name).launch()
             print("BROWSER", browser_name, browser.version)
-            ctx = browser.new_context(viewport={"width": 375, "height": 812}, bypass_csp=True, has_touch=True)
+            ctx = browser.new_context(viewport={"width": 375, "height": 812}, bypass_csp=True)
             page = ctx.new_page()
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
-            page.goto(base + "/")
-            page.fill('input[name="pin"]', info["admin_pin"])
-            page.click('button[type="submit"]')
-            page.wait_for_load_state("networkidle")
+            login = ctx.request.post(base + "/login", headers={"Origin": base},
+                                     form={"pin": info["admin_pin"]}, max_redirects=0)
+            check(login.status == 303, "the fixture admin session is ready")
             if timed_today:
                 done_ev = save(page, base, {"title": "Fini tôt", "all_day": False, "category": "study",
                                             "start": minute(now - timedelta(hours=3)), "end": minute(now - timedelta(hours=2))})
@@ -120,7 +119,10 @@ def main() -> None:
                 check(bool(done_ev and soon_ev), "seed events saved")
             save(page, base, {"title": "Agenda à glisser", "all_day": True, "category": "personal",
                               "start": (today + timedelta(days=3)).isoformat(), "end": (today + timedelta(days=4)).isoformat()})
-            page.click('.bottom-nav [data-nav="calendrier"]')
+            page.goto(base + "/#calendrier", wait_until="domcontentloaded")
+            page.locator("body.session-admin").wait_for(timeout=20000)
+            page.add_style_tag(content="#hq-debug-panel{display:none!important}")  # the perf HUD covers the sheet actions
+            page.locator('.bottom-nav [data-nav="calendrier"]').dispatch_event("click")
             check(until(page, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')"), "the calendar renders")
             page.locator('#hq-cal-app [data-view="day"]').click()
             until(page, "() => !!document.querySelector('.hq-cal-day')")
@@ -149,7 +151,13 @@ def main() -> None:
                 check(when.startswith("dans ") and "min" in when, f"it counts down ({when})")
                 check(until(page, "() => { const f = document.querySelector('.hq-cal-ring .fill'); return f && parseFloat(f.style.strokeDashoffset) < parseFloat(f.style.strokeDasharray); }"),
                       "its ring has started to fill")
+                check(bool(card.locator(".hq-cal-nextup-start").get_attribute("datetime")), "the countdown shows the event's start time")
                 shot(page, "nextup", browser_name)
+                card.click()
+                check(until(page, """() => {
+                    const event = document.querySelector('.hq-cal-event.is-selected');
+                    return event?.textContent.includes('Bientôt') && document.activeElement === event;
+                }"""), "the next-up card selects and focuses the event on the grid")
                 # Tick off the finished event.
                 ev = page.locator(".hq-cal-day .hq-cal-event", has_text="Fini tôt")
                 check(ev.locator(".hq-cal-check").count() == 1, "a finished event has a check")
@@ -194,6 +202,7 @@ def main() -> None:
             check(until(page, "() => ![...document.querySelectorAll('.hq-cal-day .hq-cal-event')].some((e) => e.innerText.includes('Aperçu vivant'))"), "and the grid follows")
 
             # Recent titles: one tap writes the title and its usual time.
+            quick.focus()
             check(until(page, "() => !document.getElementById('hq-cal-quick-recent').hidden && document.querySelectorAll('.hq-cal-recent-chip').length > 0"),
                   "recent titles sit under the empty field")
             check(page.locator(".hq-cal-recent-chip", has_text="Aperçu vivant").count() == 0, "an event taken back with Annuler is not among them")
@@ -281,7 +290,8 @@ def main() -> None:
             touch(page, "pointerup", cx, cy + 110, 22)
             h1 = page.evaluate("() => document.querySelector('.hq-cal-day .hq-cal-slot').getBoundingClientRect().height")
             check(h1 > h0 * 2.2, f"spreading two fingers makes the hours taller ({h0:.0f} → {h1:.0f} px)")
-            check(page.evaluate("() => document.getElementById('hq-cal-app').classList.contains('is-zoomed')"), "tall hours show half-hour lines")
+            check(page.locator(".hq-cal-stage .hq-cal-slot").first.evaluate("(slot) => getComputedStyle(slot).backgroundImage").startswith("linear-gradient"),
+                  "the half-hour line remains visible at the taller zoom")
             check(page.evaluate("() => Number(localStorage.getItem('hq_cal_zoom'))") > 2, "the hour height is remembered")
             shot(page, "zoomed", browser_name)
             check(strip_day(page) == day2, "a pinch is not a swipe")
@@ -309,16 +319,18 @@ def main() -> None:
             check(ok, "Annuler brings the row back")
 
             # Sons: a toggle, remembered.
+            page.locator(".hq-cal-options-trigger").click()
             sons = page.locator('#hq-cal-app [data-cal="sound"]')
             check(sons.get_attribute("aria-pressed") == "false", "Sons is off by default")
             sons.click()
             check(sons.get_attribute("aria-pressed") == "true" and page.evaluate("() => localStorage.getItem('hq_cal_sound')") == "1", "Sons turns on and is remembered")
             sons.click()
+            page.keyboard.press("Escape")
 
             # iPhone tap: where vibrate is missing (Safari), the hidden switch is used.
             if not page.evaluate("() => 'vibrate' in navigator"):
                 check(page.locator("label.hq-cal-haptic input[switch]").count() == 1, "without vibrate, the hidden switch gives the tap")
-            tops = page.evaluate("() => ['.hq-cal-toggle', '.hq-cal-create'].map((q) => Math.round(document.querySelector('#hq-cal-app ' + q).getBoundingClientRect().top))")
+            tops = page.evaluate("() => ['.hq-cal-options-trigger', '.hq-cal-create'].map((q) => Math.round(document.querySelector('#hq-cal-app ' + q).getBoundingClientRect().top))")
             check(abs(tops[0] - tops[1]) < 8, f"on a phone the toggles and + Événement share one row {tops}")
             check(not errors, f"no page errors {errors[:3]}")
             ctx.close()
@@ -326,18 +338,19 @@ def main() -> None:
             # Desktop: Ctrl + wheel (a trackpad pinch) zooms the hours.
             ctx = browser.new_context(viewport={"width": 1440, "height": 900}, bypass_csp=True)
             page = ctx.new_page()
-            page.goto(base + "/")
-            page.fill('input[name="pin"]', info["admin_pin"])
-            page.click('button[type="submit"]')
-            page.wait_for_load_state("networkidle")
-            page.click('.bottom-nav [data-nav="calendrier"]') if page.locator('.bottom-nav [data-nav="calendrier"]').is_visible() else page.evaluate("() => setView('calendrier')")
+            login = ctx.request.post(base + "/login", headers={"Origin": base},
+                                     form={"pin": info["admin_pin"]}, max_redirects=0)
+            check(login.status == 303, "the fixture admin session is ready")
+            page.goto(base + "/#calendrier", wait_until="domcontentloaded")
+            page.locator("body.session-admin").wait_for(timeout=20000)
+            page.add_style_tag(content="#hq-debug-panel{display:none!important}")  # the perf HUD covers the sheet actions
+            page.locator('.bottom-nav [data-nav="calendrier"]').dispatch_event("click") if page.locator('.bottom-nav [data-nav="calendrier"]').is_visible() else page.evaluate("() => setView('calendrier')")
             until(page, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')")
             page.locator('#hq-cal-app [data-view="day"]').click()
             until(page, "() => !!document.querySelector('.hq-cal-day')")
             page.wait_for_timeout(400)
             h0 = page.evaluate("() => document.querySelector('.hq-cal-day .hq-cal-slot').getBoundingClientRect().height")
-            sb = page.locator(".hq-cal-day").bounding_box()
-            page.mouse.move(sb["x"] + 200, 400)
+            page.locator(".hq-cal-stage .hq-cal-scroll").hover(position={"x": 100, "y": 90})
             page.keyboard.down("Control")
             for _ in range(4):
                 page.mouse.wheel(0, -40)

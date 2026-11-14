@@ -23,6 +23,8 @@ import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from hq_browser_nav import open_section
+
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
 
@@ -108,7 +110,7 @@ def _away_and_back(page, label):
     before = _counts(page)
     for _ in range(2):
         page.tap(".bottom-nav [data-nav=accueil]")
-        page.tap(".bottom-nav [data-nav=dessiner]")
+        open_section(page, "dessiner", touch=True)
     _check(_counts(page) == before, f"{label}: away/back adds no window/document handler or ResizeObserver")
 
 
@@ -125,7 +127,7 @@ def _login(page, url):
     page.goto(url + "/")
     page.fill('input[name="pin"]', FAKE_PIN)
     page.click('button[type="submit"]')
-    page.wait_for_selector(".bottom-nav [data-nav=dessiner]")
+    page.wait_for_selector(".bottom-nav [data-nav=plus]")
 
 
 def _expect_fail_state(page, module):
@@ -147,7 +149,7 @@ def case_happy(browser, device, url):
     ctx, page = _new_page(browser, device, errors)
     _login(page, url)
     before = _counts(page)
-    page.tap(".bottom-nav [data-nav=dessiner]")
+    open_section(page, "dessiner", touch=True)
     _expect_ready(page, "tap from Accueil")
     init_delta = _delta(_counts(page), before)
     _check(init_delta[0] >= 1 and init_delta[4] >= 1, f"init registers Dessiner handlers once {dict(zip(COUNT_KEYS, init_delta))}")
@@ -178,7 +180,7 @@ def case_blocked(browser, device, url, module, init_delta, how="abort"):
     else:
         page.route(pattern, lambda route: route.abort())
     _login(page, url)
-    page.tap(".bottom-nav [data-nav=dessiner]")
+    open_section(page, "dessiner", touch=True)
     _expect_fail_state(page, module)
     _check(page.evaluate("[...skFailedScripts]") == [module], f"capture listener saw the first-load {how} of {module}")
     page.evaluate("document.querySelector('#hq-sk-app .sk-fail').dataset.old = '1'")
@@ -186,7 +188,7 @@ def case_blocked(browser, device, url, module, init_delta, how="abort"):
     page.wait_for_selector("#hq-sk-app .sk-fail:not([data-old])")  # a real new attempt, not the old box
     _expect_fail_state(page, module)  # still blocked: retry fails visibly again
     page.tap(".bottom-nav [data-nav=accueil]")
-    page.tap(".bottom-nav [data-nav=dessiner]")
+    open_section(page, "dessiner", touch=True)
     _expect_fail_state(page, module)  # leaving and returning keeps a single error state
     _check(page.locator("#hq-sk-app .sk-fail").count() == 1, "leave/return: exactly one error box")
     page.reload()  # saved view + still blocked: error state without any tap
@@ -214,7 +216,7 @@ def case_throwing_script(browser, device, url, module, init_delta):
     page.route(pattern, lambda route: route.fulfill(status=200, content_type="application/javascript; charset=utf-8",
                                                      body="throw new Error('injected-" + module + "');"))
     _login(page, url)
-    page.tap(".bottom-nav [data-nav=dessiner]")
+    open_section(page, "dessiner", touch=True)
     _expect_fail_state(page, module)
     page.unroute(pattern)
     before = _counts(page)
@@ -233,12 +235,12 @@ def case_init_throws(browser, device, url):
     page.on("console", lambda m: logged.append(m.text) if m.type == "error" else None)
     _login(page, url)
     page.evaluate("sessionStorage.setItem('skBreakInit', '1')")
-    page.tap(".bottom-nav [data-nav=dessiner]")
+    open_section(page, "dessiner", touch=True)
     _expect_fail_state(page, "erreur d'initialisation")
     _check(any("injected-init" in t for t in logged), "init error still logged to the console")
     _check(not errors, f"init error contained, no pageerror ({errors})")
     page.tap(".bottom-nav [data-nav=accueil]")
-    page.tap(".bottom-nav [data-nav=dessiner]")
+    open_section(page, "dessiner", touch=True)
     _check(page.locator("#hq-sk-app .sk-fail").count() == 1 and page.locator("#hq-sk-app .sk-canvas").count() == 0,
            "leave/return after init failure: error state kept, no half-built canvas")
     page.evaluate("sessionStorage.removeItem('skBreakInit')")

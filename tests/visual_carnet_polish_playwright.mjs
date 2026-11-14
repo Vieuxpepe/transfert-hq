@@ -202,7 +202,7 @@ const backToCarnet = async (p) => {
 };
 /** Make a drawing with the real Dessiner UI (through the Dessiner tab, no Carnet link) and come back to Carnet. */
 async function makeDrawing(p, name) {
-  await p.locator('.bottom-nav [data-nav="dessiner"]').click();
+  await openSection(p, "dessiner");
   await skView(p);
   await drawLine(p);
   const stem = await dessinerSave(p, name);
@@ -248,6 +248,7 @@ const rectOf = (p, sel) => p.evaluate((s) => { const n = document.querySelector(
 // ---------------------------------------------------------------- polish helpers
 import zlib from "node:zlib";
 import { mkdirSync } from "node:fs";
+import { openSection } from "./hq_browser_nav.mjs";
 const crcT = (() => { const t = []; for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 const crc32 = (b) => { let c = 0xffffffff; for (const x of b) c = crcT[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
 function pngSolid(w, h, [r, g, b]) {

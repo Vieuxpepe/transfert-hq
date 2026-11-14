@@ -15,6 +15,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 # Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -94,12 +96,12 @@ def main() -> None:
             page.emulate_media(color_scheme="dark", reduced_motion="reduce")
             track(page)
             page.goto(base + "/")
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => /en ligne/i.test(document.querySelector('#forge-status').textContent || '')")
             page.locator('[data-nav="carnet"]').click()
             check(page.evaluate("() => getComputedStyle(document.querySelector('#forge-studio')).display") == "none", "forge panel is hidden while Carnet is open")
             check(page.locator('[data-panel="carnet"] #forge-generate').count() == 0, "forge generate is not inside the Carnet panel")
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelectorAll('#forge-checkpoint option').length > 0 && document.querySelector('#forge-checkpoint').value")
             check("Forge Studio" in page.locator("#forge-studio h1").inner_text(), "forge heading")
             page.locator("#forge-checkpoint").focus()
@@ -185,7 +187,7 @@ def main() -> None:
             phone.set_viewport_size({"width": 390, "height": 844})
             track(phone)
             phone.goto(base + "/")
-            phone.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(phone, "forge")
             phone.locator("#forge-generate").wait_for()
             boxes = phone.evaluate("""() => {
               const button = document.querySelector('#forge-generate').getBoundingClientRect();
@@ -224,7 +226,7 @@ def main() -> None:
 
             def open_forge():
                 page.locator('[data-nav="carnet"]').click()
-                page.locator('.bottom-nav [data-nav="forge"]').click()
+                open_section(page, "forge")
 
             scripted["status"] = {"forge": "offline", "code": "forge_offline", "message": "Forge n'est pas démarré.", "model": None}
             scripted["catalog"] = {"forge": "offline", "code": "forge_offline", "message": "Forge n'est pas démarré.", "models": [], "samplers": [], "schedulers": []}

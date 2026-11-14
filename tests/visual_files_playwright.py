@@ -176,13 +176,17 @@ def main():
             # move picker from the selection bar
             p.evaluate("navigate('Uni/GIA1077')")
             wait(lambda: tile(p, "mot.txt").count() == 1, "back in GIA1077", p)
+            p.route("**/api/favorites", lambda route: route.fulfill(json={"favorites": ["Print"]}))
             tile(p, "mot.txt").click(modifiers=["Control"])
             p.locator(".fx-selbar .fx-btn", has_text="Déplacer").click()
             wait(lambda: p.locator(".fx-pick").count() == 1, "move picker opens", p)
-            p.locator(".fx-pick-row", has_text="Labos").click()
-            wait(lambda: "Labos" in p.locator(".fx-sheet-foot .is-primary").inner_text(), "picker walks into Labos", p)
+            p.get_by_role("region", name="Favoris").get_by_role("button", name="Print", exact=True).click()
+            wait(lambda: "Print" in p.locator(".fx-sheet-foot .is-primary").inner_text(), "favorite selects Print", p)
+            p.get_by_role("region", name="Destinations récentes").get_by_role("button", name="Labos", exact=False).click()
+            wait(lambda: "Labos" in p.locator(".fx-sheet-foot .is-primary").inner_text(), "recent destination selects Labos", p)
             p.locator(".fx-sheet-foot .is-primary").click()
             wait(lambda: (R / "Uni/GIA1077/Labos/mot.txt").is_file(), "picker moves into Labos", p)
+            p.unroute("**/api/favorites")
 
             # permanent delete then empty
             tile(p, "gros.bin").click(modifiers=["Control"])

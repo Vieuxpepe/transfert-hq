@@ -26,8 +26,6 @@ CATALOG_TTL_SEC = 60.0
 MAX_CACHE_ENTRIES = 8
 MAX_LIST = 64
 SUBMIT_PATH = "/sdapi/v1/txt2img"
-OPTIONS_PATH = "/sdapi/v1/options"
-FORGE_GPU_MB_KEYS = frozenset({"xl_GPU_MB", "flux_GPU_MB"})
 JOB_TIMEOUT_SEC = 600.0
 
 ALLOWED_ROUTES = frozenset({
@@ -36,7 +34,6 @@ ALLOWED_ROUTES = frozenset({
     ("GET", "/sdapi/v1/sd-models"),
     ("GET", "/sdapi/v1/upscalers"),
     ("GET", "/sdapi/v1/options"),
-    ("POST", "/sdapi/v1/options"),
     ("GET", "/sdapi/v1/loras"),
     ("GET", "/sdapi/v1/progress"),
     ("GET", "/internal/pending-tasks"),
@@ -235,14 +232,20 @@ def _public(code: str) -> str:
     return "error"
 
 
-def _status_payload(code: str, *, model: str | None = None, forge: str | None = None) -> dict:
+def _status_payload(code: str, *, model: str | None = None, forge: str | None = None,
+                    progress: float | None = None, eta: float | None = None) -> dict:
     kind = forge or _public(code)
-    return {
+    payload = {
         "forge": kind,
         "model": model,
         "message": _MESSAGES.get(code, _MESSAGES["forge_error"]),
         "code": code,
     }
+    if progress is not None:
+        payload["progress"] = progress
+    if eta is not None:
+        payload["eta"] = eta
+    return payload
 
 
 def _catalog_payload(code: str, *, models=None, samplers=None, schedulers=None, upscalers=None, forge: str | None = None) -> dict:
@@ -410,7 +413,14 @@ def status(*, transport=None) -> dict:
         return _status_payload("forge_error")
     model = _checkpoint(options.get("sd_model_checkpoint"))
     if job or job_count > 0 or pending_size > 0:
-        return _status_payload("busy", model=model, forge="busy")
+        # How far the owner's own render has gone: the one thing the disabled-button
+        # reason cannot tell, so the status line carries it.
+        value = progress.get("progress")
+        done = None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            done = max(0.0, min(1.0, float(value)))
+        return _status_payload("busy", model=model, forge="busy", progress=done,
+                              eta=eta_seconds(progress))
     return _status_payload("ready", model=model, forge="ready")
 
 
@@ -510,40 +520,6 @@ def read_options(*, transport=None) -> dict:
     if not isinstance(value, dict):
         raise _Probe("forge_error")
     return value
-
-
-def set_options(partial: dict, *, transport=None) -> dict:
-    """POST /sdapi/v1/options — only Forge GPU weight keys (companion portrait tuning)."""
-    if not isinstance(partial, dict) or not partial:
-        raise _Probe("forge_error")
-    clean: dict[str, int] = {}
-    for key, raw in partial.items():
-        if key not in FORGE_GPU_MB_KEYS:
-            continue
-        try:
-            val = int(float(raw))
-        except (TypeError, ValueError):
-            raise _Probe("forge_error") from None
-        clean[key] = max(0, min(24_576, val))
-    if not clean:
-        raise _Probe("forge_error")
-    transport = _resolve(transport)
-    url = _upstream + OPTIONS_PATH
-    body = json.dumps(clean, separators=(",", ":")).encode("utf-8")
-    started = time.monotonic()
-    try:
-        status, raw = transport("POST", url, 30.0, body)
-    except (TimeoutError, ConnectionRefusedError, ConnectionResetError, OSError):
-        raise _Probe("forge_error", elapsed_ms=_elapsed_ms(started)) from None
-    if status != 200:
-        raise _Probe("forge_http", http_status=status, elapsed_ms=_elapsed_ms(started))
-    try:
-        parsed = json.loads(bytes(raw).decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        raise _Probe("forge_malformed", http_status=status, elapsed_ms=_elapsed_ms(started)) from None
-    if not isinstance(parsed, dict):
-        raise _Probe("forge_schema", http_status=status, elapsed_ms=_elapsed_ms(started))
-    return parsed
 
 
 def _elapsed_ms(started: float) -> int:

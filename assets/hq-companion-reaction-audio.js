@@ -151,7 +151,7 @@
       const ctx=ensureReactionCtx();
       if(!ctx)return Promise.resolve(null);
       if(ctx.state==='suspended')ctx.resume().catch(()=>{});
-      const job=enqueueJob(()=>win.fetch(url).then(r=>r.ok?r.arrayBuffer():Promise.reject()).then(ab=>ctx.decodeAudioData(ab))).then(buf=>{
+      const job=enqueueJob(()=>win.fetch(url).then(r=>r.ok ? r.arrayBuffer() : Promise.reject()).then(ab=>ctx.decodeAudioData(ab))).then(buf=>{
         if(!buf){warmed.delete(url);return null;}
         touchBuffer(url,buf);trimDecoded();
         return buf;
@@ -161,11 +161,11 @@
     };
     const warmSamples=(win,urls)=>Promise.all((urls||[]).filter(Boolean).map(url=>warmSample(win,url)));
     const manifestUrl='/assets/companion/chat/reactions/manifest.runtime.json?v='+encodeURIComponent(MANIFEST_REVISION);
-    const loadManifest=()=>win.fetch(manifestUrl).then(r=>r.ok?r.json():null).catch(()=>null);
+    const loadManifest=()=>win.fetch(manifestUrl).then(r=>r.ok ? r.json() : null).catch(()=>null);
     const ready=loadManifest().then(manifest=>{
       if(manifest)return manifest;
       return win.fetch('/assets/companion/chat/reactions/manifest.json?v='+encodeURIComponent(MANIFEST_REVISION))
-        .then(r=>r.ok?r.json():null);
+        .then(r=>r.ok ? r.json() : null);
     }).then(manifest=>{
         const idleDb=Number(manifest?.mastering?.idle_playback_gain_db);
         if(Number.isFinite(idleDb)&&idleDb>=-18&&idleDb<=0)gainDb.idle=idleDb;
@@ -211,7 +211,7 @@
         const list=Array.isArray(entry)?entry:[entry];
         return list.slice(0,take).map(item=>item?.url).filter(Boolean);
       });
-      const hot=[...(nsfw?slapImpacts.slice(0,2):[]),...fromKinds(1)];
+      const hot=[...(nsfw ? slapImpacts.slice(0,2):[]),...fromKinds(1)];
       const background=fromKinds(HOT_PREFETCH_PER_KIND);
       return {hot,background};
     };

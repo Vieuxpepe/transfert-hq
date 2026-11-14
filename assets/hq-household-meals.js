@@ -164,6 +164,8 @@
     paint(container);
     refresh(container);
     container.addEventListener("click", onClick);
+    session.onMealsChanged = function () { refresh(container); };
+    window.addEventListener("hq:meals-changed", session.onMealsChanged);
     return session;
   }
 
@@ -172,6 +174,7 @@
     if (!session) return;
     session.alive = false;
     container.removeEventListener("click", onClick);
+    if (session.onMealsChanged) window.removeEventListener("hq:meals-changed", session.onMealsChanged);
     sessions.delete(container);
     clear(container);
     container.classList.remove("hq-meals");

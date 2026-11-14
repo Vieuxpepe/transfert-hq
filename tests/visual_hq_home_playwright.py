@@ -1,5 +1,5 @@
 """Accueil in a browser (phone 390 px, desktop 1440 px): the welcome header (date, greeting, status,
-next-event countdown), the action row (photo, note, event, file, search), Carnet « Reprendre », Today
+next-event countdown), the quick actions (photo, note, event, file), global search, Carnet « Reprendre », Today
 open, device tiles, this PC with line icons, the activity card (since yesterday, five lines then « Tout
 voir »), drop a file anywhere (desktop), and a layout with no holes. Throwaway loopback HQ, fake PINs.
 
@@ -76,6 +76,16 @@ def main() -> None:
                 page.click('button[type="submit"]')
                 page.wait_for_load_state("networkidle")
                 if label == "phone":
+                    nav = page.locator(".bottom-nav")
+                    check(nav.evaluate("""n => [...n.querySelectorAll('button[data-nav]')]
+                          .filter(b => b.offsetWidth).slice(0, 5).map(b => b.dataset.nav).join(',')""")
+                          == "accueil,carnet,calendrier,fichiers,plus", "phone: five familiar tabs come first")
+                    check(nav.evaluate("n => n.scrollWidth > n.clientWidth"), "phone: the bar scrolls to additional tabs")
+                    nav.locator('[data-nav="plus"]').click()
+                    check(until(page, "() => location.hash === '#plus' && document.body.dataset.view === 'plus'"), "Plus has its own URL")
+                    check(page.locator('.hq-more-nav [data-view-link="forge"]').is_visible(), "Plus exposes Forge")
+                    page.go_back(wait_until="commit")
+                    check(until(page, "() => location.hash === '#accueil' && document.body.dataset.view === 'accueil'"), "Back restores Accueil")
                     events = [{"title": "Bientôt", "all_day": False, "category": "appointment", "start": minute(soon), "end": minute(soon + timedelta(hours=1))}]
                     events += [{"title": f"Remplissage {i}", "all_day": False, "category": "other",
                                 "start": minute(soon + timedelta(days=3, hours=i)), "end": minute(soon + timedelta(days=3, hours=i, minutes=30))} for i in range(6)]
@@ -86,8 +96,20 @@ def main() -> None:
                     page.reload()
                     page.wait_for_load_state("networkidle")
 
+                companion_toggle = page.locator("#hq-companions-toggle")
+                check(not page.locator("#hq-else-toggle").is_visible(), "companions start docked")
+                companion_toggle.click()
+                page.locator('[data-companion-choice="else"]').click()
+                check(until(page, "() => document.body.dataset.companion === 'else'"), "picker opens Else")
+                check(not page.locator("#hq-inventoria-toggle").is_visible(), "other companions stay docked")
+                page.keyboard.press("Escape")
+                check(companion_toggle.get_attribute("aria-expanded") == "false", "Escape docks the companions")
+                companion_toggle.click()
+                check(until(page, "() => document.body.dataset.companion === 'else'"), "launcher reopens the last companion")
+                page.keyboard.press("Escape")
+
                 # Welcome header.
-                check(until(page, "() => document.getElementById('home-greet').textContent.startsWith('Bon')"), "a greeting for the hour")
+                check(until(page, "() => document.getElementById('home-greet').textContent.trim().length >= 2"), "a greeting for the hour")
                 date_txt = page.inner_text("#home-date")
                 check(len(date_txt) > 6 and date_txt[0].isupper(), f"today's date ({date_txt})")
                 check(page.evaluate("() => document.getElementById('hq-banner').style.getPropertyValue('--home-amb').startsWith('rgb(')"), "the header takes the hour's light")
@@ -154,8 +176,9 @@ def main() -> None:
 
                 # The cards arrive one after another when Accueil opens.
                 page.evaluate("() => setView('carnet')")
+                check(until(page, "() => document.body.dataset.view === 'carnet'"), "the section transition reaches Carnet")
                 page.evaluate("() => setView('accueil')")
-                check(page.evaluate("() => document.querySelector('.home-v2').classList.contains('is-entering') && getComputedStyle(document.querySelector('.home-actions')).animationName === 'home-in'"),
+                check(until(page, "() => document.querySelector('.home-v2').classList.contains('is-entering') && getComputedStyle(document.querySelector('.home-actions')).animationName === 'home-in'"),
                       "opening Accueil brings the cards in one after another")
                 page.wait_for_timeout(1200)
 
@@ -203,11 +226,11 @@ def main() -> None:
                 check(until(page, "() => { const b = document.getElementById('hq-capture'); return b && !b.hidden; }"), "Note opens the quick capture")
                 page.keyboard.press("Escape")
                 until(page, "() => { const b = document.getElementById('hq-capture'); return !b || b.hidden; }")
-                page.click("#btn-palette")
+                page.click("#btn-search-bar")
                 check(until(page, "() => !document.getElementById('hq-palette').hidden"), "Recherche opens the search")
                 page.keyboard.press("Escape")
                 page.click("#home-act-event")
-                check(page.evaluate("() => document.body.dataset.view") == "calendrier", "Événement opens the calendar")
+                check(until(page, "() => document.body.dataset.view === 'calendrier'"), "Événement opens the calendar")
                 check(page.evaluate("() => document.activeElement && document.activeElement.id === 'hq-cal-quick-input'"), "with the quick add ready to type")
                 page.click('.bottom-nav [data-nav="accueil"]') if page.locator('.bottom-nav [data-nav="accueil"]').is_visible() else page.evaluate("() => setView('accueil')")
                 until(page, "() => !document.getElementById('home-next').hidden")

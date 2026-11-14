@@ -60,8 +60,10 @@
     const doc = win.document;
     if (win.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const nav = doc.querySelector(".bottom-nav");
-    const btn = nav && nav.querySelector('button[data-nav="' + view + '"]');
-    if (!nav || !btn) return;
+    if (!nav) return;
+    const target = nav.querySelector('button[data-nav="' + view + '"]');
+    const btn = target?.offsetWidth ? target : nav.querySelector('button[data-nav="plus"]');
+    if (!btn?.offsetWidth) return;
     let comet = doc.querySelector(".nav-comet");
     if (!comet) {
       comet = doc.createElement("span");
@@ -167,6 +169,7 @@
         nav.classList.add("has-ink");
       };
       place(false);
+      nav.addEventListener("hq:nav-order", () => place(false));
       win.requestAnimationFrame(() => place(false));
       let last = doc.body.dataset.view;
       new win.MutationObserver(() => {

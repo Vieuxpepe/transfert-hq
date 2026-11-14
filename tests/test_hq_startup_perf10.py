@@ -152,7 +152,7 @@ class FrontEndDedupe(unittest.TestCase):
         self.assertIn("function hqCarnetLoad()", loader)
         self.assertIn("requestIdleCallback", loader)
         self.assertIn("addEventListener('load'", loader)
-        view = self.bridge[self.bridge.index("function setView(name)"):]
+        view = self.bridge[self.bridge.index("function setView(name"):]
         view = view[:view.index("function isSimpleMode")]
         self.assertIn("hqDeferViewRender(view, viewTicket", view)
         self.assertIn("hqCarnetLoad().then", view)
@@ -161,7 +161,8 @@ class FrontEndDedupe(unittest.TestCase):
         calendar = (SOURCE / "assets" / "hq-calendar.js").read_text(encoding="utf-8")
         self.assertIn("function render(staged, done)", calendar)
         self.assertIn("if (staged) requestAnimationFrame(finish)", calendar)
-        self.assertIn('refresh("snap", true)', calendar)
+        self.assertIn('refresh("snap")', calendar)
+        self.assertIn("refresh(mode, staged)", calendar, "the staged flag is still propagated to the render")
 
     def test_polling_is_serialized_and_staggered(self):
         self.assertNotIn("hqTimer = setInterval", self.bridge)

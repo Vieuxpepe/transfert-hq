@@ -319,13 +319,13 @@ def _origin(value) -> dict | None:
     if not isinstance(value, dict):
         raise GalleryError("bad_image")
     out = {}
-    for key, limit in (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40), ("checkpoint_sha256", 64), ("finish_of", 40), ("inpaint_of", 40)):
+    for key, limit in      (("worker_id", 40), ("worker_name", 40), ("batch_id", 40), ("task_id", 40), ("checkpoint_sha256", 64), ("finish_of", 40), ("inpaint_of", 40), ("outpaint_of", 40)):
         item = value.get(key)
         if item is None:
             continue
         if not isinstance(item, str) or len(item) > limit or any(ord(ch) < 32 for ch in item):
             raise GalleryError("bad_image")
-        if key in ("finish_of", "inpaint_of") and not IMG_RE.fullmatch(item):
+        if key in ("finish_of", "inpaint_of", "outpaint_of") and not IMG_RE.fullmatch(item):
             raise GalleryError("bad_image")  # E: the gallery image this 'finition' started from
         out[key] = item
     return out or None
@@ -467,6 +467,9 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None, view: str = 
         image_id = item.get("id")
         if not isinstance(image_id, str):
             continue
+        # Enough for a readable card caption (model, steps). Never the prompt:
+        # the gallery listing stays a thumbnail index, not a prompt dump.
+        stored = item.get("settings") if isinstance(item.get("settings"), dict) else {}
         public.append({
             "id": image_id,
             "created": item.get("created"),
@@ -474,6 +477,7 @@ def page(root: Path, *, limit: int = 24, cursor: str | None = None, view: str = 
             "height": item.get("height"),
             "triage": triage_of(item),
             "thumb": f"/api/forge/gallery/{image_id}/thumb",
+            "settings": {"checkpoint": stored.get("checkpoint"), "steps": stored.get("steps")},
         })
     next_cursor = public[-1]["id"] if len(rows) > limit and public else None
     return {"images": public, "next_cursor": next_cursor}

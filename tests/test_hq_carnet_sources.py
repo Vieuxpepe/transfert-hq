@@ -779,7 +779,10 @@ class StaticAndParityTests(unittest.TestCase):
             "const R=require(process.argv[1]);const v=JSON.parse(require('fs').readFileSync(0,'utf8'));"
             "process.stdout.write(JSON.stringify(v.map(x=>R.checkCite(x))))"
         )
-        out = subprocess.run([node, "-e", script, str(self.ROOT / "assets" / "hq-carnet-rich.js")], input=json.dumps(vectors), capture_output=True, text=True, timeout=30)
+        # UTF-8 both ways: text=True would decode node's stdout with the Windows locale code page (cp1252),
+        # turning every astral character into mojibake before the comparison.
+        out = subprocess.run([node, "-e", script, str(self.ROOT / "assets" / "hq-carnet-rich.js")], input=json.dumps(vectors),
+                             capture_output=True, text=True, encoding="utf-8", timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         got = json.loads(out.stdout)
         self.assertEqual(got, expected)

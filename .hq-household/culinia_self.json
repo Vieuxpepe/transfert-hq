@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "events": [
+    {
+      "id": "ab5485f861054adc90ad8246f1fa6072",
+      "at": 1794617211.457136,
+      "kind": "visit",
+      "topic": "visite avec musica",
+      "text": "Je retourne finir ce morceau.",
+      "outcome": "social",
+      "tool": "",
+      "source": "visit"
+    },
+    {
+      "id": "856b8ebceb7043c3a26b4cd4ef953056",
+      "at": 1794618949.2486386,
+      "kind": "visit",
+      "topic": "visite avec musica",
+      "text": "Je vais juste sentir les herbes avant de partir.",
+      "outcome": "social",
+      "tool": "",
+      "source": "visit"
+    }
+  ],
+  "weights": {
+    "brevity": 50.0,
+    "warmth": 50.0,
+    "initiative": 50.0
+  },
+  "history": [],
+  "used_feedback": [],
+  "pinned": [],
+  "dismissed": [],
+  "pinned_axes": [],
+  "disposition": {
+    "phase": "attentive",
+    "since": 1794617211.457136,
+    "scores": {
+      "attentive": 1.0,
+      "absorbee": 0.0,
+      "sereine": 3.0,
+      "sur_la_reserve": 0.0,
+      "curieuse": 0.0
+    },
+    "label": "Attentive, sans urgence"
+  },
+  "affect": {
+    "energy": 0.515,
+    "tension": 0.12,
+    "warmth": 0.55,
+    "at": 1794618949.2486386,
+    "cause": "un passage",
+    "cause_at": 1794618949.2486386
+  }
+}

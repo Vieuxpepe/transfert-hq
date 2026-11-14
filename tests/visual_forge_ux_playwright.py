@@ -18,6 +18,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 # Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -115,7 +117,7 @@ def main() -> None:
 
             def open_forge(p):
                 p.goto(base + "/")
-                p.locator('.bottom-nav [data-nav="forge"]').click()
+                open_section(p, "forge")
                 p.wait_for_function("() => document.querySelector('#forge-checkpoint').value && !document.querySelector('#forge-generate').disabled", timeout=15000)
 
             def generate(p, prompt, steps):
@@ -210,7 +212,7 @@ def main() -> None:
 
             # Reload: history is server-side, nothing about prompts in web storage
             page.reload()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             page.locator("#forge-prompt").fill("")
             page.locator("#forge-last-prompt").click()
@@ -251,7 +253,7 @@ def main() -> None:
             jobs = page.request.get(base + "/api/forge/jobs").json()["jobs"]
             check(jobs[0]["settings"].get("prompt") == "envoi échoué mock-fail" and not jobs[0]["images"], f"the failed submission is an HQ job without image ({jobs[0]['state']})")
             page.reload()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             page.locator("#forge-prompt").fill("")
             page.locator("#forge-last-prompt").click()
@@ -295,7 +297,7 @@ def main() -> None:
             box = page.evaluate("() => [document.querySelector('#forge-form').getBoundingClientRect().bottom, document.querySelector('.forge-side').getBoundingClientRect().top]")
             check(box[1] >= box[0] - 1, "Compacte forces one column on desktop")
             page.reload()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             check(page.locator("#forge-layout").input_value() == "compact", "layout preference survives reload")
             page.locator("#forge-layout").select_option("auto")
 
@@ -329,7 +331,7 @@ def main() -> None:
             page.wait_for_function("() => document.querySelector('#forge-prompt').value.length > 0 || /Aucun/.test(document.querySelector('#forge-history-note').textContent)")
             check(SECRET not in page.locator("#forge-prompt").input_value(), "Dernier prompt (in-page) never returns the private prompt")
             page.reload()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             page.locator('input[name="forge-destination"][value="normal"]').check()
             page.locator("#forge-prompt").fill("")
@@ -553,11 +555,11 @@ def main() -> None:
             check(fab_home[0] != "none" and fab_home[1] == "fixed", "outside Forge Studio the floating Capturer is shown and fixed")
             page.evaluate("() => { window.__capOpens = 0; const o = window.hqCapture.open; window.hqCapture.open = function () { window.__capOpens++; return o.apply(this, arguments); }; }")
             for _ in range(4):
-                page.locator('.bottom-nav [data-nav="forge"]').click()
+                open_section(page, "forge")
                 page.wait_for_timeout(80)
                 page.locator('.bottom-nav [data-nav="accueil"]').click()
                 page.wait_for_timeout(80)
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => !document.querySelector('#forge-capture').hidden", timeout=15000)
             check(page.locator("#forge-capture").is_visible() and page.get_by_role("button", name="Capturer").count() >= 1, "Forge Studio shows its own Capturer button")
             check(page.evaluate("() => getComputedStyle(document.querySelector('#hq-capture-fab')).display") == "none", "the floating Capturer is hidden in Forge Studio")
@@ -650,7 +652,7 @@ def main() -> None:
                 page.wait_for_timeout(120)
                 if SHOTS:
                     page.screenshot(path=str(SHOTS / f"cap-other-section-{name}.png"))
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => !document.querySelector('#forge-generate').disabled", timeout=15000)
 
             # Aide tooltips stay inside the viewport (hover, keyboard focus, click/tap), every tooltip in Forge Studio
@@ -785,7 +787,7 @@ def main() -> None:
                             tag = f"{name} {where} {mode} {pop_id}"
                             check(e["shown"] and not e["blocks"] and e["inView"] and not e["hidden"] and e["sw"] <= e["vw"] + 1,
                                   f"{tag}: tooltip clear of the sticky bar and nav, fully visible (trigger {pos}) {e}")
-                            if SHOTS and pop_id in ("forge-help-steps", "forge-help-private", "forge-help-hr-denoise") and mode == "focus" and width < 900:
+                            if SHOTS and pop_id in ("forge-help-hr-scale", "forge-help-private", "forge-help-negative") and mode == "focus" and width < 900:
                                 page.screenshot(path=str(SHOTS / f"edge-{name}-{where}-{pop_id}.png"))
                 reset_help(page)
                 page.evaluate("(ids) => ids.forEach((id) => { const d = document.getElementById(id); if (d) d.open = false; })", FOLD_IDS)

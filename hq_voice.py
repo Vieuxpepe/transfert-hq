@@ -84,8 +84,14 @@ def start_daemon(wait_sec: float = 0.0) -> bool:
         DAEMON_LOG.parent.mkdir(parents=True, exist_ok=True)
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         flags = 0
+        extra = {}
         if os.name == "nt":
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000
+            # CREATE_NO_WINDOW without DETACHED_PROCESS (which would make it ignored) + SW_HIDE.
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            extra["startupinfo"] = si
         with open(DAEMON_LOG, "ab") as log:
             _daemon_process = subprocess.Popen(
                 [str(XTTS_PYTHON), str(XTTS_DAEMON_SCRIPT),
@@ -94,7 +100,7 @@ def start_daemon(wait_sec: float = 0.0) -> bool:
                  "--language", "fr",
                  "--host", XTTS_DAEMON_HOST, "--port", str(XTTS_DAEMON_PORT)],
                 cwd=str(GEMINI_TEST_ROOT), env=env, stdout=log, stderr=log,
-                stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True,
+                stdin=subprocess.DEVNULL, creationflags=flags, close_fds=True, **extra,
             )
     finally:
         _daemon_start_lock.release()

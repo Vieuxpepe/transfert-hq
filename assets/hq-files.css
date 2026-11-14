@@ -209,7 +209,13 @@
 .fx-sheet .fx-pick-crumb{width:auto;min-height:34px;padding:4px 10px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-weight:700;cursor:pointer}
 .fx-sheet .fx-pick-crumb:last-child{color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
 .fx-sep{width:14px!important;height:14px!important;color:var(--muted);opacity:.6}
-.fx-pick{display:flex;flex-direction:column;gap:4px;min-height:200px;max-height:50dvh;overflow:auto}
+.fx-pick-scroll{min-height:min(200px,50dvh)}
+.fx-pick{display:flex;flex-direction:column;gap:4px}
+.fx-pick-shortcuts{display:grid;gap:10px;margin-bottom:12px}
+.fx-pick-group h4{margin:0 0 5px;color:var(--muted);font-size:var(--text-sm)}
+.fx-pick-group-rows{display:flex;gap:6px;flex-wrap:wrap}
+.fx-sheet .fx-pick-shortcut{width:auto;max-width:100%;min-height:44px;justify-content:flex-start;gap:6px;padding:6px 10px;color:var(--text);background:var(--panel-2);border:1px solid var(--line);overflow-wrap:anywhere;text-align:left}
+.fx-pick-shortcut small{color:var(--muted);font-weight:500}
 .fx-sheet .fx-pick-row{display:flex;align-items:center;gap:12px;width:100%;min-height:48px;padding:8px 12px;border:0;border-radius:12px;background:color-mix(in srgb,var(--text) 5%,transparent);color:var(--text);font-weight:700;text-align:left;cursor:pointer}
 .fx-sheet .fx-pick-row:hover{background:color-mix(in srgb,var(--text) 10%,transparent)}
 .fx-sheet .fx-pick-row span:nth-child(2){flex:1}

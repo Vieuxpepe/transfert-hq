@@ -136,16 +136,31 @@ def set_external_busy(callback) -> None:
     _external_busy = callback
 
 
+def _held() -> bool:
+    """Another local img2img feature (sketch painting) holds this PC's Forge."""
+    return any(hold() for hold in _gpu_holds)
+
+
 def _external_active() -> bool:
     try:
         if _inpaint_busy is not None and _inpaint_busy():
             return True  # I: a retouch holds this PC's Forge
+        if _held():
+            return True
         return bool(_external_busy()) if _external_busy is not None else False
     except Exception:
         return True
 
 
 _inpaint_busy = None
+_gpu_holds: list = []
+
+
+def add_gpu_hold(callback) -> None:
+    """Register another local Forge user (e.g. sketch painting): while it returns True, HQ jobs and local fleet
+    tasks see the GPU as busy, exactly as for a retouch."""
+    if callback not in _gpu_holds:
+        _gpu_holds.append(callback)
 
 
 def set_inpaint_busy(callback) -> None:
@@ -158,6 +173,8 @@ def local_active(root: Path) -> bool:
     """True while an HQ single job is queued or running on the local Forge."""
     try:
         if _inpaint_busy is not None and _inpaint_busy():
+            return True
+        if _held():
             return True
     except Exception:
         return True

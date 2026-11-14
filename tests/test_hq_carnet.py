@@ -743,8 +743,10 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(
             iphone_bridge.UPLOAD_POST_EXACT,
+            # client-log and repro-note are deliberately open to every role (docs/client-debug-log.md);
+            # the screen-capture route is not: it stays admin-only.
             {"/login", "/logout", "/api/me", "/api/presence", "/api/upload", "/api/upload/init",
-             "/api/upload/chunk", "/api/upload/complete"},
+             "/api/upload/chunk", "/api/upload/complete", "/api/hq/client-log", "/api/hq/repro-note"},
         )
         self.assertEqual(iphone_bridge.UPLOAD_GET_PREFIX, ("/assets/",))
         self.assertEqual(iphone_bridge.UPLOAD_POST_PREFIX, ())

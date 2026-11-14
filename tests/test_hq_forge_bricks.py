@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from PIL import Image
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
@@ -14,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hq_forge as F  # noqa: E402
 import hq_forge_bricks as BR  # noqa: E402
+import hq_forge_gallery as G  # noqa: E402
 import test_hq_forge_fleet as TF  # noqa: E402
 
 LORAS = [
@@ -62,6 +66,24 @@ class Bricks(unittest.TestCase):
         self.assertEqual((status, out["bricks"]), (200, []))
         stored = json.loads((self.root / ".hq-forge" / "bricks.json").read_text(encoding="utf-8"))
         self.assertEqual(stored, {"version": 1, "bricks": []})
+
+    def test_cast_card_keeps_normal_references_and_seed(self):
+        out = io.BytesIO()
+        Image.new("RGB", (64, 64), (30, 40, 50)).save(out, format="PNG")
+        settings = {"prompt": "un acteur", "negative_prompt": "", "checkpoint": "test.safetensors [abcd]",
+                    "sampler_name": "Euler", "scheduler": "automatic", "width": 64, "height": 64,
+                    "steps": 8, "cfg_scale": 5.5, "seed": 7, "n_iter": 1, "batch_size": 1}
+        image = G.store(self.root, out.getvalue(), settings)
+        self.addCleanup(G.reset_for_tests)
+        status, payload = self.post(action="create", name="Mina", kind="cast", text="short red hair, grey coat",
+                                    reference_ids=[image["id"], image["id"]], seed=42)
+        self.assertEqual(status, 200, payload)
+        card = payload["bricks"][0]
+        self.assertEqual((card["kind"], card["reference_ids"], card["seed"]), ("cast", [image["id"]], 42))
+        self.assertEqual(self.post(action="create", name="Bad kind", kind="other", text="x")[0], 400)
+        self.assertEqual(self.post(action="create", name="Bad seed", kind="cast", text="x", seed=True)[0], 400)
+        self.assertEqual(self.post(action="create", name="Bad ref", kind="cast", text="x", reference_ids=["img-nope"])[0], 400)
+        self.assertEqual(self.post(action="create", name="Missing ref", kind="cast", text="x", reference_ids=["img-" + "ab" * 12])[0], 404)
 
     def test_validation_duplicates_and_missing(self):
         self.assertEqual(self.post(action="create", name="A", text="x")[0], 200)

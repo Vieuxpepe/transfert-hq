@@ -1,0 +1,129 @@
+.rb-ai[hidden], .rb-ai [hidden] { display: none !important; }
+.rb-ai {
+  position: fixed;
+  inset: 0;
+  z-index: 1170;
+  pointer-events: none;
+  --rb-ai-accent: #5ed3bc;
+  --rb-ai-border: var(--line, #33414e);
+  --rb-ai-bg: var(--panel, #14202a);
+  --rb-ai-ink: var(--text, #ebf4f6);
+  --rb-ai-muted: var(--muted, #a9b8c0);
+  color: var(--rb-ai-ink);
+  font-family: var(--font, system-ui);
+}
+.rb-ai .rb-ai-chip {
+  position: fixed;
+  z-index: 1;
+  left: 12px;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: clamp(44px, calc(62px * var(--image-chip-user-scale, 1)), min(36vw, 180px));
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid #499b91;
+  border-radius: 28%;
+  background: #133038;
+  box-shadow: 0 7px 24px #091e3566;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  pointer-events: auto;
+}
+.rb-ai .rb-ai-chip:active { cursor: grabbing; }
+.rb-ai .rb-ai-chip:focus-visible { outline: 2px solid var(--rb-ai-accent); outline-offset: 3px; }
+.rb-ai-icon {
+  width: 53%;
+  aspect-ratio: 1;
+  position: relative;
+  border: 2px solid #86e1cd;
+  border-radius: 29%;
+  background:
+    radial-gradient(circle at 31% 44%, #86e1cd 0 8%, transparent 9%),
+    radial-gradient(circle at 69% 44%, #86e1cd 0 8%, transparent 9%);
+  pointer-events: none;
+}
+.rb-ai-icon::after {
+  content: "";
+  position: absolute;
+  inset: 68% 34% auto;
+  height: 2px;
+  background: #86e1cd;
+}
+.rb-ai-chip img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }
+.rb-ai-alert-dot { position: absolute; top: 3px; right: 3px; width: 12px; height: 12px; border-radius: 50%; background: #d64555; border: 2px solid white; }
+.rb-ai-options [data-chat="memory"] { flex-basis: 100%; max-height: 180px; overflow: auto; }
+
+.rb-ai-chat {
+  position: fixed;
+  z-index: 2;
+  inset: auto 12px 76px auto;
+  display: flex;
+  flex-direction: column;
+  width: min(430px, calc(100vw - 24px));
+  max-height: min(640px, calc(100dvh - 128px));
+  overflow: hidden;
+  pointer-events: auto;
+  border: 1px solid var(--rb-ai-border);
+  border-radius: 15px;
+  background: var(--rb-ai-bg);
+  box-shadow: 0 14px 48px #08152966;
+}
+.rb-ai-chat header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--rb-ai-border);
+}
+.rb-ai-chat h2 {
+  margin: 0 auto 0 0;
+  font: 730 1rem var(--font, system-ui);
+  letter-spacing: -.018em;
+}
+.rb-ai-chat button {
+  min-height: 44px;
+  border: 1px solid var(--rb-ai-border);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: var(--rb-ai-bg);
+  color: var(--rb-ai-ink);
+  font: 650 .82rem var(--font, system-ui);
+}
+.rb-ai-chat button:hover:enabled { background: color-mix(in srgb, var(--rb-ai-bg) 90%, var(--rb-ai-ink)); }
+.rb-ai-chat button:disabled { opacity: .5; }
+.rb-ai-chat [data-chat="close"] { min-width: 44px; font-size: 1.15rem; }
+.rb-ai-options { display: flex; flex-wrap: wrap; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--rb-ai-border); }
+.rb-ai-log { min-height: 70px; overflow: auto; overscroll-behavior: contain; padding: 10px; }
+.rb-ai-log p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rb-ai-empty { padding: 6px; color: var(--rb-ai-muted); font-size: .86rem; }
+.rb-ai-message {
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rb-ai-bg) 94%, var(--rb-ai-ink));
+  font-size: .86rem;
+}
+.rb-ai-message.is-user { margin-inline-start: auto; background: color-mix(in srgb, var(--rb-ai-bg) 83%, #328f80); }
+.rb-ai-message > strong { display: block; margin-bottom: 4px; color: var(--rb-ai-muted); font-size: .72rem; }
+.rb-ai-script {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--rb-ai-border);
+  border-radius: 7px;
+  background: var(--rb-ai-bg);
+  overflow-wrap: anywhere;
+}
+.rb-ai-script summary { display: grid; align-content: center; min-height: 44px; cursor: pointer; }
+.rb-ai-script .rb-ai-stage { color: var(--rb-ai-muted); font-size: .78rem; }
+.rb-ai-script ol { padding-inline-start: 22px; margin-block: 5px; }
+.rb-ai-chat form { display: flex; align-items: end; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--rb-ai-border); }
+.rb-ai-chat textarea { flex: 1; min-width: 0; padding: 6px 8px; resize: vertical; color: inherit; background: var(--rb-ai-bg); border: 1px solid var(--rb-ai-border); border-radius: 7px; font: inherit; font-size: 1rem; }
+.rb-ai-chat [data-chat="send"]:enabled { background: #09665d; color: white; }
+.rb-ai-status { margin: 0; padding: 0 10px 8px; color: var(--rb-ai-muted); font-size: .78rem; }
+.rb-ai-status:empty { display: none; }

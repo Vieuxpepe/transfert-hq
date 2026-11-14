@@ -19,6 +19,15 @@
 #hq-debug-panel.is-collapsed .hq-debug-body {
   display: none;
 }
+/* Collapsed it is a corner chip, not a 320px bar over the page. */
+#hq-debug-panel.is-collapsed {
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+}
+#hq-debug-panel.is-collapsed .hq-debug-head {
+  padding: 5px 7px;
+  border-bottom: 0;
+}
 #hq-debug-panel.is-floating {
   bottom: auto;
 }
@@ -37,9 +46,29 @@
 }
 #hq-debug-panel .hq-debug-title {
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
   letter-spacing: 0.02em;
   cursor: inherit;
+}
+#hq-debug-panel .hq-debug-caret {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transform: rotate(-90deg);
+  transition: transform 0.18s ease;
+}
+#hq-debug-panel:not(.is-collapsed) .hq-debug-caret {
+  transform: none;
+}
+#hq-debug-panel .hq-debug-title:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 3px;
+  border-radius: 4px;
 }
 #hq-debug-panel .hq-debug-head button {
   cursor: pointer;
@@ -74,9 +103,35 @@
   border-color: rgba(248, 113, 113, 0.45);
 }
 
+/* Folded: a status bar (title, Copy, fps), not a toolbar. */
+#hq-debug-panel.is-collapsed .hq-debug-head {
+  border-bottom: 0;
+}
+#hq-debug-panel.is-collapsed .hq-debug-brief,
+#hq-debug-panel.is-collapsed .hq-debug-packet,
+#hq-debug-panel.is-collapsed .hq-debug-snap,
+#hq-debug-panel.is-collapsed .hq-debug-bundle,
+#hq-debug-panel.is-collapsed .hq-debug-note,
+#hq-debug-panel.is-collapsed .hq-debug-spike,
+#hq-debug-panel.is-collapsed .hq-debug-motion {
+  display: none;
+}
+
+#hq-debug-panel .hq-debug-body {
   padding: 6px 8px 8px;
   overflow: auto;
   max-height: 36vh;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #hq-debug-panel:not(.is-collapsed) .hq-debug-body {
+    animation: hq-debug-open 0.16s ease-out;
+  }
+  @keyframes hq-debug-open {
+    from {
+      opacity: 0;
+      transform: translateY(3px);
+    }
+  }
 }
 #hq-debug-panel .hq-debug-grid {
   display: grid;

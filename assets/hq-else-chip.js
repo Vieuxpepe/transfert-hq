@@ -259,8 +259,24 @@
 
   function deviceId(win) {
     try {
-      if (typeof win.hqDeviceId === "function") return String(win.hqDeviceId() || "");
-      return String(win.localStorage.getItem("hq_device_id") || "");
+      var id = "";
+      if (typeof win.hqDeviceId === "function") id = String(win.hqDeviceId() || "");
+      if (id.length < 12) id = String(win.localStorage.getItem("hq_device_id") || "");
+      var companionId = String(win.localStorage.getItem("hq_companion_device_id") || "");
+      if (id.length < 12 && companionId.length >= 12) id = companionId;
+      if (id.length < 12) {
+        var rnd = "";
+        if (win.crypto && typeof win.crypto.randomUUID === "function") {
+          rnd = win.crypto.randomUUID().replace(/-/g, "");
+        } else {
+          rnd = String(Date.now()) + Math.random().toString(36).slice(2, 14);
+        }
+        id = ("hq" + rnd).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
+        if (id.length < 12) id = ("hqdev" + String(Date.now())).slice(0, 24);
+      }
+      win.localStorage.setItem("hq_device_id", id);
+      if (!companionId) win.localStorage.setItem("hq_companion_device_id", id);
+      return id;
     } catch (_) {
       return "";
     }

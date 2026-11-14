@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 import hq_companion_growth as growth
+import hq_personhood
 import hq_state
+import hq_visit_memory
 
 log = logging.getLogger(__name__)
 KINDS = {"outcome", "decision", "correction", "experience", "interest", "meaning", "ritual"}
@@ -72,6 +74,9 @@ def _write(path: Path, episodes: list[dict[str, Any]]) -> None:
 
 def record(path: Path, text: str, device: str) -> None:
     """Keep only explicit statements the growth engine recognises."""
+    path = Path(path)
+    key = path.stem[:-7] if path.stem.endswith("_growth") else path.stem
+    hq_personhood.observe_chat(key, text, source=device)
     item = growth.extract(text)
     try:
         with _lock:
@@ -100,11 +105,17 @@ def record(path: Path, text: str, device: str) -> None:
 
 def hint(path: Path, query: str) -> str:
     """At most one topic-relevant, revisable view — never a personality rewrite."""
+    if not path:
+        return ""
+    path = Path(path)
     now = time.time()
+    key = path.stem[:-7] if path.stem.endswith("_growth") else path.stem
+    visit = hq_visit_memory.hint(hq_visit_memory.visit_path(path), self_key=key, query=query)
+    self_hint = hq_personhood.hint(key, query)
     with _lock:
         episodes = _load(path)
         if episodes is _UNREADABLE:
-            return ""
+            return visit or self_hint
         kept = _prune(episodes, now)
         if len(kept) != len(episodes):
             _write(path, kept)
@@ -112,10 +123,11 @@ def hint(path: Path, query: str) -> str:
     cards = growth.derive(episodes, now)
     words = set(re.findall(r"[a-z0-9]{4,}", growth.fold(query)))
     if not words:
-        return ""
+        return visit or self_hint
     related = [c for c in cards
                if words & set(re.findall(r"[a-z0-9]{4,}", growth.fold(c.get("topic", ""))))]
     if not related:
-        return ""
+        return visit or self_hint
     card = max(related, key=lambda c: (c.get("salience", 0), c.get("updated_at", 0)))
-    return growth.render(card)
+    rendered = growth.render(card)
+    return "\n".join(part for part in (rendered, visit, self_hint if not visit else "") if part)

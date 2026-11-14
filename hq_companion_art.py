@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import re
 import secrets
 import threading
@@ -997,8 +998,6 @@ IMG2IMG_MOOD_DENOISE_BASE = 0.22
 REFRESH_STEPS = 10
 DEFAULT_CHARACTER_LORA_WEIGHT = 0.82
 DEFAULT_SHEET_WEIGHT = 0.58
-DEFAULT_FORGE_GPU_MB = 7500
-_applied_forge_gpu_mb: int | None = None
 VARIATION_STRENGTH_BASE = 0.32
 
 _SAFE_STEM = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
@@ -1027,31 +1026,6 @@ def _messages(code: str) -> str:
 
 def list_poses() -> list[dict[str, str]]:
     return [{"id": k, "label": k.replace("-", " ")} for k in sorted(POSE_PROMPTS)]
-
-
-def _resolve_forge_gpu_mb(root: Path | None) -> int:
-    if root is None:
-        return DEFAULT_FORGE_GPU_MB
-    meta = load_forge_meta(root)
-    raw = meta.get("forge_gpu_mb", meta.get("xl_gpu_mb", DEFAULT_FORGE_GPU_MB))
-    try:
-        mb = int(raw)
-    except (TypeError, ValueError):
-        mb = DEFAULT_FORGE_GPU_MB
-    return max(0, min(8192, mb))
-
-
-def _apply_forge_gpu_mb(root: Path | None) -> None:
-    """Sync Forge xl_GPU_MB before companion gens (cached per process)."""
-    global _applied_forge_gpu_mb
-    mb = _resolve_forge_gpu_mb(root)
-    if _applied_forge_gpu_mb == mb:
-        return
-    try:
-        forge.set_options({"xl_GPU_MB": mb})
-    except forge._Probe:
-        return
-    _applied_forge_gpu_mb = mb
 
 
 def _wait_idle(timeout: float = JOB_TIMEOUT) -> None:
@@ -2018,6 +1992,88 @@ def _execute_forge(settings: dict, task_id: str, root: Path | None) -> tuple[dic
     return parsed, cn_info, jpeg, info
 
 
+CHAT_ART_MOODS = {
+    "warm": ("gentle smile", "golden rim light", "soft bokeh"),
+    "playful": ("mischievous smile", "canted framing", "magenta reflections"),
+    "thoughtful": ("frowning", "window light", "muted colors"),
+    "calm": ("relaxed expression", "blue hour", "subtle film grain"),
+}
+
+
+def chat_art_recipe(plan: dict, mood: str, root: Path) -> dict:
+    def number(key, default, low, high):
+        value = plan.get(key)
+        if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
+            return default
+        return value
+
+    expression, *accents = CHAT_ART_MOODS[mood]
+    width, height = {"portrait": (640, 832), "square": (768, 768), "landscape": (832, 640)}.get(
+        str(plan.get("framing")), (640, 832)
+    )
+    bubble = plan.get("presentation") == "bubble"
+    if bubble:
+        width, height = {"portrait": (256, 320), "square": (256, 256), "landscape": (320, 256)}.get(
+            str(plan.get("framing")), (256, 320)
+        )
+    sampler = str(plan.get("sampler"))
+    if sampler not in (DEFAULT_SAMPLER, "Euler"):
+        sampler = DEFAULT_SAMPLER
+    prompt = (
+        "transferania, solo adult woman, long wavy purple hair, amber eyes, fully clothed, "
+        f"({expression}:1.5), {plan['prompt']}, {secrets.choice(accents)}"
+    )
+    return {
+        "prompt": _inject_lora_prompt(prompt, root),
+        "negative_prompt": NEGATIVE + ", nudity, lingerie, explicit content, " + plan.get("negative", ""),
+        "sampler_name": sampler,
+        "scheduler": DEFAULT_SCHEDULER,
+        "steps": int(number("steps", 6, 4, 8) if bubble else number("steps", 22, 12, 28)),
+        "cfg_scale": number("cfg", DEFAULT_CFG, 3, 7),
+        "seed": int(number("seed", _roll_seed(-1), 0, 2**32 - 1)),
+        "width": width,
+        "height": height,
+    }
+
+
+def generate_chat_art(root: Path, plan: dict, mood: str) -> bytes:
+    """Run one optional job on the active Forge checkpoint and return WebP."""
+    if not _companion_forge_lock.acquire(blocking=False):
+        raise CompanionArtError("busy")
+    try:
+        settings = chat_art_recipe(plan, mood, root)
+        checkpoint = str(forge.read_options().get("sd_model_checkpoint") or "").strip()
+        if not checkpoint:
+            raise CompanionArtError("forge_error")
+        settings["checkpoint"] = checkpoint
+        task_id = "cmp_" + secrets.token_hex(6)
+        if plan.get("presentation") == "bubble":
+            body = submission_body(settings, task_id)
+        else:
+            body, _ = companion_submission_body(settings, task_id, root, controlnet_mode="face")
+        body.pop("override_settings", None)
+        body.pop("override_settings_restore_afterwards", None)
+        if forge.status().get("forge") != "ready":
+            raise CompanionArtError("busy")
+        images = forge.post_json(forge.SUBMIT_PATH, body, timeout=JOB_TIMEOUT).get("images") or []
+        if not images:
+            raise CompanionArtError("empty_image")
+        return _chat_art_webp(base64.b64decode(images[0], validate=True))
+    finally:
+        _companion_forge_lock.release()
+
+
+def _chat_art_webp(source: bytes) -> bytes:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise CompanionArtError("forge_error", "Pillow requis pour convertir en WebP") from exc
+    out = io.BytesIO()
+    with Image.open(io.BytesIO(source)) as image:
+        image.convert("RGB").save(out, format="WEBP", quality=80, method=4)
+    return out.getvalue()
+
+
 def _execute_forge_variants(
     settings: dict,
     task_id: str,
@@ -2116,7 +2172,6 @@ def generate_pose(
             "settings": {k: settings[k] for k in settings if k not in ("prompt", "prompt_tags")}
             | {"prompt_len": len(settings["prompt"])},
         }
-    _apply_forge_gpu_mb(root)
     with _companion_forge_lock:
         _wait_idle()
         task_id = "cmp_" + secrets.token_hex(6)
@@ -2206,7 +2261,6 @@ def generate_pose_batch(
                 }
             )
         count = max(1, count - len(out))
-    _apply_forge_gpu_mb(root)
     with _companion_forge_lock:
         _wait_idle()
         task_id = "cmp_" + secrets.token_hex(6)

@@ -14,6 +14,31 @@
   const progressBox = $("forge-progress");
   const progressBar = $("forge-progress-bar");
   const progressLabel = $("forge-progress-label");
+  const progressSegments = document.createElement("div");
+  progressSegments.id = "forge-progress-segments";
+  progressSegments.className = "forge-progress-segments";
+  progressSegments.setAttribute("role", "progressbar");
+  progressSegments.setAttribute("aria-label", "Progression du lot");
+  progressSegments.setAttribute("aria-valuemin", "0");
+  progressSegments.setAttribute("aria-valuemax", "1");
+  progressSegments.setAttribute("aria-valuenow", "0");
+  progressSegments.hidden = true;
+  if (progressBar && progressBar.parentNode) progressBar.insertAdjacentElement("afterend", progressSegments);
+  const retryJob = $("forge-retry-job");
+  /* Live settings summary: keep the choices that change the result visible next to Generate. */
+  const settingsSummary = document.createElement("p");
+  settingsSummary.id = "forge-settings-summary";
+  settingsSummary.className = "forge-settings-summary";
+  /* No aria-live here: this line changes on every slider tick, so announcing it
+     would talk over the field the user is actually editing. */
+  {
+    const usual = $("forge-usual-duration");
+    if (usual && usual.parentNode) usual.parentNode.insertBefore(settingsSummary, usual.nextSibling);
+  }
+  const jobDestination = $("forge-job-destination");
+  // Retain the exact submitted settings for this tab, including private jobs.
+  let generationAttempt = null;
+  let jobDestinationMode = "";
   const results = $("forge-results");
   const gallery = $("forge-gallery");
   const moreBtn = $("forge-more");
@@ -181,11 +206,30 @@
     const model = checkpointEl.selectedOptions[0];
     const sampler = samplerEl.selectedOptions[0];
     const scheduler = schedulerEl.selectedOptions[0];
-    if (model && model.value) parts.push("Modèle : " + model.textContent);
+    if (model && model.value) parts.push("Modèle sélectionné pour la génération : " + model.textContent);
     if (sampler && sampler.value) parts.push("Échantillonneur : " + sampler.textContent);
     if (scheduler && scheduler.value) parts.push("Planificateur : " + scheduler.textContent);
     const dropped = stale ? " Le choix précédent n'est plus proposé." : "";
     choiceNote.textContent = parts.length ? parts.join(". ") + "." + dropped : "";
+    updateSettingsSummary();
+  }
+
+  /* The last stretch: within a tenth of the end, or five seconds by Forge's own clock. */
+  function nearFinish(pct, payload) {
+    const eta = payload && typeof payload.eta === "number" ? payload.eta : 0;
+    return pct >= 90 || (eta > 0 && eta <= 5);
+  }
+
+  /* Seconds left, as a reader would say it: 45 s, 2 min, 1 h 05. */
+  function remainingTime(seconds) {
+    const s = Math.round(seconds);
+    if (s < 60) return s + " s";
+    const m = Math.floor(s / 60);
+    const rest = Math.round(s % 60);
+    if (m < 60) return rest >= 30 ? m + " min " + rest + " s" : m + " min";
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return h + " h" + (mm ? " " + String(mm).padStart(2, "0") : "");
   }
 
   function statusCopy(payload) {
@@ -196,15 +240,185 @@
     if (code === "api_disabled" || (payload && payload.forge === "api_disabled")) {
       return "Forge est ouvert, mais son API n'est pas activée.";
     }
-    const model = payload && payload.model ? " Modèle chargé : " + payload.model + "." : "";
+    if (code === "forge_busy" || (payload && payload.forge === "busy")) {
+      // The sticky bar already says why Générer is disabled; this line keeps the facts
+      // the bar cannot show: the loaded model, and how far the running render has gone.
+      const parts = [];
+      const ratio = payload && typeof payload.progress === "number" ? payload.progress : null;
+      if (ratio !== null) {
+        const pct = Math.round(Math.max(0, Math.min(1, ratio)) * 100);
+        const eta = payload && typeof payload.eta === "number" && payload.eta > 0 ? remainingTime(payload.eta) : "";
+        // The bar carries the number, so the text does not repeat it: it keeps the words,
+        // and the one figure the bar cannot show, the remaining time.
+        if (pct > 0) {
+          const near = nearFinish(pct, payload);
+          // At the very end "almost done" is the useful line even if the figure is holding still
+          // (Forge reports 100 % while it writes the image); earlier, a figure that does not move
+          // is the fact worth stating, and the ETA no longer says anything true.
+          const still = near ? 0 : stillFor();
+          const head = still ? "Rendu au point mort" : near ? "Rendu presque terminé" : "Rendu en cours";
+          const tail = still ? "même étape depuis " + still + " s." : eta ? "encore " + eta + "." : "";
+          parts.push(tail ? head + " \u00b7 " + tail : head + ".");
+        } else parts.push("Rendu en file d'attente.");
+      }
+      // Progress first: it is the value that moves, and a long filename then wraps
+      // onto the second line instead of orphaning the percentage.
+      if (payload && payload.model) parts.push("Modèle actif dans Forge : " + payload.model + ".");
+      return parts.join(" ") || "Forge est en ligne.";
+    }
+    const model = payload && payload.model ? " Modèle actif dans Forge : " + payload.model + "." : "";
     return ((payload && payload.message) || "Forge est indisponible.") + model;
   }
 
+  /* Declared before setStatus runs: the status handler may fire during boot. */
+  let busyTimer = 0, nearDone = false;
+  let pollMoved = null, stallRun = 0;            // did the last poll's percentage move? how long has it sat still?
+  let stillSince = 0;                            // when the percentage last changed (0 = not measured)
+  const STALL_SEC = 12;                          // a figure that has not moved this long is worth naming
+  let etaTimer = 0, etaStart = 0, etaLeft = 0, lastPayload = null;
+  let barAt = 0, barValue = 0, barRate = 0;      // last poll: the fraction, when it came, and the slope it implied
+
+  /* Progress and remaining time only arrive with the status poll, so both run on locally in
+     between: the figure falls like a clock and the bar creeps instead of jumping. */
+  function stopEta() {
+    if (etaTimer) { window.clearInterval(etaTimer); etaTimer = 0; }
+    etaLeft = 0; barAt = 0; barRate = 0; barValue = 0;
+  }
+  /* How long the figure has sat on the same value, in seconds; 0 while it moves or before it has
+     been still long enough to be worth a word. */
+  function stillFor() {
+    if (forgeState !== "busy" || !stillSince) return 0;
+    const secs = Math.floor((performance.now() - stillSince) / 1000);
+    return secs >= STALL_SEC ? secs : 0;
+  }
+  function markStall() { statusEl.dataset.stall = !nearDone && stillFor() ? "1" : "0"; }
+
+  function tickLive() {
+    if (!lastPayload || document.hidden) return;
+    if (etaLeft) {
+      // Held at one second when spent, until the poll confirms: dropping the figure made it
+      // blink in and out every six seconds when Forge kept reporting a small estimate.
+      const left = etaLeft - (performance.now() - etaStart) / 1000;
+      statusEl.textContent = statusCopy({ ...lastPayload, eta: Math.max(1, left) });
+    } else if (stillFor()) {
+      statusEl.textContent = statusCopy(lastPayload);       // the stall counter climbs once a second
+    }
+    markStall();
+    if (barAt) {
+      const shown = Math.min(1, barValue + barRate * (performance.now() - barAt) / 1000);
+      statusEl.style.setProperty("--forge-status-p", shown.toFixed(4));
+    }
+  }
+  function startLive(seconds) {
+    etaLeft = seconds || 0;
+    etaStart = performance.now();
+    if (!etaTimer) etaTimer = window.setInterval(tickLive, 1000);
+  }
+
   function setStatus(payload) {
+    const previousState = forgeState;
     forgeState = payload && payload.forge || "error";
     statusEl.dataset.state = forgeState === "loading" ? "busy" : forgeState;
     statusEl.textContent = statusCopy(payload);
+    // The bar is the live signal; a 6 s refresh of the same state should not re-announce
+    // the whole line at assistive tech, only a real state change should.
+    statusEl.setAttribute("aria-live", previousState === forgeState ? "off" : "polite");
+    const ratio = payload && typeof payload.progress === "number" ? Math.max(0, Math.min(1, payload.progress)) : null;
+    const eta = payload && typeof payload.eta === "number" && payload.eta > 0 ? payload.eta : 0;
+    const now = performance.now();
+    if (ratio === null) {
+      statusEl.style.removeProperty("--forge-status-p");
+      barAt = 0; barRate = 0; barValue = 0;
+      pollMoved = null; stallRun = 0; stillSince = 0;
+    } else {
+      if (barAt) {
+        // Slope between the last two polls; a stalled render holds the bar still, and a poll
+        // that goes backwards only stops the creep (it never invents motion).
+        const dt = (now - barAt) / 1000;
+        const moved = ratio - barValue;
+        pollMoved = moved > 0.001;               // the poll's pace follows this: moving or stalled
+        if (moved > 0.001) stillSince = now;     // the figure moved: the stall clock starts over
+        if (moved <= 0.001) barRate = 0;
+        else if (dt >= 1) barRate = Math.min(moved / dt, 0.5);
+      } else {
+        barRate = 0;                             // nothing measured yet: the bar waits for a second poll
+        pollMoved = null;
+        stillSince = now;
+      }
+      barValue = ratio;
+      barAt = now;
+      statusEl.style.setProperty("--forge-status-p", String(ratio));
+    }
+    lastPayload = payload || null;
+    nearDone = forgeState === "busy" && ratio !== null && nearFinish(Math.round(ratio * 100), payload);
+    if (forgeState === "busy" && (eta || ratio !== null)) startLive(eta); else stopEta();
+    syncPower();
     syncActions();
+    watchBusy();
+    // The owner's own render just landed: bring it in now, without a manual reload.
+    // Written again now that this poll has updated the movement clock: the line drawn at the top
+    // still knew the previous value and could call a render stalled one poll after it moved.
+    statusEl.textContent = statusCopy(payload);
+    markStall();
+    if (previousState === "busy" && forgeState === "ready") absorbForeignResult().catch(() => {});
+  }
+
+  /* While someone else's render runs, the status line reports its percentage, so it has
+     to be refreshed. Only polls on a visible Forge tab, only while Forge is busy, and the
+     catalog comes from the server's 60 s cache. */
+  const POLL_BASE = 6000, POLL_MOVING = 3000, POLL_NEAR = 2000, POLL_STALL_MAX = 12000;
+  function watchBusy() {
+    window.clearTimeout(busyTimer);
+    busyTimer = 0;
+    if (forgeState !== "busy") { stopEta(); pollMoved = null; stallRun = 0; stillSince = 0; return; }
+    // The percentage is the only sign of the render's pace: keep up while it climbs, wait longer
+    // while it sits on the same figure (a model load or a stuck step), but never past 12 s so a
+    // render that ends without a last tick is still noticed promptly. Near the end it can land at
+    // any second, and that beat wins over everything. Each refresh reschedules through setStatus.
+    let delay = POLL_BASE;
+    if (nearDone) delay = POLL_NEAR;
+    else if (pollMoved === true) { stallRun = 0; delay = POLL_MOVING; }
+    else if (pollMoved === false) { stallRun += 1; delay = Math.min(POLL_BASE * (1 << stallRun), POLL_STALL_MAX); }
+    busyTimer = window.setTimeout(function () {
+      busyTimer = 0;
+      if (document.hidden) { watchBusy(); return; }
+      refreshStatus().catch(() => {}).then(() => { if (forgeState === "busy" && !busyTimer) watchBusy(); });
+    }, delay);
+  }
+
+  // Start / stop WebForge on this PC through the Engine routes (admin only).
+  const powerBtn = $("forge-power");
+  let powerBusy = false;
+  function syncPower() {
+    if (!powerBtn || powerBusy) return;
+    powerBtn.hidden = false;
+    powerBtn.dataset.action = forgeState === "offline" ? "start" : "stop";
+    powerBtn.textContent = forgeState === "offline" ? "Démarrer WebForge" : "Arrêter WebForge";
+  }
+  if (powerBtn) {
+    powerBtn.addEventListener("click", async () => {
+      const action = powerBtn.dataset.action === "start" ? "start" : "stop";
+      if (action === "stop" && !window.confirm("Arrêter WebForge sur ce PC ?")) return;
+      powerBusy = true;
+      powerBtn.disabled = true;
+      powerBtn.textContent = action === "start" ? "Démarrage…" : "Arrêt…";
+      try {
+        const res = await fetch("/api/engine/daemons/forge/" + action, { method: "POST", credentials: "same-origin" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) statusEl.textContent = data.message || data.error || "Action impossible.";
+      } catch (_) {
+        statusEl.textContent = "Action impossible.";
+      }
+      powerBusy = false;
+      powerBtn.disabled = false;
+      syncPower();
+      // Forge takes a while to load: poll status for a minute after a start.
+      let tries = 0;
+      const timer = setInterval(() => {
+        refreshStatus().catch(() => {});
+        if (++tries >= 30 || (action === "start" ? forgeState !== "offline" : forgeState === "offline")) clearInterval(timer);
+      }, 2000);
+    });
   }
 
   function destination() {
@@ -238,6 +452,7 @@
   }
 
   function syncActions(active) {
+    active = !!active || !!(generationAttempt && !generationAttempt.retry && submitGuard);
     const privateMode = destination() === "private";
     generateBtn.hidden = privateMode;
     privateBtn.hidden = !privateMode;
@@ -262,12 +477,20 @@
       else if (hiresPrivate) reasonEl.textContent = "Générer est désactivé : Hires. fix n'est pas disponible en génération privée.";
       else if (hiresMissing) reasonEl.textContent = "Générer est désactivé : l'agrandisseur n'est pas disponible.";
       else if (hiresLarge) reasonEl.textContent = "Générer est désactivé : le second passage dépasserait 2048 pixels.";
+      // Busy does not disable Générer in normal mode: HQ queues the job. The line
+      // says what HQ will do, not that the button is off.
       else if (forgeState === "busy") reasonEl.textContent = "Forge est occup\u00e9 : HQ attendra la fin de son travail.";
       else reasonEl.textContent = "";
     }
     $("forge-normal-results").hidden = privateMode;
     $("forge-normal-gallery").hidden = privateMode;
     studio.classList.toggle("forge-private", privateMode);
+    const shownDestination = jobDestinationMode || destination();
+    const destinationLabel = shownDestination === "private" ? "Destination · Coffre privé" : "Destination · Galerie";
+    if (jobDestination.textContent !== destinationLabel) jobDestination.textContent = destinationLabel;
+    retryJob.hidden = !generationAttempt?.retry || generationAttempt.destination !== destination() || (fleetBooted && fleetMode());
+    retryJob.disabled = active || !forgeOk || catalogState !== "ready" || (privateMode
+      && (!vaultState.private_generation || !vaultState.unlocked || generationAttempt?.settings.vault !== openVid || privateTarget !== openVid));
     if (fleetBooted) fleetSync(active);
   }
 
@@ -328,30 +551,10 @@
     }
   }
 
-  function card(image, mode) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "forge-card";
-    button.dataset.id = image.id;
-    const img = document.createElement("img");
-    img.alt = mode === "private" ? "Image du coffre" : "Image générée";
-    button.appendChild(img);
-    if (image.triage && image.triage !== "none") {
-      button.dataset.triage = image.triage;
-      const badge = document.createElement("span");
-      badge.className = "forge-card-badge";
-      badge.textContent = { keep: "Gard\u00e9e", favorite: "Favori", reject: "Rejet\u00e9e" }[image.triage] || "";
-      button.appendChild(badge);
-    }
-    if (mode === "private") {
-      privateThumb(image.id).then((url) => { img.src = url; }).catch(() => { img.alt = "Image indisponible"; });
-      button.addEventListener("click", () => openPrivate(image.id, button));
-    } else {
-      img.src = image.thumb;
-      button.addEventListener("click", () => openViewer(image.id, button));
-    }
-    return button;
-  }
+
+  /* A card now says what it is: model, steps, size, and for search results the
+     prompt. Before, only the aria-label carried any of it. */
+
 
   async function privateThumb(id) {
     const response = await fetch(vaultBase() + "/images/" + id + "/thumb", { credentials: "same-origin", cache: "no-store" });
@@ -379,6 +582,7 @@
   }
 
   async function loadGallery(reset) {
+    if (!galleryUi) await ensureGalleryUi();
     if (reset) {
       cursor = null;
       gallery.replaceChildren();
@@ -386,11 +590,65 @@
     }
     const path = "/api/forge/gallery?limit=24" + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
     const page = await api(path);
-    (page.images || []).forEach((image) => gallery.appendChild(card(image)));
+    (page.images || []).forEach((image) => { const node = card(image); if (node) gallery.appendChild(node); });
     const galleryEmpty = $("forge-gallery-empty");
     if (galleryEmpty) galleryEmpty.hidden = gallery.children.length > 0;
     cursor = page.next_cursor || null;
     moreBtn.hidden = !cursor;
+  }
+
+  /* A render started in Forge's own window just finished: pull the new image in now, the way our
+     own jobs do when their poll completes. Skipped on a filtered list (it would be replaced) and
+     while one of HQ's jobs is already handling its own reveal. */
+  async function absorbForeignResult() {
+    if (document.body.dataset.view !== "forge" || gallerySearching) return;
+    if (sessionStorage.getItem("hqForgeJob")) return;
+    const before = gallery.firstElementChild ? gallery.firstElementChild.dataset.id : "";
+    await loadGallery(true);                        // the first page is the newest
+    const first = gallery.firstElementChild;
+    if (first && first.dataset.id && first.dataset.id !== before) landResult(first, false);
+  }
+
+  /* --- Galerie: the one browsing surface -----------------------------------
+     Search and the triage views live here now. The Bibliothèque dialog is kept
+     as the advanced filter sheet, reached from "Recherche avancée". */
+  let galleryView = "";
+  let galleryOffset = 0;
+  let gallerySearching = false;
+
+
+  async function searchGallery(reset) {
+    const field = $("forge-gallery-q");
+    const needle = field ? field.value.trim() : "";
+    const count = $("forge-gallery-count");
+    const clear = $("forge-gallery-clear");
+    if (!needle && !galleryView) {
+      gallerySearching = false;
+      cursor = null;
+      if (count) count.textContent = "";
+      if (clear) clear.hidden = true;
+      await loadGallery(true);
+      moreBtn.hidden = !cursor;
+      return;
+    }
+    gallerySearching = true;
+    if (reset) galleryOffset = 0;
+    const params = new URLSearchParams();
+    params.set("limit", "24");
+    params.set("offset", String(galleryOffset));
+    if (needle) params.set("q", needle);
+    if (galleryView) params.set("view", galleryView);
+    const out = await api("/api/forge/library?" + params.toString());
+    const rows = Array.isArray(out.images) ? out.images : [];
+    galleryRows(rows, reset);
+    const total = out.total == null ? rows.length : Number(out.total);
+    if (count) {
+      count.textContent = rows.length + " / " + total + " image(s)" +
+        (needle ? " pour « " + needle + " »" : galleryView === "untriaged" ? " à trier" : "");
+    }
+    galleryOffset = out.next_offset == null ? 0 : Number(out.next_offset);
+    moreBtn.hidden = out.next_offset == null;
+    if (clear) clear.hidden = false;
   }
 
   /* F4: Forge's own estimate, already sanitized by HQ (finite, 0 < s <= 3600). */
@@ -399,6 +657,96 @@
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) return "";
     if (seconds < 90) return "\u2248 " + Math.max(1, Math.round(seconds)) + " s restantes";
     return "\u2248 " + Math.round(seconds / 60) + " min restantes";
+  }
+
+  /* A job's progress must never go backwards: a late or reordered poll would make the bar
+     jump back. A new job id starts a fresh measurement. Unknown/queued progress stays
+     indeterminate instead of showing a misleading 0 %. */
+  let progressJob = "";
+  let progressValue = 0;
+  let progressStep = 0;
+  let progressSteps = 0;
+  let progressEta = null;
+  function progressFraction(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0) return null;
+    return Math.min(1, number);
+  }
+  function jobStage(job) {
+    if (job.waiting) return "En attente de Forge";
+    return { queued: "En file", starting: "D\u00e9marrage", generating: "G\u00e9n\u00e9ration", saving: "Enregistrement" }[job.state] || "Travail en cours";
+  }
+  function syncJobProgress(job, active) {
+    const id = String(job.job_id || "");
+    if (id !== progressJob) {
+      progressJob = id;
+      progressValue = 0;
+      progressStep = 0;
+      progressSteps = 0;
+      progressEta = null;
+    }
+    const raw = progressFraction(job.progress);
+    const stale = !!job.progress_stale;
+    const waiting = !!job.waiting || job.state === "queued" || job.state === "starting";
+    const known = !!active && raw !== null && !stale && (!waiting || raw > 0);
+    if (known && raw > progressValue) {
+      progressValue = raw;
+      progressStep = Number(job.step || 0);
+      progressSteps = Number(job.steps || 0);
+      progressEta = job.eta;
+    } else if (known) {
+      progressValue = Math.max(progressValue, raw);
+      if (raw === progressValue) progressEta = job.eta;
+      if (!progressSteps) {
+        progressStep = Number(job.step || 0);
+        progressSteps = Number(job.steps || 0);
+      }
+    }
+    const parts = [String(job.message || "").trim() || jobStage(job)];
+    if (known) {
+      parts.push(Math.round(progressValue * 100) + " %");
+      if (progressSteps) parts.push("pas " + progressStep + " / " + progressSteps);
+      const eta = etaCopy(progressEta);
+      if (eta) parts.push(eta);
+      progressBar.max = 1;
+      progressBar.value = progressValue;
+      progressBar.removeAttribute("data-indeterminate");
+    } else {
+      if (stale) parts.push("progression indisponible");
+      else if (active) parts.push("en attente de progression");
+      progressBar.removeAttribute("value");
+      progressBar.setAttribute("data-indeterminate", "1");
+    }
+    progressBox.dataset.stage = job.state || "";
+    progressLabel.textContent = parts.join(" \u00b7 ");
+    progressBar.setAttribute("aria-valuetext", progressLabel.textContent);
+  }
+  function shortModel(text) {
+    const clean = String(text || "").replace(/\s*\[[^\]]*\]\s*$/, "").replace(/\.safetensors$/i, "").trim();
+    return clean.length > 28 ? clean.slice(0, 27) + "\u2026" : clean;
+  }
+  function updateSettingsSummary() {
+    if (!settingsSummary) return;
+    const bits = [];
+    const width = Number($("forge-width").value);
+    const height = Number($("forge-height").value);
+    if (width > 0 && height > 0) bits.push(width + " \u00d7 " + height);
+    const steps = Number($("forge-steps").value);
+    if (steps > 0) bits.push(steps + " pas");
+    const count = Math.max(1, Number($("forge-iter").value) || 1);
+    bits.push(count > 1 ? count + " images" : "1 image");
+    if ($("forge-hr").checked) {
+      bits.push("Hires. fix \u00d7" + String($("forge-hr-scale").value).replace(".", ","));
+    }
+    const model = checkpointEl.selectedOptions && checkpointEl.selectedOptions[0];
+    if (model && model.value) bits.push(shortModel(model.textContent));
+    /* No "Réglages · " prefix: on the phone the tray's own Réglages button sits
+       directly above this line, so the word used to appear twice. */
+    const text = bits.length ? bits.join(" \u00b7 ") : "en cours de chargement\u2026";
+    if (settingsSummary.textContent !== text) {
+      settingsSummary.textContent = text;
+      settingsSummary.title = text;
+    }
   }
 
   let usualTimer = 0;
@@ -459,19 +807,62 @@
     syncWake();
   }
 
+  function syncProgressSegments(tasks, total, running) {
+    const count = Math.max(0, Number(total) || 0);
+    const segmented = !!running && count > 1;
+    progressBox.classList.toggle("has-segments", segmented);
+    progressSegments.hidden = !segmented;
+    if (segmented) progressBar.setAttribute("aria-hidden", "true");
+    else progressBar.removeAttribute("aria-hidden");
+    if (!segmented) {
+      if (progressSegments.childElementCount) progressSegments.replaceChildren();
+      return;
+    }
+    if (progressSegments.childElementCount !== count) {
+      progressSegments.replaceChildren(...Array.from({ length: count }, () => {
+        const segment = document.createElement("span");
+        segment.className = "forge-progress-segment";
+        return segment;
+      }));
+    }
+    const rows = Array.isArray(tasks) ? tasks : [];
+    let finished = 0;
+    [...progressSegments.children].forEach((segment, index) => {
+      const state = String((rows[index] && rows[index].state) || "queued");
+      segment.dataset.state = state;
+      if (["completed", "failed", "uncertain", "cancelled"].includes(state)) finished += 1;
+    });
+    progressSegments.setAttribute("aria-valuemax", String(count));
+    progressSegments.setAttribute("aria-valuenow", String(finished));
+    progressSegments.setAttribute("aria-valuetext", finished + " sur " + count + " terminées");
+  }
+
+  function setForgeAura(active) {
+    const bar = $("forge-actionbar");
+    if (bar) bar.classList.toggle("is-forging", !!active);
+  }
+
   function showJob(job) {
     const active = job && ["queued", "starting", "generating", "saving"].includes(job.state);
+    const failed = job?.state === "failed";
+    if (generationAttempt && generationAttempt.jobId === job?.job_id) {
+      generationAttempt.retry = failed ? "new" : "";
+      if (!active && !failed) generationAttempt = null;
+    }
+    jobDestinationMode = active || failed || job?.state === "unknown" ? (job.destination || "normal") : "";
     setWake("job", active);
     cancelBtn.disabled = !active || job.cancel === "deferred";
     $("forge-wait").hidden = !(job && job.waiting);
     $("forge-start-now").disabled = false;
-    progressBox.hidden = !active && !(job && job.state === "unknown");
+    progressBox.hidden = !active && !failed && job?.state !== "unknown";
+    progressBox.classList.toggle("is-error", failed);
+    progressBar.hidden = failed;
     progressBox.classList.toggle("is-live", !!active);
     if (progressBar) progressBar.classList.toggle("is-live", !!active);
+    syncProgressSegments([], 0, false);
+    setForgeAura(!!active);
     if (job) {
-      progressBar.value = Number(job.progress || 0);
-      const eta = active ? etaCopy(job.eta) : "";
-      progressLabel.textContent = (job.message || job.state || "") + (eta ? " \u00b7 " + eta : "");
+      syncJobProgress(job, active);
       if (job.destination === "private") {
         if (job.state === "completed" && vaultState.unlocked) {
           const submitted = justSubmitted;
@@ -483,8 +874,16 @@
           }).catch(() => {});
         }
       } else if (job.images && job.images.length) {
-        results.replaceChildren();
-        job.images.forEach((image) => results.appendChild(card({ id: image.id, thumb: "/api/forge/gallery/" + image.id + "/thumb" })));
+        const signature = job.images.map((image) => String(image && image.id || "")).join(",");
+        if (results.dataset.jobReveal !== signature) {
+          results.replaceChildren();
+          job.images.forEach((image, index) => {
+            const node = card({ id: image.id, thumb: "/api/forge/gallery/" + image.id + "/thumb" });
+            results.appendChild(node);
+            landResult(node, index === 0 ? justSubmitted : false, index * 50);
+          });
+          results.dataset.jobReveal = signature;
+        }
         const resultsEmpty = $("forge-results-empty");
         if (resultsEmpty) resultsEmpty.hidden = true;
       }
@@ -581,7 +980,11 @@
   }
 
   function syncSeedMode() {
-    $("forge-seed").disabled = seedMode() !== "fixed";
+    /* readOnly, not disabled: a disabled field cannot be focused, so a keyboard
+       user could not even read the seed that will be reused. */
+    const seedField = $("forge-seed");
+    seedField.readOnly = seedMode() !== "fixed";
+    seedField.setAttribute("aria-disabled", seedField.readOnly ? "true" : "false");
   }
 
   function applySeed(seed) {
@@ -602,6 +1005,7 @@
       const selected = button.dataset.width === String($("forge-width").value) && button.dataset.height === String($("forge-height").value);
       button.setAttribute("aria-pressed", selected ? "true" : "false");
     });
+    updateSettingsSummary();
   }
 
   function applyHires(settings) {
@@ -613,36 +1017,55 @@
     syncHiresNote();
   }
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (submitGuard || generateBtn.disabled) return;
+  async function submitGeneration(attempt) {
+    generationAttempt = attempt;
+    attempt.retry = "";
     submitGuard = true;
-    generateBtn.disabled = true;
+    jobDestinationMode = attempt.destination;
+    syncActions(true);
     progressBox.hidden = false;
-    progressLabel.textContent = "Envoi…";
+    progressBox.classList.remove("is-error", "is-live");
+    progressBar.hidden = false;
+    progressBar.removeAttribute("value");
+    progressLabel.textContent = attempt.destination === "private" ? "Envoi privé…" : "Envoi…";
+    function accept(job) {
+      attempt.jobId = job.job_id;
+      if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
+      showJob(job);
+    }
     try {
       const payload = await api("/api/forge/jobs", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": key() },
-        body: JSON.stringify(Object.assign(settingsFromForm(), { wait_if_busy: true }))
+        headers: { "Content-Type": "application/json", "Idempotency-Key": attempt.key },
+        body: JSON.stringify(attempt.settings)
       });
-      if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
-      showJob(payload.job);
+      accept(payload.job);
     } catch (error) {
       if (error && error.status === 409 && error.data && error.data.active_job_id) {
+        generationAttempt = null;
         sessionStorage.setItem("hqForgeJob", error.data.active_job_id);
         poll(error.data.active_job_id);
         return;
       }
       try {
-        const existing = await api("/api/forge/jobs?idempotency_key=" + encodeURIComponent(key()));
-        showJob(existing.job);
+        const existing = await api("/api/forge/jobs?idempotency_key=" + encodeURIComponent(attempt.key));
+        accept(existing.job);
         return;
       } catch (_) { /* the POST itself failed */ }
+      if (generationAttempt === attempt) attempt.retry = "same";
+      // A lost response can hide an accepted job. Retrying with this key lets HQ deduplicate it.
+      progressBox.classList.add("is-error");
+      progressBar.hidden = true;
       progressLabel.textContent = error.message || "La génération n'a pas pu démarrer.";
       submitGuard = false;
       syncActions(false);
     }
+  }
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (submitGuard || generateBtn.disabled) return;
+    submitGeneration({ key: key(), destination: "normal", settings: Object.assign(settingsFromForm(), { wait_if_busy: true }) });
   });
 
   async function privateGenerate() {
@@ -665,28 +1088,21 @@
     }
     if (!vaultState.private_generation || privateBtn.disabled) return;
     if (submitGuard) return;
-    submitGuard = true;
-    privateBtn.disabled = true;
-    progressBox.hidden = false;
-    progressLabel.textContent = "Envoi privé…";
     // The finished vault image is centered and revealed like a normal one (nothing is stored for it).
     justSubmitted = true; revealCentered = false; celebrateSubmit = houseInUse();
     resultIntent = false;
     hideSeeResult();
-    try {
-      const payload = await api("/api/forge/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Idempotency-Key": key() },
-        body: JSON.stringify(Object.assign(settingsFromForm(), { destination: "private", vault: privateTarget }))
-      });
-      if (window.hqForgeWipeDraft) window.hqForgeWipeDraft();
-      showJob(payload.job);
-    } catch (error) {
-      progressLabel.textContent = error.message || "La génération privée n'a pas démarré.";
-      submitGuard = false;
-      syncActions(false);
-    }
+    await submitGeneration({ key: key(), destination: "private", settings: Object.assign(settingsFromForm(), { destination: "private", vault: privateTarget }) });
   }
+
+  retryJob.addEventListener("click", () => {
+    if (submitGuard || retryJob.hidden || retryJob.disabled || !generationAttempt) return;
+    const attempt = generationAttempt;
+    justSubmitted = true; revealCentered = false; celebrateSubmit = houseInUse();
+    resultIntent = false;
+    hideSeeResult();
+    submitGeneration({ key: attempt.retry === "new" ? freshKey() : attempt.key, destination: attempt.destination, settings: attempt.settings });
+  });
 
   form.addEventListener("submit", (event) => {
     if (destination() !== "private") return;
@@ -814,13 +1230,47 @@
     closeViewer();
     requestRestore(settings, "all", "image de la galerie");
   });
+  /* Reversible by default: rejected images wait in the Corbeille, which has its
+     own permanent delete. A native confirm() used to be the only way back. */
   deleteBtn.addEventListener("click", async () => {
-    if (!currentDetail || !window.confirm("Supprimer cette copie HQ ? Le fichier de Forge, s'il existe, n'est pas touché.")) return;
-    await api("/api/forge/gallery/" + currentDetail.id + "/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    closeViewer();
-    loadGallery(true).catch(() => {});
+    if (!currentDetail) return;
+    try {
+      await api("/api/forge/library/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [currentDetail.id], state: "reject" }) });
+      closeViewer();
+      toast("Image déplacée dans la corbeille. Rien n'est effacé : la Corbeille permet de la remettre.");
+      loadGallery(true).catch(() => {});
+    } catch (error) {
+      toast(error.message || "Cette image n'a pas pu être déplacée.", "error");
+    }
   });
-  moreBtn.addEventListener("click", () => loadGallery(false).catch((error) => { statusEl.textContent = error.message; }));
+  moreBtn.addEventListener("click", () => (gallerySearching ? searchGallery(false) : loadGallery(false)).catch((error) => { statusEl.textContent = error.message; }));
+
+  const galleryForm = $("forge-gallery-search");
+  if (galleryForm) {
+    galleryForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      searchGallery(true).catch((error) => toast(error.message || "La recherche a échoué.", "error"));
+    });
+  }
+  const galleryClear = $("forge-gallery-clear");
+  if (galleryClear) galleryClear.addEventListener("click", () => {
+    const field = $("forge-gallery-q");
+    if (field) field.value = "";
+    galleryView = "";
+    document.querySelectorAll("#forge-gallery-filters [data-gview]").forEach((chip) => chip.setAttribute("aria-pressed", chip.dataset.gview === "" ? "true" : "false"));
+    searchGallery(true).catch((error) => toast(error.message || "La recherche a échoué.", "error"));
+  });
+  document.querySelectorAll("#forge-gallery-filters [data-gview]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      galleryView = chip.dataset.gview || "";
+      document.querySelectorAll("#forge-gallery-filters [data-gview]").forEach((item) => item.setAttribute("aria-pressed", item === chip ? "true" : "false"));
+      searchGallery(true).catch((error) => toast(error.message || "La recherche a échoué.", "error"));
+    });
+  });
+  const galleryAdvanced = $("forge-gallery-advanced");
+  if (galleryAdvanced) galleryAdvanced.addEventListener("click", () => {
+    if (window.hqForgeStudio && window.hqForgeStudio.openLibrary) window.hqForgeStudio.openLibrary();
+  });
 
   const disabledCopy = $("forge-private-note") ? $("forge-private-note").textContent : "";
   let privateDetail = null;
@@ -854,148 +1304,60 @@
   function vaultSafeName(v) { return v ? (v.discret ? "Coffre n° " + v.number : vaultName(v)) : ""; }
   function vaultsNote(text) { $("forge-vaults-note").textContent = text || ""; }
 
-  function vaultCard(v, move) {
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    const open = v.id === openVid;
-    button.type = "button";
-    button.className = "forge-vault-card";
-    button.dataset.vid = v.id;
-    button.dataset.open = open ? "true" : "false";
-    const tile = document.createElement("span");
-    tile.className = "forge-vault-tile";
-    tile.dataset.colour = COLOURS[v.colour] ? v.colour : "ardoise";
-    tile.setAttribute("aria-hidden", "true");
-    tile.textContent = (GLYPHS[v.glyph] || GLYPHS.coffre)[0];
-    if (open && v.icon) {
-      // V5: the photo icon, only while this vault is open here; locked, the glyph and colour stay.
-      if (iconCache.vid === v.id && iconCache.url) {
-        const img = document.createElement("img");
-        img.alt = "";
-        img.src = iconCache.url;
-        tile.replaceChildren(img);
-        tile.classList.add("forge-vault-tile-photo");
-      } else {
-        loadIcon(v.id);
-      }
-    }
-    const name = document.createElement("span");
-    name.className = "forge-vault-card-name";
-    name.textContent = vaultName(v);
-    const state = document.createElement("span");
-    state.className = "forge-vault-card-state";
-    state.textContent = open ? "Ouvert" : "Verrouillé";
-    button.append(tile, name, state);
-    button.setAttribute("aria-label", vaultName(v) + ", " + state.textContent.toLowerCase());
-    button.addEventListener("click", () => {
-      if (v.id === openVid) {
-        vaultsNote(quoted(vaultName(v)) + " est déjà ouvert.");
-        return;
-      }
-      openSheet(v.id);
-    });
-    item.appendChild(button);
-    if (move) {
-      // V5: manual order with buttons (no drag and drop), 44 px each.
-      const row = document.createElement("div");
-      row.className = "forge-vault-move";
-      [["up", "Monter", -1], ["down", "Descendre", 1]].forEach(([dir, text, delta]) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "secondary";
-        b.dataset.move = dir;
-        b.textContent = text;
-        b.setAttribute("aria-label", text + " " + vaultSafeName(v));
-        b.disabled = (delta < 0 && move.first) || (delta > 0 && move.last);
-        b.addEventListener("click", () => { moveVault(v.id, delta).catch((error) => vaultsNote(error.message || "L'ordre n'a pas pu \u00eatre enregistr\u00e9.")); });
-        row.appendChild(b);
-      });
-      item.appendChild(row);
-    }
-    return item;
-  }
-
-  // V5 photo icon: one blob URL for the open vault, dropped as soon as it is locked or switched.
-  let iconCache = { vid: null, url: null, loading: null };
-  function dropIcon() {
-    if (iconCache.url) URL.revokeObjectURL(iconCache.url);
-    iconCache = { vid: null, url: null, loading: null };
-  }
-  function loadIcon(vid) {
-    if (iconCache.loading === vid) return;
-    dropIcon();
-    iconCache.loading = vid;
-    fetch("/api/forge/vaults/" + encodeURIComponent(vid) + "/icon", { credentials: "same-origin", cache: "no-store" })
-      .then((response) => (response.ok ? response.blob() : null))
-      .then((blob) => {
-        if (!blob || iconCache.loading !== vid || openVid !== vid) return;
-        iconCache = { vid, url: URL.createObjectURL(blob), loading: null };
-        renderVaults();
-      })
-      .catch(() => { if (iconCache.loading === vid) iconCache.loading = null; });
-  }
-
   let vaultSort = "manuel";  // display only, kept in memory
   let vaultsAll = false;  // "Tous mes coffres" unfolded
   let currentVid = null;  // the card shown on top
   let destSheetOpen = false;  // the destination chooser under the generator chip
   let destOk = false;
-  function sortedVaults(rows) {
-    const list = rows.slice();
-    if (vaultSort === "nom") list.sort((a, b) => vaultSafeName(a).localeCompare(vaultSafeName(b), "fr", { sensitivity: "base" }));
-    else if (vaultSort === "recent") list.sort((a, b) => String(b.last_used_day || "").localeCompare(String(a.last_used_day || "")) || a.number - b.number);
-    return list;
+  // The vault panel's rendering lives in hq-forge-vault.js, fetched the first time the coffre becomes the
+  // destination: a normal visit to the generator never parses it. Core keeps the state, the vault API and
+  // the privacy scrub, and hands its live values over through accessors so nothing can go stale.
+  let vaultUi = null;
+  let vaultUiLoading = null;
+  function vaultUiCtx() {
+    return {
+      $, api, quoted, glyphs: GLYPHS, colours: COLOURS,
+      get openVid() { return openVid; },
+      get listing() { return vaultListing; },
+      get privateTarget() { return privateTarget; },
+      get vaultSort() { return vaultSort; },
+      set vaultSort(value) { vaultSort = value; },
+      get vaultsAll() { return vaultsAll; },
+      set vaultsAll(value) { vaultsAll = value; },
+      set currentVid(value) { currentVid = value; },
+      vaultName: (v) => vaultName(v),
+      vaultSafeName: (v) => vaultSafeName(v),
+      vaultsNote: (text) => vaultsNote(text),
+      vaultById: (vid) => vaultById(vid),
+      syncVaultEdit: () => syncVaultEdit(),
+      renderTarget: () => renderTarget(),
+      openSheet: (vid) => openSheet(vid),
+      refreshVault: () => refreshVault()
+    };
   }
-  async function moveVault(vid, delta) {
-    const ids = (vaultListing.vaults || []).map((v) => v.id);
-    const at = ids.indexOf(vid);
-    const to = at + delta;
-    if (at < 0 || to < 0 || to >= ids.length) return;
-    [ids[at], ids[to]] = [ids[to], ids[at]];
-    await api("/api/forge/vaults/order", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
-    await refreshVault();
-    const v = vaultById(vid);
-    vaultsNote(v ? quoted(vaultSafeName(v)) + (delta < 0 ? " est mont\u00e9." : " est descendu.") : "");
-    const again = document.querySelector('.forge-vault-card[data-vid="' + vid + '"]');
-    const btn = again && again.parentElement.querySelector('[data-move="' + (delta < 0 ? "up" : "down") + '"]');
-    if (btn && !btn.disabled) btn.focus(); else if (again) again.focus();
+  function ensureVaultUi() {
+    if (vaultUi || vaultUiLoading) return vaultUiLoading;
+    vaultUiLoading = new Promise((resolve) => {
+      const el = document.createElement("script");
+      // Same build stamp as the gallery module: the coffre panel is fetched on the first unlock, and a
+      // repeat visit should read it from cache instead of paying a revalidation mid-interaction.
+      el.src = "/assets/hq-forge-vault.js" + (window.HQ_ASSET_BUILD ? "?v=" + window.HQ_ASSET_BUILD : "");
+      el.async = false;
+      el.onload = () => {
+        vaultUi = window.hqForgeVault ? window.hqForgeVault.create(vaultUiCtx()) : null;
+        resolve(vaultUi);
+      };
+      el.onerror = () => { el.remove(); vaultUiLoading = null; resolve(null); };
+      document.body.appendChild(el);
+    }).then((ui) => { if (ui) renderVaults(); return ui; });
+    return vaultUiLoading;
   }
-
   function renderVaults() {
-    const list = $("forge-vaults-list");
-    list.replaceChildren();
-    const rows = vaultListing.vaults || [];
-    if (iconCache.vid && iconCache.vid !== openVid) dropIcon();
-    const manual = vaultSort === "manuel" && rows.length > 1;
-    const ordered = sortedVaults(rows);
-    // Panel redesign: one card on top (the open vault, else the destination, else the first); the rest behind a fold.
-    const current = vaultById(openVid) || vaultById(privateTarget) || ordered[0] || null;
-    if (rows.length < 2) vaultsAll = false;
-    ordered.forEach((v, index, all) => {
-      const item = vaultCard(v, manual ? { first: index === 0, last: index === all.length - 1 } : null);
-      if (current && v.id === current.id) item.classList.add("is-current");
-      list.appendChild(item);
-    });
-    list.classList.toggle("is-all", vaultsAll);
-    const allBtn = $("forge-vaults-all");
-    allBtn.hidden = rows.length < 2;
-    allBtn.textContent = vaultsAll ? "Masquer les autres coffres" : "Tous mes coffres (" + rows.length + ")";
-    allBtn.setAttribute("aria-expanded", vaultsAll ? "true" : "false");
-    $("forge-vaults-more").hidden = !vaultsAll;
-    currentVid = current ? current.id : null;
-    $("forge-vault-current-actions").hidden = !current;
-    $("forge-vault-lock").hidden = !current || current.id !== openVid;
-    $("forge-vault-current-open").hidden = !current || current.id === openVid;
-    if (current) $("forge-vault-current-open").setAttribute("aria-label", "Ouvrir " + quoted(vaultName(current)));
-    $("forge-vaults-sort-note").hidden = vaultSort !== "recent";
-    syncVaultEdit();
-    $("forge-vaults-new").hidden = rows.length >= (vaultListing.max || 12) || vaultListing.layout === "legacy";
-    $("forge-vaults-restore").hidden = $("forge-vaults-new").hidden;
-    $("forge-vaults-empty").hidden = rows.length > 0;
-    const opened = vaultById(openVid);
-    $("forge-vault-gallery-title").textContent = opened ? vaultName(opened) : "Coffre";
-    renderTarget();
-    if (window.hqForgeOnVaults) window.hqForgeOnVaults();
+    if (!vaultUi) { ensureVaultUi(); return; }
+    vaultUi.renderVaults();
+  }
+  function dropIcon() {
+    if (vaultUi) vaultUi.dropIcon();
   }
 
   function renderTarget() {
@@ -1058,6 +1420,10 @@
 
   /* After a lock: forget every open-only detail at once, before any request returns. */
   function forgetOpenVault() {
+    if (generationAttempt?.destination === "private") {
+      generationAttempt = null;
+      retryJob.hidden = true;
+    }
     dropIcon();
     openVid = null;
     privateTarget = null;
@@ -1146,7 +1512,7 @@
     const layout = vaultListing.layout;
     const listed = layout === "multi" || layout === "empty";
     $("forge-vaults").hidden = !privateMode || !listed;
-    renderVaults();
+    if (privateMode) renderVaults();  // the panel is only painted when the coffre is the destination
     if (layout === "unreadable") vaultsNote(vaultListing.error || "La liste des coffres est illisible. Aucun coffre n'est ouvert.");
     else if (layout === "migrating") vaultsNote("Un déplacement du coffre a été interrompu. Il reprendra au prochain démarrage de HQ. Rien n'est perdu.");
     await refreshMigration(privateMode);
@@ -1989,6 +2355,7 @@
       justSubmitted = true; revealCentered = false; celebrateSubmit = false;
       resultIntent = false;
       results.replaceChildren();
+      delete results.dataset.jobReveal;
       shownBatchImages.clear();
       showBatch(batch);
     },
@@ -2010,6 +2377,19 @@
       progressBox.hidden = false;
       showJob(job);
     },
+    /* A recipe/finish action submits a complete normal job without changing the
+       owner's prompt by accident. The existing progress panel and polling do the rest. */
+    runNormalSettings: (settings) => {
+      if (submitGuard || !settings || typeof settings !== "object") return false;
+      const normal = document.querySelector('input[name="forge-destination"][value="normal"]');
+      if (normal && !normal.checked) {
+        normal.checked = true;
+        if (typeof syncDest === "function") syncDest();
+      }
+      submitGeneration({ key: key(), destination: "normal", settings: Object.assign({}, settings, { wait_if_busy: true }) });
+      return true;
+    },
+    applySeed: (seed) => applySeed(seed),
     closeViewers: () => { if (viewer.open) closeViewer(); if (vaultViewer && vaultViewer.open) closePrivate(); },
   };
 
@@ -2168,160 +2548,74 @@
     loadVaultGallery().catch(() => {});
   });
 
-  let presets = [];
-  let loadedPreset = null;
-  let cleanSnapshot = "";
-  let editorMode = "create";
-  const presetList = $("forge-preset-list");
-  const presetState = $("forge-preset-state");
-  const presetEditor = $("forge-preset-editor");
 
-  function presetKind() {
-    const chosen = document.querySelector('input[name="forge-preset-kind"]:checked');
-    return chosen && chosen.value === "creative" ? "creative" : "technical";
-  }
-
-  function currentSettings(kind) {
+  // Le rendu des cartes, des rangées et de la liste des préréglages vit dans hq-forge-gallery.js, chargé
+  // dès que la vue est en place : le coeur garde l'état, les appels réseau et les actions, et passe ses
+  // valeurs vivantes par des accesseurs, comme pour le coffre.
+  let galleryUi = null;
+  let galleryUiLoading = null;
+  function galleryUiCtx() {
     return {
-      kind: kind,
-      prompt: kind === "creative" ? promptEl.value : "",
-      negative_prompt: negativeEl.value,
-      checkpoint: checkpointEl.value,
-      sampler_name: samplerEl.value,
-      scheduler: schedulerEl.value,
-      width: Number($("forge-width").value),
-      height: Number($("forge-height").value),
-      steps: Number($("forge-steps").value),
-      cfg_scale: Number($("forge-cfg").value),
-      seed: forgeSeed(),
-      n_iter: Number($("forge-iter").value),
-      batch_size: 1,
-      enable_hr: $("forge-hr").checked,
-      hr_scale: Number($("forge-hr-scale").value),
-      hr_upscaler: $("forge-hr-upscaler").value,
-      hr_second_pass_steps: Number($("forge-hr-steps").value),
-      denoising_strength: Number($("forge-hr-denoise").value)
+      $, option, gallery, api,
+      presetList: $("forge-preset-list"),
+      presetState: $("forge-preset-state"),
+      presetEditor: $("forge-preset-editor"),
+      promptEl, negativeEl, checkpointEl, samplerEl, schedulerEl,
+      forgeSeed: () => forgeSeed(),
+      applySeed: (seed) => applySeed(seed),
+      applyHires: (settings) => applyHires(settings),
+      describeChoices: (stale) => describeChoices(stale),
+      syncActions: (active) => syncActions(active),
+      destination: () => destination(),
+      shortModel: (text) => shortModel(text),
+      get gallerySearching() { return gallerySearching; },
+      shortModel: (text) => shortModel(text),
+      privateThumb: (id) => privateThumb(id),
+      openViewer: (id, from) => openViewer(id, from),
+      openPrivate: (id, from) => openPrivate(id, from),
     };
   }
-
-  function snapshotOf(settings) {
-    const copy = Object.assign({}, settings);
-    if (copy.kind !== "creative") copy.prompt = "";
-    return JSON.stringify(copy);
+  function ensureGalleryUi() {
+    if (galleryUi || galleryUiLoading) return galleryUiLoading;
+    galleryUiLoading = new Promise((resolve) => {
+      const el = document.createElement("script");
+      // Same build stamp as the other lazy assets, so a repeat visit reads this from cache instead of
+      // revalidating while the first gallery render waits on it.
+      el.src = "/assets/hq-forge-gallery.js" + (window.HQ_ASSET_BUILD ? "?v=" + window.HQ_ASSET_BUILD : "");
+      el.async = false;
+      el.onload = () => {
+        galleryUi = window.hqForgeGallery ? window.hqForgeGallery.create(galleryUiCtx()) : null;
+        if (galleryUi && galleryUi.init) galleryUi.init();
+        resolve(galleryUi);
+      };
+      el.onerror = () => { el.remove(); galleryUiLoading = null; resolve(null); };
+      document.body.appendChild(el);
+    }).then((ui) => { if (ui) { renderPresetList(); refreshPresetState(); } return ui; });
+    return galleryUiLoading;
   }
-
-  function renderPresetList() {
-    const current = presetList.value;
-    presetList.replaceChildren();
-    option(presetList, "", "Aucun");
-    presets.forEach((item) => option(presetList, item.id, item.name + (item.kind === "creative" ? " · créatif" : " · technique")));
-    if ([...presetList.options].some((item) => item.value === current)) presetList.value = current;
+  function card(image, mode) { return galleryUi ? galleryUi.card(image, mode) : null; }
+  function galleryRows(rows, reset) {
+    if (!galleryUi) { ensureGalleryUi().then(() => galleryRows(rows, reset)); return; }
+    galleryUi.galleryRows(rows, reset);
   }
+  function renderPresetList() { if (galleryUi) galleryUi.renderPresetList(); }
+  function refreshPresetState() { if (galleryUi) galleryUi.refreshPresetState(); }
+  function loadPresetList() { return ensureGalleryUi().then((ui) => (ui ? ui.loadPresetList() : null)); }
 
-  function selectedPreset() {
-    return presets.find((item) => item.id === presetList.value) || null;
-  }
 
-  function refreshPresetState() {
-    $("forge-preset-update").disabled = !loadedPreset;
-    $("forge-preset-rename").disabled = !selectedPreset();
-    $("forge-preset-duplicate").disabled = !selectedPreset();
-    $("forge-preset-delete").disabled = !selectedPreset();
-    if (!loadedPreset) return;
-    const dirty = snapshotOf(currentSettings(loadedPreset.kind)) !== cleanSnapshot;
-    const partial = presetState.dataset.partial || "";
-    presetState.textContent = (dirty ? "Modifié par rapport à « " + loadedPreset.name + " ». " : "Correspond à « " + loadedPreset.name + " ». ") + partial;
-  }
 
-  async function loadPresetList() {
-    const data = await api("/api/forge/presets");
-    presets = data.presets || [];
-    renderPresetList();
-    if (data.storage === "malformed") presetState.textContent = data.message || "Le fichier de préréglages est illisible.";
-    else if (!loadedPreset) presetState.textContent = presets.length ? "" : "Aucun préréglage enregistré.";
-    refreshPresetState();
-  }
 
-  function applyPreset(preset) {
-    const missing = [];
-    const take = (select, value, label) => {
-      if ([...select.options].some((item) => item.value === value)) {
-        select.value = value;
-        return;
-      }
-      let empty = [...select.options].find((item) => item.value === "");
-      if (!empty) {
-        empty = document.createElement("option");
-        empty.value = "";
-        select.prepend(empty);
-      }
-      empty.textContent = "Indisponible";
-      select.value = "";
-      missing.push(label + " « " + value + " »");
-    };
-    take(checkpointEl, preset.checkpoint, "modèle");
-    take(samplerEl, preset.sampler_name, "échantillonneur");
-    take(schedulerEl, preset.scheduler, "planificateur");
-    if (preset.include_prompt) promptEl.value = preset.prompt || "";
-    if (window.hqForgeTaint) window.hqForgeTaint();
-    negativeEl.value = preset.negative_prompt || "";
-    $("forge-width").value = String(preset.width);
-    $("forge-height").value = String(preset.height);
-    $("forge-steps").value = String(preset.steps);
-    $("forge-cfg").value = String(preset.cfg_scale);
-    applySeed(preset.seed);
-    $("forge-iter").value = String(preset.n_iter);
-    applyHires(preset);
-    if (preset.enable_hr) take($("forge-hr-upscaler"), preset.hr_upscaler, "agrandisseur");
-    describeChoices(false);
-    syncActions();
-    loadedPreset = preset;
-    cleanSnapshot = snapshotOf(currentSettings(preset.kind));
-    presetState.dataset.partial = missing.length ? "Introuvable : " + missing.join(", ") + "." : "";
-    presetList.value = preset.id;
-    refreshPresetState();
-  }
 
-  function syncPresetPrivacy() {
-    const creative = editorMode === "create" && presetKind() === "creative";
-    $("forge-preset-privacy").hidden = !creative;
-    $("forge-preset-privacy-vault").hidden = !creative || destination() !== "private";
-    const ack = $("forge-preset-privacy-ack");
-    if (!creative) ack.checked = false;
-    $("forge-preset-confirm").disabled = creative && !ack.checked;
-  }
 
-  function openPresetEditor(mode) {
-    editorMode = mode;
-    const current = mode === "rename" ? selectedPreset() : null;
-    $("forge-preset-name").value = current ? current.name : "";
-    const kind = current && current.kind === "creative" ? "creative" : "technical";
-    document.querySelector('input[name="forge-preset-kind"][value="' + kind + '"]').checked = true;
-    document.querySelectorAll('input[name="forge-preset-kind"]').forEach((input) => { input.disabled = mode === "rename"; });
-    $("forge-preset-privacy-ack").checked = false;
-    presetEditor.hidden = false;
-    syncPresetPrivacy();
-    $("forge-preset-name").focus();
-  }
 
-  async function commitPresetUpdate() {
-    await postPreset(Object.assign({ action: "update", id: loadedPreset.id }, currentSettings(loadedPreset.kind)));
-    const fresh = presets.find((item) => item.id === loadedPreset.id);
-    if (fresh) applyPreset(fresh);
-  }
 
-  async function postPreset(body) {
-    const data = await api("/api/forge/presets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    presets = data.presets || [];
-    renderPresetList();
-    return data;
-  }
 
+
+
+
+  const presetList = $("forge-preset-list");  // element ref stays: the form wiring and the hint read it
   if (presetList) {
+    ensureGalleryUi();
     [checkpointEl, samplerEl, schedulerEl].forEach((select) => {
       select.addEventListener("change", () => {
         describeChoices(false);
@@ -2373,138 +2667,6 @@
         note.textContent = "La liste des travaux n'a pas répondu.";
       }
     });
-    presetList.addEventListener("change", refreshPresetState);
-    $("forge-preset-load").addEventListener("click", () => {
-      const item = selectedPreset();
-      if (item) applyPreset(item);
-    });
-    $("forge-preset-save").addEventListener("click", () => openPresetEditor("create"));
-    $("forge-preset-rename").addEventListener("click", () => { if (selectedPreset()) openPresetEditor("rename"); });
-    $("forge-preset-cancel").addEventListener("click", () => { presetEditor.hidden = true; });
-    document.querySelectorAll('input[name="forge-preset-kind"]').forEach((input) => {
-      input.addEventListener("change", () => {
-        $("forge-preset-privacy-ack").checked = false;
-        syncPresetPrivacy();
-      });
-    });
-    $("forge-preset-privacy-ack").addEventListener("change", syncPresetPrivacy);
-    presetEditor.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (editorMode === "create" && presetKind() === "creative" && !$("forge-preset-privacy-ack").checked) {
-        syncPresetPrivacy();
-        return;
-      }
-      const name = $("forge-preset-name").value.trim();
-      try {
-        if (editorMode === "rename") {
-          await postPreset({ action: "rename", id: selectedPreset().id, name: name });
-          if (loadedPreset && loadedPreset.id === presetList.value) loadedPreset.name = name;
-        } else {
-          await postPreset(Object.assign({ action: "create", name: name }, currentSettings(presetKind())));
-          const created = presets.find((item) => item.name === name);
-          if (created) applyPreset(created);
-        }
-        presetEditor.hidden = true;
-        refreshPresetState();
-      } catch (error) {
-        presetState.textContent = error.message || "Le préréglage n'a pas été enregistré.";
-      }
-    });
-    $("forge-preset-update").addEventListener("click", async () => {
-      if (!loadedPreset) return;
-      if (loadedPreset.kind === "creative") {
-        $("forge-preset-update-gate").hidden = false;
-        $("forge-preset-update-vault").hidden = destination() !== "private";
-        $("forge-preset-update-ack").checked = false;
-        $("forge-preset-update-confirm").disabled = true;
-        return;
-      }
-      try {
-        await commitPresetUpdate();
-      } catch (error) {
-        presetState.textContent = error.message || "La mise à jour a échoué.";
-      }
-    });
-    $("forge-preset-update-ack").addEventListener("change", () => {
-      $("forge-preset-update-confirm").disabled = !$("forge-preset-update-ack").checked;
-    });
-    $("forge-preset-update-cancel").addEventListener("click", () => { $("forge-preset-update-gate").hidden = true; });
-    $("forge-preset-update-confirm").addEventListener("click", async () => {
-      if (!loadedPreset || loadedPreset.kind !== "creative" || !$("forge-preset-update-ack").checked) return;
-      try {
-        await commitPresetUpdate();
-        $("forge-preset-update-gate").hidden = true;
-      } catch (error) {
-        presetState.textContent = error.message || "La mise à jour a échoué.";
-      }
-    });
-    $("forge-preset-duplicate").addEventListener("click", async () => {
-      const item = selectedPreset();
-      if (!item) return;
-      try {
-        await postPreset({ action: "duplicate", id: item.id });
-        refreshPresetState();
-      } catch (error) {
-        presetState.textContent = error.message || "La copie a échoué.";
-      }
-    });
-    $("forge-preset-delete").addEventListener("click", async () => {
-      const item = selectedPreset();
-      if (!item || !window.confirm("Supprimer le préréglage « " + item.name + " » ?")) return;
-      try {
-        await postPreset({ action: "delete", id: item.id });
-        if (loadedPreset && loadedPreset.id === item.id) loadedPreset = null;
-        presetState.dataset.partial = "";
-        presetState.textContent = "Préréglage supprimé.";
-        refreshPresetState();
-      } catch (error) {
-        presetState.textContent = error.message || "La suppression a échoué.";
-      }
-    });
-    $("forge-preset-export").addEventListener("click", () => {
-      $("forge-preset-export-gate").hidden = false;
-      $("forge-preset-export-vault").hidden = destination() !== "private";
-    });
-    $("forge-preset-export-cancel").addEventListener("click", () => { $("forge-preset-export-gate").hidden = true; });
-    $("forge-preset-export-confirm").addEventListener("click", async () => {
-      if ($("forge-preset-export-gate").hidden) return;
-      const data = await api("/api/forge/presets");
-      const blob = new Blob([JSON.stringify({ version: data.version, presets: data.presets }, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "forge-presets.json";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-      $("forge-preset-export-gate").hidden = true;
-    });
-    document.querySelectorAll('input[name="forge-destination"]').forEach((input) => {
-      input.addEventListener("change", () => {
-        if (!$("forge-preset-privacy").hidden) $("forge-preset-privacy-ack").checked = false;
-        if (!$("forge-preset-update-gate").hidden) {
-          $("forge-preset-update-ack").checked = false;
-          $("forge-preset-update-confirm").disabled = true;
-        }
-        syncPresetPrivacy();
-        $("forge-preset-privacy-vault").hidden = destination() !== "private" || $("forge-preset-privacy").hidden;
-        $("forge-preset-export-vault").hidden = destination() !== "private";
-        $("forge-preset-update-vault").hidden = destination() !== "private";
-      });
-    });
-    $("forge-preset-import").addEventListener("change", async () => {
-      const file = $("forge-preset-import").files && $("forge-preset-import").files[0];
-      $("forge-preset-import").value = "";
-      if (!file) return;
-      try {
-        const parsed = JSON.parse(await file.text());
-        await postPreset({ action: "import", version: parsed.version, presets: parsed.presets });
-        presetState.textContent = "Import terminé.";
-      } catch (error) {
-        presetState.textContent = error.message || "L'import a été refusé.";
-      }
-    });
     document.querySelectorAll("#forge-studio .forge-help").forEach((button) => {
       button.addEventListener("click", (event) => {
         event.preventDefault();
@@ -2551,7 +2713,10 @@
   let lastSubmitted = null;
 
   function syncCount() {
-    if (countEl) countEl.textContent = promptEl.value.length + " / " + (promptEl.maxLength > 0 ? promptEl.maxLength : 2000);
+    if (!countEl) return;
+    const words = promptEl.value.trim().split(/\s+/).filter(Boolean).length;
+    const tokens = Math.ceil(words * 1.35);
+    countEl.textContent = promptEl.value.length + " / " + (promptEl.maxLength > 0 ? promptEl.maxLength : 2000) + " · ~" + tokens + " jeton" + (tokens > 1 ? "s" : "");
   }
 
   function pickOption(select, value) {
@@ -2618,8 +2783,31 @@
     return prompt !== lastApplied.prompt || negative !== lastApplied.negative;
   }
 
+  /* One Forge-wide status channel: the panel and the studio sheets share it, so a
+     confirmation never depends on which note happens to be on screen. */
+  let toastTimer = 0;
+  function toast(message, level) {
+    let box = document.getElementById("forge-studio-toast");
+    if (!box) {
+      box = document.createElement("p");
+      box.id = "forge-studio-toast";
+      box.className = "forge-studio-toast";
+      box.setAttribute("role", "status");
+      box.setAttribute("aria-live", "polite");
+      box.hidden = true;
+      document.body.appendChild(box);
+    }
+    box.textContent = String(message || "");
+    if (level) box.dataset.level = level; else delete box.dataset.level;
+    box.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { box.hidden = true; }, 6200);
+  }
+  window.hqForgeToast = toast;
+
   function say(text) {
     if (historyNote) historyNote.textContent = text;
+    if (text) toast(text);
   }
 
   function finishRestore(settings, mode, label) {
@@ -3045,11 +3233,29 @@
   }
   // A finished result: always play the reveal (CSS drops it under reduced motion); center it only for the
   // first result of the current submit and only if the user stayed idle, otherwise offer "Voir le résultat".
-  function landResult(node, submitted = justSubmitted) {
+  function landResult(node, submitted = justSubmitted, delay = 0) {
     if (!node) return;
+    node.style.setProperty("--forge-reveal-delay", Math.max(0, Number(delay) || 0) + "ms");
     node.classList.remove("forge-reveal", "forge-reveal-celebrate");
     void node.offsetWidth;
     node.classList.add("forge-reveal");
+    let wash = node.querySelector(".forge-develop-wash");
+    const motionTier = document.documentElement.dataset.hqMotionTier;
+    const noWetPrint = reduceMotion() || motionTier === "lite" || motionTier === "parked";
+    if (!noWetPrint) {
+      if (!wash) {
+        wash = document.createElement("span");
+        wash.className = "forge-develop-wash";
+        wash.setAttribute("aria-hidden", "true");
+        wash.addEventListener("animationend", () => wash.remove(), { once: true });
+        node.appendChild(wash);
+      }
+      wash.classList.remove("is-playing");
+      void wash.offsetWidth;
+      wash.classList.add("is-playing");
+    } else if (wash) {
+      wash.remove();
+    }
     if ((submitted && celebrateSubmit) || node.dataset.triage === "favorite") node.classList.add("forge-reveal-celebrate");
     if (node.classList.contains("forge-reveal-celebrate") && typeof window.hqPolishBurst === "function") {
       window.hqPolishBurst(node);
@@ -3122,6 +3328,55 @@
       return Array.isArray(saved) && saved.length ? saved.filter((id) => typeof id === "string") : ["local"];
     } catch (_) { return ["local"]; }
   })());
+
+  const fleetFxTimers = new Map();
+  const fleetTaskStates = new Map();
+  const fleetRunningIds = new Set();
+
+  function fleetTaskKey(task) {
+    return String(task.id || task.task_id || ((task.worker_id || "?") + ":" + task.index));
+  }
+
+  function paintFleetRunning() {
+    if (!deviceList) return;
+    deviceList.querySelectorAll(".forge-device").forEach((node) => {
+      node.classList.toggle("is-batch-running", fleetRunningIds.has(node.dataset.id));
+    });
+  }
+
+  function pulseDevice(id, kind) {
+    const node = deviceList && deviceList.querySelector('.forge-device[data-id="' + CSS.escape(String(id)) + '"]');
+    if (!node) return;
+    node.classList.remove("is-dispatching", "is-batch-done");
+    void node.offsetWidth;
+    node.classList.add(kind === "done" ? "is-batch-done" : "is-dispatching");
+    clearTimeout(fleetFxTimers.get(id));
+    fleetFxTimers.set(id, setTimeout(() => node.classList.remove("is-dispatching", "is-batch-done"), 950));
+  }
+
+  function syncFleetFx(batch) {
+    fleetRunningIds.clear();
+    (batch.workers || []).forEach((row) => {
+      if (row.running && row.worker_id) fleetRunningIds.add(String(row.worker_id));
+    });
+    paintFleetRunning();
+    const liveTasks = new Set((batch.tasks || []).map(fleetTaskKey));
+    for (const key of fleetTaskStates.keys()) {
+      if (!liveTasks.has(key)) fleetTaskStates.delete(key);
+    }
+    (batch.tasks || []).forEach((task) => {
+      const id = task.worker_id && String(task.worker_id);
+      if (!id) return;
+      const key = fleetTaskKey(task);
+      const previous = fleetTaskStates.get(key);
+      const state = String(task.state || "");
+      if (state !== previous) {
+        if (["dispatched", "running", "saving", "sending"].includes(state)) pulseDevice(id, "dispatch");
+        else if (state === "completed" && previous) pulseDevice(id, "done");
+        fleetTaskStates.set(key, state);
+      }
+    });
+  }
 
   function saveSelection() {
     try { localStorage.setItem("hqForgeDevices", JSON.stringify([...selected])); } catch (_) { /* private browsing */ }
@@ -3295,8 +3550,16 @@
     return node;
   }
 
+  function jobProgressValue(current) {
+    if (!current || current.progress_stale) return null;
+    return progressFraction(current.progress);
+  }
   function jobText(current) {
-    return current.steps ? "Pas " + current.step + " / " + current.steps : "T\u00e2che en cours";
+    const parts = [current.steps ? "Pas " + Number(current.step || 0) + " / " + current.steps : "T\u00e2che en cours"];
+    const value = jobProgressValue(current);
+    if (value !== null && value > 0) parts.push(Math.round(value * 100) + " %");
+    else if (current.progress_stale) parts.push("progression indisponible");
+    return parts.join(" \u00b7 ");
   }
 
   function deviceCard(device) {
@@ -3366,8 +3629,11 @@
       job.className = "forge-device-job";
       const bar = document.createElement("progress");
       bar.max = 1;
-      bar.value = Number(device.current.progress || 0);
+      const value = jobProgressValue(device.current);
+      if (value === null) { bar.removeAttribute("value"); bar.setAttribute("data-indeterminate", "1"); }
+      else { bar.value = value; }
       bar.setAttribute("aria-label", "Progression sur " + device.name);
+      bar.setAttribute("aria-valuetext", jobText(device.current));
       const text = document.createElement("span");
       text.className = "forge-device-job-text";
       text.textContent = jobText(device.current);
@@ -3386,7 +3652,7 @@
     dl.append(specLine("VRAM", first ? mb(first.vram_mb) : "inconnue"));
     dl.append(specLine("CPU", (device.hardware && device.hardware.cpu) || "inconnu"));
     dl.append(specLine("RAM", mb(device.hardware && device.hardware.ram_mb)));
-    dl.append(specLine("Mod\u00e8le charg\u00e9", device.model || "inconnu"));
+    dl.append(specLine("Mod\u00e8le actif dans Forge", device.model || "inconnu"));
     if (device.kind === "remote") dl.append(specLine("Vu", device.last_seen ? when(device.last_seen) : "jamais"));
     if (device.last_error_label) dl.append(specLine("Derni\u00e8re erreur", device.last_error_label));
     more.append(summary, dl);
@@ -3426,8 +3692,17 @@
       if (!node) return;
       const bar = node.querySelector(".forge-device-job progress");
       const text = node.querySelector(".forge-device-job-text");
-      const value = Number(device.current.progress || 0);
-      if (bar && bar.value !== value) bar.value = value;
+      const value = jobProgressValue(device.current);
+      if (bar) {
+        if (value === null) {
+          if (bar.hasAttribute("value")) bar.removeAttribute("value");
+          bar.setAttribute("data-indeterminate", "1");
+        } else if (!bar.hasAttribute("value") || Number(bar.value) !== value) {
+          bar.value = value;
+          bar.removeAttribute("data-indeterminate");
+        }
+        bar.setAttribute("aria-valuetext", jobText(device.current));
+      }
       if (text && text.textContent !== jobText(device.current)) text.textContent = jobText(device.current);
     });
   }
@@ -3461,6 +3736,7 @@
     $("forge-devices-all").hidden = !remote;
     fleetCountField.hidden = !fleetMode();
     fleetPrivateNote.hidden = !(destination() === "private" && remote);
+    paintFleetRunning();
   }
 
   async function loadDevices() {
@@ -3559,6 +3835,7 @@
       justSubmitted = true; revealCentered = false; celebrateSubmit = houseInUse();
       resultIntent = false;
       results.replaceChildren();
+      delete results.dataset.jobReveal;
       shownBatchImages.clear();
       showBatch(payload.batch);
     } catch (error) {
@@ -3573,10 +3850,12 @@
   function showBatch(batch) {
     if (!batch) return;
     sessionStorage.setItem("hqForgeBatch", batch.batch_id);
+    delete results.dataset.jobReveal;
     batchBox.hidden = false;
     const c = batch.counts;
     const running = batch.state === "running" || batch.state === "cancelling";
     setWake("batch", running);
+    syncFleetFx(batch);
     const setText = (id, value) => { const n = $(id); if (n.textContent !== value) n.textContent = value; };
     setText("forge-fleet-batch-state", { running: "En cours", cancelling: "Annulation…", completed: "Terminé", partial: "Terminé en partie", failed: "Échec", cancelled: "Annulé" }[batch.state] || batch.state);
     setText("forge-fleet-batch-totals", c.done + " / " + c.total + " terminées · " + c.failed + " en échec · " + c.pending + " en attente · " + c.running + " en cours" + (c.uncertain ? " · " + c.uncertain + " incertaines" : "") + (c.cancelled ? " · " + c.cancelled + " annulées" : ""));
@@ -3649,22 +3928,29 @@
     }
     $("forge-fleet-batch-close").hidden = running;
     if (window.hqForgeOnBatch) window.hqForgeOnBatch(batch);
-    let added = false;
+    let addedCount = 0;
     batch.tasks.forEach((task) => {
       if (task.image_id && !shownBatchImages.has(task.image_id)) {
         shownBatchImages.add(task.image_id);
         const node = card({ id: task.image_id, thumb: "/api/forge/gallery/" + task.image_id + "/thumb" });
         results.appendChild(node);
-        landResult(node);
-        added = true;
+        landResult(node, addedCount === 0 ? justSubmitted : false, addedCount * 50);
+        addedCount += 1;
       }
     });
-    if (added) {
+    if (addedCount) {
       const resultsEmpty = $("forge-results-empty");
       if (resultsEmpty) resultsEmpty.hidden = true;
     }
     progressBox.hidden = !running;
+    progressBox.classList.remove("is-error");
+    progressBox.classList.toggle("is-live", running);
+    progressBar.hidden = false;
+    progressBar.classList.toggle("is-live", running);
+    syncProgressSegments(batch.tasks, c.total, running);
+    setForgeAura(running);
     const overall = c.total ? (c.done + c.failed + c.uncertain + c.cancelled) / c.total : 0;
+    progressBar.removeAttribute("data-indeterminate");
     if (progressBar.value !== overall) progressBar.value = overall;
     const label = running ? "Lot : " + c.done + " / " + c.total : "";
     if (progressLabel.textContent !== label) progressLabel.textContent = label;
@@ -3956,6 +4242,8 @@
   const usualFields = new Set(["forge-width", "forge-height", "forge-steps", "forge-steps-range", "forge-iter", "forge-hr"]);
   studio.addEventListener("change", (event) => { if (event.target && usualFields.has(event.target.id)) queueUsual(); });
   studio.addEventListener("input", (event) => { if (event.target && usualFields.has(event.target.id)) queueUsual(); });
+  studio.addEventListener("change", updateSettingsSummary);
+  studio.addEventListener("input", updateSettingsSummary);
   document.querySelectorAll(".forge-ratio").forEach((button) => button.addEventListener("click", queueUsual));
 
   const wakeBox = $("forge-wake");
@@ -3999,6 +4287,8 @@
     refreshStatus().catch(() => {}).then(() => loadDevices()).then(() => resumeBatch()).catch(() => {});
   };
   window.hqForgeHide = function () {
+    if (busyTimer) { window.clearTimeout(busyTimer); busyTimer = 0; }
+    stopEta();
     hideSeeResult();
     if (historyDlg && historyDlg.open) historyDlg.close();
     historyItems = [];

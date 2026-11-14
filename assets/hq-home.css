@@ -12,26 +12,33 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 .home-v2 .home-pc{order:6}
 .home-v2 .home-send{order:7}
 .home-v2 .home-feed{order:8}
+.home-v2 .home-brief{order:9}
+.home-v2 #home-budget{order:10}
+.home-v2 #home-meals{order:11}
+.home-v2 #home-stock{order:12}
+.home-v2 #home-forge{order:13}
+.home-v2 #home-projects{order:14}
+.home-v2 #home-quests{order:15}
 
 /* ---- one card style ---- */
 .home-v2 section.hq{margin:0;border-radius:20px;border:1px solid color-mix(in srgb,var(--line) 70%,transparent);padding:16px;
   background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.05)}
 .home-v2 section.hq[hidden]{display:none}
 .home-v2 .home-head{display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-wrap:wrap;margin:0 0 12px}
-.home-v2 .home-head h2{margin:0;font-size:1.02rem;font-weight:800;letter-spacing:-.015em}
+.home-v2 .home-head h2{margin:0;font-size:1.06rem;font-weight:650;letter-spacing:-.01em}
 .home-v2 .row{justify-content:flex-start}
-.home-v2 button.home-link{min-height:36px;padding:6px 4px;border:0;background:transparent;color:var(--accent);font-size:var(--text-sm,.85rem);font-weight:700;box-shadow:none}
-.home-v2 button.home-chip{min-height:36px;padding:6px 14px;border-radius:999px;font-size:var(--text-sm,.85rem);font-weight:700}
+.home-v2 button.home-link{min-height:44px;padding:6px 4px;border:0;background:transparent;color:var(--accent);font-size:var(--text-sm,.85rem);font-weight:700;box-shadow:none}
+.home-v2 button.home-chip{min-height:44px;padding:6px 14px;border-radius:999px;font-size:var(--text-sm,.85rem);font-weight:700}
 
 /* ---- welcome header ---- */
-.home-v2 section.home-hero{position:relative;overflow:hidden;padding:18px 18px 16px;border-radius:24px;border-left:1px solid color-mix(in srgb,var(--line) 70%,transparent);
+.home-v2 section.home-hero{position:relative;overflow:hidden;padding:16px 18px 14px;border-radius:24px;border-left:1px solid color-mix(in srgb,var(--line) 70%,transparent);
   background:radial-gradient(120% 130% at 0% 0%,color-mix(in srgb,var(--home-amb,#8cc8ff) 32%,transparent),transparent 62%),
     radial-gradient(90% 120% at 100% 100%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 60%),var(--panel)}
 .home-hero-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px 12px;flex-wrap:wrap}
 .home-hello{min-width:0}
 .home-date{margin:0;font-size:var(--text-sm,.85rem);font-weight:700;color:var(--muted)}
-.home-greet{margin:2px 0 0;font-size:1.75rem;line-height:1.1;font-weight:850;letter-spacing:-.035em;color:var(--text)}
-.home-v2 button.hq-disclosure.home-status{flex:0 1 auto;width:auto;min-height:40px;padding:6px 10px 6px 12px;gap:6px;border-radius:999px;
+.home-greet{margin:2px 0 0;font-size:1.2rem;line-height:1.15;font-weight:700;letter-spacing:-.02em;color:var(--text)}
+.home-v2 button.hq-disclosure.home-status{flex:0 1 auto;width:auto;min-height:44px;padding:6px 10px 6px 12px;gap:6px;border-radius:999px;
   border:1px solid color-mix(in srgb,var(--line) 80%,transparent);background:color-mix(in srgb,var(--panel) 72%,transparent);
   -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 .home-v2 #hq-attention-toggle strong{font-size:.88rem}
@@ -55,19 +62,18 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 .home-next-when{flex:0 0 auto;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
 
 /* ---- the action row ---- */
-.home-actions{display:flex;gap:8px}
-.home-v2 button.home-act{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:78px;
+.home-actions{display:flex;flex-wrap:wrap;gap:8px}
+.home-v2 button.home-act{flex:1 1 calc(25% - 6px);min-width:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:78px;
   padding:10px 4px;border-radius:18px;border:1px solid color-mix(in srgb,var(--line) 70%,transparent);background:var(--panel);color:var(--text);
   font-size:.78rem;font-weight:700;box-shadow:0 1px 2px rgba(0,0,0,.05),0 6px 16px rgba(0,0,0,.04)}
 .home-v2 button.home-act[hidden]{display:none}
 .home-act-ico{display:grid;place-items:center;width:40px;height:40px;border-radius:13px;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
 .home-act-ico svg{width:22px;height:22px}
-.home-act-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;font-size:.68rem;letter-spacing:-.01em}
-.home-act .kbd-hint{display:none} /* Ctrl K is in its tooltip */
+.home-act-label{max-width:100%;font-size:.84rem;font-weight:650;line-height:1.2;text-align:center;text-wrap:balance}
 
 /* ---- Carnet « Reprendre » ---- */
 .home-v2 .carnet-home .sec-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 12px}
-.home-v2 .carnet-home .sec-head h2{margin:0;font-size:1.02rem}
+.home-v2 .carnet-home .sec-head h2{margin:0;font-size:1.06rem}
 .home-v2 button.carnet-home-resume{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:12px 14px;border-radius:16px;text-align:left;
   border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));background:color-mix(in srgb,var(--accent) 8%,var(--panel));color:var(--text);font-weight:400;box-shadow:none}
 .carnet-home-kicker{font-size:var(--text-xs,.72rem);font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
@@ -75,7 +81,7 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 .carnet-home-when{font-size:var(--text-sm,.82rem);color:var(--muted)}
 .home-v2 .carnet-home-list{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0;padding:0}
 .home-v2 .carnet-home-list li{list-style:none}
-.home-v2 button.carnet-home-chip{min-height:34px;padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--text);
+.home-v2 button.carnet-home-chip{min-height:44px;padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--text);
   font-size:var(--text-sm,.85rem);font-weight:700;gap:6px;max-width:100%}
 .carnet-home-chip .carnet-home-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:14em}
 .carnet-home-chip .carnet-home-pin{font-size:var(--text-xs,.72rem);color:var(--muted);font-weight:700}
@@ -84,22 +90,25 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 /* ---- today ---- */
 .home-v2 .home-today #hq-today-panel{margin-top:10px}
 .home-v2 .home-today #hq-cal-today .hq-list{margin:0}
+.home-v2 .home-today #hq-cal-today .hq-list li{position:relative;padding-left:14px}
+.home-v2 .home-today #hq-cal-today .hq-list li::before{content:"";position:absolute;left:0;top:10px;width:3.5px;height:calc(100% - 20px);min-height:12px;border-radius:2px;background:var(--cat,var(--accent))}
+#hq-cal-today:empty{display:none}
 
 /* ---- devices: one row of small tiles ---- */
 .home-v2 .home-device-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px;margin:0;padding:0}
 .home-v2 .hq-list li.device-tile{display:flex;align-items:center;gap:10px;min-height:58px;padding:9px 10px;border-radius:15px;
   border:1px solid color-mix(in srgb,var(--line) 75%,transparent);background:color-mix(in srgb,var(--bg) 35%,var(--panel))}
 .device-ring{position:relative;flex:0 0 auto;display:grid;place-items:center;width:38px;height:38px;border-radius:50%;
-  background:conic-gradient(var(--ring,var(--ok,#3dbe7a)) calc(var(--used,0) * 1turn),color-mix(in srgb,var(--text) 12%,transparent) 0)}
+  background:conic-gradient(var(--ring,var(--ok,#3dbe7a)) calc(var(--used,0) * 1turn),color-mix(in srgb,var(--text) 22%,transparent) 0)}
 .device-ring::before{content:"";position:absolute;inset:3.5px;border-radius:50%;background:var(--panel)}
-.device-ring.is-none{background:color-mix(in srgb,var(--text) 9%,transparent)}
+.device-ring.is-none{background:color-mix(in srgb,var(--text) 16%,transparent)}
 .device-ring svg{position:relative;width:18px;height:18px;color:var(--muted)}
 .device-tile.is-ok{--ring:var(--ok,#3dbe7a)}
 .device-tile.is-mid{--ring:var(--warn,#e6b450)}
 .device-tile.is-low{--ring:var(--danger,#e85d4c)}
 .device-tile-text{display:flex;flex-direction:column;min-width:0;flex:1 1 auto;line-height:1.25}
 .device-tile-text strong{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.device-tile-meta{font-size:var(--text-xs,.75rem);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.device-tile-meta{font-size:.78rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .device-tile-total{display:block;font-weight:500;color:var(--muted)}
 .device-tile.is-low .device-tile-meta{color:var(--danger,#e85d4c);font-weight:700}
 .device-tile .dot{display:none} /* online is the default here; offline tiles say « hors ligne » */
@@ -108,9 +117,12 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 .home-v2 .device-off-toggle{grid-column:1/-1;list-style:none;padding:0}
 
 /* ---- this PC ---- */
-.home-v2 .home-pc-row{grid-template-columns:repeat(4,minmax(0,1fr))}
-.home-v2 .home-pc .icon-btn{min-height:70px;border-radius:16px;gap:6px;background:color-mix(in srgb,var(--bg) 35%,var(--panel));border-color:color-mix(in srgb,var(--line) 75%,transparent)}
+.home-v2 .home-pc-row{grid-template-columns:repeat(auto-fit,minmax(62px,1fr))}
+.home-v2 .home-pc .icon-btn{min-height:70px;border-radius:16px;gap:6px;background:color-mix(in srgb,var(--bg) 35%,var(--panel));border-color:color-mix(in srgb,var(--line) 75%,transparent);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
 .home-v2 .home-pc .icon-btn .ico{color:var(--accent)}
+.home-v2 .home-pc #btn-lock .ico,.home-v2 .home-pc #btn-sleep .ico{color:var(--muted)}
+.home-v2 .home-pc #btn-shot .ico,.home-v2 .home-pc #btn-explore .ico{color:var(--accent)}
+.home-v2 .home-pc #btn-shot,.home-v2 .home-pc #btn-explore{background:color-mix(in srgb,var(--panel) 88%,var(--bg))}
 .home-v2 .home-pc .icon-btn .ico svg{display:block;width:24px;height:24px}
 .home-v2 .home-pc .icon-btn .lbl{font-size:.78rem}
 .home-v2 .home-pc #hq-custom-actions,.home-v2 .home-pc #hq-scenes{margin-top:10px}
@@ -118,21 +130,36 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 
 /* ---- send ---- */
 .home-send-to{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--text-sm,.85rem);font-weight:700;color:var(--muted)}
-.home-v2 .home-send-to select{width:auto;min-height:36px;margin:0;padding:4px 30px 4px 12px;border-radius:999px;font-weight:700}
+.home-v2 .home-send-to select{width:auto;min-height:36px;margin:0;padding:4px 32px 4px 14px;border-radius:999px;font-weight:700;border:1px solid color-mix(in srgb,var(--line) 80%,transparent);background:color-mix(in srgb,var(--panel) 85%,var(--bg));color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.08);cursor:pointer;transition:border-color .2s ease,box-shadow .2s ease}
+.home-v2 .home-send-to select:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
 .home-v2 .home-send-more{gap:8px}
-.home-send-hint{margin:10px 0 0;font-size:var(--text-xs,.75rem)}
+.home-v2 .home-send-more button.home-chip{transition:border-color .2s ease,transform .14s ease,background .2s ease}
+.home-v2 .home-send-more button.home-chip:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.home-send-hint{margin:10px 0 0;font-size:.8rem}
 .home-v2 .home-send #progress{margin-top:10px}
 .home-v2 .home-send #progress-label:empty,.home-v2 .home-send #offline-queue:empty{display:none}
 .home-v2 .home-send .note-acc{margin-top:10px}
 
 /* ---- activity: since yesterday, then the latest five ---- */
-.home-v2 .home-feed .hq-since{margin:0 0 12px;border-top:0;padding-top:0;padding:0 0 12px;border-bottom:1px solid color-mix(in srgb,var(--line) 70%,transparent)}
+.home-v2 .home-feed{display:flex;flex-direction:column}
+/* The 24 h digest is a different granularity from the feed rows: it sits under the list, not above the filters. */
+.home-v2 .home-feed > #hq-since{order:9;margin:14px 0 0;padding:12px 0 0;border-top:1px solid color-mix(in srgb,var(--line) 70%,transparent);border-bottom:0}
 .home-v2 .home-feed .hq-since-title{margin-top:0}
 .home-v2 .home-feed .chips{margin-bottom:8px}
 .home-feed-list:not(.is-all) > li:nth-child(n+6){display:none}
-.home-v2 .home-feed-list > li{padding:8px 0;border-top:1px solid color-mix(in srgb,var(--line) 45%,transparent)}
+.home-v2 .home-feed-list > li{position:relative;padding:8px 0 8px 18px;border-top:1px solid color-mix(in srgb,var(--line) 45%,transparent)}
 .home-v2 .home-feed-list > li:first-child{border-top:0}
-.home-v2 .meta{font-family:inherit}
+.home-v2 .home-feed-list > li::before{position:absolute;left:0;top:10px;font-size:.78rem;line-height:1}
+.home-v2 .home-feed-list > li[data-kind="transfer"]::before{content:"↓";color:var(--accent);font-weight:800}
+.home-v2 .home-feed-list > li[data-kind="activity"]::before{content:"⚙";color:var(--muted);font-size:.72rem}
+.home-v2 .home-feed-list li strong{font-size:.92rem;font-weight:700;color:var(--text)}
+.home-v2 .meta{font-family:inherit;font-size:.84rem;color:var(--muted);margin-top:2px;line-height:1.3}
+.home-v2 .feed-st{font-weight:700}
+.home-v2 .feed-st.st-done{color:var(--ok,#3dbe7a)}
+.home-v2 .feed-st.st-active{color:var(--accent)}
+.home-v2 .feed-st.st-error{color:var(--danger,#e85d4c)}
+.home-v2 .feed-op{font-weight:700;color:var(--text)}
+.home-v2 .feed-count{font-weight:800;color:var(--muted);margin-left:6px;font-variant-numeric:tabular-nums}
 .home-v2 #home-feed-more{margin-top:4px}
 
 /* ---- drop anywhere (desktop) ---- */
@@ -145,6 +172,9 @@ body[data-view="accueil"] .accueil-grid.home-v2{display:flex;flex-direction:colu
 
 /* The action row has Note: the floating capture button is not needed on Accueil. */
 body[data-view="accueil"] .hq-capture-fab{display:none}
+/* The hero already carries the HQ state and opens what needs attention: no second pill in the topbar. */
+body[data-view="accueil"] #status-chip{display:none}
+body[data-view="accueil"] .view-bar{margin:0 0 8px}
 /* Plain text in the status chip (monospace stays for paths and IPs). */
 .status-chip{font-family:inherit}
 
@@ -154,17 +184,27 @@ body[data-view="accueil"] .hq-capture-fab{display:none}
   .home-v2 .home-hero,.home-v2 .home-actions{grid-column:1/-1}
   .home-v2 .home-col{order:3}
   .home-v2 .home-col{display:flex;flex-direction:column;gap:16px;min-width:0}
-  .home-v2 section.home-hero{padding:24px 24px 20px}
-  .home-greet{font-size:2.2rem}
+  .home-v2 section.home-hero{padding:16px 20px}
   .home-v2 button.home-act{flex-direction:row;justify-content:flex-start;gap:10px;min-height:64px;padding:10px 14px}
-  .home-act-label{font-size:.92rem}
-  .home-v2 button.home-next{max-width:520px}
+  .home-act-label{font-size:.92rem;text-align:left}
 }
 
 @media (prefers-reduced-motion:no-preference){
   .home-v2 button.home-act,.home-v2 .home-pc .icon-btn,.home-v2 .hq-list li.device-tile,.home-v2 button.carnet-home-resume,.home-v2 button.home-next{
     transition:transform .14s ease,box-shadow .2s ease,border-color .2s ease}
   .home-v2 button.home-act:active,.home-v2 .home-pc .icon-btn:active,.home-v2 .hq-list li.device-tile:active,.home-v2 button.carnet-home-resume:active,.home-v2 button.home-next:active{transform:scale(.97)}
+}
+@media (hover: none) and (pointer: coarse){
+  .home-v2 button.home-act:active,
+  .home-v2 .home-pc .icon-btn:active,
+  .home-v2 .hq-list li.device-tile:active,
+  .home-v2 button.carnet-home-resume:active,
+  .home-v2 button.home-next:active{
+    transform:scale(.95);
+    background:color-mix(in srgb,var(--accent) 12%,var(--panel));
+    border-color:color-mix(in srgb,var(--accent) 50%,var(--line));
+    transition:transform .08s ease-out,background .08s ease-out;
+  }
 }
 @media (hover:hover) and (pointer:fine){
   .home-v2 button.home-act:hover,.home-v2 button.carnet-home-resume:hover,.home-v2 button.home-next:hover{filter:none;border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
@@ -233,19 +273,202 @@ body[data-view="accueil"] .hq-capture-fab{display:none}
   body[data-view="accueil"] .accueil-grid.home-v2{gap:10px}
   .home-v2 section.hq{padding:13px 14px}
   .home-v2 .home-head{margin-bottom:9px}
-  .home-v2 .home-head h2{font-size:.98rem}
+  .home-v2 section.home-hero{padding:12px 14px}
+  /* Date and weather share one line instead of stacking above the greeting. */
+  .home-v2 .home-hello{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}
+  .home-v2 .home-hello .home-greet{flex:1 1 100%;margin-top:2px}
+  .home-v2 .home-hello .home-weather{margin:0}
+  .home-v2 .home-head h2{font-size:1.04rem;font-weight:650;letter-spacing:-.01em}
   .home-v2 button.home-act{min-height:70px;padding:8px 3px;gap:5px}
   .home-act-ico{width:36px;height:36px;border-radius:12px}
+  .home-act-label{font-size:.82rem;line-height:1.18;letter-spacing:-.01em}
   .home-v2 .home-pc .icon-btn{min-height:54px;padding:6px 4px;gap:3px;border-radius:14px}
   .home-v2 .home-pc .icon-btn .ico svg{width:21px;height:21px}
-  .home-v2 .home-pc .icon-btn .lbl{font-size:.72rem}
-  .home-v2 .home-pc .home-head button.home-chip{min-height:32px;padding:4px 12px}
+  .home-v2 .home-pc .icon-btn .lbl{font-size:.74rem}
+  .home-v2 .home-pc .home-head button.home-chip{min-height:44px;padding:4px 12px}
   .home-v2 .home-send-more{flex-wrap:nowrap;gap:6px}
-  .home-v2 .home-send-more button.home-chip{flex:1 1 0;min-width:0;min-height:34px;padding:5px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .home-send-hint{margin:8px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .home-v2 .home-send-more button.home-chip{flex:1 1 0;min-width:0;min-height:44px;padding:5px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .home-send-hint{margin:8px 0 0;font-size:.82rem;color:var(--muted);line-height:1.25;white-space:normal}
   .home-v2 .hq-list li.device-tile{min-height:50px;padding:7px 9px;gap:9px}
   .home-v2 .device-ring{width:34px;height:34px}
   .home-v2 button.carnet-home-resume{padding:10px 12px}
   .home-v2 .carnet-home-actions{margin-top:10px}
   .home-v2 .home-today #hq-today-panel{margin-top:6px}
+}
+
+/* ---- readability + layout pass: a visible step between title and detail ---- */
+.home-v2 .device-tile-meta{font-size:.84rem}
+.home-v2 .home-send-hint{font-size:.84rem}
+.home-v2 .home-pc-restart{padding:6px 10px}
+.home-v2 .home-pc-restart .ico{display:grid;place-items:center}
+.home-v2 .home-pc-restart svg{width:20px;height:20px}
+.home-v2 .home-edit-btn[hidden]{display:none!important}
+/* Owner entry: an icon chip in the hero, so arranging Accueil is not at the page bottom. */
+.home-v2 button.home-edit-entry{width:44px;min-width:44px;height:44px;min-height:44px;padding:0;display:inline-flex!important;align-items:center;justify-content:center;border-radius:999px;
+  border:1px solid color-mix(in srgb,var(--line) 80%,transparent);background:color-mix(in srgb,var(--panel) 72%,transparent);color:var(--muted);box-shadow:none}
+.home-v2 button.home-edit-entry:hover{color:var(--text);border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.home-v2 button.home-edit-entry[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
+/* The upload role never sees an owner-only control ([hidden] is only the semantic half).
+   Keyed on session-upload, not on the absence of session-admin, so nothing flashes before /api/me answers. */
+.home-v2 button.home-edit-entry[hidden],
+body.session-upload #hq-actions,
+body.session-upload #btn-sync-captures,
+body.session-upload #btn-restart-bridge,
+body.session-upload #home-edit,
+body.session-upload #home-edit-row,
+body.session-upload .home-v2 .home-pc{display:none!important}
+.home-edit-ico{display:grid;place-items:center}
+.home-edit-ico svg{width:20px;height:20px}
+.home-edit-label{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+/* The restart chip says what it does at the moment it is due. */
+.home-v2 .home-pc-restart .home-pc-restart-label{display:none}
+.home-v2 .home-pc-restart.is-due .ico{display:none}
+.home-v2 .home-pc-restart.is-due .home-pc-restart-label{display:inline;white-space:nowrap}
+
+@media (min-width:900px){
+  /* The activity feed is a full-width band: it fills the void under both columns. */
+  body[data-view="accueil"] .home-v2 .home-feed{grid-column:1/-1}
+}
+@media (min-width:1100px){
+  /* Wide enough for the tools to ride in the hero: the band under the topbar folds away. */
+  body.home-tools-in-hero .view-bar{height:0;min-height:0;margin:0;padding:0;overflow:hidden;border:0}
+  body.home-tools-in-hero .view-bar #view-label{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+  body.home-tools-in-hero .home-hero-head .view-tools{margin-left:auto}
+  body.home-tools-in-hero .home-hero-head .view-tools .mode-toggle{white-space:nowrap}
+}
+
+@media (max-width:430px){
+  /* « Bon après-midi, Marc-Antoine » must fit on the one line beside the clock. */
+  .home-v2 .home-greet{font-size:1.05rem}
+}
+
+@media (max-width:359px){
+  .home-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .home-v2 button.home-act{flex-direction:row;justify-content:flex-start;min-height:54px;padding:7px 9px;gap:8px}
+  .home-act-ico{flex:0 0 32px;width:32px;height:32px}
+  .home-act-label{text-align:left}
+}
+
+/* ==================== Accueil — live row, brief, week strip, mini cards ==================== */
+
+.home-live{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.home-live[hidden]{display:none}
+.home-live-chip{
+  display:inline-flex;align-items:center;gap:6px;min-height:30px;max-width:100%;
+  padding:3px 10px;border-radius:999px;border:1px solid var(--line);
+  background:color-mix(in srgb,var(--card,var(--bg)) 88%,transparent);
+  color:var(--fg);font:inherit;font-size:.78rem;line-height:1.25;cursor:pointer;
+}
+.home-live-chip[hidden]{display:none}
+.home-live-chip:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.home-live-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(46vw,320px)}
+.home-live-dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:#3ecf8e;box-shadow:0 0 0 2px color-mix(in srgb,#3ecf8e 25%,transparent)}
+.home-live-resume{font-style:normal;opacity:.95}
+.home-live-health{flex:0 0 8px;width:8px;height:8px;align-self:center;border-radius:50%;background:#3ecf8e;opacity:.85}
+.home-live-health[hidden]{display:none}
+.home-live-health.is-warn{background:#f5a623;box-shadow:0 0 0 2px color-mix(in srgb,#f5a623 25%,transparent)}
+
+.home-brief .hq-list{display:grid;gap:4px;margin:2px 0 0;padding:0;list-style:none}
+.home-brief-line{font-size:.86rem;line-height:1.35;color:var(--fg)}
+.home-brief-line::before{content:"· ";color:var(--muted,var(--accent))}
+
+.home-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:8px 0 4px}
+.home-week[hidden]{display:none}
+.home-week-day{
+  display:flex;flex-direction:column;align-items:center;gap:1px;
+  padding:5px 2px 4px;border-radius:9px;border:1px solid transparent;background:transparent;
+  color:var(--muted,var(--fg));font:inherit;font-size:.68rem;line-height:1.1;cursor:pointer;
+}
+.home-week-day:hover{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.home-week-day.is-today{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));color:var(--fg)}
+.home-week-letter{opacity:.7;text-transform:uppercase;letter-spacing:.03em}
+.home-week-num{font-size:.82rem;font-weight:600;color:var(--fg)}
+.home-week-dot{min-height:10px;font-size:.6rem;font-weight:700;color:var(--accent)}
+.home-week-day:not(.has-events) .home-week-dot{opacity:0}
+
+.home-mini .home-mini-body{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.home-mini-main{display:flex;flex-direction:column;gap:1px;min-width:0}
+.home-mini-value{font-size:.95rem;line-height:1.2;font-weight:650}
+.home-mini-sub{font-size:.76rem;color:var(--muted,var(--fg));opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46vw}
+.home-mini-link{margin-left:auto;flex:0 0 auto}
+.home-musica .home-musica-prev{white-space:normal;max-width:none;overflow:visible;margin:6px 0 0}
+.home-musica-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.home-musica-chip{padding:3px 10px;border-radius:999px;font-size:.74rem;font-weight:700;background:color-mix(in srgb,var(--accent,#9b7bff) 16%,transparent)}
+.home-musica-chip.is-hot{background:color-mix(in srgb,#fbbf24 28%,transparent)}
+
+@media (max-width:520px){
+  .home-live-text{max-width:56vw}
+  .home-mini-sub{max-width:60vw}
+}
+
+/* ==================== Accueil — feedback and entrance (one-shot unless it is the point) ==================== */
+
+/* Transitions are safe everywhere: they only run on a state change, never on their own. */
+.home-live-chip,
+.home-mini,
+.home-week-day,
+.home-mini-link,
+.home-brief .home-link{transition:transform .16s cubic-bezier(.2,.9,.25,1),border-color .2s ease,background .2s ease,color .2s ease,box-shadow .24s ease}
+.home-live-chip:active,
+.home-mini-link:active,
+.home-brief .home-link:active{transform:scale(.96)}
+.home-week-day:active{transform:scale(.92)}
+.home-week-day.is-today{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 22%,transparent)}
+
+@media (hover:hover){
+  .home-live-chip:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.08)}
+  .home-mini:hover{border-color:color-mix(in srgb,var(--accent) 26%,var(--line));box-shadow:0 8px 22px color-mix(in srgb,var(--accent) 8%,transparent)}
+  .home-mini:hover .home-mini-value{color:color-mix(in srgb,var(--accent) 42%,var(--fg))}
+  .home-week-day:hover{transform:translateY(-1px)}
+  /* After the hover rules so a press still reads as a press. */
+  .home-live-chip:active,.home-mini-link:active,.home-brief .home-link:active{transform:scale(.96)}
+  .home-week-day:active{transform:scale(.92)}
+}
+
+.home-live-eq{display:inline-flex;align-items:flex-end;gap:2px;height:11px;margin-left:1px}
+.home-live-eq i{display:block;width:2.5px;height:100%;border-radius:1px;background:color-mix(in srgb,var(--accent) 78%,transparent);transform-origin:bottom}
+
+.home-mini-value{transition:color .25s ease}
+
+@keyframes home-card-in{
+  from{opacity:0;transform:translateY(8px) scale(.985)}
+  to{opacity:1;transform:none}
+}
+@keyframes home-value-pop{
+  0%{opacity:0;transform:translateY(3px)}
+  55%{opacity:1;transform:translateY(0) scale(1.035)}
+  100%{transform:none}
+}
+@keyframes home-line-in{
+  from{opacity:0;transform:translateX(-4px)}
+  to{opacity:1;transform:none}
+}
+@keyframes home-eq{
+  0%,100%{transform:scaleY(.35)}
+  25%{transform:scaleY(1)}
+  50%{transform:scaleY(.55)}
+  75%{transform:scaleY(.85)}
+}
+@keyframes home-dot-breathe{
+  0%,100%{box-shadow:0 0 0 2px color-mix(in srgb,#3ecf8e 22%,transparent)}
+  50%{box-shadow:0 0 0 4px color-mix(in srgb,#3ecf8e 8%,transparent)}
+}
+@keyframes home-week-today{
+  0%,100%{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 22%,transparent)}
+  50%{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 48%,transparent),0 0 10px color-mix(in srgb,var(--accent) 14%,transparent)}
+}
+
+@media (prefers-reduced-motion:no-preference){
+  /* Cards arrive in reading order, 45 ms apart, once each. */
+  .home-mini.is-fresh,
+  .home-brief.is-fresh{animation:home-card-in .42s cubic-bezier(.2,.9,.25,1) both;animation-delay:calc(var(--i,0) * 45ms)}
+  .home-mini-value.is-fresh{animation:home-value-pop .5s cubic-bezier(.2,.9,.25,1) both;animation-delay:calc(var(--i,0) * 45ms + 60ms)}
+  .home-brief-line.is-fresh{animation:home-line-in .4s ease both;animation-delay:calc(var(--i,0) * 60ms + 80ms)}
+  .home-week-day.is-fresh{animation:home-card-in .34s cubic-bezier(.2,.9,.25,1) both;animation-delay:calc(var(--i,0) * 38ms + 120ms)}
+  .home-live-chip:not([hidden]) .home-live-eq i{animation:home-eq 1.15s ease-in-out infinite}
+  .home-live-chip:not([hidden]) .home-live-eq i:nth-child(2){animation-delay:.18s}
+  .home-live-chip:not([hidden]) .home-live-eq i:nth-child(3){animation-delay:.36s}
+  .home-live-health:not([hidden]):not(.is-warn){animation:home-dot-breathe 3.6s ease-in-out infinite}
+  .home-week-day.is-today{animation:home-week-today 4.2s ease-in-out infinite}
+  #home-now:not([hidden]) .home-live-dot{animation:home-dot-breathe 2.4s ease-in-out infinite}
 }

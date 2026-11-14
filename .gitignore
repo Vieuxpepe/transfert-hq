@@ -31,6 +31,7 @@ hq_agents.json
 hq_agent_jobs.json
 hq_planner.json
 .hq-agent-state/
+.hq-terminal/
 .hq-carnet/
 .hq-inventory/
 .hq-projects/
@@ -57,6 +58,7 @@ iphone_bridge.py.bak*
 Thumbs.db
 
 .hq-ai/
+.hq-music/
 .hq-restart.log
 
 # Local-only workspace (not part of the shipped repo)
@@ -84,3 +86,25 @@ voice_line_tools/
 /test_utf8_synth.py
 /test_xtts_lora_inject.py
 /apply_displacement.py
+
+# Voice profiles (user voice choices)
+hq_voice_profiles.json
+
+# Local ACE-Step environment, checkpoints, and generated audition files
+/ACE-Step-1.5/
+/TransferHQ_Music_Test/
+.hq-inventoria/
+
+# headless Spotify player binary (not shipped)
+tools/librespot/*.exe
+
+# Local review exports, visual snapshots, scratch and runtime caches
+/review/
+/visual-visits/
+/scratch/
+/_diag_*.png
+/_intime_*.png
+/nav-after.png
+/nav-mobile-after.png
+assets/companion/chat/voice_cache/
+.hq-engine/

@@ -1,0 +1,30 @@
+/* Transfert HQ — long-press radial menu (assets/hq-radial.js). Items bloom out of the finger; the one you point at grows. */
+
+.rad{position:fixed;inset:0;z-index:1300;pointer-events:none}
+.rad[hidden]{display:none}
+.rad::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at var(--cx,50%) var(--cy,50%),rgba(4,8,20,.18),rgba(4,8,20,.42));
+  opacity:0;transition:opacity .16s ease}
+.rad.is-open::before{opacity:1}
+html.rad-open,html.rad-open body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.rad-hub{position:absolute;left:0;top:0;width:56px;height:56px;margin:-28px 0 0 -28px;border-radius:50%;
+  border:2px solid rgba(255,255,255,.65);background:rgba(255,255,255,.12);box-shadow:0 0 0 10px rgba(255,255,255,.06);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);opacity:0;scale:.4;transition:opacity .16s ease,scale .22s var(--hq-spring,ease)}
+.rad.is-open .rad-hub{opacity:1;scale:1}
+.rad-item{padding:0;min-height:0;position:absolute;left:0;top:0;width:58px;height:58px;margin:-29px 0 0 -29px;border-radius:50%;
+  display:grid;place-items:center;border:1px solid rgba(255,255,255,.22);
+  background:var(--panel,#161d26);color:var(--text,#f3f6fa);box-shadow:0 8px 24px rgba(0,0,0,.35);
+  pointer-events:auto;cursor:pointer;-webkit-tap-highlight-color:transparent;
+  transform:translate(calc(var(--x) + var(--fx)),calc(var(--y) + var(--fy))) scale(.3);opacity:0;
+  transition:transform .26s var(--hq-spring,cubic-bezier(.2,1.35,.35,1)) calc(var(--i) * 18ms),opacity .14s ease calc(var(--i) * 18ms),
+    background .12s ease}
+.rad.is-open .rad-item{transform:translate(var(--x),var(--y)) scale(1);opacity:1}
+.rad.is-open .rad-item.is-hot{transform:translate(var(--x),var(--y)) scale(1.22);background:var(--accent,#3dffb5);color:var(--accent-text,#04140e);
+  transition-delay:0s}
+.rad-item svg{width:24px;height:24px}
+.rad-label{position:absolute;top:100%;left:50%;transform:translateX(-50%);margin-top:5px;padding:2px 7px;border-radius:999px;
+  background:rgba(4,8,20,.78);color:#fff;font-size:.72rem;font-weight:600;white-space:nowrap;pointer-events:none}
+.rad-item:focus-visible{outline:2px solid #fff;outline-offset:3px}
+
+@media (prefers-reduced-motion:reduce){
+  .rad::before,.rad-hub,.rad-item{transition:none}
+}

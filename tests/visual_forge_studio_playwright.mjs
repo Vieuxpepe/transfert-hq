@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { openSection } from "./hq_browser_nav.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Find Playwright for Node: a local or global "playwright", PLAYWRIGHT_NODE_PATH, or the playwright-core
@@ -96,7 +97,7 @@ try {
   await login(admin, info.admin_pin);
   const page = await open(admin, { width: 1280, height: 900 }, "dark");
   await page.goto(base + "/");
-  await page.locator('.bottom-nav [data-nav="forge"]').click();
+  await openSection(page, "forge");
   await page.locator("#forge-status").waitFor();
   await page.waitForFunction(() => /en ligne/i.test(document.querySelector("#forge-status").textContent || ""));
   check((await page.locator("#forge-studio h1").innerText()).includes("Forge Studio"), "forge heading");
@@ -140,7 +141,7 @@ try {
 
   const phone = await open(admin, { width: 390, height: 844 }, "dark");
   await phone.goto(base + "/");
-  await phone.locator('.bottom-nav [data-nav="forge"]').click();
+  await openSection(phone, "forge");
   await phone.locator("#forge-generate").waitFor();
   const boxes = await phone.evaluate(() => {
     const button = document.querySelector("#forge-generate").getBoundingClientRect();

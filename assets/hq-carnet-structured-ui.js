@@ -676,10 +676,53 @@
         const id = wrapper.getAttribute("data-carnet-block-id") || "";
         if (host.inspect) host.inspect({ kind: "drawing", stem: p.id, blockId: id }, inspect);
       }, { "aria-label": "Agrandir le croquis : " + name, hidden: "" });
+      // A live 3D view of the drawing's part, in the page: the saved drawing is rebuilt by the server (the same mesh as
+      // Dessiner's preview and the STL) and shown in the rotatable viewer. Only offered for drawings with a part.
+      const view3d = button("Voir en 3D", "carnet-drawing-3d-btn", () => toggle3d(), { "aria-label": "Voir la pièce 3D : " + name, "aria-pressed": "false", hidden: "" });
+      let viewer3d = null;
+      async function solidViewer() {
+        const win = doc.defaultView;
+        if (win.HQSolidView) return win.HQSolidView;
+        await new Promise((ok, bad) => {
+          const sc = doc.createElement("script");
+          sc.src = "/assets/hq-solid-view.js";
+          sc.onload = ok; sc.onerror = () => bad(new Error("Vue 3D indisponible"));
+          doc.head.appendChild(sc);
+        });
+        return win.HQSolidView;
+      }
+      async function toggle3d() {
+        const win = doc.defaultView;
+        const shown = card.querySelector("canvas.carnet-drawing-3d");
+        if (shown) {
+          shown.remove(); viewer3d = null;
+          img.hidden = false; card.classList.remove("is-3d");
+          view3d.textContent = "Voir en 3D"; view3d.setAttribute("aria-pressed", "false");
+          return;
+        }
+        view3d.disabled = true;
+        try {
+          const drawing = await win.api(DRAWING_FILE_URL + encodeURIComponent(p.id) + "&kind=json", { timeoutMs: 15000 });
+          if (!drawing || !(drawing.features || []).length) { say(box, "Ce croquis n'a pas de pièce 3D."); return; }
+          const mesh = await win.api("/api/drawings/mesh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ doc: drawing }), timeoutMs: 45000 });
+          const Viewer = await solidViewer();
+          const cv = el("canvas", { class: "carnet-drawing-3d", role: "img", "aria-label": "Pièce 3D : " + name + " (glisse pour tourner, pince pour zoomer)" });
+          img.after(cv);
+          img.hidden = true;
+          card.classList.add("is-3d");
+          viewer3d = Viewer(cv);
+          viewer3d.setTriangles(mesh.triangles || []);
+          viewer3d.setEdges([]);
+          view3d.textContent = "Vue 2D"; view3d.setAttribute("aria-pressed", "true");
+        } catch (e) {
+          say(box, (e && e.message) || "Pièce 3D indisponible");
+        } finally { view3d.disabled = false; }
+      }
       img.addEventListener("load", () => {
         card.setAttribute("data-state", "ok");
         gone.hidden = true;
         open.hidden = false;
+        view3d.hidden = false;
         inspect.hidden = !host.inspect;
         retry.hidden = true;
       });
@@ -688,6 +731,7 @@
         img.hidden = true;
         gone.hidden = false;
         open.hidden = true; // an Open action only exists while the drawing still resolves
+        view3d.hidden = true;
         inspect.hidden = true;
         retry.hidden = false;
       });
@@ -701,6 +745,7 @@
       card.appendChild(offerBox);
       const bar = el("div", { class: "carnet-struct-bar carnet-drawing-bar", role: "toolbar", "aria-label": "Croquis : " + name });
       bar.appendChild(open);
+      bar.appendChild(view3d);
       bar.appendChild(inspect);
       bar.appendChild(retry);
       if (!ro) {

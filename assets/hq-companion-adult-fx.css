@@ -3793,7 +3793,7 @@
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-rig-body{scale:1.17}
 .hq-companion.has-layered-portrait.is-nsfw .hq-companion-frame.is-in-rig{scale:0.8547008547008547}
 
-/* Keep the portrait window at the original ring size while zooming its contents.
+/* Keep the portrait window square in both chat states and at the original ring size.
    Inverse-map circle(50% at 50% 50%) through the 1.17 scale about (52%,68%):
    r=50/1.17, center=pivot+(50-pivot)/1.17. Background and torso must stay
    registered: both contain painted portions of the same original scene.

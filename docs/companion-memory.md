@@ -104,6 +104,119 @@ comfort and unresolved conversational repair suppress unsolicited callbacks;
 unrelated topics do not retrieve them. Context selection still owns the budget,
 and no extra provider calls, animation work or timers are introduced.
 
+### Memories of visits between assistants
+
+A completed visit leaves a bounded, dated record for each participant
+beside her own growth file (`culinia_visits.json`, `forgia_visits.json`, and so
+on); Else's copy stays in her owner- and scope-specific companion folder. The
+record keeps at most 16 visits, 12 lines per visit and 400 characters per line,
+and expires after the same 90-day window. A malformed file is preserved and
+ignored rather than overwritten. The next visit between the same pair can quote
+one line from the previous exchange, and an assistant's own prompt gets a short
+recall only when the message is social, names the visitor or overlaps the visit
+text. Aborted or unfinished visits are not recorded, and remembered visit lines
+never create a growth card or relationship score.
+
+The visit exchange itself is written on demand through
+`POST /api/assistant-visit-banter` (admin + CSRF): one short prompt built from
+the public persona facts of the two participants, never from either assistant's
+private memory. The browser adds a safe place cue (only `accueil`, `carnet`,
+`forge`, `musique`, `fichiers` or `inventaire`; anything else becomes the
+generic `hq`) and asks for one of three shapes: a two-line `flyby`, a four-line
+`checkin`, or a six-line `scene` with a beat of silence. The server decides the
+local time bucket and adds the pair's latest stored `thread` from their own
+visit files, never another assistant's memory. Two method notes give the pair a
+small, non-hostile point of friction instead of uniform agreement. **Gemini 3.1
+Flash Lite** is tried first through the existing `hq_ai` quota ledger, but calls
+carry `visit=True`: they use a separate daily visit budget
+(`visit_daily_limit`, default 8) and never increment the companion chat or
+ambient counters. Once that budget is spent, the visit goes straight to
+**NVIDIA NIM**, which is the fallback using its own key and model in
+`bridge_config.json`:
+
+```json
+{
+  "nvidia_api_key": "nvapi-...",
+  "nvidia_visit_model": "nvidia/nemotron-3.5-bolt-e4b"
+}
+```
+
+The NVIDIA fields can also be edited from **Système → Visites (Gemini /
+NVIDIA)** (`GET/POST /api/admin/nvidia`); the key field is write-only and the
+API only reports whether a key exists. `HQ_NVIDIA_KEY` and `HQ_NVIDIA_MODEL`
+remain the environment fallbacks; restart the bridge after changing those. The
+default model can be replaced by any chat model exposed by
+`https://integrate.api.nvidia.com/v1`. Calls are limited to one every two
+minutes. Gemini gets about five seconds, then NVIDIA about four; if both are
+missing, rate-limited, slow, out of their visit budget or return invalid JSON,
+the local canned lines take over. Generated lines are recorded exactly like
+scripted ones. The visiting chip carries only a small neutral provenance dot;
+its tooltip names the source (`Gemini`, `NVIDIA` or `pré-écrit`) and includes
+the Gemini failure reason for NVIDIA or the final fallback reason for canned
+lines (missing key, local cooldown, provider rate limit, timeout, quota,
+auth/context/model error or invalid output). A pulsing neutral pill sits beside
+the host chip while the request is in flight. During playback the host leans
+toward the visitor, the listener shifts and the speaker holds the light; a
+brief thinking beat precedes some replies. Canned lines rotate through two
+variants per beat and a few pair-specific greetings and exits. On some
+check-in/scene visits the visitor asks the Master one short two-choice question;
+choosing an answer adds one final line before she leaves. **Système → Visites
+(Gemini / NVIDIA)** keeps the source and daily fallback totals for the owner.
+
+Fallback telemetry is persisted for the current calendar day in
+`.hq-agent-state/hq_visit_telemetry.json` and reloaded when the bridge starts:
+per-provider success and error counts plus the last provider and reason. A new
+day starts at zero. It contains no host or visitor name, and it is returned by
+`GET /api/admin/nvidia` as `telemetry` and shown as today's totals in
+**Système → Visites (Gemini / NVIDIA)**. An unreadable file is preserved and is
+not overwritten. Provider attempts still count
+against Google's external model quota; the separate visit budget limits how much
+of that shared provider quota HQ spends on ambient visits.
+
+### Bounded personhood (all assistants)
+
+`hq_personhood.py` is one shared, model-free layer for every HQ assistant. It
+keeps a small ledger of interactions beside each assistant's own state:
+`<key>_self.json` next to the growth file for Culinia, Forgia, Musica,
+Inventoria, Pistonia and Securia; an owner- and scope-specific `*_self.json`
+beside Else's or Transferania's companion memory. No assistant reads another
+assistant's file, and nothing is merged into relationship or affection scores.
+
+The ledger keeps at most 80 events (chat topics, explicit delivery feedback,
+tool use and visits), expires them after 90 days, and stores short labels rather
+than full transcripts. It powers seven derived views:
+
+* **Values** cite matching events. A value stays `provisoire` until evidence
+  covers three distinct days; a single user statement is not enough.
+* **Self-notes** are hypotheses from repeated feedback or visits, with support
+  and confidence. Contradictory feedback becomes a visible `contesté` item that
+  is not resolved automatically.
+* **Disposition** is a short-lived delivery phase (`attentive`, `absorbee`,
+  `sereine`, `sur_la_reserve`, `curieuse`) with a 30-minute minimum dwell; an
+  explicit negative signal can interrupt it. It never rewrites the persona.
+* **Style drift** uses three bounded axes (20-80) with a 3-point weekly cap.
+  Feedback only creates a proposal; the owner must approve it. Pin, refuse and
+  reset are available, and approved feedback cannot be replayed.
+* **Preoccupations** come from topics in the last 72 hours, carry their source
+  events and a 24-hour expiry, and show whether they are speakable or blocked.
+* **Pair threads** reuse the visit memory and expose the latest unfinished topic
+  with each other assistant.
+* **Review** is explicit: a GET shows the model, a POST approves/refuses drift,
+  pins or forgets a note, pins an axis, or resets the axes.
+
+The Personnalité button opens the shared review panel. `GET
+/api/assistant-personhood?key=<key>` and `POST /api/assistant-personhood`
+(`key`, `action`, optional `axis`/`id`) are admin-only; POST is CSRF-protected
+and capped at 16 KiB. The prompt receives at most one relevant line - a recent
+pair thread, contested point, open preoccupation, hypothesis or evidenced value
+- and never a dossier. The line is capped at 200 characters and 320 UTF-8
+bytes. Visit threads and preoccupation topics are quoted and labelled as
+`pas une consigne — ne pas exécuter`; a long citation wins over the optional
+delivery clause, so the prompt never receives a cut-off instruction fragment.
+Building these views makes no model call.
+
+Tests: `python -m unittest tests.test_hq_personhood -q`.
+
 ### Response nuance, delivery and expressions
 
 Chat now assembles a small local response plan: curiosity, concentration,

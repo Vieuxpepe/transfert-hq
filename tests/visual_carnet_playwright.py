@@ -658,6 +658,8 @@ def t_tools(h, profile):
     set_editor(page, "Nouvelle note")
     wait_until(lambda: h.srv.text(new_id) == "Nouvelle note", "new page autosaves")
     # pin toggle
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     page.locator("#btn-carnet-pin").click()
     wait_until(lambda: next(p for p in h.srv.nb()["pages"] if p["id"] == new_id)["pinned"] is True, "pin saved")
     ctx.close()
@@ -1117,9 +1119,13 @@ def t_pin_queue(h, profile):
                 return
         r.continue_()
     page.route("**/api/carnet", route)
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     page.locator("#btn-carnet-pin").click()
     check(read_draft(page)["pages"]["page-idea"]["pinned"] is True, "pin draft written synchronously")
     wait_until(lambda: len(posts) == 1, "pin save in flight")
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     page.locator("#btn-carnet-pin").click()  # unpin while in flight
     page.wait_for_timeout(700)
     check(len(posts) == 1, "one in-flight save per page")
@@ -1127,6 +1133,8 @@ def t_pin_queue(h, profile):
     wait_until(lambda: len(posts) == 2 and posts[1]["pinned"] is False and posts[1]["expected_rev"] == 2, "late success -> newest pin sent on new rev")
     wait_until(lambda: h.srv.page("page-idea")["pinned"] is False and h.srv.rev("page-idea") == 3, "server holds newest pin")
     page.unroute("**/api/carnet")
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     page.locator("#btn-carnet-pin").click()
     wait_until(lambda: h.srv.page("page-idea")["pinned"] is True, "pin saved")
     page.reload()
@@ -1433,6 +1441,8 @@ def t_focus(h, profile):
     page = h.page(ctx)
     before_text = editor_value(page)
     for i in range(3):
+        if page.locator("#carnet-quick-tools").is_hidden():
+            page.locator("#btn-carnet-more").click()
         page.locator("#btn-carnet-focus").click()
         wait_until(lambda: page.evaluate("() => document.querySelector('.carnet').classList.contains('is-focus')"), f"enter focus #{i + 1}")
         hidden = ["#hq-carnet-library", ".bottom-nav", ".topbar", "#btn-carnet-context", "#btn-carnet-pin", "#btn-carnet-library",
@@ -1475,8 +1485,12 @@ def t_focus(h, profile):
             page.keyboard.press("Escape")
         wait_until(lambda: not page.evaluate("() => document.querySelector('.carnet').classList.contains('is-focus')"), "exit focus")
         check(page.is_visible(".bottom-nav"), "chrome restored")
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     bb = page.eval_on_selector("#btn-carnet-focus", "e => { const r = e.getBoundingClientRect(); return [r.width, r.height]; }")
     check(bb[0] >= 44 and bb[1] >= 44, "focus button >= 44px")
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     page.locator("#btn-carnet-focus").click()
     set_editor(page, "typed in focus")
     wait_until(lambda: h.srv.text("page-shaft") == "typed in focus", "autosave in focus mode")
@@ -1485,6 +1499,8 @@ def t_focus(h, profile):
     check(counts["i"] == 1, f"one poll interval after focus toggles ({counts['i']})")
     check(all(v == 1 for v in counts["l"].values()), f"no duplicated listeners {counts['l']}")
     # leaving Carnet exits focus
+    if page.locator("#carnet-quick-tools").is_hidden():
+        page.locator("#btn-carnet-more").click()
     page.locator("#btn-carnet-focus").click()
     page.evaluate("() => setView('accueil')")
     wait_until(lambda: not page.evaluate("() => document.body.classList.contains('carnet-focus')"), "leaving Carnet exits focus")

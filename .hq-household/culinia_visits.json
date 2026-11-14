@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "visits": [
+    {
+      "at": 1794617211.453319,
+      "self": "culinia",
+      "other": "musica",
+      "other_name": "Musica",
+      "lines": [
+        {
+          "who": "culinia",
+          "text": "Je passais voir ce qui mijote."
+        },
+        {
+          "who": "musica",
+          "text": "Parfait, j'avais une question à poser."
+        },
+        {
+          "who": "culinia",
+          "text": "Je surveille les stocks, les lots qui périment et les menus de la semaine."
+        },
+        {
+          "who": "musica",
+          "text": "Je retourne finir ce morceau."
+        }
+      ],
+      "thread": "Je retourne finir ce morceau."
+    },
+    {
+      "at": 1794618949.2404451,
+      "self": "culinia",
+      "other": "musica",
+      "other_name": "Musica",
+      "lines": [
+        {
+          "who": "musica",
+          "text": "Bonsoir Culinia."
+        },
+        {
+          "who": "culinia",
+          "text": "Bonsoir Musica."
+        },
+        {
+          "who": "musica",
+          "text": "Je retourne finir ce morceau."
+        },
+        {
+          "who": "culinia",
+          "text": "Je vais juste sentir les herbes avant de partir."
+        }
+      ],
+      "thread": "Je vais juste sentir les herbes avant de partir."
+    }
+  ]
+}

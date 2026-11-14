@@ -14,6 +14,7 @@
     ["hq", "HQ"],
     ["other", "Autre"],
   ];
+  let categoryRows = CATS;
   const REMINDERS = [
     [0, "À l'heure"],
     [5, "5 min"],
@@ -39,6 +40,10 @@
     anchor: null,
     activity: false,
     legend: false,
+    optionsOpen: false,
+    categories: new Set(),
+    slotPreview: null,
+    selectedEvent: "",
     userMoved: false,
     synced: false,
     data: null,
@@ -49,7 +54,6 @@
     prevView: "",
     prevAnchor: null,
     landed: "",      // id of the event that was just created or moved: it lands with a small bounce
-    dropped: false,  // ...and it was dropped by a drag: it settles with a wobble instead
     zoomFrom: null,  // month cell centre the day view zooms out of
     burst: "",       // id of the event just marked done: its check bursts once
     zoom: 1,         // hour height factor (pinch on touch, Ctrl + wheel or trackpad pinch on desktop)
@@ -57,6 +61,14 @@
     fetchedAt: 0,    // when server_now was read: the live clock runs from there
   };
   const SNAP_MIN = 15;
+  const UNDO_MS = 12000;
+  const UNDO_LIMIT = 5;
+  const undoHistory = [];
+  let undoBusy = false;
+  const pendingMoves = new Map();
+  const dropEffects = new Map();
+  const DROP_GLIDE_MS = 220;
+  const DROP_EFFECT_MS = 780;
   let drag = null;           // the grid drag in progress (create, move or resize)
   let renderPending = false; // a refresh arrived during a drag: draw once the drag ends
   let lastPoint = null;      // where the owner last pressed: sheets grow out of that point
@@ -67,7 +79,6 @@
   let lastBuzz = 0;
   let nextUpShown = "";
   const preview = { ghost: null, spot: "" }; // quick add: the see-through event drawn while typing
-  let lastTitle = "";        // the period title, so a step can roll the words that changed
   let lastWhen = { id: "", text: "" }; // the countdown, so a tick can roll its number
   let morphFrom = "";        // id of the event the open detail sheet grew out of
   let sheetSeq = 0;          // bumped by every close: a morph still on its way does not reopen a closed sheet
@@ -76,7 +87,7 @@
   const ZOOM_MIN = 0.6;
   const ZOOM_MAX = 2.4;
   const VIEW_ORDER = ["day", "week", "month", "agenda"];
-  const HINT_KEY = "hq_cal_hint_done";
+  const CALENDAR_SHEETS = ["hq-cal-detail", "hq-cal-editor", "hq-cal-date-jump", "hq-cal-search", "hq-cal-free-slots", "hq-cal-transfer", "hq-cal-history", "hq-cal-gestures", "hq-cal-categories", "hq-cal-category-manager"];
 
   function pad(n) {
     return String(n).padStart(2, "0");
@@ -162,8 +173,30 @@
     return node;
   }
 
+  function categoryKey(item) {
+    const key = item.read_only ? (state.data?.schedule_category || "hq") : item.category;
+    return categoryRows.some(([id]) => id === key) ? key : "other";
+  }
+
   function catClass(item) {
-    return "cat-" + (item.category || "other") + (item.read_only ? " is-schedule" : "");
+    return "cat-" + categoryKey(item) + (item.read_only ? " is-schedule" : "");
+  }
+
+  function syncCategoryCatalog() {
+    categoryRows = state.data?.categories?.map(({ id, label, color }) => [id, label, color]) || CATS;
+    const selected = validCategories([...state.categories]);
+    if (selected.size !== state.categories.size) {
+      state.categories = selected;
+      try { localStorage.setItem("hq_cal_categories", JSON.stringify([...selected])); } catch (_) {}
+    }
+    let style = document.getElementById("hq-cal-category-colors");
+    if (!style) {
+      style = h("style", { id: "hq-cal-category-colors" });
+      document.head.appendChild(style);
+    }
+    const rules = categoryRows.filter(([, , color]) => /^#[a-f0-9]{6}$/i.test(color || ""))
+      .map(([key, , color]) => ":where(.hq-cal,.hq-sheet,.hq-cal-peekday) .cat-" + CSS.escape(key) + "{--cat:" + color + "}").join("\n");
+    if (style.textContent !== rules) style.textContent = rules;
   }
 
   function itemStart(item) {
@@ -185,6 +218,14 @@
 
   function items() {
     return (state.data && state.data.items) || [];
+  }
+
+  function matchesCategory(item) {
+    return !state.categories.size || state.categories.has(categoryKey(item));
+  }
+
+  function visibleItems() {
+    return items().filter(matchesCategory);
   }
 
   function findItem(id) {
@@ -259,35 +300,111 @@
     return node || null;
   }
 
-  function scrollDayToNow() {
-    if (state.view !== "day" || !sameDay(state.anchor, serverToday())) return;
-    const nowLine = document.querySelector("#hq-cal-app .hq-cal-now");
+  function positionTimeline(mode, smooth = false) {
     const scroll = dayScroll();
-    const wall = serverNow();
-    if (scroll && wall && scroll.scrollHeight > scroll.clientHeight + 24) {
-      const slot = scroll.querySelector(".hq-cal-slot");
-      const hourPx = slot ? slot.getBoundingClientRect().height : 48;
-      if (hourPx) {
-        const y = ((wall.getHours() * 60 + wall.getMinutes()) / 60) * hourPx;
-        scroll.scrollTop = Math.max(0, y - scroll.clientHeight * 0.35);
-      }
+    if (!scroll || (state.view !== "day" && state.view !== "week")) return;
+    const minutes = date => date.getHours() * 60 + date.getMinutes();
+    const now = liveNow();
+    const events = visibleItems().filter(item => !item.all_day && itemStart(item) && itemEnd(item));
+    const starts = events.map(itemStart).filter(day => state.view === "day" ? sameDay(day, state.anchor) : dayVisible(day));
+    const first = starts.length ? Math.min(...starts.map(minutes)) : 8 * 60;
+    const current = now && showsToday();
+    const showNow = current && (mode === "snap" || (minutes(now) >= 7 * 60 && minutes(now) <= 20 * 60));
+    const target = showNow ? minutes(now) : first;
+    const slot = scroll.querySelector(".hq-cal-slot");
+    if (slot) scroll.scrollTo({
+      top: Math.max(0, (target - 60) / 60 * slot.getBoundingClientRect().height),
+      behavior: smooth ? "smooth" : "instant",
+    });
+  }
+
+  function revealTimelineEvent(id) {
+    const scroll = dayScroll();
+    const event = timelineEvent(scroll, id);
+    if (!event) return;
+    if (document.body.dataset.view === "calendrier" && document.activeElement === document.body
+      && !document.querySelector(".hq-sheet:not([hidden]):not(.is-closing)")) {
+      event.focus({ preventScroll: true });
     }
-    if (nowLine) nowLine.scrollIntoView({ block: "center", inline: "nearest" });
+    revealTimelineNode(scroll, event);
+  }
+
+  function timelineEvent(scroll, id) {
+    return scroll?.querySelector(".hq-cal-event[data-id='" + CSS.escape(id) + "']");
+  }
+
+  function revealTimelineNode(scroll, node, align = false) {
+    if (!scroll) return;
+    const bounds = scroll.getBoundingClientRect();
+    const header = scroll.querySelector(".hq-cal-week-top")?.offsetHeight || 0;
+    const rect = node.getBoundingClientRect();
+    const top = bounds.top + header + 12;
+    const bottom = bounds.bottom - 12;
+    if (!align && rect.top >= top && rect.top < bottom && rect.bottom <= bottom) return;
+    scroll.scrollTo({
+      top: scroll.scrollTop + rect.top - top - Math.min(36, (bottom - top) / 4),
+      behavior: "smooth",
+    });
+  }
+
+  function paintEventSelection(root) {
+    for (const button of root.querySelectorAll('[data-cal="open"][data-id]')) {
+      button.classList.toggle("is-selected", button.dataset.id === state.selectedEvent);
+    }
+  }
+
+  function selectEvent(id) {
+    state.selectedEvent = id;
+    const stage = document.querySelector(".hq-cal-stage");
+    if (stage) paintEventSelection(stage);
+  }
+
+  async function jumpToNextEvent(id, dayKey) {
+    const item = findItem(id) || state.data?.next;
+    const now = liveNow();
+    const inProgress = item?.id === id && now && itemStart(item) <= now && itemEnd(item) > now;
+    const day = inProgress ? parseLocalDateKey(dateKey(now)) : parseLocalDateKey(dayKey);
+    if (!day) return;
+    selectEvent(id);
+    if (state.view !== "day" || !sameDay(day, state.anchor)) {
+      state.view = "day";
+      await goToDate(day);
+    }
+    if (state.selectedEvent !== id || state.view !== "day" || !sameDay(state.anchor, day)
+      || document.body.dataset.view !== "calendrier") return;
+    const scroll = dayScroll();
+    const event = timelineEvent(scroll, id);
+    if (!event) return;
+    revealTimelineNode(scroll, event, true);
+    if (scroll.getBoundingClientRect().top + 150 > window.innerHeight) {
+      scroll.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    event.focus({ preventScroll: true });
   }
 
   async function refresh(mode, staged) {
     const root = document.getElementById("hq-cal-app");
     if (!root || typeof api !== "function") return;
     const gen = ++refreshGen;
-    const previous = mode === "keep" ? dayScroll() : null;
+    const samePeriod = state.prevView === state.view && sameDay(state.prevAnchor, state.anchor);
+    const previous = mode === "keep" || (!mode && samePeriod) ? dayScroll() : null;
     const kept = previous ? previous.scrollTop : null;
+    const requested = { anchor: state.anchor, view: state.view };
     const range = rangeFor();
     const params = new URLSearchParams({ from: range.from, to: range.to });
     if (state.activity && state.view !== "month") params.set("include_activity", "1");
     try {
       const data = await api("/api/calendar?" + params.toString());
       if (gen !== refreshGen) return;
+      for (const item of data.items || []) {
+        const pending = pendingMoves.get(item.id);
+        if (pending && item.rev <= pending.rev) {
+          item.start = pending.start;
+          item.end = pending.end;
+        }
+      }
       state.data = data;
+      if (!data.malformed) syncCategoryCatalog();
       state.fetchedAt = Date.now();
       if (!state.synced && data.server_date && !state.userMoved) {
         state.synced = true;
@@ -297,17 +414,31 @@
           return refresh(mode);
         }
       }
-      render(!!staged, () => {
-        if (mode === "snap") scrollDayToNow();
-        else if (kept != null) {
+      const landed = state.landed;
+      render(!!staged && !root.querySelector(".hq-cal-stage"), () => {
+        if (kept != null) {
           const next = dayScroll();
           if (next) next.scrollTop = kept;
-        }
+        } else positionTimeline(mode);
+        if (landed) revealTimelineEvent(landed);
       });
     } catch (err) {
-      if (gen !== refreshGen || state.data) return;
-      root.textContent = "";
-      root.appendChild(h("p", { class: "hint", text: (err && err.message) || "Calendrier indisponible" }));
+      if (gen !== refreshGen) return;
+      root.querySelector(".hq-cal-load-error")?.remove();
+      const retry = h("button", { type: "button", class: "secondary", text: "Réessayer" });
+      retry.addEventListener("click", () => {
+        Object.assign(state, requested);
+        refresh(mode, staged);
+      });
+      if (!state.data) root.textContent = "";
+      else if (state.prevAnchor && state.prevView) {
+        state.anchor = state.prevAnchor;
+        state.view = state.prevView;
+        state.anim = "";
+      }
+      root.prepend(h("div", { class: "hq-cal-load-error", role: "status" }, [
+        h("span", { text: (err && err.message) || "Calendrier indisponible" }), retry,
+      ]));
     }
   }
 
@@ -315,9 +446,9 @@
   function nextUpItem() {
     const now = liveNow();
     if (!now) return null;
-    const list = items().filter((item) => !item.read_only && !item.all_day && itemStart(item) && itemEnd(item) && itemEnd(item) > now);
+    const list = visibleItems().filter((item) => !item.read_only && !item.all_day && itemStart(item) && itemEnd(item) && itemEnd(item) > now);
     const far = state.data && state.data.next;
-    if (far && !list.some((item) => item.id === far.id) && parseLocalDateTime(far.start) && parseLocalDateTime(far.end) > now) list.push(far);
+    if (far && matchesCategory(far) && !list.some((item) => item.id === far.id) && parseLocalDateTime(far.start) && parseLocalDateTime(far.end) > now) list.push(far);
     list.sort((a, b) => itemStart(a) - itemStart(b));
     const first = list[0];
     return first && itemStart(first) - now < 24 * 3600000 ? first : null;
@@ -362,7 +493,11 @@
         h("span", { class: "hq-cal-nextup-label" }),
         h("span", { class: "hq-cal-nextup-title", text: item.title || "Sans titre" }),
       ]),
-      h("span", { class: "hq-cal-nextup-when" }),
+      h("span", { class: "hq-cal-nextup-meta" }, [
+        h("time", { class: "hq-cal-nextup-start", datetime: item.start, text: fmtTime(itemStart(item)) }),
+        h("span", { class: "hq-cal-nextup-when" }),
+      ]),
+      h("span", { class: "hq-cal-nextup-arrow", "aria-hidden": "true", text: "›" }),
     ]);
     const fresh = nextUpShown !== item.id;
     nextUpShown = item.id;
@@ -384,12 +519,15 @@
     card.classList.toggle("is-soon", !live && left <= 15 * 60000);
     card.querySelector(".hq-cal-nextup-label").textContent = label;
     const whenEl = card.querySelector(".hq-cal-nextup-when");
-    if (whenEl.dataset.text !== when) {
-      rollWords(whenEl, when, lastWhen.id === item.id ? lastWhen.text : "", -1);
-      whenEl.dataset.text = when;
+    // Phones spend one short word on the countdown: « reste » instead of « encore ».
+    const short = live && window.matchMedia("(max-width:600px)").matches ? when.replace(/^encore\s+/, "reste ") : when;
+    if (whenEl.dataset.text !== short) {
+      rollWords(whenEl, short, lastWhen.id === item.id ? lastWhen.text : "", -1);
+      whenEl.dataset.text = short;
     }
-    lastWhen = { id: item.id, text: when };
-    card.setAttribute("aria-label", label + " : " + (item.title || "Sans titre") + ", " + when);
+    lastWhen = { id: item.id, text: short };
+    card.setAttribute("aria-label", "Voir sur la grille · " + label + " · " + (item.title || "Sans titre") +
+      " · " + fmtDay(a) + " à " + fmtTime(a) + " · " + when);
     const fill = card.querySelector(".hq-cal-ring .fill");
     const C = 2 * Math.PI * 16;
     fill.style.strokeDasharray = C.toFixed(2);
@@ -413,6 +551,7 @@
   }
 
   function recapCard() {
+    if (state.categories.size || nextUpItem()) return document.createTextNode(""); // one status line at a time
     const today = serverToday();
     const onScreen = (state.view === "day" && sameDay(state.anchor, today)) || (state.view === "week" && dayVisible(today));
     const stats = onScreen ? todayStats() : null;
@@ -541,9 +680,9 @@
     if (item.all_day) parts.push("Journée");
     else if (item.start && String(item.start).indexOf("T") !== -1) parts.push(spanLabel(item));
     else if (item.when) parts.push(WHEN[item.when] || "Conditionnel");
-    if (item.read_only) parts.push("Horaire HQ, lecture seule");
+    if (item.read_only) parts.push(item.source === "icloud" ? "iCloud, lecture seule" : "Horaire HQ, lecture seule");
     else {
-      const cat = CATS.find((row) => row[0] === (item.category || "other"));
+      const cat = categoryRows.find((row) => row[0] === (item.category || "other"));
       if (cat) parts.push(cat[1]);
     }
     if (item.scene_id || item.action_id) parts.push("Lié");
@@ -558,16 +697,39 @@
       return;
     }
     if (window.hqHideHelp) window.hqHideHelp();
+    for (const [id, effect] of dropEffects) {
+      const elapsed = performance.now() - effect.started;
+      if (elapsed >= DROP_EFFECT_MS) dropEffects.delete(id);
+      else if (effect.painted && elapsed < DROP_GLIDE_MS) {
+        const face = dropFace(root, id, effect.day);
+        if (face) effect.from = face.getBoundingClientRect();
+      }
+    }
     // Same view, same period, no slide: whatever moved glides from where it was.
     const before = !state.anim && state.prevView === state.view && sameDay(state.prevAnchor, state.anchor) ? snapshot(root) : null;
+    const active = document.activeElement;
+    const control = active?.closest(".hq-cal-bar [data-cal]");
+    const toolbarFocus = control && root.contains(control) ? control : null;
+    const timelineFocus = active?.closest(".hq-cal-timeline-controls") ? active : null;
     root.textContent = "";
     paintTz();
-    root.appendChild(toolbar());
+    const bar = toolbar();
+    root.appendChild(bar);
+    if (quickForm) root.appendChild(quickForm);
+    if (toolbarFocus) {
+      const replacement = toolbarFocus.closest(".hq-cal-options") ? bar.querySelector(".hq-cal-options-trigger")
+        : [...bar.querySelectorAll("[data-cal]")].find(node => node.dataset.cal === toolbarFocus.dataset.cal && node.dataset.view === toolbarFocus.dataset.view);
+      (replacement || bar.querySelector(".hq-cal-date-trigger"))?.focus({ preventScroll: true });
+    }
+    if (state.categories.size) root.appendChild(categorySummary());
     const legend = legendPanel();
     legend.hidden = !state.legend;
     root.appendChild(legend);
-    root.appendChild(nextUp());
-    root.appendChild(recapCard());
+    const next = nextUp();
+    const glances = state.view === "day" || state.view === "week"; // the status line rides beside the grid tools there
+    if (!glances) root.appendChild(next);
+    const recap = recapCard();
+    if (!glances) root.appendChild(recap);
     if (state.data && state.data.malformed) {
       root.appendChild(h("p", { class: "hint", text: "Fichier calendrier illisible — il n'a pas été écrasé." }));
     }
@@ -578,27 +740,45 @@
       if (state.view === "day") stage.appendChild(dayView());
       else if (state.view === "week") {
         const first = weekStart(state.anchor);
-        const hint = threeDay() ? dayHint([0, 1, 2].map((n) => addLocalDays(first, n))) : null;
+        const hint = threeDay() || state.categories.size
+          ? dayHint(Array.from({ length: weekSpan() }, (_, index) => addLocalDays(first, index))) : null;
         if (hint) stage.appendChild(hint);
-        stage.appendChild(weekView());
+        stage.append(timelineTools(), weekView());
       }
       else if (state.view === "month") stage.appendChild(monthView());
       else stage.appendChild(agendaView());
       root.appendChild(stage);
+      if (glances) {
+        const controls = stage.querySelector(".hq-cal-timeline-controls");
+        const status = next.nodeType === 1 ? next : recap.nodeType === 1 ? recap : null;
+        if (controls) {
+          const row = h("div", { class: "hq-cal-glance" });
+          controls.parentNode.insertBefore(row, controls);
+          if (status) row.appendChild(status);
+          row.appendChild(controls);
+        } else if (status) {
+          root.insertBefore(status, stage);
+        }
+      }
+      if (timelineFocus?.dataset.cal) {
+        stage.querySelector('.hq-cal-timeline-tools [data-cal="' + timelineFocus.dataset.cal + '"]')?.focus({ preventScroll: true });
+      }
+      paintEventSelection(stage);
       root.appendChild(conditionalBlock());
       state.anim = "";
       state.prevView = state.view;
       state.prevAnchor = state.anchor;
       state.zoomFrom = null;
       state.landed = "";
-      state.dropped = false;
       state.burst = "";
       paintPreview();
+      paintFreeSlotBands(stage);
       paintRecent();
       paintLive();
       if (before) requestAnimationFrame(() => glide(before)); // after the caller has put the scroll back
       maybeCelebrate();
       if (done) done();
+      for (const [id, effect] of dropEffects) paintDrop(root, id, effect);
     };
     if (staged) requestAnimationFrame(finish);
     else finish();
@@ -632,7 +812,7 @@
     if (!root || !before) return;
     glideKeys(root).forEach(([key, el]) => {
       const old = before.get(key);
-      if (!old || el.classList.contains("is-landed") || typeof el.animate !== "function") return;
+      if (!old || el.classList.contains("is-landed") || dropEffects.has(el.dataset.id) || typeof el.animate !== "function") return;
       const now = el.getBoundingClientRect();
       if (!now.width || !now.height) return;
       const dx = old.left - now.left;
@@ -643,8 +823,38 @@
       el.animate([
         { transformOrigin: "0 0", transform: "translate(" + dx + "px," + dy + "px) scale(" + sx + "," + sy + ")" },
         { transformOrigin: "0 0", transform: "none" },
-      ], { duration: 460, easing: "cubic-bezier(.2,1.12,.32,1)" });
+      ], { duration: 360, easing: "cubic-bezier(.2,1.12,.32,1)" });
     });
+  }
+
+  function dropFace(root, id, day) {
+    const event = root.querySelector('[data-col-day="' + day + '"] .hq-cal-event[data-id="' + CSS.escape(id) + '"]');
+    return event?.querySelector(".hq-cal-face") || event;
+  }
+
+  function paintDrop(root, id, effect) {
+    const face = dropFace(root, id, effect.day);
+    if (!face || typeof face.animate !== "function") return;
+    const elapsed = performance.now() - effect.started;
+    if (elapsed >= DROP_EFFECT_MS) return;
+    effect.painted = true;
+    const end = face.getBoundingClientRect();
+    const from = effect.from;
+    if (from && end.width && end.height && elapsed < DROP_GLIDE_MS) {
+      const dx = from.left - end.left;
+      const dy = from.top - end.top;
+      face.animate([
+        { transform: `translate(${dx}px, ${dy}px) scale(${from.width / end.width}, ${from.height / end.height})`, transformOrigin: "top left" },
+        { transform: "none", transformOrigin: "top left" },
+      ], { duration: DROP_GLIDE_MS - elapsed, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }
+    const color = getComputedStyle(face).getPropertyValue("--cat").trim() || "var(--accent)";
+    const glow = `0 0 0 2px color-mix(in srgb, ${color} 48%, transparent)`;
+    face.animate([
+      { boxShadow: glow, offset: 0 },
+      { boxShadow: glow, offset: 0.35 },
+      { boxShadow: "0 0 0 5px transparent", offset: 1 },
+    ], { duration: DROP_EFFECT_MS, delay: -elapsed, easing: "ease-out" });
   }
 
   /* ---- rolling words: what changed rolls in, what stayed stays put ---- */
@@ -671,9 +881,10 @@
   function renderKeep() {
     const before = dayScroll();
     const top = before ? before.scrollTop : null;
-    render();
-    const after = dayScroll();
-    if (after && top != null) after.scrollTop = top;
+    render(false, () => {
+      const after = dayScroll();
+      if (after && top != null) after.scrollTop = top;
+    });
   }
 
   /* HQ's clock, ticking on from the moment it was read. */
@@ -684,7 +895,7 @@
   }
 
   function landedClass(item) {
-    return state.landed && item && item.id === state.landed ? " is-landed" + (state.dropped ? " is-dropped" : "") : "";
+    return state.landed && item && item.id === state.landed ? " is-landed" : "";
   }
 
   /* A short tap of the phone. Android: vibrate. iPhone ignores vibrate, but Safari 18+ taps when a
@@ -786,39 +997,34 @@
     refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
   }
 
-  function goToday() {
-    const today = serverToday();
+  function goToDate(day) {
     state.userMoved = true;
-    state.anim = state.anchor && today < state.anchor ? "prev" : "next";
-    state.anchor = today;
-    refresh("snap");
+    state.anim = state.anchor && day < state.anchor ? "prev" : "next";
+    state.anchor = day;
+    return refresh(sameDay(day, serverToday()) ? "snap" : undefined);
   }
 
-  function hintDone() {
-    try { localStorage.setItem(HINT_KEY, "1"); } catch (_) {}
+  function goToday() {
+    return goToDate(serverToday());
   }
 
-  function hintSeen() {
-    try { return localStorage.getItem(HINT_KEY) === "1"; } catch (_) { return true; }
-  }
-
-  /* Under the day strip: an empty day says so (and how to add); otherwise, until the owner has once
-     swiped or tapped an hour, one quiet line says those two gestures exist. */
+  /* Keep the empty state where it can guide someone to the grid. */
   function dayHint(days) {
-    const empty = days.every((day) => !items().some((item) => overlapsDay(item, day)));
+    const events = visibleItems();
+    const empty = days.every((day) => !events.some((item) => overlapsDay(item, day)));
     if (empty) {
+      if (state.categories.size) return h("p", { class: "hq-cal-hint", text: "Aucun événement dans les catégories sélectionnées." });
       return h("div", { class: "hq-cal-hint is-empty" }, [
         freeScene(),
-        h("p", { class: "hq-cal-free-title", text: days.length > 1 ? "Jours libres" : "Journée libre" }),
-        h("p", { class: "hq-cal-free-hint", text: coarsePointer()
-          ? "Rien de prévu. Touche une heure pour ajouter quelque chose."
-          : "Rien de prévu. Clique sur une heure pour ajouter quelque chose." }),
+        h("div", { class: "hq-cal-free-copy" }, [
+          h("p", { class: "hq-cal-free-title", text: days.length > 1 ? "Jours libres" : "Journée libre" }),
+          h("p", { class: "hq-cal-free-hint", text: coarsePointer()
+            ? "Touche une heure pour ajouter un événement."
+            : "Clique sur une heure pour ajouter un événement." }),
+        ]),
       ]);
     }
-    if (hintSeen()) return null;
-    return h("p", { class: "hq-cal-hint", text: coarsePointer()
-      ? "Touche une heure pour ajouter · glisse pour changer de jour"
-      : "Clique sur une heure pour ajouter · ← → pour changer de période" });
+    return null;
   }
 
   /* A small sky for a free day, at the hour it is now: sun rising, high, setting, or a moon and stars. */
@@ -894,29 +1100,31 @@
     const head = h("div", { class: "hq-cal-head" });
     head.appendChild(h("button", { type: "button", class: "hq-cal-step", "data-cal": "prev", "aria-label": navCopy[0], "data-help": navCopy[2], text: "‹" }));
     const title = h("h3", { class: "hq-cal-title", "aria-live": "polite" });
-    const stepping = /^(swipe-)?(next|prev)$|^scrub$/.test(state.anim);
-    const back = state.anim === "scrub" ? state.prevAnchor && state.anchor < state.prevAnchor : /prev$/.test(state.anim);
-    rollWords(title, titleText(), stepping ? lastTitle : "", back ? -1 : 1);
-    lastTitle = titleText();
+    const period = titleText();
+    const anchor = state.anchor || todayLocal();
+    const accessiblePeriod = state.view === "day" ? period + " " + anchor.getFullYear() : period;
+    const dateTrigger = h("button", { type: "button", class: "hq-cal-date-trigger", "data-cal": "jump-date",
+      "aria-label": "Aller à une date · " + accessiblePeriod, "aria-haspopup": "dialog", "aria-controls": "hq-cal-date-jump" });
+    dateTrigger.appendChild(h("span", { class: "hq-cal-date-label has-short-date", text: period }));
+    dateTrigger.appendChild(h("span", { class: "hq-cal-date-label hq-cal-short-date", text: compactPeriod(anchor), "aria-hidden": "true" }));
+    dateTrigger.appendChild(h("span", { class: "hq-cal-date-chevron", "aria-hidden": "true" }));
+    title.appendChild(dateTrigger);
     head.appendChild(title);
     head.appendChild(h("button", { type: "button", class: "hq-cal-step", "data-cal": "next", "aria-label": navCopy[1], "data-help": navCopy[3], text: "›" }));
-    const tools = h("div", { class: "hq-cal-tools" });
+    const top = h("div", { class: "hq-cal-top" });
+    top.appendChild(head);
     const actions = h("div", { class: "hq-cal-actions" });
-    if (!showsToday()) {
-      actions.appendChild(h("button", { type: "button", class: "secondary hq-cal-today", "data-cal": "today", "data-help": "Revient à aujourd'hui.", text: "Aujourd'hui" }));
-    }
-    actions.appendChild(h("button", {
-      type: "button",
-      class: "hq-cal-create",
-      "data-cal": "create",
-      "aria-label": "Nouvel événement",
-      "data-help": "Crée un événement manuel dans le calendrier.",
-      text: "+ Événement",
+    const options = h("div", { class: "hq-cal-options" });
+    const optionList = h("div", { id: "hq-cal-option-list", class: "hq-cal-option-list", hidden: state.optionsOpen ? null : "hidden" });
+    options.append(h("button", { type: "button", class: "hq-cal-toggle hq-cal-icon hq-cal-options-trigger", "data-cal": "options",
+      "aria-controls": "hq-cal-option-list", "aria-expanded": String(state.optionsOpen), "aria-label": "Options du calendrier",
+      "data-help": "Affichage, catégories, légende, sons et historique.", text: "⋯" }), optionList);
+    optionList.appendChild(h("button", {
+      type: "button", class: "hq-cal-toggle", "data-cal": "categories", "aria-haspopup": "dialog",
+      text: state.categories.size ? "Catégories (" + state.categories.size + ")" : "Catégories",
     }));
-    bar.appendChild(head);
-    bar.appendChild(views);
     if (state.view !== "month") {
-      tools.appendChild(
+      optionList.appendChild(
         h("button", {
           type: "button",
           class: "hq-cal-toggle",
@@ -927,7 +1135,13 @@
         })
       );
     }
-    tools.appendChild(h("button", {
+    optionList.appendChild(h("button", {
+      type: "button", class: "hq-cal-toggle", "data-cal": "history", "aria-haspopup": "dialog", text: "Historique des modifications",
+    }));
+    optionList.appendChild(h("button", {
+      type: "button", class: "hq-cal-toggle", "data-cal": "gestures", "aria-haspopup": "dialog", text: "Gestes",
+    }));
+    optionList.appendChild(h("button", {
       type: "button",
       class: "hq-cal-toggle",
       "data-cal": "legend",
@@ -936,7 +1150,7 @@
       "data-help": "Formes et couleurs des catégories, du planning et de l'activité.",
       text: "Légende",
     }));
-    tools.appendChild(h("button", {
+    optionList.appendChild(h("button", {
       type: "button",
       class: "hq-cal-toggle",
       "data-cal": "sound",
@@ -944,9 +1158,39 @@
       "data-help": "Petits sons doux : glisser, déposer, enregistrer, cocher.",
       text: "Sons",
     }));
-    tools.appendChild(actions);
-    bar.appendChild(tools);
+    const search = h("button", { type: "button", class: "hq-cal-toggle hq-cal-icon hq-cal-search-trigger", "data-cal": "search",
+      "aria-label": "Rechercher un événement", "aria-haspopup": "dialog" }, [h("span", { text: "Rechercher" })]);
+    actions.append(options, search, h("button", {
+      type: "button",
+      class: "hq-cal-create",
+      "data-cal": "create",
+      "aria-label": "Nouvel événement",
+      "data-help": "Crée un événement manuel dans le calendrier.",
+      text: "+ Événement",
+    }));
+    top.appendChild(actions);
+    const viewsRow = h("div", { class: "hq-cal-views-row" });
+    viewsRow.appendChild(views);
+    if (!showsToday()) {
+      viewsRow.appendChild(h("button", { type: "button", class: "secondary hq-cal-today", "data-cal": "today",
+        "data-help": "Revient à aujourd'hui.", text: "Aujourd'hui" }));
+    }
+    bar.append(top, viewsRow);
     return bar;
+  }
+
+  /* A shorter period for a phone header: same information, fewer characters. */
+  function compactPeriod(anchor) {
+    if (state.view === "month") {
+      const sameYear = anchor.getFullYear() === todayLocal().getFullYear();
+      return new Intl.DateTimeFormat("fr-CA", sameYear ? { month: "short" } : { month: "short", year: "numeric" }).format(anchor);
+    }
+    if (state.view === "week") {
+      const first = weekStart(anchor);
+      const last = addLocalDays(first, weekSpan() - 1);
+      return fmtShort(first) + " – " + fmtShort(last);
+    }
+    return fmtShort(anchor);
   }
 
   function legendPanel() {
@@ -957,7 +1201,7 @@
       "aria-label": "Légende du calendrier",
     });
     const cats = h("ul", { class: "hq-cal-legend-cats" });
-    CATS.forEach(([id, label]) => {
+    categoryRows.forEach(([id, label]) => {
       const item = h("li", { class: "hq-cal-legend-item" });
       item.appendChild(h("span", { class: "hq-cal-legend-mark cat-" + id, "aria-hidden": "true" }));
       item.appendChild(h("span", { text: label }));
@@ -973,6 +1217,12 @@
     activity.appendChild(h("span", { text: "Activité observée" }));
     notes.appendChild(schedule);
     notes.appendChild(activity);
+    for (const [style, label] of [["free", "Créneau libre"], ["conflict", "Chevauchement"]]) {
+      notes.appendChild(h("li", { class: "hq-cal-legend-note" }, [
+        h("span", { class: "hq-cal-legend-key is-" + style, "aria-hidden": "true" }),
+        h("span", { text: label }),
+      ]));
+    }
     panel.appendChild(notes);
     return panel;
   }
@@ -980,11 +1230,62 @@
   function dayView() {
     const wrap = h("div", {});
     wrap.appendChild(weekStrip());
+    wrap.appendChild(timelineTools());
     const hint = dayHint([state.anchor]);
     if (hint) wrap.appendChild(hint);
     wrap.appendChild(allDayLane(state.anchor));
     wrap.appendChild(dayTimeline(state.anchor));
     return wrap;
+  }
+
+  function timelineTools() {
+    const actions = h("div", { class: "hq-cal-timeline-tools", role: "group", "aria-label": "Outils de la grille horaire" });
+    if (showsToday()) actions.appendChild(h("button", {
+      type: "button", class: "secondary", "data-cal": "now", "aria-label": "Maintenant",
+      "data-help": "Ramène la grille à l’heure actuelle.",
+    }, [
+      h("span", { class: "hq-cal-tool-glyph", "aria-hidden": "true", text: "◷" }),
+      h("span", { text: "Maintenant" }),
+    ]));
+    actions.appendChild(h("button", {
+      type: "button", class: "secondary", "data-cal": "free-slots", "aria-label": "Créneau libre",
+      "aria-haspopup": "dialog", "data-help": "Propose des heures libres pour la date sélectionnée.",
+    }, [
+      h("span", { class: "hq-cal-tool-glyph", "aria-hidden": "true", text: "▦" }),
+      h("span", { class: "hq-cal-tool-long", text: "Créneau libre" }),
+      h("span", { class: "hq-cal-tool-short", text: "Créneaux" }),
+    ]));
+    if (state.slotPreview && dayVisible(parseLocalDateKey(state.slotPreview.day))) {
+      actions.appendChild(h("button", { type: "button", class: "secondary", "data-cal": "clear-slots", "aria-label": "Masquer les créneaux" }, [
+        h("span", { class: "hq-cal-tool-long", text: "Masquer les créneaux" }),
+        h("span", { class: "hq-cal-tool-short", text: "Masquer" }),
+      ]));
+    }
+    return h("div", { class: "hq-cal-timeline-controls" }, [actions]);
+  }
+
+  function openGestureGuide() {
+    const touch = coarsePointer();
+    const root = sheet("hq-cal-gestures");
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    const card = h("div", { class: "hq-sheet-card hq-cal-picker", role: "dialog", "aria-modal": "true",
+      "aria-labelledby": "hq-cal-gestures-title", tabindex: "-1" }, [
+      h("h3", { id: "hq-cal-gestures-title", text: "Gestes du calendrier" }),
+      h("div", { class: "hq-cal-gesture-steps" }, [
+        h("div", {}, [h("strong", { text: "Créer" }), h("span", { text: touch ? "Touche une heure libre. Maintiens puis glisse pour choisir la durée." : "Clique ou glisse sur une heure libre." })]),
+        h("div", {}, [h("strong", { text: "Déplacer" }), h("span", { text: touch ? "Glisse la poignée à points. Sur un bloc étroit, maintiens le bloc puis glisse." : "Glisse le bloc vers l’heure ou le jour voulu." })]),
+        h("div", {}, [h("strong", { text: "Durée" }), h("span", { text: "Tire la barre au bas du bloc." })]),
+        h("p", { text: touch ? "Balaye la grille pour changer de jour." : "Utilise ← et → pour changer de période." }),
+        h("p", { text: "Tu peux aussi ouvrir un événement et choisir « Changer l’horaire »." }),
+      ]),
+      close,
+    ]);
+    close.addEventListener("click", closeSheets);
+    root.appendChild(card);
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus({ preventScroll: true });
   }
 
   function weekStrip() {
@@ -1010,7 +1311,7 @@
         button.classList.add("is-today");
         const run = (state.data && state.data.streak && state.data.streak.days) || 0;
         if (run >= 2) {
-          button.appendChild(h("span", { class: "hq-cal-streak", "aria-hidden": "true", text: "🔥" + run }));
+          button.appendChild(h("span", { class: "hq-cal-streak", "aria-hidden": "true", text: String(run) }));
           button.setAttribute("aria-label", fmtDay(day) + " · série de " + run + " jours");
         }
       }
@@ -1024,7 +1325,7 @@
   function dayRing(day) {
     const now = liveNow();
     if (!now) return null;
-    const ended = items().filter((item) => !item.read_only && !item.all_day && overlapsDay(item, day) && itemEnd(item) && itemEnd(item) <= now);
+    const ended = visibleItems().filter((item) => !item.read_only && !item.all_day && overlapsDay(item, day) && itemEnd(item) && itemEnd(item) <= now);
     if (!ended.length) return null;
     const done = ended.filter((item) => item.done).length;
     return { done, total: ended.length, p: done / ended.length };
@@ -1053,7 +1354,7 @@
 
   function allDayLane(day) {
     const lane = h("div", { class: "hq-cal-allday", "data-allday": dateKey(day) });
-    const rows = items().filter((item) => item.all_day && overlapsDay(item, day));
+    const rows = visibleItems().filter((item) => item.all_day && overlapsDay(item, day));
     if (!rows.length) return lane; // empty: hidden by CSS, no filler line
     rows.forEach((item) => lane.appendChild(chip(item)));
     return lane;
@@ -1116,7 +1417,7 @@
   }
 
   function columnPx() {
-    return (state.view === "week" ? 44 : 48) * 24 * state.zoom;
+    return 46 * 24 * state.zoom;
   }
 
   function assignHitSlop(placed) {
@@ -1157,7 +1458,7 @@
     const dayStart = makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate());
     const dayEnd = addLocalDays(dayStart, 1);
     const placed = layoutOverlaps(
-      timedOn(day).map((item) => {
+      timedOn(day).filter(matchesCategory).map((item) => {
         const start = itemStart(item);
         const end = itemEnd(item);
         const startMin = start <= dayStart ? 0 : start.getHours() * 60 + start.getMinutes();
@@ -1171,7 +1472,7 @@
     if (coarse) assignHitSlop(placed);
     const colPx = columnPx();
     const now = liveNow();
-    placed.forEach((entry, order) => {
+    placed.forEach(entry => {
       const width = 100 / entry.cols;
       const spanMin = Math.max(1, entry.endMin - entry.startMin);
       const top = (entry.startMin / 1440) * 100;
@@ -1181,39 +1482,44 @@
       const past = !!(now && itemEnd(entry.item) && itemEnd(entry.item) <= now);
       const live = !!(now && !past && itemStart(entry.item) <= now);
       const checkable = canCheck(entry.item, now);
+      const canDrag = movable(entry.item);
+      const compact = height * colPx / 100 < 35;
       const button = h("button", {
         type: "button",
         class: "hq-cal-event" + (coarse ? "" : " " + catClass(entry.item)) + (past ? " is-past" : "") + landedClass(entry.item)
-          + (movable(entry.item) ? " is-movable" : "") + (entry.item.done ? " is-done" : "") + (checkable ? " has-check" : "")
-          + (state.burst === entry.item.id ? " is-burst" : "") + (live ? " is-live" : ""),
+          + (canDrag ? " is-movable" : "") + (entry.item.done ? " is-done" : "") + (checkable ? " has-check" : "")
+          + (state.burst === entry.item.id ? " is-burst" : "") + (live ? " is-live" : "") + (compact ? " is-compact" : ""),
         "data-cal": "open",
         "data-id": entry.item.id,
         "data-help": previewHelp(entry.item),
+        "aria-label": previewHelp(entry.item),
       });
       if (coarse) {
         const abovePct = ((entry.hitAbovePx || 0) / colPx) * 100;
         const belowPct = ((entry.hitBelowPx || 0) / colPx) * 100;
         hitTop = top - abovePct;
         hitHeight = height + abovePct + belowPct;
-        const face = h("span", { class: "hq-cal-face " + catClass(entry.item) }, eventLabel(entry));
+        const face = h("span", { class: "hq-cal-face " + catClass(entry.item) }, [eventLabel(entry)]);
         face.style.top = (abovePct / hitHeight) * 100 + "%";
         face.style.height = (height / hitHeight) * 100 + "%";
         button.appendChild(face);
       } else {
-        eventLabel(entry).forEach((node) => button.appendChild(node));
+        button.appendChild(eventLabel(entry));
       }
       button.style.top = hitTop + "%";
       button.style.height = hitHeight + "%";
       button.style.left = entry.col * width + "%";
       button.style.width = width + "%";
-      button.style.setProperty("--n", String(Math.min(order, 12)));
       if (live) {
         // An event in progress fills with its colour from top to bottom as its time passes.
         button.dataset.from = String(itemStart(entry.item).getTime());
         button.dataset.to = String(itemEnd(entry.item).getTime());
         button.style.setProperty("--fill", liveFill(button, now).toFixed(4));
       }
-      if (movable(entry.item)) {
+      if (canDrag) {
+        const handle = h("span", { class: "hq-cal-move-grip", "data-grip": "move", "aria-hidden": "true" });
+        if (coarse) handle.style.top = ((top - hitTop) / hitHeight) * 100 + "%";
+        button.appendChild(handle);
         // Bottom edge: drag to change the end. On touch it sits at the bottom of the visible face.
         const grip = h("span", { class: "hq-cal-resize", "data-grip": "end", "aria-hidden": "true" });
         if (coarse) grip.style.top = "calc(" + (((top - hitTop) + height) / hitHeight) * 100 + "% - 14px)";
@@ -1253,12 +1559,11 @@
     return check;
   }
 
-  /* What an event block says: its start time (when it starts on this day), then its title. */
   function eventLabel(entry) {
-    const title = h("span", { class: "hq-cal-ev-title", text: entry.item.title || "Sans titre" });
-    if (entry.startMin <= 0) return [title];
-    const time = h("span", { class: "hq-cal-ev-time", text: pad(Math.floor(entry.startMin / 60)) + ":" + pad(entry.startMin % 60) });
-    return [time, title];
+    return h("span", { class: "hq-cal-event-labels" }, [
+      h("span", { class: "hq-cal-ev-title", text: entry.item.title || "Sans titre" }),
+      h("span", { class: "hq-cal-ev-time", text: hhmm(entry.startMin) }),
+    ]);
   }
 
   function layoutOverlaps(entries) {
@@ -1336,6 +1641,7 @@
     const head = h("div", { class: "hq-cal-weekhead" });
     const all = h("div", { class: "hq-cal-allweek" });
     const grid = h("div", { class: "hq-cal-weekgrid" });
+    let hasAllDay = false;
     head.appendChild(h("div", {}));
     all.appendChild(h("div", { class: "hq-cal-hourlabel", text: "Jour" }));
     const labels = h("div", { class: "hq-cal-hours" });
@@ -1347,22 +1653,29 @@
     const today = serverToday();
     for (let i = 0; i < span; i += 1) {
       const day = addLocalDays(start, i);
+      const current = sameDay(day, today);
       const headBtn = h("button", {
         type: "button",
         "data-cal": "pick-day",
         "data-day": dateKey(day),
         "aria-label": fmtDay(day),
       }, [h("span", { class: "hq-cal-strip-dow", text: DOW[(day.getDay() + 6) % 7] }), h("span", { class: "hq-cal-strip-num", text: String(day.getDate()) })]);
-      if (sameDay(day, today)) headBtn.classList.add("is-today");
+      if (current) {
+        headBtn.classList.add("is-today");
+        headBtn.setAttribute("aria-current", "date");
+      }
       markRing(headBtn, day);
       head.appendChild(headBtn);
-      const cell = h("div", { class: "hq-cal-allcell", "data-allday": dateKey(day) });
-      items()
-        .filter((item) => item.all_day && overlapsDay(item, day))
-        .slice(0, 3)
-        .forEach((item) => cell.appendChild(chip(item)));
+      const cell = h("div", { class: "hq-cal-allcell" + (current ? " is-today" : ""), "data-allday": dateKey(day) });
+      const allDay = visibleItems().filter(item => item.all_day && overlapsDay(item, day));
+      hasAllDay ||= allDay.length > 0;
+      allDay.slice(0, 2).forEach(item => cell.appendChild(chip(item)));
+      if (allDay.length > 2) {
+        cell.appendChild(h("button", { type: "button", class: "hq-cal-more", "data-cal": "pick-day", "data-day": dateKey(day),
+          "aria-label": "Voir les événements du " + fmtDay(day), text: "+" + (allDay.length - 2) }));
+      }
       all.appendChild(cell);
-      const col = h("div", { class: "hq-cal-weekcol", "data-col-day": dateKey(day) });
+      const col = h("div", { class: "hq-cal-weekcol" + (current ? " is-today" : ""), "data-col-day": dateKey(day) });
       for (let hour = 0; hour < 24; hour += 1) {
         col.appendChild(
           h("button", {
@@ -1380,9 +1693,7 @@
       if (state.activity) placeMarkers(col, day);
       grid.appendChild(col);
     }
-    board.appendChild(head);
-    board.appendChild(all);
-    board.appendChild(grid);
+    board.append(h("div", { class: "hq-cal-week-top" }, [head, hasAllDay ? all : null]), grid);
     scroll.appendChild(board);
     return scroll;
   }
@@ -1397,10 +1708,11 @@
       const day = addLocalDays(start, i);
       const cell = h("div", { class: "hq-cal-mcell" + (day.getMonth() === state.anchor.getMonth() ? "" : " is-out") });
       if (sameDay(day, today)) cell.classList.add("is-today");
-      cell.appendChild(
-        h("button", { type: "button", class: "hq-cal-mday", "data-cal": "pick-day", "data-day": dateKey(day), text: String(day.getDate()) })
-      );
-      const rows = items().filter((item) => overlapsDay(item, day));
+      if (sameDay(day, state.anchor)) cell.classList.add("is-anchor");
+      const rows = visibleItems().filter((item) => overlapsDay(item, day));
+      const label = fmtDay(day) + (rows.length ? " · " + rows.length + (rows.length === 1 ? " élément" : " éléments") : "");
+      cell.appendChild(h("button", { type: "button", class: "hq-cal-mday", "data-cal": "pick-day",
+        "data-day": dateKey(day), "aria-label": label, "aria-current": sameDay(day, today) ? "date" : null, text: String(day.getDate()) }));
       if (narrowMonth()) {
         // Phone: a cell is too narrow for titles. Coloured marks (category shapes, as in the legend)
         // say "something here"; tapping the day opens it.
@@ -1410,7 +1722,6 @@
           rows.slice(0, shown).forEach((item) => dots.appendChild(h("span", { class: "hq-cal-dot " + catClass(item) + landedClass(item) })));
           if (rows.length > shown) dots.appendChild(h("span", { class: "hq-cal-dot-more", text: "+" + (rows.length - shown) }));
           cell.appendChild(dots);
-          cell.querySelector(".hq-cal-mday").setAttribute("aria-label", fmtDay(day) + " · " + (rows.length === 1 ? "1 élément" : rows.length + " éléments"));
         }
         wrap.appendChild(cell);
         continue;
@@ -1439,13 +1750,17 @@
   function agendaView() {
     const wrap = h("div", { class: "hq-cal-agenda" });
     let any = false;
-    let order = 0; // first rows arrive one after another (motion only after the owner moved)
     for (let i = 0; i < 30; i += 1) {
       const day = addLocalDays(state.anchor, i);
-      const rows = items().filter((item) => overlapsDay(item, day));
+      const rows = visibleItems().filter((item) => overlapsDay(item, day));
       if (!rows.length) continue;
       any = true;
-      wrap.appendChild(h("h3", { text: fmtDay(day) }));
+      const heading = sameDay(day, serverToday()) ? "Aujourd’hui · " + fmtShort(day) : fmtDay(day);
+      wrap.appendChild(h("h3", {}, [h("button", {
+        type: "button", class: "hq-cal-agenda-day", "data-cal": "pick-day", "data-day": dateKey(day),
+        "aria-label": "Ouvrir la journée du " + fmtDay(day),
+      }, [h("span", { text: heading }), h("span", { class: "hq-cal-agenda-count", "aria-hidden": "true", text: String(rows.length) }),
+        h("span", { "aria-hidden": "true", text: "›" })])]));
       const allDay = rows.filter((item) => item.all_day);
       const timed = rows.filter((item) => !item.all_day).sort((a, b) => String(a.start).localeCompare(String(b.start)));
       const now = liveNow();
@@ -1458,14 +1773,13 @@
           "data-id": item.id,
           "data-help": previewHelp(item),
         });
-        button.style.setProperty("--n", String(Math.min(order++, 12)));
         button.appendChild(h("time", { text: when }));
         const body = h("span", {});
         body.appendChild(h("strong", { text: item.title || "Sans titre" }));
         if (item.location) body.appendChild(h("div", { class: "hint", text: item.location }));
         if (item.read_only) body.appendChild(h("div", { class: "hint", text: "Lecture seule" }));
         else {
-          const cat = CATS.find((row) => row[0] === (item.category || "other"));
+          const cat = categoryRows.find((row) => row[0] === (item.category || "other"));
           if (cat) body.appendChild(h("div", { class: "hint", text: cat[1] }));
         }
         button.appendChild(body);
@@ -1473,7 +1787,8 @@
         wrap.appendChild(button);
       });
     }
-    if (!any) wrap.appendChild(h("p", { class: "hint", text: "Rien de prévu sur les 30 prochains jours." }));
+    if (!any) wrap.appendChild(h("p", { class: "hint", text: state.categories.size
+      ? "Aucun événement dans les catégories sélectionnées." : "Rien de prévu sur les 30 prochains jours." }));
     return wrap;
   }
 
@@ -1485,7 +1800,7 @@
   }
 
   function conditionalBlock() {
-    const rows = (state.data && state.data.conditional) || [];
+    const rows = (state.data?.conditional || []).filter(matchesCategory);
     if (!rows.length) return document.createTextNode(""); // nothing conditional: no empty box under the grid
     const block = h("section", { class: "hq-cal-cond" });
     block.appendChild(h("h3", { text: "Conditionnel" }));
@@ -1505,16 +1820,207 @@
     return block;
   }
 
+  function setOptionsOpen(open) {
+    state.optionsOpen = open;
+    document.querySelector(".hq-cal-options-trigger")?.setAttribute("aria-expanded", String(open));
+    const options = document.getElementById("hq-cal-option-list");
+    if (options) options.hidden = !open;
+  }
+
+  function validCategories(keys) {
+    const selected = categoryRows.filter(([id]) => keys.includes(id)).map(([id]) => id);
+    return new Set(selected.length === categoryRows.length ? [] : selected);
+  }
+
+  function setCategoryFilters(keys) {
+    state.categories = validCategories(keys);
+    try { localStorage.setItem("hq_cal_categories", JSON.stringify([...state.categories])); } catch (_) {}
+    renderKeep();
+  }
+
+  function categorySummary() {
+    const labels = categoryRows.filter(([id]) => state.categories.has(id)).map(([, label]) => label);
+    return h("div", { class: "hq-cal-filter-summary", role: "group", "aria-label": "Catégories affichées" }, [
+      h("button", { type: "button", class: "secondary hq-cal-filter-current", "data-cal": "categories", "aria-haspopup": "dialog",
+        text: labels.join(" · "), "aria-label": "Modifier les catégories affichées · " + labels.join(", ") }),
+      h("button", { type: "button", class: "secondary hq-cal-filter-clear", "data-cal": "clear-categories",
+        text: "Tout afficher" }),
+    ]);
+  }
+
+  function openCategoryFilters() {
+    const root = sheet("hq-cal-categories");
+    const card = h("div", { class: "hq-sheet-card hq-cal-picker", role: "dialog", "aria-modal": "true",
+      "aria-labelledby": "hq-cal-categories-title", tabindex: "-1" });
+    const tags = h("div", { class: "hq-cal-category-tags", role: "group", "aria-label": "Catégories à afficher" });
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    const all = h("button", { type: "button", class: "hq-cal-category-tag", text: "Toutes" });
+    const buttons = categoryRows.map(([id, label]) => {
+      const button = h("button", { type: "button", class: "hq-cal-category-tag cat-" + id, text: label });
+      button.addEventListener("click", () => {
+        const selected = new Set(state.categories);
+        if (selected.has(id)) selected.delete(id);
+        else selected.add(id);
+        setCategoryFilters([...selected]);
+        paint();
+      });
+      return [id, button];
+    });
+    function paint() {
+      all.setAttribute("aria-pressed", String(!state.categories.size));
+      for (const [id, button] of buttons) button.setAttribute("aria-pressed", String(state.categories.has(id)));
+    }
+    all.addEventListener("click", () => {
+      setCategoryFilters([]);
+      paint();
+    });
+    close.addEventListener("click", closeSheets);
+    tags.append(all, ...buttons.map(([, button]) => button));
+    const manage = h("button", { type: "button", text: "Gérer les catégories" });
+    manage.addEventListener("click", () => {
+      root.hidden = true;
+      openCategoryManager();
+    });
+    card.append(h("h3", { id: "hq-cal-categories-title", text: "Filtrer par catégorie" }), tags,
+      h("div", { class: "hq-cal-picker-actions" }, [manage, close]));
+    root.appendChild(card);
+    paint();
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus({ preventScroll: true });
+  }
+
+  function openCategoryManager() {
+    const root = sheet("hq-cal-category-manager");
+    const card = h("div", { class: "hq-sheet-card hq-cal-picker", role: "dialog", "aria-modal": "true",
+      "aria-labelledby": "hq-cal-manager-title", tabindex: "-1" });
+    const body = h("div", { class: "hq-cal-category-manager" });
+    const error = h("p", { class: "hq-cal-editor-error", role: "alert" });
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    close.addEventListener("click", closeSheets);
+    card.append(h("h3", { id: "hq-cal-manager-title", text: "Gérer les catégories" }), error, body, close);
+    root.appendChild(card);
+
+    async function save(action, category, revision) {
+      if (body.inert) return;
+      body.inert = true;
+      error.textContent = "";
+      try {
+        const result = await api("/api/calendar", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, category, expected_rev: revision }),
+        });
+        Object.assign(state.data, result);
+        syncCategoryCatalog();
+        await refresh("keep");
+        if (!root.hidden && !root.classList.contains("is-closing") && card.isConnected) {
+          overview();
+          body.inert = false;
+          body.querySelector("button")?.focus({ preventScroll: true });
+        }
+      } catch (err) {
+        if (err?.status === 409) {
+          await refresh("keep");
+          overview();
+          error.textContent = "Les catégories ont changé. Rouvre la catégorie pour réessayer.";
+        } else error.textContent = err?.message || "Enregistrement impossible.";
+      } finally {
+        body.inert = false;
+      }
+    }
+
+    function overview() {
+      const revision = state.data.categories_rev;
+      const add = h("button", { type: "button", text: "Ajouter une catégorie" });
+      add.addEventListener("click", () => edit([], revision));
+      const list = h("ul", { class: "hq-cal-category-list" });
+      for (const row of categoryRows) {
+        const [id, label] = row;
+        const button = h("button", { type: "button", class: "secondary", text: "Modifier", "aria-label": "Modifier " + label });
+        button.addEventListener("click", () => edit(row, revision));
+        list.appendChild(h("li", {}, [h("strong", { class: "hq-cal-category-name cat-" + id, text: label }), button]));
+      }
+      body.replaceChildren(add, list);
+    }
+
+    function backButton() {
+      const back = h("button", { type: "button", class: "secondary", text: "Retour" });
+      back.addEventListener("click", () => {
+        error.textContent = "";
+        overview();
+        body.querySelector("button")?.focus({ preventScroll: true });
+      });
+      return back;
+    }
+
+    function edit(row, revision) {
+      const [id, label = "", color = "#9274cf"] = row;
+      const form = h("form", { class: "hq-cal-category-manager" });
+      const name = h("input", { id: "hq-cal-category-name", value: label, maxlength: 32, required: true });
+      const shade = h("input", { id: "hq-cal-category-color", type: "color", value: color });
+      form.append(field("Nom", name), field("Couleur", shade), h("div", { class: "hq-cal-picker-actions" }, [
+        h("button", { type: "submit", text: "Enregistrer" }), backButton(),
+      ]));
+      if (id && id !== "other") {
+        const remove = h("button", { type: "button", class: "danger", text: "Supprimer cette catégorie" });
+        remove.addEventListener("click", () => removeCategory(row, revision));
+        form.appendChild(remove);
+      }
+      form.addEventListener("submit", event => {
+        event.preventDefault();
+        save("category_save", { id, label: name.value, color: shade.value }, revision);
+      });
+      body.replaceChildren(form);
+      name.focus({ preventScroll: true });
+    }
+
+    function removeCategory([id, label], revision) {
+      const destination = h("select", { id: "hq-cal-category-destination" });
+      for (const [key, title] of categoryRows) {
+        if (key !== id) destination.appendChild(h("option", { value: key, text: title }));
+      }
+      destination.value = "other";
+      const remove = h("button", { type: "button", class: "danger", text: "Réaffecter et supprimer" });
+      remove.addEventListener("click", () => save("category_delete", { id, replacement: destination.value }, revision));
+      body.replaceChildren(h("p", { text: "Choisis la nouvelle catégorie des événements « " + label + " »." }),
+        field("Catégorie de destination", destination), h("div", { class: "hq-cal-picker-actions" }, [remove, backButton()]));
+      destination.focus({ preventScroll: true });
+    }
+
+    if (Number.isInteger(state.data?.categories_rev) && !state.data.malformed) overview();
+    else body.appendChild(h("p", { class: "hint", text: "La gestion des catégories est indisponible sur ce serveur." }));
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus({ preventScroll: true });
+  }
+
   function onClick(ev) {
     const button = ev.target.closest("[data-cal]");
     if (!button || !button.closest("#hq-cal-app")) return;
     const kind = button.dataset.cal;
+    if (kind === "options") {
+      setOptionsOpen(!state.optionsOpen);
+      return;
+    }
+    if (kind === "categories") {
+      document.querySelector(".hq-cal-options-trigger")?.focus({ preventScroll: true });
+      setOptionsOpen(false);
+      openCategoryFilters();
+      return;
+    }
+    if (kind === "clear-categories") {
+      setCategoryFilters([]);
+      document.querySelector(".hq-cal-options-trigger")?.focus({ preventScroll: true });
+      return;
+    }
     if (kind === "view") {
       if ((button.dataset.view || "week") === state.view) return;
       state.anim = "view";
       state.view = button.dataset.view || "week";
       try { localStorage.setItem("hq_cal_view", state.view); } catch (_) {}
-      refresh(state.view === "day" && sameDay(state.anchor, serverToday()) ? "snap" : undefined);
+      refresh();
       return;
     }
     if (kind === "prev" || kind === "next") {
@@ -1525,10 +2031,54 @@
       goToday();
       return;
     }
+    if (kind === "now") {
+      positionTimeline("snap", true);
+      const scroll = dayScroll();
+      if (scroll && scroll.getBoundingClientRect().top + 120 > window.innerHeight) {
+        scroll.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+      const line = scroll?.querySelector(".hq-cal-now");
+      if (line) {
+        line.classList.remove("is-focused");
+        void line.offsetWidth;
+        line.classList.add("is-focused");
+      }
+      return;
+    }
+    if (kind === "free-slots") {
+      openFreeSlots(button);
+      return;
+    }
+    if (kind === "clear-slots") {
+      state.slotPreview = null;
+      renderKeep();
+      document.querySelector('#hq-cal-app [data-cal="free-slots"]')?.focus({ preventScroll: true });
+      return;
+    }
+    if (kind === "choose-slot") {
+      openEditor({ ...blankDraft(parseLocalDateKey(button.dataset.start.slice(0, 10)), 0),
+        start: button.dataset.start, end: button.dataset.end });
+      return;
+    }
+    if (kind === "history" || kind === "gestures") {
+      document.querySelector(".hq-cal-options-trigger")?.focus({ preventScroll: true });
+      setOptionsOpen(false);
+      if (kind === "history") openUndoHistory();
+      else openGestureGuide();
+      return;
+    }
+    if (kind === "jump-date") {
+      openDateJump(button);
+      return;
+    }
+    if (kind === "search") {
+      openCalendarSearch(button);
+      return;
+    }
     if (kind === "activity") {
       state.activity = !state.activity;
       try { localStorage.setItem("hq_cal_activity", state.activity ? "1" : "0"); } catch (_) {}
-      refresh();
+      refresh("keep");
       return;
     }
     if (kind === "sound") {
@@ -1543,24 +2093,13 @@
       return;
     }
     if (kind === "nextup") {
-      const item = items().find((row) => row.id === button.dataset.id);
-      if (item) openDetail(item, button);
-      else {
-        const day = parseLocalDateKey(button.dataset.day);
-        if (!day) return;
-        state.userMoved = true;
-        state.anim = "view";
-        state.view = "day";
-        state.anchor = day;
-        state.landed = button.dataset.id;
-        refresh();
-      }
+      jumpToNextEvent(button.dataset.id, button.dataset.day);
       return;
     }
     if (kind === "legend") {
       state.legend = !state.legend;
-      render();
-      const again = document.querySelector('#hq-cal-app [data-cal="legend"]');
+      renderKeep();
+      const again = document.querySelector("#hq-cal-app .hq-cal-options-trigger");
       if (again) again.focus();
       return;
     }
@@ -1589,7 +2128,6 @@
       const day = parseLocalDateKey(button.dataset.day);
       const hour = Number(button.dataset.hour);
       if (!day || Number.isNaN(hour)) return;
-      hintDone();
       openEditor(blankDraft(day, hour));
       return;
     }
@@ -1648,14 +2186,273 @@
     return node;
   }
 
-  /* The card grows out of where the owner pressed (a slot, an event, a button), with a soft spring. */
+  function freeSlots(day, duration, events = items(), excludeId) {
+    const opening = new Date(day).setHours(8, 0, 0, 0);
+    const closing = new Date(day).setHours(22, 0, 0, 0);
+    const now = liveNow() || new Date();
+    const step = SNAP_MIN * 60000;
+    const length = duration * 60000;
+    const earliest = sameDay(day, now) ? Math.max(opening, now.getTime()) : opening;
+    const roundUp = time => opening + Math.ceil((time - opening) / step) * step;
+    const busy = events.filter(item => item.id !== excludeId && !item.all_day && overlapsDay(item, day))
+      .map(item => [itemStart(item).getTime(), itemEnd(item).getTime()]).sort((a, b) => a[0] - b[0]);
+    const slots = [];
+    const windows = [opening, new Date(day).setHours(12, 0, 0, 0), new Date(day).setHours(17, 0, 0, 0), closing];
+    for (let i = 0; i < windows.length - 1; i += 1) {
+      let start = roundUp(Math.max(earliest, windows[i]));
+      for (const [from, to] of busy) {
+        if (start + length <= from) break;
+        if (start < to) start = roundUp(to);
+      }
+      if (start < windows[i + 1] && start + length <= closing) slots.push(new Date(start));
+    }
+    return slots;
+  }
+
+  function openFreeSlots(trigger) {
+    trigger.focus({ preventScroll: true });
+    const day = state.anchor || serverToday();
+    const root = sheet("hq-cal-free-slots");
+    const card = h("div", { class: "hq-sheet-card hq-cal-free-slots", role: "dialog", "aria-modal": "true",
+      "aria-labelledby": "hq-cal-free-slots-title", tabindex: "-1" });
+    const durations = h("div", { class: "hq-cal-durations", role: "group", "aria-label": "Durée du créneau" });
+    const status = h("p", { class: "hint", role: "status" });
+    const results = h("div", { class: "hq-cal-free-slot-results" });
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    const showGrid = h("button", { type: "button", text: "Voir sur la grille" });
+    const choices = [[30, "30 min"], [60, "1 h"], [90, "1 h 30"]];
+    const maxRows = Math.max(...choices.map(([duration]) => freeSlots(day, duration).length));
+    results.style.setProperty("--slot-rows", String(Math.max(0, maxRows)));
+    let selected = 0;
+    let visibleList = null;
+    function show(duration) {
+      if (selected === duration) return;
+      selected = duration;
+      durations.querySelectorAll("button").forEach(button => button.setAttribute("aria-pressed", String(Number(button.value) === duration)));
+      const slots = freeSlots(day, duration);
+      showGrid.disabled = !slots.length;
+      const list = h("div", { class: "hq-cal-free-slot-list" });
+      status.textContent = slots.length ? (slots.length === 1 ? "1 créneau proposé" : slots.length + " créneaux proposés")
+        : "Aucun créneau à cette durée.";
+      slots.forEach(start => {
+        const end = new Date(start.getTime() + duration * 60000);
+        const option = h("button", { type: "button", class: "secondary hq-cal-free-slot" }, [
+          h("strong", { text: fmtTime(start) + " – " + fmtTime(end) }),
+          h("span", { text: "Choisir", "aria-hidden": "true" }),
+        ]);
+        option.addEventListener("click", () => {
+          const draft = blankDraft(day, start.getHours());
+          draft.start = minuteKey(start);
+          draft.end = minuteKey(end);
+          openEditor(draft);
+        });
+        list.appendChild(option);
+      });
+      const outgoing = visibleList;
+      visibleList = list;
+      if (!outgoing || typeof list.animate !== "function") {
+        results.replaceChildren(list);
+        return;
+      }
+      outgoing.inert = true;
+      outgoing.setAttribute("aria-hidden", "true");
+      outgoing.classList.add("is-outgoing");
+      results.replaceChildren(outgoing, list);
+      outgoing.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, fill: "forwards" })
+        .finished.then(() => outgoing.remove(), () => outgoing.remove());
+      list.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: "ease-out" });
+    }
+    choices.forEach(([duration, label]) => {
+      const button = h("button", { type: "button", class: "hq-cal-chipbtn", value: duration, text: label });
+      button.addEventListener("click", () => show(duration));
+      durations.appendChild(button);
+    });
+    close.addEventListener("click", closeSheets);
+    showGrid.addEventListener("click", async () => {
+      state.slotPreview = { day: dateKey(day), duration: selected };
+      closeSheets();
+      if (!dayVisible(day) || (state.view !== "day" && state.view !== "week")) {
+        state.view = "day";
+        await goToDate(day);
+      } else renderKeep();
+      const first = document.querySelector(".hq-cal-slot-band");
+      if (first) {
+        const scroll = dayScroll();
+        revealTimelineNode(scroll, first);
+        if (scroll && scroll.getBoundingClientRect().top + 100 > window.innerHeight) {
+          scroll.scrollIntoView({ block: "start", behavior: "smooth" });
+        }
+        first.focus({ preventScroll: true });
+      }
+    });
+    card.append(
+      h("h3", { id: "hq-cal-free-slots-title", text: "Trouver un créneau libre" }),
+      h("p", { class: "hq-cal-free-slot-date", text: fmtDay(day) }),
+      h("p", { class: "hint", text: "Entre les événements avec horaire, de 8 h à 22 h." }),
+      durations, status, results, h("div", { class: "hq-cal-picker-actions" }, [showGrid, close])
+    );
+    root.appendChild(card);
+    show(30);
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus({ preventScroll: true });
+  }
+
+  function paintFreeSlotBands(stage) {
+    const preview = state.slotPreview;
+    if (!preview) return;
+    const col = stage.querySelector('[data-col-day="' + preview.day + '"]');
+    if (!col) return;
+    const day = parseLocalDateKey(preview.day);
+    for (const start of freeSlots(day, preview.duration)) {
+      const end = new Date(start.getTime() + preview.duration * 60000);
+      const time = fmtTime(start) + " – " + fmtTime(end);
+      const minutes = start.getHours() * 60 + start.getMinutes();
+      col.appendChild(h("button", { type: "button", class: "hq-cal-slot-band", "data-cal": "choose-slot",
+        "data-start": minuteKey(start), "data-end": minuteKey(end), "aria-label": "Créer dans le créneau " + time,
+        style: "top:" + (minutes / 1440) * 100 + "%;height:" + (preview.duration / 1440) * 100 + "%",
+      }, [h("span", { text: time })]));
+    }
+  }
+
+  function openDateJump(trigger) {
+    trigger.focus({ preventScroll: true });
+    const root = sheet("hq-cal-date-jump");
+    const card = h("form", { class: "hq-sheet-card hq-cal-date-jump", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-date-jump-title" });
+    const input = h("input", { id: "hq-cal-jump-input", type: "date", value: dateKey(state.anchor || serverToday()), required: true });
+    const today = h("button", { type: "button", class: "secondary", text: "Aujourd’hui" });
+    const close = h("button", { type: "button", class: "secondary", text: "Annuler" });
+    card.append(
+      h("h3", { id: "hq-cal-date-jump-title", text: "Aller à une date" }),
+      h("div", { class: "field" }, [h("label", { for: input.id, text: "Date" }), input]),
+      h("div", { class: "hq-cal-date-jump-actions" }, [today, close, h("button", { type: "submit", text: "Aller à cette date" })])
+    );
+    async function jump(day) {
+      closeSheets();
+      await goToDate(day);
+      if (document.body.dataset.view === "calendrier" && document.activeElement === document.body) {
+        document.querySelector(".hq-cal-date-trigger")?.focus({ preventScroll: true });
+      }
+    }
+    today.addEventListener("click", () => jump(serverToday()));
+    close.addEventListener("click", closeSheets);
+    input.addEventListener("input", () => input.setCustomValidity(""));
+    card.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const day = parseLocalDateKey(input.value);
+      if (day) jump(day);
+      else {
+        input.setCustomValidity("Choisis une date valide.");
+        input.reportValidity();
+      }
+    });
+    root.appendChild(card);
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    input.focus({ preventScroll: true });
+  }
+
+  function openCalendarSearch(trigger) {
+    trigger.focus({ preventScroll: true });
+    const root = sheet("hq-cal-search");
+    const card = h("div", { class: "hq-sheet-card hq-cal-search", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-search-title" });
+    const input = h("input", { id: "hq-cal-search-input", type: "search", autocomplete: "off", placeholder: "Titre ou lieu",
+      "aria-label": "Titre ou lieu", "aria-describedby": "hq-cal-search-range" });
+    const anchor = state.anchor || serverToday();
+    const first = addLocalDays(anchor, -183);
+    const last = addLocalDays(anchor, 183);
+    const dateFormat = new Intl.DateTimeFormat("fr-CA", { day: "numeric", month: "short", year: "numeric" });
+    const status = h("p", { class: "hint", role: "status" });
+    const rows = h("div", { class: "hq-cal-search-results" });
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    let events = [];
+    let loaded = false;
+    const fold = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+    function paint() {
+      rows.textContent = "";
+      if (!loaded) return;
+      const words = fold(input.value).trim().split(/\s+/).filter(Boolean);
+      if (!words.length) {
+        status.textContent = "Saisis un titre ou un lieu.";
+        return;
+      }
+      const results = events.filter(item => {
+        const label = fold((item.title || "") + " " + (item.location || ""));
+        return matchesCategory(item) && words.every(word => label.includes(word));
+      });
+      status.textContent = results.length === 0 ? (state.categories.size
+        ? "Aucun résultat dans les catégories sélectionnées." : "Aucun événement trouvé.") : results.length === 1
+        ? "1 événement trouvé" : results.length > 40 ? "40 événements affichés sur " + results.length : results.length + " événements trouvés";
+      for (const item of results.slice(0, 40)) {
+        const start = itemStart(item);
+        const date = dateFormat.format(start) + (item.all_day ? " · Toute la journée" : " · " + fmtTime(start));
+        const row = h("button", { type: "button", class: "hq-cal-search-result " + catClass(item) }, [
+          h("strong", { text: item.title || "Sans titre" }),
+          h("span", { text: date + (item.location ? " · " + item.location : "") }),
+        ]);
+        row.addEventListener("click", () => {
+          root.hidden = true;
+          closeSheets();
+          openDetail(item);
+        });
+        rows.appendChild(row);
+      }
+    }
+
+    async function load() {
+      status.textContent = "Chargement…";
+      rows.textContent = "";
+      try {
+        const data = await api("/api/calendar?from=" + dateKey(first) + "&to=" + dateKey(last));
+        if (root.hidden || !card.isConnected) return;
+        events = (data.items || []).filter(item => !item.read_only && itemStart(item)).sort((a, b) =>
+          Math.abs(itemStart(a) - anchor) - Math.abs(itemStart(b) - anchor));
+        loaded = true;
+        paint();
+      } catch (error) {
+        if (root.hidden || !card.isConnected) return;
+        status.textContent = error?.message || "Recherche indisponible.";
+        const retry = h("button", { type: "button", class: "secondary", text: "Réessayer" });
+        retry.addEventListener("click", load);
+        rows.appendChild(retry);
+      }
+    }
+
+    card.append(
+      h("h3", { id: "hq-cal-search-title", text: "Rechercher un événement" }), input,
+      h("p", { id: "hq-cal-search-range", class: "hint", text: "Du " + dateFormat.format(first) + " au " + dateFormat.format(addLocalDays(last, -1)) }),
+      status, rows, close
+    );
+    close.addEventListener("click", closeSheets);
+    input.addEventListener("input", paint);
+    input.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown" || event.key === "Enter") {
+        const result = rows.querySelector(".hq-cal-search-result");
+        if (!result) return;
+        event.preventDefault();
+        if (event.key === "Enter") result.click();
+        else result.focus();
+      }
+    });
+    root.appendChild(card);
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    input.focus({ preventScroll: true });
+    load();
+  }
+
+  /* Give the sheet a short entrance from the direction of the triggering control. */
   function present(card) {
     const rect = card.getBoundingClientRect();
     const recent = lastPoint && Date.now() - lastPoint.t < 1500;
     const ox = recent ? lastPoint.x : rect.left + rect.width / 2;
     const oy = recent ? lastPoint.y : rect.top + rect.height;
-    card.style.setProperty("--dx", Math.round(ox - (rect.left + rect.width / 2)) + "px");
-    card.style.setProperty("--dy", Math.round(oy - (rect.top + rect.height / 2)) + "px");
+    card.style.setProperty("--dx", Math.round(Math.max(-12, Math.min(12, ox - (rect.left + rect.width / 2)))) + "px");
+    card.style.setProperty("--dy", Math.round(Math.max(-16, Math.min(16, oy - (rect.top + rect.height / 2)))) + "px");
     card.classList.add("is-morph");
   }
 
@@ -1685,16 +2482,20 @@
   function quickDraft(text) {
     const parser = window.HQCalendarQuick;
     if (!parser) return null;
-    return parser.parse(text, serverNow() || new Date(), state.anchor || todayLocal());
+    const draft = parser.parse(text, serverNow() || new Date(), state.anchor || todayLocal());
+    if (draft) draft.category = categoryKey(draft);
+    return draft;
   }
 
   function paintQuick(keepGhost) {
     const input = document.getElementById("hq-cal-quick-input");
     const preview = document.getElementById("hq-cal-quick-preview");
     const more = document.getElementById("hq-cal-quick-more");
+    const submit = document.getElementById("hq-cal-quick-submit");
     if (!input || !preview) return;
     const text = input.value.trim();
     const draft = text ? quickDraft(text) : null;
+    if (submit) submit.disabled = !draft || input.form.classList.contains("is-saving");
     preview.textContent = "";
     preview.hidden = !text;
     if (more) more.hidden = !text;
@@ -1706,7 +2507,7 @@
       return;
     }
     const day = parseLocalDateKey(draft.start.slice(0, 10));
-    const cat = CATS.find((row) => row[0] === draft.category);
+    const cat = categoryRows.find((row) => row[0] === draft.category);
     const when = draft.all_day ? "Journée" : draft.start.slice(11, 16) + "–" + draft.end.slice(11, 16);
     preview.appendChild(h("span", { class: "hq-cal-quick-chip cat-" + draft.category }, [
       h("strong", { text: draft.title }),
@@ -1787,7 +2588,7 @@
     const input = document.getElementById("hq-cal-quick-input");
     if (!box || !input) return;
     const rows = ((state.data && state.data.recent) || []).slice(0, 6);
-    box.hidden = !!input.value.trim() || !rows.length;
+    box.hidden = !!input.value.trim() || !rows.length || !input.form.contains(document.activeElement);
     const sig = JSON.stringify(rows);
     if (box.dataset.sig === sig) return;
     box.dataset.sig = sig;
@@ -1818,32 +2619,35 @@
     });
   }
 
-  /* A new change makes the previous Annuler stale (its revision is gone): it leaves at once. */
-  function dismissUndo() {
-    const bar = document.getElementById("hq-cal-undo");
-    clearTimeout(undoTimer);
-    if (bar) {
-      bar.hidden = true;
-      bar.classList.remove("is-in", "is-out");
-    }
+  function offerUndo(label, before, after) {
+    undoHistory.push({ label, before: before ? { ...before } : null, after: after ? { ...after } : null });
+    if (undoHistory.length > UNDO_LIMIT) undoHistory.shift();
+    paintUndoHistory();
+    showUndo();
   }
 
-  /* Every change can be taken back for five seconds: no confirmations, no fear. */
-  function offerUndo(label, undo) {
+  function showUndo() {
     let bar = document.getElementById("hq-cal-undo");
+    clearTimeout(undoTimer);
+    const entry = undoHistory.at(-1);
+    if (!entry) {
+      if (bar) bar.hidden = true;
+      return;
+    }
     if (!bar) {
       bar = h("div", { id: "hq-cal-undo", class: "hq-cal-undo", role: "status", "aria-live": "polite" });
-      bar.hidden = true;
       document.body.appendChild(bar);
     }
-    clearTimeout(undoTimer);
-    bar.textContent = "";
     const button = h("button", { type: "button", class: "hq-cal-undo-btn", text: "Annuler" });
-    bar.appendChild(h("span", { class: "hq-cal-undo-text", text: label }));
-    bar.appendChild(button);
-    bar.appendChild(h("span", { class: "hq-cal-undo-time", "aria-hidden": "true" }));
+    button.disabled = undoBusy;
+    button.addEventListener("click", undoLatest);
+    bar.replaceChildren(h("span", { class: "hq-cal-undo-copy" }, [
+      h("span", { class: "hq-cal-undo-text", text: entry.label + " · " + ((entry.after || entry.before).title || "Sans titre") }),
+      h("span", { class: "hq-cal-undo-when", text: whenText(entry.after || entry.before) }),
+    ]), button, h("span", { class: "hq-cal-undo-time", "aria-hidden": "true" }));
     bar.hidden = false;
     bar.classList.remove("is-in", "is-out");
+    bar.style.setProperty("--hq-cal-undo-duration", UNDO_MS + "ms");
     void bar.offsetWidth;
     bar.classList.add("is-in");
     const hide = () => {
@@ -1851,24 +2655,110 @@
       bar.classList.add("is-out");
       undoTimer = setTimeout(() => { bar.hidden = true; bar.classList.remove("is-in", "is-out"); }, 200);
     };
-    button.addEventListener("click", async () => {
-      hide();
-      try {
-        await undo();
-        chime("undo");
-        buzz(8);
-      } catch (err) {
-        if (typeof toast === "function") toast((err && err.message) || "Annulation impossible", "err");
-        refresh("keep");
+    undoTimer = setTimeout(hide, UNDO_MS);
+  }
+
+  async function undoLatest() {
+    const entry = undoHistory.at(-1);
+    if (!entry || undoBusy) return;
+    const { before, after } = entry;
+    const id = (after || before).id;
+    const focused = document.activeElement;
+    const fromHistory = focused?.matches(".hq-cal-history-undo");
+    const fromBar = focused?.matches(".hq-cal-undo-btn");
+    undoBusy = true;
+    for (const button of document.querySelectorAll(".hq-cal-undo-btn, .hq-cal-history-undo")) button.disabled = true;
+    let restored;
+    try {
+      if (before) {
+        const payload = eventPayload(before, { id: after?.id || "" });
+        restored = (await saveCall(payload, after?.rev || 0)).event;
+      } else await deleteCall(id, after.rev);
+
+      const index = undoHistory.indexOf(entry);
+      const earlier = index < 0 ? [] : undoHistory.slice(0, index);
+      if (index >= 0) undoHistory.splice(index, 1);
+      if (restored) {
+        const sameEvent = earlier.filter(row => (row.after || row.before).id === id);
+        const previous = sameEvent.at(-1);
+        if (previous?.after?.rev === before.rev) {
+          for (const row of sameEvent) {
+            if (row.before) row.before.id = restored.id;
+            if (row.after) row.after.id = restored.id;
+          }
+          previous.after.rev = restored.rev;
+        } else {
+          // An external edit broke the chain. Older snapshots must not overwrite it.
+          for (const row of sameEvent) undoHistory.splice(undoHistory.indexOf(row), 1);
+        }
       }
-    }, { once: true });
-    undoTimer = setTimeout(hide, 5000);
+      dropEffects.delete(id);
+      chime("undo");
+      buzz(8);
+      await landOn(restored);
+    } catch (err) {
+      if (err?.status === 409 || err?.message === "Événement introuvable") {
+        for (let i = undoHistory.length - 1; i >= 0; i -= 1) {
+          if ((undoHistory[i].after || undoHistory[i].before).id === id) undoHistory.splice(i, 1);
+        }
+      }
+      if (typeof toast === "function") toast(err?.message || "Annulation impossible", "err");
+      refresh("keep");
+    } finally {
+      undoBusy = false;
+      paintUndoHistory();
+      showUndo();
+      if (document.activeElement === document.body || document.activeElement === focused) {
+        if (fromHistory) {
+          const history = document.querySelector("#hq-cal-history:not([hidden]):not(.is-closing)");
+          (history?.querySelector(".hq-cal-history-undo") || history?.querySelector(".hq-cal-picker > button"))?.focus({ preventScroll: true });
+        } else if (fromBar) document.querySelector("#hq-cal-undo:not([hidden]) .hq-cal-undo-btn")?.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  function openUndoHistory() {
+    const root = sheet("hq-cal-history");
+    const card = h("div", { class: "hq-sheet-card hq-cal-picker", role: "dialog", "aria-modal": "true",
+      "aria-labelledby": "hq-cal-history-title", tabindex: "-1" });
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    close.addEventListener("click", closeSheets);
+    card.append(h("h3", { id: "hq-cal-history-title", text: "Historique des modifications" }),
+      h("div", { class: "hq-cal-history-content" }), close);
+    root.appendChild(card);
+    paintUndoHistory();
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus({ preventScroll: true });
+  }
+
+  function paintUndoHistory() {
+    const content = document.querySelector("#hq-cal-history:not([hidden]) .hq-cal-history-content");
+    if (!content) return;
+    const hadFocus = content.contains(document.activeElement);
+    if (!undoHistory.length) {
+      content.replaceChildren(h("p", { class: "hint", text: "Aucune modification à annuler." }));
+      if (hadFocus) content.parentElement.querySelector("button")?.focus({ preventScroll: true });
+      return;
+    }
+    const list = h("ol", { class: "hq-cal-history-list" });
+    [...undoHistory].reverse().forEach(({ label, before, after }) => {
+      const event = after || before;
+      list.appendChild(h("li", {}, [h("strong", { text: label + " · " + event.title }),
+        h("span", { class: "hint", text: whenText(event) })]));
+    });
+    const undo = h("button", { type: "button", class: "hq-cal-history-undo", text: "Annuler la dernière modification" });
+    undo.disabled = undoBusy;
+    undo.addEventListener("click", undoLatest);
+    content.replaceChildren(list, undo);
+    if (hadFocus && !undo.disabled) undo.focus({ preventScroll: true });
   }
 
   /* Tick an event off (or back): the check bursts, the day's ring fills. */
   async function toggleDone(item) {
     if (!item || item.read_only) return;
-    dismissUndo();
+    const original = { ...item };
     const before = !!item.done;
     item.done = !before;
     state.burst = item.done ? item.id : "";
@@ -1878,7 +2768,8 @@
       buzz(14);
     }
     try {
-      await saveCall(eventPayload(item), item.rev);
+      const saved = await saveCall(eventPayload(item), item.rev);
+      if (saved?.event) offerUndo(item.done ? "Marqué comme fait" : "Marqué à faire", original, saved.event);
       refresh("keep");
     } catch (err) {
       item.done = before;
@@ -1895,7 +2786,7 @@
       all_day: !!item.all_day,
       start: item.start,
       end: item.end,
-      category: item.category || "other",
+      category: categoryKey(item),
       notes: item.notes || "",
       location: item.location || "",
       scene_id: item.scene_id || "",
@@ -1909,19 +2800,21 @@
   }
 
   async function quickSave(form) {
+    if (form.classList.contains("is-saving")) return;
     const input = document.getElementById("hq-cal-quick-input");
-    const draft = quickDraft(input.value.trim());
+    const text = input.value;
+    const draft = quickDraft(text.trim());
     if (!draft) {
       shake(form);
       input.focus();
       return;
     }
-    dismissUndo();
     form.classList.add("is-saving");
+    document.getElementById("hq-cal-quick-submit").disabled = true;
     if (preview.ghost) preview.ghost.classList.add("is-solid");
     try {
       const saved = await saveCall(eventPayload(draft), 0);
-      input.value = "";
+      if (input.value === text) input.value = "";
       paintQuick(true); // the solid ghost stays until the saved event lands in its place
       form.classList.remove("is-done");
       void form.offsetWidth; // restart the check animation
@@ -1930,7 +2823,7 @@
       buzz(10);
       chime("save");
       const ev = saved && saved.event;
-      if (ev) offerUndo("Ajouté · " + ev.title, async () => { await deleteCall(ev.id, ev.rev); refresh("keep"); });
+      if (ev) offerUndo("Ajouté", null, ev);
       landOn(ev);
     } catch (err) {
       shake(form);
@@ -1938,6 +2831,7 @@
       if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
     } finally {
       form.classList.remove("is-saving");
+      document.getElementById("hq-cal-quick-submit").disabled = !quickDraft(input.value.trim());
     }
   }
 
@@ -1950,11 +2844,14 @@
   }
 
   /* Built once, outside the re-rendered grid, so typing survives every refresh. */
+  let quickForm = null;
+
   function mountQuick(root) {
     if (document.getElementById("hq-cal-quick")) return;
     const form = h("form", { class: "hq-cal-quick", id: "hq-cal-quick", autocomplete: "off" });
     const row = h("div", { class: "hq-cal-quick-row" });
-    row.appendChild(h("span", { class: "hq-cal-quick-plus", "aria-hidden": "true" }));
+    row.appendChild(h("button", { type: "submit", id: "hq-cal-quick-submit", class: "hq-cal-quick-plus",
+      "aria-label": "Enregistrer la saisie rapide", disabled: "disabled" }));
     row.appendChild(h("input", { id: "hq-cal-quick-input", type: "text", maxlength: "160", enterkeyhint: "done", autocapitalize: "sentences",
       spellcheck: "false", "aria-label": "Ajouter un événement",
       placeholder: "Ajouter… « Dentiste demain 14h »", "aria-describedby": "hq-cal-quick-preview" }));
@@ -1968,7 +2865,8 @@
     const recent = h("div", { class: "hq-cal-quick-recent", id: "hq-cal-quick-recent", role: "group", "aria-label": "Titres récents" });
     recent.hidden = true;
     form.appendChild(recent);
-    root.parentNode.insertBefore(form, root);
+    quickForm = form; // render() puts it back after the toolbar, before the grid
+    root.appendChild(form);
     recent.addEventListener("click", (ev) => {
       const chip = ev.target.closest("[data-quick]");
       if (!chip) return;
@@ -1980,6 +2878,8 @@
     });
     const input = form.querySelector("input");
     input.addEventListener("input", () => paintQuick());
+    form.addEventListener("focusin", paintRecent);
+    form.addEventListener("focusout", () => requestAnimationFrame(paintRecent));
     input.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && input.value) {
         ev.stopPropagation();
@@ -1993,9 +2893,7 @@
     });
     more.addEventListener("click", () => {
       const draft = quickDraft(input.value.trim()) || blankDraft(state.anchor, 9);
-      openEditor(Object.assign(blankDraft(state.anchor, 9), draft));
-      input.value = "";
-      paintQuick();
+      openEditor(Object.assign(blankDraft(state.anchor, 9), draft), input.value);
     });
   }
 
@@ -2059,7 +2957,10 @@
         }
       });
     }
-    if (drag && drag.ghost) drag.ghost.classList.toggle("is-clash", hit);
+    if (drag && drag.ghost) {
+      drag.clash = hit;
+      drag.ghost.classList.toggle("is-clash", hit);
+    }
   }
 
   function minuteIn(col, clientY) {
@@ -2101,6 +3002,7 @@
 
   function dragUpdate(x, y) {
     dragStep(x, y);
+    updateDragReadout(x, y);
     const key = drag.range ? drag.range.join("-") + (drag.target ? drag.target.dataset.colDay : "") : "";
     if (key && key !== drag.lastKey) {
       if (drag.lastKey) {
@@ -2126,6 +3028,53 @@
       drag.px = x;
       drag.py = y;
     }
+  }
+
+  function updateDragReadout(x, y) {
+    if (!drag.range || !drag.target) return;
+    const day = parseLocalDateKey(drag.target.dataset.colDay);
+    const [start, end] = drag.range;
+    const valid = !!colAt(x, y);
+    const label = drag.mode === "create" ? "Nouvel événement" : drag.mode === "resize" ? "Nouvelle durée" : "Nouvel horaire";
+    const title = valid ? label + " · " + fmtShort(day) + " · " + hhmm(start) + "–" + hhmm(end) : "Relâche ici pour annuler";
+    const hint = valid && drag.clash ? "Chevauchement avec un autre événement" : valid ? "Relâche pour appliquer" : "";
+    if (drag.readout.firstChild.textContent !== title) drag.readout.firstChild.textContent = title;
+    if (drag.readout.lastChild.textContent !== hint) drag.readout.lastChild.textContent = hint;
+    drag.readout.classList.toggle("is-clash", valid && drag.clash);
+  }
+
+  function scheduleDragScroll(x, y) {
+    drag.point = { x, y };
+    if (drag.scrollFrame) return;
+    const step = (now) => {
+      if (!drag?.active) return;
+      drag.scrollFrame = 0;
+      const scroll = dayScroll();
+      if (!scroll) return;
+      const point = drag.point;
+      const bounds = scroll.getBoundingClientRect();
+      const top = Math.max(0, bounds.top + (scroll.querySelector(".hq-cal-week-top")?.offsetHeight || 0));
+      const nav = window.innerWidth < 900 ? document.querySelector(".bottom-nav")?.getBoundingClientRect() : null;
+      const bottom = Math.min(nav?.height ? nav.top : window.innerHeight, bounds.bottom);
+      const inside = point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top - 8 && point.y <= bottom + 8;
+      const speed = !inside ? 0 : point.y < top + 32 ? -7 : point.y > bottom - 32 ? 7 : 0;
+      if (speed !== drag.scrollSpeed) {
+        drag.scrollSpeed = speed;
+        drag.scrollSince = now;
+      }
+      if (!speed) return;
+      if (now - drag.scrollSince < 200) {
+        drag.scrollFrame = requestAnimationFrame(step);
+        return;
+      }
+      const before = scroll.scrollTop;
+      scroll.scrollTop += speed;
+      if (scroll.scrollTop !== before) {
+        dragUpdate(point.x, point.y);
+        drag.scrollFrame = requestAnimationFrame(step);
+      }
+    };
+    drag.scrollFrame = requestAnimationFrame(step);
   }
 
   function dragStep(x, y) {
@@ -2156,8 +3105,9 @@
       ghostAt(col, raw, raw + dur, drag.item.title, drag.item.category, drag.range);
       markClash(col, a, a + dur, drag.item.id);
     } else {
-      let b = Math.max(drag.startMin + SNAP_MIN, minuteIn(drag.col, y));
-      const pull = magnetFor(drag.col, drag.startMin, minuteRaw(drag.col, y), drag.item.id, true);
+      const rawEnd = minuteRaw(drag.col, y) - drag.grabOffset;
+      let b = Math.min(1440, Math.max(drag.startMin + SNAP_MIN, Math.round(rawEnd / SNAP_MIN) * SNAP_MIN));
+      const pull = magnetFor(drag.col, drag.startMin, rawEnd, drag.item.id, true);
       if (pull && pull.edge > drag.startMin) {
         b = Math.round(pull.edge);
         drag.magnet = pull.edge;
@@ -2173,6 +3123,8 @@
     drag.active = true;
     document.getElementById("hq-cal-app").classList.add("is-dragging");
     if (drag.source) drag.source.classList.add("is-lifted");
+    drag.readout = h("div", { class: "hq-cal-drag-readout", role: "status" }, [h("strong", {}), h("span", {})]);
+    document.body.appendChild(drag.readout);
     buzz(12);
     chime("lift");
     dragUpdate(x, y);
@@ -2182,6 +3134,9 @@
     const finished = drag;
     drag = null;
     clearTimeout(finished.timer);
+    clearTimeout(finished.tiltTimer);
+    if (finished.scrollFrame) cancelAnimationFrame(finished.scrollFrame);
+    finished.readout?.remove();
     const root = document.getElementById("hq-cal-app");
     if (root) root.classList.remove("is-dragging");
     if (finished.source) finished.source.classList.remove("is-lifted");
@@ -2192,6 +3147,7 @@
       return;
     }
     suppressClick();
+    const from = commit ? finished.ghost?.getBoundingClientRect() : null;
     if (finished.ghost) finished.ghost.remove();
     if (finished.foot) finished.foot.remove();
     if (root) root.querySelectorAll(".hq-cal-event.is-clash").forEach((el) => el.classList.remove("is-clash"));
@@ -2216,18 +3172,18 @@
       if (pending) render();
       return;
     }
-    commitMove(finished.item, startKey, endKey, finished.mode === "resize" ? "Durée changée" : "Déplacé");
+    commitMove(finished.item, startKey, endKey, finished.mode === "resize" ? "Durée changée" : "Déplacé", from);
   }
 
-  async function commitMove(item, startKey, endKey, label) {
-    dismissUndo();
+  async function commitMove(item, startKey, endKey, label, from) {
+    if (pendingMoves.has(item.id)) return;
+    pendingMoves.set(item.id, { start: startKey, end: endKey, rev: item.rev });
     const before = { start: item.start, end: item.end };
     const snapshot = Object.assign({}, item);
     const payload = eventPayload(item, { start: startKey, end: endKey });
     item.start = startKey; // show it in place at once; the server answer confirms it
     item.end = endKey;
-    state.landed = item.id;
-    state.dropped = true;
+    dropEffects.set(item.id, { day: startKey.slice(0, 10), from, started: performance.now() });
     renderKeep();
     chime("drop");
     try {
@@ -2235,19 +3191,19 @@
       buzz(10);
       const ev = saved && saved.event;
       if (ev) {
-        offerUndo((label || "Déplacé") + " · " + (ev.title || ""), async () => {
-          const back = await saveCall(eventPayload(snapshot, before), ev.rev);
-          state.landed = back && back.event ? back.event.id : "";
-          refresh("keep");
-        });
+        Object.assign(findItem(item.id) || item, ev);
+        offerUndo(label || "Déplacé", snapshot, ev);
       }
       refresh("keep");
     } catch (err) {
-      item.start = before.start;
-      item.end = before.end;
+      dropEffects.delete(item.id);
+      const current = findItem(item.id);
+      if (current && current.rev === item.rev) Object.assign(current, before);
       renderKeep();
       if (typeof toast === "function") toast((err && err.message) || "Déplacement impossible", "err");
       refresh("keep");
+    } finally {
+      pendingMoves.delete(item.id);
     }
   }
 
@@ -2262,14 +3218,14 @@
       if (eventBtn) {
         const item = findItem(eventBtn.dataset.id);
         const col = eventBtn.closest("[data-col-day]");
-        if (!item || !col || !movable(item)) return;
+        if (!item || !col || !movable(item) || pendingMoves.has(item.id)) return;
         const startDate = itemStart(item);
         const endDate = itemEnd(item);
         const startMin = startDate.getHours() * 60 + startDate.getMinutes();
         const endMin = sameDay(startDate, endDate) ? endDate.getHours() * 60 + endDate.getMinutes() : 1440;
         const resize = !!ev.target.closest("[data-grip='end']");
         next = { mode: resize ? "resize" : "move", item, col, source: eventBtn, startMin, endMin,
-          grabOffset: minuteIn(col, ev.clientY) - startMin };
+          grabOffset: minuteRaw(col, ev.clientY) - (resize ? endMin : startMin) };
       } else if (slot) {
         const col = slot.closest("[data-col-day]");
         if (!col) return;
@@ -2277,7 +3233,9 @@
       }
       if (!next) return;
       drag = Object.assign(next, { id: ev.pointerId, type: ev.pointerType, x0: ev.clientX, y0: ev.clientY, active: false, ghost: null });
-      if (ev.pointerType !== "mouse") {
+      const directGrip = !!ev.target.closest("[data-grip]");
+      drag.directGrip = directGrip;
+      if (ev.pointerType !== "mouse" && !directGrip) {
         // Touch: a press held still turns into a drag; moving first stays a scroll or a swipe.
         drag.timer = setTimeout(() => { if (drag && !drag.active) dragActivate(drag.x0, drag.y0); }, LONG_PRESS);
       }
@@ -2286,14 +3244,20 @@
       if (!drag || ev.pointerId !== drag.id) return;
       const moved = Math.hypot(ev.clientX - drag.x0, ev.clientY - drag.y0);
       if (!drag.active) {
-        if (drag.type === "mouse" && moved > 5) dragActivate(ev.clientX, ev.clientY);
-        else if (drag.type !== "mouse" && moved > 8) dragEnd(false); // it was a scroll
+        if ((drag.type === "mouse" || drag.directGrip) && moved > 5) {
+          dragActivate(ev.clientX, ev.clientY);
+          scheduleDragScroll(ev.clientX, ev.clientY);
+        } else if (drag.type !== "mouse" && moved > 8) dragEnd(false); // it was a scroll
         return;
       }
       dragUpdate(ev.clientX, ev.clientY);
+      scheduleDragScroll(ev.clientX, ev.clientY);
     });
     window.addEventListener("pointerup", (ev) => {
-      if (drag && ev.pointerId === drag.id) dragEnd(true);
+      if (!drag || ev.pointerId !== drag.id) return;
+      const target = !!colAt(ev.clientX, ev.clientY);
+      if (drag.active && target) dragUpdate(ev.clientX, ev.clientY);
+      dragEnd(target);
     });
     window.addEventListener("pointercancel", (ev) => {
       if (drag && ev.pointerId === drag.id) dragEnd(false);
@@ -2325,7 +3289,7 @@
   /* Swipe left / right (touch): the period follows the finger, the next one is named at the edge,
      and letting go springs to it (far enough, or a flick) or back. Vertical moves stay scrolls. */
   function bindSwipe(root) {
-    const SKIP = ".hq-cal-bar, .hq-sheet, .hq-cal-row[data-id]:not(.is-schedule), .hq-cal-nextup, .hq-cal-weekstrip";
+    const SKIP = ".hq-cal-bar, .hq-sheet, .hq-cal-row[data-id]:not(.is-schedule), .hq-cal-nextup, .hq-cal-weekstrip, [data-grip], .hq-cal-timeline-controls";
     const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     function peek(dir) {
       const node = h("div", { class: "hq-cal-peek " + (dir > 0 ? "is-next" : "is-prev"), "aria-hidden": "true" }, [
@@ -2363,7 +3327,6 @@
       if (g.locked) suppressClick();
       const stage = g.stage.isConnected ? g.stage : root.querySelector(".hq-cal-stage") || g.stage;
       if (commitDir) {
-        hintDone();
         chime("swipe");
         if (calm() || !g.locked) {
           clearPeeks();
@@ -2448,7 +3411,6 @@
     const root = document.getElementById("hq-cal-app");
     if (!root) return;
     root.style.setProperty("--hq-zoom", state.zoom.toFixed(3));
-    root.classList.toggle("is-zoomed", state.zoom >= 1.5);
   }
 
   function saveZoom() {
@@ -2595,7 +3557,6 @@
         if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { sc = null; return; }
         if (Math.abs(dx) < 8 || Math.abs(dx) < Math.abs(dy)) return;
         sc.active = true;
-        hintDone();
       }
       const strip = root.querySelector(".hq-cal-weekstrip");
       if (!strip) return;
@@ -2639,6 +3600,7 @@
     root.addEventListener("touchstart", (ev) => {
       pl = null;
       if (ev.touches.length !== 1 || (state.view !== "day" && state.view !== "week")) return;
+      if (ev.target.closest("[data-grip]")) return;
       const scroll = ev.target.closest(".hq-cal-stage .hq-cal-scroll");
       if (!scroll || scroll.scrollTop > 0) return;
       pl = { scroll, x: ev.touches[0].clientX, y: ev.touches[0].clientY, active: false, d: 0, label: null };
@@ -2734,7 +3696,7 @@
     const day = parseLocalDateKey(key);
     if (!day) return null;
     closePeek();
-    const rows = items().filter((item) => overlapsDay(item, day))
+    const rows = visibleItems().filter((item) => overlapsDay(item, day))
       .sort((a, b) => (a.all_day === b.all_day ? String(a.start).localeCompare(String(b.start)) : a.all_day ? -1 : 1));
     const list = h("ul", { class: "hq-cal-peekday-list" });
     rows.slice(0, 8).forEach((item) => {
@@ -2746,7 +3708,7 @@
     if (rows.length > 8) list.appendChild(h("li", { class: "hq-cal-peekday-more", text: "+" + (rows.length - 8) }));
     const card = h("div", { class: "hq-cal-peekday-card" }, [
       h("h3", { text: fmtDay(day) }),
-      rows.length ? list : h("p", { class: "hint", text: "Journée libre" }),
+      rows.length ? list : h("p", { class: "hint", text: state.categories.size ? "Aucun événement dans la sélection" : "Journée libre" }),
       h("p", { class: "hq-cal-peekday-hint", text: "↑ Glisse vers le haut pour ouvrir" }),
     ]);
     const node = h("div", { class: "hq-cal-peekday", role: "dialog", "aria-label": fmtDay(day) }, [card]);
@@ -2772,29 +3734,34 @@
 
   /* The pointerup of a swipe must not also count as a tap on the slot or event under the finger. */
   function suppressClick() {
-    const stop = (e) => {
-      if (e.target && e.target.closest && e.target.closest(".hq-cal-haptic")) return; // the iPhone tap, not a tap
-      e.stopPropagation();
-      e.preventDefault();
+    const clear = () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointerdown", clear, true);
       document.removeEventListener("click", stop, true);
     };
+    const stop = (e) => {
+      if (e.detail === 0 || e.target.closest?.(".hq-cal-haptic")) return;
+      e.stopPropagation();
+      e.preventDefault();
+      clear();
+    };
+    // An intentional new press may follow the gesture immediately, for example to undo it.
+    document.addEventListener("pointerdown", clear, true);
     document.addEventListener("click", stop, true);
-    setTimeout(() => document.removeEventListener("click", stop, true), 400);
+    const timer = setTimeout(clear, 400);
   }
 
   function closeSheets() {
     sheetSeq += 1;
     if (morphBack()) return;
-    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    ["hq-cal-detail", "hq-cal-editor"].forEach((id) => {
+    CALENDAR_SHEETS.forEach((id) => {
       const node = document.getElementById(id);
-      if (!node || node.hidden) return;
+      if (!node || node.hidden || node.classList.contains("is-closing")) return;
       const finish = () => {
         node.hidden = true;
         node.textContent = "";
         node.classList.remove("is-closing", "is-morphing");
       };
-      if (calm) return finish();
       node.classList.add("is-closing"); // shrink away, then hide (reopening cancels this)
       node.closeTimer = setTimeout(finish, 170);
     });
@@ -2802,6 +3769,9 @@
     const opener = sheetOpener;
     sheetOpener = null;
     if (opener && opener.focus && document.contains(opener)) opener.focus();
+    else if (opener?.matches(".hq-cal-options-trigger") && document.body.dataset.view === "calendrier") {
+      document.querySelector(".hq-cal-options-trigger")?.focus({ preventScroll: true });
+    }
   }
 
   function canMorph() {
@@ -2828,6 +3798,7 @@
   }
 
   function openDetail(item, source) {
+    selectEvent(item.id);
     const shape = source && source.closest("#hq-cal-app") ? source.querySelector(".hq-cal-face") || source : null;
     if (!shape || !canMorph()) {
       morphFrom = "";
@@ -2860,17 +3831,30 @@
     card.appendChild(h("p", { class: "hint", text: whenText(item) }));
     if (item.location) card.appendChild(h("p", { text: item.location }));
     if (item.notes) card.appendChild(h("p", { class: "hq-cal-note", text: item.notes }));
-    if (item.read_only) {
+    if (item.read_only && item.source === "icloud") {
+      card.appendChild(h("p", { class: "hint", text: "iCloud · lecture seule" }));
+    } else if (item.read_only) {
       card.appendChild(h("p", { class: "hint", text: "Planification HQ · lecture seule. " + (WHEN[item.when] || "") }));
       card.appendChild(h("button", { type: "button", "data-sheet": "schedules", text: "Ouvrir les horaires" }));
     } else {
-      const cat = CATS.find((row) => row[0] === item.category);
+      const cat = categoryRows.find((row) => row[0] === item.category);
       if (cat) card.appendChild(h("p", { class: "hint", text: cat[1] }));
       if (canCheck(item, liveNow())) {
         card.appendChild(h("button", { type: "button", class: "secondary hq-cal-donebtn", "data-sheet": "done", "data-id": item.id,
           "aria-pressed": item.done ? "true" : "false", text: item.done ? "Fait ✓ — annuler" : "Marquer comme fait" }));
       }
-      card.appendChild(h("button", { type: "button", "data-sheet": "edit", "data-id": item.id, text: "Modifier" }));
+      const editActions = h("div", { class: "hq-cal-detail-actions" });
+      if (itemStart(item) && itemEnd(item)) {
+        editActions.appendChild(h("button", { type: "button", "data-sheet": "schedule", text: "Changer l’horaire" }));
+      }
+      editActions.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "edit", "data-id": item.id, text: "Modifier" }));
+      card.appendChild(editActions);
+      if (itemStart(item) && itemEnd(item)) {
+        card.appendChild(h("div", { class: "hq-cal-detail-actions" }, [
+          h("button", { type: "button", class: "secondary", "data-sheet": "move", text: "Déplacer vers…" }),
+          h("button", { type: "button", class: "secondary", "data-sheet": "duplicate", text: "Dupliquer" }),
+        ]));
+      }
       if (item.scene_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "scene", text: "Lancer la scène" }));
       if (item.action_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "run", "data-id": item.id, "data-target": "action", text: "Lancer l'action" }));
       if (item.device_id) card.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "device", "data-id": item.id, text: "Voir l'appareil" }));
@@ -2923,11 +3907,189 @@
 
   function whenText(item) {
     if (!item.start) return WHEN[item.when] || "Conditionnel";
-    if (item.all_day) return "Journée · " + item.start + " → " + item.end + " (fin exclue)";
     const start = itemStart(item);
     const end = itemEnd(item);
     if (!start || !end) return item.start;
-    return fmtDay(start) + " · " + fmtTime(start) + "–" + fmtTime(end);
+    if (item.all_day) {
+      const last = addLocalDays(end, -1);
+      return "Toute la journée · " + fmtDay(start) + (sameDay(start, last) ? "" : " au " + fmtDay(last));
+    }
+    return fmtDay(start) + " · " + fmtTime(start) + " – " + (sameDay(start, end) ? "" : fmtDay(end) + " · ") + fmtTime(end);
+  }
+
+  function shiftedBounds(item, day) {
+    const original = itemStart(item);
+    const end = itemEnd(item);
+    if (item.all_day) {
+      const utc = value => Date.UTC(value.getFullYear(), value.getMonth(), value.getDate());
+      const days = (utc(end) - utc(original)) / 86400000;
+      return { start: dateKey(day), end: dateKey(addLocalDays(day, days)) };
+    }
+    const start = makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), original.getHours(), original.getMinutes());
+    return { start: minuteKey(start), end: minuteKey(new Date(start.getTime() + (end - original))) };
+  }
+
+  function transferCard(title, item) {
+    morphFrom = "";
+    const root = sheet("hq-cal-transfer");
+    const detail = document.getElementById("hq-cal-detail");
+    if (detail) detail.hidden = true;
+    const card = h("div", { class: "hq-sheet-card hq-cal-picker", role: "dialog", "aria-modal": "true",
+      "aria-labelledby": "hq-cal-transfer-title", tabindex: "-1" }, [
+      h("h3", { id: "hq-cal-transfer-title", text: title }),
+      h("p", { class: "hq-cal-schedule-name", text: item.title || "Sans titre" }),
+    ]);
+    root.appendChild(card);
+    return card;
+  }
+
+  function focusTransfer(card) {
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    card.focus({ preventScroll: true });
+  }
+
+  function openDuplicate(item) {
+    const card = transferCard("Dupliquer l’événement", item);
+    const today = serverToday();
+    const weekday = (itemStart(item).getDay() + 6) % 7;
+    const choices = [
+      ["Demain", addLocalDays(today, 1)],
+      ["La semaine prochaine", addLocalDays(startOfLocalWeek(today), 7 + weekday)],
+    ];
+    for (const [label, day] of choices) {
+      const button = h("button", { type: "button", class: "secondary hq-cal-choice" }, [
+        h("strong", { text: label }), h("span", { text: fmtDay(day) }),
+      ]);
+      button.addEventListener("click", () => openEditor({
+        title: item.title, location: item.location, notes: item.notes, category: item.category,
+        all_day: item.all_day, ...shiftedBounds(item, day),
+      }));
+      card.appendChild(button);
+    }
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    close.addEventListener("click", closeSheets);
+    card.appendChild(close);
+    focusTransfer(card);
+  }
+
+  function openMove(item) {
+    const card = transferCard("Déplacer vers une autre date", item);
+    const start = itemStart(item);
+    const duration = (itemEnd(item) - start) / 60000;
+    const today = serverToday();
+    const date = h("input", { type: "date", id: "hq-cal-move-date",
+      value: dateKey(addLocalDays(start > today ? start : today, 1)) });
+    const status = h("p", { class: "hint", role: "status" });
+    const choices = h("div", { class: "hq-cal-free-slot-list", role: "group", "aria-label": "Créneaux" });
+    const preview = h("p", { class: "hq-cal-move-preview", role: "status", hidden: true });
+    const error = h("p", { class: "hq-cal-editor-error", role: "alert" });
+    const confirm = h("button", { type: "button", text: "Confirmer le déplacement", disabled: true });
+    const close = h("button", { type: "button", class: "secondary", text: "Fermer" });
+    let generation = 0;
+    let selected = null;
+    let requestedDate = "";
+
+    function choice(label, bounds, overlaps = false) {
+      const button = h("button", { type: "button", class: "secondary hq-cal-choice", "aria-pressed": "false", text: label });
+      button.addEventListener("click", () => {
+        selected = bounds;
+        const unchanged = bounds.start === item.start && bounds.end === item.end;
+        for (const candidate of choices.querySelectorAll("button")) {
+          candidate.setAttribute("aria-pressed", String(candidate === button));
+        }
+        preview.hidden = false;
+        preview.textContent = whenText({ ...item, ...bounds }) + (unchanged ? " · Horaire actuel."
+          : overlaps ? " · Chevauche un autre événement." : "");
+        confirm.disabled = unchanged;
+        error.textContent = "";
+      });
+      choices.appendChild(button);
+      return button;
+    }
+
+    async function load() {
+      const token = ++generation;
+      requestedDate = date.value;
+      const day = parseLocalDateKey(date.value);
+      selected = null;
+      confirm.disabled = true;
+      preview.hidden = true;
+      choices.replaceChildren();
+      error.textContent = "";
+      if (!day) {
+        status.textContent = "Choisis une date.";
+        return;
+      }
+      const shifted = shiftedBounds(item, day);
+      if (item.all_day) {
+        status.textContent = "";
+        choice("Garder la durée", shifted).click();
+        return;
+      }
+      if (duration > 14 * 60) {
+        status.textContent = "L’événement dure plus que la plage de recherche de 8 h à 22 h.";
+        choice("Garder l’heure · " + fmtTime(itemStart({ ...item, ...shifted })), shifted).click();
+        return;
+      }
+      status.textContent = "Recherche des créneaux…";
+      const last = itemEnd({ ...item, ...shifted });
+      const queryEnd = dateKey(addLocalDays(last, 1));
+      try {
+        const query = new URLSearchParams({ from: dateKey(day), to: queryEnd });
+        const data = await api("/api/calendar?" + query);
+        if (token !== generation || !card.isConnected || card.parentElement.hidden) return;
+        const events = data.items || [];
+        const slots = freeSlots(day, duration, events, item.id);
+        status.textContent = slots.length ? "Choisis un créneau pour voir le nouvel horaire."
+          : "Aucun créneau de cette durée entre 8 h et 22 h.";
+        for (const time of slots) {
+          const end = new Date(time.getTime() + duration * 60000);
+          choice(fmtTime(time) + " – " + fmtTime(end), { start: minuteKey(time), end: minuteKey(end) });
+        }
+        if (!slots.some(time => minuteKey(time) === shifted.start)) {
+          const from = itemStart({ ...item, ...shifted });
+          const conflict = events.some(event => event.id !== item.id && !event.all_day && itemStart(event) < last && itemEnd(event) > from);
+          choice("Garder l’heure · " + fmtTime(from), shifted, conflict);
+        }
+      } catch (err) {
+        if (token !== generation || !card.isConnected || card.parentElement.hidden) return;
+        status.textContent = err?.message || "Créneaux indisponibles.";
+        const retry = h("button", { type: "button", class: "secondary", text: "Réessayer" });
+        retry.addEventListener("click", load);
+        choices.appendChild(retry);
+      }
+    }
+
+    const dateChanged = () => { if (date.value !== requestedDate) load(); };
+    date.addEventListener("input", dateChanged);
+    date.addEventListener("change", dateChanged);
+    close.addEventListener("click", closeSheets);
+    confirm.addEventListener("click", async () => {
+      if (!selected || confirm.disabled) return;
+      confirm.disabled = true;
+      date.disabled = true;
+      choices.inert = true;
+      try {
+        const saved = (await saveCall(eventPayload(item, selected), item.rev)).event;
+        if (card.isConnected && !card.parentElement.classList.contains("is-closing")) closeSheets();
+        offerUndo("Déplacé", item, saved);
+        buzz(10);
+        chime("save");
+        await landOn(saved);
+      } catch (err) {
+        error.textContent = err?.message || "Déplacement impossible.";
+      } finally {
+        confirm.disabled = false;
+        date.disabled = false;
+        choices.inert = false;
+      }
+    });
+    card.append(field("Date de destination", date), status, choices, preview, error,
+      h("div", { class: "hq-cal-picker-actions" }, [confirm, close]));
+    focusTransfer(card);
+    load();
   }
 
   function onSheetClick(ev, item) {
@@ -2936,6 +4098,9 @@
     const kind = button.dataset.sheet;
     if (kind === "close") closeSheets();
     else if (kind === "edit") openEditor(item);
+    else if (kind === "schedule") openEditor(item, "", "schedule");
+    else if (kind === "move") openMove(item);
+    else if (kind === "duplicate") openDuplicate(item);
     else if (kind === "delete") removeEvent(item);
     else if (kind === "done") {
       closeSheets();
@@ -2992,11 +4157,8 @@
     if (form) form.scrollIntoView({ block: "start" });
   }
 
-  /* No "are you sure?": it goes at once, and Annuler brings it back for five seconds. */
   async function removeEvent(item, quiet) {
-    dismissUndo();
-    const restore = eventPayload(item);
-    delete restore.id;
+    const original = { ...item };
     try {
       await deleteCall(item.id, item.rev);
       closeSheets();
@@ -3004,10 +4166,7 @@
         chime("delete");
         buzz(10);
       }
-      offerUndo("Supprimé · " + (item.title || "Sans titre"), async () => {
-        const back = await saveCall(restore, 0);
-        landOn(back && back.event);
-      });
+      offerUndo("Supprimé", original, null);
       refresh("keep");
     } catch (err) {
       if (typeof toast === "function") toast((err && err.message) || "Suppression impossible", "err");
@@ -3017,18 +4176,30 @@
 
   /* The editor shows what most events need (title, when, category, place); notes, scene, action,
      device and reminders wait under "Plus d'options". Duration chips set the end in one tap. */
-  function openEditor(item) {
+  function openEditor(item, quickText = "", mode = "full") {
+    const scheduleOnly = mode === "schedule";
     morphFrom = ""; // the editor closes the ordinary way
     const original = Object.assign({}, item); // what Annuler goes back to
     const root = sheet("hq-cal-editor");
+    for (const id of ["hq-cal-detail", "hq-cal-free-slots", "hq-cal-transfer"]) {
+      const source = document.getElementById(id);
+      if (source) source.hidden = true;
+    }
     const card = h("form", { class: "hq-sheet-card hq-cal-editor", role: "dialog", "aria-modal": "true", "aria-labelledby": "hq-cal-editor-title" });
-    card.appendChild(h("h3", { id: "hq-cal-editor-title", text: item.id ? "Modifier" : "Nouvel événement" }));
-    card.appendChild(h("input", { id: "hq-cal-title", class: "hq-cal-title-input", name: "title", maxlength: "120", required: "required",
-      placeholder: "Titre", "aria-label": "Titre", autocomplete: "off", value: item.title || "" }));
+    const heading = scheduleOnly ? "Changer l’horaire" : item.id ? "Modifier" : "Nouvel événement";
+    card.appendChild(h("h3", { id: "hq-cal-editor-title", text: heading }));
+    const title = h("input", { id: "hq-cal-title", class: "hq-cal-title-input", name: "title", maxlength: "120", required: "required",
+      placeholder: "Titre", "aria-label": "Titre", autocomplete: "off", value: item.title || "" });
+    card.appendChild(scheduleOnly ? h("p", { class: "hq-cal-schedule-name", text: item.title || "Sans titre" }) : title);
     const allDay = h("input", { id: "cal-all-day", type: "checkbox" });
     allDay.checked = !!item.all_day;
     const start = h("input", { id: "cal-start", required: "required", "aria-label": "Début" });
     const end = h("input", { id: "cal-end", required: "required", "aria-label": "Fin" });
+    const startField = field("Début", start);
+    const endField = field("Fin", end);
+    let previousStart = null;
+    let hours = ["09:00", "10:00"];
+    let endsAtMidnight = false;
     const durations = h("div", { class: "hq-cal-durations", role: "group", "aria-label": "Durée" });
     [[30, "30 min"], [60, "1 h"], [90, "1 h 30"], [120, "2 h"]].forEach(([mins, label]) => {
       durations.appendChild(h("button", { type: "button", class: "hq-cal-chipbtn", "data-mins": String(mins), text: label }));
@@ -3040,40 +4211,54 @@
       durations.querySelectorAll("button").forEach((btn) => btn.setAttribute("aria-pressed", Number(btn.dataset.mins) === mins ? "true" : "false"));
       durations.hidden = allDay.checked;
     }
-    function syncTypes() {
+    function setBounds(first, last) {
       const day = allDay.checked;
       start.type = day ? "date" : "datetime-local";
       end.type = day ? "date" : "datetime-local";
-      start.value = day ? String(item.start || "").slice(0, 10) : toLocalInput(item.start, false);
-      end.value = day ? String(item.end || "").slice(0, 10) : toLocalInput(item.end, false);
+      start.value = first;
+      end.value = last;
+      startField.querySelector("label").textContent = day ? "Premier jour" : "Début";
+      endField.querySelector("label").textContent = day ? "Dernier jour" : "Fin";
+      start.setAttribute("aria-label", day ? "Premier jour" : "Début");
+      end.setAttribute("aria-label", day ? "Dernier jour" : "Fin");
+      previousStart = parseLocalDateTime(first);
       markDuration();
     }
     allDay.addEventListener("change", () => {
-      item.all_day = allDay.checked;
       if (allDay.checked) {
-        item.start = String(start.value || item.start || "").slice(0, 10);
-        const endDay = parseLocalDateKey(String(end.value || "").slice(0, 10)) || parseLocalDateKey(item.start);
-        item.end = endDay ? dateKey(addLocalDays(endDay, 1)) : item.end;
+        const first = parseLocalDateTime(start.value);
+        const last = parseLocalDateTime(end.value);
+        if (first && last) hours = [minuteKey(first).slice(11), minuteKey(last).slice(11)];
+        endsAtMidnight = !!(first && last && last > first && hours[1] === "00:00");
+        const firstDay = dateKey(first || state.anchor);
+        const lastDay = last && first && last > first ? dateKey(new Date(last.getTime() - 1)) : firstDay;
+        setBounds(firstDay, lastDay);
       } else {
-        const day = parseLocalDateKey(String(start.value || "").slice(0, 10)) || state.anchor;
-        item.start = minuteKey(makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), 9, 0));
-        item.end = minuteKey(makeLocalDate(day.getFullYear(), day.getMonth() + 1, day.getDate(), 10, 0));
+        const firstDay = parseLocalDateKey(start.value) || state.anchor || serverToday();
+        const first = parseLocalDateTime(dateKey(firstDay) + "T" + hours[0]);
+        const lastDay = parseLocalDateKey(end.value) || first;
+        const last = parseLocalDateTime(dateKey(endsAtMidnight ? addLocalDays(lastDay, 1) : lastDay) + "T" + hours[1]);
+        setBounds(minuteKey(first), minuteKey(last && last > first ? last : new Date(first.getTime() + 3600000)));
       }
-      syncTypes();
     });
-    start.addEventListener("change", () => {
-      // Moving the start keeps the duration, like every calendar does.
-      const a = parseLocalDateTime(toLocalInput(item.start, false));
-      const b = parseLocalDateTime(toLocalInput(item.end, false));
+    function startChanged() {
+      if (allDay.checked) {
+        if (start.value && (!end.value || end.value < start.value)) end.value = start.value;
+        return;
+      }
       const next = parseLocalDateTime(start.value);
-      if (!allDay.checked && a && b && next) {
-        end.value = toLocalInput(minuteKey(new Date(next.getTime() + (b - a))), false);
-        item.start = minuteKey(next);
-        item.end = minuteKey(new Date(next.getTime() + (b - a)));
+      if (!next) return;
+      const last = parseLocalDateTime(end.value);
+      if (previousStart && last && last > previousStart) {
+        end.value = minuteKey(new Date(next.getTime() + (last - previousStart)));
       }
+      previousStart = next;
       markDuration();
-    });
-    end.addEventListener("change", markDuration);
+    }
+    for (const event of ["input", "change"]) {
+      start.addEventListener(event, startChanged);
+      end.addEventListener(event, markDuration);
+    }
     durations.addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-mins]");
       const a = parseLocalDateTime(start.value);
@@ -3081,21 +4266,46 @@
       end.value = toLocalInput(minuteKey(new Date(a.getTime() + Number(btn.dataset.mins) * 60000)), false);
       markDuration();
     });
-    syncTypes();
-    const when = h("div", { class: "hq-cal-when" });
-    when.appendChild(field("Début", start));
-    when.appendChild(field("Fin", end));
-    card.appendChild(when);
-    card.appendChild(durations);
+    if (allDay.checked) {
+      const exclusive = parseLocalDateKey(item.end);
+      setBounds(item.start, exclusive ? dateKey(addLocalDays(exclusive, -1)) : item.start);
+    } else setBounds(toLocalInput(item.start, false), toLocalInput(item.end, false));
     const allWrap = h("label", { class: "hq-cal-switch" });
     allWrap.appendChild(allDay);
     allWrap.appendChild(h("span", { text: "Toute la journée" }));
-    card.appendChild(allWrap);
-    const category = h("input", { id: "cal-category", type: "hidden", value: item.category || "other" });
+    if (!scheduleOnly) card.appendChild(allWrap);
+    else if (!item.all_day) card.appendChild(h("p", { class: "hint", text: "Si tu changes le début, la durée reste la même." }));
+    card.append(h("div", { class: "hq-cal-when" }, [startField, endField]), durations);
+    const category = scheduleOnly ? null : appendEditorDetails(card, item);
+    const error = h("p", { class: "hq-cal-editor-error", role: "alert" });
+    card.appendChild(error);
+    const row = h("div", { class: "hq-cal-sheet-actions" });
+    const submit = h("button", { type: "submit", text: "Enregistrer" });
+    row.appendChild(submit);
+    row.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
+    card.appendChild(row);
+    card.addEventListener("click", (ev) => {
+      if (ev.target.closest("[data-sheet='close']")) closeSheets();
+    });
+    card.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      if (!submit.disabled) saveEditor(item, { card, allDay, start, end, category, original, error, submit, quickText, scheduleOnly });
+    });
+    card.addEventListener("input", () => { error.textContent = ""; });
+    root.appendChild(card);
+    present(card);
+    releaseSheet();
+    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
+    (scheduleOnly ? start : title).focus();
+  }
+
+  function appendEditorDetails(card, item) {
+    const initialCategory = categoryKey(item);
+    const category = h("input", { id: "cal-category", type: "hidden", value: initialCategory });
     const cats = h("div", { class: "hq-cal-cats", role: "radiogroup", "aria-label": "Catégorie" });
-    CATS.forEach(([id, label]) => {
+    categoryRows.forEach(([id, label]) => {
       cats.appendChild(h("button", { type: "button", role: "radio", class: "hq-cal-catbtn cat-" + id, "data-cat": id,
-        "aria-checked": (item.category || "other") === id ? "true" : "false", text: label }));
+        "aria-checked": initialCategory === id ? "true" : "false", text: label }));
     });
     cats.addEventListener("click", (ev) => {
       const btn = ev.target.closest("[data-cat]");
@@ -3103,7 +4313,7 @@
       category.value = btn.dataset.cat;
       cats.querySelectorAll("[data-cat]").forEach((b) => b.setAttribute("aria-checked", b === btn ? "true" : "false"));
     });
-    card.appendChild(cats);
+    card.append(h("span", { class: "hq-cal-field-label", text: "Catégorie" }), cats);
     card.appendChild(category);
     card.appendChild(field("Lieu", h("input", { id: "cal-location", maxlength: "200", value: item.location || "" })));
     const more = h("details", { class: "hq-cal-moreopts" });
@@ -3114,25 +4324,8 @@
     more.appendChild(selectField("Scène", "cal-scene", ((state.data || {}).catalog || {}).scenes, item.scene_id));
     more.appendChild(selectField("Action", "cal-action", ((state.data || {}).catalog || {}).actions, item.action_id));
     more.appendChild(selectField("Appareil (navigation)", "cal-device", ((state.data || {}).catalog || {}).devices, item.device_id));
-    more.appendChild(h("p", { class: "hint", text: "Journée entière : la date de fin est exclue (le lendemain pour un seul jour)." }));
     card.appendChild(more);
-    const row = h("div", { class: "hq-cal-sheet-actions" });
-    row.appendChild(h("button", { type: "submit", text: "Enregistrer" }));
-    row.appendChild(h("button", { type: "button", class: "secondary", "data-sheet": "close", text: "Fermer" }));
-    card.appendChild(row);
-    card.addEventListener("click", (ev) => {
-      if (ev.target.closest("[data-sheet='close']")) closeSheets();
-    });
-    card.addEventListener("submit", (ev) => {
-      ev.preventDefault();
-      saveEditor(item, { allDay, start, end, category, original });
-    });
-    root.appendChild(card);
-    present(card);
-    releaseSheet();
-    sheetRelease = window.hqTrapFocus ? window.hqTrapFocus(card) : null;
-    const title = card.querySelector("#hq-cal-title");
-    if (title) title.focus();
+    return category;
   }
 
   function normalizeBound(value, allDay) {
@@ -3149,7 +4342,7 @@
   }
 
   function field(label, control) {
-    return h("div", { class: "field" }, [h("label", { text: label }), control]);
+    return h("div", { class: "field" }, [h(control.id ? "label" : "span", { for: control.id || null, class: "hq-cal-field-label", text: label }), control]);
   }
 
   function selectField(label, id, rows, current) {
@@ -3173,10 +4366,10 @@
       wrap.appendChild(document.createTextNode(" " + label));
       box.appendChild(wrap);
     });
-    box.addEventListener("change", () => {
+    box.addEventListener("change", event => {
       const checked = box.querySelectorAll("input:checked");
       if (checked.length > 3) {
-        checked[checked.length - 1].checked = false;
+        event.target.checked = false;
         if (typeof toast === "function") toast("Trois rappels maximum", "err");
       }
     });
@@ -3184,60 +4377,68 @@
   }
 
   async function saveEditor(item, refs) {
-    const title = document.getElementById("hq-cal-title");
-    const notes = document.getElementById("cal-notes");
-    const location = document.getElementById("cal-location");
-    const scene = document.getElementById("cal-scene");
-    const action = document.getElementById("cal-action");
-    const device = document.getElementById("cal-device");
-    const reminders = [];
-    document.querySelectorAll(".hq-reminders input:checked").forEach((input) => reminders.push(Number(input.value)));
+    const { card, submit, error } = refs;
+    const value = id => card.querySelector("#" + id).value;
+    const reminders = [...card.querySelectorAll(".hq-reminders input:checked")].map(input => Number(input.value));
     const allDay = refs.allDay.checked;
-    const payload = {
-      title: title ? title.value : "",
+    const parse = allDay ? parseLocalDateKey : parseLocalDateTime;
+    const start = parse(normalizeBound(refs.start.value, allDay));
+    const end = parse(normalizeBound(refs.end.value, allDay));
+    if (!start || !end || (allDay ? end < start : end <= start)) {
+      error.textContent = allDay ? "Le dernier jour doit être le premier jour ou une date ultérieure." : "La fin doit être après le début.";
+      refs.end.focus();
+      return;
+    }
+    const bounds = {
       all_day: allDay,
-      start: normalizeBound(refs.start.value, allDay),
-      end: normalizeBound(refs.end.value, allDay),
+      start: allDay ? dateKey(start) : minuteKey(start),
+      end: allDay ? dateKey(addLocalDays(end, 1)) : minuteKey(end),
+    };
+    const payload = refs.scheduleOnly ? eventPayload(item, bounds) : {
+      ...bounds,
+      title: value("hq-cal-title"),
       category: refs.category.value,
-      notes: notes ? notes.value : "",
-      location: location ? location.value : "",
-      scene_id: scene ? scene.value : "",
-      action_id: action ? action.value : "",
-      device_id: device ? device.value : "",
+      notes: value("cal-notes"),
+      location: value("cal-location"),
+      scene_id: value("cal-scene"),
+      action_id: value("cal-action"),
+      device_id: value("cal-device"),
       reminders_min: reminders,
       done: !!item.done,
     };
     if (item.id) payload.id = item.id;
     if (!payload.title.trim()) {
-      if (typeof toast === "function") toast("Titre requis", "err");
+      error.textContent = "Titre requis.";
+      card.querySelector("#hq-cal-title")?.focus();
       return;
     }
-    dismissUndo();
+    submit.disabled = true;
+    submit.textContent = "Enregistrement…";
+    card.setAttribute("aria-busy", "true");
+    error.textContent = "";
     try {
-      const saved = await busy("Enregistrement…", () => api("/api/calendar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save", expected_rev: item.id ? item.rev : 0, event: payload }),
-      }));
-      closeSheets();
+      const saved = await saveCall(payload, item.id ? item.rev : 0);
+      if (card.isConnected && !card.parentElement.classList.contains("is-closing")) closeSheets();
+      const quick = document.getElementById("hq-cal-quick-input");
+      if (refs.quickText && quick && quick.value === refs.quickText) {
+        quick.value = "";
+        paintQuick();
+      }
       buzz(10);
       chime("save");
       const ev = saved && saved.event;
       const original = refs.original || {};
       if (ev) {
-        offerUndo((original.id ? "Modifié · " : "Ajouté · ") + ev.title, async () => {
-          if (original.id) {
-            const back = await saveCall(eventPayload(original), ev.rev);
-            state.landed = back && back.event ? back.event.id : "";
-          } else {
-            await deleteCall(ev.id, ev.rev);
-          }
-          refresh("keep");
-        });
+        const label = refs.scheduleOnly ? "Horaire modifié" : original.id ? "Modifié" : "Ajouté";
+        offerUndo(label, original.id ? original : null, ev);
       }
       landOn(ev);
     } catch (err) {
-      if (typeof toast === "function") toast((err && err.message) || "Enregistrement impossible", "err");
+      error.textContent = err?.message || "Enregistrement impossible.";
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Enregistrer";
+      card.removeAttribute("aria-busy");
     }
   }
 
@@ -3246,11 +4447,17 @@
       navKey(ev);
       return;
     }
-    const open = ["hq-cal-editor", "hq-cal-detail"].some((id) => {
+    const open = CALENDAR_SHEETS.some((id) => {
       const node = document.getElementById(id);
       return node && !node.hidden;
     });
-    if (!open) return;
+    if (!open) {
+      if (!state.optionsOpen) return;
+      setOptionsOpen(false);
+      document.querySelector("#hq-cal-app .hq-cal-options-trigger")?.focus();
+      ev.stopPropagation();
+      return;
+    }
     ev.stopPropagation();
     closeSheets();
   }
@@ -3268,12 +4475,10 @@
     if (!root) return;
     root.textContent = "";
     const today = (cal && cal.today) || [];
-    if (!today.length) {
-      root.appendChild(h("p", { class: "hint", text: "Rien de prévu aujourd'hui." }));
-    } else {
+    if (today.length) {
       const list = h("ul", { class: "hq-list" });
       today.slice(0, 5).forEach((item) => {
-        const li = h("li", {});
+        const li = h("li", { class: item.category ? "cat-" + item.category : "cat-other" });
         li.appendChild(h("strong", { text: item.title || "Sans titre" }));
         li.appendChild(h("div", { class: "meta", text: homeWhen(item) }));
         list.appendChild(li);
@@ -3298,7 +4503,7 @@
 
   function nextParts(cal) {
     const next = nextOf(cal);
-    if (!next) return { when: "", title: "Rien à venir." };
+    if (!next) return { when: "", title: (cal && cal.today && cal.today.length) ? "" : "Rien de prévu aujourd’hui." };
     const title = next.title || "Sans titre";
     if (next.all_day) {
       const start = parseLocalDateKey(next.start);
@@ -3316,6 +4521,7 @@
     if (!nextLine) return;
     nextLine.textContent = "";
     const parts = nextParts(cal);
+    if (!parts.title) return;
     const next = nextOf(cal);
     if (next) nextLine.appendChild(h("span", { class: "hq-next-label", text: "Prochain" }));
     if (parts.when) {
@@ -3359,6 +4565,8 @@
     try {
       state.zoom = Number(localStorage.getItem("hq_cal_zoom")) || 1;
       state.sound = localStorage.getItem("hq_cal_sound") === "1";
+      const categories = JSON.parse(localStorage.getItem("hq_cal_categories"));
+      if (Array.isArray(categories)) state.categories = new Set(categories.filter(key => typeof key === "string"));
     } catch (_) {}
     setZoom(state.zoom);
     state.anchor = todayLocal();
@@ -3380,6 +4588,9 @@
     if (narrow.addEventListener) narrow.addEventListener("change", onWidth);
     else if (narrow.addListener) narrow.addListener(onWidth);
     document.addEventListener("keydown", onKey);
+    document.addEventListener("click", event => {
+      if (state.optionsOpen && !event.target.closest(".hq-cal-options")) setOptionsOpen(false);
+    });
     const openHome = document.getElementById("hq-cal-open");
     if (openHome) {
       openHome.addEventListener("click", () => {
@@ -3387,7 +4598,7 @@
       });
     }
     window.hqCalendarShow = function () {
-      refresh("snap", true);
+      refresh("start", true);
     };
     // Global search: open the day of an event found in the palette (same as picking that day).
     window.hqCalendarOpenDay = function (key) {
@@ -3398,7 +4609,7 @@
       state.view = "day";
       refresh(sameDay(day, serverToday()) ? "snap" : undefined);
     };
-    if (document.body && document.body.dataset.view === "calendrier") refresh("snap", true);
+    if (document.body && document.body.dataset.view === "calendrier") window.hqCalendarShow();
     setInterval(() => {
       if (document.hidden) return;
       if (!document.body || document.body.dataset.view !== "calendrier") return;

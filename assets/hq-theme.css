@@ -15,6 +15,11 @@
 body{font-family:var(--font);font-feature-settings:"cv11" 1,"ss03" 1;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility}
 /* --accent is not registered as a <color>: code that reads it (canvas drawing, tests) keeps getting the hex it wrote */
 button,input,select,textarea{font-family:inherit}
+/* Use the platform sans on small screens to keep control weights legible in WebKit. */
+@media (max-width:899px){
+  :root{--font:system-ui,-apple-system,"Segoe UI",sans-serif}
+  body{-webkit-font-smoothing:auto}
+}
 h1,h2,h3,.home-greet{font-family:var(--font-display);font-optical-sizing:auto;font-weight:650;letter-spacing:-.012em}
 h1,.home-greet{font-weight:600;letter-spacing:-.02em}
 .home-greet{font-weight:620}
@@ -27,24 +32,28 @@ body:not(.theme-midnight)[data-view="accueil"]{--accent:#ffab70;--accent2:#ffab7
 body:not(.theme-midnight)[data-view="carnet"]{--accent:#f2c46b;--accent2:#f2c46b}
 body:not(.theme-midnight)[data-view="calendrier"]{--accent:#c3a6ff;--accent2:#c3a6ff}
 body:not(.theme-midnight)[data-view="dessiner"]{--accent:#ff9478;--accent2:#ff9478}
-body:not(.theme-midnight)[data-view="forge"]{--accent:#ff7a45;--accent2:#ff7a45}
+/* Forge keeps its indigo beyond the panel: the nav, selection and scrollbars match
+   --forge-accent so the view no longer carries two accents. */
+body:not(.theme-midnight)[data-view="forge"]{--accent:#9aa6ff;--accent2:#9aa6ff}
 body:not(.theme-midnight)[data-view="fichiers"]{--accent:#5fd0f0;--accent2:#5fd0f0}
 body:not(.theme-midnight)[data-view="projets"]{--accent:#7fb0ff;--accent2:#7fb0ff}
 body:not(.theme-midnight)[data-view="inventaire"]{--accent:#a8dc72;--accent2:#a8dc72}
 body:not(.theme-midnight)[data-view="lecteur"]{--accent:#ff7fb8;--accent2:#ff7fb8}
 body:not(.theme-midnight)[data-view="intime"]{--accent:#ff4d8d;--accent2:#ff4d8d}
+body:not(.theme-midnight)[data-view="musique"]{--accent:#c084fc;--accent2:#c084fc}
 body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:#3dffb5;--accent2:#3dffb5}
 @media (prefers-color-scheme: light){
   body:not(.theme-midnight)[data-view="accueil"]{--accent:#a4461b;--accent2:#a4461b}
   body:not(.theme-midnight)[data-view="carnet"]{--accent:#7d5810;--accent2:#7d5810}
   body:not(.theme-midnight)[data-view="calendrier"]{--accent:#6440b0;--accent2:#6440b0}
   body:not(.theme-midnight)[data-view="dessiner"]{--accent:#a63d26;--accent2:#a63d26}
-  body:not(.theme-midnight)[data-view="forge"]{--accent:#a5360f;--accent2:#a5360f}
+  body:not(.theme-midnight)[data-view="forge"]{--accent:#2f3fbe;--accent2:#2f3fbe}
   body:not(.theme-midnight)[data-view="fichiers"]{--accent:#0b6680;--accent2:#0b6680}
   body:not(.theme-midnight)[data-view="projets"]{--accent:#1f4fae;--accent2:#1f4fae}
   body:not(.theme-midnight)[data-view="inventaire"]{--accent:#366b17;--accent2:#366b17}
   body:not(.theme-midnight)[data-view="lecteur"]{--accent:#a12a63;--accent2:#a12a63}
   body:not(.theme-midnight)[data-view="intime"]{--accent:#b01856;--accent2:#b01856}
+  body:not(.theme-midnight)[data-view="musique"]{--accent:#6d28d9;--accent2:#6d28d9}
   body:not(.theme-midnight)[data-view="plus"],body:not(.theme-midnight)[data-view="ops"]{--accent:#08724f;--accent2:#08724f}
 }
 ::selection{background:color-mix(in srgb,var(--accent) 32%,transparent)}
@@ -52,6 +61,9 @@ html{scrollbar-color:color-mix(in srgb,var(--accent) 35%,var(--line)) transparen
 
 /* ---------------------------------------------------------------- the frosted sidebar and its gliding highlight */
 .bottom-nav{background:color-mix(in srgb,var(--panel) 70%,transparent);-webkit-backdrop-filter:blur(22px) saturate(150%);backdrop-filter:blur(22px) saturate(150%)}
+@media (max-width:899px){
+  .bottom-nav{background:color-mix(in srgb,var(--panel) 94%,transparent)}
+}
 @media (min-width:900px){
   .bottom-nav{background:linear-gradient(180deg,color-mix(in srgb,var(--panel) 58%,transparent),color-mix(in srgb,var(--panel) 40%,transparent));
     border-right:1px solid color-mix(in srgb,var(--line) 55%,transparent);box-shadow:1px 0 0 color-mix(in srgb,#fff 4%,transparent)}

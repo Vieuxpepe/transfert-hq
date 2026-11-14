@@ -24,6 +24,21 @@
 .home-clouds{transform:translate(calc(var(--px) * -24px),calc(var(--py) * -6px));opacity:0;transition:opacity 1.5s ease,transform 1.2s cubic-bezier(.2,.8,.2,1)}
 .sky-day .home-clouds{opacity:.55}
 .sky-dawn .home-clouds,.sky-dusk .home-clouds{opacity:.16}
+/* Weather conditions modulation */
+.home-hero.weather-cloudy .home-clouds{opacity:.85}
+.home-hero.weather-partly_cloudy .home-clouds{opacity:.5}
+.home-hero.weather-rain .home-clouds,.home-hero.weather-snow .home-clouds{opacity:.75}
+.home-hero.weather-fog .home-sky{background:radial-gradient(100% 100% at 50% 50%,rgba(200,215,230,.22),transparent 75%)}
+.home-hero.weather-storm .home-sky{background:radial-gradient(100% 100% at 70% 30%,rgba(160,140,220,.25),transparent 70%)}
+.home-precip{position:absolute;inset:0;pointer-events:none;overflow:hidden;opacity:0;transition:opacity 1.2s ease}
+.home-hero.weather-rain .home-precip,.home-hero.weather-snow .home-precip{opacity:1}
+.home-drop-item{position:absolute;top:-20px;opacity:0}
+.home-hero.weather-snow .home-drop-item{width:var(--drop-size,3px);height:var(--drop-size,3px);border-radius:50%;background:#ffffff;box-shadow:0 0 4px rgba(255,255,255,.9)}
+.home-hero.weather-rain .home-drop-item{width:1px;height:14px;border-radius:1px;background:linear-gradient(180deg,transparent,rgba(180,215,255,.75));transform:rotate(15deg)}
+.home-weather{display:inline-flex;align-items:center;gap:6px;font-size:.82rem;font-weight:600;letter-spacing:.02em;color:var(--text);margin:0 0 2px 0}
+.home-weather b{font-weight:800;font-variant-numeric:tabular-nums}
+.home-weather .home-weather-city{color:var(--muted);font-weight:600}
+.home-weather .home-weather-city::before{content:"·";margin-right:6px}
 .home-cloud{position:absolute;left:-30%;width:200px;height:52px;border-radius:999px;transform:scale(var(--s,1));transform-origin:left center;
   background:radial-gradient(60% 90% at 30% 70%,rgba(255,255,255,.9),transparent 70%),radial-gradient(50% 100% at 62% 45%,rgba(255,255,255,.85),transparent 70%),
     radial-gradient(40% 80% at 82% 72%,rgba(255,255,255,.8),transparent 70%);filter:none}
@@ -52,12 +67,20 @@
 }
 
 /* ---------------------------------------------------------------- greeting + clock */
-.home-fx section.home-hero{min-height:170px}
 .home-fx .home-greet{display:block}
+.home-fx .home-hello,.home-fx .home-clock{text-shadow:0 1px 3px rgba(0,0,0,.45),0 0 12px rgba(0,0,0,.22)}
+/* Text-safe band: the sky's clouds fade out behind the greeting instead of running under it. */
+.home-fx .home-hero-head{position:relative}
+.home-fx .home-hero-head::before{content:"";position:absolute;left:-12px;top:-10px;bottom:-10px;width:min(78%,540px);z-index:0;pointer-events:none;border-radius:22px;
+  background:linear-gradient(100deg,color-mix(in srgb,var(--panel) 94%,transparent) 0%,color-mix(in srgb,var(--panel) 72%,transparent) 62%,transparent 100%)}
+.home-fx .home-hello,.home-fx .home-clock,.home-fx .home-status{position:relative;z-index:1}
+@media (prefers-color-scheme: light){
+  .home-fx .home-hello,.home-fx .home-clock{text-shadow:0 1px 2px rgba(255,255,255,.75)}
+}
 .home-ch{display:inline-block;white-space:pre}
 .home-clock{display:flex;flex-direction:column;align-items:flex-end;gap:5px;margin-left:auto;padding-top:2px;
   font-family:Bahnschrift,"DIN Alternate","Roboto Condensed",system-ui,sans-serif;font-variant-numeric:tabular-nums;color:var(--text)}
-.home-clock-face{display:flex;align-items:center;font-size:2.3rem;font-weight:800;line-height:1;letter-spacing:-.02em}
+.home-clock-face{display:flex;align-items:center;font-size:1.25rem;font-weight:700;line-height:1;letter-spacing:-.02em}
 .home-odo{display:inline-block;height:1.2em;overflow:hidden}
 .home-odo-col{display:flex;flex-direction:column;transition:transform .9s cubic-bezier(.2,1.25,.35,1);transition-delay:calc(var(--k,0) * 70ms)}
 .home-odo-d{display:block;height:1.2em;line-height:1.2em;text-align:center}
@@ -66,14 +89,12 @@
 .home-clock-sec i{display:block;height:100%;width:100%;border-radius:inherit;background:linear-gradient(90deg,var(--home-amb,#8cc8ff),var(--accent));transform:scaleX(0);transform-origin:left center;transition:transform 1s linear} /* perf11: scaleX, not width: no layout every frame */
 @media (prefers-reduced-motion:reduce){.home-clock-sec i,.home-odo-col{transition:none}}
 @media (max-width:759.98px){
-  .home-fx section.home-hero{min-height:0}
   .home-orb{left:calc(80% + var(--op,.5) * 14%);top:calc(124px - var(--oh,.6) * 22px);width:40px;height:40px}
   .home-orb.is-moon{width:34px;height:34px}
   .home-orb-rays{inset:-20px!important}
-  .home-clock{order:2;margin-left:auto}
-  .home-clock-face{font-size:1.55rem}
-  .home-fx .home-hello{flex:1 1 calc(100% - 150px);min-width:0}
-  .home-fx .home-status{order:3}
+  .home-fx .home-clock{display:none}
+  .home-fx .home-hello{flex:1 1 100%;min-width:0}
+  .home-fx .home-status{order:3;margin-left:auto}
 }
 
 /* ---------------------------------------------------------------- status + next */
@@ -109,7 +130,6 @@
 .home-fx #home-act-note:hover .home-act-ico svg{transform:rotate(-10deg) translateY(-1px)}
 .home-fx #home-act-event:hover .home-act-ico svg{transform:rotate(8deg) scale(1.08)}
 .home-fx #home-act-file:hover .home-act-ico svg{transform:translateY(-3px)}
-.home-fx #btn-palette:hover .home-act-ico svg{transform:rotate(-14deg) scale(1.1)}
 .home-fx #btn-camera:hover .home-act-ico svg{transform:scale(1.12)}
 
 /* this PC */
@@ -161,7 +181,7 @@
 /* Opacity + scale rather than a brightness filter: re-filtering the orb's wide glow every frame was costly. */
 @keyframes hf-glow{0%,100%{opacity:.9;transform:scale(1)}50%{opacity:1;transform:scale(1.03)}}
 @keyframes hf-shoot{0%{opacity:0;transform:rotate(-24deg) translateX(0)}10%{opacity:1}100%{opacity:0;transform:rotate(-24deg) translateX(260px)}}
-@keyframes hf-letter{from{opacity:0;transform:translateY(.55em) rotate(8deg) scale(1.08)}60%{opacity:.85}to{opacity:1;transform:none}} /* perf11: no blur filter animation */
+@keyframes hf-letter{from{transform:translateY(.55em) rotate(8deg) scale(1.08)}to{transform:none}} /* perf11: no blur filter animation; transform only, so pausing never blanks the greeting */
 @keyframes hf-wave{0%,100%{transform:none}40%{transform:translateY(-.18em)}}
 @keyframes hf-blink{0%,49%{opacity:.8}50%,100%{opacity:.2}}
 @keyframes hf-ping{0%{transform:scale(1);opacity:.55}100%{transform:scale(2.8);opacity:0}}
@@ -176,6 +196,11 @@
 .home-fx .device-tile:not(.is-off) .device-ring::after{content:"";position:absolute;inset:0;border-radius:50%;pointer-events:none;opacity:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--ring,var(--ok)) 45%,transparent)}
 /* perf11: frozen while Accueil is off screen, hidden or scrolled away */
 .hf-paused,.hf-paused *,.hf-paused *::before,.hf-paused *::after{animation-play-state:paused!important}
+/* Frozen effects must never hide reading text: the greeting's letters land in place whatever frame they froze on. */
+.hf-paused .home-ch{opacity:1!important;transform:none!important}
+/* Same for the one-off entrance animations: a frozen frame shows the cards, never their 0% keyframe. */
+.hf-paused .home-hero,.hf-paused .home-actions,.hf-paused .home-col > section,.hf-paused .home-edit-row,
+.hf-paused .fx-in,.hf-paused .fx-new{opacity:1!important;transform:none!important}
 @keyframes hf-flash{0%{opacity:.9}100%{opacity:0}}
 @keyframes hf-shutter{0%,100%{transform:none}30%{transform:scale(.8)}60%{transform:scale(1.15)}}
 @keyframes hf-flip{0%{transform:none}40%{transform:rotateY(70deg) rotate(-6deg)}100%{transform:none}}
@@ -217,7 +242,6 @@
   .home-fx #home-act-note.is-fire .home-act-ico svg{animation:hf-flip .6s ease}
   .home-fx #home-act-event.is-fire .home-act-ico svg{animation:hf-bounce .6s ease}
   .home-fx #home-act-file.is-fire .home-act-ico svg{animation:hf-launch .6s ease}
-  .home-fx #btn-palette.is-fire .home-act-ico svg{animation:hf-scan .7s ease}
   .home-fx #home-act-file:hover .home-act-ico svg{animation:hf-bob 1.2s ease-in-out infinite}
   .home-fx #btn-lock.is-fire .ico svg{animation:hf-shake .5s ease}
   .home-fx #btn-sleep:hover .ico::after,.home-fx #btn-sleep.is-fire .ico::after{animation:hf-z 1.4s ease-out infinite}
@@ -324,16 +348,21 @@ body[data-view="accueil"] .home-fx section.home-hero{background-image:radial-gra
 @keyframes hf-sway{0%,100%{translate:0 0}50%{translate:var(--sway,40px) 0}}
 @keyframes hf-wave-slide{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @keyframes hf-bgtwinkle{0%,100%{opacity:.2}50%{opacity:.6}}
+@keyframes hf-snow-fall{0%{transform:translate3d(0,-20px,0);opacity:0}20%{opacity:.85}85%{opacity:.7}100%{transform:translate3d(40px,260px,0);opacity:0}}
+@keyframes hf-rain-fall{0%{transform:translate3d(0,-20px,0);opacity:0}15%{opacity:.75}90%{opacity:.6}100%{transform:translate3d(-20px,260px,0);opacity:0}}
 @media (prefers-reduced-motion:no-preference){
   .bg-mesh .m2{animation:hf-sun 24s ease-in-out infinite}
   .bg-lights span{animation-name:hf-rise,hf-sway;animation-timing-function:linear,ease-in-out;animation-iteration-count:infinite,infinite}
   .bg-waves{animation:hf-wave-slide 180s linear infinite}
   .bg-stars span.is-moving{animation:hf-bgtwinkle 6s ease-in-out infinite}
+  .home-hero.weather-snow .home-drop-item{animation:hf-snow-fall linear infinite}
+  .home-hero.weather-rain .home-drop-item{animation:hf-rain-fall linear infinite}
 }
 /* Explicit Accueil budgets: full = 8 star accents + 4 lights; lite = 4 star accents; parked/off-view = 0. */
 html[data-hq-motion-tier="lite"] .home-star.is-moving:not(.is-lite),
 html[data-hq-motion-tier="lite"] .bg-stars span.is-moving:not(.is-lite){animation:none!important}
 html[data-hq-motion-tier="lite"] .home-cloud,
+html[data-hq-motion-tier="lite"] .home-drop-item,
 html[data-hq-motion-tier="lite"] .home-aurora span,
 html[data-hq-motion-tier="lite"] .home-orb-rays,
 html[data-hq-motion-tier="lite"] .home-orb-core,
@@ -363,3 +392,8 @@ html[data-hq-motion-tier="parked"] .home-bg *::after{animation-play-state:paused
 @keyframes hq-restart-due{50%{transform:scale(1.5);opacity:.6}}
 .home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])){grid-template-columns:repeat(5,minmax(0,1fr))}
 @media (max-width:420px){.home-v2 .home-pc-row:has(#btn-restart-bridge:not([hidden])) .lbl{font-size:.68rem;letter-spacing:-.01em}}
+
+/* Forge runs an indigo accent; the warm amber/rose bloom behind it made the two
+   vibrate against each other. The sky cools for that view only, so the accent
+   keeps its identity and no other view changes. */
+.home-bg[data-view="forge"]{--bg-a:#584a92;--bg-b:#7c4a63;--bg-c:#251e3d}

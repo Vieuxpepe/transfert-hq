@@ -1,5 +1,5 @@
 """Calendar motion in a browser: moved events glide (FLIP), an event grows into its sheet and back
-(View Transitions), changed words roll, a dragged event leans, shows its landing footprint, clicks onto
+(View Transitions), days transition as one grid, a dragged event leans, shows its landing footprint, clicks onto
 a neighbour's edge and lights up clashes, events in progress fill up, the end-of-day recap celebrates
 once, the streak flame shows, a free day has a sky, the strip scrubs, pulling down comes back to today,
 and a long press peeks at a day. Throwaway loopback HQ, fake PINs.
@@ -51,13 +51,13 @@ def shot(page, name, browser_name):
 
 
 def save(page, base, ev):
-    r = page.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
+    r = page.context.request.post(base + "/api/calendar", headers={"origin": base, "content-type": "application/json"},
                           data=json.dumps({"action": "save", "expected_rev": 0, "event": ev}))
     return r.json().get("event") if r.ok else None
 
 
 def events_on(page, base, day):
-    data = page.request.get(f"{base}/api/calendar?from={day.isoformat()}&to={(day + timedelta(days=1)).isoformat()}").json()
+    data = page.context.request.get(f"{base}/api/calendar?from={day.isoformat()}&to={(day + timedelta(days=1)).isoformat()}").json()
     return {item["title"]: item for item in data.get("items") or []}
 
 
@@ -95,18 +95,25 @@ def open_day(page, day):
 def login(browser, base, info, **ctx_args):
     ctx = browser.new_context(bypass_csp=True, **ctx_args)
     page = ctx.new_page()
-    page.goto(base + "/")
-    page.fill('input[name="pin"]', info["admin_pin"])
-    page.click('button[type="submit"]')
-    page.wait_for_load_state("networkidle")
+    login_r = ctx.request.post(base + "/login", headers={"Origin": base},
+                               form={"pin": info["admin_pin"]}, max_redirects=0)
+    if login_r.status != 303:
+        raise SystemExit("fixture login failed: " + str(login_r.status))
+    ctx.request.get(base + "/api/me")  # lets the fixture persist the session before the page loads
     return ctx, page
 
 
+def enter(page, base):
+    """Load the app after the seeds: a page load before any API write drops the fixture session."""
+    page.goto(base + "/#calendrier", wait_until="domcontentloaded")
+    page.locator("body.session-admin").wait_for(timeout=20000)
+    page.add_style_tag(content="#hq-debug-panel{display:none!important}")
+
+
 def to_calendar(page):
-    if page.locator('.bottom-nav [data-nav="calendrier"]').is_visible():
-        page.click('.bottom-nav [data-nav="calendrier"]')
-    else:
-        page.evaluate("() => setView('calendrier')")
+    tab = page.locator('.bottom-nav [data-nav="calendrier"]')
+    if tab.count():
+        tab.dispatch_event("click")
     until(page, "() => !!document.querySelector('#hq-cal-app .hq-cal-bar')")
     page.locator('#hq-cal-app [data-view="day"]').click()
     until(page, "() => !!document.querySelector('.hq-cal-day')")
@@ -131,13 +138,14 @@ def main() -> None:
             ctx, page = login(browser, base, info, viewport={"width": 375, "height": 812}, has_touch=True)
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
-            page.evaluate("() => { try { localStorage.removeItem('hq_cal_cheer'); } catch (_) {} }")
 
             if timed_today:
                 # End of day: only finished events today, so the recap shows now.
                 check(bool(save(page, base, timed("Matin fini", now - timedelta(hours=3), now - timedelta(hours=2), "study"))), "seed: a finished event today")
                 yday = now - timedelta(days=1)
                 check(bool(save(page, base, timed("Hier fait", yday.replace(hour=9, minute=0), yday.replace(hour=10, minute=0), done=True))), "seed: yesterday, done")
+                enter(page, base)
+                page.evaluate("() => { try { localStorage.removeItem('hq_cal_cheer'); } catch (_) {} }")
                 to_calendar(page)
                 if page.locator(".hq-cal-today").count():
                     page.locator(".hq-cal-today").click()
@@ -190,15 +198,17 @@ def main() -> None:
                     print("  --   no View Transitions here: the sheet opens the ordinary way")
 
             else:
+                enter(page, base)
+                page.evaluate("() => { try { localStorage.removeItem('hq_cal_cheer'); } catch (_) {} }")
                 to_calendar(page)
                 print("  --   too close to midnight for today's timed checks")
 
-            # Rolling title.
+            # The grid transitions as one surface, and the date stays still.
             page.locator("#hq-cal-app [data-cal=next]").click()
-            check(until(page, "() => document.querySelectorAll('.hq-cal-title .hq-roll').length > 0"), "stepping a day rolls the words that changed in the title")
-            check(page.evaluate("() => [...document.querySelectorAll('.hq-cal-title .hq-roll')].every((r) => r.classList.contains('is-up'))"), "forward rolls up")
+            check(until(page, "() => document.querySelector('.hq-cal-stage.is-next')"), "stepping forward transitions the grid")
+            check(page.locator(".hq-cal-title .hq-roll").count() == 0, "the date remains steady during navigation")
             page.locator("#hq-cal-app [data-cal=prev]").click()
-            check(until(page, "() => [...document.querySelectorAll('.hq-cal-title .hq-roll')].some((r) => r.classList.contains('is-down'))"), "back rolls down")
+            check(until(page, "() => document.querySelector('.hq-cal-stage.is-prev')"), "stepping back transitions the grid in reverse")
 
             # A free day has a sky.
             open_day(page, today + timedelta(days=5))
@@ -272,6 +282,7 @@ def main() -> None:
                                               datetime.combine(tomorrow, datetime.min.time()).replace(hour=11)))), "seed: Ancre 10:05–11:00 tomorrow")
             check(bool(save(page, base, timed("Mobile", datetime.combine(tomorrow, datetime.min.time()).replace(hour=7),
                                               datetime.combine(tomorrow, datetime.min.time()).replace(hour=8)))), "seed: Mobile 07:00–08:00 tomorrow")
+            enter(page, base)
             to_calendar(page)
             open_day(page, tomorrow)
             ev = page.locator(".hq-cal-day .hq-cal-event", has_text="Mobile")

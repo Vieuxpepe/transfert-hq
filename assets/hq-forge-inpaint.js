@@ -27,7 +27,9 @@
   let source = null; /* {kind, id} */
   let stored = {}; /* the source image's settings, in memory only */
   let strokes = [];
+  let redoStack = [];
   let drawing = null;
+  let padStroke = null;
   let polling = 0;
   let busy = false;
 
@@ -38,17 +40,20 @@
     ctx.strokeStyle = "#ff3b3b";
     ctx.fillStyle = "#ff3b3b";
     for (const s of strokes) {
+      ctx.save();
+      ctx.globalCompositeOperation = s.erase ? "destination-out" : "source-over";
       ctx.lineWidth = s.size;
       if (s.points.length === 1) {
         ctx.beginPath();
         ctx.arc(s.points[0][0], s.points[0][1], s.size / 2, 0, Math.PI * 2);
         ctx.fill();
-        continue;
+      } else if (s.points.length) {
+        ctx.beginPath();
+        ctx.moveTo(s.points[0][0], s.points[0][1]);
+        for (const p of s.points.slice(1)) ctx.lineTo(p[0], p[1]);
+        ctx.stroke();
       }
-      ctx.beginPath();
-      ctx.moveTo(s.points[0][0], s.points[0][1]);
-      for (const p of s.points.slice(1)) ctx.lineTo(p[0], p[1]);
-      ctx.stroke();
+      ctx.restore();
     }
     canvas.classList.toggle("is-inverted", invert.checked);
     sync();
@@ -78,6 +83,7 @@
     try { canvas.setPointerCapture(event.pointerId); } catch (_error) { /* synthetic pointer */ }
     drawing = { size: Math.max(2, Math.round(Number(brush.value) * scale())), points: [point(event)] };
     strokes.push(drawing);
+    redoStack = [];
     redraw();
   });
   canvas.addEventListener("pointermove", (event) => {
@@ -91,8 +97,8 @@
   canvas.addEventListener("pointercancel", end);
   canvas.addEventListener("lostpointercapture", end);
 
-  undoBtn.addEventListener("click", () => { strokes.pop(); redraw(); });
-  clearBtn.addEventListener("click", () => { strokes = []; redraw(); });
+  undoBtn.addEventListener("click", () => { const s = strokes.pop(); if (s) redoStack.push(s); redraw(); });
+  clearBtn.addEventListener("click", () => { strokes = []; redoStack = []; redraw(); });
   invert.addEventListener("change", redraw);
 
   function maskDataUrl() {
@@ -122,7 +128,9 @@
   function wipe() {
     stopPolling();
     strokes = [];
+    redoStack = [];
     drawing = null;
+    padStroke = null;
     busy = false;
     source = null;
     stored = {};
@@ -135,8 +143,9 @@
     sync();
   }
 
+  function deskTouch() { if (window.hqDesk && typeof window.hqDesk.touch === "function") window.hqDesk.touch(); }
   function close() { if (dialog.open) dialog.close(); }
-  dialog.addEventListener("close", wipe);
+  dialog.addEventListener("close", () => { wipe(); deskTouch(); });
   $("forge-inpaint-close").addEventListener("click", close);
 
   /* The retouch uses the model Forge has loaded (it never switches); say which, from the status read. */
@@ -166,6 +175,7 @@
     showModel();
     redraw();
     dialog.showModal();
+    deskTouch();
     $("forge-inpaint-close").focus();
   }
 
@@ -262,4 +272,50 @@
     return prevScrub ? prevScrub.apply(this, arguments) : undefined;
   };
   sync();
+
+  function normPoint(p) {
+    if (!Array.isArray(p) || !isFinite(p[0]) || !isFinite(p[1])) return null;
+    return [Math.round(Math.min(1, Math.max(0, p[0])) * canvas.width), Math.round(Math.min(1, Math.max(0, p[1])) * canvas.height)];
+  }
+  if (window.hqPadTargets && typeof window.hqPadTargets.register === "function") {
+    window.hqPadTargets.register({
+      id: "inpaint",
+      label: "Masque Forge",
+      ready: () => !!(dialog && dialog.open && !busy),
+      size() { const r = canvas.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; },
+      history: () => ({ undo: strokes.length > 0, redo: redoStack.length > 0 }),
+      begin(pts, meta) {
+        if (!dialog.open || busy) return false;
+        padStroke = { size: Math.max(2, Math.round(Number(brush.value) * scale())), points: [], erase: !!(meta && meta.tool === "erase") };
+        strokes.push(padStroke);
+        redoStack = [];
+        this.add(pts, meta);
+        return true;
+      },
+      add(pts) {
+        if (!padStroke || !Array.isArray(pts)) return;
+        for (const p of pts) { const q = normPoint(p); if (q) padStroke.points.push(q); }
+        redraw();
+      },
+      end() { padStroke = null; redraw(); return { ok: true, text: "Masque" }; },
+      cancel() { if (padStroke) { strokes.pop(); padStroke = null; redraw(); } },
+      undo() { padStroke = null; const s = strokes.pop(); if (s) redoStack.push(s); redraw(); },
+      redo() { const s = redoStack.pop(); if (s) strokes.push(s); redraw(); },
+      hover() {},
+      snapshot() {
+        return new Promise((resolve) => {
+          if (!img.naturalWidth) { resolve(null); return; }
+          const long = Math.max(img.naturalWidth, img.naturalHeight);
+          const sc = Math.min(1, 1280 / long);
+          const cv = document.createElement("canvas");
+          cv.width = Math.max(1, Math.round(img.naturalWidth * sc));
+          cv.height = Math.max(1, Math.round(img.naturalHeight * sc));
+          const c = cv.getContext("2d");
+          if (!c) { resolve(null); return; }
+          c.drawImage(img, 0, 0, cv.width, cv.height);
+          cv.toBlob((b) => { cv.width = 0; cv.height = 0; resolve(b && b.size <= 512 * 1024 ? b : null); }, "image/jpeg", 0.6);
+        });
+      },
+    });
+  }
 })();

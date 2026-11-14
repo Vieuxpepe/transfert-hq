@@ -398,6 +398,15 @@ class ForgeHttp(unittest.TestCase):
         self.assertEqual(len(jobs), 1, "no new job was created")
         store.write_text(json.dumps({"jobs": [], "idempotency": {}}), encoding="utf-8")
 
+    def test_preview_route_is_admin_only_csrf_gated_and_has_no_job_fallback(self):
+        path = "/api/forge/preview"
+        self.assertEqual(self.anon.req(path)[0], 401)
+        self.assertEqual(self.upload.req(path)[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", b"{}", origin=False)[0], 403)
+        self.assertEqual(self.admin.req(path, "POST", b"{}")[0], 400)
+        self.assertEqual(self.admin.req("/api/forge/preview/nope")[0], 404)
+        self.assertEqual(self.anon.req("/api/forge/preview/nope")[0], 401)
+
     def test_readiness_does_not_depend_on_forge(self):
         self.assertNotIn("hq_forge", D.REQUIRED_MODULES)
         status, _headers, body = self.admin.req("/api/diag/ready")

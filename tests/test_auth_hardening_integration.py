@@ -422,7 +422,7 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
         self.assertIn("success", results)
 
         # 2. Scheduled asynchronous actions (/api/pc/sleep and /api/pc/restart-bridge)
-        with mock.patch("iphone_bridge.pc_sleep", return_value=None):
+        with mock.patch("iphone_bridge.threading.Timer"), mock.patch("iphone_bridge.pc_sleep", return_value=None):
             st, _, _ = _http_req(
                 self.port,
                 "/api/pc/sleep",
@@ -488,7 +488,7 @@ class AuthHardeningIntegrationTests(unittest.TestCase):
         self.assertIn("failed", action_results)
 
         # 4. Handled exception inside privileged operation (/api/terminal)
-        with mock.patch("cc_ext.run_terminal", side_effect=RuntimeError("terminal exploded")):
+        with mock.patch("cc_ext.start_terminal_job", side_effect=RuntimeError("terminal exploded")):
             st, _, body = _http_req(
                 self.port,
                 "/api/terminal",

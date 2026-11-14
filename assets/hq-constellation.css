@@ -1,0 +1,60 @@
+/* Transfert HQ — Carnet constellation (assets/hq-constellation.js). The Accueil's night palette, full screen. */
+
+.sky{position:fixed;inset:0;z-index:1200;color:#f5f7ff;
+  background:radial-gradient(120% 90% at 50% 40%,#18215a 0%,#0b1030 55%,#05071a 100%);
+  opacity:0;transition:opacity var(--hq-dur-slow,.38s) var(--hq-out,ease)}
+.sky[hidden]{display:none}
+.sky.is-open{opacity:1}
+.sky.is-diving{transition:opacity .5s ease .25s;opacity:0}
+html.sky-open,html.sky-open body{overflow:hidden}
+.sky-canvas{position:absolute;inset:0;width:100%;height:100%;cursor:grab;touch-action:none}
+.sky.is-panning .sky-canvas{cursor:grabbing}
+
+.sky-head{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;
+  padding:calc(env(safe-area-inset-top,0px) + 14px) 18px 0;pointer-events:none}
+.sky-head>*{pointer-events:auto}
+.sky-title{display:flex;align-items:center;gap:8px;font-family:var(--font-display,Georgia,serif);font-size:1.15rem;font-weight:600;
+  text-shadow:0 2px 16px rgba(0,0,0,.5);white-space:nowrap}
+.sky-ico{width:20px;height:20px;flex:none}
+.sky .sky-search{margin-left:auto;width:min(320px,40vw);min-height:40px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,.18);
+  background:rgba(10,14,40,.6);color:#f5f7ff;font:inherit;font-size:.9rem;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.sky .sky-search::placeholder{color:rgba(230,236,255,.6)}
+.sky-search:focus-visible,.sky-btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.sky-actions{display:flex;gap:6px}
+.sky-btn{padding:0;min-height:0;display:inline-grid;place-items:center;width:40px;height:40px;border-radius:999px;border:1px solid rgba(255,255,255,.18);
+  background:rgba(10,14,40,.6);color:#f5f7ff;cursor:pointer;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.sky-btn:hover{background:rgba(255,255,255,.14)}
+.sky-btn .sky-ico{width:18px;height:18px}
+.sky-stats{position:absolute;left:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);margin:0;font-size:.8rem;color:rgba(230,236,255,.75);
+  text-shadow:0 1px 8px rgba(0,0,0,.6);pointer-events:none;font-variant-numeric:tabular-nums}
+.sky-legend{position:absolute;right:18px;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);display:flex;flex-wrap:wrap;justify-content:flex-end;
+  gap:4px 12px;max-width:50vw;font-size:.72rem;color:rgba(230,236,255,.7);pointer-events:none}
+.sky-legend span::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;background:currentColor}
+.sky-lg-page::before{background:#c7d7ff!important}
+.sky-lg-project::before{background:#fde68a!important;box-shadow:0 0 8px #fde68a}
+.sky-lg-orphan::before{background:#9aa6c8!important}
+.sky-legend [data-kind="source"]::before{background:#fcd34d}
+.sky-legend [data-kind="file"]::before{background:#7dd3fc}
+.sky-legend [data-kind="drawing"]::before{background:#f9a8d4}
+.sky-legend [data-kind="model"]::before{background:#86efac}
+.sky-legend [data-kind="media"]::before{background:#c4b5fd}
+.sky-tip{position:absolute;left:0;top:0;max-width:240px;padding:8px 10px;border-radius:10px;background:rgba(6,8,26,.86);
+  border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 28px rgba(0,0,0,.4);pointer-events:none;display:flex;flex-direction:column;gap:2px}
+.sky-tip[hidden]{display:none}
+.sky-tip strong{font-size:.86rem;font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.sky-tip span{font-size:.74rem;color:rgba(230,236,255,.72)}
+
+/* the launcher lives in the view bar but only means something in the Carnet */
+body:not([data-view="carnet"]) #btn-constellation{display:none}
+
+@media (max-width:899px){
+  .sky-head{flex-wrap:wrap;padding-left:12px;padding-right:12px;gap:8px}
+  .sky-title{font-size:1rem}
+  .sky .sky-search{order:3;width:100%;margin-left:0}
+  .sky-actions{margin-left:auto}
+  .sky-legend{display:none}
+  .sky-stats{left:12px;right:12px}
+}
+@media (prefers-reduced-motion:reduce){
+  .sky,.sky.is-diving{transition:none}
+}

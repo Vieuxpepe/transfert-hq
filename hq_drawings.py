@@ -16,9 +16,17 @@ Filesystem rules:
     are published with os.link (fails if the target exists) — atomic and
     never clobbering.
 
-Document format (version 3; versions 1 and 2 remain readable):
+Document format (version 6; versions 1 to 5 remain readable):
   stable object ids, explicit point table (lines/circles reference point ids,
   so connectivity is explicit), units, grid, driving constraints, 3D features.
+  Version 4 adds an optional stroke width: ``w`` in model units and ``k``, a
+  per-point factor of the same length. DXF keeps a plain polyline (no width).
+  Version 5 adds 3D features built on the Boolean kernel (hq_solid_ops): a ``revolve`` base, and after the base
+  ``hole``, ``shell`` and ``pattern`` steps. A drawing with only an extrusion and cuts keeps building as before.
+  Version 6 is built as an exact solid (hq_solid_occ, OpenCascade): sketches on planes (``sketches``, and ``sketch``
+  on points and objects), arcs, geometric constraints (horizontal, vertical, parallel, perpendicular, equal, tangent,
+  radius, fixed), features that add or cut (``op``), ``fillet`` / ``chamfer`` on picked edges, ``sweep``, ``loft``,
+  ``suppressed`` features and a ``rollback`` point. STEP export and mass properties come with it.
 """
 
 from __future__ import annotations
@@ -37,9 +45,14 @@ import unicodedata
 from pathlib import Path
 
 import hq_solid
+import hq_solid_occ  # noqa: F401  (loads OpenCascade on the main thread at startup, when installed)
+import hq_solid_ops
 
 FORMAT = "transfert-hq-sketch"
-VERSION = 3
+VERSION = 6
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5, 6)
+SKETCH_PLANES = ("XY", "XZ", "YZ")
+MAX_SKETCHES = 20
 SUBDIR = ("Inbox", "Drawings")
 DOC_SUFFIX = ".hqdraw.json"
 PNG_SUFFIX = ".png"
@@ -215,8 +228,57 @@ def _xy(v, what: str) -> list[float]:
     return [_num(v[0], what), _num(v[1], what)]
 
 
+GEOMETRIC_CONSTRAINTS = ("horizontal", "vertical", "parallel", "perpendicular", "equal", "tangent", "radius", "fixed")
+
+
+def _edge_ref(e, fid) -> dict:
+    """A picked edge, found again on the rebuilt part by its two ends and its middle."""
+    if not isinstance(e, dict):
+        raise DrawingError(f"{fid} : arête invalide")
+    out = {}
+    for key in ("a", "b", "m"):
+        v = e.get(key)
+        if not isinstance(v, list) or len(v) != 3:
+            raise DrawingError(f"{fid} : arête invalide")
+        out[key] = [_num(x, f"{fid} arête") for x in v]
+    return out
+
+
+def _geometric_constraint(k, kid, kind, line_ends, arc_ids, kinds, point_ids) -> dict:
+    lines = {i for i, t in kinds.items() if t in ("line", "centerline")}
+    rounds = {i for i, t in kinds.items() if t in ("circle", "arc")}
+    if kind in ("horizontal", "vertical"):
+        line = _id(k.get("line"), kid)
+        if line not in lines:
+            raise DrawingError(f"{kid} : ligne inconnue")
+        return {"id": kid, "type": kind, "line": line}
+    if kind == "fixed":
+        point = _id(k.get("point"), kid)
+        if point not in point_ids:
+            raise DrawingError(f"{kid} : point inconnu")
+        return {"id": kid, "type": kind, "point": point}
+    if kind == "radius":
+        item = _id(k.get("item"), kid)
+        if item not in rounds:
+            raise DrawingError(f"{kid} : cercle ou arc attendu")
+        return {"id": kid, "type": kind, "item": item, "value": _num(k.get("value"), f"{kid} rayon", lo=1e-9)}
+    items = k.get("items")
+    if not isinstance(items, list) or len(items) != 2:
+        raise DrawingError(f"{kid} : deux éléments attendus")
+    a, b = _id(items[0], kid), _id(items[1], kid)
+    if a == b:
+        raise DrawingError(f"{kid} : deux éléments distincts attendus")
+    if kind in ("parallel", "perpendicular") and not ({a, b} <= lines):
+        raise DrawingError(f"{kid} : deux lignes attendues")
+    if kind == "equal" and not ({a, b} <= lines or {a, b} <= rounds):
+        raise DrawingError(f"{kid} : deux lignes ou deux cercles/arcs attendus")
+    if kind == "tangent" and not ((a in lines and b in rounds) or (a in rounds and b in lines) or {a, b} <= rounds):
+        raise DrawingError(f"{kid} : une ligne et un cercle/arc, ou deux cercles/arcs")
+    return {"id": kid, "type": kind, "items": [a, b]}
+
+
 def check_underlay(value, version=VERSION) -> dict:
-    """Optional fixed underlay: ``{"asset_id": "asset-<24 hex>", "fit": "contain"}`` and nothing else (version 3 only)."""
+    """Optional fixed underlay: ``{"asset_id": "asset-<24 hex>", "fit": "contain"}`` and nothing else (version 3 and later)."""
     if version < 3 or not isinstance(value, dict) or set(value) != {"asset_id", "fit"}:
         raise DrawingError("Fond de dessin invalide")
     if not isinstance(value["asset_id"], str) or not UNDERLAY_ASSET_RE.match(value["asset_id"]) or value["fit"] not in UNDERLAY_FITS:
@@ -230,7 +292,7 @@ def validate_document(doc) -> dict:
         raise DrawingError("Document invalide")
     if doc.get("format") != FORMAT:
         raise DrawingError("Format de dessin inconnu")
-    if doc.get("version") not in (1, 2, VERSION):
+    if doc.get("version") not in SUPPORTED_VERSIONS:
         raise DrawingError("Version de dessin non prise en charge")
     units = doc.get("units")
     if units not in UNITS:
@@ -274,18 +336,50 @@ def validate_document(doc) -> dict:
         ids.add(i)
         return i
 
+    v6 = doc["version"] >= 6
+    raw_sketches = doc.get("sketches", [])
+    if not isinstance(raw_sketches, list) or len(raw_sketches) > MAX_SKETCHES or (raw_sketches and not v6):
+        raise DrawingError("Esquisses invalides")
+    sketches = []
+    for i, sk in enumerate(raw_sketches):
+        if not isinstance(sk, dict) or sk.get("plane") not in SKETCH_PLANES:
+            raise DrawingError(f"Esquisse {i} invalide")
+        entry = {"id": claim(_id(sk.get("id"), f"esquisse {i}")), "name": _text(sk.get("name", ""), f"esquisse {i} nom")[:40],
+                 "plane": sk["plane"], "offset": _num(sk.get("offset", 0), f"esquisse {i} décalage")}
+        if sk.get("face") is not None:
+            if sk["face"] not in (1, -1) or isinstance(sk["face"], bool):
+                raise DrawingError(f"Esquisse {i} : face invalide")
+            entry["face"] = sk["face"]  # a sketch on a part's face: which way is outward along its normal
+        sketches.append(entry)
+    if v6:
+        out["sketches"] = sketches
+    sketch_ids = {sk["id"] for sk in sketches}
+
+    def sketch_of(item, raw, label):
+        sid = raw.get("sketch")
+        if sid is None:
+            return ""
+        if not v6 or sid not in sketch_ids:
+            raise DrawingError(f"{label} : esquisse inconnue")
+        item["sketch"] = sid
+        return sid
+
     raw_points = doc.get("points") or []
     if not isinstance(raw_points, list) or len(raw_points) > MAX_POINTS:
         raise DrawingError("Points invalides ou trop nombreux", 413 if isinstance(raw_points, list) else 400)
     points = []
     point_ids: set[str] = set()
+    point_sketch: dict[str, str] = {}
     for i, p in enumerate(raw_points):
         if not isinstance(p, dict):
             raise DrawingError(f"Point {i} invalide")
         pid = claim(_id(p.get("id"), f"point {i}"))
         point_ids.add(pid)
-        points.append({"id": pid, "x": _num(p.get("x"), f"point {pid}"), "y": _num(p.get("y"), f"point {pid}")})
+        item = {"id": pid, "x": _num(p.get("x"), f"point {pid}"), "y": _num(p.get("y"), f"point {pid}")}
+        point_sketch[pid] = sketch_of(item, p, pid)
+        points.append(item)
     out["points"] = points
+    point_xy = {p["id"]: (p["x"], p["y"]) for p in points}
 
     raw_objects = doc.get("objects") or []
     if not isinstance(raw_objects, list):
@@ -293,6 +387,7 @@ def validate_document(doc) -> dict:
     if len(raw_objects) > MAX_OBJECTS:
         raise DrawingError("Trop d'objets", 413)
     objects = []
+    arc_ids: set[str] = set()
     line_ends: dict[str, tuple[str, str]] = {}
     total_stroke = 0
     for i, o in enumerate(raw_objects):
@@ -301,6 +396,29 @@ def validate_document(doc) -> dict:
         oid = claim(_id(o.get("id"), f"objet {i}"))
         kind = o.get("type")
         item: dict = {"id": oid, "type": kind}
+        osk = sketch_of(item, o, oid)
+
+        def same_sketch(*pids):
+            if any(point_sketch.get(pid, "") != osk for pid in pids):
+                raise DrawingError(f"{oid} : points d'une autre esquisse")
+
+        if kind == "arc":
+            if not v6:
+                raise DrawingError(f"{oid} : les arcs exigent la version 6")
+            c, p1, p2 = _id(o.get("center"), oid), _id(o.get("p1"), oid), _id(o.get("p2"), oid)
+            if not {c, p1, p2} <= point_ids or len({c, p1, p2}) != 3:
+                raise DrawingError(f"{oid} : arc invalide")
+            same_sketch(c, p1, p2)
+            r1, r2 = math.dist(point_xy[c], point_xy[p1]), math.dist(point_xy[c], point_xy[p2])
+            if r1 <= 1e-9 or abs(r1 - r2) > 1e-6 * max(1.0, r1):
+                raise DrawingError(f"{oid} : les extrémités de l'arc doivent être à la même distance du centre")
+            item.update(center=c, p1=p1, p2=p2)
+            line_ends[oid] = (p1, p2)
+            arc_ids.add(oid)
+            objects.append(item)
+            continue
+        if kind in ("line", "centerline", "circle"):
+            same_sketch(*[x for x in (o.get("p1"), o.get("p2"), o.get("center")) if isinstance(x, str) and x in point_ids])
         if kind in ("line", "centerline"):
             p1, p2 = _id(o.get("p1"), oid), _id(o.get("p2"), oid)
             if p1 not in point_ids or p2 not in point_ids or p1 == p2:
@@ -322,6 +440,19 @@ def validate_document(doc) -> dict:
             if total_stroke > MAX_TOTAL_STROKE_PTS:
                 raise DrawingError("Tracés main levée trop volumineux", 413)
             item["pts"] = [_xy(p, oid) for p in pts]
+            has_w = o.get("w") is not None
+            has_k = o.get("k") is not None
+            if has_w or has_k:
+                if doc["version"] < 4:
+                    raise DrawingError(f"{oid} : épaisseur non prise en charge")
+                if not has_w:
+                    raise DrawingError(f"{oid} : épaisseur invalide")
+                item["w"] = _num(o.get("w"), f"{oid} épaisseur", lo=1e-9, hi=MAX_COORD)
+                if has_k:
+                    ks = o.get("k")
+                    if not isinstance(ks, list) or len(ks) != len(item["pts"]):
+                        raise DrawingError(f"{oid} : épaisseur invalide")
+                    item["k"] = [_num(v, f"{oid} facteur", lo=0.05, hi=4) for v in ks]
         elif kind == "text":
             item.update(
                 x=_num(o.get("x"), oid),
@@ -352,6 +483,7 @@ def validate_document(doc) -> dict:
         objects.append(item)
     out["objects"] = objects
 
+    object_kinds = {o["id"]: o["type"] for o in objects}
     raw_cons = doc.get("constraints") or []
     if not isinstance(raw_cons, list):
         raise DrawingError("Contraintes invalides")
@@ -384,6 +516,8 @@ def validate_document(doc) -> dict:
                 raise DrawingError(f"{kid} : les lignes ne partagent pas ce sommet")
             cons.append({"id": kid, "type": "angle", "lines": [l1, l2], "vertex": vertex,
                          "value": _num(k.get("value"), f"{kid} angle", lo=0, hi=180)})
+        elif kind in GEOMETRIC_CONSTRAINTS and v6:
+            cons.append(_geometric_constraint(k, kid, kind, line_ends, arc_ids, object_kinds, point_ids))
         else:
             raise DrawingError(f"{kid} : type de contrainte inconnu")
     out["constraints"] = cons
@@ -394,27 +528,135 @@ def validate_document(doc) -> dict:
         raise DrawingError("Les fonctions 3D exigent la version 2")
     features = []
     object_types = {o["id"]: o["type"] for o in objects}
+    seen_features = []
     for i, f in enumerate(raw_features):
         if not isinstance(f, dict):
             raise DrawingError(f"Fonction 3D {i} invalide")
         fid = claim(_id(f.get("id"), f"fonction 3D {i}"))
         kind = f.get("type")
-        if kind not in ("extrude", "cut") or (i == 0) != (kind == "extrude"):
-            raise DrawingError("Une extrusion de base, puis des coupes, sont requises")
-        profile = f.get("profile")
-        if not isinstance(profile, list) or not 1 <= len(profile) <= 500:
-            raise DrawingError(f"{fid} : profil invalide")
-        profile = [_id(v, f"{fid} profil") for v in profile]
-        if len(set(profile)) != len(profile) or any(object_types.get(v) not in ("line", "circle") for v in profile):
-            raise DrawingError(f"{fid} : profil invalide")
-        extent = f.get("extent", "blind")
-        if extent not in ("blind", "throughAll") or (kind == "extrude" and extent != "blind"):
-            raise DrawingError(f"{fid} : étendue invalide")
-        depth = _num(f.get("depth", 0), f"{fid} profondeur", lo=0, hi=MAX_COORD)
-        if (kind == "extrude" or extent == "blind") and depth <= 0:
-            raise DrawingError(f"{fid} : profondeur positive requise")
-        features.append({"id": fid, "type": kind, "profile": profile, "depth": depth, "extent": extent})
+        if v6:
+            allowed = ("extrude", "revolve", "sweep", "loft") if i == 0 else ("extrude", "revolve", "sweep", "loft", "cut", "hole", "shell", "pattern", "fillet", "chamfer")
+        else:
+            allowed = ("extrude", "revolve") if i == 0 else ("cut", "hole", "shell", "pattern")
+        if kind not in allowed:
+            raise DrawingError("Une pièce de base (extrusion, révolution, balayage, lissage), puis des fonctions, sont requises")
+        if kind in hq_solid_ops.V5_TYPES and doc["version"] < 5:
+            raise DrawingError(f"{fid} : cette fonction 3D exige la version 5")
+        profile_kinds = ("line", "circle", "arc") if v6 else ("line", "circle")
+
+        def profile_of(key="profile"):
+            profile = f.get(key)
+            if not isinstance(profile, list) or not 1 <= len(profile) <= 500:
+                raise DrawingError(f"{fid} : profil invalide")
+            profile = [_id(v, f"{fid} profil") for v in profile]
+            if len(set(profile)) != len(profile) or any(object_types.get(v) not in profile_kinds for v in profile):
+                raise DrawingError(f"{fid} : profil invalide")
+            return profile
+
+        if kind in ("extrude", "cut"):
+            profile = profile_of()
+            extent = f.get("extent", "blind")
+            if extent not in ("blind", "throughAll") or (kind == "extrude" and extent != "blind"):
+                raise DrawingError(f"{fid} : étendue invalide")
+            depth = _num(f.get("depth", 0), f"{fid} profondeur", lo=0, hi=MAX_COORD)
+            if (kind == "extrude" or extent == "blind") and depth <= 0:
+                raise DrawingError(f"{fid} : profondeur positive requise")
+            item = {"id": fid, "type": kind, "profile": profile, "depth": depth, "extent": extent}
+        elif kind == "revolve":
+            profile = profile_of()
+            axis = _id(f.get("axis"), f"{fid} axe")
+            if object_types.get(axis) not in ("line", "centerline") or axis in profile:
+                raise DrawingError(f"{fid} : axe de révolution invalide")
+            angle = _num(f.get("angle", 360), f"{fid} angle", lo=1, hi=360)
+            item = {"id": fid, "type": kind, "profile": profile, "axis": axis, "angle": angle}
+        elif kind == "hole":
+            at = f.get("at")
+            if not isinstance(at, list) or not 1 <= len(at) <= hq_solid_ops.MAX_COPIES:
+                raise DrawingError(f"{fid} : trous invalides")
+            at = [_id(v, f"{fid} trou") for v in at]
+            if len(set(at)) != len(at) or any(object_types.get(v) != "circle" for v in at):
+                raise DrawingError(f"{fid} : un trou se place au centre d'un cercle")
+            standard, fit = f.get("standard"), f.get("fit")
+            if standard not in hq_solid_ops.HOLES_MM or fit not in hq_solid_ops.FITS:
+                raise DrawingError(f"{fid} : trou inconnu")
+            extent = f.get("extent", "throughAll")
+            if extent not in ("blind", "throughAll"):
+                raise DrawingError(f"{fid} : étendue invalide")
+            depth = _num(f.get("depth", 0), f"{fid} profondeur", lo=0, hi=MAX_COORD)
+            if extent == "blind" and depth <= 0 and fit != "insert":
+                raise DrawingError(f"{fid} : profondeur positive requise")
+            item = {"id": fid, "type": kind, "at": at, "standard": standard, "fit": fit, "extent": extent, "depth": depth}
+        elif kind == "shell":
+            if any(x["type"] == "shell" for x in seen_features):
+                raise DrawingError(f"{fid} : une seule coque par pièce")
+            thickness = _num(f.get("thickness"), f"{fid} épaisseur", lo=0, hi=MAX_COORD)
+            if thickness <= 0 or not isinstance(f.get("open", True), bool):
+                raise DrawingError(f"{fid} : coque invalide")
+            item = {"id": fid, "type": kind, "thickness": thickness, "open": f.get("open", True)}
+        elif kind == "pattern":
+            source = _id(f.get("source"), f"{fid} source")
+            # an earlier cut or hole; in v6 also an earlier boss or cut feature (not the base, which is the part itself)
+            repeatable = ("cut", "hole", "extrude", "revolve", "sweep", "loft") if v6 else ("cut", "hole")
+            if not any(x["id"] == source and x["type"] in repeatable for x in seen_features[1:]):
+                raise DrawingError(f"{fid} : la répétition reprend une fonction placée avant elle (pas la pièce de base)")
+            mode = f.get("mode")
+            count = f.get("count")
+            if mode not in ("linear", "circular") or isinstance(count, bool) or not isinstance(count, int) or not 2 <= count <= hq_solid_ops.MAX_COPIES:
+                raise DrawingError(f"{fid} : répétition invalide")
+            item = {"id": fid, "type": kind, "source": source, "mode": mode, "count": count}
+            if mode == "linear":
+                item["dx"] = _num(f.get("dx", 0), f"{fid} pas X", lo=-MAX_COORD, hi=MAX_COORD)
+                item["dy"] = _num(f.get("dy", 0), f"{fid} pas Y", lo=-MAX_COORD, hi=MAX_COORD)
+                if abs(item["dx"]) + abs(item["dy"]) <= 0:
+                    raise DrawingError(f"{fid} : pas de répétition nul")
+            else:
+                item["cx"] = _num(f.get("cx", 0), f"{fid} centre X", lo=-MAX_COORD, hi=MAX_COORD)
+                item["cy"] = _num(f.get("cy", 0), f"{fid} centre Y", lo=-MAX_COORD, hi=MAX_COORD)
+                item["angle"] = _num(f.get("angle", 360), f"{fid} angle", lo=1, hi=360)
+        elif kind in ("fillet", "chamfer"):
+            edges = f.get("edges")
+            if not isinstance(edges, list) or not 1 <= len(edges) <= 100:
+                raise DrawingError(f"{fid} : arêtes invalides")
+            item = {"id": fid, "type": kind, "edges": [_edge_ref(e, fid) for e in edges]}
+            key = "radius" if kind == "fillet" else "distance"
+            item[key] = _num(f.get(key), f"{fid} {key}", lo=1e-9, hi=MAX_COORD)
+        elif kind == "sweep":
+            path = f.get("path")
+            if not isinstance(path, list) or not 1 <= len(path) <= 500 or any(object_types.get(_id(v, fid)) not in ("line", "arc") for v in path):
+                raise DrawingError(f"{fid} : chemin invalide")
+            item = {"id": fid, "type": kind, "profile": profile_of(), "path": [str(v) for v in path]}
+        elif kind == "loft":
+            profiles = f.get("profiles")
+            if not isinstance(profiles, list) or not 2 <= len(profiles) <= 10:
+                raise DrawingError(f"{fid} : il faut de 2 à 10 profils")
+            out_profiles = []
+            for prof in profiles:
+                if not isinstance(prof, list) or not 1 <= len(prof) <= 500 or any(object_types.get(_id(v, fid)) not in profile_kinds for v in prof):
+                    raise DrawingError(f"{fid} : profil invalide")
+                out_profiles.append([str(v) for v in prof])
+            item = {"id": fid, "type": kind, "profiles": out_profiles}
+        if v6:
+            op = f.get("op", "add")
+            if kind in ("extrude", "revolve", "sweep", "loft"):
+                if op not in ("add", "cut") or (i == 0 and op != "add"):
+                    raise DrawingError(f"{fid} : opération invalide")
+                item["op"] = op
+            for flag in ("reverse", "both", "suppressed"):
+                if f.get(flag) is not None:
+                    if not isinstance(f.get(flag), bool):
+                        raise DrawingError(f"{fid} : {flag} invalide")
+                    if f[flag]:
+                        item[flag] = True
+        elif any(f.get(k) is not None for k in ("op", "reverse", "both", "suppressed")):
+            raise DrawingError(f"{fid} : option de la version 6")
+        seen_features.append(item)
+        features.append(item)
     out["features"] = features if doc["version"] >= 2 else []
+    rollback = doc.get("rollback")
+    if rollback is not None:
+        if not v6 or isinstance(rollback, bool) or not isinstance(rollback, int) or not 0 <= rollback <= len(features):
+            raise DrawingError("Point de retour invalide")
+        out["rollback"] = rollback
     raw_faces = doc.get("faceFeatures", [])
     if not isinstance(raw_faces, list) or len(raw_faces) > 50 or (doc["version"] < 3 and raw_faces):
         raise DrawingError("Fonctions sur face invalides")
@@ -481,6 +723,17 @@ def validate_document(doc) -> dict:
         except hq_solid.SolidError as e:
             raise DrawingError(str(e), 422) from e
     return out
+
+
+def stroke_widths(obj: dict) -> list[float]:
+    """Per-point model widths for a validated stroke. Empty when the stroke has no stored width
+    (versions 1–3, drawn as the historical hairline). Not used by DXF."""
+    pts = obj.get("pts") or []
+    w = obj.get("w")
+    if not w:
+        return []
+    ks = obj.get("k") or [1.0] * len(pts)
+    return [float(w) * float(ks[i] if i < len(ks) else 1.0) for i in range(len(pts))]
 
 
 def decode_png(data_url) -> bytes:
@@ -580,6 +833,19 @@ def build_dxf(doc: dict) -> str:
 
     for o in doc["objects"]:
         t = o["type"]
+        if o.get("sketch"):
+            continue  # DXF is the base XY drawing; sketches on other planes live in the 3D part (STEP)
+        if t == "arc":
+            cx, cy = pts[o["center"]]
+            ax, ay = pts[o["p1"]]
+            bx, by = pts[o["p2"]]
+            r = math.hypot(ax - cx, ay - cy)
+            seen(cx - r, cy - r)
+            seen(cx + r, cy + r)
+            start = math.degrees(math.atan2(ay - cy, ax - cx)) % 360
+            end = math.degrees(math.atan2(by - cy, bx - cx)) % 360
+            ents.append(("ARC", [(8, "GEOMETRIE"), (10, _f(cx)), (20, _f(cy)), (30, "0"), (40, _f(r)), (50, _f(start)), (51, _f(end))]))
+            continue
         if t in ("line", "centerline"):
             line("GEOMETRIE" if t == "line" else "AXES", pts[o["p1"]], pts[o["p2"]])
         elif t == "circle":
@@ -589,6 +855,7 @@ def build_dxf(doc: dict) -> str:
             seen(cx + r, cy + r)
             ents.append(("CIRCLE", [(8, "GEOMETRIE"), (10, _f(cx)), (20, _f(cy)), (30, "0"), (40, _f(r))]))
         elif t == "stroke":
+            # Width (w, k) is a screen/PNG concern. DXF stays a plain POLYLINE: no width group codes.
             simp = simplify(o["pts"], spacing * 0.05)
             if len(simp) == 1:
                 simp = [simp[0], simp[0]]
@@ -861,12 +1128,53 @@ def preview_mesh(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise DrawingError("Requête invalide")
     doc = validate_document(payload.get("doc"))
+    if hq_solid_occ.uses_occ(doc):
+        # exact part: every edge (curves as short polylines) can be picked for a fillet or chamfer
+        try:
+            shape = hq_solid_occ.build_shape(doc)
+            mesh = hq_solid_occ.triangles(shape)
+            edges = hq_solid_occ.edges_of(shape) if shape is not None else []
+            mass = hq_solid_occ.mass_properties(doc) if shape is not None else {}
+        except hq_solid.SolidError as e:
+            raise DrawingError(str(e), 422) from e
+        return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh), "exact": True,
+                "edges": edges[:5000], "edgesTruncated": len(edges) > 5000, "mass": mass}
     mesh = hq_solid.build_mesh(doc)
     from hq_round_solid import eligible_edges
     edges = eligible_edges(mesh)
     return {"ok": True, "units": doc["units"], "triangles": mesh, "count": len(mesh),
             "edges": [{"a": e["a"], "b": e["b"], "length": e["length"]} for e in edges[:5000]],
             "edgesTruncated": len(edges) > 5000}
+
+
+def step_file(payload: dict) -> tuple[bytes, str]:
+    """The part as a STEP file (exact solid, millimetres): version-6 drawings only."""
+    if not isinstance(payload, dict):
+        raise DrawingError("Requête invalide")
+    doc = validate_document(payload.get("doc"))
+    if not hq_solid_occ.uses_occ(doc):
+        raise DrawingError("L'export STEP demande une pièce exacte (dessin version 6)", 409)
+    try:
+        data = hq_solid_occ.step_bytes(doc)
+    except hq_solid.SolidError as e:
+        raise DrawingError(str(e), 422) from e
+    name = sanitize_base_name(payload.get("name") or "piece") if payload.get("name") else "piece"
+    return data, name + ".step"
+
+
+def ar_model(payload: dict) -> dict:
+    """Build a USDZ of the drawing's part for AR Quick Look and hold it briefly in memory (hq_usdz)."""
+    import hq_usdz
+    if not isinstance(payload, dict):
+        raise DrawingError("Requête invalide")
+    doc = validate_document(payload.get("doc"))
+    mesh = hq_solid.build_mesh(doc)
+    if not mesh:
+        raise DrawingError("Crée d'abord une pièce 3D", 409)
+    name = payload.get("name") if isinstance(payload.get("name"), str) else "Piece"
+    data = hq_usdz.build(mesh, doc["units"], name[:40])
+    fid = hq_usdz.keep(data)
+    return {"ok": True, "id": fid, "url": f"/api/drawings/usdz/{fid}.usdz", "bytes": len(data), "triangles": len(mesh)}
 
 
 def _read_regular(directory: Path, name: str, cap: int) -> bytes:

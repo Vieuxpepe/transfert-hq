@@ -1,0 +1,133 @@
+/* Transfert HQ — phone as a second screen (assets/hq-desk.js): the phone sheet, the PC's top-bar chip, and the photo
+ * that lands on the PC after a flick. Motion is off with reduced motion. */
+
+/* ---- PC: chip while a phone is connected, and the landed photo */
+.desk-chip{font-weight:600;display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 10px;border-radius:999px;border:1px solid var(--line,#334055);
+  background:var(--panel-2,#1c2530);color:var(--text,#f3f6fa);font:inherit;font-size:.78rem;cursor:pointer}
+.desk-chip[hidden]{display:none}
+.desk-chip .desk-ico{width:16px;height:16px;color:var(--accent,#3dffb5)}
+.desk-chip::after{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent,#3dffb5);box-shadow:0 0 8px var(--accent,#3dffb5);
+  animation:desk-pulse 2s ease-in-out infinite}
+@keyframes desk-pulse{50%{opacity:.35}}
+
+.desk-flick{position:fixed;left:50%;top:50%;z-index:1250;transform:translate(-50%,-50%) rotate(var(--rot,-3deg));
+  padding:12px 12px 10px;border:0;border-radius:6px;background:#fbfaf7;color:#1b1e24;cursor:pointer;
+  box-shadow:0 30px 70px rgba(0,0,0,.45),0 6px 16px rgba(0,0,0,.25);display:flex;flex-direction:column;gap:8px;max-width:min(62vw,520px)}
+.desk-flick img{display:block;max-width:100%;max-height:56vh;border-radius:2px;object-fit:contain;background:#eee}
+.desk-flick-cap{display:flex;align-items:center;gap:6px;font-size:.8rem;font-weight:600;color:#3b4250;max-width:100%}
+.desk-flick-cap span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desk-flick-cap .desk-ico{width:15px;height:15px;flex:none}
+.desk-flick:focus-visible{outline:3px solid var(--accent,#3dffb5);outline-offset:4px}
+
+/* ---- phone sheet */
+.desk-ico{width:20px;height:20px;flex:none}
+.desk{position:fixed;inset:0;z-index:1200;display:flex;flex-direction:column;gap:12px;
+  padding:calc(env(safe-area-inset-top,0px) + 12px) 16px calc(env(safe-area-inset-bottom,0px) + 14px);
+  background:var(--bg,#0c1014);color:var(--text,#f3f6fa);overflow-y:auto;overscroll-behavior:contain;
+  transform:translateY(24px);opacity:0;transition:transform var(--hq-dur,.24s) var(--hq-out,ease),opacity var(--hq-dur,.24s) ease}
+.desk[hidden]{display:none}
+.desk.is-open{transform:none;opacity:1}
+html.desk-open,html.desk-open body{overflow:hidden}
+.desk-head{display:flex;align-items:center;gap:10px}
+.desk-title{display:flex;align-items:center;gap:8px;font-family:var(--font-display,Georgia,serif);font-size:1.1rem}
+.desk-status{display:flex;align-items:center;gap:6px;margin:0 0 0 auto;font-size:.78rem;color:var(--muted,#b7c2ce);min-width:0}
+.desk-status-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desk-dot{width:8px;height:8px;border-radius:50%;background:var(--warn,#e8a838);flex:none}
+.desk.is-online .desk-dot{background:var(--accent,#3dffb5);box-shadow:0 0 8px var(--accent,#3dffb5)}
+.desk.is-retry .desk-dot{background:var(--warn,#e8a838);box-shadow:none}
+.desk-btn{padding:0;min-height:0;display:inline-grid;place-items:center;width:40px;height:40px;border-radius:999px;border:1px solid var(--line,#334055);
+  background:var(--panel,#161d26);color:inherit;flex:none}
+.desk-tabs{display:grid;grid-template-columns:repeat(3,1fr);padding:3px;border-radius:999px;background:var(--panel,#161d26);border:1px solid var(--line,#334055)}
+.desk-tab{border:0;background:none;font-weight:500;padding:0 8px;color:var(--muted,#b7c2ce);font:inherit;font-size:.88rem;min-height:38px;border-radius:999px}
+.desk-tab[aria-selected="true"]{background:var(--accent,#3dffb5);color:var(--accent-text,#04140e);font-weight:600}
+.desk-pane{display:flex;flex-direction:column;gap:12px;min-height:0}
+.desk-pane[hidden]{display:none}
+.desk-row{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+.desk-pill{font-weight:500;display:inline-flex;align-items:center;gap:7px;min-height:44px;padding:0 16px;border-radius:999px;border:1px solid var(--line,#334055);
+  background:var(--panel,#161d26);color:inherit;font:inherit;font-size:.9rem}
+.desk-pill[hidden]{display:none}
+.desk .desk-accent{background:var(--accent,#3dffb5);color:var(--accent-text,#04140e);border-color:transparent;font-weight:600}
+.desk-hint{margin:0;text-align:center;font-size:.85rem;color:var(--muted,#b7c2ce)}
+
+/* pad */
+.desk-pad{--ar:1.3333;position:relative;align-self:center;width:min(100%,calc(58vh * var(--ar)));aspect-ratio:var(--ar);
+  border-radius:16px;border:1px solid var(--line,#334055);touch-action:none;user-select:none;-webkit-user-select:none;
+  -webkit-touch-callout:none;overscroll-behavior:none;
+  background:radial-gradient(circle at 1px 1px,rgba(255,255,255,.09) 1px,transparent 1.5px) 0 0/22px 22px,var(--panel,#161d26)}
+.desk-pad-ink{position:absolute;inset:0;width:100%;height:100%;border-radius:inherit;z-index:1}
+.desk-snap{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;opacity:.55;pointer-events:none;border-radius:inherit;z-index:0}
+.desk-snap[hidden]{display:none}
+/* once the PC tells the pad its ink colour, the pad ink and the picture match: show the picture as it is, so the
+ * handoff from local ink to the PC picture cannot be seen */
+.desk-pad.has-ink .desk-snap{opacity:1}
+.desk-pad-hint{position:absolute;inset:auto 0 12px;margin:0;text-align:center;font-size:.8rem;color:var(--muted,#b7c2ce);pointer-events:none;transition:opacity .2s;z-index:2}
+.desk-pad.is-drawing .desk-pad-hint{opacity:0}
+.desk-pad.is-off{opacity:.45}
+/* sketch to 3D: the pad glows while a shape is being lifted */
+.desk-pad.is-lifting{outline:3px solid var(--accent,#3dffb5);outline-offset:3px}
+.desk .desk-lift{border-color:var(--accent,#3dffb5);color:var(--accent,#3dffb5)}
+.desk .desk-lift[aria-pressed="true"]{background:var(--accent,#3dffb5);color:var(--accent-text,#04140e)}
+.desk .desk-smooth.is-on{border-color:var(--accent,#3dffb5);color:var(--accent,#3dffb5)}
+.desk-pen[aria-pressed="false"]{border-color:var(--accent,#3dffb5);color:var(--accent,#3dffb5)}
+/* tablets: the pad takes all the room the sheet leaves (header + tabs + one row of buttons) */
+@media (min-width:700px){
+  .desk-pad{width:min(100%,calc((100dvh - 300px) * var(--ar)))}
+  .desk-pad-hint{font-size:.9rem}
+}
+.desk-ack{margin:0;min-height:1.2em;text-align:center;font-size:.82rem;color:var(--muted,#b7c2ce)}
+.desk-home-hint{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;margin:0;font-size:.82rem;color:var(--muted,#b7c2ce)}
+.desk-home-hint[hidden]{display:none}
+.desk-ring{position:absolute;inset:0;z-index:6;pointer-events:none}
+.desk-ring[hidden]{display:none}
+.desk-ring-item{position:absolute;transform:translate(-50%,-50%);min-width:44px;min-height:44px;padding:0 12px;border-radius:999px;border:1px solid var(--line,#334055);background:var(--panel,#161d26);color:inherit;font:inherit;font-size:.82rem}
+.desk-ring-item.is-on{background:var(--accent,#3dffb5);color:var(--accent-text,#04140e);border-color:transparent}
+.desk-thicks{display:inline-flex;gap:4px}
+.desk-thick{width:44px;height:44px;padding:0;border-radius:999px;border:1px solid var(--line,#334055);background:var(--panel,#161d26);color:inherit;display:inline-grid;place-items:center}
+.desk-thick i{display:block;border-radius:50%;background:currentColor}
+.desk-thick.is-on{border-color:var(--accent,#3dffb5);color:var(--accent,#3dffb5)}
+.desk-btn{width:44px;height:44px}
+.desk-tab{min-height:44px}
+.desk-pad.is-off .desk-pad-hint::after{content:" (Dessiner n'est pas ouvert sur le PC)"}
+
+/* lecteur */
+.desk-player{display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:18px;background:var(--panel,#161d26);border:1px solid var(--line,#334055)}
+.desk-now{margin:0;font-weight:600;font-size:1rem;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.desk-seek,.desk-vol{width:100%;accent-color:var(--accent,#3dffb5)}
+.desk-times{display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted,#b7c2ce);font-variant-numeric:tabular-nums;margin-top:-4px}
+.desk-controls{display:flex;justify-content:center;align-items:center;gap:8px}
+.desk-round{padding:0;min-height:0;display:inline-grid;place-items:center;width:46px;height:46px;border-radius:50%;border:1px solid var(--line,#334055);background:var(--panel-2,#1c2530);color:inherit}
+.desk .desk-play{width:62px;height:62px;background:var(--accent,#3dffb5);color:var(--accent-text,#04140e);border-color:transparent}
+.desk-play .desk-ico{width:26px;height:26px}
+.desk-vol-row{display:flex;align-items:center;gap:10px;color:var(--muted,#b7c2ce)}
+.desk .desk-filter{width:100%;box-sizing:border-box;min-height:42px;padding:0 14px;border-radius:999px;border:1px solid var(--line,#334055);background:var(--panel,#161d26);color:inherit;font:inherit}
+.desk-lib{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.desk .desk-lib-item{justify-content:flex-start;font-weight:500;display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0 12px;border-radius:12px;border:0;background:none;color:inherit;font:inherit;text-align:left}
+.desk .desk-lib-item.is-current{background:var(--panel,#161d26);color:var(--accent,#3dffb5)}
+.desk-lib-k{width:20px;text-align:center;color:var(--muted,#b7c2ce)}
+.desk-lib-n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem}
+
+/* lancer */
+.desk-stage{position:relative;min-height:52vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  border-radius:18px;border:1px dashed var(--line,#334055);overflow:hidden}
+.desk-card{padding:10px 10px 26px;background:#fbfaf7;border-radius:6px;box-shadow:0 18px 40px rgba(0,0,0,.4);touch-action:none;
+  transition:transform .35s var(--hq-spring,cubic-bezier(.2,1.35,.35,1))}
+.desk-card[hidden]{display:none}
+.desk-card img{display:block;max-width:64vw;max-height:36vh;border-radius:2px;pointer-events:none}
+.desk-card.is-held{transition:none;box-shadow:0 26px 60px rgba(0,0,0,.5)}
+.desk-card.is-thrown{transition:transform .45s cubic-bezier(.4,0,1,1),opacity .45s ease;opacity:0}
+.desk-card.is-ready{animation:desk-bob 2.4s ease-in-out infinite}
+.desk-card.is-held,.desk-card.is-thrown{animation:none}
+@keyframes desk-bob{50%{translate:0 -6px}}
+
+/* the launcher only exists on phones (hq-desk.js adds it there), but keep the view bar tidy if a tablet adds it */
+.desk-launch .desk-ico{width:20px;height:20px}
+
+@media (prefers-reduced-motion:reduce){
+  .desk,.desk-card,.desk-card.is-thrown,.desk-pad-hint,.desk-snap{transition:none}
+  .desk-card.is-ready,.desk-chip::after{animation:none}
+}
+
+/* AR Quick Look from the pad: « Ouvrir en AR » is a real link (Quick Look opens on a tap) */
+.desk .desk-ar-go{text-decoration:none}
+.desk .desk-ar-go img{width:0;height:0;position:absolute}
+.desk .desk-ar-go[hidden]{display:none}

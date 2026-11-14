@@ -95,10 +95,15 @@
     dessiner: { name: "Crépuscule d'atelier", dark: ["#1f3a4a", "#e07a5f", "#3d7a7a", "#14262f"], light: ["#d9ecee", "#fbcbbc", "#cfe8e4", "#edf6f6"] },
     forge: { name: "Braises", dark: ["#3b1a22", "#e8622c", "#9a2f2a", "#200f14"], light: ["#f6dcd6", "#ffc2a0", "#f3c0b4", "#fbeeea"] },
     intime: { name: "Chambre pourpre", dark: ["#381428", "#ff3377", "#8a244c", "#1f0914"], light: ["#fbe4ec", "#ff80ab", "#f8bbd0", "#fdf0f4"] },
+    repas: { name: "Cuisine au soir", dark: ["#3a2a1f", "#e8a75a", "#8a5a34", "#221810"], light: ["#f8ecdc", "#fbd3a0", "#f0d0b4", "#fcf5ec"] },
+    budget: { name: "Bureau, lampe allumée", dark: ["#24342e", "#d9b45a", "#4d6b57", "#151f1b"], light: ["#e6efe6", "#fbe2a6", "#d6e4d4", "#f2f7f1"] },
     fichiers: { name: "Coucher sur la mer", dark: ["#1d2f52", "#e2a14a", "#2f6f86", "#10203a"], light: ["#d8e5f6", "#fdd9a8", "#c8e6ee", "#ecf3fa"] },
     projets: { name: "Plan au crépuscule", dark: ["#1a2a55", "#f0955a", "#2c5d9a", "#111b38"], light: ["#d7e1f7", "#fdd2b2", "#cfdcf5", "#edf1fb"] },
     inventaire: { name: "Forêt au soir", dark: ["#23352a", "#d8a04c", "#4f6b3a", "#16211a"], light: ["#e1ecdc", "#f7dcab", "#d8e6c8", "#f1f6ec"] },
     lecteur: { name: "Cinéma de nuit", dark: ["#2c1846", "#e0568f", "#5a2a7a", "#170c28"], light: ["#eadcf5", "#f9c6dc", "#e3cdf2", "#f6eefb"] },
+    musique: { name: "Scène, lumières basses", dark: ["#191a3d", "#f0619c", "#41307a", "#0e0f24"], light: ["#e6e2f8", "#fbb4d3", "#d3cdf0", "#f4f1fd"] },
+    engine: { name: "Atelier machines", dark: ["#2a2b33", "#e0a03c", "#5b6472", "#17181e"], light: ["#e8e9ee", "#f7d9a6", "#cdd3dc", "#f4f5f8"] },
+    securite: { name: "Veille de nuit", dark: ["#12262b", "#d98a3f", "#2f5a5f", "#0a171a"], light: ["#dbecec", "#f9d2a4", "#c6e0dd", "#eef7f6"] },
     plus: { name: "Aurore boréale", dark: ["#152c3e", "#7fd6b4", "#2f5f7a", "#0d1a26"], light: ["#d9eaf2", "#cdeedd", "#d3e5ef", "#eef6f8"] },
     ops: { name: "Aurore boréale", dark: ["#152c3e", "#7fd6b4", "#2f5f7a", "#0d1a26"], light: ["#d9eaf2", "#cdeedd", "#d3e5ef", "#eef6f8"] },
   };
@@ -136,7 +141,7 @@
   // ------------------------------------------------------------------ browser layer
 
   const SVG_NS = "http://www.w3.org/2000/svg";
-  const S = { win: null, doc: null, hero: null, home: null, sky: null, orb: null, clock: null, cols: [], sec: null, last: "", splitting: false, shootTimer: 0, raf: 0 };
+  const S = { win: null, doc: null, hero: null, home: null, sky: null, orb: null, clock: null, precip: null, cols: [], sec: null, last: "", splitting: false, shootTimer: 0, raf: 0, weather: null };
 
   function el(tag, cls, attrs) {
     const n = S.doc.createElement(tag);
@@ -219,13 +224,24 @@
       c.style.cssText = "top:" + y + "%;--s:" + sc + ";animation-delay:" + delay + "s";
       clouds.appendChild(c);
     });
+    const precip = el("div", "home-precip");
+    for (let i = 0; i < 24; i += 1) {
+      const p = el("span", "home-drop-item");
+      const left = ((i * 17) % 98) + 1;
+      const delay = -((i * 1.3) % 7).toFixed(1);
+      const dur = (2.2 + ((i * 0.7) % 2.5)).toFixed(1);
+      const size = 2 + (i % 3);
+      p.style.cssText = "left:" + left + "%;animation-delay:" + delay + "s;animation-duration:" + dur + "s;--drop-size:" + size + "px";
+      precip.appendChild(p);
+    }
     const orb = el("div", "home-orb");
     orb.append(el("span", "home-orb-rays"), el("span", "home-orb-core"));
-    sky.append(aurora, stars, clouds, orb);
+    sky.append(aurora, stars, clouds, precip, orb);
     S.hero.insertBefore(sky, S.hero.firstChild);
     S.sky = sky;
     S.orb = orb;
     S.shoot = shoot;
+    S.precip = precip;
   }
 
   function paintSky(date) {
@@ -239,6 +255,28 @@
     S.orb.classList.toggle("is-moon", o.kind === "moon");
     S.orb.style.setProperty("--op", String(o.p));
     S.orb.style.setProperty("--oh", String(o.h));
+    if (S.weather) applyWeatherToSky(S.weather);
+  }
+
+  function applyWeatherToSky(w) {
+    if (!S.sky || !S.hero) return;
+    S.weather = w;
+    const kind = String((w && w.kind) || "clear");
+    for (const k of ["clear", "partly_cloudy", "cloudy", "rain", "snow", "storm", "fog"]) {
+      S.hero.classList.toggle("weather-" + k, k === kind);
+    }
+    const label = S.doc.getElementById("home-weather");
+    if (label && w && w.temp_h) {
+      // Temperature first (it is what you look for), city second and quieter.
+      const temp = S.doc.createElement("b");
+      temp.textContent = (w.icon ? w.icon + " " : "") + w.temp_h;
+      const city = S.doc.createElement("span");
+      city.className = "home-weather-city";
+      city.textContent = w.city || "";
+      label.textContent = "";
+      label.append(temp, city);
+      label.removeAttribute("hidden");
+    }
   }
 
   function stopShootingStars() {
@@ -670,6 +708,7 @@
         }).observe(S.hero);
       }
       syncPause();
+      win.hqApplyWeather = applyWeatherToSky;
     };
     if (S.doc.readyState === "loading") S.doc.addEventListener("DOMContentLoaded", boot, { once: true });
     else boot();

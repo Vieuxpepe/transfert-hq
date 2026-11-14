@@ -377,7 +377,8 @@ class LecteurTabStaticTests(unittest.TestCase):
         self.assertIn('body[data-view="lecteur"] [data-panel="lecteur"]', B.BASE_CSS)
         self.assertIn("try { window.hqPlayerView(view); } catch (e) { console.error(e); }", self.js)
         # Combined with PR #15: the Dessiner watchdog and the guarded Calendrier hook are still in setView.
-        set_view = re.search(r"function setView\(name\) \{(.*?)\n\}", self.js, re.S).group(1)
+        # setView now takes an options object: match the signature, not just `name`.
+        set_view = re.search(r"function setView\(name[^)]*\) \{(.*?)\n\}", self.js, re.S).group(1)
         self.assertIn("if (view === 'dessiner') hqDeferViewRender", set_view)
         self.assertIn("window.hqCalendarShow()", set_view)
         self.assertIn("window.hqPlayerView(view)", set_view)
@@ -436,14 +437,16 @@ class LecteurTabStaticTests(unittest.TestCase):
     def test_csp_unchanged(self):
         class Probe:
             def __init__(self):
-                self.headers = []
+                self.sent = []
+                self.headers = {}  # request headers: the policy builder reads Host
+                self.path = "/"
 
             def send_header(self, k, v):
-                self.headers.append((k, v))
+                self.sent.append((k, v))
 
         probe = Probe()
         B.Handler._security_headers(probe)
-        csp = dict(probe.headers)["Content-Security-Policy"]
+        csp = dict(probe.sent)["Content-Security-Policy"]
         self.assertEqual(csp, "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
                               "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
 

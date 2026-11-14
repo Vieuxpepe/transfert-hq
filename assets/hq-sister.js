@@ -125,8 +125,24 @@
 
     function deviceId() {
       try {
-        if (typeof w.hqDeviceId === "function") return String(w.hqDeviceId() || "");
-        return String(w.localStorage.getItem("hq_device_id") || "");
+        var id = "";
+        if (typeof w.hqDeviceId === "function") id = String(w.hqDeviceId() || "");
+        if (id.length < 12) id = String(w.localStorage.getItem("hq_device_id") || "");
+        var companionId = String(w.localStorage.getItem("hq_companion_device_id") || "");
+        if (id.length < 12 && companionId.length >= 12) id = companionId;
+        if (id.length < 12) {
+          var rnd = "";
+          if (w.crypto && typeof w.crypto.randomUUID === "function") {
+            rnd = w.crypto.randomUUID().replace(/-/g, "");
+          } else {
+            rnd = String(Date.now()) + Math.random().toString(36).slice(2, 14);
+          }
+          id = ("hq" + rnd).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
+          if (id.length < 12) id = ("hqdev" + String(Date.now())).slice(0, 24);
+        }
+        w.localStorage.setItem("hq_device_id", id);
+        if (!companionId) w.localStorage.setItem("hq_companion_device_id", id);
+        return id;
       } catch (_) {
         return "";
       }

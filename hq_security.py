@@ -5,7 +5,10 @@ Standard-library only, concurrency-safe, bounded, privacy-preserving.
 
 from __future__ import annotations
 
+import base64
 import collections
+import hashlib
+import hmac
 import html
 import json
 import math
@@ -114,7 +117,14 @@ def get_session_policy(config: dict | None, role: str) -> tuple[float, float]:
     return abs_ttl, idle_ttl
 
 
-def create_session_record(user: str, role: str, gen: int, config: dict | None, now: float | None = None) -> dict:
+def create_session_record(
+    user: str,
+    role: str,
+    gen: int,
+    config: dict | None,
+    now: float | None = None,
+    user_id: str | None = None,
+) -> dict:
     """Create a new session record with absolute expiration and idle timeout tracking."""
     if role not in ("admin", "upload"):
         raise ValueError(f"Invalid session role: {role}")
@@ -126,6 +136,7 @@ def create_session_record(user: str, role: str, gen: int, config: dict | None, n
         "last_active": t_now,
         "created_at": t_now,
         "user": str(user or "user")[:40],
+        "user_id": str(user_id or "")[:40],
         "role": role,
         "gen": int(gen),
     }
@@ -266,6 +277,7 @@ def parse_stored_session(raw: object, config: dict | None, now: float | None = N
         "last_active": last_active,
         "created_at": created_at,
         "user": str(raw.get("user") or "user")[:40],
+        "user_id": str(raw.get("user_id") or "")[:40],
         "role": role,
         "gen": gen,
     }
@@ -977,6 +989,21 @@ class SecurityLog:
     EVENT_PROXY_REJECTED = "auth.proxy.rejected"
     EVENT_ROLE_DENIED = "auth.role.denied"
     EVENT_PRIVILEGED_ACTION = "auth.privileged_action"
+    EVENT_ACCOUNT_CREATED = "auth.account.created"
+    EVENT_ACCOUNT_DELETED = "auth.account.deleted"
+    EVENT_ACCOUNT_DISABLED = "auth.account.disabled"
+    EVENT_ACCOUNT_ENABLED = "auth.account.enabled"
+    EVENT_ACCOUNT_PIN_ROTATED = "auth.account.pin_rotated"
+    EVENT_ACCOUNT_ROLE_CHANGED = "auth.account.role_changed"
+    EVENT_ACCOUNT_RENAMED = "auth.account.renamed"
+    EVENT_SESSIONS_REVOKED = "auth.account.sessions_revoked"
+    EVENT_PASSKEY_REGISTERED = "auth.passkey.registered"
+    EVENT_PASSKEY_LOGIN = "auth.passkey.login"
+    EVENT_PASSKEY_DELETED = "auth.passkey.deleted"
+    EVENT_TRIPWIRE_TRIGGERED = "auth.tripwire.triggered"
+    EVENT_TRIPWIRE_LOCKDOWN = "auth.tripwire.lockdown"
+    EVENT_TRIPWIRE_UNLOCKED = "auth.tripwire.unlocked"
+    EVENT_TRIPWIRE_UNLOCK_FAILED = "auth.tripwire.unlock_failed"
 
     ALLOWED_EVENTS = frozenset({
         EVENT_LOGIN_SUCCESS,
@@ -989,6 +1016,21 @@ class SecurityLog:
         EVENT_PROXY_REJECTED,
         EVENT_ROLE_DENIED,
         EVENT_PRIVILEGED_ACTION,
+        EVENT_ACCOUNT_CREATED,
+        EVENT_ACCOUNT_DELETED,
+        EVENT_ACCOUNT_DISABLED,
+        EVENT_ACCOUNT_ENABLED,
+        EVENT_ACCOUNT_PIN_ROTATED,
+        EVENT_ACCOUNT_ROLE_CHANGED,
+        EVENT_ACCOUNT_RENAMED,
+        EVENT_SESSIONS_REVOKED,
+        EVENT_PASSKEY_REGISTERED,
+        EVENT_PASSKEY_LOGIN,
+        EVENT_PASSKEY_DELETED,
+        EVENT_TRIPWIRE_TRIGGERED,
+        EVENT_TRIPWIRE_LOCKDOWN,
+        EVENT_TRIPWIRE_UNLOCKED,
+        EVENT_TRIPWIRE_UNLOCK_FAILED,
     })
 
     ALLOWED_RESULTS = frozenset({
@@ -1002,6 +1044,10 @@ class SecurityLog:
         "authorized",
         "scheduled",
         "accepted",
+        "created",
+        "deleted",
+        "modified",
+        "rotated",
     })
 
     def __init__(self, maxlen: int = SECURITY_RING_MAX) -> None:
@@ -1052,6 +1098,8 @@ class SecurityLog:
         action: str | None = None,
         path_category: str | None = None,
         request_id: str | None = None,
+        actor_user_id: str | None = None,
+        target_user_id: str | None = None,
     ) -> None:
         """Record a sanitized security event. Completely privacy-preserving."""
         if event not in self.ALLOWED_EVENTS:
@@ -1073,6 +1121,10 @@ class SecurityLog:
             "request_id": rid,
         }
 
+        if actor_user_id:
+            entry["actor_user_id"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(actor_user_id))[:40]
+        if target_user_id:
+            entry["target_user_id"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(target_user_id))[:40]
         if reason:
             entry["reason"] = re.sub(r"[^A-Za-z0-9_.-]", "", str(reason))[:60]
         if action:
@@ -1142,4 +1194,1457 @@ class SecurityLog:
 # Module singleton instances
 SECURITY_LOG = SecurityLog()
 AUTH_RATE_LIMITER = AuthRateLimiter()
+
+
+# =============================================================================
+# 5. Credential Security & User Management
+# =============================================================================
+
+# Slow KDF parameters (standard library hashlib.scrypt / PBKDF2)
+SCRYPT_N = 16384          # CPU/memory cost parameter (2^14)
+SCRYPT_R = 8              # Block size
+SCRYPT_P = 1              # Parallelization
+SCRYPT_MAXMEM = 32 * 1024 * 1024  # 32 MB max memory
+SALT_BYTES = 16           # 128 bits of cryptographically secure random salt
+PIN_MIN_LENGTH = 8        # Minimum 8 numeric digits or passphrase characters
+PIN_MAX_LENGTH = 128
+PBKDF2_ROUNDS = 100_000   # Fallback rounds for PBKDF2-HMAC-SHA256
+
+
+def hash_pin(pin: str, salt: bytes | None = None) -> str:
+    """Hash a PIN using slow, salted standard-library scrypt (or PBKDF2 fallback).
+
+    Format:
+    scrypt$<n>$<r>$<p>$<salt_hex>$<hash_hex>
+    or
+    pbkdf2$sha256$<rounds>$<salt_hex>$<hash_hex>
+    """
+    if not isinstance(pin, str):
+        raise TypeError("PIN must be a string")
+    pin_clean = pin.strip()
+    if not pin_clean:
+        raise ValueError("PIN cannot be empty")
+    pin_bytes = pin_clean.encode("utf-8")
+
+    if salt is None:
+        salt = secrets.token_bytes(SALT_BYTES)
+    elif not isinstance(salt, (bytes, bytearray)) or len(salt) < 8:
+        raise ValueError("Salt must be at least 8 bytes")
+    else:
+        salt = bytes(salt)
+
+    try:
+        derived = hashlib.scrypt(
+            pin_bytes,
+            salt=salt,
+            n=SCRYPT_N,
+            r=SCRYPT_R,
+            p=SCRYPT_P,
+            maxmem=SCRYPT_MAXMEM,
+        )
+        return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${salt.hex()}${derived.hex()}"
+    except (AttributeError, ValueError):
+        # Fallback to PBKDF2-HMAC-SHA256 if scrypt is unavailable
+        derived = hashlib.pbkdf2_hmac("sha256", pin_bytes, salt, PBKDF2_ROUNDS)
+        return f"pbkdf2$sha256${PBKDF2_ROUNDS}${salt.hex()}${derived.hex()}"
+
+
+def verify_pin(pin: str, stored_hash: str) -> bool:
+    """Verify a candidate PIN against a stored hash or legacy credential.
+
+    Constant-time comparison through hmac.compare_digest.
+    Supports:
+    - scrypt$<n>$<r>$<p>$<salt_hex>$<hash_hex>
+    - pbkdf2$<algo>$<rounds>$<salt_hex>$<hash_hex>
+    - legacy sha256 hex digest (transfert-bridge:<pin>)
+    - direct sha256 hex digest
+    - legacy plaintext comparison
+    """
+    if not isinstance(pin, str) or not isinstance(stored_hash, str):
+        return False
+    pin_clean = pin.strip()
+    stored_clean = stored_hash.strip()
+    if not pin_clean or not stored_clean:
+        return False
+
+    pin_bytes = pin_clean.encode("utf-8")
+
+    # 1. scrypt format
+    if stored_clean.startswith("scrypt$"):
+        parts = stored_clean.split("$")
+        if len(parts) == 6:
+            try:
+                n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+                salt = bytes.fromhex(parts[4])
+                expected = bytes.fromhex(parts[5])
+                derived = hashlib.scrypt(
+                    pin_bytes,
+                    salt=salt,
+                    n=n,
+                    r=r,
+                    p=p,
+                    maxmem=SCRYPT_MAXMEM,
+                )
+                return hmac.compare_digest(derived, expected)
+            except Exception:
+                return False
+
+    # 2. pbkdf2 format
+    if stored_clean.startswith("pbkdf2$"):
+        parts = stored_clean.split("$")
+        if len(parts) == 6:
+            try:
+                algo = parts[1]
+                rounds = int(parts[2])
+                salt = bytes.fromhex(parts[3])
+                expected = bytes.fromhex(parts[4])
+                derived = hashlib.pbkdf2_hmac(algo, pin_bytes, salt, rounds)
+                return hmac.compare_digest(derived, expected)
+            except Exception:
+                return False
+
+    # 3. Legacy SHA-256 (transfert-bridge:{pin})
+    try:
+        legacy_hash = hashlib.sha256(f"transfert-bridge:{pin_clean}".encode("utf-8")).hexdigest()
+        if hmac.compare_digest(legacy_hash, stored_clean):
+            return True
+    except Exception:
+        pass
+
+    # 4. Direct SHA-256 hex digest
+    try:
+        direct_sha256 = hashlib.sha256(pin_bytes).hexdigest()
+        if hmac.compare_digest(direct_sha256, stored_clean):
+            return True
+    except Exception:
+        pass
+
+    # 5. Legacy plaintext comparison (for unmigrated records during startup/transition)
+    try:
+        if hmac.compare_digest(pin_clean, stored_clean):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def validate_pin_strength(pin: str) -> tuple[bool, str]:
+    """Validate that a new PIN meets security requirements.
+
+    Requirements:
+    - 8 to 128 characters
+    - No leading/trailing spaces
+    - No control or unprintable characters
+    - If numeric: reject all-identical digits or consecutive ascending/descending sequences
+    """
+    if not isinstance(pin, str):
+        return False, "Le PIN doit être une chaîne de caractères."
+    pin_clean = pin.strip()
+    if len(pin) != len(pin_clean):
+        return False, "Le PIN ne doit pas contenir d'espaces au début ou à la fin."
+    if len(pin_clean) < PIN_MIN_LENGTH:
+        return False, f"Le PIN doit contenir au moins {PIN_MIN_LENGTH} caractères ou chiffres."
+    if len(pin_clean) > PIN_MAX_LENGTH:
+        return False, f"Le PIN ne peut pas dépasser {PIN_MAX_LENGTH} caractères."
+
+    # Reject non-printable / control characters
+    if any(ord(c) < 32 or ord(c) == 127 for c in pin_clean):
+        return False, "Le PIN contient des caractères non autorisés."
+
+    # If numeric, reject trivial patterns
+    if pin_clean.isdigit():
+        if len(set(pin_clean)) == 1:
+            return False, "Le PIN ne peut pas être composé d'un seul chiffre répété."
+        is_asc = all(int(pin_clean[i]) == (int(pin_clean[i - 1]) + 1) % 10 for i in range(1, len(pin_clean)))
+        is_desc = all(int(pin_clean[i]) == (int(pin_clean[i - 1]) - 1) % 10 for i in range(1, len(pin_clean)))
+        if is_asc or is_desc:
+            return False, "Le PIN ne peut pas être une séquence numérique consécutive triviale."
+
+    return True, ""
+
+
+def check_duplicate_pin(candidate_pin: str, users: list[dict], exclude_user_id: str | None = None) -> bool:
+    """Check if candidate_pin matches the PIN of any other active user."""
+    if not candidate_pin or not isinstance(users, list):
+        return False
+    for u in users:
+        if not isinstance(u, dict):
+            continue
+        uid = str(u.get("id") or "")
+        if exclude_user_id and uid == exclude_user_id:
+            continue
+        if not u.get("enabled", True):
+            continue
+        stored = str(u.get("pin_hash") or u.get("pin") or "").strip()
+        if stored and verify_pin(candidate_pin, stored):
+            return True
+    return False
+
+
+def generate_user_id() -> str:
+    """Generate a stable, collision-resistant internal account ID."""
+    return f"usr_{secrets.token_hex(6)}"
+
+
+def count_enabled_admins(users: list[dict]) -> int:
+    """Count the number of active, enabled administrator accounts."""
+    if not isinstance(users, list):
+        return 0
+    return sum(
+        1 for u in users
+        if isinstance(u, dict)
+        and u.get("role") == "admin"
+        and bool(u.get("enabled", True))
+        and bool(str(u.get("pin_hash") or u.get("pin") or "").strip())
+    )
+
+
+def find_user_by_id(users: list[dict], user_id: str) -> dict | None:
+    """Find a user account dictionary by stable internal ID."""
+    if not isinstance(users, list) or not user_id:
+        return None
+    for u in users:
+        if isinstance(u, dict) and str(u.get("id") or "") == user_id:
+            return u
+    return None
+
+
+def find_user_by_name(users: list[dict], name: str) -> dict | None:
+    """Find a user account dictionary by display name (case-insensitive)."""
+    if not isinstance(users, list) or not name:
+        return None
+    name_folded = name.strip().lower()
+    for u in users:
+        if isinstance(u, dict) and str(u.get("name") or "").strip().lower() == name_folded:
+            return u
+    return None
+
+
+def migrate_users_config(config: dict) -> bool:
+    """Safely migrate legacy PIN and user records to modern schema with KDF hashes.
+
+    Guarantees:
+    - Never locks out the original administrator.
+    - If CONFIG["pin"] exists, ensures an enabled administrator account is present in CONFIG["users"].
+    - Every account receives a stable unique internal ID.
+    - Plaintext PINs in user records are upgraded to salted KDF hashes and wiped.
+    - Preserves all unrelated configuration.
+    """
+    if not isinstance(config, dict):
+        return False
+    changed = False
+
+    raw_users = config.get("users")
+    if not isinstance(raw_users, list):
+        raw_users = []
+        config["users"] = raw_users
+        changed = True
+
+    users: list[dict] = []
+    seen_ids: set[str] = set()
+
+    # Step 1: Normalize and upgrade existing users
+    for item in raw_users:
+        if not isinstance(item, dict):
+            changed = True
+            continue
+        u = dict(item)
+
+        # ID assignment
+        uid = str(u.get("id") or "").strip()
+        if not uid or uid in seen_ids:
+            uid = generate_user_id()
+            changed = True
+        u["id"] = uid
+        seen_ids.add(uid)
+
+        # Name normalization
+        name = str(u.get("name") or "Utilisateur")[:40].strip() or "Utilisateur"
+        if name != u.get("name"):
+            u["name"] = name
+            changed = True
+
+        # Role normalization
+        role = u.get("role")
+        if role not in ("admin", "upload"):
+            role = "upload" if "upload" in str(role).lower() else "admin"
+            u["role"] = role
+            changed = True
+
+        # Enabled normalization
+        enabled = bool(u.get("enabled", True))
+        if "enabled" not in u or u.get("enabled") != enabled:
+            u["enabled"] = enabled
+            changed = True
+
+        # Timestamp normalization
+        now = time.time()
+        if not isinstance(u.get("created_at"), (int, float)):
+            u["created_at"] = now
+            changed = True
+        if not isinstance(u.get("updated_at"), (int, float)):
+            u["updated_at"] = u["created_at"]
+            changed = True
+        if not isinstance(u.get("pin_updated_at"), (int, float)):
+            u["pin_updated_at"] = u["created_at"]
+            changed = True
+
+        # Plaintext PIN migration to KDF hash
+        plain_pin = str(u.get("pin") or "").strip()
+        pin_hash_val = str(u.get("pin_hash") or "").strip()
+        if plain_pin and not pin_hash_val:
+            u["pin_hash"] = hash_pin(plain_pin)
+            u.pop("pin", None)
+            changed = True
+        elif plain_pin and pin_hash_val:
+            u.pop("pin", None)
+            changed = True
+
+        users.append(u)
+
+    # Step 2: Ensure original administrator is NEVER locked out
+    legacy_root_pin = str(config.get("pin") or "").strip()
+    has_enabled_admin = any(
+        u.get("role") == "admin" and u.get("enabled", True) and (u.get("pin_hash") or u.get("pin"))
+        for u in users
+    )
+
+    if legacy_root_pin:
+        matches_existing_admin = any(
+            u.get("role") == "admin" and verify_pin(legacy_root_pin, str(u.get("pin_hash") or u.get("pin") or ""))
+            for u in users
+        )
+        if not matches_existing_admin and not has_enabled_admin:
+            # Create primary admin account from legacy root PIN
+            admin_uid = "usr_admin" if "usr_admin" not in seen_ids else generate_user_id()
+            now = time.time()
+            admin_record = {
+                "id": admin_uid,
+                "name": "Administrateur",
+                "role": "admin",
+                "enabled": True,
+                "pin_hash": hash_pin(legacy_root_pin),
+                "created_at": now,
+                "updated_at": now,
+                "pin_updated_at": now,
+            }
+            users.insert(0, admin_record)
+            seen_ids.add(admin_uid)
+            changed = True
+        elif not matches_existing_admin and has_enabled_admin and len(users) == 0:
+            # Fallback
+            pass
+
+    config["users"] = users
+    return changed
+
+
+def create_account(
+    config: dict,
+    name: str,
+    role: str,
+    pin: str,
+) -> tuple[dict | None, str | None]:
+    """Create a new user account with validated credentials and invariants.
+
+    Returns (created_account, error_message).
+    """
+    if not isinstance(config, dict):
+        return None, "Configuration invalide."
+
+    # Name validation
+    name_clean = str(name or "").strip()
+    if not name_clean:
+        return None, "Le nom du compte est obligatoire."
+    if len(name_clean) > 40:
+        return None, "Le nom du compte ne doit pas dépasser 40 caractères."
+    if re.search(r"[<>&\"'\r\n]", name_clean):
+        return None, "Le nom du compte contient des caractères non autorisés."
+
+    # Role validation
+    if role not in ("admin", "upload"):
+        return None, "Rôle invalide. Choisissez 'admin' ou 'upload'."
+
+    # PIN validation
+    valid_pin, pin_err = validate_pin_strength(pin)
+    if not valid_pin:
+        return None, pin_err
+
+    # Ensure users array exists and legacy migration is checked
+    migrate_users_config(config)
+    users = config.setdefault("users", [])
+
+    # Check for duplicate PIN across all active users
+    if check_duplicate_pin(pin, users):
+        return None, "Ce code PIN est déjà utilisé par un autre compte actif."
+
+    now = time.time()
+    account = {
+        "id": generate_user_id(),
+        "name": name_clean,
+        "role": role,
+        "enabled": True,
+        "pin_hash": hash_pin(pin),
+        "created_at": now,
+        "updated_at": now,
+        "pin_updated_at": now,
+    }
+    users.append(account)
+    return account, None
+
+
+def update_account(
+    config: dict,
+    user_id: str,
+    *,
+    name: str | None = None,
+    role: str | None = None,
+    enabled: bool | None = None,
+) -> tuple[dict | None, str | None, bool]:
+    """Update account details with last-administrator protection.
+
+    Returns (updated_account, error_message, permissions_changed).
+    """
+    if not isinstance(config, dict):
+        return None, "Configuration invalide.", False
+
+    users = config.get("users", [])
+    account = find_user_by_id(users, user_id)
+    if not account:
+        return None, "Compte introuvable.", False
+
+    current_role = account.get("role", "upload")
+    current_enabled = bool(account.get("enabled", True))
+    is_admin = current_role == "admin" and current_enabled
+
+    # Check last administrator invariants if demoting or disabling
+    will_demote = role is not None and role != "admin" and current_role == "admin"
+    will_disable = enabled is not None and not enabled and current_enabled
+
+    if (will_demote or will_disable) and is_admin:
+        if count_enabled_admins(users) <= 1:
+            return None, "Impossible de désactiver ou rétrograder le dernier administrateur actif.", False
+
+    permissions_changed = False
+
+    if name is not None:
+        name_clean = str(name).strip()
+        if not name_clean:
+            return None, "Le nom du compte ne peut pas être vide.", False
+        if len(name_clean) > 40:
+            return None, "Le nom du compte ne doit pas dépasser 40 caractères.", False
+        if re.search(r"[<>&\"'\r\n]", name_clean):
+            return None, "Le nom du compte contient des caractères non autorisés.", False
+        account["name"] = name_clean
+
+    if role is not None and role in ("admin", "upload"):
+        if role != account.get("role"):
+            account["role"] = role
+            permissions_changed = True
+
+    if enabled is not None:
+        new_enabled = bool(enabled)
+        if new_enabled != account.get("enabled"):
+            account["enabled"] = new_enabled
+            permissions_changed = True
+
+    account["updated_at"] = time.time()
+    return account, None, permissions_changed
+
+
+def rotate_account_pin(
+    config: dict,
+    user_id: str,
+    new_pin: str,
+) -> tuple[dict | None, str | None]:
+    """Rotate an account's PIN, validating strength and uniqueness.
+
+    Returns (updated_account, error_message).
+    """
+    if not isinstance(config, dict):
+        return None, "Configuration invalide."
+
+    users = config.get("users", [])
+    account = find_user_by_id(users, user_id)
+    if not account:
+        return None, "Compte introuvable."
+
+    valid_pin, pin_err = validate_pin_strength(new_pin)
+    if not valid_pin:
+        return None, pin_err
+
+    if check_duplicate_pin(new_pin, users, exclude_user_id=user_id):
+        return None, "Ce code PIN est déjà utilisé par un autre compte actif."
+
+    now = time.time()
+    account["pin_hash"] = hash_pin(new_pin)
+    account["pin_updated_at"] = now
+    account["updated_at"] = now
+    return account, None
+
+
+def delete_account(config: dict, user_id: str) -> tuple[bool, str | None]:
+    """Delete an account, enforcing last-administrator protection.
+
+    Returns (success, error_message).
+    """
+    if not isinstance(config, dict):
+        return False, "Configuration invalide."
+
+    users = config.get("users", [])
+    idx = next((i for i, u in enumerate(users) if isinstance(u, dict) and u.get("id") == user_id), None)
+    if idx is None:
+        return False, "Compte introuvable."
+
+    account = users[idx]
+    if account.get("role") == "admin" and bool(account.get("enabled", True)):
+        if count_enabled_admins(users) <= 1:
+            return False, "Impossible de supprimer le dernier administrateur actif."
+
+    users.pop(idx)
+    return True, None
+
+
+def sanitize_account_for_api(account: dict, active_sessions: int = 0, is_current: bool = False) -> dict:
+    """Return a safe representation of an account for client API consumption.
+
+    GUARANTEE: Never exposes pin or pin_hash.
+    """
+    return {
+        "id": str(account.get("id") or ""),
+        "name": str(account.get("name") or ""),
+        "role": str(account.get("role") or "upload"),
+        "enabled": bool(account.get("enabled", True)),
+        "created_at": float(account.get("created_at") or 0.0),
+        "updated_at": float(account.get("updated_at") or 0.0),
+        "pin_updated_at": float(account.get("pin_updated_at") or 0.0),
+        "active_sessions": int(active_sessions),
+        "is_current": bool(is_current),
+    }
+
+
+def revoke_sessions_for_user(
+    sessions: dict,
+    user_id: str,
+    username: str | None = None,
+    sessions_lock: threading.Lock | None = None,
+) -> int:
+    """Revoke all active sessions belonging to the given user ID (or legacy username).
+
+    Concurrency-safe when sessions_lock is provided.
+    Returns count of revoked sessions.
+    """
+    if not isinstance(sessions, dict) or not user_id:
+        return 0
+
+    revoked_count = 0
+    to_delete = []
+
+    def _scan():
+        nonlocal revoked_count
+        for tok, info in list(sessions.items()):
+            if not isinstance(info, dict):
+                continue
+            sess_uid = str(info.get("user_id") or "")
+            sess_user = str(info.get("user") or "")
+            if sess_uid == user_id or (not sess_uid and username and sess_user == username):
+                to_delete.append(tok)
+        for tok in to_delete:
+            sessions.pop(tok, None)
+            revoked_count += 1
+
+    if sessions_lock:
+        with sessions_lock:
+            _scan()
+    else:
+        _scan()
+
+    return revoked_count
+
+
+def count_user_sessions(sessions: dict, user_id: str, username: str | None = None) -> int:
+    """Count active non-expired sessions for a specific user ID."""
+    if not isinstance(sessions, dict) or not user_id:
+        return 0
+    now = time.time()
+    count = 0
+    for tok, info in sessions.items():
+        if not isinstance(info, dict):
+            continue
+        if float(info.get("exp") or 0.0) <= now:
+            continue
+        sess_uid = str(info.get("user_id") or "")
+        sess_user = str(info.get("user") or "")
+        if sess_uid == user_id or (not sess_uid and username and sess_user == username):
+            count += 1
+    return count
+
+
+# =============================================================================
+# WebAuthn / Passkeys Engine (Face ID / Touch ID / Windows Hello)
+# =============================================================================
+
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding
+    HAS_WEBAUTHN_CRYPTO = True
+except ImportError:
+    HAS_WEBAUTHN_CRYPTO = False
+
+_WEBAUTHN_CHALLENGES: dict[str, dict] = {}
+_WEBAUTHN_LOCK = threading.Lock()
+WEBAUTHN_CHALLENGE_TTL = 120.0  # seconds
+
+
+def create_webauthn_challenge(user_id: str | None = None, purpose: str = "login") -> str:
+    """Generate a high-entropy random base64url challenge and cache it with TTL."""
+    raw = secrets.token_bytes(32)
+    challenge = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    now = time.time()
+    with _WEBAUTHN_LOCK:
+        expired = [c for c, data in _WEBAUTHN_CHALLENGES.items() if data.get("exp", 0) <= now]
+        for c in expired:
+            _WEBAUTHN_CHALLENGES.pop(c, None)
+        _WEBAUTHN_CHALLENGES[challenge] = {
+            "user_id": user_id,
+            "purpose": purpose,
+            "exp": now + WEBAUTHN_CHALLENGE_TTL,
+        }
+    return challenge
+
+
+def consume_webauthn_challenge(challenge: str) -> dict | None:
+    """Validate and atomically consume a challenge. Returns associated data or None."""
+    if not challenge:
+        return None
+    now = time.time()
+    with _WEBAUTHN_LOCK:
+        data = _WEBAUTHN_CHALLENGES.pop(challenge, None)
+    if not data or float(data.get("exp", 0)) < now:
+        return None
+    return data
+
+
+def register_passkey(
+    config: dict,
+    user_id: str,
+    cred_id_b64: str,
+    pubkey_der_b64: str,
+    name: str = "",
+) -> dict:
+    """Register a new passkey credential in configuration for a user."""
+    if not user_id or not cred_id_b64 or not pubkey_der_b64:
+        raise ValueError("Données de clé d'accès manquantes")
+    passkeys = config.setdefault("passkeys", [])
+    if not isinstance(passkeys, list):
+        passkeys = []
+        config["passkeys"] = passkeys
+
+    for p in passkeys:
+        if isinstance(p, dict) and p.get("id") == cred_id_b64:
+            raise ValueError("Cette clé d'accès est déjà enregistrée")
+
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    record = {
+        "id": cred_id_b64,
+        "user_id": user_id,
+        "public_key": pubkey_der_b64,
+        "name": str(name or "Biométrie / Clé d'accès")[:60],
+        "created_at": now_iso,
+        "last_used_at": None,
+    }
+    passkeys.append(record)
+    return record
+
+
+def list_passkeys(config: dict, user_id: str | None = None) -> list[dict]:
+    """List registered passkeys, optionally filtered by user ID (sanitized without public keys)."""
+    passkeys = config.get("passkeys") or []
+    if not isinstance(passkeys, list):
+        return []
+    out = []
+    for p in passkeys:
+        if not isinstance(p, dict):
+            continue
+        if user_id and p.get("user_id") != user_id:
+            continue
+        out.append({
+            "id": p.get("id"),
+            "user_id": p.get("user_id"),
+            "name": p.get("name") or "Biométrie",
+            "created_at": p.get("created_at"),
+            "last_used_at": p.get("last_used_at"),
+        })
+    return out
+
+
+def delete_passkey(config: dict, cred_id_b64: str, user_id: str | None = None) -> bool:
+    """Delete a registered passkey."""
+    passkeys = config.get("passkeys") or []
+    if not isinstance(passkeys, list):
+        return False
+    idx_to_remove = None
+    for i, p in enumerate(passkeys):
+        if isinstance(p, dict) and p.get("id") == cred_id_b64:
+            if user_id and p.get("user_id") != user_id:
+                return False
+            idx_to_remove = i
+            break
+    if idx_to_remove is not None:
+        passkeys.pop(idx_to_remove)
+        return True
+    return False
+
+
+def verify_passkey_assertion(
+    config: dict,
+    cred_id_b64: str,
+    client_data_bytes: bytes,
+    auth_data_bytes: bytes,
+    signature_bytes: bytes,
+    expected_challenge: str,
+) -> dict | None:
+    """
+    Cryptographically verify a WebAuthn assertion signature against a registered passkey.
+    Returns the associated user dict if valid, or None.
+    """
+    if not HAS_WEBAUTHN_CRYPTO:
+        return None
+    if not cred_id_b64 or not client_data_bytes or not auth_data_bytes or not signature_bytes:
+        return None
+
+    try:
+        client_data = json.loads(client_data_bytes.decode("utf-8"))
+        if client_data.get("type") != "webauthn.get":
+            return None
+        ch = str(client_data.get("challenge") or "").rstrip("=")
+        if not hmac.compare_digest(ch, expected_challenge.rstrip("=")):
+            return None
+    except Exception:
+        return None
+
+    passkeys = config.get("passkeys") or []
+    matching_cred = None
+    for p in passkeys:
+        if isinstance(p, dict) and p.get("id") == cred_id_b64:
+            matching_cred = p
+            break
+    if not matching_cred:
+        return None
+
+    client_hash = hashlib.sha256(client_data_bytes).digest()
+    data_to_verify = auth_data_bytes + client_hash
+
+    try:
+        raw_der = base64.b64decode(matching_cred["public_key"])
+        pubkey = serialization.load_der_public_key(raw_der)
+    except Exception:
+        return None
+
+    verified = False
+    try:
+        pubkey.verify(signature_bytes, data_to_verify, ec.ECDSA(hashes.SHA256()))
+        verified = True
+    except Exception:
+        pass
+
+    if not verified:
+        try:
+            pubkey.verify(signature_bytes, data_to_verify, padding.PKCS1v15(), hashes.SHA256())
+            verified = True
+        except Exception:
+            pass
+
+    if not verified:
+        return None
+
+    matching_cred["last_used_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    user_id = matching_cred.get("user_id")
+    for u in config.get("users") or []:
+        if isinstance(u, dict) and u.get("id") == user_id:
+            if u.get("disabled"):
+                return None
+            return u
+
+    if user_id == "usr_root":
+        return {"id": "usr_root", "name": "Admin", "role": "admin", "disabled": False}
+
+    return None
+
+
+# =============================================================================
+# Safety Tripwire & Hotmail Emergency Lockdown
+# =============================================================================
+
+import smtplib
+import urllib.request
+import urllib.error
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+_TRIPWIRE_FAILURES: list[dict] = []
+_TRIPWIRE_LOCK = threading.RLock()
+_TRIPWIRE_TOKENS: dict[str, dict] = {}
+_LAST_ALERT_TIME: float = 0.0
+
+DEFAULT_TRIPWIRE_RECIPIENT = "autm_200895011@hotmail.com"
+DEFAULT_TRIPWIRE_SMTP_HOST = "smtp-mail.outlook.com"
+DEFAULT_TRIPWIRE_SMTP_PORT = 587
+TRIPWIRE_THRESHOLD = 2
+TRIPWIRE_FAIL_WINDOW = 600.0  # 10 minutes
+TRIPWIRE_ALERT_COOLDOWN = 180.0  # 3 minutes cooldown between emails to avoid mailbombing
+LOCKDOWN_TOKEN_TTL = 86400.0  # 24 hours
+
+
+def get_tripwire_config(config: dict) -> dict:
+    """Retrieve or default the tripwire configuration."""
+    cfg = config.get("tripwire")
+    if not isinstance(cfg, dict):
+        cfg = {}
+    return {
+        "enabled": bool(cfg.get("enabled", True)),
+        "recipient_email": str(cfg.get("recipient_email") or DEFAULT_TRIPWIRE_RECIPIENT).strip(),
+        "smtp_host": str(cfg.get("smtp_host") or DEFAULT_TRIPWIRE_SMTP_HOST).strip(),
+        "smtp_port": int(cfg.get("smtp_port") or DEFAULT_TRIPWIRE_SMTP_PORT),
+        "smtp_user": str(cfg.get("smtp_user") or DEFAULT_TRIPWIRE_RECIPIENT).strip(),
+        "smtp_password": str(cfg.get("smtp_password") or "").strip(),
+        "resend_api_key": str(cfg.get("resend_api_key") or "").strip(),
+        "brevo_api_key": str(cfg.get("brevo_api_key") or "").strip(),
+        "base_url": str(cfg.get("base_url") or "").strip(),
+        "failed_threshold": int(cfg.get("failed_threshold") or TRIPWIRE_THRESHOLD),
+    }
+
+
+def create_lockdown_token(config: dict) -> str:
+    """Create a single-use, cryptographically signed emergency lockdown token."""
+    secret = str(config.get("secret_key") or "transfert-hq-emergency-secret")
+    nonce = secrets.token_hex(16)
+    timestamp = str(int(time.time()))
+    payload = f"{timestamp}:{nonce}"
+    sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    token = f"{payload}:{sig}"
+
+    with _TRIPWIRE_LOCK:
+        _TRIPWIRE_TOKENS[token] = {
+            "exp": time.time() + LOCKDOWN_TOKEN_TTL,
+            "used": False,
+        }
+    return token
+
+
+def verify_lockdown_token(config: dict, token: str) -> bool:
+    """Verify and consume a single-use emergency lockdown token."""
+    if not token or token.count(":") != 2:
+        return False
+    timestamp, nonce, sig = token.split(":")
+    secret = str(config.get("secret_key") or "transfert-hq-emergency-secret")
+    payload = f"{timestamp}:{nonce}"
+    expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    if not hmac.compare_digest(sig, expected_sig):
+        return False
+
+    now = time.time()
+    try:
+        ts_val = float(timestamp)
+        if now - ts_val > LOCKDOWN_TOKEN_TTL or ts_val > now + 300:
+            return False
+    except ValueError:
+        return False
+
+    with _TRIPWIRE_LOCK:
+        token_data = _TRIPWIRE_TOKENS.get(token)
+        if token_data:
+            if token_data.get("used") or token_data.get("exp", 0) < now:
+                return False
+            token_data["used"] = True
+            return True
+        else:
+            _TRIPWIRE_TOKENS[token] = {"exp": ts_val + LOCKDOWN_TOKEN_TTL, "used": True}
+            return True
+
+
+def record_failed_attempt(
+    ip: str,
+    user_agent: str,
+    config: dict,
+    base_url: str = "",
+) -> dict | None:
+    """
+    Record a failed login attempt. Returns alert payload if tripwire threshold (2 tries) is reached.
+    """
+    global _LAST_ALERT_TIME
+    now = time.time()
+    tw_cfg = get_tripwire_config(config)
+    if not tw_cfg["enabled"]:
+        return None
+
+    threshold = tw_cfg["failed_threshold"]
+
+    with _TRIPWIRE_LOCK:
+        _TRIPWIRE_FAILURES[:] = [f for f in _TRIPWIRE_FAILURES if now - f["t"] <= TRIPWIRE_FAIL_WINDOW]
+        _TRIPWIRE_FAILURES.append({
+            "t": now,
+            "ip": ip,
+            "ua": user_agent[:120],
+        })
+
+        recent_count = len(_TRIPWIRE_FAILURES)
+        if recent_count >= threshold and (now - _LAST_ALERT_TIME >= TRIPWIRE_ALERT_COOLDOWN):
+            _LAST_ALERT_TIME = now
+            token = create_lockdown_token(config)
+            configured_base = tw_cfg.get("base_url") or ""
+            if configured_base:
+                clean_base = configured_base.rstrip("/")
+            elif base_url and not any(h in base_url for h in ("localhost", "127.0.0.1")):
+                clean_base = base_url.rstrip("/")
+            elif config.get("public_base_urls"):
+                clean_base = str(config["public_base_urls"][0]).rstrip("/")
+            else:
+                clean_base = base_url.rstrip("/") if base_url else ""
+            action_url = f"{clean_base}/emergency/lockdown?token={token}"
+            unlock_url = f"{clean_base}/emergency/unlock"
+            wifi_action_url = f"http://192.168.2.110:8765/emergency/lockdown?token={token}"
+            wifi_unlock_url = f"http://192.168.2.110:8765/emergency/unlock"
+
+            return {
+                "failures": recent_count,
+                "ip": ip,
+                "user_agent": user_agent,
+                "token": token,
+                "action_url": action_url,
+                "wifi_action_url": wifi_action_url,
+                "unlock_url": unlock_url,
+                "wifi_unlock_url": wifi_unlock_url,
+                "recipient": tw_cfg["recipient_email"],
+                "timestamp_str": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(now)),
+            }
+    return None
+
+
+def is_locked_down(config: dict) -> bool:
+    """Return True if emergency lockdown is active."""
+    return bool(config.get("emergency_lockdown"))
+
+
+def engage_lockdown(config: dict) -> None:
+    """Engage emergency lockdown."""
+    config["emergency_lockdown"] = True
+
+
+def unlock_system(config: dict, admin_pin: str) -> tuple[bool, str, dict | None]:
+    """
+    Unlock the system ONLY if a valid administrator PIN is provided.
+    Returns (success, message, admin_user_dict).
+    """
+    if not admin_pin:
+        return False, "Code PIN requis", None
+
+    migrate_users_config(config)
+
+    # 1. Check enabled admin users in CONFIG["users"]
+    users = config.get("users") or []
+    for u in users:
+        if not isinstance(u, dict):
+            continue
+        if u.get("role") == "admin" and not u.get("disabled"):
+            h = str(u.get("pin_hash") or "")
+            p = str(u.get("pin") or "")
+            if (h and verify_pin(admin_pin, h)) or (p and verify_pin(admin_pin, p)):
+                config["emergency_lockdown"] = False
+                with _TRIPWIRE_LOCK:
+                    _TRIPWIRE_FAILURES.clear()
+                return True, "Système déverrouillé avec succès", u
+
+    # 2. Check legacy root PIN fallback if admin
+    root_h = str(config.get("pin_hash") or "")
+    root_p = str(config.get("pin") or "")
+    if (root_h and verify_pin(admin_pin, root_h)) or (root_p and verify_pin(admin_pin, root_p)):
+        config["emergency_lockdown"] = False
+        with _TRIPWIRE_LOCK:
+            _TRIPWIRE_FAILURES.clear()
+        return True, "Système déverrouillé avec succès", {"id": "usr_root", "name": "Admin", "role": "admin"}
+
+    return False, "Code PIN administrateur incorrect", None
+
+
+def tripwire_status(config: dict) -> dict:
+    """Return live interactive Tripwire state, counters, and cooldown."""
+    global _LAST_ALERT_TIME
+    tw_cfg = get_tripwire_config(config)
+    now = time.time()
+    locked = is_locked_down(config)
+    with _TRIPWIRE_LOCK:
+        _TRIPWIRE_FAILURES[:] = [f for f in _TRIPWIRE_FAILURES if now - f["t"] <= TRIPWIRE_FAIL_WINDOW]
+        recent_count = len(_TRIPWIRE_FAILURES)
+        cooldown_rem = max(0, int(TRIPWIRE_ALERT_COOLDOWN - (now - _LAST_ALERT_TIME))) if _LAST_ALERT_TIME > 0 else 0
+
+    enabled = bool(tw_cfg.get("enabled", False))
+    threshold = int(tw_cfg.get("failed_threshold") or TRIPWIRE_THRESHOLD)
+    if locked:
+        state = "lockdown"
+    elif not enabled:
+        state = "disarmed"
+    elif recent_count >= threshold or cooldown_rem > 0:
+        state = "tripped"
+    else:
+        state = "armed"
+
+    return {
+        "state": state,
+        "enabled": enabled,
+        "locked_down": locked,
+        "failed_threshold": threshold,
+        "recent_failures": recent_count,
+        "window_sec": int(TRIPWIRE_FAIL_WINDOW),
+        "cooldown_remaining_sec": cooldown_rem,
+        "recipient_email": tw_cfg.get("recipient_email", ""),
+    }
+
+
+def arm_or_rearm_tripwire(
+    config: dict,
+    *,
+    enabled: bool = True,
+    threshold: int | None = None,
+    release_lockdown: bool = False,
+) -> dict:
+    """Arm or rearm the Tripwire (resets failure window & alert cooldown)."""
+    global _LAST_ALERT_TIME
+    tw = config.setdefault("tripwire", {})
+    if not isinstance(tw, dict):
+        tw = {}
+        config["tripwire"] = tw
+    tw["enabled"] = bool(enabled)
+    if threshold is not None:
+        tw["failed_threshold"] = max(1, min(20, int(threshold)))
+    if release_lockdown:
+        config["emergency_lockdown"] = False
+    with _TRIPWIRE_LOCK:
+        _TRIPWIRE_FAILURES.clear()
+        _LAST_ALERT_TIME = 0.0
+    return tripwire_status(config)
+
+
+def send_tripwire_email(config: dict, alert_data: dict) -> tuple[bool, str]:
+    """
+    Deliver emergency security alert email to Hotmail using Resend HTTPS API, Brevo, or SMTP STARTTLS.
+    """
+    tw_cfg = get_tripwire_config(config)
+    recipient = alert_data.get("recipient") or tw_cfg["recipient_email"]
+    smtp_host = tw_cfg["smtp_host"]
+    smtp_port = tw_cfg["smtp_port"]
+    smtp_user = tw_cfg["smtp_user"]
+    smtp_pass = tw_cfg["smtp_password"]
+    resend_key = tw_cfg.get("resend_api_key") or (smtp_pass if smtp_pass.startswith("re_") else "")
+    brevo_key = tw_cfg.get("brevo_api_key") or (smtp_pass if smtp_pass.startswith("xkeysib-") else "")
+
+    if not smtp_pass and not resend_key and not brevo_key:
+        return False, "Aucune clé de relais (Resend re_..., Brevo ou mot de passe SMTP) configurée"
+
+    ip = html.escape(str(alert_data.get("ip") or "inconnue"))
+    t_str = html.escape(str(alert_data.get("timestamp_str") or ""))
+    ua = html.escape(str(alert_data.get("user_agent") or "inconnu"))
+    action_url = str(alert_data.get("action_url") or "")
+    wifi_action_url = str(alert_data.get("wifi_action_url") or "")
+    unlock_url = str(alert_data.get("unlock_url") or "")
+    wifi_unlock_url = str(alert_data.get("wifi_unlock_url") or "")
+
+    text_body = f"""ALERTE SÉCURITÉ TRANSFERT HQ
+=============================================
+Deux tentatives de connexion ont échoué consécutivement.
+
+Détails de l'incident :
+- Adresse IP : {ip}
+- Horodatage : {t_str}
+- Navigateur : {ua}
+
+COUPE-CIRCUIT D'URGENCE :
+Si vous n'êtes pas à l'origine de ces tentatives, verrouillez immédiatement Transfert HQ en cliquant sur ce lien sécurisé (Tailscale / Distant) :
+{action_url}
+
+Si vous êtes connecté sur votre Wi-Fi local sans Tailscale :
+{wifi_action_url}
+
+Le verrouillage révoquera toutes les sessions et bloquera tout accès futur.
+
+RÉACTIVATION ET DÉVERROUILLAGE :
+Pour rouvrir ou déverrouiller l'accès, saisissez votre code PIN administrateur sur :
+- Via Tailscale / Distant : {unlock_url}
+- Via Wi-Fi local : {wifi_unlock_url}
+"""
+
+    html_body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"/></head>
+<body style="margin:0;padding:24px;background-color:#0a0d14;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#f8fafc;">
+  <div style="max-width:540px;margin:0 auto;background-color:#121824;border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:32px 28px;box-shadow:0 10px 30px rgba(0,0,0,0.6);">
+    <div style="display:inline-block;padding:6px 14px;border-radius:999px;background:rgba(244,63,94,0.12);border:1px solid rgba(244,63,94,0.35);color:#fda4af;font-size:12px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:16px;">
+      🚨 Coupe-circuit d'urgence
+    </div>
+    <h1 style="font-size:22px;font-weight:700;color:#ffffff;margin:0 0 10px;">Tentatives suspectes sur Transfert HQ</h1>
+    <p style="font-size:14px;line-height:1.5;color:#94a3b8;margin:0 0 24px;">
+      Deux tentatives de connexion consécutives ont échoué sur votre passerelle.
+    </p>
+
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px 18px;margin-bottom:28px;font-size:13px;line-height:1.6;">
+      <div style="color:#94a3b8;"><strong style="color:#ffffff;">Adresse IP :</strong> <code>{ip}</code></div>
+      <div style="color:#94a3b8;"><strong style="color:#ffffff;">Date & Heure :</strong> {t_str}</div>
+      <div style="color:#94a3b8;margin-top:4px;"><strong style="color:#ffffff;">Client :</strong> <span style="font-size:12px;">{ua}</span></div>
+    </div>
+
+    <div style="text-align:center;margin-bottom:16px;">
+      <a href="{action_url}" style="background:linear-gradient(135deg, #e11d48 0%, #be123c 100%);color:#ffffff;padding:16px 28px;text-decoration:none;border-radius:14px;font-weight:700;font-size:15px;display:inline-block;box-shadow:0 6px 20px rgba(225,29,72,0.45);letter-spacing:0.02em;">
+        🛑 VERROUILLER TRANSFERT HQ IMMÉDIATEMENT
+      </a>
+    </div>
+
+    <div style="text-align:center;margin-bottom:24px;">
+      <a href="{wifi_action_url}" style="color:#fda4af;font-size:12px;text-decoration:underline;">
+        Lien direct de verrouillage si vous êtes sur le Wi-Fi local (sans Tailscale)
+      </a>
+    </div>
+
+    <div style="margin-top:24px;padding-top:22px;border-top:1px solid rgba(255,255,255,0.08);text-align:center;">
+      <div style="font-size:13px;color:#94a3b8;margin-bottom:14px;">Faux signal ou besoin de rouvrir l'accès ?</div>
+      <a href="{unlock_url}" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);color:#ffffff;padding:12px 24px;text-decoration:none;border-radius:12px;font-weight:600;font-size:14px;display:inline-block;">
+        🔓 DÉVERROUILLER / RÉACTIVER (AVEC PIN ADMIN)
+      </a>
+      <div style="margin-top:10px;">
+        <a href="{wifi_unlock_url}" style="color:#64748b;font-size:11px;text-decoration:underline;">
+          (Lien de déverrouillage via Wi-Fi local sans Tailscale)
+        </a>
+      </div>
+    </div>
+
+    <p style="font-size:12px;line-height:1.5;color:#64748b;margin:0;border-top:1px solid rgba(255,255,255,0.06);padding-top:18px;margin-top:22px;">
+      Le verrouillage d'urgence est réversible à tout moment uniquement en fournissant votre <strong>PIN administrateur</strong>.
+    </p>
+  </div>
+</body>
+</html>"""
+
+    email_subject = alert_data.get("subject") or "🚨 [Alerte Sécurité HQ] 2 tentatives de connexion suspectes détectées"
+
+    # 1. Delivery via Resend HTTPS API (Recommended)
+    if resend_key:
+        try:
+            payload = json.dumps({
+                "from": "Transfert HQ <onboarding@resend.dev>",
+                "to": [recipient],
+                "subject": email_subject,
+                "html": html_body,
+                "text": text_body,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.resend.com/emails",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {resend_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                if 200 <= resp.status < 300:
+                    return True, "Courriel d'alerte envoyé avec succès via Resend"
+                return False, f"Erreur Resend HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8", errors="replace")
+            return False, f"Erreur Resend ({e.code}) : {err_msg}"
+        except Exception as e:
+            return False, f"Erreur connexion Resend : {e}"
+
+    # 2. Delivery via Brevo HTTPS API
+    if brevo_key:
+        try:
+            payload = json.dumps({
+                "sender": {"name": "Transfert HQ", "email": "transfert-hq@notify.local"},
+                "to": [{"email": recipient}],
+                "subject": email_subject,
+                "htmlContent": html_body,
+                "textContent": text_body,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.brevo.com/v3/smtp/email",
+                data=payload,
+                headers={
+                    "api-key": brevo_key,
+                    "Content-Type": "application/json",
+                    "User-Agent": "TransfertHQ/7.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                if 200 <= resp.status < 300:
+                    return True, "Courriel d'alerte envoyé avec succès via Brevo"
+                return False, f"Erreur Brevo HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            err_msg = e.read().decode("utf-8", errors="replace")
+            return False, f"Erreur Brevo ({e.code}) : {err_msg}"
+        except Exception as e:
+            return False, f"Erreur connexion Brevo : {e}"
+
+    # 3. Fallback: Delivery via Standard SMTP
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = email_subject
+    msg["From"] = f"Transfert HQ <{smtp_user}>"
+    msg["To"] = recipient
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=12)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, [recipient], msg.as_string())
+        server.quit()
+        return True, "Courriel d'alerte envoyé via SMTP"
+    except Exception as e:
+        return False, f"Erreur envoi courriel : {e}"
+
+
+def send_tripwire_email_async(config: dict, alert_data: dict) -> None:
+    """Launch email transmission in background thread so HTTP requests are never blocked."""
+    def _worker():
+        send_tripwire_email(config, alert_data)
+    t = threading.Thread(target=_worker, name="TripwireEmailThread", daemon=True)
+    t.start()
+
+
+# =============================================================================
+# 9. Real-Time Traffic & Provenance Tracker
+# =============================================================================
+
+class TrafficTracker:
+    """Thread-safe sliding-window traffic tracker for Transfert HQ.
+
+    Tracks requests per minute (last 60 minutes), response status distribution,
+    client IP provenance, active concurrent requests, and recent request logs.
+    """
+    def __init__(self, history_minutes: int = 60, recent_maxlen: int = 100) -> None:
+        self._lock = threading.Lock()
+        self._history_minutes = history_minutes
+        self._recent_requests: collections.deque[dict] = collections.deque(maxlen=recent_maxlen)
+        self._minutes: dict[int, dict[str, int]] = {}
+        self._total_requests = 0
+        self._status_counts = {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+        self._prov_counts = {"localhost": 0, "lan": 0, "tailscale": 0, "unknown": 0}
+        self._start_time = time.time()
+        self._active_connections = 0
+
+    def start_request(self) -> None:
+        with self._lock:
+            self._active_connections += 1
+
+    def end_request(self) -> None:
+        with self._lock:
+            self._active_connections = max(0, self._active_connections - 1)
+
+    def record(
+        self,
+        ip: str,
+        method: str,
+        path: str,
+        status: int,
+        duration_ms: float,
+        provenance: str,
+        role: str,
+        pin_hint: str | None = None,
+    ) -> None:
+        now = time.time()
+        minute_bucket = int(now // 60) * 60
+        s_group = f"{status // 100}xx" if 100 <= status < 600 else "other"
+        prov = provenance if provenance in ("localhost", "lan", "tailscale", "tailscale_serve") else "unknown"
+        if prov == "tailscale_serve":
+            prov = "tailscale"
+
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "ip": ip,
+            "method": method,
+            "path": path.split("?")[0],
+            "status": status,
+            "duration_ms": round(duration_ms, 1),
+            "provenance": prov,
+            "role": role or "anonymous",
+            "pin_hint": pin_hint,
+        }
+
+        with self._lock:
+            self._total_requests += 1
+            if s_group in self._status_counts:
+                self._status_counts[s_group] += 1
+            if prov in self._prov_counts:
+                self._prov_counts[prov] += 1
+            else:
+                self._prov_counts["unknown"] += 1
+
+            self._recent_requests.append(entry)
+
+            if minute_bucket not in self._minutes:
+                self._minutes[minute_bucket] = {
+                    "total": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0,
+                    "localhost": 0, "lan": 0, "tailscale": 0, "unknown": 0
+                }
+            b = self._minutes[minute_bucket]
+            b["total"] += 1
+            if s_group in b:
+                b[s_group] += 1
+            if prov in b:
+                b[prov] += 1
+            else:
+                b["unknown"] += 1
+
+            # Prune old minutes
+            cutoff = minute_bucket - (self._history_minutes * 60)
+            stale = [m for m in self._minutes if m < cutoff]
+            for m in stale:
+                del self._minutes[m]
+
+    def snapshot(self) -> dict:
+        now = time.time()
+        current_minute = int(now // 60) * 60
+        with self._lock:
+            timeline = []
+            for i in range(29, -1, -1):
+                m = current_minute - (i * 60)
+                b = self._minutes.get(m, {
+                    "total": 0, "2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0,
+                    "localhost": 0, "lan": 0, "tailscale": 0, "unknown": 0
+                })
+                timeline.append({
+                    "minute": m,
+                    "time": datetime.fromtimestamp(m, timezone.utc).strftime("%H:%M"),
+                    **b
+                })
+
+            last_b = self._minutes.get(current_minute, {})
+            req_last_min = last_b.get("total", 0)
+
+            return {
+                "total_requests": self._total_requests,
+                "requests_last_minute": req_last_min,
+                "active_connections": self._active_connections,
+                "uptime_seconds": int(now - self._start_time),
+                "status_counts": dict(self._status_counts),
+                "provenance_counts": dict(self._prov_counts),
+                "timeline": timeline,
+                "recent_requests": list(self._recent_requests)[-50:],
+            }
+
+
+TRAFFIC_TRACKER = TrafficTracker()
+
+
+_PROTECTED_IPS = {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"}
+
+
+class IpBlocklist:
+    """Thread-safe IP quarantine/blocklist managed by Securia & HQ security."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[str, dict] = {}
+        self._path: Path | None = None
+
+    def attach(self, root: str | Path) -> None:
+        p = Path(root) / ".hq-security" / "ip_blocklist.json"
+        with self._lock:
+            self._path = p
+            if p.is_file():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        self._entries = {str(k): dict(v) for k, v in data.items() if isinstance(v, dict)}
+                except Exception:
+                    pass
+
+    def _persist(self) -> None:
+        if not self._path:
+            return
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._entries, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, self._path)
+        except OSError:
+            pass
+
+    def _prune_expired_locked(self, now: float) -> bool:
+        expired = [ip for ip, rec in self._entries.items() if rec.get("expires_at") and float(rec["expires_at"]) <= now]
+        for ip in expired:
+            del self._entries[ip]
+        return bool(expired)
+
+    def block(self, ip: str, *, reason: str = "", duration_sec: int = 0) -> tuple[bool, str]:
+        clean_ip = (ip or "").strip()
+        if not clean_ip:
+            return False, "Adresse IP requise."
+        if clean_ip in _PROTECTED_IPS:
+            return False, f"Impossible de bloquer une adresse locale protégée ({clean_ip})."
+        now = time.time()
+        dur = max(0, int(duration_sec or 0))
+        expires_at = (now + dur) if dur > 0 else 0
+        with self._lock:
+            self._entries[clean_ip] = {
+                "ip": clean_ip,
+                "reason": (reason or "Quarantaine Securia")[:240],
+                "blocked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "duration_sec": dur,
+                "expires_at": expires_at,
+            }
+            self._persist()
+        return True, f"IP {clean_ip} mise en quarantaine" + (f" pour {dur}s" if dur else " (permanente)")
+
+    def unblock(self, ip: str) -> tuple[bool, str]:
+        clean_ip = (ip or "").strip()
+        with self._lock:
+            if clean_ip in self._entries:
+                del self._entries[clean_ip]
+                self._persist()
+                return True, f"IP {clean_ip} retirée de la liste de blocage."
+        return False, f"IP {clean_ip} non présente dans la liste de blocage."
+
+    def is_blocked(self, ip: str) -> tuple[bool, dict | None]:
+        clean_ip = (ip or "").strip()
+        if not clean_ip or clean_ip in _PROTECTED_IPS:
+            return False, None
+        now = time.time()
+        with self._lock:
+            if self._prune_expired_locked(now):
+                self._persist()
+            rec = self._entries.get(clean_ip)
+            if rec:
+                return True, dict(rec)
+        return False, None
+
+    def list_blocked(self) -> list[dict]:
+        now = time.time()
+        with self._lock:
+            if self._prune_expired_locked(now):
+                self._persist()
+            return [dict(v) for v in self._entries.values()]
+
+    def clear_for_tests(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            if self._path and self._path.is_file():
+                try:
+                    self._path.unlink()
+                except OSError:
+                    pass
+
+
+IP_BLOCKLIST = IpBlocklist()
+
+
+
+
+
 

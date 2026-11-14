@@ -25,13 +25,18 @@ voice and log.
 
 
 Views are **`document.body.dataset.view`** (see **`setView`** in **`iphone_bridge.py`** inline app JS).  
-Bottom nav uses **`data-nav`** matching view ids in **`VIEW_LABELS`**.
+Bottom nav uses **`data-nav`** matching view ids in **`VIEW_LABELS`**. One nav, two shapes: above 900 px it is a 164 px left rail
+(compact icon+label rows, hairlines before `dessiner` and `ops`); below 900 px only `MOBILE_FIRST` — accueil, carnet, calendrier,
+fichiers, plus — keeps a tab, and every other space is reached through **Plus** (`hq-more-nav`). `setView` highlights Plus when the
+current view has no tab, so a hidden view is never "nowhere".
 
 Use this table before opening large JS files.
 
 | View | Nav label | Lazy load | Show / init hook | Primary assets | Perf marks (subsystem) |
 |------|-----------|-----------|------------------|----------------|------------------------|
 | `accueil` | Accueil | — | `hqCarnetHome()` (admin summary) | `hq.js`, inline bridge | `bridge boot-ready` |
+| `accueil` (Musica card) | Accueil › Musica | `hq-home-cards.js` (`paintMusica`) | `GET /api/musica/dj/station` | `hq-home.js` card key `musica`, `hq_home.KEYS` | opens Musique via `sessionStorage hq_music_tab` |
+| any non-Musique view (nudges) | — | `hq-musica-moments.js` (deferred, global) | `GET /api/musica/dj/station` every 5 min | `hq-musica-chip.css` (`.hq-musica-moment`) | silent on any API error |
 | `carnet` | Carnet | **`hqCarnetLoad()`** (41 scripts) | **`hqCarnetShow()`** | `assets/hq-carnet*.js` ( **`hq-carnet.js` last** ) | `carnet script-load`, `carnet-show`, `poll`, `nav setView-lazy` |
 | `calendrier` | Calendrier | — | **`hqCalendarShow()`** | calendar JS in bridge bundle | — |
 | `dessiner` | Dessiner | sketch stack (`SK_SCRIPTS`) | **`hqSketchShow()`** via `hqSketchStart` | `hq-dessiner.js`, sketch core | `dessiner show` |
@@ -40,6 +45,7 @@ Use this table before opening large JS files.
 | `lecteur` | Lecteur | — | **`hqPlayerView`** | player JS inline | — |
 | `projets` | Projets | — | **`hqProjectsShow()`** | projects module | — |
 | `inventaire` | Inventaire | — | **`hqInventoryShow()`** | inventory module | — |
+| `robotique` | Robotique | **`hqRoboticsLoad()`** | **`HqRobotics.show/hide`**, admin | `hq-robotics.js`, `hq-robotics.css`, `hq-robotics-assistant.js/css` | `nav setView-lazy` |
 | `ops` | Terminal | — | ops tools | `ops` UI (hidden in simple mode) | — |
 | `intime` | Tête-à-tête | companion bundle with page | **`HqCompanion`**, admin only | **`assets/hq-companion.js`** | `companion live2d-frame` |
 | `plus` | Plus / Système | — | status / settings chrome; Mini-Quêtes section `#system-mini-quests` | inline + `hq-mini-quests.js` | — |

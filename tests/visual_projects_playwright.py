@@ -12,6 +12,8 @@ import time
 import zlib
 from pathlib import Path
 
+from hq_browser_nav import open_section
+
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(SOURCE / "tests"))
@@ -97,7 +99,7 @@ def main():
             p.on("pageerror", lambda e: errors.append("pageerror " + str(e)))
             p.on("console", lambda m: errors.append("console " + m.text) if m.type == "error" else None)
             p.goto(srv.base + "/")
-            p.locator('.bottom-nav [data-nav="projets"]').click()
+            open_section(p, "projets")
             p.wait_for_selector("#hq-prj-app .prj-cards")
             print("-- list [desktop]")
             check(p.evaluate("() => document.body.dataset.view") == "projets", "Projets opens from the nav")

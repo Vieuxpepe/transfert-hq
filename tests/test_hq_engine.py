@@ -312,8 +312,9 @@ class HttpTests(EngineBase):
         eng.register_defaults()
         ids = {d.id for d in eng.all_daemons()}
         self.assertTrue({"bridge", "phonon", "xtts", "forge"} <= ids)
-        self.assertTrue(eng.get("forge").observe_only)
-        self.assertFalse(eng.get("forge").can("stop"))
+        self.assertFalse(eng.get("forge").observe_only)
+        self.assertTrue(eng.get("forge").can("start"))
+        self.assertTrue(eng.get("forge").can("stop"))
         self.assertTrue(all("state" in c for c in eng.status()["daemons"]))
 
 

@@ -12,6 +12,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 # Windows consoles default to cp1252: never crash on ✓ or ≥ in a check message.
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -74,7 +76,7 @@ def main() -> None:
             page.route("**/api/forge/status", fulfill)
             page.route("**/api/forge/catalog", fulfill)
             page.goto(base + "/")
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-checkpoint').value")
             page.evaluate("() => { document.querySelector('#forge-sampling').open = true; document.querySelector('#forge-negative-fold').open = true; }")
             page.locator("#forge-sampler").select_option(label="DPM++ 2M")
@@ -137,7 +139,7 @@ def main() -> None:
             page.locator("#forge-preset-confirm").click()
             page.wait_for_function("() => [...document.querySelectorAll('#forge-preset-list option')].some((item) => item.textContent.includes('Créatif'))")
             page.reload()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => [...document.querySelectorAll('#forge-preset-list option')].some((item) => item.textContent.includes('Créatif'))")
             page.evaluate("() => { document.querySelector('#forge-sampling').open = true; document.querySelector('#forge-negative-fold').open = true; }")
             check(any("Créatif" in text for text in page.locator("#forge-preset-list option").all_inner_texts()), "presets remain after a refresh")
@@ -172,7 +174,7 @@ def main() -> None:
 
             scripted["catalog"] = dict(CATALOG, samplers=[{"name": "Euler a"}])
             page.locator('.bottom-nav [data-nav="carnet"]').click()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => document.querySelector('#forge-sampler').value")
             page.locator("#forge-preset-list").select_option(label="Soigné · technique")
             page.locator("#forge-preset-load").click()
@@ -206,7 +208,7 @@ def main() -> None:
             check(help_button.get_attribute("aria-expanded") == "true", "a tap opens sampler help")
             page.locator("#forge-sampler").select_option(label="Euler a")
             check(page.locator("#forge-sampler").input_value() == "Euler a", "help does not block the sampler")
-            for help_id in ("forge-help-checkpoint", "forge-help-scheduler", "forge-help-steps", "forge-help-cfg", "forge-help-width", "forge-help-height", "forge-help-seed", "forge-help-iter", "forge-help-batch", "forge-help-negative", "forge-help-gallery", "forge-help-private"):
+            for help_id in ("forge-help-sampler", "forge-help-scheduler", "forge-help-width", "forge-help-height", "forge-help-hr-scale", "forge-help-iter", "forge-help-batch", "forge-help-negative", "forge-help-gallery", "forge-help-private"):
                 check((page.locator("#" + help_id).text_content() or "").strip() != "", "help text present for " + help_id)
 
             page.once("dialog", lambda dialog: dialog.accept())
@@ -218,7 +220,7 @@ def main() -> None:
             scripted["status"] = {"forge": "offline", "code": "forge_offline", "message": "Forge n'est pas démarré.", "model": None}
             scripted["catalog"] = {"forge": "offline", "code": "forge_offline", "message": "Forge n'est pas démarré.", "models": [], "samplers": [], "schedulers": []}
             page.locator('.bottom-nav [data-nav="carnet"]').click()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => (document.querySelector('#forge-status').textContent || '').includes(\"n'est pas démarré\")")
             check(page.locator("#forge-generate").is_disabled() and page.locator("#forge-generate-private").is_disabled(), "offline disables both generate buttons")
             page.unroute("**/api/forge/status", fulfill)
@@ -226,7 +228,7 @@ def main() -> None:
             page.route("**/api/forge/status", lambda route: route.abort())
             page.route("**/api/forge/catalog", lambda route: route.abort())
             page.locator('.bottom-nav [data-nav="carnet"]').click()
-            page.locator('.bottom-nav [data-nav="forge"]').click()
+            open_section(page, "forge")
             page.wait_for_function("() => (document.querySelector('#forge-choice-note').textContent || '').includes('échoué') || (document.querySelector('#forge-generate-reason').textContent || '').includes(\"n'a pas répondu\")")
             check(page.locator("#forge-generate").is_disabled() and page.locator("#forge-generate-private").is_disabled(), "connection failure disables both generate buttons")
             browser.close()

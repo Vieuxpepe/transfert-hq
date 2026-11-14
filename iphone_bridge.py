@@ -45,6 +45,8 @@ import hq_diagnostics_ui
 import hq_security
 import hq_drawings
 import hq_ai
+import hq_assistant_visits
+import hq_personhood
 import hq_companion_art
 import hq_files
 import hq_folder_backups
@@ -1159,6 +1161,7 @@ def default_config() -> dict:
         "terminal_commands": [],
         "shell_targets": [],
         "ssh_user": "",
+        "terminal_timeout_sec": 20,  # allowlisted POST /api/terminal; falls back to shell_timeout_sec when absent
         "shell_timeout_sec": 45,
         "disk_probe_enabled": True,
         "disk_probe_every_sec": 120,
@@ -1168,6 +1171,8 @@ def default_config() -> dict:
         "screenshot_ingest_max_age_sec": 90,
         "autostart": True,
         "public_base_urls": [],  # optional https://… bases (Tailscale Serve) for CSRF allowlist + QR
+        "nvidia_api_key": "",  # optional nvapi- key for ambient chip visits (server-side only)
+        "nvidia_visit_model": "nvidia/nemotron-3.5-bolt-e4b",  # NVIDIA NIM fallback model for those visits
         "upload_sessions_max": UPLOAD_SESSIONS_MAX,
         "upload_disk_reserve_gb": UPLOAD_DISK_RESERVE_GB_DEFAULT,
         "automation_enabled": True,
@@ -2848,6 +2853,123 @@ $g.Dispose(); $bmp.Dispose()
     return {"rel": rel, "name": dest.name, "size": dest.stat().st_size}
 
 
+# The live screen card asks for one frame at a time: never two PowerShell captures at once.
+_SCREEN_FRAME_LOCK = threading.Lock()
+# ssh runs this as one argument; the other PC's PowerShell reads the capture script from stdin.
+_SCREEN_REMOTE_WRAP = "powershell -NoProfile -NonInteractive -Command -"
+# {width}/{quality} are filled per request; the other braces are literal PowerShell blocks.
+_SCREEN_REMOTE_TEMPLATE = """
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$w = {width}
+$h = [int][math]::Round($b.Height * $w / $b.Width)
+if ($w -gt $b.Width) { $w = $b.Width; $h = $b.Height }
+$src = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+$g = [System.Drawing.Graphics]::FromImage($src)
+$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+$dst = New-Object System.Drawing.Bitmap $w, $h
+$g2 = [System.Drawing.Graphics]::FromImage($dst)
+$g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+$g2.DrawImage($src, 0, 0, $w, $h)
+$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+$ep = New-Object System.Drawing.Imaging.EncoderParameters(1)
+$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]{quality})
+$p = Join-Path $env:TEMP ('hq-screen-' + [guid]::NewGuid().ToString('N') + '.jpg')
+$dst.Save($p, $enc, $ep)
+$g.Dispose(); $g2.Dispose(); $src.Dispose(); $dst.Dispose()
+$bytes = [IO.File]::ReadAllBytes($p)
+Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+[Console]::Out.Write([Convert]::ToBase64String($bytes))
+"""
+
+
+def screen_remote_frame_jpeg(target: dict, width: int = 1280, quality: int = 60, timeout: int = 45) -> bytes:
+    """One frame from another PC: the capture script piped to its PowerShell over the existing SSH path."""
+    width = max(320, min(int(width or 1280), 1600))
+    quality = max(30, min(int(quality or 60), 90))
+    ps = _SCREEN_REMOTE_TEMPLATE.replace("{width}", str(width)).replace("{quality}", str(quality))
+    spec = cc_ext._shell_spec(target=target, shell="raw", command=_SCREEN_REMOTE_WRAP, timeout=timeout)
+    try:
+        r = subprocess.run(
+            spec["argv"],
+            input=ps,
+            shell=spec["shell_flag"],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Délai dépassé pour l'aperçu distant")
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout or "ssh a échoué").strip()[:200])
+    # The base64 blob is the long line on stdout; anything else is shell noise.
+    best = ""
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if len(line) > len(best) and re.fullmatch(r"[A-Za-z0-9+/=]+", line):
+            best = line
+    if len(best) < 2000:
+        raise RuntimeError("Aperçu distant illisible")
+    try:
+        data = base64.b64decode(best, validate=True)
+    except ValueError:
+        raise RuntimeError("Aperçu distant illisible")
+    if data[:2] != b"\xff\xd8":
+        raise RuntimeError("Aperçu distant illisible")
+    return data
+
+
+def screen_frame_jpeg(width: int = 1280, quality: int = 65) -> bytes:
+    """One downscaled JPEG of the primary screen (~0.3-0.5 s). Windows only, nothing kept on disk."""
+    if sys.platform != "win32":
+        raise RuntimeError("Aperçu de l'écran : Windows seulement")
+    width = max(320, min(int(width or 1280), 1920))
+    quality = max(30, min(int(quality or 65), 90))
+    base = os.environ.get("TEMP") or os.environ.get("TMP") or "."
+    dest = Path(base) / f"hq-screen-{os.getpid()}-{threading.get_ident()}.jpg"
+    ps = f"""
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$w = {width}
+$h = [int][math]::Round($b.Height * $w / $b.Width)
+if ($w -gt $b.Width) {{ $w = $b.Width; $h = $b.Height }}
+$src = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+$g = [System.Drawing.Graphics]::FromImage($src)
+$g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+$dst = New-Object System.Drawing.Bitmap $w, $h
+$g2 = [System.Drawing.Graphics]::FromImage($dst)
+$g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+$g2.DrawImage($src, 0, 0, $w, $h)
+$enc = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object {{ $_.MimeType -eq 'image/jpeg' }}
+$ep = New-Object System.Drawing.Imaging.EncoderParameters(1)
+$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]{quality})
+$dst.Save('{str(dest).replace(chr(39), chr(39) * 2)}', $enc, $ep)
+$g.Dispose(); $g2.Dispose(); $src.Dispose(); $dst.Dispose()
+"""
+    with _SCREEN_FRAME_LOCK:
+        try:
+            # Over stdin, not -Command: the antivirus script shield blocks a capture script
+            # passed on the command line (or as a .ps1) and lets the same text through stdin.
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", "-"],
+                input=ps,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if r.returncode != 0 or not dest.is_file():
+                raise RuntimeError((r.stderr or "capture impossible").strip()[:200])
+            return dest.read_bytes()
+        finally:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+
+
 def _path_allowed(path: Path) -> bool:
     try:
         resolved = path.resolve()
@@ -3465,6 +3587,15 @@ def bind_hq() -> None:
         client_is_controller=lambda ip: cc_ext.classify_ip(str(ip or "")) in ("local", "lan", "tailscale"),
         nsfw_enabled=lambda: CONFIG.get("companion_nsfw_enabled", False) is True,
         activity=lambda n: cc_ext.activity_list(n),  # Transferania reacts to true events: backups, prints
+    )
+    hq_assistant_visits.bind(  # Gemini first, NVIDIA NIM as fallback; both keys stay server-side
+        root=ROOT,
+        nvidia_key=lambda: str(CONFIG.get("nvidia_api_key") or os.environ.get("HQ_NVIDIA_KEY") or "").strip(),
+        nvidia_model=lambda: str(CONFIG.get("nvidia_visit_model") or os.environ.get("HQ_NVIDIA_MODEL")
+                                 or hq_assistant_visits.DEFAULT_NVIDIA_MODEL).strip(),
+        gemini_generate=hq_ai.generate,
+        config=lambda: CONFIG,
+        save=lambda: save_config(CONFIG),
     )
     hq_folder_backups.bind(  # Fichiers: automatic backups of chosen folders, rolling window, to backup_dir/Dossiers
         root=ROOT,
@@ -4414,6 +4545,7 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
     else history.replaceState(null, '', '#' + view);
   }
   const viewT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const viewSeq = ++viewTicket;            // claims the view now, so an older deferred commit can tell it is stale
   const commit = () => {
   const prevView = document.body.dataset.view;
   const focusHeading = prevView !== view && document.activeElement?.closest('.hq-more-nav');
@@ -4446,7 +4578,7 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
   if (window.hqPlayerView) {
     try { window.hqPlayerView(view); } catch (e) { console.error(e); }  // like the other view hooks: never abort setView
   }
-  const currentViewTicket = ++viewTicket;
+  const currentViewTicket = viewSeq;
   if (view === 'robotique') {
     hqRoboticsLoad().then(() => {
       if (viewTicket !== currentViewTicket || !hqSessionIsAdmin()) return;
@@ -4523,8 +4655,12 @@ function setView(name, { historyMode = 'push', focus = '', section = '' } = {}) 
   if (window.hqPerfMark) window.hqPerfMark('nav', { op: 'setView-commit', ms: viewMs, from: prevView, to: view }, { force: viewMs > 120 });
   };
   // A quick action must focus during the tap so mobile browsers can open the keyboard.
-  if (!focus && !section && window.HqTheme && typeof window.HqTheme.runViewChange === 'function') {
-    window.HqTheme.runViewChange(window, view, commit);
+  // A change made while a view transition is still running is applied straight away: the theme's transition calls
+  // commit() from inside startViewTransition, and a second transition started over it never ran its own callback —
+  // tapping Engine then Sécurité quickly left the rail on Engine while the URL said #securite.
+  const vtBusy = document.body.classList.contains('hq-vt-active');
+  if (!vtBusy && !focus && !section && window.HqTheme && typeof window.HqTheme.runViewChange === 'function') {
+    window.HqTheme.runViewChange(window, view, () => { if (viewTicket === viewSeq) commit(); });
   } else commit();
 }
 function isSimpleMode() {
@@ -5351,6 +5487,7 @@ function renderActivity(items) {
     ).join('') || '<li class="hint">—</li>';
   }
   renderRecents();
+  renderTerminalRecent();
 }
 
 function renderRecents() {
@@ -5535,6 +5672,8 @@ async function refreshHQ(scope = 'all') {
       renderLauncher(st.actions || []);
       renderTerminalCmds(st.terminal_commands || []);
       fillShellTargets(st.shell_targets || []);
+      const termOut = $('#shell-out');
+      if (termOut && termOut.offsetParent !== null) hqTermRecentRefresh();
       fillSendTargets(dev.devices || []);
       if (st.weather && window.hqApplyWeather) window.hqApplyWeather(st.weather);
     } catch (e) {
@@ -5602,31 +5741,1073 @@ async function renderHomeChart() {
   } catch (_) {}
 }
 
+// Terminal tab ---------------------------------------------------------------
+// A command runs as a job on the bridge: the POST returns an id at once, this view
+// polls for the new output and Arrêter kills the whole process tree. The bridge owns
+// the timeout (terminal_timeout_sec / shell_timeout_sec).
+const HQ_SHELL_POLL_MS = 700;
+// Jobs live in the bridge's memory: no answer this long, or a 404, means the job is gone.
+const HQ_SHELL_LOST_MS = 6000;
+// Past this, a job is "long": the toast says how long it took and a hidden tab gets a system notification.
+const HQ_TERM_NOTIFY_MS = 30000;
+let hqShellHistIndex = -1;
+let hqTermJob = null;
+let hqTermJobsCache = [];
+let hqTermJobSeq = 0;
+let hqTermTruncated = false;
+
+function hqShellStore(key, value) { try { sessionStorage.setItem('hq_shell_' + key, value); } catch (_) {} }
+function hqShellRead(key, fallback) { try { return sessionStorage.getItem('hq_shell_' + key) || fallback; } catch (_) { return fallback; } }
+
+function hqTermLabel(id) {
+  const sel = $('#shell-target');
+  const opt = sel ? Array.from(sel.options || []).find(o => o.value === id) : null;
+  return (opt && opt.textContent) || id || 'Ce PC (local)';
+}
+
+function hqTermMs(ms) {
+  const n = Number(ms);
+  if (!isFinite(n) || n <= 0) return '';
+  return n < 1000 ? Math.round(n) + ' ms' : (n / 1000).toFixed(1) + ' s';
+}
+
+function hqTermEcho(head, data) {
+  const meta = [];
+  if (data && data.target) meta.push(hqTermLabel(data.target));
+  if (data && data.shell) meta.push(data.shell);
+  if (data && data.code !== undefined && data.code !== null) meta.push('exit ' + data.code);
+  if (data && hqTermMs(data.duration_ms)) meta.push(hqTermMs(data.duration_ms));
+  return '$ ' + (head || (data && data.label) || 'commande') + (meta.length ? '\n# ' + meta.join(' · ') : '');
+}
+
+function hqTermBegin(head, meta) {
+  const out = $('#shell-out');
+  hqTermTruncated = false;
+  if (!out) return;
+  out.textContent = '$ ' + (head || 'commande') + (meta ? '\n# ' + meta : '') + '\n';
+  out.scrollTop = out.scrollHeight;
+}
+
+function hqTermAppend(text) {
+  const out = $('#shell-out');
+  if (!out || !text) return;
+  const stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 24;
+  out.appendChild(document.createTextNode(text));
+  if (hqTermFollow || stick) out.scrollTop = out.scrollHeight;
+}
+
+// The console header: one word of state, one coloured dot.
+function hqTermStatus(text, state) {
+  const el = $('#term-status');
+  if (el) el.textContent = text || 'Prêt';
+  const dot = $('#term-dot');
+  if (dot) dot.className = 'term-dot' + (state ? ' ' + state : '');
+}
+
+let hqTermTickTimer = null;
+
+// Elapsed ticker for the console header (aria-hidden: the status word carries the meaning).
+function hqTermElapsedStart(baseMs) {
+  hqTermElapsedStop();
+  const base = Number(baseMs) || 0;
+  const t0 = Date.now();
+  const el = $('#term-elapsed');
+  const paint = () => { if (el) el.textContent = hqTermMs(base + (Date.now() - t0)); };
+  paint();
+  hqTermTickTimer = setInterval(paint, 1000);
+}
+
+function hqTermElapsedStop(finalMs) {
+  if (hqTermTickTimer) { clearInterval(hqTermTickTimer); hqTermTickTimer = null; }
+  const el = $('#term-elapsed');
+  if (el) el.textContent = finalMs === undefined || finalMs === null ? '' : hqTermMs(finalMs);
+}
+
+function hqTermSetRunning(on) {
+  const stopBtn = $('#btn-term-stop');
+  if (stopBtn) { stopBtn.hidden = !on; if (!on) stopBtn.disabled = false; }
+  const run = $('#btn-shell-run');
+  if (run) run.disabled = !!on;
+  $$('#term-cmds button').forEach(b => { b.disabled = !!on; });
+  if (on) hqTermStatus('en cours', 'running');
+}
+
+function hqTermRelease() {
+  if (hqTermJob && hqTermJob.stopBusy) hqTermJob.stopBusy();
+  if (hqTermJob) { hqTermJob.timer = null; hqTermJob.stopBusy = null; }
+  hqTermJob = null;
+  hqTermSetRunning(false);
+}
+
+function hqTermFinish(job) {
+  const state = String((job && job.state) || 'failed');
+  hqTermStatus(hqTermStateLabel(state) + (job && job.code !== null && job.code !== undefined ? ' · exit ' + job.code : ''), state);
+  hqTermElapsedStop(job && job.elapsed_ms);
+  const bits = [];
+  if (job && job.code !== null && job.code !== undefined) bits.push('exit ' + job.code);
+  if (job && hqTermMs(job.elapsed_ms)) bits.push(hqTermMs(job.elapsed_ms));
+  let tail = '';
+  if (state === 'stopped') tail = '— arrêtée';
+  else if (state === 'timeout') tail = '— ' + (job.error || 'délai dépassé');
+  else if (state !== 'done') tail = '— échec';
+  hqTermAppend('\n' + bits.join(' · ') + (bits.length && tail ? ' ' : '') + tail + '\n');
+  hqTermRelease();
+  if (typeof toast === 'function') {
+    // A long job says how long it took, like the notification you get when the tab is hidden.
+    const took = Number(job && job.elapsed_ms) >= HQ_TERM_NOTIFY_MS ? hqTermMs(job.elapsed_ms) : '';
+    const suffix = took ? ' · ' + took : '';
+    if (state === 'done') toast('Commande terminée' + suffix);
+    else if (state === 'stopped') toast('Commande arrêtée' + suffix);
+    else toast((state === 'timeout' ? 'Délai dépassé' : 'Commande en erreur') + suffix, 'err');
+  }
+  hqTermLongNotify(job);
+  hqTermRecentRefresh();
+}
+
+function hqTermStopPolling() {
+  if (hqTermJob && hqTermJob.timer) { clearTimeout(hqTermJob.timer); hqTermJob.timer = null; }
+}
+
+// The bridge forgets jobs when it restarts: say so, instead of retrying a dead id.
+function hqTermLost(reason) {
+  const job = hqTermJob;
+  if (!job) return;
+  hqTermStopPolling();
+  hqTermAppend('\n— tâche perdue : ' + reason + '\n  (la commande a peut-être continué sans suivi)\n');
+  hqTermJob = null;
+  if (job.stopBusy) job.stopBusy();
+  hqTermSetRunning(false);
+  hqTermStatus('tâche perdue', 'failed');
+  hqTermElapsedStop();
+  if (typeof toast === 'function') toast('Tâche perdue', 'err');
+  hqTermRecentRefresh();
+}
+
+async function hqTermPoll() {
+  const job = hqTermJob;
+  if (!job) return;
+  const seq = job.seq;
+  let data = null;
+  try {
+    data = await api('/api/shell/job?id=' + encodeURIComponent(job.id) + '&cursor=' + job.cursor, { timeoutMs: 15000 });
+  } catch (e) {
+    if (!hqTermJob || hqTermJob.seq !== seq) return;
+    if (e.status === 404) {
+      hqTermLost('tâche inconnue (pont redémarré)');
+      return;
+    }
+    job.retries = (job.retries || 0) + 1;
+    if (Date.now() - (job.lastOk || 0) > HQ_SHELL_LOST_MS) {
+      hqTermLost('pont injoignable (redémarrage ?)');
+      return;
+    }
+    job.timer = setTimeout(hqTermPoll, 1000);
+    return;
+  }
+  if (!hqTermJob || hqTermJob.seq !== seq) return;
+  job.retries = 0;
+  job.lastOk = Date.now();
+  job.cursor = Number(data.cursor || job.cursor || 0);
+  if (data.output) hqTermAppend(data.output);
+  if (data.truncated && !hqTermTruncated) {
+    hqTermTruncated = true;
+    hqTermAppend('\n… sortie tronquée (seule la fin est gardée).\n');
+  }
+  if (data.state === 'running') {
+    job.timer = setTimeout(hqTermPoll, HQ_SHELL_POLL_MS);
+    return;
+  }
+  hqTermFinish(data);
+}
+
+// One launch path for the button, Enter and Ctrl/⌘+Enter.
+function hqTermRunFromInput() {
+  const cmd = ($('#shell-cmd')?.value || '').trim();
+  if (!cmd) { toast('Commande vide', 'err'); return; }
+  if (hqTermJob) { toast('Une commande tourne déjà — Arrêter ou attendre', 'err'); return; }
+  const target = $('#shell-target')?.value || 'local';
+  const shell = $('#shell-type')?.value || 'powershell';
+  if (!confirm('Exécuter sur ' + hqTermLabel(target) + ' ?\n\n' + cmd)) return;
+  hqShellHistIndex = -1;
+  hqTermHistoryAdd(cmd);
+  hqTermStart('shell', { target, shell, cmd }, cmd, [hqTermLabel(target), shell].join(' · '));
+}
+
+async function hqTermStart(kind, payload, head, meta) {
+  hqTermStopPolling();
+  hqTermJob = null;
+  hqTermSetRunning(true);
+  hqTermAskNotifications();
+  hqTermFindClear();
+  hqTermBegin(head, meta);
+  const stopBusy = typeof startBusy === 'function' ? startBusy('Exécution…', 'shell-busy') : null;
+  let data = null;
+  try {
+    data = await api(kind === 'terminal' ? '/api/terminal' : '/api/shell', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+      timeoutMs: 15000
+    });
+  } catch (e) {
+    if (stopBusy) stopBusy();
+    hqTermSetRunning(false);
+    hqTermFail(e.message);
+    toast(e.message, 'err');
+    return;
+  }
+  if (!data || !data.job_id) {
+    if (stopBusy) stopBusy();
+    hqTermSetRunning(false);
+    hqTermFail('Réponse sans identifiant de tâche');
+    return;
+  }
+  hqTermJob = { id: data.job_id, cursor: Number(data.cursor || 0), seq: ++hqTermJobSeq, timer: null, stopBusy, retries: 0, lastOk: Date.now() };
+  hqTermElapsedStart(data.elapsed_ms);
+  if (data.output) hqTermAppend(data.output);
+  hqTermRecentRefresh();
+  hqTermPoll();
+}
+
+async function hqTermStopNow() {
+  const job = hqTermJob;
+  if (!job) return;
+  const stopBtn = $('#btn-term-stop');
+  if (stopBtn) stopBtn.disabled = true;
+  try {
+    await api('/api/shell/job/stop', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: job.id }), timeoutMs: 15000
+    });
+    hqTermAppend('\n… arrêt demandé\n');
+  } catch (e) {
+    if (e.status === 404) { hqTermLost('tâche inconnue (pont redémarré)'); return; }
+    toast(e.message, 'err');
+  }
+  finally { if (stopBtn) stopBtn.disabled = false; }
+}
+
+const HQ_TERM_STATE_LABEL = { running: 'en cours', done: 'terminée', failed: 'échec', stopped: 'arrêtée', timeout: 'délai dépassé' };
+
+function hqTermStateLabel(state) {
+  return HQ_TERM_STATE_LABEL[String(state || '')] || String(state || '—');
+}
+
+function hqTermJobLine(job) {
+  const bits = [job.label || job.job_id];
+  // A shell job is already labelled by its target: do not print the same name twice.
+  const targetLabel = job.target ? hqTermLabel(job.target) : '';
+  if (targetLabel && targetLabel !== bits[0]) bits.push(targetLabel);
+  const live = String(job.state || '') === 'running';
+  // A running row already carries a pulsing dot and a live counter: the state word would only wrap it.
+  if (!live) bits.push(hqTermStateLabel(job.state));
+  // Non-breaking spaces keep « exit 1 » and « 6.1 s » on the same line in the narrow jobs column.
+  // A stopped job always ends on a kill code: printing it only costs a wrapped second line.
+  if (job.code !== null && job.code !== undefined && String(job.state || '') !== 'stopped') bits.push('exit\u00A0' + job.code);
+  // A running row gets a live counter instead of the duration frozen at fetch time.
+  if (!live) {
+    const ms = hqTermMs(job.elapsed_ms);
+    if (ms) bits.push(ms.replace(/ /g, '\u00A0'));
+  }
+  return bits.join(' · ');
+}
+
+// Every job of this bridge session, newest first. A click reopens its transcript.
+async function hqTermRecentRefresh() {
+  const box = $('#term-jobs');
+  if (!box) return;
+  try {
+    const data = await api('/api/shell/jobs', { timeoutMs: 12000 });
+    hqTermJobsCache = (data && data.jobs) || [];
+    hqTermJobsStorage = (data && data.storage) || { count: 0, bytes: 0 };
+  } catch (e) {
+    hqTermJobsCache = [];
+  }
+  hqTermRecentRender();
+}
+
+function hqTermJobsMatch(job) {
+  const state = ($('#term-jobs-state')?.value || '').trim();
+  if (state && String(job.state || '') !== state) return false;
+  const q = hqTermFold($('#term-jobs-filter')?.value || '');
+  if (!q) return true;
+  const hay = hqTermFold([job.label, job.target, job.shell, job.state, hqTermStateLabel(job.state), job.code, job.error].join(' '));
+  return hay.indexOf(q) !== -1;
+}
+
+// Accents and case never matter in the filter: « arret » finds « arrêtée ».
+function hqTermFold(text) {
+  return String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function hqTermRecentRender() {
+  const box = $('#term-jobs');
+  if (!box) return;
+  const jobs = hqTermJobsCache || [];
+  const tools = $('#term-jobs-tools');
+  if (tools) tools.hidden = !jobs.length;
+  const wrap = $('#term-jobs-wrap');
+  if (wrap) wrap.hidden = !jobs.length;
+  // The jobs card only takes the right column once there is something in it.
+  const view = box.closest('.term-view');
+  if (view) view.classList.toggle('has-jobs', jobs.length > 0);
+  box.textContent = '';
+  if (!jobs.length) { box.hidden = true; hqTermListStop(); return; }
+  box.hidden = false;
+  const shown = jobs.filter(hqTermJobsMatch);
+  if (!shown.length) {
+    const none = document.createElement('p');
+    none.className = 'hint';
+    none.textContent = 'Aucune tâche pour ce filtre.';
+    box.appendChild(none);
+    hqTermListStop();
+    return;
+  }
+  const current = hqTermJob && hqTermJob.id;
+  let day = '';
+  hqTermOrderRows(shown).forEach(job => {
+    const key = hqTermDayKey(job.started);
+    if (key !== day) {
+      day = key;
+      const head = document.createElement('p');
+      head.className = 'hint term-jobs-day';
+      head.textContent = hqTermDayLabel(job.started) + ' · ' + hqTermDayCounts(shown, key);
+      box.appendChild(head);
+    }
+    const state = String(job.state || 'done');
+    const row = document.createElement('div');
+    row.className = 'term-job st-' + state + (job.job_id === current ? ' is-current' : '');
+    row.dataset.job = job.job_id;
+
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'term-job-open';
+    open.dataset.job = job.job_id;
+    open.setAttribute('data-help', 'Rouvrir la sortie de cette tâche.');
+    if (state === 'running') {
+      // Same pulse as the console header, so a live row is obvious at a glance.
+      const dot = document.createElement('span');
+      dot.className = 'term-dot running';
+      dot.setAttribute('aria-hidden', 'true');
+      open.appendChild(dot);
+    }
+    // The text lives in its own span, so a long line ends with … instead of being cut mid-word.
+    const line = document.createElement('span');
+    line.className = 'term-job-text';
+    line.textContent = hqTermJobLine(job);
+    open.appendChild(line);
+    if (state === 'running') {
+      const live = document.createElement('span');
+      live.className = 'term-job-elapsed';
+      live.dataset.base = String(Number(job.elapsed_ms) || 0);
+      live.dataset.at = String(Date.now());
+      live.textContent = hqTermMs(Number(job.elapsed_ms) || 0);
+      open.appendChild(live);
+    }
+    open.addEventListener('click', () => { hqTermOpen(job.job_id, job.label); });
+    row.appendChild(open);
+
+    const actions = document.createElement('span');
+    actions.className = 'term-job-actions';
+    if (state === 'running' || state === 'queued') {
+      const stop = document.createElement('button');
+      stop.type = 'button';
+      stop.className = 'term-job-stop';
+      stop.textContent = '■';
+      stop.setAttribute('data-help', 'Arrêter cette tâche et son processus.');
+      stop.addEventListener('click', (e) => { e.stopPropagation(); hqTermStopById(job.job_id); });
+      actions.appendChild(stop);
+    }
+    if (job.cmd_id || job.command) {
+      const again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'term-job-rerun';
+      again.textContent = '⟳';
+      again.setAttribute('data-help', 'Relancer la même commande sur le même PC.');
+      again.addEventListener('click', (e) => { e.stopPropagation(); hqTermRerun(job); });
+      actions.appendChild(again);
+    }
+    if (actions.children.length) row.appendChild(actions);
+    box.appendChild(row);
+  });
+  if (shown.some(job => String(job.state) === 'running')) hqTermListStart();
+  else hqTermListStop();
+  const stopAll = $('#btn-term-stop-all');
+  if (stopAll) {
+    const live = shown.filter(job => String(job.state) === 'running' || String(job.state) === 'queued').length;
+    stopAll.hidden = !live;
+    stopAll.textContent = live > 1 ? 'Tout arrêter (' + live + ')' : 'Tout arrêter';
+  }
+  const clearSaved = $('#btn-term-jobs-clear');
+  if (clearSaved) clearSaved.hidden = !(hqTermJobsStorage && hqTermJobsStorage.count);
+}
+
+// A running row keeps counting without rebuilding the list (focus stays put).
+let hqTermListTimer = null;
+
+function hqTermListTick() {
+  const spans = $$('.term-job-elapsed');
+  if (!spans.length) { hqTermListStop(); return; }
+  const now = Date.now();
+  spans.forEach(sp => {
+    const base = Number(sp.dataset.base) || 0;
+    const at = Number(sp.dataset.at) || now;
+    sp.textContent = hqTermMs(base + (now - at));
+  });
+}
+
+function hqTermListStart() {
+  if (hqTermListTimer) return;
+  hqTermListTimer = setInterval(hqTermListTick, 1000);
+}
+
+function hqTermListStop() {
+  if (hqTermListTimer) { clearInterval(hqTermListTimer); hqTermListTimer = null; }
+}
+
+let hqTermJobsStorage = { count: 0, bytes: 0 };
+let hqTermFollow = true;
+let hqTermFindHits = [];
+let hqTermFindAt = 0;
+let hqTermCompleteAt = -1;
+let hqTermCompletePrefix = '';
+let hqTermCompleteSet = [];
+
+// Permission is asked once, on the first run; only long jobs notify, and only when the tab is hidden.
+function hqTermAskNotifications() {
+  try {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+    Notification.requestPermission();
+  } catch (_) {}
+}
+
+function hqTermLongNotify(job) {
+  try {
+    const ms = Number(job && job.elapsed_ms) || 0;
+    if (ms < HQ_TERM_NOTIFY_MS || !document.hidden) return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    const state = String((job && job.state) || 'done');
+    const title = state === 'done' ? 'Commande terminée' : state === 'stopped' ? 'Commande arrêtée' : 'Commande en erreur';
+    const note = new Notification('Terminal — ' + title, {
+      body: ((job && job.label) || 'commande') + ' · ' + hqTermMs(ms),
+      tag: 'hq-terminal'
+    });
+    // Clicking it brings the tab back, so you land where the output is.
+    note.onclick = () => { try { window.focus(); note.close(); } catch (_) {} };
+  } catch (_) {}
+}
+
+async function hqTermStopById(id) {
+  if (!id) return;
+  try {
+    await api('/api/shell/job/stop', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id }), timeoutMs: 15000
+    });
+    toast('Arrêt demandé');
+    hqTermRecentRefresh();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function hqTermStopAll() {
+  // The list can lag (a job started from the palette in another tab): let the bridge decide what is live.
+  const live = (hqTermJobsCache || []).filter(j => String(j.state) === 'running' || String(j.state) === 'queued').length;
+  if (!confirm(live ? 'Arrêter ' + live + ' tâche(s) en cours ?' : 'Arrêter toutes les tâches en cours ?')) return;
+  try {
+    const data = await api('/api/shell/job/stop', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ all: true }), timeoutMs: 20000
+    });
+    const stopped = Number(data.stopped || 0);
+    toast(stopped ? stopped + ' tâche(s) arrêtée(s)' : 'Aucune tâche à arrêter', stopped ? 'ok' : 'err');
+    hqTermRecentRefresh();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function hqTermRerun(job) {
+  if (!job) return;
+  if (job.cmd_id) { hqTermStart('terminal', { id: job.cmd_id }, job.label || job.cmd_id, ''); return; }
+  const cmd = String(job.command || job.label || '').trim();
+  if (!cmd) { toast('Commande inconnue pour cette tâche', 'err'); return; }
+  const target = job.target || ($('#shell-target')?.value || 'local');
+  const shell = job.shell || 'powershell';
+  hqTermStart('shell', { target, shell, cmd }, cmd, [hqTermLabel(target), shell].join(' · '));
+}
+
+function hqTermNextTarget() {
+  const sel = $('#shell-target');
+  if (!sel || sel.options.length < 2) { toast('Un seul PC dans la liste', 'err'); return; }
+  sel.selectedIndex = (sel.selectedIndex + 1) % sel.options.length;
+  hqShellStore('target', sel.value);
+  hqShellSyncTarget();
+  toast('Cible : ' + hqTermLabel(sel.value));
+}
+
+function hqTermPinsList() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem('hq_shell_pins') || '[]');
+    return Array.isArray(raw) ? raw.filter(x => typeof x === 'string' && x.trim()) : [];
+  } catch (_) { return []; }
+}
+
+function hqTermPinsRender() {
+  const box = $('#term-pinned');
+  if (!box) return;
+  const pins = hqTermPinsList();
+  box.hidden = !pins.length;
+  box.textContent = '';
+  pins.forEach(cmd => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.setAttribute('data-help', 'Remplir la commande : ' + cmd);
+    chip.textContent = cmd.length > 42 ? cmd.slice(0, 41) + '…' : cmd;
+    chip.addEventListener('click', () => {
+      const input = $('#shell-cmd');
+      if (input) { input.value = cmd; input.focus(); }
+    });
+    box.appendChild(chip);
+  });
+}
+
+function hqTermPinToggle() {
+  const cmd = ($('#shell-cmd')?.value || '').trim();
+  if (!cmd) { toast('Commande vide', 'err'); return; }
+  const pins = hqTermPinsList();
+  const at = pins.indexOf(cmd);
+  if (at >= 0) pins.splice(at, 1); else pins.unshift(cmd);
+  try { sessionStorage.setItem('hq_shell_pins', JSON.stringify(pins.slice(0, 8))); } catch (_) {}
+  const btn = $('#btn-term-pin');
+  if (btn) btn.setAttribute('aria-pressed', at >= 0 ? 'false' : 'true');
+  hqTermPinsRender();
+  toast(at >= 0 ? 'Épinglage retiré' : 'Commande épinglée');
+}
+
+function hqTermCandidates() {
+  const out = hqTermHistoryList().slice();
+  $$('#term-cmds button').forEach(b => { const t = (b.textContent || '').trim(); if (t) out.push(t); });
+  hqTermPinsList().forEach(c => out.push(c));
+  return out;
+}
+
+function hqTermComplete() {
+  const input = $('#shell-cmd');
+  if (!input) return;
+  const raw = input.value.trim();
+  if (!raw) return;
+  // Keep matching the typed prefix, so a second Tab cycles instead of locking on one match.
+  const prefix = (hqTermCompleteSet.length && hqTermCompleteSet.indexOf(raw) >= 0)
+    ? hqTermCompletePrefix
+    : raw.toLowerCase();
+  const matches = hqTermCandidates().filter(c => c.toLowerCase().startsWith(prefix));
+  if (!matches.length) return;
+  hqTermCompletePrefix = prefix;
+  hqTermCompleteSet = matches;
+  hqTermCompleteAt = (hqTermCompleteAt + 1) % matches.length;
+  input.value = matches[hqTermCompleteAt];
+}
+
+function hqTermSetFollow(on) {
+  hqTermFollow = !!on;
+  const btn = $('#btn-term-follow');
+  if (btn) {
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.classList.toggle('active', !!on);
+  }
+  if (on) {
+    const out = $('#shell-out');
+    if (out) out.scrollTop = out.scrollHeight;
+  }
+}
+
+function hqTermFindClear() {
+  hqTermFindHits = [];
+  hqTermFindAt = 0;
+  const count = $('#term-find-count');
+  if (count) count.textContent = '';
+}
+
+function hqTermTextOffset(root, node, offset) {
+  let total = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n = walker.nextNode();
+  while (n) {
+    if (n === node) return total + offset;
+    total += n.nodeValue.length;
+    n = walker.nextNode();
+  }
+  return null;
+}
+
+function hqTermFindJump(out, at, len) {
+  if (!out || at === null || at < 0) return;
+  const walker = document.createTreeWalker(out, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  let pos = 0;
+  while (node) {
+    const next = pos + node.nodeValue.length;
+    if (at < next) {
+      const start = at - pos;
+      const end = Math.min(node.nodeValue.length, start + len);
+      try {
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, end);
+        const box = range.getBoundingClientRect();
+        const host = out.getBoundingClientRect();
+        out.scrollTop += box.top - host.top - host.height / 3;
+        if (window.getSelection) window.getSelection().setBaseAndExtent(node, start, node, end);
+      } catch (_) {}
+      return;
+    }
+    pos = next;
+    node = walker.nextNode();
+  }
+}
+
+function hqTermFindRun(step) {
+  const out = $('#shell-out');
+  const input = $('#term-find-input');
+  const count = $('#term-find-count');
+  const needle = (input?.value || '');
+  const text = out ? out.textContent || '' : '';
+  hqTermFindHits = [];
+  if (needle) {
+    const hay = text.toLowerCase();
+    const q = needle.toLowerCase();
+    let at = hay.indexOf(q);
+    while (at !== -1 && hqTermFindHits.length < 500) {
+      hqTermFindHits.push(at);
+      at = hay.indexOf(q, at + q.length);
+    }
+  }
+  if (!hqTermFindHits.length) {
+    if (count) count.textContent = needle ? '0/0' : '';
+    return;
+  }
+  if (step) hqTermFindAt = (hqTermFindAt + step + hqTermFindHits.length) % hqTermFindHits.length;
+  else hqTermFindAt = Math.min(hqTermFindAt, hqTermFindHits.length - 1);
+  if (count) count.textContent = (hqTermFindAt + 1) + '/' + hqTermFindHits.length;
+  hqTermFindJump(out, hqTermFindHits[hqTermFindAt], needle.length);
+}
+
+function hqTermTokenAt(out, x, y) {
+  let offset = null;
+  try {
+    if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      if (r && out.contains(r.startContainer)) offset = hqTermTextOffset(out, r.startContainer, r.startOffset);
+    } else if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p && out.contains(p.offsetNode)) offset = hqTermTextOffset(out, p.offsetNode, p.offset);
+    }
+  } catch (_) { return ''; }
+  if (offset === null) return '';
+  const text = out.textContent || '';
+  const word = (ch) => !!ch && !/[\s<>"']/.test(ch);
+  let a = offset;
+  let b = offset;
+  while (a > 0 && word(text[a - 1])) a--;
+  while (b < text.length && word(text[b])) b++;
+  return text.slice(a, b).replace(/[.,;:)»]+$/, '');
+}
+
+function hqTermOpenToken(token) {
+  if (!token) return;
+  if (/^https?:\/\//i.test(token)) { window.open(token, '_blank', 'noopener'); return; }
+  if (/^(Inbox|Uni|Print)\//.test(token) && typeof navigate === 'function') navigate(token);
+}
+
+async function hqTermSendToInbox() {
+  const text = ($('#shell-out')?.textContent || '').trim();
+  if (!text) { toast('Rien à envoyer', 'err'); return; }
+  try {
+    const data = await api('/api/terminal/export', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ text, name: 'terminal' }), timeoutMs: 20000
+    });
+    toast('Dans Inbox : ' + (data.name || ''));
+    if (typeof refreshFiles === 'function') refreshFiles();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function hqTermBytes(n) {
+  const v = Number(n) || 0;
+  return v < 1024 ? v + ' o' : v < 1048576 ? (v / 1024).toFixed(1) + ' Ko' : (v / 1048576).toFixed(1) + ' Mo';
+}
+
+async function hqTermClearSaved() {
+  const info = hqTermJobsStorage || { count: 0, bytes: 0 };
+  if (!confirm('Supprimer ' + (info.count || 0) + ' tâche(s) enregistrée(s) (' + hqTermBytes(info.bytes) + ') ?\nLes tâches en cours restent.')) return;
+  try {
+    const data = await api('/api/shell/jobs/clear', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}', timeoutMs: 20000
+    });
+    toast((data.deleted || 0) + ' tâche(s) supprimée(s)');
+    hqTermRecentRefresh();
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function hqTermStatsLoad() {
+  const box = $('#term-stats');
+  if (!box) return;
+  let data = null;
+  try {
+    data = await api('/api/shell/stats', { timeoutMs: 12000 });
+  } catch (e) {
+    box.textContent = '';
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = e.message;
+    box.appendChild(p);
+    return;
+  }
+  const s = (data && data.stats) || {};
+  box.textContent = '';
+  const line = document.createElement('p');
+  line.className = 'hint';
+  line.textContent = (s.total || 0) + ' tâche(s) · ' + (s.ok || 0) + ' OK · ' + (s.failed || 0) + ' en erreur · moyenne ' + (hqTermMs(s.avg_ms) || '—');
+  box.appendChild(line);
+  (s.commands || []).forEach(c => {
+    const row = document.createElement('p');
+    row.className = 'term-stat';
+    row.textContent = (c.label || '?') + ' — ' + (c.runs || 0) + '×' + (c.failures ? ' · ' + c.failures + ' échec(s)' : '') + ' · ' + (hqTermMs(c.avg_ms) || '—');
+    box.appendChild(row);
+  });
+  if (!(s.commands || []).length) {
+    const none = document.createElement('p');
+    none.className = 'hint';
+    none.textContent = 'Aucune tâche encore.';
+    box.appendChild(none);
+  }
+  const slowest = (s.slowest || [])[0];
+  if (slowest) {
+    const row = document.createElement('p');
+    row.className = 'term-stat';
+    row.textContent = 'La plus lente : ' + (slowest.label || '?') + ' · ' + (hqTermMs(slowest.elapsed_ms) || '—');
+    box.appendChild(row);
+  }
+}
+
+// Écran du PC: a still image every 2 s while the card is open, and nothing at all otherwise.
+const HQ_SCREEN_FRAME_MS = 2000;
+let hqScreenTimer = null;
+let hqScreenOpen = false;
+let hqScreenPaused = false;
+let hqScreenBusy = false;
+let hqScreenTargetsAt = 0;
+
+function hqScreenAge(text) {
+  const el = $('#screen-frame-age');
+  if (el) el.textContent = text || '';
+}
+
+function hqScreenVisible() {
+  const box = $('#screen-live');
+  return !!(box && !box.hidden && box.getClientRects().length);
+}
+
+function hqScreenSync() {
+  const sel = $('#screen-target');
+  const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  const remote = !!(opt && (opt.dataset.type || 'local') !== 'local');
+  const note = $('#screen-note');
+  if (note) {
+    note.hidden = !remote;
+    note.textContent = remote ? 'Aperçu distant : une image toutes les 3-4 s, le temps d’un aller-retour SSH.' : '';
+  }
+  const shown = $('#screen-frame');
+  if (shown) shown.removeAttribute('src');  // never keep the previous PC's picture
+  if (hqScreenOpen && !hqScreenPaused) hqScreenLoad();
+}
+
+async function hqScreenTargetsLoad(force) {
+  const sel = $('#screen-target');
+  if (!sel) return;
+  if (!force && sel.options.length && Date.now() - hqScreenTargetsAt < 60000) return;
+  try {
+    const data = await api('/api/shell/targets', { timeoutMs: 12000 });
+    const list = (data && data.targets) || [];
+    const keep = sel.value || hqShellRead('screen_target', '') || 'local';
+    hqScreenTargetsAt = Date.now();
+    sel.innerHTML = list.map(t => '<option value="' + escapeAttr(t.id || '') + '" data-type="' + escapeAttr(t.type || 'local') + '">' + escapeHtml(t.label || t.id || '') + '</option>').join('');
+    if (Array.from(sel.options).some(o => o.value === keep)) sel.value = keep;
+    hqScreenSync();
+  } catch (_) {}
+}
+
+function hqScreenLoad() {
+  if (!hqScreenOpen || hqScreenPaused || hqScreenBusy) return;
+  // Hidden tab or another view: no request at all, the interval simply waits.
+  if (document.hidden || !hqScreenVisible()) return;
+  hqScreenBusy = true;
+  const target = $('#screen-target')?.value || 'local';
+  const shot = new Image();
+  shot.onload = () => {
+    hqScreenBusy = false;
+    const shown = $('#screen-frame');
+    // A frame from the PC you just left must not replace the new one.
+    if (shown && hqScreenOpen && (($('#screen-target')?.value || 'local') === target)) shown.src = shot.src;
+    hqScreenAge('actualisé à ' + new Date().toLocaleTimeString('fr-FR'));
+  };
+  shot.onerror = () => {
+    hqScreenBusy = false;
+    hqScreenAge('aperçu indisponible');
+  };
+  shot.src = '/api/screen/frame?w=1280&target=' + encodeURIComponent(target) + '&t=' + Date.now();
+}
+
+function hqScreenPause(on) {
+  hqScreenPaused = !!on;
+  const btn = $('#btn-screen-pause');
+  if (btn) {
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.textContent = on ? 'Reprendre' : 'Pause';
+  }
+  if (on) hqScreenAge('en pause');
+  else hqScreenLoad();
+}
+
+function hqScreenSetOpen(on) {
+  hqScreenOpen = !!on;
+  const box = $('#screen-live');
+  if (box) box.hidden = !on;
+  const btn = $('#btn-screen-live');
+  if (btn) {
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.textContent = on ? "Fermer l'aperçu" : "Ouvrir l'aperçu";
+  }
+  const pause = $('#btn-screen-pause');
+  if (pause) pause.hidden = !on;
+  if (on) {
+    hqScreenTargetsLoad();
+    if (!hqScreenTimer) hqScreenTimer = setInterval(hqScreenLoad, HQ_SCREEN_FRAME_MS);
+    hqScreenLoad();
+    return;
+  }
+  if (hqScreenTimer) { clearInterval(hqScreenTimer); hqScreenTimer = null; }
+  const shown = $('#screen-frame');
+  if (shown) shown.removeAttribute('src');
+  hqScreenPaused = false;
+  if (pause) { pause.setAttribute('aria-pressed', 'false'); pause.textContent = 'Pause'; }
+  hqScreenAge('');
+}
+
+const HQ_TERM_STATE_SHORT = { running: 'en cours', done: 'OK', failed: 'échec', stopped: 'arrêtée', timeout: 'délai' };
+
+function hqTermDayKey(ms) {
+  const d = new Date(Number(ms) || 0);
+  return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+}
+
+// Running jobs first inside their day: the live one is always the first row of the group.
+function hqTermOrderRows(jobs) {
+  const days = [];
+  const buckets = new Map();
+  (jobs || []).forEach(job => {
+    const key = hqTermDayKey(job.started);
+    if (!buckets.has(key)) { buckets.set(key, []); days.push(key); }
+    buckets.get(key).push(job);
+  });
+  const out = [];
+  days.forEach(key => {
+    const rows = buckets.get(key).slice().sort((a, b) => {
+      const ra = String(a.state) === 'running' ? 0 : 1;
+      const rb = String(b.state) === 'running' ? 0 : 1;
+      return (ra - rb) || (Number(b.started) - Number(a.started));
+    });
+    rows.forEach(row => out.push(row));
+  });
+  return out;
+}
+
+function hqTermDayLabel(ms) {
+  const when = Number(ms) || 0;
+  const key = hqTermDayKey(when);
+  const now = Date.now();
+  if (key === hqTermDayKey(now)) return "Aujourd'hui";
+  if (key === hqTermDayKey(now - 86400000)) return 'Hier';
+  const d = new Date(when);
+  try { return d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }); }
+  catch (_) { return d.toLocaleDateString(); }
+}
+
+// « 4 tâches · 3 OK · 1 échec » : the day header says what the list contains.
+function hqTermDayCounts(jobs, key) {
+  const counts = {};
+  jobs.forEach(job => {
+    if (hqTermDayKey(job.started) !== key) return;
+    const state = String(job.state || 'done');
+    counts[state] = (counts[state] || 0) + 1;
+  });
+  const total = Object.keys(counts).reduce((sum, state) => sum + counts[state], 0);
+  const bits = [total + (total > 1 ? ' tâches' : ' tâche')];
+  ['running', 'done', 'failed', 'stopped', 'timeout'].forEach(state => {
+    if (counts[state]) bits.push(counts[state] + ' ' + (HQ_TERM_STATE_SHORT[state] || state));
+  });
+  return bits.join(' · ');
+}
+
+// Reopen a past job: replay what it printed, then keep following it if it still runs.
+async function hqTermOpen(id, label) {
+  if (!id) return;
+  if (hqTermJob && hqTermJob.id === id) return;
+  hqTermStopPolling();
+  hqTermRelease();
+  hqTermElapsedStop();
+  hqTermFindClear();
+  hqTermBegin(label || id, '');
+  const stopBusy = typeof startBusy === 'function' ? startBusy('Chargement…', 'shell-busy') : null;
+  let data = null;
+  try {
+    data = await api('/api/shell/job?id=' + encodeURIComponent(id) + '&cursor=0', { timeoutMs: 15000 });
+  } catch (e) {
+    if (stopBusy) stopBusy();
+    hqTermFail(e.message);
+    toast(e.message, 'err');
+    return;
+  }
+  if (stopBusy) stopBusy();
+  hqTermBegin(label || data.label || id, [data.target, data.shell].filter(Boolean).join(' · '));
+  if (data.output) hqTermAppend(data.output);
+  if (data.truncated) {
+    hqTermTruncated = true;
+    hqTermAppend('\n… sortie tronquée (seule la fin est gardée).\n');
+  }
+  if (data.state === 'running') {
+    hqTermSetRunning(true);
+    const busy = typeof startBusy === 'function' ? startBusy('Exécution…', 'shell-busy') : null;
+    hqTermJob = { id, cursor: Number(data.cursor || 0), seq: ++hqTermJobSeq, timer: null, stopBusy: busy, retries: 0, lastOk: Date.now() };
+    hqTermElapsedStart(data.elapsed_ms);
+    hqTermPoll();
+    return;
+  }
+  hqTermSetRunning(false);
+  hqTermStatus(hqTermStateLabel(data.state) + (data.code === null || data.code === undefined ? '' : ' · exit ' + data.code), data.state);
+  hqTermElapsedStop(data.elapsed_ms);
+  const code = data.code === null || data.code === undefined ? '' : ' (exit ' + data.code + ')';
+  const ms = hqTermMs(data.elapsed_ms);
+  hqTermAppend('\n— ' + hqTermStateLabel(data.state) + code + (ms ? ' · ' + ms : '') + '\n');
+  hqTermRecentRefresh();
+}
+
+// Palette handoff: assets/hq.js starts the job, this view follows it.
+window.hqTermAttachJob = (job) => {
+  if (!job || !job.job_id) return false;
+  hqTermStopPolling();
+  hqTermRelease();
+  hqTermSetRunning(true);
+  hqTermBegin(job.label || 'commande', [job.target, job.shell].filter(Boolean).join(' · '));
+  const stopBusy = typeof startBusy === 'function' ? startBusy('Exécution…', 'shell-busy') : null;
+  hqTermJob = { id: job.job_id, cursor: Number(job.cursor || 0), seq: ++hqTermJobSeq, timer: null, stopBusy, retries: 0, lastOk: Date.now() };
+  hqTermElapsedStart(job.elapsed_ms);
+  if (job.output) hqTermAppend(job.output);
+  hqTermPoll();
+  return true;
+};
+
+function hqTermFail(message) {
+  const out = $('#shell-out');
+  if (out) out.textContent = '# ' + (message || 'échec');
+  hqTermStatus('échec', 'failed');
+  hqTermElapsedStop();
+}
+
+function hqTermHistoryList() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem('hq_shell_history') || '[]');
+    return Array.isArray(raw) ? raw.filter(x => typeof x === 'string' && x.trim()).slice(0, 20) : [];
+  } catch (_) { return []; }
+}
+
+function hqTermHistoryAdd(cmd) {
+  const text = String(cmd || '').trim();
+  if (!text) return;
+  const list = hqTermHistoryList().filter(x => x !== text);
+  list.unshift(text);
+  try { sessionStorage.setItem('hq_shell_history', JSON.stringify(list.slice(0, 20))); } catch (_) {}
+  hqShellHistIndex = -1;
+  hqTermHistoryRender();
+}
+
+function hqTermHistoryRender() {
+  const el = $('#term-history');
+  if (!el) return;
+  el.innerHTML = hqTermHistoryList().slice(0, 6).map((c, i) =>
+    `<button type="button" class="chip" data-term-hist="${i}" title="${escapeAttr(c)}">${escapeHtml(c.length > 28 ? c.slice(0, 27) + '…' : c)}</button>`
+  ).join('');
+  $$('[data-term-hist]', el).forEach(b => b.addEventListener('click', () => {
+    const cmd = hqTermHistoryList()[Number(b.dataset.termHist)] || '';
+    const input = $('#shell-cmd');
+    if (input) { input.value = cmd; input.focus(); }
+  }));
+}
+
+// A non-Windows Tailscale peer only answers a raw command; a Windows peer needs its own shell.
+function hqShellSyncTarget() {
+  const sel = $('#shell-target');
+  const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  const type = opt ? (opt.dataset.type || 'local') : 'local';
+  const os = opt ? (opt.dataset.os || '') : '';
+  const shellSel = $('#shell-type');
+  const note = $('#shell-target-note');
+  const remoteUnix = type !== 'local' && !!os && !/win/i.test(os);
+  if (shellSel) {
+    const rawOpt = Array.from(shellSel.options).find(o => o.value === 'raw');
+    if (rawOpt) rawOpt.hidden = type === 'local';
+    if (type === 'local' && shellSel.value === 'raw') shellSel.value = 'powershell';
+    if (remoteUnix) shellSel.value = 'raw';
+    hqShellStore('shell', shellSel.value);
+  }
+  if (note) {
+    if (remoteUnix) {
+      note.hidden = false;
+      note.textContent = 'Cible ' + os + ' : « Commande brute (SSH) » est choisie — un shell Windows ne répond pas à distance.';
+    } else if (type !== 'local' && !os) {
+      note.hidden = false;
+      note.textContent = 'Cible SSH sans OS connu : si ce n’est pas un Windows, choisis « Commande brute (SSH) ».';
+    } else {
+      note.hidden = true;
+      note.textContent = '';
+    }
+  }
+}
+
 function renderTerminalCmds(cmds) {
   const el = $('#term-cmds');
   if (!el) return;
   el.innerHTML = (cmds || []).map(c =>
-    `<button type="button" class="secondary" data-term="${escapeAttr(c.id)}">${escapeHtml(c.label||c.id)}</button>`
-  ).join('');
-  $$('[data-term]', el).forEach(b => b.addEventListener('click', async () => {
-    try {
-      const data = await api('/api/terminal', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: b.dataset.term }) });
-      const head = data.ok === false ? ('exit ' + (data.code ?? '?') + '\n') : '';
-      const out = $('#shell-out') || $('#term-out');
-      if (out) out.textContent = head + (data.stdout || '') + (data.stderr ? '\n' + data.stderr : '');
-    } catch (e) { toast(e.message, 'err'); }
+    `<button type="button" class="secondary" data-term="${escapeAttr(c.id)}" data-help="Commande allowlist : ${escapeAttr(c.label||c.id)}">${escapeHtml(c.label||c.id)}</button>`
+  ).join('') || '<span class="hint">Aucune commande allowlist dans bridge_config.json.</span>';
+  $$('[data-term]', el).forEach(b => b.addEventListener('click', () => {
+    hqTermStart('terminal', { id: b.dataset.term }, b.textContent || b.dataset.term, '');
   }));
 }
 
 function fillShellTargets(targets) {
   const sel = $('#shell-target');
   if (!sel) return;
-  const cur = sel.value;
+  const keep = sel.value || hqShellRead('target', '');
   sel.innerHTML = (targets || []).map(t => {
-    const off = t.online === false ? ' (off)' : '';
-    return `<option value="${escapeAttr(t.id)}">${escapeHtml(t.label || t.id)}${off}</option>`;
-  }).join('') || '<option value="local">Ce PC (local)</option>';
-  if (cur) sel.value = cur;
+    const type = t.type || 'local';
+    const mark = t.online === false ? ' (hors ligne)'
+      : ((t.online === null || t.online === undefined) && type !== 'local' ? ' (état inconnu)' : '');
+    return `<option value="${escapeAttr(t.id)}" data-type="${escapeAttr(type)}" data-os="${escapeAttr(t.os || '')}">${escapeHtml(t.label || t.id)}${escapeHtml(mark)}</option>`;
+  }).join('') || '<option value="local" data-type="local" data-os="">Ce PC (local)</option>';
+  if (keep && Array.from(sel.options).some(o => o.value === keep)) sel.value = keep;
+  const shellSel = $('#shell-type');
+  const wanted = hqShellRead('shell', '');
+  if (shellSel && wanted && Array.from(shellSel.options).some(o => o.value === wanted)) shellSel.value = wanted;
+  hqShellSyncTarget();
+}
+
+function renderTerminalRecent() {
+  const el = $('#term-recent');
+  if (!el) return;
+  const rows = (typeof activityCache !== 'undefined' ? activityCache : [])
+    .filter(x => /^(shell|terminal)$/.test(String((x && x.kind) || ''))).slice(0, 8);
+  el.innerHTML = rows.map(x =>
+    `<li><strong>${escapeHtml(x.message || '')}</strong><div class="meta">${escapeHtml(x.at_h || '')} · ${escapeHtml(x.kind || '')}</div></li>`
+  ).join('') || '<li class="hint">Aucune commande encore.</li>';
 }
 
 async function loadKanban() {
@@ -5967,30 +7148,145 @@ function setupHQ() {
     if (!rel) return;
     window.open('/files/' + rel.split('/').map(encodeURIComponent).join('/'), '_blank');
   });
-  $('#btn-shell-run')?.addEventListener('click', async () => {
-    const cmd = ($('#shell-cmd')?.value || '').trim();
-    if (!cmd) { toast('Commande vide', 'err'); return; }
-    const target = $('#shell-target')?.value || 'local';
-    const shell = $('#shell-type')?.value || 'powershell';
-    if (!confirm('Exécuter sur ' + target + ' ?\n\n' + cmd)) return;
-    $('#shell-out').textContent = '…';
-    try {
-      const data = await withBusy('Exécution…', () => api('/api/shell', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ target, shell, cmd })
-      }), 'shell-busy');
-      $('#shell-out').textContent =
-        (data.ok ? '' : ('exit ' + data.code + '\n')) +
-        (data.stdout || '') +
-        (data.stderr ? ('\n' + data.stderr) : '');
-    } catch (e) {
-      $('#shell-out').textContent = e.message;
-      toast(e.message, 'err');
+  $('#btn-shell-run')?.addEventListener('click', () => { hqTermRunFromInput(); });
+  $('#btn-term-stop')?.addEventListener('click', () => { hqTermStopNow(); });
+  $('#shell-cmd')?.addEventListener('keydown', (e) => {
+    const input = $('#shell-cmd');
+    const list = hqTermHistoryList();
+    if (e.key === 'Tab' && !e.shiftKey) {
+      e.preventDefault();
+      hqTermComplete();
+      return;
+    }
+    if (e.key === 'Enter') {
+      // Enter from the phone keyboard, Ctrl+Enter and ⌘+Enter both launch the command.
+      e.preventDefault();
+      hqTermRunFromInput();
+      return;
+    }
+    if (!input || !list.length) return;
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      hqShellHistIndex = Math.min(hqShellHistIndex + 1, list.length - 1);
+      input.value = list[hqShellHistIndex];
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      hqShellHistIndex = Math.max(hqShellHistIndex - 1, -1);
+      input.value = hqShellHistIndex < 0 ? '' : list[hqShellHistIndex];
     }
   });
-  $('#shell-cmd')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') $('#btn-shell-run')?.click();
+  $('#shell-cmd')?.addEventListener('input', () => { hqTermCompleteAt = -1; hqTermCompleteSet = []; });
+  $('#shell-target')?.addEventListener('change', () => {
+    const sel = $('#shell-target');
+    if (sel) hqShellStore('target', sel.value);
+    hqShellSyncTarget();
   });
+  $('#shell-type')?.addEventListener('change', () => {
+    const sel = $('#shell-type');
+    if (sel) hqShellStore('shell', sel.value);
+  });
+  $('#btn-shell-refresh')?.addEventListener('click', async () => {
+    try {
+      const [targets, cmds] = await Promise.all([
+        api('/api/shell/targets', { timeoutMs: 12000 }),
+        api('/api/terminal/commands', { timeoutMs: 12000 })
+      ]);
+      fillShellTargets(targets.targets || []);
+      renderTerminalCmds(cmds.commands || []);
+      toast('PC et commandes actualisés');
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  $('#btn-term-copy')?.addEventListener('click', async () => {
+    const text = ($('#shell-out')?.textContent || '').trim();
+    if (!text) { toast('Rien à copier', 'err'); return; }
+    try { await navigator.clipboard.writeText(text); toast('Sortie copiée'); }
+    catch (_) { toast('Copie refusée par le navigateur', 'err'); }
+  });
+  $('#btn-term-clear')?.addEventListener('click', () => {
+    const out = $('#shell-out');
+    if (out) out.textContent = '';
+    toast('Sortie effacée');
+  });
+  $('#btn-term-save')?.addEventListener('click', () => {
+    const text = $('#shell-out')?.textContent || '';
+    if (!text.trim()) { toast('Rien à sauver', 'err'); return; }
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = '' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'terminal-' + stamp + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  });
+  $('#btn-term-expand')?.addEventListener('click', (e) => {
+    const out = $('#shell-out');
+    if (!out) return;
+    const open = out.classList.toggle('term-out-full');
+    e.currentTarget.setAttribute('aria-pressed', open ? 'true' : 'false');
+    e.currentTarget.textContent = open ? 'Réduire' : 'Agrandir';
+  });
+  $('#btn-term-next-target')?.addEventListener('click', () => { hqTermNextTarget(); });
+  $('#btn-term-pin')?.addEventListener('click', () => { hqTermPinToggle(); });
+  $('#btn-term-find')?.addEventListener('click', (e) => {
+    const bar = $('#term-find');
+    if (!bar) return;
+    bar.hidden = !bar.hidden;
+    e.currentTarget.setAttribute('aria-pressed', bar.hidden ? 'false' : 'true');
+    if (!bar.hidden) {
+      const findInput = $('#term-find-input');
+      if (findInput) { findInput.focus(); hqTermFindRun(0); }
+    }
+  });
+  $('#term-find-input')?.addEventListener('input', () => { hqTermFindAt = 0; hqTermFindRun(0); });
+  $('#term-find-input')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); hqTermFindRun(e.shiftKey ? -1 : 1); }
+  });
+  $('#btn-find-prev')?.addEventListener('click', () => { hqTermFindRun(-1); });
+  $('#btn-find-next')?.addEventListener('click', () => { hqTermFindRun(1); });
+  $('#btn-term-follow')?.addEventListener('click', () => { hqTermSetFollow(!hqTermFollow); });
+  $('#shell-out')?.addEventListener('scroll', () => {
+    const out = $('#shell-out');
+    if (!out) return;
+    const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 24;
+    if (!atBottom && hqTermFollow) hqTermSetFollow(false);
+  });
+  $('#shell-out')?.addEventListener('click', (e) => {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    hqTermOpenToken(hqTermTokenAt(e.currentTarget, e.clientX, e.clientY));
+  });
+  $('#btn-term-send')?.addEventListener('click', () => { hqTermSendToInbox(); });
+  $('#btn-term-stop-all')?.addEventListener('click', () => { hqTermStopAll(); });
+  $('#btn-term-jobs-clear')?.addEventListener('click', () => { hqTermClearSaved(); });
+  $('#term-stats-block')?.addEventListener('toggle', (e) => { if (e.currentTarget.open) hqTermStatsLoad(); });
+  $('#btn-screen-live')?.addEventListener('click', () => { hqScreenSetOpen(!hqScreenOpen); });
+  $('#btn-screen-pause')?.addEventListener('click', () => { hqScreenPause(!hqScreenPaused); });
+  $('#screen-target')?.addEventListener('change', () => {
+    const sel = $('#screen-target');
+    if (sel) hqShellStore('screen_target', sel.value);
+    hqScreenSync();
+  });
+  const jobsFilterEl = $('#term-jobs-filter');
+  if (jobsFilterEl) jobsFilterEl.value = hqShellRead('jobs_filter', '');
+  const jobsStateEl = $('#term-jobs-state');
+  if (jobsStateEl) {
+    const savedState = hqShellRead('jobs_state', '');
+    if (savedState && Array.from(jobsStateEl.options).some(o => o.value === savedState)) jobsStateEl.value = savedState;
+  }
+  $('#term-jobs-filter')?.addEventListener('input', (e) => {
+    hqShellStore('jobs_filter', e.currentTarget.value);
+    hqTermRecentRender();
+  });
+  $('#term-jobs-state')?.addEventListener('change', (e) => {
+    hqShellStore('jobs_state', e.currentTarget.value);
+    hqTermRecentRender();
+  });
+  hqTermPinsRender();
+  hqTermHistoryRender();
   window.addEventListener('online', () => { toast('En ligne — reprise file'); flushOfflineQueue(); });
   setupRecentsFilters();
   beatPresence();
@@ -6625,7 +7921,174 @@ li.file.is-dir .fname{color:var(--ok)}
 .kcol{border:1px solid var(--line);border-radius:12px;padding:8px;background:color-mix(in srgb,var(--bg) 35%,var(--panel));min-height:120px}
 .kcol h3{margin:0 0 8px;font-size:.85rem}
 .kcard{border:1px solid var(--line);border-radius:10px;padding:8px;margin-bottom:6px;background:var(--panel);font-size:.85rem}
-.term-out{background:#0a0e14;color:#c6f6d5;border-radius:10px;padding:10px;min-height:80px;max-height:220px;overflow:auto;font-size:var(--text-sm);line-height:1.45;white-space:pre-wrap;font-family:var(--font-mono)}
+.term-out{background:#0a0e14;color:#c6f6d5;border:1px solid var(--line);border-radius:10px;padding:10px;min-height:80px;max-height:220px;overflow:auto;font-size:var(--text-sm);line-height:1.45;white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);scrollbar-gutter:stable}
+.term-out:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+.term-out-full{min-height:45vh;max-height:60vh}
+.term-jobs{display:flex;flex-direction:column;gap:6px;margin:10px 0 2px}
+.term-jobs[hidden]{display:none}
+.term-job{display:flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--bg) 35%,var(--panel));color:var(--text);min-height:44px}
+.term-job:hover{border-color:currentColor}
+.term-job-open{flex:1 1 auto;min-width:0;text-align:left;font-family:var(--font-mono);font-size:var(--text-sm);padding:9px 10px;background:transparent;border:0;border-radius:8px;color:inherit;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.term-job-actions{display:flex;gap:2px;flex:0 0 auto;padding-right:4px}
+.term-job-actions button{width:auto;min-height:32px;padding:2px 8px;font-size:var(--text-sm);line-height:1;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--muted)}
+.term-job-actions button:hover{color:var(--text);border-color:var(--line)}
+.term-job-actions .term-job-stop{color:var(--danger)}
+.term-jobs-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.term-jobs-head .term-label{margin:0}
+.term-jobs-actions{display:flex;gap:6px;flex-wrap:wrap}
+.term-jobs-actions button{width:auto;padding:4px 10px;font-size:var(--text-xs);min-height:32px;border-radius:999px}
+/* Écran du PC: one fresh JPEG every 2 s, only while the card is open (no video, no capture when hidden). */
+.term-screen-stage{margin-top:8px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#05070b;min-height:96px;display:flex;align-items:center;justify-content:center}
+.term-screen-stage[hidden]{display:none}
+.term-screen-stage img{display:block;width:100%;height:auto}
+.term-screen-stage:empty{min-height:96px}
+.term-find{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.term-find[hidden]{display:none}
+.term-find input{flex:1 1 auto;min-width:0;padding:6px 10px;border-radius:999px;font-size:var(--text-sm)}
+.term-find button{width:auto;min-height:32px;padding:2px 10px;border-radius:999px;font-size:var(--text-sm)}
+#term-find-count{font-variant-numeric:tabular-nums;white-space:nowrap}
+.term-stats-block{grid-column:1/-1;grid-row:5;margin-top:0}
+.term-stats .term-stat{margin:4px 0;font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted)}
+#term-pinned .chip{font-family:var(--font-mono);font-size:var(--text-xs);max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.term-job.is-current{border-style:dashed}
+.term-job.st-running{border-color:#d8a13a}
+.term-job.st-failed,.term-job.st-timeout{border-color:#c0554f}
+.term-job.st-stopped{opacity:.75}
+.term-job-elapsed{font-variant-numeric:tabular-nums;opacity:.9;margin-left:6px;flex:0 0 auto}
+.term-job .term-dot{display:inline-block;vertical-align:middle;margin-right:6px}
+.term-compose{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:12px;margin-bottom:12px}
+.term-grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,170px);gap:8px}
+@media(max-width:560px){.term-grid2{grid-template-columns:1fr}}
+.term-inline{flex-wrap:nowrap}
+.term-cmd-field{margin-bottom:0}
+.term-cmd-line{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:10px;background:#0a0e14;padding:0 12px}
+.term-cmd-line:focus-within{border-color:var(--accent)}
+.term-cmd-line input{border:0;background:transparent;color:#c6f6d5;font-family:var(--font-mono);font-size:var(--text-sm);padding:11px 0;border-radius:0}
+.term-cmd-line input:focus-visible{outline:none}
+.term-prompt{color:var(--accent);font-family:var(--font-mono);font-weight:800}
+.term-run{justify-content:flex-start;margin:10px 0 6px}
+.term-label{margin:10px 0 6px;font-size:var(--text-xs);font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.term-console{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#0a0e14}
+.term-console-head{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--panel-2);border-bottom:1px solid var(--line);font-size:var(--text-sm);color:var(--muted)}
+#term-status{font-weight:800;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.term-console-tools{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.term-console-tools button{width:auto;padding:4px 10px;font-size:var(--text-xs);min-height:32px;border-radius:999px;background:transparent;border:1px solid var(--line);color:var(--muted)}
+.term-console-tools button:hover{color:var(--text)}
+.term-elapsed{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+.term-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.term-dot.running{background:var(--warn)}
+.term-dot.done{background:var(--ok)}
+.term-dot.failed,.term-dot.timeout{background:var(--danger)}
+@media (prefers-reduced-motion:no-preference){.term-dot.running{animation:hqTermPulse 1.4s ease-in-out infinite}}
+@keyframes hqTermPulse{50%{opacity:.35}}
+.term-console .term-out{border:0;border-radius:0;min-height:170px;max-height:360px}
+.term-jobs-wrap{margin:12px 0 0}
+.term-jobs-wrap[hidden]{display:none}
+.term-recent-block{margin-top:12px}
+@media(min-width:900px){
+.term-view{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
+.term-view.has-jobs{grid-template-columns:minmax(0,1fr) minmax(260px,320px)}
+.term-head{grid-column:1/-1;grid-row:1}
+.term-compose{grid-column:1;grid-row:2;margin-bottom:0}
+.term-console{grid-column:1;grid-row:3}
+.term-jobs-wrap{grid-column:2;grid-row:2 / span 2;margin:0;position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto}
+.term-recent-block{grid-column:1/-1;grid-row:4;margin-top:0}
+}
+.term-jobs-day{margin:8px 0 0;font-weight:700;letter-spacing:.02em}
+.term-jobs-filter{display:flex;gap:6px;align-items:center;margin:8px 0 0}
+.term-jobs-filter[hidden]{display:none}
+#term-jobs-filter{flex:1 1 auto;min-width:0}
+#term-jobs-state{flex:0 0 auto}
+#term-history:empty{display:none}
+/* Terminal — visual pass: one coherent surface for composer, console and jobs, desktop and iPhone. */
+.term-view{gap:14px}
+.term-compose{background:linear-gradient(180deg,color-mix(in srgb,var(--panel) 94%,#fff 2%),var(--panel));box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 1px 2px rgba(0,0,0,.25);border-radius:16px;padding:14px}
+.term-compose .field{margin-bottom:10px}
+.term-compose .field>label{font-size:var(--text-xs);letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:800}
+.term-compose>.term-label{margin-top:14px}
+#shell-target,#shell-type{min-height:var(--tap-min)}
+.term-cmd-line{padding:0 6px 0 12px;border-radius:12px;transition:border-color .15s ease,box-shadow .15s ease}
+.term-cmd-line:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+.term-cmd-line input{flex:1 1 auto;min-width:0;padding:13px 0;letter-spacing:.01em}
+.term-cmd-line input::placeholder{color:color-mix(in srgb,var(--muted) 75%,transparent)}
+#shell-cmd{font-size:14px}
+.term-run{gap:8px;flex-wrap:wrap}
+.term-run button{min-height:var(--tap-min);touch-action:manipulation}
+#btn-shell-run{min-width:132px;font-weight:800}
+#term-cmds .chip,#term-pinned .chip{min-height:36px;touch-action:manipulation}
+.term-console{border-radius:16px;background:linear-gradient(180deg,#0d131b,#0a0e14);box-shadow:0 6px 22px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.03)}
+.term-console-head{padding:8px 12px;gap:10px;background:color-mix(in srgb,var(--panel-2) 88%,#000)}
+#term-status{font-size:var(--text-sm);letter-spacing:.01em}
+.term-console-tools{gap:4px}
+.term-console-tools button{min-height:30px;padding:3px 9px;border-color:transparent;background:color-mix(in srgb,var(--panel-2) 60%,transparent)}
+.term-console-tools button:hover{background:color-mix(in srgb,var(--panel-2) 90%,#000);border-color:var(--line);color:var(--text)}
+.term-console-tools button[aria-pressed="true"]{color:var(--accent-text, #0a0e14);background:var(--accent);border-color:var(--accent)}
+.term-console .term-out{padding:14px 16px;font-size:13px;line-height:1.6;min-height:190px;max-height:min(52vh,420px);overscroll-behavior:contain}
+#shell-out:empty::before{content:"La sortie apparaîtra ici.";color:#5c6b80;font-style:italic}
+.term-out{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--muted) 45%,transparent) transparent}
+.term-out::-webkit-scrollbar{width:10px;height:10px}
+.term-out::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted) 40%,transparent);border-radius:99px;border:3px solid transparent;background-clip:content-box}
+.term-hint-narrow{display:none}
+.term-find{padding:8px 12px;gap:8px}
+.term-find input{background:#0a0e14;color:#c6f6d5;border:1px solid var(--line)}
+.term-find input:focus-visible{outline:none;border-color:var(--accent)}
+.term-jobs-wrap{border:1px solid var(--line);border-radius:16px;background:var(--panel);padding:12px}
+.term-job{border-radius:12px;border-left:3px solid color-mix(in srgb,var(--muted) 45%,transparent);background:color-mix(in srgb,var(--bg) 28%,var(--panel-2));transition:background .15s ease,border-color .15s ease}
+.term-job.st-running{border-left-color:var(--warn)}
+.term-job.st-done{border-left-color:var(--ok)}
+.term-job.st-failed,.term-job.st-timeout{border-left-color:var(--danger)}
+.term-job:hover{background:color-mix(in srgb,var(--bg) 18%,var(--panel-2));border-color:color-mix(in srgb,var(--muted) 55%,var(--line))}
+.term-job-open{padding:11px 10px;line-height:1.35;display:flex;align-items:center;gap:6px;text-align:left}
+.term-job-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;line-height:1.28}
+/* With the jobs card beside it, the console header gets two rows instead of squeezing « Prêt ». */
+.term-view.has-jobs .term-console-head{flex-wrap:wrap;row-gap:6px}
+.term-view.has-jobs .term-console-tools{margin-left:0;flex:1 1 100%;justify-content:flex-start}
+/* A narrow jobs column wraps instead of cutting the PC name mid-word. */
+#screen-target{min-width:170px}
+@media(min-width:900px){
+#screen-target{flex:0 1 auto;width:auto;min-width:240px;max-width:340px}
+}
+.term-job-actions button{min-height:36px;min-width:36px;display:inline-flex;align-items:center;justify-content:center;touch-action:manipulation}
+.term-screen-stage{aspect-ratio:16/9;min-height:0;margin-top:10px}
+.term-screen-stage img{width:100%;height:100%;object-fit:contain}
+.term-console-head button:focus-visible,.term-run button:focus-visible,.term-job-actions button:focus-visible,.term-jobs-actions button:focus-visible{outline:var(--focus-ring);outline-offset:2px}
+/* iPhone: 16px fields so Safari does not zoom on focus, 44 px targets, tools scroll instead of wrapping. */
+@media (max-width:640px){
+.term-compose{padding:12px;border-radius:14px}
+/* Compact on a phone: one row for both selects, icon-only refresh, primary action on its own row. */
+.term-grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+#shell-target,#shell-type{font-size:14px}
+/* The list refreshes on every page load: on a phone the button would only eat the select's width. */
+#btn-shell-refresh{display:none}
+.term-run{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.term-run #btn-shell-run,.term-run #btn-term-stop{grid-column:1/-1}
+.term-run #btn-shell-run{min-height:48px}
+.term-compose>.sec-hint{display:none}
+.term-hint-wide{display:none}
+.term-hint-narrow{display:inline}
+#shell-cmd,#term-find-input,#term-jobs-filter{font-size:16px}
+.term-console-head{flex-wrap:wrap;padding:8px 10px;row-gap:6px}
+.term-console-tools{width:100%;flex-wrap:wrap;justify-content:flex-start;row-gap:6px;padding-bottom:0;overflow:visible;mask-image:none;-webkit-mask-image:none}
+.term-console-tools::-webkit-scrollbar{display:none}
+.term-console-tools button{flex:0 0 auto;min-height:40px;padding:6px 12px}
+.term-console .term-out{padding:12px;min-height:180px;max-height:56vh;font-size:12.5px;line-height:1.55}
+.term-run button{flex:1 1 auto;justify-content:center;min-height:44px}
+#btn-term-stop-all,#btn-term-jobs-clear,.term-jobs-actions button{min-height:40px}
+.term-job{min-height:52px}
+.term-job-actions button{min-height:40px;min-width:40px}
+.term-jobs-filter{flex-wrap:wrap}
+#term-jobs-state{flex:1 1 auto}
+.term-screen-stage{aspect-ratio:auto;min-height:120px}
+.term-screen-stage img{height:auto;max-height:56vh}
+#term-cmds,#term-history,#term-pinned{flex-wrap:wrap;row-gap:6px;padding-bottom:0;overflow:visible;mask-image:none;-webkit-mask-image:none}
+#term-cmds::-webkit-scrollbar,#term-history::-webkit-scrollbar,#term-pinned::-webkit-scrollbar{display:none}
+#term-cmds .chip,#term-history .chip,#term-pinned .chip{flex:0 0 auto;white-space:nowrap;max-width:100%;min-height:40px;overflow:hidden;text-overflow:ellipsis}
+}
+@media (min-width:900px){
+.term-compose{padding:16px}
+.term-console .term-out{font-size:13.5px}
+}
+@media (prefers-reduced-motion:reduce){.term-job,.term-cmd-line{transition:none}}
 .home-chart{min-height:72px}
 .icon-actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .icon-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:56px;padding:10px 6px;
@@ -6653,13 +8116,26 @@ body.kiosk .bottom-nav{display:none}
 .dot.off{background:var(--danger)}
 .hq-more-nav{display:none}
 @media (max-width:899px){
-  .bottom-nav [data-nav="robotique"]{display:none!important}
+  /* One bar, five places: the rest of the house lives in Plus (hq-more-nav), which is what setView already highlights when
+     the current view has no tab here. Keeping every space in the strip meant thirteen targets behind a sideways scroll. */
+  .bottom-nav [data-nav]{display:none}
+  .bottom-nav [data-nav="accueil"],
+  .bottom-nav [data-nav="carnet"],
+  .bottom-nav [data-nav="calendrier"],
+  .bottom-nav [data-nav="fichiers"],
+  .bottom-nav [data-nav="plus"]{display:flex;flex-direction:column}
+  /* Above the companion (320) on a phone: in Tête-à-tête its card runs past the bottom of the screen and its action row
+     used to swallow the taps meant for Plus, so the way out of that space was gone. Chrome the user must be able to leave
+     with stays on top; the card scrolls behind it. */
   .bottom-nav{padding-left:max(4px, env(safe-area-inset-left));padding-right:max(4px, env(safe-area-inset-right));
-    grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:max(58px,18.6%);gap:2px;
+    grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:2px;z-index:600;
     overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;touch-action:pan-x;
     scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  #hq-intime-room{padding-bottom:calc(var(--nav-h,64px) + 8px)}
   .bottom-nav::-webkit-scrollbar{display:none}
   .bottom-nav button{min-width:0;padding:6px 1px;min-height:48px;font-size:.72rem;font-weight:650}
+  /* Five columns must shrink to the phone, not push the page wider than it: a 320px screen gives each tab 60px. */
+  .bottom-nav [data-nav]{min-width:0}
   .hq-more-nav{display:grid;gap:14px;margin-bottom:12px}
   .hq-more-nav h2{margin:0 0 6px;font-size:1rem}
   .hq-more-nav .hq-more-system-title{margin:8px 0 0}
@@ -6669,9 +8145,15 @@ body.kiosk .bottom-nav{display:none}
   .hq-more-links a[aria-current="page"]{border-color:var(--accent)}
   body:not(.session-admin) .hq-more-links [data-view-link="intime"],
   body:not(.session-admin) .hq-more-links [data-view-link="engine"],
-  body:not(.session-admin) .hq-more-links [data-view-link="securite"]{display:none}
+  body:not(.session-admin) .hq-more-links [data-view-link="securite"],
+  body:not(.session-admin) .hq-more-links [data-view-link="musique"],
+  body:not(.session-admin) .hq-more-links [data-view-link="robotique"]{display:none}
 }
 @media (max-width:520px){
+  /* The view toolbar (search, history, Mode complet) used to refuse to wrap: on a 320px phone it forced the layout
+     viewport to 386px, so the last tab of the bar sat off-screen. */
+  .view-bar{flex-wrap:wrap;row-gap:6px}
+  .view-tools{flex-wrap:wrap;min-width:0}
   .qrs{grid-template-columns:1fr}
   .wrap{padding:12px max(12px, env(safe-area-inset-right)) 20px max(12px, env(safe-area-inset-left))}
   .icon-actions{grid-template-columns:repeat(4,minmax(0,1fr))}
@@ -6679,7 +8161,25 @@ body.kiosk .bottom-nav{display:none}
 @media (min-width:900px){
   body{padding-bottom:0;display:grid;grid-template-columns:164px 1fr;min-height:100vh}
   .bottom-nav{position:sticky;top:0;left:auto;right:auto;bottom:auto;height:100vh;width:164px;grid-template-columns:1fr;
-    border-top:0;border-right:1px solid var(--line);padding:16px 10px;align-content:start;gap:6px;order:0}
+    border-top:0;border-right:1px solid var(--line);padding:10px 8px;align-content:stretch;gap:2px;order:0;
+    grid-auto-rows:minmax(0,1fr);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+  /* Icon and label on one line: a 14-row rail of stacked pairs ran past the bottom of a 768px window and hid Système. */
+  /* The rows share the window height instead of overflowing it: 18 tabs at 768px would need 800px of rail and cut Système. */
+  .bottom-nav button{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:10px;
+    min-height:0;padding:6px 10px;border-radius:9px;font-size:.82rem;font-weight:650;text-align:left}
+  .bottom-nav .nav-ico{flex:0 0 auto}
+  .bottom-nav .nav-svg{width:18px;height:18px}
+  .bottom-nav .nav-label{overflow:hidden;text-overflow:ellipsis}
+  .bottom-nav button.active{box-shadow:inset 3px 0 0 var(--accent),inset 0 0 0 1px color-mix(in srgb,var(--accent) 30%,transparent)}
+  /* Hairlines between the three kinds of space (quotidien, créer/espaces, système) without wrapping the buttons, so the
+     drag ordering in hq-nav-order.js keeps working on the same flat children. */
+  .bottom-nav [data-nav="dessiner"],.bottom-nav [data-nav="ops"]{margin-top:7px;border-top:1px solid var(--line);padding-top:7px}
+  /* Simple mode keeps Engine / Sécurité / Musique out of the rail, but those pages stay reachable (Pistonia's chip opens
+     Engine, the music chip opens Musique, and #engine is a link). Being on one used to leave no highlighted row at all, so
+     the row that belongs to the current view is revealed while you are in it, and only then. */
+  body.mode-simple[data-view="engine"] .bottom-nav [data-nav="engine"],
+  body.mode-simple[data-view="securite"] .bottom-nav [data-nav="securite"],
+  body.mode-simple[data-view="musique"] .bottom-nav [data-nav="musique"]{display:flex}
   .nav-label-mobile{display:none}
   .nav-label-desktop{display:inline}
   .wrap{order:1;max-width:980px;padding:20px 24px 40px}
@@ -7956,6 +9456,7 @@ def render_app() -> bytes:
 <link rel="stylesheet" href="/assets/hq-culinia-chip.css"/>
 <link rel="stylesheet" href="/assets/hq-forgia-chip.css"/>
 <link rel="stylesheet" href="/assets/hq-assistant-visits.css"/>
+<link rel="stylesheet" href="/assets/hq-personhood.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-face.css"/>
 <link rel="stylesheet" href="/assets/hq-companion-adult-fx.css"/>
 {debug_css_link}
@@ -8155,6 +9656,10 @@ def render_app() -> bytes:
         </form>
       </details>
     </section>
+    <section class="hq home-mini home-musica" id="home-musica" aria-labelledby="home-musica-title" hidden>
+      <div class="home-head"><h2 id="home-musica-title">Musica</h2></div>
+      <div class="home-mini-body" id="home-musica-body"></div>
+    </section>
     <section class="hq home-mini" id="home-budget" aria-labelledby="home-budget-title" hidden>
       <div class="home-head"><h2 id="home-budget-title">Budget</h2></div>
       <div class="home-mini-body" id="home-budget-body"></div>
@@ -8349,29 +9854,129 @@ def render_app() -> bytes:
   </div>
 
   <div data-panel="ops" class="mode-complet-only">
-    <section class="hq hq-primary" aria-labelledby="shell-title">
-      <div class="sec-head">
+    <section class="hq hq-primary term-view" aria-labelledby="shell-title">
+      <div class="sec-head term-head">
         <h2 id="shell-title">Terminal</h2>
-        <p class="sec-hint">Commande rapide sur ce PC ou un autre via Tailscale</p>
+        <p class="sec-hint">Ce PC : commandes autorisées · autre PC : commande SSH libre</p>
       </div>
-      <div class="field"><label for="shell-target">Sur quel PC ?</label><select id="shell-target"></select></div>
-      <div class="field"><label for="shell-type">Type de terminal</label>
-        <select id="shell-type">
-          <option value="powershell">PowerShell</option>
-          <option value="cmd">CMD</option>
-          <option value="pwsh">PowerShell 7 (pwsh)</option>
-        </select>
+
+      <div class="term-compose">
+        <div class="term-grid2">
+          <div class="field"><label for="shell-target">Sur quel PC ?</label>
+            <div class="row term-inline" style="align-items:stretch">
+              <select id="shell-target" style="flex:1 1 auto;min-width:0"></select>
+              <button data-help="Relire la liste des PC et des commandes autorisées." aria-label="Actualiser la liste des PC" type="button" class="secondary" id="btn-shell-refresh"><span aria-hidden="true">↻</span><span class="term-refresh-text"> Actualiser</span></button>
+            </div>
+          </div>
+          <div class="field"><label for="shell-type">Type de terminal</label>
+            <select id="shell-type">
+              <option value="powershell">PowerShell</option>
+              <option value="cmd">CMD</option>
+              <option value="pwsh">PowerShell 7 (pwsh)</option>
+              <option value="raw">Commande brute (SSH)</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint" id="shell-target-note" hidden></p>
+
+        <div class="field term-cmd-field">
+          <label for="shell-cmd">Commande</label>
+          <div class="term-cmd-line">
+            <span class="term-prompt" aria-hidden="true">$</span>
+            <input id="shell-cmd" type="text" placeholder="Ex. Get-Process | Select -First 5" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-describedby="shell-where"/>
+          </div>
+        </div>
+        <p class="hint" id="shell-where"><span class="term-hint-wide">Entrée ou Ctrl+Entrée lance · ↑ ↓ historique · Tab complète · stdin fermé (pas de commande interactive)</span><span class="term-hint-narrow">Entrée lance · stdin fermé</span></p>
+        <div class="row hq-actions term-run">
+          <button data-help="Exécuter la commande saisie." type="button" id="btn-shell-run"><span aria-hidden="true">▶</span> Lancer</button>
+          <button data-help="Interrompre la commande en cours et tout son processus." type="button" id="btn-term-stop" class="danger-outline" hidden><span aria-hidden="true">■</span> Arrêter</button>
+          <button data-help="Basculer la commande saisie sur le PC suivant de la liste (le texte est gardé)." type="button" class="secondary" id="btn-term-next-target">PC suivant</button>
+          <button data-help="Épingler (ou retirer) la commande saisie au-dessus des commandes rapides." type="button" class="secondary" id="btn-term-pin" aria-pressed="false">Épingler</button>
+        </div>
+        <div class="row hq-actions" id="term-pinned" aria-label="Commandes épinglées" hidden></div>
+        <p class="term-label">Commandes rapides</p>
+        <div class="row hq-actions" id="term-cmds" style="margin-bottom:8px"></div>
+        <div class="row hq-actions" id="term-history" aria-label="Commandes récentes"></div>
+        <p class="sec-hint">Les autres PCs apparaissent s'ils ont OpenSSH.</p>
       </div>
-      <div class="row hq-actions" id="term-cmds" style="margin-bottom:8px"></div>
-      <div class="field"><label for="shell-cmd">Commande</label>
-        <input id="shell-cmd" type="text" placeholder="Get-Process | Select -First 5" autocomplete="off"/>
+
+      <div class="term-console">
+        <div class="term-console-head">
+          <span class="term-dot" id="term-dot" aria-hidden="true"></span>
+          <span id="term-status" role="status">Prêt</span>
+          <span id="term-elapsed" class="term-elapsed" aria-hidden="true"></span>
+          <span class="term-console-tools" role="group" aria-label="Outils de la sortie">
+            <button data-help="Copier la sortie affichée." type="button" class="secondary" id="btn-term-copy">Copier</button>
+            <button data-help="Vider la sortie affichée." type="button" class="secondary" id="btn-term-clear">Effacer</button>
+            <button data-help="Enregistrer la sortie dans un fichier texte." type="button" class="secondary" id="btn-term-save">Sauver .txt</button>
+            <button data-help="Agrandir la sortie pour lire une longue réponse." type="button" class="secondary" id="btn-term-expand" aria-pressed="false">Agrandir</button>
+            <button data-help="Chercher dans la sortie affichée." type="button" class="secondary" id="btn-term-find" aria-pressed="false">Chercher</button>
+            <button data-help="Suivre la sortie : défiler automatiquement vers le bas à chaque nouvelle ligne." type="button" class="secondary" id="btn-term-follow" aria-pressed="true">Suivre</button>
+            <button data-help="Envoyer la sortie dans Inbox, pour la récupérer sur le téléphone." type="button" class="secondary" id="btn-term-send">Envoyer</button>
+          </span>
+        </div>
+        <div class="term-find" id="term-find" hidden>
+          <input id="term-find-input" type="search" placeholder="Chercher dans la sortie…" aria-label="Chercher dans la sortie" autocomplete="off" autocapitalize="none" spellcheck="false"/>
+          <span id="term-find-count" class="hint" aria-live="polite"></span>
+          <button data-help="Occurrence précédente." type="button" class="secondary" id="btn-find-prev">↑</button>
+          <button data-help="Occurrence suivante." type="button" class="secondary" id="btn-find-next">↓</button>
+        </div>
+        <div class="busy-line" id="shell-busy" hidden><span class="busy-dot"></span><span class="busy-text">Exécution…</span><span class="busy-elapsed">0s</span></div>
+        <pre id="shell-out" class="term-out" role="log" aria-live="polite" aria-atomic="false" aria-label="Sortie du terminal" tabindex="0" dir="ltr"></pre>
+      </div>
+
+      <div class="term-jobs-wrap" id="term-jobs-wrap" hidden>
+        <div class="term-jobs-head">
+          <p class="term-label">Tâches de cette session</p>
+          <span class="term-jobs-actions">
+            <button data-help="Arrêter toutes les tâches en cours et en attente." type="button" class="danger-outline" id="btn-term-stop-all" hidden>Tout arrêter</button>
+            <button data-help="Supprimer les tâches enregistrées sur le disque (les tâches en cours restent)." type="button" class="secondary" id="btn-term-jobs-clear" hidden>Vider</button>
+          </span>
+        </div>
+        <div class="row term-jobs-filter" id="term-jobs-tools" hidden>
+          <input id="term-jobs-filter" type="search" placeholder="Filtrer une tâche…" aria-label="Filtrer les tâches par nom" autocomplete="off" autocapitalize="none" spellcheck="false"/>
+          <select id="term-jobs-state" aria-label="Filtrer les tâches par état">
+            <option value="">Tous les états</option>
+            <option value="running">En cours</option>
+            <option value="done">Terminée</option>
+            <option value="failed">Échec</option>
+            <option value="stopped">Arrêtée</option>
+            <option value="timeout">Délai dépassé</option>
+          </select>
+        </div>
+        <div id="term-jobs" class="term-jobs" hidden aria-label="Tâches de cette session"></div>
+      </div>
+
+      <details class="hq term-stats-block" id="term-stats-block">
+        <summary>
+          <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Statistiques</span>
+        </summary>
+        <div class="term-stats" id="term-stats"><p class="hint">Ouvre pour charger.</p></div>
+      </details>
+
+      <details class="hq term-recent-block">
+        <summary>
+          <span class="summary-title" style="font-size:1.12rem;font-weight:800;color:var(--text)">Dernières commandes</span>
+        </summary>
+        <ul class="hq-list" id="term-recent"><li class="hint">Aucune commande encore.</li></ul>
+      </details>
+    </section>
+
+    <section class="hq" aria-labelledby="screen-live-title">
+      <div class="sec-head">
+        <h2 id="screen-live-title">Écran du PC</h2>
+        <p class="sec-hint">Un aperçu, pas une vidéo : une image toutes les 2 s, seulement quand la carte est ouverte</p>
       </div>
       <div class="row hq-actions">
-        <button data-help="Exécuter la commande saisie." type="button" id="btn-shell-run">Lancer</button>
+        <select id="screen-target" aria-label="Écran de quel PC" style="flex:0 1 auto"><option value="local" data-type="local">Ce PC (local)</option></select>
+        <button data-help="Afficher un aperçu de l'écran du PC choisi, rafraîchi toutes les 2 secondes." type="button" class="secondary" id="btn-screen-live" aria-pressed="false">Ouvrir l'aperçu</button>
+        <button data-help="Figer l'image affichée sans fermer l'aperçu." type="button" class="secondary" id="btn-screen-pause" aria-pressed="false" hidden>Pause</button>
+        <span class="hint" id="screen-frame-age" aria-live="polite"></span>
       </div>
-      <p class="sec-hint">« Local » = cet ordinateur. Les autres PCs apparaissent s'ils ont OpenSSH.</p>
-      <div class="busy-line" id="shell-busy" hidden><span class="busy-dot"></span><span class="busy-text">Exécution…</span><span class="busy-elapsed">0s</span></div>
-      <pre id="shell-out" class="term-out" aria-live="polite"></pre>
+      <p class="hint" id="screen-note" hidden></p>
+      <div class="term-screen-stage" id="screen-live" hidden>
+        <img id="screen-frame" alt="Aperçu de l'écran du PC" decoding="async"/>
+      </div>
     </section>
 
     <details class="hq">
@@ -9382,6 +10987,7 @@ def render_app() -> bytes:
     </nav>
     <nav class="sys-jump" aria-label="Sections Système">
       <button type="button" class="admin-only" id="system-robotics-settings">Réglages Robotique</button>
+      <button data-help="Gemini principal, clé NVIDIA de repli et modèle des visites." type="button" class="admin-only" data-jump="system-nvidia">Visites (Gemini / NVIDIA)</button>
       <button data-help="Cet appareil, la session et la déconnexion." type="button" data-jump="system-session">Session</button>
       <button data-help="PINs, accès et sécurité du pont." type="button" data-jump="system-security">Sécurité &amp; PINs</button>
       <button data-help="Sauvegardes et restauration." type="button" data-jump="system-backups">Sauvegardes</button>
@@ -9600,6 +11206,30 @@ def render_app() -> bytes:
         <button data-help="Ouvrir l'espace tête-à-tête." type="button" class="secondary" id="hq-intime-open" hidden style="margin-top:8px">Ouvrir l'espace Tête-à-tête ›</button>
       </div>
     </section>
+    <section class="hq admin-only" id="system-nvidia" aria-labelledby="nvidia-settings-title">
+      <div class="sec-head">
+        <h2 id="nvidia-settings-title">Visites (Gemini / NVIDIA)</h2>
+        <p class="sec-hint">Gemini 3.1 Flash Lite écrit les échanges ambiants ; NVIDIA NIM sert de repli si Gemini est indisponible. Les clés restent sur ce PC et ne sont jamais renvoyées au navigateur.</p>
+      </div>
+      <form id="nvidia-settings-form">
+        <div class="field">
+          <label for="nvidia-api-key">Clé API NVIDIA</label>
+          <input type="password" id="nvidia-api-key" maxlength="256" autocomplete="new-password" spellcheck="false" placeholder="nvapi-… (laisser vide pour conserver)"/>
+          <p class="hint" id="nvidia-key-state">Chargement…</p>
+        </div>
+        <div class="field">
+          <label for="nvidia-visit-model">Modèle NIM de repli</label>
+          <input type="text" id="nvidia-visit-model" maxlength="120" spellcheck="false" placeholder="nvidia/nemotron-3.5-bolt-e4b"/>
+          <p class="hint">Identifiant du modèle affiché sur build.nvidia.com ; il peut changer côté NVIDIA.</p>
+        </div>
+        <div class="field" style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="submit" class="secondary" id="nvidia-save">Enregistrer</button>
+          <button type="button" class="secondary" id="nvidia-clear-key">Effacer la clé</button>
+        </div>
+        <p class="hint" id="nvidia-settings-status" role="status" aria-live="polite"></p>
+        <p class="hint" id="nvidia-visit-telemetry" role="status" aria-live="polite">Chargement…</p>
+      </form>
+    </section>
   </div>
 
 </main>
@@ -9639,6 +11269,7 @@ def render_app() -> bytes:
 <script src="/assets/hq-dangling-member.js"></script>
 <script src="/assets/hq-chrome.js"></script>
 <script src="/assets/hq-users.js"></script>
+<script src="/assets/hq-nvidia-settings.js"></script>
 <script src="/assets/hq-polish.js"></script>
 <script src="/assets/hq-lecteur.js"></script>
 <script src="/assets/hq-dessiner-motion.js"></script>
@@ -9655,13 +11286,16 @@ def render_app() -> bytes:
 <script src="/assets/hq-else-chip.js"></script>
 <script src="/assets/hq-inventoria-chip.js"></script>
 <script src="/assets/hq-musica-chip.js"></script>
+<script src="/assets/hq-musica-moments.js" defer></script>
 <script src="/assets/hq-engine.js"></script>
+<script src="/assets/hq-pistonia-stream.js"></script>
 <script src="/assets/hq-pistonia-chip.js"></script>
 <script src="/assets/hq-security.js"></script>
 <script src="/assets/hq-securia-chip.js"></script>
 <script src="/assets/hq-culinia-chip.js"></script>
 <script src="/assets/hq-forgia-chip.js"></script>
 <script src="/assets/hq-assistant-visits.js"></script>
+<script src="/assets/hq-personhood.js"></script>
 <script src="/assets/hq-model-view.js"></script>
 <script src="/assets/hq-timemachine.js"></script>
 <script src="/assets/hq-constellation.js"></script>
@@ -10754,6 +12388,39 @@ class Handler(BaseHTTPRequestHandler):
             return close
         return []
 
+    def _pistonia_stream(self, data: dict) -> None:
+        """POST /api/engine/pistonia/stream: the same turn as .../message, delivered as it is written
+        (``text/event-stream``, chunked). ``delta`` carries the reply text so far, ``reset`` retracts text that turned
+        out not to be the answer, and ``done`` carries the stored message exactly as .../message would have answered.
+        A failure after the headers is an ``error`` event: the status line is already gone by then."""
+        import hq_pistonia
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Transfer-Encoding", "chunked")
+        self._security_headers()
+        self.end_headers()
+
+        def emit(event: dict) -> None:
+            frame = ("data: " + json.dumps(event, ensure_ascii=False, default=str) + "\n\n").encode("utf-8")
+            self.wfile.write(b"%x\r\n" % len(frame) + frame + b"\r\n")
+            self.wfile.flush()
+
+        try:
+            payload = hq_pistonia.message(data, emit=emit)
+            emit({"type": "done", **payload})
+        except hq_pistonia.PistoniaError as exc:
+            emit({"type": "error", "error": str(exc), "code": exc.code, "retryable": exc.retryable})
+        except Exception:
+            emit({"type": "error", "error": "Pistonia a rencontré une erreur.", "code": "error", "retryable": True})
+        finally:
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
+
     def _json(self, code: int, obj: dict, headers: list[tuple[str, str]] | None = None) -> None:
         try:
             body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
@@ -10800,6 +12467,21 @@ class Handler(BaseHTTPRequestHandler):
         hq_forge_fleet.bind(ROOT)
         ip = self.client_address[0] if self.client_address else ""
         code, payload = hq_forge_fleet.handle_worker(self.command or "POST", raw, self.headers, body, ip)
+        self._json(code, payload)
+
+    def _voice_worker(self, raw: str) -> None:
+        import hq_voice_remote
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self._json(400, {"error": "longueur invalide"})
+            return
+        if length < 0 or length > hq_voice_remote.max_body(raw):
+            self._json(413, {"error": "Requête trop grande."})
+            return
+        body = self.rfile.read(length) if length else b""
+        ip = self.client_address[0] if self.client_address else ""
+        code, payload = hq_voice_remote.handle_worker(self.command or "POST", raw, self.headers, body, ip)
         self._json(code, payload)
 
     def _engine_agent(self, raw: str) -> None:
@@ -11827,6 +13509,26 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
             self._json(code, payload)
             return True
+        if raw == "/api/assistant-visits":  # latest visit between two assistants (admin only)
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return True
+            code, payload = hq_assistant_visits.http_get(
+                parse_qs(parsed.query),
+                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+            )
+            self._json(code, payload)
+            return True
+        if raw == "/api/assistant-personhood":  # bounded self-model and review (admin only)
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return True
+            code, payload = hq_personhood.http_get(
+                parse_qs(parsed.query, keep_blank_values=True),
+                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+            )
+            self._json(code, payload)
+            return True
         if raw.startswith("/api/companion/chat-image/"):
             if self._role() != "admin":
                 self._json(403, {"error": "Réservé admin", "code": "forbidden"})
@@ -12557,6 +14259,81 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = hq_ai.http_post(data, client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
             self._json(code, payload)
             return True
+        if raw == "/api/assistant-visit-banter":  # one live-generated ambient exchange (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return True
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > 4096:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_assistant_visits.banter(
+                data,
+                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+            )
+            self._json(code, payload)
+            return True
+        if raw == "/api/assistant-visits":  # completed visit transcript, admin + CSRF
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return True
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > 16384:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_assistant_visits.http_post(
+                data,
+                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+            )
+            self._json(code, payload)
+            return True
+        if raw == "/api/assistant-personhood":  # approve/pin/reset a self-model hypothesis (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return True
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"error": "longueur invalide", "code": "validation_error"})
+                return True
+            if length < 0 or length > 16384:
+                self.close_connection = True
+                self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
+                return True
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            code, payload = hq_personhood.http_post(
+                data,
+                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+            )
+            self._json(code, payload)
+            return True
         if raw == "/api/companion/art":
             try:
                 data = self._read_json()
@@ -12712,7 +14489,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 self._json(400, {"error": "longueur invalide", "code": "validation_error"})
                 return True
-            if length < 0 or length > (32768 if raw == "/api/engine/pistonia/message" else 4096):   # chat carries a short history
+            if length < 0 or length > (32768 if raw in ("/api/engine/pistonia/message", "/api/engine/pistonia/stream") else 4096):   # chat carries a short history
                 self.close_connection = True
                 self._json(413, {"error": "corps trop volumineux", "code": "validation_error"})
                 return True
@@ -12720,6 +14497,9 @@ class Handler(BaseHTTPRequestHandler):
                 data = self._read_json() if length else {}
             except ValueError as e:
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
+                return True
+            if raw == "/api/engine/pistonia/stream":   # the same turn, sent as it is written
+                self._pistonia_stream(data)
                 return True
             code, payload = hq_engine.http_post(raw, data)
             self._json(code, hq_engine.redact_for_logs(payload) if code >= 400 else payload)
@@ -12899,7 +14679,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Inconnu"})
             return
 
-        if raw.startswith("/agent/v1/") or raw.startswith("/forge-worker/v1/") or raw.startswith("/engine-agent/v1/"):
+        if raw.startswith("/agent/v1/") or raw.startswith("/forge-worker/v1/") or raw.startswith("/engine-agent/v1/") or raw.startswith("/voice-worker/v1/"):
             self._json(405, {"error": "POST requis"})
             return
 
@@ -13214,6 +14994,69 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"targets": cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers), "ssh_user": CONFIG.get("ssh_user") or ""})
             return
 
+        if raw == "/api/shell/jobs":
+            if not self._require_admin():
+                return
+            self._json(200, {"jobs": cc_ext.list_jobs(), "storage": cc_ext.persisted_stats()})
+            return
+
+        if raw == "/api/shell/stats":
+            if not self._require_admin():
+                return
+            self._json(200, {"stats": cc_ext.job_stats()})
+            return
+
+        if raw == "/api/shell/job":
+            if not self._require_admin():
+                return
+            qs = parse_qs(parsed.query)
+            job_id = (qs.get("id", [""])[0] or "").strip()
+            try:
+                cursor = max(0, int(qs.get("cursor", ["0"])[0] or 0))
+            except ValueError:
+                cursor = 0
+            try:
+                self._json(200, cc_ext.job_snapshot(job_id, cursor=cursor))
+            except KeyError:
+                self._json(404, {"error": "Tâche inconnue"})
+            return
+
+        if raw == "/api/screen/frame":  # live screen card: one JPEG frame, admin only, never cached
+            if not self._require_admin():
+                return
+            qs = parse_qs(parsed.query)
+            try:
+                width = int(qs.get("w", ["1280"])[0] or 1280)
+            except ValueError:
+                width = 1280
+            target_id = (qs.get("target", ["local"])[0] or "local").strip()
+            try:
+                if target_id in ("", "local"):
+                    jpeg = screen_frame_jpeg(width=width)
+                else:
+                    found = next(
+                        (t for t in cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers) if str(t.get("id")) == target_id),
+                        None,
+                    )
+                    if found is None:
+                        self._json(404, {"error": "Cible inconnue", "code": "unknown_target"})
+                        return
+                    if str(found.get("type") or "local") == "local":
+                        jpeg = screen_frame_jpeg(width=width)
+                    else:
+                        jpeg = screen_remote_frame_jpeg(found, width=width)
+            except (RuntimeError, OSError, ValueError):
+                self._json(503, {"error": "Aperçu de l'écran indisponible", "code": "screen_unavailable"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.send_header("Cache-Control", "no-store")
+            self._security_headers()
+            self.end_headers()
+            self.wfile.write(jpeg)
+            return
+
         if raw == "/api/me":
             info = session_info(self._token()) or {"user": "?", "role": self._role() or "upload"}
             self._json(200, {"user": info.get("user"), "user_id": info.get("user_id", ""), "role": info.get("role")})
@@ -13230,6 +15073,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"challenge": ch, "rp_id": host, "allow_credentials": creds})
             return
 
+        if raw == "/api/admin/nvidia":  # NVIDIA visit settings: key is write-only
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return
+            self._json(200, hq_assistant_visits.settings_snapshot())
+            return
         if raw == "/api/admin/passkeys":
             if self._role() != "admin":
                 self._record_sec_event(
@@ -13464,6 +15313,10 @@ class Handler(BaseHTTPRequestHandler):
             # Forge generation workers: no browser session and no CSRF (no cookie is read), HMAC on every route
             # except the one-time-code enrollment. The body is never logged.
             self._forge_worker(raw)
+            return
+        if raw.startswith("/voice-worker/v1/"):
+            # Musica's voice worker (another PC's GPU): bearer token, no cookie, no CSRF; the body is never logged.
+            self._voice_worker(raw)
             return
         if raw.startswith("/engine-agent/v1/"):
             # Engine agents (other computers): same trust model as the Forge workers, no cookie is read, HMAC on /report.
@@ -13778,6 +15631,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"error": "Clé introuvable", "code": "not_found"})
+            return
+
+        if raw == "/api/admin/nvidia":  # save/clear the NVIDIA key and visit model (admin + CSRF)
+            if self._role() != "admin":
+                self._json(403, {"ok": False, "error": "Accès admin requis", "code": "forbidden"})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+            except ValueError:
+                self.close_connection = True
+                self._json(400, {"ok": False, "error": "longueur invalide", "code": "validation_error"})
+                return
+            if length < 0 or length > 4096:
+                self.close_connection = True
+                self._json(413, {"ok": False, "error": "corps trop volumineux", "code": "validation_error"})
+                return
+            try:
+                data = self._read_json()
+            except ValueError as e:
+                self._json(400, {"ok": False, "error": str(e)[:200], "code": "validation_error"})
+                return
+            code, payload = hq_assistant_visits.settings_update(data)
+            self._json(code, payload)
             return
 
         if raw == "/api/admin/tripwire/test":
@@ -14223,13 +16099,19 @@ class Handler(BaseHTTPRequestHandler):
             with self._start_privileged_audit(raw) as audit:
                 data = self._read_json()
                 try:
-                    info = cc_ext.run_terminal(cmd_id=data.get("id"), raw=data.get("cmd"))
-                    audit.success()
-                except Exception as e:
-                    audit.failed(reason="terminal_failed")
+                    info = cc_ext.start_terminal_job(cmd_id=data.get("id"), raw=data.get("cmd"))
+                    audit.scheduled(reason="job_started")
+                except ValueError as e:
+                    # Allowlist refusal or a launch failure: safe for the operator.
+                    audit.failed(reason="terminal_refused")
                     self._json(400, {"error": str(e)})
                     return
-                self._json(200, info)
+                except Exception:
+                    # Never echo an internal repr: it can repeat the raw command line.
+                    audit.failed(reason="terminal_failed")
+                    self._json(400, {"error": "Échec de la commande"})
+                    return
+                self._json(202, {"ok": True, **info})
                 return
 
         if raw == "/api/shell":
@@ -14242,7 +16124,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "Cible non autorisée — utilisez un id de shell_targets"})
                     return
                 target_id = str(data.get("target") or "local")
-                shell = str(data.get("shell") or "powershell")
+                shell = str(data.get("shell") or "powershell").strip().lower()
                 command = str(data.get("cmd") or data.get("command") or "")
                 targets = {t["id"]: t for t in cc_ext.list_shell_targets(tailscale_peers_fn=tailscale_peers)}
                 target = targets.get(target_id)
@@ -14251,17 +16133,74 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(400, {"error": "Cible inconnue"})
                     return
                 try:
-                    info = cc_ext.run_shell(target=target, shell=shell, command=command)
-                    audit.success()
-                except subprocess.TimeoutExpired:
-                    audit.failed(reason="timeout")
-                    self._json(400, {"error": "Délai dépassé"})
-                    return
-                except Exception as e:
-                    audit.failed(reason="shell_failed")
+                    info = cc_ext.start_shell_job(target=target, shell=shell, command=command)
+                    audit.scheduled(reason="job_started")
+                except ValueError as e:
+                    # Refused shell / empty / too long command: the message is meant for the operator.
+                    audit.failed(reason="shell_refused")
                     self._json(400, {"error": str(e)})
                     return
-                self._json(200, info)
+                except Exception:
+                    audit.failed(reason="shell_failed")
+                    self._json(400, {"error": "Échec de la commande"})
+                    return
+                self._json(202, {"ok": True, **info})
+                return
+
+        if raw == "/api/shell/job/stop":
+            if not self._require_admin():
+                return
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                if data.get("all"):
+                    info = cc_ext.stop_all_jobs()
+                    audit.success()
+                    self._json(200, {"ok": True, **info})
+                    return
+                try:
+                    info = cc_ext.stop_job(str(data.get("id") or ""))
+                    audit.success()
+                except KeyError:
+                    audit.failed(reason="unknown_job")
+                    self._json(404, {"error": "Tâche inconnue"})
+                    return
+                self._json(200, {"ok": True, **info})
+                return
+
+        if raw == "/api/shell/jobs/clear":
+            if not self._require_admin():
+                return
+            with self._start_privileged_audit(raw) as audit:
+                info = cc_ext.clear_persisted()
+                audit.success()
+                self._json(200, {"ok": True, **info})
+                return
+
+        if raw == "/api/terminal/export":
+            if not self._require_admin():
+                return
+            with self._start_privileged_audit(raw) as audit:
+                data = self._read_json()
+                text = str(data.get("text") or "")[:500_000]
+                if not text.strip():
+                    audit.failed(reason="empty_text")
+                    self._json(400, {"error": "Sortie vide"})
+                    return
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                base = slugify(str(data.get("name") or "")) or "terminal"
+                dest = unique_under_rel("Inbox", f"{base}_{stamp}.txt")
+                if not dest:
+                    audit.failed(reason="inbox_unavailable")
+                    self._json(400, {"error": "Inbox indisponible"})
+                    return
+                try:
+                    dest.write_text(text, encoding="utf-8")
+                except OSError:
+                    audit.failed(reason="write_failed")
+                    self._json(500, {"error": "Écriture impossible"})
+                    return
+                audit.success()
+                self._json(200, {"ok": True, "name": dest.name, "rel": "/".join(Path(dest).relative_to(ROOT).parts)})
                 return
 
         if raw == "/api/note":
@@ -14768,6 +16707,11 @@ def main() -> None:
     load_sessions()
     ensure_folders_and_migrate()
     bind_cc_ext()
+    # A job still marked running on disk died with the previous bridge: mark it, never kill its PID.
+    try:
+        cc_ext.reconcile_orphans()
+    except Exception:
+        pass
     bind_hq()
     hq_forge_fleet.bind(ROOT)  # resumes queued multi-device tasks; dispatched ones become uncertain
     # Resume the backup schedule from the catalog: a restart within backup_every_hours

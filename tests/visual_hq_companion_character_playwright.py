@@ -74,7 +74,8 @@ def main():
                     # Journal controls live in a continuously swaying bubble.
                     # Stabilize that panel only; portrait physics stays active.
                     page.add_style_tag(content=".hq-companion-bubble{animation:none!important}")
-                    page.locator(".hq-companion-open-chat").click()
+                    page.locator("#hq-companions-toggle").click()
+                    page.locator('[data-companion-choice="transferania"]').click()
                     page.locator('button[data-icon="edit"]').click()
                     editor = page.locator('#hq-companion-editor')
                     editor.locator('textarea').first.wait_for()
@@ -110,6 +111,10 @@ def main():
                     assert any(b.get("op") == "send" for b in seen)
                     if adult:
                         page.wait_for_selector(".has-layered-portrait")
+                        clip = page.locator(".hq-companion-rig-body > .hq-companion-rig-clip")
+                        assert clip.evaluate("""e => e.offsetWidth === e.offsetHeight
+                            && e.offsetHeight === e.parentElement.offsetHeight
+                            && getComputedStyle(e).bottom === '0px'"""), "the expanded room clip shares the portrait frame"
                         assert page.locator('img.hq-companion-rig-hair-base').evaluate('(e)=>e.complete&&e.naturalHeight===1354')
                         assert page.locator('.hq-companion-rig-body').evaluate('(e)=>getComputedStyle(e).scale') == '1.17'
                         assert abs(float(page.locator('.hq-companion-frame.is-in-rig').evaluate('(e)=>getComputedStyle(e).scale')) * 1.17 - 1) < .00001

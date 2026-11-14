@@ -33,7 +33,17 @@ ALL_DAY_REMINDER_HOUR = 8
 ALL_DAY_REMINDER_MINUTE = 0
 SCHEDULE_BLOCK_MIN = 30
 
-CATEGORIES = ("personal", "study", "appointment", "maintenance", "hq", "other")
+DEFAULT_CATEGORIES = (
+    ("personal", "Personnel", "#7aa2ff"),
+    ("study", "Étude", "#3dbe7a"),
+    ("appointment", "Rendez-vous", "#e6b450"),
+    ("maintenance", "Maintenance", "#e85d4c"),
+    ("hq", "HQ", "#9274cf"),
+    ("other", "Autre", "#7d8794"),
+)
+CATEGORIES = tuple(key for key, _label, _color in DEFAULT_CATEGORIES)
+CATEGORY_MAX = 24
+CATEGORY_LABEL_MAX = 32
 REMINDER_CHOICES = (0, 5, 15, 30, 60, 120, 1440)
 GRID_WHENS = ("daily", "weekdays", "weekly", "once")
 CONDITIONAL_WHENS = ("on-online", "online", "wake")
@@ -41,6 +51,8 @@ CONDITIONAL_WHENS = ("on-online", "online", "wake")
 _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _MINUTE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d)$")
 _CAL_ID_RE = re.compile(r"^cal-[a-f0-9]{16}$")
+_CATEGORY_ID_RE = re.compile(r"^custom-[a-f0-9]{12}$")
+_CATEGORY_COLOR_RE = re.compile(r"^#[a-fA-F0-9]{6}$")
 _LINK_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 # Names that must never be stored or interpreted on an event.
 _FORBIDDEN = {
@@ -273,7 +285,7 @@ def _event_bounds(event: dict) -> tuple[datetime, datetime]:
     return start, end
 
 
-def validate_event(payload: dict, *, existing: dict | None = None) -> dict:
+def validate_event(payload: dict, *, existing: dict | None = None, categories=CATEGORIES) -> dict:
     """Return a stored manual event. Server assigns id, rev, and timestamps."""
     _reject_forbidden(payload)
     all_day = payload.get("all_day")
@@ -284,7 +296,7 @@ def validate_event(payload: dict, *, existing: dict | None = None) -> dict:
     if not title:
         raise CalendarError("Titre requis")
     category = str(payload.get("category") or "other")
-    if category not in CATEGORIES:
+    if category not in categories:
         raise CalendarError("Catégorie invalide")
     start_raw = payload.get("start")
     end_raw = payload.get("end")
@@ -353,6 +365,17 @@ def _blank() -> dict:
     return {"version": VERSION, "events": [], "reminder_fired": {}}
 
 
+def _categories(state: dict) -> list[dict]:
+    if "categories" in state:
+        return state["categories"]
+    return [{"id": key, "label": label, "color": color} for key, label, color in DEFAULT_CATEGORIES]
+
+
+def _category_catalog(state: dict) -> dict:
+    return {"categories": _categories(state), "categories_rev": state.get("categories_rev", 0),
+            "schedule_category": state.get("schedule_category", "hq")}
+
+
 def _usable_state(data: Any) -> dict | None:
     if not isinstance(data, dict):
         return None
@@ -367,6 +390,23 @@ def _usable_state(data: Any) -> dict | None:
         return None
     if any(not isinstance(value, dict) for value in fired.values()):
         return None
+    if "categories" in data:
+        rows, rev = data["categories"], data.get("categories_rev")
+        if not isinstance(rows, list) or not 1 <= len(rows) <= CATEGORY_MAX or type(rev) is not int or rev < 1:
+            return None
+        ids = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                return None
+            key, label, color = row.get("id"), row.get("label"), row.get("color")
+            if (not isinstance(key, str) or key in ids or (key not in CATEGORIES and not _CATEGORY_ID_RE.fullmatch(key))
+                    or not isinstance(label, str) or not label.strip() or len(label) > CATEGORY_LABEL_MAX
+                    or not isinstance(color, str) or not _CATEGORY_COLOR_RE.fullmatch(color)):
+                return None
+            ids.add(key)
+        schedule_key = data.get("schedule_category", "hq")
+        if "other" not in ids or not isinstance(schedule_key, str) or schedule_key not in ids:
+            return None
     return data
 
 
@@ -398,11 +438,14 @@ def _load_for_write() -> dict:
         raise CalendarConflict("hq_calendar.json illisible — fichier conservé")
     if state is None:
         return _blank()
-    return {
+    result = {
         "version": VERSION,
         "events": list(state.get("events") or []),
         "reminder_fired": dict(state.get("reminder_fired") or {}),
     }
+    if "categories" in state:
+        result.update(_category_catalog(state))
+    return result
 
 
 def _write_state(state: dict) -> None:
@@ -459,12 +502,13 @@ def save_event(payload: dict, expected_rev: Any = None) -> dict:
     with lock:
         state = _load_for_write()
         events: list[dict] = state["events"]
+        category_ids = {row["id"] for row in _categories(state)}
         if raw_id in (None, ""):
             if expected_rev not in (None, 0):
                 raise CalendarError("expected_rev invalide")
             if len(events) >= EVENTS_MAX:
                 raise CalendarError("Calendrier plein")
-            stored = validate_event(payload)
+            stored = validate_event(payload, categories=category_ids)
             events.append(stored)
             verb = "créé"
         else:
@@ -474,7 +518,7 @@ def save_event(payload: dict, expected_rev: Any = None) -> dict:
             if current is None:
                 raise CalendarError("Événement introuvable")
             _expect_rev(expected_rev, int(current.get("rev") or 1))
-            stored = validate_event(payload, existing=current)
+            stored = validate_event(payload, existing=current, categories=category_ids)
             stored["id"] = raw_id
             keep = _reminder_keys(stored)
             _drop_reminder_keys(state["reminder_fired"], raw_id, keep)
@@ -484,6 +528,50 @@ def save_event(payload: dict, expected_rev: Any = None) -> dict:
         _write_state(state)
     _journal("calendar", f"Événement {verb}: {stored['title'][:80]}")
     return stored
+
+
+def change_category(action: str, payload: dict, expected_rev: Any) -> dict:
+    if action not in ("category_save", "category_delete"):
+        raise CalendarError("Action invalide")
+    with hq_state.path_lock(_path()):
+        state = _load_for_write()
+        rev = state.get("categories_rev", 0)
+        _expect_rev(expected_rev, rev)
+        rows = _categories(state)
+        key = payload.get("id")
+        current = next((row for row in rows if row["id"] == key), None)
+        if action == "category_delete":
+            if current is None or key == "other":
+                raise CalendarError("Cette catégorie ne peut pas être supprimée")
+            replacement = payload.get("replacement")
+            if replacement == key or not any(row["id"] == replacement for row in rows):
+                raise CalendarError("Choisis une catégorie de destination")
+            rows.remove(current)
+            if state.get("schedule_category", "hq") == key:
+                state["schedule_category"] = replacement
+            stamp = _fmt_stamp(_local_now())
+            for event in state["events"]:
+                if event.get("category") == key:
+                    event.update(category=replacement, rev=int(event.get("rev") or 1) + 1, updated_at=stamp)
+        else:
+            if key and current is None:
+                raise CalendarError("Catégorie introuvable")
+            label = " ".join(_clean_text(payload.get("label"), CATEGORY_LABEL_MAX, label="Nom", required=True).split())
+            color = payload.get("color")
+            if not isinstance(color, str) or not _CATEGORY_COLOR_RE.fullmatch(color):
+                raise CalendarError("Couleur invalide")
+            if any(row is not current and row["label"].casefold() == label.casefold() for row in rows):
+                raise CalendarError("Ce nom de catégorie existe déjà")
+            if current is None:
+                if len(rows) >= CATEGORY_MAX:
+                    raise CalendarError("Nombre maximal de catégories atteint")
+                current = {"id": "custom-" + uuid.uuid4().hex[:12]}
+                rows.append(current)
+            current.update(label=label, color=color.lower())
+        state["categories"] = rows
+        state["categories_rev"] = rev + 1
+        _write_state(state)
+        return _category_catalog(state)
 
 
 def delete_event(event_id: str, expected_rev: Any) -> dict:
@@ -516,8 +604,10 @@ def _overlaps(event: dict, start: datetime, end: datetime) -> bool:
 def manual_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
     """Manual events overlapping [start, end). Does not create the state file."""
     state, bad = _read_state()
-    if bad or state is None:
-        return [], bad
+    return _manual_items(state or {}, start, end), bad
+
+
+def _manual_items(state: dict, start: datetime, end: datetime) -> list[dict]:
     found = []
     for event in state.get("events") or []:
         if isinstance(event, dict) and _overlaps(event, start, end):
@@ -526,7 +616,7 @@ def manual_between(start: datetime, end: datetime) -> tuple[list[dict], bool]:
             item["read_only"] = False
             found.append(item)
     found.sort(key=_item_sort)
-    return found, False
+    return found
 
 
 def _item_sort(item: dict) -> tuple:
@@ -721,7 +811,9 @@ def _journal_between(start: datetime, end: datetime) -> list[dict]:
 
 def query(start: datetime, end: datetime, *, include_activity: bool = False, with_catalog: bool = True) -> dict:
     assert_span(start, end)
-    manual, bad = manual_between(start, end)
+    state, bad = _read_state()
+    state = state or {}
+    manual = _manual_items(state, start, end)
     scheduled, conditional = _project(start, end)
     items = list(manual) + scheduled
     items.sort(key=_item_sort)
@@ -737,6 +829,7 @@ def query(start: datetime, end: datetime, *, include_activity: bool = False, wit
     body.update(clock())
     body["recent"] = recent_titles()
     body["next"] = next_manual()
+    body.update(_category_catalog(state))
     body["streak"] = streak()
     if include_activity:
         body["activity"] = _activity(start, end)

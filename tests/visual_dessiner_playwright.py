@@ -20,6 +20,8 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from hq_browser_nav import open_section
+
 BASE = os.environ.get("HQ_BASE", "http://127.0.0.1:8765")
 PIN = os.environ.get("HQ_TEST_PIN", "246810")
 ROOT = Path(os.environ.get("HQ_ROOT", "/tmp/hq-visual-root"))
@@ -43,7 +45,7 @@ def login(page):
 
 
 def open_tab(page):
-    page.click('.bottom-nav [data-nav="dessiner"]')
+    open_section(page, "dessiner")
     page.wait_for_selector(".sk-canvas")
     page.wait_for_timeout(400)
 

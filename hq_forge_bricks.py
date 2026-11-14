@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import hq_forge as forge
+import hq_forge_gallery as gallery
 
 VERSION = 1
 MAX_BRICKS = 60
@@ -35,8 +36,11 @@ MAX_TEXT = 400
 MAX_LORA = 120
 MAX_WORD = 60
 MAX_WORDS = 8
+MAX_REFERENCES = 8
+MAX_SEED = 2**32 - 1
 MAX_SUGGESTED = 6
 MAX_LORAS = 200
+KINDS = ("prompt", "cast")
 _ID = re.compile(r"^brick-[0-9a-f]{16}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # A LoRA name goes inside <lora:NAME:WEIGHT>: no angle brackets or colons.
@@ -71,6 +75,33 @@ def _line(value, limit: int, *, required: bool) -> str | None:
     value = value.strip()
     if (required and not value) or len(value) > limit or _CONTROL.search(value):
         return None
+    return value
+
+
+def _kind(value) -> str | None:
+    value = "prompt" if value is None or value == "" else value
+    return value if isinstance(value, str) and value in KINDS else None
+
+
+def _references(value) -> list[str] | None:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_REFERENCES:
+        return None
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not gallery.IMG_RE.fullmatch(item):
+            return None
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _seed(value) -> int | None | bool:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_SEED:
+        return False
     return value
 
 
@@ -114,11 +145,17 @@ def _parse(data: dict, *, brick_id: str) -> dict | None:
     text = _line(data.get("text"), MAX_TEXT, required=False)
     words = _words(data.get("triggers"))
     lora = _lora(data.get("lora"))
-    if name is None or text is None or words is None or lora is False:
+    kind = _kind(data.get("kind"))
+    references = _references(data.get("reference_ids"))
+    seed = _seed(data.get("seed"))
+    if name is None or text is None or words is None or lora is False or kind is None or references is None or seed is False:
         return None
-    if not text and not words and lora is None:
-        return None  # an empty brick inserts nothing
-    return {"id": brick_id, "name": name, "text": text, "lora": lora, "triggers": words, "updated": _now()}
+    if kind == "cast" and not text and not words and lora is None and not references and seed is None:
+        return None  # an empty cast has nothing to reuse
+    if kind != "cast" and not text and not words and lora is None:
+        return None  # an empty prompt brick inserts nothing
+    return {"id": brick_id, "name": name, "kind": kind, "text": text, "lora": lora,
+            "triggers": words, "reference_ids": references, "seed": seed, "updated": _now()}
 
 
 def _valid_stored(item) -> dict | None:
@@ -175,6 +212,13 @@ def _write(root: Path, bricks: list) -> None:
         raise
 
 
+def _existing(root: Path, image_id: str) -> dict | None:
+    try:
+        return gallery.get(root, image_id)
+    except gallery.GalleryError:
+        return None
+
+
 def _payload(bricks: list, storage: str = "ready") -> dict:
     return {"storage": storage, "bricks": bricks, "message": MESSAGES["malformed"] if storage == "malformed" else ""}
 
@@ -203,6 +247,8 @@ def _mutate(root: Path, data: dict) -> tuple[int, dict]:
                 return _error(400, "validation")
             if any(b["name"].casefold() == parsed["name"].casefold() for b in bricks):
                 return _error(409, "duplicate")
+            if any(_existing(root, image_id) is None for image_id in parsed["reference_ids"]):
+                return _error(404, "missing")
             bricks.append(parsed)
         elif action in ("update", "delete"):
             brick_id = data.get("id")
@@ -219,6 +265,8 @@ def _mutate(root: Path, data: dict) -> tuple[int, dict]:
                     return _error(400, "validation")
                 if any(b["name"].casefold() == parsed["name"].casefold() and b["id"] != brick_id for b in bricks):
                     return _error(409, "duplicate")
+                if any(_existing(root, image_id) is None for image_id in parsed["reference_ids"]):
+                    return _error(404, "missing")
                 bricks[index] = parsed
         else:
             return _error(400, "validation")

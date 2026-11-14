@@ -50,7 +50,7 @@ def login(page, url):
     page.goto(url)
     page.fill('input[name="pin"]', FAKE_PIN)
     page.click('button[type="submit"]')
-    page.wait_for_selector('.bottom-nav [data-nav="lecteur"]')
+    page.wait_for_selector('.bottom-nav [data-nav="fichiers"]')
 
 
 def tile(page, name):
@@ -79,7 +79,7 @@ def assert_lecteur(page, name, element="audio"):
     state = page.evaluate("""(el) => { const m=document.querySelector('#player-' + el);
       return {name: document.querySelector('#player-name').textContent, src: m.getAttribute('src'), hidden: m.hidden,
               playsinline: document.querySelector('#player-video').hasAttribute('playsinline'),
-              active: document.querySelector('.bottom-nav [data-nav="lecteur"]').classList.contains('active')}; }""", element)
+              active: document.querySelector('.bottom-nav [data-nav="lecteur"]').getAttribute('aria-current') === 'page'}; }""", element)
     assert state["name"] == name, state
     assert state["src"] == "/media/" + "/".join(p for p in f"{FOLDER}/{name}".split("/")), state
     assert not state["hidden"] and state["playsinline"] and state["active"], state

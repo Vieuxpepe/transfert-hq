@@ -712,7 +712,9 @@
 
     function syncView() {
       const view = (doc.body && doc.body.dataset.view) || "accueil";
-      const hide = !sessionAdmin(win) || view === "intime" || doc.body.classList.contains("hq-intime-active");
+      const picked = doc.body && doc.body.dataset.companion === "inventoria";
+      const onAllowedView = view === "inventaire" || view === "budget" || picked;
+      const hide = !sessionAdmin(win) || !onAllowedView || doc.body.classList.contains("hq-intime-active");
       root.hidden = hide;
       toggle.hidden = hide;
     }

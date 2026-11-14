@@ -4,7 +4,9 @@
 
 Prints one JSON line {"base": "http://127.0.0.1:PORT", "admin_pin": ..., "upload_pin": ...} then serves
 until killed. The root is a temp directory chosen by the caller; assets are copied into it (the bridge
-serves /assets from ROOT). Never run this against the live Transfert root.
+serves /assets from ROOT), without the regenerated voice cache. Never run this against the live Transfert root.
+The root is marked as a test copy and stale ones are removed by tests/hq_temp_janitor.py (callers often kill this
+server and never delete their root).
 """
 import json
 import os
@@ -25,9 +27,15 @@ def main() -> None:
         raise SystemExit("root must be an empty temp directory")
     import iphone_bridge as B
 
+    import hq_temp_janitor
+
+    hq_temp_janitor.mark(root)
+    hq_temp_janitor.prune_in_background()
     for name in ("Inbox", "Uni", "Print"):
         (root / name).mkdir()
-    shutil.copytree(SOURCE / "assets", root / "assets")
+    # voice_cache is regenerated audio (hundreds of MB): a fresh install has none, and no browser check needs it
+    shutil.copytree(SOURCE / "assets", root / "assets",
+                    ignore=lambda folder, names: ["voice_cache"] if Path(folder).name == "chat" and "voice_cache" in names else [])
     B.ROOT = root
     B.SESSIONS_PATH = root / "bridge_sessions.json"
     B.CONFIG.update({

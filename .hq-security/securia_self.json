@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "events": [
+    {
+      "id": "028303d5c0ab418d9b2655007488e064",
+      "at": 1794617416.1844072,
+      "kind": "visit",
+      "topic": "visite avec musica",
+      "text": "Mieux vaut vérifier le cadenas avant de partir.",
+      "outcome": "social",
+      "tool": "",
+      "source": "visit"
+    },
+    {
+      "id": "3f5d7464585943a79ed12dfb05c08e2a",
+      "at": 1794619197.1880698,
+      "kind": "visit",
+      "topic": "visite avec else",
+      "text": "Rien ne presse. Je regarde.",
+      "outcome": "social",
+      "tool": "",
+      "source": "visit"
+    }
+  ],
+  "weights": {
+    "brevity": 50.0,
+    "directness": 50.0,
+    "initiative": 50.0
+  },
+  "history": [],
+  "used_feedback": [],
+  "pinned": [],
+  "dismissed": [],
+  "pinned_axes": [],
+  "disposition": {
+    "phase": "attentive",
+    "since": 1794617416.1844072,
+    "scores": {
+      "attentive": 1.0,
+      "absorbee": 0.0,
+      "sereine": 3.0,
+      "sur_la_reserve": 0.0,
+      "curieuse": 0.0
+    },
+    "label": "Attentive, sans urgence"
+  },
+  "affect": {
+    "energy": 0.541,
+    "tension": 0.12,
+    "warmth": 0.635,
+    "at": 1794619197.1880698,
+    "cause": "un passage",
+    "cause_at": 1794619197.1880698
+  }
+}

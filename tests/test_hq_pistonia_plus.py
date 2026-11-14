@@ -500,5 +500,90 @@ class RouteTests(Base):
         self.assertTrue(calls)
 
 
+class TraceCancelAndMemoryTests(Base):
+    """The chat upgrades: what she read, a cancel that really stops her, live steps, and a memory that keeps her last answer whole."""
+
+    class _Daemon:
+        label = "Forge"
+
+    class _FakeEng:
+        def get(self, i):
+            return TraceCancelAndMemoryTests._Daemon() if i == "forge" else None
+
+        def tail_log(self, i, n):
+            return 200, {"lines": ["l1", "l2", "l3"]}
+
+        def status(self):
+            return {"system": {}, "daemons": [], "machines": []}
+
+        _events: list = []
+
+    def test_toolbox_records_what_she_read(self):
+        tb = pis.Toolbox(engine=self._FakeEng())
+        tb.run("get_logs", {"id": "forge", "lines": 5})
+        tb.run("get_overview", {})
+        self.assertEqual([t["tool"] for t in tb.trace], ["get_logs", "get_overview"])
+        self.assertIn("Forge", tb.trace[0]["label"])
+        self.assertIn("3 lignes", tb.trace[0]["label"])
+        self.assertTrue(tb.trace[1]["label"])
+        self.assertEqual(tb.last_found, "0 moteurs")     # the live step says what it found, not what it read
+
+    def test_a_failing_tool_says_so_in_the_trace(self):
+        tb = pis.Toolbox(engine=self._FakeEng())
+        tb.run("get_logs", {})                      # unknown id: the fake answers an empty log
+        tb.run("nope", {})
+        self.assertIn("échec", tb.trace[-1]["label"])
+        self.assertEqual(tb.last_found, "échec")
+
+    def test_the_trace_is_stored_with_the_reply(self):
+        tool_call = json.dumps({"reply": "", "tools": [{"name": "get_logs", "args": {"id": "forge"}}]})
+        final = json.dumps({"reply": "Trois lignes, deux erreurs.", "tools": []})
+        tb = pis.Toolbox(engine=self._FakeEng())
+        reply, _ = pis.respond("lis le journal", [], generate=script(tool_call, final), toolbox=tb, snapshot="SNAP")
+        self.assertIn("Trois", reply)
+        row = store.add_message("assistant", reply, trace=tb.trace)
+        self.assertEqual(store.thread()[-1]["trace"][0]["tool"], "get_logs")
+        self.assertLessEqual(len(store.add_message("assistant", "x", trace=[{"label": "a"}] * 40)["trace"]), store.TRACE_PER_MSG)
+        self.assertNotIn("payload", json.dumps(row["trace"]))     # labels only, never what the tool returned
+
+    def test_cancel_stops_the_turn_and_stores_nothing(self):
+        self.assertEqual(pis.cancel(""), {"ok": True, "cancelled": False})     # no token: nothing to cancel
+        self.assertTrue(pis.cancel("job-abc123")["cancelled"])
+        out = pis.message({"text": "encore", "job": "job-abc123"}, generate=script(json.dumps({"reply": "trop tard", "tools": []})))
+        self.assertTrue(out.get("cancelled"))
+        self.assertEqual(store.thread(), [])                   # neither the question nor the answer was kept
+        self.assertEqual(eng.http_post("/api/engine/pistonia/cancel", {"job": "job-def456"})[1]["cancelled"], True)
+
+    def test_progress_reports_the_steps_she_went_through(self):
+        pis._clear_stage("job-xyz789")
+        pis._stage("job-xyz789", "Je regarde les moteurs…")
+        pis._stage("job-xyz789", "Je lis un journal…")
+        pis._stage("job-xyz789", "Je lis un journal…")          # a repeated step is not a new one
+        pis._stage_found("job-xyz789", "Journal de Forge — 20 lignes")   # what the step came back with
+        out = pis.progress("job-xyz789")
+        self.assertEqual(out["stage"], "Je lis un journal…")
+        self.assertEqual(out["found"], "Journal de Forge — 20 lignes")
+        self.assertEqual(out["steps"], [{"say": "Je regarde les moteurs…", "found": ""},
+                                        {"say": "Je lis un journal…", "found": "Journal de Forge — 20 lignes"}])
+        pis._stage("job-xyz789", "Je réponds…")                  # the found stays on the step it belongs to
+        self.assertEqual(pis.progress("job-xyz789")["steps"][1]["found"], "Journal de Forge — 20 lignes")
+        pis._clear_stage("job-xyz789")
+        self.assertEqual(pis.progress("job-xyz789"), {"ok": True, "stage": "", "found": "", "steps": []})
+
+    def test_her_last_answer_is_read_whole_and_older_turns_digest(self):
+        long = "z" * 900
+        rows = pis._clean_history([{"role": "user", "text": "q"}, {"role": "assistant", "text": long}])
+        self.assertEqual(len(rows[-1]["text"]), 900)                      # "the third line" still has a referent
+        older = pis._clean_history([{"role": "assistant", "text": long}, {"role": "user", "text": "q"},
+                                    {"role": "assistant", "text": "recent"}])
+        self.assertLessEqual(len(older[0]["text"]), pis.HISTORY_CHARS)    # an earlier answer stays bounded
+        self.assertEqual(older[-1]["text"], "recent")                     # the newest one is never clipped
+        text = pis.digest([{"role": "user", "text": "  hello   there "}, {"role": "assistant", "text": "hi"}])
+        self.assertIn("- Master: hello there", text)
+        self.assertIn("- Pistonia: hi", text)
+        self.assertIn("EARLIER IN THIS CONVERSATION", pis.build_system("SNAP", text))
+        self.assertNotIn("EARLIER", pis.build_system("SNAP"))            # no digest, no empty section
+
+
 if __name__ == "__main__":
     unittest.main()
