@@ -520,6 +520,7 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
             reservation = {"kind": "followup", "id": followup["id"], "at": now}
             _save(data)
         hint = ""
+        personhood = {}
         ritual_available = bool(view and view["kind"] == "ritual")
         if decision["continuity_kind"] == "followup":
             hint = "SUJET EN ATTENTE (une seule relance si le moment convient, sans inventer de résultat) : " + followup["question"]
@@ -553,9 +554,15 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
                 hint = visit_recall
             elif conversation_text is not None:
                 try:
-                    hint = hq_personhood.hint(_memory_scope.get(), episode_query, owner=current_owner(), now=now)
+                    detail = hq_personhood.hint_detail(_memory_scope.get(), episode_query,
+                                                      owner=current_owner(), now=now)
+                    hint = detail.get("line") or ""
+                    # The line comes with the salience its own evidence implies:
+                    # how present that subject is decides its priority and bytes.
+                    personhood = {k: detail[k] for k in ("tier", "score", "priority", "share",
+                                                         "basis", "age_s", "repeats") if k in detail}
                 except Exception:
-                    hint = ""
+                    hint, personhood = "", {}
         style = presence.style_from_memories(active)
         expression = presence.response_plan(conversation_text or "", decision)
         # Only current, relevant corrections; never resurrect a superseded
@@ -574,7 +581,7 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
                     presence.response_hint(expression) if conversation_text is not None else "") if part),
                 "expression": expression,
                 "ritual_available": ritual_available,
-                "corrections": corrections,
+                "corrections": corrections, "personhood": personhood,
                 "selected_episode_count": int(decision["continuity_kind"] == "episode"), "reservation": reservation}
 
 

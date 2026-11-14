@@ -261,6 +261,7 @@ def complete_exchanges(messages: list[dict]) -> list[list[dict]]:
 def build_companion_context(channel: str, system: str, message: str, *, history: list | None = None,
                             summary: str = "", memories: list | None = None, page: str = "",
                             corrections: list | None = None, budget: int | None = None,
+                            personhood: dict | None = None,
                             record: bool = True) -> tuple[str, list, dict]:
     """Priority selection of whole evidence blocks and paired history; archives stay intact.
 
@@ -272,7 +273,7 @@ def build_companion_context(channel: str, system: str, message: str, *, history:
     try:
         contents, selection = companion_context.assemble(system, message, budget=budget, groups=groups,
             summary=str(summary or "")[:TRANSFERANIA_SUMMARY_MAX], memories=memories or [],
-            corrections=corrections or [], page=page)
+            corrections=corrections or [], page=page, personhood=personhood)
     except ValueError as error:
         raise AiError("Instructions et message dépassent le budget de contexte configuré", 413, "context_budget") from error
     info = {"estimated_input_tokens": estimate_context(system, contents), "estimate_method": "utf8_bytes_plus_overhead",
@@ -4115,7 +4116,8 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
             "Omet la ligne si l'image n'apporte rien. Ton texte doit rester naturel même si Forge est indisponible."
         )
     evidence = dict(history=prompt_history,
-        summary=summary, memories=shared_memories, corrections=packet.get("corrections", []), page=join_evidence_page(
+        summary=summary, memories=shared_memories, corrections=packet.get("corrections", []),
+        personhood=packet.get("personhood"), page=join_evidence_page(
             facts_block(did), packet["prompt"], life, resolved_followup,
             presence_page_block(prefs, signals, nsfw=use_nsfw),
             nsfw_evidence_page("chat") if use_nsfw else "",
@@ -4516,6 +4518,7 @@ def else_ambient(view: Any = "accueil", digest: Any = "", persona: Any = "warm",
             system, contents, _ = build_companion_context(
                 "ambient", system, "Une observation brève si elle est pertinente — ton Else.",
                 summary=summary, memories=packet["memories"], corrections=packet.get("corrections", []),
+                personhood=packet.get("personhood"),
                 page=join_evidence_page(packet["prompt"], sister_awareness_block(did, "else"),
                                         _persona_state_line("else"), page),
             )
@@ -5084,6 +5087,7 @@ def companion_context_preview(data: dict, *, client_ip=None, role=None) -> dict:
         _companion_local.state = None
         system, contents, info = build_companion_context(channel, system, message,
             history=history, summary=summary, memories=packet["memories"], corrections=packet.get("corrections", []),
+            personhood=packet.get("personhood"),
             page=join_evidence_page(
                 packet["prompt"], hq_life.mood_label(hq_life.mood(state)), hq_life.upcoming_block(state),
                 presence_page_block(prefs, data.get("signals"), nsfw=nsfw),

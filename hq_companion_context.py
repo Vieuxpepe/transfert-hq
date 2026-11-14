@@ -78,7 +78,8 @@ def block_cost(candidate, *, page_prefix=True):
     return len(text.encode()) + 2 + (len(PAGE_PREFIX.encode()) if page_prefix else 0)
 
 
-def assemble(system, message, *, budget, groups, summary="", memories=(), corrections=(), page=""):
+def assemble(system, message, *, budget, groups, summary="", memories=(), corrections=(), page="",
+             personhood=None):
     """Select whole blocks/pairs by priority; serialize history chronologically.
 
     Costs use the same conservative UTF-8-plus-message-overhead estimator as
@@ -90,6 +91,11 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     so no other block can take that room and growth elsewhere cannot squeeze
     them out. The share never exceeds what those blocks actually need, and it is
     withdrawn (never overspent) when the mandatory core leaves no room.
+
+    ``personhood`` carries the salience of her own line (tier, priority and
+    byte share) derived from the evidence behind it: a subject that is recent
+    and repeated ranks higher and may take more bytes, while a stale one ranks
+    lower and is refused when its line exceeds its share.
     """
     base = 48 + len(system.encode()) + len(message.encode())
     if base > budget:
@@ -115,7 +121,17 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
         kind = "history_recent" if index >= len(groups)-2 else "history_relevant"
         text = "\n".join(p["text"] for m in group for p in m["parts"])
         add(kind, text, group=group, history_index=index, relevance=relevance)
-    ranked = sorted(candidates, key=lambda c: (-PRIORITY[c["kind"]],
+    salience = personhood if isinstance(personhood, dict) else {}
+    personhood_priority = int(salience.get("priority") or PRIORITY["personhood"])
+    personhood_share = int(salience.get("share") or 0)
+    for c in candidates:
+        if c["kind"] == "personhood":
+            c["priority"] = personhood_priority
+            if personhood_share and block_cost(c) > personhood_share:
+                # Her byte share is already spent by the size of her own line:
+                # a subject this cold does not get to occupy the packet.
+                c["over_share"] = personhood_share
+    ranked = sorted(candidates, key=lambda c: (-c.get("priority", PRIORITY[c["kind"]]),
         -c.get("relevance", 0) if c["kind"] == "history_relevant" else 0,
         -c.get("history_index", 0), c["order"]))
     # The share is a ceiling on what may be set aside, never a tax: only bytes
@@ -124,7 +140,7 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
     share_room = min(int(budget * PROTECTED_SHARE), max(0, budget - base))
     reserved, guaranteed = 0, set()
     for c in ranked:
-        if c["kind"] in PROTECTED_KINDS:
+        if c["kind"] in PROTECTED_KINDS and not c.get("over_share"):
             cost = block_cost(c)
             if reserved + cost <= share_room:
                 guaranteed.add(c["order"])
@@ -138,7 +154,9 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
         kind, text = c["kind"], c["text"]
         history = "group" in c
         row = dict(id=f"{kind}.{c['order']}", kind=kind, estimated_bytes=len(text.encode()),
-                   selected=False, reason="budget", priority=PRIORITY[kind])
+                   selected=False, reason="budget", priority=c.get("priority", PRIORITY[kind]))
+        if kind == "personhood" and personhood_share:
+            row["share"] = personhood_share
         if history:
             row["history_index"] = c["history_index"]
         cost = block_cost(c, page_prefix=not page_selected)
@@ -148,6 +166,9 @@ def assemble(system, message, *, budget, groups, summary="", memories=(), correc
             row["reason"] = "duplicate"
             if c["order"] in guaranteed:
                 used -= cost  # release a reservation nothing will spend
+        elif c.get("over_share"):
+            # Refused on her own byte share, whatever room the budget has left.
+            row["reason"] = "budget"
         elif c["order"] in guaranteed:
             # Already paid for by the reserved share; never re-checked against
             # the remaining room, so optional content cannot displace it.
