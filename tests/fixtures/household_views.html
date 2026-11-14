@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Repas et Budget</title>
+  <link rel="stylesheet" href="../../assets/hq-household-icons.css">
   <link rel="stylesheet" href="../../assets/hq-household-meals.css">
   <link rel="stylesheet" href="../../assets/hq-household-budget.css">
 </head>
@@ -12,6 +13,7 @@
     <section id="repas" aria-label="Repas"></section>
     <section id="budget" aria-label="Budget"></section>
   </main>
+  <script src="../../assets/hq-household-icons.js"></script>
   <script src="../../assets/hq-household-meals.js"></script>
   <script src="../../assets/hq-household-budget.js"></script>
   <script>
@@ -23,8 +25,21 @@
       if (call.path.startsWith("/api/meals/recipes")) {
         return Promise.resolve({ status: 200, body: { ok: true, items: [{
           id: "rcp-0000000000000001", rev: 1, title: evil, servings: 4,
-          ingredients: [{ name: "Riz", qty_milli: 1250, unit: "g" }],
+          ingredients: [
+            { name: "Riz", qty_milli: 1250, unit: "g" },
+            { name: "Tomates", qty_milli: 400000, unit: "g" },
+            { name: "Œufs", qty_milli: 2000, unit: "pc" },
+            { name: "Huile d'olive", qty_milli: 30000, unit: "ml" },
+            { name: "Poulet", qty_milli: 500000, unit: "g" }
+          ],
           steps: ["Rincer"], leftover_policy: "none"
+        }, {
+          id: "rcp-0000000000000002", rev: 1, title: "Soupe à l'oignon", servings: 2,
+          ingredients: [
+            { name: "Oignons", qty_milli: 500000, unit: "g" },
+            { name: "Beurre", qty_milli: 40000, unit: "g" }
+          ],
+          steps: ["Faire revenir"], leftover_policy: "none"
         }] } });
       }
       if (call.path.startsWith("/api/meals/plans") && call.method === "GET") {
@@ -35,7 +50,10 @@
       }
       if (call.path.indexOf("/build-list") !== -1 && call.body && call.body.mode === "preview") {
         return Promise.resolve({ status: 200, body: { ok: true, preview: true, preview_digest: "ab".repeat(32), lines: [
-          { name: "Riz", qty_milli: 250, unit: "g" }
+          { name: "Riz", qty_milli: 250, unit: "g" },
+          { name: "Tomates", qty_milli: 400, unit: "g" },
+          { name: "Lait", qty_milli: 1000, unit: "ml" },
+          { name: "Vis M4", qty_milli: 1000, unit: "pc" }
         ], warnings: [] } });
       }
       if (call.method === "POST") return Promise.resolve({ status: 403, body: { ok: false, error: "refusé", code: "csrf" } });

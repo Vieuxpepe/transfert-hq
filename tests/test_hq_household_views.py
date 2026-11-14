@@ -21,6 +21,16 @@ class HouseholdViewPureTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
+    def test_household_icons(self) -> None:
+        completed = subprocess.run(
+            ["node", str(ROOT / "tests" / "hq_household_icons.test.mjs")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_views_do_not_touch_shared_navigation(self) -> None:
         meals = (ROOT / "assets" / "hq-household-meals.js").read_text(encoding="utf-8")
         budget = (ROOT / "assets" / "hq-household-budget.js").read_text(encoding="utf-8")

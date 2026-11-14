@@ -48,6 +48,20 @@ Verify scripts (recommended):
 
 ---
 
+## Musique / Spotify
+
+| If you changed… | Run |
+|-----------------|-----|
+| `hq_music.py`, discoveries/presets | `python -m unittest tests.test_hq_music -v` |
+| `hq_music_mixer.py` | `python -m unittest tests.test_hq_music_mixer -v` |
+| `hq_spotify.py` (mocked) | `python -m unittest tests.test_hq_spotify -v` |
+| Musique nav / lazy-load wiring | `python -m unittest tests.test_hq_music_ui -v` |
+| All Musique unit | `python -m unittest tests.test_hq_music tests.test_hq_music_mixer tests.test_hq_spotify tests.test_hq_music_ui -v` |
+
+Setup notes: [musique-spotify.md](musique-spotify.md). Live Spotify OAuth/playback is **not** covered by CI mocks.
+
+---
+
 ## Bridge / HTTP core
 
 | If you changed… | Run |
@@ -108,8 +122,10 @@ Les tests utilisent un état temporaire et des périphériques simulés. [Guide 
 |-----------------|-----|
 | `hq_household_schemas.py`, `schemas/household/*`, docs contracts | `python -m unittest tests.test_household_schemas -v` (CI: `.github/workflows/household-foundations.yml`) |
 | `hq_household_store.py` SQLite shell | `python -m unittest tests.test_household_store tests.test_household_schemas -v` (CI: `.github/workflows/household-store.yml`) |
+| Household HQ backup (`snapshot_to` + `cc_ext.run_backup`) | `python -m unittest tests.test_hq_household_backup tests.test_household_store tests.test_backup_retention -v` |
+| Gate B init safety (absent GET / first POST) | `python -m unittest tests.test_hq_household_backup.HouseholdInitSafetyTests -v` |
 
-Architecture index: [household/README.md](household/README.md). `*.v1.json` = custom contract descriptors (not JSON Schema Draft). Store shell is **not** wired to the bridge (PR #31).
+Architecture index: [household/README.md](household/README.md). `*.v1.json` = custom contract descriptors (not JSON Schema Draft). Store shell + HQ backup packaging; domain routes are bridge-wired.
 
 ---
 

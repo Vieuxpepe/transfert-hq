@@ -21,6 +21,7 @@ Index des livrables d'architecture pour **Finances**, **Repas & Épicerie** et
 | [14-inventoria-ux.md](14-inventoria-ux.md) | **C** — FAB bas-gauche, safe areas, focus/clavier (sans nav #30) |
 | [15-contract-format.md](15-contract-format.md) | Descripteurs `*.v1.json` ≠ JSON Schema Draft |
 | [16-sqlite-shell.md](16-sqlite-shell.md) | **PR #31** — moteur SQLite local (non activé) |
+| [17-gate-b-activation-recovery.md](17-gate-b-activation-recovery.md) | Gate B — init, backup HQ, restore, recovery |
 
 **Contrats versionnés :** [`schemas/household/`](../../schemas/household/) — **descripteurs de contrat HQ personnalisés**, **pas** des documents JSON Schema Draft.  
 La vérité exécutable = [`hq_household_schemas.py`](../../hq_household_schemas.py).  

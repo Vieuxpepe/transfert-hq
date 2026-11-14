@@ -691,6 +691,50 @@ class StoreLifecycleTests(unittest.TestCase):
             finally:
                 restored.close()
 
+    def test_snapshot_to_absent_creates_nothing(self):
+        empty = Path(self.tmp.name) / "empty-root"
+        empty.mkdir()
+        dest = Path(self.tmp.name) / "hq-backup" / "Household"
+        out = store.snapshot_to(empty, dest)
+        self.assertEqual(out, {"ok": True, "included": False, "status": "absent"})
+        self.assertFalse(dest.exists())
+        self.assertFalse(store.household_dir(empty).exists())
+        self.assertFalse((empty / ".hq-inventory").exists())
+
+    def test_snapshot_to_publishes_verified_atomic(self):
+        with store.open_store(self.root) as st:
+            st.set_meta("gate", "b")
+        dest = Path(self.tmp.name) / "published" / "Household"
+        out = store.snapshot_to(self.root, dest)
+        self.assertTrue(out["ok"] and out["included"] and out["valid"])
+        self.assertEqual(out["status"], "included")
+        self.assertEqual(out["schema_version"], 7)
+        self.assertTrue((dest / "household.sqlite").is_file())
+        self.assertTrue((dest / "household.sqlite.manifest.json").is_file())
+        self.assertFalse(any(dest.parent.glob("Household.staging-*")))
+        with tempfile.TemporaryDirectory() as restore_root:
+            restored = store.restore_to_temp(dest / "household.sqlite", dest_root=restore_root)
+            try:
+                self.assertEqual(restored.schema_version, 7)
+                self.assertEqual(restored.get_meta("gate"), "b")
+                self.assertEqual(store.integrity_check(restored.conn), "ok")
+            finally:
+                restored.close()
+        with self.assertRaises(FileExistsError):
+            store.snapshot_to(self.root, dest)
+
+    def test_snapshot_to_corruption_not_published(self):
+        with store.open_store(self.root) as st:
+            st.set_meta("x", "1")
+        dest = Path(self.tmp.name) / "bad" / "Household"
+        with mock.patch.object(store, "integrity_check", return_value="error at page 1"):
+            out = store.snapshot_to(self.root, dest)
+        self.assertEqual(out["status"], "invalid")
+        self.assertTrue(out["included"])
+        self.assertFalse(out["valid"])
+        self.assertFalse(dest.exists())
+        self.assertFalse(any((Path(self.tmp.name) / "bad").glob("Household.staging-*")))
+
     def test_restore_requires_valid_manifest(self):
         with store.open_store(self.root) as st:
             st.set_meta("s", "1")
