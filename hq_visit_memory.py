@@ -167,6 +167,22 @@ def latest(path: Path, *, self_key: str, other_key: str | None = None,
             "lines": [{"who": line["who"], "text": line["text"]} for line in row["lines"]]}
 
 
+def visits_between(path: Path, *, self_key: str, other_key: str,
+                   now: float | None = None) -> int:
+    """How many retained visits in this log are with that same other.
+
+    One function, so every surface that reads a visit's repetition (the recall
+    page and the thread line) counts the same history the same way.
+    """
+    with _lock:
+        rows = _load(path)
+        if rows is _UNREADABLE:
+            return 0
+        rows = _prune(rows, float(now if now is not None else time.time()))
+    return sum(1 for row in rows
+               if row.get("self") == self_key and row.get("other") == other_key)
+
+
 def _quote(lines: list[dict[str, Any]], who: str) -> str:
     line = next((item for item in lines if item.get("who") == who), None)
     if not line:
@@ -210,8 +226,9 @@ def hint_detail(path: Path, *, self_key: str, query: Any, now: float | None = No
         return "", None, 1
     row = max(matches, key=lambda item: float(item["at"]))
     # How present that sister is, from the log itself: the visits with the same
-    # other in this assistant's own file.
-    repeats = max(1, len([r for r in mine if r.get("other") == row.get("other")]))
+    # other in this assistant's own file — the same count the thread line reads.
+    repeats = max(1, visits_between(path, self_key=self_key,
+                                    other_key=str(row.get("other") or ""), now=stamp))
     name = row["other_name"]
     other_quote = _quote(row["lines"], row["other"])
     self_quote = _quote(row["lines"], self_key)

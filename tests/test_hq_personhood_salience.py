@@ -218,6 +218,27 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(repeated["continuity"], fresh["continuity"],
                          "ranking moved but the words did not")
 
+    def test_a_repeated_visit_reads_the_same_in_the_thread_line(self):
+        import unittest.mock
+        import hq_visit_memory as visits
+        # A temp log, never the account's own: the visit path is patched, as the
+        # other visit tests do, so a suite run cannot touch live data.
+        path = self.root / "else_visits.json"
+        lines = [{"who": "else", "text": "On a reparlé du chou."}]
+        # Oldest first: a record prunes against its own timestamp.
+        for age in (10800, 7200, 3600):
+            visits.record(path, self_key="else", other_key="transferania",
+                          other_name="Transferania", lines=lines, now=self.clock[0] - age)
+        with unittest.mock.patch.object(ph, "_visit_path_for",
+                                        side_effect=lambda key, owner=None: path if key == "else" else None):
+            rows = ph.pair_threads("transferania", owner="admin", now=self.clock[0])
+            detail = ph.hint_detail("transferania", "Tu penses à Else ?", owner="admin",
+                                    now=self.clock[0])
+        self.assertEqual([(row["other_name"], row["repeats"]) for row in rows], [("Else", 3)])
+        self.assertTrue(detail["line"].startswith("FIL RÉCENT AVEC Else"), detail["line"])
+        self.assertEqual(detail["repeats"], 3, "three visits must not be read as one")
+        self.assertEqual((detail["tier"], detail["priority"], detail["share"]), ("hot", 98, 530))
+
     def test_every_trace_heading_keeps_its_personhood_row(self):
         import hq_companion_context as context
         for heading in ("SUJET RÉCENT — x", "SUJET ANCIEN — x",

@@ -96,6 +96,7 @@ DEEP_HOT = {"tier": "unready", "rung": "unready", "priority": 80, "share": 450,
 # its own — only the default priority and no declared byte share).
 FIL_WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "basis": "visit"}
 FIL_COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "basis": "visit"}
+FIL_HOT = {"tier": "hot", "rung": "hot", "priority": 98, "share": 530, "selected": True, "basis": "visit"}
 POINT_WARM = {"tier": "warm", "priority": 70, "share": 440, "selected": True, "basis": "contested"}
 POINT_COLD = {"tier": "cold", "priority": 40, "share": 380, "selected": True, "basis": "contested"}
 # The recall page ranks by the visit it quotes, in the same bands as her
@@ -158,6 +159,15 @@ STATES = {
     "fil_else_stale": {"expected": FIL_COLD, "message": ELSE_QUERY,
                        "visit": {"ages": (20 * 3600,), "log": "other", "other": "else", "name": "Else",
                                  "lines": VISIT_ELSE_LINES}},
+    # The same sister visited three times inside the window, read from her own log:
+    # the thread line must report the count and the rung the recall page does for
+    # that same history, instead of calling it a one-off.
+    "fil_repeat": {"expected": FIL_HOT, "message": VISIT_QUERY,
+                   "visit": {"ages": (3600, 7200, 10800), "log": "other", "other": "forgia",
+                             "name": "Forgia", "lines": VISIT_LINES}},
+    "fil_else_repeat": {"expected": FIL_HOT, "message": ELSE_QUERY,
+                        "visit": {"ages": (3600, 7200, 10800), "log": "other", "other": "else",
+                                  "name": "Else", "lines": VISIT_ELSE_LINES}},
     "point_fresh": {"expected": POINT_WARM, "message": SOCIAL,
                     "feedback": ((3600, CONCISE), (1800, DETAIL))},
     "point_stale": {"expected": POINT_COLD, "message": SOCIAL,
@@ -608,6 +618,22 @@ def main() -> int:
             failures.append(f"{sister}: the repeated recall row is not the hot row")
         if one["printed_line"] != many["printed_line"]:
             failures.append(f"{sister}: repetition changed the recall page's words")
+    # One history, one reading: the recall page and the thread line for the same
+    # three visits must agree on the count, the tier, the priority and the share —
+    # and the thread line must still name her.
+    for sister, recall_state, thread_state in (("Forgia", "visit_repeat", "fil_repeat"),
+                                               ("Else", "visit_else_repeat", "fil_else_repeat")):
+        recall, thread = report["states"][recall_state], report["states"][thread_state]
+        if recall["repeats"] != thread["repeats"]:
+            failures.append(f"{sister}: recall repeats {recall['repeats']} != thread repeats {thread['repeats']}")
+        if thread["repeats"] is None or thread["repeats"] < 3:
+            failures.append(f"{sister}: three visits printed as repeats {thread['repeats']} in the thread line")
+        reading = lambda state: (state["salience"].get("tier"), state["salience"].get("priority"),
+                                 state["salience"].get("share"))
+        if reading(recall) != reading(thread):
+            failures.append(f"{sister}: recall {reading(recall)} != thread {reading(thread)} for the same visits")
+        if f"FIL RÉCENT AVEC {sister}" not in thread["printed_line"]:
+            failures.append(f"{sister}: the repeated thread line does not name her")
     # The thread line through her own log, for both sisters: same bands, and the
     # line must name the sister it is actually about.
     for sister, fresh_state, stale_state in (("Forgia", "fil_fresh", "fil_stale"),
@@ -648,9 +674,9 @@ def main() -> int:
             print("  -", item)
         return 1
     print("verify_live_personhood: OK (hot, warm, stale, corrected, recovered, burst, climbing, deep, "
-          "deep_warm, deep_hot, fil_fresh, fil_stale, fil_else_fresh, fil_else_stale, point_fresh, "
-          "point_stale, visit_fresh, visit_stale, visit_repeat, visit_else_fresh, visit_else_stale "
-          "and visit_else_repeat states)")
+          "deep_warm, deep_hot, fil_fresh, fil_stale, fil_repeat, fil_else_fresh, fil_else_stale, "
+          "fil_else_repeat, point_fresh, point_stale, visit_fresh, visit_stale, visit_repeat, "
+          "visit_else_fresh, visit_else_stale and visit_else_repeat states)")
     return 0
 
 
