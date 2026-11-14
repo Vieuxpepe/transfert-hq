@@ -10,7 +10,8 @@ Two jobs:
                 hq_carnet.mutate).
   Transferania  floating companion (``ambient`` + ``transferania`` chat). Mémoire **par appareil** :
                 ``.hq-ai/threads/{device_id}.json`` et ``.hq-ai/prefs/{device_id}.json`` (archive conservée, contexte borné).
-  Compagnon     alias persona warm/flirt/off; local daily caps configurable (ambient 240, chat/background 1000).
+  Compagnon     alias persona warm/flirt/off; local daily caps configurable (ambient 240, chat/background 1000,
+                visites 8 séparées via ``visit=True``).
 
 The API key lives only in bridge_config.json (``gemini_api_key``) on this PC and is sent only to Google in a header,
 never to the browser. Models are tried in order and skipped when they are busy (429/503) or when HQ's own count says the
@@ -26,8 +27,10 @@ import math
 import uuid
 import copy
 from contextlib import contextmanager
+from contextvars import copy_context
 import os
 import re
+import secrets
 import threading
 import time
 import unicodedata
@@ -50,23 +53,32 @@ from typing import Any, Callable
 hq_pronunciation.warmup()
 
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+STREAM_API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
 # (model id, label, requests per minute, requests per day) — the free tier of this key
 MODELS = {
     "gemini-3.1-flash-lite": ("Gemini 3.1 Flash Lite", 15, 500),
     "gemini-3.5-flash-lite": ("Gemini 3.5 Flash Lite", 15, 500),
     "gemini-3.6-flash": ("Gemini 3.6 Flash", 5, 20),
+    # Three more big-model pools at 5 RPM / 20 a day each (AI Studio, 2026-11); IDs from aistudio.google.com/docs/models.
+    "gemini-3.8-flash": ("Gemini 3.8 Flash", 5, 20),
+    "gemini-4-hydrogen": ("Gemini 4 Hydrogen", 5, 20),
+    "gemini-3-flash-preview": ("Gemini 3 Flash (preview)", 5, 20),
     "gemma-4-26b-a4b-it": ("Gemma 4 26B", 30, 14400),
     "gemma-4-31b-it": ("Gemma 4 31B", 30, 14400),
     # Web search (Google Search grounding) has a free quota only on Gemini 2.x / 2.5 (1.5K a day on AI Studio);
     # « Gemini 3 and newer » get 0, so grounded calls go through SEARCH_CHAIN, never the 3.x chains.
-    "gemini-2.5-flash-lite": ("Gemini 2.5 Flash Lite", 15, 1000),
-    "gemini-2.5-flash": ("Gemini 2.5 Flash", 10, 250),
+    # The 1.5K/day grounding pool is not the cap: each grounded call is also a request on its own model, and the
+    # AI Studio rate-limit page (2026-11) gives these two 20 a day (10 / 5 per minute) on the free tier.
+    "gemini-2.5-flash-lite": ("Gemini 2.5 Flash Lite", 10, 20),
+    "gemini-2.5-flash": ("Gemini 2.5 Flash", 5, 20),
 }
 # Input TPM from the project's AI Studio limits; independent of request quotas.
 MODEL_TPM = {m: (16000 if m.startswith("gemma-") else 250000) for m in MODELS}
 ASK_CHAIN = ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-31b-it")
 SEARCH_CHAIN = ("gemini-2.5-flash-lite", "gemini-2.5-flash")  # the models with a web-search quota
-DEEP_CHAIN = ("gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
+# 3.8 Flash sits behind Hydrogen: on 2026-11-13 it answered 503 "high demand" or timed out on 4 of 4 probe calls.
+DEEP_CHAIN = ("gemini-3.6-flash", "gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3-flash-preview",
+              "gemini-3.1-flash-lite", "gemini-3.5-flash-lite")
 CAPTURE_CHAIN = ("gemma-4-26b-a4b-it", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-31b-it")
 AMBIENT_CHAIN = ("gemini-3.1-flash-lite", "gemma-4-26b-a4b-it", "gemini-3.5-flash-lite")
 # Adult mode: Flash Lite first, as in the Else project (same BLOCK_NONE settings; its 2026-09-14 probe found
@@ -90,6 +102,7 @@ USAGE = "usage.json"
 Q_MAX = 2000
 AMBIENT_DAILY = 240
 TRANSFERANIA_DAILY = 1000
+VISIT_DAILY = 8  # Gemini visit attempts per day, independent of chat/ambient budgets
 TRANSFERANIA_FILE = "transferania.json"
 TRANSFERANIA_PREFS_FILE = "transferania_prefs.json"
 TRANSFERANIA_THREADS = "threads"
@@ -561,7 +574,7 @@ def _validate_usage(data: Any) -> dict:
                 raise ValueError()
         if "day" not in data or any(not counter(n) for n in data["count"].values()):
             raise ValueError()
-        if any(not counter(data.get(k, 0)) for k in ("ambient", "transferania")):
+        if any(not counter(data.get(k, 0)) for k in ("ambient", "transferania", "visits")):
             raise ValueError()
         windows = data.get("token_window", {})
         if not isinstance(windows, dict) or not isinstance(data.get("model_backoff_until", {}), dict):
@@ -601,7 +614,7 @@ def usage() -> dict:
                 data["count"] = {}
             data["model_day"] = max(data.get("model_day", data.get("day")), _provider_day())
             if data.get("day") < _today():
-                data.update(day=_today(), ambient=0, transferania=0)
+                data.update(day=_today(), ambient=0, transferania=0, visits=0)
             # Rolling windows and provider backoff survive either daily reset.
             return data
     except FileNotFoundError:
@@ -655,7 +668,8 @@ def _slot_model(slot: str) -> str:
     return slot.split("@", 1)[0]
 
 
-def _count(model: str, *, ambient: bool = False, transferania: bool = False, input_tokens: int = 0) -> str:
+def _count(model: str, *, ambient: bool = False, transferania: bool = False, visit: bool = False,
+           input_tokens: int = 0) -> str:
     with _usage_transaction():
         u = usage()
         u["count"][model] = int(u["count"].get(model, 0)) + 1
@@ -663,6 +677,8 @@ def _count(model: str, *, ambient: bool = False, transferania: bool = False, inp
             u["ambient"] = int(u.get("ambient", 0)) + 1
         if transferania:
             u["transferania"] = int(u.get("transferania", 0)) + 1
+        if visit:
+            u["visits"] = int(u.get("visits", 0)) + 1
         reservation = uuid.uuid4().hex
         windows = u.setdefault("token_window", {})
         for name in list(windows):
@@ -674,7 +690,8 @@ def _count(model: str, *, ambient: bool = False, transferania: bool = False, inp
 
 
 def daily_limit(channel: str) -> int:
-    default = AMBIENT_DAILY if channel == "ambient" else TRANSFERANIA_DAILY
+    default = (AMBIENT_DAILY if channel == "ambient" else
+               VISIT_DAILY if channel == "visit" else TRANSFERANIA_DAILY)
     return _budget_integer(companion_config().get(channel + "_daily_limit", default), default, 0, 100000)
 
 
@@ -804,6 +821,47 @@ def _backoff(slot: str, seconds: float) -> None:
         _save_usage(u)
 
 
+# Rolling model health, in memory only (a restart forgets it, which is harmless). A model whose recent calls
+# mostly failed (overload 5xx, timeout, empty reply) is tried after the healthy ones; it is demoted, never removed,
+# and once its failures age out of the window it leads its chain again, so it is probed without extra traffic.
+# 429 (quota) and safety filtering are not health signals and are never recorded here.
+HEALTH_WINDOW_S = 600.0
+HEALTH_MIN_SAMPLES = 4
+HEALTH_FAIL_RATE = 0.6
+_HEALTH_KEEP = 20
+_health: dict[str, list[tuple[float, bool]]] = {}
+
+
+def _health_note(model: str, ok: bool) -> None:
+    now = time.monotonic()
+    with _lock:
+        rows = [r for r in _health.get(model, []) if now - r[0] < HEALTH_WINDOW_S][-(_HEALTH_KEEP - 1):]
+        rows.append((now, ok))
+        _health[model] = rows
+
+
+def _health_sick(model: str) -> bool:
+    now = time.monotonic()
+    with _lock:
+        rows = [r for r in _health.get(model, []) if now - r[0] < HEALTH_WINDOW_S]
+    if len(rows) < HEALTH_MIN_SAMPLES:
+        return False
+    return sum(1 for _, ok in rows if not ok) / len(rows) >= HEALTH_FAIL_RATE
+
+
+def _health_order(chain: tuple[str, ...]) -> tuple[str, ...]:
+    """``chain`` with recently failing models moved to the end; the authored order is kept within each group."""
+    sick = [m for m in chain if _health_sick(m)]
+    return chain if not sick else tuple(m for m in chain if m not in sick) + tuple(sick)
+
+
+def model_health(model: str) -> dict:
+    now = time.monotonic()
+    with _lock:
+        rows = [r for r in _health.get(model, []) if now - r[0] < HEALTH_WINDOW_S]
+    return {"samples": len(rows), "failures": sum(1 for _, ok in rows if not ok), "demoted": _health_sick(model)}
+
+
 def ambient_used() -> int:
     return int(usage().get("ambient", 0))
 
@@ -818,6 +876,14 @@ def transferania_used() -> int:
 
 def transferania_ok() -> bool:
     return transferania_used() < daily_limit("chat")
+
+
+def visit_used() -> int:
+    return int(usage().get("visits", 0))
+
+
+def visit_ok() -> bool:
+    return visit_used() < daily_limit("visit")
 
 
 def available(model: str, input_tokens: int = 0) -> bool:
@@ -888,6 +954,62 @@ def nsfw_truncated_end(text: str) -> bool:
     return False
 
 
+def _post_stream(url: str, body: dict, headers: dict, timeout: int, on_delta) -> tuple[int, dict]:
+    """POST a Gemini SSE stream, handing every text fragment to ``on_delta`` as it arrives, and answer the same
+    (status, data) shape as ``_post``: the chunks are folded back into one candidates[0] reply, so the caller's
+    parsing, token reconciliation and health notes stay exactly as they are for a single-shot call."""
+    fn = _cb.get("stream")
+    if callable(fn):
+        return fn(url, body, headers, timeout, on_delta)
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                 headers={**headers, "Accept": "text/event-stream"}, method="POST")
+    text: list[str] = []
+    finish, usage, grounding = "", {}, None
+    status = 0
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status = r.status
+            for raw in r:                                    # line by line, flushed by the provider as it writes
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(payload)
+                except ValueError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                if isinstance(chunk.get("error"), dict):     # refused mid-stream: an error response, not a reply
+                    return int(chunk["error"].get("code") or 500), chunk
+                if isinstance(chunk.get("usageMetadata"), dict):
+                    usage = chunk["usageMetadata"]
+                cands = chunk.get("candidates") or []
+                c0 = cands[0] if cands and isinstance(cands[0], dict) else {}
+                if c0.get("finishReason"):
+                    finish = str(c0["finishReason"])
+                if isinstance(c0.get("groundingMetadata"), dict):
+                    grounding = c0["groundingMetadata"]
+                parts = ((c0.get("content") or {}).get("parts") or [])
+                piece = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+                if piece:
+                    text.append(piece)
+                    on_delta(piece)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8") or "{}")
+        except ValueError:
+            return e.code, {}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise AiError("Google injoignable (" + str(getattr(e, "reason", e))[:80] + ")", 502, "unreachable") from e
+    cand: dict = {"content": {"parts": [{"text": "".join(text)}]}, "finishReason": finish or "STOP"}
+    if grounding is not None:
+        cand["groundingMetadata"] = grounding
+    return status or 200, {"candidates": [cand], "usageMetadata": usage}
+
+
 def _parse_generation(data: dict) -> tuple[str, str, bool]:
     """(text, finish_reason, should_try_next_model)."""
     pf = data.get("promptFeedback") or {}
@@ -935,9 +1057,10 @@ def _model_body(model: str, body: dict) -> dict:
     return {**body, "generationConfig": {**body["generationConfig"], "thinkingConfig": dict(GEMMA_THINKING)}}
 
 
-def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_out: bool = False, temperature: float = 0.3, ambient: bool = False, transferania: bool = False, max_tokens: int | None = None, nsfw: bool = False, background: bool = False,
+def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_out: bool = False, temperature: float = 0.3, ambient: bool = False, transferania: bool = False, visit: bool = False, max_tokens: int | None = None, nsfw: bool = False, background: bool = False,
              refit: Callable[[int], tuple[str, list]] | None = None, deadline: float | None = None,
-             search: bool = False, grounding: dict | None = None) -> tuple[str, str]:
+             search: bool = False, grounding: dict | None = None,
+             attempt_timeout: float | None = None, on_delta: Callable[[str], None] | None = None) -> tuple[str, str]:
     """(text, model). Tries each model of ``chain`` in turn, on key 1 then each extra key; busy or exhausted
     model/key slots are skipped. A filtered, truncated or empty reply moves on to the next model, not the next key.
 
@@ -945,7 +1068,9 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
     search tool). When ``grounding`` is a dict it receives ``{"queries": [...], "sources": [{"title", "uri"}]}``.
 
     ``refit(cap)`` re-assembles a smaller prompt for a model whose cap (``model_input_cap``) is below this
-    prompt's size, instead of skipping that model. Without it, a model that cannot take the prompt is skipped."""
+    prompt's size, instead of skipping that model. Without it, a model that cannot take the prompt is skipped.
+    ``attempt_timeout`` caps each HTTP attempt; short background jobs use it to leave room for a fallback.
+    ``visit=True`` uses the visit-specific daily budget, never the companion chat or ambient counters."""
     keys = _api_keys()
     if not keys:
         raise AiError("Aucune clé : ajoute gemini_api_key dans bridge_config.json puis redémarre le pont", 503, "no_key")
@@ -953,6 +1078,8 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
         raise AiError("Quota des répliques du compagnon épuisé pour aujourd'hui", 429, "ambient_quota")
     if transferania and not transferania_ok():
         raise AiError("Quota de chat Transferania épuisé pour aujourd'hui", 429, "transferania_quota")
+    if visit and not visit_ok():
+        raise AiError("Quota des visites Gemini épuisé pour aujourd'hui", 429, "visit_quota")
     tok = max_tokens if max_tokens is not None else ((512 if ambient else 1536) if nsfw else (256 if ambient else 2048))
     body: dict[str, Any] = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents,
                             "generationConfig": {"temperature": temperature, "maxOutputTokens": tok}}
@@ -975,19 +1102,22 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                      if input_tokens <= 4000 else
                      ("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it", "gemma-4-31b-it"))
         chain = tuple(m for m in preferred if m in chain) + tuple(m for m in chain if m not in preferred)
+    chain = _health_order(chain)
     content_failed: set[str] = set()
     fitted: dict[int, tuple[str, list] | None] = {}
     for model, lane in [(m, i) for m in chain for i in range(len(keys))]:
         if (state is not None or ambient or transferania) and attempts >= 2:
             break
         timeout = TIMEOUT
+        if attempt_timeout is not None:
+            timeout = max(1.0, min(TIMEOUT, float(attempt_timeout)))
         if deadline is not None:
             # Chat path only: never start an attempt that cannot finish before the overall deadline.
             left = deadline - time.monotonic()
             if left < CHAT_MIN_ATTEMPT_S:
                 last = "Délai de réponse dépassé"
                 break
-            timeout = max(CHAT_MIN_TIMEOUT_S, min(TIMEOUT, int(left)))
+            timeout = min(timeout, max(CHAT_MIN_TIMEOUT_S, min(TIMEOUT, int(left))))
         if model in content_failed:
             continue
         slot = quota_slot(model, lane)
@@ -1014,14 +1144,28 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                 raise AiError("Quota des répliques du compagnon épuisé", 429, "ambient_quota")
             if transferania and not transferania_ok():
                 raise AiError("Quota de chat Transferania épuisé", 429, "transferania_quota")
+            if visit and not visit_ok():
+                raise AiError("Quota des visites Gemini épuisé", 429, "visit_quota")
             # The minute window holds provider tokens: reserve the calibrated estimate, then
             # _reconcile_tokens replaces it with the measured promptTokenCount.
-            reservation = _count(slot, ambient=ambient, transferania=transferania, input_tokens=estimate_tokens(slot, tokens_m))
+            reservation = _count(slot, ambient=ambient, transferania=transferania, visit=visit,
+                                 input_tokens=estimate_tokens(slot, tokens_m))
         attempts += 1
         if state is not None:
             state["provider_attempts"] += 1
         try:
-            status, data = _post(API.format(model=model), _model_body(model, {**body, "systemInstruction": {"parts": [{"text": sys_m}]}, "contents": contents_m}), {"Content-Type": "application/json", "x-goog-api-key": keys[lane]}, timeout)
+            model_body = _model_body(model, {**body, "systemInstruction": {"parts": [{"text": sys_m}]}, "contents": contents_m})
+            model_headers = {"Content-Type": "application/json", "x-goog-api-key": keys[lane]}
+            if on_delta is None:
+                status, data = _post(API.format(model=model), model_body, model_headers, timeout)
+            else:
+                # Streaming attempt: the caller sees the text as it is written, and an attempt that dies mid-way
+                # tells it (empty fragment) to drop what it already showed — the chain simply tries the next model.
+                shown: list[str] = []
+                status, data = _post_stream(STREAM_API.format(model=model), model_body, model_headers, timeout,
+                                            lambda piece: (shown.append(piece), on_delta(piece))[1])
+                if status != 200 and shown:
+                    on_delta("")
         except (AiError, ValueError, UnicodeError) as error:
             # Timeout, dropped connection or an unreadable body: this model failed, the chain has not.
             if state is not None:
@@ -1029,6 +1173,7 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                                                 "error": "transport", "cost": None})
                 state.update(cost=None, cost_status="unavailable")
             last = str(error) if isinstance(error, AiError) else f"{model} : réponse illisible"
+            _health_note(model, False)
             content_failed.add(model)
             continue
         data = data if isinstance(data, dict) else {}
@@ -1069,6 +1214,7 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
         if status in (500, 502, 503, 504):
             # The model is overloaded for everyone: the same model on another key would fail the same way.
             last = msg or f"{model} occupé ({status})"
+            _health_note(model, False)
             content_failed.add(model)
             continue
         if status != 200:
@@ -1076,6 +1222,11 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
                 last = f"clé {lane + 1} refusée pour {model}"
                 _backoff(slot, KEY_REJECTED_BACKOFF)  # a bad or restricted key: stop hitting it for an hour
                 attempts -= 1
+                continue
+            if status == 404:
+                last = f"{model} : modèle introuvable ou retiré"  # a renamed or withdrawn model must not end the chain
+                _backoff(slot, KEY_REJECTED_BACKOFF)
+                content_failed.add(model)
                 continue
             if status == 400 and "thinking" in msg.lower():
                 last = f"{model} : réglage de réflexion refusé"  # never fail the reply over GEMMA_THINKING
@@ -1089,12 +1240,15 @@ def generate(chain: tuple[str, ...], system: str, contents: list[dict], *, json_
         text, finish, retry = _parse_generation(data if isinstance(data, dict) else {})
         if not text.strip():
             last = f"{model} n'a rien répondu ({finish})"
+            if finish in ("empty", "UNKNOWN", "STOP", "MAX_TOKENS"):
+                _health_note(model, False)  # a silent reply, not a safety block
             content_failed.add(model)
             continue
         if nsfw and retry:
             last = f"{model} tronqué ou filtré ({finish})"
             content_failed.add(model)
             continue
+        _health_note(model, True)
         if search and isinstance(grounding, dict):
             grounding.update(_grounding_of(data))
         return text.strip(), model
@@ -1959,6 +2113,28 @@ def recent_said_block(device_id: str) -> str:
     return "\n".join(lines)
 
 
+def _persona_state_line(key: str) -> str:
+    """One bounded line of her own decaying state; empty when nothing is left."""
+    try:
+        import hq_personhood
+        # The request clock, so the state decays against the same instant the
+        # rest of the prompt is built from.
+        return hq_personhood.state_line(
+            key, owner=companion_memory.current_owner() or "admin", now=_now())
+    except Exception:
+        return ""
+
+
+def _personhood_withholds(key: str) -> bool:
+    """True while her grade closes unprompted initiative. Fails open."""
+    try:
+        import hq_personhood
+        return hq_personhood.withholds_initiative(
+            key, owner=companion_memory.current_owner() or "admin", now=_now())
+    except Exception:
+        return False
+
+
 def build_transferania_system(channel: str, persona: str, *, nsfw: bool, view: str, device_id: str, prefs: Any = None, signals: Any = None, summary: str = "", life: str = "", context_core: bool = False, trait_overrides: dict | None = None) -> str:
     """``channel`` : ``ambient`` | ``chat``."""
     ch = "chat" if str(channel).strip().lower() == "chat" else "ambient"
@@ -2561,6 +2737,12 @@ def ambient(view: Any, digest: Any = "", persona: Any = "warm", *, nsfw: bool = 
     base = {"ambient_used": ambient_used(), "ambient_per_day": daily_limit("ambient"), "device_id": did, "mood": _mood_out(st), "event_id": ev["id"] if ev else None}
     if mode == "off" and not use_nsfw:
         return {"ok": True, "line": fallback_ambient(v, "warm"), "fallback": True, "persona": "off", "nsfw": False, **base}
+    if ev is None and _personhood_withholds("transferania"):
+        # A tense grade silences the spontaneous remark only; a reaction to real
+        # news (ev) still gets its line. No quota is spent on a withheld message.
+        _life_end(did, None)
+        return {"ok": True, "line": "", "skipped": True, "reason": "withheld",
+                "persona": "nsfw" if use_nsfw else mode, "nsfw": use_nsfw, **base}
     key = (_api_keys() or [""])[0]
     if not key or not ambient_ok():
         fb = "flirt" if mode == "flirt" or use_nsfw else mode
@@ -2581,7 +2763,8 @@ def ambient(view: Any, digest: Any = "", persona: Any = "warm", *, nsfw: bool = 
             packet["prompt"], hq_life.mood_label(st["mood"]),
             presence_page_block(prefs, signals, nsfw=use_nsfw),
             nsfw_evidence_page("ambient") if use_nsfw else "",
-            followup if not ev else "", recent_said_block(did), sister_page, ctx))
+            followup if not ev else "", _persona_state_line("transferania"),
+            recent_said_block(did), sister_page, ctx))
     _finalize_continuity_context(packet, contents)
     sig = parse_companion_signals(signals)
     try:
@@ -2951,6 +3134,13 @@ def transferania_public_messages(data: dict) -> list[dict]:
         extra = companion_photo_public(m, catalog)
         if extra:
             row.update(extra)
+        art = m.get("chat_art")
+        if isinstance(art, dict) and re.fullmatch(r"[0-9a-f]{32}", str(art.get("id") or "")):
+            row["chat_art_id"] = art["id"]
+            if art.get("presentation") == "bubble":
+                row["chat_art_presentation"] = "bubble"
+            if art.get("ready"):
+                row["photo_href"] = f"/api/companion/chat-image/{art['id']}?device_id={art['device_id']}"
         extra_loop = companion_loop_public(m, loop_catalog)
         if extra_loop:
             row.update(extra_loop)
@@ -3743,8 +3933,93 @@ def transferania_stats() -> dict:
             "cost_today": round(cost_today, 6), "cost_today_unpriced": unpriced, "model_mix": mix,
             "prices_configured": bool(companion_config().get("prices_per_million"))}
 
+_CHAT_ART_DIRECTIVE = re.compile(r"(?m)^[ \t]*\[forge-image:([^\r\n]*)\][ \t]*$")
+_chat_art_running = set()
+
+
+def _chat_art_available(thread: dict) -> bool:
+    return not _chat_art_running and _now() >= float(thread.get("next_chat_art_at") or 0)
+
+
+def _chat_art_delay(plan: dict, mood: str) -> int:
+    """Roll once per job so page reloads and extra messages can't reroll the wait."""
+    if plan.get("presentation") == "bubble":
+        low, high = (4, 9) if mood in ("playful", "warm") else (7, 13)
+    else:
+        low, high = (15, 25) if mood in ("playful", "warm") else (22, 35)
+    return low * 60 + secrets.randbelow((high - low) * 60 + 1)
+
+
+def _extract_chat_art(text: str) -> tuple[str, dict | None]:
+    matches = list(_CHAT_ART_DIRECTIVE.finditer(text))
+    clean = _CHAT_ART_DIRECTIVE.sub("", text).strip()
+    if len(matches) != 1:
+        return clean, None
+    try:
+        plan = json.loads(matches[0][1])
+    except ValueError:
+        return clean, None
+    if not isinstance(plan, dict) or not isinstance(plan.get("prompt"), str):
+        return clean, None
+    prompt = " ".join(plan["prompt"].split())
+    negative = plan.get("negative", "")
+    if not 3 <= len(prompt) <= 450 or not isinstance(negative, str) or len(negative) > 200:
+        return clean, None
+    if any(c in prompt + negative for c in "<>[]"):
+        return clean, None
+    return clean, {**plan, "prompt": prompt, "negative": negative}
+
+
+def _chat_art_path(art_id: str, suffix: str = ".webp") -> Path:
+    return Path(_cb["root"]) / STORE / "chat-art" / f"{art_id}{suffix}"
+
+
+@companion_memory.owner_request
+def transferania_chat_image(art_id: str, did: str, *, owner_id: str) -> Path | None:
+    if not re.fullmatch(r"[0-9a-f]{32}", art_id):
+        return None
+    for message in load_transferania(did)["messages"]:
+        art = message.get("chat_art") if isinstance(message, dict) else None
+        if isinstance(art, dict) and art.get("id") == art_id and art.get("ready"):
+            for suffix in (".webp", ".jpg"):
+                path = _chat_art_path(art_id, suffix)
+                if path.is_file() and not path.is_symlink() and not path.parent.is_symlink():
+                    return path
+    return None
+
+
+def _finish_chat_art(did: str, art_id: str, plan: dict, mood: str) -> None:
+    import hq_companion_art
+
+    try:
+        webp = hq_companion_art.generate_chat_art(Path(_cb["root"]), plan, mood)
+        with _lock:
+            thread = load_transferania(did)
+            for message in reversed(thread["messages"]):
+                art = message.get("chat_art") if isinstance(message, dict) else None
+                if isinstance(art, dict) and art.get("id") == art_id:
+                    path = _chat_art_path(art_id)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if path.parent.is_symlink():
+                        return
+                    with path.open("xb") as output:
+                        output.write(webp)
+                    try:
+                        art["ready"] = True
+                        save_transferania(thread, did)
+                    except (OSError, AiError):
+                        path.unlink(missing_ok=True)
+                        raise
+                    break
+    except (ValueError, OSError, hq_companion_art.CompanionArtError, hq_companion_art.forge._Probe):
+        pass
+    finally:
+        with _lock:
+            _chat_art_running.discard(art_id)
+
+
 @companion_request("chat")
-def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "warm", *, nsfw: bool = False, client_ip: Any = None, role: Any = None, signals: Any = None, device_id: Any = None, image: Any = None) -> dict:
+def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "warm", *, nsfw: bool = False, client_ip: Any = None, role: Any = None, signals: Any = None, device_id: Any = None, image: Any = None, steam: bool = False, chat_art: bool = False) -> dict:
     started = time.monotonic()
     did = normalize_device_id(device_id)
     mode = _resolve_persona(persona)
@@ -3777,6 +4052,11 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         raise AiError(THREAD_UNREADABLE_MSG, 409, "thread_unreadable")
     prefs = load_transferania_prefs(did)
     page = append_companion_signals(gather_ambient(v, str(digest or "")), signals, prefs, device_id=did, nsfw=use_nsfw)
+    if steam and role == "admin":
+        import hq_companion_steam
+        steam_context = hq_companion_steam.context_for(msg)
+        if steam_context:
+            page += "\n\n" + steam_context
     st = _life_begin(did, v, signals)
     allow_social_continuity = companion_presence.classify(msg) == "social" and _shared_memory(companion_memory.continuity_allowed)
     with hq_life._lock:
@@ -3818,13 +4098,30 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     hq_lookup_text, hq_sources = hq_live_lookup_block(msg)
     arch_text = companion_archive.archive_block(msg, nsfw=use_nsfw, recent_messages=prompt_history[-8:])
     core = system
+    can_offer_art = False
+    if chat_art and role == "admin" and v == "intime":
+        with _lock:
+            can_offer_art = _chat_art_available(data)
+    if can_offer_art:
+        core += (
+            "\nPHOTO FORGE OPTIONNELLE : si tu as spontanément envie de partager une image pertinente à ce moment, "
+            "tu peux ajouter UNE dernière ligne [forge-image:{\"prompt\":\"tags en anglais\",\"negative\":\"tags facultatifs\","
+            "\"framing\":\"portrait\",\"sampler\":\"Euler\",\"steps\":22,\"cfg\":5,\"seed\":-1}]. "
+            "Invente ton propre sujet, décor, cadrage et éclairage selon ton humeur et la discussion. "
+            "Choisis portrait, square ou landscape, Euler ou DPM++ 2M, 12 à 28 steps et CFG 3 à 7. "
+            "Parfois, pour un petit cadeau-surprise, ajoute \"presentation\":\"bubble\" dans le JSON "
+            "et choisis 4 à 8 steps. Le dessin miniature se révèle six secondes quand le Maître éclate la bulle. "
+            "Seed -1 pour varier. Portrait habillé et non explicite. "
+            "Omet la ligne si l'image n'apporte rien. Ton texte doit rester naturel même si Forge est indisponible."
+        )
     evidence = dict(history=prompt_history,
         summary=summary, memories=shared_memories, corrections=packet.get("corrections", []), page=join_evidence_page(
             facts_block(did), packet["prompt"], life, resolved_followup,
             presence_page_block(prefs, signals, nsfw=use_nsfw),
             nsfw_evidence_page("chat") if use_nsfw else "",
             followup if not due else "", arch_text, hq_lookup_text,
-            sister_awareness_block(did, "transferania"), page, voice_guidance))
+            sister_awareness_block(did, "transferania"), _persona_state_line("transferania"),
+            page, voice_guidance))
     system, contents, _ = build_companion_context("chat", core, msg, **evidence)
     if inline_img and contents and contents[-1].get("role") == "user":
         contents[-1]["parts"].append({"inlineData": inline_img})
@@ -3871,6 +4168,8 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         return {"ok": True, "reply": reply, "fallback": True, "messages": pub,
                 "transferania_used": transferania_used(), "transferania_per_day": daily_limit("chat"), "persona": mode, "nsfw": use_nsfw,
                 "has_summary": bool(sum2), "name": TRANSFERANIA_NAME, "device_id": did}
+    text, art_plan = _extract_chat_art(text)
+    art_plan = art_plan if can_offer_art else None
     photo_catalog = list_companion_chat_photo_ids() if use_nsfw else {}
     loop_catalog = list_companion_loop_ids() if use_nsfw else {}
     shaped, photo_id, loop_id, fx_id = extract_companion_chat_media(
@@ -3890,6 +4189,10 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
     _shared_memory(companion_memory.observe_reply, msg, reply, did)
     suggest_cap = wants_capture(msg)
     inline_props = extract_inline_proposals(msg) if suggest_cap else []
+    art_id = None
+    mood = st["mood"]
+    style = {"win": "playful", "return": "warm", "error": "thoughtful"}.get(mood.get("why"))
+    style = style or ("warm" if mood["warm"] >= .55 else "calm")
     with _lock:
         data = load_transferania(did)
         merge_thread_facts(data, msg, reply)
@@ -3907,11 +4210,28 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
             asst["suggest_capture"] = msg[:200]
         if inline_props:
             asst["proposals"] = inline_props
+        if art_plan and _chat_art_available(data):
+            art_id = uuid.uuid4().hex
+            asst["chat_art"] = {"id": art_id, "device_id": did}
+            if art_plan.get("presentation") == "bubble":
+                asst["chat_art"]["presentation"] = "bubble"
+            asst.pop("photo", None)
+            photo_id = None
+            data["next_chat_art_at"] = _now() + _chat_art_delay(art_plan, style)
         data["messages"].append(asst)
         maybe_compress(data)
         save_transferania(data, did)
+        if art_id:
+            _chat_art_running.add(art_id)
         summary = str(data.get("summary") or "").strip()
         pub = transferania_public_messages(data)
+    if art_id:
+        context = copy_context()
+        try:
+            hq_life.spawn(lambda: context.run(_finish_chat_art, did, art_id, art_plan, style))
+        except RuntimeError:
+            with _lock:
+                _chat_art_running.discard(art_id)
     out: dict[str, Any] = {
         "ok": True,
         "reply": reply,
@@ -3929,6 +4249,7 @@ def transferania_chat(message: Any, view: Any = "", digest: Any = "", persona: A
         "device_id": did,
         "warmth": warmth,
         "thought": thought_res.get("thought") or "",
+        **({"chat_art_id": art_id} if art_id else {}),
         **({"photo": photo_id} if photo_id else {}),
         **({"loop": loop_id} if loop_id else {}),
         **({"fx": fx_id} if fx_id else {}),
@@ -4053,7 +4374,8 @@ def else_chat(message: Any, view: Any = "", digest: Any = "", persona: Any = "wa
                 facts_block(did), packet["prompt"], resolved_followup,
                 presence_page_block(prefs, signals, nsfw=use_nsfw),
                 nsfw_evidence_page("chat") if use_nsfw else "",
-                followup or "", hq_lookup_text, sister_awareness_block(did, "else"), page, voice_guidance or ""))
+                followup or "", hq_lookup_text, sister_awareness_block(did, "else"),
+                _persona_state_line("else"), page, voice_guidance or ""))
         system, contents, _ = build_companion_context("chat", core, msg, **evidence)
         _finalize_continuity_context(packet, contents)
         refits: dict[int, tuple[str, list]] = {}
@@ -4172,6 +4494,10 @@ def else_ambient(view: Any = "accueil", digest: Any = "", persona: Any = "warm",
             "persona": "nsfw" if use_nsfw else mode,
             "nsfw": use_nsfw,
         }
+        if _personhood_withholds("else"):
+            # Her aside is initiative by definition: a tense grade keeps her
+            # quiet without spending quota or resetting the cadence clock.
+            return {"ok": True, "skipped": True, "reason": "withheld", **base}
         key = (_api_keys() or [""])[0]
         # Prefer soft when no key / ambient budget — still marks presence.
         if not key or not ambient_ok() or (int(now * 1000) // 41) % 10 < 6:
@@ -4190,7 +4516,8 @@ def else_ambient(view: Any = "accueil", digest: Any = "", persona: Any = "warm",
             system, contents, _ = build_companion_context(
                 "ambient", system, "Une observation brève si elle est pertinente — ton Else.",
                 summary=summary, memories=packet["memories"], corrections=packet.get("corrections", []),
-                page=join_evidence_page(packet["prompt"], sister_awareness_block(did, "else"), page),
+                page=join_evidence_page(packet["prompt"], sister_awareness_block(did, "else"),
+                                        _persona_state_line("else"), page),
             )
             try:
                 text, model = generate(
@@ -4541,6 +4868,8 @@ def transferania_post(data: dict, *, client_ip: Any = None, role: Any = None) ->
             signals=data.get("signals"),
             device_id=did,
             image=data.get("image"),
+            steam=data.get("steam") is True,
+            chat_art=data.get("chat_art") is True,
         )
     raise AiError("Opération Transferania inconnue (op: send, history, clear, prefs)")
 
@@ -4759,7 +5088,8 @@ def companion_context_preview(data: dict, *, client_ip=None, role=None) -> dict:
                 packet["prompt"], hq_life.mood_label(hq_life.mood(state)), hq_life.upcoming_block(state),
                 presence_page_block(prefs, data.get("signals"), nsfw=nsfw),
                 nsfw_evidence_page(channel) if nsfw else "",
-                packet["continuity"], recent_said_block(did) if channel == "ambient" else "", page, voice_guidance))
+                packet["continuity"], _persona_state_line("transferania"),
+                recent_said_block(did) if channel == "ambient" else "", page, voice_guidance))
     finally:
         _companion_local.state = saved_state
     return {"ok": True, "kind": channel, "system": system, "contents": contents, "context_usage": info,
@@ -4811,7 +5141,8 @@ def preview(data: Any, *, client_ip: Any = None, role: Any = None) -> dict:
     shared_memories, followup = packet["memories"], packet["continuity"]
     system, contents, context_usage = build_companion_context("ambient", system, "Une observation brève si elle est pertinente.",
         summary=summary, memories=shared_memories, corrections=packet.get("corrections", []),
-        page=join_evidence_page(packet["prompt"], followup, recent_said_block(did), ctx))
+        page=join_evidence_page(packet["prompt"], followup, _persona_state_line("transferania"),
+                                recent_said_block(did), ctx))
     _finalize_continuity_context(packet, contents)
     included = bool(followup and followup in contents[-1]["parts"][0]["text"])
     context_usage.update(conversation_mode=packet["presence"]["mode"], continuity_kind=packet["presence"]["continuity_kind"] if included else "none",
@@ -4872,6 +5203,7 @@ def status(client_ip: Any = None, role: Any = None, *, device_id: Any = None) ->
             "session_admin": session_admin,
             "device_id": did_out,
             "ambient": {"used": ambient_used(), "per_day": daily_limit("ambient")},
+            "visits": {"used": visit_used(), "per_day": daily_limit("visit")},
             "transferania": {"used": transferania_used(), "per_day": daily_limit("chat"), "keep": t_keep,
                              "messages": msg_n,
                              "has_summary": bool(mem_summary)},
@@ -4888,6 +5220,15 @@ def status(client_ip: Any = None, role: Any = None, *, device_id: Any = None) ->
 @companion_memory.owner_request
 def http_get(qs: dict, *, client_ip: Any = None, role: Any = None, owner_id: Any = None) -> tuple[int, dict]:
     try:
+        art_id = (qs.get("chat_art") or [""])[0]
+        if art_id:
+            if role != "admin":
+                raise AiError("Photo réservée à la session administrateur", 403, "forbidden")
+            did = device_id_from(None, qs)
+            with _lock:
+                path = transferania_chat_image(art_id, did, owner_id=companion_memory.current_owner())
+                return 200, {"pending": art_id in _chat_art_running,
+                             "photo_href": f"/api/companion/chat-image/{art_id}?device_id={did}" if path else ""}
         flag = (qs.get("transferania") or [""])[0] if isinstance(qs, dict) else ""
         if str(flag).lower() in ("1", "true", "history"):
             return 200, transferania_history(device_id=device_id_from(None, qs), client_ip=client_ip, role=role)

@@ -16,7 +16,9 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import hq_companion_presence as presence
 import hq_companion_growth as growth
+import hq_personhood
 import hq_personas
+import hq_visit_memory
 
 _owner = ContextVar("companion_owner", default="admin")
 # The default owner exists for single-user single-account installs, but a store
@@ -66,6 +68,18 @@ def set_owner(owner) -> None:
     """Mark the owner as explicitly established for the current operation."""
     _owner.set(str(owner))
     _owner_established.set(True)
+
+
+@contextmanager
+def owner_context(owner):
+    """Temporarily act for one authenticated owner (visit writes and reads)."""
+    token = _owner.set(str(owner or "admin"))
+    etoken = _owner_established.set(True)
+    try:
+        yield
+    finally:
+        _owner.reset(token)
+        _owner_established.reset(etoken)
 
 
 def owner_request(fn):
@@ -118,6 +132,27 @@ def path():
 
 def _empty():
     return {"v": 1, "revision": 0, "memories": [], "followups": [], "imported": {}, "forgotten": {}, "presence": {}, "episodes": []}
+
+
+def visit_path():
+    """Owner- and scope-specific visit file, beside this assistant's memory."""
+    p = path()
+    return p.with_name(p.stem + "_visits.json")
+
+
+def record_visit(*, other_key: str, other_name: str, lines: list) -> dict | None:
+    return hq_visit_memory.record(visit_path(), self_key=_memory_scope.get(),
+                                  other_key=other_key, other_name=other_name, lines=lines,
+                                  now=_now())
+
+
+def recent_visit(*, other_key: str | None = None) -> dict | None:
+    return hq_visit_memory.latest(visit_path(), self_key=_memory_scope.get(), other_key=other_key,
+                                  now=_now())
+
+
+def visit_hint(query) -> str:
+    return hq_visit_memory.hint(visit_path(), self_key=_memory_scope.get(), query=query, now=_now())
 
 
 def _load():
@@ -308,6 +343,10 @@ def migrate(device, thread):
 
 
 def observe_user(text, device):
+    try:
+        hq_personhood.observe_chat(_memory_scope.get(), text, source=device, owner=current_owner())
+    except Exception:
+        pass
     now = _now()
     resolved = []
     with _lock:
@@ -367,12 +406,21 @@ def observe_reply(user_text, reply, device):
     questions = [s.strip() for s in re.split(r"(?<=[.!?])\s+", reply) if s.strip().endswith("?")]
     if not questions:
         return
+    # Read before the store lock: the personhood gate must never nest inside it.
+    try:
+        withheld = hq_personhood.withholds_initiative(_memory_scope.get(), owner=current_owner(), now=now)
+    except Exception:
+        withheld = False
     with _lock:
         data = _load()
         for question in questions[-1:]:
             matching = [f for f in data["followups"] if f["status"].startswith("awaiting") and terms(f["topic"]) & terms(question)]
             if matching:
                 matching[-1].update(last_asked_at=now, offered_at=now, ask_count=matching[-1]["ask_count"] + 1)
+                continue
+            if withheld:
+                # She asked while tense; do not enshrine that as a future nudge.
+                # Nothing is pending yet, so nothing is deleted either.
                 continue
             items = extract(user_text)
             topic = items[0]["subject"] if items else user_text.strip()
@@ -408,6 +456,13 @@ def context(query, *, reserve_followup=False):
 
 
 def context_packet(query, *, reserve_followup=False, conversation_text=None, allow_followup=True):
+    # A tense grade closes the initiative structurally, not by asking the model
+    # to hold back: no pending follow-up is offered and no callback is planted.
+    # Read before the store lock, so the two modules never nest their locks.
+    try:
+        withheld = hq_personhood.withholds_initiative(_memory_scope.get(), owner=current_owner(), now=_now())
+    except Exception:
+        withheld = False
     with _lock:
         data = _load()
         now = _now()
@@ -429,6 +484,10 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
         due = [f for f in data["followups"] if f["status"].startswith("awaiting") and now >= f["not_before"]
                and (f.get("offered_at") is None or now - f["offered_at"] >= 21600)
                and (conversation_text is None or not terms(conversation_text) or bool(terms(conversation_text) & terms(f["topic"])))]
+        if withheld:
+            # The record stays pending for a calmer turn; it is simply not put
+            # in front of her now, and nothing is reserved for it.
+            due = []
         followup = due[0] if due else None
         state = data["presence"]
         mode = presence.classify(conversation_text) if conversation_text is not None else state.get("mode", "social") if now - state.get("at", 0) < 1800 else "social"
@@ -440,11 +499,12 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
         generic_recall = recall and bool(re.search(r"what do you remember|last time|dernier.*(?:fois|moment)|de quoi.*souviens", fold(episode_query)))
         episode = next((e for relevance, _, e in scored if relevance or generic_recall), None)
         callback_cooled = state.get("callback_at") is None or now - state["callback_at"] >= 21600
-        callback_ready = state.get("return_gap", 0) >= 21600 and callback_cooled
+        callback_ready = (not withheld) and state.get("return_gap", 0) >= 21600 and callback_cooled
         # Let a reinforced interest or an explicitly named ritual colour a
         # relevant social exchange without requiring a memory quiz or a return.
         # It still shares the one continuity slot and six-hour cooldown.
-        motif = growth.natural_callback(views, episode_query, terms=terms) if not requested and mode == "social" and callback_cooled else None
+        motif = (growth.natural_callback(views, episode_query, terms=terms)
+                 if not requested and mode == "social" and callback_cooled and not withheld else None)
         if motif:
             episode = next(e for e in episodes if e["id"] == motif["source_ids"][-1])
         decision = presence.arbitrate({**state, **({"mode": mode, "at": now} if conversation_text is not None else {})}, now=now,
@@ -482,6 +542,20 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
                 state["callback_at"] = now
                 reservation = {"kind": "episode", "id": episode["id"], "at": now}
                 _save(data)
+        if not hint and conversation_text is not None:
+            # A visit is a second, separate kind of continuity: it may fill the
+            # empty slot, but never displaces a follow-up or an episode, and it
+            # stays out of ambient lines that have no conversational turn.
+            # An explicit recall still gets its visit; only the unprompted
+            # continuity offer is closed by a tense grade.
+            visit_recall = "" if (withheld and not recall) else visit_hint(episode_query)
+            if visit_recall:
+                hint = visit_recall
+            elif conversation_text is not None:
+                try:
+                    hint = hq_personhood.hint(_memory_scope.get(), episode_query, owner=current_owner(), now=now)
+                except Exception:
+                    hint = ""
         style = presence.style_from_memories(active)
         expression = presence.response_plan(conversation_text or "", decision)
         # Only current, relevant corrections; never resurrect a superseded

@@ -188,3 +188,22 @@ class PromptPipelineTests(Base):
         kinds = [r["kind"] for r in info["selection_manifest"] if r["selected"] and r["kind"] not in {"system", "current_message"}]
         self.assertIn("sister", kinds)
         self.assertIn("delivery", kinds)
+
+    def test_internal_state_reaches_the_assembled_prompt_and_fades(self):
+        import hq_personhood
+        # Same scope the runtime observation path writes to, not a hard-coded owner.
+        hq_personhood.record_event("transferania", kind="tool", outcome="failed",
+                                   now=self.clock[0] - 60)
+
+        def preview():
+            code, out = ai.http_post({"action": "transferania", "op": "context_preview", "kind": "chat",
+                "device_id": DEV, "persona": "warm", "message": "On reprend le prompt ?"}, role="admin")
+            self.assertEqual(code, 200, out)
+            return json.dumps(out["contents"], ensure_ascii=False)
+
+        payload = preview()
+        self.assertIn("ÉTAT INTERNE", payload)
+        self.assertIn("un outil a lâché", payload)
+        # The same person, a day later: the state has decayed out of the prompt.
+        self.clock[0] += 86400
+        self.assertNotIn("ÉTAT INTERNE", preview())

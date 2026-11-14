@@ -39,6 +39,7 @@ source of billed token counts.
 | Evidence | Shared memory / life context | Current corrections, reported facts, actual events, stated reasons |
 | Summary | Existing summary lifecycle | Choices, explicit reasons, corrections, open/resolved threads |
 | Conversation | Whole paired exchanges | Latest continuity and older user-topic relevance |
+| Internal state | `hq_personhood.state_line` / `regime` / `withholds_initiative` | Her own decaying energy/tension/warmth, the last thing that moved it, and the bounded `régime` that turns it into brevity, openness or a closed subject; one `behavior` block, never identity. While the grade is tense every unprompted offer is withheld at its own source — follow-up, absence callback, motif callback, visit continuity, her open-thread/self-note/contested/value note, a follow-up registered from her own question, and the spontaneous ambient lines (Transferania and Else); records stay pending and nothing is reserved, explicit recall and requested reflections stay open by design, and a personhood read that raises fails open |
 | Delivery | `delivery_hint` | Cadence and at most one contextual habit; no repeated identity catalog |
 
 The intensity comparison has one home in the full core, independently of edited

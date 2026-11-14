@@ -1,9 +1,12 @@
 """Local memory meaning, owner boundaries, shared follow-through and migration."""
 import json
 import threading
+from unittest import mock
 
 import hq_ai as ai
+import hq_companion_growth as growth
 import hq_companion_memory as memory
+import hq_personhood
 from tests.test_hq_ai import Base, DEV, DEV2, reply
 
 
@@ -123,6 +126,134 @@ class MemoryTests(Base):
         self.assertTrue(self.profile(device=DEV2)["followups"])
         self.clock[0] += 21601
         self.assertIn("robot", memory.context("bonjour", reserve_followup=True)[1])
+
+    def _tense(self, key="transferania"):
+        hq_personhood.record_event(key, kind="tool", outcome="failed", now=self.clock[0])
+        hq_personhood.record_event(key, kind="error", outcome="failed", now=self.clock[0])
+
+    def test_personhood_gate_fails_open_when_it_raises(self):
+        memory.observe_reply("Je travaille sur le robot.", "Tu as fini le robot ?", DEV)
+        self.clock[0] += 86401
+        with mock.patch.object(hq_personhood, "withholds_initiative", side_effect=RuntimeError("self file")):
+            packet = memory.context_packet("Tu as fini le robot ?", conversation_text="Tu as fini le robot ?")
+        # A broken personhood read must never cost her the offer or the reply.
+        self.assertIn("SUJET EN ATTENTE", packet["continuity"])
+        self.assertEqual(packet["presence"]["continuity_kind"], "followup")
+
+    def test_tense_grade_still_returns_the_requested_episode(self):
+        memory.observe_user("On a décidé de refaire le robot.", DEV)
+        self.clock[0] += 86401
+        self._tense()
+        packet = memory.context_packet("Tu te souviens du robot ?", conversation_text="Tu te souviens du robot ?")
+        # Recall is an answer, not an initiative: the gate must not touch it.
+        self.assertIn("ÉPISODE ÉNONCÉ", packet["continuity"])
+        self.assertEqual(packet["presence"]["continuity_kind"], "episode")
+
+    def test_tense_grade_does_not_register_a_new_followup(self):
+        self._tense()
+        memory.observe_reply("Je travaille sur le robot.", "Tu as fini le robot ?", DEV)
+        self.assertFalse(memory.snapshot()["followups"])
+
+    def test_tense_grade_withholds_the_absence_callback(self):
+        memory.observe_user("On a décidé de refaire le robot.", DEV)
+        self.clock[0] += 86401
+        memory.observe_user("bonjour", DEV)
+        calm = memory.context_packet("robot", conversation_text="robot")
+        self.assertIn("ÉPISODE ÉNONCÉ", calm["continuity"])
+        self._tense()
+        tense = memory.context_packet("robot", conversation_text="robot")
+        self.assertEqual(tense["continuity"], "")
+        self.assertEqual(tense["presence"]["continuity_kind"], "none")
+
+    def test_tense_grade_never_asks_growth_for_a_callback(self):
+        memory.observe_user("On a décidé de refaire le robot.", DEV)
+        self.clock[0] += 7200
+        with mock.patch.object(growth, "natural_callback", return_value=None) as motif:
+            memory.context_packet("jazz", conversation_text="jazz")
+        self.assertEqual(motif.call_count, 1)
+        self._tense()
+        with mock.patch.object(growth, "natural_callback", return_value=None) as motif:
+            memory.context_packet("jazz", conversation_text="jazz")
+        self.assertEqual(motif.call_count, 0)
+
+    def test_tense_grade_withholds_the_visit_continuity_hint(self):
+        memory.record_visit(other_key="forgia", other_name="Forgia", lines=[{"who": "forgia", "text": "Le rendu tient."}])
+        self.clock[0] += 60
+        calm = memory.context_packet("Forgia a fini le rendu ?", conversation_text="Forgia a fini le rendu ?")
+        self.assertIn("VISITE RÉCENTE", calm["continuity"])
+        self._tense()
+        tense = memory.context_packet("Forgia a fini le rendu ?", conversation_text="Forgia a fini le rendu ?")
+        self.assertNotIn("VISITE RÉCENTE", tense["continuity"])
+        # …but an explicitly requested visit is recall and still comes back.
+        asked = memory.context_packet("Tu te souviens de Forgia ?", conversation_text="Tu te souviens de Forgia ?")
+        self.assertIn("VISITE RÉCENTE", asked["continuity"])
+
+    def _ambient_call(self, fn, *args, **kwargs):
+        """The ambient paths coalesce and cool down, so prime, then let it decide."""
+        fn(*args, **kwargs)
+        self.clock[0] += 9
+        return fn(*args, **kwargs)
+
+    def test_open_thread_line_reaches_continuity_only_when_the_grade_allows_it(self):
+        snap = {"ok": True, "affect": {"withholds": False, "energy": .5, "tension": .1, "warmth": .5},
+                "preoccupations": [{"label": "On prépare une soupe de courge.", "at": self.clock[0] - 60}],
+                "pair_threads": [], "contested": [], "self_notes": [], "values": []}
+        with mock.patch.object(hq_personhood, "snapshot", return_value=snap):
+            calm = memory.context_packet("Tu penses à la courge ?", conversation_text="Tu penses à la courge ?")
+        self.assertIn("SUJET RÉCENT", calm["continuity"])
+        held = {**snap, "affect": {**snap["affect"], "withholds": True}}
+        with mock.patch.object(hq_personhood, "snapshot", return_value=held):
+            tense = memory.context_packet("Tu penses à la courge ?", conversation_text="Tu penses à la courge ?")
+        self.assertEqual(tense["continuity"], "")
+
+    def test_open_thread_is_offered_when_calm_and_withheld_when_tense(self):
+        def seed():
+            hq_personhood.observe_chat("transferania", "On prépare une soupe de courge.", now=self.clock[0] - 300)
+        seed()
+        calm = memory.context_packet("Tu penses à la courge ?", conversation_text="Tu penses à la courge ?")
+        self.assertIn("SUJET RÉCENT", calm["continuity"])
+        path = hq_personhood.self_path("transferania")
+        if path and path.exists():
+            path.unlink()
+        seed()
+        self._tense()
+        tense = memory.context_packet("Tu penses à la courge ?", conversation_text="Tu penses à la courge ?")
+        self.assertNotIn("SUJET RÉCENT", tense["continuity"])
+
+    def test_tense_grade_silences_the_spontaneous_ambient_message(self):
+        calm = self._ambient_call(ai.ambient, "accueil", "calme", "warm", device_id=DEV)
+        self.assertFalse(calm.get("skipped"))
+        self._tense()
+        self.clock[0] += 130  # clear the ambient cooldown; the tension is still fresh
+        tense = self._ambient_call(ai.ambient, "accueil", "tendu", "warm", device_id=DEV)
+        self.assertTrue(tense.get("skipped"))
+        self.assertEqual(tense.get("reason"), "withheld")
+
+    def test_tense_grade_silences_the_else_aside(self):
+        calm = self._ambient_call(ai.else_ambient, "accueil", "calme", "warm", device_id=DEV)
+        self.assertNotEqual(calm.get("reason"), "withheld")
+        self.clock[0] += 25 * 3600
+        self._tense("else")
+        tense = self._ambient_call(ai.else_ambient, "accueil", "tendu", "warm", device_id=DEV)
+        self.assertTrue(tense.get("skipped"))
+        self.assertEqual(tense.get("reason"), "withheld")
+
+    def test_tense_grade_withholds_the_followup_offer_structurally(self):
+        memory.observe_reply("Je travaille sur le robot.", "Tu as fini le robot ?", DEV)
+        self.clock[0] += 86401
+        calm = memory.context_packet("Tu as fini le robot ?", conversation_text="Tu as fini le robot ?")
+        self.assertIn("SUJET EN ATTENTE", calm["continuity"])
+        self.assertEqual(calm["presence"]["continuity_kind"], "followup")
+        # Same pending follow-up, but a tense grade: the memory layer stops
+        # offering it instead of asking the model to hold back.
+        hq_personhood.record_event("transferania", kind="tool", outcome="failed", now=self.clock[0])
+        hq_personhood.record_event("transferania", kind="error", outcome="failed", now=self.clock[0])
+        tense = memory.context_packet("Tu as fini le robot ?", conversation_text="Tu as fini le robot ?")
+        self.assertEqual(tense["continuity"], "")
+        self.assertEqual(tense["presence"]["continuity_kind"], "none")
+        self.assertIsNone(tense["reservation"])
+        # Withheld, not forgotten: the record is still pending for a calmer turn.
+        self.assertTrue(memory.snapshot()["followups"])
 
     def test_manual_close_prevents_further_followup(self):
         self.send("Je travaille sur le robot.")
