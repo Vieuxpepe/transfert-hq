@@ -101,6 +101,66 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(packet["continuity"], ph.hint("transferania", QUERY, owner="admin", now=self.clock[0]))
         self.assertIn("SUJET RÉCENT", packet["continuity"])
 
+    def push_back(self, subject="fermentation du chou", times=2, age=600):
+        """The Master corrects the same subject again and again.
+
+        Written as the archive holds them: one active correction, the earlier
+        ones superseded, all still evidence of the repetition.
+        """
+        with memory.owner_context("admin"), memory.memory_scope("transferania"):
+            data = memory._load()
+            for index in range(times):
+                data["episodes"].append({
+                    "id": f"correction{index}", "text": f"Non, pas la {subject} ({index + 1}).",
+                    "kind": "correction", "topic": subject, "source_device": "hqtestdevice01ab",
+                    "source_key": "preference:" + subject, "at": self.clock[0] - age,
+                    "evidence": "user_correction",
+                    "status": "active" if index == times - 1 else "superseded"})
+            memory._save(data)
+
+    def test_one_correction_lowers_the_subject_one_tier(self):
+        self.push_back(times=1)
+        packet = self.seed(3600, 1800)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 1)
+        self.assertFalse(salience["withhold"])
+        self.assertEqual(salience["tier"], "warm")
+        self.assertEqual((salience["priority"], salience["share"]), (92, 200))
+        self.assertLess(salience["score"], 0.811)
+        row, _, payload = self.assemble(packet)
+        self.assertTrue(row["selected"])
+        self.assertEqual(row["priority"], 92)
+        self.assertIn("SUJET RÉCENT", payload)
+
+    def test_two_corrections_take_the_offer_away(self):
+        self.push_back(times=2)
+        packet = self.seed(3600, 1800)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 2)
+        self.assertTrue(salience["withhold"])
+        self.assertEqual(salience["tier"], "cold")
+        self.assertEqual((salience["priority"], salience["share"]), (84, 160))
+        self.assertEqual(packet["continuity"], "", "she stops offering the subject unprompted")
+        row, usage, payload = self.assemble(packet)
+        self.assertIsNone(row, "no personhood row is offered for a refused subject")
+        self.assertNotIn("personhood", usage["selection_totals"])
+        self.assertNotIn("SUJET RÉCENT", payload)
+
+    def test_corrections_about_another_subject_do_not_count(self):
+        self.push_back(subject="café", times=2)
+        packet = self.seed(3600, 1800)
+        salience = packet["personhood"]
+        self.assertEqual(salience["pushback"], 0)
+        self.assertEqual(salience["tier"], "hot")
+        self.assertEqual((salience["priority"], salience["share"]), (98, 320))
+
+    def test_corrections_outside_the_window_do_not_count(self):
+        now = self.clock[0]
+        old = [{"topic": "fermentation du chou", "text": "Non.", "at": now - 30 * 3600}] * 2
+        fresh = [{"topic": "fermentation du chou", "text": "Non.", "at": now - 3600}] * 2
+        self.assertEqual(ph._pushback_count(old, "fermentation du chou", now), 0)
+        self.assertEqual(ph._pushback_count(fresh, "fermentation du chou", now), 2)
+
     def test_a_hot_line_survives_competition_but_a_cold_long_one_does_not(self):
         hot_row, hot_usage, _ = self.assemble(self.seed(3600, 1800), budget=6200)
         cold_row, cold_usage, _ = self.assemble(self.seed(20 * 3600), budget=6200)

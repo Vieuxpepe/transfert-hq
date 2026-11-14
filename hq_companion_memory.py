@@ -554,13 +554,20 @@ def context_packet(query, *, reserve_followup=False, conversation_text=None, all
                 hint = visit_recall
             elif conversation_text is not None:
                 try:
+                    # The correction archive is the record of the Master pushing
+                    # back: repetitions about one subject lower its salience, even
+                    # though only the latest stays active.
+                    pushback = [{"topic": e.get("topic") or "", "text": e.get("text") or "",
+                                 "at": e.get("at")}
+                                for e in data["episodes"] if e.get("kind") == "correction"]
                     detail = hq_personhood.hint_detail(_memory_scope.get(), episode_query,
-                                                      owner=current_owner(), now=now)
+                                                      owner=current_owner(), now=now, pushback=pushback)
                     hint = detail.get("line") or ""
                     # The line comes with the salience its own evidence implies:
                     # how present that subject is decides its priority and bytes.
                     personhood = {k: detail[k] for k in ("tier", "score", "priority", "share",
-                                                         "basis", "age_s", "repeats") if k in detail}
+                                                         "basis", "age_s", "repeats", "pushback",
+                                                         "withhold") if k in detail}
                 except Exception:
                     hint, personhood = "", {}
         style = presence.style_from_memories(active)

@@ -35,13 +35,21 @@ import hq_personhood as ph  # noqa: E402
 
 BASE = "http://127.0.0.1:8765"
 DEVICE = "hqtestdevice01ab"
-MESSAGE = "Tu te souviens de notre discussion ?"
+# Social, and it names the subject, so the live pick cannot drift onto another
+# recent turn while the bridge is in use.
+MESSAGE = "Tu te souviens de notre discussion sur la fermentation du chou ?"
 COOKIE = "transfert_session"
 SUBJECT = "Parle-moi de la fermentation du chou."
 
 HOT = {"tier": "hot", "priority": 98, "share": 320, "selected": True}
 COLD = {"tier": "cold", "priority": 84, "share": 160, "selected": False}
-STATES = {"hot": (HOT, (3600, 1800)), "cold": (COLD, (20 * 3600,))}
+PUSHED = {"tier": "cold", "priority": 84, "share": 160, "selected": False, "withhold": True}
+# Same recent evidence as hot, but the Master corrected this very subject twice:
+# the offer is withdrawn instead of merely shrinking.
+STATES = {"hot": (HOT, (3600, 1800), 0), "cold": (COLD, (20 * 3600,), 0),
+          "pushed_back": (PUSHED, (3600, 1800), 2)}
+CORRECTIONS = ["J'aime la fermentation du chou.", "Je n'aime pas la fermentation du chou.",
+               "J'aime beaucoup la fermentation du chou."]
 
 
 def config() -> dict:
@@ -114,7 +122,7 @@ def owner_for_token(token: str) -> str:
     return ((raw.get(token) if isinstance(raw, dict) else None) or {}).get("user") or "admin"
 
 
-def capture_state(opener, owner: str, live_cfg: dict, ages: tuple) -> dict:
+def capture_state(opener, owner: str, live_cfg: dict, ages: tuple, corrections: int = 0) -> dict:
     """Seed one subject state, capture live + in-process, restore the store."""
     path = self_path(owner)
     store = memory_path(owner)
@@ -124,13 +132,40 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple) -> dict:
     out = {"ages": list(ages), "store_restored": False}
     try:
         with memory.owner_context(owner), memory.memory_scope("transferania"):
+            # The store only surfaces its two most recent threads, so a capture
+            # must start from just this subject: otherwise real traffic decides
+            # the pick. The original file is put back in ``finally``.
+            with ph._scope("transferania", owner) as store_path:
+                with ph._lock:
+                    data = ph._load(Path(store_path), "transferania")
+                    data["events"] = []
+                    ph._write(Path(store_path), data)
             for age in ages:
                 ph.observe_chat("transferania", SUBJECT, now=time.time() - age)
+            if corrections:
+                # The archive keeps one active correction per subject; the earlier
+                # ones stay as superseded evidence of the repetition.
+                mem = memory._load()
+                for index in range(corrections):
+                    mem["episodes"].append({
+                        "id": f"verify-correction{index}",
+                        "text": CORRECTIONS[index], "kind": "correction",
+                        "topic": "fermentation du chou", "source_device": DEVICE,
+                        "source_key": "preference:fermentation du chou",
+                        "at": time.time() - 600, "evidence": "user_correction",
+                        "status": "active" if index == corrections - 1 else "superseded"})
+                memory._save(mem)
         # Read-only salience: the same helper the pipeline uses, without
         # recording a turn that would take the continuity slot from her line.
-        detail = ph.hint_detail("transferania", MESSAGE, owner=owner, now=time.time())
+        with memory.owner_context(owner), memory.memory_scope("transferania"):
+            archive = memory._load().get("episodes", [])
+        pushback = [{"topic": e.get("topic") or "", "text": e.get("text") or "", "at": e.get("at")}
+                    for e in archive if e.get("kind") == "correction"]
+        detail = ph.hint_detail("transferania", MESSAGE, owner=owner, now=time.time(),
+                                pushback=pushback)
         out["salience"] = {k: detail[k] for k in ("tier", "score", "priority", "share",
-                                                  "basis", "age_s", "repeats") if k in detail}
+                                                  "basis", "age_s", "repeats", "pushback",
+                                                  "withhold") if k in detail}
         out["line"] = detail.get("line") or ""
 
         payload = {"action": "transferania", "op": "context_preview", "kind": "chat",
@@ -164,24 +199,35 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple) -> dict:
 def check_state(name: str, expected: dict, result: dict, failures: list[str]) -> None:
     live, inproc = result["live"], result["inproc"]
     rows = live["personhood"]
-    if not rows:
+    if not rows and not expected.get("withhold"):
         failures.append(f"{name}: no personhood row in the live manifest")
         return
-    row = rows[0]
+    row = rows[0] if rows else {}
+    if expected.get("withhold"):
+        if rows:
+            failures.append(f"{name}: a corrected subject still has a personhood row")
+        if result["salience"].get("withhold") is not True:
+            failures.append(f"{name}: withhold not set in the in-process salience")
+        if result["salience"].get("pushback") != 2:
+            failures.append(f"{name}: pushback {result['salience'].get('pushback')} != 2")
+        if live["hint_in_payload"] or result.get("line"):
+            failures.append(f"{name}: the withdrawn subject still reaches the prompt")
+        if "personhood" in live["totals"]:
+            failures.append(f"{name}: a withdrawn line is counted as selected")
     if result["salience"].get("tier") != expected["tier"]:
         failures.append(f"{name}: tier {result['salience'].get('tier')} != {expected['tier']}")
-    if (result["salience"].get("share") or 0) != expected["share"]:
+    if (result["salience"].get("share") or 0) != expected["share"] and not expected.get("withhold"):
         failures.append(f"{name}: in-process share {result['salience'].get('share')} != {expected['share']}")
 
-    if row["priority"] != expected["priority"]:
+    if row and row.get("priority") != expected["priority"]:
         failures.append(f"{name}: live priority {row['priority']} != {expected['priority']}")
-    if row.get("share") != expected["share"]:
+    if row and row.get("share") != expected["share"]:
         failures.append(f"{name}: live share {row.get('share')} != {expected['share']}")
-    if row["selected"] is not expected["selected"]:
+    if expected["selected"] and row.get("selected") is not True:
         failures.append(f"{name}: live selected {row['selected']} != {expected['selected']}")
     if expected["selected"] and live["hint_in_payload"] is not True:
         failures.append(f"{name}: her line is selected but absent from the payload")
-    if not expected["selected"]:
+    if not expected["selected"] and not expected.get("withhold"):
         if live["hint_in_payload"]:
             failures.append(f"{name}: a refused line reached the payload")
         if row["reason"] != "budget":
@@ -203,7 +249,7 @@ def check_state(name: str, expected: dict, result: dict, failures: list[str]) ->
         failures.append(f"{name}: personhood store was not restored")
     if not result.get("memory_restored"):
         failures.append(f"{name}: companion memory store was not restored")
-    if not result.get("line"):
+    if not result.get("line") and not result["salience"].get("withhold"):
         failures.append(f"{name}: the store offered no line for this state")
 
 
@@ -229,9 +275,9 @@ def main() -> int:
     report = {"owner": owner, "pid": before.get("pid"), "started_at": before.get("started_at"),
               "pending_before": before.get("pending"), "config_budget": live_cfg.get("chat_input_budget"),
               "states": {}}
-    for name in ("hot", "cold"):
-        expected, ages = STATES[name]
-        result = capture_state(opener, owner, live_cfg, ages)
+    for name in ("hot", "cold", "pushed_back"):
+        expected, ages, corrections = STATES[name]
+        result = capture_state(opener, owner, live_cfg, ages, corrections)
         check_state(name, expected, result, failures)
         report["states"][name] = {
             "expected": expected,
@@ -253,7 +299,15 @@ def main() -> int:
             "preview_status": result.get("preview_status"),
         }
 
-    hot, cold = report["states"]["hot"]["live"], report["states"]["cold"]["live"]
+    hot = report["states"]["hot"]["live"]
+    cold = report["states"]["cold"]["live"]
+    pushed = report["states"]["pushed_back"]["live"]
+    if pushed["personhood"]:
+        failures.append("a subject corrected twice still has a live personhood row")
+    if hot["estimate"] <= pushed["estimate"]:
+        failures.append("the corrected subject did not free the room its line took")
+    if hot["totals"] == pushed["totals"] and hot["estimate"] == pushed["estimate"]:
+        failures.append("hot and corrected subjects produced identical contexts")
     if not hot["personhood"] or not cold["personhood"]:
         failures.append("one of the states has no personhood row")
     else:
@@ -278,7 +332,7 @@ def main() -> int:
         for item in failures:
             print("  -", item)
         return 1
-    print("verify_live_personhood: OK (two live states, salience-driven)")
+    print("verify_live_personhood: OK (hot, stale and corrected live states)")
     return 0
 
 
