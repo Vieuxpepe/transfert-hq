@@ -150,6 +150,14 @@ STATES = {
     "fil_stale": {"expected": FIL_COLD, "message": VISIT_QUERY,
                   "visit": {"ages": (20 * 3600,), "log": "other", "other": "forgia", "name": "Forgia",
                             "lines": VISIT_LINES}},
+    # The thread line for the same sister, read from *her* own log: the two
+    # sisters' files are the same path, seen from the other side of the visit.
+    "fil_else_fresh": {"expected": FIL_WARM, "message": ELSE_QUERY,
+                       "visit": {"ages": (3600,), "log": "other", "other": "else", "name": "Else",
+                                 "lines": VISIT_ELSE_LINES}},
+    "fil_else_stale": {"expected": FIL_COLD, "message": ELSE_QUERY,
+                       "visit": {"ages": (20 * 3600,), "log": "other", "other": "else", "name": "Else",
+                                 "lines": VISIT_ELSE_LINES}},
     "point_fresh": {"expected": POINT_WARM, "message": SOCIAL,
                     "feedback": ((3600, CONCISE), (1800, DETAIL))},
     "point_stale": {"expected": POINT_COLD, "message": SOCIAL,
@@ -600,6 +608,15 @@ def main() -> int:
             failures.append(f"{sister}: the repeated recall row is not the hot row")
         if one["printed_line"] != many["printed_line"]:
             failures.append(f"{sister}: repetition changed the recall page's words")
+    # The thread line through her own log, for both sisters: same bands, and the
+    # line must name the sister it is actually about.
+    for sister, fresh_state, stale_state in (("Forgia", "fil_fresh", "fil_stale"),
+                                             ("Else", "fil_else_fresh", "fil_else_stale")):
+        fresh, stale = report["states"][fresh_state], report["states"][stale_state]
+        if f"FIL RÉCENT AVEC {sister}" not in fresh["printed_line"]:
+            failures.append(f"{sister}: the fresh thread line does not name her")
+        if f"FIL ANCIEN AVEC {sister}" not in stale["printed_line"]:
+            failures.append(f"{sister}: the stale thread line does not name her")
     if hot["estimate"] <= pushed["estimate"]:
         failures.append("the corrected subject did not free the room its line took")
     if not recovered["personhood"]:
@@ -631,8 +648,9 @@ def main() -> int:
             print("  -", item)
         return 1
     print("verify_live_personhood: OK (hot, warm, stale, corrected, recovered, burst, climbing, deep, "
-          "deep_warm, deep_hot, fil_fresh, fil_stale, point_fresh, point_stale, visit_fresh, "
-          "visit_stale, visit_repeat, visit_else_fresh, visit_else_stale and visit_else_repeat states)")
+          "deep_warm, deep_hot, fil_fresh, fil_stale, fil_else_fresh, fil_else_stale, point_fresh, "
+          "point_stale, visit_fresh, visit_stale, visit_repeat, visit_else_fresh, visit_else_stale "
+          "and visit_else_repeat states)")
     return 0
 
 
