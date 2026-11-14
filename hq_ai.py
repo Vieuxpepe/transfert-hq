@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import hq_life
+import hq_state
 import hq_pronunciation
 import hq_companion_memory as companion_memory
 import hq_companion_presence as companion_presence
@@ -399,6 +400,9 @@ def bind(**kwargs: Any) -> None:
     _cb.update(kwargs)
     hq_life.bind(**kwargs)
     companion_memory.bind(root=_cb.get("root", "."), now=_now)
+    # One root for the stores that would otherwise fall back to the project: a
+    # test that binds its own root cannot reach live state by forgetting a patch.
+    hq_state.bind_root(_cb.get("root") or ".")
 
 
 def _shared_memory(fn, *args, **kwargs):

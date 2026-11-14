@@ -12,11 +12,28 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 _GUARD = threading.Lock()
 _LOCKS: dict[str, threading.RLock] = {}
+
+# One root for the stores that fall back to "the project". A store that is not
+# explicitly bound resolves here, and a test that binds its own root cannot reach
+# the live tree by forgetting a patch. Unbound, the working directory is the root,
+# which is what a plain `python` run of this project always meant.
+_STATE_ROOT: ContextVar[Path | None] = ContextVar("hq_state_root", default=None)
+
+
+def bind_root(root: Path | str | None) -> None:
+    """Point every unbound store at one root (tests bind a temp dir)."""
+    _STATE_ROOT.set(None if root is None else Path(root))
+
+
+def state_root() -> Path:
+    """The bound root, or the working directory when nothing is bound."""
+    return _STATE_ROOT.get() or Path(".")
 
 # Private directory for companion secrets. Not the artifact inbox.
 AGENT_STATE_DIR = ".hq-agent-state"

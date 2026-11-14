@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import http.cookiejar
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -292,10 +293,16 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
     path = self_path(owner)
     store = memory_path(owner)
     logs = {key: visit_path(owner, key) for key in ("transferania", "forgia", "else")}
-    original = path.read_bytes() if path.exists() else None
-    other = store.read_bytes() if store.exists() else None
-    log_originals = {log: log.read_bytes() if log.exists() else None for log in logs.values()}
-    before = hashlib.sha256(original or b"").hexdigest()
+    def snapshot(file: Path):
+        if not file.exists():
+            return None
+        stat = file.stat()
+        return file.read_bytes(), stat.st_atime_ns, stat.st_mtime_ns
+
+    original = snapshot(path)
+    other = snapshot(store)
+    log_originals = {log: snapshot(log) for log in logs.values()}
+    before = hashlib.sha256(original[0] if original else b"").hexdigest()
     seed_ages = list(ages) + (list(visit["ages"]) if visit else []) + [age for age, _ in feedback]
     out = {"ages": list(ages), "message": message, "store_restored": False,
            "seed_age_s": max(seed_ages) if seed_ages else None}
@@ -386,20 +393,27 @@ def capture_state(opener, owner: str, live_cfg: dict, ages: tuple = (), correcti
         out["inproc"] = pinned(inproc["context_usage"], inproc["contents"], out["line"])
         out["system_identical"] = live["system"] == inproc["system"]
     finally:
-        if original is not None:
-            path.write_bytes(original)
-        if other is not None:
-            store.write_bytes(other)
+        def restore(file: Path, saved) -> None:
+            # Put the bytes back and give the file its old timestamps, so a store
+            # this run seeded is indistinguishable from one nobody touched.
+            if saved is None:
+                if file.exists():
+                    file.unlink()
+                return
+            data, atime_ns, mtime_ns = saved
+            if not file.exists() or file.read_bytes() != data:
+                file.write_bytes(data)
+            os.utime(file, ns=(atime_ns, mtime_ns))
+
+        restore(path, original)
+        restore(store, other)
         for log, saved in log_originals.items():
-            if saved is not None:
-                log.write_bytes(saved)
-            elif log.exists():
-                log.unlink()
+            restore(log, saved)
         after = hashlib.sha256(path.read_bytes() if path.exists() else b"").hexdigest()
-        out["visits_restored"] = all((log.read_bytes() if log.exists() else None) == saved
+        out["visits_restored"] = all((log.read_bytes() if log.exists() else None) == (saved[0] if saved else None)
                                      for log, saved in log_originals.items())
         out["memory_restored"] = (hashlib.sha256(store.read_bytes() if store.exists() else b"").hexdigest()
-                                  == hashlib.sha256(other or b"").hexdigest())
+                                  == hashlib.sha256(other[0] if other else b"").hexdigest())
         out["store_restored"] = after == before
         out["store_sha256"] = after[:16]
     return out

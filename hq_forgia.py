@@ -108,7 +108,7 @@ def bind(*, root: str | Path) -> None:
 
 
 def _state_dir() -> Path:
-    base = _bound_root or Path(".")
+    base = _bound_root or hq_state.state_root()
     d = base / STATE_FOLDER
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -332,7 +332,7 @@ def _prefs_prompt_block() -> str:
 
 
 def _execute_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
-    root = _bound_root or Path(".")
+    root = _bound_root or hq_state.state_root()
     try:
         if name == "get_forge_status":
             st = hq_forge.status()
@@ -602,7 +602,7 @@ def _forge_snapshot() -> dict[str, Any]:
     except Exception:
         pass
     try:
-        rows = hq_forge_jobs.summary_rows(_bound_root or Path("."))
+        rows = hq_forge_jobs.summary_rows(_bound_root or hq_state.state_root())
         snap["jobs_count"] = len(rows)
     except Exception:
         pass

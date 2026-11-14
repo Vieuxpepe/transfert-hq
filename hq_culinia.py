@@ -126,7 +126,7 @@ def bind(*, root: str | Path) -> None:
 
 
 def _state_dir() -> Path:
-    base = _bound_root or Path(".")
+    base = _bound_root or hq_state.state_root()
     d = base / STATE_FOLDER
     d.mkdir(parents=True, exist_ok=True)
     return d

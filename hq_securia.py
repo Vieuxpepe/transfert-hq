@@ -17,6 +17,7 @@ import time
 
 import hq_assistant_growth as assistant_growth
 import hq_security
+import hq_state
 
 STATE_FOLDER = ".hq-security"
 THREAD_FILE = "securia_thread.json"
@@ -120,7 +121,7 @@ def _utcnow() -> str:
 
 
 def _state_dir() -> Path:
-    base = _bound_root or Path(".")
+    base = _bound_root or hq_state.state_root()
     d = base / STATE_FOLDER
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -177,7 +178,7 @@ _REDACT_KEY_RE = re.compile(r'((?:api_key|token|secret|password|pin|passphrase|r
 
 
 def _project_root() -> Path:
-    return (_bound_root or Path(".")).resolve()
+    return (_bound_root or hq_state.state_root()).resolve()
 
 
 def _is_sensitive_path(rel_parts: tuple[str, ...], name: str) -> bool:

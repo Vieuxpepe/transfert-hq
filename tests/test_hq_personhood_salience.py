@@ -218,6 +218,22 @@ class PersonhoodSalienceTests(Base):
         self.assertEqual(repeated["continuity"], fresh["continuity"],
                          "ranking moved but the words did not")
 
+    def test_no_persona_store_can_resolve_outside_the_test_root(self):
+        import hq_culinia
+        import hq_forgia
+        import hq_securia
+        from pathlib import Path
+        root = str(Path(self.root).resolve())
+        for key in ("forgia", "culinia", "securia", "musica", "else", "transferania"):
+            path = ph._visit_path_for(key, "admin")
+            if path is None:
+                continue  # a store that refuses to resolve unbound is safe by design
+            self.assertTrue(str(Path(path).resolve()).startswith(root),
+                            f"{key} resolves outside the test root: {path}")
+        for module in (hq_forgia, hq_culinia, hq_securia):
+            self.assertTrue(str(Path(module.growth_path()).resolve()).startswith(root),
+                            f"{module.__name__} escapes the test root")
+
     def test_a_repeated_visit_reads_the_same_in_the_thread_line(self):
         import unittest.mock
         import hq_visit_memory as visits
