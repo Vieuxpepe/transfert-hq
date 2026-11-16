@@ -55,12 +55,12 @@ def device_ip(value):
     return pinned_ip(str(addresses.pop()))
 
 
-def pinned_ip(value):
+def pinned_ip(value, *, allow_loopback=False):
     try:
         address = ipaddress.IPv4Address(value)
     except (ValueError, TypeError):
         raise ValueError("Adresse IPv4 locale requise") from None
-    if not any(address in network for network in PRIVATE):
+    if not any(address in network for network in PRIVATE) and not (allow_loopback and address.is_loopback):
         raise ValueError("Adresse IPv4 privée requise")
     return str(address)
 
@@ -79,6 +79,67 @@ def position(pose):
     r = UPPER * math.sin(shoulder + OFFSET) + LOWER * math.sin(shoulder + elbow)
     z = UPPER * math.cos(shoulder + OFFSET) + LOWER * math.cos(shoulder + elbow)
     return {"x": r * math.cos(base), "y": r * math.sin(base), "z": z, "t": pose["hand"]}
+
+
+def link_positions(pose):
+    """Return 3D coordinates (mm) for shoulder, elbow, and TCP gripper reference."""
+    base, shoulder, elbow, _hand = map(math.radians, (pose[k] for k in JOINTS))
+    cb, sb = math.cos(base), math.sin(base)
+    r_elbow = UPPER * math.sin(shoulder + OFFSET)
+    z_elbow = UPPER * math.cos(shoulder + OFFSET)
+    r_tcp = r_elbow + LOWER * math.sin(shoulder + elbow)
+    z_tcp = z_elbow + LOWER * math.cos(shoulder + elbow)
+    return {
+        "shoulder": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "elbow": {"x": r_elbow * cb, "y": r_elbow * sb, "z": z_elbow},
+        "tcp": {"x": r_tcp * cb, "y": r_tcp * sb, "z": z_tcp},
+    }
+
+
+def _point_to_aabb_distance(pt, box):
+    dx = max(box["x"][0] - pt["x"], 0.0, pt["x"] - box["x"][1])
+    dy = max(box["y"][0] - pt["y"], 0.0, pt["y"] - box["y"][1])
+    dz = max(box["z"][0] - pt["z"], 0.0, pt["z"] - box["z"][1])
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+
+
+def _segment_to_aabb_distance(p0, p1, box, *, samples=6):
+    best = math.inf
+    for i in range(samples + 1):
+        t = i / samples
+        pt = {axis: p0[axis] + t * (p1[axis] - p0[axis]) for axis in ("x", "y", "z")}
+        dist = _point_to_aabb_distance(pt, box)
+        if dist < best:
+            best = dist
+            if best == 0.0:
+                return 0.0
+    return best
+
+
+def swept_clearance(start, end, zones, *, link_radius=22.0):
+    """Compute minimum capsule-to-keepout clearance (mm) along a joint-space segment."""
+    if not zones:
+        return {"min_clearance_mm": None, "collision_zone": None}
+    delta = {key: end[key] - start[key] for key in JOINTS}
+    steps = max(1, math.ceil(max(abs(delta[key]) for key in JOINTS) / 2))
+    min_clearance = math.inf
+    collision_zone = None
+    for index in range(steps + 1):
+        t = index / steps
+        pose = {key: start[key] + t * delta[key] for key in JOINTS}
+        links = link_positions(pose)
+        for zone in zones:
+            d_upper = _segment_to_aabb_distance(links["shoulder"], links["elbow"], zone) - link_radius
+            d_lower = _segment_to_aabb_distance(links["elbow"], links["tcp"], zone) - link_radius
+            clearance = min(d_upper, d_lower)
+            if clearance < min_clearance:
+                min_clearance = clearance
+                if clearance <= 0.0:
+                    collision_zone = zone["name"]
+    return {
+        "min_clearance_mm": round(min_clearance, 2) if math.isfinite(min_clearance) else None,
+        "collision_zone": collision_zone,
+    }
 
 
 def validate_pose(raw, limits, workspace):
@@ -149,7 +210,8 @@ class HttpArm:
                 raw = response.read(4097)
                 if len(raw) > 4096 or time.monotonic() >= deadline:
                     raise DeviceError("Réponse RoArm invalide")
-                value = json.loads(raw)
+                # The real firmware acknowledges a command with an empty body or `null`, not `{}`.
+                value = {} if raw.strip() in (b"", b"null") else json.loads(raw)
                 if not isinstance(value, dict):
                     raise DeviceError("Réponse RoArm invalide")
                 return value
@@ -177,11 +239,19 @@ class HttpArm:
                     if raw[field] not in (0, 1):
                         raise ValueError
                     torque[key] = int(raw[field])
+            if not torque:
+                torque_state = "unknown"
+            elif set(torque) != set(JOINTS):
+                torque_state = "partial"
+            elif all(value == 1 for value in torque.values()):
+                torque_state = "enabled"
+            else:
+                torque_state = "disabled"
             volts = number(raw["v"], 1, 3000) / 100 if "v" in raw else None
         except (KeyError, ValueError):
             raise DeviceError("Télémétrie incompatible avec le profil RoArm M2-S pince") from None
         return {"source": "hardware", "actual": pose, "xyz": xyz, "load": loads, "torque": torque,
-                "voltage": volts}
+                "torque_state": torque_state, "voltage": volts}
 
     def move(self, pose, speed, acceleration):
         if self._command({"T": 102, **{key: math.radians(pose[key]) for key in JOINTS},
