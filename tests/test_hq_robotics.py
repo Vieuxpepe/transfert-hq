@@ -1358,13 +1358,15 @@ class SafetyRegression(unittest.TestCase):
         class ReplayHandler(BaseHTTPRequestHandler):
             seq = 10
             force_seq = None
+            saw_secret_header = False
 
             def log_message(self, *_):
                 pass
 
             def do_GET(self):
                 nonce = self.headers.get("X-HQ-Estop-Nonce", "")
-                self.assert_no_secret = "X-HQ-Estop-Token" not in self.headers
+                if "X-HQ-Estop-Token" in self.headers:
+                    ReplayHandler.saw_secret_header = True
                 if self.force_seq is not None:
                     seq = self.force_seq
                 else:
@@ -1387,6 +1389,7 @@ class SafetyRegression(unittest.TestCase):
             first = self.lab.estop_health(self.lab.config(), force=True)
             self.assertTrue(first["healthy"])
             self.assertTrue(first.get("signed"))
+            self.assertFalse(ReplayHandler.saw_secret_header)
             ReplayHandler.force_seq = 11  # replayed/non-monotonic seq across a fresh HttpEstop instance
             second = self.lab.estop_health(self.lab.config(), force=True)
             self.assertFalse(second["healthy"])
@@ -1435,6 +1438,78 @@ class SafetyRegression(unittest.TestCase):
         entries = self.call("blackbox", method="GET")["entries"]
         self.assertEqual(entries[0]["incident"], "estop")
         self.assertAlmostEqual(entries[0]["actual"]["base"], 7.5)
+
+    def test_cancel_after_in_tolerance_feedback_stays_unconfirmed(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        # FakeArm.follow is False: hardware has not moved.
+        self.call("move", {
+            **keys,
+            "kind": "joints",
+            "pose": {**arm.HOME, "base": 1.0},
+        })
+        self.now += 0.6
+        self.call("telemetry")  # Actual remains HOME, within 2° tolerance.
+        status = self.call("cancel", {"lease": keys["lease"]})
+        self.assertTrue(status["uncertain"])
+        self.assertEqual(status["stop_state"], "unconfirmed")
+
+    def test_swept_clearance_detects_midpoint_capsule_collision(self):
+        start = {**arm.HOME, "base": -1.0}
+        end = {**arm.HOME, "base": 1.0}
+        zone = {
+            "name": "mid_sweep",
+            "x": [331.99, 332.01],
+            "y": [-0.01, 0.01],
+            "z": [236.81, 236.83],
+        }
+        result = arm.swept_clearance(start, end, [zone])
+        self.assertEqual(result["collision_zone"], "mid_sweep")
+        self.assertLessEqual(result["min_clearance_mm"], 0)
+
+    def test_concurrent_signed_estop_sequence_is_monotonic(self):
+        import hmac as _hmac
+        import hashlib as _hashlib
+
+        class ConcurrentHandler(BaseHTTPRequestHandler):
+            seq = 0
+            gate = threading.Event()
+
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                nonce = self.headers.get("X-HQ-Estop-Nonce", "")
+                ConcurrentHandler.seq += 1
+                my_seq = ConcurrentHandler.seq
+                if my_seq == 1:
+                    ConcurrentHandler.gate.wait(0.2)
+                sig = _hmac.new(b"secret", f"{nonce}:{my_seq}:1".encode(), _hashlib.sha256).hexdigest()
+                body = json.dumps({"closed": True, "nonce": nonce, "seq": my_seq, "hmac": sig}).encode()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+        with serve(ConcurrentHandler) as port:
+            self.lab.estop_factory = estop.HttpEstop
+            self.setup_hardware(estop=False)
+            cfg = self.call("settings", {
+                "estop_ip": "127.0.0.1", "estop_port": port, "estop_token": "secret",
+                "estop_required": True, "estop_require_signed": True,
+            })["config"]
+            self.lab.write(self.lab.commission_path, {"revision": cfg["revision"], "profile": robotics.PROFILE})
+            live_cfg = self.lab.config()
+            results = []
+            t1 = threading.Thread(target=lambda: results.append(self.lab.estop_health(live_cfg, force=True)))
+            t2 = threading.Thread(target=lambda: results.append(self.lab.estop_health(live_cfg, force=True)))
+            t1.start()
+            t2.start()
+            ConcurrentHandler.gate.set()
+            t1.join(timeout=2.0)
+            t2.join(timeout=2.0)
+            self.assertEqual(len(results), 2)
+            self.assertTrue(all(r["healthy"] for r in results))
+            self.assertEqual(self.lab.estop_last_seq, 2)
 
 
 @contextmanager

@@ -1920,8 +1920,11 @@
     async gotoPtzPreset() {
       const token = this.nodes['ptz-preset-list'].value;
       if (!token) throw new Error('Choisissez une vue caméra.');
-      await this.request('camera/ptz-preset', { op: 'goto', token });
-      this.invalidateCameraMap('Vue PTZ modifiée — recalibration requise.');
+      try {
+        await this.request('camera/ptz-preset', { op: 'goto', token });
+      } finally {
+        this.invalidateCameraMap('Vue PTZ modifiée — recalibration requise.');
+      }
       this.message('Caméra positionnée sur la vue mémorisée.');
     }
 

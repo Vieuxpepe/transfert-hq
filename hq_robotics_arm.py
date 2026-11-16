@@ -150,25 +150,66 @@ def _segment_to_aabb_distance(p0, p1, box):
 
 
 def swept_clearance(start, end, zones, *, link_radius=22.0):
-    """Compute minimum capsule-to-keepout clearance (mm) along a joint-space segment."""
+    """Conservative continuous capsule-to-keepout clearance (mm) using adaptive subdivision.
+
+    Subdivides any joint-space sub-interval [t0, t1] whenever the midpoint clearance
+    minus half the link arc-length bound could reach zero, until arc <= 0.25 mm.
+    """
     if not zones:
         return {"min_clearance_mm": None, "collision_zone": None}
     delta = {key: end[key] - start[key] for key in JOINTS}
-    steps = max(1, math.ceil(max(abs(delta[key]) for key in JOINTS) / 2))
-    min_clearance = math.inf
-    collision_zone = None
-    for index in range(steps + 1):
-        t = index / steps
-        pose = {key: start[key] + t * delta[key] for key in JOINTS}
+
+    def pose_at(t):
+        return {key: start[key] + t * delta[key] for key in JOINTS}
+
+    def arc_bound(dt):
+        return math.radians(
+            (UPPER + LOWER) * (abs(delta["base"]) + abs(delta["shoulder"])) * dt
+            + LOWER * abs(delta["elbow"]) * dt
+        )
+
+    def pose_clearance(pose):
         links = link_positions(pose)
+        best = math.inf
+        hit = None
         for zone in zones:
             d_upper = _segment_to_aabb_distance(links["shoulder"], links["elbow"], zone) - link_radius
             d_lower = _segment_to_aabb_distance(links["elbow"], links["tcp"], zone) - link_radius
-            clearance = min(d_upper, d_lower)
-            if clearance < min_clearance:
-                min_clearance = clearance
-                if clearance <= 0.0:
-                    collision_zone = zone["name"]
+            c = min(d_upper, d_lower)
+            if c < best:
+                best = c
+                if c <= 0.0:
+                    hit = zone["name"]
+        return best, hit
+
+    min_clearance = math.inf
+    collision_zone = None
+
+    for endpoint in (start, end):
+        c, hit = pose_clearance(endpoint)
+        if c < min_clearance:
+            min_clearance = c
+            if hit and collision_zone is None:
+                collision_zone = hit
+
+    stack = [(0.0, 1.0, 0)]
+    while stack:
+        t0, t1, depth = stack.pop()
+        tm = 0.5 * (t0 + t1)
+        c_mid, hit = pose_clearance(pose_at(tm))
+        if c_mid < min_clearance:
+            min_clearance = c_mid
+            if hit and collision_zone is None:
+                collision_zone = hit
+        if c_mid <= 0.0:
+            continue
+        half_arc = 0.5 * arc_bound(t1 - t0)
+        if c_mid - half_arc > 0.0:
+            continue
+        if half_arc > 0.125 and depth < 14:
+            stack.append((t0, tm, depth + 1))
+            stack.append((tm, t1, depth + 1))
+
     return {
         "min_clearance_mm": round(min_clearance, 2) if math.isfinite(min_clearance) else None,
         "collision_zone": collision_zone,

@@ -286,7 +286,11 @@ class Robotics:
         self.estop_state = None
         self.estop_at = -math.inf
         self.estop_last_seq = None
+        self._estop_seq_lock = threading.Lock()
         self.physical_command_sent = False
+        self.stream_active = False
+        self.commanded_start = None
+        self.settled_reads = 0
         self.lock = threading.RLock()
         self.io = threading.Lock()
         self.lease = None
@@ -384,16 +388,22 @@ class Robotics:
         if not force and self.estop_state is not None and now - self.estop_at < .5:
             return dict(self.estop_state)
         try:
-            kwargs = {}
             if cfg.get("estop_require_signed"):
-                kwargs = {"require_signed": True, "last_seq": self.estop_last_seq}
-            elif self.estop_factory is HttpEstop:
-                kwargs = {"last_seq": self.estop_last_seq}
-            client = self.estop_factory(cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
-                                        min(.3, cfg["arm_timeout"]), **kwargs)
-            reading = client.read()
-            if getattr(client, "_last_seq", None) is not None:
-                self.estop_last_seq = client._last_seq
+                with self._estop_seq_lock:
+                    client = self.estop_factory(
+                        cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
+                        min(.3, cfg["arm_timeout"]), require_signed=True, last_seq=self.estop_last_seq,
+                    )
+                    reading = client.read()
+                    if getattr(client, "_last_seq", None) is not None:
+                        self.estop_last_seq = max(self.estop_last_seq or -1, client._last_seq)
+            else:
+                kwargs = {"last_seq": self.estop_last_seq} if self.estop_factory is HttpEstop else {}
+                client = self.estop_factory(cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
+                                            min(.3, cfg["arm_timeout"]), **kwargs)
+                reading = client.read()
+                if getattr(client, "_last_seq", None) is not None:
+                    self.estop_last_seq = max(self.estop_last_seq or -1, client._last_seq)
             state = {"mode": "hardware", "healthy": reading.get("healthy") is True}
             if reading.get("signed") is True:
                 state["signed"] = True
@@ -788,11 +798,20 @@ class Robotics:
             self.feedback = value
             if self.motion and self.blendable and self.target and not self.blend:
                 self.blend = max(abs(value["actual"][k] - self.target[k]) for k in JOINTS) <= BLEND_DEGREES
-            if self.motion and all(abs(value["actual"][k] - self.target[k]) <= REACHED_DEGREES for k in JOINTS):
-                self.clear_inspection()
-                self.motion = None
-                self.physical_command_sent = False
-                self.record("reached")
+            if not self.stream_active and self.motion and all(abs(value["actual"][k] - self.target[k]) <= REACHED_DEGREES for k in JOINTS):
+                started_far = bool(
+                    self.commanded_start
+                    and max(abs(self.target[k] - self.commanded_start[k]) for k in JOINTS) > REACHED_DEGREES
+                )
+                if started_far or self.settled_reads >= 1:
+                    self.clear_inspection()
+                    self.motion = None
+                    self.physical_command_sent = False
+                    self.commanded_start = None
+                    self.settled_reads = 0
+                    self.record("reached")
+                else:
+                    self.settled_reads += 1
         return value
 
     def resolve_pose(self, cfg, data):
@@ -949,6 +968,8 @@ class Robotics:
                     self._validate_stream_waypoints(cfg, start, pose, seconds)
                     stream = (start, pose, seconds, stream_spd)
                 self.target = pose
+                self.commanded_start = dict(start)
+                self.settled_reads = 0
                 self.motion = self.clock() + max(4, seconds + 3)
                 self.blend, self.blendable = False, progress is not None
                 if direct or whole:
@@ -1014,6 +1035,8 @@ class Robotics:
         return seconds, planned_speed
 
     def start_stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None):
+        with self.lock:
+            self.stream_active = True
         if self.stream_threaded:
             threading.Thread(target=self.stream, args=(cfg, session, key, start, target, seconds, spd),
                              kwargs={"epoch": epoch}, name="robotics-stream", daemon=True).start()
@@ -1025,6 +1048,8 @@ class Robotics:
 
         Stops sending as soon as the arming is released, a STOP or E-stop or fault latches,
         the epoch changes, or the measured pose falls far behind the commanded one."""
+        with self.lock:
+            self.stream_active = True
         arm = self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
         cap = int(cfg["speed"])
         floor = min(STREAM_SPD_FLOOR, cap)
@@ -1041,8 +1066,8 @@ class Robotics:
                 self.stream_sleep(max(0.0, began + tick * STREAM_TICK - self.clock()))
                 elapsed = self.clock() - began
                 with self.lock:
-                    if (not self.owner(session, key) or self.stop_pending or self.stop_latched
-                            or self.uncertain or (epoch is not None and self.epoch != epoch)):
+                    if (not self.stream_active or not self.owner(session, key) or self.stop_pending
+                            or self.stop_latched or self.uncertain or (epoch is not None and self.epoch != epoch)):
                         return False
                 if self._estop_monitored(cfg):
                     estop = self.estop_health(cfg, force=True)
@@ -1070,6 +1095,9 @@ class Robotics:
             with self.lock:
                 self.fault("uncertain")
             return False
+        finally:
+            with self.lock:
+                self.stream_active = False
         with self.lock:
             if self.motion and self.blendable and (epoch is None or self.epoch == epoch):
                 self.blend = True  # each step is rest-to-rest, so the next one may begin
