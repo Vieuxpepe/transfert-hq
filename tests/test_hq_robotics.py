@@ -1733,6 +1733,37 @@ class SafetyRegression(unittest.TestCase):
         # Local inspection/reset must remain possible.
         self.call("reset", {"inspected": True})
 
+    def test_stream_worker_initialization_failure_releases_id(self):
+        self.setup_hardware()
+        self.lab.stream_threaded = True
+        self.arm.actual = {**arm.HOME, "base": 20.0}
+        self.now += 0.6
+        self.call("telemetry")
+        keys = self.arm_keys()
+        failed = threading.Event()
+
+        def factory(*_args):
+            if threading.current_thread().name == "robotics-stream":
+                failed.set()
+                raise RuntimeError("worker initialization failed")
+            return self.arm
+
+        self.lab.arm_factory = factory
+        self.call("move", {
+            **keys,
+            "kind": "home_direct",
+            "confirmed": True,
+        })
+        self.assertTrue(failed.wait(2.0))
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and self.lab.active_stream_id is not None:
+            time.sleep(0.01)
+        self.call("cancel", {"lease": keys["lease"]})
+        # Worker failure must not permanently block inspection/reset.
+        self.assertIsNone(self.lab.active_stream_id)
+        self.assertTrue(self.lab.uncertain)
+        self.call("reset", {"inspected": True})
+
 
 @contextmanager
 def serve(handler):

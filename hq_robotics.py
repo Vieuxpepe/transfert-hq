@@ -1097,11 +1097,11 @@ class Robotics:
                 self.stream_generation += 1
                 stream_id = self.stream_generation
             self.active_stream_id = stream_id
-        arm = self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
-        cap = int(cfg["speed"])
-        floor = min(STREAM_SPD_FLOOR, cap)
-        began, tick = self.clock(), 0
         try:
+            arm = self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
+            cap = int(cfg["speed"])
+            floor = min(STREAM_SPD_FLOOR, cap)
+            began, tick = self.clock(), 0
             fraction = trapezoid(seconds, STREAM_RAMP)
 
             def at(elapsed):
@@ -1139,6 +1139,11 @@ class Robotics:
                 if elapsed >= seconds:
                     break
         except DeviceError:
+            with self.lock:
+                self.fault("uncertain")
+            return False
+        except Exception as err:
+            logging.getLogger("hq_robotics").error("stream worker failed: %s", err)
             with self.lock:
                 self.fault("uncertain")
             return False
