@@ -1511,6 +1511,101 @@ class SafetyRegression(unittest.TestCase):
             self.assertTrue(all(r["healthy"] for r in results))
             self.assertEqual(self.lab.estop_last_seq, 2)
 
+    def test_two_unmoved_feedback_reads_must_not_confirm_physical_stop(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        # FakeArm.follow is False, so actual remains at HOME.
+        self.call("move", {
+            **keys,
+            "kind": "joints",
+            "pose": {**arm.HOME, "base": 1.0},
+        })
+        for _ in range(2):
+            self.now += 0.6
+            self.call("telemetry")
+        status = self.call("cancel", {"lease": keys["lease"]})
+        self.assertTrue(status["uncertain"])
+        self.assertEqual(status["stop_state"], "unconfirmed")
+
+    def test_async_joint_keepout_counterexample(self):
+        start = {**arm.HOME, "base": -2.5, "shoulder": -2.5, "elbow": 87.5}
+        end = {**arm.HOME, "base": 2.5, "shoulder": 2.5, "elbow": 92.5}
+        async_pose = {**arm.HOME, "base": -2.5, "shoulder": 2.5, "elbow": 92.5}
+        tcp = arm.link_positions(async_pose)["tcp"]
+        zone = {
+            "name": "async_only",
+            **{axis: [tcp[axis] - 0.1, tcp[axis] + 0.1] for axis in ("x", "y", "z")},
+        }
+        coordinated = arm.swept_clearance(start, end, [zone])
+        self.assertIsNone(coordinated["collision_zone"])
+
+        async_res = arm.async_box_clearance(start, end, [zone])
+        self.assertEqual(async_res["collision_zone"], "async_only")
+        self.assertLessEqual(async_res["min_clearance_mm"], 0.0)
+
+        self.setup_hardware()
+        cfg = self.call("settings", {"keepout": [zone]})["config"]
+        self.lab.write(self.lab.commission_path, {"revision": cfg["revision"], "profile": robotics.PROFILE})
+        self.arm.actual = dict(start)
+        self.now += 0.6
+        self.call("telemetry")
+        keys = self.arm_keys()
+        with self.assertRaisesRegex(robotics.Rejected, "async_only"):
+            self.call("move", {**keys, "kind": "joints", "pose": end})
+        self.assertEqual([c for c in self.arm.calls if isinstance(c, tuple)], [])
+
+    def test_old_stream_finally_cannot_clear_newer_stream_active_state(self):
+        cfg = self.setup_hardware()
+        self.arm.follow = True
+        self.arm.actual = {**arm.HOME, "base": 10.0}
+        self.now += 0.6
+        self.call("telemetry")
+        keys = self.arm_keys()
+        old_sleeping = threading.Event()
+        old_release = threading.Event()
+
+        def sleep_old(_seconds):
+            if threading.current_thread().name == "old-stream":
+                old_sleeping.set()
+                old_release.wait(2.0)
+
+        self.lab.stream_sleep = sleep_old
+        old_thread = threading.Thread(
+            target=self.lab.stream,
+            args=(cfg, "a", keys["lease"], self.arm.actual, arm.HOME, 0.2, 60),
+            kwargs={"epoch": self.lab.epoch, "stream_id": 1},
+            name="old-stream",
+        )
+        self.lab.stream_generation = 1
+        self.lab.active_stream_id = 1
+        old_thread.start()
+        self.assertTrue(old_sleeping.wait(2.0))
+
+        # Newer stream generation 2 takes over active_stream_id; old stream wakes & exits.
+        with self.lab.lock:
+            self.lab.stream_generation = 2
+            self.lab.active_stream_id = 2
+        old_release.set()
+        old_thread.join(timeout=2.0)
+        self.assertEqual(self.lab.active_stream_id, 2)
+
+    def test_swept_clearance_terminal_interval_fails_closed(self):
+        # Tiny interval (0.01 deg) near a box at exact 22.05 mm distance: c_mid > 0,
+        # but c_mid - half_arc < 0 at terminal subdivision -> must fail closed.
+        start = {**arm.HOME, "base": -0.005}
+        end = {**arm.HOME, "base": 0.005}
+        tcp = arm.link_positions(arm.HOME)["tcp"]
+        zone = {
+            "name": "near_edge",
+            "x": [tcp["x"] + 22.02, tcp["x"] + 23.02],
+            "y": [-0.5, 0.5],
+            "z": [tcp["z"] - 0.5, tcp["z"] + 0.5],
+        }
+        res = arm.swept_clearance(start, end, [zone])
+        self.assertTrue(res["clearance_uncertain"])
+        self.assertEqual(res["collision_zone"], "near_edge")
+        self.assertLessEqual(res["min_clearance_mm"], 0.0)
+
 
 @contextmanager
 def serve(handler):

@@ -14,9 +14,9 @@ import threading
 import time
 
 import hq_state
-from hq_robotics_arm import (DeviceError, HOME, HttpArm, JOINTS, LIMITS, WORKSPACE, cartesian,
-                             device_ip, link_positions, number, pinned_ip, position, swept_clearance,
-                             validate_async_box, validate_path, validate_pose)
+from hq_robotics_arm import (DeviceError, HOME, HttpArm, JOINTS, LIMITS, WORKSPACE, async_box_clearance,
+                             cartesian, device_ip, link_positions, number, pinned_ip, position,
+                             swept_clearance, validate_async_box, validate_path, validate_pose)
 from hq_robotics_camera import Camera, TRACK, executable
 from hq_robotics_estop import HttpEstop, monitor_ip
 from hq_robotics_ptz import DIRECTIONS as PTZ_DIRECTIONS, Ptz
@@ -288,7 +288,8 @@ class Robotics:
         self.estop_last_seq = None
         self._estop_seq_lock = threading.Lock()
         self.physical_command_sent = False
-        self.stream_active = False
+        self.stream_generation = 0
+        self.active_stream_id = None
         self.commanded_start = None
         self.settled_reads = 0
         self.lock = threading.RLock()
@@ -388,17 +389,12 @@ class Robotics:
         if not force and self.estop_state is not None and now - self.estop_at < .5:
             return dict(self.estop_state)
         try:
-            if cfg.get("estop_require_signed"):
-                with self._estop_seq_lock:
-                    client = self.estop_factory(
-                        cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
-                        min(.3, cfg["arm_timeout"]), require_signed=True, last_seq=self.estop_last_seq,
-                    )
-                    reading = client.read()
-                    if getattr(client, "_last_seq", None) is not None:
-                        self.estop_last_seq = max(self.estop_last_seq or -1, client._last_seq)
-            else:
-                kwargs = {"last_seq": self.estop_last_seq} if self.estop_factory is HttpEstop else {}
+            with self._estop_seq_lock:
+                kwargs = {}
+                if cfg.get("estop_require_signed"):
+                    kwargs = {"require_signed": True, "last_seq": self.estop_last_seq}
+                elif self.estop_factory is HttpEstop:
+                    kwargs = {"last_seq": self.estop_last_seq}
                 client = self.estop_factory(cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
                                             min(.3, cfg["arm_timeout"]), **kwargs)
                 reading = client.read()
@@ -725,7 +721,7 @@ class Robotics:
     def arm(self, cfg, session, physical, authorized):
         with self.lock:
             self.expire()
-            if self.lease or self.motion or self.stop_pending or self.io.locked():
+            if self.lease or self.motion or self.stop_pending or self.active_stream_id is not None or self.io.locked():
                 refuse("robotics_busy", "Poste de commande occupé")
             if self.stop_latched or self.uncertain or (self.mode == "hardware" and self.requires_inspection.exists()):
                 refuse("robotics_inspect", "Inspection sur place et réarmement manuel requis")
@@ -798,19 +794,26 @@ class Robotics:
             self.feedback = value
             if self.motion and self.blendable and self.target and not self.blend:
                 self.blend = max(abs(value["actual"][k] - self.target[k]) for k in JOINTS) <= BLEND_DEGREES
-            if not self.stream_active and self.motion and all(abs(value["actual"][k] - self.target[k]) <= REACHED_DEGREES for k in JOINTS):
-                started_far = bool(
-                    self.commanded_start
-                    and max(abs(self.target[k] - self.commanded_start[k]) for k in JOINTS) > REACHED_DEGREES
+            if self.active_stream_id is None and self.motion and all(abs(value["actual"][k] - self.target[k]) <= REACHED_DEGREES for k in JOINTS):
+                start_dist = (
+                    max(abs(self.target[k] - self.commanded_start[k]) for k in JOINTS)
+                    if self.commanded_start else math.inf
                 )
-                if started_far or self.settled_reads >= 1:
+                now_dist = max(abs(self.target[k] - value["actual"][k]) for k in JOINTS)
+                moved_toward = (
+                    not self.commanded_start
+                    or start_dist <= NOOP_DEGREES
+                    or max(abs(value["actual"][k] - self.commanded_start[k]) for k in JOINTS) >= NOOP_DEGREES
+                    and now_dist < start_dist
+                )
+                if moved_toward and (start_dist > REACHED_DEGREES or self.settled_reads >= 1):
                     self.clear_inspection()
                     self.motion = None
                     self.physical_command_sent = False
                     self.commanded_start = None
                     self.settled_reads = 0
                     self.record("reached")
-                else:
+                elif moved_toward:
                     self.settled_reads += 1
         return value
 
@@ -941,9 +944,10 @@ class Robotics:
                     refuse("robotics_step_limit", "Cible trop éloignée pour un déplacement physique")
                 self.keepout_path(cfg, start, pose)
                 if cfg.get("keepout"):
-                    clearance = swept_clearance(start, pose, cfg["keepout"])
-                    if clearance["collision_zone"]:
-                        refuse("robotics_keepout", f"Zone interdite « {clearance['collision_zone']} » sur le volume balayé", 409)
+                    clearance = async_box_clearance(start, pose, cfg["keepout"])
+                    if clearance["collision_zone"] or clearance["clearance_uncertain"]:
+                        zone_name = clearance["collision_zone"] or "d'exclusion"
+                        refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
                 if direct:
                     validate_path(start, pose, cfg["joint_limits"], cfg["workspace"], independent_axes=False)
                     validate_async_box(start, pose, cfg["joint_limits"], cfg["workspace"])
@@ -1036,20 +1040,25 @@ class Robotics:
 
     def start_stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None):
         with self.lock:
-            self.stream_active = True
+            self.stream_generation += 1
+            stream_id = self.stream_generation
+            self.active_stream_id = stream_id
         if self.stream_threaded:
             threading.Thread(target=self.stream, args=(cfg, session, key, start, target, seconds, spd),
-                             kwargs={"epoch": epoch}, name="robotics-stream", daemon=True).start()
+                             kwargs={"epoch": epoch, "stream_id": stream_id}, name="robotics-stream", daemon=True).start()
         else:
-            self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch)
+            self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch, stream_id=stream_id)
 
-    def stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None):
+    def stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None):
         """Send one approved move as goals along a smooth curve, every STREAM_TICK seconds.
 
         Stops sending as soon as the arming is released, a STOP or E-stop or fault latches,
         the epoch changes, or the measured pose falls far behind the commanded one."""
         with self.lock:
-            self.stream_active = True
+            if stream_id is None:
+                self.stream_generation += 1
+                stream_id = self.stream_generation
+            self.active_stream_id = stream_id
         arm = self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
         cap = int(cfg["speed"])
         floor = min(STREAM_SPD_FLOOR, cap)
@@ -1066,7 +1075,7 @@ class Robotics:
                 self.stream_sleep(max(0.0, began + tick * STREAM_TICK - self.clock()))
                 elapsed = self.clock() - began
                 with self.lock:
-                    if (not self.stream_active or not self.owner(session, key) or self.stop_pending
+                    if (self.active_stream_id != stream_id or not self.owner(session, key) or self.stop_pending
                             or self.stop_latched or self.uncertain or (epoch is not None and self.epoch != epoch)):
                         return False
                 if self._estop_monitored(cfg):
@@ -1097,7 +1106,8 @@ class Robotics:
             return False
         finally:
             with self.lock:
-                self.stream_active = False
+                if self.active_stream_id == stream_id:
+                    self.active_stream_id = None
         with self.lock:
             if self.motion and self.blendable and (epoch is None or self.epoch == epoch):
                 self.blend = True  # each step is rest-to-rest, so the next one may begin
@@ -1248,8 +1258,9 @@ class Robotics:
                 self.keepout_path(cfg, cursor, wp)
                 validate_path(cursor, wp, cfg["joint_limits"], cfg["workspace"])
                 clearance = swept_clearance(cursor, wp, cfg.get("keepout") or [])
-                if clearance["collision_zone"]:
-                    refuse("robotics_keepout", f"Zone interdite « {clearance['collision_zone']} » sur le volume balayé", 409)
+                if clearance["collision_zone"] or clearance.get("clearance_uncertain"):
+                    zone_name = clearance["collision_zone"] or "d'exclusion"
+                    refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
                 if clearance["min_clearance_mm"] is not None:
                     min_clearance = clearance["min_clearance_mm"] if min_clearance is None else min(min_clearance, clearance["min_clearance_mm"])
                 total_deg += max(abs(wp[k] - cursor[k]) for k in JOINTS)
@@ -1633,11 +1644,13 @@ class Robotics:
             if action == "reset":
                 if self.mode == "hardware" and (not physical or data.get("inspected") is not True):
                     refuse("robotics_inspect", "Confirmer l’inspection sur le PC HQ", 403)
-                if self.io.locked() or self.motion or self.lease or self.stop_pending:
+                if self.io.locked() or self.motion or self.lease or self.stop_pending or self.active_stream_id is not None:
                     refuse("robotics_busy", "Poste de commande occupé")
                 self.epoch += 1
                 self.uncertain = self.stop_latched = False
                 self.physical_command_sent = False
+                self.commanded_start = None
+                self.settled_reads = 0
                 self.feedback = self.target = None
                 self.estop_state = None
                 if self.mode == "hardware":

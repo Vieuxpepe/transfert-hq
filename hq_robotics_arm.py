@@ -149,14 +149,34 @@ def _segment_to_aabb_distance(p0, p1, box):
     return math.sqrt(max(0.0, best_sq))
 
 
+def _pose_link_clearance(pose, zones, link_radius):
+    links = link_positions(pose)
+    best = math.inf
+    hit = None
+    nearest = None
+    nearest_dist = math.inf
+    for zone in zones:
+        d_upper = _segment_to_aabb_distance(links["shoulder"], links["elbow"], zone) - link_radius
+        d_lower = _segment_to_aabb_distance(links["elbow"], links["tcp"], zone) - link_radius
+        c = min(d_upper, d_lower)
+        if c < nearest_dist:
+            nearest_dist = c
+            nearest = zone["name"]
+        if c < best:
+            best = c
+            if c <= 0.0:
+                hit = zone["name"]
+    return best, hit, nearest
+
+
 def swept_clearance(start, end, zones, *, link_radius=22.0):
     """Conservative continuous capsule-to-keepout clearance (mm) using adaptive subdivision.
 
-    Subdivides any joint-space sub-interval [t0, t1] whenever the midpoint clearance
-    minus half the link arc-length bound could reach zero, until arc <= 0.25 mm.
+    Fails closed (clearance_uncertain=True) if any terminal interval still allows
+    a collision within its arc-length bound.
     """
     if not zones:
-        return {"min_clearance_mm": None, "collision_zone": None}
+        return {"min_clearance_mm": None, "collision_zone": None, "clearance_uncertain": False}
     delta = {key: end[key] - start[key] for key in JOINTS}
 
     def pose_at(t):
@@ -168,51 +188,110 @@ def swept_clearance(start, end, zones, *, link_radius=22.0):
             + LOWER * abs(delta["elbow"]) * dt
         )
 
-    def pose_clearance(pose):
-        links = link_positions(pose)
-        best = math.inf
-        hit = None
-        for zone in zones:
-            d_upper = _segment_to_aabb_distance(links["shoulder"], links["elbow"], zone) - link_radius
-            d_lower = _segment_to_aabb_distance(links["elbow"], links["tcp"], zone) - link_radius
-            c = min(d_upper, d_lower)
-            if c < best:
-                best = c
-                if c <= 0.0:
-                    hit = zone["name"]
-        return best, hit
-
     min_clearance = math.inf
     collision_zone = None
+    uncertain = False
 
     for endpoint in (start, end):
-        c, hit = pose_clearance(endpoint)
+        c, hit, _ = _pose_link_clearance(endpoint, zones, link_radius)
         if c < min_clearance:
             min_clearance = c
-            if hit and collision_zone is None:
-                collision_zone = hit
+        if hit and collision_zone is None:
+            collision_zone = hit
 
     stack = [(0.0, 1.0, 0)]
     while stack:
         t0, t1, depth = stack.pop()
         tm = 0.5 * (t0 + t1)
-        c_mid, hit = pose_clearance(pose_at(tm))
+        c_mid, hit, nearest = _pose_link_clearance(pose_at(tm), zones, link_radius)
         if c_mid < min_clearance:
             min_clearance = c_mid
-            if hit and collision_zone is None:
-                collision_zone = hit
+        if hit and collision_zone is None:
+            collision_zone = hit
         if c_mid <= 0.0:
             continue
         half_arc = 0.5 * arc_bound(t1 - t0)
-        if c_mid - half_arc > 0.0:
+        lower_bound = c_mid - half_arc
+        if lower_bound > 0.0:
             continue
         if half_arc > 0.125 and depth < 14:
             stack.append((t0, tm, depth + 1))
             stack.append((tm, t1, depth + 1))
+        else:
+            uncertain = True
+            if lower_bound < min_clearance:
+                min_clearance = lower_bound
+            if collision_zone is None:
+                collision_zone = nearest
 
     return {
         "min_clearance_mm": round(min_clearance, 2) if math.isfinite(min_clearance) else None,
         "collision_zone": collision_zone,
+        "clearance_uncertain": uncertain,
+    }
+
+
+def async_box_clearance(start, end, zones, *, link_radius=22.0):
+    """Conservative full-link clearance over the entire asynchronous joint box [start, end]."""
+    if not zones:
+        return {"min_clearance_mm": None, "collision_zone": None, "clearance_uncertain": False}
+    box = {k: (min(start[k], end[k]), max(start[k], end[k])) for k in JOINTS}
+    min_clearance = math.inf
+    collision_zone = None
+    uncertain = False
+
+    for b in box["base"]:
+        for s in box["shoulder"]:
+            for e in box["elbow"]:
+                for h in box["hand"]:
+                    c, hit, _ = _pose_link_clearance({"base": b, "shoulder": s, "elbow": e, "hand": h}, zones, link_radius)
+                    if c < min_clearance:
+                        min_clearance = c
+                    if hit and collision_zone is None:
+                        collision_zone = hit
+                    if collision_zone is not None:
+                        return {
+                            "min_clearance_mm": round(min_clearance, 2),
+                            "collision_zone": collision_zone,
+                            "clearance_uncertain": False,
+                        }
+
+    stack = [(box, 0)]
+    while stack:
+        cur, depth = stack.pop()
+        mid = {k: 0.5 * (cur[k][0] + cur[k][1]) for k in JOINTS}
+        c_mid, hit, nearest = _pose_link_clearance(mid, zones, link_radius)
+        if c_mid < min_clearance:
+            min_clearance = c_mid
+        if hit and collision_zone is None:
+            collision_zone = hit
+        if c_mid <= 0.0:
+            continue
+        spans = {k: cur[k][1] - cur[k][0] for k in JOINTS}
+        half_arc = 0.5 * math.radians(
+            (UPPER + LOWER) * (spans["base"] + spans["shoulder"]) + LOWER * spans["elbow"]
+        )
+        lower_bound = c_mid - half_arc
+        if lower_bound > 0.0:
+            continue
+        widest = max(("base", "shoulder", "elbow"), key=lambda k: spans[k])
+        if spans[widest] > 0.25 and depth < 10:
+            m = mid[widest]
+            left = {**cur, widest: (cur[widest][0], m)}
+            right = {**cur, widest: (m, cur[widest][1])}
+            stack.append((left, depth + 1))
+            stack.append((right, depth + 1))
+        else:
+            uncertain = True
+            if lower_bound < min_clearance:
+                min_clearance = lower_bound
+            if collision_zone is None:
+                collision_zone = nearest
+
+    return {
+        "min_clearance_mm": round(min_clearance, 2) if math.isfinite(min_clearance) else None,
+        "collision_zone": collision_zone,
+        "clearance_uncertain": uncertain,
     }
 
 
