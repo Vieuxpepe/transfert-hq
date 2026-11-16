@@ -401,7 +401,7 @@ def plan_safety_report(cfg, script):
         if clearance["min_clearance_mm"] is not None:
             min_clearance = clearance["min_clearance_mm"] if min_clearance is None else min(min_clearance, clearance["min_clearance_mm"])
         cursor = step
-    speed = max(1, int(script.get("speed", cfg["speed"])))
+    speed = min(int(cfg["speed"]), max(1, int(script.get("speed", cfg["speed"]))))
     return {
         "step_count": len(script["steps"]),
         "max_joint_delta_deg": round(max_delta, 2),

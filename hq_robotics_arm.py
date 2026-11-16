@@ -103,17 +103,50 @@ def _point_to_aabb_distance(pt, box):
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
-def _segment_to_aabb_distance(p0, p1, box, *, samples=6):
-    best = math.inf
-    for i in range(samples + 1):
-        t = i / samples
-        pt = {axis: p0[axis] + t * (p1[axis] - p0[axis]) for axis in ("x", "y", "z")}
-        dist = _point_to_aabb_distance(pt, box)
-        if dist < best:
-            best = dist
-            if best == 0.0:
-                return 0.0
-    return best
+def _segment_to_aabb_distance(p0, p1, box):
+    """Exact minimum Euclidean distance from 3D segment [p0, p1] to axis-aligned box."""
+    axes = ("x", "y", "z")
+    d = {a: p1[a] - p0[a] for a in axes}
+    breakpoints = {0.0, 1.0}
+    for a in axes:
+        if d[a]:
+            for bound in box[a]:
+                t = (bound - p0[a]) / d[a]
+                if 0.0 < t < 1.0:
+                    breakpoints.add(t)
+    pts = sorted(breakpoints)
+    best_sq = math.inf
+    for i in range(len(pts) - 1):
+        t0, t1 = pts[i], pts[i + 1]
+        tm = 0.5 * (t0 + t1)
+        qa = 0.0
+        qb = 0.0
+        qc = 0.0
+        for a in axes:
+            pm = p0[a] + tm * d[a]
+            lo, hi = box[a]
+            if pm < lo:
+                diff0 = p0[a] - lo
+                qa += d[a] * d[a]
+                qb += 2.0 * diff0 * d[a]
+                qc += diff0 * diff0
+            elif pm > hi:
+                diff0 = p0[a] - hi
+                qa += d[a] * d[a]
+                qb += 2.0 * diff0 * d[a]
+                qc += diff0 * diff0
+        candidates = (t0, t1)
+        if qa > 1e-12:
+            t_star = -qb / (2.0 * qa)
+            if t0 < t_star < t1:
+                candidates = (t0, t_star, t1)
+        for tc in candidates:
+            val = qa * tc * tc + qb * tc + qc
+            if val < best_sq:
+                best_sq = val
+                if best_sq <= 0.0:
+                    return 0.0
+    return math.sqrt(max(0.0, best_sq))
 
 
 def swept_clearance(start, end, zones, *, link_radius=22.0):
@@ -190,6 +223,17 @@ def validate_path(start, end, limits, workspace, *, independent_axes=False):
             number(point[axis], low + margin, high - margin)
 
 
+def validate_async_box(start, end, limits, workspace):
+    """Validate asynchronous joint-axis extremes across the [start, end] joint box."""
+    validate_pose(start, limits, workspace)
+    validate_pose(end, limits, workspace)
+    for b in (start["base"], end["base"]):
+        for s in (start["shoulder"], end["shoulder"]):
+            for e in (start["elbow"], end["elbow"]):
+                for h in (start["hand"], end["hand"]):
+                    validate_pose({"base": b, "shoulder": s, "elbow": e, "hand": h}, limits, workspace)
+
+
 class HttpArm:
     """Replaceable device adapter. HTTP success is transport receipt only."""
 
@@ -236,9 +280,9 @@ class HttpArm:
             torque = {}
             for key, field in zip(JOINTS, ("torswitchB", "torswitchS", "torswitchE", "torswitchH")):
                 if field in raw:
-                    if raw[field] not in (0, 1):
+                    if type(raw[field]) is not int or raw[field] not in (0, 1):
                         raise ValueError
-                    torque[key] = int(raw[field])
+                    torque[key] = raw[field]
             if not torque:
                 torque_state = "unknown"
             elif set(torque) != set(JOINTS):

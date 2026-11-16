@@ -132,12 +132,12 @@ class Ptz:
         if not self.token:
             self.connect()
         device_timeout = max(2, min(10, int(round(seconds)) + 2))
-        self._post(self.paths["ptz"],
-                   '<ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl">'
-                   f'<ProfileToken>{self.token}</ProfileToken><Velocity>'
-                   f'<PanTilt x="{pan * SPEED}" y="{tilt * SPEED}" xmlns="http://www.onvif.org/ver10/schema"/>'
-                   f'</Velocity><Timeout>PT{device_timeout}S</Timeout></ContinuousMove>')
         try:
+            self._post(self.paths["ptz"],
+                       '<ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl">'
+                       f'<ProfileToken>{self.token}</ProfileToken><Velocity>'
+                       f'<PanTilt x="{pan * SPEED}" y="{tilt * SPEED}" xmlns="http://www.onvif.org/ver10/schema"/>'
+                       f'</Velocity><Timeout>PT{device_timeout}S</Timeout></ContinuousMove>')
             time.sleep(seconds)
         finally:
             self.stop()

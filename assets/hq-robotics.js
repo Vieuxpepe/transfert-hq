@@ -752,6 +752,11 @@
       this.nodes['ptz-preset-goto'].disabled = !state || !this.nodes['ptz-preset-list'].value;
       this.nodes['ptz-preset-save'].disabled = !state || !this.nodes['ptz-preset-name'].value.trim();
       this.nodes['camera-calibration'].hidden = !(state?.config.camera_configured && state.camera_local);
+      const calMeta = this.cameraMap?.meta;
+      if (calMeta && state?.config && ((calMeta.camera_ip && calMeta.camera_ip !== state.config.camera_ip) ||
+          (calMeta.quality && calMeta.quality !== state.config.quality))) {
+        this.invalidateCameraMap('Caméra ou profil vidéo modifié — recalibration requise.');
+      }
       this.drawCameraOverlay();
       const nightOk = !!(state?.config.camera_cloud_configured && state.camera_local);
       this.nodes.night.hidden = !nightOk;
@@ -760,6 +765,7 @@
 
     motionLabel() {
       if (this.pending) return 'Envoi…';
+      if (this.state?.stop_state === 'unconfirmed' || this.state?.uncertain) return 'Arrêt non confirmé';
       if (!this.state?.moving) return 'À l’arrêt';
       return this.state.config.mode === 'simulation' ? 'En mouvement' : 'Confirmation en attente';
     }
@@ -1924,10 +1930,12 @@
       this.ptzBusy = true;
       try {
         await this.request('camera/ptz', { direction, ms: this.ptzPulse() });
-        this.invalidateCameraMap('Mouvement PTZ — recalibration requise.');
       }
       catch (error) { if (error.status !== 429) this.message(error.message, true); }
-      finally { this.ptzBusy = false; }
+      finally {
+        this.invalidateCameraMap('Mouvement PTZ — recalibration requise.');
+        this.ptzBusy = false;
+      }
     }
 
     // A telemetry read can hold the arm for a moment; a chained sub-step that meets it just retries.

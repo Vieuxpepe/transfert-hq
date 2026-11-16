@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import json
+import logging
 import math
 from pathlib import Path
 import re
@@ -15,7 +16,7 @@ import time
 import hq_state
 from hq_robotics_arm import (DeviceError, HOME, HttpArm, JOINTS, LIMITS, WORKSPACE, cartesian,
                              device_ip, link_positions, number, pinned_ip, position, swept_clearance,
-                             validate_path, validate_pose)
+                             validate_async_box, validate_path, validate_pose)
 from hq_robotics_camera import Camera, TRACK, executable
 from hq_robotics_estop import HttpEstop, monitor_ip
 from hq_robotics_ptz import DIRECTIONS as PTZ_DIRECTIONS, Ptz
@@ -284,6 +285,8 @@ class Robotics:
         self.estop_factory = estop_factory
         self.estop_state = None
         self.estop_at = -math.inf
+        self.estop_last_seq = None
+        self.physical_command_sent = False
         self.lock = threading.RLock()
         self.io = threading.Lock()
         self.lease = None
@@ -381,9 +384,16 @@ class Robotics:
         if not force and self.estop_state is not None and now - self.estop_at < .5:
             return dict(self.estop_state)
         try:
-            kwargs = {"require_signed": True} if cfg.get("estop_require_signed") else {}
-            reading = self.estop_factory(cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
-                                         min(.3, cfg["arm_timeout"]), **kwargs).read()
+            kwargs = {}
+            if cfg.get("estop_require_signed"):
+                kwargs = {"require_signed": True, "last_seq": self.estop_last_seq}
+            elif self.estop_factory is HttpEstop:
+                kwargs = {"last_seq": self.estop_last_seq}
+            client = self.estop_factory(cfg["estop_ip"], cfg["estop_port"], cfg["estop_token"],
+                                        min(.3, cfg["arm_timeout"]), **kwargs)
+            reading = client.read()
+            if getattr(client, "_last_seq", None) is not None:
+                self.estop_last_seq = client._last_seq
             state = {"mode": "hardware", "healthy": reading.get("healthy") is True}
             if reading.get("signed") is True:
                 state["signed"] = True
@@ -399,23 +409,24 @@ class Robotics:
     def trip_estop(self, cfg=None):
         """Latch the controller unsafe when a monitored E-stop opens, times out, or fails."""
         with self.lock:
-            if not (self.lease or self.motion) and self.stop_latched:
+            if not (self.lease or self.motion or self.physical_command_sent) and self.stop_latched:
                 return
             self.epoch += 1
             self.stop_latched = True
-            if self.motion:
+            if self.motion or self.physical_command_sent:
                 self.uncertain = True
             self.motion = None
             self.lease = None
+            self.physical_command_sent = False
             self.live_script = self.script_state = None
-            self.feedback = None
             self.record("estop")
             self.record_incident("estop", cfg)
+            self.feedback = None
             if self.mode == "hardware":
                 try:
                     self.write(self.requires_inspection, {"pending": True, "reason": "estop"})
-                except Rejected:
-                    pass
+                except Rejected as err:
+                    logging.getLogger("hq_robotics").warning("inspection write failed on estop: %s", err)
 
     def _start_estop_supervisor(self, cfg):
         if not self._estop_monitored(cfg):
@@ -432,23 +443,46 @@ class Robotics:
 
     def _estop_supervisor_loop(self):
         while not self._supervisor_stop.wait(ESTOP_SUPERVISOR_INTERVAL):
-            with self.lock:
-                if self.mode != "hardware" or not (self.lease or self.motion):
-                    self._supervisor_thread = None
-                    return
-                cfg = self._supervisor_cfg
-            if not cfg or not self._estop_monitored(cfg):
+            try:
                 with self.lock:
-                    self._supervisor_thread = None
-                return
-            estop = self.estop_health(cfg, force=True)
-            if estop.get("healthy") is not True:
-                self.trip_estop(cfg)
+                    if self.mode != "hardware" or not (self.lease or self.motion):
+                        self._supervisor_thread = None
+                        return
+                    cfg = self._supervisor_cfg
+                if not cfg or not self._estop_monitored(cfg):
+                    with self.lock:
+                        self._supervisor_thread = None
+                    return
+                estop = self.estop_health(cfg, force=True)
+                if estop.get("healthy") is not True:
+                    self.trip_estop(cfg)
+                    with self.lock:
+                        self._supervisor_thread = None
+                    return
+            except Exception as err:
+                logging.getLogger("hq_robotics").error("estop supervisor failed: %s", err)
+                self.trip_estop(getattr(self, "_supervisor_cfg", None))
                 with self.lock:
                     self._supervisor_thread = None
                 return
 
     def close(self):
+        with self.lock:
+            if self.mode == "hardware" and (self.lease or self.motion or self.physical_command_sent):
+                self.epoch += 1
+                self.stop_latched = True
+                self.uncertain = True
+                self.motion = None
+                self.lease = None
+                self.physical_command_sent = False
+                self.live_script = self.script_state = None
+                self.record("uncertain")
+                self.record_incident("shutdown")
+                self.feedback = None
+                try:
+                    self.write(self.requires_inspection, {"pending": True, "reason": "shutdown"})
+                except Rejected as err:
+                    logging.getLogger("hq_robotics").warning("inspection write failed on close: %s", err)
         self._supervisor_stop.set()
         thread = self._supervisor_thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
@@ -502,17 +536,18 @@ class Robotics:
         if self.mode == "simulation" and self.motion:
             self.motion = None
             self.target = self.sim_pose.copy()
-        elif self.mode == "hardware" and self.motion and kind in ("cancelled", "disarmed"):
+        elif self.mode == "hardware" and (self.motion or self.physical_command_sent) and kind in ("cancelled", "disarmed"):
             # RoArm T:102 has no verified controlled-stop command and T:210 cmd:0
             # drops torque (gravity risk). Suppress further commands and require
             # physical inspection instead of claiming the arm stopped.
             self.uncertain = True
             self.motion = None
+            self.physical_command_sent = False
             uncertain_latched = True
             try:
                 self.write(self.requires_inspection, {"pending": True, "reason": kind})
-            except Rejected:
-                pass
+            except Rejected as err:
+                logging.getLogger("hq_robotics").warning("inspection write failed on disarm: %s", err)
         if self.lease or kind != "disarmed":
             self.record(kind)
         self.lease = None
@@ -522,13 +557,14 @@ class Robotics:
 
     def fault(self, kind):
         self.epoch += 1
-        self.uncertain = self.uncertain or bool(self.motion)
+        self.uncertain = self.uncertain or bool(self.motion) or self.physical_command_sent
         self.motion = None
         self.lease = None
+        self.physical_command_sent = False
         self.live_script = self.script_state = None
-        self.feedback = None
         self.record(kind)
         self.record_incident(kind)
+        self.feedback = None
 
     def owner(self, session, key):
         return bool(self.lease and self.lease.session == session and
@@ -665,8 +701,8 @@ class Robotics:
             try:
                 self.state_dir.mkdir(exist_ok=True)
                 hq_state.write_json_atomic(self.blackbox_path, list(self.blackbox))
-            except (OSError, RuntimeError):
-                pass
+            except (OSError, RuntimeError) as err:
+                logging.getLogger("hq_robotics").warning("blackbox write failed: %s", err)
 
     def capture_blackbox(self, cfg, feedback, owner, estop=None):
         """A bounded, redacted incident history (persisted on incidents, sampled on status)."""
@@ -755,6 +791,7 @@ class Robotics:
             if self.motion and all(abs(value["actual"][k] - self.target[k]) <= REACHED_DEGREES for k in JOINTS):
                 self.clear_inspection()
                 self.motion = None
+                self.physical_command_sent = False
                 self.record("reached")
         return value
 
@@ -884,8 +921,13 @@ class Robotics:
                 if delta > cfg["step_limit"] and not (direct or whole):
                     refuse("robotics_step_limit", "Cible trop éloignée pour un déplacement physique")
                 self.keepout_path(cfg, start, pose)
+                if cfg.get("keepout"):
+                    clearance = swept_clearance(start, pose, cfg["keepout"])
+                    if clearance["collision_zone"]:
+                        refuse("robotics_keepout", f"Zone interdite « {clearance['collision_zone']} » sur le volume balayé", 409)
                 if direct:
                     validate_path(start, pose, cfg["joint_limits"], cfg["workspace"], independent_axes=False)
+                    validate_async_box(start, pose, cfg["joint_limits"], cfg["workspace"])
                 elif not whole:
                     validate_path(start, pose, limits, workspace, independent_axes=True)
                 if delta <= NOOP_DEGREES:
@@ -915,19 +957,13 @@ class Robotics:
                     # A long move must not outlive the dead-man window it started under.
                     self.lease.expires = max(self.lease.expires, self.clock() + seconds + LEASE_SECONDS)
                 self.record("moving")
-            if self._estop_monitored(cfg):
-                estop = self.estop_health(cfg, force=True)
-                if estop.get("healthy") is not True:
-                    self.trip_estop(cfg)
-                    refuse("robotics_estop", "Arrêt d’urgence ouvert ou moniteur injoignable")
             try:
                 if stream is None:
-                    with self.lock:
-                        if (not self.owner(session, key) or not authorized() or self.stop_pending
-                                or self.stop_latched or self.uncertain or self.epoch != move_epoch):
-                            refuse("robotics_disarmed", "Autorisation relâchée avant envoi", 403)
                     final_speed = int(min(cfg["speed"], max(1, speed)))
-                    self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"]).move(pose, final_speed, cfg["acceleration"])
+                    if not self._dispatch_arm_move(cfg, session, key, move_epoch, pose,
+                                                   final_speed, cfg["acceleration"],
+                                                   authorized=authorized):
+                        refuse("robotics_disarmed", "Autorisation relâchée avant envoi", 403)
             except DeviceError:
                 with self.lock:
                     self.fault("uncertain")
@@ -938,6 +974,25 @@ class Robotics:
             self.io.release()
         if stream is not None:
             self.start_stream(cfg, session, key, *stream, epoch=move_epoch)
+
+    def _dispatch_arm_move(self, cfg, session, key, epoch, goal, goal_spd, acceleration, *,
+                           arm_client=None, authorized=None):
+        """Serialize hardware move admission + transmission atomically under self.io and self.lock."""
+        if self._estop_monitored(cfg):
+            estop = self.estop_health(cfg, force=True)
+            if estop.get("healthy") is not True:
+                self.trip_estop(cfg)
+                return False
+        client = arm_client if arm_client is not None else self.arm_factory(cfg["arm_ip"], cfg["arm_timeout"])
+        safe_spd = int(min(cfg["speed"], max(1, goal_spd)))
+        with self.lock:
+            if (not self.owner(session, key) or (authorized is not None and not authorized())
+                    or self.stop_pending or self.stop_latched or self.uncertain
+                    or (epoch is not None and self.epoch != epoch)):
+                return False
+            self.physical_command_sent = True
+            client.move(goal, safe_spd, acceleration)
+            return True
 
     def _validate_stream_waypoints(self, cfg, start, target, seconds):
         """Validate every streamed curve waypoint against limits, workspace, and keep-outs."""
@@ -999,16 +1054,9 @@ class Robotics:
                 needed = max(abs(goal[k] - here[k]) for k in JOINTS) / span / deg_per_step  # steps/s
                 goal_spd = int(min(cap, spd, max(floor, math.ceil(needed * STREAM_SPD_GAIN))))
                 with self.io:
-                    with self.lock:
-                        if (not self.owner(session, key) or self.stop_pending or self.stop_latched
-                                or self.uncertain or (epoch is not None and self.epoch != epoch)):
-                            return False
-                    if self._estop_monitored(cfg):
-                        estop = self.estop_health(cfg, force=True)
-                        if estop.get("healthy") is not True:
-                            self.trip_estop(cfg)
-                            return False
-                    arm.move(goal, goal_spd, cfg["acceleration"])
+                    if not self._dispatch_arm_move(cfg, session, key, epoch, goal, goal_spd,
+                                                   cfg["acceleration"], arm_client=arm):
+                        return False
                     if elapsed < seconds and tick % 5 == 0:
                         measured = self.read_feedback(cfg)["actual"]
                         lag = max(abs(measured[k] - here[k]) for k in JOINTS)
@@ -1161,7 +1209,7 @@ class Robotics:
         if action in ("rename", "delete", "update", "preflight") and not existing:
             refuse("robotics_recording_missing", "Script enregistré introuvable", 404)
         if action == "preflight":
-            max_step = number(data.get("max_step_deg", cfg["step_limit"]), 0.5, 8.0)
+            max_step = number(data.get("max_step_deg", cfg["step_limit"]), 0.5, cfg["step_limit"])
             start = validate_pose(existing["start"], cfg["joint_limits"], cfg["workspace"])
             raw_steps = [validate_pose(s, cfg["joint_limits"], cfg["workspace"]) for s in existing["steps"]]
             waypoints = self.resample_trajectory(start, raw_steps, max_step_deg=max_step)
@@ -1362,7 +1410,8 @@ class Robotics:
             self.last_tapo = now
             for attempt in (1, 2):
                 session = self.tapo_session
-                if session is None or (session.address, session.password) != (cfg["camera_ip"], cfg["camera_cloud_password"]):
+                if session is None or (session.address, session.password, getattr(session, "tls_sha256", "")) != (
+                        cfg["camera_ip"], cfg["camera_cloud_password"], cfg["camera_tls_sha256"]):
                     tapo_kwargs = {"tls_sha256": cfg["camera_tls_sha256"]} if cfg.get("camera_tls_sha256") else {}
                     session = self.tapo_session = self.tapo_factory(cfg["camera_ip"], "admin",
                                                                      cfg["camera_cloud_password"], cfg["camera_timeout"],
@@ -1560,6 +1609,7 @@ class Robotics:
                     refuse("robotics_busy", "Poste de commande occupé")
                 self.epoch += 1
                 self.uncertain = self.stop_latched = False
+                self.physical_command_sent = False
                 self.feedback = self.target = None
                 self.estop_state = None
                 if self.mode == "hardware":

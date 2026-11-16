@@ -1245,6 +1245,197 @@ class SafetyRegression(unittest.TestCase):
         self.assertAlmostEqual(report["max_joint_delta_deg"], 6.0)
         self.assertGreater(report["estimated_seconds"], 0.0)
 
+    def test_estop_supervisor_unexpected_exception_latches_unsafe(self):
+        self.setup_hardware(estop=True)
+        with patch.object(robotics, "ESTOP_SUPERVISOR_INTERVAL", 0.02):
+            self.call("arm")
+            with patch.object(self.lab, "estop_health", side_effect=RuntimeError("unexpected")):
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline and not self.lab.stop_latched:
+                    time.sleep(0.01)
+            self.assertTrue(self.lab.stop_latched)
+            self.assertIsNone(self.lab.lease)
+
+    def test_close_during_active_motion_invalidates_epoch(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        self.call("move", {**keys, "kind": "joints", "pose": {**arm.HOME, "base": 2.0}})
+        epoch_before = self.lab.epoch
+        self.lab.close()
+        self.assertGreater(self.lab.epoch, epoch_before)
+        self.assertTrue(self.lab.stop_latched)
+        self.assertTrue(self.lab.uncertain)
+        self.assertIsNone(self.lab.lease)
+
+    def test_shutdown_persists_unconfirmed_inspection(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        self.call("move", {**keys, "kind": "joints", "pose": {**arm.HOME, "base": 2.0}})
+        self.lab.close()
+        self.assertTrue(self.lab.requires_inspection.exists())
+        restarted = robotics.Robotics(Path(self.temp.name))
+        self.addCleanup(restarted.close)
+        self.assertTrue(restarted.requires_inspection.exists())
+        self.assertTrue(any(e.get("incident") == "shutdown" for e in restarted.blackbox))
+
+    def test_cancel_between_final_epoch_check_and_arm_send(self):
+        cfg = self.setup_hardware()
+        keys = self.arm_keys()
+        epoch = self.lab.epoch
+        self.lab.io.acquire()
+        try:
+            self.call("cancel", {"lease": keys["lease"]})
+            sent = self.lab._dispatch_arm_move(cfg, "a", keys["lease"], epoch, arm.HOME, 60, 4)
+            self.assertFalse(sent)
+            self.assertEqual([c for c in self.arm.calls if isinstance(c, tuple)], [])
+        finally:
+            self.lab.io.release()
+
+    def test_stop_between_stream_estop_read_and_arm_send(self):
+        self.setup_hardware(estop=True)
+        cfg = self.lab.config()
+        self.arm.actual = {**arm.HOME, "base": 10.0}
+        self.now += .6
+        self.call("telemetry")
+        keys = self.arm_keys()
+        epoch = self.lab.epoch
+        paused = threading.Event()
+        resumed = threading.Event()
+        orig_health = self.lab.estop_health
+
+        def hook(c, *, force=False):
+            res = orig_health(c, force=force)
+            if threading.current_thread().name == "stream-toctou":
+                paused.set()
+                resumed.wait(2.0)
+            return res
+
+        self.lab.estop_health = hook
+        worker = threading.Thread(
+            target=self.lab.stream,
+            args=(cfg, "a", keys["lease"], self.arm.actual, arm.HOME, 0.2, 60),
+            kwargs={"epoch": epoch},
+            name="stream-toctou",
+        )
+        worker.start()
+        self.assertTrue(paused.wait(2.0))
+        self.call("stop")
+        resumed.set()
+        worker.join(timeout=2.0)
+        self.assertEqual([c for c in self.arm.calls if isinstance(c, tuple)], [])
+
+    def test_cancel_after_feedback_arrival_but_before_physical_settling(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        self.call("move", {**keys, "kind": "joints", "pose": {**arm.HOME, "base": 2.0}})
+        self.lab.motion = None  # Simulate motion cleared, physical_command_sent still True
+        status = self.call("cancel", {"lease": keys["lease"]})
+        self.assertTrue(status["uncertain"])
+        self.assertEqual(status["stop_state"], "unconfirmed")
+
+    def test_direct_home_rejects_async_axis_workspace_counterexample(self):
+        self.setup_hardware()
+        # Finding C: valid pose (z=70.27mm), coordinated path valid, but asynchronous (52.58, 90) hits z=-102.42mm.
+        self.arm.actual = {"base": -35.47, "shoulder": 52.58, "elbow": 47.66, "hand": 180.0}
+        self.now += .6
+        self.call("telemetry")
+        keys = self.arm_keys()
+        with self.assertRaises(ValueError):
+            self.call("move", {**keys, "kind": "home_direct", "confirmed": True})
+        self.assertEqual([c for c in self.arm.calls if isinstance(c, tuple)], [])
+
+    def test_swept_clearance_detects_thin_box_between_spatial_samples(self):
+        # Finding D: narrow box between 6-sample points on stationary HOME lower arm.
+        thin = {"name": "ThinSensor", "x": [146.5314, 146.9314], "y": [-0.5, 0.5], "z": [236.32, 237.32]}
+        res = arm.swept_clearance(arm.HOME, arm.HOME, [thin])
+        self.assertEqual(res["collision_zone"], "ThinSensor")
+        self.assertLess(res["min_clearance_mm"], 0.0)
+
+    def test_signed_estop_sequence_survives_new_transport_instance(self):
+        import hmac as _hmac
+        import hashlib as _hashlib
+
+        class ReplayHandler(BaseHTTPRequestHandler):
+            seq = 10
+            force_seq = None
+
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                nonce = self.headers.get("X-HQ-Estop-Nonce", "")
+                self.assert_no_secret = "X-HQ-Estop-Token" not in self.headers
+                if self.force_seq is not None:
+                    seq = self.force_seq
+                else:
+                    ReplayHandler.seq += 1
+                    seq = ReplayHandler.seq
+                sig = _hmac.new(b"secret", f"{nonce}:{seq}:1".encode(), _hashlib.sha256).hexdigest()
+                body = json.dumps({"closed": True, "nonce": nonce, "seq": seq, "hmac": sig}).encode()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+        with serve(ReplayHandler) as port:
+            self.lab.estop_factory = estop.HttpEstop
+            self.setup_hardware(estop=False)
+            cfg = self.call("settings", {
+                "estop_ip": "127.0.0.1", "estop_port": port, "estop_token": "secret",
+                "estop_required": True, "estop_require_signed": True,
+            })["config"]
+            self.lab.write(self.lab.commission_path, {"revision": cfg["revision"], "profile": robotics.PROFILE})
+            first = self.lab.estop_health(self.lab.config(), force=True)
+            self.assertTrue(first["healthy"])
+            self.assertTrue(first.get("signed"))
+            ReplayHandler.force_seq = 11  # replayed/non-monotonic seq across a fresh HttpEstop instance
+            second = self.lab.estop_health(self.lab.config(), force=True)
+            self.assertFalse(second["healthy"])
+
+    def test_tapo_pin_change_invalidates_cached_session(self):
+        created = []
+
+        class FakeTapo:
+            def __init__(self, address, user, password, timeout, *, tls_sha256=""):
+                self.address = address
+                self.password = password
+                self.tls_sha256 = tls_sha256
+                created.append(tls_sha256)
+
+            def night_mode(self, mode=None):
+                return "auto"
+
+        self.lab.tapo_factory = FakeTapo
+        self.call("settings", {
+            "camera_ip": "192.168.4.5", "camera_user": "admin", "camera_password": "pw",
+            "camera_cloud_password": "cloud", "camera_tls_sha256": "a" * 64,
+        })
+        self.call("camera/night", {"mode": "read"})
+        self.call("settings", {"camera_tls_sha256": "b" * 64})
+        self.call("camera/night", {"mode": "read"})
+        self.assertEqual(created, ["a" * 64, "b" * 64])
+
+    def test_preflight_respects_commissioned_step_limit(self):
+        saved = self.call("recordings", {
+            "action": "save",
+            "name": "StepCheck",
+            "start": arm.HOME.copy(),
+            "steps": [{**arm.HOME, "base": 10.0}],
+        })
+        rec_id = next(iter(saved["recordings"]))
+        with self.assertRaises(ValueError):
+            self.call("recordings", {"action": "preflight", "id": rec_id, "max_step_deg": 8.0})
+
+    def test_incident_preserves_last_known_feedback(self):
+        self.setup_hardware(estop=True)
+        self.arm.actual = {**arm.HOME, "base": 7.5}
+        self.now += .6
+        self.call("telemetry")
+        self.call("arm")
+        self.lab.trip_estop(self.lab.config())
+        entries = self.call("blackbox", method="GET")["entries"]
+        self.assertEqual(entries[0]["incident"], "estop")
+        self.assertAlmostEqual(entries[0]["actual"]["base"], 7.5)
+
 
 @contextmanager
 def serve(handler):

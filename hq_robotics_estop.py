@@ -44,7 +44,7 @@ class HttpEstop:
     and a strictly monotonic `seq`.
     """
 
-    def __init__(self, address, port, token, timeout, *, require_signed=False):
+    def __init__(self, address, port, token, timeout, *, require_signed=False, last_seq=None):
         self.address = monitor_ip(address)
         try:
             self.port = int(port)
@@ -59,13 +59,13 @@ class HttpEstop:
         self.token = token
         self.timeout = timeout
         self.require_signed = bool(require_signed)
-        self._last_seq = None
+        self._last_seq = last_seq
 
     def read(self):
         nonce = secrets.token_hex(16)
         connection = http.client.HTTPConnection(self.address, self.port, timeout=self.timeout)
         headers = {"Accept": "application/json", "Connection": "close", "X-HQ-Estop-Nonce": nonce}
-        if self.token:
+        if self.token and not self.require_signed:
             headers["X-HQ-Estop-Token"] = self.token
         try:
             connection.request("GET", PATH, headers=headers)
