@@ -1669,10 +1669,8 @@ class SafetyRegression(unittest.TestCase):
         worker_a.start()
         self.assertTrue(paused_before_start.wait(2.0))
 
-        # Cancel A, clear stream_id as if A never started, reset, and start B.
+        # Cancel A, reset, and start B (no manual active_stream_id cleanup needed).
         self.call("cancel", {"lease": keys_a["lease"]})
-        with self.lab.lock:
-            self.lab.active_stream_id = None
         self.call("reset", {"inspected": True})
         self.now += 0.6
         self.call("telemetry")
@@ -1687,6 +1685,53 @@ class SafetyRegression(unittest.TestCase):
         self.assertNotEqual(self.lab.active_stream_id, 1)
         self.assertEqual(self.lab.stream_generation, b_stream_id)
         self.assertTrue(self.lab.owner("a", keys_b["lease"]))
+
+    def test_slow_continued_motion_does_not_confirm_stationary(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        self.call("move", {
+            **keys,
+            "kind": "joints",
+            "pose": {**arm.HOME, "base": 3.0},
+        })
+        for base in (1.1, 1.3):
+            self.now += 0.4
+            self.arm.actual = {**arm.HOME, "base": base}
+            self.call("telemetry")
+        # The arm is still progressing toward its target.
+        self.assertTrue(self.lab.physical_command_sent)
+        status = self.call("cancel", {"lease": keys["lease"]})
+        self.assertTrue(status["uncertain"])
+        self.assertEqual(status["stop_state"], "unconfirmed")
+
+    def test_cancelled_unstarted_stream_does_not_orphan_stream_id(self):
+        self.setup_hardware()
+        self.arm.actual = {**arm.HOME, "base": 20.0}
+        self.now += 0.6
+        self.call("telemetry")
+        keys = self.arm_keys()
+        original_start = self.lab.start_stream
+
+        def interrupted_start(cfg, session, key, *args, **kwargs):
+            # Cancellation occurs after ID registration,
+            # but before the stream worker is launched.
+            self.call("cancel", {"lease": key})
+            return original_start(cfg, session, key, *args, **kwargs)
+
+        self.lab.start_stream = interrupted_start
+        try:
+            self.call("move", {
+                **keys,
+                "kind": "home_direct",
+                "confirmed": True,
+            })
+        finally:
+            self.lab.start_stream = original_start
+        # A reservation with no worker must be cleaned up.
+        self.assertIsNone(self.lab.active_stream_id)
+        self.assertIsNone(self.lab.pending_stream_id)
+        # Local inspection/reset must remain possible.
+        self.call("reset", {"inspected": True})
 
 
 @contextmanager

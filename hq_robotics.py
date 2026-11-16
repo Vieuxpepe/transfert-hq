@@ -289,6 +289,7 @@ class Robotics:
         self._estop_seq_lock = threading.Lock()
         self.physical_command_sent = False
         self.stream_generation = 0
+        self.pending_stream_id = None
         self.active_stream_id = None
         self.commanded_start = None
         self.last_settled_pose = None
@@ -419,6 +420,7 @@ class Robotics:
             if not (self.lease or self.motion or self.physical_command_sent) and self.stop_latched:
                 return
             self.epoch += 1
+            self.pending_stream_id = None
             self.stop_latched = True
             if self.motion or self.physical_command_sent:
                 self.uncertain = True
@@ -539,6 +541,7 @@ class Robotics:
 
     def disarm(self, kind):
         self.epoch += 1
+        self.pending_stream_id = None
         uncertain_latched = False
         if self.mode == "simulation" and self.motion:
             self.motion = None
@@ -564,6 +567,7 @@ class Robotics:
 
     def fault(self, kind):
         self.epoch += 1
+        self.pending_stream_id = None
         self.uncertain = self.uncertain or bool(self.motion) or self.physical_command_sent
         self.motion = None
         self.lease = None
@@ -812,7 +816,7 @@ class Robotics:
                 if (moved_toward
                         and self.last_settled_pose is not None
                         and now_ts - self.last_settled_at >= 0.35
-                        and max(abs(actual_pose[k] - self.last_settled_pose[k]) for k in JOINTS) <= NOOP_DEGREES):
+                        and max(abs(actual_pose[k] - self.last_settled_pose[k]) for k in JOINTS) <= 0.08):
                     self.clear_inspection()
                     self.motion = None
                     self.physical_command_sent = False
@@ -984,7 +988,7 @@ class Robotics:
                     self._validate_stream_waypoints(cfg, start, pose, seconds)
                     self.stream_generation += 1
                     stream_id = self.stream_generation
-                    self.active_stream_id = stream_id
+                    self.pending_stream_id = stream_id
                     stream = (start, pose, seconds, stream_spd)
                 self.target = pose
                 self.commanded_start = dict(start)
@@ -1062,16 +1066,25 @@ class Robotics:
                     return False
                 self.stream_generation += 1
                 stream_id = self.stream_generation
-                self.active_stream_id = stream_id
-            elif (not self.owner(session, key) or self.stop_pending or self.stop_latched
-                  or self.uncertain or (epoch is not None and self.epoch != epoch)
-                  or self.active_stream_id != stream_id):
-                return False
-        if self.stream_threaded:
-            threading.Thread(target=self.stream, args=(cfg, session, key, start, target, seconds, spd),
-                             kwargs={"epoch": epoch, "stream_id": stream_id}, name="robotics-stream", daemon=True).start()
-        else:
-            self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch, stream_id=stream_id)
+            else:
+                expected = self.pending_stream_id == stream_id
+                if expected:
+                    self.pending_stream_id = None
+                if (not expected or not self.owner(session, key) or self.stop_pending or self.stop_latched
+                        or self.uncertain or (epoch is not None and self.epoch != epoch)):
+                    return False
+            self.active_stream_id = stream_id
+        try:
+            if self.stream_threaded:
+                threading.Thread(target=self.stream, args=(cfg, session, key, start, target, seconds, spd),
+                                 kwargs={"epoch": epoch, "stream_id": stream_id}, name="robotics-stream", daemon=True).start()
+            else:
+                self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch, stream_id=stream_id)
+        except Exception:
+            with self.lock:
+                if self.active_stream_id == stream_id:
+                    self.active_stream_id = None
+            raise
         return True
 
     def stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None):
@@ -1656,7 +1669,7 @@ class Robotics:
                 clearance = None
                 if start:
                     self.keepout_path(cfg, start, pose)
-                    clearance = swept_clearance(start, pose, cfg.get("keepout") or [])
+                    clearance = async_box_clearance(start, pose, cfg.get("keepout") or [])
                 return {
                     "ok": True,
                     "pose": pose,
@@ -1672,6 +1685,7 @@ class Robotics:
                 if self.io.locked() or self.motion or self.lease or self.stop_pending or self.active_stream_id is not None:
                     refuse("robotics_busy", "Poste de commande occupé")
                 self.epoch += 1
+                self.pending_stream_id = None
                 self.uncertain = self.stop_latched = False
                 self.physical_command_sent = False
                 self.commanded_start = None
