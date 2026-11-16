@@ -15,7 +15,7 @@ import time
 import hq_ai
 import hq_state
 from hq_robotics import LEASE_SECONDS, NOOP_DEGREES, PROFILE, Rejected, read_object, refuse
-from hq_robotics_arm import JOINTS, number, position, swept_clearance, validate_path
+from hq_robotics_arm import JOINTS, async_box_clearance, number, position, validate_path
 
 PREFIX = "assistant/"
 DRAFT_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
@@ -395,9 +395,10 @@ def plan_safety_report(cfg, script):
         delta = max(abs(step[k] - cursor[k]) for k in JOINTS)
         max_delta = max(max_delta, delta)
         total_delta += delta
-        clearance = swept_clearance(cursor, step, zones)
-        if clearance["collision_zone"]:
-            refuse("robotics_keepout", f"Zone interdite « {clearance['collision_zone']} » sur le volume balayé", 409)
+        clearance = async_box_clearance(cursor, step, zones)
+        if clearance["collision_zone"] or clearance.get("clearance_uncertain"):
+            zone_name = clearance["collision_zone"] or "d'exclusion"
+            refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
         if clearance["min_clearance_mm"] is not None:
             min_clearance = clearance["min_clearance_mm"] if min_clearance is None else min(min_clearance, clearance["min_clearance_mm"])
         cursor = step

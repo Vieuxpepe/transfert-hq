@@ -291,7 +291,8 @@ class Robotics:
         self.stream_generation = 0
         self.active_stream_id = None
         self.commanded_start = None
-        self.settled_reads = 0
+        self.last_settled_pose = None
+        self.last_settled_at = -math.inf
         self.lock = threading.RLock()
         self.io = threading.Lock()
         self.lease = None
@@ -795,26 +796,36 @@ class Robotics:
             if self.motion and self.blendable and self.target and not self.blend:
                 self.blend = max(abs(value["actual"][k] - self.target[k]) for k in JOINTS) <= BLEND_DEGREES
             if self.active_stream_id is None and self.motion and all(abs(value["actual"][k] - self.target[k]) <= REACHED_DEGREES for k in JOINTS):
+                now_ts = self.feedback_at
+                actual_pose = value["actual"]
                 start_dist = (
                     max(abs(self.target[k] - self.commanded_start[k]) for k in JOINTS)
                     if self.commanded_start else math.inf
                 )
-                now_dist = max(abs(self.target[k] - value["actual"][k]) for k in JOINTS)
+                now_dist = max(abs(self.target[k] - actual_pose[k]) for k in JOINTS)
                 moved_toward = (
                     not self.commanded_start
                     or start_dist <= NOOP_DEGREES
-                    or max(abs(value["actual"][k] - self.commanded_start[k]) for k in JOINTS) >= NOOP_DEGREES
-                    and now_dist < start_dist
+                    or (max(abs(actual_pose[k] - self.commanded_start[k]) for k in JOINTS) >= NOOP_DEGREES
+                        and now_dist < start_dist)
                 )
-                if moved_toward and (start_dist > REACHED_DEGREES or self.settled_reads >= 1):
+                if (moved_toward
+                        and self.last_settled_pose is not None
+                        and now_ts - self.last_settled_at >= 0.35
+                        and max(abs(actual_pose[k] - self.last_settled_pose[k]) for k in JOINTS) <= NOOP_DEGREES):
                     self.clear_inspection()
                     self.motion = None
                     self.physical_command_sent = False
                     self.commanded_start = None
-                    self.settled_reads = 0
+                    self.last_settled_pose = None
+                    self.last_settled_at = -math.inf
                     self.record("reached")
-                elif moved_toward:
-                    self.settled_reads += 1
+                else:
+                    self.last_settled_pose = dict(actual_pose)
+                    self.last_settled_at = now_ts
+            elif self.motion:
+                self.last_settled_pose = None
+                self.last_settled_at = -math.inf
         return value
 
     def resolve_pose(self, cfg, data):
@@ -965,15 +976,20 @@ class Robotics:
                     self.disarm("disarmed")
                     refuse("robotics_stale", "Autorisation expirée avant envoi")
                 seconds = delta / (speed * 360 / 4096)
+                stream_id = None
                 if direct or whole:
                     # The arm's controller runs a command at constant speed with abrupt starts and stops
                     # whatever the acceleration setting. Stream a smooth rest-to-rest curve instead.
                     seconds, stream_spd = self.stream_plan(cfg, start, pose, speed)
                     self._validate_stream_waypoints(cfg, start, pose, seconds)
+                    self.stream_generation += 1
+                    stream_id = self.stream_generation
+                    self.active_stream_id = stream_id
                     stream = (start, pose, seconds, stream_spd)
                 self.target = pose
                 self.commanded_start = dict(start)
-                self.settled_reads = 0
+                self.last_settled_pose = None
+                self.last_settled_at = -math.inf
                 self.motion = self.clock() + max(4, seconds + 3)
                 self.blend, self.blendable = False, progress is not None
                 if direct or whole:
@@ -998,7 +1014,7 @@ class Robotics:
         finally:
             self.io.release()
         if stream is not None:
-            self.start_stream(cfg, session, key, *stream, epoch=move_epoch)
+            self.start_stream(cfg, session, key, *stream, epoch=move_epoch, stream_id=stream_id)
 
     def _dispatch_arm_move(self, cfg, session, key, epoch, goal, goal_spd, acceleration, *,
                            arm_client=None, authorized=None):
@@ -1038,16 +1054,25 @@ class Robotics:
         planned_speed = min(cap, max(floor, math.ceil(peak * STREAM_SPD_GAIN)))
         return seconds, planned_speed
 
-    def start_stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None):
+    def start_stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None):
         with self.lock:
-            self.stream_generation += 1
-            stream_id = self.stream_generation
-            self.active_stream_id = stream_id
+            if stream_id is None:
+                if (not self.owner(session, key) or self.stop_pending or self.stop_latched
+                        or self.uncertain or (epoch is not None and self.epoch != epoch)):
+                    return False
+                self.stream_generation += 1
+                stream_id = self.stream_generation
+                self.active_stream_id = stream_id
+            elif (not self.owner(session, key) or self.stop_pending or self.stop_latched
+                  or self.uncertain or (epoch is not None and self.epoch != epoch)
+                  or self.active_stream_id != stream_id):
+                return False
         if self.stream_threaded:
             threading.Thread(target=self.stream, args=(cfg, session, key, start, target, seconds, spd),
                              kwargs={"epoch": epoch, "stream_id": stream_id}, name="robotics-stream", daemon=True).start()
         else:
             self.stream(cfg, session, key, start, target, seconds, spd, epoch=epoch, stream_id=stream_id)
+        return True
 
     def stream(self, cfg, session, key, start, target, seconds, spd, *, epoch=None, stream_id=None):
         """Send one approved move as goals along a smooth curve, every STREAM_TICK seconds.
@@ -1257,7 +1282,7 @@ class Robotics:
             for wp in waypoints:
                 self.keepout_path(cfg, cursor, wp)
                 validate_path(cursor, wp, cfg["joint_limits"], cfg["workspace"])
-                clearance = swept_clearance(cursor, wp, cfg.get("keepout") or [])
+                clearance = async_box_clearance(cursor, wp, cfg.get("keepout") or [])
                 if clearance["collision_zone"] or clearance.get("clearance_uncertain"):
                     zone_name = clearance["collision_zone"] or "d'exclusion"
                     refuse("robotics_keepout", f"Zone interdite « {zone_name} » sur le volume balayé", 409)
@@ -1650,7 +1675,8 @@ class Robotics:
                 self.uncertain = self.stop_latched = False
                 self.physical_command_sent = False
                 self.commanded_start = None
-                self.settled_reads = 0
+                self.last_settled_pose = None
+                self.last_settled_at = -math.inf
                 self.feedback = self.target = None
                 self.estop_state = None
                 if self.mode == "hardware":

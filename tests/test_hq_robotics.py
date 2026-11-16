@@ -344,6 +344,8 @@ class Controller(unittest.TestCase):
         self.assertEqual(self.arm.calls[-1], ("move", pose, 100, 4))
         self.now += .6
         self.arm.actual = pose
+        self.call("telemetry")
+        self.now += .4
         self.assertFalse(self.call("telemetry")["moving"])
         self.assertFalse(self.lab.requires_inspection.exists())
         self.arm.error = "move"
@@ -575,6 +577,8 @@ class Controller(unittest.TestCase):
         self.assertTrue(self.call("move", {**keys, "kind": "joints", "pose": pose})["moving"])
         self.arm.actual = {**arm.HOME, "elbow": 91.7}  # 1.3 deg short, like the real elbow
         self.now += .6
+        self.call("telemetry")
+        self.now += .4
         status = self.call("telemetry")
         self.assertFalse(status["moving"])
         self.assertFalse(status["uncertain"])
@@ -1605,6 +1609,84 @@ class SafetyRegression(unittest.TestCase):
         self.assertTrue(res["clearance_uncertain"])
         self.assertEqual(res["collision_zone"], "near_edge")
         self.assertLessEqual(res["min_clearance_mm"], 0.0)
+
+    def test_partial_progress_does_not_confirm_stationary(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        self.call("move", {
+            **keys,
+            "kind": "joints",
+            "pose": {**arm.HOME, "base": 3.0},
+        })
+        # Arm has started moving but is still 1.9 degrees from target.
+        self.arm.actual = {**arm.HOME, "base": 1.1}
+        self.now += 0.6
+        self.call("telemetry")
+        status = self.call("cancel", {"lease": keys["lease"]})
+        self.assertTrue(status["uncertain"])
+        self.assertEqual(status["stop_state"], "unconfirmed")
+
+    def test_progress_samples_do_not_prove_settling(self):
+        self.setup_hardware()
+        keys = self.arm_keys()
+        self.call("move", {
+            **keys,
+            "kind": "joints",
+            "pose": {**arm.HOME, "base": 1.0},
+        })
+        # Two readings during continuing motion, not stationary dwell.
+        for base in (0.3, 0.6):
+            self.arm.actual = {**arm.HOME, "base": base}
+            self.now += 0.6
+            self.call("telemetry")
+        status = self.call("cancel", {"lease": keys["lease"]})
+        self.assertTrue(status["uncertain"])
+        self.assertEqual(status["stop_state"], "unconfirmed")
+
+    def test_delayed_start_stream_cannot_overwrite_newer_stream_id(self):
+        self.setup_hardware()
+        self.arm.follow = True
+        self.arm.actual = {**arm.HOME, "base": 20.0}
+        self.now += 0.6
+        self.call("telemetry")
+        keys_a = self.arm_keys()
+
+        paused_before_start = threading.Event()
+        resume_a = threading.Event()
+        orig_start = self.lab.start_stream
+
+        def hook_start(cfg, session, key, *args, **kwargs):
+            if key == keys_a["lease"]:
+                paused_before_start.set()
+                resume_a.wait(2.0)
+            return orig_start(cfg, session, key, *args, **kwargs)
+
+        self.lab.start_stream = hook_start
+        worker_a = threading.Thread(
+            target=self.call,
+            args=("move", {**keys_a, "kind": "home_direct", "confirmed": True}),
+        )
+        worker_a.start()
+        self.assertTrue(paused_before_start.wait(2.0))
+
+        # Cancel A, clear stream_id as if A never started, reset, and start B.
+        self.call("cancel", {"lease": keys_a["lease"]})
+        with self.lab.lock:
+            self.lab.active_stream_id = None
+        self.call("reset", {"inspected": True})
+        self.now += 0.6
+        self.call("telemetry")
+        keys_b = self.arm_keys()
+        self.lab.start_stream = orig_start
+        self.call("move", {**keys_b, "kind": "home_direct", "confirmed": True})
+        b_stream_id = self.lab.stream_generation
+
+        # Now resume delayed A: start_stream must return False and never overwrite B's stream_id.
+        resume_a.set()
+        worker_a.join(timeout=2.0)
+        self.assertNotEqual(self.lab.active_stream_id, 1)
+        self.assertEqual(self.lab.stream_generation, b_stream_id)
+        self.assertTrue(self.lab.owner("a", keys_b["lease"]))
 
 
 @contextmanager
