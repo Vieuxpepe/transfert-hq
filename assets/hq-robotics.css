@@ -72,7 +72,7 @@
 .rb-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.28fr) minmax(0, 1fr);
-  grid-template-areas: "camera motion" "telemetry motion" "presets presets" "config history";
+  grid-template-areas: "camera motion" "telemetry motion" "presets presets" "records records" "library library" "config history";
   grid-template-rows: auto 1fr;
   align-items: start;
   gap: 12px;
@@ -89,8 +89,116 @@
 .rb-motion { grid-area: motion; }
 .rb-telemetry { grid-area: telemetry; }
 .rb-presets { grid-area: presets; }
+.rb-library { grid-area: library; }
+.rb-library[hidden] { display: none; }
+.rb-library-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.rb-library-empty { margin: 0; color: var(--rb-muted); font-size: .86rem; }
+.rb-library .rb-ai-script {
+  display: grid; gap: 6px; padding: 10px; overflow-wrap: anywhere;
+  border: 1px solid var(--rb-line); border-radius: 10px; background: var(--rb-surface);
+}
+.rb-library .rb-ai-script summary { min-height: 44px; align-content: center; cursor: pointer; }
+.rb-library .rb-ai-stage, .rb-lib-meta { margin: 0; color: var(--rb-muted); font-size: .78rem; }
+.rb-lib-summary { margin: 0; font-size: .86rem; }
+.rb-ai-script .rb-lib-meta { margin: 0; font-size: .78rem; opacity: .8; }
+.rb-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rb-lib-trace { width: 100%; height: 64px; border-radius: 7px; background: var(--rb-panel); }
+.rb-lib-trace polyline { fill: none; stroke: #73edce; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.rb-lib-trace circle { fill: #ffc176; }
+.rb-ai-script .rb-lib-trace { width: 100%; height: 64px; border-radius: 7px; background: rgba(0, 0, 0, .25); }
+.rb-ai-script .rb-lib-trace polyline { fill: none; stroke: #73edce; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.rb-ai-script .rb-lib-trace circle { fill: #ffc176; }
+.rb-lib-json {
+  width: 100%; box-sizing: border-box; resize: vertical; padding: 8px;
+  border: 1px solid rgba(160, 185, 190, .35); border-radius: 7px;
+  background: rgba(0, 0, 0, .3); color: inherit; font: 12px/1.45 ui-monospace, monospace; tab-size: 2;
+}
+.rb-lib-json[readonly] { opacity: .75; }
+.rb-lib-code summary { min-height: 44px; display: grid; align-content: center; cursor: pointer; }
+.rb-lib-axes { fill: #a2bdbf; font: 5px ui-monospace, monospace; }
+.rb-ai-script .rb-lib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.rb-ai-script .rb-lib-actions button, .rb-ai-script .rb-lib-star { min-height: 44px; min-width: 44px; }
+.rb-ai-script .rb-lib-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rb-ai-script .rb-lib-summary { margin: 0; font-size: .86rem; }
+.rb-lib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.rb-lib-actions button, .rb-lib-star { min-height: 44px; min-width: 44px; }
 .rb-config { grid-area: config; }
 .rb-history { grid-area: history; }
+.rb-records { grid-area: records; }
+.rb-record-save {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 8px;
+  margin-top: 10px;
+}
+.rb-record-save label { display: grid; gap: 4px; min-width: 0; color: var(--rb-muted); font-size: .79rem; }
+.rb-record-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.rb-record-search { display: grid; gap: 4px; flex: 1 1 200px; color: var(--rb-muted); font-size: .78rem; }
+.rb-record-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 10px; }
+.rb-record-tags { margin: -1px 0 0; color: var(--rb-muted); font-size: .74rem; overflow-wrap: anywhere; }
+.rb-record {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--rb-line);
+  border-radius: 10px;
+  background: var(--rb-surface);
+}
+.rb-record-head { display: flex; justify-content: space-between; gap: 8px; overflow-wrap: anywhere; }
+.rb-record-head span { color: var(--rb-muted); font-size: .78rem; white-space: nowrap; }
+.rb-record .rb-actions { margin: 0; }
+.rb-record-empty { margin: 10px 0 0; color: var(--rb-muted); font-size: .86rem; }
+.rb-playback {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--rb-line);
+  border-radius: 10px;
+  background: var(--rb-surface);
+}
+.rb-playback[hidden] { display: none; }
+.rb-playback-head, .rb-playback-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.rb-playback-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rb-playback-head span, .rb-playback-foot { color: var(--rb-muted); font-size: .78rem; }
+.rb-playback-bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.09); overflow: hidden; }
+.rb-playback-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: #c9b8ff; transition: width .25s ease; }
+.rb-record-edit { display: grid; gap: 8px; margin-top: 8px; }
+.rb-record-edit .rb-actions { margin-top: 0; }
+.rb-record-steps {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.rb-record-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+  font-size: .78rem;
+}
+.rb-record-step b { color: var(--rb-muted); font-variant-numeric: tabular-nums; }
+.rb-record-step span { overflow-wrap: anywhere; }
+.rb-record-step div { display: flex; gap: 4px; }
+.rb-record-step button { min-width: 30px; min-height: 30px; padding: 2px 6px; font-size: .78rem; }
+.rb-record-step button:disabled { opacity: .45; cursor: default; }
+.rb-plot canvas { touch-action: none; }
+.rb-plot canvas.is-aim { cursor: crosshair; }
+.rb-plot canvas.is-drag { cursor: grabbing; }
 
 .rb-viewport {
   position: relative;
@@ -123,11 +231,20 @@
   pointer-events: none;
 }
 .rb-plot-caption { inset: 9px 10px auto; justify-content: space-between; }
-.rb-plot-key { inset: auto auto 8px 10px; }
+.rb-plot-key { inset: auto auto 8px 10px; flex-wrap: wrap; max-width: calc(100% - 20px); row-gap: 4px; }
 .rb-plot-key > span { display: inline-flex; align-items: center; gap: 5px; }
 .rb-plot-key > span::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #73edce; }
 .rb-plot-key .rb-key-area::before { border: 1px solid #5d9295; border-radius: 2px; background: #17373e; }
 .rb-plot-key .rb-key-preview::before { background: #ffc176; }
+.rb-plot-key .rb-key-trace::before { background: #c9b8ff; }
+.rb-plot-key .rb-key-command::before {
+  width: 8px;
+  height: 8px;
+  border: 1px solid #9fc5ff;
+  border-radius: 1px;
+  background: transparent;
+  transform: rotate(45deg);
+}
 .rb-coordinates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px !important; }
 .rb-coordinates > div {
   display: flex;
@@ -158,6 +275,34 @@
   color: #dbedee;
   font-size: .72rem;
 }
+/* Fullscreen HUD: STOP, stream health and the measured pose stay reachable when the video fills the screen. */
+.rb-video-hud {
+  position: absolute;
+  z-index: 3;
+  inset: auto 0 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 24px 10px 8px;
+  background: linear-gradient(180deg, transparent, #071116d9 46%);
+  color: #dbedee;
+  font-size: .72rem;
+  pointer-events: none;
+}
+.rb-video-hud > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.rb-hud-live { font-weight: 700; color: #b3cbd2; }
+.rb-hud-live::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .6;
+}
+.rb-hud-live[data-state="live"] { color: #86e1cd; }
+.rb-hud-live[data-state="live"]::before { background: #73edce; opacity: 1; }
+.rb-hud-rate, .rb-hud-latency, .rb-hud-cells { color: #a8c6ca; font: 500 .72rem ui-monospace, monospace; }
+.rb-hud-cells i { font-style: normal; opacity: .7; }
+#hq-robotics-app .rb-hud-stop { margin-inline-start: auto; pointer-events: auto; }
+#hq-robotics-app .rb-viewport:fullscreen .rb-hud-stop { min-height: 52px; padding-inline: 18px; font-size: .95rem; }
+.rb-viewport:fullscreen .rb-video-hud { padding: 46px 22px 18px; gap: 8px 16px; font-size: .88rem; }
+
 .rb-lens {
   display: grid;
   width: 36px;
@@ -200,12 +345,24 @@
 .rb-actions { margin-top: 10px; }
 .rb-camera-actions { margin-top: 9px; justify-content: space-between; }
 .rb-camera-actions .rb-actions { margin-top: 0; }
+.rb-audio[hidden] { display: none; }
+.rb-audio { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.rb-audio button { min-height: 44px; }
+.rb-audio button[aria-pressed="true"] { background: #0f6a5e; color: #fff; }
+.rb-audio [role="status"] { color: var(--rb-muted); font-size: .8rem; }
 .rb-quality { display: flex; gap: 6px; align-items: center; color: var(--rb-muted); font-size: .8rem; }
 .rb-quality select { width: auto !important; }
 
 .rb-safety { padding: 9px 10px; background: var(--rb-surface); border-radius: 9px; }
 .rb-safety .rb-actions { margin: 0; }
 .rb-safety p { margin-top: 6px !important; line-height: 1.38; }
+#hq-robotics-app .rb-lease {
+  align-self: center;
+  color: var(--rb-muted);
+  font: 600 .74rem ui-monospace, monospace;
+  white-space: nowrap;
+}
+#hq-robotics-app .rb-hint { margin: 8px 0 0; color: var(--rb-muted); font-size: .76rem; line-height: 1.38; }
 .rb-hardware-note { border-inline-start: 2px solid #b96051; padding-inline-start: 7px; }
 .rb-tabs { gap: 2px; background: var(--rb-surface); border-radius: 9px; padding: 2px; }
 .rb-motion > .rb-tabs { margin-block: 11px; }
@@ -226,6 +383,12 @@
 }
 .rb-axis label { font-size: .85rem; font-weight: 630; }
 #hq-robotics-app .rb-axis button { padding: 0; touch-action: manipulation; font-size: 1.2rem; }
+#hq-robotics-app .rb-axis button.is-pressed {
+  background: #0f6a5e;
+  border-color: #22867b;
+  color: #fff;
+  transform: translateY(1px);
+}
 .rb-axis-input { position: relative; }
 .rb-axis-input span { position: absolute; inset: 50% 7px auto auto; transform: translateY(-50%); font-size: .72rem; color: var(--rb-muted); pointer-events: none; }
 #hq-robotics-app .rb-axis-input input { padding-inline: 6px 25px; appearance: textfield; }
@@ -246,15 +409,27 @@
   color: var(--rb-muted);
   font-size: .79rem;
 }
+.rb-settings-grid label.rb-check { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; min-height: 44px; }
+.rb-settings-grid label.rb-check input { flex: none; width: 22px; height: 22px; min-height: 0; padding: 0; margin: 0; accent-color: #1fa896; }
 .rb-motion-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .rb-motion-actions button:last-child { grid-column: 1 / -1; }
 .rb-pose output { display: block; margin-top: 8px; font-size: .82rem; color: var(--rb-muted); }
 
-.rb-telemetry table { width: 100%; border-collapse: collapse; font-size: .84rem; }
-.rb-telemetry :is(th, td) { padding: 7px 3px; border-bottom: 1px solid var(--rb-line); text-align: right; }
+.rb-telemetry table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: .84rem; }
+.rb-telemetry thead th:first-child { width: 22%; }
+.rb-telemetry thead th:not(:first-child) { width: 19.5%; }
+.rb-telemetry :is(th, td) { padding: 6px 3px; border-bottom: 1px solid var(--rb-line); text-align: right; }
 .rb-telemetry th:first-child { text-align: left; }
 .rb-telemetry thead th { color: var(--rb-muted); font-size: .76rem; }
 .rb-telemetry tbody td:nth-child(2) { font-weight: 700; }
+.rb-delta { color: var(--rb-muted); white-space: nowrap; }
+.rb-delta.is-off { color: #ffc176; font-weight: 700; }
+.rb-load { display: grid; justify-items: end; gap: 2px; }
+.rb-load > span:first-child { font-size: .76rem; color: var(--rb-muted); font-variant-numeric: tabular-nums; }
+.rb-load-track { display: block; width: 100%; height: 4px; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; }
+.rb-load-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: #73edce; transition: width .2s ease; }
+.rb-load-track i.is-high { background: #ffc176; }
+.rb-load-track i.is-negative { background: #d8915a; }
 .rb-readings { margin-top: 9px; }
 .rb-readings output { background: none; }
 .rb-config { scroll-margin-top: 120px; }
@@ -281,7 +456,7 @@
 @media (max-width: 1050px) {
   .rb-workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "camera" "motion" "telemetry" "presets" "config" "history";
+    grid-template-areas: "camera" "motion" "telemetry" "presets" "records" "library" "config" "history";
     grid-template-rows: auto;
   }
 }
@@ -299,10 +474,278 @@
   .rb-lens::after { width: 9px; height: 9px; }
   .rb-camera-actions .rb-actions { flex: 1 1 100%; }
   .rb-camera-actions button { flex: 1 1 auto; }
+  .rb-record-save { grid-template-columns: minmax(0, 1fr); }
+  .rb-record-tools { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .rb-telemetry table { font-size: .76rem; }
+  .rb-telemetry :is(th, td) { padding: 6px 2px; }
+  .rb-telemetry thead th { font-size: .68rem; }
+  .rb-load > span:first-child { font-size: .7rem; }
+  .rb-video-hud .rb-hud-rate, .rb-video-hud .rb-hud-latency { display: none; }
 }
 
 @media (max-width: 365px) {
   .rb-settings-grid { grid-template-columns: minmax(0, 1fr); }
   .rb-axis { gap: 4px; }
   .rb-coordinates > div { padding-inline: 6px; }
+  .rb-telemetry :is(th, td) { padding-inline: 1px; }
+}
+
+.rb-ptz[hidden] { display: none; }
+.rb-ptz {
+  display: grid; grid-template-columns: repeat(3, 48px); gap: 6px; justify-content: center; margin-top: 12px;
+  grid-template-areas: ". up ." "left stop right" ". down .";
+}
+.rb-ptz button { min-height: 48px; min-width: 48px; touch-action: none; user-select: none; }
+.rb-ptz [data-ptz="up"] { grid-area: up; }
+.rb-ptz [data-ptz="left"] { grid-area: left; }
+.rb-ptz [data-ptz="stop"] { grid-area: stop; }
+.rb-ptz [data-ptz="right"] { grid-area: right; }
+.rb-ptz [data-ptz="down"] { grid-area: down; }
+
+.rb-night[hidden] { display: none; }
+.rb-night { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.rb-night span { color: var(--rb-muted); font-size: .8rem; margin-right: 4px; }
+.rb-night button { min-height: 44px; min-width: 56px; }
+
+/* Batch 3: joint sliders, editable sequence rows, PTZ pulse, homing and library ghosts. */
+#hq-robotics-app .rb-axis .rb-slider {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 28px;
+  min-height: 28px;
+  margin: 0 0 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--rb-active);
+  cursor: pointer;
+}
+.rb-homing { border-color: color-mix(in srgb, var(--rb-active) 38%, var(--rb-line)); }
+.rb-homing .rb-playback-bar i { background: var(--rb-active); }
+.rb-plot-key .rb-key-ghost::before { background: #73edce; opacity: .6; }
+#hq-robotics-app .rb-ghost-toggle { margin-inline-start: auto; }
+
+.rb-ptz-pulse {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  color: var(--rb-muted);
+  font-size: .78rem;
+}
+#hq-robotics-app .rb-ptz-pulse select { width: auto; max-width: 100%; min-height: 44px; }
+
+.rb-sequence .rb-seq-steps { display: grid; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.rb-seq-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+}
+.rb-seq-step > b { color: var(--rb-muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.rb-seq-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; min-width: 0; }
+#hq-robotics-app .rb-seq-input { width: 100%; height: 38px; min-height: 38px; padding-inline: 5px; font-size: .78rem; }
+.rb-seq-tools { display: flex; gap: 3px; }
+#hq-robotics-app .rb-seq-tools button { width: 34px; min-width: 34px; height: 34px; min-height: 34px; padding: 0; font-size: .8rem; }
+.rb-seq-empty { padding: 4px 0; color: var(--rb-muted); font-size: .82rem; list-style: none; }
+
+.rb-section-nav { display: none; }
+@media (max-width: 620px) {
+  .rb-section-nav {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    margin: 0 0 8px;
+    padding: 6px 0;
+    background: color-mix(in srgb, var(--rb-panel) 92%, transparent);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+  .rb-section-nav::-webkit-scrollbar { display: none; }
+  #hq-robotics-app .rb-section-nav button { flex: 0 0 auto; min-height: 44px; padding-inline: 12px; font-size: .78rem; }
+  .rb-status { top: 60px; }
+  .rb-workspace .rb-card { scroll-margin-top: 168px; }
+  .rb-seq-step { grid-template-columns: 18px minmax(0, 1fr); }
+  .rb-seq-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rb-seq-tools { grid-column: 1 / -1; justify-content: flex-end; }
+}
+
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot {
+    border-color: var(--rb-line);
+    background:
+      linear-gradient(90deg, rgba(20, 70, 80, .08) 1px, transparent 1px),
+      linear-gradient(rgba(20, 70, 80, .08) 1px, transparent 1px), #eef6f5;
+    color: var(--rb-ink);
+  }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-caption,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key { color: var(--rb-muted); }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key .rb-key-area::before {
+    border-color: #7d9b9b;
+    background: #dcebea;
+  }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key .rb-key-preview::before { background: #a35a00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key .rb-key-trace::before { background: #5a40af; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key .rb-key-command::before { border-color: #2b63c7; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-plot-key .rb-key-ghost::before { background: #08724f; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-lib-trace polyline { stroke: #08724f; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-lib-trace circle { fill: #a35a00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-lib-axes { fill: var(--rb-muted); }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-ai-script .rb-lib-trace { background: var(--rb-surface); }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-playback-bar,
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-track {
+    background: color-mix(in srgb, var(--rb-line) 45%, transparent);
+  }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-playback-bar i { background: #5a40af; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-homing .rb-playback-bar i { background: #08724f; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-track i { background: #08724f; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-track i.is-high { background: #8b5e00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-track i.is-negative { background: #b45309; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-delta.is-off { color: #8b5e00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-lib-json {
+    background: var(--rb-surface);
+    border-color: var(--rb-line);
+  }
+}
+.rb-night button[aria-pressed="true"] { background: #0f6a5e; color: #fff; }
+
+/* Stage 4: load watch, TCP exclusion zones, saved simulation routines, black-box export. */
+.rb-load-watch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, auto);
+  align-items: end;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--rb-line);
+}
+.rb-load-watch canvas { display: block; width: 100%; height: 38px; min-width: 0; }
+.rb-load-watch > div { display: grid; gap: 2px; text-align: end; }
+.rb-load-watch strong { font-size: .78rem; color: var(--rb-muted); font-weight: 650; }
+.rb-load-watch strong[data-state="warn"] { color: #ffc176; }
+.rb-load-watch strong[data-state="critical"] { color: #ff8ca0; }
+.rb-load-watch span { color: var(--rb-muted); font: .72rem ui-monospace, monospace; }
+.rb-load-track i.is-critical { background: #ff8ca0; }
+
+.rb-routine { display: grid; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rb-line); }
+.rb-routine-load, .rb-routine-save { display: flex; align-items: end; flex-wrap: wrap; gap: 6px; }
+.rb-routine-load label, .rb-routine-save label { display: grid; gap: 4px; min-width: 150px; flex: 1 1 180px; color: var(--rb-muted); font-size: .78rem; }
+.rb-routine-load button, .rb-routine-save button { flex: 0 0 auto; }
+.rb-keepout { display: grid; gap: 7px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rb-line); }
+.rb-keepout-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.rb-keepout-head strong { font-size: .82rem; }
+.rb-keepout-rows { display: grid; gap: 6px; }
+.rb-keepout-row {
+  display: grid;
+  grid-template-columns: minmax(76px, 1.2fr) repeat(6, minmax(50px, 1fr)) 34px;
+  align-items: end;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+  background: var(--rb-surface);
+}
+.rb-keepout-row label { display: grid; gap: 2px; min-width: 0; color: var(--rb-muted); font-size: .67rem; }
+#hq-robotics-app .rb-keepout-row input { min-height: 36px; height: 36px; padding-inline: 5px; font-size: .75rem; }
+#hq-robotics-app .rb-keepout-row button { min-height: 36px; height: 36px; padding: 0; color: var(--rb-muted); }
+.rb-keepout-empty { margin: 0; color: var(--rb-muted); font-size: .8rem; }
+.rb-blackbox { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.rb-blackbox span { color: var(--rb-muted); font-size: .76rem; }
+.rb-ptz-presets {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto minmax(140px, 1fr) auto auto;
+  align-items: end;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--rb-line);
+}
+.rb-ptz-presets label { display: grid; gap: 3px; min-width: 0; color: var(--rb-muted); font-size: .74rem; }
+.rb-ptz-presets button { min-height: 40px; }
+.rb-ptz-presets > span { grid-column: 1 / -1; color: var(--rb-muted); font-size: .72rem; }
+.rb-camera-overlay { position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.rb-camera-calibration { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--rb-line); }
+.rb-cal-points { display: grid; gap: 6px; margin: 8px 0; }
+.rb-cal-point {
+  display: grid;
+  grid-template-columns: 18px auto repeat(2, minmax(70px, 1fr)) minmax(70px, auto);
+  align-items: end;
+  gap: 5px;
+  padding: 6px;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+  background: var(--rb-surface);
+}
+.rb-cal-point b { align-self: center; color: var(--rb-muted); }
+.rb-cal-point label { display: grid; gap: 2px; color: var(--rb-muted); font-size: .68rem; }
+#hq-robotics-app .rb-cal-point input { min-height: 36px; height: 36px; padding-inline: 5px; font-size: .76rem; }
+.rb-cal-point output { align-self: center; color: var(--rb-muted); font: .72rem ui-monospace, monospace; text-align: end; }
+.rb-camera-calibration .rb-check { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--rb-muted); font-size: .78rem; }
+.rb-camera-calibration .rb-check input { width: 20px; height: 20px; min-height: 0; }
+@media (max-width: 620px) {
+  .rb-cal-point { grid-template-columns: 18px auto minmax(0, 1fr) minmax(0, 1fr); }
+  .rb-cal-point output { grid-column: 1 / -1; text-align: start; }
+}
+@media (max-width: 620px) {
+  .rb-ptz-presets { grid-template-columns: minmax(0, 1fr) auto; }
+  .rb-ptz-presets label { grid-column: 1 / -1; }
+  .rb-ptz-presets button { min-height: 44px; }
+}
+#hq-robotics-app .rb-estop { color: var(--rb-muted); font-size: .68rem; font-weight: 600; white-space: nowrap; }
+#hq-robotics-app .rb-estop[data-state="warn"] { color: #ffc176; }
+#hq-robotics-app .rb-estop[data-state="ok"] { color: #73edce; }
+.rb-commission-guide { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--rb-line); }
+.rb-commission-steps { display: grid; gap: 6px; margin: 8px 0; padding: 0; list-style: none; }
+.rb-commission-steps li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(90px, auto);
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px;
+  border: 1px solid var(--rb-line);
+  border-radius: 8px;
+  font-size: .8rem;
+}
+.rb-commission-steps output { color: var(--rb-muted); font-size: .74rem; text-align: end; }
+.rb-commission-steps output[data-state="ok"] { color: #73edce; }
+.rb-commission-steps output[data-state="warn"] { color: #ffc176; }
+.rb-commission-steps li.is-ok { border-color: color-mix(in srgb, var(--rb-active) 50%, var(--rb-line)); }
+.rb-commission-steps li.is-warn { border-color: color-mix(in srgb, #ffc176 45%, var(--rb-line)); }
+#hq-robotics-app [data-rb="commission-status"] { margin-top: 8px; color: var(--rb-muted); font-size: .78rem; }
+@media (max-width: 620px) {
+  .rb-commission-steps li { grid-template-columns: minmax(0, 1fr) auto; }
+  .rb-commission-steps output { grid-column: 1 / -1; text-align: start; }
+}
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-estop[data-state="warn"],
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-steps output[data-state="warn"] { color: #8b5e00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-estop[data-state="ok"] { color: #08724f; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-commission-steps output[data-state="ok"] { color: #08724f; }
+}
+
+@media (max-width: 620px) {
+  .rb-load-watch { grid-template-columns: minmax(0, 1fr); }
+  .rb-load-watch > div { grid-template-columns: 1fr auto; text-align: start; }
+  .rb-keepout-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rb-keepout-row > label:first-child { grid-column: 1 / -1; }
+  #hq-robotics-app .rb-keepout-row > button { grid-column: 1 / -1; justify-self: end; width: 44px; }
+  .rb-routine-load, .rb-routine-save { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .rb-routine-load label, .rb-routine-save label { min-width: 0; }
+}
+
+@media (prefers-color-scheme: light) {
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-watch strong[data-state="warn"] { color: #8b5e00; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-watch strong[data-state="critical"] { color: #a22035; }
+  body:not(.theme-midnight):not(.theme-oled) #hq-robotics-app .rb-load-track i.is-critical { background: #b4233d; }
 }
