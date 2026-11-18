@@ -1875,6 +1875,11 @@ def session_info(token: str | None, touch: bool = True) -> dict | None:
     return info
 
 
+def session_memory_owner(session: dict | None) -> str:
+    """Re-export for bridge handlers; see ``hq_security.session_memory_owner``."""
+    return hq_security.session_memory_owner(session)
+
+
 def session_valid(token: str | None) -> bool:
     return session_info(token) is not None
 
@@ -13515,7 +13520,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if raw == "/api/ai":  # the assistant: usage and whether a key is set (admin: not in the upload allowlist)
             ip = self.client_address[0] if self.client_address else ""
-            code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
+            code, payload = hq_ai.http_get(parse_qs(parsed.query), client_ip=ip, role=self._role(), owner_id=session_memory_owner(session_info(self._token())))
             self._json(code, payload)
             return True
         if raw == "/api/assistant-visits":  # latest visit between two assistants (admin only)
@@ -13524,7 +13529,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_assistant_visits.http_get(
                 parse_qs(parsed.query),
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -13534,7 +13539,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_personhood.http_get(
                 parse_qs(parsed.query, keep_blank_values=True),
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -13543,7 +13548,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "Réservé admin", "code": "forbidden"})
                 return True
             qs = parse_qs(parsed.query)
-            owner = (session_info(self._token()) or {}).get("user", "admin")
+            owner = session_memory_owner(session_info(self._token()))
             path = hq_ai.transferania_chat_image(raw.rsplit("/", 1)[-1], hq_ai.device_id_from(None, qs), owner_id=owner)
             if path:
                 self._send_file(path)
@@ -14020,7 +14025,7 @@ class Handler(BaseHTTPRequestHandler):
             owner = ""
             if assistant_action or (action == "move" and data.get("kind") == "reviewed_script"):
                 session = self._session_info() or {}
-                owner = str(session.get("user_id") or "legacy-admin")
+                owner = session_memory_owner(session) if session else "legacy-admin"
             if assistant_action:
                 import hq_robotics_assistant
                 result = hq_robotics_assistant.dispatch(
@@ -14265,7 +14270,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(e)[:200], "code": "validation_error"})
                 return True
             ip = self.client_address[0] if self.client_address else ""
-            code, payload = hq_ai.http_post(data, client_ip=ip, role=self._role(), owner_id=(session_info(self._token()) or {}).get("user", "admin"))
+            code, payload = hq_ai.http_post(data, client_ip=ip, role=self._role(), owner_id=session_memory_owner(session_info(self._token())))
             self._json(code, payload)
             return True
         if raw == "/api/assistant-visit-banter":  # one live-generated ambient exchange (admin + CSRF)
@@ -14289,7 +14294,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_assistant_visits.banter(
                 data,
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -14314,7 +14319,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_assistant_visits.http_post(
                 data,
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True
@@ -14339,7 +14344,7 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             code, payload = hq_personhood.http_post(
                 data,
-                owner_id=(session_info(self._token()) or {}).get("user", "admin"),
+                owner_id=session_memory_owner(session_info(self._token())),
             )
             self._json(code, payload)
             return True

@@ -142,6 +142,21 @@ def create_session_record(
     }
 
 
+def session_memory_owner(session: dict | None) -> str:
+    """Stable owner key for companion memory, personhood and relationships.
+
+    Prefer the authenticated account id from the session record; fall back to
+    the display name, then ``admin`` for legacy single-user installs.
+    """
+    if not session or not isinstance(session, dict):
+        return "admin"
+    uid = str(session.get("user_id") or "").strip()
+    if uid:
+        return uid
+    name = str(session.get("user") or "").strip()
+    return name or "admin"
+
+
 def parse_stored_session(raw: object, config: dict | None, now: float | None = None) -> dict | None:
     """Validate, deserialize, and safely migrate a stored session record.
 

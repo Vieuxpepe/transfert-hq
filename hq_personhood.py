@@ -39,6 +39,22 @@ import hq_visit_memory
 
 log = logging.getLogger(__name__)
 
+# Verification and CI probes use fixed device ids; they must not inflate Master bond.
+_INSTRUMENT_SOURCE = re.compile(
+    r"^(?:hq(?:live|verify|test|personaudit)|verify_)", re.IGNORECASE
+)
+
+
+def _instrument_source(source: str) -> bool:
+    return bool(_INSTRUMENT_SOURCE.match(str(source or "").strip()))
+
+
+def _bond_eligible(event: dict[str, Any]) -> bool:
+    if event.get("kind") == "visit":
+        return False
+    return not _instrument_source(str(event.get("source") or ""))
+
+
 VERSION = 1
 RETENTION = 90 * 86400
 EVENT_LIMIT = 80
@@ -687,6 +703,39 @@ def state_line(key: str, *, owner: str | None = None, now: float | None = None) 
     if directive:
         text += " " + directive
     return _bounded_state(text, cause_clause=cause_clause)
+
+
+def bond(key: str, *, owner: str | None = None, now: float | None = None) -> dict[str, int]:
+    """Distinct days of real exchange with the Master, from her own ledger.
+
+    Visits are exchanges with another assistant, so they belong to the
+    relationship store, not here: a day spent with a sister is not a day of
+    conversation with him. Cheap and read-only; an unreadable file claims
+    nothing rather than guessing.
+    """
+    key = str(key or "").strip().lower()
+    if key not in KEYS:
+        return {"days": 0, "turns": 0}
+    stamp = float(now if now is not None else time.time())
+    try:
+        with _scope(key, owner) as path:
+            with _lock:
+                data = _load(path, key)
+    except Exception:
+        return {"days": 0, "turns": 0}
+    if data is _UNREADABLE or not isinstance(data, dict):
+        return {"days": 0, "turns": 0}
+    events: list[dict[str, Any]] = []
+    for event in data.get("events") or []:
+        if not isinstance(event, dict) or not _bond_eligible(event):
+            continue
+        try:
+            age = stamp - float(event.get("at"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= age <= RETENTION:
+            events.append(event)
+    return {"days": len({_date(float(e["at"])) for e in events}), "turns": len(events)}
 
 
 def _bounded_state(text: str, *, cause_clause: str = "") -> str:
