@@ -1179,6 +1179,8 @@ def default_config() -> dict:
         "nvidia_api_key": "",  # optional nvapi- key for ambient chip visits (server-side only)
         "nvidia_visit_model": "nvidia/nemotron-3.5-bolt-e4b",  # NVIDIA NIM fallback model for those visits
         "nim_fallback": False,  # opt-in: NVIDIA NIM overflow (same key) when every Gemini model failed, deep + background calls only
+        "ace_step_root": "",  # optional absolute path to external ACE-Step-1.5 dir (split release/state layout; env HQ_ACESTEP_ROOT overrides)
+        "lora_models_root": "",  # optional absolute path to immutable companion LoRA checkpoints dir (env HQ_LORA_ROOT overrides)
         "upload_sessions_max": UPLOAD_SESSIONS_MAX,
         "upload_disk_reserve_gb": UPLOAD_DISK_RESERVE_GB_DEFAULT,
         "automation_enabled": True,
@@ -3643,7 +3645,9 @@ def bind_hq() -> None:
         llm_adapter=hq_inventoria_ai.adapter,  # Gemini reply: persona + inventory + session history (read-only)
         notify=_inventoria_notify,  # offline stock alerts: HQ's existing Discord webhook + web push (opt-in, off by default)
     )  # Inventoria: admin-only; CSRF on POST below
-    hq_engine.bind(ROOT, notify=_inventoria_notify)  # Engine: pairing, Pistonia (state in .hq-engine); notifier used only if she is switched on
+    import hq_music_studio
+    hq_music_studio.configure(code_root=CODE_ROOT, config_getter=lambda: CONFIG)
+    hq_engine.bind(ROOT, notify=_inventoria_notify, config_getter=lambda: CONFIG)  # Engine: pairing, Pistonia (state in .hq-engine); notifier used only if she is switched on
     hq_music.bind(root=ROOT, notify=_inventoria_notify,  # release alerts / Studio pings: opt-in channels
                   calendar=lambda start, end: hq_calendar.manual_between(start, end)[0])  # Musique preferences / discoveries / presets (admin + CSRF on POST); calendar read-only for mood picks
     hq_spotify.bind(root=ROOT, config_getter=lambda: CONFIG)  # Spotify OAuth + Web API (tokens under .hq-music/)
@@ -5872,8 +5876,11 @@ async function hqPollTick() {
 }
 function hqStartPollScheduler() {
   const now = Date.now();
+  // Stagger initial phases forward (>= intervalMs) so early boot/parked checks stay undisturbed
+  // and periodic tasks (presence 8s, status 8s, roster 12s, inbox 15s) avoid initial burst convergence.
+  const staggerMs = { presence: 0, status: 3000, roster: 1000, scratchpad: 7000, inbox: 5500, secondary: 2000, me: 3500 };
   for (const task of hqPollTasks) {
-    if (!task.nextAt) task.nextAt = now + task.intervalMs;
+    if (!task.nextAt) task.nextAt = now + task.intervalMs + (staggerMs[task.id] || 0);
   }
   hqSchedulePoll(1000);
 }

@@ -13,9 +13,13 @@ import json
 import os
 import tempfile
 import threading
+import time
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+
+_REPLACE_RETRIES = 6
+_REPLACE_BACKOFF_SEC = (0.01, 0.02, 0.04, 0.08, 0.16)
 
 _GUARD = threading.Lock()
 _LOCKS: dict[str, threading.RLock] = {}
@@ -120,6 +124,20 @@ def path_lock(path: Path | str) -> threading.RLock:
         return lock
 
 
+def _replace_atomic(tmp: Path, dest: Path) -> None:
+    """Atomic ``os.replace`` with bounded retry for transient Windows ``PermissionError`` (P5-22)."""
+    attempts = _REPLACE_RETRIES if os.name == "nt" else 1
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if attempt + 1 >= attempts:
+                raise
+            delay = _REPLACE_BACKOFF_SEC[min(attempt, len(_REPLACE_BACKOFF_SEC) - 1)]
+            time.sleep(delay)
+
+
 def write_json_atomic(path: Path | str, data: Any, *, verify_existing: bool = True, compact: bool = False) -> None:
     """Replace ``path`` with JSON ``data``.
 
@@ -162,7 +180,7 @@ def write_json_atomic(path: Path | str, data: Any, *, verify_existing: bool = Tr
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(tmp, dest)
+            _replace_atomic(tmp, dest)
         except Exception:
             try:
                 tmp.unlink()

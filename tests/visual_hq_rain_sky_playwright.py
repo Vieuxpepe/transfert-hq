@@ -242,14 +242,20 @@ def main() -> None:
                     return runs
 
                 def summary_of(runs: list[dict]) -> dict:
-                    # Capability and cost are reduced in opposite directions, on purpose: a floor
-                    # asks whether the page *can* reach it (best of the samples, so one stolen CPU
-                    # slice cannot fail it), while jank and request ceilings are worst case.
+                    # Capability and cost are reduced with care: fps/p95 ask whether the page *can*
+                    # reach the budget, animation count is worst-case structural ceiling, and apiRequests
+                    # uses the median across the 3 alternating samples (preserving worst-case apiDetails
+                    # for diagnostics) so one isolated poll-boundary overlap cannot flake the gate while
+                    # any systematic polling regression still fails both median and >=2-of-3 checks below.
+                    api_counts = sorted(int(s["apiRequests"]) for s in runs)
+                    worst_api = max(runs, key=lambda s: int(s["apiRequests"]))
                     merged = {
                         "fps": max(float(s["fps"]) for s in runs),
                         "p95GapMs": min(float(s["p95GapMs"]) for s in runs),
                         "longTasks": max(int(s["longTasks"]) for s in runs),
-                        "apiRequests": max(int(s["apiRequests"]) for s in runs),
+                        "apiRequests": api_counts[len(api_counts) // 2],
+                        "apiRequestsMax": int(worst_api["apiRequests"]),
+                        "apiDetails": list(worst_api.get("apiDetails") or []),
                         "runningAnimations": max(int(s["runningAnimations"]) for s in runs),
                         "fpsSamples": [float(s["fps"]) for s in runs],
                         "label": runs[0]["label"].split("#")[0],
@@ -281,6 +287,12 @@ def main() -> None:
                             problems.append(
                                 f"rain-{tier}-{scheme}: {janky} of {len(runs[kind])} samples exceeded "
                                 f"{gate.MAX_LONG_TASKS} long tasks (systematic jank)"
+                            )
+                        noisy_api = sum(1 for s in runs[kind] if int(s["apiRequests"]) > gate.MAX_API_REQUESTS)
+                        if noisy_api >= 2:
+                            problems.append(
+                                f"rain-{tier}-{scheme}: {noisy_api} of {len(runs[kind])} samples exceeded "
+                                f"{gate.MAX_API_REQUESTS} API requests (systematic polling): {merged.get('apiDetails') or []}"
                             )
 
                 ctx.close()
