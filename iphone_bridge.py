@@ -5876,11 +5876,11 @@ async function hqPollTick() {
 }
 function hqStartPollScheduler() {
   const now = Date.now();
-  // Stagger initial phases so periodic tasks (presence 8s, status 8s, inbox 15s, roster 12s)
-  // do not converge into a deterministic thundering-herd burst right after page load.
-  const initialOffsets = { presence: 2000, status: 5000, scratchpad: 7000, roster: 9500, inbox: 12000, secondary: 15000, me: 18500 };
+  // Stagger initial phases forward (>= intervalMs) so early boot/parked checks stay undisturbed
+  // and periodic tasks (presence 8s, status 8s, roster 12s, inbox 15s) avoid initial burst convergence.
+  const staggerMs = { presence: 0, status: 3000, roster: 1000, scratchpad: 7000, inbox: 5500, secondary: 2000, me: 3500 };
   for (const task of hqPollTasks) {
-    if (!task.nextAt) task.nextAt = now + (initialOffsets[task.id] || task.intervalMs);
+    if (!task.nextAt) task.nextAt = now + task.intervalMs + (staggerMs[task.id] || 0);
   }
   hqSchedulePoll(1000);
 }
